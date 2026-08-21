@@ -11,6 +11,7 @@ import { useFilePreview } from '@renderer/context/file-preview-context'
 interface CsvRendererProps {
   url: string
   filePath: string
+  commentsEnabled?: boolean
 }
 
 const MAX_ROWS = 1000
@@ -32,6 +33,7 @@ interface CsvTableProps {
   /** "row:col" -> 1-based comment numbers pinned to that cell. */
   commentsByCell: Map<string, number[]>
   onCellClick: CellClickHandler
+  commentsEnabled: boolean
 }
 
 /**
@@ -39,7 +41,7 @@ interface CsvTableProps {
  * `cellTarget` state) doesn't re-render up to MAX_ROWS × columns of cells.
  * Only re-renders when the data or pinned comments actually change.
  */
-const CsvTable = memo(function CsvTable({ rows, columnLabels, commentsByCell, onCellClick }: CsvTableProps) {
+const CsvTable = memo(function CsvTable({ rows, columnLabels, commentsByCell, onCellClick, commentsEnabled }: CsvTableProps) {
   return (
     <table className="border-collapse text-xs font-mono">
       <thead>
@@ -50,7 +52,7 @@ const CsvTable = memo(function CsvTable({ rows, columnLabels, commentsByCell, on
           {columnLabels.map((label, c) => (
             <th
               key={c}
-              className="sticky top-0 z-10 bg-muted px-3 py-1.5 text-left font-semibold whitespace-nowrap border-b border-r border-border/40"
+              className="sticky top-0 z-10 bg-muted px-3 py-1.5 text-left font-medium whitespace-nowrap border-b border-r border-border/40"
             >
               {label}
             </th>
@@ -71,16 +73,17 @@ const CsvTable = memo(function CsvTable({ rows, columnLabels, commentsByCell, on
                   <td
                     key={c}
                     data-csv-cell
-                    onClick={(e) => onCellClick(e, rowNum, c, columnLabels[c], value)}
+                    onClick={commentsEnabled ? (e) => onCellClick(e, rowNum, c, columnLabels[c], value) : undefined}
                     className={cn(
-                      'relative px-3 py-1 align-top whitespace-pre-wrap break-words max-w-[28rem] cursor-pointer border-b border-r border-border/30 hover:bg-primary/5',
+                      'relative px-3 py-1 align-top whitespace-pre-wrap break-words max-w-[28rem] border-b border-r border-border/30',
+                      commentsEnabled && 'cursor-pointer hover:bg-primary/5',
                       cellComments && 'bg-primary/10',
                     )}
                   >
                     {value}
                     {cellComments && (
                       <span
-                        className="absolute top-0.5 right-0.5 min-w-3.5 h-3.5 px-1 rounded-full bg-primary text-primary-foreground text-[9px] font-bold leading-[0.875rem] text-center shadow-sm pointer-events-none"
+                        className="absolute top-0.5 right-0.5 min-w-3.5 h-3.5 px-1 rounded-full bg-primary text-primary-foreground text-[9px] font-medium leading-[0.875rem] text-center shadow-sm pointer-events-none"
                         title={`${cellComments.length} comment${cellComments.length === 1 ? '' : 's'}`}
                       >
                         {cellComments.length}
@@ -97,7 +100,7 @@ const CsvTable = memo(function CsvTable({ rows, columnLabels, commentsByCell, on
   )
 })
 
-export function CsvRenderer({ url, filePath }: CsvRendererProps) {
+export function CsvRenderer({ url, filePath, commentsEnabled = true }: CsvRendererProps) {
   const [view, setView] = useState<'table' | 'raw'>('table')
   const [cellTarget, setCellTarget] = useState<CellTarget | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -218,7 +221,7 @@ export function CsvRenderer({ url, filePath }: CsvRendererProps) {
       </div>
 
       {view === 'raw' ? (
-        <TextRenderer url={url} filePath={filePath} />
+        <TextRenderer url={url} filePath={filePath} commentsEnabled={commentsEnabled} />
       ) : (
         <>
           <CsvTable
@@ -226,6 +229,7 @@ export function CsvRenderer({ url, filePath }: CsvRendererProps) {
             columnLabels={columnLabels}
             commentsByCell={commentsByCell}
             onCellClick={handleCellClick}
+            commentsEnabled={commentsEnabled}
           />
           {sizeTruncated && (
             <div className="px-4 py-3 border-t text-xs text-muted-foreground text-center">
@@ -242,7 +246,7 @@ export function CsvRenderer({ url, filePath }: CsvRendererProps) {
         </>
       )}
 
-      {cellTarget && (
+      {commentsEnabled && cellTarget && (
         <CommentOverlay
           selection={{
             text: '',

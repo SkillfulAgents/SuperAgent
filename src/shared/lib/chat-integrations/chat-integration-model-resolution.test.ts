@@ -64,6 +64,7 @@ vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveModels: () => ({
     agentModel: 'claude-sonnet-4-20250514',
     browserModel: 'claude-sonnet-4-20250514',
+    agentEffort: 'low',
   }),
   getSettings: () => ({}),
 }))
@@ -79,14 +80,20 @@ vi.mock('@shared/lib/services/agent-preferences-service', () => ({
   readAgentPreferences: (...args: unknown[]) => mockReadAgentPreferences(...args),
 }))
 
-// Mock telegram connector to return our MockChatClientConnector
-vi.mock('./telegram-connector', () => ({
-  TelegramConnector: class {
-    constructor() {
-      return mockConnector
-    }
-  },
-}))
+// Mock telegram connector to return our MockChatClientConnector. Keep the REAL
+// classifyChatId static so classification lookups still exercise production.
+vi.mock('./telegram-connector', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./telegram-connector')>()
+  return {
+    ...actual,
+    TelegramConnector: class {
+      static classifyChatId = actual.TelegramConnector.classifyChatId
+      constructor() {
+        return mockConnector
+      }
+    },
+  }
+})
 
 // ── Imports (after mocks) ──────────────────────────────────────────────
 
@@ -139,6 +146,10 @@ describe('chat integration model and effort resolution', () => {
 
     mockReadAgentPreferences.mockReset()
     mockReadAgentPreferences.mockResolvedValue({})
+
+    // connectIntegration cancels itself on a stopped manager; this harness
+    // drives addIntegration directly (no start()), so mark the manager running.
+    ;(chatIntegrationManager as unknown as { isRunning: boolean }).isRunning = true
   })
 
   afterEach(async () => {
@@ -171,8 +182,7 @@ describe('chat integration model and effort resolution', () => {
   it('uses the global default when neither integration nor agent set one', async () => {
     const args = await startSession()
     expect(args.model).toBe('claude-sonnet-4-20250514')
-    // Effort/speed must be omitted entirely, not sent as undefined.
-    expect('effort' in args).toBe(false)
+    expect(args.effort).toBe('low')
     expect('speed' in args).toBe(false)
   })
 

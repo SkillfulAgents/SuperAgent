@@ -30,7 +30,7 @@ interface ActivitySparkChartProps {
   className?: string
 }
 
-function dayLabel(date: string): string {
+export function dayLabel(date: string): string {
   const parsed = new Date(`${date}T00:00:00.000Z`)
   return new Intl.DateTimeFormat('en-US', {
     month: 'short',
@@ -39,14 +39,18 @@ function dayLabel(date: string): string {
   }).format(parsed)
 }
 
-function plural(value: number, singular: string, multiple = `${singular}s`): string {
+export function plural(value: number, singular: string, multiple = `${singular}s`): string {
   return value === 1 ? singular : multiple
 }
 
-export function ActivitySparkChart({ label, data, className }: ActivitySparkChartProps) {
+export function summarizeDailyActivity(data: DailyActivityPoint[]) {
   const succeeded = data.reduce((sum, point) => sum + point.succeeded, 0)
   const failed = data.reduce((sum, point) => sum + point.failed, 0)
-  const total = succeeded + failed
+  return { succeeded, failed, total: succeeded + failed }
+}
+
+export function ActivitySparkChart({ label, data, className }: ActivitySparkChartProps) {
+  const { succeeded, failed, total } = summarizeDailyActivity(data)
   const max = Math.max(1, ...data.map((point) => point.succeeded + point.failed))
   const barWidth = data.length > 0
     ? Math.max(1, (WIDTH - BAR_GAP * (data.length - 1)) / data.length)

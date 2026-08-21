@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ArrowUp, AtSign, ChevronDown, Loader2, Paperclip } from 'lucide-react'
+import { ArrowUp, AtSign, ChevronDown, Cloud, Loader2, Paperclip } from 'lucide-react'
 import { cn } from '@shared/lib/utils'
+import { targetIsRemote } from '@renderer/lib/api-target'
 import { Button } from '@renderer/components/ui/button'
 import { ModelIcon } from '@renderer/components/ui/model-icon'
 import { apiFetch } from '@renderer/lib/api'
@@ -19,6 +20,10 @@ import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { toast } from 'sonner'
 import { AgentMenu, AttachMenu, ModelEffortMenu } from './quick-dispatch-menus'
 import { EFFORT_LABELS } from '@renderer/components/messages/effort-slider'
+import {
+  MarkdownComposerEditor,
+  selectAllMarkdownComposer,
+} from '@renderer/components/messages/markdown-composer-editor'
 
 type OpenMenu = 'agent' | 'model' | 'attach' | null
 
@@ -96,11 +101,11 @@ export function QuickDispatch() {
     agentDefaultsReady: agentPrefsFetched,
   })
   const createSession = useCreateSession()
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const editorRef = useRef<HTMLDivElement | null>(null)
 
   const selectedModel =
     findCatalogModel(composerOptions.model, composerOptions.catalog) ??
-    composerOptions.catalog.find((m) => m.family === 'sonnet' && m.isLatest) ??
+    findCatalogModel(composerOptions.defaultModel, composerOptions.catalog) ??
     composerOptions.catalog[0]
 
   const composer = useMessageComposer({
@@ -159,10 +164,9 @@ export function QuickDispatch() {
   useEffect(() => {
     const unsub = window.electronAPI?.onQuickDispatchShown?.(() => {
       setOpenMenu(null)
-      const el = textareaRef.current
+      const el = editorRef.current
       if (el) {
-        el.focus()
-        el.select()
+        selectAllMarkdownComposer(el)
       }
     })
     return () => unsub?.()
@@ -274,7 +278,7 @@ export function QuickDispatch() {
   const handleWindowDragStart = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return
     // Never start a window-drag from controls, text fields, or the menus.
-    if ((e.target as HTMLElement).closest('button, input, textarea, a, [data-no-window-drag]')) return
+    if ((e.target as HTMLElement).closest('button, input, textarea, a, [contenteditable="true"], [data-no-window-drag]')) return
     const startX = e.screenX
     const startY = e.screenY
     window.electronAPI?.quickDispatchDragStart?.()
@@ -320,16 +324,23 @@ export function QuickDispatch() {
   const toggleMenu = (menu: Exclude<OpenMenu, null>) =>
     setOpenMenu((prev) => (prev === menu ? null : menu))
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
+  const handleKeyDown = (e: KeyboardEvent) => {
     // Enter (and ⌘/Ctrl+Enter) dispatches; Shift+Enter inserts a newline.
     // Matches the main app's composer (submit on `Enter && !shiftKey`).
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      composer.handleSubmit(e)
+      void composer.handleSubmit(e)
     }
   }
 
   const isDisabled = createSession.isPending || composer.isUploading || !selectedSlug
+
+  // The launcher resolves the same target as the main window, so a global-
+  // shortcut dispatch can create a session on the organization's Superagent from
+  // a panel that otherwise looks exactly like the local one. It needs its own
+  // marker: the main window says which Superagent it is driving through the
+  // switcher in its title bar, and this panel has no title bar to put one in.
+  const cloudMode = targetIsRemote()
 
   return (
     // The window IS the panel (Raycast-style): one frosted, edge-to-edge rounded
@@ -339,12 +350,27 @@ export function QuickDispatch() {
     // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- onMouseDown here is a pointer-only window-drag gesture (frameless move); it has no meaningful keyboard equivalent and exposes no interactive control.
     <div
       data-testid="quick-dispatch"
-      className="relative flex flex-col overflow-hidden rounded-[12px] bg-transparent ring-1 ring-foreground/10"
+      className={cn(
+        'relative flex flex-col overflow-hidden rounded-[12px] bg-transparent ring-1 ring-foreground/10',
+        cloudMode && 'ring-2 ring-sky-500/70',
+      )}
       onMouseDown={handleWindowDragStart}
       onDragOver={handlePanelDragOver}
       onDragLeave={handlePanelDragLeave}
       onDrop={handlePanelDrop}
     >
+      {/* Cloud marker: the panel's whole width, above the input, so it is read
+          before anything is typed. Carries no handlers, which also leaves it a
+          drag surface for the frameless window. */}
+      {cloudMode && (
+        <div
+          className="flex items-center justify-center gap-1 bg-sky-500 py-0.5 text-[10px] font-medium leading-none text-white"
+          data-testid="quick-dispatch-cloud-mode"
+        >
+          <Cloud className="size-2.5" />
+          Cloud workspace
+        </div>
+      )}
       <MountChoiceDialog
         open={composer.mountDialog.open}
         onChoice={composer.mountDialog.onChoice}
@@ -354,26 +380,28 @@ export function QuickDispatch() {
         {/* Input row — large, borderless, full-width like Raycast's search
             field. File drops are handled at the panel root (any file dragged
             anywhere over the window attaches here). */}
-        <div className="px-4 pt-3.5 pb-2.5">
+        <div
+          className="px-4 pt-3.5 pb-2.5"
+          onPaste={composer.handlePaste}
+          onFocus={() => setOpenMenu(null)}
+        >
           {composer.attachments.length > 0 && (
             <div className="mb-2">
               <AttachmentPreview attachments={composer.attachments} onRemove={composer.removeAttachment} />
             </div>
           )}
-          <textarea
-            ref={textareaRef}
-            dir="auto"
+          <MarkdownComposerEditor
             value={composer.message}
-            onChange={(e) => composer.setMessage(e.target.value)}
+            onChange={composer.setMessage}
             onKeyDown={handleKeyDown}
-            onPaste={composer.handlePaste}
-            onFocus={() => setOpenMenu(null)}
             placeholder={selectedAgent ? `Dispatch ${selectedAgent.name}…` : 'Dispatch an agent…'}
             disabled={isDisabled}
-            rows={1}
+            minRows={1}
             autoFocus
-            data-testid="quick-dispatch-input"
-            className="max-h-[200px] w-full resize-none bg-transparent text-[15px] leading-relaxed outline-none [field-sizing:content] placeholder:text-muted-foreground/70 disabled:opacity-60"
+            dataTestId="quick-dispatch-input"
+            enterKeyHint="send"
+            className="max-h-[200px] w-full bg-transparent text-[15px] leading-relaxed outline-none"
+            onEditorElement={(element) => { editorRef.current = element }}
           />
         </div>
 

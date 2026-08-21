@@ -6,6 +6,14 @@
  */
 
 import { ContentBlock, JsonlMessageEntry, JsonlSystemEntry } from '@shared/lib/types/agent'
+import { makeThinkingBlockId } from '@shared/lib/utils/thinking-block-id'
+
+export interface TransformedThinkingBlock {
+  /** Stable live↔persisted identity when the SDK message id is available. */
+  id?: string
+  text: string
+  durationMs?: number
+}
 
 export interface TransformedMessage {
   id: string
@@ -41,7 +49,14 @@ export interface TransformedMessage {
    * the block with an empty string, which is skipped). `durationMs` is derived
    * from entry timestamps (see thinkingByEntry) and absent when underivable.
    */
-  thinking?: Array<{ text: string; durationMs?: number }>
+  thinking?: TransformedThinkingBlock[]
+  /** Per-model-response token usage, de-duplicated by the merge pass above. */
+  usage?: {
+    inputTokens: number
+    outputTokens: number
+    cacheCreationInputTokens: number
+    cacheReadInputTokens: number
+  }
 }
 
 export interface TransformedCompactBoundary {
@@ -171,8 +186,14 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i]
     if (entry.type === 'system' && (entry as JsonlSystemEntry).subtype === 'memory_recall') {
-      memoryRecalls.set(i, entry as JsonlSystemEntry)
+      const sysEntry = entry as JsonlSystemEntry
       skipIndices.add(i)
+      // Dedupe by uuid: resume history replay re-appends system entries
+      // verbatim too (see the message-entry dedup below)
+      const isDuplicate = [...memoryRecalls.values()].some((e) => e.uuid === sysEntry.uuid)
+      if (!isDuplicate) {
+        memoryRecalls.set(i, sysEntry)
+      }
     } else if (entry.type === 'system' && (entry as JsonlSystemEntry).subtype === 'informational') {
       const sysEntry = entry as JsonlSystemEntry
       skipIndices.add(i)
@@ -199,6 +220,17 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
       }
     } else if (entry.type === 'system' && (entry as JsonlSystemEntry).subtype === 'compact_boundary') {
       const sysEntry = entry as JsonlSystemEntry
+      // Dedupe replayed copies (same uuid). Today a duplicate is also masked
+      // by boundaryBeforeUuid keying on the NEXT message's uuid (the replayed
+      // pair overwrites the original slot), but that only holds when the
+      // following entry replays too — dedupe explicitly instead. The replayed
+      // summary user message needs no pairing here: the standalone
+      // isCompactSummary skip below hides it.
+      const isDuplicate = [...compactBoundaries.values()].some((e) => e.boundary.uuid === sysEntry.uuid)
+      if (isDuplicate) {
+        skipIndices.add(i)
+        continue
+      }
       let summaryContent = ''
 
       // Look ahead for the next isCompactSummary user message (within a few entries)
@@ -223,13 +255,24 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
     }
   }
 
-  // Filter to only message entries for the main transform pipeline
+  // Filter to only message entries for the main transform pipeline.
+  // Dedupe by uuid: when a session is resumed into a fresh CLI process, the
+  // CLI can re-append the prior history to the transcript VERBATIM (same
+  // uuids, same message.ids). Without this, the merge-by-message.id pass
+  // below would stack the replayed content blocks onto the original
+  // messages (tripled text, duplicated tool calls).
   const messageEntries: JsonlMessageEntry[] = []
+  const seenUuids = new Set<string>()
 
   for (let i = 0; i < entries.length; i++) {
     if (skipIndices.has(i)) continue
     const entry = entries[i]
     if (entry.type === 'user' || entry.type === 'assistant') {
+      const uuid = (entry as JsonlMessageEntry).uuid
+      if (uuid) {
+        if (seenUuids.has(uuid)) continue
+        seenUuids.add(uuid)
+      }
       messageEntries.push(entry as JsonlMessageEntry)
     }
   }
@@ -246,7 +289,7 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
   // completes, so (thinking entry ts − previous entry ts) ≈ how long the agent
   // thought. Old transcripts (pre CLI 2.1.181) persist the block with an empty
   // string (signature only) — those are skipped, they carry nothing to show.
-  const thinkingByEntry = new Map<JsonlMessageEntry, Array<{ text: string; durationMs?: number }>>()
+  const thinkingByEntry = new Map<JsonlMessageEntry, TransformedThinkingBlock[]>()
   let prevEntryTs: number | null = null
   // message.id of the entry prevEntryTs came from (null for user entries).
   // Some provider paths flush ALL of a message's block entries in one burst at
@@ -258,6 +301,10 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
   for (const entry of messageEntries) {
     const messageId = entry.message.id
     let target = entry
+    // Offset of this entry's content inside the merged message. The live SDK
+    // identifies content blocks by their index in the complete assistant
+    // message, so the persisted path must count preceding merged blocks too.
+    let mergedContentOffset = 0
     if (entry.type === 'assistant' && messageId) {
       const existingIndex = assistantMessageIds.get(messageId)
       if (existingIndex !== undefined) {
@@ -267,8 +314,20 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
         const newContent = entry.message.content
 
         if (Array.isArray(existingContent) && Array.isArray(newContent)) {
+          mergedContentOffset = existingContent.length
           // Append new content blocks to existing
           ;(existing.message.content as ContentBlock[]).push(...(newContent as ContentBlock[]))
+        }
+        // Transcript snapshots for one provider response repeat the same input
+        // usage while output_tokens grows. Keep the latest/highest snapshot so
+        // consumers can count this response once without understating it.
+        const existingUsage = existing.message.usage
+        const incomingUsage = entry.message.usage
+        if (
+          incomingUsage &&
+          (!existingUsage || incomingUsage.output_tokens >= existingUsage.output_tokens)
+        ) {
+          existing.message.usage = { ...incomingUsage }
         }
         // Keep the original entry's uuid and timestamp for correct ordering
         target = existing
@@ -294,12 +353,17 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
 
     const entryTs = new Date(entry.timestamp).getTime()
     if (entry.type === 'assistant' && Array.isArray(entry.message.content)) {
-      const texts = (entry.message.content as ContentBlock[])
+      const blocks = (entry.message.content as ContentBlock[])
         // typeof guard: this runs server-side on raw JSONL — a malformed
         // non-string `thinking` must be skipped, not throw and 500 the route
-        .filter((b) => b.type === 'thinking' && typeof b.thinking === 'string' && b.thinking.trim())
-        .map((b) => (b as { thinking: string }).thinking)
-      if (texts.length > 0) {
+        .map((block, blockIndex) => ({ block, blockIndex: mergedContentOffset + blockIndex }))
+        .filter(
+          (item): item is { block: ContentBlock & { thinking: string }; blockIndex: number } =>
+            item.block.type === 'thinking' &&
+            typeof (item.block as { thinking?: unknown }).thinking === 'string' &&
+            !!(item.block as { thinking: string }).thinking.trim(),
+        )
+      if (blocks.length > 0) {
         // Only derivable when the previous entry is a different message (user
         // entry or another assistant response) — an intra-message gap is write
         // jitter. Underivable durations are omitted (header reads "Thought").
@@ -311,7 +375,14 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
         const list = thinkingByEntry.get(target) ?? []
         // The duration covers the whole entry — if one entry carries several
         // thinking blocks (rare), attach it to the first
-        texts.forEach((text, i) => list.push(i === 0 && durationMs !== undefined ? { text, durationMs } : { text }))
+        blocks.forEach(({ block, blockIndex }, i) => {
+          const id = makeThinkingBlockId(messageId, blockIndex)
+          list.push({
+            ...(id && { id }),
+            text: block.thinking,
+            ...(i === 0 && durationMs !== undefined && { durationMs }),
+          })
+        })
         thinkingByEntry.set(target, list)
       }
     }
@@ -530,6 +601,14 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
       ...(entry.error && { apiError: entry.error }),
       ...(entry.isQueuedCommand && { queued: true }),
       ...(thinking && thinking.length > 0 && { thinking }),
+      ...(entry.message.usage && {
+        usage: {
+          inputTokens: entry.message.usage.input_tokens ?? 0,
+          outputTokens: entry.message.usage.output_tokens ?? 0,
+          cacheCreationInputTokens: entry.message.usage.cache_creation_input_tokens ?? 0,
+          cacheReadInputTokens: entry.message.usage.cache_read_input_tokens ?? 0,
+        },
+      }),
     })
   }
 

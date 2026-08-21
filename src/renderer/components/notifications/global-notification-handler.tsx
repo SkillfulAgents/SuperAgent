@@ -22,6 +22,11 @@ import { useUnreadNotificationCount } from '@renderer/hooks/use-notifications'
 import { usePlatformUnreadCount } from '@renderer/hooks/use-platform-notifications'
 import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { setMountWarning } from '@renderer/hooks/use-mount-warnings'
+import {
+  invalidateAgentArtifacts,
+  markDashboardScreenshotReady,
+  updateAgentRuntimeCache,
+} from '@renderer/lib/agent-cache'
 import type { UserSettingsData } from '@shared/lib/services/user-settings-service'
 import {
   NotificationActionContextSchema,
@@ -29,6 +34,11 @@ import {
   NotificationActionsArraySchema,
   NotificationMetadataSchema,
 } from '@shared/lib/notifications/notification-action-schema'
+import {
+  supportsDeclarativeWebPush,
+  revalidatePushSubscription,
+} from '@renderer/lib/push-notifications'
+import { isNotificationTypeEnabled as isTypeEnabledInPreferences } from '@shared/lib/notifications/notification-preferences'
 import { useRenderTracker } from '@renderer/lib/perf'
 
 function isNotificationTypeEnabled(
@@ -36,14 +46,10 @@ function isNotificationTypeEnabled(
   notificationType: string
 ): boolean {
   const n = settings?.notifications
-  if (!n?.enabled) return n === undefined // no settings loaded yet → allow; explicitly disabled → block
-  switch (notificationType) {
-    case 'session_complete': return n.sessionComplete !== false
-    case 'session_waiting': return n.sessionWaiting !== false
-    case 'session_scheduled': return n.sessionScheduled !== false
-    case 'platform_notification': return n.platformNotification !== false
-    default: return true
-  }
+  if (n === undefined) return true // no settings loaded yet → allow
+  // Type→toggle mapping is shared with the server-side gates
+  // (notification-preferences.ts) so the two can never drift.
+  return isTypeEnabledInPreferences(n, notificationType)
 }
 
 export function GlobalNotificationHandler() {
@@ -148,7 +154,7 @@ export function GlobalNotificationHandler() {
         if (!res.ok && res.status !== 404) {
           console.error('[notification-action] Failed to submit proxy review decision:', res.status)
         }
-        queryClient.invalidateQueries({ queryKey: ['proxy-reviews', ctx.agentSlug] })
+        queryClient.invalidateQueries({ queryKey: ['pending-user-requests'] })
       })
       .catch((err) => {
         console.error('[notification-action] Error submitting proxy review decision:', err)
@@ -184,6 +190,15 @@ export function GlobalNotificationHandler() {
       }
     })
   }, [dispatchNotificationEvent, navigate])
+
+  // Web Push keep-alive: with no service worker there is no
+  // pushsubscriptionchange event, so re-upsert this device's subscription
+  // once per app launch to repair endpoint rotation or a lost server row.
+  useEffect(() => {
+    if (supportsDeclarativeWebPush()) {
+      void revalidatePushSubscription()
+    }
+  }, [])
 
   useEffect(() => {
     const baseUrl = getApiBaseUrl()
@@ -347,22 +362,52 @@ export function GlobalNotificationHandler() {
             queryClient.invalidateQueries({ queryKey: ['webhook-trigger-sessions'] })
             queryClient.invalidateQueries({ queryKey: ['scheduled-task-sessions'] })
 
-            // Proxy review created or resolved — refetch review list
-            if (eventAgentSlug && data.review) {
-              queryClient.invalidateQueries({ queryKey: ['proxy-reviews', eventAgentSlug] })
+            break
+          }
+
+          case 'user_request_created':
+          case 'user_request_resolved':
+            // Unified pending-request wire. Invalidation, not data: the
+            // refetch reads the server registry snapshot. This is the live
+            // path for agent-scoped reviews (they have no session stream) and
+            // the cross-tab/cross-session sync for everything else; the
+            // store's interval refetch is the safety net for a missed event.
+            queryClient.invalidateQueries({ queryKey: ['pending-user-requests'] })
+            break
+
+          case 'agent_status_changed': {
+            // Status is already in the event; preserve cached summaries instead
+            // of refetching every agent. Artifact runtime state is agent-scoped.
+            const agentSlug = data.agentSlug as string | undefined
+            const status = data.status === 'running' || data.status === 'stopped'
+              ? data.status
+              : undefined
+            if (agentSlug && status) {
+              updateAgentRuntimeCache(queryClient, agentSlug, status)
+              invalidateAgentArtifacts(queryClient, agentSlug)
             }
             break
           }
 
-          case 'agent_status_changed':
-            // Agent started/stopped - update agent list and artifacts
-            queryClient.invalidateQueries({ queryKey: ['agents'] })
-            queryClient.invalidateQueries({ queryKey: ['artifacts'] })
+          case 'dashboard_screenshot_ready': {
+            const agentSlug = data.agentSlug as string | undefined
+            const dashboardSlug = data.dashboardSlug as string | undefined
+            if (agentSlug && dashboardSlug) {
+              markDashboardScreenshotReady(queryClient, agentSlug, dashboardSlug)
+            }
             break
+          }
 
           case 'container_health_changed':
             // Container health warnings changed - update agent list
             queryClient.invalidateQueries({ queryKey: ['agents'] })
+            break
+
+          case 'agent_created':
+            // Agent-created child creation lands outside the human create mutation,
+            // so refresh both caches the direct-create path invalidates together.
+            queryClient.invalidateQueries({ queryKey: ['agents'] })
+            queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
             break
 
           case 'scheduled_task_created':
@@ -425,8 +470,15 @@ export function GlobalNotificationHandler() {
       }
     }
 
+    // Catch up anything missed while the stream was down, including the
+    // window before the first successful connect.
+    es.onopen = () => {
+      queryClient.invalidateQueries({ queryKey: ['agents'] })
+      queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
+    }
+
     es.onerror = () => {
-      // EventSource will auto-reconnect
+      // EventSource will auto-reconnect; onopen above catches up.
     }
 
     return () => {

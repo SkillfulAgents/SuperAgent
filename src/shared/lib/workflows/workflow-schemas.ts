@@ -79,6 +79,9 @@ export const ParsedAgentCallSchema = z.object({
   sourceIndex: z.number().int(),
   /** True if this call sits inside a `parallel([...])` span. */
   inParallel: z.boolean(),
+  /** `args` key this call fans out over (`args.<key>.map(...)` / `pipeline(args.<key>, ...)`),
+   *  so the expected agent count can be sized from the invocation's actual array. */
+  fanOutArgsKey: z.string().nullable(),
 })
 export type ParsedAgentCall = z.infer<typeof ParsedAgentCallSchema>
 
@@ -97,9 +100,11 @@ export const WorkflowAgentNodeSchema = z.object({
   /** Resolved display label, e.g. `word-alpha` or `fact:Mars`; falls back to `agent N`. */
   label: z.string(),
   phase: z.string().nullable(),
-  // Disk (journal) only knows running/done; `failed` comes from the live wire snapshot.
+  // running/done come from the journal; `failed` from either the live wire snapshot
+  // or, durably, a transcript that ends on a synthetic error frame with no result.
   status: z.enum(['running', 'done', 'failed']),
-  /** Display string of the agent's return value (JSON-stringified if structured). */
+  /** Display string of the agent's return value (JSON-stringified if structured);
+   *  for failed agents, the error details from the trailing error frame. */
   result: z.string().nullable(),
   /** How the agentId→call join was made (for debuggability + tests). */
   resolved: z.enum(['prompt-regex', 'ordinal-fallback']),
@@ -120,9 +125,11 @@ export const WorkflowTreeSchema = z.object({
   description: z.string().nullable(),
   phases: z.array(WorkflowPhaseSchema),
   agents: z.array(WorkflowAgentNodeSchema),
-  /** Number of `agent()` call sites in the script — a LOWER bound on total agents
-   *  (a parallel/map call site spawns N). Used to render not-yet-started agents as
-   *  "pending" in the progress bar; never over-counts dynamic fan-outs. */
+  /** Estimated total agents: call sites that fan out over a Workflow `args` array
+   *  count as that array's actual length (mined from the invocation's tool_use);
+   *  every other call site counts as 1. Still a LOWER bound — fan-outs over
+   *  runtime-computed collections can't be sized statically. Used to render
+   *  not-yet-started agents as "pending" in the progress bar. */
   expectedAgents: z.number().int().nonnegative(),
   /** Workflow-wide rollups: summed tools/tokens, and the wall-clock span across all
    *  agents (max end − min start; parallel-aware, NOT a sum of per-agent durations). */

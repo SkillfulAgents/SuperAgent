@@ -210,7 +210,7 @@ export function ToolPolicyEditorBody({
             value={decisionFilter}
             onValueChange={(v) => setDecisionFilter(v as 'all' | PolicyDecision)}
           >
-            <SelectTrigger className="w-[100px] h-8 text-xs shrink-0">
+            <SelectTrigger className="w-[100px] h-8 shrink-0">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

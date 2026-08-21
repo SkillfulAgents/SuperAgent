@@ -76,7 +76,7 @@ test.describe('Composer failure recovery', () => {
 
     // The typed text is restored into the composer, the optimistic ghost is
     // dropped, and nothing landed in the transcript
-    await expect(sessionPage.getMessageInput()).toHaveValue(text, { timeout: 10000 })
+    await expect(sessionPage.getMessageInput()).toHaveText(text, { timeout: 10000 })
     await expect(sessionPage.getUserMessages()).toHaveCount(1)
 
     // Server recovers — the restored text resends as-is
@@ -88,7 +88,7 @@ test.describe('Composer failure recovery', () => {
     await expect(
       sessionPage.getAssistantMessages().filter({ hasText: 'This is a mock response from the E2E test container.' })
     ).toHaveCount(2, { timeout: 15000 })
-    await expect(sessionPage.getMessageInput()).toHaveValue('')
+    await expect(sessionPage.getMessageInput()).toHaveText('')
   })
 
   test('a failed upload preserves text and attachment for a retry', async ({ page }) => {
@@ -114,7 +114,7 @@ test.describe('Composer failure recovery', () => {
     // the attachment chip survive — the send never happened
     const inlineError = page.getByTestId('main-content').getByText('Injected upload failure')
     await expect(inlineError).toBeVisible({ timeout: 10000 })
-    await expect(sessionPage.getMessageInput()).toHaveValue(text)
+    await expect(sessionPage.getMessageInput()).toHaveText(text)
     await expect(attachmentPreview(page, 'guarded.txt')).toBeVisible()
     await expect(sessionPage.getUserMessages()).toHaveCount(1)
 
@@ -129,7 +129,7 @@ test.describe('Composer failure recovery', () => {
     await sessionPage.waitForUserMessageCount(2, 15000)
     await sessionPage.expectUserMessage(text, 1)
     await expect(page.getByTestId('file-pill').filter({ hasText: 'guarded.txt' }).first()).toBeVisible({ timeout: 5000 })
-    await expect(sessionPage.getMessageInput()).toHaveValue('')
+    await expect(sessionPage.getMessageInput()).toHaveText('')
   })
 
   test('a slow successful send is not yanked back into the composer', async ({ page }) => {
@@ -164,6 +164,6 @@ test.describe('Composer failure recovery', () => {
     // ...and the composer stayed empty throughout — the mid-flight message
     // was never treated as undelivered (pre-fix, its text reappeared here at
     // ~1.5s and was still present at this point)
-    await expect(sessionPage.getMessageInput()).toHaveValue('')
+    await expect(sessionPage.getMessageInput()).toHaveText('')
   })
 })

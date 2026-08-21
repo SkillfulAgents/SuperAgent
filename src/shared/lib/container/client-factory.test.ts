@@ -37,12 +37,16 @@ vi.mock('./podman-container-client', () => ({
   },
 }))
 
+const mockEnsureAppleContainerReady = vi.fn()
+
 vi.mock('./apple-container-client', () => ({
   AppleContainerClient: {
-    isEligible: vi.fn(() => false),
+    // Eligible at module load so apple is in SUPPORTED_RUNNERS for availability tests.
+    isEligible: vi.fn(() => true),
     isAvailable: vi.fn(() => Promise.resolve(false)),
     isRunning: vi.fn(() => Promise.resolve(false)),
   },
+  ensureAppleContainerReady: (...args: unknown[]) => mockEnsureAppleContainerReady(...args),
 }))
 
 const mockStopWSL2Distro = vi.fn()
@@ -114,6 +118,7 @@ vi.mock('@shared/lib/error-reporting', () => ({
 // ============================================================================
 
 import {
+  checkAllRunnersAvailability,
   clearRunnerAvailabilityCache,
   pullImage,
   PULL_STALL_TIMEOUT_MS,
@@ -121,7 +126,9 @@ import {
   reconcileRunnerState,
   restartRunner,
   shutdownActiveRunner,
+  startRunner,
 } from './client-factory'
+import { AppleContainerClient } from './apple-container-client'
 
 // ============================================================================
 // Tests
@@ -173,6 +180,51 @@ describe('shutdownActiveRunner', () => {
     await shutdownActiveRunner()
 
     expect(mockStopWSL2Distro).toHaveBeenCalledOnce()
+  })
+})
+
+describe('startRunner apple-container', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    clearRunnerAvailabilityCache()
+    mockEnsureAppleContainerReady.mockResolvedValue(undefined)
+  })
+
+  it('delegates to ensureAppleContainerReady with allowInstall', async () => {
+    const result = await startRunner('apple-container', undefined, { allowInstall: true })
+
+    expect(mockEnsureAppleContainerReady).toHaveBeenCalledWith(undefined, { allowInstall: true })
+    expect(result.success).toBe(true)
+    expect(result.message).toMatch(/running/i)
+  })
+
+  it('auto-start path does not allow install', async () => {
+    await startRunner('apple-container')
+
+    expect(mockEnsureAppleContainerReady).toHaveBeenCalledWith(undefined, { allowInstall: false })
+  })
+})
+
+describe('checkAllRunnersAvailability apple-container canStart', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    clearRunnerAvailabilityCache()
+    vi.mocked(AppleContainerClient.isEligible).mockReturnValue(true)
+  })
+
+  it('sets canStart true when CLI missing (provisionable)', async () => {
+    vi.mocked(AppleContainerClient.isAvailable).mockResolvedValue(false)
+    vi.mocked(AppleContainerClient.isRunning).mockResolvedValue(false)
+
+    const results = await checkAllRunnersAvailability()
+    const apple = results.find((r) => r.runner === 'apple-container')
+
+    expect(apple).toMatchObject({
+      installed: false,
+      running: false,
+      available: false,
+      canStart: true,
+    })
   })
 })
 

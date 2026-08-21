@@ -52,6 +52,7 @@ describe('activity API', () => {
       days: 14,
       tzOffsetMinutes: 0,
       isSessionLive: expect.any(Function),
+      ownerId: 'user-123',
     })
   })
 

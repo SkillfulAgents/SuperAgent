@@ -2,38 +2,61 @@
 import { useMessages } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
+import { usePendingUserRequests } from '@renderer/hooks/use-pending-user-requests'
 import { apiFetch } from '@renderer/lib/api'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
 import { InsufficientBalanceCard, usePlatformBillingUrl } from './insufficient-balance-card'
 import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
 import { isTurnStartingUserMessage } from './pending-message'
-import { cn } from '@shared/lib/utils'
-import { AlertTriangle, Monitor, X } from 'lucide-react'
 import { useCallback, useMemo, useState } from 'react'
 
-interface Todo {
-  content: string
-  status: 'pending' | 'in_progress' | 'completed'
-  activeForm: string
-}
+import { deriveTaskList, Todo } from '@shared/lib/utils/derive-task-list'
+import { ActivityCard, ActivityErrorCard, type ActivitySubagentItem } from './activity-card'
+import { deriveActivityStatus } from './activity-orb'
 
 interface AgentActivityIndicatorProps {
   sessionId: string
   agentSlug: string
 }
 
+function extractResumedAgentId(result: unknown): string | null {
+  if (typeof result === 'string') {
+    try {
+      return extractResumedAgentId(JSON.parse(result))
+    } catch {
+      return null
+    }
+  }
+
+  if (Array.isArray(result)) {
+    for (const block of result) {
+      const agentId = extractResumedAgentId(block)
+      if (agentId) return agentId
+    }
+    return null
+  }
+
+  if (!result || typeof result !== 'object') return null
+
+  const resumedAgentId = (result as { resumedAgentId?: unknown }).resumedAgentId
+  if (typeof resumedAgentId === 'string' && resumedAgentId.length > 0) {
+    return resumedAgentId
+  }
+
+  const text = (result as { text?: unknown }).text
+  return typeof text === 'string' ? extractResumedAgentId(text) : null
+}
+
 export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIndicatorProps) {
   const {
     isActive, error, apiErrorCode, activeStartTime, isCompacting, activeSubagents, completedSubagents,
-    pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests,
-    pendingFileRequests, pendingRemoteMcpRequests, pendingBrowserInputRequests,
     apiRetry, computerUseApp, computerUseAppIcon, backgroundTasks,
     isThinking,
   } = useMessageStream(sessionId, agentSlug)
+  const { data: pendingUserRequests } = usePendingUserRequests(agentSlug, sessionId)
 
   const [revoking, setRevoking] = useState(false)
   const [revokeError, setRevokeError] = useState(false)
-  const [showAllTodos, setShowAllTodos] = useState(false)
 
   // Non-null only for a platform billing 402 the workspace can act on (see hook).
   const billingUrl = usePlatformBillingUrl(error ?? '')
@@ -51,14 +74,13 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     }
   }, [agentSlug, sessionId])
 
-  const isAwaitingInput = isActive && (
-    pendingSecretRequests.length > 0 ||
-    pendingConnectedAccountRequests.length > 0 ||
-    pendingQuestionRequests.length > 0 ||
-    pendingFileRequests.length > 0 ||
-    pendingRemoteMcpRequests.length > 0 ||
-    pendingBrowserInputRequests.length > 0
-  )
+  // The unified store's blocking predicate is the SAME one the server derives
+  // the session's awaiting status from, so this indicator can no longer
+  // disagree with the sidebar/header. It also covers the kinds the old
+  // per-type list silently omitted: script_run, computer_use, and
+  // capability_review used to read as "Working…" while a card was parked.
+  const isAwaitingInput = isActive &&
+    (pendingUserRequests ?? []).some((r) => r.blocking && !r.autoApproved)
   const { data: messages } = useMessages(sessionId, agentSlug)
 
   // Use activeStartTime from SSE (set when session_active fires) as primary source.
@@ -78,109 +100,153 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
 
   const elapsed = useElapsedTimer(isActive ? timerStartTime : null)
 
-  // Collect subagent display info by matching activeSubagents (SSE-tracked) with tool calls in messages
-  const subagentItems = useMemo(() => {
+  // Build one display row per stable agentId. A SendMessage resume gets a new
+  // tool_use id but keeps the agentId, so keying rows by the launch tool alone
+  // leaves the original row completed while the resumed run works invisibly.
+  const subagentItems = useMemo<ActivitySubagentItem[]>(() => {
     if (!messages || activeSubagents.length === 0) return []
-    const activeMap = new Map(activeSubagents.map(s => [s.parentToolId, s]))
-    const items: { id: string; name: string; description: string; status: 'running' | 'completed'; progressSummary: string | null }[] = []
+
+    type LaunchMetadata = {
+      agentId: string | null
+      name: string
+      description: string
+      completedFromResult: boolean
+    }
+    type ResumeMetadata = {
+      agentId: string | null
+    }
+    const launchByToolId = new Map<string, LaunchMetadata>()
+    const launchByAgentId = new Map<string, LaunchMetadata>()
+    const launches: LaunchMetadata[] = []
+    const resumeByToolId = new Map<string, ResumeMetadata>()
+
     for (const msg of messages) {
       if (msg.type !== 'user' && msg.type !== 'assistant') continue
       for (const tc of msg.toolCalls || []) {
-        if ((tc.name === 'Agent' || tc.name === 'Task') && activeMap.has(tc.id)) {
+        if (tc.name === 'Agent' || tc.name === 'Task') {
           if (tc.isError) continue
           const input = tc.input as { subagent_type?: string; description?: string }
-          // A background agent returns an immediate "async_launched" tool result
-          // — that's the launch ack, NOT completion. It only finishes when the
-          // sidechain result fires the subagent_completed SSE (completedSubagents).
-          // Foreground agents complete when their tool result lands. (Mirrors
-          // subagent-block.tsx so the activity block and the thread block agree.)
           const isAsyncLaunched = tc.subagent?.status === 'async_launched'
-          const isCompleted = (completedSubagents?.has(tc.id) ?? false) || (!isAsyncLaunched && tc.result != null)
-          const sub = activeMap.get(tc.id)
-          items.push({
-            id: tc.id,
+          const metadata = {
+            agentId: tc.subagent?.agentId ?? null,
             name: input.subagent_type || tc.name,
             description: input.description || '',
-            status: isCompleted ? 'completed' : 'running',
-            progressSummary: sub?.progressSummary ?? null,
+            completedFromResult: !isAsyncLaunched && tc.result != null,
+          }
+          launchByToolId.set(tc.id, metadata)
+          launches.push(metadata)
+          if (tc.subagent?.agentId) {
+            launchByAgentId.set(tc.subagent.agentId, metadata)
+          }
+        } else if (tc.name === 'SendMessage') {
+          const input = tc.input as { to?: string; recipient?: string }
+          const target = input.to ?? input.recipient ?? null
+          const resultAgentId = extractResumedAgentId(tc.result)
+          resumeByToolId.set(tc.id, {
+            agentId: resultAgentId ?? (target && launchByAgentId.has(target) ? target : null),
           })
         }
       }
     }
-    return items
+
+    const findMatchingLaunchAgentId = (sub: (typeof activeSubagents)[number]) => {
+      const hasName = !!sub.subagentType
+      const hasDescription = !!sub.description
+      if (!hasName && !hasDescription) return null
+
+      // Before the SendMessage result persists, its name target is not a stable
+      // agent ID. Join only when the lifecycle metadata identifies exactly one
+      // prior launch; ambiguous matches remain separate until the ID arrives.
+      const matches = new Set(
+        launches
+          .filter((launch) =>
+            launch.agentId &&
+            (!hasName || launch.name === sub.subagentType) &&
+            (!hasDescription || launch.description === sub.description)
+          )
+          .map((launch) => launch.agentId!)
+      )
+      return matches.size === 1 ? [...matches][0] : null
+    }
+
+    const groups = new Map<string, typeof activeSubagents>()
+    for (const sub of activeSubagents) {
+      const directLaunch = sub.parentToolId
+        ? launchByToolId.get(sub.parentToolId)
+        : undefined
+      const originalLaunch = sub.agentId
+        ? launchByAgentId.get(sub.agentId)
+        : undefined
+      const resume = sub.parentToolId
+        ? resumeByToolId.get(sub.parentToolId)
+        : undefined
+      const isSendMessageRun = resume !== undefined
+      // local_workflow also emits subagent lifecycle events, but it has its own
+      // activity UI. Only Agent/Task launches and their SendMessage resumes
+      // belong in this list.
+      if (!directLaunch && !originalLaunch && !isSendMessageRun) continue
+
+      const stableAgentId = sub.agentId
+        ?? directLaunch?.agentId
+        ?? resume?.agentId
+        ?? (isSendMessageRun ? findMatchingLaunchAgentId(sub) : null)
+      if (!stableAgentId && !sub.parentToolId) continue
+      const key = stableAgentId
+        ? `agent:${stableAgentId}`
+        : `tool:${sub.parentToolId}`
+      const group = groups.get(key) ?? []
+      group.push(sub)
+      groups.set(key, group)
+    }
+
+    const isCompleted = (sub: (typeof activeSubagents)[number]) => {
+      const parentToolId = sub.parentToolId
+      if (parentToolId && completedSubagents?.has(parentToolId)) return true
+      return !!parentToolId && (launchByToolId.get(parentToolId)?.completedFromResult ?? false)
+    }
+
+    return [...groups.entries()].map(([key, group]) => {
+      let selected = group[group.length - 1]
+      for (let i = group.length - 1; i >= 0; i--) {
+        if (!isCompleted(group[i])) {
+          selected = group[i]
+          break
+        }
+      }
+
+      const directLaunch = selected.parentToolId
+        ? launchByToolId.get(selected.parentToolId)
+        : undefined
+      const selectedAgentId = selected.agentId
+        ?? directLaunch?.agentId
+        ?? (selected.parentToolId ? resumeByToolId.get(selected.parentToolId)?.agentId : undefined)
+        ?? (selected.parentToolId && resumeByToolId.has(selected.parentToolId)
+          ? findMatchingLaunchAgentId(selected)
+          : null)
+      const originalLaunch = selectedAgentId
+        ? launchByAgentId.get(selectedAgentId)
+        : undefined
+      const metadata = directLaunch ?? originalLaunch
+
+      return {
+        id: selectedAgentId ?? selected.parentToolId ?? key,
+        name: selected.subagentType || metadata?.name || 'Agent',
+        description: selected.description || metadata?.description || '',
+        status: isCompleted(selected) ? 'completed' as const : 'running' as const,
+        progressSummary: selected.progressSummary ?? null,
+      }
+    })
   }, [messages, activeSubagents, completedSubagents])
 
   // Derive the todo/task list from TaskCreate/TaskUpdate (newer SDK) or fall back
   // to TodoWrite (older SDK). Memoized on [messages] so it doesn't re-scan the
   // whole transcript on every per-delta re-render driven by useMessageStream —
   // only when the persisted message list actually changes.
-  const { todos, activeItem } = useMemo<{ todos: Todo[] | null; activeItem: Todo | null }>(() => {
-    if (!messages) return { todos: null, activeItem: null }
+  const { todos, activeItem } = useMemo<{ todos: Todo[] | null; activeItem: Todo | null }>(
+    () => deriveTaskList(messages),
+    [messages]
+  )
 
-    let list: Todo[] | null = null
-    let current: Todo | null = null
-
-    // Try TaskCreate/TaskUpdate first (newer SDK format)
-    const taskMap = new Map<string, Todo>()
-    let taskCounter = 0
-
-    for (const message of messages) {
-      if (message.type !== 'user' && message.type !== 'assistant') continue
-      for (const tc of message.toolCalls || []) {
-        if (tc.name === 'TaskCreate') {
-          taskCounter++
-          const input = tc.input as { subject?: string; activeForm?: string }
-          if (input?.subject) {
-            taskMap.set(String(taskCounter), {
-              content: input.subject,
-              status: 'pending',
-              activeForm: input.activeForm || input.subject,
-            })
-          }
-        } else if (tc.name === 'TaskUpdate') {
-          const input = tc.input as { taskId?: string; status?: string }
-          if (input?.taskId && taskMap.has(input.taskId)) {
-            const task = taskMap.get(input.taskId)!
-            if (input.status === 'completed' || input.status === 'in_progress' || input.status === 'pending') {
-              task.status = input.status
-            }
-          }
-        }
-      }
-    }
-
-    if (taskMap.size > 0) {
-      list = Array.from(taskMap.values())
-      current = list.find((t) => t.status === 'in_progress') || null
-    }
-
-    // Fall back to TodoWrite (older SDK format)
-    if (!list) {
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const message = messages[i]
-        if (message.type !== 'user' && message.type !== 'assistant') continue
-        const toolCalls = message.toolCalls || []
-        for (let j = toolCalls.length - 1; j >= 0; j--) {
-          const toolCall = toolCalls[j]
-          if (toolCall.name === 'TodoWrite') {
-            try {
-              const input = toolCall.input as { todos?: Todo[] }
-              if (input?.todos && Array.isArray(input.todos)) {
-                list = input.todos
-                current = list.find((t) => t.status === 'in_progress') || null
-                break
-              }
-            } catch {
-              // Invalid input format, skip
-            }
-          }
-        }
-        if (list) break
-      }
-    }
-
-    return { todos: list, activeItem: current }
-  }, [messages])
 
   // Show error if present
   if (error) {
@@ -192,16 +258,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
         ) : isProviderError ? (
           <ProviderErrorCard message={error} data-testid="provider-error-card" />
         ) : (
-          <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-3 select-text" data-testid="error-card">
-            <div className="flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 text-destructive" />
-              <span className="text-sm font-medium text-destructive">Error</span>
-            </div>
-            <p className="mt-1 text-sm text-destructive/90">{error}</p>
-            <p className="mt-2 text-xs text-muted-foreground">
-              Send another message to retry.
-            </p>
-          </div>
+          <ActivityErrorCard message={error} />
         )}
       </div>
     )
@@ -212,203 +269,31 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     return null
   }
 
-  const statusText = isAwaitingInput
-    ? 'Waiting for input...'
-    : isCompacting
-      ? 'Compacting...'
-      : apiRetry
-        ? `Retrying... (attempt ${apiRetry.attempt}${apiRetry.maxRetries ? `/${apiRetry.maxRetries}` : ''})`
-        : isThinking
-          ? 'Thinking...'
-          : (activeItem?.activeForm || 'Working...')
+  // One precedence order drives both the label and the orb's animation.
+  const { statusText, orbState } = deriveActivityStatus({
+    isAwaitingInput,
+    isCompacting,
+    apiRetry,
+    isThinking,
+    activeForm: activeItem?.activeForm ?? null,
+  })
 
   return (
-    <div className="mx-auto mb-2 w-full max-w-[740px] px-4">
-      <div className="rounded-lg border bg-muted/50 p-3" data-testid="activity-indicator">
-        {/* Header with pulsing indicator */}
-        <div className="flex items-center gap-2">
-          <span className="relative flex h-3 w-3">
-            <span className={cn(
-              "animate-ping absolute inline-flex h-full w-full rounded-full opacity-75",
-              (isAwaitingInput || apiRetry) ? "bg-orange-500" : "bg-primary"
-            )}></span>
-            <span className={cn(
-              "relative inline-flex rounded-full h-3 w-3",
-              (isAwaitingInput || apiRetry) ? "bg-orange-500" : "bg-primary"
-            )}></span>
-          </span>
-          <span className="text-sm font-medium">{statusText}</span>
-          {computerUseApp && (
-            <span className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300">
-              {computerUseAppIcon ? (
-                <img src={`data:image/png;base64,${computerUseAppIcon}`} alt="" className="h-4 w-4" />
-              ) : (
-                <Monitor className="h-3 w-3" />
-              )}
-              {computerUseApp}
-              <button
-                onClick={handleRevokeComputerUse}
-                disabled={revoking}
-                className={cn(
-                  "ml-0.5 rounded-full p-0.5 transition-colors cursor-pointer",
-                  revokeError ? "bg-red-200 dark:bg-red-800" : "hover:bg-blue-200 dark:hover:bg-blue-800"
-                )}
-                title={revokeError ? "Failed to revoke — click to retry" : "Release app and revoke permission"}
-              >
-                <X className={cn("h-3 w-3", revokeError && "text-red-600 dark:text-red-400")} />
-              </button>
-            </span>
-          )}
-          {elapsed && (
-            <span className="text-xs text-muted-foreground tabular-nums">{elapsed}</span>
-          )}
-        </div>
-
-        {/* Streamed reasoning renders as a thinking card in the transcript
-            (see ThinkingBlockItem) — only the "Thinking..." status shows here. */}
-
-        {/* Active subagents */}
-        {subagentItems.length > 0 && (
-          <ul className="mt-2 space-y-1 text-sm pl-5">
-            {subagentItems.map((item) => (
-              <li key={item.id} className="flex flex-col gap-0.5">
-                <div className="flex items-center gap-2">
-                  {item.status === 'running' ? (
-                    <span className="relative flex h-2 w-2 shrink-0">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                      <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
-                    </span>
-                  ) : (
-                    <span className="text-xs text-green-500 shrink-0">✓</span>
-                  )}
-                  <span className={cn(
-                    'font-mono text-xs',
-                    item.status === 'completed' && 'text-muted-foreground'
-                  )}>
-                    {item.name}
-                  </span>
-                  {item.description && (
-                    <span className="text-xs text-muted-foreground truncate">
-                      {item.description}
-                    </span>
-                  )}
-                </div>
-                {item.progressSummary && item.status === 'running' && (
-                  <span className="text-xs text-muted-foreground ml-4 italic">
-                    {item.progressSummary}
-                  </span>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-
-        {/* Active background processes. Background subagents are excluded: they
-            already render as named subagent rows above, and counting them here
-            would show the same work twice. */}
-        {backgroundTasks.some((t) => !t.isSubagent) && (
-          <BackgroundTasksSection tasks={backgroundTasks.filter((t) => !t.isSubagent)} />
-        )}
-
-        {/* Todo list if available and at least one item is not completed */}
-        {todos && todos.length > 0 && todos.some((t) => t.status !== 'completed') && (() => {
-          const MAX_VISIBLE = 5
-          const needsTruncation = todos.length > MAX_VISIBLE && !showAllTodos
-
-          const notDone = todos.filter(t => t.status !== 'completed')
-          const doneReversed = todos.filter(t => t.status === 'completed').reverse()
-
-          let visibleTodos: Todo[]
-          let hiddenTodos: Todo[]
-
-          if (!needsTruncation) {
-            visibleTodos = [...notDone, ...doneReversed]
-            hiddenTodos = []
-          } else {
-            const visibleNotDone = notDone.slice(0, MAX_VISIBLE)
-            const remainingSlots = MAX_VISIBLE - visibleNotDone.length
-            const visibleDone = doneReversed.slice(0, remainingSlots)
-            visibleTodos = [...visibleNotDone, ...visibleDone]
-            const visibleSet = new Set(visibleTodos)
-            hiddenTodos = todos.filter(t => !visibleSet.has(t))
-          }
-
-          const hiddenPending = hiddenTodos.filter(t => t.status !== 'completed').length
-          const hiddenDone = hiddenTodos.filter(t => t.status === 'completed').length
-
-          return (
-            <ul className="mt-2 space-y-1 text-sm">
-              {hiddenTodos.length > 0 && (
-                <li>
-                  <button
-                    onClick={() => setShowAllTodos(true)}
-                    className="text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-                  >
-                    {hiddenTodos.length} more{': '}
-                    {[
-                      hiddenPending > 0 && `${hiddenPending} pending`,
-                      hiddenDone > 0 && `${hiddenDone} done`,
-                    ].filter(Boolean).join(', ')}
-                  </button>
-                </li>
-              )}
-              {showAllTodos && todos.length > MAX_VISIBLE && (
-                <li>
-                  <button
-                    onClick={() => setShowAllTodos(false)}
-                    className="text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-                  >
-                    Show fewer
-                  </button>
-                </li>
-              )}
-              {visibleTodos.map((todo, index) => (
-                <li
-                  key={index}
-                  className={cn(
-                    'flex items-center gap-2',
-                    todo.status === 'completed' && 'text-muted-foreground line-through',
-                    todo.status === 'in_progress' && 'font-semibold'
-                  )}
-                >
-                  <span className="text-xs">
-                    {todo.status === 'completed' && '✓'}
-                    {todo.status === 'in_progress' && '→'}
-                    {todo.status === 'pending' && '○'}
-                  </span>
-                  {todo.content}
-                </li>
-              ))}
-            </ul>
-          )
-        })()}
-      </div>
-    </div>
-  )
-}
-
-function BackgroundTasksSection({ tasks }: { tasks: Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean }> }) {
-  const earliest = Math.min(...tasks.map(t => t.startedAt))
-  const elapsed = useElapsedTimer(new Date(earliest))
-  // Label as "workflow" when every active background task is a dynamic workflow;
-  // fall back to the generic "process" wording for backgrounded Bash (or a mix).
-  const allWorkflows = tasks.every(t => t.isWorkflow)
-  const noun = allWorkflows ? 'workflow' : 'process'
-  const label = `${tasks.length} background ${tasks.length === 1 ? noun : allWorkflows ? `${noun}s` : `${noun}es`}`
-  return (
-    <div className="mt-2 text-sm pl-5">
-      <div className="flex items-center gap-2">
-        <span className="relative flex h-2 w-2 shrink-0">
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-          <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
-        </span>
-        <span className="text-xs text-muted-foreground">
-          {label}
-        </span>
-        {elapsed && (
-          <span className="text-xs text-muted-foreground tabular-nums">{elapsed}</span>
-        )}
-      </div>
-    </div>
+    <ActivityCard
+      statusText={statusText}
+      orbState={orbState}
+      elapsed={elapsed}
+      isAwaitingInput={isAwaitingInput}
+      computerUse={computerUseApp ? {
+        app: computerUseApp,
+        iconBase64: computerUseAppIcon,
+        revoking,
+        revokeError,
+        onRevoke: handleRevokeComputerUse,
+      } : null}
+      subagents={subagentItems}
+      backgroundTasks={backgroundTasks}
+      todos={todos}
+    />
   )
 }

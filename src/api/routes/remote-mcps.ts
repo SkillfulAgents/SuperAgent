@@ -9,6 +9,7 @@ import {
   completeOAuthFlow,
   validateAndConsumeOAuthErrorResponse,
   discoverOAuthMetadata,
+  McpOAuthSetupError,
 } from '@shared/lib/mcp/oauth'
 import type { McpToolInfo } from '@shared/lib/mcp/types'
 import { getAppBaseUrlFromRequest, getCurrentUserId } from '@shared/lib/auth/config'
@@ -16,8 +17,15 @@ import { isAuthMode } from '@shared/lib/auth/mode'
 import { Authenticated, UsersMcpServer, IsAdmin, Or } from '../middleware/auth'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
+import { mcpSafeFetch } from '@shared/lib/mcp/mcp-safe-fetch'
 import { validateMcpDiscoveryUrl } from '@shared/lib/utils/url-safety'
 import { discoverTools } from '@shared/lib/mcp/discover-tools'
+import {
+  findAgentsAssignedRemoteMcp,
+  syncAgentsAssignedRemoteMcp,
+  syncRemoteMcpAgents,
+} from '@shared/lib/container/connection-runtime-sync'
+import { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
 
 function safeParseTools(json: string | null): McpToolInfo[] {
   if (!json) return []
@@ -98,8 +106,20 @@ function renderMcpOAuthCallbackHtml(payload: McpOAuthCallbackPayload, message: s
  * already completed server-side. It hands the result back into the app via the
  * custom scheme so the main process can notify the renderer over IPC.
  */
-function renderMcpOAuthHandoffHtml(payload: McpOAuthCallbackPayload): string {
-  const protocol = process.env.SUPERAGENT_PROTOCOL || 'superagent'
+// Only SuperAgent desktop deep-link schemes — never arbitrary URI schemes from the client.
+const DESKTOP_OAUTH_PROTOCOLS = new Set(['superagent', 'superagent-dev'])
+
+function resolveDesktopOAuthProtocol(candidate?: string): string {
+  if (candidate && DESKTOP_OAUTH_PROTOCOLS.has(candidate)) return candidate
+  const fromEnv = process.env.SUPERAGENT_PROTOCOL
+  if (fromEnv && DESKTOP_OAUTH_PROTOCOLS.has(fromEnv)) return fromEnv
+  return 'superagent'
+}
+
+function renderMcpOAuthHandoffHtml(payload: McpOAuthCallbackPayload, desktopProtocol?: string): string {
+  // Prefer the scheme recorded on the flow: a cloud deployment serving this
+  // callback has no SUPERAGENT_PROTOCOL of its own (SUP-560).
+  const protocol = resolveDesktopOAuthProtocol(desktopProtocol)
   const params = new URLSearchParams()
   params.set('success', payload.success ? 'true' : 'false')
   if (payload.mcpId) params.set('mcpId', payload.mcpId)
@@ -129,10 +149,10 @@ function renderMcpOAuthHandoffHtml(payload: McpOAuthCallbackPayload): string {
 function mcpOAuthCallbackBody(
   payload: McpOAuthCallbackPayload,
   message: string,
-  delivery: { electron?: boolean; redirectWasScheme?: boolean },
+  delivery: { electron?: boolean; redirectWasScheme?: boolean; desktopProtocol?: string },
 ): string {
   if (delivery.electron && delivery.redirectWasScheme === false) {
-    return renderMcpOAuthHandoffHtml(payload)
+    return renderMcpOAuthHandoffHtml(payload, delivery.desktopProtocol)
   }
   return renderMcpOAuthCallbackHtml(payload, message)
 }
@@ -140,7 +160,7 @@ function mcpOAuthCallbackBody(
 // Entry-path SSRF guard for the user-supplied MCP server URL. Delegates to the
 // shared policy so it cannot drift from the OAuth-discovery checks, which must
 // reject the same private/loopback hosts on every server-supplied metadata URL.
-function validateMcpServerUrl(url: string): URL {
+async function validateMcpServerUrl(url: string): Promise<URL> {
   return validateMcpDiscoveryUrl(url)
 }
 
@@ -176,7 +196,7 @@ remoteMcps.post('/', async (c) => {
   }
 
   try {
-    validateMcpServerUrl(body.url.trim())
+    await validateMcpServerUrl(body.url.trim())
   } catch (e: any) {
     return c.json({ error: e.message }, 400)
   }
@@ -253,6 +273,7 @@ remoteMcps.post('/initiate-oauth', async (c) => {
     name?: string
     url?: string
     electron?: boolean
+    protocol?: string
     clientName?: string
     clientId?: string
     clientSecret?: string
@@ -280,7 +301,12 @@ remoteMcps.post('/initiate-oauth', async (c) => {
   // not getAppBaseUrlFromRequest: the packaged renderer is served from file://, so its
   // fetches carry `Origin: null`. The AS redirects the external browser here to complete
   // the flow, so the URL must be one the local API server actually answers on.
-  const protocol = process.env.SUPERAGENT_PROTOCOL || 'superagent'
+  //
+  // Scheme from the Electron client (allowlisted): a cloud deployment serving a
+  // proxied client has no SUPERAGENT_PROTOCOL of its own (SUP-560).
+  const protocol = resolveDesktopOAuthProtocol(
+    typeof body.protocol === 'string' ? body.protocol : undefined,
+  )
   // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
   const loopbackRedirect = `${new URL(c.req.url).origin}/api/remote-mcps/oauth-callback`
   const httpRedirect = body.electron
@@ -306,7 +332,13 @@ remoteMcps.post('/initiate-oauth', async (c) => {
       return c.json({ error: 'MCP server not found' }, 404)
     }
 
-    const result = await initiateOAuthFlow(body.mcpId, server.url, redirectCandidates, !!body.electron, clientNameOverride, clientIdOverride, clientSecretOverride)
+    let result
+    try {
+      result = await initiateOAuthFlow(body.mcpId, server.url, redirectCandidates, !!body.electron, clientNameOverride, clientIdOverride, clientSecretOverride)
+    } catch (e) {
+      if (e instanceof McpOAuthSetupError) return c.json({ error: e.message }, 500)
+      throw e
+    }
 
     if (!result) {
       const discoveryResult = await discoverOAuthMetadata(server.url)
@@ -319,13 +351,19 @@ remoteMcps.post('/initiate-oauth', async (c) => {
     return c.json({ redirectUrl: result.authorizationUrl, state: result.state })
   } else if (body.name && body.url) {
     try {
-      validateMcpServerUrl(body.url.trim())
+      await validateMcpServerUrl(body.url.trim())
     } catch (e: any) {
       return c.json({ error: e.message }, 400)
     }
 
     // New server: OAuth-first flow (no DB insert yet)
-    const result = await initiateNewServerOAuth(body.url.trim(), body.name.trim(), redirectCandidates, !!body.electron, getCurrentUserId(c), clientNameOverride, clientIdOverride, clientSecretOverride)
+    let result
+    try {
+      result = await initiateNewServerOAuth(body.url.trim(), body.name.trim(), redirectCandidates, !!body.electron, getCurrentUserId(c), clientNameOverride, clientIdOverride, clientSecretOverride)
+    } catch (e) {
+      if (e instanceof McpOAuthSetupError) return c.json({ error: e.message }, 500)
+      throw e
+    }
 
     if (!result) {
       const discoveryResult = await discoverOAuthMetadata(body.url.trim())
@@ -370,7 +408,11 @@ remoteMcps.get('/oauth-callback', async (c) => {
   }
 
   const result = await completeOAuthFlow(state, code, iss)
-  const delivery = { electron: result.electron, redirectWasScheme: result.redirectWasScheme }
+  const delivery = {
+    electron: result.electron,
+    redirectWasScheme: result.redirectWasScheme,
+    desktopProtocol: result.desktopProtocol,
+  }
 
   if (!result.success || !result.mcpId) {
     return c.html(mcpOAuthCallbackBody(
@@ -382,6 +424,12 @@ remoteMcps.get('/oauth-callback', async (c) => {
 
   // Discover tools to verify the connection works
   let serverUrl: string | undefined
+  let assignedAgentSlugs: string[] | null = null
+  try {
+    assignedAgentSlugs = await findAgentsAssignedRemoteMcp(result.mcpId)
+  } catch (error) {
+    console.warn('Failed to resolve agents assigned to OAuth MCP:', error)
+  }
   try {
     const [server] = await db
       .select()
@@ -401,9 +449,13 @@ remoteMcps.get('/oauth-callback', async (c) => {
         })
         .where(eq(remoteMcpServers.id, result.mcpId))
     }
+    // This HTML callback has no renderer response channel for a refresh
+    // warning. The sync remains best-effort and logs failures server-side.
+    if (assignedAgentSlugs) await syncRemoteMcpAgents(assignedAgentSlugs)
   } catch (err: any) {
     // Tool discovery failed — delete the server so we don't leave a broken entry
     await db.delete(remoteMcpServers).where(eq(remoteMcpServers.id, result.mcpId))
+    if (assignedAgentSlugs) await syncRemoteMcpAgents(assignedAgentSlugs)
     const errorMsg = err.message || 'Tool discovery failed'
     return c.html(mcpOAuthCallbackBody(
       {
@@ -415,6 +467,10 @@ remoteMcps.get('/oauth-callback', async (c) => {
       delivery,
     ))
   }
+
+  // OAuth and tool discovery both succeeded, so every proxy request parked
+  // on this MCP can safely reload its token and retry.
+  mcpReauthManager.completeMcp(result.mcpId)
 
   trackServerEvent('mcp_oauth_succeeded', { url: serverUrl, mcpId: result.mcpId })
   return c.html(mcpOAuthCallbackBody(
@@ -480,7 +536,7 @@ remoteMcps.patch('/:id', Or(UsersMcpServer(), IsAdmin()), async (c) => {
 
   if (body.url !== undefined) {
     try {
-      validateMcpServerUrl(body.url.trim())
+      await validateMcpServerUrl(body.url.trim())
     } catch (e: any) {
       return c.json({ error: e.message }, 400)
     }
@@ -505,9 +561,11 @@ remoteMcps.patch('/:id', Or(UsersMcpServer(), IsAdmin()), async (c) => {
     .limit(1)
 
   logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: id, action: 'updated' })
+  const liveRefresh = await syncAgentsAssignedRemoteMcp(id)
 
   return c.json({
     server: sanitizeServer(updated),
+    liveRefresh,
   })
 })
 
@@ -525,11 +583,20 @@ remoteMcps.delete('/:id', Or(UsersMcpServer(), IsAdmin()), async (c) => {
     return c.json({ error: 'MCP server not found' }, 404)
   }
 
+  let assignedAgentSlugs: string[] | null = null
+  try {
+    assignedAgentSlugs = await findAgentsAssignedRemoteMcp(id)
+  } catch (error) {
+    console.warn(`Failed to resolve agents assigned MCP ${id} before delete:`, error)
+  }
   await db.delete(remoteMcpServers).where(eq(remoteMcpServers.id, id))
+  const liveRefresh = assignedAgentSlugs
+    ? await syncRemoteMcpAgents(assignedAgentSlugs)
+    : false
 
   logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: id, action: 'deleted', details: { name: existing.name } })
 
-  return c.json({ success: true })
+  return c.json({ success: true, liveRefresh })
 })
 
 // Discover tools from an MCP server
@@ -561,7 +628,9 @@ remoteMcps.post('/:id/discover-tools', Or(UsersMcpServer(), IsAdmin()), async (c
       })
       .where(eq(remoteMcpServers.id, id))
 
-    return c.json({ tools })
+    const liveRefresh = await syncAgentsAssignedRemoteMcp(id)
+    mcpReauthManager.completeMcp(id)
+    return c.json({ tools, liveRefresh })
   } catch (error: any) {
     const errorMessage = error.message || 'Tool discovery failed'
     await db
@@ -573,7 +642,8 @@ remoteMcps.post('/:id/discover-tools', Or(UsersMcpServer(), IsAdmin()), async (c
       })
       .where(eq(remoteMcpServers.id, id))
 
-    return c.json({ error: errorMessage }, 502)
+    const liveRefresh = await syncAgentsAssignedRemoteMcp(id)
+    return c.json({ error: errorMessage, liveRefresh }, 502)
   }
 })
 
@@ -592,7 +662,7 @@ remoteMcps.post('/:id/test-connection', Or(UsersMcpServer(), IsAdmin()), async (
   }
 
   try {
-    validateMcpServerUrl(server.url)
+    await validateMcpServerUrl(server.url)
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -602,7 +672,7 @@ remoteMcps.post('/:id/test-connection', Or(UsersMcpServer(), IsAdmin()), async (
       headers['Authorization'] = `Bearer ${server.accessToken}`
     }
 
-    const res = await fetch(server.url, {
+    const res = await mcpSafeFetch(server.url, {
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -611,7 +681,7 @@ remoteMcps.post('/:id/test-connection', Or(UsersMcpServer(), IsAdmin()), async (
         params: {
           protocolVersion: '2025-03-26',
           capabilities: {},
-          clientInfo: { name: 'Superagent', version: '1.0.0' },
+          clientInfo: { name: 'Gamut', version: '1.0.0' },
         },
         id: 1,
       }),
@@ -622,7 +692,13 @@ remoteMcps.post('/:id/test-connection', Or(UsersMcpServer(), IsAdmin()), async (
         .update(remoteMcpServers)
         .set({ status: 'auth_required', errorMessage: 'Authentication required', updatedAt: new Date() })
         .where(eq(remoteMcpServers.id, id))
-      return c.json({ success: false, error: 'Authentication required', needsAuth: true })
+      const liveRefresh = await syncAgentsAssignedRemoteMcp(id)
+      return c.json({
+        success: false,
+        error: 'Authentication required',
+        needsAuth: true,
+        liveRefresh,
+      })
     }
 
     if (!res.ok) {
@@ -634,14 +710,17 @@ remoteMcps.post('/:id/test-connection', Or(UsersMcpServer(), IsAdmin()), async (
       .set({ status: 'active', errorMessage: null, updatedAt: new Date() })
       .where(eq(remoteMcpServers.id, id))
 
-    return c.json({ success: true })
+    const liveRefresh = await syncAgentsAssignedRemoteMcp(id)
+    mcpReauthManager.completeMcp(id)
+    return c.json({ success: true, liveRefresh })
   } catch (error: any) {
     const errorMessage = error.message || 'Connection test failed'
     await db
       .update(remoteMcpServers)
       .set({ status: 'error', errorMessage, updatedAt: new Date() })
       .where(eq(remoteMcpServers.id, id))
-    return c.json({ success: false, error: errorMessage })
+    const liveRefresh = await syncAgentsAssignedRemoteMcp(id)
+    return c.json({ success: false, error: errorMessage, liveRefresh })
   }
 })
 

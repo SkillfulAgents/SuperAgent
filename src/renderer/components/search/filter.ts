@@ -14,14 +14,7 @@ export type FlatItem =
   | { kind: 'session'; agent: ApiAgent; session: ApiSession }
 
 function getAgentDashboards(agent: ApiAgent): ApiAgentDashboard[] {
-  if (Array.isArray(agent.dashboards)) return agent.dashboards
-
-  const slugs = agent.dashboardSlugs ?? []
-  const names = agent.dashboardNames ?? []
-  return slugs.map((slug, index) => ({
-    slug,
-    name: names[index] || slug,
-  }))
+  return Array.isArray(agent.dashboards) ? agent.dashboards : []
 }
 
 /**

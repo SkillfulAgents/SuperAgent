@@ -29,6 +29,7 @@ const VENDOR_LABELS: Record<string, string> = {
   openai: 'OpenAI',
   zai: 'Z.AI',
   xai: 'xAI',
+  kimi: 'Moonshot AI',
 }
 
 const NO_VENDOR = 'other'
@@ -45,13 +46,21 @@ export function vendorDisplayName(key: string): string {
   return VENDOR_LABELS[key] ?? capitalize(key)
 }
 
+/** The catalog-declared concrete default for a model vendor. */
+export function vendorDefault(
+  catalog: ModelDefinition[],
+  vendor: string,
+): ModelDefinition | undefined {
+  return catalog.find((m) => vendorKey(m) === vendor && m.isDefault)
+}
+
 /**
  * Families whose entries are versions of one product line. These collapse to a
  * single row ("Opus") with per-version pin chips revealed on hover/selection.
  * Families outside this set (e.g. 'gpt', where each entry is a distinct tier)
  * keep one row per concrete model.
  */
-const LINEAGE_FAMILIES = new Set(['fable', 'opus', 'sonnet', 'haiku'])
+const LINEAGE_FAMILIES = new Set(['fable', 'opus', 'sonnet', 'haiku', 'kimi'])
 
 /** Chip label for a version: its label minus the family prefix ("Opus 4.8" → "4.8"). */
 function versionChipLabel(label: string, familyName: string): string {
@@ -118,12 +127,23 @@ export function webToolsWarning(
 ): string | null {
   if (!model || webVendorSet) return null
   if (model.supportsWebSearch === false) {
-    return 'Web search and fetch aren’t available on this model. Set a provider under Settings → Web to use them on any model.'
+    return 'Web search and fetch aren’t available on this model. Set a provider under Settings → Web Search to use them on any model.'
   }
   if (model.supportsWebFetch === false) {
-    return 'Native web fetch isn’t available on this model. Set a provider under Settings → Web to use fetch (search still works).'
+    return 'Native web fetch isn’t available on this model. Set a provider under Settings → Web Search to use fetch (search still works).'
   }
   return null
+}
+
+/**
+ * Picker banner for tiers whose discount is paid in the user's data. Unlike
+ * the web-tools warning there is no setting that fixes it — the only remedy is
+ * picking a different model — so the copy names the tradeoff and the class of
+ * content to keep off it rather than pointing at a settings page.
+ */
+export function dataUseWarning(model: ModelDefinition | undefined): string | null {
+  if (!model?.dataUsedForProductImprovement) return null
+  return 'Prompts and outputs on this model may be used by the provider to improve its products. Avoid customer data, credentials, and anything confidential.'
 }
 
 type LongContextCliff = NonNullable<ModelDefinition['longContextPriceCliff']>
@@ -381,9 +401,12 @@ function LineRow({
 /**
  * Flat model picker shared by the saved-setting selector and the per-message
  * composer. A vendor tab bar (when the catalog spans more than one brand) filters
- * to one vendor. Lineage families (Opus, Sonnet, …) collapse to one row with
- * per-version pin chips revealed on hover/selection, and non-lineage models whose
- * labels share a versioned base ("GPT-5.6 Sol/Terra/Luna") collapse the same way;
+ * to one vendor; switching tabs also picks that vendor's declared default
+ * (unless the selection is already on the tab), so a tab click IS a selection
+ * — single-model vendors need no second click. Lineage families (Opus, Sonnet,
+ * …) collapse to one row with per-version pin chips revealed on hover/selection,
+ * and non-lineage models whose labels share a versioned base ("GPT-5.6
+ * Sol/Terra/Luna") collapse the same way;
  * remaining models render one row each, newest-first. When `offerLatest` is set,
  * rows carry an explicit "Latest" chip storing the bare alias (rides upgrades) —
  * lit when the alias is the stored selection, while a lit version chip means a
@@ -451,6 +474,7 @@ export function ModelFamilyList({
   // `native`/undefined means no host vendor — only then surface the model's native gap.
   const webVendorSet = !!webProvider && webProvider !== 'native'
   const webWarning = webToolsWarning(resolved, webVendorSet)
+  const dataWarning = dataUseWarning(resolved)
 
   return (
     <div className="flex flex-col gap-0.5">
@@ -482,7 +506,26 @@ export function ModelFamilyList({
                           aria-checked={isActive}
                           aria-label={vendorDisplayName(key)}
                           data-testid={`model-vendor-tab-${key}`}
-                          onClick={() => setPickedVendor(key)}
+                          // A tab click also SELECTS the vendor's declared default —
+                          // without this, single-model tabs (Grok, Kimi) read
+                          // as selected while nothing changed. Skipped when the
+                          // selection already lives on the clicked tab, so
+                          // re-clicking your own tab can't clobber a pinned
+                          // version or bare alias. The pick is provisional:
+                          // picks never dismiss, so the check lands in view
+                          // and any other row is one click away.
+                          onClick={() => {
+                            setPickedVendor(key)
+                            if (resolved && vendorKey(resolved) === key) return
+                            const defaultModel = vendorDefault(catalog, key)
+                            if (defaultModel) {
+                              // The catalog declares a concrete default. Do
+                              // not turn it into a family alias on settings
+                              // surfaces: the family's latest may be a
+                              // different model now or after an upgrade.
+                              onPick(defaultModel.id)
+                            }
+                          }}
                           className={cn(
                             'inline-flex h-6 w-8 items-center justify-center rounded-md transition-all hover:bg-background/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                             isActive && 'bg-background text-foreground shadow'
@@ -603,6 +646,19 @@ export function ModelFamilyList({
           wrong-row hazard). Like the cliff note, the warning is scoped to the
           tab that owns the selection — on any other tab its "this model" copy
           would read as being about the listed models. */}
+      {/* Data-use first: a missing web tool is an inconvenience the user can
+          fix in settings, but this one leaves the building with their prompt
+          and has no remedy after the fact, so it must not sit below the fold
+          of a second banner. */}
+      {dataWarning && resolved && vendorKey(resolved) === activeVendor && (
+        <div
+          data-testid="model-data-use-warning"
+          className="mx-1 mt-1 flex items-start gap-1.5 rounded-sm bg-amber-500/10 px-2 py-1 text-[11px] text-amber-600 dark:text-amber-500"
+        >
+          <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
+          <span>{dataWarning}</span>
+        </div>
+      )}
       {webWarning && resolved && vendorKey(resolved) === activeVendor && (
         <div
           data-testid="model-no-websearch-warning"

@@ -1,11 +1,10 @@
 import { useUpdateChatIntegration, useSetRequireApproval } from '@renderer/hooks/use-chat-integrations'
-import { parseChatIntegrationConfig, type SlackConfig } from '@shared/lib/chat-integrations/config-schema'
 import { ToggleRow, SessionTimeoutSelect } from './integration-settings-controls'
 import { DetailCard } from '@renderer/components/triggers/detail-card'
-import type { ChatIntegration } from '@shared/lib/db/schema'
+import type { PublicChatIntegration } from '@shared/lib/chat-integrations/public'
 
 export function IntegrationSettingsCard({ integration, canManageAccess }: {
-  integration: ChatIntegration
+  integration: PublicChatIntegration
   /** Telegram owner: shows the require-approval gate. */
   canManageAccess?: boolean
 }) {
@@ -51,44 +50,43 @@ export function IntegrationSettingsCard({ integration, canManageAccess }: {
           />
         )}
         {integration.provider === 'slack' && (() => {
-          const config = parseChatIntegrationConfig('slack', integration.config) as SlackConfig | null
-          if (!config) return null
+          const settings = integration.settings
           return (
             <>
               <ToggleRow
                 label="Only respond when @mentioned"
                 helperText="Replies to every message when disabled."
-                checked={!!config.onlyMentioned}
+                checked={!!settings.onlyMentioned}
                 disabled={updateIntegration.isPending}
                 onCheckedChange={(checked) =>
                   updateIntegration.mutate({
                     id: integration.id,
-                    config: { ...config, onlyMentioned: checked },
+                    config: { onlyMentioned: checked },
                   })
                 }
               />
               <ToggleRow
                 label="Reply in thread"
                 helperText="Keep replies in a thread."
-                checked={!!config.answerInThread}
+                checked={!!settings.answerInThread}
                 disabled={updateIntegration.isPending}
                 onCheckedChange={(checked) =>
                   updateIntegration.mutate({
                     id: integration.id,
-                    config: { ...config, answerInThread: checked, ...(!checked ? { newSessionPerThread: false } : {}) },
+                    config: { answerInThread: checked, ...(!checked ? { newSessionPerThread: false } : {}) },
                   })
                 }
               />
-              {!!config.answerInThread && (
+              {!!settings.answerInThread && (
                 <ToggleRow
                   label="Separate conversation per thread"
                   helperText="Separate context per thread."
-                  checked={!!config.newSessionPerThread}
+                  checked={!!settings.newSessionPerThread}
                   disabled={updateIntegration.isPending}
                   onCheckedChange={(checked) =>
                     updateIntegration.mutate({
                       id: integration.id,
-                      config: { ...config, newSessionPerThread: checked },
+                      config: { newSessionPerThread: checked },
                     })
                   }
                 />

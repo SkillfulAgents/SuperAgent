@@ -753,10 +753,11 @@ Instructions here`
       expect(onDiskSkill).toBe(localContent)
     })
 
-    it('gitPull resolves origin/HEAD via set-head and refreshes via fetch+reset FETCH_HEAD', async () => {
+    it('gitPull trusts only its cache path while refreshing via fetch+reset FETCH_HEAD', async () => {
       const skillContent = '# Test Skill\nOriginal content'
       const meta = buildMetadata({ originalContentHash: contentHash(skillContent) })
       const config = buildSkillsetConfig()
+      const repoDir = getSkillsetRepoDir(config.id)
       const index = buildIndex({
         skills: [{ name: 'Test Skill', path: meta.skillPath, description: 'desc', version: '1.0.0' }],
       })
@@ -791,6 +792,18 @@ Instructions here`
       // No brittle hardcoded master fallback and no full-history reset by name.
       expect(cmdline).not.toContain('git checkout master')
       expect(cmdline.some((c) => c.startsWith('git reset --hard origin/'))).toBe(false)
+
+      const repoCalls = mockExecFile.mock.calls.filter((call) => {
+        const [command, , options] = call as [string, string[], { cwd?: string }]
+        return command === 'git' && options?.cwd === repoDir
+      })
+      expect(repoCalls.length).toBeGreaterThan(0)
+      for (const call of repoCalls) {
+        const options = call[2] as { env: Record<string, string | undefined> }
+        const safeConfigIndex = Number(options.env.GIT_CONFIG_COUNT) - 1
+        expect(options.env[`GIT_CONFIG_KEY_${safeConfigIndex}`]).toBe('safe.directory')
+        expect(options.env[`GIT_CONFIG_VALUE_${safeConfigIndex}`]).toBe(repoDir)
+      }
     })
 
     it('coalesces concurrent refreshes for the same cache directory', async () => {

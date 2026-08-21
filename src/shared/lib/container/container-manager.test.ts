@@ -109,13 +109,28 @@ vi.mock('drizzle-orm', () => ({
   eq: (col: string, val: string) => ({ col, val }),
 }))
 
+const mockSettingsState = {
+  containerRunner: 'docker' as string,
+  chromeProfileId: undefined as string | undefined,
+  hostBrowserProvider: undefined as string | undefined,
+}
+
 vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: () => ({ container: { agentImage: 'test-image', containerRunner: 'docker' }, app: {} }),
+  getSettings: () => ({
+    container: { agentImage: 'test-image', containerRunner: mockSettingsState.containerRunner },
+    app: {
+      chromeProfileId: mockSettingsState.chromeProfileId,
+      hostBrowserProvider: mockSettingsState.hostBrowserProvider,
+    },
+  }),
   updateSettings: vi.fn(),
   // the runner auto-switch now persists via mutateSettings; apply the
   // mutator to a fresh snapshot and return it (matching the real return shape).
   mutateSettings: (mutator: (s: { container: { agentImage: string; containerRunner: string }; app: Record<string, unknown> }) => void) => {
-    const s = { container: { agentImage: 'test-image', containerRunner: 'docker' }, app: {} }
+    const s = {
+      container: { agentImage: 'test-image', containerRunner: mockSettingsState.containerRunner },
+      app: {},
+    }
     mutator(s)
     return s
   },
@@ -139,8 +154,9 @@ vi.mock('./health-monitor', () => ({
   },
 }))
 
+const mockCopyChromeProfileData = vi.fn().mockReturnValue(false)
 vi.mock('@shared/lib/browser/chrome-profile', () => ({
-  copyChromeProfileData: vi.fn().mockReturnValue(false),
+  copyChromeProfileData: (...args: unknown[]) => mockCopyChromeProfileData(...args),
 }))
 
 vi.mock('@shared/lib/services/agent-service', () => ({}))
@@ -177,6 +193,8 @@ describe('containerManager.ensureRunning — env var construction', () => {
     vi.clearAllMocks()
     // Clear internal state by removing the client
     containerManager.removeClient('test-agent')
+    mockSettingsState.chromeProfileId = undefined
+    mockSettingsState.hostBrowserProvider = undefined
 
     mockGetOrCreateProxyToken.mockResolvedValue('synth-token-123')
     mockGetContainerHostUrl.mockReturnValue('192.168.1.100')
@@ -201,7 +219,13 @@ describe('containerManager.ensureRunning — env var construction', () => {
       status: string
       providerConnectionId: string
       providerName: string
-    }>
+    }>,
+    mcps: Array<{
+      id: string
+      name: string
+      status: string
+      toolsJson: string | null
+    }> = [],
   ) {
     // First db.select().from() call: connected accounts
     mockDbInnerJoin.mockReturnValue({ where: mockDbWhere })
@@ -211,7 +235,7 @@ describe('containerManager.ensureRunning — env var construction', () => {
 
     // Second db.select().from() call: remote MCPs
     mockMcpInnerJoin.mockReturnValue({ where: mockMcpWhere })
-    mockMcpWhere.mockResolvedValue([])
+    mockMcpWhere.mockResolvedValue(mcps.map((mcp) => ({ mcp })))
   }
 
   it('sets PROXY_BASE_URL with correct format', async () => {
@@ -224,6 +248,19 @@ describe('containerManager.ensureRunning — env var construction', () => {
     expect(startOpts.envVars.PROXY_BASE_URL).toBe(
       'http://192.168.1.100:3000/api/proxy/test-agent'
     )
+  })
+
+  it('caches the health-validated start result without another runtime query', async () => {
+    setupAccountMocks([])
+    mockStart.mockResolvedValue({ status: 'running', port: 4567 })
+
+    await containerManager.ensureRunning('test-agent')
+
+    expect(mockGetInfoFromRuntime).not.toHaveBeenCalled()
+    expect(containerManager.getCachedInfo('test-agent')).toEqual({
+      status: 'running',
+      port: 4567,
+    })
   })
 
   it('sets PROXY_TOKEN from getOrCreateProxyToken return value', async () => {
@@ -247,7 +284,38 @@ describe('containerManager.ensureRunning — env var construction', () => {
     expect(mockGetOrCreateHostToken).toHaveBeenCalledWith('test-agent')
   })
 
-  it('CONNECTED_ACCOUNTS includes only active accounts, grouped by toolkitSlug', async () => {
+  it('waits for an asynchronous Chrome profile sync before starting the container', async () => {
+    setupAccountMocks([])
+    mockSettingsState.chromeProfileId = 'Default'
+    let finishProfileSync!: (copied: boolean) => void
+    mockCopyChromeProfileData.mockReturnValueOnce(new Promise<boolean>((resolve) => {
+      finishProfileSync = resolve
+    }))
+
+    const startPromise = containerManager.ensureRunning('test-agent')
+    await vi.waitFor(() => expect(mockCopyChromeProfileData).toHaveBeenCalledWith(
+      'Default',
+      '/workspace/test-agent/.browser-profile',
+    ))
+
+    expect(mockStart).not.toHaveBeenCalled()
+    finishProfileSync(true)
+    await startPromise
+    expect(mockStart).toHaveBeenCalledOnce()
+  })
+
+  it('does not copy a local profile into a workspace that uses the host browser', async () => {
+    setupAccountMocks([])
+    mockSettingsState.chromeProfileId = 'Default'
+    mockSettingsState.hostBrowserProvider = 'chrome'
+
+    await containerManager.ensureRunning('test-agent')
+
+    expect(mockCopyChromeProfileData).not.toHaveBeenCalled()
+    expect(mockStart.mock.calls[0][0].envVars.AGENT_BROWSER_USE_HOST).toBe('1')
+  })
+
+  it('CONNECTED_ACCOUNTS includes active and reconnectable assigned accounts, grouped by toolkitSlug', async () => {
     setupAccountMocks([
       { id: 'acc-1', toolkitSlug: 'gmail', displayName: 'user@gmail.com', status: 'active', providerConnectionId: 'c1', providerName: 'composio' },
       { id: 'acc-2', toolkitSlug: 'gmail', displayName: 'user2@gmail.com', status: 'active', providerConnectionId: 'c2', providerName: 'composio' },
@@ -262,10 +330,12 @@ describe('containerManager.ensureRunning — env var construction', () => {
 
     expect(metadata.gmail).toHaveLength(2)
     expect(metadata.slack).toHaveLength(1)
-    expect(metadata.github).toBeUndefined() // expired, excluded
+    expect(metadata.github).toEqual([
+      { name: 'My GH', id: 'acc-4', status: 'expired' },
+    ])
   })
 
-  it('each account entry has { name, id } structure', async () => {
+  it('each account entry has { name, id, status } structure', async () => {
     setupAccountMocks([
       { id: 'acc-1', toolkitSlug: 'gmail', displayName: 'user@gmail.com', status: 'active', providerConnectionId: 'c1', providerName: 'composio' },
     ])
@@ -275,7 +345,7 @@ describe('containerManager.ensureRunning — env var construction', () => {
     const startOpts = mockStart.mock.calls[0][0]
     const metadata = JSON.parse(startOpts.envVars.CONNECTED_ACCOUNTS)
 
-    expect(metadata.gmail[0]).toEqual({ name: 'user@gmail.com', id: 'acc-1' })
+    expect(metadata.gmail[0]).toEqual({ name: 'user@gmail.com', id: 'acc-1', status: 'active' })
   })
 
   it('empty CONNECTED_ACCOUNTS ({}) when no accounts exist', async () => {
@@ -288,11 +358,12 @@ describe('containerManager.ensureRunning — env var construction', () => {
     expect(metadata).toEqual({})
   })
 
-  it('inactive accounts are excluded from metadata', async () => {
+  it('unknown inactive statuses are excluded while expired accounts remain available for reconnect', async () => {
     setupAccountMocks([
       { id: 'acc-1', toolkitSlug: 'gmail', displayName: 'active@gmail.com', status: 'active', providerConnectionId: 'c1', providerName: 'composio' },
       { id: 'acc-2', toolkitSlug: 'gmail', displayName: 'inactive@gmail.com', status: 'inactive', providerConnectionId: 'c2', providerName: 'composio' },
       { id: 'acc-3', toolkitSlug: 'slack', displayName: 'expired-slack', status: 'expired', providerConnectionId: 'c3', providerName: 'composio' },
+      { id: 'acc-4', toolkitSlug: 'notion', displayName: 'revoked-notion', status: 'revoked', providerConnectionId: 'c4', providerName: 'composio' },
     ])
 
     await containerManager.ensureRunning('test-agent')
@@ -302,7 +373,49 @@ describe('containerManager.ensureRunning — env var construction', () => {
 
     expect(metadata.gmail).toHaveLength(1)
     expect(metadata.gmail[0].name).toBe('active@gmail.com')
-    expect(metadata.slack).toBeUndefined()
+    expect(metadata.slack).toEqual([
+      { name: 'expired-slack', id: 'acc-3', status: 'expired' },
+    ])
+    expect(metadata.notion).toEqual([
+      { name: 'revoked-notion', id: 'acc-4', status: 'revoked' },
+    ])
+  })
+
+  it('serializes connection projections in stable id order', async () => {
+    setupAccountMocks(
+      [
+        { id: 'slack-z', toolkitSlug: 'slack', displayName: 'Slack Z', status: 'active', providerConnectionId: 'c3', providerName: 'composio' },
+        { id: 'gmail-z', toolkitSlug: 'gmail', displayName: 'Gmail Z', status: 'active', providerConnectionId: 'c2', providerName: 'composio' },
+        { id: 'gmail-a', toolkitSlug: 'gmail', displayName: 'Gmail A', status: 'active', providerConnectionId: 'c1', providerName: 'composio' },
+      ],
+      [
+        {
+          id: 'mcp-z',
+          name: 'Zed',
+          status: 'active',
+          toolsJson: JSON.stringify([{ name: 'search' }, { invalid: true }]),
+        },
+        { id: 'mcp-disabled', name: 'Disabled', status: 'auth_required', toolsJson: null },
+        { id: 'mcp-error', name: 'Broken', status: 'error', toolsJson: null },
+        { id: 'mcp-a', name: 'Alpha', status: 'active', toolsJson: '[]' },
+      ],
+    )
+
+    await containerManager.ensureRunning('test-agent')
+
+    const envVars = mockStart.mock.calls[0][0].envVars
+    expect(JSON.parse(envVars.CONNECTED_ACCOUNTS)).toEqual({
+      gmail: [
+        { name: 'Gmail A', id: 'gmail-a', status: 'active' },
+        { name: 'Gmail Z', id: 'gmail-z', status: 'active' },
+      ],
+      slack: [{ name: 'Slack Z', id: 'slack-z', status: 'active' }],
+    })
+    const mcpConfigs = JSON.parse(envVars.REMOTE_MCPS)
+    expect(mcpConfigs.map((mcp: { id: string }) => mcp.id))
+      .toEqual(['mcp-a', 'mcp-disabled', 'mcp-z'])
+    expect(mcpConfigs[1]).toMatchObject({ status: 'auth_required', tools: [] })
+    expect(mcpConfigs[2].tools).toEqual([{ name: 'search' }])
   })
 
   it('sets TZ env var from resolveTimezoneForAgent', async () => {
@@ -647,7 +760,7 @@ describe('containerManager — health warnings', () => {
 // ensureImageReady — state machine (CHECKING -> READY / ERROR / RUNTIME_UNAVAILABLE)
 // ============================================================================
 
-import { checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage } from './client-factory'
+import { checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage, startRunner } from './client-factory'
 
 describe('containerManager.ensureImageReady — state machine', () => {
   const originalE2eMock = process.env.E2E_MOCK
@@ -656,6 +769,7 @@ describe('containerManager.ensureImageReady — state machine', () => {
     vi.clearAllMocks()
     containerManager.clearClients()
     delete process.env.E2E_MOCK
+    mockSettingsState.containerRunner = 'docker'
     // Default: plenty of disk space (100 GB)
     mockStatfs.mockResolvedValue({ bavail: 100 * 1024 * 1024 * 1024 / 4096, bsize: 4096 })
   })
@@ -705,6 +819,26 @@ describe('containerManager.ensureImageReady — state machine', () => {
     const readiness = containerManager.getReadiness()
     expect(readiness.status).toBe('RUNTIME_UNAVAILABLE')
     expect(readiness.message).toContain('docker')
+  })
+
+  it('does not auto-provision apple-container when CLI is missing (no silent elevate)', async () => {
+    mockSettingsState.containerRunner = 'apple-container'
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      {
+        runner: 'apple-container',
+        installed: false,
+        running: false,
+        available: false,
+        canStart: true,
+        supportsCustomAgentImage: true,
+      },
+    ])
+
+    await containerManager.ensureImageReady()
+
+    expect(startRunner).not.toHaveBeenCalled()
+    const readiness = containerManager.getReadiness()
+    expect(readiness.status).toBe('RUNTIME_UNAVAILABLE')
   })
 
   it('pulls image when runner available but image does not exist', async () => {
@@ -1105,6 +1239,35 @@ describe('containerManager.resetReadiness', () => {
     containerManager.resetReadiness()
 
     expect(containerManager.getReadiness().message).toBe('Restarting runtime...')
+  })
+})
+
+describe('containerManager start/fail guards vs PULLING_IMAGE', () => {
+  it.each([
+    {
+      label: 'markRuntimeUnavailable',
+      act: () => containerManager.markRuntimeUnavailable('should be ignored'),
+      assert: () => expect(containerManager.getReadiness().status).toBe('PULLING_IMAGE'),
+    },
+    {
+      label: 'updateStartProgress',
+      act: () =>
+        containerManager.updateStartProgress({
+          status: 'Downloading...',
+          percent: 50,
+          completedLayers: 0,
+          totalLayers: 0,
+        }),
+      assert: () => expect(containerManager.getReadiness().pullProgress?.percent).toBe(10),
+    },
+  ])('$label does NOT override PULLING_IMAGE', ({ act, assert }) => {
+    ;(containerManager as any)._readiness = {
+      status: 'PULLING_IMAGE',
+      message: 'Pulling...',
+      pullProgress: { status: 'layer', percent: 10, completedLayers: 1, totalLayers: 3 },
+    }
+    act()
+    assert()
   })
 })
 

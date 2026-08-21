@@ -1,9 +1,14 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { renderHook } from '@testing-library/react'
-import { usePendingRequests, type PendingRequestDescriptor } from './use-pending-requests'
+import { act, renderHook } from '@testing-library/react'
+import {
+  usePendingRequests,
+  usePendingBrowserInputRequests,
+  type PendingRequestDescriptor,
+} from './use-pending-requests'
 import { createAssistantMessage, createUserMessage, createToolCall } from '@renderer/test/factories'
 import type { ApiMessageOrBoundary } from '@shared/lib/types/api'
+import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
 
 // Mock useMessages
 const mockMessagesData: { data: ApiMessageOrBoundary[] | undefined; isLoading: boolean } = {
@@ -15,71 +20,51 @@ vi.mock('@renderer/hooks/use-messages', () => ({
   useMessages: () => mockMessagesData,
 }))
 
-// Mock useMessageStream
+// Mock useMessageStream — the hook only reads lifecycle/streaming state from it
+// now; the per-kind pending arrays moved to the unified store.
 const mockStreamState = {
   isActive: false,
-  pendingSecretRequests: [] as Array<{ toolUseId: string; secretName: string; reason?: string }>,
-  pendingConnectedAccountRequests: [] as Array<{ toolUseId: string; toolkit: string; reason?: string }>,
-  pendingRemoteMcpRequests: [] as Array<{ toolUseId: string; url: string; name?: string; reason?: string; authHint?: 'oauth' | 'bearer' }>,
-  pendingQuestionRequests: [] as Array<{ toolUseId: string; questions: Array<{ question: string; header: string; options: Array<{ label: string; description: string }>; multiSelect: boolean }> }>,
-  pendingFileRequests: [] as Array<{ toolUseId: string; description: string; fileTypes?: string }>,
-  pendingBrowserInputRequests: [] as Array<{ toolUseId: string; message: string; requirements: string[] }>,
-  pendingScriptRunRequests: [] as Array<{ toolUseId: string; script: string; explanation: string; scriptType: 'applescript' | 'shell' | 'powershell' }>,
-  pendingComputerUseRequests: [] as Array<{ toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string }>,
-  pendingCapabilityReviewRequests: [] as Array<{ toolUseId: string; capability: 'subagents' | 'workflows'; toolName: string; input: Record<string, unknown> }>,
   streamingToolUses: [] as Array<{ id: string; name: string; partialInput: string; ready?: boolean }>,
   autoApprovedScriptRunIds: new Set<string>(),
   autoApprovedComputerUseIds: new Set<string>(),
 }
 
-const mockRemovers = {
-  removeSecretRequest: vi.fn(),
-  removeConnectedAccountRequest: vi.fn(),
-  removeRemoteMcpRequest: vi.fn(),
-  removeQuestionRequest: vi.fn(),
-  removeFileRequest: vi.fn(),
-  removeBrowserInputRequest: vi.fn(),
-  removeScriptRunRequest: vi.fn(),
-  removeComputerUseRequest: vi.fn(),
-  removeCapabilityReviewRequest: vi.fn(),
-}
-
 vi.mock('@renderer/hooks/use-message-stream', () => ({
   useMessageStream: () => mockStreamState,
-  removeSecretRequest: (...args: unknown[]) => mockRemovers.removeSecretRequest(...args),
-  removeConnectedAccountRequest: (...args: unknown[]) => mockRemovers.removeConnectedAccountRequest(...args),
-  removeRemoteMcpRequest: (...args: unknown[]) => mockRemovers.removeRemoteMcpRequest(...args),
-  removeQuestionRequest: (...args: unknown[]) => mockRemovers.removeQuestionRequest(...args),
-  removeFileRequest: (...args: unknown[]) => mockRemovers.removeFileRequest(...args),
-  removeBrowserInputRequest: (...args: unknown[]) => mockRemovers.removeBrowserInputRequest(...args),
-  removeScriptRunRequest: (...args: unknown[]) => mockRemovers.removeScriptRunRequest(...args),
-  removeComputerUseRequest: (...args: unknown[]) => mockRemovers.removeComputerUseRequest(...args),
-  removeCapabilityReviewRequest: (...args: unknown[]) => mockRemovers.removeCapabilityReviewRequest(...args),
 }))
 
-// Mock proxy reviews — mutable per test
-type ProxyReviewMock = {
-  id: string
-  agentSlug: string
-  accountId: string
-  toolkit: string
-  method: string
-  targetPath: string
-  matchedScopes: string[]
-  scopeDescriptions: Record<string, string>
-  displayText?: string
-  xAgent?: {
-    targetAgentSlug: string
-    targetAgentName: string
-    operation: 'list' | 'read' | 'invoke' | 'create'
-    preview?: string
-  }
-}
-const mockProxyReviewsData: { reviews: ProxyReviewMock[] } = { reviews: [] }
-const mockRefetchProxyReviews = vi.fn()
-vi.mock('@renderer/hooks/use-proxy-reviews', () => ({
-  usePendingProxyReviews: () => ({ data: mockProxyReviewsData, refetch: mockRefetchProxyReviews }),
+// Mock the unified pending-request store — mutable per test.
+const mockUnified: { data: PendingUserInputRequest[] | undefined } = { data: [] }
+vi.mock('@renderer/hooks/use-pending-user-requests', () => ({
+  usePendingUserRequests: () => ({ data: mockUnified.data }),
 }))
+
+// The hook uses the query client only to invalidate on review completion —
+// keep the real module surface (spread) so new exports don't break the mock.
+const mockInvalidateQueries = vi.fn()
+vi.mock('@tanstack/react-query', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@tanstack/react-query')>()),
+  useQueryClient: () => ({ invalidateQueries: mockInvalidateQueries }),
+}))
+
+/** Build a unified registry envelope the way the server snapshot returns it. */
+function unified(
+  kind: PendingUserInputRequest['kind'],
+  id: string,
+  payload: Record<string, unknown>,
+  opts: { autoApproved?: boolean; agentScoped?: boolean } = {},
+): PendingUserInputRequest {
+  return {
+    id,
+    kind,
+    scope: opts.agentScoped
+      ? { agentSlug: 'agent-1' }
+      : { agentSlug: 'agent-1', sessionId: 's-1' },
+    blocking: true,
+    autoApproved: opts.autoApproved ?? false,
+    payload,
+  } as unknown as PendingUserInputRequest
+}
 
 const defaultArgs = {
   sessionId: 's-1',
@@ -98,29 +83,19 @@ describe('usePendingRequests', () => {
     vi.clearAllMocks()
     mockMessagesData.data = undefined
     mockMessagesData.isLoading = false
-    mockProxyReviewsData.reviews = []
+    mockUnified.data = []
     Object.assign(mockStreamState, {
       isActive: false,
-      pendingSecretRequests: [],
-      pendingConnectedAccountRequests: [],
-      pendingRemoteMcpRequests: [],
-      pendingQuestionRequests: [],
-      pendingFileRequests: [],
-      pendingBrowserInputRequests: [],
-      pendingScriptRunRequests: [],
-      pendingComputerUseRequests: [],
-      pendingCapabilityReviewRequests: [],
       streamingToolUses: [],
       autoApprovedScriptRunIds: new Set<string>(),
       autoApprovedComputerUseIds: new Set<string>(),
     })
   })
 
-  it('returns SSE-based pending secret requests', () => {
+  it('returns unified-store pending secret requests', () => {
+    mockStreamState.isActive = true
     mockMessagesData.data = []
-    mockStreamState.pendingSecretRequests = [
-      { toolUseId: 'tu-1', secretName: 'API_KEY' },
-    ]
+    mockUnified.data = [unified('secret', 'tu-1', { secretName: 'API_KEY' })]
 
     const { result } = renderHook(() => usePendingRequests(defaultArgs))
 
@@ -130,11 +105,11 @@ describe('usePendingRequests', () => {
     expect(matches[0].secretName).toBe('API_KEY')
   })
 
-  it('returns SSE-based pending question requests', () => {
+  it('returns unified-store pending question requests', () => {
+    mockStreamState.isActive = true
     mockMessagesData.data = []
-    mockStreamState.pendingQuestionRequests = [
-      {
-        toolUseId: 'tu-q1',
+    mockUnified.data = [
+      unified('question', 'tu-q1', {
         questions: [
           {
             question: 'Which DB?',
@@ -143,7 +118,7 @@ describe('usePendingRequests', () => {
             multiSelect: false,
           },
         ],
-      },
+      }),
     ]
 
     const { result } = renderHook(() => usePendingRequests(defaultArgs))
@@ -154,11 +129,10 @@ describe('usePendingRequests', () => {
     expect(matches[0].toolUseId).toBe('tu-q1')
   })
 
-  it('returns SSE-based pending file requests', () => {
+  it('returns unified-store pending file requests', () => {
+    mockStreamState.isActive = true
     mockMessagesData.data = []
-    mockStreamState.pendingFileRequests = [
-      { toolUseId: 'tu-f1', description: 'Upload config file' },
-    ]
+    mockUnified.data = [unified('file', 'tu-f1', { description: 'Upload config file' })]
 
     const { result } = renderHook(() => usePendingRequests(defaultArgs))
 
@@ -168,10 +142,11 @@ describe('usePendingRequests', () => {
     expect(matches[0].description).toBe('Upload config file')
   })
 
-  it('returns SSE-based pending connected account requests', () => {
+  it('returns unified-store pending connected account requests', () => {
+    mockStreamState.isActive = true
     mockMessagesData.data = []
-    mockStreamState.pendingConnectedAccountRequests = [
-      { toolUseId: 'tu-ca-1', toolkit: 'slack', reason: 'Need access' },
+    mockUnified.data = [
+      unified('connected_account', 'tu-ca-1', { toolkit: 'slack', reason: 'Need access' }),
     ]
 
     const { result } = renderHook(() => usePendingRequests(defaultArgs))
@@ -182,10 +157,11 @@ describe('usePendingRequests', () => {
     expect(matches[0].toolkit).toBe('slack')
   })
 
-  it('returns SSE-based pending remote MCP requests', () => {
+  it('returns unified-store pending remote MCP requests', () => {
+    mockStreamState.isActive = true
     mockMessagesData.data = []
-    mockStreamState.pendingRemoteMcpRequests = [
-      { toolUseId: 'tu-mcp-1', url: 'https://mcp.test.com', name: 'Test MCP' },
+    mockUnified.data = [
+      unified('remote_mcp', 'tu-mcp-1', { url: 'https://mcp.test.com', name: 'Test MCP' }),
     ]
 
     const { result } = renderHook(() => usePendingRequests(defaultArgs))
@@ -194,6 +170,89 @@ describe('usePendingRequests', () => {
     const matches = ofKind(result.current.items, 'remote_mcp')
     expect(matches).toHaveLength(1)
     expect(matches[0].url).toBe('https://mcp.test.com')
+  })
+
+  it('a recovered synthetic envelope renders no card — the transcript covers it', () => {
+    // Recovered entries are now IN the snapshot (they are blocking waits the
+    // activity indicator must count) but carry no renderable payload; the
+    // per-kind guards must drop them rather than draw a broken card.
+    mockStreamState.isActive = true
+    mockMessagesData.data = []
+    mockUnified.data = [unified('secret', 'tu-recovered', { recovered: true })]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+    expect(result.current.count).toBe(0)
+  })
+
+  it('normalizes malformed questions on a unified envelope — a question without options still renders', () => {
+    mockStreamState.isActive = true
+    mockMessagesData.data = []
+    // The model can omit `options` (or emit garbage). The card indexes
+    // options unconditionally, so the projection must run the same
+    // normalizer the message-history recovery path uses — raw passthrough
+    // crashes the card, and (unlike legacy) a reload would not heal it
+    // because the unified bucket wins the dedupe.
+    mockUnified.data = [
+      unified('question', 'tu-q-bad', {
+        questions: [{ question: 'Pick one?', header: 'DB', multiSelect: false }],
+      }),
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    const matches = ofKind(result.current.items, 'question')
+    expect(matches).toHaveLength(1)
+    expect(matches[0].questions[0].options).toEqual([])
+  })
+
+  it('onComplete hides the card synchronously — before any store refetch settles it', () => {
+    mockStreamState.isActive = true
+    mockMessagesData.data = []
+    mockUnified.data = [unified('secret', 'tu-sync', { secretName: 'A' })]
+
+    const { result, rerender } = renderHook(() => usePendingRequests(defaultArgs))
+    expect(result.current.count).toBe(1)
+
+    // Answer the card but leave EVERY source untouched: the unified store
+    // still lists the entry (the settle is a server round trip away). The
+    // dismissal alone must remove it — this is the state-not-ref property;
+    // a ref here would leave the answered card up until the refetch lands.
+    act(() => {
+      ofKind(result.current.items, 'secret')[0].onComplete()
+    })
+    rerender()
+    expect(result.current.count).toBe(0)
+  })
+
+  it('a lenient envelope missing its card-critical field renders nothing (no broken card)', () => {
+    mockStreamState.isActive = true
+    mockMessagesData.data = []
+    // The server accepts malformed tool input rather than dropping the wait;
+    // the projection must re-validate instead of drawing a crashing card.
+    mockUnified.data = [unified('secret', 'tu-bad', { reason: 'no name' })]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+    expect(result.current.count).toBe(0)
+  })
+
+  it('hides session-scoped unified entries while the session is idle, but keeps agent-scoped reviews', () => {
+    // e.g. an abandoned computer-use approval survives the idle boundary
+    // server-side for reconnect replay — rendering it on an idle session
+    // would gate the composer behind a dead card. Reviews outlive turns.
+    mockStreamState.isActive = false
+    mockUnified.data = [
+      unified('computer_use', 'tu-cu-idle', { method: 'click', params: {}, permissionLevel: 'use_application' }),
+      unified(
+        'proxy_review',
+        'review-live',
+        { accountId: 'a', toolkit: 'gh', method: 'GET', targetPath: '/x', matchedScopes: [], scopeDescriptions: {} },
+        { agentScoped: true },
+      ),
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+    expect(ofKind(result.current.items, 'computer_use')).toHaveLength(0)
+    expect(ofKind(result.current.items, 'proxy_review')).toHaveLength(1)
   })
 
   it('derives pending secret request from message history when active', () => {
@@ -219,7 +278,7 @@ describe('usePendingRequests', () => {
     expect(matches[0].secretName).toBe('DB_PASSWORD')
   })
 
-  it('derives pending secret request from ready streaming tool use when SSE event is missed', () => {
+  it('derives pending secret request from ready streaming tool use when the event is missed', () => {
     mockStreamState.isActive = true
     mockMessagesData.data = []
     mockStreamState.streamingToolUses = [
@@ -283,11 +342,9 @@ describe('usePendingRequests', () => {
     expect(result.current.count).toBe(0)
   })
 
-  it('deduplicates SSE and message-based pending requests by toolUseId', () => {
+  it('deduplicates unified-store and message-based pending requests by toolUseId', () => {
     mockStreamState.isActive = true
-    mockStreamState.pendingSecretRequests = [
-      { toolUseId: 'tu-dup', secretName: 'API_KEY' },
-    ]
+    mockUnified.data = [unified('secret', 'tu-dup', { secretName: 'API_KEY' })]
     mockMessagesData.data = [
       createAssistantMessage({
         content: { text: '' },
@@ -482,6 +539,72 @@ describe('usePendingRequests', () => {
     expect(ofKind(result.current.items, 'computer_use')).toHaveLength(0)
   })
 
+  // A client that mounts (or reconnects) after the auto-approved
+  // user_request_created has fired never sees that event, so its live
+  // suppression set is empty. The snapshot is the only thing that still knows
+  // the request was auto-approved — if suppression does not read it, the
+  // transcript fallback draws an approval card for something the server is
+  // already executing, and pressing it can run the side effect twice.
+  it('suppresses an auto-approved computer_use from the snapshot alone (no live event seen)', () => {
+    mockStreamState.isActive = true
+    mockStreamState.autoApprovedComputerUseIds = new Set()
+    mockUnified.data = [
+      unified(
+        'computer_use',
+        'tc-cu-late',
+        { method: 'apps', params: {}, permissionLevel: 'list_apps_windows' },
+        { autoApproved: true },
+      ),
+    ]
+    mockMessagesData.data = [
+      createAssistantMessage({
+        content: { text: '' },
+        toolCalls: [
+          createToolCall({
+            id: 'tc-cu-late',
+            name: 'mcp__computer-use__computer_apps',
+            input: { includeHidden: false },
+            result: undefined,
+          }),
+        ],
+      }),
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    expect(ofKind(result.current.items, 'computer_use')).toHaveLength(0)
+  })
+
+  it('suppresses an auto-approved script_run from the snapshot alone (no live event seen)', () => {
+    mockStreamState.isActive = true
+    mockStreamState.autoApprovedScriptRunIds = new Set()
+    mockUnified.data = [
+      unified(
+        'script_run',
+        'tc-sr-late',
+        { script: 'sw_vers', explanation: 'Check version', scriptType: 'shell' },
+        { autoApproved: true },
+      ),
+    ]
+    mockMessagesData.data = [
+      createAssistantMessage({
+        content: { text: '' },
+        toolCalls: [
+          createToolCall({
+            id: 'tc-sr-late',
+            name: 'mcp__user-input__request_script_run',
+            input: { script: 'sw_vers', explanation: 'Check version', scriptType: 'shell' },
+            result: undefined,
+          }),
+        ],
+      }),
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    expect(ofKind(result.current.items, 'script_run')).toHaveLength(0)
+  })
+
   it('derives computer-use pending request from ready streaming tool use', () => {
     mockStreamState.isActive = true
     mockMessagesData.data = []
@@ -525,6 +648,22 @@ describe('usePendingRequests', () => {
     expect(ofKind(result.current.items, 'computer_use')).toHaveLength(0)
   })
 
+  it('an auto-approved unified computer-use entry renders no approval card', () => {
+    mockStreamState.isActive = true
+    mockMessagesData.data = []
+    mockUnified.data = [
+      unified(
+        'computer_use',
+        'tu-cu-auto',
+        { method: 'apps', params: {}, permissionLevel: 'list_apps_windows' },
+        { autoApproved: true },
+      ),
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+    expect(ofKind(result.current.items, 'computer_use')).toHaveLength(0)
+  })
+
   it('coerces a non-array requirements to [] (model emitted a bare string)', () => {
     // Regression: the model can emit `requirements` as a string instead of a
     // string[]. The old `input.requirements || []` guard let a non-empty string
@@ -543,6 +682,20 @@ describe('usePendingRequests', () => {
           }),
         ],
       }),
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    const matches = ofKind(result.current.items, 'browser_input')
+    expect(matches).toHaveLength(1)
+    expect(matches[0].requirements).toEqual([])
+  })
+
+  it('coerces a non-array requirements to [] on a unified envelope too', () => {
+    mockStreamState.isActive = true
+    mockMessagesData.data = []
+    mockUnified.data = [
+      unified('browser_input', 'tu-bi', { message: 'Log in', requirements: 'not-an-array' }),
     ]
 
     const { result } = renderHook(() => usePendingRequests(defaultArgs))
@@ -625,9 +778,7 @@ describe('usePendingRequests', () => {
 
   it('clears dismissed-request set when session transitions active → idle', () => {
     mockStreamState.isActive = true
-    mockStreamState.pendingSecretRequests = [
-      { toolUseId: 'tu-dismiss', secretName: 'API_KEY' },
-    ]
+    mockUnified.data = [unified('secret', 'tu-dismiss', { secretName: 'API_KEY' })]
     // Same request also derivable from messages (no result yet)
     mockMessagesData.data = [
       createAssistantMessage({
@@ -650,8 +801,8 @@ describe('usePendingRequests', () => {
     const item = ofKind(result.current.items, 'secret')[0]
     item.onComplete()
 
-    // SSE clears it; messages-based source would resurface, but dismissed blocks it
-    mockStreamState.pendingSecretRequests = []
+    // The store settles it; messages-based source would resurface, but dismissed blocks it
+    mockUnified.data = []
     rerender()
     expect(result.current.count).toBe(0)
 
@@ -670,12 +821,17 @@ describe('usePendingRequests', () => {
 
   // ---- Auto-approved script run filtering ----
 
-  it('filters out script run requests whose toolUseId is auto-approved', () => {
-    mockStreamState.pendingScriptRunRequests = [
-      { toolUseId: 'tu-script-1', script: 'echo hi', explanation: 'manual', scriptType: 'shell' },
-      { toolUseId: 'tu-script-2', script: 'echo bye', explanation: 'auto', scriptType: 'shell' },
+  it('filters out auto-approved script run entries (visible in the store, not a wait)', () => {
+    mockStreamState.isActive = true
+    mockUnified.data = [
+      unified('script_run', 'tu-script-1', { script: 'echo hi', explanation: 'manual', scriptType: 'shell' }),
+      unified(
+        'script_run',
+        'tu-script-2',
+        { script: 'echo bye', explanation: 'auto', scriptType: 'shell' },
+        { autoApproved: true },
+      ),
     ]
-    mockStreamState.autoApprovedScriptRunIds = new Set(['tu-script-2'])
 
     const { result } = renderHook(() => usePendingRequests(defaultArgs))
 
@@ -684,21 +840,24 @@ describe('usePendingRequests', () => {
     expect(matches[0].toolUseId).toBe('tu-script-1')
   })
 
-  // ---- Proxy reviews ----
+  // ---- Proxy reviews (agent-scoped envelopes in the same store) ----
 
   it('emits a proxy_review descriptor for non-xAgent reviews', () => {
-    mockProxyReviewsData.reviews = [
-      {
-        id: 'review-1',
-        agentSlug: 'agent-1',
-        accountId: 'acct-1',
-        toolkit: 'github',
-        method: 'POST',
-        targetPath: '/repos/me/secret',
-        matchedScopes: ['repo:write'],
-        scopeDescriptions: { 'repo:write': 'Write to repos' },
-        displayText: 'Push to private repo',
-      },
+    mockUnified.data = [
+      unified(
+        'proxy_review',
+        'review-1',
+        {
+          accountId: 'acct-1',
+          toolkit: 'github',
+          method: 'POST',
+          targetPath: '/repos/me/secret',
+          matchedScopes: ['repo:write'],
+          scopeDescriptions: { 'repo:write': 'Write to repos' },
+          displayText: 'Push to private repo',
+        },
+        { agentScoped: true },
+      ),
     ]
 
     const { result } = renderHook(() => usePendingRequests(defaultArgs))
@@ -708,26 +867,29 @@ describe('usePendingRequests', () => {
     expect(matches).toHaveLength(1)
     expect(matches[0].reviewId).toBe('review-1')
     expect(matches[0].displayText).toBe('Push to private repo')
+    expect(matches[0].scopeDescriptions).toEqual({ 'repo:write': 'Write to repos' })
   })
 
   it('emits an x_agent_review descriptor when xAgent metadata is present', () => {
-    mockProxyReviewsData.reviews = [
-      {
-        id: 'review-x',
-        agentSlug: 'agent-1',
-        accountId: 'acct-x',
-        toolkit: 'x',
-        method: 'POST',
-        targetPath: '/agent',
-        matchedScopes: [],
-        scopeDescriptions: {},
-        displayText: 'Sub-agent review',
-        xAgent: {
-          targetAgentSlug: 'researcher',
-          targetAgentName: 'Researcher',
-          operation: 'invoke',
+    mockUnified.data = [
+      unified(
+        'x_agent_review',
+        'review-x',
+        {
+          accountId: 'acct-x',
+          toolkit: 'x',
+          method: 'POST',
+          targetPath: '/agent',
+          matchedScopes: [],
+          scopeDescriptions: {},
+          xAgent: {
+            targetAgentSlug: 'researcher',
+            targetAgentName: 'Researcher',
+            operation: 'invoke',
+          },
         },
-      },
+        { agentScoped: true },
+      ),
     ]
 
     const { result } = renderHook(() => usePendingRequests(defaultArgs))
@@ -737,106 +899,138 @@ describe('usePendingRequests', () => {
     expect(ofKind(result.current.items, 'proxy_review')).toHaveLength(0)
   })
 
-  it('proxy review onComplete triggers refetch', () => {
-    mockProxyReviewsData.reviews = [
-      {
-        id: 'review-r',
-        agentSlug: 'agent-1',
-        accountId: 'acct-r',
-        toolkit: 'gh',
-        method: 'GET',
-        targetPath: '/x',
-        matchedScopes: [],
-        scopeDescriptions: {},
-      },
+  it('an x_agent_review envelope with malformed xAgent metadata renders nothing', () => {
+    mockUnified.data = [
+      unified(
+        'x_agent_review',
+        'review-bad',
+        {
+          accountId: 'acct-x',
+          toolkit: 'x',
+          method: 'POST',
+          targetPath: '/agent',
+          xAgent: { operation: 'invoke' },
+        },
+        { agentScoped: true },
+      ),
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+    expect(result.current.count).toBe(0)
+  })
+
+  it('proxy review onComplete invalidates the unified store', () => {
+    mockUnified.data = [
+      unified(
+        'proxy_review',
+        'review-r',
+        { accountId: 'acct-r', toolkit: 'gh', method: 'GET', targetPath: '/x', matchedScopes: [], scopeDescriptions: {} },
+        { agentScoped: true },
+      ),
     ]
 
     const { result } = renderHook(() => usePendingRequests(defaultArgs))
     ofKind(result.current.items, 'proxy_review')[0].onComplete()
-    expect(mockRefetchProxyReviews).toHaveBeenCalledTimes(1)
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ['pending-user-requests'] })
   })
 
-  // ---- SSE onComplete wiring: each kind's onComplete must call the matching remove* ----
-
-  it('secret onComplete calls removeSecretRequest with (sessionId, toolUseId)', () => {
-    mockStreamState.pendingSecretRequests = [{ toolUseId: 'tu-s', secretName: 'A' }]
-    const { result } = renderHook(() => usePendingRequests(defaultArgs))
-    ofKind(result.current.items, 'secret')[0].onComplete()
-    expect(mockRemovers.removeSecretRequest).toHaveBeenCalledTimes(1)
-    expect(mockRemovers.removeSecretRequest).toHaveBeenCalledWith('s-1', 'tu-s')
-  })
-
-  it('connected_account onComplete calls removeConnectedAccountRequest', () => {
-    mockStreamState.pendingConnectedAccountRequests = [{ toolUseId: 'tu-c', toolkit: 'slack' }]
-    const { result } = renderHook(() => usePendingRequests(defaultArgs))
-    ofKind(result.current.items, 'connected_account')[0].onComplete()
-    expect(mockRemovers.removeConnectedAccountRequest).toHaveBeenCalledWith('s-1', 'tu-c')
-  })
-
-  it('remote_mcp onComplete calls removeRemoteMcpRequest', () => {
-    mockStreamState.pendingRemoteMcpRequests = [{ toolUseId: 'tu-m', url: 'https://x' }]
-    const { result } = renderHook(() => usePendingRequests(defaultArgs))
-    ofKind(result.current.items, 'remote_mcp')[0].onComplete()
-    expect(mockRemovers.removeRemoteMcpRequest).toHaveBeenCalledWith('s-1', 'tu-m')
-  })
-
-  it('question onComplete calls removeQuestionRequest', () => {
-    mockStreamState.pendingQuestionRequests = [{
-      toolUseId: 'tu-q',
-      questions: [{ question: 'Q?', header: 'H', options: [], multiSelect: false }],
-    }]
-    const { result } = renderHook(() => usePendingRequests(defaultArgs))
-    ofKind(result.current.items, 'question')[0].onComplete()
-    expect(mockRemovers.removeQuestionRequest).toHaveBeenCalledWith('s-1', 'tu-q')
-  })
-
-  it('file onComplete calls removeFileRequest', () => {
-    mockStreamState.pendingFileRequests = [{ toolUseId: 'tu-f', description: 'd' }]
-    const { result } = renderHook(() => usePendingRequests(defaultArgs))
-    ofKind(result.current.items, 'file')[0].onComplete()
-    expect(mockRemovers.removeFileRequest).toHaveBeenCalledWith('s-1', 'tu-f')
-  })
-
-  it('browser_input onComplete calls removeBrowserInputRequest', () => {
-    mockStreamState.pendingBrowserInputRequests = [{ toolUseId: 'tu-b', message: 'm', requirements: [] }]
-    const { result } = renderHook(() => usePendingRequests(defaultArgs))
-    ofKind(result.current.items, 'browser_input')[0].onComplete()
-    expect(mockRemovers.removeBrowserInputRequest).toHaveBeenCalledWith('s-1', 'tu-b')
-  })
-
-  it('script_run onComplete calls removeScriptRunRequest', () => {
-    mockStreamState.pendingScriptRunRequests = [
-      { toolUseId: 'tu-r', script: 'echo', explanation: '', scriptType: 'shell' },
+  it('emits an account_reauth_required descriptor with the proxy request id', () => {
+    mockUnified.data = [
+      unified(
+        'account_reauth_required',
+        'reauth-1',
+        {
+          accountId: 'acct-r',
+          toolkit: 'gmail',
+          accountStatus: 'expired',
+          proxyRequestId: 'proxy-request-1',
+        },
+        { agentScoped: true },
+      ),
     ]
+
     const { result } = renderHook(() => usePendingRequests(defaultArgs))
-    ofKind(result.current.items, 'script_run')[0].onComplete()
-    expect(mockRemovers.removeScriptRunRequest).toHaveBeenCalledWith('s-1', 'tu-r')
+
+    expect(result.current.count).toBe(1)
+    expect(ofKind(result.current.items, 'account_reauth_required')).toEqual([
+      expect.objectContaining({
+        proxyRequestId: 'proxy-request-1',
+        accountId: 'acct-r',
+        toolkit: 'gmail',
+        accountStatus: 'expired',
+      }),
+    ])
   })
 
-  it('computer_use onComplete calls removeComputerUseRequest', () => {
-    mockStreamState.pendingComputerUseRequests = [
-      { toolUseId: 'tu-cu', method: 'click', params: {}, permissionLevel: 'high' },
+  it('emits an mcp_reauth_required descriptor with reconnect metadata', () => {
+    mockUnified.data = [
+      unified(
+        'mcp_reauth_required',
+        'mcp-reauth-1',
+        {
+          mcpId: 'mcp-cal',
+          mcpName: 'Cal.com',
+          authType: 'oauth',
+          proxyRequestId: 'mcp-proxy-request-1',
+        },
+        { agentScoped: true },
+      ),
     ]
+
     const { result } = renderHook(() => usePendingRequests(defaultArgs))
-    ofKind(result.current.items, 'computer_use')[0].onComplete()
-    expect(mockRemovers.removeComputerUseRequest).toHaveBeenCalledWith('s-1', 'tu-cu')
+
+    expect(result.current.count).toBe(1)
+    expect(ofKind(result.current.items, 'mcp_reauth_required')).toEqual([
+      expect.objectContaining({
+        proxyRequestId: 'mcp-proxy-request-1',
+        mcpId: 'mcp-cal',
+        mcpName: 'Cal.com',
+        authType: 'oauth',
+      }),
+    ])
+  })
+
+  // ---- onComplete wiring: every kind drops its card synchronously ----
+
+  it.each([
+    ['secret', 'tu-s', { secretName: 'A' }],
+    ['connected_account', 'tu-c', { toolkit: 'slack' }],
+    ['remote_mcp', 'tu-m', { url: 'https://x' }],
+    ['question', 'tu-q', { questions: [{ question: 'Q?', header: 'H', options: [], multiSelect: false }] }],
+    ['file', 'tu-f', { description: 'd' }],
+    ['browser_input', 'tu-b', { message: 'm', requirements: [] }],
+    ['script_run', 'tu-r', { script: 'echo', explanation: '', scriptType: 'shell' }],
+    ['computer_use', 'tu-cu', { method: 'click', params: {}, permissionLevel: 'high' }],
+  ] as const)('%s onComplete drops the card without waiting for the snapshot', (kind, toolUseId, payload) => {
+    mockStreamState.isActive = true
+    mockUnified.data = [unified(kind, toolUseId, payload as Record<string, unknown>)]
+    const { result, rerender } = renderHook(() => usePendingRequests(defaultArgs))
+    expect(ofKind(result.current.items, kind)).toHaveLength(1)
+
+    act(() => {
+      ofKind(result.current.items, kind)[0].onComplete()
+    })
+    // The snapshot still lists it — answering must not leave the card up
+    // until the refetch lands.
+    rerender()
+    expect(ofKind(result.current.items, kind)).toHaveLength(0)
   })
 
   // ---- Arrival-order sort across mixed types ----
 
   it('sorts mixed-type requests by chronological arrival order across renders', () => {
+    mockStreamState.isActive = true
     // First batch: a single secret request arrives
-    mockStreamState.pendingSecretRequests = [
-      { toolUseId: 'tu-secret', secretName: 'A' },
-    ]
+    mockUnified.data = [unified('secret', 'tu-secret', { secretName: 'A' })]
 
     const { result, rerender } = renderHook(() => usePendingRequests(defaultArgs))
 
     expect(result.current.items.map((d) => d.key)).toEqual(['tu-secret'])
 
     // Second batch: a file request arrives later — should sort after the secret
-    mockStreamState.pendingFileRequests = [
-      { toolUseId: 'tu-file', description: 'Upload' },
+    mockUnified.data = [
+      unified('secret', 'tu-secret', { secretName: 'A' }),
+      unified('file', 'tu-file', { description: 'Upload' }),
     ]
     rerender()
 
@@ -844,9 +1038,10 @@ describe('usePendingRequests', () => {
 
     // Third batch: another secret arrives last — sorts after both even though
     // the secret block comes first in the iteration order inside the hook.
-    mockStreamState.pendingSecretRequests = [
-      { toolUseId: 'tu-secret', secretName: 'A' },
-      { toolUseId: 'tu-secret-2', secretName: 'B' },
+    mockUnified.data = [
+      unified('secret', 'tu-secret', { secretName: 'A' }),
+      unified('file', 'tu-file', { description: 'Upload' }),
+      unified('secret', 'tu-secret-2', { secretName: 'B' }),
     ]
     rerender()
 
@@ -857,11 +1052,15 @@ describe('usePendingRequests', () => {
     ])
   })
 
-  it('returns SSE-based capability review requests while active', () => {
+  it('returns unified-store capability review requests while active', () => {
     mockStreamState.isActive = true
     mockMessagesData.data = []
-    mockStreamState.pendingCapabilityReviewRequests = [
-      { toolUseId: 'tu-cap-1', capability: 'workflows', toolName: 'Workflow', input: { name: 'audit' } },
+    mockUnified.data = [
+      unified('capability_review', 'tu-cap-1', {
+        capability: 'workflows',
+        toolName: 'Workflow',
+        input: { name: 'audit' },
+      }),
     ]
 
     const { result } = renderHook(() => usePendingRequests(defaultArgs))
@@ -870,6 +1069,20 @@ describe('usePendingRequests', () => {
     expect(matches).toHaveLength(1)
     expect(matches[0].capability).toBe('workflows')
     expect(matches[0].input).toEqual({ name: 'audit' })
+  })
+
+  it('hides capability reviews while the session is idle', () => {
+    mockStreamState.isActive = false
+    mockUnified.data = [
+      unified('capability_review', 'tu-cap-idle', {
+        capability: 'workflows',
+        toolName: 'Workflow',
+        input: {},
+      }),
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+    expect(ofKind(result.current.items, 'capability_review')).toHaveLength(0)
   })
 
   it('does NOT derive capability reviews from message history — a running Task without a result is not an approval', () => {
@@ -891,5 +1104,76 @@ describe('usePendingRequests', () => {
     const { result } = renderHook(() => usePendingRequests(defaultArgs))
 
     expect(ofKind(result.current.items, 'capability_review')).toHaveLength(0)
+  })
+})
+
+describe('usePendingBrowserInputRequests', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockUnified.data = []
+  })
+
+  const browserInput = (id: string, message: string) =>
+    unified('browser_input', id, { message, requirements: ['a password'] })
+
+  it('projects browser_input requests out of the snapshot', () => {
+    mockUnified.data = [
+      browserInput('tu-bi-1', 'Log in to the dashboard'),
+      unified('secret', 'tu-secret', { secretName: 'API_KEY' }),
+    ]
+
+    const { result } = renderHook(() =>
+      usePendingBrowserInputRequests('s-1', 'agent-1', true),
+    )
+
+    expect(result.current.requests).toHaveLength(1)
+    expect(result.current.requests[0]).toMatchObject({
+      toolUseId: 'tu-bi-1',
+      message: 'Log in to the dashboard',
+      requirements: ['a password'],
+    })
+  })
+
+  it('shows nothing while the session is inactive', () => {
+    mockUnified.data = [browserInput('tu-bi-idle', 'Log in')]
+
+    const { result } = renderHook(() =>
+      usePendingBrowserInputRequests('s-1', 'agent-1', false),
+    )
+
+    expect(result.current.requests).toHaveLength(0)
+  })
+
+  it('drops an overlay synchronously on dismiss, without waiting for a refetch', () => {
+    mockUnified.data = [browserInput('tu-bi-2', 'Log in')]
+
+    const { result } = renderHook(() =>
+      usePendingBrowserInputRequests('s-1', 'agent-1', true),
+    )
+    expect(result.current.requests).toHaveLength(1)
+
+    // The snapshot still lists the request — answering in the tray has to hide
+    // the overlay before the server round-trip settles it.
+    act(() => result.current.dismiss('tu-bi-2'))
+
+    expect(result.current.requests).toHaveLength(0)
+  })
+
+  it('forgets dismissals when the session goes idle, so the next turn can ask again', () => {
+    mockUnified.data = [browserInput('tu-bi-3', 'Log in')]
+
+    const { result, rerender } = renderHook(
+      ({ isActive }: { isActive: boolean }) =>
+        usePendingBrowserInputRequests('s-1', 'agent-1', isActive),
+      { initialProps: { isActive: true } },
+    )
+
+    act(() => result.current.dismiss('tu-bi-3'))
+    expect(result.current.requests).toHaveLength(0)
+
+    rerender({ isActive: false })
+    rerender({ isActive: true })
+
+    expect(result.current.requests).toHaveLength(1)
   })
 })

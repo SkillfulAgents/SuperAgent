@@ -1,8 +1,8 @@
 import crypto from 'crypto'
-import { broadcastReview } from './review-broadcast'
 import { getScopeLabel, type ScopeLabel } from './scope-metadata'
 import { messagePersister } from '@shared/lib/container/message-persister'
-import { notificationManager } from '@shared/lib/notifications/notification-manager'
+import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
 
 const REVIEW_TIMEOUT_MS = 5 * 60 * 1000 // 5 minutes
 
@@ -96,46 +96,130 @@ export function generateReviewDisplayText(
   return `Allow ${method} request to ${toolkitDisplay}?`
 }
 
-interface PendingReview {
-  id: string
-  details: ReviewDetails
+interface ReviewSettler {
   resolve: (decision: 'allow' | 'deny') => void
   reject: (error: Error) => void
   timer: ReturnType<typeof setTimeout>
 }
 
+type ReviewRegistryEntry = Extract<
+  PendingUserInputRequest,
+  { kind: 'proxy_review' | 'x_agent_review' }
+>
+
 export class ReviewManager {
-  private pending: Map<string, PendingReview> = new Map()
+  // The registry (userInputRequestManager) IS the pending-review store — each
+  // envelope's payload carries the full ReviewDetails plus displayText. This
+  // map holds only what an envelope cannot: the blocked proxied call's promise
+  // settlers and the auto-deny timer. An entry without a settler is still a
+  // real review (visible, decidable, sweepable); a settler without an entry is
+  // a leak the shadow check flags.
+  private settlers: Map<string, ReviewSettler> = new Map()
+
+  private shadowSettlerCheck(context: string): void {
+    if (process.env.NODE_ENV === 'production') return
+    userInputRequestManager.verifyReviewSettlerParity({
+      context,
+      settlerIds: [...this.settlers.keys()],
+    })
+  }
+
+  private static isReviewEntry(r: PendingUserInputRequest): r is ReviewRegistryEntry {
+    return r.kind === 'proxy_review' || r.kind === 'x_agent_review'
+  }
+
+  private reviewEntriesForAgent(agentSlug: string): ReviewRegistryEntry[] {
+    return userInputRequestManager
+      .getAgentScopedRequests(agentSlug)
+      .filter(ReviewManager.isReviewEntry)
+  }
+
+  // Rebuild ReviewDetails from an envelope payload. The payload schema is
+  // deliberately lenient, so every field gets a safe default; displayText is
+  // recomputed when the envelope predates it.
+  private static detailsOf(entry: ReviewRegistryEntry): ReviewDetails & { displayText: string } {
+    const p = entry.payload as Record<string, unknown>
+    const toolkit = typeof p.toolkit === 'string' ? p.toolkit : ''
+    const method = typeof p.method === 'string' ? p.method : ''
+    const targetPath = typeof p.targetPath === 'string' ? p.targetPath : ''
+    const scopeDescriptions =
+      p.scopeDescriptions && typeof p.scopeDescriptions === 'object'
+        ? (p.scopeDescriptions as Record<string, string>)
+        : {}
+    const endpointDescription =
+      typeof p.endpointDescription === 'string' ? p.endpointDescription : undefined
+    const displayText =
+      typeof p.displayText === 'string' && p.displayText.length > 0
+        ? p.displayText
+        : generateReviewDisplayText(toolkit, method, targetPath, scopeDescriptions, endpointDescription)
+    return {
+      agentSlug: entry.scope.agentSlug ?? '',
+      accountId: typeof p.accountId === 'string' ? p.accountId : '',
+      toolkit,
+      method,
+      targetPath,
+      matchedScopes: Array.isArray(p.matchedScopes) ? (p.matchedScopes as string[]) : [],
+      scopeDescriptions,
+      ...(endpointDescription !== undefined ? { endpointDescription } : {}),
+      ...(p.xAgent && typeof p.xAgent === 'object'
+        ? { xAgent: p.xAgent as ReviewDetails['xAgent'] }
+        : {}),
+      displayText,
+    }
+  }
+
+  // The single exit: settles the registry entry, the parked promise (if one
+  // exists), the auto-deny timer, and the UI broadcast together, in that
+  // order — the registry must be settled before the promise resumes the
+  // proxied call, which can re-enter and request another review.
+  private settleReview(
+    entry: ReviewRegistryEntry,
+    outcome: 'answered' | 'declined' | 'cancelled' | 'timeout',
+    action: { type: 'resolve'; decision: 'allow' | 'deny' } | { type: 'reject'; error: Error },
+  ): void {
+    const settler = this.settlers.get(entry.id)
+    this.settlers.delete(entry.id)
+    if (settler) clearTimeout(settler.timer)
+    userInputRequestManager.resolve(entry.id, outcome)
+    if (settler) {
+      if (action.type === 'resolve') settler.resolve(action.decision)
+      else settler.reject(action.error)
+    }
+  }
 
   requestReview(details: ReviewDetails, signal?: AbortSignal): Promise<'allow' | 'deny'> {
     const id = crypto.randomUUID()
 
     return new Promise<'allow' | 'deny'>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id)
+      const settleTimedOut = () => {
+        if (!this.settlers.has(id)) return
+        this.settlers.delete(id)
+        userInputRequestManager.resolve(id, 'timeout')
+        this.shadowSettlerCheck('settleTimedOut')
+        messagePersister.syncAgentSessionsAwaiting(details.agentSlug)
         reject(new Error('Review timeout'))
-      }, REVIEW_TIMEOUT_MS)
+      }
+
+      const timer = setTimeout(settleTimedOut, REVIEW_TIMEOUT_MS)
 
       const cleanup = () => {
         clearTimeout(timer)
-        this.pending.delete(id)
-        broadcastReview(details.agentSlug, {
-          type: 'proxy_review_resolved',
-          reviewId: id,
-          decision: 'deny',
-        })
+        this.settlers.delete(id)
+        userInputRequestManager.resolve(id, 'cancelled')
+        this.shadowSettlerCheck('abortCleanup')
+        messagePersister.syncAgentSessionsAwaiting(details.agentSlug)
       }
 
       // If the request is aborted (e.g. task stopped), clean up the orphaned review
       if (signal) {
         signal.addEventListener('abort', () => {
-          if (!this.pending.has(id)) return // already resolved/timed out
+          if (!this.settlers.has(id)) return // already resolved/timed out
           cleanup()
           reject(new Error('Request aborted'))
         }, { once: true })
       }
 
-      this.pending.set(id, { id, details, resolve, reject, timer })
+      this.settlers.set(id, { resolve, reject, timer })
 
       const displayText = generateReviewDisplayText(
         details.toolkit,
@@ -145,37 +229,42 @@ export class ReviewManager {
         details.endpointDescription,
       )
 
-      // Broadcast review request to agent's active sessions
-      broadcastReview(details.agentSlug, {
-        type: 'proxy_review_request',
-        reviewId: id,
-        accountId: details.accountId,
-        toolkit: details.toolkit,
-        method: details.method,
-        targetPath: details.targetPath,
-        matchedScopes: details.matchedScopes,
-        scopeDescriptions: details.scopeDescriptions,
-        displayText,
-        ...(details.xAgent ? { xAgent: details.xAgent } : {}),
+      // Reviews are agent-scoped — no sessionId in the proxied call, so the
+      // envelope carries agentSlug only. The registry entry IS the pending
+      // review: it makes the agent's sessions read as awaiting, and its
+      // payload carries the full details plus the derived display text so
+      // every reader (unified wire, dashboard poll, sweeps) renders from it.
+      const registered = userInputRequestManager.register({
+        id,
+        kind: details.xAgent ? 'x_agent_review' : 'proxy_review',
+        scope: { agentSlug: details.agentSlug },
+        blocking: true,
+        autoApproved: false,
+        payload: { ...details, displayText },
       })
-
-      // Fire ONE OS notification per review, attributed to the first active
-      // session of this agent. The proxy call is agent-scoped (no sessionId
-      // in the request), so we pick an active session — same attribution
-      // heuristic the sidebar uses for its orange dot (agents.ts:
-      // isActive && hasAgentLevelReviews). Whether the OS popup actually
-      // shows is the renderer's call — it knows OS focus + per-user viewing
-      // + `notifyWhenUnfocused`. An open SSE connection ≠ actively looking
-      // at the screen.
-      const targetSessionId = messagePersister.getActiveSessionIdsForAgent(details.agentSlug)[0]
-      if (targetSessionId) {
-        const kind = details.xAgent ? 'agent_action' : 'api_request'
-        notificationManager
-          .triggerSessionApiReviewWaiting(targetSessionId, details.agentSlug, id, displayText, undefined, kind)
-          .catch((err) => {
-            console.error('[ReviewManager] Failed to trigger API review notification:', err)
-          })
+      if (!registered) {
+        // Can't happen with our own envelope construction, but if the registry
+        // ever drops it, fail the proxied call now — a review that exists
+        // nowhere would otherwise park until the timeout.
+        clearTimeout(timer)
+        this.settlers.delete(id)
+        reject(new Error('Failed to register review'))
+        return
       }
+      this.shadowSettlerCheck('requestReview')
+
+      // The card reaches every surface off the registry's 'created'
+      // transition (user_request_created on the global stream). Nothing here
+      // re-announces the review on a channel of its own.
+
+      // Recompute awaiting for the agent's sessions so chat tick / activity
+      // strip stop lying "Working…" while the Allow/Deny card is up — the
+      // registry entry registered above is what flips them.
+      messagePersister.syncAgentSessionsAwaiting(details.agentSlug)
+
+      // The OS notification fires from the registry 'created' transition
+      // (persister dispatchRequestNotification) — one per review, attributed
+      // to the agent's first active session there.
     })
   }
 
@@ -189,24 +278,26 @@ export class ReviewManager {
    * by agentSlug itself) may omit it.
    */
   submitDecision(id: string, decision: 'allow' | 'deny', expectedAgentSlug?: string): boolean {
-    const review = this.pending.get(id)
-    if (!review) return false
-    if (expectedAgentSlug !== undefined && review.details.agentSlug !== expectedAgentSlug) {
+    const entry = userInputRequestManager.getOpenRequest(id)
+    // The kind guard is load-bearing: the decision routes accept a
+    // caller-supplied id, and resolving whatever the registry holds under it
+    // would let a review decision settle a parked secret/question/computer-use
+    // wait out from under its own decision flow.
+    if (!entry || !ReviewManager.isReviewEntry(entry)) return false
+    if (expectedAgentSlug !== undefined && entry.scope.agentSlug !== expectedAgentSlug) {
       // Don't leak existence of the review to an unauthorized caller —
       // return the same `false` shape as "review not found".
       return false
     }
 
-    clearTimeout(review.timer)
-    this.pending.delete(id)
-    review.resolve(decision)
-
-    // Broadcast resolution so UIs can dismiss the prompt
-    broadcastReview(review.details.agentSlug, {
-      type: 'proxy_review_resolved',
-      reviewId: id,
+    this.settleReview(entry, decision === 'allow' ? 'answered' : 'declined', {
+      type: 'resolve',
       decision,
     })
+    this.shadowSettlerCheck('submitDecision')
+    if (entry.scope.agentSlug) {
+      messagePersister.syncAgentSessionsAwaiting(entry.scope.agentSlug)
+    }
 
     return true
   }
@@ -216,22 +307,15 @@ export class ReviewManager {
     scope: string,
     decision: 'allow' | 'deny'
   ): void {
-    for (const [id, review] of this.pending) {
-      if (
-        review.details.agentSlug === agentSlug &&
-        review.details.matchedScopes.includes(scope)
-      ) {
-        clearTimeout(review.timer)
-        this.pending.delete(id)
-        review.resolve(decision)
-
-        broadcastReview(agentSlug, {
-          type: 'proxy_review_resolved',
-          reviewId: id,
-          decision,
-        })
-      }
+    for (const entry of this.reviewEntriesForAgent(agentSlug)) {
+      if (!ReviewManager.detailsOf(entry).matchedScopes.includes(scope)) continue
+      this.settleReview(entry, decision === 'allow' ? 'answered' : 'declined', {
+        type: 'resolve',
+        decision,
+      })
     }
+    this.shadowSettlerCheck('resolveMatchingPending')
+    messagePersister.syncAgentSessionsAwaiting(agentSlug)
   }
 
   /**
@@ -246,21 +330,19 @@ export class ReviewManager {
     label: ScopeLabel,
     decision: 'allow' | 'deny',
   ): void {
-    for (const [id, review] of this.pending) {
-      if (review.details.agentSlug !== agentSlug) continue
-      const hasLabel = review.details.matchedScopes.some(
-        (s) => getScopeLabel(review.details.toolkit, s) === label,
+    for (const entry of this.reviewEntriesForAgent(agentSlug)) {
+      const details = ReviewManager.detailsOf(entry)
+      const hasLabel = details.matchedScopes.some(
+        (s) => getScopeLabel(details.toolkit, s) === label,
       )
       if (!hasLabel) continue
-      clearTimeout(review.timer)
-      this.pending.delete(id)
-      review.resolve(decision)
-      broadcastReview(agentSlug, {
-        type: 'proxy_review_resolved',
-        reviewId: id,
+      this.settleReview(entry, decision === 'allow' ? 'answered' : 'declined', {
+        type: 'resolve',
         decision,
       })
     }
+    this.shadowSettlerCheck('resolveMatchingPendingByLabel')
+    messagePersister.syncAgentSessionsAwaiting(agentSlug)
   }
 
   /**
@@ -274,41 +356,24 @@ export class ReviewManager {
     operation: 'list' | 'read' | 'invoke' | 'create',
     decision: 'allow' | 'deny',
   ): void {
-    for (const [id, review] of this.pending) {
-      if (
-        review.details.agentSlug === agentSlug &&
-        review.details.xAgent?.operation === operation
-      ) {
-        clearTimeout(review.timer)
-        this.pending.delete(id)
-        review.resolve(decision)
-
-        broadcastReview(agentSlug, {
-          type: 'proxy_review_resolved',
-          reviewId: id,
-          decision,
-        })
-      }
+    for (const entry of this.reviewEntriesForAgent(agentSlug)) {
+      if (ReviewManager.detailsOf(entry).xAgent?.operation !== operation) continue
+      this.settleReview(entry, decision === 'allow' ? 'answered' : 'declined', {
+        type: 'resolve',
+        decision,
+      })
     }
+    this.shadowSettlerCheck('resolveMatchingXAgentByOperation')
+    messagePersister.syncAgentSessionsAwaiting(agentSlug)
   }
 
   getPendingReviewsForAgent(
     agentSlug: string
   ): Array<{ id: string; displayText: string } & ReviewDetails> {
-    const results: Array<{ id: string; displayText: string } & ReviewDetails> = []
-    for (const review of this.pending.values()) {
-      if (review.details.agentSlug === agentSlug) {
-        const displayText = generateReviewDisplayText(
-          review.details.toolkit,
-          review.details.method,
-          review.details.targetPath,
-          review.details.scopeDescriptions,
-          review.details.endpointDescription,
-        )
-        results.push({ id: review.id, displayText, ...review.details })
-      }
-    }
-    return results
+    return this.reviewEntriesForAgent(agentSlug).map((entry) => ({
+      id: entry.id,
+      ...ReviewManager.detailsOf(entry),
+    }))
   }
 
   /**
@@ -360,27 +425,44 @@ export class ReviewManager {
   }
 
   denyAllForAgent(agentSlug: string): void {
-    for (const [id, review] of this.pending) {
-      if (review.details.agentSlug !== agentSlug) continue
-      clearTimeout(review.timer)
-      this.pending.delete(id)
-      review.resolve('deny')
-
-      broadcastReview(agentSlug, {
-        type: 'proxy_review_resolved',
-        reviewId: id,
-        decision: 'deny',
-      })
+    for (const entry of this.reviewEntriesForAgent(agentSlug)) {
+      this.settleReview(entry, 'declined', { type: 'resolve', decision: 'deny' })
     }
+    this.shadowSettlerCheck('denyAllForAgent')
+    messagePersister.syncAgentSessionsAwaiting(agentSlug)
   }
 
   rejectAll(): void {
-    for (const [id, review] of this.pending) {
-      clearTimeout(review.timer)
-      this.pending.delete(id)
-      review.reject(new Error('Review timeout'))
+    const agentSlugs = new Set<string>()
+    for (const entry of userInputRequestManager.getOpenRequestsForStore('review')) {
+      if (!ReviewManager.isReviewEntry(entry)) continue
+      if (entry.scope.agentSlug) agentSlugs.add(entry.scope.agentSlug)
+      this.settleReview(entry, 'cancelled', { type: 'reject', error: new Error('Review timeout') })
+    }
+    // Defensive: a settler whose registry entry vanished is still a parked
+    // proxied call — shutdown must never leave one hung.
+    for (const [id, settler] of this.settlers) {
+      clearTimeout(settler.timer)
+      this.settlers.delete(id)
+      settler.reject(new Error('Review timeout'))
+    }
+    for (const agentSlug of agentSlugs) {
+      messagePersister.syncAgentSessionsAwaiting(agentSlug)
     }
   }
 }
 
-export const reviewManager = new ReviewManager()
+// Use globalThis to persist across Next.js hot reloads in development, matching
+// messagePersister. The two are coupled: pending reviews write through to the
+// userInputRequestManager registry (which drives the persister's awaiting
+// projection), and both singletons survive reloads — so reviewManager must too,
+// or a reload would strand its pending reviews in a stale instance.
+const globalForReviewManager = globalThis as unknown as {
+  reviewManager: ReviewManager | undefined
+}
+
+export const reviewManager = globalForReviewManager.reviewManager ?? new ReviewManager()
+
+if (process.env.NODE_ENV !== 'production') {
+  globalForReviewManager.reviewManager = reviewManager
+}

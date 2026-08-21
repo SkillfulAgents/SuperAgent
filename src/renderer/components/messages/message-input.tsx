@@ -13,9 +13,11 @@ import { SlashCommandMenu } from './slash-command-menu'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
+import { registerSessionComposerFocus } from './composer-focus'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { ChatComposerBox } from './chat-composer-box'
 import { ComposerOptions, useComposerOptions } from './composer-options'
+import { AgentDefaultFooter } from './agent-default-footer'
 import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { useRenderTracker } from '@renderer/lib/perf'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
@@ -58,7 +60,9 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     agentKey: agentSlug,
     agentDefaultsReady: agentPrefsFetched,
   })
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const textareaRef = useRef<HTMLDivElement>(null)
+  // Let out-of-tree components (file-preview comment bar) focus this composer.
+  useEffect(() => registerSessionComposerFocus(sessionId, () => textareaRef.current?.focus()), [sessionId])
   const sendMessage = useSendMessage()
   const uploadFile = useUploadFile()
   const uploadFolder = useUploadFolder()
@@ -94,14 +98,19 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
       // a parameter change would interrupt/restart the in-flight query.
       // (The server also strips them when it sees the session is active.)
       const queued = isActive && !isWaitingBackground
+      const runtimeOptions = queued ? {} : composerOptions.toRuntimeOptions()
       onMessageSent?.(content, localId, queued)
       try {
         const result = await sendMessage.mutateAsync({
           sessionId,
           agentSlug,
           content,
-          ...(queued ? {} : composerOptions.toRuntimeOptions()),
+          ...runtimeOptions,
         })
+        // Only a fresh turn accepts runtime-option changes. The server's
+        // queued decision is authoritative and may differ from our SSE-based
+        // guess, so keep a user pick dirty when the server stripped it.
+        if (!result.queued) composerOptions.markSubmitted(runtimeOptions)
         // Reconcile against the server's authoritative decision: our local
         // `queued` guess is derived from SSE state that can be stale (reconnect,
         // a peer's turn, background-task flag), and a mismatch otherwise strands
@@ -166,8 +175,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     textareaRef.current?.focus()
   }, [composer])
 
-  const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const value = e.target.value
+  const handleChange = useCallback((value: string) => {
     composer.setMessage(value)
 
     // Open slash menu when input is "/" followed by optional non-space chars (still typing command)
@@ -202,7 +210,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     }
   }
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  const handleKeyDown = (e: KeyboardEvent) => {
     // Slash command menu keyboard navigation
     if (slashMenuOpen && filteredCommands.length > 0) {
       if (e.key === 'ArrowDown') {
@@ -234,7 +242,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
       // mid-thought. Desktop (fine pointer) keeps Enter-to-send unchanged.
       if (typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches) return
       e.preventDefault()
-      composer.handleSubmit(e)
+      void composer.handleSubmit(e)
     }
   }
 
@@ -248,7 +256,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
   return (
     <form
       onSubmit={composer.handleSubmit}
-      className={`relative px-4 pt-3 ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
+      className={`relative z-10 isolate px-4 pt-0 ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
       {...composer.dragHandlers}
     >
       <MountChoiceDialog
@@ -264,6 +272,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
         filter={slashFilter ?? ''}
       />
       <ChatComposerBox
+        className="relative z-10 border-border/70 bg-background/85 shadow-[0_0_24px_rgba(15,23,42,0.07),0_2px_10px_-4px_rgba(15,23,42,0.08)] backdrop-blur-md supports-[backdrop-filter]:bg-background/65 dark:shadow-[0_0_26px_rgba(0,0,0,0.22),0_2px_12px_-4px_rgba(0,0,0,0.16)]"
         attachments={composer.attachments}
         onRemoveAttachment={composer.removeAttachment}
         textareaRef={textareaRef}
@@ -302,7 +311,11 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
             />
             {/* Model/effort are locked while the agent works — changing them
                 mid-turn would interrupt the running query. */}
-            <ComposerOptions state={composerOptions} disabled={isDisabled || isActive} />
+            <ComposerOptions
+              state={composerOptions}
+              disabled={isDisabled || isActive}
+              footer={<AgentDefaultFooter agentSlug={agentSlug} state={composerOptions} />}
+            />
           </>
         )}
         rightActions={(

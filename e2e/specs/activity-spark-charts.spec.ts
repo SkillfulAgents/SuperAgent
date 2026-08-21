@@ -39,6 +39,7 @@ test.describe('Activity spark charts', () => {
 
     await sessionPage.sendMessage('schedule task for daily issues')
     await sessionPage.waitForResponse(15000)
+    await sessionPage.expandLatestCompletedTurn(15000)
     await sessionPage.expectToolCall('mcp__user-input__schedule_task', 15000)
     await waitForDailyIssueSummaryTask(request, agentSlug)
 

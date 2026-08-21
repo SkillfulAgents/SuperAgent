@@ -11,6 +11,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 class MockEventSource {
   static instances: MockEventSource[] = []
   onmessage: ((event: { data: string }) => void) | null = null
+  onopen: (() => void) | null = null
   onerror: (() => void) | null = null
   url: string
   constructor(url: string) {
@@ -89,7 +90,7 @@ function simulateSSEMessage(es: MockEventSource, data: unknown) {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
+describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
   let queryClient: QueryClient
 
   beforeEach(async () => {
@@ -129,7 +130,7 @@ describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
     Reflect.deleteProperty(document, 'visibilityState')
   })
 
-  it('session_awaiting_input with review data invalidates proxy-reviews query', async () => {
+  it('user_request_created/resolved invalidate the unified store', () => {
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 
     render(
@@ -140,80 +141,30 @@ describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
 
     const es = getLatestEventSource()
 
+    // A dashboard-triggered review can exist with NO session anywhere — this
+    // global event is its only push signal. Every review surface (in-chat
+    // cards AND the dashboard panel) reads the unified store now.
     simulateSSEMessage(es, {
-      type: 'session_awaiting_input',
-      agentSlug: 'my-agent',
-      review: {
-        type: 'proxy_review_request',
-        reviewId: 'r-123',
+      type: 'user_request_created',
+      request: {
+        id: 'rev-1',
+        kind: 'proxy_review',
+        scope: { agentSlug: 'my-agent' },
+        blocking: true,
+        autoApproved: false,
+        payload: {},
       },
     })
-
-    // Should have invalidated proxy-reviews for this agent
-    const proxyReviewCalls = invalidateSpy.mock.calls.filter(
-      (call) => {
-        const opts = call[0] as { queryKey?: unknown[] }
-        return opts.queryKey?.[0] === 'proxy-reviews'
-      }
-    )
-    expect(proxyReviewCalls.length).toBe(1)
-    expect((proxyReviewCalls[0][0] as { queryKey: unknown[] }).queryKey).toEqual(['proxy-reviews', 'my-agent'])
-  })
-
-  it('session_awaiting_input WITHOUT review data does NOT invalidate proxy-reviews', () => {
-    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
-
-    render(
-      <QueryClientProvider client={queryClient}>
-        <GlobalNotificationHandler />
-      </QueryClientProvider>
-    )
-
-    const es = getLatestEventSource()
-
-    // Normal session awaiting input (not a proxy review — e.g., user input request)
     simulateSSEMessage(es, {
-      type: 'session_awaiting_input',
-      agentSlug: 'my-agent',
+      type: 'user_request_resolved',
+      requestId: 'rev-1',
+      kind: 'proxy_review',
+      outcome: 'answered',
+      scope: { agentSlug: 'my-agent' },
     })
 
-    const proxyReviewCalls = invalidateSpy.mock.calls.filter(
-      (call) => {
-        const opts = call[0] as { queryKey?: unknown[] }
-        return opts.queryKey?.[0] === 'proxy-reviews'
-      }
-    )
-    expect(proxyReviewCalls.length).toBe(0)
-  })
-
-  it('proxy_review_resolved event also invalidates proxy-reviews', () => {
-    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
-
-    render(
-      <QueryClientProvider client={queryClient}>
-        <GlobalNotificationHandler />
-      </QueryClientProvider>
-    )
-
-    const es = getLatestEventSource()
-
-    simulateSSEMessage(es, {
-      type: 'session_awaiting_input',
-      agentSlug: 'my-agent',
-      review: {
-        type: 'proxy_review_resolved',
-        reviewId: 'r-123',
-        decision: 'allow',
-      },
-    })
-
-    const proxyReviewCalls = invalidateSpy.mock.calls.filter(
-      (call) => {
-        const opts = call[0] as { queryKey?: unknown[] }
-        return opts.queryKey?.[0] === 'proxy-reviews'
-      }
-    )
-    expect(proxyReviewCalls.length).toBe(1)
+    const keys = invalidateSpy.mock.calls.map((call) => (call[0] as { queryKey?: unknown[] }).queryKey?.[0])
+    expect(keys.filter((k) => k === 'pending-user-requests')).toHaveLength(2)
   })
 
   // SECURITY: focus-aware gate — when an actionable session_waiting fires
@@ -329,11 +280,21 @@ describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
       notificationType: 'session_complete',
       sessionId: 'sess-1',
       agentSlug: 'my-agent',
-      title: 'Done',
-      body: 'Session complete',
+      title: 'Demo Agent finished',
+      body: 'The report is ready.',
     })
 
-    expect(showOSNotification).toHaveBeenCalled()
+    expect(showOSNotification).toHaveBeenCalledWith(
+      'Demo Agent finished',
+      'The report is ready.',
+      undefined,
+      expect.objectContaining({
+        context: expect.objectContaining({
+          agentSlug: 'my-agent',
+          sessionId: 'sess-1',
+        }),
+      }),
+    )
   })
 
   it('session_complete suppressed when notifyWhenUnfocused is off and viewing session', async () => {
@@ -522,5 +483,122 @@ describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
     })
 
     expect(showOSNotification).not.toHaveBeenCalled()
+  })
+
+  it('applies agent status events directly and refreshes only that agent\'s artifacts', () => {
+    queryClient.setQueryData(['agents'], [{
+      slug: 'agent-a',
+      displaySlug: 'agent-a-display',
+      name: 'Agent A',
+      status: 'stopped',
+      containerPort: null,
+      sessionCount: 9,
+    }])
+    queryClient.setQueryData(['agents', 'agent-a'], {
+      slug: 'agent-a',
+      displaySlug: 'agent-a-display',
+      name: 'Agent A',
+      status: 'stopped',
+      containerPort: null,
+      sessionCount: 9,
+    })
+    queryClient.setQueryData(['artifacts', 'agent-a'], [])
+    queryClient.setQueryData(['artifacts', 'agent-a-display'], [])
+    queryClient.setQueryData(['artifacts', 'agent-b'], [])
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'agent_status_changed',
+      agentSlug: 'agent-a',
+      status: 'running',
+    })
+
+    expect(queryClient.getQueryData<Array<{ status: string; sessionCount: number }>>(['agents'])?.[0])
+      .toMatchObject({ status: 'running', sessionCount: 9 })
+    expect(queryClient.getQueryData<{ status: string }>(['agents', 'agent-a'])?.status).toBe('running')
+    expect(queryClient.getQueryState(['artifacts', 'agent-a'])?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryState(['artifacts', 'agent-a-display'])?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryState(['artifacts', 'agent-b'])?.isInvalidated).toBe(false)
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['agents'] })
+  })
+
+  it('marks only the announced dashboard thumbnail ready without a refetch', () => {
+    queryClient.setQueryData(['agents'], [{
+      slug: 'agent-a',
+      displaySlug: 'agent-a',
+      name: 'Agent A',
+      status: 'running',
+      containerPort: 3456,
+      dashboards: [
+        { slug: 'sales', name: 'Sales' },
+        { slug: 'support', name: 'Support' },
+      ],
+    }])
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'dashboard_screenshot_ready',
+      agentSlug: 'agent-a',
+      dashboardSlug: 'sales',
+    })
+
+    expect(queryClient.getQueryData<Array<{ dashboards: Array<Record<string, unknown>> }>>(['agents'])?.[0].dashboards)
+      .toEqual([
+        { slug: 'sales', name: 'Sales', hasScreenshot: true },
+        { slug: 'support', name: 'Support' },
+      ])
+    expect(invalidateSpy).not.toHaveBeenCalled()
+  })
+
+  it('agent_created invalidates visible agents and personal roles together', () => {
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    // Producer contract: x-agent create broadcasts this exact shape after ACL writes.
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'agent_created',
+      agentSlug: 'new-helper',
+    })
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
+  })
+
+  it('SSE open invalidates agents and roles, including the first connect', () => {
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    const es = getLatestEventSource()
+    es.onopen?.()
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
+
+    invalidateSpy.mockClear()
+    es.onerror?.()
+    es.onopen?.()
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
   })
 })

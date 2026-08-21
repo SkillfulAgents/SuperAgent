@@ -20,6 +20,10 @@ import { getMountsWithHealth } from '@shared/lib/services/mount-service'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { mergeCustomEnvVars } from './reserved-env-vars'
+import {
+  buildConnectedAccountsProjection,
+  buildRemoteMcpProjection,
+} from './connection-runtime-projections'
 
 /** Interval for syncing container status with reality (in ms). Default: 300 seconds */
 const STATUS_SYNC_INTERVAL_MS = parseInt(
@@ -104,6 +108,9 @@ class ContainerManager {
             })
           })
         },
+        // MicroVM dead-generation replace (and similar) must restart through the
+        // manager so starts share startingAgents and rebuild env from the DB.
+        restartAgent: () => this.restartAgent(agentId),
       }
 
       client = createContainerClient(config)
@@ -111,6 +118,36 @@ class ContainerManager {
     }
 
     return client
+  }
+
+  // Single-flight restart used by runtime clients that tear down a dead generation.
+  private async restartAgent(agentId: string): Promise<void> {
+    if (this.stoppingAgents.has(agentId)) {
+      throw new Error(`Cannot restart agent ${agentId} while it is stopping`)
+    }
+    const inflight = this.startingAgents.get(agentId)
+    if (inflight) {
+      await inflight
+      return
+    }
+
+    this.markAsStopped(agentId)
+    // Dead generation had live sessions; clear isActive before the new start
+    // (same as stopContainer — replace does not go through stopContainer).
+    messagePersister.markAllSessionsInactiveForAgent(agentId)
+    messagePersister.broadcastGlobal({
+      type: 'agent_status_changed',
+      agentSlug: agentId,
+      status: 'stopped',
+    })
+    const client = this.getClient(agentId)
+    const startPromise = this.doStartContainer(agentId, client)
+    this.startingAgents.set(agentId, startPromise)
+    try {
+      await startPromise
+    } finally {
+      this.startingAgents.delete(agentId)
+    }
   }
 
   /**
@@ -143,6 +180,8 @@ class ContainerManager {
    */
   markAsStopped(agentId: string): void {
     this.updateCachedStatus(agentId, 'stopped', null)
+    this.containerStartedAt.delete(agentId)
+    this.lastKeepAliveAt.delete(agentId)
   }
 
   /**
@@ -266,6 +305,12 @@ class ContainerManager {
     if (this.startingAgents.has(agentId)) return info
 
     this.updateCachedStatus(agentId, info.status, info.port)
+
+    // Host restart clears in-memory start times. Floor the idle clock at
+    // rediscovery so zero-session warm containers are still reaped.
+    if (info.status === 'running' && !this.containerStartedAt.has(agentId)) {
+      this.containerStartedAt.set(agentId, Date.now())
+    }
 
     // Broadcast if status changed (e.g., container was stopped externally)
     if (previousStatus && previousStatus !== info.status) {
@@ -535,17 +580,9 @@ class ContainerManager {
         .where(eq(agentConnectedAccounts.agentSlug, agentId))
 
       // Build account metadata (names + IDs, no tokens)
-      const accountMetadata: Record<string, Array<{ name: string; id: string }>> = {}
-      for (const { account } of accountMappings) {
-        if (account.status !== 'active') continue
-        if (!accountMetadata[account.toolkitSlug]) {
-          accountMetadata[account.toolkitSlug] = []
-        }
-        accountMetadata[account.toolkitSlug].push({
-          name: account.displayName,
-          id: account.id,
-        })
-      }
+      const accountMetadata = buildConnectedAccountsProjection(
+        accountMappings.map(({ account }) => account),
+      )
       envVars['CONNECTED_ACCOUNTS'] = JSON.stringify(accountMetadata)
 
       // Fetch remote MCPs for this agent
@@ -555,21 +592,11 @@ class ContainerManager {
         .innerJoin(remoteMcpServers, eq(agentRemoteMcps.remoteMcpId, remoteMcpServers.id))
         .where(eq(agentRemoteMcps.agentSlug, agentId))
 
-      const mcpConfigs = mcpMappings
-        .filter(({ mcp }) => mcp.status === 'active')
-        .map(({ mcp }) => {
-          // Only pass tool names (not full schemas) to keep env var size small
-          let toolNames: Array<{ name: string }> = []
-          if (mcp.toolsJson) {
-            try { toolNames = JSON.parse(mcp.toolsJson).map((t: any) => ({ name: t.name })) } catch { /* ignore */ }
-          }
-          return {
-            id: mcp.id,
-            name: mcp.name,
-            proxyUrl: `${hostApiBaseUrl}/api/mcp-proxy/${agentId}/${mcp.id}`,
-            tools: toolNames,
-          }
-        })
+      const mcpConfigs = buildRemoteMcpProjection(
+        mcpMappings.map(({ mcp }) => mcp),
+        agentId,
+        hostApiBaseUrl,
+      )
 
       if (mcpConfigs.length > 0) {
         envVars['REMOTE_MCPS'] = JSON.stringify(mcpConfigs)
@@ -583,13 +610,15 @@ class ContainerManager {
         envVars['AGENT_ID'] = agentId
       }
 
-      // Copy Chrome profile data into workspace if configured
+      // Seed the built-in container browser from the selected Chrome profile.
+      // A host-browser provider uses its own dedicated profile, so copying the
+      // same data into the mounted workspace would only delay container start.
       const chromeProfileId = settings.app?.chromeProfileId
-      if (chromeProfileId) {
+      if (chromeProfileId && !settings.app?.hostBrowserProvider) {
         const workspaceDir = getAgentWorkspaceDir(agentId)
         const browserProfileDir = path.join(workspaceDir, '.browser-profile')
-        if (copyChromeProfileData(chromeProfileId, browserProfileDir)) {
-          console.log(`[ContainerManager] Copied Chrome profile "${chromeProfileId}" to workspace`)
+        if (await copyChromeProfileData(chromeProfileId, browserProfileDir)) {
+          console.log(`[ContainerManager] Synchronized Chrome profile "${chromeProfileId}" to workspace`)
         }
       }
 
@@ -622,7 +651,7 @@ class ContainerManager {
       envVars['CLAUDE_CODE_ATTRIBUTION_HEADER'] = '0'
 
       // Load mounts and build volume flags for healthy ones
-      const mountsWithHealth = getMountsWithHealth(agentId)
+      const mountsWithHealth = await getMountsWithHealth(agentId)
       const healthyMounts = mountsWithHealth.filter((m) => m.health === 'ok')
       const missingMounts = mountsWithHealth.filter((m) => m.health === 'missing')
 
@@ -646,7 +675,7 @@ class ContainerManager {
       // drops that one mount and the container still comes up. Surface the same
       // mount-health warning banner with a macOS-specific hint instead of
       // failing the whole agent.
-      await client.start({
+      const startedInfo = await client.start({
         envVars,
         additionalVolumes,
         onMountDropped: (hostPath) => {
@@ -663,9 +692,12 @@ class ContainerManager {
         },
       })
 
-      // Get actual port from runtime and update cache directly
-      // (can't use syncAgentStatus here — it's guarded against updates during startup)
-      const info = await client.getInfoFromRuntime()
+      // start() returns the port that just passed the runtime's health gate,
+      // so don't immediately spawn another inspect/API request for the same
+      // state. The runtime-query fallback covers clients that omit the
+      // return, which the ContainerClient contract still allows. (Can't use
+      // syncAgentStatus here — it is guarded against updates during startup.)
+      const info = startedInfo ?? await client.getInfoFromRuntime()
       this.updateCachedStatus(agentId, info.status, info.port)
 
       // Record start time so auto-sleep monitor doesn't immediately
@@ -805,6 +837,45 @@ class ContainerManager {
       status: 'CHECKING',
       message,
       pullProgress: null,
+    })
+  }
+
+  /**
+   * Clear a CHECKING banner after a failed start/install and broadcast.
+   * Skips if an image pull is in progress (same guard as resetReadiness).
+   */
+  markRuntimeUnavailable(message: string): void {
+    if (this._readiness.status === 'PULLING_IMAGE') {
+      return
+    }
+    this.setReadiness({
+      status: 'RUNTIME_UNAVAILABLE',
+      message,
+      pullProgress: null,
+    })
+  }
+
+  /**
+   * Broadcast start/install progress while status stays CHECKING.
+   * Reuses pullProgress so existing readiness UI can show phase + optional %.
+   * Skips no-op duplicates and never overrides an in-flight image pull.
+   */
+  updateStartProgress(progress: ImagePullProgress): void {
+    if (this._readiness.status === 'PULLING_IMAGE') {
+      return
+    }
+    const prev = this._readiness.pullProgress
+    if (
+      this._readiness.status === 'CHECKING' &&
+      prev?.status === progress.status &&
+      prev?.percent === progress.percent
+    ) {
+      return
+    }
+    this.setReadiness({
+      status: 'CHECKING',
+      message: progress.status,
+      pullProgress: progress,
     })
   }
 
@@ -1137,4 +1208,3 @@ if (process.env.NODE_ENV !== 'production') {
 // Note: Graceful shutdown handlers are registered in the application entry point
 // (src/main/index.ts for Electron, src/web/server.ts for web)
 // This avoids side effects at module import time and allows proper cleanup coordination
-

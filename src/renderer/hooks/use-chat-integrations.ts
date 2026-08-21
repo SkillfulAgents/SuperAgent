@@ -4,13 +4,15 @@
  * React Query hooks for managing external chat integrations (Telegram, Slack).
  */
 
-import type { ChatIntegration, ChatIntegrationSession, ChatIntegrationAccess } from '@shared/lib/db/schema'
+import type { ChatIntegrationSession, ChatIntegrationAccess } from '@shared/lib/db/schema'
 import type { ChatProvider } from '@shared/lib/chat-integrations/config-schema'
+import type { PublicChatIntegration as ChatIntegration } from '@shared/lib/chat-integrations/public'
 import { isSettling } from '@shared/lib/chat-integrations/utils'
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 
-export type { ChatIntegration, ChatIntegrationSession, ChatIntegrationAccess }
+export type { ChatIntegrationSession, ChatIntegrationAccess }
+export type { PublicChatIntegration as ChatIntegration } from '@shared/lib/chat-integrations/public'
 
 /** A list row plus the live transport state the list route computes, so the
  *  agent-home tag can derive its state from the same `(status, connected)` the

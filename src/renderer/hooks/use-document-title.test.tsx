@@ -62,9 +62,19 @@ describe('getDocumentTitle', () => {
     expect(getDocumentTitle({ location: location({ kind: 'connections' }, 'agent-one'), agentName: 'Agent One' })).toBe(
       `Agent One${DASH}Connections`,
     )
+    expect(getDocumentTitle({
+      location: location({
+        kind: 'connections',
+        detail: { rowKey: 'account-1', source: 'home', view: 'logs' },
+      }, 'agent-one'),
+      agentName: 'Agent One',
+    })).toBe(`Agent One${DASH}Connection Logs`)
     expect(getDocumentTitle({ location: location({ kind: 'apiLogs' }, 'agent-one'), agentName: 'Agent One' })).toBe(
       `Agent One${DASH}API Logs`,
     )
+    expect(
+      getDocumentTitle({ location: location({ kind: 'xAgentPermissions' }, 'agent-one'), agentName: 'Agent One' }),
+    ).toBe(`Agent One${DASH}Agent-to-agent Connections`)
     expect(
       getDocumentTitle({
         location: location({ kind: 'dashboard', slug: 'sales-dashboard' }, 'agent-one'),
@@ -78,7 +88,7 @@ describe('getDocumentTitle', () => {
     expect(getDocumentTitle({ location: location({ kind: 'notifications' }) })).toBe(`Notifications${DOT}Gamut`)
     expect(getDocumentTitle({ location: location({ kind: 'home' }), isSettingsRoute: true })).toBe(`Settings${DOT}Gamut`)
     expect(getDocumentTitle({ location: location({ kind: 'home' }), isSettingsRoute: true, settingsTab: 'llm' })).toBe(
-      `Settings${DASH}LLM Provider`,
+      `Settings${DASH}Model Provider`,
     )
   })
 })

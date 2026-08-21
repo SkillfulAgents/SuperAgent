@@ -17,7 +17,7 @@ export const getSessionTranscriptTool = tool(
   'get_agent_session_transcript',
   `Read the message transcript of a session belonging to another agent. Returns a status line ('running' | 'idle' | 'awaiting_input') followed by the messages.
 
-If sync=true and the session is currently running, the tool waits until the target agent's turn is complete before returning. Otherwise it returns the current transcript immediately.
+If sync=true and the session is currently running, the tool waits up to ~2 minutes for the target agent's turn to complete before returning. If the turn is still in progress after that, it returns the transcript so far with status 'running' — call again with sync=true to keep waiting. Otherwise it returns the current transcript immediately.
 
 Tool calls in the transcript are summarized — the raw tool input/output is omitted to keep the result compact.`,
   {

@@ -3,12 +3,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { useComposerOptions, type UseComposerOptionsArgs } from './composer-options'
 
-// Mutable settings the mocked useSettings reads at call time, so tests can
+// Mutable settings the mocked useModelSettings reads at call time, so tests can
 // simulate the query resolving (undefined → loaded) and later refetches.
 const state = vi.hoisted(() => ({ settings: undefined as unknown }))
 
 vi.mock('@renderer/hooks/use-settings', () => ({
-  useSettings: () => ({ data: state.settings }),
+  useModelSettings: () => ({ data: state.settings }),
 }))
 
 const LOADED_SETTINGS = {
@@ -177,6 +177,109 @@ describe('useComposerOptions default adoption', () => {
     })
     expect(result.current.model).toBe('claude-opus-4-6')
     expect(result.current.effort).toBe('xhigh')
+  })
+
+  it('adopts a newer authoritative session model after mounting from stale cached detail', () => {
+    const { result, rerender } = render({
+      initialModel: 'claude-opus-4-6',
+      agentKey: 'a',
+      agentDefaultModel: 'haiku',
+      agentDefaultsReady: true,
+    })
+    expect(result.current.model).toBe('claude-opus-4-6')
+
+    // React Query can render cached session detail first, then deliver the
+    // refetched last-used model. The refreshed session value must replace the
+    // stale seed and be the value sent on the next turn.
+    rerender({
+      initialModel: 'claude-sonnet-4-6',
+      agentKey: 'a',
+      agentDefaultModel: 'haiku',
+      agentDefaultsReady: true,
+    })
+    expect(result.current.model).toBe('claude-sonnet-4-6')
+    expect(result.current.toRuntimeOptions()).toEqual({ model: 'claude-sonnet-4-6' })
+  })
+
+  it('protects an unsent model pick, then follows session updates after submit succeeds', () => {
+    const { result, rerender } = render({
+      initialModel: 'claude-opus-4-6',
+      agentKey: 'a',
+      agentDefaultsReady: true,
+    })
+    act(() => result.current.setModel('claude-sonnet-4-6'))
+
+    // A peer update/refetch must not erase a local choice that has not reached
+    // the server yet.
+    rerender({
+      initialModel: 'claude-haiku-4-5',
+      agentKey: 'a',
+      agentDefaultsReady: true,
+    })
+    expect(result.current.model).toBe('claude-sonnet-4-6')
+
+    act(() => result.current.markSubmitted({ model: 'claude-sonnet-4-6' }))
+    rerender({
+      initialModel: 'claude-sonnet-4-6',
+      agentKey: 'a',
+      agentDefaultsReady: true,
+    })
+
+    // Once acknowledged, a later peer's accepted model is authoritative.
+    rerender({
+      initialModel: 'claude-opus-4-8',
+      agentKey: 'a',
+      agentDefaultsReady: true,
+    })
+    expect(result.current.model).toBe('claude-opus-4-8')
+    expect(result.current.toRuntimeOptions()).toEqual({ model: 'claude-opus-4-8' })
+  })
+
+  it('applies the same authoritative refresh and unsent-edit protection to effort and speed', () => {
+    const { result, rerender } = render({
+      initialEffort: 'medium',
+      initialSpeed: 'normal',
+      agentKey: 'a',
+      agentDefaultsReady: true,
+    })
+
+    rerender({
+      initialEffort: 'high',
+      initialSpeed: 'fast',
+      agentKey: 'a',
+      agentDefaultsReady: true,
+    })
+    expect(result.current.effort).toBe('high')
+    expect(result.current.speed).toBe('fast')
+
+    act(() => {
+      result.current.setEffort('low')
+      result.current.setSpeed('slow')
+    })
+    rerender({
+      initialEffort: 'xhigh',
+      initialSpeed: 'normal',
+      agentKey: 'a',
+      agentDefaultsReady: true,
+    })
+    expect(result.current.effort).toBe('low')
+    expect(result.current.speed).toBe('slow')
+
+    act(() => result.current.markSubmitted({ effort: 'low', speed: 'slow' }))
+    rerender({
+      initialEffort: 'low',
+      initialSpeed: 'slow',
+      agentKey: 'a',
+      agentDefaultsReady: true,
+    })
+    rerender({
+      initialEffort: 'high',
+      initialSpeed: 'fast',
+      agentKey: 'a',
+      agentDefaultsReady: true,
+    })
+    expect(result.current.effort).toBe('high')
+    expect(result.current.speed).toBe('fast')
   })
 })
 

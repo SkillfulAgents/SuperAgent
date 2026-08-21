@@ -20,25 +20,32 @@ export function AgentBanners({ slug, startAgent }: AgentBannersProps) {
   const { warning: mountWarning, dismiss: dismissMountWarning } = useMountWarnings(slug)
   const { data: runtimeStatus } = useRuntimeStatus()
   const readiness = runtimeStatus?.runtimeReadiness
-  const isPulling = readiness?.status === 'PULLING_IMAGE'
+  const progress = readiness?.pullProgress
+  const showProgress =
+    !!progress &&
+    (readiness?.status === 'PULLING_IMAGE' || readiness?.status === 'CHECKING')
 
   return (
     <>
-      {/* Image pull progress indicator */}
-      {isPulling && readiness?.pullProgress && (
+      {/* Image pull / runtime install progress */}
+      {showProgress && progress && (
         <div className="shrink-0 border-b bg-muted/30 px-4 py-2">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <Loader2 className="h-3 w-3 animate-spin" />
-            <span>Pulling agent image... {readiness.pullProgress.status}</span>
-            {readiness.pullProgress.percent != null && (
-              <span>({readiness.pullProgress.percent}%)</span>
+            <span>
+              {readiness?.status === 'PULLING_IMAGE'
+                ? `Pulling agent image... ${progress.status}`
+                : progress.status}
+            </span>
+            {progress.percent != null && (
+              <span>({progress.percent}%)</span>
             )}
           </div>
-          {readiness.pullProgress.percent != null && (
+          {progress.percent != null && (
             <div className="mt-1 h-1 w-full bg-muted rounded-full overflow-hidden">
               <div
                 className="h-full bg-primary transition-all duration-300"
-                style={{ width: `${readiness.pullProgress.percent}%` }}
+                style={{ width: `${progress.percent}%` }}
               />
             </div>
           )}

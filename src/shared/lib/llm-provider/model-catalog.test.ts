@@ -17,13 +17,53 @@ import {
   hasVersionSegment,
   resolveModelForProvider,
 } from './model-catalog'
-import { resolveActiveProviderModel } from './index'
+import { getAllProviderInfo, getLlmProvider, resolveActiveProviderModel } from './index'
 
 beforeEach(() => {
   settingsMock.mockReturnValue({ llmProvider: 'anthropic' })
 })
 
 describe('getProviderCatalog', () => {
+  it('exposes provider-owned onboarding options and uses Grok as the Platform agent fallback', () => {
+    const platform = getAllProviderInfo().find((provider) => provider.id === 'platform')!
+
+    expect(platform.defaultModelOptions.map((option) => option.model)).toEqual([
+      'opus',
+      'gpt',
+      'grok',
+    ])
+    expect(platform.defaultModels.agent).toBe('grok')
+    expect(getLlmProvider('platform').getDefaultModel('agent')).toBe('grok')
+  })
+
+  it('declares one concrete picker default for every built-in model vendor', () => {
+    const defaultsByIcon = (providerId: 'anthropic' | 'bedrock' | 'openrouter' | 'platform') =>
+      getProviderCatalog(providerId)
+        .filter((model) => model.isDefault)
+        .map((model) => [model.icon, model.id])
+
+    expect(defaultsByIcon('anthropic')).toEqual([
+      ['anthropic', 'claude-opus-5'],
+    ])
+    expect(defaultsByIcon('bedrock')).toEqual([
+      ['anthropic', 'us.anthropic.claude-opus-4-8'],
+    ])
+    expect(defaultsByIcon('openrouter')).toEqual([
+      ['anthropic', 'claude-opus-5'],
+      ['openai', 'openai/gpt-5.5'],
+      ['zai', 'z-ai/glm-5.2'],
+      ['xai', 'x-ai/grok-4.6'],
+      ['kimi', 'moonshotai/kimi-k3'],
+    ])
+    expect(defaultsByIcon('platform')).toEqual([
+      ['anthropic', 'claude-opus-5'],
+      ['openai', 'gpt-5.6-sol'],
+      ['xai', 'grok-4.6'],
+      ['kimi', 'kimi-k3'],
+      ['meta', 'muse-spark-1.2'],
+    ])
+  })
+
   it('normalizes to at most one isLatest per family', () => {
     for (const providerId of ['anthropic', 'bedrock', 'openrouter', 'platform'] as const) {
       const catalog = getProviderCatalog(providerId)
@@ -41,7 +81,7 @@ describe('getProviderCatalog', () => {
     const catalog = getProviderCatalog('anthropic')
     const opusLatest = catalog.filter((m) => m.family === 'opus' && m.isLatest)
     expect(opusLatest).toHaveLength(1)
-    expect(opusLatest[0].id).toBe('claude-opus-4-8')
+    expect(opusLatest[0].id).toBe('claude-opus-5')
   })
 
   it('gives Opus/Fable all five efforts and Sonnet/Haiku the lower three', () => {
@@ -56,7 +96,7 @@ describe('getProviderCatalog', () => {
     const catalog = getProviderCatalog('openrouter')
     const gpt = catalog.find((m) => m.id === 'openai/gpt-5.5')!
     const glm = catalog.find((m) => m.id === 'z-ai/glm-5.2')!
-    const grok = catalog.find((m) => m.id === 'x-ai/grok-4.5')!
+    const grok = catalog.find((m) => m.id === 'x-ai/grok-4.6')!
     expect(gpt).toMatchObject({
       family: 'gpt',
       isLatest: true,
@@ -77,10 +117,53 @@ describe('getProviderCatalog', () => {
       pricing: { inputPerMtok: 2, outputPerMtok: 6 },
       contextWindow: 500_000,
     })
+    expect(catalog.find((m) => m.id === 'x-ai/grok-4.5')).toMatchObject({
+      family: 'grok',
+      icon: 'xai',
+      supportsWebSearch: false,
+      pricing: { inputPerMtok: 2, outputPerMtok: 6 },
+      contextWindow: 500_000,
+    })
+    expect(catalog.find((m) => m.id === 'x-ai/grok-4.5')!.isLatest).toBeFalsy()
     // Anthropic must NOT inherit the OpenRouter-only extras.
     expect(getProviderCatalog('anthropic').some((m) => m.id === 'openai/gpt-5.5')).toBe(false)
     expect(getProviderCatalog('anthropic').some((m) => m.id === 'x-ai/grok-4.5')).toBe(false)
     expect(getProviderCatalog('platform').some((m) => m.id === 'x-ai/grok-4.5')).toBe(false)
+  })
+
+  it('offers the Kimi line on OpenRouter, K3 latest with the cheaper K2 versions pinnable', () => {
+    const catalog = getProviderCatalog('openrouter')
+    expect(catalog.find((m) => m.id === 'moonshotai/kimi-k3')).toMatchObject({
+      family: 'kimi',
+      isLatest: true,
+      icon: 'kimi',
+      supportsWebSearch: false,
+      pricing: { inputPerMtok: 3, outputPerMtok: 15 },
+      contextWindow: 1_048_576,
+    })
+    expect(catalog.find((m) => m.id === 'moonshotai/kimi-k2.7-code')).toMatchObject({
+      family: 'kimi',
+      icon: 'kimi',
+      pricing: { inputPerMtok: 0.73, outputPerMtok: 3.5 },
+      contextWindow: 262_144,
+    })
+    expect(catalog.find((m) => m.id === 'moonshotai/kimi-k2.6')).toMatchObject({
+      family: 'kimi',
+      icon: 'kimi',
+      pricing: { inputPerMtok: 0.646, outputPerMtok: 2.72 },
+      contextWindow: 262_144,
+    })
+    // Exactly one latest, or the bare `kimi` alias is ambiguous.
+    const kimiLatest = catalog.filter((m) => m.family === 'kimi' && m.isLatest)
+    expect(kimiLatest.map((m) => m.id)).toEqual(['moonshotai/kimi-k3'])
+    // OpenRouter ignores our speed header, so no entry may claim a speed knob.
+    for (const m of catalog.filter((m) => m.family === 'kimi')) {
+      expect(m.supportedSpeeds).toBeUndefined()
+    }
+    // The two catalogs keep their own ids — no cross-contamination.
+    expect(catalog.some((m) => m.id === 'kimi-k3')).toBe(false)
+    expect(getProviderCatalog('platform').some((m) => m.id === 'moonshotai/kimi-k3')).toBe(false)
+    expect(getProviderCatalog('anthropic').some((m) => m.family === 'kimi')).toBe(false)
   })
 
   it('offers both GPT versions, with 5.5 the family latest and 5.4 a pinnable older version', () => {
@@ -132,7 +215,7 @@ describe('getProviderCatalog', () => {
     const gptLatest = catalog.filter((m) => m.family === 'gpt' && m.isLatest)
     expect(gptLatest.map((m) => m.id)).toEqual(['gpt-5.6-sol'])
     // Grok rides the same Responses wire (xai-responses upstream); bare id only.
-    expect(catalog.find((m) => m.id === 'grok-4.5')).toMatchObject({
+    expect(catalog.find((m) => m.id === 'grok-4.6')).toMatchObject({
       family: 'grok',
       isLatest: true,
       icon: 'xai',
@@ -141,11 +224,33 @@ describe('getProviderCatalog', () => {
       pricing: { inputPerMtok: 2, outputPerMtok: 6 },
       contextWindow: 500_000,
     })
+    expect(catalog.find((m) => m.id === 'grok-4.5')).toMatchObject({
+      family: 'grok',
+      icon: 'xai',
+      supportsWebSearch: true,
+      supportsWebFetch: false,
+      pricing: { inputPerMtok: 2, outputPerMtok: 6 },
+      contextWindow: 500_000,
+    })
+    expect(catalog.find((m) => m.id === 'grok-4.5')!.isLatest).toBeFalsy()
+    const grokLatest = catalog.filter((m) => m.family === 'grok' && m.isLatest)
+    expect(grokLatest.map((m) => m.id)).toEqual(['grok-4.6'])
+    // Kimi rides Fireworks' Anthropic-compatible wire, which strips server tools.
+    expect(catalog.find((m) => m.id === 'kimi-k3')).toMatchObject({
+      family: 'kimi',
+      isLatest: true,
+      icon: 'kimi',
+      supportsWebSearch: false,
+      supportsWebFetch: false,
+      supportedSpeeds: ['normal', 'fast'],
+      pricing: { inputPerMtok: 3, outputPerMtok: 15, speedMultipliers: { fast: 1.5 } },
+    })
     // Platform keys off bare ids, never the OpenRouter vendor-prefixed slugs.
     expect(catalog.some((m) => m.id === 'openai/gpt-5.5')).toBe(false)
     expect(catalog.some((m) => m.id === 'z-ai/glm-5.2')).toBe(false)
     expect(catalog.some((m) => m.id === 'glm-5.2')).toBe(false)
     expect(catalog.some((m) => m.id === 'x-ai/grok-4.5')).toBe(false)
+    expect(catalog.some((m) => m.id === 'x-ai/grok-4.6')).toBe(false)
   })
 })
 
@@ -339,6 +444,7 @@ describe('getModelContextWindow', () => {
   })
 
   it('returns the catalog window for Platform Grok models', () => {
+    expect(getModelContextWindow('grok-4.6', 'platform')).toBe(500_000)
     expect(getModelContextWindow('grok-4.5', 'platform')).toBe(500_000)
   })
 
@@ -368,9 +474,11 @@ describe('getModelPromptHints', () => {
     }
   })
 
-  it('returns browser-integration guidance for Platform and OpenRouter Grok 4.5', () => {
+  it('returns browser-integration guidance for Platform and OpenRouter Grok models', () => {
     for (const [providerId, modelId] of [
+      ['platform', 'grok-4.6'],
       ['platform', 'grok-4.5'],
+      ['openrouter', 'x-ai/grok-4.6'],
       ['openrouter', 'x-ai/grok-4.5'],
     ] as const) {
       const hints = getModelPromptHints(modelId, providerId)
@@ -413,7 +521,7 @@ describe('resolveModelForProvider', () => {
   })
 
   it('resolves a bare family alias to that family latest id', () => {
-    expect(resolveModelForProvider('opus', 'anthropic', 'agent')).toBe('claude-opus-4-8')
+    expect(resolveModelForProvider('opus', 'anthropic', 'agent')).toBe('claude-opus-5')
     expect(resolveModelForProvider('sonnet', 'anthropic', 'agent')).toBe('claude-sonnet-5')
   })
 
@@ -423,7 +531,7 @@ describe('resolveModelForProvider', () => {
 
   it('falls back to the provider default (alias-resolved) for an unknown family-less alias', () => {
     // Anthropic agent default is 'opus' → resolves to its latest concrete id.
-    expect(resolveModelForProvider('mystery', 'anthropic', 'agent')).toBe('claude-opus-4-8')
+    expect(resolveModelForProvider('mystery', 'anthropic', 'agent')).toBe('claude-opus-5')
     // Summarizer default 'haiku' → latest haiku.
     expect(resolveModelForProvider('mystery', 'anthropic', 'summarizer')).toBe('claude-haiku-4-5')
   })
@@ -431,21 +539,33 @@ describe('resolveModelForProvider', () => {
   it('resolves OpenRouter non-Claude models (gpt alias → latest id, glm slug passthrough)', () => {
     expect(resolveModelForProvider('gpt', 'openrouter', 'agent')).toBe('openai/gpt-5.5')
     expect(resolveModelForProvider('z-ai/glm-5.2', 'openrouter', 'agent')).toBe('z-ai/glm-5.2')
-    expect(resolveModelForProvider('grok', 'openrouter', 'agent')).toBe('x-ai/grok-4.5')
+    expect(resolveModelForProvider('grok', 'openrouter', 'agent')).toBe('x-ai/grok-4.6')
+    expect(resolveModelForProvider('x-ai/grok-4.6', 'openrouter', 'agent')).toBe('x-ai/grok-4.6')
     expect(resolveModelForProvider('x-ai/grok-4.5', 'openrouter', 'agent')).toBe('x-ai/grok-4.5')
+  })
+
+  it('resolves the kimi alias per provider, since the two catalogs use different ids', () => {
+    expect(resolveModelForProvider('kimi', 'openrouter', 'agent')).toBe('moonshotai/kimi-k3')
+    expect(resolveModelForProvider('kimi', 'platform', 'agent')).toBe('kimi-k3')
+    // Pinning an older version stays pinned rather than riding the alias.
+    expect(resolveModelForProvider('moonshotai/kimi-k2.6', 'openrouter', 'agent')).toBe(
+      'moonshotai/kimi-k2.6',
+    )
   })
 
   it('resolves Platform GPT/Grok models to bare ids and falls back for unsupported glm', () => {
     expect(resolveModelForProvider('gpt', 'platform', 'agent')).toBe('gpt-5.6-sol')
     expect(resolveModelForProvider('gpt-5.4', 'platform', 'agent')).toBe('gpt-5.4')
     expect(resolveModelForProvider('gpt-5.6-luna', 'platform', 'agent')).toBe('gpt-5.6-luna')
-    expect(resolveModelForProvider('grok', 'platform', 'agent')).toBe('grok-4.5')
+    expect(resolveModelForProvider('grok', 'platform', 'agent')).toBe('grok-4.6')
+    expect(resolveModelForProvider('grok-4.6', 'platform', 'agent')).toBe('grok-4.6')
     expect(resolveModelForProvider('grok-4.5', 'platform', 'agent')).toBe('grok-4.5')
-    expect(resolveModelForProvider('glm', 'platform', 'agent')).toBe('claude-opus-4-8')
+    expect(resolveModelForProvider('glm', 'platform', 'agent')).toBe('grok-4.6')
   })
 
   it('resolves the SAME bare alias to each provider concrete id (cross-provider portability)', () => {
-    expect(resolveModelForProvider('opus', 'anthropic', 'agent')).toBe('claude-opus-4-8')
+    expect(resolveModelForProvider('opus', 'anthropic', 'agent')).toBe('claude-opus-5')
+    // Bedrock's opus family stays on 4.8 until AWS publishes an Opus 5 region id.
     expect(resolveModelForProvider('opus', 'bedrock', 'agent')).toBe('us.anthropic.claude-opus-4-8')
   })
 

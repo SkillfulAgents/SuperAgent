@@ -30,6 +30,7 @@ import { resolveContainerModel, getContainerModelPromptHints } from './resolve-m
 import { getActiveWebProvider } from '../web-provider'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { getOrCreateHostToken } from './host-token-store'
+import { getSubagentModelCatalog } from './subagent-model-catalog'
 
 const execAsync = promisify(exec)
 
@@ -416,6 +417,15 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   /**
+   * Exec bound for the `run` command; undefined = unbounded. Override when the
+   * runtime can hang on run instead of failing (e.g. Apple's VZ materializing
+   * a dataless iCloud mount).
+   */
+  protected getRunExecTimeoutMs(): number | undefined {
+    return undefined
+  }
+
+  /**
    * Whether a run failure is a host-port allocation race. The chosen port passed
    * findAvailablePort()'s pre-flight bind but was grabbed (or published on a
    * different interface) before `run -p` claimed it. Recoverable by re-picking a
@@ -616,11 +626,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     })
   }
 
-  async start(options?: StartOptions): Promise<void> {
+  async start(options?: StartOptions): Promise<ContainerInfo> {
     const info = await this.getInfo()
     if (info.status === 'running') {
       console.log(`Container ${this.getContainerName()} is already running on port ${info.port}`)
-      return
+      return info
     }
 
     addErrorBreadcrumb({ category: 'container', message: 'Starting container', data: { agentId: this.config.agentId } })
@@ -671,8 +681,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       // Bounded retry loop. Each recovery path makes exactly one attempt of
       // progress so the loop can't spin: dropping a mount shrinks `volumes`,
       // re-picking a port is capped by portRetries, and VM provisioning and
-      // image re-creation each run once. A fresh stop+rm precedes every
-      // attempt so we never double-start.
+      // image re-creation each run once. A fresh force-remove precedes every
+      // attempt so we never double-start, using one runtime process instead
+      // of a redundant stop followed by rm.
       const MAX_PORT_RETRIES = 3
       let portRetries = 0
       const triedPorts = new Set<number>([port])
@@ -681,11 +692,10 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       let stdout: string
       try {
         for (;;) {
-          await execWithPathSilent(`${runner} stop ${containerName}`)
-          await execWithPathSilent(`${runner} rm ${containerName}`)
+          await execWithPathSilent(`${runner} rm -f ${containerName}`)
 
           try {
-            ({ stdout } = await execWithPath(buildRunCmd()))
+            ({ stdout } = await execWithPath(buildRunCmd(), { timeoutMs: this.getRunExecTimeoutMs() }))
             break
           } catch (runError: any) {
             // 1. Inaccessible bind mount (e.g. iCloud/File Provider path the VM
@@ -791,6 +801,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       }
 
       console.log(`Container ${containerName} is now running on port ${port}`)
+      return { status: 'running', port }
     } catch (error: any) {
       // Only capture if not already captured (health check errors are captured
       // above; image pull/build failures are captured at their throw site —
@@ -1092,9 +1103,15 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     // Resolve stored selections (bare aliases or concrete ids) to the active
     // provider's concrete wire id before the container ever sees them.
     const resolvedModel = resolveContainerModel(options.model, 'agent')
+    // Resolved on the same path as the session's own model, so the prompt
+    // hints the container pre-warms with match what a default session would
+    // actually be built with.
+    const resolvedPrewarmModel = resolveContainerModel(options.prewarmDefaults?.model, 'agent')
+    const prewarmPromptHints = getContainerModelPromptHints(resolvedPrewarmModel)
     const resolvedBrowserModel = resolveContainerModel(options.browserModel, 'browser')
     const resolvedDashboardBuilderModel = resolveContainerModel(options.dashboardBuilderModel, 'dashboard')
     const modelPromptHints = getContainerModelPromptHints(resolvedModel)
+    const subagentModels = getSubagentModelCatalog(getActiveLlmProvider().id)
     // The active web vendor id is a non-secret signal (NOT a model, so no resolveContainerModel).
     // Resolved once here from global settings so every session-creation caller inherits it. One
     // stored vendor backs both tools; the two ids sent to the container are the per-tool enablement
@@ -1126,6 +1143,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           model: resolvedModel,
           browserModel: resolvedBrowserModel,
           dashboardBuilderModel: resolvedDashboardBuilderModel,
+          subagentModels,
           webSearchProvider,
           webFetchProvider,
           maxOutputTokens: options.maxOutputTokens,
@@ -1137,6 +1155,12 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           effort: options.effort,
           speed: options.speed,
           capabilityPolicies,
+          prewarmDefaults: options.prewarmDefaults && {
+            model: resolvedPrewarmModel,
+            modelPromptHints: prewarmPromptHints.length > 0 ? prewarmPromptHints : undefined,
+            effort: options.prewarmDefaults.effort,
+            speed: options.prewarmDefaults.speed,
+          },
         }),
         signal: controller.signal,
       })
@@ -1182,11 +1206,14 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         )
       }
 
-      // Handle network errors with user-friendly messages
+      // Handle network errors with user-friendly messages.
+      // Keep the original as cause so callers can distinguish refused (never
+      // delivered) from reset/timeout (prompt may already be running).
       if (this.isConnectionError(err)) {
         this.handleConnectionError()
         throw new Error(
-          'Failed to start session - unable to connect to the agent. Please check that the agent is running and try again.'
+          'Failed to start session - unable to connect to the agent. Please check that the agent is running and try again.',
+          { cause: err },
         )
       }
 
@@ -1214,12 +1241,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   async deleteSession(sessionId: string): Promise<boolean> {
     const port = await this.getPortOrThrow()
 
-    // Close WebSocket if exists
-    const ws = this.wsConnections.get(sessionId)
-    if (ws) {
-      ws.close()
-      this.wsConnections.delete(sessionId)
-    }
+    this.closeTrackedWebSocket(sessionId)
 
     const response = await fetch(
       `${this.getBaseUrl(port)}/sessions/${sessionId}`,
@@ -1336,6 +1358,18 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return response.ok
   }
 
+  // Drop listeners before close so a deliberate teardown cannot fire
+  // connection_closed into a newer socket's map slot (SUP-572).
+  private closeTrackedWebSocket(sessionId: string): void {
+    const ws = this.wsConnections.get(sessionId)
+    if (!ws) return
+    ws.removeAllListeners()
+    // close() on CONNECTING emits 'error'; zero listeners is an uncaughtException.
+    ws.on('error', () => {})
+    ws.close()
+    this.wsConnections.delete(sessionId)
+  }
+
   subscribeToStream(
     sessionId: string,
     callback: (message: StreamMessage) => void
@@ -1350,9 +1384,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const setupWebSocket = async () => {
       const port = await this.getPortOrThrow()
 
-      const existing = this.wsConnections.get(sessionId)
-      if (existing) {
-        existing.close()
+      if (this.wsConnections.has(sessionId)) {
+        this.closeTrackedWebSocket(sessionId)
       }
 
       const ws = new WebSocket(
@@ -1425,11 +1458,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     })
 
     const unsubscribe = () => {
-      const ws = this.wsConnections.get(sessionId)
-      if (ws) {
-        ws.close()
-        this.wsConnections.delete(sessionId)
-      }
+      this.closeTrackedWebSocket(sessionId)
     }
 
     return { unsubscribe, ready }
@@ -1595,10 +1624,15 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   // Merge order: provider defaults < runtime constants < config.envVars < extra.
   protected buildAgentEnv(extra?: Record<string, string>): Record<string, string> {
     const settings = getSettings()
+    const provider = getActiveLlmProvider()
     const merged: Record<string, string | undefined> = {
-      ...getActiveLlmProvider().getContainerEnvVars(this.agentIdentityForEnv()),
+      ...provider.getContainerEnvVars(this.agentIdentityForEnv()),
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
-      ENABLE_TOOL_SEARCH: settings.enableToolSearch !== false ? 'true' : 'false',
+      // The setting only switches tool search OFF; whether it may be on is the
+      // provider's call, because it depends on the endpoint expanding deferred
+      // tools (see BaseLlmProvider.toolSearchEnv). Undefined leaves the var
+      // unset — the image must not define it either, or unset would read as on.
+      ENABLE_TOOL_SEARCH: settings.enableToolSearch === false ? 'false' : provider.toolSearchEnv,
       ...this.config.envVars,
       ...extra,
     }

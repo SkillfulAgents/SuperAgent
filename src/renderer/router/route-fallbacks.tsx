@@ -1,4 +1,6 @@
+import { useEffect, useState } from 'react'
 import { useRouter } from '@tanstack/react-router'
+import { Loader2 } from 'lucide-react'
 import { Button, buttonVariants } from '@renderer/components/ui/button'
 import { AppLink } from '@renderer/components/ui/app-link'
 
@@ -97,6 +99,31 @@ export function RouteNotFound() {
       <AppLink to="/" className={buttonVariants({ variant: 'outline', size: 'sm' })}>
         Back to home
       </AppLink>
+    </div>
+  )
+}
+
+/**
+ * Router-level `defaultPendingComponent`: shown while a lazy route chunk (or
+ * loader) is in flight with nothing else to render — mainly cold-boot deep
+ * links, where the root Suspense fallback would otherwise be an empty content
+ * area. The spinner is delayed so fast local loads (packaged Electron reads
+ * chunks off disk in ~a frame) never flash it; only genuinely slow fetches
+ * (web deployments on slow networks) get feedback.
+ */
+export function RoutePending() {
+  const [show, setShow] = useState(false)
+  useEffect(() => {
+    const id = window.setTimeout(() => setShow(true), 150)
+    return () => window.clearTimeout(id)
+  }, [])
+  if (!show) return null
+  return (
+    <div
+      data-testid="route-pending"
+      className="flex flex-1 items-center justify-center p-8"
+    >
+      <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
     </div>
   )
 }

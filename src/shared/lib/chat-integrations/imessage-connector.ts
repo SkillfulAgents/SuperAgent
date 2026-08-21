@@ -9,8 +9,16 @@
 import WebSocket from 'ws'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
-import { ChatClientConnector, type OutgoingMessage } from './base-connector'
-import { describeUnsupportedRequest, isUnsupportedInChat } from './utils'
+import {
+  ChatClientConnector,
+  isMultiPartyChatType,
+  type ChatClassifyContext,
+  type ChatConversationType,
+  type OutgoingMessage,
+  type SystemPromptContext,
+} from './base-connector'
+import { buildSessionContextPrompt } from './chat-session-context'
+import { describeUnsupportedRequest, isUnsupportedInChat, withSessionUrl, type AppLinkContext } from './utils'
 import { captureException } from '@shared/lib/error-reporting'
 
 // ── Config ──────────────────────────────────────────────────────────────
@@ -60,10 +68,39 @@ interface PendingQuestion {
   }>
 }
 
+/**
+ * Classify an iMessage chat. This depends on the bridge contract that chatName
+ * is present only for group chats.
+ * Without a name we return undefined (not dm) so listing callers that only
+ * have a chat id do not mislabel groups as private.
+ */
+export function classifyIMessageChat(chat: ChatClassifyContext): ChatConversationType | undefined {
+  return chat.chatName ? 'group' : undefined
+}
+
+const IMESSAGE_PROVIDER_RULES = `- Prefer asking questions directly in natural language rather than using the ask questions tool.
+- You can react to the user's last message by starting your response with a reaction tag. Available reactions: [[reaction:heart]], [[reaction:thumbs_up]], [[reaction:thumbs_down]], [[reaction:haha]], [[reaction:emphasize]], [[reaction:question]]. The tag will be stripped from the message and sent as a tapback reaction. If your entire response is just a reaction tag, only the reaction is sent (no text message).
+- The user may send voice notes which are automatically transcribed.`
+
+export function buildIMessageSystemPrompt(message: SystemPromptContext): string {
+  const kind = classifyIMessageChat(message)
+  const shared = buildSessionContextPrompt({
+    surface: 'chat',
+    where: kind === 'group'
+      ? 'a live iMessage group conversation'
+      : 'a live iMessage conversation',
+    multiParty: isMultiPartyChatType(kind),
+  })
+  return `${shared}\n${IMESSAGE_PROVIDER_RULES}`
+}
+
 // ── Connector ───────────────────────────────────────────────────────────
 
 export class IMessageConnector extends ChatClientConnector {
   readonly provider = 'imessage' as const
+
+  static generateSystemPrompt = buildIMessageSystemPrompt
+  static classifyChatId = classifyIMessageChat
 
   private ws: WebSocket | null = null
   private _connected = false
@@ -93,7 +130,7 @@ export class IMessageConnector extends ChatClientConnector {
   private nextUploadId = 0
   private nextApprovalId = 0
 
-  constructor(private config: IMessageConfig) {
+  constructor(private config: IMessageConfig, private appLink?: AppLinkContext) {
     super()
   }
 
@@ -329,14 +366,15 @@ export class IMessageConnector extends ChatClientConnector {
 
   // ── User request cards ──────────────────────────────────────────────
 
-  async sendUserRequestCard(chatId: string, event: UserRequestEvent): Promise<string> {
+  async sendUserRequestCard(chatId: string, event: UserRequestEvent, sessionId?: string): Promise<string> {
+    const appLink = withSessionUrl(this.appLink, sessionId)
     const targetChatId = chatId || this.lastChatId || undefined
     if (isUnsupportedInChat(event)) {
-      return this.sendTextAndReturn(describeUnsupportedRequest(event), targetChatId)
+      return this.sendTextAndReturn(describeUnsupportedRequest(event, appLink), targetChatId)
     }
 
     switch (event.type) {
-      case 'user_question_request': {
+      case 'question_request': {
         // Handle proxy review requests (approval cards)
         if (event.toolUseId.startsWith('review:')) {
           return this.sendApprovalCard(event, targetChatId)
@@ -359,7 +397,7 @@ export class IMessageConnector extends ChatClientConnector {
       }
 
       default: {
-        return this.sendTextAndReturn(describeUnsupportedRequest(event), targetChatId)
+        return this.sendTextAndReturn(describeUnsupportedRequest(event, appLink), targetChatId)
       }
     }
   }
@@ -720,7 +758,7 @@ function guessMimeType(filename: string): string {
     webp: 'image/webp', svg: 'image/svg+xml', pdf: 'application/pdf',
     mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4', ogg: 'audio/ogg',
     mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm',
-    txt: 'text/plain', json: 'application/json', csv: 'text/csv',
+    txt: 'text/plain', json: 'application/json', csv: 'text/csv', vcf: 'text/vcard',
     zip: 'application/zip',
   }
   return (ext && map[ext]) || 'application/octet-stream'

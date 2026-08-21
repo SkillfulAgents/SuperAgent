@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { ArrowLeft, ChevronRight } from 'lucide-react'
+import { ArrowLeft, ChevronRight, ExternalLink } from 'lucide-react'
 import {
   Sidebar,
   SidebarContent,
@@ -20,6 +20,7 @@ import { SettingsPageContainer, PageTitle } from '@renderer/components/layout/se
 import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { isElectron, getPlatform } from '@renderer/lib/env'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
+import { openExternalUrl } from '@renderer/lib/open-external'
 
 export interface SettingsPageSection {
   id: string
@@ -29,6 +30,8 @@ export interface SettingsPageSection {
   render: () => React.ReactNode
   /** Optional actions rendered next to the page title (e.g. an "Add" button). */
   headerActions?: React.ReactNode
+  /** Opens this URL instead of selecting the section (no in-app content). */
+  externalHref?: string
 }
 
 export interface SettingsPageSectionGroup {
@@ -135,7 +138,12 @@ function SettingsPageContent({
   const isMobile = useIsMobile()
 
   const allSections = React.useMemo(() => groups.flatMap((g) => g.sections), [groups])
-  const sectionIds = React.useMemo(() => allSections.map((s) => s.id), [allSections])
+  // External items open a URL; they are not selectable content panes.
+  const contentSections = React.useMemo(
+    () => allSections.filter((s) => !s.externalHref),
+    [allSections],
+  )
+  const sectionIds = React.useMemo(() => contentSections.map((s) => s.id), [contentSections])
 
   const [active, setActive] = React.useState(() => {
     if (initialSection && sectionIds.includes(initialSection)) return initialSection
@@ -150,8 +158,26 @@ function SettingsPageContent({
     if (initialSection && sectionIds.includes(initialSection)) {
       setActive(initialSection)
       if (isMobile) setMobileView('content')
+      return
     }
+
+    // Deep link or stale active points at a non-content section (e.g. Users
+    // became external-only after platform-auth resolved) — fall back and sync URL.
+    setActive((current) => {
+      if (sectionIds.includes(current)) return current
+      return sectionIds[0] ?? ''
+    })
   }, [initialSection, sectionIds, isMobile])
+
+  React.useEffect(() => {
+    if (!onSectionChange || sectionIds.length === 0) return
+    if (initialSection && sectionIds.includes(initialSection)) return
+    if (!sectionIds.includes(active)) return
+    // URL still names a removed/external section while content shows a valid tab.
+    if (initialSection && initialSection !== active) {
+      onSectionChange(active)
+    }
+  }, [initialSection, sectionIds, active, onSectionChange])
 
   const handleSectionClick = (id: string) => {
     setActive(id)
@@ -161,18 +187,22 @@ function SettingsPageContent({
     onSectionChange?.(id)
   }
 
-  const activeSection = allSections.find((s) => s.id === active)
+  const handleExternalClick = (href: string) => {
+    void openExternalUrl(href)
+  }
+
+  const activeSection = contentSections.find((s) => s.id === active)
   const isFullScreen = useFullScreen()
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && !isFullScreen
 
   const [headerHidden, setHeaderHidden] = React.useState(false)
   const [contentFullWidth, setContentFullWidth] = React.useState(false)
-  // Reset header visibility / width override whenever the active section changes
-  // so a setting from one section doesn't leak into the next.
-  React.useEffect(() => {
-    setHeaderHidden(false)
-    setContentFullWidth(false)
-  }, [active])
+  // No reset-on-section-change effect here: the consuming hooks
+  // (useHideSettingsHeader / useFullWidthSettingsContent) reset to false in
+  // their unmount cleanup, which covers section switches. A parent-level
+  // reset would also fire AFTER a child's mount effect (child effects run
+  // first), clobbering a section that sets its override on first mount —
+  // e.g. deep-linking straight into /settings/connections?detail=….
 
   if (isMobile) {
     if (mobileView === 'menu') {
@@ -195,6 +225,21 @@ function SettingsPageContent({
                 {group.sections.map((s) => {
                   const navClassName =
                     'flex w-full items-center gap-3 px-4 py-3 text-sm text-left hover:bg-accent active:bg-accent'
+                  if (s.externalHref) {
+                    return (
+                      <button
+                        key={s.id}
+                        type="button"
+                        className={navClassName}
+                        onClick={() => handleExternalClick(s.externalHref!)}
+                        data-testid={`${navTestIdPrefix}-nav-${s.id}`}
+                      >
+                        {s.icon}
+                        <span className="flex-1">{s.label}</span>
+                        <ExternalLink className="h-4 w-4 text-muted-foreground" />
+                      </button>
+                    )
+                  }
                   const navChildren = (
                     <>
                       {s.icon}
@@ -214,6 +259,7 @@ function SettingsPageContent({
                   ) : (
                     <button
                       key={s.id}
+                      type="button"
                       className={navClassName}
                       onClick={() => handleSectionClick(s.id)}
                       data-testid={`${navTestIdPrefix}-nav-${s.id}`}
@@ -276,7 +322,16 @@ function SettingsPageContent({
                 <SidebarMenu>
                   {group.sections.map((s) => (
                     <SidebarMenuItem key={s.id}>
-                      {sectionLinkProps ? (
+                      {s.externalHref ? (
+                        <SidebarMenuButton
+                          onClick={() => handleExternalClick(s.externalHref!)}
+                          data-testid={`${navTestIdPrefix}-nav-${s.id}`}
+                        >
+                          {s.icon}
+                          <span className="flex-1">{s.label}</span>
+                          <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />
+                        </SidebarMenuButton>
+                      ) : sectionLinkProps ? (
                         <SidebarMenuButton
                           asChild
                           isActive={active === s.id}

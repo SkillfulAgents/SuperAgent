@@ -207,6 +207,30 @@ class InputManager {
   }
 
   /**
+   * Reject and remove every pending request of a given input type. Used for
+   * lifecycle invalidation: a request can become unanswerable when the
+   * resource it depends on goes away — e.g. browser_input requests when the
+   * browser closes (possibly by a DIFFERENT session or agent than the one
+   * that created the request, so per-session scoping is not enough here).
+   * A blocked awaiter gets a clean error and can continue its turn instead
+   * of parking until the 24h human-input TTL.
+   * @returns number of requests rejected
+   */
+  rejectByType(inputType: string, reason: string): number {
+    let rejected = 0
+    for (const [toolUseId, pending] of this.pending) {
+      if (pending.inputType !== inputType) continue
+      console.log(
+        `[InputManager] Rejecting ${pending.inputType} request ${toolUseId} (type invalidated): ${reason}`
+      )
+      this.pending.delete(toolUseId)
+      pending.reject(new Error(reason))
+      rejected++
+    }
+    return rejected
+  }
+
+  /**
    * Resolve a pending request with a value.
    * If no pending request exists yet (e.g. parallel tool calls race condition),
    * the value is buffered so createPending can resolve immediately when called.

@@ -6,6 +6,8 @@ export interface RuntimeStatusResponse {
   runtimeReadiness: RuntimeReadiness
   hasRunningAgents: boolean
   apiKeyConfigured: boolean
+  /** Non-null when background services failed to init and the server runs degraded. */
+  servicesInitError: string | null
 }
 
 export function useRuntimeStatus() {

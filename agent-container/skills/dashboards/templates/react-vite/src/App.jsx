@@ -1,8 +1,7 @@
 import React from 'react';
 
-// IMPORTANT: All fetch calls MUST use relative URLs (no leading slash).
-//   CORRECT: fetch('api/data')
-//   WRONG:   fetch('/api/data')   <-- absolute paths bypass the proxy and will 404
+// Use the injected mount helper for URLs that must remain dashboard-scoped.
+//   window.__GAMUT_DASHBOARD__.url('api/data')
 
 export default function App() {
   return (

@@ -1,0 +1,141 @@
+import { describe, expect, it } from 'vitest'
+
+import {
+  dashboardHttpForwardHeaders,
+  dashboardHttpUpstreamPath,
+  dashboardWebSocketForwardHeaders,
+  dashboardWebSocketUpstreamPath,
+  parseDashboardProxyRoute,
+  requestedWebSocketProtocols,
+} from './dashboard-proxy'
+
+describe('dashboard HTTP headers', () => {
+  it('preserves request metadata without exposing the host credential', () => {
+    const headers = dashboardHttpForwardHeaders(
+      {
+        host: 'container.internal',
+        cookie: 'dashboard=abc',
+        'x-forwarded-prefix': '/api/agents/a/artifacts/slides',
+        'x-superagent-host-token': 'secret',
+      },
+      'stripped',
+    )
+
+    expect(Object.fromEntries(headers)).toEqual({
+      cookie: 'dashboard=abc',
+      'x-forwarded-prefix': '/api/agents/a/artifacts/slides',
+    })
+  })
+
+  it('omits the stripped-prefix signal when the path remains mounted', () => {
+    const headers = dashboardHttpForwardHeaders(
+      {
+        cookie: 'dashboard=abc',
+        'x-forwarded-prefix': '/api/agents/a/artifacts/slides',
+      },
+      'mounted',
+    )
+
+    expect(Object.fromEntries(headers)).toEqual({ cookie: 'dashboard=abc' })
+  })
+})
+
+describe('dashboard HTTP upstream path', () => {
+  const basePath = '/api/agents/agent-1/artifacts/open-slide/'
+
+  it('keeps the compatibility contract stripped by default', () => {
+    expect(dashboardHttpUpstreamPath('/@vite/client', basePath, 'stripped')).toBe(
+      '/@vite/client',
+    )
+  })
+
+  it('restores the public mount for opted-in dashboard servers', () => {
+    expect(dashboardHttpUpstreamPath('/@vite/client', basePath, 'mounted')).toBe(
+      `${basePath}@vite/client`,
+    )
+    expect(dashboardHttpUpstreamPath('/', basePath, 'mounted')).toBe(basePath)
+  })
+
+  it('falls back to the stripped path when host mount metadata is unavailable', () => {
+    expect(dashboardHttpUpstreamPath('/@vite/client', null, 'mounted')).toBe('/@vite/client')
+  })
+})
+
+describe('dashboard proxy route', () => {
+  it('strips the container artifact prefix for a dashboard WebSocket', () => {
+    expect(parseDashboardProxyRoute('/artifacts/open-slide/__vite_hmr')).toEqual({
+      slug: 'open-slide',
+      subPath: '/__vite_hmr',
+    })
+    expect(parseDashboardProxyRoute('/artifacts/open-slide')).toEqual({
+      slug: 'open-slide',
+      subPath: '/',
+    })
+  })
+
+  it('rejects invalid slugs and unrelated paths', () => {
+    expect(parseDashboardProxyRoute('/sessions/a/stream')).toBeNull()
+    expect(parseDashboardProxyRoute('/artifacts/../socket')).toBeNull()
+    expect(parseDashboardProxyRoute('/artifacts/OpenSlide/socket')).toBeNull()
+  })
+})
+
+describe('dashboard WebSocket headers', () => {
+  it('preserves proxy metadata but removes both handshake and host secrets', () => {
+    const request = {
+      headers: {
+        cookie: 'dashboard=abc',
+        'x-forwarded-prefix': '/api/agents/a/artifacts/slides',
+        'x-superagent-host-token': 'secret',
+        'sec-websocket-key': 'key',
+        'sec-websocket-protocol': 'vite-hmr, second',
+        upgrade: 'websocket',
+      },
+    } as any
+
+    expect(dashboardWebSocketForwardHeaders(request, 'stripped')).toEqual({
+      cookie: 'dashboard=abc',
+      'x-forwarded-prefix': '/api/agents/a/artifacts/slides',
+    })
+    expect(requestedWebSocketProtocols(request)).toEqual(['vite-hmr', 'second'])
+  })
+
+  it('omits the stripped-prefix signal for mounted WebSockets', () => {
+    const request = {
+      headers: {
+        cookie: 'dashboard=abc',
+        'x-forwarded-prefix': '/api/agents/a/artifacts/slides',
+      },
+    } as any
+
+    expect(dashboardWebSocketForwardHeaders(request, 'mounted')).toEqual({
+      cookie: 'dashboard=abc',
+    })
+  })
+})
+
+describe('dashboard WebSocket upstream path', () => {
+  const basePath = '/api/agents/agent-1/artifacts/open-slide/'
+
+  it('restores the public Vite base for HMR handshakes', () => {
+    expect(dashboardWebSocketUpstreamPath('/', ['vite-hmr'], basePath, 'stripped')).toBe(basePath)
+    expect(dashboardWebSocketUpstreamPath('/custom-hmr', ['vite-ping'], basePath, 'stripped')).toBe(
+      `${basePath}custom-hmr`,
+    )
+  })
+
+  it('leaves application WebSocket paths stripped', () => {
+    expect(
+      dashboardWebSocketUpstreamPath('/socket', ['dashboard-v1'], basePath, 'stripped'),
+    ).toBe('/socket')
+    expect(
+      dashboardWebSocketUpstreamPath('/socket', ['vite-hmr'], null, 'stripped'),
+    ).toBe('/socket')
+  })
+
+  it('restores application WebSocket paths for mounted dashboards', () => {
+    expect(dashboardWebSocketUpstreamPath('/socket', ['dashboard-v1'], basePath, 'mounted')).toBe(
+      `${basePath}socket`,
+    )
+  })
+})

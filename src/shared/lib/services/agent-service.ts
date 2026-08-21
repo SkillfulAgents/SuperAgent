@@ -15,6 +15,7 @@ import {
   ensureDirectory,
   removeDirectory,
   readFileOrNull,
+  fileExists,
   writeFileAtomic,
   parseMarkdownWithFrontmatter,
   serializeMarkdownWithFrontmatter,
@@ -97,6 +98,22 @@ async function parseAgentClaudeMd(slug: string): Promise<AgentConfig | null> {
 }
 
 /**
+ * List agent slugs only — a directory listing plus a CLAUDE.md existence
+ * check per entry, no frontmatter parsing. For callers that need scope
+ * (which agents exist), not identity; listAgents() reads every agent's
+ * CLAUDE.md sequentially, which is too heavy to run per request.
+ */
+export async function listAgentSlugs(): Promise<string[]> {
+  const agentsDir = getAgentsDir()
+  await ensureDirectory(agentsDir)
+  const slugs = await listDirectories(agentsDir)
+  const checks = await Promise.all(
+    slugs.map(async (slug) => ((await fileExists(getAgentClaudeMdPath(slug))) ? slug : null)),
+  )
+  return checks.filter((slug): slug is string => slug !== null)
+}
+
+/**
  * Get a single agent by slug
  */
 export async function getAgent(slug: string): Promise<AgentConfig | null> {
@@ -113,7 +130,10 @@ export async function getAgent(slug: string): Promise<AgentConfig | null> {
  * Get a single agent with container status (returns API format)
  * Uses cached container status to avoid spawning docker processes.
  */
-export async function getAgentWithStatus(slug: string): Promise<ApiAgent | null> {
+export async function getAgentWithStatus(
+  slug: string,
+  options: { includeSummary?: boolean } = {},
+): Promise<ApiAgent | null> {
   const agent = await getAgent(slug)
   if (!agent) {
     return null
@@ -122,6 +142,11 @@ export async function getAgentWithStatus(slug: string): Promise<ApiAgent | null>
   // Use cached status to avoid spawning docker processes
   const info = containerManager.getCachedInfo(slug)
   const base = toApiAgent(agent, info.status, info.port)
+
+  // Routes that either discard the body (/start) or immediately run the richer
+  // enrichAgentsWithSummary pass (list/detail) skip this otherwise-duplicate
+  // O(session-count) stat scan; standalone callers keep the enriched default.
+  if (options.includeSummary === false) return base
 
   // Compute session activity flags (same logic as the list endpoint)
   const sessionSummary = await getSessionSummary(slug)

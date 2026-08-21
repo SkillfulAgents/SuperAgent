@@ -11,6 +11,7 @@ export const ExaSearchResultSchema = z.object({
   publishedDate: z.string().optional(), // ISO 8601; omitted where Exa has no date
   highlights: z.array(z.string()).optional(), // returned when contents.highlights is requested
   text: z.string().optional(),         // returned when contents.text is requested
+  favicon: z.string().optional(),      // the page's declared icon; returned alongside contents
 })
 
 export const ExaSearchResponseSchema = z.object({

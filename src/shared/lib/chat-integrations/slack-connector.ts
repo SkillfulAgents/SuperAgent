@@ -7,11 +7,23 @@
  * Typing indicator via emoji reactions (Slack doesn't support bot typing).
  */
 
-import { App as SlackApp } from '@slack/bolt'
+import { App as SlackApp, SocketModeReceiver } from '@slack/bolt'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
-import { ChatClientConnector, type OutgoingMessage } from './base-connector'
-import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage } from './utils'
+import {
+  ChatClientConnector,
+  isMultiPartyChatType,
+  type ChatConversationType,
+  type ChatDirectoryChannel,
+  type ChatDirectoryPage,
+  type ChatDirectoryUser,
+  type ChatClassifyContext,
+  type OutgoingMessage,
+  type SystemPromptContext,
+} from './base-connector'
+import { buildSessionContextPrompt } from './chat-session-context'
+import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage, withSessionUrl, type AppLinkContext } from './utils'
+import { isUnrecoverableSlackError } from './slack-error'
 import { captureException } from '@shared/lib/error-reporting'
 
 // ── Config ──────────────────────────────────────────────────────────────
@@ -116,6 +128,52 @@ export function markdownToSlackMrkdwn(md: string): string {
   return result.trim()
 }
 
+// ── Session system prompt ───────────────────────────────────────────────
+
+/**
+ * Session-level context for Slack conversations, built per session so it names
+ * the concrete destination (DM vs channel vs thread). Without this the agent
+ * cannot tell where its replies land or that its transcript streams straight
+ * into the chat — it has misrouted messages by replying through
+ * send_chat_message and guessing a DM target.
+ */
+export function buildSlackSystemPrompt(message: SystemPromptContext): string {
+  const pipeIdx = message.chatId.indexOf('|')
+  const baseChannelId = pipeIdx > 0 ? message.chatId.slice(0, pipeIdx) : message.chatId
+  const kind = classifySlackChat(message)
+  const whereDetail = kind === 'thread'
+    ? `a message thread in channel ${baseChannelId}`
+    : kind === 'dm'
+      ? 'a direct message conversation'
+      : kind === 'channel' || kind === 'group'
+        ? `a channel (id ${baseChannelId})`
+        : 'a Slack conversation'
+  return buildSessionContextPrompt({
+    surface: 'chat',
+    where: `a live Slack conversation: you are responding inside ${whereDetail} (chat id: ${message.chatId})`,
+    multiParty: isMultiPartyChatType(kind),
+  })
+}
+
+// ── Chat id classification ──────────────────────────────────────────────
+
+/**
+ * Classify a Slack (effective) chat id by shape: `channel|threadTs` composites
+ * are threads, and top-level conversation ids encode their type in the prefix
+ * (D* = DM, G* = private group/mpim, C* = channel).
+ */
+export function classifySlackChatId(chatId: string): ChatConversationType | undefined {
+  if (chatId.indexOf('|') > 0) return 'thread'
+  if (chatId.startsWith('D')) return 'dm'
+  if (chatId.startsWith('G')) return 'group'
+  if (chatId.startsWith('C')) return 'channel'
+  return undefined
+}
+
+export function classifySlackChat(chat: ChatClassifyContext): ChatConversationType | undefined {
+  return classifySlackChatId(chat.chatId)
+}
+
 // ── Message routing (exported for testing) ──────────────────────────────
 
 export interface SlackMessageRoutingParams {
@@ -146,8 +204,9 @@ export interface SlackMessageRoutingResult {
 export function routeSlackMessage(params: SlackMessageRoutingParams): SlackMessageRoutingResult {
   const { rawText, chatId, ts, channelType, threadTs, botUserId, config, activeThreads } = params
   const isChannel = channelType === 'channel' || channelType === 'group'
+  const mentionFilterApplies = isChannel || channelType === 'mpim'
 
-  if (isChannel && config.onlyMentioned) {
+  if (mentionFilterApplies && config.onlyMentioned) {
     const isMentioned = botUserId ? rawText.includes(`<@${botUserId}>`) : false
     if (!isMentioned) {
       if (!threadTs || !activeThreads.has(`${chatId}|${threadTs}`)) {
@@ -255,9 +314,36 @@ export function reactionsForChat(activeReactions: Set<string>, chatId: string): 
 export class SlackConnector extends ChatClientConnector {
   readonly provider = 'slack' as const
 
+  static generateSystemPrompt = buildSlackSystemPrompt
+  static discoveryCapabilities = ['list_users', 'list_channels', 'dm_by_user_id'] as const
+  static classifyChatId = classifySlackChat
+
   private app: SlackApp | null = null
+  private receiver: SocketModeReceiver | null = null
   private connected = false
   private botUserId: string | null = null
+
+  // Own reconnect loop (mirrors IMessageConnector). The receiver is built with
+  // autoReconnectEnabled: false, so every socket drop lands here instead of in
+  // @slack/socket-mode's internal loop — which leaks unrecoverable reconnect
+  // failures as unhandled promise rejections (delayReconnectAttempt's
+  // `cb.apply(this).then(res)` has no .catch), fatal at the app level.
+  private disconnecting = false
+  // Only reconnect a socket that fully started once: a failed INITIAL connect
+  // is the manager's to retry — its late 'disconnected' event must not start a
+  // zombie loop on a connector object the manager already discarded.
+  private started = false
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  // The restart attempt currently in flight, if any. disconnect() can only
+  // clear the TIMER; an attempt already awaiting apps.connections.open has no
+  // socket yet, so socket-mode's disconnect() resolves without touching it —
+  // and the pending start would otherwise OPEN a socket after teardown
+  // finished. That ownerless socket still acks its share of round-robin
+  // events, silently eating messages meant for the replacement connector.
+  private restartInFlight: Promise<void> | null = null
+  private reconnectAttempts = 0
+  private static readonly BASE_RECONNECT_DELAY_MS = 1_000
+  private static readonly MAX_RECONNECT_DELAY_MS = 60_000
 
   // Track action_id → toolUseId mappings for interactive responses
   private actionDataMap: Map<string, { toolUseId: string; value: unknown; ts: number }> = new Map()
@@ -286,27 +372,56 @@ export class SlackConnector extends ChatClientConnector {
   // requires a re-mention if it ever resurfaces.
   private static readonly MAX_TRACKED_THREADS = 1000
 
-  constructor(private config: SlackConfig) {
+  constructor(private config: SlackConfig, private appLink?: AppLinkContext) {
     super()
   }
 
   // ── Lifecycle ───────────────────────────────────────────────────────
 
   async connect(): Promise<void> {
-    this.app = new SlackApp({
-      token: this.config.botToken,
+    this.disconnecting = false
+    this.started = false
+    this.reconnectAttempts = 0
+
+    // Fail fast on the underlying API calls (auth.test, apps.connections.open):
+    // retry pacing belongs to our loop below and to the manager's health-check
+    // backstop, not to a WebClient silently retrying for half an hour while the
+    // manager waits on connect(). The 30s timeout matters too: WebClient's
+    // default is 0 (unbounded), so a blackholed request would otherwise wedge
+    // a connect/reconnect attempt for as long as the OS keeps the TCP open.
+    //
+    // Locals throughout this method: disconnect() nulls this.app/this.receiver,
+    // and a disconnect racing this connect used to turn that into a TypeError
+    // ("Cannot read properties of null") mid-flight (ELECTRON-3T's signature).
+    const receiver = new SocketModeReceiver({
       appToken: this.config.appToken,
-      socketMode: true,
+      autoReconnectEnabled: false,
       logLevel: 'warn' as any,
+      installerOptions: { clientOptions: { retryConfig: { retries: 2 }, timeout: 30_000 } },
     })
+    const app = new SlackApp({
+      token: this.config.botToken,
+      receiver,
+      logLevel: 'warn' as any,
+      clientOptions: { retryConfig: { retries: 2 }, timeout: 30_000 },
+      // Without this, Bolt's constructor kicks off its own auth.test on the bot
+      // token and parks the promise in a closure nothing awaits until the first
+      // inbound event. A revoked token rejects it (invalid_auth) with no handler
+      // attached, so it escapes every try/catch here and reaches the main
+      // process's unhandled-rejection handler — which quits the whole app.
+      // Deferring routes that same call through the awaited init() below.
+      deferInitialization: true,
+    })
+    this.receiver = receiver
+    this.app = app
 
     // Catch-all for events we don't explicitly handle (Bolt requires ack for all events)
-    this.app.event(/.*/, async (_ctx: any) => {
+    app.event(/.*/, async (_ctx: any) => {
       // No-op — just acknowledge so Slack doesn't retry/disconnect
     })
 
     // Handle incoming messages
-    this.app.message(async ({ message, say: _say }: { message: any; say: any }) => {
+    app.message(async ({ message, say: _say }: { message: any; say: any }) => {
       // Skip bot messages, edits, etc. — but allow file_share (user sent an image/file)
       const subtype = (message as any).subtype
       if (!message || (subtype && subtype !== 'file_share')) return
@@ -386,7 +501,7 @@ export class SlackConnector extends ChatClientConnector {
     })
 
     // Handle button clicks (interactive actions)
-    this.app.action(/^cb_\d+$/, async ({ ack, action, body }: { ack: any; action: any; body: any }) => {
+    app.action(/^cb_\d+$/, async ({ ack, action, body }: { ack: any; action: any; body: any }) => {
       await ack()
 
       const actionId = (action as any).action_id
@@ -437,7 +552,7 @@ export class SlackConnector extends ChatClientConnector {
 
     // Validate tokens before starting Socket Mode
     try {
-      const authResult = await this.app.client.auth.test()
+      const authResult = await app.client.auth.test()
       if (!authResult.ok) {
         throw new Error(`Slack auth.test failed: ${authResult.error}`)
       }
@@ -448,19 +563,113 @@ export class SlackConnector extends ChatClientConnector {
       throw new Error(`Slack bot token invalid: ${msg}`)
     }
 
+    // Deferred above, so it has to happen explicitly — and before start(),
+    // which throws AppInitializationError on an uninitialized app. It runs
+    // after the check above so a bad token still reports as "bot token
+    // invalid" rather than the vaguer initialization failure.
+    try {
+      await app.init()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      throw new Error(`Slack app failed to initialize: ${msg}`)
+    }
+
+    // Track the real socket state so isConnected() is honest — the manager's
+    // health check is blind without this.
+    const client = receiver.client
+    client.on('connected', () => {
+      // A 'connected' arriving after disconnect() began is a socket that
+      // outlived its owner (a start() that was mid-flight during teardown) —
+      // it is being closed, and must not flip a torn-down connector "live".
+      if (this.disconnecting) return
+      this.connected = true
+      this.reconnectAttempts = 0
+    })
+    client.on('disconnected', () => {
+      this.connected = false
+      if (!this.disconnecting && this.started) this.scheduleReconnect()
+    })
+
     // Start Socket Mode (requires valid app-level token with connections:write)
     try {
-      await this.app.start()
+      await app.start()
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       throw new Error(`Slack Socket Mode failed to start (check app-level token and connections:write scope): ${msg}`)
     }
+    // disconnect() may have raced this connect (user pause, manager teardown):
+    // its app.stop() ran against a socket that didn't exist yet, so the one
+    // that just opened is ownerless — close it and report the connect failed.
+    if (this.disconnecting) {
+      await app.stop().catch(() => {})
+      throw new Error('Slack connector was disconnected during connect')
+    }
+    this.started = true
     this.connected = true
     console.log('[SlackConnector] Socket Mode connected')
   }
 
+  /**
+   * Restart the Socket Mode client with exponential backoff after an
+   * unexpected disconnect. Transient failures re-schedule; unrecoverable auth
+   * failures (dead workspace / revoked tokens) stop the loop and surface via
+   * onError so the manager can badge the integration and eventually auto-pause.
+   */
+  private scheduleReconnect(): void {
+    if (this.disconnecting || this.reconnectTimer) return
+    this.reconnectAttempts++
+    const delay = Math.min(
+      SlackConnector.BASE_RECONNECT_DELAY_MS * 2 ** (this.reconnectAttempts - 1),
+      SlackConnector.MAX_RECONNECT_DELAY_MS,
+    )
+    console.log(`[SlackConnector] Socket closed — reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`)
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null
+      if (this.disconnecting || !this.receiver) return
+      const client = this.receiver.client
+      const attempt = client.start()
+        .then(() => {
+          if (this.disconnecting) {
+            // Teardown began while this attempt was awaiting its connection —
+            // the socket that just opened has no owner. Close it (socket-mode's
+            // disconnect() never rejects).
+            void client.disconnect()
+            return
+          }
+          // The 'connected' listener already restored state.
+          console.log('[SlackConnector] Socket Mode reconnected')
+        })
+        .catch((err: unknown) => {
+          if (this.disconnecting) return
+          if (isUnrecoverableSlackError(err)) {
+            console.error('[SlackConnector] Unrecoverable Slack error — stopping reconnect loop:', err)
+            this.emitError(err instanceof Error ? err : new Error(String(err)))
+            return
+          }
+          // A websocket-stage failure rejects with undefined (socket-mode's
+          // close handler carries no error) — name it for the log.
+          console.warn(`[SlackConnector] Reconnect attempt ${this.reconnectAttempts} failed:`, err instanceof Error ? err.message : err ?? 'socket closed before connecting')
+          this.scheduleReconnect()
+        })
+        .finally(() => {
+          if (this.restartInFlight === attempt) this.restartInFlight = null
+        })
+      this.restartInFlight = attempt
+    }, delay)
+  }
+
   async disconnect(): Promise<void> {
+    this.disconnecting = true
     this.connected = false
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+    // Capture any restart already past its timer: it can't be cancelled, only
+    // waited out — its own success handler closes the socket it opens now that
+    // disconnecting is set (see restartInFlight).
+    const restart = this.restartInFlight
 
     // Remove any active reactions (before clearing thread context needed to resolve channels)
     for (const key of this.activeReactions) {
@@ -481,6 +690,13 @@ export class SlackConnector extends ChatClientConnector {
       await this.app.stop()
       this.app = null
     }
+    this.receiver = null
+    // Wait for a mid-flight restart to settle: app.stop() resolves while the
+    // pending start is still awaiting apps.connections.open (no socket exists
+    // for it to close), and the start can OPEN a socket after this point. Its
+    // success handler tears that late socket down; don't report "disconnected"
+    // until it has.
+    if (restart) await restart.catch(() => {})
     console.log('[SlackConnector] Disconnected')
   }
 
@@ -634,16 +850,21 @@ export class SlackConnector extends ChatClientConnector {
 
   // ── User request cards ──────────────────────────────────────────────
 
-  async sendUserRequestCard(chatId: string, event: UserRequestEvent): Promise<string> {
+  async sendUserRequestCard(chatId: string, event: UserRequestEvent, sessionId?: string): Promise<string> {
     if (!this.app) throw new Error('Slack app not connected')
+    const appLink = withSessionUrl(this.appLink, sessionId)
 
     const { channel, threadTs } = this.resolveChannel(chatId)
     const threadOpt = threadTs ? { thread_ts: threadTs } : {}
 
     if (isUnsupportedInChat(event)) {
+      // Sent unwrapped, NOT as `_…_` italic: the notice ends in a URL, and Slack
+      // refuses to render italic when a URL abuts the closing underscore — the
+      // markers leak into the message as literal characters. mrkdwn still
+      // auto-links the URL.
       const result = await this.app.client.chat.postMessage({
         channel,
-        text: `_${describeUnsupportedRequest(event)}_`,
+        text: describeUnsupportedRequest(event, appLink),
         mrkdwn: true,
         ...threadOpt,
       })
@@ -651,7 +872,7 @@ export class SlackConnector extends ChatClientConnector {
     }
 
     switch (event.type) {
-      case 'user_question_request': {
+      case 'question_request': {
         let lastTs = ''
 
         // Track multi-question requests
@@ -737,15 +958,100 @@ export class SlackConnector extends ChatClientConnector {
       }
 
       default: {
+        // Unwrapped for the same reason as the isUnsupportedInChat branch above.
         const result = await this.app.client.chat.postMessage({
           channel,
-          text: `_${describeUnsupportedRequest(event)}_`,
+          text: describeUnsupportedRequest(event, appLink),
           mrkdwn: true,
           ...threadOpt,
         })
         return result.ts || ''
       }
     }
+  }
+
+  // ── Directory discovery ─────────────────────────────────────────────
+
+  // Cap on directory listings so a large workspace can't flood an agent's
+  // context; pages of 200 match Slack's recommended page size.
+  private static readonly MAX_DIRECTORY_ENTRIES = 500
+  private static readonly DIRECTORY_PAGE_SIZE = 200
+
+  async listChatUsers(): Promise<ChatDirectoryPage<ChatDirectoryUser>> {
+    if (!this.app) throw new Error('Slack app not connected')
+
+    const users: ChatDirectoryUser[] = []
+    let truncated = false
+    let cursor: string | undefined
+    do {
+      const result = await this.app.client.users.list({
+        limit: SlackConnector.DIRECTORY_PAGE_SIZE,
+        ...(cursor ? { cursor } : {}),
+      })
+      for (const member of result.members ?? []) {
+        // Directory = reachable people: skip deactivated accounts, bots, and
+        // Slackbot (a bot in every workspace that users.list doesn't flag).
+        if (!member.id || member.deleted || member.is_bot || member.id === 'USLACKBOT') continue
+        if (users.length >= SlackConnector.MAX_DIRECTORY_ENTRIES) {
+          truncated = true
+          break
+        }
+        const title = member.profile?.title
+        users.push({
+          id: member.id,
+          name: member.profile?.real_name || member.real_name || member.name || member.id,
+          ...(title ? { title } : {}),
+        })
+      }
+      cursor = truncated ? undefined : (result.response_metadata?.next_cursor || undefined)
+    } while (cursor)
+
+    return { items: users, truncated }
+  }
+
+  async listChatChannels(): Promise<ChatDirectoryPage<ChatDirectoryChannel>> {
+    if (!this.app) throw new Error('Slack app not connected')
+
+    const channels: ChatDirectoryChannel[] = []
+    let truncated = false
+    let cursor: string | undefined
+    do {
+      const result = await this.app.client.conversations.list({
+        limit: SlackConnector.DIRECTORY_PAGE_SIZE,
+        exclude_archived: true,
+        types: 'public_channel,private_channel',
+        ...(cursor ? { cursor } : {}),
+      })
+      for (const channel of result.channels ?? []) {
+        if (!channel.id || !channel.name) continue
+        if (channels.length >= SlackConnector.MAX_DIRECTORY_ENTRIES) {
+          truncated = true
+          break
+        }
+        channels.push({
+          id: channel.id,
+          name: `#${channel.name}`,
+          isPrivate: !!channel.is_private,
+          isMember: !!channel.is_member,
+        })
+      }
+      cursor = truncated ? undefined : (result.response_metadata?.next_cursor || undefined)
+    } while (cursor)
+
+    return { items: channels, truncated }
+  }
+
+  async resolveDirectChat(userId: string): Promise<string> {
+    if (!this.app) throw new Error('Slack app not connected')
+
+    // conversations.open returns the existing 1:1 when there is one and only
+    // otherwise creates it — resolving is idempotent and side-effect-light.
+    const result = await this.app.client.conversations.open({ users: userId })
+    const channelId = result.channel?.id
+    if (!channelId) {
+      throw new Error(`Slack did not return a DM channel for user ${userId}`)
+    }
+    return channelId
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────

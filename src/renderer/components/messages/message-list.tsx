@@ -19,17 +19,32 @@ import { WorkflowBlock } from './workflow-block'
 import { CompactBoundaryItem } from './compact-boundary-item'
 import { MemoryRecallItem } from './memory-recall-item'
 import { InformationalItem } from './informational-item'
+import { isSessionTimeGap, SessionTimeFlag } from './session-time-flag'
 import { MessageErrorBoundary } from './message-error-boundary'
-import { ArrowDown, FileX2, Loader2, MessageSquarePlus, WifiOff } from 'lucide-react'
+import { ArrowDown, ChevronRight, FileX2, Loader2, MessageSquarePlus, WifiOff } from 'lucide-react'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
-import { useDraft, useDraftsStore } from '@renderer/context/drafts-context'
+import { appendToSessionDraft, useDraft, useDraftsStore } from '@renderer/context/drafts-context'
 import { useWorkflow } from '@renderer/context/workflow-context'
 import { useRenderTracker } from '@renderer/lib/perf'
-import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, Fragment, type ReactNode } from 'react'
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useCallback,
+  useMemo,
+  Fragment,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+  type UIEvent as ReactUIEvent,
+} from 'react'
+import { useStickToBottom } from 'use-stick-to-bottom'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
 import type { ApiMessage, ApiCompactBoundary, ApiMemoryRecall, ApiInformational } from '@shared/lib/types/api'
+import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
+import { MESSAGES_PAGE_LIMIT, MESSAGES_PAGE_OLDER_LIMIT } from '@shared/lib/messages-page'
 
 // Prefix for system-injected user messages that should be hidden in the UI.
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in agent-container/src/claude-code.ts
@@ -42,8 +57,91 @@ const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] '
 // messages stream in at the bottom the oldest rendered ones drop off the top and
 // the DOM node count stays flat. The window only grows on an explicit scroll-up
 // and is reset when the session changes.
-const BASE_WINDOW = 300
-const LOAD_STEP = 200
+const BASE_WINDOW = MESSAGES_PAGE_LIMIT
+const LOAD_STEP = MESSAGES_PAGE_OLDER_LIMIT
+const TURN_ANCHOR_TOP = 100
+// Live-edge following (engage/escape/resume and the smooth chase) is owned by
+// use-stick-to-bottom: it derives escape from user-attributable signals (wheel
+// direction, scroll direction, text selection) and drives the viewport from
+// content resizes — scroll-event echoes of its own writes can never disengage
+// it. The layer in this file only manages what sits on top of that: the
+// new-turn reading-line reserve (the spacer) and windowed history loading.
+//
+// Scroll events cannot say who caused them, so the reserve adjustments below
+// only act on events that closely follow a real gesture (wheel/touch/keys, or
+// a held-down pointer for scrollbar drags). A layout clamp from shrinking
+// content carries no fresh gesture and passes through untouched.
+const SCROLL_GESTURE_WINDOW_MS = 400
+const TURN_WORK_REVEAL_CLASS = 'animate-in fade-in-0 slide-in-from-top-2 duration-200 ease-out motion-reduce:animate-none'
+const SCROLL_KEYS = new Set(['ArrowDown', 'ArrowUp', 'End', 'Home', 'PageDown', 'PageUp', ' '])
+const isManualCompactCommand = (text: string) => /^\/compact(?:\s|$)/.test(text.trim())
+
+const prefersReducedMotion = () =>
+  window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
+interface CompletedTurn {
+  id: string
+  startMessageId: string
+  /** Null during the brief idle window before the streamed final text persists. */
+  finalAssistantMessageId: string | null
+  /** The final textual response for this visual work phase. */
+  answerMessageIds: ReadonlySet<string>
+  /** Tool cards on the answer message that appear only after expansion. */
+  revealedToolCallIds: ReadonlySet<string>
+  elapsedMs: number
+  toolCallCount: number
+  tokenCount: number
+  hasTokenUsage: boolean
+}
+
+function TurnSummaryRow({
+  turn,
+  expanded,
+  onToggle,
+  onProvideFeedback,
+}: {
+  turn: CompletedTurn
+  expanded: boolean
+  onToggle: () => void
+  onProvideFeedback?: () => void
+}) {
+  return (
+    <div className="flex items-center gap-3 border-b border-border text-muted-foreground">
+      <button
+        type="button"
+        className="flex min-w-0 flex-1 items-center gap-1.5 py-3 text-left text-sm tabular-nums transition-colors hover:text-foreground"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        aria-label={expanded ? 'Collapse completed turn work' : 'Expand completed turn work'}
+        data-testid="turn-summary"
+      >
+        <span>Worked for {formatElapsed(turn.elapsedMs)}</span>
+        <span aria-hidden="true">·</span>
+        <span>{turn.toolCallCount} {turn.toolCallCount === 1 ? 'tool call' : 'tool calls'}</span>
+        {turn.hasTokenUsage && (
+          <>
+            <span aria-hidden="true">·</span>
+            <span>{turn.tokenCount.toLocaleString('en-US')} tokens</span>
+          </>
+        )}
+        <ChevronRight
+          className={`h-4 w-4 shrink-0 transition-transform duration-200 ${expanded ? 'rotate-90' : ''}`}
+          aria-hidden="true"
+        />
+      </button>
+      {onProvideFeedback && (
+        <button
+          type="button"
+          onClick={onProvideFeedback}
+          className="flex shrink-0 items-center gap-1 text-xs transition-colors hover:text-foreground"
+        >
+          <MessageSquarePlus className="h-3 w-3" />
+          <span>Voice feedback</span>
+        </button>
+      )}
+    </div>
+  )
+}
 
 function DeliveredFiles({ files, agentSlug }: { files: { filePath: string }[]; agentSlug: string }) {
   return (
@@ -67,11 +165,13 @@ interface MessageListProps {
   readOnly?: boolean
   /** Hide the scroll affordance while a footer popover overlaps it. */
   suppressScrollToBottom?: boolean
+  /** Height of an overlaid footer that the live edge must remain above. */
+  bottomInset?: number
 }
 
-export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared, readOnly, suppressScrollToBottom = false }: MessageListProps) {
+export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared, readOnly, suppressScrollToBottom = false, bottomInset = 0 }: MessageListProps) {
   useRenderTracker('MessageList')
-  const { data: messages, isLoading, error } = useMessages(sessionId, agentSlug)
+  const { data: messages, isLoading, error, fetchOlder, hasOlder, isFetchingOlder } = useMessages(sessionId, agentSlug)
   const deleteMessage = useDeleteMessage()
   const deleteToolCall = useDeleteToolCall()
   const cancelQueuedMessage = useCancelQueuedMessage()
@@ -105,13 +205,23 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   const { data: agentData } = useAgent(agentSlug)
   const hasVoiceConfigured = useIsVoiceAgentConfigured()
   const [feedbackDialogOpen, setFeedbackDialogOpen] = useState(false)
+  const [expandedTurnIds, setExpandedTurnIds] = useState<Set<string>>(new Set())
 
   const handleProvideFeedback = useCallback(() => {
     setFeedbackDialogOpen(true)
   }, [])
 
-  // Find the last assistant message that has an elapsed time (for voice feedback button)
-  const lastAssistantElapsedId = useMemo(() => {
+  const toggleTurn = useCallback((turnId: string) => {
+    setExpandedTurnIds((current) => {
+      const next = new Set(current)
+      if (next.has(turnId)) next.delete(turnId)
+      else next.add(turnId)
+      return next
+    })
+  }, [])
+
+  // Find the latest assistant response (for the voice feedback button).
+  const lastAssistantMessageId = useMemo(() => {
     if (!messages) return null
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i]
@@ -178,7 +288,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // mid-turn (queued/steering) are re-id'd by the CLI on enqueue (see
   // normalizeQueuedCommandEntry in session-service), so those — and sends
   // whose POST response hasn't arrived yet — match by trimmed text + arrival
-  // window, claiming each persisted id at most once.
+  // window, claiming each persisted id at most once. Manual /compact is the
+  // exception: the runtime persists its effect as a compact boundary rather
+  // than as a user message, so that boundary materializes the command ghost.
   useEffect(() => {
     if (!messages) return
     const claimed = claimedMessageIdsRef.current
@@ -198,6 +310,15 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       // re-ids them) and sends still awaiting their POST response.
       if (!match && (pending.queued || !pending.uuid)) {
         match = findTextMatch(pending.text, pending.sentAt - 5000)
+        if (match) claimed.add(match.id)
+      }
+      if (!match && isManualCompactCommand(pending.text)) {
+        match = messages.find(
+          (m) =>
+            m.type === 'compact_boundary' &&
+            !claimed.has(m.id) &&
+            new Date(m.createdAt).getTime() >= pending.sentAt - 5000
+        )
         if (match) claimed.add(match.id)
       }
       if (match) {
@@ -235,11 +356,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     const dead = new Set(discardedCommandUuids)
     const rescued = (pendingUserMessages ?? []).filter((p) => p.uuid && dead.has(p.uuid))
     if (rescued.length > 0) {
-      const draftKey = `session:${sessionId}`
-      const existing = draftsStore.get<string>(draftKey)?.trim() ?? ''
       const restored = rescued.map((p) => p.text.trim()).filter(Boolean)
-      const merged = [...restored, existing].filter(Boolean).join('\n\n')
-      draftsStore.set(draftKey, merged || undefined)
+      appendToSessionDraft(draftsStore, sessionId, restored.join('\n\n'), { prepend: true })
       for (const pending of rescued) {
         onPendingMessageAppeared?.(pending.localId)
         consumeDiscardedCommand(sessionId, pending.uuid!)
@@ -272,16 +390,23 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // materializes above), so restoring it here would yank back a message that
   // is actually mid-delivery — it then lands in the transcript AND sits in
   // the composer, baiting a duplicate resend. Leave those pending.
+  //
+  // Manual /compact is also not restorable user text. It persists as a compact
+  // boundary rather than a user message, and compact_complete can beat the
+  // boundary refetch by more than this grace period. Consume its ghost at idle
+  // without prepending the command over a draft typed during compaction.
   useEffect(() => {
     if (isActive || ((pendingUserMessages?.length ?? 0) === 0 && peerUserMessages.length === 0)) return
     const undelivered = (pendingUserMessages ?? []).filter((p) => p.queued || p.uuid)
     const timerId = setTimeout(() => {
       if (undelivered.length > 0) {
-        const draftKey = `session:${sessionId}`
-        const existing = draftsStore.get<string>(draftKey)?.trim() ?? ''
-        const restored = undelivered.map((p) => p.text.trim()).filter(Boolean)
-        const merged = [...restored, existing].filter(Boolean).join('\n\n')
-        draftsStore.set(draftKey, merged || undefined)
+        const restored = undelivered
+          .filter((p) => !isManualCompactCommand(p.text))
+          .map((p) => p.text.trim())
+          .filter(Boolean)
+        if (restored.length > 0) {
+          appendToSessionDraft(draftsStore, sessionId, restored.join('\n\n'), { prepend: true })
+        }
         for (const pending of undelivered) onPendingMessageAppeared?.(pending.localId)
       }
       clearPeerUserMessages(sessionId)
@@ -289,9 +414,40 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     return () => clearTimeout(timerId)
   }, [pendingUserMessages, peerUserMessages, isActive, onPendingMessageAppeared, sessionId, draftsStore])
 
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const isScrolledToBottomRef = useRef(true)
-  const [showScrollToBottom, setShowScrollToBottom] = useState(false)
+  // Live-edge following. `isAtBottom` goes false only on a user-attributable
+  // escape (wheel up, upward scroll, selection drag) and comes back when the
+  // reader returns near the bottom — geometry sampled from our own writes can
+  // never disengage it. Content growth is followed from the library's
+  // ResizeObserver on `contentRef`, so the bottom inset below must be a real
+  // element (content-box), not container padding.
+  const {
+    scrollRef,
+    contentRef,
+    scrollToBottom: stickScrollToBottom,
+    stopScroll: stickStopScroll,
+    isAtBottom,
+    state: stickState,
+  } = useStickToBottom({
+    initial: 'instant',
+    ...(prefersReducedMotion() ? { resize: 'instant' as const } : {}),
+  })
+  const contentBodyRef = useRef<HTMLDivElement>(null)
+  const bottomSpacerRef = useRef<HTMLDivElement>(null)
+  const bottomSpacerHeightRef = useRef(0)
+  const anchoredTurnRef = useRef<{ localId: string; scrollTop: number } | null>(null)
+  const lastScrollTopRef = useRef(0)
+  const lastGestureAtRef = useRef(0)
+  // Stamped when a gesture-attributed scroll event actually moved the reader
+  // upward — a stronger signal than lastGestureAtRef (which a downward wheel
+  // also stamps), used to honor escapes the transition shield swallowed.
+  const lastUpwardGestureAtRef = useRef(0)
+  const pointerDownRef = useRef(false)
+  // True from a send until its scroll-to-reading-line settles. The library
+  // only assigns state.animation in its first animation frame, so this is the
+  // signal that covers the whole interval (a commit landing between the send
+  // effect and that first frame would otherwise let the reserve restore
+  // preempt the glide with an instant jump).
+  const sendScrollInFlightRef = useRef(false)
 
   // How many trailing (visible) messages to render. Grows on scroll-up and while
   // the user is scrolled up during streaming. Starts at BASE_WINDOW; the component
@@ -314,6 +470,49 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     })
   }, [messages])
 
+  // Time flags are derived from all loaded history rather than the trailing DOM
+  // window, so scrolling/windowing cannot change which turns qualify. When an
+  // older page still exists, the first loaded user is not assumed to be the
+  // first user in the session.
+  const timeFlagState = useMemo(() => {
+    const messageIds = new Set<string>()
+    let hasSeenUser = hasOlder
+    let hasUserSinceLastAssistant = hasOlder
+    let lastAssistantAt: Date | null = null
+
+    for (const item of visibleMessages) {
+      if (item.type === 'assistant') {
+        const createdAt = new Date(item.createdAt)
+        lastAssistantAt = Number.isNaN(createdAt.getTime()) ? null : createdAt
+        hasUserSinceLastAssistant = false
+        continue
+      }
+
+      if (
+        item.type !== 'user' ||
+        item.queued ||
+        isInterruptMarkerMessage(item)
+      ) continue
+
+      const createdAt = new Date(item.createdAt)
+      if (
+        !hasSeenUser ||
+        (!hasUserSinceLastAssistant && isSessionTimeGap(createdAt, lastAssistantAt))
+      ) {
+        messageIds.add(item.id)
+      }
+      hasSeenUser = true
+      hasUserSinceLastAssistant = true
+    }
+
+    return {
+      messageIds,
+      hasSeenUser,
+      hasUserSinceLastAssistant,
+      lastAssistantAt,
+    }
+  }, [visibleMessages, hasOlder])
+
   // The trailing slice we actually render. The other derived values below still
   // compute over the FULL message list, so turn boundaries / elapsed times / etc.
   // stay correct even when their anchor message is outside the rendered window.
@@ -334,49 +533,233 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   useLayoutEffect(() => {
     const grown = visibleMessages.length - prevVisibleLenRef.current
     prevVisibleLenRef.current = visibleMessages.length
-    if (grown > 0 && !isScrolledToBottomRef.current) {
+    // Grow while the reader is away from the live edge (escaped), during the
+    // new-turn reserve, or when an older-page prepend is landing (a pending
+    // scroll capture marks that) — so the rows the user is reading keep their
+    // position instead of sliding off the trailing window.
+    if (
+      grown > 0 &&
+      (!stickState.isAtBottom || anchoredTurnRef.current || prevScrollHeightRef.current != null)
+    ) {
       setWindowSize((n) => n + grown)
     }
-  }, [visibleMessages])
+  }, [visibleMessages, stickState])
 
-  const handleScroll = useCallback(() => {
-    const el = scrollRef.current
-    if (!el) return
-    // Consider "at bottom" if within 80px of the bottom edge
-    const threshold = 80
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-    isScrolledToBottomRef.current = distanceFromBottom < threshold
-    // Show "scroll to bottom" button when scrolled up more than 300px
-    setShowScrollToBottom(distanceFromBottom > 300)
+  const setBottomSpacerHeight = useCallback((height: number) => {
+    const spacer = bottomSpacerRef.current
+    if (!spacer) return
+    const nextHeight = Math.max(0, Math.ceil(height))
+    bottomSpacerHeightRef.current = nextHeight
+    spacer.style.height = `${nextHeight}px`
+    spacer.hidden = nextHeight === 0
+  }, [])
 
-    // Near the top with older messages still hidden: reveal the next chunk.
-    // prevScrollHeightRef doubles as a re-entrancy guard so we expand at most once
-    // per scroll gesture; the layout effect clears it after re-anchoring.
-    if (el.scrollTop < 200 && prevScrollHeightRef.current == null && hiddenCount > 0) {
-      prevScrollHeightRef.current = el.scrollHeight
-      // The user is reading older content — make sure nothing auto-pins to the
-      // bottom during the expand (the distance heuristic can misfire when the
-      // rendered slice barely overflows the viewport).
-      isScrolledToBottomRef.current = false
-      setWindowSize((n) => n + LOAD_STEP)
+  // A programmatic follow transition — the send-anchor scroll (where the
+  // previous turn collapses to a summary row and content shrinks above), or a
+  // viewport re-pin — can coincide with a browser clamp whose scroll event
+  // reads as the reader scrolling up. Two defenses: shield the library's
+  // deferred classification across the transition (it skips scroll events
+  // while a resize is in flight), and verify shortly after — an escape with
+  // no user gesture inside the window can only be such an echo, so reverse
+  // it. Real gestures (wheel, touch, held pointer, scroll keys) suppress the
+  // reversal, so a reader who actually leaves during the window stays left.
+  const verifyFollowTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(() => () => clearTimeout(verifyFollowTimerRef.current), [])
+  const protectFollowTransition = useCallback(() => {
+    if (stickState.resizeDifference === 0) {
+      stickState.resizeDifference = 1
+      // Mirror the library's own reset: the clamp's deferred classification
+      // (a tick after its scroll event) must land inside the shield, so drop
+      // it a frame + a tick later. The guard keeps a concurrent real content
+      // resize's value intact.
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          if (stickState.resizeDifference === 1) stickState.resizeDifference = 0
+        }, 1)
+      })
     }
-  }, [hiddenCount])
+    const transitionAt = performance.now()
+    clearTimeout(verifyFollowTimerRef.current)
+    verifyFollowTimerRef.current = setTimeout(() => {
+      const gestured =
+        pointerDownRef.current || lastGestureAtRef.current >= transitionAt
+      if (!gestured && !stickState.isAtBottom) {
+        void stickScrollToBottom(prefersReducedMotion() ? 'instant' : undefined)
+        return
+      }
+      // The shield cuts both ways: while it holds, the library also discards
+      // the scroll classification of genuine keyboard, touch, and scrollbar
+      // escapes (wheel-up escapes through its own handler and is unaffected).
+      // If a gesture moved the reader upward during the window yet following
+      // still reads engaged and they are beyond the re-stick range, that
+      // escape was swallowed — honor it, or the next growth would yank them
+      // back down. Reserve eating is unaffected: it re-bases the reading line
+      // onto the reader, keeping them within the re-stick range.
+      if (
+        stickState.isAtBottom &&
+        lastUpwardGestureAtRef.current >= transitionAt &&
+        !stickState.isNearBottom
+      ) {
+        stickStopScroll()
+      }
+    }, 40)
+  }, [stickState, stickScrollToBottom, stickStopScroll])
+
+  // Keep the newly-sent turn fixed at its reading line while the response uses
+  // up the reserved room below it. The spacer inflates scrollHeight so that the
+  // reading line IS the scroll target: from the follow library's perspective
+  // the reader simply sits at the bottom, and content growth paired with an
+  // equal spacer shrink is a net-zero resize — no motion. Once the reserve
+  // reaches zero the anchor retires and real growth resumes normal following.
+  const syncTurnReserve = useCallback(() => {
+    const el = scrollRef.current
+    const anchoredTurn = anchoredTurnRef.current
+    if (!el || !anchoredTurn) return
+    const naturalScrollHeight = el.scrollHeight - bottomSpacerHeightRef.current
+    const requiredSpacer = Math.max(
+      0,
+      anchoredTurn.scrollTop + el.clientHeight - naturalScrollHeight,
+    )
+    setBottomSpacerHeight(requiredSpacer)
+    // The response now fills the viewport. Retire the special turn state so
+    // long-thread windowing can return to its bounded trailing slice.
+    if (requiredSpacer === 0) {
+      anchoredTurnRef.current = null
+      return
+    }
+    // A transient content shrink during the reserve hold (a working indicator
+    // swapping forms, a streamed block replaced by its shorter persisted copy)
+    // clamps scrollTop below the reading line for the instant before the
+    // spacer write above re-inflates the scroll range — and nothing else moves
+    // it back until content grows again, so the held turn visibly sags. The
+    // anchored reading line IS the scroll target while the reserve holds, so
+    // put the viewport back on it. Skip while the reader is gesturing (their
+    // scroll owns the position — reserve eating re-bases the anchor), while a
+    // send's scroll to the reading line is pending or animating (it starts
+    // below the target by construction), and while any other scroll
+    // animation is in flight.
+    const gestureDriven =
+      pointerDownRef.current ||
+      performance.now() - lastGestureAtRef.current < SCROLL_GESTURE_WINDOW_MS
+    const target = Math.max(0, stickState.calculatedTargetScrollTop)
+    if (
+      !sendScrollInFlightRef.current &&
+      !gestureDriven &&
+      stickState.isAtBottom &&
+      !stickState.animation &&
+      el.scrollTop < target
+    ) {
+      protectFollowTransition()
+      stickState.scrollTop = target
+      lastScrollTopRef.current = el.scrollTop
+    }
+  }, [scrollRef, setBottomSpacerHeight, stickState, protectFollowTransition])
+
+  // Pin the viewport to the live edge before first paint. The library's own
+  // initial scroll runs from its ResizeObserver callback, which lands after
+  // paint — without this, opening a session flashes the top of the transcript
+  // for a frame. Guarded and dep-free because the scroll container mounts only
+  // after loading/error states resolve.
+  const pinnedInitialRef = useRef(false)
+  useLayoutEffect(() => {
+    if (pinnedInitialRef.current || !scrollRef.current) return
+    pinnedInitialRef.current = true
+    stickState.scrollTop = Math.max(0, stickState.calculatedTargetScrollTop)
+    lastScrollTopRef.current = scrollRef.current.scrollTop
+  })
+
+  const handleScroll = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
+    const el = event.currentTarget
+    const previousScrollTop = lastScrollTopRef.current
+    lastScrollTopRef.current = el.scrollTop
+
+    // Only scroll events that closely follow a real gesture may adjust the
+    // reserve. Programmatic writes (the follow animation) and layout clamps
+    // from shrinking content reach this handler too, but carry no fresh
+    // wheel/touch/key stamp and no held pointer, so they pass through.
+    const gestureDriven =
+      pointerDownRef.current ||
+      performance.now() - lastGestureAtRef.current < SCROLL_GESTURE_WINDOW_MS
+
+    // Blank reserve is one-way. When the reader moves upward, consume the same
+    // number of pixels from the spacer. The new scroll position becomes the
+    // reserve's live edge, so that discarded blank area cannot be revisited.
+    const anchoredTurn = anchoredTurnRef.current
+    const upwardDelta = Math.max(0, previousScrollTop - el.scrollTop)
+    const downwardDelta = Math.max(0, el.scrollTop - previousScrollTop)
+    if (gestureDriven && upwardDelta > 0) {
+      lastUpwardGestureAtRef.current = performance.now()
+    }
+    if (gestureDriven && anchoredTurn && upwardDelta > 0 && bottomSpacerHeightRef.current > 0) {
+      const discard = Math.min(upwardDelta, bottomSpacerHeightRef.current)
+      const remainingSpacer = bottomSpacerHeightRef.current - discard
+      anchoredTurn.scrollTop = Math.max(0, anchoredTurn.scrollTop - discard)
+      setBottomSpacerHeight(remainingSpacer)
+      if (remainingSpacer === 0) anchoredTurnRef.current = null
+    }
+
+    // Reaching the actual live edge through a user scroll is an explicit trip
+    // to the bottom: retire the reserve so its blank room doesn't keep the
+    // streamed content away from the reader. The browser clamps scrollTop to
+    // the new natural maximum synchronously.
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    if (
+      gestureDriven &&
+      downwardDelta > 0 &&
+      anchoredTurnRef.current &&
+      distanceFromBottom <= 1
+    ) {
+      anchoredTurnRef.current = null
+      setBottomSpacerHeight(0)
+      lastScrollTopRef.current = el.scrollTop
+    }
+
+    // Near the top: reveal the next local chunk, or fetch the next API page.
+    // prevScrollHeightRef is only set when we know the DOM will grow (local
+    // expand, or fetchOlder about to prepend) so a failed/empty fetch cannot wedge.
+    if (el.scrollTop < 200 && prevScrollHeightRef.current == null) {
+      if (hiddenCount > 0) {
+        prevScrollHeightRef.current = el.scrollHeight
+        setWindowSize((n) => n + LOAD_STEP)
+      } else if (hasOlder && !isFetchingOlder && fetchOlder) {
+        void fetchOlder(() => {
+          // Back at the bottom mid-fetch: the trailing window doesn't move on
+          // prepend, so skip the capture — a lingering guard would block the
+          // next scroll-up gesture. Derived from geometry at capture time.
+          const viewport = scrollRef.current
+          if (
+            viewport &&
+            viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight > 100
+          ) {
+            prevScrollHeightRef.current = viewport.scrollHeight
+          }
+        })
+      }
+    }
+  }, [hiddenCount, hasOlder, isFetchingOlder, fetchOlder, setBottomSpacerHeight, scrollRef])
 
   // After a scroll-up expansion adds older messages above the viewport, restore the
   // scroll position so the content the user was reading stays put (no jump).
+  // Deps are [windowSize] ONLY: when a prepend lands the anchor effect grows
+  // windowSize in the same commit, so this fires exactly when the rows mount.
+  // A visibleMessages.length dep would consume the guard one commit early
+  // (data grows, window unchanged, delta 0) and leave the mount uncompensated.
   useLayoutEffect(() => {
     const el = scrollRef.current
     if (el && prevScrollHeightRef.current != null) {
       el.scrollTop += el.scrollHeight - prevScrollHeightRef.current
       prevScrollHeightRef.current = null
     }
-  }, [windowSize])
+    // scrollRef is a stable library ref — windowSize remains the sole trigger.
+  }, [windowSize, scrollRef])
 
-  const scrollToBottom = useCallback(() => {
-    const el = scrollRef.current
-    if (!el) return
-    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
-  }, [])
+  const handleScrollToBottom = useCallback(() => {
+    // Drop the turn reserve first so the scroll target is the true live edge,
+    // not the blank reading-line reserve.
+    anchoredTurnRef.current = null
+    setBottomSpacerHeight(0)
+    void stickScrollToBottom(prefersReducedMotion() ? 'instant' : undefined)
+  }, [setBottomSpacerHeight, stickScrollToBottom])
 
   // Safety net: if isCompacting is true but a NEW compact boundary appears in fetched
   // messages, compaction is done and the SSE compact_complete event was missed.
@@ -426,14 +809,25 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // Filter live thinking blocks to only those NOT yet carried by a persisted
   // message (mirrors unpersistedStreamingToolUses). Once the refetched assistant
   // message arrives with its `thinking` array, the persisted card in MessageItem
-  // takes over and the ephemeral one must not double-render. Matched by text
-  // prefix in either direction since the stream can trail the transcript.
+  // takes over and the ephemeral one must not double-render. Modern runtimes
+  // match by stable message-id + content-index identity. Text-prefix matching
+  // remains only when either side predates that identity.
   // Only the current turn's persisted thinking is compared — live blocks are
   // reset on session_active, so a match against an older turn can only be a
   // false positive (the model reusing a stock opener suppresses the live card).
   const unpersistedThinkingBlocks = useMemo(() => {
-    if (!thinkingBlocks.length || !messages?.length) return thinkingBlocks
-    const persisted: string[] = []
+    if (!thinkingBlocks.length) return thinkingBlocks
+
+    // Opus can emit a signed thinking block with no display text. Keep the
+    // placeholder only while that exact block is still open; once thinking_stop
+    // arrives, an empty card has nothing useful to show even if the wider turn
+    // remains active for a following tool call or response.
+    const displayableThinkingBlocks = thinkingBlocks.filter(
+      b => b.text.trim() || (isActive && b.endedAt === null)
+    )
+    if (!displayableThinkingBlocks.length || !messages?.length) return displayableThinkingBlocks
+
+    const persisted: Array<{ id?: string; text: string }> = []
     let interrupted = false
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i]
@@ -448,7 +842,12 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       if (isTurnStartingUserMessage(m)) break
       if (m.type === 'assistant' && Array.isArray((m as ApiMessage).thinking)) {
         for (const t of (m as ApiMessage).thinking!) {
-          if (typeof t?.text === 'string' && t.text.trim()) persisted.push(t.text.trim())
+          if (typeof t?.text === 'string' && t.text.trim()) {
+            persisted.push({
+              ...(typeof t.id === 'string' && t.id && { id: t.id }),
+              text: t.text.trim(),
+            })
+          }
         }
       }
     }
@@ -460,13 +859,18 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     // An interrupted turn is over even when nothing persisted: the SDK
     // discarded whatever the leftover live blocks hold, so they'd strand.
     if (!isActive && (persisted.length || interrupted)) return []
-    return thinkingBlocks.filter(b => {
+    return displayableThinkingBlocks.filter(b => {
       const t = b.text.trim()
-      // Blocks with no streamed text (display option off) have no persisted
-      // counterpart to collide with — keep them while the turn runs, but don't
-      // let them strand in an idle transcript.
-      if (!t) return isActive
-      return !persisted.some(p => p.startsWith(t) || t.startsWith(p))
+      const matched = persisted.some(p => {
+        // When both sides have an identity, text must not override it: models
+        // legitimately reuse stock reasoning across different responses.
+        if (b.persistedId && p.id) return b.persistedId === p.id
+        // Legacy runtime/transcript fallback. Prefix matching tolerates a live
+        // stream that trails the completed transcript.
+        return !!t && (p.text.startsWith(t) || t.startsWith(p.text))
+      })
+      if (matched) return false
+      return true
     })
   }, [messages, thinkingBlocks, isActive])
 
@@ -484,42 +888,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     return streamingToolUses.filter(t => !persistedToolIds.has(t.id))
   }, [messages, streamingToolUses])
 
-  // Compute elapsed time for each completed response turn
-  // A turn starts with a user message and ends at the last assistant message before the next user message (or end of messages when idle)
-  const turnElapsedTimes = useMemo(() => {
-    const elapsed = new Map<string, number>()
-    if (!messages) return elapsed
-
-    let lastUserMessageTime: number | null = null
-    let lastAssistantMessageId: string | null = null
-    let lastAssistantMessageTime: number | null = null
-
-    for (const msg of messages) {
-      // Queued (mid-turn) user messages don't end the turn they appear in
-      if (isTurnStartingUserMessage(msg)) {
-        // Close previous turn
-        if (lastUserMessageTime && lastAssistantMessageId && lastAssistantMessageTime) {
-          elapsed.set(lastAssistantMessageId, lastAssistantMessageTime - lastUserMessageTime)
-        }
-        lastUserMessageTime = new Date(msg.createdAt).getTime()
-        lastAssistantMessageId = null
-        lastAssistantMessageTime = null
-      } else if (msg.type === 'assistant') {
-        lastAssistantMessageId = msg.id
-        lastAssistantMessageTime = new Date(msg.createdAt).getTime()
-      }
-    }
-
-    // Close the last turn if session is idle, or if the user has sent a new message
-    // (a pending message means a new turn started, so the previous one is complete)
-    if ((!isActive || hasTurnStartingPendingMessage) && lastUserMessageTime && lastAssistantMessageId && lastAssistantMessageTime) {
-      elapsed.set(lastAssistantMessageId, lastAssistantMessageTime - lastUserMessageTime)
-    }
-
-    return elapsed
-  }, [messages, isActive, hasTurnStartingPendingMessage])
-
-  // Collect delivered files for each completed turn (same turn boundaries as turnElapsedTimes)
+  // Collect delivered files for each completed turn.
   const turnDeliveredFiles = useMemo(() => {
     const filesMap = new Map<string, { filePath: string }[]>()
     if (!messages) return filesMap
@@ -574,6 +943,199 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     return null
   }, [messages, hasTurnStartingPendingMessage, streamingMessage, isStreamingMessagePersisted, unpersistedStreamingToolUses])
 
+  // Group persisted history into user-initiated turns, then split each completed
+  // turn into visual work phases at queued steering messages. The actual turn
+  // remains fully expanded until it completes; afterward each steering message
+  // floats between the summary for the work before it and the summary for the
+  // work it initiated.
+  const hasUnpersistedStreamingMessage =
+    !!streamingMessage && !isStreamingMessagePersisted
+  const hasUnpersistedStreamingTools = unpersistedStreamingToolUses.length > 0
+  const hasUnpersistedThinking = unpersistedThinkingBlocks.length > 0
+
+  const { completedTurns, completedTurnByItemId, collapsedMessageById } = useMemo(() => {
+    const turns: CompletedTurn[] = []
+    const byItemId = new Map<string, CompletedTurn>()
+    const collapsedById = new Map<string, ApiMessage>()
+    let actualTurnStartIndex: number | null = null
+
+    const finishWorkPhase = (
+      startIndex: number,
+      endIndex: number,
+      isTerminalPhase: boolean,
+      finalTextIsStillStreaming = false,
+    ) => {
+      if (endIndex <= startIndex + 1) return
+      const items = visibleMessages.slice(startIndex, endIndex)
+      const start = items[0]
+      if (!start || start.type !== 'user') return
+
+      const assistantMessages = items.filter(
+        (item): item is ApiMessage => item.type === 'assistant'
+      )
+      const finalAssistant = assistantMessages[assistantMessages.length - 1]
+      if (!finalAssistant) return
+
+      // The persisted tail may already be the completed answer even while an
+      // older, divergent live text buffer is still waiting to reconcile. Never
+      // hide that tail: at worst it is the latest visible checkpoint until the
+      // streamed answer persists, and hiding it loses real output in the
+      // queued-message cancellation race.
+      const answerMessageIds = new Set([finalAssistant.id])
+
+      // A declined/cancelled user-input request can itself be the terminal
+      // output. Keep those historical cards visible, regardless of parallel
+      // call order. Ordinary tool work stays behind the phase disclosure.
+      const visibleTerminalToolCalls = isTerminalPhase
+        ? finalAssistant.toolCalls.filter((toolCall) =>
+            isBlockingUserInputToolName(toolCall.name),
+          )
+        : []
+      const visibleTerminalToolCallIds = new Set(
+        visibleTerminalToolCalls.map((toolCall) => toolCall.id),
+      )
+      const revealedToolCallIds = new Set(
+        finalAssistant.toolCalls
+          .filter((toolCall) => !visibleTerminalToolCallIds.has(toolCall.id))
+          .map((toolCall) => toolCall.id),
+      )
+
+      const answerHasHiddenThinking =
+        finalAssistant.thinking?.some((block) => block.text.trim().length > 0) === true
+      const hasCollapsibleWork =
+        assistantMessages.some((message) => !answerMessageIds.has(message.id)) ||
+        answerHasHiddenThinking ||
+        finalAssistant.toolCalls.length > visibleTerminalToolCalls.length
+      // Turns with no hidden work don't need a disclosure row, but they also
+      // don't need an entry in the completed-turn map: the answer and any
+      // terminal user-input outcome already render naturally.
+      if (!hasCollapsibleWork) return
+
+      collapsedById.set(finalAssistant.id, {
+        ...finalAssistant,
+        thinking: undefined,
+        toolCalls: visibleTerminalToolCalls,
+      })
+
+      let toolCallCount = 0
+      let tokenCount = 0
+      let hasTokenUsage = false
+      for (const message of assistantMessages) {
+        for (const toolCall of message.toolCalls) {
+          toolCallCount += 1 + (toolCall.subagent?.totalToolUseCount ?? 0)
+          if (toolCall.subagent?.totalTokens !== undefined) {
+            tokenCount += toolCall.subagent.totalTokens
+            hasTokenUsage = true
+          }
+        }
+        if (message.usage) {
+          // Match loadSessionUsageTotals: cumulative billed/processed tokens,
+          // including the four raw provider usage fields for every response.
+          tokenCount +=
+            message.usage.inputTokens +
+            message.usage.outputTokens +
+            message.usage.cacheCreationInputTokens +
+            message.usage.cacheReadInputTokens
+          hasTokenUsage = true
+        }
+      }
+
+      const startTime = new Date(start.createdAt).getTime()
+      const endTime = new Date(finalAssistant.createdAt).getTime()
+      const turn: CompletedTurn = {
+        id: start.id,
+        startMessageId: start.id,
+        finalAssistantMessageId: finalTextIsStillStreaming ? null : finalAssistant.id,
+        answerMessageIds,
+        revealedToolCallIds,
+        elapsedMs:
+          Number.isFinite(startTime) && Number.isFinite(endTime)
+            ? Math.max(0, endTime - startTime)
+            : 0,
+        toolCallCount,
+        tokenCount,
+        hasTokenUsage,
+      }
+      turns.push(turn)
+      for (const item of items) byItemId.set(item.id, turn)
+    }
+
+    const finishActualTurn = (endIndex: number, finalTextIsStillStreaming = false) => {
+      if (
+        actualTurnStartIndex === null ||
+        endIndex <= actualTurnStartIndex + 1
+      ) return
+
+      let phaseStartIndex = actualTurnStartIndex
+      for (let i = actualTurnStartIndex + 1; i < endIndex; i++) {
+        const item = visibleMessages[i]
+        if (item.type !== 'user' || !item.queued) continue
+        finishWorkPhase(phaseStartIndex, i, false)
+        phaseStartIndex = i
+      }
+      finishWorkPhase(
+        phaseStartIndex,
+        endIndex,
+        true,
+        finalTextIsStillStreaming,
+      )
+    }
+
+    for (let i = 0; i < visibleMessages.length; i++) {
+      if (!isTurnStartingUserMessage(visibleMessages[i])) continue
+      if (actualTurnStartIndex !== null) finishActualTurn(i)
+      actualTurnStartIndex = i
+    }
+
+    const hasUnreconciledOutput =
+      hasUnpersistedStreamingMessage ||
+      hasUnpersistedStreamingTools ||
+      hasUnpersistedThinking
+    if (actualTurnStartIndex !== null && (!isActive || hasTurnStartingPendingMessage)) {
+      // session_idle can precede the final messages refetch. Collapse the
+      // persisted work immediately, but don't mistake its last interim text
+      // for the final answer — the still-streamed final text below owns that.
+      finishActualTurn(
+        visibleMessages.length,
+        hasUnreconciledOutput && !hasTurnStartingPendingMessage,
+      )
+    }
+
+    return {
+      completedTurns: turns,
+      completedTurnByItemId: byItemId,
+      collapsedMessageById: collapsedById,
+    }
+  }, [
+    visibleMessages,
+    hasUnpersistedStreamingMessage,
+    hasUnpersistedStreamingTools,
+    hasUnpersistedThinking,
+    isActive,
+    hasTurnStartingPendingMessage,
+  ])
+
+  // A turn completing collapses its whole work phase into a summary row — a
+  // massive one-commit shrink whose browser clamp reads as the reader
+  // scrolling up, stranding the viewport above the final answer. Guard the
+  // transition from the same commit (this runs before the clamp's scroll
+  // event can dispatch, so the shield is race-free here).
+  const prevCompletedTurnCountRef = useRef(completedTurns.length)
+  useLayoutEffect(() => {
+    const grew = completedTurns.length > prevCompletedTurnCountRef.current
+    prevCompletedTurnCountRef.current = completedTurns.length
+    if (grew && stickState.isAtBottom) protectFollowTransition()
+  }, [completedTurns, stickState, protectFollowTransition])
+
+  // Drop expansion state for turns that no longer exist after edits/refetches.
+  useEffect(() => {
+    const validIds = new Set(completedTurns.map((turn) => turn.id))
+    setExpandedTurnIds((current) => {
+      if ([...current].every((id) => validIds.has(id))) return current
+      return new Set([...current].filter((id) => validIds.has(id)))
+    })
+  }, [completedTurns])
+
   // Determine which messages could have tool calls that are still running.
   // Only the trailing assistant messages (after the last user message) can have running tools,
   // and only if the session is active and there's no pending user message (which means user moved on).
@@ -592,32 +1154,176 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     return result
   }, [messages, isActive, hasTurnStartingPendingMessage])
 
-  // Re-pin to bottom when the user sends a new message. Track ids actually
-  // seen — not a count — so a send racing a ghost removal still re-pins, and
-  // a removal alone never yanks a scrolled-up reader back down.
+  // Detect actual sends by id (rather than list length, since materialization
+  // can remove one ghost as another arrives). A turn-starting send gets a
+  // stable reading line 100px from the viewport top; queued mid-turn sends
+  // retain the regular live-edge behavior.
   const seenPendingIdsRef = useRef(new Set<string>())
-  useEffect(() => {
+  useLayoutEffect(() => {
     const seen = seenPendingIdsRef.current
     let hasNewSend = false
+    let newestTurnStart: PendingMessage | undefined
     for (const pending of pendingUserMessages ?? []) {
       if (!seen.has(pending.localId)) {
         seen.add(pending.localId)
         hasNewSend = true
+        if (!pending.queued) newestTurnStart = pending
       }
     }
-    if (hasNewSend) {
-      isScrolledToBottomRef.current = true
-      setShowScrollToBottom(false)
-    }
-  }, [pendingUserMessages])
 
-  // Auto-scroll to bottom when new messages arrive or requests appear,
-  // but only if the user hasn't scrolled up to read earlier content.
-  useEffect(() => {
-    if (scrollRef.current && isScrolledToBottomRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    if (hasNewSend) {
+      if (newestTurnStart) {
+        const viewport = scrollRef.current
+        const anchor = Array.from(
+          contentBodyRef.current?.querySelectorAll<HTMLElement>('[data-turn-anchor-id]') ?? [],
+        ).find((element) => element.dataset.turnAnchorId === newestTurnStart.localId)
+
+        if (viewport && anchor) {
+          lastScrollTopRef.current = viewport.scrollTop
+          const anchorTop =
+            anchor.getBoundingClientRect().top -
+            viewport.getBoundingClientRect().top +
+            viewport.scrollTop
+          anchoredTurnRef.current = {
+            localId: newestTurnStart.localId,
+            scrollTop: Math.max(0, anchorTop - TURN_ANCHOR_TOP),
+          }
+        } else {
+          anchoredTurnRef.current = null
+          setBottomSpacerHeight(0)
+        }
+      } else {
+        anchoredTurnRef.current = null
+        setBottomSpacerHeight(0)
+      }
+
+      // The viewport intentionally sits below the new reading line until the
+      // scroll below travels there — hold the reserve restore off for the
+      // whole interval (state.animation alone starts too late: the library
+      // assigns it in its first animation frame, and a commit can land first).
+      sendScrollInFlightRef.current = true
+      // Size the reserve before scrolling so the scroll target IS the new
+      // turn's reading line (the spacer inflates scrollHeight to end there).
+      syncTurnReserve()
+      // The collapse of the finished turn above (same commit as the ghost)
+      // shrinks content and can clamp scrollTop — guard the transition so
+      // that clamp echo cannot latch an escape under the send.
+      protectFollowTransition()
+      // A send always returns the reader to the thread: re-engage following
+      // and glide to the reading line (or the live edge for queued sends).
+      // Under reduced motion, position synchronously instead of gliding.
+      if (prefersReducedMotion()) {
+        stickState.scrollTop = Math.max(0, stickState.calculatedTargetScrollTop)
+      }
+      void Promise.resolve(
+        stickScrollToBottom(prefersReducedMotion() ? 'instant' : undefined),
+      ).finally(() => {
+        sendScrollInFlightRef.current = false
+      })
+      // Programmatic writes fire their scroll event asynchronously (and not at
+      // all in jsdom) — resync the gesture-delta baseline now so the write
+      // isn't misread as a user delta.
+      lastScrollTopRef.current = scrollRef.current?.scrollTop ?? 0
+      return
     }
-  }, [messages, pendingUserMessages, streamingMessage, streamingToolUses, thinkingBlocks, isCompacting, pendingRequestCount, activeSubagents])
+
+    syncTurnReserve()
+  }, [
+    messages,
+    pendingUserMessages,
+    streamingMessage,
+    streamingToolUses,
+    thinkingBlocks,
+    isCompacting,
+    pendingRequestCount,
+    activeSubagents,
+    syncTurnReserve,
+    setBottomSpacerHeight,
+    scrollRef,
+    stickState,
+    stickScrollToBottom,
+    protectFollowTransition,
+    bottomInset,
+  ])
+
+  // Markdown, images, and expanded tool cards can change height without a
+  // message-state update. Feed those layout changes through the same reserve
+  // calculation so they cannot make the anchored turn jump. Re-attach after
+  // the loading/error states resolve — the scroll container mounts only then.
+  useEffect(() => {
+    const content = contentBodyRef.current
+    const viewport = scrollRef.current
+    if (!content || !viewport || typeof ResizeObserver === 'undefined') return
+    let frameId = 0
+    let lastViewportHeight = viewport.clientHeight
+    let lastContentHeight = content.offsetHeight
+    const observer = new ResizeObserver(() => {
+      // A vertical viewport resize is invisible to the follow library (it
+      // observes only the content element), and browsers anchor the TOP edge
+      // on resize — so a window shrink would slide the live edge behind the
+      // fold. Re-pin immediately while following, guarded against the grow
+      // clamp's scroll echo being read as an escape (a viewport GROW lowers
+      // the scroll range, and the browser's clamp fires a scroll event that
+      // classifies as the reader scrolling up). During the turn reserve the
+      // spacer math already keeps the reading line valid, so no pin there.
+      const viewportHeight = viewport.clientHeight
+      if (viewportHeight !== lastViewportHeight) {
+        lastViewportHeight = viewportHeight
+        if (stickState.isAtBottom && !anchoredTurnRef.current) {
+          protectFollowTransition()
+          stickState.scrollTop = Math.max(0, stickState.calculatedTargetScrollTop)
+          lastScrollTopRef.current = viewport.scrollTop
+        }
+      }
+      // Catch-all for content shrinks at the live edge (a thinking card
+      // collapsing, a streamed block swapped for its shorter persisted form):
+      // each one clamps scrollTop and can latch a spurious escape the same
+      // way. The commit-hooked guards cover the big known transitions
+      // race-free; this covers the rest via the deferred verification.
+      const contentHeight = content.offsetHeight
+      if (contentHeight < lastContentHeight && stickState.isAtBottom) {
+        protectFollowTransition()
+      }
+      lastContentHeight = contentHeight
+      cancelAnimationFrame(frameId)
+      frameId = requestAnimationFrame(syncTurnReserve)
+    })
+    observer.observe(content)
+    observer.observe(viewport)
+    return () => {
+      cancelAnimationFrame(frameId)
+      observer.disconnect()
+    }
+  }, [syncTurnReserve, scrollRef, stickState, protectFollowTransition, isLoading, error])
+
+  // Escape from following is owned by the stick-to-bottom library (wheel
+  // direction, scroll direction, selection). These stamps exist only so the
+  // scroll handler can attribute reserve adjustments to a live gesture.
+  const handleUserScrollIntent = useCallback(() => {
+    lastGestureAtRef.current = performance.now()
+  }, [])
+
+  // Scrollbar drags emit no wheel/touch/key events — track the held pointer so
+  // a multi-second drag stays attributable beyond the gesture window.
+  const handlePointerDown = useCallback(() => {
+    pointerDownRef.current = true
+    lastGestureAtRef.current = performance.now()
+  }, [])
+  useEffect(() => {
+    const release = () => {
+      pointerDownRef.current = false
+    }
+    window.addEventListener('pointerup', release)
+    window.addEventListener('pointercancel', release)
+    return () => {
+      window.removeEventListener('pointerup', release)
+      window.removeEventListener('pointercancel', release)
+    }
+  }, [])
+
+  const handleScrollKey = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (SCROLL_KEYS.has(event.key)) handleUserScrollIntent()
+  }, [handleUserScrollIntent])
 
   // Peer messages still worth showing optimistically: not our own, and the
   // persisted copy (by uuid, or — for queued/steering messages whose uuid the
@@ -638,6 +1344,40 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       ),
     [peerUserMessages, messages, user?.id]
   )
+
+  // New-turn ghosts should receive the same flag immediately, before their
+  // persisted transcript entry arrives. Process them in their render order and
+  // show at most one flag before the next assistant response.
+  const optimisticTimeFlagIds = useMemo(() => {
+    const ids = new Set<string>()
+    let {
+      hasSeenUser,
+      hasUserSinceLastAssistant,
+      lastAssistantAt,
+    } = timeFlagState
+    const ghosts = [
+      ...visiblePeerMessages
+        .filter((peer) => !peer.queued)
+        .map((peer) => ({ id: peer.uuid, sentAt: peer.receivedAt })),
+      ...(pendingUserMessages ?? [])
+        .filter((pending) => !pending.queued)
+        .map((pending) => ({ id: pending.localId, sentAt: pending.sentAt })),
+    ]
+
+    for (const ghost of ghosts) {
+      const sentAt = new Date(ghost.sentAt)
+      if (
+        !hasSeenUser ||
+        (!hasUserSinceLastAssistant && isSessionTimeGap(sentAt, lastAssistantAt))
+      ) {
+        ids.add(ghost.id)
+      }
+      hasSeenUser = true
+      hasUserSinceLastAssistant = true
+    }
+
+    return ids
+  }, [timeFlagState, visiblePeerMessages, pendingUserMessages])
 
   // Cancel a queued message before the agent picks it up. cancelled: false
   // means we lost the race — the agent already has the message, so flip the
@@ -773,56 +1513,164 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
 
   return (
     <div className="relative flex-1 min-h-0 overflow-hidden">
-      <div className="overflow-y-auto overscroll-contain h-full" style={{ overflowAnchor: 'none' }} ref={scrollRef} onScroll={handleScroll} data-testid="message-list" data-message-content-area>
-        <div className={`mx-auto w-full max-w-[720px] px-4 pb-4 space-y-4 ${readOnly ? 'pt-3' : 'pt-14'}`}>
+      {/* A labelled, focusable scroll region is intentional: keyboard users
+          need to be able to drive the transcript with its scroll keys. */}
+      {/* eslint-disable jsx-a11y/no-noninteractive-tabindex */}
+      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-noninteractive-tabindex */}
+      <div
+        className="overflow-y-auto overscroll-contain h-full"
+        style={{ overflowAnchor: 'none' }}
+        ref={scrollRef}
+        onScroll={handleScroll}
+        onWheel={handleUserScrollIntent}
+        onTouchMove={handleUserScrollIntent}
+        onPointerDown={handlePointerDown}
+        onKeyDown={handleScrollKey}
+        role="region"
+        aria-label="Messages"
+        tabIndex={0}
+        data-testid="message-list"
+        data-message-content-area
+      >
+        <div ref={contentRef} className="mx-auto w-full max-w-[720px] px-4">
+        <div
+          ref={contentBodyRef}
+          className={`space-y-4 ${readOnly ? 'pt-3' : 'pt-[100px]'}`}
+          role="log"
+          aria-relevant="additions"
+          aria-busy={isStreaming || undefined}
+        >
         {hiddenCount > 0 && (
           <div className="flex items-center justify-center py-3 text-xs text-muted-foreground">
             {hiddenCount} earlier {hiddenCount === 1 ? 'message' : 'messages'} hidden — scroll up to load
           </div>
         )}
-        {windowedMessages.map((item) => (
-          <Fragment key={item.id}>
-            {item.type === 'memory_recall' ? (
-              <MemoryRecallItem recall={item as ApiMemoryRecall} />
-            ) : item.type === 'compact_boundary' ? (
-              <CompactBoundaryItem boundary={item as ApiCompactBoundary} />
-            ) : item.type === 'informational' ? (
-              <InformationalItem item={item as ApiInformational} />
-            ) : (
-              <>
-                <MessageErrorBoundary kind="message" raw={item} itemId={item.id}>
-                  <MessageItem message={item as ApiMessage} agentSlug={agentSlug} sessionId={sessionId} isSessionActive={canHaveRunningToolCalls.has(item.id)} activeSubagents={activeSubagents} completedSubagents={completedSubagents} onRemoveMessage={readOnly ? undefined : handleRemoveMessage} onRemoveToolCall={readOnly ? undefined : handleRemoveToolCall} readOnly={readOnly} />
-                </MessageErrorBoundary>
-                {turnDeliveredFiles.has(item.id) && item.id !== deferredElapsedMessageId && (
-                  <DeliveredFiles files={turnDeliveredFiles.get(item.id)!} agentSlug={agentSlug} />
-                )}
-                {turnElapsedTimes.has(item.id) && item.id !== deferredElapsedMessageId && (
-                  <div className="flex items-center gap-3 pb-1 -mt-3 text-xs text-muted-foreground tabular-nums italic">
-                    <span>Worked for {formatElapsed(turnElapsedTimes.get(item.id)!)}</span>
-                    <div className="h-px flex-1 bg-border" />
-                    {hasVoiceConfigured && (item as ApiMessage).type === 'assistant' && item.id === lastAssistantElapsedId && (
-                      <button
-                        type="button"
-                        onClick={handleProvideFeedback}
-                        className="flex items-center gap-1 not-italic text-muted-foreground hover:text-foreground transition-colors"
-                      >
-                        <MessageSquarePlus className="h-3 w-3" />
-                        <span>Voice feedback</span>
-                      </button>
-                    )}
-                  </div>
-                )}
-              </>
-            )}
-          </Fragment>
-        ))}
+        {windowedMessages.map((item, index) => {
+          const turn = completedTurnByItemId.get(item.id)
+          const expanded = !!turn && expandedTurnIds.has(turn.id)
+          const previousItem = index > 0 ? windowedMessages[index - 1] : null
+          const previousTurn = previousItem
+            ? completedTurnByItemId.get(previousItem.id)
+            : undefined
+          const showTurnSummary =
+            !!turn &&
+            item.id !== turn.startMessageId &&
+            (!previousTurn ||
+              previousTurn.id !== turn.id ||
+              previousItem?.id === turn.startMessageId)
+          const collapsed = !!turn && !expanded
+          const isAssistantItem = item.type === 'assistant'
+          const isAnswerMessage =
+            !!turn && isAssistantItem && turn.answerMessageIds.has(item.id)
+          const hideItem =
+            collapsed &&
+            isAssistantItem &&
+            !isAnswerMessage
+          const isRevealedWorkItem =
+            expanded &&
+            isAssistantItem &&
+            !isAnswerMessage
+
+          let renderedItem: ReactNode = null
+          if (!hideItem) {
+            if (item.type === 'memory_recall') {
+              renderedItem = <MemoryRecallItem recall={item as ApiMemoryRecall} />
+            } else if (item.type === 'compact_boundary') {
+              renderedItem = <CompactBoundaryItem boundary={item as ApiCompactBoundary} />
+            } else if (item.type === 'informational') {
+              renderedItem = <InformationalItem item={item as ApiInformational} />
+            } else {
+              const message = item as ApiMessage
+              // Collapsed answer shapes are memoized with the turn grouping so
+              // streaming deltas don't allocate and re-render past messages.
+              const displayedMessage = collapsed
+                ? collapsedMessageById.get(message.id) ?? message
+                : message
+              const messageItem = (
+                <>
+                  <MessageErrorBoundary kind="message" raw={item} itemId={item.id}>
+                    <MessageItem
+                      message={displayedMessage}
+                      agentSlug={agentSlug}
+                      sessionId={sessionId}
+                      isSessionActive={canHaveRunningToolCalls.has(item.id)}
+                      activeSubagents={activeSubagents}
+                      completedSubagents={completedSubagents}
+                      onRemoveMessage={readOnly ? undefined : handleRemoveMessage}
+                      onRemoveToolCall={readOnly ? undefined : handleRemoveToolCall}
+                      readOnly={readOnly}
+                      workDetailClassName={
+                        expanded && isAnswerMessage
+                          ? TURN_WORK_REVEAL_CLASS
+                          : undefined
+                      }
+                      revealedToolCallIds={
+                        expanded && isAnswerMessage
+                          ? turn.revealedToolCallIds
+                          : undefined
+                      }
+                    />
+                  </MessageErrorBoundary>
+                  {turnDeliveredFiles.has(item.id) && item.id !== deferredElapsedMessageId && (
+                    <DeliveredFiles files={turnDeliveredFiles.get(item.id)!} agentSlug={agentSlug} />
+                  )}
+                </>
+              )
+              renderedItem = isRevealedWorkItem ? (
+                <div
+                  className={TURN_WORK_REVEAL_CLASS}
+                  data-testid="turn-work-detail"
+                >
+                  {messageItem}
+                </div>
+              ) : messageItem
+            }
+          }
+
+          return (
+            <Fragment key={item.id}>
+              {showTurnSummary && (
+                <TurnSummaryRow
+                  turn={turn}
+                  expanded={expanded}
+                  onToggle={() => toggleTurn(turn.id)}
+                  onProvideFeedback={
+                    hasVoiceConfigured && turn.finalAssistantMessageId === lastAssistantMessageId
+                      ? handleProvideFeedback
+                      : undefined
+                  }
+                />
+              )}
+              {timeFlagState.messageIds.has(item.id) && (
+                <SessionTimeFlag date={new Date(item.createdAt)} />
+              )}
+              {renderedItem}
+            </Fragment>
+          )
+        })}
 
         {/* Turn-starting ghosts (sent while idle) — the next turn belongs to
             them, so they render before any streaming content. Queued ghosts
             (sent mid-turn) render at the bottom instead, below the current
             turn's streaming output and running tools. */}
-        {visiblePeerMessages.filter((p) => !p.queued).map(renderPeerGhost)}
-        {pendingUserMessages?.filter((p) => !p.queued).map(renderPendingGhost)}
+        {visiblePeerMessages.filter((p) => !p.queued).map((peer) => (
+          <Fragment key={peer.uuid}>
+            {optimisticTimeFlagIds.has(peer.uuid) && (
+              <SessionTimeFlag date={new Date(peer.receivedAt)} />
+            )}
+            {renderPeerGhost(peer)}
+          </Fragment>
+        ))}
+        {pendingUserMessages?.filter((p) => !p.queued).map((pending) => (
+          <Fragment key={pending.localId}>
+            {optimisticTimeFlagIds.has(pending.localId) && (
+              <SessionTimeFlag date={new Date(pending.sentAt)} />
+            )}
+            <div data-turn-anchor-id={pending.localId}>
+              {renderPendingGhost(pending)}
+            </div>
+          </Fragment>
+        ))}
 
         {/* Typing indicator - shown when ANOTHER user is typing. The server echoes
             user_typing back to the sender too, so exclude our own id (mirrors the
@@ -905,7 +1753,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
             } else {
               inner = (
                 <div className="max-w-[80%]">
-                  <ToolCallItem toolCall={syntheticToolCall} agentSlug={agentSlug} isSessionActive={isActive} />
+                  <ToolCallItem toolCall={syntheticToolCall} agentSlug={agentSlug} sessionId={sessionId} isSessionActive={isActive} />
                 </div>
               )
             }
@@ -926,15 +1774,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
           )
         })}
 
-        {/* Deferred delivered files + elapsed time — shown after streaming content */}
+        {/* Deferred delivered files — shown after streaming content */}
         {deferredElapsedMessageId && turnDeliveredFiles.has(deferredElapsedMessageId) && (
           <DeliveredFiles files={turnDeliveredFiles.get(deferredElapsedMessageId)!} agentSlug={agentSlug} />
-        )}
-        {deferredElapsedMessageId && turnElapsedTimes.has(deferredElapsedMessageId) && (
-          <div className="flex items-center gap-3 pb-1 -mt-3 text-xs text-muted-foreground tabular-nums italic">
-            <span>Worked for {formatElapsed(turnElapsedTimes.get(deferredElapsedMessageId)!)}</span>
-            <div className="h-px flex-1 bg-border" />
-          </div>
         )}
 
         {/* Queued ghosts — waiting for the agent loop to pick them up, so they
@@ -965,11 +1807,28 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
 
         {/* Pending interactive requests render in the composer slot — see SessionChatColumn. */}
         </div>
+        <div
+          ref={bottomSpacerRef}
+          data-testid="turn-anchor-spacer"
+          aria-hidden="true"
+          hidden
+        />
+        {/* Live-edge clearance above the overlaid footer. A real element
+            rather than container padding: the follow library's ResizeObserver
+            measures the content box, so footer growth must change it. */}
+        <div
+          data-testid="live-edge-clearance"
+          aria-hidden="true"
+          style={{ height: bottomInset > 0 ? bottomInset + 16 : 16 }}
+        />
+        </div>
       </div>
-      {showScrollToBottom && !suppressScrollToBottom && (
+      {/* eslint-enable jsx-a11y/no-noninteractive-tabindex */}
+      {!isAtBottom && !suppressScrollToBottom && (
         <button
-          onClick={scrollToBottom}
+          onClick={handleScrollToBottom}
           className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 rounded-full bg-primary text-primary-foreground px-3 py-1.5 text-xs font-medium shadow-lg hover:bg-primary/90 transition-opacity cursor-pointer"
+          style={bottomInset > 0 ? { bottom: bottomInset + 16 } : undefined}
         >
           <ArrowDown className="h-3.5 w-3.5" />
           Scroll to bottom

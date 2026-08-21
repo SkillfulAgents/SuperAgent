@@ -6,6 +6,7 @@ import { useAddMount } from './use-mounts'
 import { useDraft } from '@renderer/context/drafts-context'
 import { appendAttachedFiles, appendMountedFolders } from '@shared/lib/utils/attached-files'
 import { zipFolderFiles, type FolderGroup } from '@renderer/lib/file-utils'
+import { canUseHostFeatures } from '@renderer/lib/host-features'
 import type { Attachment } from '@renderer/components/messages/attachment-preview'
 import {
   findPotentialSecrets,
@@ -33,6 +34,8 @@ interface UseMessageComposerOptions {
   initialAttachments?: Attachment[]
   /** One-shot secure-pill seed, used when moving a draft into a new session. */
   initialSecuredSecrets?: SecuredSecret[]
+  /** Fires on composer-mic transcript updates (before message state changes). */
+  onVoiceTranscript?: () => void
 }
 
 export function useMessageComposer(options: UseMessageComposerOptions) {
@@ -116,19 +119,18 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     })
   }, [])
 
-  const removeSecuredSecrets = useCallback((
-    secrets: SecuredSecret[],
-    range: { start: number; end: number }
-  ) => {
+  const removeSecuredSecrets = useCallback((secrets: SecuredSecret[]) => {
     const secretIds = new Set(secrets.map((secret) => secret.id))
-    setMessage((current) => `${current.slice(0, range.start)}${current.slice(range.end)}`)
     setSecuredSecrets((current) => current.filter((secret) => !secretIds.has(secret.id)))
   }, [])
 
   // Mount choice dialog state
   const [pendingFolders, setPendingFolders] = useState<FolderGroup[]>([])
   const [showMountDialog, setShowMountDialog] = useState(false)
-  const isElectron = !!window.electronAPI
+  // Whether a dropped folder can be offered as a *mount* rather than an upload.
+  // Mounting hands the agent's machine a path on this one, so it needs both the
+  // bridge and for the two to be the same machine.
+  const canOfferMount = canUseHostFeatures()
 
   const handleFoldersReceived = useCallback((folders: FolderGroup[]) => {
     setPendingFolders(folders)
@@ -149,14 +151,19 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     handleFolderSelect,
     dragHandlers,
   } = useAttachments({
-    onFoldersReceived: isElectron ? handleFoldersReceived : undefined,
+    onFoldersReceived: canOfferMount ? handleFoldersReceived : undefined,
     initialAttachments: options.initialAttachments,
   })
 
+  // Pulled off `options` so the dep is the callback itself. Depending on
+  // `options` instead would rebuild this every render — callers pass an inline
+  // object literal, so its identity is never stable.
+  const { onVoiceTranscript } = options
   const voiceInput = useVoiceInput({
     onTranscriptUpdate: useCallback((text: string) => {
+      onVoiceTranscript?.()
       setMessage(text)
-    }, []),
+    }, [onVoiceTranscript]),
   })
 
   const handleMountChoice = useCallback((choice: 'upload' | 'mount' | 'cancel') => {
@@ -179,7 +186,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     setPendingFolders([])
   }, [pendingFolders, addFoldersDirectly, addMounts])
 
-  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLElement>) => {
     const items = e.clipboardData?.items
     if (!items) return
 
@@ -197,7 +204,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     }
   }, [addFiles])
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: Pick<React.FormEvent, 'preventDefault'>) => {
     e.preventDefault()
 
     // Stop voice recording first and await the final text: stopRecording flushes

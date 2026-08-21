@@ -3,7 +3,7 @@ import { DetailCard } from '@renderer/components/triggers/detail-card'
 import { useUpdateChatIntegration } from '@renderer/hooks/use-chat-integrations'
 import { deriveChatIntegrationState } from '@shared/lib/chat-integrations/utils'
 import { ChatIntegrationPill } from './chat-integration-pill'
-import type { ChatIntegration } from '@shared/lib/db/schema'
+import type { PublicChatIntegration as ChatIntegration } from '@shared/lib/chat-integrations/public'
 
 export function IntegrationStatusCard({ integration, connected }: {
   integration: ChatIntegration

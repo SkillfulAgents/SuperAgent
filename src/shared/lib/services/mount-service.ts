@@ -4,8 +4,10 @@ import fs from 'fs'
 import crypto from 'crypto'
 import {
   getAgentDir,
-  readJsonFileStrictSync,
-  writeJsonFileAtomicSync,
+  readJsonFileStrict,
+  writeJsonFileAtomic,
+  withFileLock,
+  directoryExists,
   CorruptFileError,
 } from '@shared/lib/utils/file-storage'
 import { isPathWithinDir } from '@shared/lib/utils/path-safety'
@@ -24,8 +26,8 @@ function getMountsFilePath(slug: string): string {
  * previous catch-all swallowed bad reads, so the next write dropped every prior
  * mount). Do NOT use this on read-only display paths — use {@link getMounts}.
  */
-function readMountsStrict(slug: string): AgentMount[] {
-  return readJsonFileStrictSync(getMountsFilePath(slug), agentMountsSchema, [])
+function readMountsStrict(slug: string): Promise<AgentMount[]> {
+  return readJsonFileStrict(getMountsFilePath(slug), agentMountsSchema, [])
 }
 
 /**
@@ -37,9 +39,9 @@ function readMountsStrict(slug: string): AgentMount[] {
  * writes go through addMount/removeMount, which use the strict read and abort on
  * corruption instead of overwriting.
  */
-export function getMounts(slug: string): AgentMount[] {
+export async function getMounts(slug: string): Promise<AgentMount[]> {
   try {
-    return readMountsStrict(slug)
+    return await readMountsStrict(slug)
   } catch (error) {
     if (error instanceof CorruptFileError) {
       console.error(`Corrupt mounts.json for agent ${slug}; treating as no mounts (NOT overwriting)`, error)
@@ -85,15 +87,15 @@ export const CLOUD_MOUNT_MESSAGE =
   'which can’t be shared into the agent sandbox. Please copy it to a regular local folder ' +
   '(e.g. somewhere under your home directory) and mount that instead.'
 
-function writeMounts(slug: string, mounts: AgentMount[]): void {
+async function writeMounts(slug: string, mounts: AgentMount[]): Promise<void> {
   const filePath = getMountsFilePath(slug)
-  fs.mkdirSync(path.dirname(filePath), { recursive: true })
+  await fs.promises.mkdir(path.dirname(filePath), { recursive: true })
   // Atomic temp-file + rename: an interrupted write can never truncate
   // mounts.json into the half-state the old reader would have swallowed.
-  writeJsonFileAtomicSync(filePath, agentMountsSchema.parse(mounts))
+  await writeJsonFileAtomic(filePath, agentMountsSchema.parse(mounts))
 }
 
-export function addMount(slug: string, hostPath: string): AgentMount {
+export async function addMount(slug: string, hostPath: string): Promise<AgentMount> {
   if (!path.isAbsolute(hostPath)) {
     throw new Error('hostPath must be an absolute path')
   }
@@ -104,48 +106,56 @@ export function addMount(slug: string, hostPath: string): AgentMount {
   if (isCloudStoragePath(hostPath)) {
     throw new Error(CLOUD_MOUNT_MESSAGE)
   }
-  const resolved = fs.realpathSync(hostPath)
+  const resolved = await fs.promises.realpath(hostPath)
   if (isCloudStoragePath(resolved)) {
     throw new Error(CLOUD_MOUNT_MESSAGE)
   }
-  if (!fs.statSync(resolved).isDirectory()) {
+  if (!(await fs.promises.stat(resolved)).isDirectory()) {
     throw new Error('hostPath must be a directory')
   }
 
-  const mounts = readMountsStrict(slug)
-  const baseName = path.basename(resolved)
+  // The read-modify-write must not interleave with a concurrent add/remove for
+  // the same agent (the old sync code got this for free by never yielding).
+  return withFileLock(getMountsFilePath(slug), async () => {
+    const mounts = await readMountsStrict(slug)
+    const baseName = path.basename(resolved)
 
-  // Pick container path, append -2, -3, etc. on collision
-  let containerName = baseName
-  let suffix = 2
-  while (mounts.some((m) => m.containerPath === `/mounts/${containerName}`)) {
-    containerName = `${baseName}-${suffix}`
-    suffix++
-  }
+    // Pick container path, append -2, -3, etc. on collision
+    let containerName = baseName
+    let suffix = 2
+    while (mounts.some((m) => m.containerPath === `/mounts/${containerName}`)) {
+      containerName = `${baseName}-${suffix}`
+      suffix++
+    }
 
-  const mount: AgentMount = {
-    id: crypto.randomUUID(),
-    hostPath: resolved,
-    containerPath: `/mounts/${containerName}`,
-    folderName: baseName,
-    addedAt: new Date().toISOString(),
-  }
+    const mount: AgentMount = {
+      id: crypto.randomUUID(),
+      hostPath: resolved,
+      containerPath: `/mounts/${containerName}`,
+      folderName: baseName,
+      addedAt: new Date().toISOString(),
+    }
 
-  mounts.push(mount)
-  writeMounts(slug, mounts)
-  return mount
+    mounts.push(mount)
+    await writeMounts(slug, mounts)
+    return mount
+  })
 }
 
-export function removeMount(slug: string, mountId: string): void {
-  const mounts = readMountsStrict(slug)
-  const filtered = mounts.filter((m) => m.id !== mountId)
-  writeMounts(slug, filtered)
+export function removeMount(slug: string, mountId: string): Promise<void> {
+  return withFileLock(getMountsFilePath(slug), async () => {
+    const mounts = await readMountsStrict(slug)
+    const filtered = mounts.filter((m) => m.id !== mountId)
+    await writeMounts(slug, filtered)
+  })
 }
 
-export function getMountsWithHealth(slug: string): AgentMountWithHealth[] {
-  const mounts = getMounts(slug)
-  return mounts.map((m) => ({
-    ...m,
-    health: fs.existsSync(m.hostPath) ? 'ok' : 'missing',
-  }))
+export async function getMountsWithHealth(slug: string): Promise<AgentMountWithHealth[]> {
+  const mounts = await getMounts(slug)
+  return Promise.all(
+    mounts.map(async (m) => ({
+      ...m,
+      health: (await directoryExists(m.hostPath)) ? ('ok' as const) : ('missing' as const),
+    }))
+  )
 }

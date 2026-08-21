@@ -1,3 +1,5 @@
+import { API_PREFIX_SNIPPET } from './polyfill-api-prefix'
+
 let cached: string | null = null
 
 export function getLlmPolyfillJs(): string {
@@ -15,15 +17,16 @@ export function getLlmPolyfillJs(): string {
 
 const LLM_SHIM_SOURCE = /* js */ `(function () {
   "use strict";
-
+${API_PREFIX_SNIPPET}
   var _sdkReady = null;
 
   function ensureSdk() {
     if (_sdkReady) return _sdkReady;
     _sdkReady = new Promise(function (resolve, reject) {
       var script = document.createElement("script");
-      // Absolute path — iframe serves from a subpath so relative URLs won't resolve correctly
-      script.src = "/api/llm/anthropic-sdk.js";
+      // Absolute — the iframe serves from a subpath, so a relative URL would not
+      // resolve; apiPrefix keeps it on whichever API served this document.
+      script.src = apiPrefix + "/api/llm/anthropic-sdk.js";
       script.onload = function () {
         if (window.__AnthropicSDK) resolve(window.__AnthropicSDK);
         else { _sdkReady = null; reject(new Error("Anthropic SDK failed to initialize")); }
@@ -129,7 +132,7 @@ const LLM_SHIM_SOURCE = /* js */ `(function () {
       var self = this;
       this._realPromise = ensureSdk().then(function (SDK) {
         var config = Object.assign({}, self._userOpts, {
-          baseURL: window.location.origin + "/api/llm",
+          baseURL: window.location.origin + apiPrefix + "/api/llm",
           apiKey: "placeholder",
           dangerouslyAllowBrowser: true,
         });

@@ -102,6 +102,25 @@ test.describe('Proxy Review Requests', () => {
     await sessionPage.expectAssistantMessage('denied by user', 0, 15000)
   })
 
+  test('proxy review: activity indicator shows awaiting while the card is parked', async ({ page, request }, testInfo) => {
+    const { review } = await sendReviewScenario(page, request, testInfo, 'proxy review', {
+      xAgent: false,
+      toolkit: 'slack',
+      targetPath: 'api/chat.postMessage',
+    })
+
+    await sessionPage.waitForProxyReviewRequestById(review.id, 35000)
+
+    // While the Allow/Deny card is parked, the indicator must read "Waiting for
+    // input..." — before this fix it kept painting "Working...".
+    const indicator = sessionPage.getActivityIndicator()
+    await expect(indicator).toContainText('Waiting for input...')
+
+    // Resolving the review clears the awaiting state.
+    await sessionPage.allowProxyReview(review.id)
+    await expect(sessionPage.getProxyReviewRequests(review.id)).toHaveCount(0, { timeout: 10000 })
+  })
+
   test('proxy review: remember always allow for scope', async ({ page, request }, testInfo) => {
     const { review } = await sendReviewScenario(page, request, testInfo, 'proxy review', {
       xAgent: false,

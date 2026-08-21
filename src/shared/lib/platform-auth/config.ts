@@ -1,6 +1,7 @@
 declare global {
   var __PLATFORM_BASE_URL__: string | undefined
   var __PLATFORM_PROXY_URL__: string | undefined
+  var __PLATFORM_AUTH_ISSUER_URL__: string | undefined
 }
 
 function getConfiguredValue(runtimeValue: string | undefined, buildValue: string | undefined): string {
@@ -15,8 +16,26 @@ function getBuildPlatformProxyUrl(): string {
   return getConfiguredValue(undefined, globalThis.__PLATFORM_PROXY_URL__)
 }
 
+function getBuildPlatformAuthIssuerUrl(): string {
+  return getConfiguredValue(undefined, globalThis.__PLATFORM_AUTH_ISSUER_URL__)
+}
+
 export function getPlatformBaseUrl(): string {
   return getConfiguredValue(process.env.PLATFORM_BASE_URL, getBuildPlatformBaseUrl())
+}
+
+/**
+ * Resolve the platform OIDC auth server base URL (no trailing slash), e.g.
+ * `https://auth.gamutagents.com`. This is a distinct host from the web origin
+ * ({@link getPlatformBaseUrl}) and the proxy ({@link getPlatformProxyBaseUrl});
+ * it serves the RFC 8693 `/token/deployment-assertion` grant endpoint the
+ * desktop app calls to mint a deployment grant. Empty when unconfigured.
+ */
+export function getPlatformAuthIssuerUrl(): string {
+  return getConfiguredValue(
+    process.env.PLATFORM_AUTH_ISSUER_URL,
+    getBuildPlatformAuthIssuerUrl(),
+  ).replace(/\/+$/, '')
 }
 
 /**

@@ -2,6 +2,8 @@ import { spawn, ChildProcess } from 'child_process'
 import * as fs from 'fs'
 import * as path from 'path'
 import { captureDashboardScreenshot, type ScreenshotResult } from './dashboard-screenshot'
+import { notifyDashboardScreenshotReady } from './host-events'
+import { DashboardPackageSchema } from './dashboard-package-schema'
 
 const SCREENSHOT_FILENAME = 'screenshot.png'
 
@@ -10,6 +12,13 @@ export const ARTIFACTS_DIR = process.env.ARTIFACTS_DIR || '/workspace/artifacts'
 const DASHBOARD_BASE_PORT = 5000
 const MAX_RESTARTS = 3
 const RESTART_WINDOW_MS = 5 * 60 * 1000 // 5 minutes
+// Boot screenshots spawn a Chromium per dashboard; deferring them keeps the
+// container's few CPUs free for dashboard/server startup while users wait.
+const BOOT_SCREENSHOT_DELAY_MS = 10_000
+// Bun defaults to 48 concurrent network requests. Under Lima's virtualized
+// network that causes small package downloads to stall in long waves; eight
+// keeps the pipeline full without overwhelming the VM's network path.
+export const BUN_INSTALL_NETWORK_CONCURRENCY = 8
 export const SLUG_REGEX = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/
 
 // dashboard.log is append-only across every start/crash/restart; without a
@@ -67,14 +76,48 @@ export function validateSlug(slug: string): void {
   }
 }
 
+/**
+ * Browser-visible mount supplied to framework build/dev tooling.
+ *
+ * The agent id is injected by the host when the container starts. Dashboards
+ * still work without it (for direct development and older hosts), but only a
+ * host-provided id can form the public Gamut path without hardcoding it in the
+ * dashboard itself.
+ */
+export function getDashboardBasePath(
+  slug: string,
+  agentId: string | undefined = process.env.SUPERAGENT_AGENT_SLUG
+    || process.env.SUPERAGENT_AGENT_ID,
+): string | null {
+  validateSlug(slug)
+  const normalizedAgentId = agentId?.trim()
+  if (!normalizedAgentId || !/^[A-Za-z0-9._-]+$/.test(normalizedAgentId)) return null
+  return `/api/agents/${encodeURIComponent(normalizedAgentId)}/artifacts/${slug}/`
+}
+
 export type DashboardStatus = 'running' | 'stopped' | 'crashed' | 'starting'
+export type DashboardStartupPhase = 'installing-dependencies' | 'starting-server'
+export type DashboardUpstreamPathMode = 'stripped' | 'mounted'
+
+export function getDashboardValidationUrl(
+  slug: string,
+  port: number,
+  mode: DashboardUpstreamPathMode,
+  agentId?: string,
+): string {
+  const pathname = mode === 'mounted' ? (getDashboardBasePath(slug, agentId) ?? '/') : '/'
+  return `http://localhost:${port}${pathname}`
+}
 
 interface DashboardInfo {
   slug: string
   name: string
   description: string
+  upstreamPathMode: DashboardUpstreamPathMode
   port: number
   status: DashboardStatus
+  startupPhase: DashboardStartupPhase
+  firstRun: boolean
   process: ChildProcess | null
   restartCount: number
   restartTimestamps: number[]
@@ -102,23 +145,38 @@ class DashboardManager {
       await fs.promises.mkdir(ARTIFACTS_DIR, { recursive: true })
       const entries = await fs.promises.readdir(ARTIFACTS_DIR, { withFileTypes: true })
 
+      const started: string[] = []
       for (const entry of entries) {
         if (!entry.isDirectory()) continue
 
         const pkgPath = path.join(ARTIFACTS_DIR, entry.name, 'package.json')
         try {
           await fs.promises.access(pkgPath)
-          const info = await this.startDashboard(entry.name)
-          // Fire-and-forget screenshot refresh on boot. No agent is waiting,
-          // so we don't block the scan loop.
-          if (info.status === 'running') {
-            this.captureScreenshot(entry.name).catch((err) => {
-              console.warn(`[DashboardManager] Boot screenshot failed for ${entry.name}:`, err)
-            })
-          }
+          // Boot scan trusts the node_modules freshness heuristic — deps only
+          // change through agent-initiated starts, which force an install.
+          const info = await this.startDashboard(entry.name, { forceInstall: false })
+          if (info.status === 'running') started.push(entry.name)
         } catch {
           // No package.json, skip
         }
+      }
+
+      // Refresh screenshots only after the boot storm settles: each capture
+      // spawns a Chromium, and doing that while dashboards (and the session
+      // prewarm) are still starting starves them of CPU exactly when a user
+      // is waiting for first paint. Sequential on purpose — one Chromium at
+      // a time.
+      if (started.length > 0) {
+        setTimeout(() => {
+          void (async () => {
+            for (const slug of started) {
+              if (this.dashboards.get(slug)?.status !== 'running') continue
+              await this.captureScreenshot(slug).catch((err) => {
+                console.warn(`[DashboardManager] Boot screenshot failed for ${slug}:`, err)
+              })
+            }
+          })()
+        }, BOOT_SCREENSHOT_DELAY_MS)
       }
     } catch (error) {
       console.error('[DashboardManager] Error scanning artifacts:', error)
@@ -136,23 +194,49 @@ class DashboardManager {
       return { ok: false, reason: `Dashboard ${slug} is not running` }
     }
     const outPath = path.join(ARTIFACTS_DIR, slug, SCREENSHOT_FILENAME)
-    return captureDashboardScreenshot(`http://localhost:${info.port}/`, outPath)
+    const url = getDashboardValidationUrl(slug, info.port, info.upstreamPathMode)
+    const result = await captureDashboardScreenshot(url, outPath)
+    if (result.ok) {
+      void notifyDashboardScreenshotReady(slug).catch((error) => {
+        console.warn(`[DashboardManager] Failed to publish screenshot event for ${slug}:`, error)
+      })
+    }
+    return result
   }
 
-  private readPackageJson(slug: string): { name: string; description: string } {
+  private readPackageJson(slug: string): {
+    name: string
+    description: string
+    upstreamPathMode: DashboardUpstreamPathMode
+  } {
     try {
       const pkgPath = path.join(ARTIFACTS_DIR, slug, 'package.json')
-      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'))
+      const pkg = DashboardPackageSchema.parse(JSON.parse(fs.readFileSync(pkgPath, 'utf-8')))
       return {
         name: pkg.name || slug,
         description: pkg.description || '',
+        upstreamPathMode: pkg.gamut?.upstreamPath === 'mounted' ? 'mounted' : 'stripped',
       }
-    } catch {
-      return { name: slug, description: '' }
+    } catch (error) {
+      console.warn(
+        `[DashboardManager] Invalid package.json metadata for ${slug}; using safe defaults:`,
+        error,
+      )
+      return { name: slug, description: '', upstreamPathMode: 'stripped' }
     }
   }
 
-  async startDashboard(slug: string): Promise<DashboardInfo> {
+  /**
+   * `forceInstall` (default true) always runs `bun install` before starting,
+   * so an agent-edited package.json takes effect even when the node_modules
+   * freshness heuristic would skip it. Internal boot/crash-restart paths pass
+   * false — deps can't have changed there, and skipping keeps boot fast.
+   */
+  async startDashboard(
+    slug: string,
+    opts?: { forceInstall?: boolean }
+  ): Promise<DashboardInfo> {
+    const forceInstall = opts?.forceInstall ?? true
     validateSlug(slug)
     const existing = this.dashboards.get(slug)
 
@@ -170,17 +254,21 @@ class DashboardManager {
       this.closeLogStream(existing)
     }
 
-    const { name, description } = this.readPackageJson(slug)
+    const { name, description, upstreamPathMode } = this.readPackageJson(slug)
     const port = existing?.port ?? this.nextPort++
     const dashboardDir = path.join(ARTIFACTS_DIR, slug)
     const logPath = path.join(dashboardDir, 'dashboard.log')
+    const firstRun = !fs.existsSync(path.join(dashboardDir, 'node_modules'))
 
     const info: DashboardInfo = {
       slug,
       name,
       description,
+      upstreamPathMode,
       port,
       status: 'starting',
+      startupPhase: 'starting-server',
+      firstRun,
       process: null,
       restartCount: existing?.restartCount ?? 0,
       restartTimestamps: existing?.restartTimestamps ?? [],
@@ -201,15 +289,25 @@ class DashboardManager {
         console.error(`[DashboardManager] Log stream error for ${slug}:`, error)
       })
 
-      // Run bun install only if node_modules is missing or package.json is newer than it
-      await this.runBunInstallIfNeeded(dashboardDir, info.logStream)
+      // Run bun install: always when forced (deps may have changed), else
+      // only if node_modules is missing or package.json is newer than it
+      await this.runBunInstallIfNeeded(
+        dashboardDir,
+        info.logStream,
+        forceInstall,
+        () => { info.startupPhase = 'installing-dependencies' },
+      )
 
       // Start the dashboard server
+      info.startupPhase = 'starting-server'
+      const dashboardBasePath = getDashboardBasePath(slug)
       const proc = spawn('bun', ['run', 'start'], {
         cwd: dashboardDir,
         env: {
           ...process.env,
           DASHBOARD_PORT: String(port),
+          ...(dashboardBasePath ? { DASHBOARD_BASE_PATH: dashboardBasePath } : {}),
+          DASHBOARD_ARTIFACT_SLUG: slug,
           PORT: String(port),
           NODE_ENV: 'production',
         },
@@ -276,28 +374,65 @@ class DashboardManager {
     return info
   }
 
-  private async runBunInstallIfNeeded(dir: string, logStream?: fs.WriteStream): Promise<void> {
-    const nodeModules = path.join(dir, 'node_modules')
-    const pkgJson = path.join(dir, 'package.json')
-    try {
-      const nmStat = fs.statSync(nodeModules)
-      const pkgStat = fs.statSync(pkgJson)
-      if (nmStat.isDirectory() && nmStat.mtimeMs >= pkgStat.mtimeMs) {
-        logStream?.write('[DashboardManager] node_modules up-to-date, skipping bun install\n')
-        return
+  private async runBunInstallIfNeeded(
+    dir: string,
+    logStream: fs.WriteStream | undefined,
+    force: boolean,
+    onInstallStart: () => void,
+  ): Promise<void> {
+    if (!force) {
+      const nodeModules = path.join(dir, 'node_modules')
+      const pkgJson = path.join(dir, 'package.json')
+      try {
+        const nmStat = fs.statSync(nodeModules)
+        const pkgStat = fs.statSync(pkgJson)
+        if (nmStat.isDirectory() && nmStat.mtimeMs >= pkgStat.mtimeMs) {
+          logStream?.write('[DashboardManager] node_modules up-to-date, skipping bun install\n')
+          return
+        }
+      } catch {
+        // node_modules doesn't exist or stat failed — need install
       }
-    } catch {
-      // node_modules doesn't exist or stat failed — need install
+      // Boot-path install with a lockfile present: try --frozen-lockfile first
+      // so the install is resolution-free and deterministic. If the lockfile
+      // is out of sync with package.json, fall back to a plain install.
+      onInstallStart()
+      if (this.hasLockfile(dir)) {
+        try {
+          return await this.runBunInstall(dir, logStream, ['--frozen-lockfile'])
+        } catch {
+          logStream?.write('[DashboardManager] frozen-lockfile install failed, retrying without\n')
+        }
+      }
+    } else {
+      onInstallStart()
     }
+    // Forced (agent-initiated) or no/stale lockfile: plain install, which
+    // resolves and updates the lockfile as needed.
     return this.runBunInstall(dir, logStream)
   }
 
-  private async runBunInstall(dir: string, logStream?: fs.WriteStream): Promise<void> {
+  private hasLockfile(dir: string): boolean {
+    return (
+      fs.existsSync(path.join(dir, 'bun.lock')) ||
+      fs.existsSync(path.join(dir, 'bun.lockb'))
+    )
+  }
+
+  private async runBunInstall(
+    dir: string,
+    logStream?: fs.WriteStream,
+    extraArgs: string[] = []
+  ): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      const proc = spawn('bun', ['install'], {
-        cwd: dir,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      })
+      const proc = spawn(
+        'bun',
+        ['install', `--network-concurrency=${BUN_INSTALL_NETWORK_CONCURRENCY}`, ...extraArgs],
+        {
+          cwd: dir,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      )
 
       let stderr = ''
       proc.stdout?.on('data', (chunk) => {
@@ -325,7 +460,7 @@ class DashboardManager {
 
   private async waitForPort(port: number, timeoutMs: number): Promise<boolean> {
     const start = Date.now()
-    const interval = 250
+    const interval = 100
     while (Date.now() - start < timeoutMs) {
       try {
         const response = await fetch(`http://localhost:${port}/`, {
@@ -362,9 +497,10 @@ class DashboardManager {
     info.restartCount++
     console.log(`[DashboardManager] Auto-restarting dashboard ${slug} (attempt ${info.restartTimestamps.length}/${MAX_RESTARTS})`)
 
-    // Delay restart slightly
+    // Delay restart slightly. Deps can't have changed across a crash — skip
+    // the forced install.
     setTimeout(() => {
-      this.startDashboard(slug).catch((err) => {
+      this.startDashboard(slug, { forceInstall: false }).catch((err) => {
         console.error(`[DashboardManager] Failed to restart dashboard ${slug}:`, err)
       })
     }, 1000)
@@ -376,6 +512,8 @@ class DashboardManager {
     description: string
     status: DashboardStatus
     port: number
+    startupPhase?: DashboardStartupPhase
+    firstRun?: boolean
   }> {
     const result: Array<{
       slug: string
@@ -383,6 +521,8 @@ class DashboardManager {
       description: string
       status: DashboardStatus
       port: number
+      startupPhase?: DashboardStartupPhase
+      firstRun?: boolean
     }> = []
 
     // Include tracked dashboards
@@ -393,6 +533,9 @@ class DashboardManager {
         description: info.description,
         status: info.status,
         port: info.port,
+        ...(info.status === 'starting'
+          ? { startupPhase: info.startupPhase, firstRun: info.firstRun }
+          : {}),
       })
     }
 
@@ -450,6 +593,10 @@ class DashboardManager {
     const info = this.dashboards.get(slug)
     if (!info || info.status !== 'running') return null
     return info.port
+  }
+
+  getDashboardUpstreamPathMode(slug: string): DashboardUpstreamPathMode {
+    return this.dashboards.get(slug)?.upstreamPathMode ?? 'stripped'
   }
 
   async getDashboardLogs(slug: string, clear: boolean = false): Promise<string> {

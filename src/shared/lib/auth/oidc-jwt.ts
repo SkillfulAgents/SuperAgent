@@ -30,7 +30,14 @@ function getJwksResolverForIssuer(issuer: string): RemoteJwksResolver {
 
 export interface VerifyOidcJwtOptions {
   issuer: string
-  audience: string
+  /**
+   * Accepted audience. jose compares the `aud` claim byte-for-byte and accepts
+   * any member of a multi-valued claim, so a caller needing a different rule
+   * (a canonical comparison, or a single-valued `aud`) omits this and enforces
+   * that rule on the returned payload instead. Omitting it means jose does not
+   * check `aud` at all — the caller then *must*.
+   */
+  audience?: string | string[]
   algorithms?: string[]
   typ?: string
 }

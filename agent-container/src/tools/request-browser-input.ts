@@ -1,6 +1,7 @@
 import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { inputManager } from '../input-manager'
+import { getBrowserState } from '../browser-state'
 
 export const requestBrowserInputTool = tool(
   'request_browser_input',
@@ -32,14 +33,35 @@ Example:
       }
     }
 
+    // The request is only answerable while a browser is open — the card tells
+    // the user to act "in the open browser tab". Checking here (synchronously,
+    // right before createPendingWithType) also closes the race with browser
+    // teardown: the close routes' rejectByType only covers pendings that
+    // already exist, so a close landing before this handler runs must be
+    // caught by this guard rather than creating a fresh 24h pending nobody
+    // can ever answer. Both this check+register and the close's
+    // state-flip+reject are synchronous blocks, so they cannot interleave.
+    if (!getBrowserState().active) {
+      console.log('[request_browser_input] Rejected: no active browser')
+      return {
+        content: [{ type: 'text' as const, text: 'Browser input request cancelled: no browser is open (it may have just been closed). Open the browser again with browser_open before requesting manual input, or continue without it.' }],
+        isError: true,
+      }
+    }
+
     try {
-      await inputManager.createPendingWithType(toolUseId, 'browser_input', {
+      const completion = await inputManager.createPendingWithType<string>(toolUseId, 'browser_input', {
         message: args.message,
         requirements: args.requirements,
       })
 
       return {
-        content: [{ type: 'text' as const, text: 'User has completed the requested browser interaction. Take a browser snapshot to see the current state.' }],
+        content: [{
+          type: 'text' as const,
+          text: completion === 'credentials_filled'
+            ? 'Credentials have been filled into the browser. Click the login or sign-in button to continue. If 2FA or another manual step appears, call request_browser_input again.'
+            : 'User has completed the requested browser interaction. Take a browser snapshot to see the current state.',
+        }],
       }
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error'

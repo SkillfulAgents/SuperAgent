@@ -59,10 +59,15 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
 }))
 
 // Telegram connector → a real mock connector that connects without network.
-vi.mock('./telegram-connector', async () => {
+// Keep the REAL classifyChatId static so classification still exercises
+// production rather than silently bypassing it.
+vi.mock('./telegram-connector', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./telegram-connector')>()
   const { MockChatClientConnector } = await import('./mock-connector')
   return {
+    ...actual,
     TelegramConnector: class {
+      static classifyChatId = actual.TelegramConnector.classifyChatId
       constructor() {
         return new MockChatClientConnector()
       }
@@ -89,6 +94,9 @@ describe('SUP-233 reconnect restore ignores archived sessions', () => {
     testSqlite = new Database(':memory:')
     testDb = drizzle(testSqlite, { schema })
     migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
+    // connectIntegration cancels itself on a stopped manager; this harness
+    // drives it directly (no start()), so mark the manager running.
+    ;(chatIntegrationManager as unknown as { isRunning: boolean }).isRunning = true
   })
 
   afterEach(async () => {

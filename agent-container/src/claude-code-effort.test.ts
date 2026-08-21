@@ -9,7 +9,7 @@
  *     as the current level (so the first post-upgrade message with effort='high'
  *     does not trigger a spurious restart).
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 type MockQueryCall = { options: Record<string, unknown> }
 const calls: MockQueryCall[] = []
@@ -17,9 +17,20 @@ const setModelCalls: (string | undefined)[] = []
 
 // Stub the SDK before importing ClaudeCodeProcess.
 vi.mock('@anthropic-ai/claude-agent-sdk', () => {
-  // Returns an async iterator that never yields until aborted — good enough to
-  // model a running session for the purposes of this test.
-  function makeQuery(_args: { prompt: unknown; options: Record<string, unknown> }) {
+  // Model a running SDK iterator that actually honors the AbortController.
+  // This lets interrupt() observe processMessages() unwind immediately instead
+  // of paying its 5-second hung-SDK fallback in every restart test.
+  function makeQuery(args: { prompt: unknown; options: Record<string, unknown> }) {
+    const abortController = args.options.abortController as AbortController
+    let resolvePending:
+      | ((result: IteratorResult<never>) => void)
+      | undefined
+    const finish = () => {
+      resolvePending?.({ value: undefined, done: true })
+      resolvePending = undefined
+    }
+    abortController.signal.addEventListener('abort', finish, { once: true })
+
     const iter: AsyncIterableIterator<never> & {
       interrupt: () => Promise<void>
       setModel: (model?: string) => Promise<void>
@@ -28,11 +39,15 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         return this
       },
       next() {
-        return new Promise<IteratorResult<never>>(() => {
-          /* pending forever — real abort handled via AbortController in process */
+        if (abortController.signal.aborted) {
+          return Promise.resolve({ value: undefined, done: true })
+        }
+        return new Promise<IteratorResult<never>>((resolve) => {
+          resolvePending = resolve
         })
       },
       return() {
+        finish()
         return Promise.resolve({ value: undefined, done: true } as IteratorResult<never>)
       },
       throw(err?: unknown) {
@@ -68,7 +83,13 @@ vi.mock('./mcp-server', () => ({
 }))
 
 vi.mock('./tools/browser', () => ({
-  createBrowserTools: () => [],
+  createBrowserTools: () => [
+    { name: 'browser_open' },
+    { name: 'browser_get_state' },
+    { name: 'browser_snapshot' },
+    { name: 'browser_click' },
+    { name: 'browser_close' },
+  ],
 }))
 
 vi.mock('./tools/computer-use', () => ({
@@ -82,6 +103,7 @@ vi.mock('./file-hooks', () => ({
 
 vi.mock('./input-manager', () => ({
   inputManager: {},
+  HUMAN_INPUT_TTL_MS: 24 * 60 * 60 * 1000,
 }))
 
 import { ClaudeCodeProcess } from './claude-code'
@@ -91,14 +113,7 @@ describe('ClaudeCodeProcess effort handling', () => {
     calls.length = 0
   })
 
-  afterEach(async () => {
-    // Nothing to tear down — process.stop() triggers abort which our stub ignores.
-  })
-
-  // Interrupt's wait-for-stop polls up to 5 s before falling through; our mock
-  // doesn't honor the abort signal, so each effort-change test waits that full
-  // window. Raise the per-test timeout accordingly.
-  it('rebuilds the query with the new effort when effort changes', { timeout: 15000 }, async () => {
+  it('rebuilds the query with the new effort when effort changes', async () => {
     const process = new ClaudeCodeProcess({
       sessionId: 'test-session-1',
       workingDirectory: '/tmp',
@@ -134,7 +149,7 @@ describe('ClaudeCodeProcess effort handling', () => {
     expect(calls).toHaveLength(1)
   })
 
-  it('treats undefined stored effort as high so first high message does not restart', { timeout: 15000 }, async () => {
+  it('treats undefined stored effort as high so first high message does not restart', async () => {
     // Simulates a session created before this feature (no persisted effort).
     const process = new ClaudeCodeProcess({
       sessionId: 'test-session-3',
@@ -432,5 +447,26 @@ describe('ClaudeCodeProcess static tool bans', () => {
     expect(calls).toHaveLength(1)
     const disallowed = calls[0].options.disallowedTools as string[]
     expect(disallowed).toContain('DesignSync')
+  })
+})
+
+describe('ClaudeCodeProcess dashboard browser tools', () => {
+  beforeEach(() => {
+    calls.length = 0
+  })
+
+  it('lets the dashboard builder open and validate container-local dashboards', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-dashboard-browser-tools',
+      workingDirectory: '/tmp',
+    })
+
+    await process.start()
+    const agents = calls[0].options.agents as Record<string, { tools: string[] }>
+    const tools = agents['dashboard-builder'].tools
+    expect(tools).toContain('mcp__browser__browser_open')
+    expect(tools).toContain('mcp__browser__browser_get_state')
+    expect(tools).toContain('mcp__browser__browser_click')
+    expect(tools).toContain('mcp__browser__browser_close')
   })
 })

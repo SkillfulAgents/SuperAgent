@@ -313,6 +313,40 @@ describe('transformMessages', () => {
       expect(asMessage(result[1]).content.text).toBe('Second')
     })
 
+    it('preserves the highest usage snapshot for a merged provider response', () => {
+      const first = createAssistantMessage(
+        'uuid-1',
+        'msg-shared',
+        [{ type: 'text', text: 'Working' }]
+      )
+      first.message.usage = {
+        input_tokens: 10,
+        output_tokens: 5,
+        cache_creation_input_tokens: 20,
+        cache_read_input_tokens: 30,
+      }
+      const final = createAssistantMessage(
+        'uuid-2',
+        'msg-shared',
+        [{ type: 'text', text: ' done' }]
+      )
+      final.message.usage = {
+        input_tokens: 10,
+        output_tokens: 15,
+        cache_creation_input_tokens: 20,
+        cache_read_input_tokens: 30,
+      }
+
+      const result = transformMessages([first, final])
+
+      expect(asMessage(result[0]).usage).toEqual({
+        inputTokens: 10,
+        outputTokens: 15,
+        cacheCreationInputTokens: 20,
+        cacheReadInputTokens: 30,
+      })
+    })
+
     it('handles three-way merge (text + tool_use + more text)', () => {
       const entries: JsonlMessageEntry[] = [
         createAssistantMessage('uuid-1', 'msg-shared', [{ type: 'text', text: 'Starting. ' }]),
@@ -697,8 +731,24 @@ describe('transformMessages', () => {
       // derived from the gap to the previous entry's timestamp
       const message = asMessage(result[1])
       expect(message.content.text).toBe('Here is my answer.')
-      expect(message.thinking).toEqual([{ text: 'Let me think about this...', durationMs: 5000 }])
+      expect(message.thinking).toEqual([{ id: 'msg-1:0', text: 'Let me think about this...', durationMs: 5000 }])
       expect(message.toolCalls).toHaveLength(0)
+    })
+
+    it('assigns persisted thinking the same message-id and content-index identity as the stream', () => {
+      const entries: JsonlMessageEntry[] = [
+        createAssistantMessage('uuid-1', 'msg-stable', [
+          { type: 'text', text: 'Preamble.' },
+          { type: 'thinking', thinking: 'Stable reasoning.' } as ContentBlock,
+          { type: 'tool_use', id: 'tool-1', name: 'Bash', input: {} },
+        ]),
+      ]
+
+      const result = transformMessages(entries)
+
+      expect(asMessage(result[0]).thinking).toEqual([
+        { id: 'msg-stable:1', text: 'Stable reasoning.' },
+      ])
     })
 
     it('extracts multiple thinking blocks in order, skipping empty ones', () => {
@@ -717,7 +767,10 @@ describe('transformMessages', () => {
       const result = transformMessages(entries)
 
       // No preceding entry — durations are underivable and omitted
-      expect(asMessage(result[0]).thinking).toEqual([{ text: 'First episode.' }, { text: 'Second episode.' }])
+      expect(asMessage(result[0]).thinking).toEqual([
+        { id: 'msg-1:0', text: 'First episode.' },
+        { id: 'msg-1:4', text: 'Second episode.' },
+      ])
       expect(asMessage(result[0]).toolCalls).toHaveLength(1)
     })
 
@@ -742,8 +795,8 @@ describe('transformMessages', () => {
       const result = transformMessages(entries)
 
       // Message 1: thinking took user→entry gap; message 2: tool_result→entry gap
-      expect(asMessage(result[1]).thinking).toEqual([{ text: 'First episode.', durationMs: 3000 }])
-      expect(asMessage(result[2]).thinking).toEqual([{ text: 'Second episode.', durationMs: 4000 }])
+      expect(asMessage(result[1]).thinking).toEqual([{ id: 'msg-1:0', text: 'First episode.', durationMs: 3000 }])
+      expect(asMessage(result[2]).thinking).toEqual([{ id: 'msg-2:0', text: 'Second episode.', durationMs: 4000 }])
     })
 
     it('omits durationMs when the previous entry belongs to the same message', () => {
@@ -765,7 +818,7 @@ describe('transformMessages', () => {
 
       // No duration — the 5ms sibling gap must not be reported as thinking time
       expect(asMessage(result[1]).thinking).toEqual([
-        { text: 'Reasoning that arrived after the text entry.' },
+        { id: 'msg-1:1', text: 'Reasoning that arrived after the text entry.' },
       ])
     })
 
@@ -796,7 +849,7 @@ describe('transformMessages', () => {
       const result = transformMessages(entries)
 
       expect(asMessage(result[0]).content.text).toBe('Answer.')
-      expect(asMessage(result[0]).thinking).toEqual([{ text: 'Valid episode.' }])
+      expect(asMessage(result[0]).thinking).toEqual([{ id: 'msg-1:2', text: 'Valid episode.' }])
     })
 
     it('handles tool result for non-existent tool (orphaned result)', () => {
@@ -886,7 +939,7 @@ describe('transformMessages', () => {
       // (no preceding entry, so no derivable duration)
       expect(result).toHaveLength(1)
       expect(asMessage(result[0]).content.text).toBe('')
-      expect(asMessage(result[0]).thinking).toEqual([{ text: 'Deep thoughts...' }])
+      expect(asMessage(result[0]).thinking).toEqual([{ id: 'msg-1:0', text: 'Deep thoughts...' }])
       expect(asMessage(result[0]).toolCalls).toHaveLength(0)
     })
 
@@ -1776,5 +1829,88 @@ describe('parseCommandMessage', () => {
       const result = transformMessages(entries)
       expect(result.map((r) => r.id)).toEqual(['user-1', 'info-1'])
     })
+  })
+})
+
+// ============================================================================
+// Resume history replay: the CLI can re-append prior transcript entries
+// VERBATIM (same uuid, same message.id) when a session is resumed into a
+// fresh CLI process. Duplicated entries must be dropped, not re-merged.
+// ============================================================================
+
+describe('replayed duplicate entries (resume history replay)', () => {
+  it('drops a replayed user entry with an already-seen uuid', () => {
+    const original = createUserMessage('user-1', 'Hello')
+    const replayed = createUserMessage('user-1', 'Hello')
+    const result = transformMessages([original, replayed])
+    expect(result).toHaveLength(1)
+  })
+
+  it('drops replayed assistant per-block entries instead of stacking their blocks', () => {
+    const textEntry = () =>
+      createAssistantMessage('uuid-a1', 'msg-1', [{ type: 'text', text: 'Working on it' }])
+    const toolEntry = () =>
+      createAssistantMessage('uuid-a2', 'msg-1', [
+        { type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'ls' } },
+      ])
+    // Original per-block stream, then the resume replay of the same entries
+    const result = transformMessages([textEntry(), toolEntry(), textEntry(), toolEntry()])
+    expect(result).toHaveLength(1)
+    const msg = asMessage(result[0])
+    expect(msg.content.text).toBe('Working on it')
+    expect(msg.toolCalls).toHaveLength(1)
+  })
+
+  it('still merges distinct per-block entries sharing a message.id', () => {
+    const result = transformMessages([
+      createAssistantMessage('uuid-a1', 'msg-1', [{ type: 'text', text: 'One' }]),
+      createAssistantMessage('uuid-a2', 'msg-1', [
+        { type: 'tool_use', id: 'tool-1', name: 'Bash', input: {} },
+      ]),
+    ])
+    expect(result).toHaveLength(1)
+    expect(asMessage(result[0]).toolCalls).toHaveLength(1)
+    expect(asMessage(result[0]).content.text).toBe('One')
+  })
+
+  it('drops a replayed memory_recall entry with an already-seen uuid', () => {
+    const recall = (): JsonlSystemEntry => ({
+      uuid: 'recall-1',
+      type: 'system',
+      subtype: 'memory_recall',
+      content: '',
+      isMeta: false,
+      timestamp: '2026-01-24T10:00:00.000Z',
+      memory_paths: ['memory/a.md'],
+    })
+    const result = transformMessages([
+      recall(),
+      createUserMessage('user-1', 'Hello'),
+      // Cold-resume replay of the same [recall, message] pair
+      recall(),
+      createUserMessage('user-1', 'Hello'),
+    ])
+    expect(result.filter((r) => r.type === 'memory_recall')).toHaveLength(1)
+    expect(result).toHaveLength(2)
+  })
+
+  it('drops a replayed compact boundary with an already-seen uuid', () => {
+    const boundary = (): JsonlSystemEntry => ({
+      uuid: 'boundary-1',
+      type: 'system',
+      subtype: 'compact_boundary',
+      content: '',
+      isMeta: false,
+      timestamp: '2026-01-24T10:00:00.000Z',
+      compactMetadata: { trigger: 'auto', preTokens: 1000 },
+    })
+    const result = transformMessages([
+      boundary(),
+      createUserMessage('user-1', 'Hello'),
+      boundary(),
+      createUserMessage('user-1', 'Hello'),
+    ])
+    expect(result.filter((r) => r.type === 'compact_boundary')).toHaveLength(1)
+    expect(result).toHaveLength(2)
   })
 })

@@ -2,11 +2,23 @@ import { useEffect, useRef } from 'react'
 import { apiFetch } from '@renderer/lib/api'
 import { uploadFileChunked, type UploadProgress } from '@renderer/lib/upload'
 import { downloadBlob } from '@renderer/lib/download'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useSkillsets } from '@renderer/hooks/use-skillsets'
-import type { ApiAgent, ApiDiscoverableAgent, ApiItemStatus } from '@shared/lib/types/api'
+import type { ApiAgentTemplateInstallResult, ApiDiscoverableAgent, ApiItemStatus } from '@shared/lib/types/api'
 import { AGENT_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
+import {
+  hostExportStatusSchema,
+  type HostExportStatus,
+} from '@shared/lib/services/export-status-schema'
+
+export const HOST_EXPORT_STATUS_QUERY_KEY = ['host-export-status'] as const
+const HOST_EXPORT_STATUS_POLL_MS = 2000
+
+/** Normalize discoverable agent path `agents/<dir>/` → `<dir>` (website template_slug). */
+export function slugFromAgentPath(path: string): string {
+  return path.replace(/^agents\//, '').replace(/\/$/, '')
+}
 
 // Alias preserves the prior export name for downstream consumers while we
 // route everything through the canonical `ApiItemStatus`.
@@ -56,7 +68,28 @@ export function useDiscoverableAgents() {
   })
 }
 
+export function useHostExportStatus() {
+  return useQuery<HostExportStatus>({
+    queryKey: HOST_EXPORT_STATUS_QUERY_KEY,
+    queryFn: async () => {
+      const res = await apiFetch('/api/agents/export-status')
+      if (!res.ok) throw new Error('Failed to fetch export status')
+      return hostExportStatusSchema.parse(await res.json())
+    },
+    refetchInterval: (query) => (query.state.data?.inProgress ? HOST_EXPORT_STATUS_POLL_MS : false),
+  })
+}
+
+function markHostExportBusy(queryClient: QueryClient) {
+  queryClient.setQueryData(HOST_EXPORT_STATUS_QUERY_KEY, { inProgress: true })
+}
+
+function settleHostExportStatus(queryClient: QueryClient) {
+  void queryClient.invalidateQueries({ queryKey: HOST_EXPORT_STATUS_QUERY_KEY })
+}
+
 export function useExportAgentTemplate() {
+  const queryClient = useQueryClient()
   const { track } = useAnalyticsTracking()
 
   return useMutation<void, Error, { agentSlug: string; agentName: string }>({
@@ -72,10 +105,17 @@ export function useExportAgentTemplate() {
 
       await downloadBlob(res, `${agentName || agentSlug}-template${AGENT_PACKAGE_EXTENSION}`)
     },
+    onMutate: () => {
+      markHostExportBusy(queryClient)
+    },
+    onSettled: () => {
+      settleHostExportStatus(queryClient)
+    },
   })
 }
 
 export function useExportAgentFull() {
+  const queryClient = useQueryClient()
   const { track } = useAnalyticsTracking()
 
   return useMutation<void, Error, { agentSlug: string; agentName: string }>({
@@ -91,6 +131,12 @@ export function useExportAgentFull() {
 
       await downloadBlob(res, `${agentName || agentSlug}-full${AGENT_PACKAGE_EXTENSION}`)
     },
+    onMutate: () => {
+      markHostExportBusy(queryClient)
+    },
+    onSettled: () => {
+      settleHostExportStatus(queryClient)
+    },
   })
 }
 
@@ -101,21 +147,24 @@ export function useImportAgentTemplate() {
   const { track } = useAnalyticsTracking()
 
   return useMutation<
-    ApiAgent & { hasOnboarding?: boolean },
+    ApiAgentTemplateInstallResult,
     Error,
     { file: File; mode?: 'template' | 'full'; onProgress?: (p: ImportProgress) => void }
   >({
     meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ file, mode, onProgress }) => {
-      return uploadFileChunked<ApiAgent & { hasOnboarding?: boolean }>({
+      return uploadFileChunked<ApiAgentTemplateInstallResult>({
         url: '/api/agents/import-template',
         file,
         fields: { mode: mode || 'template' },
         onProgress,
       })
     },
-    onSuccess: () => {
-      track('agent_created', { source: 'file_import' })
+    onSuccess: (result) => {
+      track('agent_created', {
+        source: 'file_import',
+        has_template_prompt: Boolean(result.templatePrompt),
+      })
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
     },
@@ -127,7 +176,7 @@ export function useInstallAgentFromSkillset() {
   const { track } = useAnalyticsTracking()
 
   return useMutation<
-    ApiAgent & { hasOnboarding?: boolean },
+    ApiAgentTemplateInstallResult,
     Error,
     {
       skillsetId: string
@@ -149,8 +198,11 @@ export function useInstallAgentFromSkillset() {
       }
       return res.json()
     },
-    onSuccess: () => {
-      track('agent_created', { source: 'skillset' })
+    onSuccess: (result) => {
+      track('agent_created', {
+        source: 'skillset',
+        has_template_prompt: Boolean(result.templatePrompt),
+      })
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['discoverable-agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })

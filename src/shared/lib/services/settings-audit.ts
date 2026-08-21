@@ -44,7 +44,7 @@ const IGNORED_PATHS = new Set(['app.faviconUpdatedAt'])
 
 /**
  * Maps a changed path to the settings-UI tab it is edited on, so the audit log
- * can say "LLM Provider" instead of making the reader decode dotted paths.
+ * can say "Model Provider" instead of making the reader decode dotted paths.
  * First matching prefix wins — keep specific rules above their catch-alls.
  */
 const SECTION_RULES: Array<[prefix: string, label: string]> = [
@@ -54,22 +54,22 @@ const SECTION_RULES: Array<[prefix: string, label: string]> = [
   ['apiKeys.browserbase', 'Browser Use'],
   ['apiKeys.deepgramApiKey', 'Voice'],
   ['apiKeys.openaiApiKey', 'Voice'],
-  ['apiKeys.exaApiKey', 'Web'],
-  ['apiKeys.', 'LLM Provider'],
-  ['llmProvider', 'LLM Provider'],
-  ['models', 'LLM Provider'],
-  ['modelCatalog', 'LLM Provider'],
-  ['enableToolSearch', 'LLM Provider'],
-  ['webProvider', 'Web'],
-  ['webAllowedSites', 'Web'],
-  ['webBlockedSites', 'Web'],
-  ['container', 'Runtime'],
-  ['customEnvVars', 'Runtime'],
-  ['agentLimits', 'Runtime'],
+  ['apiKeys.exaApiKey', 'Web Search'],
+  ['apiKeys.', 'Model Provider'],
+  ['llmProvider', 'Model Provider'],
+  ['models', 'Model Provider'],
+  ['modelCatalog', 'Model Provider'],
+  ['enableToolSearch', 'Model Provider'],
+  ['webProvider', 'Web Search'],
+  ['webAllowedSites', 'Web Search'],
+  ['webBlockedSites', 'Web Search'],
+  ['container', 'Container Runtime'],
+  ['customEnvVars', 'Container Runtime'],
+  ['agentLimits', 'Container Runtime'],
   ['auth', 'Auth'],
   ['voice', 'Voice'],
   ['computerUse', 'Computer Use'],
-  ['agentCapabilities', 'Agent Capabilities'],
+  ['agentCapabilities', 'Subagents'],
   ['shareAnalytics', 'Analytics'],
   ['shareErrorReports', 'Analytics'],
   ['analyticsTargets', 'Analytics'],
@@ -78,7 +78,10 @@ const SECTION_RULES: Array<[prefix: string, label: string]> = [
   ['app.hostBrowserProvider', 'Browser Use'],
   ['app.chrome', 'Browser Use'],
   ['app.maxBrowserTabs', 'Browser Use'],
+  ['app.configuredPasswordManagers', 'Browser Use'],
   ['app.browserbase', 'Browser Use'],
+  ['app.autoSleepTimeoutMinutes', 'Container Runtime'],
+  ['app.warmStartOnType', 'Container Runtime'],
   ['app.', 'General'],
 ]
 

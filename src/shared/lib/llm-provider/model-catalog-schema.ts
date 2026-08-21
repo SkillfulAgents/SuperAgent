@@ -48,12 +48,23 @@ export const modelDefinitionSchema = z.object({
   family: z.string().optional(),
   /** This id is what the bare `family` alias resolves to (newest in the family). */
   isLatest: z.boolean().optional(),
+  /** Concrete model selected when switching to this model vendor in the picker. */
+  isDefault: z.boolean().optional(),
   // Omit/undefined ⇒ supported (Claude). false ⇒ OpenRouter non-Claude, etc.
   supportsWebSearch: z.boolean().optional(),
   // Omit/undefined ⇒ follow supportsWebSearch. false when search works but fetch does not (Platform Responses).
   supportsWebFetch: z.boolean().optional(),
   // Vision. Populated from provider modalities during model search; omit ⇒ unknown.
   supportsImageInput: z.boolean().optional(),
+  /**
+   * The provider reserves the right to use prompts and outputs sent to this
+   * model to improve its own products (Meta's muse-spark "contributor" tier
+   * buys its discount this way). Present ⇒ the picker warns, because the cost
+   * of this one is paid in the user's data rather than in dollars or latency,
+   * and nothing else on the row hints at it. Omit for models under a normal
+   * no-training commitment.
+   */
+  dataUsedForProductImprovement: z.boolean().optional(),
   /** Extra system-prompt guidance needed by model families with weaker tool priors. */
   promptHints: z.array(z.string().min(1)).optional(),
   /**

@@ -1,10 +1,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 import type { MiddlewareHandler } from 'hono'
+import * as dnsPromises from 'node:dns/promises'
 
 // ---------------------------------------------------------------------------
 // Mocks — must be set up before importing the module under test
 // ---------------------------------------------------------------------------
+
+vi.mock('node:dns/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:dns/promises')>()
+  return {
+    ...actual,
+    lookup: vi.fn(),
+  }
+})
 
 // Mock auth middleware — always pass through
 vi.mock('../middleware/auth', () => {
@@ -35,14 +44,34 @@ const mockInitiateNewServerOAuth = vi.fn()
 const mockCompleteOAuthFlow = vi.fn()
 const mockDiscoverOAuthMetadata = vi.fn()
 const mockValidateAndConsumeOAuthErrorResponse = vi.fn()
+const mockFindAgentsAssignedRemoteMcp = vi.fn().mockResolvedValue(['agent-a'])
+const mockSyncAgentsAssignedRemoteMcp = vi.fn().mockResolvedValue(true)
+const mockSyncRemoteMcpAgents = vi.fn().mockResolvedValue(true)
+const mockCompleteMcpReauth = vi.fn()
 
 vi.mock('@shared/lib/mcp/oauth', () => ({
+  McpOAuthSetupError: class McpOAuthSetupError extends Error {},
   initiateOAuthFlow: (...args: unknown[]) => mockInitiateOAuthFlow(...args),
   initiateNewServerOAuth: (...args: unknown[]) => mockInitiateNewServerOAuth(...args),
   completeOAuthFlow: (...args: unknown[]) => mockCompleteOAuthFlow(...args),
   validateAndConsumeOAuthErrorResponse: (...args: unknown[]) =>
     mockValidateAndConsumeOAuthErrorResponse(...args),
   discoverOAuthMetadata: (...args: unknown[]) => mockDiscoverOAuthMetadata(...args),
+}))
+
+vi.mock('@shared/lib/container/connection-runtime-sync', () => ({
+  findAgentsAssignedRemoteMcp: (...args: unknown[]) =>
+    mockFindAgentsAssignedRemoteMcp(...args),
+  syncAgentsAssignedRemoteMcp: (...args: unknown[]) =>
+    mockSyncAgentsAssignedRemoteMcp(...args),
+  syncRemoteMcpAgents: (...args: unknown[]) =>
+    mockSyncRemoteMcpAgents(...args),
+}))
+
+vi.mock('@shared/lib/proxy/mcp-reauth-manager', () => ({
+  mcpReauthManager: {
+    completeMcp: (...args: unknown[]) => mockCompleteMcpReauth(...args),
+  },
 }))
 
 // Mock DB with chainable query builder
@@ -86,6 +115,8 @@ vi.mock('drizzle-orm', () => ({
 const mockFetch = vi.fn()
 vi.stubGlobal('fetch', mockFetch)
 
+const lookupMock = dnsPromises.lookup as unknown as ReturnType<typeof vi.fn>
+
 // Import after mocks
 import remoteMcps from './remote-mcps'
 
@@ -94,6 +125,10 @@ function createApp() {
   app.route('/api/remote-mcps', remoteMcps)
   return app
 }
+
+beforeEach(() => {
+  lookupMock.mockResolvedValue({ address: '93.184.216.34', family: 4 })
+})
 
 // ---------------------------------------------------------------------------
 // parseMcpResponse tests — exercised through POST / which uses discoverTools,
@@ -412,7 +447,7 @@ describe('discoverTools (via POST /)', () => {
     expect(initCall[0]).toBe('https://mcp.example.com')
     const initBody = JSON.parse(initCall[1].body)
     expect(initBody.method).toBe('initialize')
-    expect(initBody.params.clientInfo.name).toBe('Superagent')
+    expect(initBody.params.clientInfo.name).toBe('Gamut')
 
     // Call 2: notifications/initialized — includes session ID
     const notifCall = mockFetch.mock.calls[1]
@@ -1003,6 +1038,93 @@ describe('SSRF protection', () => {
       expect(electron).toBe(false)
       expect(candidates).toEqual(['http://localhost:3000/api/remote-mcps/oauth-callback'])
     })
+
+    it('uses the protocol sent by the Electron client for the scheme candidate (cloud-served initiate, SUP-560)', async () => {
+      mockInitiateNewServerOAuth.mockResolvedValue({
+        authorizationUrl: 'https://auth.example.com/auth',
+        state: 'state-xyz',
+      })
+
+      await app.request('http://localhost/api/remote-mcps/initiate-oauth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Dev MCP',
+          url: 'https://mcp.example.com/mcp',
+          electron: true,
+          protocol: 'superagent-dev',
+        }),
+      })
+
+      const [, , candidates] = mockInitiateNewServerOAuth.mock.calls[0]
+      expect(candidates[0]).toBe('superagent-dev://mcp-oauth-callback')
+    })
+
+    it('ignores a protocol that is not a valid URI scheme and falls back to the default', async () => {
+      mockInitiateNewServerOAuth.mockResolvedValue({
+        authorizationUrl: 'https://auth.example.com/auth',
+        state: 'state-xyz',
+      })
+
+      await app.request('http://localhost/api/remote-mcps/initiate-oauth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Dev MCP',
+          url: 'https://mcp.example.com/mcp',
+          electron: true,
+          protocol: 'javascript:alert(1)//',
+        }),
+      })
+
+      const [, , candidates] = mockInitiateNewServerOAuth.mock.calls[0]
+      expect(candidates[0]).toBe('superagent://mcp-oauth-callback')
+    })
+
+    it('ignores well-formed but non-allowlisted schemes (file, vscode, …)', async () => {
+      mockInitiateNewServerOAuth.mockResolvedValue({
+        authorizationUrl: 'https://auth.example.com/auth',
+        state: 'state-xyz',
+      })
+
+      for (const protocol of ['file', 'vscode', 'http', 'https']) {
+        mockInitiateNewServerOAuth.mockClear()
+        await app.request('http://localhost/api/remote-mcps/initiate-oauth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Dev MCP',
+            url: 'https://mcp.example.com/mcp',
+            electron: true,
+            protocol,
+          }),
+        })
+
+        const [, , candidates] = mockInitiateNewServerOAuth.mock.calls[0]
+        expect(candidates[0]).toBe('superagent://mcp-oauth-callback')
+      }
+    })
+  })
+
+  describe('POST /initiate-oauth — surfaces OAuth setup failures', () => {
+    it('returns the setup error message when the authorization server rejects registration', async () => {
+      const { McpOAuthSetupError } = await import('@shared/lib/mcp/oauth')
+      mockInitiateNewServerOAuth.mockRejectedValue(
+        new McpOAuthSetupError(
+          'The authorization server rejected client registration (HTTP 400): redirect_uri is not allowed by the account configuration'
+        )
+      )
+
+      const res = await app.request('http://localhost/api/remote-mcps/initiate-oauth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Locked Down', url: 'https://mcp.example.com/mcp' }),
+      })
+
+      expect(res.status).toBe(500)
+      const body = await res.json()
+      expect(body.error).toContain('redirect_uri is not allowed by the account configuration')
+    })
   })
 
   describe('PATCH /:id — rejects unsafe URL updates', () => {
@@ -1052,7 +1174,44 @@ describe('SSRF protection', () => {
       })
 
       expect(res.status).toBe(200)
+      expect(await res.json()).toMatchObject({ liveRefresh: true })
+      expect(mockSyncAgentsAssignedRemoteMcp).toHaveBeenCalledWith('mcp-1')
     })
+  })
+})
+
+describe('remote MCP runtime propagation', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockDeleteWhere.mockResolvedValue(undefined)
+  })
+
+  it('refreshes previously assigned agents after deleting the MCP row', async () => {
+    mockDbFrom.mockReturnValue({ where: mockWhere })
+    mockWhere.mockReturnValue({ limit: mockLimit })
+    mockLimit.mockResolvedValue([
+      {
+        id: 'mcp-1',
+        name: 'Calendar',
+        url: 'https://mcp.example.com',
+      },
+    ])
+
+    const res = await app.request('http://localhost/api/remote-mcps/mcp-1', {
+      method: 'DELETE',
+    })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ success: true, liveRefresh: true })
+    expect(mockFindAgentsAssignedRemoteMcp).toHaveBeenCalledWith('mcp-1')
+    expect(mockDeleteWhere).toHaveBeenCalled()
+    expect(mockSyncRemoteMcpAgents).toHaveBeenCalledWith(['agent-a'])
+    expect(
+      mockDeleteWhere.mock.invocationCallOrder[0],
+    ).toBeLessThan(mockSyncRemoteMcpAgents.mock.invocationCallOrder[0])
   })
 })
 
@@ -1220,6 +1379,9 @@ describe('OAuth callback — postMessage origin', () => {
     const html = await res.text()
     expect(html).toContain('window.location.origin')
     expect(html).not.toContain("'*'")
+    expect(mockFindAgentsAssignedRemoteMcp).toHaveBeenCalledWith('mcp-new')
+    expect(mockSyncRemoteMcpAgents).toHaveBeenCalledWith(['agent-a'])
+    expect(mockCompleteMcpReauth).toHaveBeenCalledWith('mcp-new')
   })
 
   it('emits callback fallbacks for web popups whose opener was severed', async () => {
@@ -1298,5 +1460,43 @@ describe('OAuth callback — postMessage origin', () => {
     expect(html).toContain('mcpId=mcp-new')
     // NOT the web postMessage/BroadcastChannel bridge.
     expect(html).not.toContain("new BroadcastChannel('mcp-oauth-callback')")
+  })
+
+  it('hands back with the scheme recorded on the flow, not the server env (SUP-560)', async () => {
+    mockCompleteOAuthFlow.mockResolvedValue({
+      success: true,
+      mcpId: 'mcp-new',
+      electron: true,
+      redirectWasScheme: false,
+      desktopProtocol: 'superagent-dev',
+    })
+    mockDbFrom.mockReturnValue({ where: mockWhere })
+    mockWhere.mockReturnValue({ limit: mockLimit })
+    mockLimit.mockResolvedValue([
+      { id: 'mcp-new', url: 'https://mcp.example.com', accessToken: 'tok' },
+    ])
+    mockFetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ jsonrpc: '2.0', result: {}, id: 1 }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    )
+    mockFetch.mockResolvedValueOnce(new Response(null, { status: 200 }))
+    mockFetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ jsonrpc: '2.0', result: { tools: [] }, id: 2 }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    )
+    mockSet.mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
+
+    const res = await app.request(
+      'http://localhost/api/remote-mcps/oauth-callback?code=abc&state=xyz'
+    )
+
+    expect(res.status).toBe(200)
+    const html = await res.text()
+    expect(html).toContain('superagent-dev://mcp-oauth-callback?success=true')
+    expect(html).not.toContain('superagent://mcp-oauth-callback')
   })
 })

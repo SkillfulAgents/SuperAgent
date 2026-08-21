@@ -15,6 +15,7 @@ import type { SessionMetadataMap } from '@shared/lib/types/agent'
 import type {
   AgentActivityStats,
   ConnectionActivityStats,
+  CronActivityPoint,
   DailyActivityPoint,
 } from '@shared/lib/types/activity'
 import { DEFAULT_CRON_ACTIVITY_SLOTS } from '@shared/lib/types/activity'
@@ -31,6 +32,8 @@ import { readSessionMetadata } from './session-service'
 
 export interface ActivityStatsOptions {
   days: number
+  /** Undefined in local/single-user mode; set to the acting user in auth mode. */
+  ownerId?: string
   /** Viewer's `Date.prototype.getTimezoneOffset()`; buckets days locally. */
   tzOffsetMinutes?: number
   now?: Date
@@ -45,9 +48,25 @@ export interface ActivityStatsOptions {
   isSessionLive?: (sessionId: string) => boolean
 }
 
-export interface ConnectionStatsOptions extends ActivityStatsOptions {
-  /** Undefined in local/single-user mode; set to the acting user in auth mode. */
-  ownerId?: string
+export type ConnectionStatsOptions = ActivityStatsOptions
+
+interface AutomationTaskInput {
+  id: string
+  scheduleType: 'at' | 'cron'
+  scheduleExpression: string
+  timezone?: string | null
+  createdAt: Date
+  pausedAt?: Date | null
+  cancelledAt?: Date | null
+}
+
+interface AutomationTriggerInput {
+  id: string
+}
+
+export interface AutomationActivityStats {
+  cronByTaskId: Record<string, CronActivityPoint[]>
+  webhookByTriggerId: Record<string, DailyActivityPoint[]>
 }
 
 function dailyEventsById(
@@ -101,6 +120,58 @@ function webhookEvents(
   }
 
   return events
+}
+
+/**
+ * Build only the automation series from one already-loaded metadata map.
+ * The homepage batch endpoint reuses this path so card and agent-detail
+ * charts cannot drift while avoiding connection/audit queries entirely.
+ */
+export function buildAutomationActivityStats(
+  tasks: AutomationTaskInput[],
+  triggers: AutomationTriggerInput[],
+  metadata: SessionMetadataMap,
+  options: ActivityStatsOptions,
+): AutomationActivityStats {
+  const now = options.now ?? new Date()
+  const tzOffsetMinutes = options.tzOffsetMinutes ?? 0
+
+  // One pass over the metadata map, grouped by task; a persisted 'running'
+  // with no live session is downgraded to failed (see isSessionLive).
+  const sessionsByTaskId = new Map<string, Array<{
+    scheduledExecutionAt?: string
+    automationStatus?: 'running' | 'succeeded' | 'failed'
+  }>>()
+  for (const [sessionId, meta] of Object.entries(metadata)) {
+    if (!meta.scheduledTaskId) continue
+    let status = normalizeAutomationStatus(meta.automationStatus)
+    if (status === 'running' && options.isSessionLive && !options.isSessionLive(sessionId)) {
+      status = 'failed'
+    }
+    const sessions = sessionsByTaskId.get(meta.scheduledTaskId) ?? []
+    sessions.push({ scheduledExecutionAt: meta.scheduledExecutionAt, automationStatus: status })
+    sessionsByTaskId.set(meta.scheduledTaskId, sessions)
+  }
+
+  const cronByTaskId = Object.fromEntries(
+    tasks
+      .filter((task) => task.scheduleType === 'cron')
+      .map((task) => [task.id, buildCronActivitySeries({
+        task,
+        sessions: sessionsByTaskId.get(task.id) ?? [],
+        now,
+        slots: options.cronSlots ?? DEFAULT_CRON_ACTIVITY_SLOTS,
+      })]),
+  )
+
+  const webhookIds = triggers.map((trigger) => trigger.id)
+  const webhookByTriggerId = dailyEventsById(
+    webhookIds,
+    webhookEvents(metadata, { ...options, tzOffsetMinutes }),
+    { ...options, now, tzOffsetMinutes },
+  )
+
+  return { cronByTaskId, webhookByTriggerId }
 }
 
 // Audit tables grow with every proxied call and have no time-based retention,
@@ -178,6 +249,12 @@ export async function getAgentActivityStats(
   const now = options.now ?? new Date()
   const tzOffsetMinutes = options.tzOffsetMinutes ?? 0
   const from = getActivityWindowStart(options.days, now, tzOffsetMinutes)
+  const accountOwnerCondition = options.ownerId
+    ? eq(connectedAccounts.userId, options.ownerId)
+    : undefined
+  const mcpOwnerCondition = options.ownerId
+    ? eq(remoteMcpServers.userId, options.ownerId)
+    : undefined
 
   const [
     tasks,
@@ -193,10 +270,24 @@ export async function getAgentActivityStats(
     readSessionMetadata(agentSlug),
     db.select({ id: agentConnectedAccounts.connectedAccountId })
       .from(agentConnectedAccounts)
-      .where(eq(agentConnectedAccounts.agentSlug, agentSlug)),
+      .innerJoin(
+        connectedAccounts,
+        eq(agentConnectedAccounts.connectedAccountId, connectedAccounts.id),
+      )
+      .where(and(
+        eq(agentConnectedAccounts.agentSlug, agentSlug),
+        accountOwnerCondition,
+      )),
     db.select({ id: agentRemoteMcps.remoteMcpId })
       .from(agentRemoteMcps)
-      .where(eq(agentRemoteMcps.agentSlug, agentSlug)),
+      .innerJoin(
+        remoteMcpServers,
+        eq(agentRemoteMcps.remoteMcpId, remoteMcpServers.id),
+      )
+      .where(and(
+        eq(agentRemoteMcps.agentSlug, agentSlug),
+        mcpOwnerCondition,
+      )),
     auditRollupQuery(proxyAuditLog, proxyAuditLog.accountId, and(
       eq(proxyAuditLog.agentSlug, agentSlug),
       gte(proxyAuditLog.createdAt, from),
@@ -207,38 +298,10 @@ export async function getAgentActivityStats(
     ), tzOffsetMinutes),
   ])
 
-  // One pass over the metadata map, grouped by task; a persisted 'running'
-  // with no live session is downgraded to failed (see isSessionLive).
-  const sessionsByTaskId = new Map<string, Array<{
-    scheduledExecutionAt?: string
-    automationStatus?: 'running' | 'succeeded' | 'failed'
-  }>>()
-  for (const [sessionId, meta] of Object.entries(metadata)) {
-    if (!meta.scheduledTaskId) continue
-    let status = normalizeAutomationStatus(meta.automationStatus)
-    if (status === 'running' && options.isSessionLive && !options.isSessionLive(sessionId)) {
-      status = 'failed'
-    }
-    const sessions = sessionsByTaskId.get(meta.scheduledTaskId) ?? []
-    sessions.push({ scheduledExecutionAt: meta.scheduledExecutionAt, automationStatus: status })
-    sessionsByTaskId.set(meta.scheduledTaskId, sessions)
-  }
-
-  const cronByTaskId = Object.fromEntries(
-    tasks
-      .filter((task) => task.scheduleType === 'cron')
-      .map((task) => [task.id, buildCronActivitySeries({
-        task,
-        sessions: sessionsByTaskId.get(task.id) ?? [],
-        now,
-        slots: options.cronSlots ?? DEFAULT_CRON_ACTIVITY_SLOTS,
-      })]),
-  )
-
-  const webhookIds = triggers.map((trigger) => trigger.id)
-  const webhookByTriggerId = dailyEventsById(
-    webhookIds,
-    webhookEvents(metadata, { ...options, tzOffsetMinutes }),
+  const { cronByTaskId, webhookByTriggerId } = buildAutomationActivityStats(
+    tasks,
+    triggers,
+    metadata,
     { ...options, now, tzOffsetMinutes },
   )
 

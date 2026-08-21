@@ -89,7 +89,7 @@ test.describe('Provider API key lifecycle', () => {
     await gotoLlmSettings(page)
 
     await keyInput(page).fill(BAD_KEY)
-    await page.getByRole('button', { name: 'Validate & Save' }).click()
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
 
     await expect(page.getByText('Invalid API key: 401 unauthorized')).toBeVisible()
     // The input keeps the rejected key for correction rather than clearing it.
@@ -103,7 +103,7 @@ test.describe('Provider API key lifecycle', () => {
     await gotoLlmSettings(page)
 
     await keyInput(page).fill(GOOD_KEY)
-    await page.getByRole('button', { name: 'Validate & Save' }).click()
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
 
     // Saved state: success note, source pill, and the input resets.
     await expect(page.getByText('API key is valid and has been saved.')).toBeVisible()

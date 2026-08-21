@@ -8,8 +8,18 @@ import {
   useAddSkillset,
   useRemoveSkillset,
   useRefreshSkillset,
+  useUpdateSkillsetCredential,
 } from '@renderer/hooks/use-skillsets'
-import { AlertTriangle, Loader2, Trash2, RefreshCw, Library } from 'lucide-react'
+import {
+  AlertTriangle,
+  ExternalLink,
+  KeyRound,
+  Loader2,
+  Trash2,
+  RefreshCw,
+  Library,
+  X,
+} from 'lucide-react'
 
 export function SkillsetsTab() {
   const { data: skillsets, isLoading } = useSkillsets()
@@ -17,7 +27,15 @@ export function SkillsetsTab() {
   const addSkillset = useAddSkillset()
   const removeSkillset = useRemoveSkillset()
   const refreshSkillset = useRefreshSkillset()
+  const updateCredential = useUpdateSkillsetCredential()
   const [urlInput, setUrlInput] = useState('')
+  const [tokenInput, setTokenInput] = useState('')
+  const [editingCredentialId, setEditingCredentialId] = useState<string | null>(null)
+  const [replacementToken, setReplacementToken] = useState('')
+  const [credentialError, setCredentialError] = useState<{
+    skillsetId: string
+    message: string
+  } | null>(null)
   const [validationResult, setValidationResult] = useState<{
     valid: boolean
     error?: string
@@ -28,11 +46,13 @@ export function SkillsetsTab() {
     setValidationResult(null)
 
     try {
-      const result = await validateSkillset.mutateAsync(urlInput.trim())
+      const input = { url: urlInput.trim(), token: tokenInput.trim() || undefined }
+      const result = await validateSkillset.mutateAsync(input)
 
       if (result.valid) {
-        await addSkillset.mutateAsync(urlInput.trim())
+        await addSkillset.mutateAsync(input)
         setUrlInput('')
+        setTokenInput('')
         setValidationResult(null)
       } else {
         setValidationResult({ valid: false, error: result.error })
@@ -46,6 +66,35 @@ export function SkillsetsTab() {
   }
 
   const isBusy = validateSkillset.isPending || addSkillset.isPending
+
+  const handleSaveCredential = async (id: string) => {
+    if (!replacementToken.trim()) return
+    setCredentialError(null)
+    try {
+      await updateCredential.mutateAsync({ id, token: replacementToken.trim() })
+      setReplacementToken('')
+      setEditingCredentialId(null)
+    } catch (error) {
+      setCredentialError({
+        skillsetId: id,
+        message: error instanceof Error ? error.message : 'Failed to update repository token',
+      })
+    }
+  }
+
+  const handleRemoveCredential = async (id: string) => {
+    setCredentialError(null)
+    try {
+      await updateCredential.mutateAsync({ id, token: null })
+      setReplacementToken('')
+      setEditingCredentialId(null)
+    } catch (error) {
+      setCredentialError({
+        skillsetId: id,
+        message: error instanceof Error ? error.message : 'Failed to remove repository token',
+      })
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -90,6 +139,63 @@ export function SkillsetsTab() {
           </Button>
         </div>
 
+        <Input
+          type="password"
+          autoComplete="off"
+          aria-label="Repository token (optional)"
+          placeholder="Repository token (optional, for private GitHub repositories)"
+          value={tokenInput}
+          onChange={(e) => {
+            setTokenInput(e.target.value)
+            setValidationResult(null)
+          }}
+          disabled={isBusy}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              handleValidateAndAdd()
+            }
+          }}
+        />
+
+        <div className="rounded-md border bg-muted/30 p-3 text-xs">
+          <p className="font-medium">Private GitHub repository token</p>
+          <ol className="mt-1.5 list-decimal space-y-1 pl-4 text-muted-foreground">
+            <li>
+              <a
+                href="https://github.com/settings/personal-access-tokens/new"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-primary hover:underline"
+              >
+                Create a fine-grained personal access token
+                <ExternalLink className="h-3 w-3" aria-hidden="true" />
+              </a>{' '}
+              and choose the repository owner.
+            </li>
+            <li>
+              Under <span className="font-medium text-foreground">Repository access</span>, choose{' '}
+              <span className="font-medium text-foreground">Only select repositories</span> and
+              select this skillset repository.
+            </li>
+            <li>
+              Under <span className="font-medium text-foreground">Repository permissions</span>,
+              set <span className="font-medium text-foreground">Contents</span> to{' '}
+              <span className="font-medium text-foreground">Read-only</span>. GitHub adds Metadata
+              read access automatically.
+            </li>
+            <li>Generate the token and paste it above.</li>
+          </ol>
+          <p className="mt-2 text-muted-foreground">
+            This minimum permission supports discovering, installing, and refreshing skills. A
+            classic token also works with the broader{' '}
+            <code className="rounded bg-muted px-1 py-0.5 text-foreground">repo</code> scope, but a
+            fine-grained token is recommended. Publishing pull requests requires additional write
+            and fork permissions. If GitHub marks an organization token as pending, an organization
+            owner must approve it before it can read private repositories.
+          </p>
+        </div>
+
         {validationResult && !validationResult.valid && (
           <Alert variant="destructive">
             <AlertTriangle className="h-4 w-4" />
@@ -98,7 +204,8 @@ export function SkillsetsTab() {
         )}
 
         <p className="text-xs text-muted-foreground">
-          Enter a git repository URL containing an index.json file. Supports HTTPS and SSH URLs.
+          Enter a git repository URL containing an index.json file. Private GitHub repositories
+          must use an HTTPS URL.
         </p>
       </div>
 
@@ -134,6 +241,11 @@ export function SkillsetsTab() {
                       {ss.badgeLabel}
                     </span>
                   )}
+                  {ss.credential && (
+                    <span className="text-2xs px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground font-medium">
+                      Private · {ss.credential.tokenPreview}
+                    </span>
+                  )}
                 </div>
                 {ss.description && (
                   <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">
@@ -151,8 +263,76 @@ export function SkillsetsTab() {
                     <p className="text-xs text-destructive line-clamp-2">{ss.error}</p>
                   </div>
                 )}
+                {editingCredentialId === ss.id && (
+                  <div className="mt-2 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="password"
+                        autoComplete="off"
+                        aria-label={`Repository token for ${ss.name}`}
+                        placeholder={ss.credential ? 'Replace repository token' : 'Add repository token'}
+                        value={replacementToken}
+                        onChange={(e) => {
+                          setReplacementToken(e.target.value)
+                          setCredentialError(null)
+                        }}
+                        className="h-8"
+                        disabled={updateCredential.isPending}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault()
+                            handleSaveCredential(ss.id)
+                          }
+                        }}
+                      />
+                      <Button
+                        size="sm"
+                        className="h-8"
+                        disabled={!replacementToken.trim() || updateCredential.isPending}
+                        onClick={() => handleSaveCredential(ss.id)}
+                      >
+                        Save
+                      </Button>
+                      {ss.credential && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8"
+                          disabled={updateCredential.isPending}
+                          onClick={() => handleRemoveCredential(ss.id)}
+                        >
+                          Remove
+                        </Button>
+                      )}
+                    </div>
+                    {credentialError?.skillsetId === ss.id && (
+                      <div
+                        role="alert"
+                        className="flex items-start gap-1.5 text-xs text-destructive"
+                      >
+                        <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+                        <span>{credentialError.message}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
               <div className="flex gap-1 shrink-0">
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-7 w-7"
+                  onClick={() => {
+                    const nextId = editingCredentialId === ss.id ? null : ss.id
+                    setEditingCredentialId(nextId)
+                    setReplacementToken('')
+                    setCredentialError(null)
+                  }}
+                  disabled={updateCredential.isPending || (ss.provider ?? 'github') !== 'github'}
+                  title={ss.credential ? 'Replace or remove repository token' : 'Add repository token'}
+                >
+                  {editingCredentialId === ss.id ? <X className="h-3.5 w-3.5" /> : <KeyRound className="h-3.5 w-3.5" />}
+                </Button>
                 <Button
                   size="icon"
                   variant="ghost"

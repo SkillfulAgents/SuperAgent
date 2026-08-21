@@ -1,45 +1,44 @@
 import { describe, it, expect } from 'vitest'
 import { getPolyfillJs } from '../speech-recognition-polyfill'
 import { getLlmPolyfillJs } from '../llm-polyfill'
+import { injectDashboardRuntime } from '../dashboard-runtime'
 
 /**
  * Tests for the polyfill injection logic used in proxyArtifactRequest.
  * This replicates the injection logic to verify it handles various HTML structures.
  */
 function injectPolyfill(html: string): string {
-  const tag = `<script>${getPolyfillJs()}${getLlmPolyfillJs()}</script>`
-  const headMatch = html.match(/<head(\s[^>]*)?>/i)
-  if (headMatch) {
-    const pos = headMatch.index! + headMatch[0].length
-    return html.slice(0, pos) + tag + html.slice(pos)
-  }
-  return tag + html
+  return injectDashboardRuntime(html, {
+    basePath: '/api/agents/agent-1/artifacts/test/',
+    slug: 'test',
+    polyfillJs: getPolyfillJs() + getLlmPolyfillJs(),
+  })
 }
 
 describe('artifact polyfill injection', () => {
   it('injects after <head> tag', () => {
     const html = '<!DOCTYPE html><html><head><title>Test</title></head><body></body></html>'
     const result = injectPolyfill(html)
-    expect(result).toContain('<head><script>')
+    expect(result).toContain('<head><base data-gamut-dashboard-base href="/api/agents/agent-1/artifacts/test/"><script>')
     expect(result).toContain('</script><title>Test</title>')
   })
 
   it('injects after <head> with attributes', () => {
     const html = '<html><head lang="en"><meta charset="utf-8"></head></html>'
     const result = injectPolyfill(html)
-    expect(result).toContain('<head lang="en"><script>')
+    expect(result).toContain('<head lang="en"><base data-gamut-dashboard-base href="/api/agents/agent-1/artifacts/test/"><script>')
   })
 
   it('is case-insensitive for <HEAD>', () => {
     const html = '<HTML><HEAD><TITLE>Hi</TITLE></HEAD></HTML>'
     const result = injectPolyfill(html)
-    expect(result).toContain('<HEAD><script>')
+    expect(result).toContain('<HEAD><base data-gamut-dashboard-base href="/api/agents/agent-1/artifacts/test/"><script>')
   })
 
   it('prepends to document when no <head> tag', () => {
     const html = '<html><body><h1>Hello</h1></body></html>'
     const result = injectPolyfill(html)
-    expect(result.startsWith('<script>')).toBe(true)
+    expect(result.startsWith('<base data-gamut-dashboard-base href="/api/agents/agent-1/artifacts/test/"><script>')).toBe(true)
     expect(result).toContain('</script><html><body>')
   })
 

@@ -1,5 +1,6 @@
 import type { UUID } from 'crypto';
 import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk';
+import type { SubagentModelDefinition } from './subagent-model-catalog';
 
 // Normalized processing-speed tiers (slow/normal/fast). Not an SDK concept:
 // the speed is signaled upstream via the X-Superagent-Speed custom header,
@@ -80,6 +81,7 @@ export interface CreateSessionRequest {
   model?: string; // Claude model to use for this session
   browserModel?: string; // Model for browser subagent
   dashboardBuilderModel?: string; // Model for the dashboard-builder subagent
+  subagentModels?: SubagentModelDefinition[]; // Provider catalog exposed as model-backed subagent types
   webSearchProvider?: string; // Active host-side web search vendor id (non-secret); activates mcp__web__search + disables native WebSearch
   webFetchProvider?: string; // Active host-side web fetch vendor id (non-secret); activates mcp__web__web_fetch + disables native WebFetch
   maxOutputTokens?: number; // Max tokens per response (CLAUDE_CODE_MAX_OUTPUT_TOKENS)
@@ -91,6 +93,16 @@ export interface CreateSessionRequest {
   effort?: EffortLevel; // Initial thinking effort level
   speed?: SpeedLevel; // Initial processing-speed tier (emitted as X-Superagent-Speed)
   capabilityPolicies?: AgentCapabilityPolicies; // Launch policies for subagents/workflows (absent = allow)
+  // What the host expects the NEXT session to ask for (agent default model/
+  // effort/speed with the global fallback applied), as opposed to this
+  // session's own possibly one-off pick. Used to pre-warm a CLI subprocess for
+  // the right configuration; absent on non-interactive callers.
+  prewarmDefaults?: {
+    model?: string;
+    modelPromptHints?: string[];
+    effort?: EffortLevel;
+    speed?: SpeedLevel;
+  };
 }
 
 export interface SendMessageRequest {

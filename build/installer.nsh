@@ -23,6 +23,19 @@
     nsExec::Exec 'netsh advfirewall firewall delete rule name="Gamut agent connections"'
     nsExec::Exec 'netsh advfirewall firewall add rule name="Gamut agent connections" dir=in action=allow program="$INSTDIR\Gamut.exe" enable=yes profile=any'
   ${EndIf}
+
+  ; Download-carried enrollment: the release worker may stamp a one-time
+  ; enrollment code into the installer's filename. NSIS has no regex, so just
+  ; record the filename verbatim; the app parses and validates it on first
+  ; run (and deletes the file either way). $APPDATA\Gamut is the app's
+  ; userData dir for the per-user install this targets.
+  CreateDirectory "$APPDATA\Gamut"
+  ClearErrors
+  FileOpen $R1 "$APPDATA\Gamut\pending-download-source" w
+  ${IfNot} ${Errors}
+    FileWrite $R1 "$EXEFILE"
+    FileClose $R1
+  ${EndIf}
 !macroend
 
 !macro customUnInstall

@@ -28,6 +28,10 @@ vi.mock('@shared/lib/services/session-service', () => ({
   getSessionMetadata: vi.fn(() => Promise.resolve(null)),
   finalizeAutomationStatus: vi.fn(() => Promise.resolve('updated')),
 }))
+const mockRecordSessionActivity = vi.fn()
+vi.mock('@shared/lib/services/session-summary-cache', () => ({
+  recordSessionActivity: (...args: unknown[]) => mockRecordSessionActivity(...args),
+}))
 const mockAppendInformationalEntry = vi.fn((..._args: unknown[]) => Promise.resolve())
 vi.mock('@shared/lib/services/session-transcript-append', () => ({
   appendInformationalEntry: (...args: unknown[]) => mockAppendInformationalEntry(...args),
@@ -68,6 +72,7 @@ vi.mock('fs', () => ({
 }))
 vi.mock('@shared/lib/utils/file-storage', () => ({
   getAgentSessionsDir: vi.fn(() => '/mock/sessions'),
+  getSessionJsonlPath: vi.fn(() => '/mock/sessions/test-session-1.jsonl'),
 }))
 
 // Mock computer-use modules
@@ -169,7 +174,9 @@ vi.mock('./container-manager', () => ({
 }))
 
 // Import after mocks are set up
-import { messagePersister, redactStreamedToolInput } from './message-persister'
+import { messagePersister, redactStreamedToolInput, WaitForIdleTimeoutError } from './message-persister'
+import { notificationManager } from '@shared/lib/notifications/notification-manager'
+import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 
 describe('redactStreamedToolInput', () => {
@@ -270,6 +277,13 @@ describe('MessagePersister', () => {
   let sseEvents: any[]
   let sseCleanup: () => void
 
+  // One `user_request_created` per open request, carrying the registry
+  // envelope — the only request wire there is.
+  const requestCards = (kind: string) =>
+    sseEvents.filter((e) => e.type === 'user_request_created' && e.request?.kind === kind)
+  const openStreamRequestIds = () =>
+    userInputRequestManager.getStoreIdsForSession(SESSION_ID, 'stream')
+
   beforeEach(async () => {
     mockClient = createMockClient()
     await messagePersister.subscribeToSession(SESSION_ID, mockClient, SESSION_ID, AGENT_SLUG)
@@ -283,6 +297,433 @@ describe('MessagePersister', () => {
     sseCleanup()
     messagePersister.unsubscribeFromSession(SESSION_ID)
     vi.clearAllMocks()
+  })
+
+  describe('session summary activity', () => {
+    it('records complete top-level transcript frames with their source timestamp', () => {
+      const timestamp = new Date('2026-08-07T18:00:00.000Z')
+
+      mockClient._messageCallback!({
+        type: 'message',
+        content: { type: 'assistant', message: { role: 'assistant', content: 'done' } },
+        timestamp,
+        sessionId: SESSION_ID,
+      })
+
+      expect(mockRecordSessionActivity).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID, timestamp)
+    })
+
+    it('ignores replayed catch-up frames whose host timestamp is arrival time', () => {
+      // On the wire, SDK result frames carry no timestamp field, so the host
+      // stamps Date.now() at arrival — a reconnect replay recorded here would
+      // fabricate recency for a session that did nothing.
+      mockClient._messageCallback!({
+        type: 'message',
+        content: { type: 'result', subtype: 'success', replayed: true },
+        timestamp: new Date('2026-08-07T17:00:00.000Z'),
+        sessionId: SESSION_ID,
+      })
+
+      expect(mockRecordSessionActivity).not.toHaveBeenCalled()
+    })
+
+    it('does not attribute a sidechain transcript frame to the parent session', () => {
+      mockClient._messageCallback!({
+        type: 'message',
+        content: { type: 'assistant', parent_tool_use_id: 'tool-1' },
+        timestamp: new Date('2026-08-07T19:00:00.000Z'),
+        sessionId: SESSION_ID,
+      })
+
+      expect(mockRecordSessionActivity).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('completion notification response selection', () => {
+    it('passes only the newest merged textual assistant response at authoritative idle', async () => {
+      mockStat.mockResolvedValueOnce({ size: 12_345 })
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'capabilities',
+        session_state_events: true,
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'working-entry',
+        message: {
+          id: 'msg-working',
+          content: [{ type: 'text', text: 'I am still working.' }],
+        },
+      })
+      // A new late frame for that older message ID also merges into its
+      // original UI bubble; arrival order must not make it the final answer.
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'working-late-tool-entry',
+        message: {
+          id: 'msg-working',
+          content: [
+            { type: 'tool_use', id: 'tool-late', name: 'Read', input: {} },
+          ],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'final-thinking-entry',
+        message: {
+          id: 'msg-final',
+          content: [{ type: 'thinking', thinking: 'Hidden reasoning' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'final-text-entry-1',
+        message: {
+          id: 'msg-final',
+          content: [{ type: 'text', text: 'Final ' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'final-tool-entry',
+        message: {
+          id: 'msg-final',
+          content: [
+            { type: 'tool_use', id: 'tool-1', name: 'Read', input: {} },
+          ],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'final-text-entry-2',
+        message: {
+          id: 'msg-final',
+          content: [{ type: 'text', text: 'answer.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'working-late-after-final',
+        message: {
+          id: 'msg-working',
+          content: [
+            { type: 'tool_use', id: 'tool-latest', name: 'Read', input: {} },
+          ],
+        },
+      })
+      // Replaying an older group after the final group must not roll the
+      // candidate backward either; transcript UUID dedupe is turn-wide.
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'working-entry',
+        replayed: true,
+        message: {
+          id: 'msg-working',
+          content: [{ type: 'text', text: 'I am still working.' }],
+        },
+      })
+      // A reattached CLI can replay a persisted frame verbatim. The UI
+      // deduplicates by UUID, so the notification source must do the same.
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'final-text-entry-2',
+        replayed: true,
+        message: {
+          id: 'msg-final',
+          content: [{ type: 'text', text: 'answer.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+
+      expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'session_state_changed',
+        state: 'idle',
+      })
+
+      const call = vi.mocked(notificationManager.triggerSessionComplete).mock.calls.at(-1)
+      expect(call?.slice(0, 2)).toEqual([SESSION_ID, AGENT_SLUG])
+      expect(call?.[2]?.responseText).toBe('Final answer.')
+      await expect(call?.[2]?.responseTranscriptEndOffset).resolves.toBe(12_345)
+    })
+
+    it('dispatches completion without waiting for the transcript stat', async () => {
+      let resolveStat: ((value: { size: number }) => void) | undefined
+      mockStat.mockImplementationOnce(
+        () => new Promise<{ size: number }>((resolve) => {
+          resolveStat = resolve
+        }),
+      )
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'final-entry',
+        message: {
+          id: 'msg-final',
+          content: [{ type: 'text', text: 'Finished.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
+      const offset = vi.mocked(notificationManager.triggerSessionComplete)
+        .mock.calls[0][2]?.responseTranscriptEndOffset
+      resolveStat?.({ size: 99 })
+      await expect(offset).resolves.toBe(99)
+    })
+
+    it('does not reuse working text when the newest assistant item is tool-only', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'working-entry',
+        message: {
+          id: 'msg-working',
+          content: [{ type: 'text', text: 'Earlier working note.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'tool-only-entry',
+        message: {
+          id: 'msg-tool-only',
+          content: [
+            { type: 'tool_use', id: 'tool-2', name: 'Read', input: {} },
+          ],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledWith(
+        SESSION_ID,
+        AGENT_SLUG,
+        {
+          responseText: '',
+          responseTranscriptEndOffset: expect.any(Promise),
+        },
+      )
+    })
+
+    it('does not reuse the prior answer when a queued turn produces no assistant item', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'capabilities',
+        session_state_events: true,
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'turn-a-answer',
+        message: {
+          id: 'msg-turn-a',
+          content: [{ type: 'text', text: 'Answer for the first request.' }],
+        },
+      })
+
+      // The second request is queued before turn A's result. It then ends with
+      // no assistant frame (for example, a prompt hook blocks it).
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+      // A delayed frame for turn A must still merge into turn A in the UI; it
+      // cannot resurrect A as turn B's notification response.
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'turn-a-late-frame',
+        message: {
+          id: 'msg-turn-a',
+          content: [{ type: 'text', text: 'Stale turn-A text.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 0,
+        usage: { input_tokens: 0, output_tokens: 0 },
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'session_state_changed',
+        state: 'idle',
+      })
+
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledWith(
+        SESSION_ID,
+        AGENT_SLUG,
+        { responseText: '', responseTranscriptEndOffset: expect.any(Promise) },
+      )
+    })
+
+    it.each([
+      {
+        label: 'resume',
+        result: {
+          type: 'result',
+          subtype: 'resume',
+          is_error: false,
+          num_turns: 1,
+          usage: { input_tokens: 1, output_tokens: 0 },
+        },
+      },
+      {
+        label: 'graceful interrupt',
+        result: {
+          type: 'result',
+          subtype: 'error_during_execution',
+          is_error: true,
+          terminal_reason: 'aborted_tools',
+          num_turns: 1,
+          usage: { input_tokens: 1, output_tokens: 0 },
+        },
+      },
+    ])('does not consume the queued-turn guard on $label results', ({ result }) => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'capabilities',
+        session_state_events: true,
+      })
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      mockClient._sendMessage(result)
+
+      const state = (messagePersister as any).streamingStates.get(SESSION_ID)
+      expect(state.queuedTurnCount).toBe(1)
+      expect(state.resetAssistantBeforeNextTurnOutput).toBe(false)
+
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+
+      expect(state.queuedTurnCount).toBe(0)
+      expect(state.resetAssistantBeforeNextTurnOutput).toBe(true)
+    })
+
+    it('settles a self-healed running event followed by idle without a new result', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'capabilities',
+        session_state_events: true,
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'completed-answer',
+        message: {
+          id: 'msg-completed',
+          content: [{ type: 'text', text: 'Completed.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'session_state_changed',
+        state: 'idle',
+      })
+      vi.mocked(notificationManager.triggerSessionComplete).mockClear()
+
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'session_state_changed',
+        state: 'running',
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'session_state_changed',
+        state: 'idle',
+      })
+
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledWith(
+        SESSION_ID,
+        AGENT_SLUG,
+        { responseText: '', responseTranscriptEndOffset: expect.any(Promise) },
+      )
+    })
+
+    it('does not notify for a modern success-subtype error result', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'capabilities',
+        session_state_events: true,
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: true,
+        terminal_reason: 'api_error',
+        errors: ['provider failed'],
+        num_turns: 0,
+        usage: { input_tokens: 0, output_tokens: 0 },
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'session_state_changed',
+        state: 'idle',
+      })
+
+      expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
+    })
+
+    it('does not notify when a legacy turn exits for resume', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'resume-answer',
+        message: {
+          id: 'msg-resume',
+          content: [{ type: 'text', text: 'Pausing for resume.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'resume',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+
+      expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
+    })
   })
 
   // ============================================================================
@@ -500,18 +941,21 @@ describe('MessagePersister', () => {
       // With display:'summarized', thinking_delta carries text; signature_delta does not.
       sseEvents.length = 0
 
-      mockClient._sendMessage({ type: 'stream_event', event: { type: 'message_start' } })
       mockClient._sendMessage({
         type: 'stream_event',
-        event: { type: 'content_block_start', content_block: { type: 'thinking' } },
+        event: { type: 'message_start', message: { id: 'msg-thinking-1' } },
       })
       mockClient._sendMessage({
         type: 'stream_event',
-        event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'Let me ' } },
+        event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } },
       })
       mockClient._sendMessage({
         type: 'stream_event',
-        event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'consider.' } },
+        event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'Let me ' } },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'consider.' } },
       })
       mockClient._sendMessage({
         type: 'stream_event',
@@ -523,8 +967,11 @@ describe('MessagePersister', () => {
       const deltas = sseEvents.filter(e => e.type === 'thinking_delta')
       const stops = sseEvents.filter(e => e.type === 'thinking_stop')
       expect(starts).toHaveLength(1)
+      expect(starts[0].thinkingId).toBe('msg-thinking-1:0')
       expect(deltas.map(d => d.text)).toEqual(['Let me ', 'consider.'])
+      expect(deltas.map(d => d.thinkingId)).toEqual(['msg-thinking-1:0', 'msg-thinking-1:0'])
       expect(stops).toHaveLength(1)
+      expect(stops[0].thinkingId).toBe('msg-thinking-1:0')
     })
 
     it('does not emit thinking_stop for a tool_use content_block_stop', () => {
@@ -845,6 +1292,140 @@ describe('MessagePersister', () => {
         type: 'system', subtype: 'task_notification', task_id: 'bgsub', tool_use_id: 'bg-tool', status: 'completed',
       })
       expect(sseEvents.filter(e => e.type === 'subagent_completed')).toHaveLength(1)
+    })
+
+    it('completes an errored background launch instead of treating it as an async ack', () => {
+      // The streamed run_in_background input is only a hint. If the launch is
+      // rejected before it gets an async_launched result (for example by a
+      // capability-review gate), the error tool_result is terminal and must
+      // clean up both the subagent entry and its parked child requests.
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_start', content_block: { type: 'tool_use', id: 'blocked-bg-tool', name: 'Agent' } },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json: '{"subagent_type":"general-purpose","run_in_background":true}' } },
+      })
+      mockClient._sendMessage({ type: 'stream_event', event: { type: 'content_block_stop' } })
+      userInputRequestManager.register({
+        id: 'blocked-bg-child-request',
+        kind: 'question',
+        scope: { sessionId: SESSION_ID, agentSlug: AGENT_SLUG },
+        blocking: true,
+        autoApproved: false,
+        parentToolUseId: 'blocked-bg-tool',
+        payload: { questions: [] },
+      })
+      sseEvents.length = 0
+
+      try {
+        mockClient._sendMessage({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [{
+              type: 'tool_result',
+              tool_use_id: 'blocked-bg-tool',
+              content: 'Agent launch blocked by policy',
+              is_error: true,
+            }],
+          },
+        })
+
+        expect(sseEvents.filter(e => e.type === 'subagent_completed')).toHaveLength(1)
+        expect(messagePersister.getActiveBackgroundTasks(SESSION_ID)).toHaveLength(0)
+        expect(userInputRequestManager.getOpenRequest('blocked-bg-child-request')).toBeNull()
+      } finally {
+        userInputRequestManager.resolve('blocked-bg-child-request', 'cancelled')
+      }
+    })
+
+    it('keeps a SendMessage-resumed subagent running until its task completes', () => {
+      // Real Claude Code 2.1.219 order:
+      // Agent completes → SendMessage → background_tasks_changed → task_started
+      // (same agentId, new SendMessage tool_use_id) → SendMessage ack → terminal task events.
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_start', content_block: { type: 'tool_use', id: 'agent-tool', name: 'Agent' } },
+      })
+      mockClient._sendMessage({ type: 'stream_event', event: { type: 'content_block_stop' } })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'agent-resumed',
+        tool_use_id: 'agent-tool',
+        subagent_type: 'general-purpose',
+        task_type: 'local_agent',
+        description: 'Lifecycle probe',
+      })
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { status: 'completed', agentId: 'agent-resumed' },
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'agent-tool', content: 'FIRST_DONE' }],
+        },
+      })
+
+      sseEvents.length = 0
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'background_tasks_changed',
+        tasks: [{ task_id: 'agent-resumed', task_type: 'local_agent', description: 'Lifecycle probe' }],
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'agent-resumed',
+        tool_use_id: 'send-tool',
+        subagent_type: 'general-purpose',
+        task_type: 'local_agent',
+        description: 'Lifecycle probe',
+      })
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: {
+          success: true,
+          resumedAgentId: 'agent-resumed',
+          message: 'Agent resumed from transcript in the background.',
+        },
+        message: {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'send-tool',
+            content: '{"success":true,"resumedAgentId":"agent-resumed"}',
+          }],
+        },
+      })
+
+      expect(sseEvents.filter(e => e.type === 'subagent_completed')).toHaveLength(0)
+      expect(messagePersister.getActiveBackgroundTasks(SESSION_ID)).toEqual([
+        expect.objectContaining({ taskId: 'agent-resumed', isSubagent: true }),
+      ])
+
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_updated',
+        task_id: 'agent-resumed',
+        patch: { status: 'completed' },
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'agent-resumed',
+        tool_use_id: 'send-tool',
+        status: 'completed',
+        summary: 'SECOND_DONE',
+      })
+
+      const completed = sseEvents.filter(e => e.type === 'subagent_completed')
+      expect(completed).toHaveLength(1)
+      expect(completed[0]).toEqual(expect.objectContaining({
+        parentToolId: 'send-tool',
+        agentId: 'agent-resumed',
+      }))
     })
 
     // A dynamic workflow (task_type 'local_workflow') must get the same treatment as a
@@ -1716,7 +2297,7 @@ describe('MessagePersister', () => {
       })
     }
 
-    it('broadcasts remote_mcp_request event on tool_use completion', () => {
+    it('registers a remote_mcp request on tool_use completion', () => {
       sseEvents.length = 0
 
       simulateRemoteMcpToolUse('mcp-tool-1', {
@@ -1725,30 +2306,32 @@ describe('MessagePersister', () => {
         reason: 'Need weather data',
       })
 
-      const mcpRequests = sseEvents.filter(e => e.type === 'remote_mcp_request')
+      const mcpRequests = requestCards('remote_mcp')
       expect(mcpRequests).toHaveLength(1)
-      expect(mcpRequests[0].toolUseId).toBe('mcp-tool-1')
-      expect(mcpRequests[0].url).toBe('https://mcp.example.com/mcp')
-      expect(mcpRequests[0].name).toBe('Example MCP')
-      expect(mcpRequests[0].reason).toBe('Need weather data')
-      expect(mcpRequests[0].agentSlug).toBe(AGENT_SLUG)
+      expect(mcpRequests[0].request.id).toBe('mcp-tool-1')
+      expect(mcpRequests[0].request.scope.agentSlug).toBe(AGENT_SLUG)
+      expect(mcpRequests[0].request.payload).toMatchObject({
+        url: 'https://mcp.example.com/mcp',
+        name: 'Example MCP',
+        reason: 'Need weather data',
+      })
     })
 
-    it('broadcasts remote_mcp_request with only url (name and reason optional)', () => {
+    it('registers a remote_mcp request with only url (name and reason optional)', () => {
       sseEvents.length = 0
 
       simulateRemoteMcpToolUse('mcp-tool-2', {
         url: 'https://other.mcp.io/api',
       })
 
-      const mcpRequests = sseEvents.filter(e => e.type === 'remote_mcp_request')
+      const mcpRequests = requestCards('remote_mcp')
       expect(mcpRequests).toHaveLength(1)
-      expect(mcpRequests[0].url).toBe('https://other.mcp.io/api')
-      expect(mcpRequests[0].name).toBeUndefined()
-      expect(mcpRequests[0].reason).toBeUndefined()
+      expect(mcpRequests[0].request.payload.url).toBe('https://other.mcp.io/api')
+      expect(mcpRequests[0].request.payload.name).toBeUndefined()
+      expect(mcpRequests[0].request.payload.reason).toBeUndefined()
     })
 
-    it('does not broadcast remote_mcp_request for invalid JSON input', () => {
+    it('registers nothing for invalid JSON input', () => {
       sseEvents.length = 0
 
       mockClient._sendMessage({
@@ -1770,16 +2353,16 @@ describe('MessagePersister', () => {
         event: { type: 'content_block_stop' },
       })
 
-      const mcpRequests = sseEvents.filter(e => e.type === 'remote_mcp_request')
+      const mcpRequests = requestCards('remote_mcp')
       expect(mcpRequests).toHaveLength(0)
     })
 
-    it('does not broadcast remote_mcp_request when url is missing', () => {
+    it('registers nothing when url is missing', () => {
       sseEvents.length = 0
 
       simulateRemoteMcpToolUse('mcp-no-url', { name: 'No URL MCP' })
 
-      const mcpRequests = sseEvents.filter(e => e.type === 'remote_mcp_request')
+      const mcpRequests = requestCards('remote_mcp')
       expect(mcpRequests).toHaveLength(0)
     })
 
@@ -1805,7 +2388,7 @@ describe('MessagePersister', () => {
       )
     })
 
-    it('still broadcasts tool_use_ready alongside remote_mcp_request', () => {
+    it('still broadcasts tool_use_ready alongside the registration', () => {
       sseEvents.length = 0
 
       simulateRemoteMcpToolUse('mcp-tool-ready', {
@@ -2045,10 +2628,10 @@ describe('MessagePersister', () => {
       expect(stored[0].name).toBe('compact')
     })
 
-    it('does not overwrite rich slash commands with init event strings', () => {
-      // Pre-set rich commands (e.g. from container HTTP response)
+    it('uses init slugs without losing rich command details', () => {
+      // Pre-set rich commands (e.g. legacy metadata or a container HTTP response)
       const richCommands = [
-        { name: 'compact', description: 'Clear conversation history', argumentHint: '<instructions>' },
+        { name: 'Order Canvas Print', description: 'Order a framed canvas', argumentHint: '<image>' },
       ]
       messagePersister.setSlashCommands(SESSION_ID, richCommands)
 
@@ -2059,16 +2642,17 @@ describe('MessagePersister', () => {
         type: 'system',
         subtype: 'init',
         session_id: 'claude-session-1',
-        slash_commands: ['compact', 'review'],
+        slash_commands: ['order-canvas-print', 'review'],
       })
 
-      // Should still have the rich commands, NOT overwritten by strings
       const stored = messagePersister.getSlashCommands(SESSION_ID)
-      expect(stored).toEqual(richCommands)
+      expect(stored).toEqual([
+        { name: 'order-canvas-print', description: 'Order a framed canvas', argumentHint: '<image>' },
+        { name: 'review', description: '', argumentHint: '' },
+      ])
 
-      // stream_start should include the rich commands
       const streamStarts = sseEvents.filter(e => e.type === 'stream_start')
-      expect(streamStarts[0].slashCommands).toEqual(richCommands)
+      expect(streamStarts[0].slashCommands).toEqual(stored)
     })
 
     it('broadcasts slash commands in stream_start when available', () => {
@@ -2559,6 +3143,13 @@ describe('MessagePersister', () => {
   // ============================================================================
 
   describe('awaiting input status tracking', () => {
+    beforeEach(() => {
+      // Requests park mid-turn: production always has markSessionActive before
+      // a request event arrives, and the derived awaiting projection is gated
+      // on an active turn (an inactive session is never awaiting).
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    })
+
     // Helper to collect global notification events
     function collectGlobalEvents(): { events: any[]; cleanup: () => void } {
       const events: any[] = []
@@ -2621,7 +3212,9 @@ describe('MessagePersister', () => {
       const { events: globalEvents, cleanup: globalCleanup } = collectGlobalEvents()
 
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
-      messagePersister.recoverSessionAwaitingInput(SESSION_ID, AGENT_SLUG)
+      messagePersister.recoverSessionAwaitingInput(SESSION_ID, AGENT_SLUG, [
+        { toolUseId: 'recovered-1', toolName: 'mcp__user-input__request_secret' },
+      ])
 
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
       expect(messagePersister.hasSessionsAwaitingInputForAgent(AGENT_SLUG)).toBe(true)
@@ -2631,14 +3224,32 @@ describe('MessagePersister', () => {
       expect(awaitingEvents[0].sessionId).toBe(SESSION_ID)
       expect(awaitingEvents[0].agentSlug).toBe(AGENT_SLUG)
 
+      // Recovered entries carry no payload, so no card event goes out for
+      // them; clients render the card from the transcript instead.
+      expect(requestCards('question')).toHaveLength(0)
+
+      // Its tool_result settles the recovered wait like any other request.
+      mockClient._sendMessage({
+        type: 'user',
+        message: {
+          content: [
+            { type: 'tool_result', tool_use_id: 'recovered-1', content: 'secret-value' },
+          ],
+        },
+      })
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+
       globalCleanup()
     })
 
     it('does not recover awaiting input for an inactive session', () => {
-      messagePersister.recoverSessionAwaitingInput(SESSION_ID, AGENT_SLUG)
+      // A session with no active turn (here: no streaming state at all — the
+      // post-restart shape this fallback exists for) must not be recovered.
+      messagePersister.recoverSessionAwaitingInput('inactive-session-1', AGENT_SLUG, [
+        { toolUseId: 'recovered-2', toolName: 'mcp__user-input__request_secret' },
+      ])
 
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
-      expect(messagePersister.hasSessionsAwaitingInputForAgent(AGENT_SLUG)).toBe(false)
+      expect(messagePersister.isSessionAwaitingInput('inactive-session-1')).toBe(false)
     })
 
     it('sets isAwaitingInput after AskUserQuestion tool fires', () => {
@@ -2681,6 +3292,172 @@ describe('MessagePersister', () => {
       })
 
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+    })
+
+    // A background subagent's request_browser_input must flip the SAME awaiting
+    // flag the main agent's does: the in-chat card is renderer-local state, but
+    // the sidebar/header orange dot reads the persister's isAwaitingInput. A
+    // request surfaced only as a card leaves the agent labeled "working" while
+    // it is actually blocked on the user.
+    describe('subagent-originated browser input requests', () => {
+      function sendSidechainStreamEvent(event: any, parentToolId = 'agent-tool-1') {
+        mockClient._sendMessage({
+          type: 'stream_event',
+          parent_tool_use_id: parentToolId,
+          event,
+        })
+      }
+
+      it('sets isAwaitingInput when a subagent streams request_browser_input', () => {
+        sendSidechainStreamEvent({
+          type: 'content_block_start',
+          content_block: {
+            type: 'tool_use',
+            id: 'sub-tool-1',
+            name: 'mcp__user-input__request_browser_input',
+          },
+        })
+        sendSidechainStreamEvent({
+          type: 'content_block_delta',
+          delta: {
+            type: 'input_json_delta',
+            partial_json: JSON.stringify({
+              message: 'Log in to GitHub.',
+              requirements: ['Complete 2FA'],
+            }),
+          },
+        })
+        sendSidechainStreamEvent({ type: 'content_block_stop' })
+
+        // The card fires either way — the status flag is the fix target.
+        const cards = requestCards('browser_input')
+        expect(cards).toHaveLength(1)
+        expect(cards[0].request.id).toBe('sub-tool-1')
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      })
+
+      it('sets isAwaitingInput when a subagent complete assistant message carries request_browser_input', () => {
+        const { events: globalEvents, cleanup } = collectGlobalEvents()
+
+        mockClient._sendMessage({
+          type: 'assistant',
+          parent_tool_use_id: 'agent-tool-2',
+          message: {
+            content: [
+              {
+                type: 'tool_use',
+                id: 'sub-tool-2',
+                name: 'mcp__user-input__request_browser_input',
+                input: { message: 'Log in to GitHub.', requirements: [] },
+              },
+            ],
+          },
+        })
+
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+        const awaiting = globalEvents.filter(e => e.type === 'session_awaiting_input')
+        expect(awaiting).toHaveLength(1)
+        expect(awaiting[0].sessionId).toBe(SESSION_ID)
+
+        cleanup()
+      })
+
+      // The resolve side of the same asymmetry: a subagent's tool_result comes
+      // back on the SIDECHAIN (parent_tool_use_id set), which never reaches the
+      // main-path 'user' handler that clears isAwaitingInput and drops the
+      // replayable card. After the user clicks Complete, the subagent resumes —
+      // the UI must stop saying "needs input" and must not replay a stale card.
+      function sendSidechainBrowserInputRequest(parentToolId: string, subToolId: string) {
+        mockClient._sendMessage({
+          type: 'assistant',
+          parent_tool_use_id: parentToolId,
+          message: {
+            content: [
+              {
+                type: 'tool_use',
+                id: subToolId,
+                name: 'mcp__user-input__request_browser_input',
+                input: { message: 'Log in to GitHub.', requirements: [] },
+              },
+            ],
+          },
+        })
+      }
+
+      it('clears awaiting state and settles the request when the sidechain tool_result arrives', () => {
+        const { events: globalEvents, cleanup } = collectGlobalEvents()
+
+        sendSidechainBrowserInputRequest('agent-tool-3', 'sub-tool-3')
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+        expect(openStreamRequestIds()).toHaveLength(1)
+
+        sseEvents.length = 0
+
+        mockClient._sendMessage({
+          type: 'user',
+          parent_tool_use_id: 'agent-tool-3',
+          message: {
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'sub-tool-3',
+                content: 'User has completed the requested browser interaction.',
+              },
+            ],
+          },
+        })
+
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+        expect(openStreamRequestIds()).toHaveLength(0)
+        // Same broadcast the main path uses — other windows drop their card copy off it
+        const results = sseEvents.filter(e => e.type === 'tool_result')
+        expect(results).toHaveLength(1)
+        expect(results[0].toolUseId).toBe('sub-tool-3')
+        expect(globalEvents.filter(e => e.type === 'session_input_provided')).toHaveLength(1)
+
+        cleanup()
+      })
+
+      it('does not clear awaiting state on unrelated sidechain tool results', () => {
+        sendSidechainBrowserInputRequest('agent-tool-4', 'sub-tool-4')
+
+        // An ordinary subagent tool result (e.g. Bash) while the request is open
+        mockClient._sendMessage({
+          type: 'user',
+          parent_tool_use_id: 'agent-tool-4',
+          message: {
+            content: [
+              { type: 'tool_result', tool_use_id: 'other-tool-9', content: 'file listing' },
+            ],
+          },
+        })
+
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+        expect(openStreamRequestIds()).toHaveLength(1)
+      })
+
+      it('keeps awaiting when another input request is still open after the sidechain result', () => {
+        // Main-agent question open in parallel with the subagent's browser input
+        simulateToolUse('AskUserQuestion', 'main-q-1', {
+          questions: [{ question: 'Pick DB', header: 'DB', options: [], multiSelect: false }],
+        })
+        sendSidechainBrowserInputRequest('agent-tool-5', 'sub-tool-5')
+        expect(openStreamRequestIds()).toHaveLength(2)
+
+        // Only the subagent's request resolves
+        mockClient._sendMessage({
+          type: 'user',
+          parent_tool_use_id: 'agent-tool-5',
+          message: {
+            content: [
+              { type: 'tool_result', tool_use_id: 'sub-tool-5', content: 'done' },
+            ],
+          },
+        })
+
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+        expect(openStreamRequestIds()).toEqual(['main-q-1'])
+      })
     })
 
     it('does NOT set isAwaitingInput for schedule_task tool', () => {
@@ -2754,6 +3531,50 @@ describe('MessagePersister', () => {
       })
 
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+    })
+
+    it('keeps isAwaitingInput on tool result while a parked review is open', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      // A parked proxy/x-agent review keeps the agent awaiting even as an
+      // unrelated tool result lands. The review lives outside the stream maps
+      // as an agent-scoped registry entry — exactly what ReviewManager writes
+      // through on requestReview.
+      // The registry singleton is shared across tests; resolve in finally so a
+      // failing assertion can't leak this review into later tests.
+      userInputRequestManager.register({
+        id: 'blocker-review-1',
+        kind: 'proxy_review',
+        scope: { agentSlug: AGENT_SLUG },
+        blocking: true,
+        autoApproved: false,
+        payload: { toolkit: 'slack' },
+      })
+
+      try {
+        simulateToolUse('mcp__user-input__request_secret', 'tool-1', { secretName: 'KEY' })
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+
+        // User answers the secret; its tool result arrives while the review is still up.
+        mockClient._sendMessage({
+          type: 'user',
+          message: {
+            content: [
+              { type: 'tool_result', tool_use_id: 'tool-1', content: 'secret-value' },
+            ],
+          },
+        })
+
+        // Must stay awaiting — the review is still open.
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+
+        // Once the review resolves, the agent-wide sync settles the session.
+        userInputRequestManager.resolve('blocker-review-1', 'answered')
+        messagePersister.syncAgentSessionsAwaiting(AGENT_SLUG)
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      } finally {
+        userInputRequestManager.resolve('blocker-review-1', 'cancelled')
+      }
     })
 
     it('broadcasts session_input_provided globally when input is received', () => {
@@ -2874,7 +3695,7 @@ describe('MessagePersister', () => {
         expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
       })
 
-      it('sweeps pendingComputerUseRequests (the separate map) and interrupts', async () => {
+      it('sweeps the pending computer-use entries and interrupts', async () => {
         vi.stubEnv('E2E_MOCK', 'true') // skip the host platform gate so the request goes pending
         try {
           messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
@@ -3037,34 +3858,34 @@ describe('MessagePersister', () => {
 
     const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
-    it('broadcasts a review card and stores it for reconnect replay', async () => {
+    it('registers a review card clients can render', async () => {
       simulateToolUse('Workflow', 'wf-1', { script: 'export const meta = {}' })
 
       await vi.waitFor(() => {
-        expect(sseEvents.filter(e => e.type === 'capability_review_request')).toHaveLength(1)
+        expect(requestCards('capability_review')).toHaveLength(1)
       })
-      expect(sseEvents.filter(e => e.type === 'capability_review_request')[0]).toMatchObject({
-        toolUseId: 'wf-1',
-        capability: 'workflows',
+      expect(requestCards('capability_review')[0].request).toMatchObject({
+        id: 'wf-1',
+        payload: { capability: 'workflows' },
       })
-      expect(messagePersister.getPendingInputRequests(SESSION_ID).map(r => r.toolUseId)).toContain('wf-1')
+      expect(openStreamRequestIds()).toContain('wf-1')
     })
 
-    it('completeCapabilityReview clears the replay store immediately and notifies live clients', async () => {
+    it('completeCapabilityReview settles the entry immediately and notifies live clients', async () => {
       simulateToolUse('Workflow', 'wf-1', { script: 'export const meta = {}' })
       await vi.waitFor(() => {
-        expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(1)
+        expect(openStreamRequestIds()).toHaveLength(1)
       })
 
       // The decision route calls this on approve AND reject. Waiting for the
-      // launched Workflow's tool_result would leave the card replaying to any
-      // reconnecting client for the whole (possibly minutes-long) run.
+      // launched Workflow's tool_result would leave the card up for the whole
+      // (possibly minutes-long) run.
       messagePersister.completeCapabilityReview(SESSION_ID, 'wf-1')
 
-      expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
-      const resolved = sseEvents.filter(e => e.type === 'capability_review_resolved')
+      expect(openStreamRequestIds()).toHaveLength(0)
+      const resolved = sseEvents.filter(e => e.type === 'user_request_resolved')
       expect(resolved).toHaveLength(1)
-      expect(resolved[0]).toMatchObject({ toolUseId: 'wf-1' })
+      expect(resolved[0]).toMatchObject({ requestId: 'wf-1' })
     })
 
     it('a session-scope grant in the host mirror suppresses review cards without a container query', async () => {
@@ -3072,7 +3893,7 @@ describe('MessagePersister', () => {
       simulateToolUse('Workflow', 'wf-2', { script: 'export const meta = {}' })
 
       await flush()
-      expect(sseEvents.filter(e => e.type === 'capability_review_request')).toHaveLength(0)
+      expect(requestCards('capability_review')).toHaveLength(0)
       expect(mockClient.fetch).not.toHaveBeenCalled()
     })
 
@@ -3089,7 +3910,7 @@ describe('MessagePersister', () => {
       await vi.waitFor(() => {
         expect(messagePersister.hasSessionCapabilityGrant(SESSION_ID, 'workflows')).toBe(true)
       })
-      expect(sseEvents.filter(e => e.type === 'capability_review_request')).toHaveLength(0)
+      expect(requestCards('capability_review')).toHaveLength(0)
     })
 
     it('still shows the card when the grant lookup fails', async () => {
@@ -3098,7 +3919,7 @@ describe('MessagePersister', () => {
       simulateToolUse('Workflow', 'wf-4', { script: 'export const meta = {}' })
 
       await vi.waitFor(() => {
-        expect(sseEvents.filter(e => e.type === 'capability_review_request')).toHaveLength(1)
+        expect(requestCards('capability_review')).toHaveLength(1)
       })
     })
 
@@ -3106,8 +3927,72 @@ describe('MessagePersister', () => {
       simulateToolUse('Task', 'task-1', { prompt: 'go', subagent_type: 'Explore' })
 
       await flush()
-      expect(sseEvents.filter(e => e.type === 'capability_review_request')).toHaveLength(0)
+      expect(requestCards('capability_review')).toHaveLength(0)
       expect(mockClient.fetch).not.toHaveBeenCalled()
+    })
+
+    it('a cancellation racing ahead of the grant lookup suppresses the card entirely', async () => {
+      // handleCapabilityReviewTool awaits the container grant lookup before
+      // storing/broadcasting the card. A capability_review_cancelled frame
+      // landing during that await must tombstone the id — otherwise the
+      // handler resurrects an unanswerable card and re-marks the session
+      // awaiting input after its own cancellation.
+      let releaseLookup!: (value: unknown) => void
+      vi.mocked(mockClient.fetch).mockReturnValue(
+        new Promise((resolve) => { releaseLookup = resolve }) as never
+      )
+
+      simulateToolUse('Workflow', 'wf-race', { script: 'export const meta = {}' })
+      await flush()
+      mockClient._sendMessage({
+        type: 'capability_review_cancelled',
+        toolUseId: 'wf-race',
+        capability: 'workflows',
+      })
+      await flush()
+
+      releaseLookup({ ok: true, json: async () => ({ grants: [] }) })
+      await flush()
+      await flush()
+
+      expect(requestCards('capability_review')).toHaveLength(0)
+      expect(openStreamRequestIds()).toHaveLength(0)
+
+      // The tombstone is consumed — a later review with a fresh id is unaffected.
+      vi.mocked(mockClient.fetch).mockResolvedValue({
+        ok: true,
+        json: async () => ({ grants: [] }),
+      } as unknown as Response)
+      simulateToolUse('Workflow', 'wf-after-race', { script: 'export const meta = {}' })
+      await vi.waitFor(() => {
+        expect(requestCards('capability_review')).toHaveLength(1)
+      })
+      expect(requestCards('capability_review')[0].request).toMatchObject({
+        id: 'wf-after-race',
+      })
+    })
+
+    it('a container cancellation frame closes the card like a decision does', async () => {
+      // The container's gate hook emits this when the CLI abandons the parked
+      // hook (per-hook timeout or turn abort) — no decision can ever land, so
+      // the card must not linger for live clients or reconnect replay.
+      simulateToolUse('Workflow', 'wf-5', { script: 'export const meta = {}' })
+      await vi.waitFor(() => {
+        expect(openStreamRequestIds()).toHaveLength(1)
+      })
+
+      mockClient._sendMessage({
+        type: 'capability_review_cancelled',
+        toolUseId: 'wf-5',
+        capability: 'workflows',
+      })
+
+      await vi.waitFor(() => {
+        expect(openStreamRequestIds()).toHaveLength(0)
+      })
+      const resolved = sseEvents.filter(e => e.type === 'user_request_resolved')
+      expect(resolved).toHaveLength(1)
+      expect(resolved[0]).toMatchObject({ requestId: 'wf-5' })
     })
   })
 
@@ -3116,6 +4001,12 @@ describe('MessagePersister', () => {
   // ============================================================================
 
   describe('automated session promotion', () => {
+    beforeEach(() => {
+      // Promotion fires on the awaiting rising edge, which requires an active
+      // turn — as in production, where the automated send marks active first.
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    })
+
     function collectGlobalEvents(): { events: any[]; cleanup: () => void } {
       const events: any[] = []
       const cleanup = messagePersister.addGlobalNotificationClient((data) => {
@@ -3423,11 +4314,163 @@ describe('MessagePersister', () => {
     })
   })
 
+  describe('automation stream release on settle (SUP-572)', () => {
+    // A leaked stream per cron/webhook run holds a runtime-container WebSocket
+    // open forever (keepalives defeat idle cuts); runtimes that cap concurrent
+    // connections per container then block new sessions. The persister must
+    // release the stream once an unpromoted automation session truly settles.
+
+    afterEach(() => {
+      // mockResolvedValue survives clearAllMocks — restore the suite default.
+      vi.mocked(getSessionMetadata).mockImplementation(() => Promise.resolve(null))
+    })
+
+    // Re-subscribe AFTER pointing the metadata mock at the desired session
+    // shape, then let the async subscribe-time resolution land.
+    async function resubscribeWithMetadata(meta: Record<string, unknown> | null) {
+      vi.mocked(getSessionMetadata).mockResolvedValue(meta as never)
+      await messagePersister.subscribeToSession(SESSION_ID, mockClient, SESSION_ID, AGENT_SLUG)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    function settleSession() {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      // State-events authority: the runtime's own idle proves the queue drained.
+      mockClient._sendMessage({ type: 'system', subtype: 'capabilities', session_state_events: true })
+      mockClient._sendMessage({
+        type: 'result', subtype: 'success', is_error: false, duration_ms: 100, num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+    }
+
+    it('releases the stream when a scheduled session settles', async () => {
+      await resubscribeWithMetadata({ isScheduledExecution: true, scheduledTaskId: 'task-1' })
+
+      settleSession()
+
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(false)
+      const lastSubscription = vi.mocked(mockClient.subscribeToStream).mock.results.at(-1)!
+        .value as { unsubscribe: ReturnType<typeof vi.fn> }
+      expect(lastSubscription.unsubscribe).toHaveBeenCalled()
+    })
+
+    it('releases the stream when a scheduled session settles with an error', async () => {
+      await resubscribeWithMetadata({ isScheduledExecution: true, scheduledTaskId: 'task-1' })
+
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({ type: 'system', subtype: 'capabilities', session_state_events: true })
+      mockClient._sendMessage({
+        type: 'result', subtype: 'error_during_execution', is_error: true, duration_ms: 100, num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 0 },
+      })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(false)
+    })
+
+    it('releases the stream when a webhook session settles', async () => {
+      await resubscribeWithMetadata({ isWebhookExecution: true, webhookTriggerId: 'trigger-1' })
+
+      settleSession()
+
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(false)
+    })
+
+    it('keeps the stream for an interactive session', async () => {
+      await resubscribeWithMetadata(null)
+
+      settleSession()
+
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(true)
+    })
+
+    it('keeps the stream for a promoted automation session', async () => {
+      await resubscribeWithMetadata({ isScheduledExecution: true, promotedToInteractive: true })
+
+      settleSession()
+
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(true)
+    })
+
+    it('keeps the stream when a scheduled session is promoted mid-run', async () => {
+      await resubscribeWithMetadata({ isScheduledExecution: true, scheduledTaskId: 'task-1' })
+
+      await messagePersister.promoteAutomatedSession(SESSION_ID, AGENT_SLUG)
+
+      settleSession()
+
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(true)
+    })
+
+    it('does not let a stale subscribe-time metadata read undo a promotion', async () => {
+      const unpromoted = { isScheduledExecution: true, scheduledTaskId: 'task-1' }
+      let resolveSubscribeMeta: ((value: typeof unpromoted) => void) | undefined
+      let metaCalls = 0
+      vi.mocked(getSessionMetadata).mockImplementation(() => {
+        metaCalls += 1
+        if (metaCalls === 1) {
+          return new Promise((resolve) => { resolveSubscribeMeta = resolve })
+        }
+        return Promise.resolve(unpromoted as never)
+      })
+
+      await messagePersister.subscribeToSession(SESSION_ID, mockClient, SESSION_ID, AGENT_SLUG)
+      await messagePersister.promoteAutomatedSession(SESSION_ID, AGENT_SLUG)
+      resolveSubscribeMeta!(unpromoted)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      settleSession()
+
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(true)
+    })
+
+    it('does not release on a legacy result-driven idle (no state-events authority)', async () => {
+      // Without the runtime's own idle event there is no proof the container's
+      // message queue is drained — a queued message could still start a turn
+      // on this stream, so the release must not fire.
+      await resubscribeWithMetadata({ isScheduledExecution: true, scheduledTaskId: 'task-1' })
+
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'result', subtype: 'success', is_error: false, duration_ms: 100, num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(true)
+    })
+
+    it('a released session re-subscribes cleanly for a later wake', async () => {
+      await resubscribeWithMetadata({ isScheduledExecution: true, scheduledTaskId: 'task-1' })
+      settleSession()
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(false)
+
+      // The wake path checks isSubscribed and re-subscribes on demand.
+      await messagePersister.subscribeToSession(SESSION_ID, mockClient, SESSION_ID, AGENT_SLUG)
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(true)
+
+      // And the resumed run releases again at its own settle.
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      settleSession()
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(false)
+    })
+  })
+
   // ============================================================================
   // Script run request detection
   // ============================================================================
 
   describe('Script run request detection', () => {
+    beforeEach(() => {
+      // Awaiting is derived and gated on an active turn — mark active as the
+      // real message send would before any request event arrives.
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    })
+
     // Use existing simulateToolUse helper (already defined above in awaiting input tests)
     // Re-define locally since the other is scoped to that describe block
     function simulateToolUse(toolName: string, toolId: string, input: Record<string, unknown>) {
@@ -3451,7 +4494,7 @@ describe('MessagePersister', () => {
       })
     }
 
-    it('broadcasts script_run_request with autoApproved:false when permission needed', () => {
+    it('registers a script_run with autoApproved:false when permission needed', () => {
       mockCheckPermission.mockReturnValue('prompt_needed')
       sseEvents.length = 0
 
@@ -3461,20 +4504,21 @@ describe('MessagePersister', () => {
         scriptType: 'shell',
       })
 
-      const scriptEvents = sseEvents.filter(e => e.type === 'script_run_request')
+      const scriptEvents = requestCards('script_run')
       expect(scriptEvents).toHaveLength(1)
-      expect(scriptEvents[0]).toMatchObject({
-        type: 'script_run_request',
-        toolUseId: 'tool-sr-1',
-        script: 'sw_vers',
-        explanation: 'Check macOS version',
-        scriptType: 'shell',
-        agentSlug: AGENT_SLUG,
+      expect(scriptEvents[0].request).toMatchObject({
+        id: 'tool-sr-1',
         autoApproved: false,
+        scope: { agentSlug: AGENT_SLUG, sessionId: SESSION_ID },
+        payload: {
+          script: 'sw_vers',
+          explanation: 'Check macOS version',
+          scriptType: 'shell',
+        },
       })
     })
 
-    it('auto-executes AND broadcasts with autoApproved:true when use_host_shell granted', async () => {
+    it('auto-executes AND registers with autoApproved:true when use_host_shell granted', async () => {
       const { notificationManager } = await import('@shared/lib/notifications/notification-manager')
       mockCheckPermission.mockReturnValue('granted')
       sseEvents.length = 0
@@ -3489,12 +4533,11 @@ describe('MessagePersister', () => {
         scriptType: 'shell',
       })
 
-      // Broadcast still happens, but flagged as auto-approved so the UI can suppress its prompt.
-      const scriptEvents = sseEvents.filter(e => e.type === 'script_run_request')
+      // Still registered, flagged auto-approved so the UI suppresses its prompt.
+      const scriptEvents = requestCards('script_run')
       expect(scriptEvents).toHaveLength(1)
-      expect(scriptEvents[0]).toMatchObject({
-        type: 'script_run_request',
-        toolUseId: 'tool-sr-granted',
+      expect(scriptEvents[0].request).toMatchObject({
+        id: 'tool-sr-granted',
         autoApproved: true,
       })
 
@@ -3516,7 +4559,7 @@ describe('MessagePersister', () => {
       vi.unstubAllGlobals()
     })
 
-    it('broadcasts script_run_request even without prior permission (prompts user)', () => {
+    it('registers a script_run even without prior permission (prompts user)', () => {
       mockCheckPermission.mockReturnValue('prompt_needed')
       sseEvents.length = 0
 
@@ -3526,12 +4569,12 @@ describe('MessagePersister', () => {
         scriptType: 'shell',
       })
 
-      // Should broadcast to SSE for user approval (no cached permission → prompt user)
-      const scriptEvents = sseEvents.filter(e => e.type === 'script_run_request')
+      // Should reach the client for approval (no cached permission → prompt user)
+      const scriptEvents = requestCards('script_run')
       expect(scriptEvents).toHaveLength(1)
     })
 
-    it('does not broadcast when script is missing from input', () => {
+    it('registers nothing when script is missing from input', () => {
       mockCheckPermission.mockReturnValue('prompt_needed')
       sseEvents.length = 0
 
@@ -3540,11 +4583,11 @@ describe('MessagePersister', () => {
         scriptType: 'shell',
       })
 
-      const scriptEvents = sseEvents.filter(e => e.type === 'script_run_request')
+      const scriptEvents = requestCards('script_run')
       expect(scriptEvents).toHaveLength(0)
     })
 
-    it('does not broadcast when scriptType is missing', () => {
+    it('registers nothing when scriptType is missing', () => {
       mockCheckPermission.mockReturnValue('prompt_needed')
       sseEvents.length = 0
 
@@ -3553,7 +4596,7 @@ describe('MessagePersister', () => {
         explanation: 'Check version',
       })
 
-      const scriptEvents = sseEvents.filter(e => e.type === 'script_run_request')
+      const scriptEvents = requestCards('script_run')
       expect(scriptEvents).toHaveLength(0)
     })
 
@@ -3612,7 +4655,7 @@ describe('MessagePersister', () => {
       })
     }
 
-    it('auto-executes AND broadcasts with autoApproved:true when computer-use permission is granted', async () => {
+    it('auto-executes AND registers with autoApproved:true when computer-use permission is granted', async () => {
       const { notificationManager } = await import('@shared/lib/notifications/notification-manager')
       const originalE2eMock = process.env.E2E_MOCK
       process.env.E2E_MOCK = 'true'
@@ -3632,16 +4675,17 @@ describe('MessagePersister', () => {
           expect(fetchMock).toHaveBeenCalledTimes(1)
         })
 
-        const computerUseEvents = sseEvents.filter(e => e.type === 'computer_use_request')
+        const computerUseEvents = requestCards('computer_use')
         expect(computerUseEvents).toHaveLength(1)
-        expect(computerUseEvents[0]).toMatchObject({
-          type: 'computer_use_request',
-          toolUseId: 'tool-cu-granted',
-          method: 'apps',
-          params: { includeHidden: false },
-          permissionLevel: 'list_apps_windows',
-          agentSlug: AGENT_SLUG,
+        expect(computerUseEvents[0].request).toMatchObject({
+          id: 'tool-cu-granted',
           autoApproved: true,
+          scope: { agentSlug: AGENT_SLUG, sessionId: SESSION_ID },
+          payload: {
+            method: 'apps',
+            params: { includeHidden: false },
+            permissionLevel: 'list_apps_windows',
+          },
         })
 
         expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
@@ -3658,6 +4702,42 @@ describe('MessagePersister', () => {
           params: { includeHidden: false },
           permissionLevel: 'list_apps_windows',
         })
+      } finally {
+        if (originalE2eMock === undefined) delete process.env.E2E_MOCK
+        else process.env.E2E_MOCK = originalE2eMock
+        vi.unstubAllGlobals()
+      }
+    })
+
+    it('registers the auto-approved request so the decision gate can let the auto-execute through', async () => {
+      // The /computer-use route only acts on requests the registry holds open.
+      // Auto-approved requests are executed via that same route (the _auto
+      // session), so they must be registered too — flagged autoApproved so no
+      // projection treats them as a user-facing wait, and kept out of the
+      // legacy replay so a reconnecting client never renders an approval card
+      // for a command that is already executing.
+      const originalE2eMock = process.env.E2E_MOCK
+      process.env.E2E_MOCK = 'true'
+      mockCheckPermission.mockReturnValue('granted')
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true } as Response)))
+
+      try {
+        simulateToolUse('mcp__computer-use__computer_apps', 'tool-cu-granted-reg', {
+          includeHidden: false,
+        })
+
+        await vi.waitFor(() => {
+          const open = userInputRequestManager.getOpenRequest('tool-cu-granted-reg')
+          expect(open).toMatchObject({
+            kind: 'computer_use',
+            blocking: true,
+            autoApproved: true,
+            scope: { agentSlug: AGENT_SLUG, sessionId: SESSION_ID },
+          })
+        })
+
+        expect(messagePersister.getPendingComputerUseRequests(SESSION_ID)).toHaveLength(0)
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
       } finally {
         if (originalE2eMock === undefined) delete process.env.E2E_MOCK
         else process.env.E2E_MOCK = originalE2eMock
@@ -5259,9 +6339,15 @@ describe('MessagePersister', () => {
       // Once the session is active, observeMs no longer applies — timeoutMs is
       // the stop-gap. Verifies the timeout branch (not the never-active branch).
       messagePersister.markSessionActive(WAIT_SESSION, AGENT_SLUG)
-      await expect(
-        messagePersister.waitForIdle(WAIT_SESSION, { timeoutMs: 200 }),
-      ).rejects.toThrow(/timeout after 200ms/)
+      const err: unknown = await messagePersister
+        .waitForIdle(WAIT_SESSION, { timeoutMs: 200 })
+        .then(() => null, (e: unknown) => e)
+      expect(err).toBeInstanceOf(WaitForIdleTimeoutError)
+      // The x-agent routes distinguish timeout from other failures by error
+      // NAME (their tests mock this module wholesale, so instanceof is out).
+      // If this name changes, sync invoke stops promoting to async on timeout.
+      expect((err as Error).name).toBe('WaitForIdleTimeoutError')
+      expect((err as Error).message).toMatch(/timeout after 200ms/)
     })
 
     it('resolves once an active session goes idle (and preserves isActive across subscribe)', async () => {
@@ -5621,6 +6707,253 @@ describe('MessagePersister', () => {
       mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
       expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(1)
       expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+    })
+
+    // ------------------------------------------------------------------
+    // The level set must drain from BOTH directions. `background_tasks_changed`
+    // is a level signal the SDK only re-emits on a membership CHANGE, and it
+    // emits nothing at all when a fresh CLI process starts. So any id that
+    // enters the snapshot and never leaves it pins the session in
+    // waiting-background forever: every later session_state_changed:'idle'
+    // takes the waiting branch instead of finalizing, and nothing — not a
+    // terminal per-task signal, not Stop, not a re-subscribe — ever clears it.
+    // These cover the three ways prod sessions got stuck that way.
+    // ------------------------------------------------------------------
+
+    it('terminal task signal drains the snapshot when the removal frame never arrives', () => {
+      // Mirror image of the self-heal test above: there the per-task terminal
+      // signal was lost and the snapshot rescued the session; here the snapshot's
+      // removal frame is the one that never comes. A background subagent settles
+      // via task_notification carrying its agentId as task_id — the incremental
+      // map clears, but the stale snapshot id keeps the union non-zero.
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      // Background subagent launch: the ack registers it in the incremental map.
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { status: 'async_launched', isAsync: true, agentId: 'agent-bg-1' },
+        message: {
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'tool-agent-1',
+            content: 'Async agent launched successfully.',
+          }],
+        },
+      })
+      // The SDK announces the same task in its level set.
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'background_tasks_changed',
+        tasks: [{ task_id: 'agent-bg-1', task_type: 'local_agent', description: 'Verify policies' }],
+      })
+
+      // Turn ends while it runs → waiting, as designed.
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+
+      sseEvents.length = 0
+
+      // The subagent finishes. Its terminal signal arrives; the removal snapshot does not.
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'agent-bg-1',
+        tool_use_id: 'tool-agent-1',
+        status: 'completed',
+        summary: 'Agent finished',
+      })
+      expect(messagePersister.getActiveBackgroundTasks(SESSION_ID)).toHaveLength(0)
+
+      // The wake turn's result + idle must now finalize the session.
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+
+      expect(sseEvents.filter(e => e.type === 'session_waiting_background')).toHaveLength(0)
+      expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(1)
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+    })
+
+    it('Stop drains the snapshot so later turns still settle', () => {
+      // The user hits Stop while a background task is live. The process is
+      // replaced, so no terminal signal or removal snapshot will EVER arrive for
+      // that id. If Stop clears only the incremental map, every subsequent turn
+      // in the session ends in waiting-background instead of idle — the session
+      // reads "Working…" at the end of every turn, permanently.
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { backgroundTaskId: 'bg-download' },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running' }] },
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'background_tasks_changed',
+        tasks: [{ task_id: 'bg-download', task_type: 'local_bash', description: 'yt-dlp' }],
+      })
+
+      return messagePersister.markSessionInterrupted(SESSION_ID).then(() => {
+        expect(messagePersister.getActiveBackgroundTasks(SESSION_ID)).toHaveLength(0)
+
+        // A brand-new turn, with no background work at all.
+        messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+        sseEvents.length = 0
+        mockClient._sendMessage({ type: 'result', subtype: 'success' })
+        mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+
+        expect(sseEvents.filter(e => e.type === 'session_waiting_background')).toHaveLength(0)
+        expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(1)
+        expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+      })
+    })
+
+    it('process_restarted drops the snapshot from the dead process', () => {
+      // The level set is per-process and a fresh CLI emits nothing at startup,
+      // so ids from the previous process can never be retired by the SDK. The
+      // container announces the replacement (idle eviction + --resume, crash,
+      // MCP-injection restart) and the host must reset to the empty set.
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'background_tasks_changed',
+        tasks: [{ task_id: 'bg-doomed', task_type: 'local_bash', description: 'Sleep' }],
+      })
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+
+      // The CLI process is replaced; its background tasks died with it.
+      mockClient._sendMessage({ type: 'system', subtype: 'process_restarted' })
+
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      sseEvents.length = 0
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+
+      expect(sseEvents.filter(e => e.type === 'session_waiting_background')).toHaveLength(0)
+      expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(1)
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+    })
+
+    it('a capabilities handshake naming a new process instance drops the stale snapshot', () => {
+      // The cold-resume path: the CLI is replaced while nothing is attached
+      // (idle eviction + --resume, container restart), so the live
+      // process_restarted broadcast reaches nobody — it fires before the
+      // session is published and before the socket subscribes. The host state
+      // survives that reconnect, so the handshake has to carry the process
+      // identity and the host has to notice it changed.
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'system', subtype: 'capabilities', session_state_events: true, process_instance: 'proc-1',
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'background_tasks_changed',
+        tasks: [{ task_id: 'bg-orphan', task_type: 'local_bash', description: 'Sleep' }],
+      })
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+
+      // Reconnect after the process was replaced behind our back.
+      mockClient._sendMessage({
+        type: 'system', subtype: 'capabilities', session_state_events: true, process_instance: 'proc-2',
+      })
+
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      sseEvents.length = 0
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+
+      expect(sseEvents.filter(e => e.type === 'session_waiting_background')).toHaveLength(0)
+      expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(1)
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+    })
+
+    it('a reattach to the SAME process instance keeps running tasks tracked', () => {
+      // The other direction, and the reason this keys on identity rather than
+      // "saw a handshake": an SSE/WebSocket reattach mid-job is the same live
+      // CLI with the same tasks still running. Resetting there would drop the
+      // indicator and un-gate auto-sleep on real work.
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'system', subtype: 'capabilities', session_state_events: true, process_instance: 'proc-1',
+      })
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { backgroundTaskId: 'bg-live' },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running' }] },
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'background_tasks_changed',
+        tasks: [{ task_id: 'bg-live', task_type: 'local_bash', description: 'yt-dlp' }],
+      })
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+
+      sseEvents.length = 0
+      // Transport reattach: same process, same handshake identity.
+      mockClient._sendMessage({
+        type: 'system', subtype: 'capabilities', session_state_events: true, process_instance: 'proc-1',
+      })
+
+      expect(sseEvents.filter(e => e.type === 'background_task_completed')).toHaveLength(0)
+      expect(messagePersister.getActiveBackgroundTasks(SESSION_ID).map(t => t.taskId)).toContain('bg-live')
+
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(0)
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+    })
+
+    it('keeps process identity in sync across an interrupt-driven restart', () => {
+      // The interrupt path restarts the query (claude-code.ts "Restarting query
+      // after interrupt"), which mints a new process instance. But the host
+      // drops every non-result frame while isInterrupted is set, so that
+      // announcement was being swallowed — leaving the recorded identity one
+      // process behind the container. The NEXT reattach then reads a changed
+      // name and mistakes it for a restart, dropping background tasks that are
+      // genuinely running: a live indicator lost and auto-sleep un-gated
+      // mid-job, the exact failure the union gate exists to prevent.
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'system', subtype: 'capabilities', session_state_events: true, process_instance: 'proc-A',
+      })
+
+      return messagePersister.markSessionInterrupted(SESSION_ID).then(() => {
+        // The container restarts the CLI in response, while we're still flagged
+        // interrupted.
+        mockClient._sendMessage({
+          type: 'system', subtype: 'process_restarted', process_instance: 'proc-B',
+        })
+
+        // New turn on the new process, with real background work.
+        messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+        mockClient._sendMessage({
+          type: 'user',
+          tool_use_result: { backgroundTaskId: 'bg-live' },
+          message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running' }] },
+        })
+        mockClient._sendMessage({
+          type: 'system',
+          subtype: 'background_tasks_changed',
+          tasks: [{ task_id: 'bg-live', task_type: 'local_bash', description: 'yt-dlp' }],
+        })
+        mockClient._sendMessage({ type: 'result', subtype: 'success' })
+
+        sseEvents.length = 0
+        // A transport reattach. Same process as the one running bg-live, so
+        // nothing may be dropped.
+        mockClient._sendMessage({
+          type: 'system', subtype: 'capabilities', session_state_events: true, process_instance: 'proc-B',
+        })
+
+        expect(sseEvents.filter(e => e.type === 'background_task_completed')).toHaveLength(0)
+        expect(messagePersister.getActiveBackgroundTasks(SESSION_ID).map(t => t.taskId)).toContain('bg-live')
+
+        mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+        expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(0)
+        expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+      })
     })
 
     it('forwards command_lifecycle frames to SSE and drops malformed ones', () => {

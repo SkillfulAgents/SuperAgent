@@ -372,6 +372,7 @@ const FIXTURE_EXPECTATIONS: FixtureExpectation[] = [
   { name: 'sdk206-queued-message-interrupt-receipt', settledAtEnd: true },
   { name: 'sdk206-sequential-different-types', settledAtEnd: true },
   { name: 'sdk206-workflow-probe', settledAtEnd: true },
+  { name: 'sendmessage-resumed-subagent', settledAtEnd: true },
   { name: 'sequential-different-types', settledAtEnd: true },
   { name: 'single-subagent-progress', settledAtEnd: true },
 ];

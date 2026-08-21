@@ -34,14 +34,14 @@ export interface ApiAgent {
   hasUnreadNotifications?: boolean
   sessionCount?: number
   lastActivityAt?: Date | null
-  scheduledTaskCount?: number
-  nextScheduledTaskAt?: Date | null
-  chatIntegrationCount?: number
-  dashboardCount?: number
-  dashboardNames?: string[]
-  dashboardSlugs?: string[]
   dashboards?: ApiAgentDashboard[]
-  autoDeleteInactiveDays?: number
+}
+
+/** Response returned when an agent template has been installed or imported. */
+export interface ApiAgentTemplateInstallResult extends ApiAgent {
+  hasOnboarding?: boolean
+  /** Optional root PROMPT.md contents to prefill on the new agent's home page. */
+  templatePrompt?: string
 }
 
 export interface ApiAgentDashboard {
@@ -76,6 +76,16 @@ export interface ApiDiscoverableAgent {
   description: string
   version: string
   path: string
+  /** Long-form markdown for the details page. */
+  details?: string
+  /** Marketplace category, e.g. "Marketing", "Customer Success". */
+  category?: string
+  /** kebab-case lucide icon name, e.g. "badge-dollar-sign". */
+  icon?: string
+  tags?: string[]
+  /** Services the template connects to; `slug` matches the service-icon set. */
+  worksWith?: { type: string; slug: string }[]
+  developer?: { name: string; url?: string }
 }
 
 // ============================================================================
@@ -173,7 +183,14 @@ export interface ApiMessage {
    * thinking-text persistence. `durationMs` is derived from transcript entry
    * timestamps and absent when underivable.
    */
-  thinking?: Array<{ text: string; durationMs?: number }>
+  thinking?: Array<{ id?: string; text: string; durationMs?: number }>
+  /** Per-model-response token usage preserved from the session transcript. */
+  usage?: {
+    inputTokens: number
+    outputTokens: number
+    cacheCreationInputTokens: number
+    cacheReadInputTokens: number
+  }
 }
 
 /**
@@ -312,6 +329,10 @@ export interface ApiSkillsetConfig {
   badgeLabel?: string
   showUrl: boolean
   publishMode: 'pull_request' | 'hosted_submit' | 'none'
+  credential?: {
+    type: 'token'
+    tokenPreview: string
+  }
   error?: string
 }
 
@@ -362,35 +383,4 @@ export interface ApiNotification {
   isRead: boolean
   createdAt: Date
   readAt: Date | null
-}
-
-// ============================================================================
-// Connected Account API Types
-// ============================================================================
-
-/**
- * Provider info
- */
-export interface ApiProvider {
-  slug: string
-  displayName: string
-  icon?: string
-}
-
-/**
- * Connected account response
- */
-export interface ApiConnectedAccount {
-  id: string
-  providerConnectionId: string
-  providerName: string
-  toolkitSlug: string
-  displayName: string
-  status: 'active' | 'revoked' | 'expired'
-  createdAt: Date
-  updatedAt: Date
-  provider?: ApiProvider
-  // Only present when fetched for a specific agent
-  mappingId?: string
-  mappedAt?: Date
 }

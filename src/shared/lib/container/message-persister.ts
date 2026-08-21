@@ -1,4 +1,5 @@
 import type { ContainerClient, StreamMessage, SlashCommandInfo } from './types'
+import { mergeCanonicalSlashCommands } from './slash-commands'
 import type { SessionUsage, SessionActivity } from '@shared/lib/types/agent'
 import type { AskUserQuestionInput } from '@shared/lib/tool-definitions/ask-user-question'
 import type { RequestSecretInput } from '@shared/lib/tool-definitions/request-secret'
@@ -8,6 +9,13 @@ import type { RequestRemoteMcpInput } from '@shared/lib/tool-definitions/request
 import type { RequestBrowserInputInput } from '@shared/lib/tool-definitions/request-browser-input'
 import type { RequestScriptRunInput } from '@shared/lib/tool-definitions/request-script-run'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
+import { userInputRequestManager, type UserInputRequestTransition } from '@shared/lib/user-input/request-manager'
+import {
+  isReplayableUserInputRequest,
+  type PendingUserInputRequest,
+  type UserInputRequestKind,
+  type UserInputRequestOutcome,
+} from '@shared/lib/user-input/request-schema'
 import { classifyResult } from './result-classification'
 import { parseBackgroundTasksChanged } from './background-tasks-changed'
 import { parseCommandLifecycle } from './command-lifecycle'
@@ -58,6 +66,8 @@ import { eq } from 'drizzle-orm'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { getFrequencyWarning, getScheduleCountWarning, validateScheduleExpression } from '@shared/lib/services/schedule-parser'
 import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
+import { recordSessionActivity } from '@shared/lib/services/session-summary-cache'
+import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
@@ -67,9 +77,11 @@ import { getActiveLlmProvider, getModelContextWindow } from '@shared/lib/llm-pro
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { resolveAppFromWindowRef } from '@shared/lib/computer-use/executor'
 import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp, type ComputerUsePermissionLevel } from '@shared/lib/computer-use/types'
-import { getAgentSessionsDir } from '@shared/lib/utils/file-storage'
+import { getAgentSessionsDir, getSessionJsonlPath } from '@shared/lib/utils/file-storage'
+import { makeThinkingBlockId } from '@shared/lib/utils/thinking-block-id'
 import { WorkflowJournalTailer } from './workflow-journal-tailer'
 import { SubagentCapture } from './subagent-capture'
+import * as fs from 'fs'
 import * as path from 'path'
 import { randomUUID } from 'crypto'
 // Per-subagent streaming state (supports multiple concurrent background agents)
@@ -78,8 +90,19 @@ interface SubagentStreamingState {
   currentText: string
   currentToolUse: { id: string; name: string } | null
   currentToolInput: string
-  isBackground: boolean // True for run_in_background agents — completion comes via sidechain 'result', not tool_result
+  isBackground: boolean // Streamed launch hint, confirmed by an async launch acknowledgement
+  isResumed: boolean // Authoritative task_started/result signal for a SendMessage-resumed run
 }
+
+/**
+ * The kinds whose lifecycle is the turn (`storeForKind` → 'stream'). Computer
+ * use and reviews register through their own paths with their own clearing
+ * rules, so the persister's stream-request helper excludes them by type.
+ */
+type StreamRequestKind = Exclude<
+  UserInputRequestKind,
+  'computer_use' | 'proxy_review' | 'x_agent_review' | 'account_reauth_required' | 'mcp_reauth_required'
+>
 
 // Tracks streaming state for SSE broadcasts
 // In the file-based model, messages are stored in JSONL files by the Claude SDK.
@@ -90,11 +113,20 @@ interface StreamingState {
   currentToolUse: { id: string; name: string } | null
   currentToolInput: string // Accumulated partial JSON input for current tool
   currentThinking?: boolean // True while an extended-thinking content block is streaming
+  currentAssistantMessageId?: string | null // SDK message id for stable live↔persisted block identity
+  currentThinkingBlockIndex?: number | null // Content index within currentAssistantMessageId
   isActive: boolean // True from user message until result received
   isInterrupted: boolean // True after user interrupts, prevents race conditions
   isCompacting: boolean // True while compaction is in progress, cleared on compact completion
   agentSlug?: string // The agent slug for this session
   notAutomationSession?: boolean // Cached "not a cron/webhook session" verdict; skips the automation-status metadata write on later results
+  // Unpromoted cron/webhook session: release its container stream when the
+  // session settles. Resolved from session metadata at subscribe time so the
+  // settle-time teardown in finalizeIdle stays synchronous (race-free).
+  releaseStreamOnSettle?: boolean
+  // Set synchronously on promote so an in-flight subscribe-time metadata read
+  // cannot flip releaseStreamOnSettle back to true.
+  promotedToInteractive?: boolean
   // True when the most recent result was a clean success (not error-shaped,
   // not an interrupt, not a resume-exit). Consumed by finalizeIdle: a success
   // result alone is NOT terminal — queued messages or background work can keep
@@ -103,22 +135,49 @@ interface StreamingState {
   lastResultCleanSuccess: boolean
   lastContextWindow: number // Last known context window size (default 200k)
   lastAssistantUsage: SessionUsage | null // Per-call usage from most recent assistant message
-  completedSubagentIds: Set<string> // agentIds of subagents that have completed (to avoid re-discovery)
+  completedSubagentIds: Set<string> // completed agentIds; a new task_started with the same ID is a resumed run
   // Per-subagent streaming state, keyed by parent tool_use ID (supports concurrent background agents)
   activeSubagents: Map<string, SubagentStreamingState>
   slashCommands: SlashCommandInfo[] // Available slash commands from SDK
-  isAwaitingInput: boolean // True when session is waiting for user input (e.g., secret, file, question)
-  // TODO: computer-use and the other input requests are tracked in two separate maps with
-  // divergent clearing rules (this one is cleared only via explicit route calls; pendingInputRequests
-  // below is cleared on tool_result + turn boundaries — so e.g. interrupt clears one but not the
-  // other). Unify into a single store + single SSE replay loop. Tracked: SUP-213 (sibling of SUP-163).
-  pendingComputerUseRequests: Map<string, { toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string; agentSlug?: string }> // Pending computer use requests awaiting user approval (keyed by toolUseId)
-  // Pending user-input request broadcasts (secret/connected_account/question/file/remote_mcp/
-  // script_run/browser_input), keyed by toolUseId. These are one-shot SSE events, so a client
-  // that connects AFTER they fire would never see them; we store the exact payloads here and the
-  // /stream route replays them on (re)connect. Cleared at turn boundaries (session_active/idle).
-  pendingInputRequests: Map<string, { type: string; toolUseId: string; [k: string]: unknown }>
+  // Cache of the registry's derived awaiting projection (userInputRequestManager.isSessionAwaiting,
+  // gated on isActive), maintained by syncSessionAwaiting for edge-triggered broadcasts. Do not
+  // set imperatively — turn-boundary teardown paths reset it to false alongside isActive; every
+  // other transition must go through syncSessionAwaiting.
+  isAwaitingInput: boolean
+  // Requests settled by a decision route while their transcript tool_result is
+  // still HELD BACK (parallel tool calls release every sibling's result only
+  // when the last one settles). The messages route stamps these outcomes onto
+  // the transcript so history consumers — the client's refresh fallback, the
+  // transcript card, the recovery scan — see a completed call instead of
+  // resurrecting a decided one. Cleared at turn boundaries, when the real
+  // results are in the transcript.
+  settledInputRequests: Map<string, UserInputRequestOutcome>
+  // Tombstones for capability reviews cancelled BEFORE their card was stored:
+  // handleCapabilityReviewTool awaits a container grant lookup before it
+  // broadcasts, so a capability_review_cancelled frame can win that race —
+  // the handler must then drop the card instead of resurrecting it. NOT
+  // cleared at turn boundaries: a hung grant lookup can outlive the turn
+  // (interrupts kill the container the fetch is talking to), and a tool_use
+  // id never recurs, so a straggler can only ever suppress its own stale
+  // card. Entries are consumed on match; the rest die with this state.
+  cancelledCapabilityReviews: Set<string>
   lastApiErrorCode: string | null // SDK error code from last assistant message (e.g., 'authentication_failed', 'rate_limit')
+  // Text from the newest top-level assistant message group. Complete assistant
+  // frames sharing a message id are merged the same way transformMessages
+  // merges the persisted transcript. A newer id replaces the candidate even
+  // when it has no text, so a tool/thinking-only final response cannot reuse
+  // an earlier working note as the completion-notification body.
+  lastAssistantMessageId: string | null
+  assistantMessageIds: Set<string>
+  assistantEntryUuids: Set<string>
+  lastAssistantText: string
+  // A user message accepted while active may become a continuation turn after
+  // the current result. Delay the response reset until that next turn actually
+  // produces an assistant/result frame: if the queued message was steered into
+  // the current response and idle follows immediately, that response is still
+  // the correct final answer.
+  queuedTurnCount: number
+  resetAssistantBeforeNextTurnOutput: boolean
   // Backgrounded Bash commands + dynamic workflows still running, keyed by the SDK task_id.
   // For workflows we also carry the launching tool's id, the meta.name, and — once the
   // Workflow tool result arrives — the real on-disk runId (`wf_…`), which is DISTINCT from
@@ -135,6 +194,10 @@ interface StreamingState {
   // arrives with the following task_started/tool-result) — liveness gates use
   // the UNION of both.
   bgTasksSnapshot: Set<string> | null
+  // Identity of the CLI process the background-task bookkeeping above belongs
+  // to, from the container's handshake. Those tasks are process-local, so when
+  // this changes every id we hold is unretirable and must be dropped.
+  processInstanceId: string | null
   pendingDeliverFiles: Map<string, { filePath: string; description?: string }> // deliver_file tool calls awaiting their tool_result, keyed by tool_use ID
   // True when the runtime publishes session_state_changed events — then IT is
   // the idle authority: a 'result' alone does not end the session (queued
@@ -218,6 +281,16 @@ export function redactStreamedToolInput(toolName: string | undefined, partialInp
   return partialInput.replace(/("secret"\s*:\s*")(?:\\.|[^"\\])*/g, '$1***')
 }
 
+// Thrown by waitForIdle when the session is still active past timeoutMs.
+// Callers use this to tell "target is still working" (recoverable — poll later)
+// apart from genuine failures like "session never became active".
+export class WaitForIdleTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`waitForIdle timeout after ${timeoutMs}ms`)
+    this.name = 'WaitForIdleTimeoutError'
+  }
+}
+
 // TODO this file is too big, this class is HUGE. Needs breaking up
 class MessagePersister {
   private streamingStates: Map<string, StreamingState> = new Map()
@@ -243,6 +316,115 @@ class MessagePersister {
   // subscribeToSession() calls for the same session share the underlying
   // promise so we don't double-install listeners or double-tear-down state.
   private subscribingNow: Map<string, Promise<void>> = new Map()
+
+  constructor() {
+    // Unified wire: every registry transition — no matter which of the many
+    // mutation paths drove it — broadcasts ONE typed event, to the global
+    // stream always and to the session stream when session-scoped. Emitting
+    // from the registry's single funnel (instead of per-callsite) is what
+    // makes a silent settle impossible on this wire. It is the only request
+    // wire there is: every consumer — renderer, chat connectors, Electron
+    // main, notifications — reads these events and the snapshot they point at.
+    userInputRequestManager.onTransition((transition) => {
+      this.broadcastRequestTransition(transition)
+      // Notifications ride the same funnel: exactly one 'created' per request
+      // id — no matter how many delivery paths carried the tool_use — means
+      // exactly one OS notification. Per-handler triggering used to double-
+      // notify when the subagent stream and the complete-assistant message
+      // both delivered the same request.
+      if (transition.type === 'created') {
+        this.dispatchRequestNotification(transition.request)
+      }
+    })
+  }
+
+  /**
+   * One notification per registered request, driven by the registry 'created'
+   * transition.
+   */
+  private dispatchRequestNotification(request: PendingUserInputRequest): void {
+    // Recovered synthetics were notified by the original process before it
+    // died; the recovery stub must not notify again. (Its later upgrade to a
+    // real registration re-emits 'created' — that matches the old behavior,
+    // where the re-streamed tool_use re-ran the handler.)
+    if (!isReplayableUserInputRequest(request)) return
+    // Auto-approved requests are already executing; non-blocking ones are
+    // automation-facing. Neither needs the user's attention.
+    if (!request.blocking || request.autoApproved) return
+    const agentSlug = request.scope.agentSlug
+    if (!agentSlug) return
+
+    if (request.kind === 'proxy_review' || request.kind === 'x_agent_review') {
+      // Reviews are agent-scoped — attribute the notification to the first
+      // active session, the same heuristic the awaiting projection applies.
+      // No active session (a dashboard-triggered review) → no notification;
+      // the dashboard panel is the surface for those.
+      const sessionId = request.scope.sessionId ?? this.getActiveSessionIdsForAgent(agentSlug)[0]
+      if (!sessionId) return
+      const payload = request.payload as { displayText?: unknown }
+      notificationManager
+        .triggerSessionApiReviewWaiting(
+          sessionId,
+          agentSlug,
+          request.id,
+          typeof payload.displayText === 'string' ? payload.displayText : 'API request review',
+          undefined,
+          request.kind === 'x_agent_review' ? 'agent_action' : 'api_request',
+        )
+        .catch((err) => {
+          console.error('[MessagePersister] Failed to trigger API review notification:', err)
+        })
+      return
+    }
+
+    const sessionId = request.scope.sessionId
+    // Agent-scoped reviews and re-auth requests have no session id and no safe
+    // actionable OS-notification flow; their in-app cards are the prompt.
+    if (!sessionId) return
+    // Defensive type boundary if a future caller violates the agent-scoped
+    // re-auth invariant; these kinds are not accepted notification categories.
+    if (request.kind === 'account_reauth_required' || request.kind === 'mcp_reauth_required') return
+    const waitingFor =
+      request.kind === 'capability_review'
+        ? (request.payload as { capability?: unknown }).capability === 'workflows'
+          ? 'capability_review_workflows'
+          : 'capability_review_subagents'
+        : request.kind
+    notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, waitingFor).catch((err) => {
+      console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
+    })
+  }
+
+  private broadcastRequestTransition(transition: UserInputRequestTransition): void {
+    const { request } = transition
+    if (!isReplayableUserInputRequest(request)) return
+    // agentSlug MUST be at the top level: the global-stream ACL filter
+    // (notifications.ts) reads only that field and forwards events without
+    // one to every authenticated user — nesting the slug inside scope would
+    // broadcast request payloads tenant-wide in auth mode.
+    const event =
+      transition.type === 'created'
+        ? { type: 'user_request_created', agentSlug: request.scope.agentSlug, request }
+        : {
+            type: 'user_request_resolved',
+            agentSlug: request.scope.agentSlug,
+            requestId: request.id,
+            kind: request.kind,
+            outcome: transition.outcome,
+            scope: request.scope,
+          }
+    // Fail closed: the schema types scope.agentSlug as optional (and '' is
+    // possible), and the ACL filter forwards slug-less events to EVERY
+    // authenticated user — so a request without a verified slug must never
+    // reach the global stream. Its session stream still gets it: those
+    // subscribers are AgentRead-gated per session.
+    if (request.scope.agentSlug) {
+      this.broadcastGlobal(event)
+    }
+    if (request.scope.sessionId) {
+      this.broadcastToSSE(request.scope.sessionId, event)
+    }
+  }
 
   // Subscribe to a session's messages for SSE streaming.
   // Returns a promise that resolves when the WebSocket connection is ready.
@@ -271,18 +453,27 @@ class MessagePersister {
     containerSessionId: string,
     agentSlug?: string
   ): Promise<void> {
-    // Preserve session-lifecycle flags across (re-)subscribe so callers that
+    // Preserve session-lifecycle state across (re-)subscribe so callers that
     // markSessionActive *before* subscribing (e.g. x-agent sync invoke) and
     // SSE reconnects of in-flight sessions don't lose their "currently busy"
-    // state when the listener reattaches.
+    // state when the listener reattaches. The pending-request stores carry
+    // over too: the awaiting cache is only meaningful while its source of
+    // truth survives — recreating them empty would let the next sync clear a
+    // genuinely parked wait.
     const prior = this.streamingStates.get(sessionId)
     const priorIsActive = prior?.isActive ?? false
     const priorIsAwaitingInput = prior?.isAwaitingInput ?? false
     const priorBackgroundTasks = prior?.activeBackgroundTasks ?? new Map()
+    const priorSettledInputRequests = prior?.settledInputRequests ?? new Map()
 
-    // Unsubscribe if already subscribed (this also clears state, which is why
-    // we captured the flags above)
-    this.unsubscribeFromSession(sessionId)
+    // Detach only the transport if already subscribed. NOT unsubscribeFromSession:
+    // that is a full teardown — it drops the session's registry entries, which
+    // must outlive a transport reattach for the same live session.
+    const existingUnsubscribe = this.subscriptions.get(sessionId)
+    if (existingUnsubscribe) {
+      existingUnsubscribe()
+      this.subscriptions.delete(sessionId)
+    }
 
     // Initialize state
     this.streamingStates.set(sessionId, {
@@ -298,19 +489,39 @@ class MessagePersister {
       lastAssistantUsage: null,
       completedSubagentIds: new Set(),
       activeSubagents: new Map(),
-      slashCommands: [],
+      slashCommands: prior?.slashCommands ?? [],
       isAwaitingInput: priorIsAwaitingInput,
-      pendingComputerUseRequests: new Map(),
-      pendingInputRequests: new Map(),
+      settledInputRequests: priorSettledInputRequests,
+      cancelledCapabilityReviews: new Set(),
       lastApiErrorCode: null,
+      lastAssistantMessageId:
+        priorIsActive ? (prior?.lastAssistantMessageId ?? null) : null,
+      assistantMessageIds:
+        priorIsActive ? new Set(prior?.assistantMessageIds ?? []) : new Set(),
+      assistantEntryUuids:
+        priorIsActive ? new Set(prior?.assistantEntryUuids ?? []) : new Set(),
+      lastAssistantText:
+        priorIsActive ? (prior?.lastAssistantText ?? '') : '',
+      queuedTurnCount: priorIsActive ? (prior?.queuedTurnCount ?? 0) : 0,
+      resetAssistantBeforeNextTurnOutput:
+        priorIsActive ? (prior?.resetAssistantBeforeNextTurnOutput ?? false) : false,
       activeBackgroundTasks: priorBackgroundTasks,
       bgTasksSnapshot: prior?.bgTasksSnapshot ?? null,
+      // Carried with the snapshot it describes — the incoming handshake is what
+      // decides whether both are still valid.
+      processInstanceId: prior?.processInstanceId ?? null,
       pendingDeliverFiles: new Map(),
       stateEventsAuthority: prior?.stateEventsAuthority ?? false,
       lastResultSubtype: null,
       lastResultCleanSuccess: false,
       isRetrying: false,
+      // Carried over so a transport reattach mid-run doesn't lose the verdict
+      // before the refresh below lands.
+      releaseStreamOnSettle: prior?.releaseStreamOnSettle ?? false,
+      promotedToInteractive: prior?.promotedToInteractive ?? false,
     })
+
+    this.resolveReleaseStreamOnSettle(sessionId, agentSlug)
 
     // Store container client for reconnection checks
     this.containerClients.set(sessionId, client)
@@ -333,6 +544,35 @@ class MessagePersister {
     await ready
   }
 
+  // Resolve whether this subscription belongs to an unpromoted cron/webhook
+  // session. Non-blocking: automation runs last long enough that the verdict
+  // lands well before finalizeIdle consumes it, and an unresolved read just
+  // means the stream is kept (the pre-fix behavior). Scheduler and trigger
+  // paths register metadata before subscribing, so the read can't miss them.
+  private resolveReleaseStreamOnSettle(sessionId: string, agentSlug?: string): void {
+    if (!agentSlug) return
+    const stateRef = this.streamingStates.get(sessionId)
+    void getSessionMetadata(agentSlug, sessionId)
+      .then((meta) => {
+        // A resubscribe replaced the state and kicked off its own resolution.
+        const current = this.streamingStates.get(sessionId)
+        if (!current || current !== stateRef) return
+        // Promote wins: its marker is set synchronously, this read may be stale.
+        if (current.promotedToInteractive) return
+        current.releaseStreamOnSettle = Boolean(
+          (meta?.isScheduledExecution || meta?.isWebhookExecution) &&
+            !meta?.promotedToInteractive
+        )
+      })
+      .catch((error) => {
+        console.warn('[MessagePersister] Failed to resolve automation stream policy:', error)
+        captureException(error, {
+          tags: { area: 'container', op: 'resolveReleaseStreamOnSettle' },
+          extra: { sessionId, agentSlug },
+        })
+      })
+  }
+
   // Unsubscribe from a session
   unsubscribeFromSession(sessionId: string): void {
     const unsubscribe = this.subscriptions.get(sessionId)
@@ -341,6 +581,8 @@ class MessagePersister {
       this.subscriptions.delete(sessionId)
     }
     this.streamingStates.delete(sessionId)
+    // Shadow registry (Phase 2): every session-scoped entry dies with the state.
+    userInputRequestManager.dropSessionRequests(sessionId, 'invalidated')
     this.containerClients.delete(sessionId)
     // Safe to drop: the container's persisted grants are authoritative, so a
     // resubscribed session repopulates this on the next launch with one GET.
@@ -360,6 +602,12 @@ class MessagePersister {
       this.persistAutomationStatus(sessionId, state, 'succeeded')
     }
     state.isActive = false
+    // Teardown resets the awaiting cache silently alongside isActive (an
+    // inactive session is never awaiting). isSessionAwaitingInput reports this
+    // bit raw, so leaving it set would strand "needs input" on an idle session
+    // — e.g. the markSessionIdle revert after markSessionActive's sync picked
+    // up an open agent-scoped review.
+    state.isAwaitingInput = false
     this.broadcastToSSE(sessionId, { type: 'session_idle', isActive: false })
     this.broadcastGlobal({
       type: 'session_idle',
@@ -367,6 +615,20 @@ class MessagePersister {
       agentSlug: state.agentSlug,
       isActive: false,
     })
+    this.maybeReleaseSettledAutomationStream(sessionId, state)
+  }
+
+  // Tear down a settled automation stream. Sync: an async gap races the wake path's isSubscribed check.
+  // Gated on stateEventsAuthority so a legacy idle can't drop a queued turn's stream.
+  private maybeReleaseSettledAutomationStream(sessionId: string, state: StreamingState): void {
+    if (
+      state.releaseStreamOnSettle &&
+      state.stateEventsAuthority &&
+      this.subscriptions.has(sessionId)
+    ) {
+      console.log(`[MessagePersister] Releasing settled automation stream for session ${sessionId}`)
+      this.unsubscribeFromSession(sessionId)
+    }
   }
 
   // Revert an optimistic markSessionActive when a host-initiated send fails
@@ -451,7 +713,7 @@ class MessagePersister {
         }
         if (Date.now() - startedAt > timeoutMs) {
           cleanup()
-          reject(new Error(`waitForIdle timeout after ${timeoutMs}ms`))
+          reject(new WaitForIdleTimeoutError(timeoutMs))
           return
         }
         timer = setTimeout(tick, 250)
@@ -495,19 +757,38 @@ class MessagePersister {
     return state ? this.computeActivity(state) : 'idle'
   }
 
-  // Get pending computer use requests for a session (for SSE replay on reconnect)
+  // Open computer-use approvals for a session, projected out of the registry.
+  // Drives the turn-cancel sweep (which must reject each one on the container)
+  // and the lifecycle tests' view of what is still parked.
   getPendingComputerUseRequests(sessionId: string): Array<{ toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string; agentSlug?: string }> {
-    const state = this.streamingStates.get(sessionId)
-    if (!state) return []
-    return Array.from(state.pendingComputerUseRequests.values())
+    return userInputRequestManager
+      .getOpenRequestsForSession(sessionId)
+      // Auto-approved requests are registered only for the decision gate —
+      // nothing may treat a command that is already executing as parked.
+      .filter((r) => r.kind === 'computer_use' && !r.autoApproved)
+      .map((r) => {
+        const payload = r.payload as {
+          method?: string
+          params?: Record<string, unknown>
+          permissionLevel?: string
+          appName?: string
+        }
+        return {
+          toolUseId: r.id,
+          method: payload.method ?? '',
+          params: payload.params ?? {},
+          permissionLevel: payload.permissionLevel ?? '',
+          appName: payload.appName,
+          agentSlug: r.scope.agentSlug,
+        }
+      })
   }
 
-  // Get pending user-input request broadcasts for a session (for SSE replay on (re)connect).
-  // Returns the exact event payloads that were broadcast, so the route can re-send them verbatim.
-  getPendingInputRequests(sessionId: string): Array<{ type: string; toolUseId: string; [k: string]: unknown }> {
-    const state = this.streamingStates.get(sessionId)
-    if (!state) return []
-    return Array.from(state.pendingInputRequests.values())
+  // Requests a decision route settled while their transcript tool_result is
+  // still held back by parallel siblings. The messages route stamps these
+  // outcomes onto the transcript.
+  getSettledInputRequests(sessionId: string): Map<string, UserInputRequestOutcome> {
+    return this.streamingStates.get(sessionId)?.settledInputRequests ?? new Map()
   }
 
   // Record an "Allow for this session" capability grant (decision route calls
@@ -528,36 +809,62 @@ class MessagePersister {
   // tool_result cleanup at handleToolResult — an approved Task/Workflow runs for
   // minutes before its result arrives, and until then a refresh would replay (and
   // other connected clients would keep) a stale approval card.
-  completeCapabilityReview(sessionId: string, toolUseId: string): void {
+  completeCapabilityReview(
+    sessionId: string,
+    toolUseId: string,
+    outcome: UserInputRequestOutcome = 'answered',
+  ): void {
     const state = this.streamingStates.get(sessionId)
     if (!state) return
-    state.pendingInputRequests.delete(toolUseId)
-    this.broadcastToSSE(sessionId, { type: 'capability_review_resolved', toolUseId })
-    if (state.pendingInputRequests.size === 0) {
-      this.broadcastGlobal({
-        type: 'session_input_provided',
-        sessionId,
-        agentSlug: state.agentSlug,
+    userInputRequestManager.resolveIfInStore(toolUseId, 'stream', outcome)
+    this.syncSessionAwaiting(sessionId)
+  }
+
+  // Settle a stream-store request the moment its decision succeeds. The
+  // transcript tool_result normally does this cleanup, but parallel tool
+  // calls hold every sibling's result until the LAST one resolves — without
+  // an explicit settle the decided entry stays open: the snapshot keeps
+  // serving it, a reload resurrects the card, and the stale card can act on
+  // a request that was already declined. Mirrors completeCapabilityReview;
+  // the real tool_result arriving later is a no-op. Callers that only know
+  // the toolUseId (chat connectors) pass sessionId undefined — the registry
+  // entry's scope supplies it.
+  completeInputRequest(
+    sessionId: string | undefined,
+    toolUseId: string,
+    outcome: UserInputRequestOutcome,
+  ): void {
+    const scopeSessionId =
+      sessionId ?? userInputRequestManager.getOpenRequest(toolUseId)?.scope.sessionId
+    if (!scopeSessionId) return
+    const state = this.streamingStates.get(scopeSessionId)
+    const settled = userInputRequestManager.resolveIfInStore(toolUseId, 'stream', outcome)
+    if (state && settled) {
+      state.settledInputRequests.set(toolUseId, outcome)
+    }
+    if (settled) {
+      // Same broadcast the tool_result path emits — the resolving tab already
+      // removed its card optimistically; every other tab drops it off this
+      // event. Card removal is idempotent, so the later real tool_result
+      // broadcasting again is harmless.
+      this.broadcastToSSE(scopeSessionId, {
+        type: 'tool_result',
+        toolUseId,
+        result: outcome === 'answered' ? 'User provided input' : 'User declined the request',
+        isError: outcome !== 'answered',
       })
     }
+    this.syncSessionAwaiting(scopeSessionId)
   }
 
   // Clear a pending computer use request (after approval/rejection)
-  clearPendingComputerUseRequest(sessionId: string, toolUseId: string): void {
-    const state = this.streamingStates.get(sessionId)
-    if (state) {
-      state.pendingComputerUseRequests.delete(toolUseId)
-      // Broadcast so the sidebar updates immediately.
-      // Don't clear isAwaitingInput here — other input types (secrets, questions, etc.)
-      // may still be pending. The flag is cleared when the tool result arrives in the stream.
-      if (state.pendingComputerUseRequests.size === 0) {
-        this.broadcastGlobal({
-          type: 'session_input_provided',
-          sessionId,
-          agentSlug: state.agentSlug,
-        })
-      }
-    }
+  clearPendingComputerUseRequest(
+    sessionId: string,
+    toolUseId: string,
+    outcome: UserInputRequestOutcome = 'answered',
+  ): void {
+    userInputRequestManager.resolveIfInStore(toolUseId, 'computer_use', outcome)
+    this.syncSessionAwaiting(sessionId)
   }
 
   // When a new message arrives while the session is awaiting user input, cancel the
@@ -581,10 +888,13 @@ class MessagePersister {
   async cancelAwaitingInput(sessionId: string, agentSlug: string): Promise<void> {
     if (!this.isSessionAwaitingInput(sessionId)) return
 
-    // Snapshot the pending tool ids from BOTH maps before interrupting. pendingInputRequests holds
-    // the broadcast types (cleared by markSessionInterrupted's session_idle); computer_use lives in
-    // its own pendingComputerUseRequests map, which that broadcast does NOT clear.
-    const inputRequestIds = this.getPendingInputRequests(sessionId).map((r) => r.toolUseId)
+    // Snapshot the pending ids of both stores before interrupting: the stream
+    // store is cleared by markSessionInterrupted's session_idle, and computer
+    // use survives that boundary deliberately. Recovered synthetics are
+    // INCLUDED — they are exactly the ones whose container-side pending may
+    // still be live (the host missed the original delivery), so skipping them
+    // would leave an abandoned request for a late click to land on.
+    const inputRequestIds = userInputRequestManager.getStoreIdsForSession(sessionId, 'stream')
     const computerUseIds = this.getPendingComputerUseRequests(sessionId).map((r) => r.toolUseId)
 
     // Interrupt FIRST: abort the parked query so it can never resume into a filler reply.
@@ -594,9 +904,10 @@ class MessagePersister {
     await this.markSessionInterrupted(sessionId)
 
     // Clear the host-side computer_use bookkeeping explicitly — session_idle only clears
-    // pendingInputRequests, so a leftover entry would replay a phantom approval card on reconnect.
-    const state = this.streamingStates.get(sessionId)
-    for (const id of computerUseIds) state?.pendingComputerUseRequests.delete(id)
+    // the stream store, so a leftover entry would replay a phantom approval card on reconnect.
+    for (const id of computerUseIds) {
+      userInputRequestManager.resolveIfInStore(id, 'computer_use', 'superseded')
+    }
 
     // Cleanup-reject each pending request on the CONTAINER: the query is already aborted, so the
     // reason is never read by the model — this just clears the container-side pending entry so a
@@ -738,6 +1049,11 @@ class MessagePersister {
       state.currentToolInput = ''
       state.activeSubagents.clear()
       state.activeBackgroundTasks.clear()
+      // Stop replaces the CLI process, so its background tasks are gone and no
+      // terminal signal or removal snapshot will ever arrive for them. Dropping
+      // only the incremental map would leave the level set stale for the life of
+      // the session — every later turn would end waiting-background, never idle.
+      state.bgTasksSnapshot = null
       this.stopAllWorkflowTailers(sessionId)
     }
 
@@ -778,6 +1094,30 @@ class MessagePersister {
     this.broadcastToSSE(sessionId, { type: 'session_updated' })
   }
 
+  private resetSessionCompleteResponse(state: StreamingState): void {
+    state.lastAssistantMessageId = null
+    state.lastAssistantText = ''
+  }
+
+  /**
+   * Start a non-blocking snapshot of the transcript's observed byte boundary
+   * when the terminal frame arrives. The CLI owns transcript writes in another
+   * process, so this is not a cross-process barrier; it simply gives the later
+   * context lookup a same-file bound without blocking the WebSocket handler.
+   */
+  private async getSessionTranscriptEndOffset(
+    agentSlug: string,
+    sessionId: string,
+  ): Promise<number | null> {
+    try {
+      return (await fs.promises.stat(
+        getSessionJsonlPath(agentSlug, sessionId),
+      )).size
+    } catch {
+      return null
+    }
+  }
+
   // Mark session as active (when user sends a message)
   markSessionActive(sessionId: string, agentSlug?: string): void {
     let state = this.streamingStates.get(sessionId)
@@ -797,11 +1137,18 @@ class MessagePersister {
         activeSubagents: new Map(),
         slashCommands: [],
         isAwaitingInput: false,
-        pendingComputerUseRequests: new Map(),
-        pendingInputRequests: new Map(),
+        settledInputRequests: new Map(),
+        cancelledCapabilityReviews: new Set(),
         lastApiErrorCode: null,
+        lastAssistantMessageId: null,
+        assistantMessageIds: new Set(),
+        assistantEntryUuids: new Set(),
+        lastAssistantText: '',
+        queuedTurnCount: 0,
+        resetAssistantBeforeNextTurnOutput: false,
         activeBackgroundTasks: new Map(),
         bgTasksSnapshot: null,
+        processInstanceId: null,
         pendingDeliverFiles: new Map(),
         stateEventsAuthority: false,
         lastResultSubtype: null,
@@ -815,6 +1162,7 @@ class MessagePersister {
         this.capture.recordNote(sessionId, 'state_created', { agentSlug }).catch(() => {})
       }
     }
+    const wasActive = state.isActive
     state.isActive = true
     state.isInterrupted = false // Reset interrupted flag on new message
     state.isAwaitingInput = false // Reset awaiting input on new message
@@ -824,12 +1172,25 @@ class MessagePersister {
     // event) must not wedge the next turn's label. State is reused across turns.
     state.isCompacting = false
     state.currentThinking = false
+    state.currentAssistantMessageId = null
+    state.currentThinkingBlockIndex = null
     state.lastApiErrorCode = null // Clear previous API error on new message
     // Clear the previous turn's result subtype so a late idle from an
     // already-finished (or interrupted) run can't fire a stale "success"
     // completion notification against the turn this message is starting.
     state.lastResultSubtype = null
     state.lastResultCleanSuccess = false
+    // Re-marking an already-active session is how queued/steering messages are
+    // accepted mid-turn. Preserve the current candidate in that case; the next
+    // assistant message group will replace it. A genuinely new turn must never
+    // inherit the prior turn's answer.
+    if (!wasActive) {
+      this.resetSessionCompleteResponse(state)
+      state.queuedTurnCount = 0
+      state.resetAssistantBeforeNextTurnOutput = false
+    } else {
+      state.queuedTurnCount += 1
+    }
     if (agentSlug) {
       state.agentSlug = agentSlug
     }
@@ -844,13 +1205,30 @@ class MessagePersister {
       agentSlug: state.agentSlug,
       isActive: true,
     })
+
+    // The session_active broadcast above wiped the previous turn's parked
+    // requests, so the projection here reflects only waits that genuinely
+    // survive a new message — an agent-scoped proxy/x-agent review. Syncing
+    // makes a session that joins mid-review show awaiting immediately (the
+    // review used to mark only the sessions active at request time).
+    this.syncSessionAwaiting(sessionId)
   }
 
-  // Mark session as awaiting user input and broadcast globally
-  private markSessionAwaitingInput(sessionId: string): void {
+  // Recompute the derived awaiting projection for a session and broadcast on
+  // the edges. `state.isAwaitingInput` is only a cache of the registry's
+  // `isSessionAwaiting` projection — this is the ONE place that flips it in
+  // response to requests opening/settling (turn-boundary teardown paths reset
+  // it directly, alongside isActive, without broadcasting). An inactive
+  // session is never awaiting: its parked requests died with the turn, even
+  // when a stale entry (or an agent-scoped review) is still open.
+  private syncSessionAwaiting(sessionId: string): void {
     const state = this.streamingStates.get(sessionId)
-    if (state && !state.isAwaitingInput) {
-      state.isAwaitingInput = true
+    if (!state) return
+    const derived =
+      state.isActive && userInputRequestManager.isSessionAwaiting(sessionId, state.agentSlug)
+    if (derived === state.isAwaitingInput) return
+    state.isAwaitingInput = derived
+    if (derived) {
       this.broadcastGlobal({
         type: 'session_awaiting_input',
         sessionId,
@@ -861,31 +1239,157 @@ class MessagePersister {
           console.error('[MessagePersister] Failed to promote automated session:', err)
         })
       }
+    } else {
+      this.broadcastGlobal({
+        type: 'session_input_provided',
+        sessionId,
+        agentSlug: state.agentSlug,
+      })
     }
+  }
+
+  // Agent-wide recompute: agent-scoped requests (proxy / x-agent reviews) block
+  // every session of the agent, so ReviewManager calls this after each review
+  // opens or settles. Replaces the registerAwaitingBlockerSource predicate and
+  // the mark/clear pair ReviewManager used to drive imperatively.
+  syncAgentSessionsAwaiting(agentSlug: string): void {
+    for (const [sessionId, state] of this.streamingStates) {
+      if (state.agentSlug === agentSlug) this.syncSessionAwaiting(sessionId)
+    }
+  }
+
+  /**
+   * Register a stream-store request. Every per-kind handler ends here — the
+   * registry entry IS the request, and its 'created' transition is what puts
+   * the ask on the wire, in the snapshot, and in front of a notification.
+   *
+   * `register` is first-delivery-wins (and upgrades a recovered synthetic), so
+   * a tool_use that arrives on two delivery paths still yields one request.
+   */
+  private registerStreamRequest(
+    sessionId: string,
+    kind: StreamRequestKind,
+    toolUseId: string,
+    payload: Record<string, unknown>,
+    opts: { agentSlug?: string; parentToolUseId?: string; autoApproved?: boolean } = {},
+  ): void {
+    userInputRequestManager.register({
+      id: toolUseId,
+      kind,
+      scope: { agentSlug: opts.agentSlug, sessionId },
+      blocking: true,
+      autoApproved: opts.autoApproved === true,
+      parentToolUseId: opts.parentToolUseId,
+      payload,
+    })
+  }
+
+  // Surface host-blocking user-input tools (main + sidechain). script_run /
+  // computer-use / capability-review keep their own handlers (conditional await).
+  // First delivery wins: stream stop and complete-assistant can both carry the same tool_use.
+  private dispatchBlockingUserInputTool(
+    sessionId: string,
+    toolName: string,
+    toolUseId: string,
+    toolInput: string,
+    agentSlug?: string,
+    parentToolUseId?: string,
+  ): void {
+    // A recovered stub does NOT dedupe: transcript recovery can synthesize a
+    // payload-less entry before the real delivery lands, and that delivery must
+    // go through to upgrade the registry entry (register() replaces recovered
+    // synthetics; clients never got a renderable event for the stub).
+    const existing = userInputRequestManager.getOpenRequest(toolUseId)
+    if (existing && isReplayableUserInputRequest(existing)) return
+
+    if (toolName === 'AskUserQuestion') {
+      this.handleAskUserQuestionTool(sessionId, toolUseId, toolInput, agentSlug, parentToolUseId)
+    } else if (toolName === 'mcp__user-input__request_secret') {
+      this.handleSecretRequestTool(sessionId, toolUseId, toolInput, agentSlug, parentToolUseId)
+    } else if (toolName === 'mcp__user-input__request_connected_account') {
+      this.handleConnectedAccountRequestTool(sessionId, toolUseId, toolInput, agentSlug, parentToolUseId)
+    } else if (toolName === 'mcp__user-input__request_file') {
+      this.handleFileRequestTool(sessionId, toolUseId, toolInput, agentSlug, parentToolUseId)
+    } else if (toolName === 'mcp__user-input__request_remote_mcp') {
+      this.handleRemoteMcpRequestTool(sessionId, toolUseId, toolInput, agentSlug, parentToolUseId)
+    } else if (toolName === 'mcp__user-input__request_browser_input') {
+      this.handleBrowserInputRequestTool(sessionId, toolUseId, toolInput, agentSlug, parentToolUseId)
+    }
+
+    // Only tools with 'request_' prefix actually block waiting for user response
+    // (schedule_task, deliver_file, search_* resolve immediately and don't block).
+    // computer-use AND request_script_run sync awaiting in their own handlers.
+    // The handler above already broadcast the request event, which registered
+    // it — the sync just picks the new entry up.
+    if (isBlockingUserInputToolName(toolName)) {
+      this.syncSessionAwaiting(sessionId)
+    }
+  }
+
+  // Blocking user-input tool name → the request kind its handler registers.
+  // Recovery synthesizes registry envelopes of that kind when the original
+  // delivery was missed. Keep in sync with dispatchBlockingUserInputTool.
+  private static readonly REQUEST_KIND_BY_TOOL_NAME: Record<string, StreamRequestKind> = {
+    AskUserQuestion: 'question',
+    'mcp__user-input__request_secret': 'secret',
+    'mcp__user-input__request_connected_account': 'connected_account',
+    'mcp__user-input__request_file': 'file',
+    'mcp__user-input__request_remote_mcp': 'remote_mcp',
+    'mcp__user-input__request_browser_input': 'browser_input',
   }
 
   // Recover awaiting-input state from persisted messages when the one-shot
   // request stream event was missed but the unresolved tool call is visible.
-  recoverSessionAwaitingInput(sessionId: string, agentSlug?: string): void {
+  // Re-establishes the missed requests in the stream store and the registry
+  // (the derived awaiting projection needs real entries — there is no forced
+  // bit anymore), then recomputes awaiting. Entries are marked `recovered` so
+  // SSE replay skips them: they carry no payload, and connected clients render
+  // the card from the transcript that triggered this recovery in the first
+  // place. Resolution needs no special path — their tool_result (or the next
+  // turn boundary) clears them like any other stream-store entry.
+  recoverSessionAwaitingInput(
+    sessionId: string,
+    agentSlug: string | undefined,
+    unresolved: Array<{ toolUseId: string; toolName: string }>,
+  ): void {
     const state = this.streamingStates.get(sessionId)
     if (!state?.isActive) return
     if (agentSlug && !state.agentSlug) {
       state.agentSlug = agentSlug
     }
-    this.markSessionAwaitingInput(sessionId)
+    for (const { toolUseId, toolName } of unresolved) {
+      const kind = MessagePersister.REQUEST_KIND_BY_TOOL_NAME[toolName]
+      if (!kind || userInputRequestManager.getOpenRequest(toolUseId)) continue
+      this.registerStreamRequest(
+        sessionId,
+        kind,
+        toolUseId,
+        { recovered: true },
+        { agentSlug: state.agentSlug },
+      )
+    }
+    this.syncSessionAwaiting(sessionId)
   }
 
   // Promote an automated session (cron/webhook/chat) to a regular session so it
-  // appears in the sidebar and receives completion notifications.
-  private async promoteAutomatedSession(sessionId: string, agentSlug: string): Promise<void> {
+  // appears in the sidebar and receives completion notifications. Public: the
+  // notification manager promotes on session_waiting so blocked automations
+  // surface in session lists instead of accruing unread rows nothing displays.
+  async promoteAutomatedSession(sessionId: string, agentSlug: string): Promise<void> {
     const meta = await getSessionMetadata(agentSlug, sessionId)
-    if (!meta) return
-    if (meta.promotedToInteractive) return
-    if (!meta.isScheduledExecution && !meta.isWebhookExecution && !meta.isChatIntegrationSession) return
+    if (!isHiddenAutomatedSession(meta)) return
 
     await updateSessionMetadata(agentSlug, sessionId, {
       promotedToInteractive: true,
     })
+
+    // Promoted sessions behave interactive from here on — keep their stream
+    // alive across settles like any other interactive session.
+    const state = this.streamingStates.get(sessionId)
+    if (state) {
+      state.promotedToInteractive = true
+      state.releaseStreamOnSettle = false
+    }
 
     console.log(`[MessagePersister] Promoted automated session ${sessionId} to interactive (agent: ${agentSlug})`)
 
@@ -959,33 +1463,35 @@ class MessagePersister {
     this.broadcastToSSE(sessionId, data)
   }
 
-  // One-shot user-input request events that a late-joining client must be able to
-  // recover on (re)connect. Keep in sync with the /stream route's replay loop.
-  private static readonly INPUT_REQUEST_TYPES = new Set([
-    'secret_request',
-    'connected_account_request',
-    'user_question_request',
-    'file_request',
-    'remote_mcp_request',
-    'script_run_request',
-    'browser_input_request',
-    'capability_review_request',
-  ])
-
   // Broadcast to SSE clients
   private broadcastToSSE(sessionId: string, data: unknown): void {
     this.capture?.recordOutput(sessionId, data)
-    // Track/clear pending user-input requests so the /stream route can replay them to
-    // clients that connect after the one-shot broadcast (the e2e late-join flake, and a
-    // real reconnect/refresh while the agent is awaiting input). Turn boundaries clear them.
-    const evt = data as { type?: string; toolUseId?: string } | null
-    if (evt && typeof evt.type === 'string') {
+    // Turn boundaries settle whatever the last turn left parked. That is the
+    // only request bookkeeping on the broadcast path — registration itself
+    // lives in the per-kind handlers.
+    const evt = data as { type?: string } | null
+    if (evt && (evt.type === 'session_active' || evt.type === 'session_idle')) {
       const state = this.streamingStates.get(sessionId)
       if (state) {
-        if (evt.type === 'session_active' || evt.type === 'session_idle') {
-          state.pendingInputRequests.clear()
-        } else if (MessagePersister.INPUT_REQUEST_TYPES.has(evt.type) && typeof evt.toolUseId === 'string') {
-          state.pendingInputRequests.set(evt.toolUseId, evt as { type: string; toolUseId: string })
+        // The turn boundary lands the held-back sibling results in the
+        // transcript — the settled-outcome stamps are no longer needed.
+        state.settledInputRequests.clear()
+        // A new turn supersedes parked asks; an idle boundary cancels them.
+        userInputRequestManager.clearSessionStreamRequests(
+          sessionId,
+          evt.type === 'session_active' ? 'superseded' : 'cancelled',
+        )
+        if (evt.type === 'session_active') {
+          // A new turn also supersedes computer-use approvals left over from
+          // a previous one. Historically these were never cleared at turn
+          // boundaries (only by a decision or cancelAwaitingInput), so
+          // stale entries could survive an idle/interrupt — harmless when
+          // awaiting was an imperative bit, but the derived projection would
+          // read them as a live wait and flag the fresh turn as awaiting.
+          // (Idle keeps them so a still-parked approval survives a reconnect.)
+          for (const id of userInputRequestManager.getStoreIdsForSession(sessionId, 'computer_use')) {
+            userInputRequestManager.resolveIfInStore(id, 'computer_use', 'superseded')
+          }
         }
       }
     }
@@ -1011,8 +1517,17 @@ class MessagePersister {
     if (!state) return
 
     // Skip processing if session was interrupted (prevents race conditions)
-    // Allow 'result' through as it indicates the container actually stopped
-    if (state.isInterrupted && message.content?.type !== 'result') {
+    // Allow 'result' through as it indicates the container actually stopped.
+    // `process_restarted` is allowed for the same reason: the interrupt path itself
+    // restarts the query, so this is a fact about which runtime we are now
+    // talking to, not turn content. Swallowing it leaves the recorded process
+    // identity a generation behind, and the next reattach then reads a changed
+    // name as a restart and drops background tasks that are actually running.
+    if (
+      state.isInterrupted &&
+      message.content?.type !== 'result' &&
+      message.content?.subtype !== 'process_restarted'
+    ) {
       return
     }
 
@@ -1024,9 +1539,14 @@ class MessagePersister {
     // carrying this task's id + status. The busy path (task settles while a foreground
     // tool is in flight) is handled separately via `task_updated` in the system switch
     // below — that path does NOT emit a matching `task_notification`.
-    if (content.type === 'system' && state.activeBackgroundTasks.size > 0) {
+    // Runs whether or not the id is in the incremental map: the snapshot can
+    // carry ids the map never had (a subagent's own nested background agents
+    // notify onto the lead session), and those must retire here or they pin
+    // the union forever. clearBackgroundTask no-ops the broadcast side for
+    // anything untracked.
+    if (content.type === 'system') {
       const taskId = content.task_id as string | undefined
-      if (taskId && content.status && state.activeBackgroundTasks.has(taskId)) {
+      if (taskId && content.status) {
         this.clearBackgroundTask(sessionId, state, taskId)
       }
     }
@@ -1043,6 +1563,20 @@ class MessagePersister {
       return
     }
 
+    // Complete top-level frames correspond to durable parent-transcript writes.
+    // Keep the warm per-agent summary current without restatting every sibling.
+    // Replayed catch-up frames are excluded: SDK frames carry no timestamp on
+    // the wire, so the host stamps arrival time, and a late-join replay to an
+    // idle session would masquerade as fresh activity — the directory-mtime and
+    // TTL reconciliation already repair anything a missed turn-end left behind.
+    if (
+      state.agentSlug &&
+      !content.replayed &&
+      (content.type === 'assistant' || content.type === 'user' || content.type === 'result')
+    ) {
+      recordSessionActivity(state.agentSlug, sessionId, message.timestamp)
+    }
+
     // Container late-join catch-up: the runtime replays the last turn's
     // terminal frames (informational/result/idle, marked `replayed: true`)
     // when a WebSocket attaches after the turn already ended — e.g. a
@@ -1056,6 +1590,40 @@ class MessagePersister {
 
     switch (content.type) {
       case 'assistant': {
+        if (state.resetAssistantBeforeNextTurnOutput) {
+          this.resetSessionCompleteResponse(state)
+          state.resetAssistantBeforeNextTurnOutput = false
+        }
+        // Preserve exactly the text portion the transcript UI can render. The
+        // SDK persists one complete frame per content block, so several frames
+        // can share an assistant message id (thinking, text, tool use). Merge
+        // their text here and let a newer id replace the candidate entirely.
+        const assistantMessageId =
+          typeof content.message?.id === 'string' && content.message.id
+            ? content.message.id
+            : null
+        const assistantEntryUuid =
+          typeof content.uuid === 'string' && content.uuid ? content.uuid : null
+        const assistantText = this.extractAssistantText(content)
+        // Resumed CLI processes can replay already-persisted frames. The
+        // renderer deduplicates those by transcript UUID before merging, so
+        // ignore a duplicate even if it arrives after a newer message group.
+        if (!assistantEntryUuid || !state.assistantEntryUuids.has(assistantEntryUuid)) {
+          if (assistantMessageId && assistantMessageId === state.lastAssistantMessageId) {
+            state.lastAssistantText += assistantText
+          } else if (assistantMessageId && state.assistantMessageIds.has(assistantMessageId)) {
+            // A later frame can belong to an older assistant group (typically a
+            // delayed tool block). transformMessages merges it into that older
+            // bubble without changing which assistant item is last, so neither
+            // should the notification candidate.
+          } else {
+            state.lastAssistantMessageId = assistantMessageId
+            state.lastAssistantText = assistantText
+          }
+          if (assistantMessageId) state.assistantMessageIds.add(assistantMessageId)
+          if (assistantEntryUuid) state.assistantEntryUuids.add(assistantEntryUuid)
+        }
+
         // Complete assistant message - JSONL is the source of truth
         // Track SDK error code from assistant message (e.g., 'authentication_failed', 'rate_limit')
         if (content.error) {
@@ -1100,6 +1668,11 @@ class MessagePersister {
                   const toolUseResult = content.tool_use_result as Record<string, unknown> | undefined
                   if (toolUseResult?.agentId && typeof toolUseResult.agentId === 'string') {
                     sub.agentId = toolUseResult.agentId
+                  } else if (
+                    toolUseResult?.resumedAgentId &&
+                    typeof toolUseResult.resumedAgentId === 'string'
+                  ) {
+                    sub.agentId = toolUseResult.resumedAgentId
                   } else {
                     // Parse agentId from the tool result text (SDK includes "agentId: <hex>")
                     const parts = Array.isArray(block.content) ? block.content : []
@@ -1115,23 +1688,22 @@ class MessagePersister {
                   }
                 }
 
-                // A background (run_in_background) Agent returns an immediate
-                // "async_launched" ack as its tool_result; its REAL completion
-                // arrives later as task_updated/task_notification (handled in the
-                // system switch), never a second tool_result or a sidechain
-                // 'result'. Detect the ack authoritatively from tool_use_result
-                // here and mark the subagent background — the streamed
-                // run_in_background input is unreliable (interleaved content
-                // blocks + the complete assistant message can clear currentToolUse
-                // before it's parsed, leaving isBackground=false). Marking it here
-                // both prevents the ack from completing the subagent and lets the
-                // later task event complete it.
+                // Background Agent launches and SendMessage resumes both return
+                // immediate acknowledgments; their REAL completion arrives later
+                // as task_updated/task_notification, never as a second tool_result.
+                // Detect those acknowledgments authoritatively from result metadata
+                // or a resumed task_started. Do not use the streamed isBackground
+                // hint here: partial/interleaved input is unreliable, and an error
+                // result for a requested background launch is terminal.
                 const tur = content.tool_use_result as
-                  | { status?: string; isAsync?: boolean; agentId?: string }
+                  | { status?: string; isAsync?: boolean; agentId?: string; resumedAgentId?: string }
                   | undefined
                 const isAsyncLaunchAck = tur?.status === 'async_launched' || tur?.isAsync === true
-                if (isAsyncLaunchAck) {
-                  sub.isBackground = true
+                const isResumeAck = typeof tur?.resumedAgentId === 'string'
+                const isErrorResult = block.is_error === true
+                if (!isErrorResult && (isAsyncLaunchAck || isResumeAck || sub.isResumed)) {
+                  if (isAsyncLaunchAck) sub.isBackground = true
+                  if (isResumeAck) sub.isResumed = true
                   // A background subagent outlives its launch turn, and since SDK
                   // 0.3.197 the runtime settles the turn (result + idle) while the
                   // subagent is still running — older SDKs held them back, which is
@@ -1141,29 +1713,14 @@ class MessagePersister {
                   // waiting-background state; its terminal task_updated /
                   // task_notification (task_id === agentId) clears it through the
                   // existing paths.
-                  const bgAgentId = tur?.agentId ?? sub.agentId
-                  if (bgAgentId && !state.activeBackgroundTasks.has(bgAgentId)) {
-                    const startedAt = Date.now()
-                    state.activeBackgroundTasks.set(bgAgentId, {
-                      startedAt,
-                      isSubagent: true,
-                      toolUseId: block.tool_use_id,
-                    })
-                    // isSubagent lets the renderer skip these in the generic
-                    // "N background processes" row — the named subagent row
-                    // already represents this work in the activity tray.
-                    this.broadcastToSSE(sessionId, {
-                      type: 'background_task_started',
-                      taskId: bgAgentId,
-                      startedAt,
-                      isSubagent: true,
-                    })
-                    this.broadcastGlobal({
-                      type: 'background_task_started',
+                  const bgAgentId = tur?.resumedAgentId ?? tur?.agentId ?? sub.agentId
+                  if (bgAgentId) {
+                    this.registerBackgroundSubagent(
                       sessionId,
-                      agentSlug: state.agentSlug,
-                      taskId: bgAgentId,
-                    })
+                      state,
+                      bgAgentId,
+                      block.tool_use_id,
+                    )
                   }
                 } else {
                   // Foreground subagent: the tool_result IS the completion.
@@ -1217,16 +1774,10 @@ class MessagePersister {
           this.broadcastToSSE(sessionId, { type: 'messages_updated' })
           break
         }
-        // Clear awaiting input when tool results arrive (user provided input)
-        if (state.isAwaitingInput) {
-          state.isAwaitingInput = false
-          this.broadcastGlobal({
-            type: 'session_input_provided',
-            sessionId,
-            agentSlug: state.agentSlug,
-          })
-        }
-        // Tool results come as 'user' type messages
+        // Tool results come as 'user' type messages. handleToolResults settles
+        // each answered request in the registry and recomputes awaiting from
+        // what actually remains open — answering one of several parallel
+        // requests no longer drops the waiting light while siblings are parked.
         this.handleToolResults(sessionId, content)
         // Broadcast refresh so frontend can detect the persisted user message
         // and clear the optimistic pending copy promptly.
@@ -1236,13 +1787,13 @@ class MessagePersister {
       case 'system':
         // System messages (init, etc.)
         if (content.subtype === 'init') {
-          // Capture slash commands from init event as fallback (e.g. resumed sessions)
-          if (state.slashCommands.length === 0 && Array.isArray(content.slash_commands)) {
-            state.slashCommands = content.slash_commands.map((name: string) => ({
-              name,
-              description: '',
-              argumentHint: '',
-            }))
+          // The init strings are the executable names. Reconcile even when we
+          // already have rich/persisted commands so display titles cannot win.
+          if (Array.isArray(content.slash_commands)) {
+            state.slashCommands = mergeCanonicalSlashCommands(
+              content.slash_commands.filter((name: unknown): name is string => typeof name === 'string'),
+              state.slashCommands,
+            )
           }
           this.broadcastToSSE(sessionId, {
             type: 'stream_start',
@@ -1283,6 +1834,10 @@ class MessagePersister {
           // guarantees task_id === subagent session ID === JSONL filename).
           const toolUseId = content.tool_use_id as string | undefined
           const agentId = content.task_id as string | undefined
+          const isResumedSubagent =
+            content.task_type === 'local_agent' &&
+            !!agentId &&
+            state.completedSubagentIds.has(agentId)
           // A subagent's own inner Bash can surface in the parent stream as an
           // unparented task_started{task_type:'local_bash'} — it is not a
           // subagent, and creating an entry for it renders a phantom subagent
@@ -1291,6 +1846,7 @@ class MessagePersister {
             const existing = state.activeSubagents.get(toolUseId)
             if (existing) {
               if (agentId) existing.agentId = agentId
+              if (isResumedSubagent) existing.isResumed = true
             } else {
               state.activeSubagents.set(toolUseId, {
                 agentId: agentId ?? null,
@@ -1298,7 +1854,11 @@ class MessagePersister {
                 currentToolUse: null,
                 currentToolInput: '',
                 isBackground: false,
+                isResumed: isResumedSubagent,
               })
+            }
+            if (isResumedSubagent && agentId) {
+              this.registerBackgroundSubagent(sessionId, state, agentId, toolUseId)
             }
             this.broadcastToSSE(sessionId, {
               type: 'subagent_started',
@@ -1364,21 +1924,23 @@ class MessagePersister {
           const taskId = content.task_id as string | undefined
           const status = (content.patch as { status?: string } | undefined)?.status
           const isTerminal = status === 'completed' || status === 'failed' || status === 'killed'
-          if (taskId && isTerminal && state.activeBackgroundTasks.has(taskId)) {
+          // Unconditional on map membership, same reason as the task_notification
+          // path above: the id may only exist in the snapshot.
+          if (taskId && isTerminal) {
             this.clearBackgroundTask(sessionId, state, taskId)
           }
           // A background *subagent* (task_type 'local_agent') settles via a
           // task_updated whose task_id equals the subagent's agentId. The busy
           // path can deliver this without a matching task_notification, so finish
-          // the subagent here too. Scoped to isBackground: foreground subagents
-          // complete via their tool_result (see the 'user' case) and also emit
-          // these task events — acting on them here would fire an early
-          // completion with an unresolved (null) agentId. Idempotent:
+          // the subagent here too. Scoped to background/resumed lifecycle
+          // flags: foreground subagents complete via their tool_result (see the
+          // 'user' case) and also emit these task events — acting on them here
+          // would fire an early completion with an unresolved (null) agentId. Idempotent:
           // broadcastSubagentCompleted removes it, so a trailing task_notification
           // no-ops.
           if (taskId && isTerminal) {
             for (const [parentToolId, sub] of state.activeSubagents) {
-              if (sub.isBackground && sub.agentId === taskId) {
+              if ((sub.isBackground || sub.isResumed) && sub.agentId === taskId) {
                 this.broadcastSubagentCompleted(sessionId, state, parentToolId)
                 break
               }
@@ -1391,18 +1953,26 @@ class MessagePersister {
           // Without this, broadcastSubagentCompleted never fires for a background
           // subagent — its tool_result stays the 'async_launched' ack and no
           // sidechain 'result' arrives — so the UI shows it running until the
-          // whole turn ends. Scoped to isBackground for the same reason as the
-          // task_updated branch above (foreground subagents finish via tool_result).
+          // whole turn ends. Scoped to background/resumed lifecycle flags for
+          // the same reason as the task_updated branch above (foreground
+          // subagents finish via tool_result).
           const toolUseId = content.tool_use_id as string | undefined
           const status = content.status as string | undefined
           const sub = toolUseId ? state.activeSubagents.get(toolUseId) : undefined
           if (
-            sub?.isBackground &&
+            (sub?.isBackground || sub?.isResumed) &&
             (status === 'completed' || status === 'failed' || status === 'killed')
           ) {
             const summary = typeof content.summary === 'string' ? content.summary : undefined
             this.broadcastSubagentCompleted(sessionId, state, toolUseId!, summary)
           }
+        } else if (content.subtype === 'process_restarted') {
+          // Container-synthesized, live: the session's CLI process was replaced
+          // while we were attached (MCP-injection restart, crash, an
+          // interrupt-driven respawn). The handshake below covers the restarts
+          // that happen with nobody attached; this one settles the indicator
+          // immediately instead of at the next reconnect.
+          this.handleProcessRestarted(sessionId, state, content.process_instance)
         } else if (content.subtype === 'capabilities') {
           // The container announces its stream contract when the WebSocket
           // connects, before relaying any SDK message. `session_state_events`
@@ -1414,6 +1984,11 @@ class MessagePersister {
           if (content.session_state_events === true) {
             state.stateEventsAuthority = true
           }
+          // The handshake also names the CLI process we're now attached to.
+          // This is the path that catches a replacement we never saw: on a cold
+          // resume the container's live announcement fires before the session is
+          // published and before this socket subscribes, so it reaches nobody.
+          this.adoptHandshakeProcessInstance(sessionId, state, content.process_instance)
         } else if (content.subtype === 'session_state_changed') {
           // The runtime's own session state — `idle` is the SDK's authoritative
           // "fully settled" signal: it fires only after heldBackResult flushes
@@ -1454,16 +2029,32 @@ class MessagePersister {
                 // Completion notification at the real end of the work. Skip
                 // resume-exits: the session is pausing for a resume, not done.
                 if (state.lastResultSubtype === 'success' && state.agentSlug) {
-                  notificationManager.triggerSessionComplete(sessionId, state.agentSlug).catch((err) => {
+                  notificationManager.triggerSessionComplete(sessionId, state.agentSlug, {
+                    responseText: state.lastAssistantText,
+                    responseTranscriptEndOffset: this.getSessionTranscriptEndOffset(
+                      state.agentSlug,
+                      sessionId,
+                    ),
+                  }).catch((err) => {
                     console.error('[MessagePersister] Failed to trigger session complete notification:', err)
                   })
                 }
               }
+            } else if (!state.isActive && state.lastResultSubtype !== null) {
+              // Error path already cleared isActive, so finalizeIdle never ran.
+              this.maybeReleaseSettledAutomationStream(sessionId, state)
             }
           } else if (content.state === 'running' && !state.isActive) {
             // The runtime started a turn we didn't initiate via POST (e.g. a
             // queued message picked up after an out-of-order idle) — self-heal.
             state.isActive = true
+            this.resetSessionCompleteResponse(state)
+            state.queuedTurnCount = 0
+            state.resetAssistantBeforeNextTurnOutput = false
+            // Preserve the prior result guard. Some runtimes emit a stray
+            // running → idle pair without another result; clearing the guard
+            // here would leave isActive stuck until disconnect. The response
+            // reset above keeps any duplicate completion notification generic.
             this.broadcastToSSE(sessionId, { type: 'session_active', isActive: true })
             this.broadcastGlobal({
               type: 'session_active',
@@ -1471,6 +2062,12 @@ class MessagePersister {
               agentSlug: state.agentSlug,
               isActive: true,
             })
+            // Same trailing sync as markSessionActive: the session_active
+            // broadcast above wiped the previous turn's parked requests, so
+            // this picks up only waits that survive a new turn — an
+            // agent-scoped review that was already parked when the runtime
+            // started this one.
+            this.syncSessionAwaiting(sessionId)
           }
         } else if (content.subtype === 'background_tasks_changed') {
           // Authoritative full snapshot of the session's live background tasks
@@ -1528,14 +2125,42 @@ class MessagePersister {
         // (terminal_reason: api_error etc.) that a subtype check alone misses.
         const classification = classifyResult(content)
         const isError = classification.isError
+        // Resume and graceful-interrupt results are pauses inside the current
+        // turn. They must not consume the queued-turn boundary or reset its
+        // response candidate one result early.
+        const completesTurn = !classification.isInterrupt && content.subtype !== 'resume'
+        if (completesTurn) {
+          if (state.resetAssistantBeforeNextTurnOutput) {
+            this.resetSessionCompleteResponse(state)
+            state.resetAssistantBeforeNextTurnOutput = false
+          }
+          if (state.queuedTurnCount > 0) {
+            state.queuedTurnCount -= 1
+            state.resetAssistantBeforeNextTurnOutput = true
+          }
+        }
         state.isStreaming = false
-        state.isAwaitingInput = false
         // On error the turn ends here, so settle isActive too BEFORE the single
         // emit. Collapsing every terminal flag change into ONE emit (reflecting
         // the final state) avoids a spurious working(true)→(false) pair — the
         // intermediate "isActive still true, streaming just cleared" snapshot
         // would read working=true and race connectors into a stuck indicator.
-        if (isError || classification.isInterrupt) state.isActive = false
+        // The awaiting cache follows the same rule: silent-clear ONLY where the
+        // session is actually settling (error/interrupt here, finalizeIdle
+        // below). A clean success can leave the session ACTIVE — the runtime
+        // owns idle under state-event authority, or background work remains —
+        // and an open agent-scoped review still blocks every active session,
+        // so re-derive instead: a blind clear would misreport "working" AND
+        // eat the falling edge (the review's later settle would see
+        // cache == derived and never broadcast session_input_provided).
+        if (isError || classification.isInterrupt) {
+          state.isActive = false
+          state.isAwaitingInput = false
+        } else if (state.stateEventsAuthority || this.openBackgroundWorkCount(state) > 0) {
+          this.syncSessionAwaiting(sessionId)
+        } else {
+          state.isAwaitingInput = false // finalizeIdle below settles the turn
+        }
         state.currentText = ''
         state.lastResultSubtype = typeof content.subtype === 'string' ? content.subtype : null
 
@@ -1658,7 +2283,13 @@ class MessagePersister {
         // `notifyWhenUnfocused` toggle. Skip for 'resume' exits — the
         // session is pausing for a resume, not truly finished.
         if (content.subtype !== 'resume' && state.agentSlug) {
-          notificationManager.triggerSessionComplete(sessionId, state.agentSlug).catch((err) => {
+          notificationManager.triggerSessionComplete(sessionId, state.agentSlug, {
+            responseText: state.lastAssistantText,
+            responseTranscriptEndOffset: this.getSessionTranscriptEndOffset(
+              state.agentSlug,
+              sessionId,
+            ),
+          }).catch((err) => {
             console.error('[MessagePersister] Failed to trigger session complete notification:', err)
           })
         }
@@ -1671,6 +2302,23 @@ class MessagePersister {
           type: 'browser_active',
           active: content.active,
         })
+        break
+
+      case 'capability_review_cancelled':
+        // The container's gate hook stopped waiting for this review (the CLI
+        // abandoned the parked hook — its timeout elapsed or the turn was
+        // aborted). No decision can land anymore: close the approval card
+        // everywhere instead of leaving it dangling until reconnect cleanup.
+        if (typeof content.toolUseId === 'string') {
+          if (userInputRequestManager.getOpenRequest(content.toolUseId)) {
+            this.completeCapabilityReview(sessionId, content.toolUseId, 'cancelled')
+          } else {
+            // No card yet — handleCapabilityReviewTool is still awaiting its
+            // container grant lookup. Tombstone the id so the handler drops
+            // the card instead of broadcasting it after this cancellation.
+            state.cancelledCapabilityReviews.add(content.toolUseId)
+          }
+        }
         break
 
       case 'connection_closed':
@@ -1760,6 +2408,9 @@ class MessagePersister {
     state.currentToolInput = ''
     state.activeSubagents.clear()
     state.activeBackgroundTasks.clear()
+    // The runtime is gone; its background tasks went with it (same reasoning as
+    // markSessionInterrupted).
+    state.bgTasksSnapshot = null
     this.stopAllWorkflowTailers(sessionId)
     if (diedMidTurn) {
       // Mirror the result-error path: settle isActive BEFORE broadcasting so
@@ -1805,7 +2456,14 @@ class MessagePersister {
     let sub = state.activeSubagents.get(parentToolId)
     if (!sub) {
       // Sidechain message arrived before the tool_use was tracked (rare but possible)
-      sub = { agentId: null, currentText: '', currentToolUse: null, currentToolInput: '', isBackground: false }
+      sub = {
+        agentId: null,
+        currentText: '',
+        currentToolUse: null,
+        currentToolInput: '',
+        isBackground: false,
+        isResumed: false,
+      }
       state.activeSubagents.set(parentToolId, sub)
     }
 
@@ -1841,6 +2499,15 @@ class MessagePersister {
     // Complete messages have been persisted to the subagent JSONL by the SDK,
     // so the frontend can refetch them via the API endpoint.
     if (content.type === 'user' || content.type === 'assistant') {
+      // A subagent's tool_result arrives here, NOT via the main-path 'user'
+      // handler — so a resolved input request (user clicked Complete on a
+      // subagent's browser_input card) must run the same bookkeeping: drop
+      // the replayable card and clear the awaiting status while the subagent
+      // resumes. Without this the UI stays "needs input" behind a stale card
+      // until the whole turn ends.
+      if (content.type === 'user') {
+        this.resolveSidechainInputRequests(sessionId, state, content)
+      }
       if (content.type === 'assistant') {
         const messageContent = content.message?.content
         if (Array.isArray(messageContent)) {
@@ -1874,29 +2541,27 @@ class MessagePersister {
           sub.currentText = newText
 
           for (const block of messageContent) {
-            if (block.type === 'tool_use' && block.name === 'mcp__user-input__request_browser_input') {
-              this.handleBrowserInputRequestTool(
-                sessionId,
-                block.id,
-                JSON.stringify(block.input || {}),
-                state.agentSlug
-              )
+            if (block.type !== 'tool_use') continue
+            const input = JSON.stringify(block.input || {})
+            this.dispatchBlockingUserInputTool(
+              sessionId,
+              block.name,
+              block.id,
+              input,
+              state.agentSlug,
+              parentToolId,
+            )
+            if (block.name === 'mcp__user-input__request_script_run') {
+              this.handleScriptRunRequestTool(sessionId, block.id, input, state.agentSlug, parentToolId)
             }
-            if (block.type === 'tool_use' && block.name === 'mcp__user-input__request_script_run') {
-              this.handleScriptRunRequestTool(
-                sessionId,
-                block.id,
-                JSON.stringify(block.input || {}),
-                state.agentSlug
-              )
-            }
-            if (block.type === 'tool_use' && block.name.startsWith('mcp__computer-use__')) {
+            if (block.name.startsWith('mcp__computer-use__')) {
               this.handleComputerUseRequestTool(
                 sessionId,
                 block.id,
                 block.name,
-                JSON.stringify(block.input || {}),
-                state.agentSlug
+                input,
+                state.agentSlug,
+                parentToolId,
               )
             }
           }
@@ -1910,6 +2575,37 @@ class MessagePersister {
     }
   }
 
+  private registerBackgroundSubagent(
+    sessionId: string,
+    state: StreamingState,
+    agentId: string,
+    toolUseId: string,
+  ): void {
+    if (state.activeBackgroundTasks.has(agentId)) return
+
+    const startedAt = Date.now()
+    state.activeBackgroundTasks.set(agentId, {
+      startedAt,
+      isSubagent: true,
+      toolUseId,
+    })
+    // isSubagent lets the renderer skip these in the generic
+    // "N background processes" row — the named subagent row
+    // already represents this work in the activity tray.
+    this.broadcastToSSE(sessionId, {
+      type: 'background_task_started',
+      taskId: agentId,
+      startedAt,
+      isSubagent: true,
+    })
+    this.broadcastGlobal({
+      type: 'background_task_started',
+      sessionId,
+      agentSlug: state.agentSlug,
+      taskId: agentId,
+    })
+  }
+
   // Clear a finished background task (backgrounded Bash OR a dynamic workflow),
   // emitting the shared `background_task_completed` plus, for workflows, the
   // `workflow_completed` event and stopping the journal tailer. Returns whether a
@@ -1921,6 +2617,10 @@ class MessagePersister {
   // briefly know a task the other doesn't. Counting the union means a missed
   // registration can't cause a premature idle and a missed terminal signal
   // can't pin the session forever (the snapshot self-heal below clears it).
+  // Both directions must drain, or the union stops being a safety net and
+  // becomes a permanent pin: the SDK re-emits the level only on a membership
+  // CHANGE and emits nothing at all for a fresh process, so an id that enters
+  // bgTasksSnapshot and never leaves it can never be retired by the SDK.
   private openBackgroundWorkCount(state: StreamingState): number {
     if (!state.bgTasksSnapshot) return state.activeBackgroundTasks.size
     const union = new Set(state.activeBackgroundTasks.keys())
@@ -1928,7 +2628,45 @@ class MessagePersister {
     return union.size
   }
 
+  // The live `process_restarted` frame: the container is telling us outright
+  // that the CLI was replaced, so reset regardless of whether we had recorded
+  // the outgoing process's identity.
+  private handleProcessRestarted(sessionId: string, state: StreamingState, instance: unknown): void {
+    this.dropProcessLocalBackgroundState(sessionId, state)
+    if (typeof instance === 'string' && instance !== '') state.processInstanceId = instance
+  }
+
+  // The handshake's process identity. A first sighting is NOT a restart — it's
+  // just the first time we've been told — so reset only when the name actually
+  // changes. That distinction is the point of keying on identity: a plain
+  // transport reattach re-announces the SAME process with the same tasks still
+  // running, and resetting there would drop a live indicator and un-gate
+  // auto-sleep mid-job. A container too old to send the field is a no-op.
+  private adoptHandshakeProcessInstance(sessionId: string, state: StreamingState, instance: unknown): void {
+    if (typeof instance !== 'string' || instance === '') return
+    if (state.processInstanceId === instance) return
+    const isReplacement = state.processInstanceId !== null
+    state.processInstanceId = instance
+    if (isReplacement) this.dropProcessLocalBackgroundState(sessionId, state)
+  }
+
+  // Background tasks die with their CLI process, and a fresh process emits NO
+  // initial background_tasks_changed — so once the process is gone, nothing will
+  // ever retire the ids we hold and they would pin the session "working" for the
+  // rest of its life. Mirrors SessionSettlementTracker.resetBackgroundTasks.
+  private dropProcessLocalBackgroundState(sessionId: string, state: StreamingState): void {
+    for (const taskId of [...state.activeBackgroundTasks.keys()]) {
+      this.clearBackgroundTask(sessionId, state, taskId)
+    }
+    state.bgTasksSnapshot = null
+  }
+
   private clearBackgroundTask(sessionId: string, state: StreamingState, taskId: string): boolean {
+    // Retire the id from the level set too. A terminal per-task signal normally
+    // trails the snapshot that already dropped the task and this is a no-op; if
+    // that removal frame never arrives, the freshest information has to win or
+    // the union pins the session. Mirrors SessionSettlementTracker.removeTask.
+    state.bgTasksSnapshot?.delete(taskId)
     const info = state.activeBackgroundTasks.get(taskId)
     if (!info) return false
     state.activeBackgroundTasks.delete(taskId)
@@ -2076,6 +2814,36 @@ class MessagePersister {
       state.completedSubagentIds.add(sub.agentId)
     }
     state.activeSubagents.delete(parentToolId)
+    this.invalidateSubagentRequests(sessionId, state, parentToolId)
+  }
+
+  // A terminated subagent can leave a parked request nothing will ever answer
+  // (it died before its tool_result). Settle its registry entries, drop the
+  // replay mirrors, reject the container-side pendings so a late click can't
+  // land, and recompute awaiting. A subagent that resolved its requests
+  // normally has no entries left under its parent — this is then a no-op.
+  private invalidateSubagentRequests(
+    sessionId: string,
+    state: StreamingState,
+    parentToolId: string,
+  ): void {
+    const orphaned = userInputRequestManager.resolveRequestsByParent(parentToolId, 'invalidated')
+    if (orphaned.length === 0) return
+    for (const request of orphaned) {
+      if (state.agentSlug) {
+        this.rejectContainerInput(
+          state.agentSlug,
+          request.id,
+          'The subagent that asked for this input was terminated.',
+        ).catch((e) =>
+          console.error(
+            `[MessagePersister] dead-subagent reject failed for ${request.id}:`,
+            e,
+          ),
+        )
+      }
+    }
+    this.syncSessionAwaiting(sessionId)
   }
 
   // Handle subagent stream events — mirrors handleStreamEvent but with subagent_ prefixed SSE events
@@ -2146,22 +2914,22 @@ class MessagePersister {
 
       case 'content_block_stop':
         if (sub.currentToolUse) {
-          // Safety net: detect browser input if stream events arrive for subagents
-          if (sub.currentToolUse.name === 'mcp__user-input__request_browser_input') {
-            this.handleBrowserInputRequestTool(
-              sessionId,
-              sub.currentToolUse.id,
-              sub.currentToolInput,
-              state.agentSlug
-            )
-          }
+          this.dispatchBlockingUserInputTool(
+            sessionId,
+            sub.currentToolUse.name,
+            sub.currentToolUse.id,
+            sub.currentToolInput,
+            state.agentSlug,
+            parentToolId,
+          )
 
           if (sub.currentToolUse.name === 'mcp__user-input__request_script_run') {
             this.handleScriptRunRequestTool(
               sessionId,
               sub.currentToolUse.id,
               sub.currentToolInput,
-              state.agentSlug
+              state.agentSlug,
+              parentToolId
             )
           }
 
@@ -2171,7 +2939,8 @@ class MessagePersister {
               sub.currentToolUse.id,
               sub.currentToolUse.name,
               sub.currentToolInput,
-              state.agentSlug
+              state.agentSlug,
+              parentToolId,
             )
           }
 
@@ -2209,7 +2978,7 @@ class MessagePersister {
   // Handle stream events for SSE broadcasting (not for persistence)
   private handleStreamEvent(
     sessionId: string,
-    event: { type: string; content_block?: { type: string; id?: string; name?: string }; delta?: { type: string; text?: string; partial_json?: string; thinking?: string }; usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } },
+    event: { type: string; index?: number; message?: { id?: string }; content_block?: { type: string; id?: string; name?: string }; delta?: { type: string; text?: string; partial_json?: string; thinking?: string }; usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } },
     state: StreamingState
   ): void {
     switch (event.type) {
@@ -2218,6 +2987,8 @@ class MessagePersister {
         state.isStreaming = false // text hasn't started; set true at the first text token below
         state.currentToolUse = null
         state.currentThinking = false
+        state.currentAssistantMessageId = event.message?.id ?? null
+        state.currentThinkingBlockIndex = null
         state.isRetrying = false // the response is flowing now, so any retry resolved
         // 'streaming' is deferred to the first text token (set above) so a message that
         // opens with a tool call stays 'working' instead of flipping streaming→working.
@@ -2243,7 +3014,14 @@ class MessagePersister {
           // Reasoning text follows via thinking_delta (the agent requests
           // `display: 'summarized'`; without it newer models omit the text).
           state.currentThinking = true
-          this.broadcastToSSE(sessionId, { type: 'thinking_start' })
+          state.currentThinkingBlockIndex = Number.isInteger(event.index) ? event.index! : null
+          this.broadcastToSSE(sessionId, {
+            type: 'thinking_start',
+            thinkingId: makeThinkingBlockId(
+              state.currentAssistantMessageId,
+              state.currentThinkingBlockIndex,
+            ),
+          })
         }
         break
 
@@ -2258,9 +3036,16 @@ class MessagePersister {
           // message_start so a tool-first message never flips streaming→working).
           state.isStreaming = true
         } else if (event.delta?.type === 'thinking_delta' && event.delta.thinking) {
+          // A reconnect can miss content_block_start while retaining message_start;
+          // recover the index from the delta itself when available.
+          if (Number.isInteger(event.index)) state.currentThinkingBlockIndex = event.index!
           // Stream summarized reasoning text so the UI can accumulate it for "View thinking"
           this.broadcastToSSE(sessionId, {
             type: 'thinking_delta',
+            thinkingId: makeThinkingBlockId(
+              state.currentAssistantMessageId,
+              state.currentThinkingBlockIndex,
+            ),
             text: event.delta.thinking,
           })
         } else if (event.delta?.type === 'input_json_delta') {
@@ -2283,7 +3068,14 @@ class MessagePersister {
         // Thinking block finished streaming — flip back to "Working"
         if (state.currentThinking) {
           state.currentThinking = false
-          this.broadcastToSSE(sessionId, { type: 'thinking_stop' })
+          this.broadcastToSSE(sessionId, {
+            type: 'thinking_stop',
+            thinkingId: makeThinkingBlockId(
+              state.currentAssistantMessageId,
+              state.currentThinkingBlockIndex,
+            ),
+          })
+          state.currentThinkingBlockIndex = null
         }
         // Tool use block finished streaming
         if (state.currentToolUse) {
@@ -2295,25 +3087,13 @@ class MessagePersister {
             trackServerEvent(`agent_${action}`, { agentSlug: state.agentSlug })
           }
 
-          // Check if this is a secret request tool
-          if (state.currentToolUse.name === 'mcp__user-input__request_secret') {
-            this.handleSecretRequestTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          // Check if this is a connected account request tool
-          if (state.currentToolUse.name === 'mcp__user-input__request_connected_account') {
-            this.handleConnectedAccountRequestTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
+          this.dispatchBlockingUserInputTool(
+            sessionId,
+            state.currentToolUse.name,
+            state.currentToolUse.id,
+            state.currentToolInput,
+            state.agentSlug,
+          )
 
           // Check if this is a schedule task tool
           if (state.currentToolUse.name === 'mcp__user-input__schedule_task') {
@@ -2414,45 +3194,6 @@ class MessagePersister {
             )
           }
 
-          // Check if this is an AskUserQuestion tool
-          if (state.currentToolUse.name === 'AskUserQuestion') {
-            this.handleAskUserQuestionTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          // Check if this is a file request tool
-          if (state.currentToolUse.name === 'mcp__user-input__request_file') {
-            this.handleFileRequestTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          // Check if this is a remote MCP request tool
-          if (state.currentToolUse.name === 'mcp__user-input__request_remote_mcp') {
-            this.handleRemoteMcpRequestTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          if (state.currentToolUse.name === 'mcp__user-input__request_browser_input') {
-            this.handleBrowserInputRequestTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
           if (state.currentToolUse.name === 'mcp__user-input__request_script_run') {
             this.handleScriptRunRequestTool(
               sessionId,
@@ -2485,16 +3226,6 @@ class MessagePersister {
             )
           }
 
-          // Mark session as awaiting input when a blocking user-input tool fires
-          // Only tools with 'request_' prefix actually block waiting for user response
-          // (schedule_task, deliver_file, search_* resolve immediately and don't block)
-          // Note: computer-use AND request_script_run tools are handled by their own
-          // handlers which only mark awaiting input when user approval is actually
-          // needed (not when auto-executed against a cached permission grant).
-          if (isBlockingUserInputToolName(state.currentToolUse.name)) {
-            this.markSessionAwaitingInput(sessionId)
-          }
-
           // Track deliver_file tool calls so the matching tool_result can be
           // correlated. We deliver the file to chat clients off the tool RESULT
           // (which validates the file exists in-container) rather than off the
@@ -2525,6 +3256,7 @@ class MessagePersister {
               currentToolUse: null,
               currentToolInput: '',
               isBackground,
+              isResumed: false,
             })
           }
 
@@ -2557,8 +3289,16 @@ class MessagePersister {
         // Defensive: ensure thinking state is cleared if a stop was missed
         if (state.currentThinking) {
           state.currentThinking = false
-          this.broadcastToSSE(sessionId, { type: 'thinking_stop' })
+          this.broadcastToSSE(sessionId, {
+            type: 'thinking_stop',
+            thinkingId: makeThinkingBlockId(
+              state.currentAssistantMessageId,
+              state.currentThinkingBlockIndex,
+            ),
+          })
         }
+        state.currentAssistantMessageId = null
+        state.currentThinkingBlockIndex = null
         break
     }
   }
@@ -2568,7 +3308,8 @@ class MessagePersister {
     sessionId: string,
     toolUseId: string,
     toolInput: string,
-    agentSlug?: string
+    agentSlug?: string,
+    parentToolUseId?: string
   ): void {
     try {
       // Parse the tool input to get secretName and reason
@@ -2585,22 +3326,13 @@ class MessagePersister {
         return
       }
 
-      // Broadcast the secret request event to SSE clients
-      this.broadcastToSSE(sessionId, {
-        type: 'secret_request',
+      this.registerStreamRequest(
+        sessionId,
+        'secret',
         toolUseId,
-        secretName: input.secretName,
-        reason: input.reason,
-        agentSlug,
-      })
-
-      // Renderer's notification gate decides whether to show the OS popup
-      // based on focus / per-user viewing / `notifyWhenUnfocused` toggle.
-      if (agentSlug) {
-        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'secret').catch((err) => {
-          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
-        })
-      }
+        { secretName: input.secretName, reason: input.reason },
+        { agentSlug, parentToolUseId },
+      )
     } catch (error) {
       console.error('[MessagePersister] Error handling secret request:', error)
     }
@@ -2611,7 +3343,8 @@ class MessagePersister {
     sessionId: string,
     toolUseId: string,
     toolInput: string,
-    agentSlug?: string
+    agentSlug?: string,
+    parentToolUseId?: string
   ): void {
     try {
       // Parse the tool input to get toolkit and reason
@@ -2628,21 +3361,13 @@ class MessagePersister {
         return
       }
 
-      // Broadcast the connected account request event to SSE clients
-      this.broadcastToSSE(sessionId, {
-        type: 'connected_account_request',
+      this.registerStreamRequest(
+        sessionId,
+        'connected_account',
         toolUseId,
-        toolkit: input.toolkit.toLowerCase(),
-        reason: input.reason,
-        agentSlug,
-      })
-
-      // Renderer-side gate handles suppression; see session_complete trigger.
-      if (agentSlug) {
-        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'connected_account').catch((err) => {
-          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
-        })
-      }
+        { toolkit: input.toolkit.toLowerCase(), reason: input.reason },
+        { agentSlug, parentToolUseId },
+      )
     } catch (error) {
       console.error('[MessagePersister] Error handling connected account request:', error)
     }
@@ -3808,7 +4533,8 @@ ${continuation}`
     sessionId: string,
     toolUseId: string,
     toolInput: string,
-    agentSlug?: string
+    agentSlug?: string,
+    parentToolUseId?: string
   ): void {
     try {
       // Parse the tool input to get questions
@@ -3825,20 +4551,13 @@ ${continuation}`
         return
       }
 
-      // Broadcast the question request event to SSE clients
-      this.broadcastToSSE(sessionId, {
-        type: 'user_question_request',
+      this.registerStreamRequest(
+        sessionId,
+        'question',
         toolUseId,
-        questions: input.questions,
-        agentSlug,
-      })
-
-      // Renderer-side gate handles suppression; see session_complete trigger.
-      if (agentSlug) {
-        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'question').catch((err) => {
-          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
-        })
-      }
+        { questions: input.questions },
+        { agentSlug, parentToolUseId },
+      )
     } catch (error) {
       console.error('[MessagePersister] Error handling AskUserQuestion:', error)
     }
@@ -3887,6 +4606,15 @@ ${continuation}`
         }
       }
 
+      // The grant lookup above is async — a capability_review_cancelled frame
+      // may have arrived while we awaited it (interrupts make this common).
+      // Its completeCapabilityReview found nothing to delete, so consume the
+      // tombstone here: broadcasting now would resurrect an unanswerable card
+      // and re-mark the session as awaiting input.
+      if (this.streamingStates.get(sessionId)?.cancelledCapabilityReviews.delete(toolUseId)) {
+        return
+      }
+
       let input: Record<string, unknown> = {}
       try {
         input = JSON.parse(toolInput)
@@ -3894,21 +4622,14 @@ ${continuation}`
         // Launches with unparseable input still need a decision — show the card with what we have.
       }
 
-      this.broadcastToSSE(sessionId, {
-        type: 'capability_review_request',
+      this.registerStreamRequest(
+        sessionId,
+        'capability_review',
         toolUseId,
-        capability,
-        toolName,
-        input,
-        agentSlug,
-      })
-      this.markSessionAwaitingInput(sessionId)
-
-      if (agentSlug) {
-        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'capability_review').catch((err) => {
-          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
-        })
-      }
+        { capability, toolName, input },
+        { agentSlug },
+      )
+      this.syncSessionAwaiting(sessionId)
     } catch (error) {
       console.error('[MessagePersister] Error handling capability review:', error)
     }
@@ -3919,7 +4640,8 @@ ${continuation}`
     sessionId: string,
     toolUseId: string,
     toolInput: string,
-    agentSlug?: string
+    agentSlug?: string,
+    parentToolUseId?: string
   ): void {
     try {
       let input: RequestFileInput = {}
@@ -3935,21 +4657,13 @@ ${continuation}`
         return
       }
 
-      // Broadcast the file request event to SSE clients
-      this.broadcastToSSE(sessionId, {
-        type: 'file_request',
+      this.registerStreamRequest(
+        sessionId,
+        'file',
         toolUseId,
-        description: input.description,
-        fileTypes: input.fileTypes,
-        agentSlug,
-      })
-
-      // Renderer-side gate handles suppression; see session_complete trigger.
-      if (agentSlug) {
-        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'file').catch((err) => {
-          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
-        })
-      }
+        { description: input.description, fileTypes: input.fileTypes },
+        { agentSlug, parentToolUseId },
+      )
     } catch (error) {
       console.error('[MessagePersister] Error handling file request:', error)
     }
@@ -3960,7 +4674,8 @@ ${continuation}`
     sessionId: string,
     toolUseId: string,
     toolInput: string,
-    agentSlug?: string
+    agentSlug?: string,
+    parentToolUseId?: string
   ): void {
     try {
       let input: RequestRemoteMcpInput = {}
@@ -3976,23 +4691,13 @@ ${continuation}`
         return
       }
 
-      // Broadcast the remote MCP request event to SSE clients
-      this.broadcastToSSE(sessionId, {
-        type: 'remote_mcp_request',
+      this.registerStreamRequest(
+        sessionId,
+        'remote_mcp',
         toolUseId,
-        url: input.url,
-        name: input.name,
-        reason: input.reason,
-        authHint: input.authHint,
-        agentSlug,
-      })
-
-      // Renderer-side gate handles suppression; see session_complete trigger.
-      if (agentSlug) {
-        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'remote_mcp').catch((err) => {
-          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
-        })
-      }
+        { url: input.url, name: input.name, reason: input.reason, authHint: input.authHint },
+        { agentSlug, parentToolUseId },
+      )
     } catch (error) {
       console.error('[MessagePersister] Error handling remote MCP request:', error)
     }
@@ -4003,7 +4708,8 @@ ${continuation}`
     sessionId: string,
     toolUseId: string,
     toolInput: string,
-    agentSlug?: string
+    agentSlug?: string,
+    parentToolUseId?: string
   ): void {
     try {
       let input: RequestBrowserInputInput = {}
@@ -4019,22 +4725,48 @@ ${continuation}`
         return
       }
 
-      this.broadcastToSSE(sessionId, {
-        type: 'browser_input_request',
+      this.registerStreamRequest(
+        sessionId,
+        'browser_input',
         toolUseId,
-        message: input.message,
-        // The model controls this field — coerce a non-array (e.g. a bare
-        // string) to [] so the renderer never calls `.map()` on a non-array.
-        requirements: Array.isArray(input.requirements) ? input.requirements : [],
-        agentSlug,
-      })
+        {
+          message: input.message,
+          // The model controls this field — coerce a non-array (e.g. a bare
+          // string) to [] so no renderer calls `.map()` on a non-array.
+          requirements: Array.isArray(input.requirements) ? input.requirements : [],
+        },
+        { agentSlug, parentToolUseId },
+      )
 
-      // Renderer-side gate handles suppression; see session_complete trigger.
-      if (agentSlug) {
-        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'browser_input').catch((err) => {
-          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
+      // The URL is host-observed context, never a model-supplied tool field.
+      // Capture it when the request opens so credential discovery does not
+      // need a separate browser roundtrip later. Fill still re-checks the live
+      // origin immediately before the password crosses the host boundary.
+      const client = this.containerClients.get(sessionId)
+      if (client) {
+        void client.fetch(
+          `/browser/credential-context?sessionId=${encodeURIComponent(sessionId)}`,
+        ).then(async (response) => {
+          if (!response?.ok || typeof response.json !== 'function') return
+          const context = await response.json() as { url?: unknown }
+          if (typeof context.url !== 'string') return
+          userInputRequestManager.enrichOpenRequestPayload(toolUseId, 'browser_input', {
+            browserContext: { url: context.url, capturedAt: Date.now() },
+          })
+        }).catch((error: unknown) => {
+          console.warn(
+            '[MessagePersister] Failed to capture browser input context:',
+            error instanceof Error ? error.message : error,
+          )
         })
       }
+
+      // The request always blocks on the user, no matter which stream it came
+      // from. Marking here (not only in the main-stream content_block_stop
+      // handler) covers SUBAGENT-originated requests, whose sidechain paths
+      // bypass that handler — without this the orange awaiting-input status
+      // never flips and the agent shows "working" while parked on the user.
+      this.syncSessionAwaiting(sessionId)
     } catch (error) {
       console.error('[MessagePersister] Error handling browser input request:', error)
     }
@@ -4060,7 +4792,8 @@ ${continuation}`
     sessionId: string,
     toolUseId: string,
     toolInput: string,
-    agentSlug?: string
+    agentSlug?: string,
+    parentToolUseId?: string
   ): void {
     try {
       let input: RequestScriptRunInput = {}
@@ -4102,26 +4835,18 @@ ${continuation}`
         }
       }
 
-      this.broadcastToSSE(sessionId, {
-        type: 'script_run_request',
+      this.registerStreamRequest(
+        sessionId,
+        'script_run',
         toolUseId,
-        script: input.script,
-        explanation: input.explanation,
-        scriptType: input.scriptType,
-        agentSlug,
-        autoApproved,
-      })
+        { script: input.script, explanation: input.explanation, scriptType: input.scriptType },
+        { agentSlug, parentToolUseId, autoApproved },
+      )
 
       // Only flip the global "awaiting input" status (which drives the orange agent-status
       // pill in the sidebar / tray) when the user actually has to respond.
       if (!autoApproved) {
-        this.markSessionAwaitingInput(sessionId)
-        // Renderer-side gate handles suppression; see session_complete trigger.
-        if (agentSlug) {
-          notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'script_run').catch((err) => {
-            console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
-          })
-        }
+        this.syncSessionAwaiting(sessionId)
       }
     } catch (error) {
       console.error('[MessagePersister] Error handling script run request:', error)
@@ -4137,6 +4862,7 @@ ${continuation}`
     toolName: string,
     toolInput: string,
     agentSlug?: string,
+    parentToolUseId?: string,
   ): Promise<void> {
     try {
       // Extract AC method from tool name: mcp__computer-use__computer_launch -> launch.
@@ -4179,51 +4905,38 @@ ${continuation}`
         const permissionResult = computerUsePermissionManager.checkPermission(agentSlug, permissionLevel, appName)
 
         if (permissionResult === 'granted') {
-          // Auto-execute: permission already granted. Broadcast with autoApproved
-          // so clients can suppress streaming/message-history fallback prompts
-          // during the window before the tool result is persisted.
-          this.broadcastToSSE(sessionId, {
-            type: 'computer_use_request',
-            toolUseId,
-            method,
-            params,
-            permissionLevel,
-            appName,
-            agentSlug,
+          // Auto-execute: permission already granted. Registered anyway —
+          // flagged autoApproved so no projection treats it as a user-facing
+          // wait — because the /computer-use route's already-settled gate only
+          // acts on requests the registry holds open, and auto-execution goes
+          // through that same route.
+          userInputRequestManager.register({
+            id: toolUseId,
+            kind: 'computer_use',
+            scope: { agentSlug, sessionId },
+            blocking: true,
             autoApproved: true,
+            parentToolUseId,
+            payload: { method, params, permissionLevel, appName },
           })
           this.autoExecuteComputerUseCommand(sessionId, agentSlug, toolUseId, method, params, permissionLevel, appName)
           return
         }
       }
 
-      // Permission needed — track and broadcast to UI for user approval
-      const state = this.streamingStates.get(sessionId)
-      if (state) {
-        // Guard against duplicate entries (e.g., SSE event replayed)
-        if (!state.pendingComputerUseRequests.has(toolUseId)) {
-          state.pendingComputerUseRequests.set(toolUseId, { toolUseId, method, params, permissionLevel, appName, agentSlug })
-        }
-      }
-      this.markSessionAwaitingInput(sessionId)
-
-      this.broadcastToSSE(sessionId, {
-        type: 'computer_use_request',
-        toolUseId,
-        method,
-        params,
-        permissionLevel,
-        appName,
-        agentSlug,
+      // Permission needed — register and broadcast to UI for user approval.
+      // register() is first-delivery-wins, so a duplicate delivery (e.g. an
+      // SSE event replayed) cannot double-enter the registry.
+      userInputRequestManager.register({
+        id: toolUseId,
+        kind: 'computer_use',
+        scope: { agentSlug, sessionId },
+        blocking: true,
         autoApproved: false,
+        parentToolUseId,
+        payload: { method, params, permissionLevel, appName },
       })
-
-      // Renderer-side gate handles suppression; see session_complete trigger.
-      if (agentSlug) {
-        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'computer_use').catch((err) => {
-          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
-        })
-      }
+      this.syncSessionAwaiting(sessionId)
     } catch (error) {
       console.error('[MessagePersister] Error handling computer use request:', error)
     }
@@ -4401,6 +5114,39 @@ ${continuation}`
   }
 
   // Handle tool results - broadcast to SSE clients
+  // Sidechain counterpart of handleToolResults, scoped to tracked input
+  // requests only: ordinary subagent tool results (Bash, Read, …) stream
+  // constantly and must not broadcast main-path `tool_result` events. The
+  // trailing sync recomputes awaiting from what remains open — a main-agent
+  // question, a pending computer-use, or a parked proxy/x-agent review keeps
+  // the session waiting even after a subagent's browser_input resolves.
+  private resolveSidechainInputRequests(
+    sessionId: string,
+    state: StreamingState,
+    content: { message?: { content?: Array<{ type: string; tool_use_id?: string; content?: unknown; is_error?: boolean }> } }
+  ): void {
+    const blocks = content.message?.content
+    if (!Array.isArray(blocks)) return
+    for (const block of blocks) {
+      if (block.type !== 'tool_result' || !block.tool_use_id) continue
+      const settled = userInputRequestManager.resolveIfInStore(
+        block.tool_use_id,
+        'stream',
+        block.is_error ? 'declined' : 'answered',
+      )
+      if (!settled) continue
+      // Same broadcast the main path emits — the resolving tab already removed
+      // its card optimistically; every other tab drops it off this event.
+      this.broadcastToSSE(sessionId, {
+        type: 'tool_result',
+        toolUseId: block.tool_use_id,
+        result: block.content,
+        isError: block.is_error || false,
+      })
+    }
+    this.syncSessionAwaiting(sessionId)
+  }
+
   private handleToolResults(
     sessionId: string,
     content: { message?: { content?: Array<{ type: string; tool_use_id?: string; content?: unknown; is_error?: boolean }> } }
@@ -4414,7 +5160,13 @@ ${continuation}`
           // A resolved user-input request must not be replayed to a client that
           // reconnects later (e.g. answer one of several parallel requests, then
           // refresh) — its tool_result is in, so drop it from the replay store.
-          state?.pendingInputRequests.delete(block.tool_use_id)
+          if (state) {
+            userInputRequestManager.resolveIfInStore(
+              block.tool_use_id,
+              'stream',
+              block.is_error ? 'declined' : 'answered',
+            )
+          }
 
           // Broadcast update to SSE clients
           this.broadcastToSSE(sessionId, {
@@ -4441,6 +5193,7 @@ ${continuation}`
           }
         }
       }
+      this.syncSessionAwaiting(sessionId)
     } catch (error) {
       console.error('Failed to handle tool results:', error)
     }

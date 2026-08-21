@@ -202,7 +202,7 @@ test.describe('Settings Page', () => {
 
     await expect(page.locator('[data-testid="settings-model-trigger"]')).toBeVisible()
     await expect(page.locator('#max-browser-tabs')).toBeVisible()
-    await expect(page.locator('#browser-host')).toBeVisible()
+    await expect(page.locator('[data-testid="browser-host-card-container"]')).toBeVisible()
   })
 
   test('closes settings page', async ({ page }) => {
@@ -245,10 +245,15 @@ test.describe('Settings Page', () => {
     await expect(page.locator('[data-testid="settings-sidebar"]')).not.toBeVisible()
   })
 
-  test('non-auth mode shows ungrouped sections (no group labels)', async ({ page }) => {
+  test('sidebar shows the four semantic settings groups', async ({ page }) => {
     await openSettings(page)
-    // Group labels are only rendered in auth+admin mode; in non-auth mode the sidebar is flat.
-    await expect(page.locator('[data-sidebar="group-label"]')).toHaveCount(0)
+    // Semantic groups render for everyone, regardless of auth mode.
+    const labels = page.locator('[data-sidebar="group-label"]')
+    await expect(labels).toHaveCount(4)
+    await expect(labels.nth(0)).toHaveText('App Settings')
+    await expect(labels.nth(1)).toHaveText('Agent Capabilities')
+    await expect(labels.nth(2)).toHaveText('Agent Infrastructure')
+    await expect(labels.nth(3)).toHaveText('Agent Activity')
   })
 })
 
@@ -333,18 +338,18 @@ test.describe('Settings persistence', () => {
       await openSettings(page)
       await goToTab(page, 'browser')
 
-      const input = page.locator('#max-browser-tabs')
-      await expect(input).toHaveValue('10')
+      const trigger = page.locator('#max-browser-tabs')
+      await expect(trigger).toContainText('10')
 
       const savePromise = waitForSettingsSave(page)
-      await input.fill('5')
+      await pickSelectOption(page, 'max-browser-tabs', '5')
       await savePromise
-      await expect(input).toHaveValue('5')
+      await expect(trigger).toContainText('5')
 
       await closeSettings(page)
       await openSettings(page)
       await goToTab(page, 'browser')
-      await expect(page.locator('#max-browser-tabs')).toHaveValue('5')
+      await expect(page.locator('#max-browser-tabs')).toContainText('5')
 
       const persisted = await settings(request)
       expect(persisted.app.maxBrowserTabs).toBe(5)
@@ -432,27 +437,26 @@ test.describe('Settings persistence', () => {
 
       // The API default-policy row inside the "Default Policies" card.
       const globalSection = page.locator('[data-testid="default-policy-api"]')
-      const reviewToggle = globalSection.locator('[data-testid="policy-toggle-review"]')
-      const allowToggle = globalSection.locator('[data-testid="policy-toggle-allow"]')
+      const trigger = globalSection.locator('[data-testid="policy-dropdown-trigger"]')
 
-      // Review is default, should be active.
-      await expect(reviewToggle).toHaveAttribute('data-active', 'true')
-      await expect(allowToggle).toHaveAttribute('data-active', 'false')
+      // Review is default.
+      await expect(trigger).toHaveAttribute('data-decision', 'review')
 
       // Switch to allow and wait for the user-settings mutation.
+      await trigger.click()
       const savePromise = waitForUserSettingsSave(page)
-      await allowToggle.click()
+      await page.locator('[data-testid="policy-menu-allow"]').click()
       await savePromise
-      await expect(allowToggle).toHaveAttribute('data-active', 'true')
-      await expect(reviewToggle).toHaveAttribute('data-active', 'false')
+      await expect(trigger).toHaveAttribute('data-decision', 'allow')
 
       // Close, reopen, verify the persisted setting is reflected by the UI.
       await closeSettings(page)
       await openSettings(page)
       await goToTab(page, 'connections')
-      const reopenedSection = page.locator('[data-testid="default-policy-api"]')
-      await expect(reopenedSection.locator('[data-testid="policy-toggle-allow"]')).toHaveAttribute('data-active', 'true')
-      await expect(reopenedSection.locator('[data-testid="policy-toggle-review"]')).toHaveAttribute('data-active', 'false')
+      const reopenedTrigger = page
+        .locator('[data-testid="default-policy-api"]')
+        .locator('[data-testid="policy-dropdown-trigger"]')
+      await expect(reopenedTrigger).toHaveAttribute('data-decision', 'allow')
 
       const persisted = await userSettings(request)
       expect(persisted.defaultApiPolicy).toBe('allow')

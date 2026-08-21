@@ -1,7 +1,7 @@
 import { useMemo, useEffect, useCallback } from 'react'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { ChevronRight, Loader2, Zap } from 'lucide-react'
-import { PolicyDecisionToggle } from '@renderer/components/ui/policy-decision-toggle'
+import { PolicyDecisionDropdown } from '@renderer/components/ui/policy-decision-toggle'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import {
   useConnectedAccounts,
@@ -14,6 +14,7 @@ import { FeaturedServicesStack } from '@renderer/components/connections/featured
 import { ConnectionRow } from '@renderer/components/connections/connection-row'
 import { ConnectionAgentCount } from '@renderer/components/connections/connection-agent-count'
 import { ConnectionDetailPage } from '@renderer/components/connections/connection-detail-page'
+import { ConnectionLogsView } from '@renderer/components/connections/connection-logs-view'
 import { buildUnifiedRows, type UnifiedRow } from '@renderer/components/connections/unified-rows'
 import { useOAuthReconnect } from '@renderer/hooks/use-oauth-reconnect'
 import { useConnectionActivityStats } from '@renderer/hooks/use-activity-stats'
@@ -37,14 +38,25 @@ export function ConnectionsTab() {
   // so it's deep-linkable + reload-durable + back/forward-able — parity with the
   // agent connections route, which is also URL-driven. (Was local useState.)
   const navigate = useNavigate()
-  const search = useSearch({ strict: false }) as { detail?: string }
+  const search = useSearch({ strict: false }) as { detail?: string; connectionView?: string }
   const selectedRowKey = typeof search.detail === 'string' ? search.detail : null
+  const selectedView = search.connectionView === 'logs' ? 'logs' : 'details'
   const setDetail = useCallback(
     (key: string | null) => {
       void navigate({
         to: '/settings/$tab',
         params: { tab: 'connections' },
-        search: (prev) => ({ ...prev, detail: key ?? undefined }),
+        search: (prev) => ({ ...prev, detail: key ?? undefined, connectionView: undefined }),
+      })
+    },
+    [navigate],
+  )
+  const setDetailView = useCallback(
+    (view: 'details' | 'logs') => {
+      void navigate({
+        to: '/settings/$tab',
+        params: { tab: 'connections' },
+        search: (prev) => ({ ...prev, connectionView: view === 'logs' ? 'logs' : undefined }),
       })
     },
     [navigate],
@@ -73,10 +85,14 @@ export function ConnectionsTab() {
   }, [selectedRowKey, selectedRow, isLoading, setDetail])
 
   if (selectedRow) {
+    if (selectedView === 'logs') {
+      return <ConnectionLogsView row={selectedRow} onBack={() => setDetailView('details')} />
+    }
     return (
       <ConnectionDetailPage
         row={selectedRow}
         onBack={() => setDetail(null)}
+        onViewLogs={() => setDetailView('logs')}
       />
     )
   }
@@ -150,13 +166,13 @@ export function ConnectionsTab() {
               </div>
             </div>
             <div className="shrink-0">
-              <PolicyDecisionToggle
+              <PolicyDecisionDropdown
                 value={apiPolicy}
+                includeDefault={false}
                 onChange={(value) => {
                   if (value === 'default') return
                   updateSettings.mutate({ defaultApiPolicy: value })
                 }}
-                size="sm"
               />
             </div>
           </div>
@@ -169,13 +185,13 @@ export function ConnectionsTab() {
               </div>
             </div>
             <div className="shrink-0">
-              <PolicyDecisionToggle
+              <PolicyDecisionDropdown
                 value={mcpPolicy}
+                includeDefault={false}
                 onChange={(value) => {
                   if (value === 'default') return
                   updateSettings.mutate({ defaultMcpPolicy: value })
                 }}
-                size="sm"
               />
             </div>
           </div>

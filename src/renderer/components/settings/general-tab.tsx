@@ -15,6 +15,7 @@ import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useUpdateStatus } from '@renderer/context/update-status-context'
 import { ShortcutsSection } from './shortcuts-section'
+import { AutoDeleteSelect } from './auto-delete-select'
 import { applyWebFavicon, getWebFaviconHref } from '@renderer/lib/favicon'
 import {
   Wand2,
@@ -373,37 +374,55 @@ export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
         </div>
       )}
 
-      {!isAuthMode && (
+      {/* Telemetry toggles are desktop-only; Session Auto-Delete is a
+          server-wide retention setting, so in auth mode it is admin-only. */}
+      {showAdminFeatures && (
         <div className="space-y-2">
           <h3 className={SECTION_HEADING}>Privacy</h3>
           <div className={CARD_CLASS}>
-            <SettingRow
-              name="Share Error Reports"
-              subtitle="Send error reports to help us diagnose and fix issues faster"
-              htmlFor="share-error-reports"
-              right={
-                <Switch
-                  id="share-error-reports"
-                  checked={globalSettings?.shareErrorReports !== false}
-                  onCheckedChange={(checked: boolean) => {
-                    updateGlobalSettings.mutate({ shareErrorReports: checked })
-                  }}
-                  disabled={!globalSettings}
+            {!isAuthMode && (
+              <>
+                <SettingRow
+                  name="Share Error Reports"
+                  subtitle="Send error reports to help us diagnose and fix issues faster"
+                  htmlFor="share-error-reports"
+                  right={
+                    <Switch
+                      id="share-error-reports"
+                      checked={globalSettings?.shareErrorReports !== false}
+                      onCheckedChange={(checked: boolean) => {
+                        updateGlobalSettings.mutate({ shareErrorReports: checked })
+                      }}
+                      disabled={!globalSettings}
+                    />
+                  }
                 />
-              }
-            />
+                <SettingRow
+                  name="Share Anonymous Analytics"
+                  subtitle="Help improve Gamut by sharing anonymous usage data"
+                  htmlFor="share-analytics"
+                  right={
+                    <Switch
+                      id="share-analytics"
+                      checked={!!globalSettings?.shareAnalytics}
+                      onCheckedChange={(checked: boolean) => {
+                        updateGlobalSettings.mutate({ shareAnalytics: checked })
+                      }}
+                      disabled={!globalSettings}
+                    />
+                  }
+                />
+              </>
+            )}
             <SettingRow
-              name="Share Anonymous Analytics"
-              subtitle="Help improve Gamut by sharing anonymous usage data"
-              htmlFor="share-analytics"
+              name="Session Auto-Delete"
+              subtitle="Automatically delete sessions inactive for this duration. Starred sessions are preserved."
               right={
-                <Switch
-                  id="share-analytics"
-                  checked={!!globalSettings?.shareAnalytics}
-                  onCheckedChange={(checked: boolean) => {
-                    updateGlobalSettings.mutate({ shareAnalytics: checked })
+                <AutoDeleteSelect
+                  value={globalSettings?.app?.autoDeleteInactiveDays}
+                  onChange={(days) => {
+                    updateGlobalSettings.mutate({ app: { autoDeleteInactiveDays: days } })
                   }}
-                  disabled={!globalSettings}
                 />
               }
             />

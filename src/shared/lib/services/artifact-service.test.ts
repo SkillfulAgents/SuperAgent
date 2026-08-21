@@ -39,6 +39,7 @@ describe('artifact-service', () => {
       path.join(dir, 'package.json'),
       JSON.stringify(pkg)
     )
+    fs.mkdirSync(path.join(dir, 'node_modules'))
     return dir
   }
 
@@ -206,6 +207,23 @@ describe('artifact-service', () => {
         expect(artifact.status).toBe('stopped')
         expect(artifact.port).toBe(0)
       }
+    })
+
+    it('marks a dashboard as first run when node_modules is absent', async () => {
+      const dir = createArtifactDir('test-agent', 'cold-dash', { name: 'Cold' })
+      fs.rmdirSync(path.join(dir, 'node_modules'))
+
+      const result = await listArtifactsFromFilesystem('test-agent')
+
+      expect(result[0].firstRun).toBe(true)
+    })
+
+    it('omits firstRun after dependencies have been installed', async () => {
+      createArtifactDir('test-agent', 'warm-dash', { name: 'Warm' })
+
+      const result = await listArtifactsFromFilesystem('test-agent')
+
+      expect(result[0].firstRun).toBeUndefined()
     })
 
     it('omits hasScreenshot when screenshot.png is absent', async () => {

@@ -104,7 +104,7 @@ export function AuditLogTab() {
       {/* Filters */}
       <div className="flex items-center gap-2">
         <Select value={objectFilter} onValueChange={setObjectFilter}>
-          <SelectTrigger className="h-8 w-[140px] text-xs">
+          <SelectTrigger className="h-8 w-[140px]">
             <SelectValue placeholder="All objects" />
           </SelectTrigger>
           <SelectContent>
@@ -116,7 +116,7 @@ export function AuditLogTab() {
         </Select>
 
         <Select value={actionFilter} onValueChange={setActionFilter}>
-          <SelectTrigger className="h-8 w-[140px] text-xs">
+          <SelectTrigger className="h-8 w-[140px]">
             <SelectValue placeholder="All actions" />
           </SelectTrigger>
           <SelectContent>
@@ -129,7 +129,7 @@ export function AuditLogTab() {
 
         {isAuthMode && (
           <Select value={userFilter} onValueChange={setUserFilter}>
-            <SelectTrigger className="h-8 w-[140px] text-xs">
+            <SelectTrigger className="h-8 w-[140px]">
               <SelectValue placeholder="All users" />
             </SelectTrigger>
             <SelectContent>

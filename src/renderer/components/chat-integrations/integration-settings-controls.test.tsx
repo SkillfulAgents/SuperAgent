@@ -25,8 +25,9 @@ vi.mock('@renderer/hooks/use-chat-integrations', () => ({
   }),
 }))
 
-vi.mock('@renderer/hooks/use-settings', () => ({
-  useSettings: () => ({
+vi.mock('@renderer/hooks/use-settings', () => {
+  // Built lazily — the hoisted factory runs before CATALOG is initialized.
+  const settings = () => ({
     data: {
       llmProvider: 'anthropic',
       llmProviderStatus: [{
@@ -34,8 +35,17 @@ vi.mock('@renderer/hooks/use-settings', () => ({
         catalog: CATALOG,
         defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
       }],
+      models: { agentModel: 'claude-opus-4-8', agentEffort: 'high' },
     },
-  }),
+  })
+  return {
+    useSettings: settings,
+    useModelSettings: settings,
+  }
+})
+
+vi.mock('@renderer/hooks/use-agent-preferences', () => ({
+  useAgentPreferences: () => ({ data: {} }),
 }))
 
 describe('IntegrationModelEffort', () => {
@@ -48,9 +58,10 @@ describe('IntegrationModelEffort', () => {
     expect(screen.getByTestId('settings-model-trigger')).toBeInTheDocument()
   })
 
-  it('shows default effort (Medium) when integration has no effort set', () => {
+  it('shows the inherited app-default effort when integration has no effort set', () => {
     render(<IntegrationModelEffort integration={makeIntegration()} />)
-    expect(screen.getByTestId('settings-model-trigger')).toHaveTextContent('Medium')
+    expect(screen.getByTestId('settings-model-trigger')).toHaveTextContent('High')
+    expect(screen.getByTestId('settings-model-trigger')).not.toHaveTextContent('Medium')
   })
 
   it('shows the integration model (bare alias → latest) when set', () => {

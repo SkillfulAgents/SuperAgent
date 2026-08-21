@@ -64,6 +64,22 @@ describe('SubAgentBlock', () => {
     expect(screen.getByText('Find config files')).toBeInTheDocument()
   })
 
+  it('renders model-routed agent types without their internal prefix and hash', () => {
+    const tc = createToolCall({
+      name: 'Agent',
+      input: {
+        subagent_type: 'model-gpt-5-5-1iimw9e',
+        description: 'Run with another model',
+      },
+      result: 'Done',
+    })
+
+    render(<SubAgentBlock toolCall={tc} sessionId="s-1" agentSlug="agent-1" />)
+
+    expect(screen.getByText('GPT 5.5')).toBeInTheDocument()
+    expect(screen.queryByText('model-gpt-5-5-1iimw9e')).not.toBeInTheDocument()
+  })
+
   it('shows stats footer for completed subagent when expanded', async () => {
     const user = userEvent.setup()
     const tc = createToolCall({
@@ -120,6 +136,39 @@ describe('SubAgentBlock', () => {
 
     // Running status is indicated
     expect(screen.getByText('running')).toBeTruthy()
+  })
+
+  it('shows a completed tool call as running while the same agent is resumed', () => {
+    const tc = createToolCall({
+      id: 'agent-tool',
+      name: 'Agent',
+      input: { subagent_type: 'general-purpose', description: 'Resume UI probe' },
+      result: 'FIRST_DONE',
+      subagent: { agentId: 'agent-1', status: 'completed' },
+    })
+
+    render(
+      <SubAgentBlock
+        toolCall={tc}
+        sessionId="s-1"
+        agentSlug="agent-1"
+        isSessionActive
+        activeSubagent={{
+          parentToolId: 'send-tool',
+          agentId: 'agent-1',
+          streamingMessage: null,
+          streamingToolUse: null,
+          progressSummary: 'Running resumed task',
+          subagentType: 'general-purpose',
+          description: 'Resume UI probe',
+          usage: null,
+          lastToolName: null,
+        }}
+      />
+    )
+
+    expect(screen.getByText('running')).toBeInTheDocument()
+    expect(screen.getByText('Sub-agent is working...')).toBeInTheDocument()
   })
 
   it('renders subagent messages when expanded', async () => {

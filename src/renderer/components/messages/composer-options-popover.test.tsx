@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -23,9 +23,11 @@ interface HarnessProps {
   initialEffort?: EffortLevel
   initialSpeed?: SpeedLevel
   initialModel?: string
+  defaultModel?: string
   catalog?: ModelDefinition[]
   onState?: (state: ComposerOptionsState) => void
   disabled?: boolean
+  footer?: ReactNode
 }
 
 // Minimal real-state harness — the popover's auto-reset effect and any state
@@ -34,9 +36,11 @@ function Harness({
   initialEffort = 'high',
   initialSpeed = 'normal',
   initialModel,
+  defaultModel,
   catalog = CATALOG,
   onState,
   disabled,
+  footer,
 }: HarnessProps) {
   const [effort, setEffort] = useState<EffortLevel>(initialEffort)
   const [speed, setSpeed] = useState<SpeedLevel>(initialSpeed)
@@ -49,21 +53,25 @@ function Harness({
     model,
     setModel,
     catalog,
+    defaultModel,
     toRuntimeOptions: () => ({ effort, speed, ...(model ? { model } : {}) }),
   }
   onState?.(state)
-  return <ComposerOptionsPopover state={state} disabled={disabled} />
+  return <ComposerOptionsPopover state={state} disabled={disabled} footer={footer} />
 }
 
 describe('ComposerOptionsPopover', () => {
   it('renders the combined "Model · Effort" label, resolving a bare alias to its latest', () => {
     render(<Harness initialModel="opus" initialEffort="high" />)
-    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Opus 4.8 · High')
+    const trigger = screen.getByTestId('composer-options-trigger')
+    expect(trigger).toHaveTextContent('Opus 4.8 · High')
+    expect(trigger).toHaveClass('max-[420px]:w-[34px]')
+    expect(trigger.querySelector('span')).toHaveClass('max-[420px]:hidden')
   })
 
-  it('falls back to Sonnet on the trigger when no model is set', () => {
-    render(<Harness initialModel={undefined} initialEffort="medium" />)
-    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Sonnet 4.6 · Medium')
+  it('uses the provider catalog default on the trigger when no model is set', () => {
+    render(<Harness initialModel={undefined} defaultModel="opus" initialEffort="medium" />)
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Opus 4.8 · Medium')
   })
 
   it('displays the exact pinned version (does not collapse to the family latest)', () => {
@@ -85,6 +93,13 @@ describe('ComposerOptionsPopover', () => {
     expect(screen.queryByTestId('model-latest-opus')).not.toBeInTheDocument()
   })
 
+  it('renders arbitrary caller-provided footer content after the picker sections', async () => {
+    const user = userEvent.setup()
+    render(<Harness initialModel="claude-sonnet-4-6" footer={<div>Custom footer</div>} />)
+    await user.click(screen.getByTestId('composer-options-trigger'))
+    expect(await screen.findByText('Custom footer')).toBeInTheDocument()
+  })
+
   it('picking a version calls setModel with the concrete id and keeps the popover open', async () => {
     const user = userEvent.setup()
     const setModel = vi.fn()
@@ -98,6 +113,7 @@ describe('ComposerOptionsPopover', () => {
           model: 'claude-sonnet-4-6',
           setModel,
           catalog: CATALOG,
+          defaultModel: 'opus',
           toRuntimeOptions: () => ({ effort: 'high', model: 'claude-sonnet-4-6' }),
         }}
       />
@@ -122,6 +138,7 @@ describe('ComposerOptionsPopover', () => {
           model: 'claude-opus-4-8',
           setModel: vi.fn(),
           catalog: CATALOG,
+          defaultModel: 'opus',
           toRuntimeOptions: () => ({ effort: 'high', model: 'claude-opus-4-8' }),
         }}
       />

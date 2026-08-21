@@ -55,7 +55,9 @@ test.describe('composer secret detection', () => {
     const envVar = `DEPLOY_KEY_${tag.toUpperCase()}`
     const input = page.locator('[data-testid="home-message-input"]')
 
-    await input.fill(`Use this credential:\n${rawKey}`)
+    await input.fill('Use this credential:')
+    await input.press('Shift+Enter')
+    await input.pressSequentially(rawKey)
     await expect(page.locator('[data-testid="potential-secret"]')).toHaveText(rawKey)
     await expect(page.getByText('Is this a Key?')).toBeVisible()
 
@@ -67,7 +69,9 @@ test.describe('composer secret detection', () => {
     await dialog.getByRole('button', { name: 'Save securely' }).click()
 
     await expect(dialog).not.toBeVisible()
-    await expect(input).toHaveValue(`Use this credential:\n[${keyName} | *********]`)
+    await expect(input).toContainText('Use this credential:')
+    await expect(input.locator('br[data-soft-break="true"]')).toHaveCount(1)
+    await expect(input).toContainText(`[${keyName} | *********]`)
     await expect(page.locator('[data-testid="secured-secret"]')).toHaveText(`[${keyName} | *********]`)
     await expect(page.getByText('Is this a Key?')).toHaveCount(0)
 
@@ -94,7 +98,7 @@ test.describe('composer secret detection', () => {
 
     await page.getByRole('button', { name: 'Dismiss key suggestion' }).click()
     await expect(highlight).toHaveCount(0)
-    await expect(input).toHaveValue(rawKey)
+    await expect(input).toHaveText(rawKey)
   })
 
   test('removes a saved key pill atomically with Backspace', async ({ page }) => {
@@ -110,16 +114,17 @@ test.describe('composer secret detection', () => {
     const pill = page.locator('[data-testid="secured-secret"]')
     await expect(pill).toHaveText('[GitHub Token | *********]')
     await expect(pill).toHaveClass(/outline-amber-500\/70/)
-    await input.press('End')
-    await input.press('ArrowLeft')
-    await input.press('ArrowLeft')
-    await input.press('ArrowLeft')
-    await input.press('ArrowLeft')
-    await input.press('ArrowLeft')
-    await input.press('ArrowLeft')
+    await input.focus()
+    await pill.evaluate((element) => {
+      const selection = window.getSelection()
+      const range = document.createRange()
+      range.selectNodeContents(element)
+      selection?.removeAllRanges()
+      selection?.addRange(range)
+    })
     await input.press('Backspace')
 
-    await expect(input).toHaveValue('Before  after')
+    await expect(input).toHaveText('Before  after')
     await expect(pill).toHaveCount(0)
   })
 })

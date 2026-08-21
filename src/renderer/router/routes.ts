@@ -1,4 +1,4 @@
-import { createRootRouteWithContext, createRoute, notFound, redirect } from '@tanstack/react-router'
+import { createRootRouteWithContext, createRoute, lazyRouteComponent, notFound, redirect } from '@tanstack/react-router'
 import type { QueryClient } from '@tanstack/react-query'
 import { z } from 'zod'
 import type { UserContextValue } from '@renderer/context/user-context'
@@ -6,25 +6,51 @@ import { HttpError } from '@renderer/lib/api'
 import { agentQuery } from '@renderer/hooks/query-options'
 import { AgentNotFound, AgentLoadError } from './route-fallbacks'
 import { lenient } from './zod-search'
-import { chatSearchSchema, connectionsSearchSchema, rootSearchSchema, settingsSearchSchema, settingsTabSchema } from './search-schemas'
+import { chatSearchSchema, connectionsSearchSchema, homeSearchSchema, rootSearchSchema, settingsSearchSchema, settingsTabSchema } from './search-schemas'
 import { HomePage } from '@renderer/components/home/home-page'
 import { RootLayout, AppShellLayout } from '@renderer/components/layout/route-layouts'
-import { NotificationsRoute } from '@renderer/components/layout/notifications-route'
-import { NotificationDetailRoute } from '@renderer/components/layout/notification-detail-route'
-import { AgentShell } from '@renderer/components/layout/agent-shell'
-import {
-  AgentHomeRoute,
-  ApiLogsRoute,
-  ChatRoute,
-  ConnectionsRoute,
-  DashboardRoute,
-  SessionRoute,
-  SettingsLayout,
-  SettingsIndexRoute,
-  SettingsTabRoute,
-  TaskRoute,
-  WebhookRoute,
-} from './route-components'
+
+// Keep only the root shell and the default Home route on the boot graph. Route
+// components below are fetched together with their dependencies only when a
+// matching URL is entered; TanStack Router also knows how to preload these
+// components during a route transition.
+const NotificationsRoute = lazyRouteComponent(
+  () => import('@renderer/components/layout/notifications-route'),
+  'NotificationsRoute',
+)
+const NotificationDetailRoute = lazyRouteComponent(
+  () => import('@renderer/components/layout/notification-detail-route'),
+  'NotificationDetailRoute',
+)
+const ExploreRoute = lazyRouteComponent(
+  () => import('@renderer/components/layout/explore-route'),
+  'ExploreRoute',
+)
+const ExploreTemplateRoute = lazyRouteComponent(
+  () => import('@renderer/components/layout/explore-route'),
+  'ExploreTemplateRoute',
+)
+const ExploreCategoryRoute = lazyRouteComponent(
+  () => import('@renderer/components/layout/explore-route'),
+  'ExploreCategoryRoute',
+)
+const AgentShell = lazyRouteComponent(
+  () => import('@renderer/components/layout/agent-shell'),
+  'AgentShell',
+)
+const AgentHomeRoute = lazyRouteComponent(() => import('./lazy-routes/agent-home-route'), 'AgentHomeRoute')
+const XAgentPermissionsRoute = lazyRouteComponent(() => import('./lazy-routes/x-agent-permissions-route'), 'XAgentPermissionsRoute')
+const ApiLogsRoute = lazyRouteComponent(() => import('./lazy-routes/api-logs-route'), 'ApiLogsRoute')
+const ChatRoute = lazyRouteComponent(() => import('./lazy-routes/chat-route'), 'ChatRoute')
+const ConnectionsRoute = lazyRouteComponent(() => import('./lazy-routes/connections-route'), 'ConnectionsRoute')
+const DashboardRoute = lazyRouteComponent(() => import('./lazy-routes/dashboard-route'), 'DashboardRoute')
+const SecretsRoute = lazyRouteComponent(() => import('./lazy-routes/secrets-route'), 'SecretsRoute')
+const SessionRoute = lazyRouteComponent(() => import('./lazy-routes/session-route'), 'SessionRoute')
+const TaskRoute = lazyRouteComponent(() => import('./lazy-routes/task-route'), 'TaskRoute')
+const WebhookRoute = lazyRouteComponent(() => import('./lazy-routes/webhook-route'), 'WebhookRoute')
+const SettingsLayout = lazyRouteComponent(() => import('./settings-route-components'), 'SettingsLayout')
+const SettingsIndexRoute = lazyRouteComponent(() => import('./settings-route-components'), 'SettingsIndexRoute')
+const SettingsTabRoute = lazyRouteComponent(() => import('./settings-route-components'), 'SettingsTabRoute')
 
 /**
  * Code-based route tree. No file-based codegen — the tree is small and fully
@@ -56,6 +82,7 @@ export const appShellRoute = createRoute({
 export const homeRoute = createRoute({
   getParentRoute: () => appShellRoute,
   path: '/',
+  validateSearch: lenient(homeSearchSchema),
   component: HomePage,
 })
 
@@ -70,6 +97,33 @@ export const notificationDetailRoute = createRoute({
   path: 'notifications/$id',
   params: { parse: (raw) => ({ id: z.string().min(1).parse(raw.id) }) },
   component: NotificationDetailRoute,
+})
+
+export const exploreRoute = createRoute({
+  getParentRoute: () => appShellRoute,
+  path: 'explore',
+  component: ExploreRoute,
+})
+
+// Static `category` outranks the `$skillsetId/$templateSlug` pattern below, so
+// this matches first despite both being two segments under /explore.
+export const exploreCategoryRoute = createRoute({
+  getParentRoute: () => appShellRoute,
+  path: 'explore/category/$category',
+  params: { parse: (raw) => ({ category: z.string().min(1).parse(raw.category) }) },
+  component: ExploreCategoryRoute,
+})
+
+export const exploreTemplateRoute = createRoute({
+  getParentRoute: () => appShellRoute,
+  path: 'explore/$skillsetId/$templateSlug',
+  params: {
+    parse: (raw) => ({
+      skillsetId: z.string().min(1).parse(raw.skillsetId),
+      templateSlug: z.string().min(1).parse(raw.templateSlug),
+    }),
+  },
+  component: ExploreTemplateRoute,
 })
 
 // ── AGENT LAYOUT: /agents/$slug — mount-survival anchor #2 (chat/SSE shell) ────
@@ -153,6 +207,18 @@ export const connectionsRoute = createRoute({
   component: ConnectionsRoute,
 })
 
+export const secretsRoute = createRoute({
+  getParentRoute: () => agentLayoutRoute,
+  path: 'secrets',
+  component: SecretsRoute,
+})
+
+export const xAgentPermissionsRoute = createRoute({
+  getParentRoute: () => agentLayoutRoute,
+  path: 'x-agent-permissions',
+  component: XAgentPermissionsRoute,
+})
+
 // ── SETTINGS: SIBLING of app-shell → replaces the whole shell (App.tsx) ───────
 // LAYOUT (just an <Outlet/>): so the `$tab` child renders. `?from=` close-target
 // (open-redirect-safe) lives here and is inherited by both children.
@@ -190,6 +256,9 @@ export const routeTree = rootRoute.addChildren([
     homeRoute,
     notificationsRoute,
     notificationDetailRoute,
+    exploreRoute,
+    exploreCategoryRoute,
+    exploreTemplateRoute,
     agentLayoutRoute.addChildren([
       agentHomeRoute,
       sessionRoute,
@@ -199,6 +268,8 @@ export const routeTree = rootRoute.addChildren([
       dashboardRoute,
       apiLogsRoute,
       connectionsRoute,
+      secretsRoute,
+      xAgentPermissionsRoute,
     ]),
   ]),
   settingsRoute.addChildren([settingsIndexRoute, settingsTabRoute]),

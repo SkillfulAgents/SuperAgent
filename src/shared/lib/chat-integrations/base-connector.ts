@@ -37,10 +37,114 @@ export type InteractiveResponseHandler = (toolUseId: string, response: unknown, 
 export type ErrorHandler = (error: Error) => void
 export type TypingHintHandler = (chatId: string) => void
 
+/** Context available at chat-session creation, passed to generateSystemPrompt. */
+export type SystemPromptContext = Pick<IncomingMessage, 'chatId' | 'chatName' | 'userName'>
+
+/** What a connector's chat classifier gets to look at. */
+export type ChatClassifyContext = Pick<IncomingMessage, 'chatId' | 'chatName'>
+
+/** What kind of conversation a chat addresses, for labeling and attribution. */
+export type ChatConversationType = 'dm' | 'channel' | 'group' | 'thread'
+
+/**
+ * Whether more than one person can post. Fail-closed: only group/channel/thread
+ * count; undefined (unclassified) does not.
+ */
+export function isMultiPartyChatType(type: ChatConversationType | undefined): boolean {
+  return type === 'group' || type === 'channel' || type === 'thread'
+}
+
+/** Optional discovery features a provider can support (see discoveryCapabilities). */
+export type ChatDiscoveryCapability = 'list_users' | 'list_channels' | 'dm_by_user_id'
+
+/** A person reachable through a provider's directory. */
+export interface ChatDirectoryUser {
+  id: string
+  name: string
+  title?: string
+}
+
+/** A channel/group the bot could post into. */
+export interface ChatDirectoryChannel {
+  id: string
+  name: string
+  isPrivate?: boolean
+  /** Whether the bot is a member (it may be unable to post where it isn't). */
+  isMember?: boolean
+}
+
+/**
+ * A capped directory listing. `truncated` is true when the provider had more
+ * entries than the cap — callers must surface that rather than presenting the
+ * list as complete.
+ */
+export interface ChatDirectoryPage<T> {
+  items: T[]
+  truncated: boolean
+}
+
+/**
+ * Static surface of a connector class, for capability lookups that never
+ * construct (concrete connectors have provider-specific constructor args, so
+ * `typeof ChatClientConnector` — which carries a construct signature — would
+ * not admit them).
+ */
+export type ChatConnectorClass = Pick<
+  typeof ChatClientConnector,
+  'generateSystemPrompt' | 'discoveryCapabilities' | 'classifyChatId'
+>
+
 // ── Abstract class ──────────────────────────────────────────────────────
 
 export abstract class ChatClientConnector {
   abstract readonly provider: ChatProvider
+
+  /**
+   * Optional provider-specific system prompt attached to every NEW chat
+   * session for this provider. Implement it to tell the agent what kind of
+   * conversation it is serving (e.g. Slack DM vs channel thread) and any
+   * provider conventions (delivery semantics, reaction tags, …).
+   *
+   * Static rather than an instance method: the prompt derives from the
+   * incoming message alone and must not depend on live connection state.
+   */
+  static generateSystemPrompt?: (message: SystemPromptContext) => string
+
+  /**
+   * Discovery features this provider supports, advertised to agents via
+   * list_chat_integrations so tools that need a capability are only ever
+   * suggested where it exists. Static (a property of the provider, not a
+   * connection) so listings can label integrations without a live connector.
+   * Undefined/empty means no discovery support — the graceful default.
+   */
+  static discoveryCapabilities?: ReadonlyArray<ChatDiscoveryCapability>
+
+  /**
+   * Classify a chat as dm/channel/group/thread. Each provider uses its best
+   * signal (Slack/Telegram: id shape; iMessage: chatName when the bridge set
+   * one). Optional: providers that cannot classify leave chats unlabeled.
+   * Static for the same reason generateSystemPrompt is: it derives from the
+   * message alone. Listing callers may pass only chatId.
+   */
+  static classifyChatId?: (chat: ChatClassifyContext) => ChatConversationType | undefined
+
+  /**
+   * List people reachable through the provider's directory (capability:
+   * list_users). Implementations must cap the result and set `truncated`
+   * rather than returning unbounded listings from large workspaces.
+   */
+  listChatUsers?(): Promise<ChatDirectoryPage<ChatDirectoryUser>>
+
+  /** List channels/groups the bot could post into (capability: list_channels). */
+  listChatChannels?(): Promise<ChatDirectoryPage<ChatDirectoryChannel>>
+
+  /**
+   * Return (opening if needed) the chat id of a 1:1 conversation with a
+   * directory user (capability: dm_by_user_id). Lets a send reach a person the
+   * bot has never talked to. Throws when the provider refuses (e.g. the user
+   * left the workspace).
+   */
+  resolveDirectChat?(userId: string): Promise<string>
 
   protected messageHandlers: MessageHandler[] = []
   protected interactiveResponseHandlers: InteractiveResponseHandler[] = []
@@ -98,7 +202,7 @@ export abstract class ChatClientConnector {
    * (Slack Block Kit, Telegram inline keyboards, etc.).
    * Returns the external message ID.
    */
-  abstract sendUserRequestCard(chatId: string, event: UserRequestEvent): Promise<string>
+  abstract sendUserRequestCard(chatId: string, event: UserRequestEvent, sessionId?: string): Promise<string>
 
   /**
    * Resolve an open single-question AskUserQuestion card with a free-typed message as the

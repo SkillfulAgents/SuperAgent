@@ -15,6 +15,7 @@ import { useNavTransient } from '@renderer/context/nav-transient-context'
 import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { AgentSettingsDialog } from '@renderer/components/agents/agent-settings-dialog'
+import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { SystemPromptDialog } from '@renderer/components/agents/system-prompt-dialog'
 import { toast } from 'sonner'
 import { apiFetch } from '@renderer/lib/api'
@@ -25,10 +26,10 @@ import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
 import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { ComposerOptions, useComposerOptions } from '@renderer/components/messages/composer-options'
+import { AgentDefaultFooter } from '@renderer/components/messages/agent-default-footer'
 import { InlineEditableTitle } from '@renderer/components/ui/inline-editable-title'
 import { HomeTriggers } from './home-triggers'
 import { HomeSkills } from './home-skills'
-import { HomeDefaultModel } from './home-default-model'
 import { HomeExtras } from './home-extras'
 import { HomeConnections } from './home-connections'
 import { HomeChatIntegrations } from './home-chat-integrations'
@@ -47,9 +48,13 @@ import {
 } from '@renderer/hooks/use-typewriter-placeholder'
 import { UNTITLED_AGENT_NAME } from '@renderer/hooks/use-create-untitled-agent'
 import { useRenameUntitledAgent } from '@renderer/hooks/use-rename-untitled-agent'
+import { useWarmStartOnType } from '@renderer/hooks/use-warm-start-on-type'
+import { useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { formatDistanceToNow } from 'date-fns'
 import { useNewSessionCarryover } from '@renderer/lib/new-session-carryover'
+import { useDraftsStore } from '@renderer/context/drafts-context'
+import { completeAgentTemplateHandoff } from '@renderer/lib/agent-template-handoff'
 
 interface AgentHomeProps {
   agent: ApiAgent
@@ -82,6 +87,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     if (introStagger) setJustCreatedSlug(null)
   }, [introStagger, setJustCreatedSlug])
   const startOnboardingSession = useStartOnboardingSession()
+  const draftsStore = useDraftsStore()
   const { canUseAgent, canAdminAgent } = useUser()
   const isViewOnly = !canUseAgent(agent.slug)
   const isOwner = canAdminAgent(agent.slug)
@@ -105,7 +111,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     followDefaults: true,
   })
   const sessionSearchRef = useRef<HTMLInputElement>(null)
-  const composerTextareaRef = useRef<HTMLTextAreaElement>(null)
+  const composerTextareaRef = useRef<HTMLDivElement>(null)
   const isMobile = useIsMobile()
   // Tracks an explicit user collapse so the auto-expand effect doesn't fight it.
   // Reset when the message clears (e.g. after submit).
@@ -118,8 +124,8 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   // so the post-submit deriveAgentName fallback doesn't clobber it.
   const nameAssignedRef = useRef(false)
   // Agent-scoped settings dialogs — opened from the settings button and
-  // HomeExtras (system-prompt/secrets). NOT the global /settings route; they
-  // stay local dialog state here.
+  // HomeExtras (system prompt). Secrets now have a standalone route; these
+  // settings remain local dialog state rather than global /settings routes.
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<string | undefined>(undefined)
   const [systemPromptOpen, setSystemPromptOpen] = useState(false)
@@ -131,7 +137,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     setSettingsTab(tab)
     setSettingsOpen(true)
   }, [])
-
   const sessions = useMemo(() => {
     if (!Array.isArray(sessionsData)) return []
     return sessionsData.map((s) => ({
@@ -198,6 +203,13 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     initialSecuredSecrets: carryover?.securedSecrets,
   })
 
+  const warmStartEnabled = useWarmStartOnTypeEnabled()
+  const { noteProgrammaticChange } = useWarmStartOnType({
+    agentSlug: agent.slug,
+    message: composer.message,
+    enabled: warmStartEnabled,
+  })
+
   // Reset the manual-collapse flag once the message clears.
   useEffect(() => {
     if (composer.message.trim() === '') userCollapsedRef.current = false
@@ -214,10 +226,10 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     }
   }, [composer.message, isExpanded])
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
+  const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault()
-      composer.handleSubmit(e)
+      void composer.handleSubmit(e)
     }
   }
 
@@ -243,16 +255,23 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   )
 
   const handleImportComplete = useCallback(
-    async ({ agent: imported, hasOnboarding }: ImportResult) => {
-      void navigate({ to: '/agents/$slug', params: { slug: imported.slug } })
-      if (agent.name === UNTITLED_AGENT_NAME && sessions.length === 0 && agent.slug !== imported.slug) {
-        deleteAgent.mutate(agent.slug)
-      }
-      if (hasOnboarding) {
-        await startOnboardingSession(imported.slug)
-      }
+    async (imported: ImportResult) => {
+      await completeAgentTemplateHandoff({
+        draftsStore,
+        agentSlug: imported.slug,
+        hasOnboarding: imported.hasOnboarding,
+        templatePrompt: imported.templatePrompt,
+        noteProgrammaticChange,
+        openAgent: () => {
+          void navigate({ to: '/agents/$slug', params: { slug: imported.slug } })
+          if (agent.name === UNTITLED_AGENT_NAME && sessions.length === 0 && agent.slug !== imported.slug) {
+            deleteAgent.mutate(agent.slug)
+          }
+        },
+        startOnboardingSession,
+      })
     },
-    [navigate, agent.slug, agent.name, sessions.length, deleteAgent, startOnboardingSession],
+    [draftsStore, noteProgrammaticChange, navigate, agent.slug, agent.name, sessions.length, deleteAgent, startOnboardingSession],
   )
 
   const formatDate = useCallback(
@@ -284,32 +303,44 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
           </div>
         </div>
       )}
-      <div className={`grid gap-10 items-start ${showRightColumn ? 'grid-cols-1 xl:grid-cols-[1fr_minmax(320px,400px)] w-full max-w-6xl mx-auto' : 'max-w-2xl mx-auto'}`}>
+      <div
+        data-testid="agent-home-layout"
+        className={cn(
+          'grid gap-10 items-start w-full mx-auto',
+          showRightColumn
+            ? 'grid-cols-1 max-w-6xl xl:grid-cols-[1fr_minmax(320px,400px)]'
+            : 'xl:max-w-2xl',
+        )}
+      >
         {/* Left Column — Chat composer + Sessions */}
         <div className="space-y-6 w-full min-w-0 xl:min-w-[480px] xl:max-w-[720px]">
           <div className="flex items-center justify-between gap-2 intro-step intro-step-1">
-            <InlineEditableTitle
-              value={agent.name}
-              canEdit={isOwner}
-              isSaving={updateAgent.isPending}
-              onSave={async (name) => {
-                await updateAgent.mutateAsync({ slug: agent.slug, name })
-              }}
-              onError={(error) => {
-                console.error('Failed to rename agent:', error)
-                toast.error('Failed to rename agent', {
-                  description: error instanceof Error ? error.message : 'Please try again.',
-                })
-              }}
-              displayClassName="text-xl font-semibold"
-              inputClassName="h-9 text-xl font-semibold"
-              saveButtonClassName="h-8 w-8"
-              ariaLabel="Rename agent"
-              saveAriaLabel="Save name"
-              displayTestId="agent-name"
-              inputTestId="agent-name-input"
-              saveButtonTestId="agent-name-save"
-            />
+            <AgentContextMenu agent={agent}>
+              <div className="flex-1 min-w-0 cursor-context-menu">
+                <InlineEditableTitle
+                  value={agent.name}
+                  canEdit={isOwner}
+                  isSaving={updateAgent.isPending}
+                  onSave={async (name) => {
+                    await updateAgent.mutateAsync({ slug: agent.slug, name })
+                  }}
+                  onError={(error) => {
+                    console.error('Failed to rename agent:', error)
+                    toast.error('Failed to rename agent', {
+                      description: error instanceof Error ? error.message : 'Please try again.',
+                    })
+                  }}
+                  displayClassName="text-xl font-medium"
+                  inputClassName="h-9 text-xl font-medium"
+                  saveButtonClassName="h-8 w-8"
+                  ariaLabel="Rename agent"
+                  saveAriaLabel="Save name"
+                  displayTestId="agent-name"
+                  inputTestId="agent-name-input"
+                  saveButtonTestId="agent-name-save"
+                />
+              </div>
+            </AgentContextMenu>
             {/* AgentHome owns the settings dialog (no onOpenSettings prop), so the
                 gear opens the local handler rather than a parent-supplied one. */}
             <Button type="button" size="icon" variant="ghost" className="h-8 w-8 shrink-0" onClick={() => handleOpenSettings()} aria-label="Agent settings" data-testid="agent-settings-button">
@@ -353,7 +384,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                   attachments={composer.attachments}
                   onRemoveAttachment={composer.removeAttachment}
                   value={composer.message}
-                  onChange={(e) => composer.setMessage(e.target.value)}
+                  onChange={composer.setMessage}
                   onKeyDown={handleKeyDown}
                   onPaste={composer.handlePaste}
                   placeholder={composerPlaceholder}
@@ -378,7 +409,17 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                         onRecentFileAttach={(file) => composer.addFiles([{ file }])}
                         disabled={isDisabled}
                       />
-                      <ComposerOptions state={composerOptions} disabled={isDisabled} />
+                      <ComposerOptions
+                        state={composerOptions}
+                        disabled={isDisabled}
+                        footer={
+                          <AgentDefaultFooter
+                            agentSlug={agent.slug}
+                            state={composerOptions}
+                            agentHomeLink={false}
+                          />
+                        }
+                      />
                     </>
                   )}
                   topRightActions={(
@@ -533,13 +574,11 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                 const el = composerTextareaRef.current
                 if (el) {
                   el.focus()
-                  el.selectionStart = el.selectionEnd = text.length
                 }
               }, 0)
             }} />
             <HomeChatIntegrations className="intro-step intro-step-7" agentSlug={agent.slug} />
             <HomeVolumes className="intro-step intro-step-8" agentSlug={agent.slug} />
-            <HomeDefaultModel className="intro-step intro-step-9" agentSlug={agent.slug} />
             <HomeExtras className="intro-step intro-step-9" agentSlug={agent.slug} onOpenSettings={handleOpenSettings} />
             <HomeHooks className="intro-step intro-step-9" agentSlug={agent.slug} isOwner={isOwner} />
           </div>

@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItem, nativeImage, nativeTheme, powerMonitor, session, shell, Notification } from 'electron'
-import { execFileSync, exec } from 'child_process'
+import { execFile, execFileSync, exec } from 'child_process'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
@@ -53,9 +53,12 @@ import {
 } from './quick-dispatch-window'
 import { registerGlobalDispatchShortcut, unregisterGlobalDispatchShortcut } from './global-dispatch-shortcut'
 import { filesFromCommandLine } from './opened-files'
+import { parseAgentDeepLink } from './agent-deep-link'
+import { planMcpOAuthCallback, parseMcpOAuthCompletionResponse } from './mcp-oauth-callback'
 import { classifyImportPackage } from './import-packages'
 import { isImportPackagePath } from '@shared/lib/utils/package-extensions'
 import { safeOpenExternalFromApp } from './safe-open-external'
+import { APPLE_PASSWORDS_CHROME_EXTENSION_URL } from '@shared/lib/credentials/apple-passwords-links'
 
 // In dev mode, use a separate data directory to avoid mixing with production data.
 // Setting app.name before getPath('userData') changes the resolved directory.
@@ -63,6 +66,13 @@ import { safeOpenExternalFromApp } from './safe-open-external'
 if (!app.isPackaged) {
   app.name = 'Superagent-Dev'
 }
+
+// Publish the packaged/dev distinction to `shared/` code, which can't import
+// electron. Written unconditionally on every launch, so a shipped build always
+// clobbers an inherited or spoofed value. Readers must treat "unset" as
+// packaged — see `cloud-workspace-service`, which trusts a loopback deployment
+// target only in a dev build.
+process.env.SUPERAGENT_IS_PACKAGED = app.isPackaged ? '1' : '0'
 
 // Set Electron-specific data directory BEFORE importing API.
 //
@@ -90,10 +100,14 @@ console.log(`Data directory: ${process.env.SUPERAGENT_DATA_DIR}`)
 
 // Initialize error reporting as early as possible (after data dir is set)
 import { initErrorReporting, captureException, flushErrorReporting } from '@shared/lib/error-reporting'
+import { recordFatalError, reportCrashMarkerFromLastRun, toReportableError } from './crash-marker'
 
 // Only report errors in production builds — dev mode generates too much noise
 if (app.isPackaged) {
   initErrorReporting({ environment: 'electron' })
+  // If the last session died in a fatal handler, its Sentry event may have
+  // been lost (no offline transport) — deliver the on-disk record now.
+  void reportCrashMarkerFromLastRun()
 }
 
 // Register auto-update IPC handlers early (before window creation)
@@ -103,9 +117,15 @@ registerUpdateHandlers()
 // Now safe to import API (env var is set)
 import { serve } from '@hono/node-server'
 import api from '../api'
-import { initializeServices, shutdownServices } from '@shared/lib/startup'
-import { setupServerHandlers } from '@shared/lib/startup'
+import { afterBindInitialize, setupServerHandlers, shutdownServices } from '@shared/lib/startup'
 import { bindServerWithRetry } from '@shared/lib/server-bind'
+import { configureDownloadNonceRecovery } from '@shared/lib/services/download-nonce-service'
+import { CLOUD_PROXY_PREFIX, isCloudProxyEnabled } from '../api/routes/cloud-proxy'
+import { getCloudProxyKey } from '@shared/lib/services/cloud-proxy-key'
+import { resolveCloudProxyTarget } from '@shared/lib/services/cloud-proxy-target'
+import { applyPreferredApiTarget, resolveApiTargetForRenderer } from './api-target'
+import { startCloudBootPrefetch } from '@shared/lib/services/cloud-boot-prefetch'
+import { showTargetSwitchOverlay, finishTargetSwitchOverlay } from './target-switch-overlay'
 import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 
@@ -303,7 +323,11 @@ function createWindow() {
     },
     ...(process.platform === 'darwin' && {
       titleBarStyle: 'hiddenInset' as const,
-      trafficLightPosition: { x: 16, y: 16 },
+      // Centered in the sidebar's 48px title bar row, which is now the only
+      // thing the lights ever sit beside — the renderer used to push a second
+      // position over IPC whenever the sidebar collapsed, back when an expanded
+      // sidebar had a taller header to align with.
+      trafficLightPosition: { x: 21, y: 23 },
       vibrancy: 'sidebar' as const,
       visualEffectState: 'active' as const,
     }),
@@ -445,18 +469,47 @@ ipcMain.handle('get-window-maximized-state', () => {
   return mainWindow?.isMaximized() ?? false
 })
 
-// Reposition macOS traffic-light buttons to vertically center them in the
-// 48px top bar when the sidebar is collapsed (no sidebar header to align with).
-ipcMain.on('set-sidebar-collapsed', (_event, collapsed: boolean) => {
-  if (process.platform !== 'darwin' || !mainWindow) return
-  const y = collapsed ? 23 : 16
-  const x = collapsed ? 21 : 16
-  mainWindow.setWindowButtonPosition({ x, y })
-})
-
 // IPC handler for getting the API URL (port may vary)
 ipcMain.handle('get-api-url', () => {
   return `http://localhost:${actualApiPort}`
+})
+
+/** The cloud proxy's base URL, or null when there is no workspace to drive. */
+function cloudApiBaseUrl(): string | null {
+  if (!isCloudProxyEnabled() || !resolveCloudProxyTarget()) return null
+  return `http://localhost:${actualApiPort}${CLOUD_PROXY_PREFIX}/${getCloudProxyKey()}`
+}
+
+/** Which Superagent this app is driving, and the base URL that reaches it. */
+function activeApiTarget() {
+  return resolveApiTargetForRenderer(`http://localhost:${actualApiPort}`, cloudApiBaseUrl())
+}
+
+// Which Superagent this renderer drives, settled in main rather than in the
+// renderer — see api-target.ts. The renderer is handed a finished base URL
+// rather than assembling one, because half of the cloud prefix is the per-boot
+// proxy key, a secret owned by main (see cloud-proxy-key.ts).
+ipcMain.handle('get-api-target', () => activeApiTarget())
+
+ipcMain.handle('set-preferred-api-target', (_event, target: unknown) => {
+  applyPreferredApiTarget(target)
+})
+
+// The switch animation, which cannot live in the document the switch reloads.
+// Awaited by the renderer so the band is up before it reloads itself; lifted
+// when the reloaded renderer says it has painted. Both are no-ops when there is
+// nothing on screen, so the renderer never has to track whether it is switching.
+ipcMain.handle('begin-target-switch', async () => {
+  if (mainWindow) await showTargetSwitchOverlay(mainWindow)
+})
+
+// Only the covered window's own paint counts. Every renderer with our preload
+// sends this, and a second one opening mid-switch (a quick-dispatch composer, a
+// popout) would otherwise report a paint the user cannot see and take the band
+// off the window that is still blank.
+ipcMain.on('renderer-painted', (event) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) return
+  void finishTargetSwitchOverlay()
 })
 
 // IPC handler for opening URLs in system browser. Renderer-supplied strings are
@@ -468,6 +521,28 @@ ipcMain.handle('get-api-url', () => {
 // above stays strict (web-only) since it fires for untrusted content.
 ipcMain.handle('open-external', async (_event, url: string) => {
   await safeOpenExternalFromApp(url)
+})
+
+// First-party, argument-free launcher for the exact Apple extension listing.
+// On macOS this targets Chrome explicitly so installation remains one click even
+// when another browser is the system default. No renderer-provided URL or app
+// name reaches execFile.
+ipcMain.handle('open-apple-passwords-extension', async () => {
+  if (process.platform === 'darwin' && fs.existsSync('/Applications/Google Chrome.app')) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        execFile(
+          '/usr/bin/open',
+          ['-a', 'Google Chrome', APPLE_PASSWORDS_CHROME_EXTENSION_URL],
+          (error) => error ? reject(error) : resolve(),
+        )
+      })
+      return
+    } catch (error) {
+      console.warn('Could not open the Apple Passwords extension in Chrome:', error)
+    }
+  }
+  await safeOpenExternalFromApp(APPLE_PASSWORDS_CHROME_EXTENSION_URL)
 })
 
 // IPC handler for launching an elevated PowerShell window (Windows only)
@@ -561,7 +636,7 @@ ipcMain.handle('show-notification', (
     liveNotifications.delete(notification)
   })
   // Track by reviewId if this is a proxy-review notification, so the SSE
-  // 'proxy_review_resolved' handler can dismiss it later.
+  // 'user_request_resolved' handler can dismiss it later.
   const ctxForTrack = context as { kind?: string; reviewId?: string } | undefined
   const reviewId =
     ctxForTrack?.kind === 'proxy_review' && typeof ctxForTrack.reviewId === 'string'
@@ -680,6 +755,20 @@ ipcMain.handle('show-in-folder', async (_event, rawPath: unknown) => {
   }
   const errorMessage = await shell.openPath(hostPath)
   return errorMessage === '' ? null : errorMessage
+})
+
+// Reveal a specific file or directory in the OS file manager. This is kept
+// separate from show-in-folder, whose existing contract opens a mounted
+// directory rather than selecting it in its parent.
+ipcMain.handle('reveal-in-folder', async (_event, rawPath: unknown) => {
+  const hostPath = ShowInFolderPath.parse(rawPath)
+  try {
+    await fs.promises.stat(hostPath)
+    shell.showItemInFolder(hostPath)
+    return null
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).message
+  }
 })
 
 // --- Recent files infrastructure ---
@@ -839,7 +928,7 @@ ipcMain.handle('show-emoji-panel', () => {
 
 // IPC handler for opening a dashboard in a separate window
 ipcMain.handle('open-dashboard-window', (_event, { agentSlug, dashboardSlug }: { agentSlug: string; dashboardSlug: string }) => {
-  openDashboardWindow(agentSlug, dashboardSlug, actualApiPort)
+  openDashboardWindow(agentSlug, dashboardSlug, activeApiTarget().baseUrl)
 })
 
 // IPC handler for creating a macOS dock shortcut for a dashboard
@@ -1007,24 +1096,46 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
     return
   }
 
-  // Agent deep link — navigate to the agent and select its latest session when available.
-  if (url.startsWith(`${PROTOCOL_SCHEME}://agent/`)) {
+  // Agent deep link — session-bearing links navigate straight to the session;
+  // slug-only links resolve the agent's latest session first. Both bring the
+  // window up the same way, so a link that arrives after the window was closed
+  // recreates it instead of being dropped.
+  const agentLink = parseAgentDeepLink(url, PROTOCOL_SCHEME)
+  if (agentLink) {
+    if (agentLink.sessionId) {
+      focusMainWindowOnSession(agentLink.agentSlug, agentLink.sessionId)
+      return
+    }
     try {
-      const slug = decodeURIComponent(url.replace(`${PROTOCOL_SCHEME}://agent/`, '').split('/')[0])
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.show()
-        mainWindow.focus()
-        fetch(`http://localhost:${actualApiPort}/api/agents/${slug}/sessions`)
-          .then(res => res.ok ? res.json() : [])
-          .then((sessions: Array<{ id: string; isActive: boolean; updatedAt?: string }>) => {
-            const active = sessions.find(s => s.isActive)
-            const latest = active ?? sessions[0]
-            mainWindow!.webContents.send('navigate-to-agent', slug, latest?.id ?? null)
-          })
-          .catch(() => {
-            mainWindow!.webContents.send('navigate-to-agent', slug, null)
-          })
-      }
+      const slug = agentLink.agentSlug
+      showOrCreateMainWindow()
+      // Resolved against the effective target, not always the local API: the
+      // renderer interprets the slug on whichever Superagent it is driving, so
+      // the session lookup must ask that same one.
+      const linkBaseUrl = activeApiTarget().baseUrl
+      fetch(`${linkBaseUrl}/api/agents/${encodeURIComponent(slug)}/sessions`)
+        .then(res => res.ok ? res.json() : [])
+        .then((sessions: Array<{ id: string; isActive: boolean; updatedAt?: string }>) => {
+          if (!Array.isArray(sessions)) return null
+          const active = sessions.find(s => s.isActive)
+          return (active ?? sessions[0])?.id ?? null
+        })
+        .catch(() => null)
+        .then((sessionId: string | null) => {
+          // A switch while the lookup was in flight leaves both the slug and
+          // the session id belonging to the previous Superagent — delivering
+          // them navigates the new renderer to someone else's agent. Drop the
+          // link rather than land it wrong.
+          if (activeApiTarget().baseUrl !== linkBaseUrl) return
+          sendToMainWindowWhenReady((win) =>
+            win.webContents.send('navigate-to-agent', slug, sessionId),
+          )
+        })
+        // Terminal catch: an unhandled rejection here is fatal (the process-level
+        // handler quits the app), and a failed deep link must never do that.
+        .catch((error) => {
+          console.error('Failed to navigate to agent from deep link:', error)
+        })
     } catch (error) {
       console.error('Failed to navigate to agent from deep link:', error)
     }
@@ -1039,7 +1150,7 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
       const agentSlug = decodeURIComponent(parts[0])
       const dashboardSlug = decodeURIComponent(parts[1])
       if (apiReady) {
-        openDashboardWindow(agentSlug, dashboardSlug, actualApiPort)
+        openDashboardWindow(agentSlug, dashboardSlug, activeApiTarget().baseUrl)
       } else {
         pendingDashboardLinks.push({ agentSlug, dashboardSlug })
       }
@@ -1074,52 +1185,45 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
 
   // MCP OAuth callback
   if (url.startsWith(`${PROTOCOL_SCHEME}://mcp-oauth-callback`)) {
-    try {
-      const callbackUrl = new URL(url)
-      const params = callbackUrl.searchParams
-
-      if (params.has('success')) {
-        // http-loopback path: the local API server already completed the token
-        // exchange (and any error/issuer validation) in the external browser and
-        // bounced the result back here — the hand-off page always carries
-        // `success`. Notify the renderer directly; no second exchange needed.
-        const success = params.get('success') === 'true'
-        mainWindow?.webContents.send('mcp-oauth-callback', {
-          success,
-          mcpId: params.get('mcpId') || null,
-          error: success ? null : (params.get('error') || 'OAuth failed'),
-        })
-      } else {
-        // Custom-scheme path: the app received the raw code/state, so forward to
-        // the local API server to complete the token exchange.
-        const apiUrl = `http://localhost:${actualApiPort}/api/remote-mcps/oauth-callback${callbackUrl.search}`
-        fetch(apiUrl)
-          .then(async (res) => {
-            const text = await res.text()
-            const success = text.includes('OAuth successful')
-            const mcpIdMatch = text.match(/mcpId:\s*'([^']+)'/)
-            mainWindow?.webContents.send('mcp-oauth-callback', {
-              success,
-              mcpId: mcpIdMatch?.[1] || null,
-              error: success ? null : 'OAuth failed',
-            })
-          })
-          .catch((err) => {
-            console.error('Failed to complete MCP OAuth callback:', err)
-            mainWindow?.webContents.send('mcp-oauth-callback', {
-              success: false,
-              error: err.message || 'Failed to complete OAuth',
-            })
-          })
-      }
-      mainWindow?.focus()
-    } catch (error) {
-      console.error('Failed to parse MCP OAuth callback URL:', error)
+    // Planned against the active target, not always the local API: with the
+    // Cloud toggle on, the pending OAuth state lives in the cloud deployment's
+    // memory, so the completion fetch must go through the cloud proxy (SUP-560).
+    const plan = planMcpOAuthCallback(url, activeApiTarget().baseUrl)
+    if (!plan) {
+      console.error('Failed to parse MCP OAuth callback URL:', url)
       mainWindow?.webContents.send('mcp-oauth-callback', {
         success: false,
         error: 'Invalid callback URL',
       })
+      return
     }
+
+    if (plan.action === 'notify') {
+      // http-loopback path: the initiating API server already completed the
+      // token exchange (and any error/issuer validation) in the external
+      // browser and bounced the result back here — the hand-off page always
+      // carries `success`. Notify the renderer directly; no second exchange.
+      mainWindow?.webContents.send('mcp-oauth-callback', plan.result)
+    } else {
+      // Custom-scheme path: the app received the raw code/state, so forward to
+      // the active Superagent's API to complete the token exchange.
+      fetch(plan.completionUrl)
+        .then(async (res) => {
+          const text = await res.text()
+          mainWindow?.webContents.send(
+            'mcp-oauth-callback',
+            parseMcpOAuthCompletionResponse(text),
+          )
+        })
+        .catch((err) => {
+          console.error('Failed to complete MCP OAuth callback:', err)
+          mainWindow?.webContents.send('mcp-oauth-callback', {
+            success: false,
+            error: err.message || 'Failed to complete OAuth',
+          })
+        })
+    }
+    mainWindow?.focus()
   }
 
   if (url.startsWith(`${PROTOCOL_SCHEME}://platform-auth-callback`)) {
@@ -1225,9 +1329,15 @@ function startNotificationListener(): void {
       // doesn't sit in Notification Center inviting stale Approve/Deny
       // clicks (review S8). This mirrors the renderer-side query
       // invalidation and works for dismissal regardless of window state.
-      if (data.type === 'session_awaiting_input' && data.review?.type === 'proxy_review_resolved') {
-        const rid = data.review.reviewId
-        if (typeof rid === 'string') dismissReviewNotification(rid)
+      // Driven by the unified resolved event — every settle path (decision,
+      // timeout, sweep, policy sibling-resolve) emits it, so a dismissal
+      // cannot be missed by a settle path that forgot the legacy broadcast.
+      if (
+        data.type === 'user_request_resolved' &&
+        (data.kind === 'proxy_review' || data.kind === 'x_agent_review') &&
+        typeof data.requestId === 'string'
+      ) {
+        dismissReviewNotification(data.requestId)
       }
 
       if (data.type === 'os_notification') {
@@ -1341,10 +1451,27 @@ function stopNotificationListener(): void {
 
 // Start the API server and app
 async function startApp() {
+  // Download-carried enrollment nonce recovery. The channels are all
+  // best-effort reads of the install's surroundings; the handoff file is the
+  // Windows installer's note of its own (stamped) filename, and the dev-only
+  // override lets a harness point the scanner at a fake install source.
+  configureDownloadNonceRecovery({
+    // The literal 'Gamut' must match the installer's `$APPDATA\Gamut` drop
+    // location in build/installer.nsh (NOT getPath('userData'), which the
+    // legacy 'SuperAgent' app.name pins elsewhere).
+    windowsHandoffFile:
+      process.platform === 'win32'
+        ? path.join(app.getPath('appData'), 'Gamut', 'pending-download-source')
+        : undefined,
+    testSourcePath:
+      !app.isPackaged && process.env.SUPERAGENT_FAKE_INSTALLER_SOURCE
+        ? process.env.SUPERAGENT_FAKE_INSTALLER_SOURCE
+        : undefined,
+  })
+
   // Bind the API server atomically, retrying on a port race until a port is
   // claimed (no probe-then-bind TOCTOU gap; an EADDRINUSE retries instead of
   // crashing the app via uncaughtException). See bindServerWithRetry.
-  let boundPort: number
   try {
     const bound = await bindServerWithRetry(api.fetch, {
       startPort: DEFAULT_API_PORT,
@@ -1356,7 +1483,6 @@ async function startApp() {
     // server, so update both the module state and process.env.PORT.
     actualApiPort = bound.port
     process.env.PORT = String(bound.port)
-    boundPort = bound.port
     // Wire server-level handlers (WebSocket proxies, etc.) on the bound server.
     setupServerHandlers(bound.server)
     console.log(`API server running on http://localhost:${bound.port}`)
@@ -1366,10 +1492,7 @@ async function startApp() {
     return
   }
 
-  // Initialize all background services
-  initializeServices().catch((error) => {
-    console.error('Failed to initialize services:', error)
-  })
+  void afterBindInitialize()
 
   // Reconnect chat integrations after system sleep
   powerMonitor.on('resume', () => {
@@ -1384,7 +1507,7 @@ async function startApp() {
   // Mark API as ready and process any queued dashboard deep links
   apiReady = true
   for (const link of pendingDashboardLinks) {
-    openDashboardWindow(link.agentSlug, link.dashboardSlug, actualApiPort)
+    openDashboardWindow(link.agentSlug, link.dashboardSlug, activeApiTarget().baseUrl)
   }
   pendingDashboardLinks.length = 0
   processPendingProtocolUrls()
@@ -1393,15 +1516,23 @@ async function startApp() {
   // deferred until here so they're never built against a port that never bound.
   await app.whenReady()
 
+  // A cold start into a cloud workspace faces the same wait as a switch: the
+  // renderer cannot ask for anything until it has loaded. Start those calls
+  // alongside the window rather than after it (no-op without a workspace).
+  if (activeApiTarget().target === 'cloud') startCloudBootPrefetch()
+
   createWindow()
 
-  // Create the application menu (macOS menu bar)
-  createAppMenu(mainWindow, boundPort)
+  // Create the application menu (macOS menu bar). The getter re-resolves the
+  // effective base URL on every poll, so the Agents menu and the tray follow a
+  // target switch (via the keyed cloud proxy) instead of always listing this
+  // machine's agents.
+  createAppMenu(mainWindow, () => activeApiTarget().baseUrl)
 
   // Create system tray if enabled in settings
   const settings = getSettings()
   if (settings.app?.showMenuBarIcon !== false) {
-    createTray(mainWindow, boundPort)
+    createTray(mainWindow, () => activeApiTarget().baseUrl)
   }
 
   // Restore keep-awake state from previous session (after window is ready so dialogs display correctly)
@@ -1580,7 +1711,14 @@ app.on('open-file', (event, filePath) => {
 // second process spawns. It MUST bail out immediately — if it falls through to
 // startApp() it boots its own API server and briefly shows a window before the
 // quit lands, which is the "ghost window" flash on re-launch.
-const gotTheLock = app.requestSingleInstanceLock()
+// Dev/test escape hatch: the lock identity derives from app.name
+// ('SuperAgent', shared with installed builds), so a dev instance silently
+// dies whenever the installed app is running. Harnesses that use their own
+// SUPERAGENT_DATA_DIR can opt out; packaged builds never can.
+const gotTheLock =
+  !app.isPackaged && process.env.SUPERAGENT_DISABLE_SINGLE_INSTANCE === '1'
+    ? true
+    : app.requestSingleInstanceLock()
 
 if (!gotTheLock) {
   // Exit hard without running startApp() or the before-quit graceful-shutdown
@@ -1681,6 +1819,10 @@ app.on('before-quit', async (event) => {
 // Handle uncaught exceptions
 process.on('uncaughtException', async (error) => {
   console.error('Uncaught exception:', error)
+  // Persist to disk before any async work — if the network is down (or flush
+  // hangs, or shutdown throws again) the Sentry event below is lost, and the
+  // marker is then the only record that this exit was a crash.
+  recordFatalError('uncaughtException', error)
   captureException(error, { tags: { type: 'uncaughtException' }, level: 'fatal' })
   await flushErrorReporting(3000)
   await gracefulShutdown()
@@ -1691,7 +1833,8 @@ process.on('uncaughtException', async (error) => {
 // Handle unhandled promise rejections
 process.on('unhandledRejection', async (reason) => {
   console.error('Unhandled rejection:', reason)
-  captureException(reason instanceof Error ? reason : new Error(String(reason)), { tags: { type: 'unhandledRejection' }, level: 'fatal' })
+  recordFatalError('unhandledRejection', reason)
+  captureException(toReportableError(reason), { tags: { type: 'unhandledRejection' }, level: 'fatal' })
   await flushErrorReporting(3000)
   await gracefulShutdown()
   // See before-quit handler above for why this is deferred

@@ -7,6 +7,9 @@ import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { AppLink } from '@renderer/components/ui/app-link'
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
+import { TargetSwitcher } from '@renderer/components/layout/target-switcher'
+import { useTargetSwitch } from '@renderer/hooks/use-target-switch'
+import { hasInteractiveLogin } from '@renderer/lib/auth-mode'
 import { useDialogs } from '@renderer/context/dialog-context'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 import {
@@ -38,6 +41,7 @@ import {
   RuntimeUnavailableSidebarBanner,
   RuntimeCheckingSidebarBanner,
   RuntimePullingSidebarBanner,
+  ServicesDegradedSidebarBanner,
   SidebarBannerStack,
   type FirewallFixUiState,
 } from '@renderer/components/runtime/runtime-status-banners'
@@ -51,6 +55,7 @@ import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
+import { SIDEBAR_TREE_CONNECTORS } from '@renderer/components/ui/tree-connectors'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { DashboardContextMenu } from '@renderer/components/dashboards/dashboard-context-menu'
@@ -70,6 +75,7 @@ import { useUpdateStatus } from '@renderer/context/update-status-context'
 import { useUnreadNotificationCount } from '@renderer/hooks/use-notifications'
 import { usePlatformUnreadCount } from '@renderer/hooks/use-platform-notifications'
 import { useIsOnline } from '@renderer/context/connectivity-context'
+import { HoverScrollText } from '@renderer/components/ui/hover-scroll-text'
 import {
   DndContext,
   closestCenter,
@@ -90,7 +96,11 @@ import { SortableAgentMenuItem } from './sortable-agent-item'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
-import { AgentTemplateBrowseDialog } from '@renderer/components/agents/agent-template-browse-dialog'
+import { useSkillsets } from '@renderer/hooks/use-skillsets'
+import { useRememberedFlag } from '@renderer/hooks/use-remembered-flag'
+
+/** Set once Explore has been opened, which retires its "New" badge. */
+const EXPLORE_SEEN_KEY = 'explore.seen'
 
 // 4px-wide thin scrollbar with a muted-foreground/20 thumb. Reused on the
 // agents-list group; pull out as a constant so the call site stays readable.
@@ -98,27 +108,6 @@ const THIN_SCROLLBAR =
   '[scrollbar-width:thin] [scrollbar-color:hsl(var(--muted-foreground)/0.2)_transparent] ' +
   '[&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:bg-transparent ' +
   '[&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/20'
-
-// Tree connectors on the agent submenu: a vertical rail hanging from
-// the agent row's chevron plus an elbow into each sub-item row. Geometry is
-// coupled to the surrounding layout: the rail sits 15px from the submenu's
-// left edge (chevron = left-1.5 + p-0.5 + half a 14px icon) and rows are
-// indented pl-5 (20px), so connectors anchor at -5px from each <li>. Elbows
-// sit at 14px = half the h-7 row. Each row draws its own rail segment
-// (stretched -top-1 to bridge the gap-1 between rows) so the rail tracks
-// variable row heights; the last row's segment stops at its elbow. The
-// first row instead starts at -top-0.5 so the rail tops out flush with the
-// agent row's bottom edge (the ul's py-0.5) rather than poking 2px up into
-// the agent row's highlight.
-const TREE_CONNECTORS =
-  '[&>li]:relative ' +
-  '[&>li]:before:absolute [&>li]:before:-left-[5px] [&>li]:before:top-[14px] [&>li]:before:w-[5px] ' +
-  '[&>li]:before:border-t [&>li]:before:border-muted-foreground/25 ' +
-  '[&>li]:after:absolute [&>li]:after:-left-[5px] [&>li]:after:-top-1 [&>li]:after:bottom-0 ' +
-  '[&>li]:after:border-l [&>li]:after:border-muted-foreground/25 ' +
-  '[&>li:first-child]:after:-top-0.5 ' +
-  '[&>li:last-child]:after:bottom-auto [&>li:last-child]:after:h-[18px] ' +
-  '[&>li:first-child:last-child]:after:h-[16px]'
 
 // Session sub-item that tracks its streaming state
 function SessionSubItem({
@@ -163,7 +152,13 @@ function SessionSubItem({
             className="flex items-center gap-2 w-full"
             data-testid={`session-item-${session.id}`}
           >
-            <span className="flex-1 min-w-0 truncate text-left">{session.name}</span>
+            <HoverScrollText
+              className="flex-1 text-left"
+              data-testid={`session-name-${session.id}`}
+              hoverTarget="parent"
+            >
+              {session.name}
+            </HoverScrollText>
             {hint !== null ? (
               <CmdHintBadge hint={hint} />
             ) : (
@@ -390,7 +385,7 @@ export const AgentMenuItem = React.forwardRef<
   // would just be visual noise.
   const hasInitialContent =
     (agent.sessionCount ?? 0) > 0 ||
-    (agent.dashboardCount ?? 0) > 0
+    (agent.dashboards?.length ?? 0) > 0
   const [isOpen, setIsOpen] = useState(isSelected && hasInitialContent)
 
   // Once the user navigates into a sub-item (session / task / webhook / chat /
@@ -426,7 +421,7 @@ export const AgentMenuItem = React.forwardRef<
   const hasExpandableContent =
     isOpen ||
     (agent.sessionCount ?? 0) > 0 ||
-    (agent.dashboardCount ?? 0) > 0
+    (agent.dashboards?.length ?? 0) > 0
 
   // Show skeleton after 100ms if sessions haven't loaded yet
   useEffect(() => {
@@ -515,7 +510,7 @@ export const AgentMenuItem = React.forwardRef<
         {hasExpandableContent ? (
           <>
             <CollapsibleContent>
-              <SidebarMenuSub className={cn('pb-2', TREE_CONNECTORS)}>
+              <SidebarMenuSub className={cn('pb-2', SIDEBAR_TREE_CONNECTORS)}>
                 {isOpen && sessionsLoading && showSkeleton ? (
                   <SessionsSkeleton />
                 ) : (
@@ -595,6 +590,10 @@ function NotificationsMenuButton() {
 
 function UserMenu() {
   const { isAuthMode, user, signOut } = useUser()
+  // Go through the same switch path as the sidebar's control rather than
+  // calling switchTarget directly: it owns the failure handling, so a switch
+  // that cannot be recorded reports itself instead of rejecting into nothing.
+  const { switching, switchTo } = useTargetSwitch()
   if (!isAuthMode || !user) return null
   return (
     <div className="px-2">
@@ -606,14 +605,30 @@ function UserMenu() {
           </button>
         </PopoverTrigger>
         <PopoverContent align="start" className="w-48 p-1">
-          <button
-            onClick={signOut}
-            className="flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-sm hover:bg-accent transition-colors"
-            data-testid="sign-out-button"
-          >
-            <LogOut className="h-4 w-4" />
-            Sign out
-          </button>
+          {hasInteractiveLogin() ? (
+            <button
+              onClick={signOut}
+              className="flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-sm hover:bg-accent transition-colors"
+              data-testid="sign-out-button"
+            >
+              <LogOut className="h-4 w-4" />
+              Sign out
+            </button>
+          ) : (
+            // Cloud workspace: signing out would revoke the deployment session
+            // the desktop's grant is bound to — disruptive, and pointless since
+            // main still holds the platform connection and would just mint
+            // another. Offer the action that actually means something here.
+            <button
+              onClick={() => void switchTo('local')}
+              disabled={switching}
+              className="flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-sm hover:bg-accent transition-colors disabled:opacity-60"
+              data-testid="switch-to-local-button"
+            >
+              <LogOut className="h-4 w-4" />
+              Use this computer
+            </button>
+          )}
         </PopoverContent>
       </Popover>
     </div>
@@ -714,9 +729,29 @@ export function AppSidebar() {
     if (isMobile) setOpenMobile(false)
   }, [locationHref, isMobile, setOpenMobile])
   const { data: agents, isLoading, error } = useAgents()
+  // Whether to offer Explore is two round trips deep — skillsets, and only then
+  // the discoverable agents they contain — so the item arrives after the rest of
+  // the nav and pushes it down on the way in. Remember the last answer for this
+  // Superagent and show that until the real one lands; `null` means "still
+  // asking", which is not the same as "no" and must not render as one.
+  const { data: skillsets } = useSkillsets()
   const { data: discoverableAgents } = useDiscoverableAgents()
-  const hasMarketplace = !!(discoverableAgents && discoverableAgents.length > 0)
-  const [marketplaceOpen, setMarketplaceOpen] = useState(false)
+  const marketplaceAnswer =
+    skillsets === undefined
+      ? null
+      : skillsets.length === 0
+        ? false // no skillsets, so the discoverable query never runs at all
+        : discoverableAgents === undefined
+          ? null
+          : discoverableAgents.length > 0
+  const hasMarketplace = useRememberedFlag('marketplace', marketplaceAnswer)
+  const exploreVisited = pathname === '/explore' || pathname.startsWith('/explore/')
+  // Sticky across reloads, and read once at mount so the badge doesn't vanish
+  // out from under the pointer mid-click.
+  const [seenExplore] = useState(() => localStorage.getItem(EXPLORE_SEEN_KEY) === '1')
+  useEffect(() => {
+    if (exploreVisited) localStorage.setItem(EXPLORE_SEEN_KEY, '1')
+  }, [exploreVisited])
   const { data: userSettings } = useUserSettings()
   const updateSettings = useUpdateUserSettings()
   const { data: runtimeStatus } = useRuntimeStatus()
@@ -779,103 +814,103 @@ export function AppSidebar() {
       : 'idle'
 
   const readiness = runtimeStatus?.runtimeReadiness
+  const servicesInitError = runtimeStatus?.servicesInitError ?? null
   const isRuntimeUnavailable = readiness?.status === 'RUNTIME_UNAVAILABLE' || readiness?.status === 'ERROR'
   const isPullingOrBuilding = readiness?.status === 'PULLING_IMAGE'
   const isChecking = readiness?.status === 'CHECKING'
 
-  // The header bar exists only to leave room for macOS traffic lights when
-  // windowed. In every other case (mac fullscreen, windows, web) it collapses
-  // to 0 height so the wordmark sits flush with the top of the sidebar.
+  // macOS windowed is the only case that needs room reserved at the left of the
+  // header row; everywhere else (mac fullscreen, Windows, web) the row starts at
+  // the sidebar's own padding.
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && !animatedFullScreen
   const isWindowsElectron = isElectron() && getPlatform() === 'win32'
-  const showHeaderBar = needsTrafficLightPadding
   const showHistoryNavigation = !__WEB__ && isElectron()
 
   return (
     <>
       <Sidebar variant="inset" data-testid="app-sidebar">
       {/*
-        Always rendered so height/border can transition smoothly when entering
-        or leaving fullscreen on macOS. Collapses to 0 height (with no border)
-        when there's no traffic-light spacer to make room for and no Windows
-        menu chevron to host.
+        The sidebar's title bar: one 48px row holding everything that acts on the
+        window rather than on an agent — where agents run, history, search — and,
+        on macOS, the traffic lights it leaves room for. The browser restores the
+        app name in the space left by the Electron-only target and history
+        controls.
+
+        The left padding (not the height) is what changes on a fullscreen
+        toggle, so the row itself never moves and only the traffic-light gap
+        animates shut.
       */}
       <SidebarHeader
-        className={cn(
-          'app-drag-region p-0 overflow-hidden transition-[height,border-bottom-width] duration-200 ease-out',
-          showHeaderBar ? 'h-12 border-b' : 'h-0 border-b-0'
-        )}
-        style={{
-          paddingLeft: needsTrafficLightPadding ? '80px' : undefined,
-        }}
+        className="app-drag-region h-12 shrink-0 p-0 overflow-hidden transition-[padding-left] duration-200 ease-out"
+        style={{ paddingLeft: needsTrafficLightPadding ? '80px' : undefined }}
       >
-        <div className="flex items-center h-12 px-2 gap-1" />
+        {/* `overflow-hidden` is load-bearing: hovering the target switcher
+            expands it in place, which pushes the buttons after it past the right
+            edge rather than squeezing them. */}
+        <div className="flex items-center h-12 px-2 gap-1 overflow-hidden">
+          {__WEB__ && (
+            <span className="shrink-0 select-none text-base font-medium">Gamut</span>
+          )}
+
+          {isWindowsElectron && (
+            <button
+              className="app-no-drag shrink-0 p-0.5 rounded hover:bg-foreground/10 transition-colors cursor-default"
+              aria-label="Application menu"
+              onClick={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect()
+                window.electronAPI?.popupAppMenu(Math.round(rect.left), Math.round(rect.bottom))
+              }}
+            >
+              <ChevronDown className="h-4 w-4 text-foreground/60" />
+            </button>
+          )}
+
+          {/* Which Superagent this window drives. First in the row, ahead of the
+              controls that act within it: it scopes them, and everything below.
+              Renders nothing when there is no cloud workspace to switch to. */}
+          <TargetSwitcher />
+
+          <div className="app-no-drag ml-auto -mr-2 flex shrink-0 items-center gap-0.5">
+            <TooltipProvider delayDuration={200}>
+              {showHistoryNavigation && <HistoryNavigationButtons />}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={openSearch}
+                    aria-label="Search"
+                    className="h-7 w-7 inline-flex items-center justify-center rounded-md text-muted-foreground hover:bg-foreground/10 transition-colors"
+                    data-testid="search-button"
+                  >
+                    <Search className="h-4 w-4 -translate-y-[1px]" />
+                  </button>
+                </TooltipTrigger>
+                {/* No keyboard on touch, and the Sheet's focus-trap would auto-open
+                    this tooltip with no way to dismiss it — so suppress it on mobile. */}
+                {!isMobile && (
+                  <TooltipContent side="bottom" className="flex items-center gap-2">
+                    <span>Search</span>
+                    <span className="opacity-70">{getPlatform() === 'darwin' ? '⌘K' : 'Ctrl+K'}</span>
+                  </TooltipContent>
+                )}
+              </Tooltip>
+            </TooltipProvider>
+          </div>
+        </div>
       </SidebarHeader>
 
       <ErrorBoundary compact>
         <SidebarContent className="overflow-visible">
           <SidebarGroup className="shrink-0 p-0">
-            {/*
-              When the header bar is present its 48px sit above the wordmark
-              (small `-4px` pull-up tightens the gap). When it's collapsed the
-              wordmark needs its own breathing room. Animated via marginTop so
-              the transition matches the header collapse on fullscreen toggle.
-            */}
-            <div
-              className={cn(
-                'px-2 pb-2 text-base font-semibold select-none transition-[margin-top] duration-200 ease-out flex items-center gap-1',
-                isWindowsElectron && 'app-drag-region'
-              )}
-              style={{ marginTop: showHeaderBar ? '-8px' : '8px' }}
-            >
-              <span>Gamut</span>
-              {isWindowsElectron && (
-                <button
-                  className="app-no-drag p-0.5 rounded hover:bg-foreground/10 transition-colors cursor-default"
-                  onClick={(e) => {
-                    const rect = e.currentTarget.getBoundingClientRect()
-                    window.electronAPI?.popupAppMenu(Math.round(rect.left), Math.round(rect.bottom))
-                  }}
-                >
-                  <ChevronDown className="h-4 w-4 text-foreground/60" />
-                </button>
-              )}
-              <div className="app-no-drag ml-auto -mr-2 flex items-center gap-0.5">
-                <TooltipProvider delayDuration={200}>
-                  {showHistoryNavigation && <HistoryNavigationButtons />}
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        onClick={openSearch}
-                        aria-label="Search"
-                        className="h-7 w-7 inline-flex items-center justify-center rounded-md text-muted-foreground hover:bg-foreground/10 transition-colors"
-                        data-testid="search-button"
-                      >
-                        <Search className="h-4 w-4 -translate-y-[1px]" />
-                      </button>
-                    </TooltipTrigger>
-                    {/* No keyboard on touch, and the Sheet's focus-trap would auto-open
-                        this tooltip with no way to dismiss it — so suppress it on mobile. */}
-                    {!isMobile && (
-                      <TooltipContent side="bottom" className="flex items-center gap-2">
-                        <span>Search</span>
-                        <span className="opacity-70">{getPlatform() === 'darwin' ? '⌘K' : 'Ctrl+K'}</span>
-                      </TooltipContent>
-                    )}
-                  </Tooltip>
-                </TooltipProvider>
-              </div>
-            </div>
-
-            {/* Status banners — render under the wordmark so they sit inside the
-                sidebar's content area rather than pushing the wordmark down. The
+            {/* Status banners — render under the title bar so they sit inside the
+                sidebar's content area rather than pushing the header down. The
                 SidebarBannerStack wrapper owns horizontal padding, inter-banner
                 gap, and trailing space; render it only when at least one banner
                 is visible to avoid a stray padded div. */}
-            {(!isOnline || isRuntimeUnavailable || isChecking || isPullingOrBuilding || isFirewallBlocked) && (
+            {(!isOnline || isRuntimeUnavailable || isChecking || isPullingOrBuilding || isFirewallBlocked || servicesInitError) && (
               <SidebarBannerStack>
                 {!isOnline && <OfflineSidebarBanner />}
+                {servicesInitError && <ServicesDegradedSidebarBanner message={servicesInitError} />}
                 {isRuntimeUnavailable && (
                   <RuntimeUnavailableSidebarBanner
                     message={readiness?.message}
@@ -900,7 +935,7 @@ export function AppSidebar() {
 
             <ApiKeyWarning onOpenSettings={() => openSettings('llm')} />
             <SidebarGroupContent>
-              <SidebarMenu className="gap-0.5 py-2">
+              <SidebarMenu className="gap-0.5 py-2 pt-0">
                 <SidebarMenuItem>
                   <SidebarMenuButton
                     asChild
@@ -921,11 +956,22 @@ export function AppSidebar() {
                 {hasMarketplace && (
                   <SidebarMenuItem>
                     <SidebarMenuButton
-                      onClick={() => setMarketplaceOpen(true)}
+                      asChild
+                      // Prefix match: the details page (/explore/...) is still Explore.
+                      isActive={exploreVisited}
                       data-testid="marketplace-button"
                     >
-                      <Compass className="h-4 w-4" />
-                      <span>Explore</span>
+                      <AppLink to="/explore">
+                        <Compass className="h-4 w-4" />
+                        <span>Discover New Agents</span>
+                        {/* Retires itself the first time the page is opened —
+                            a badge that says "New" forever says nothing. */}
+                        {!seenExplore && (
+                          <span className="rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium leading-tight text-white">
+                            New
+                          </span>
+                        )}
+                      </AppLink>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 )}
@@ -1013,8 +1059,6 @@ export function AppSidebar() {
 
       <SidebarRail />
       </Sidebar>
-
-      <AgentTemplateBrowseDialog open={marketplaceOpen} onOpenChange={setMarketplaceOpen} />
     </>
   )
 }

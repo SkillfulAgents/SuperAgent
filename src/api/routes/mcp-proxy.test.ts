@@ -1,10 +1,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
+import * as dnsPromises from 'node:dns/promises'
 
 // ---------------------------------------------------------------------------
 // Mock dependencies
 // ---------------------------------------------------------------------------
 const mockValidateProxyToken = vi.fn()
+
+vi.mock('node:dns/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:dns/promises')>()
+  return {
+    ...actual,
+    lookup: vi.fn(),
+  }
+})
 
 vi.mock('@shared/lib/proxy/token-store', () => ({
   validateProxyToken: (...args: unknown[]) => mockValidateProxyToken(...args),
@@ -44,6 +53,7 @@ vi.mock('drizzle-orm', () => ({
 // Mock policy enforcement
 const mockResolveMcpPolicy = vi.fn()
 const mockRequestReview = vi.fn()
+const mockRequestMcpReauth = vi.fn()
 
 vi.mock('@shared/lib/proxy/policy-resolver', () => ({
   resolveMcpPolicy: (...args: unknown[]) => mockResolveMcpPolicy(...args),
@@ -55,9 +65,18 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
   },
 }))
 
+vi.mock('@shared/lib/proxy/mcp-reauth-manager', () => ({
+  mcpReauthManager: {
+    requestReauth: (...args: unknown[]) => mockRequestMcpReauth(...args),
+    completeMcp: vi.fn(),
+  },
+}))
+
 // Mock fetch for forwarded requests
 const mockFetch = vi.fn()
 vi.stubGlobal('fetch', mockFetch)
+
+const lookupMock = dnsPromises.lookup as unknown as ReturnType<typeof vi.fn>
 
 import mcpProxy from './mcp-proxy'
 
@@ -87,6 +106,13 @@ function buildMcp(overrides: Record<string, unknown> = {}) {
     oauthResource: null,
     status: 'active',
     errorMessage: null,
+    toolsJson: JSON.stringify([
+      {
+        name: 'search',
+        description: 'Search records',
+        inputSchema: { type: 'object', properties: { query: { type: 'string' } } },
+      },
+    ]),
     ...overrides,
   }
 }
@@ -113,7 +139,8 @@ function setupSuccessPath(
   const {
     mcpOverrides = {},
     upstreamStatus = 200,
-    upstreamHeaders = { 'content-type': 'application/json' },
+    // Default GET-friendly: non-SSE application/json on GET is rewritten to 405 (SUP-525).
+    upstreamHeaders = { 'content-type': 'text/event-stream' },
     upstreamBody = '{"ok":true}',
   } = overrides
 
@@ -121,11 +148,10 @@ function setupSuccessPath(
   const mcp = buildMcp(mcpOverrides)
   setupDbMocks(mcp)
 
-  const mockResponse = new Response(upstreamBody, {
+  mockFetch.mockImplementation(async () => new Response(upstreamBody, {
     status: upstreamStatus,
     headers: upstreamHeaders,
-  })
-  mockFetch.mockResolvedValue(mockResponse)
+  }))
   return mcp
 }
 
@@ -137,6 +163,7 @@ describe('mcp-proxy route', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    lookupMock.mockResolvedValue({ address: '93.184.216.34', family: 4 })
     app = createApp()
     // Default: DB writes succeed
     mockInsertValues.mockResolvedValue(undefined)
@@ -149,6 +176,7 @@ describe('mcp-proxy route', () => {
       scopeDescriptions: {},
       resolvedFrom: 'global_default',
     })
+    mockRequestMcpReauth.mockResolvedValue(undefined)
   })
 
   afterEach(() => {
@@ -235,6 +263,237 @@ describe('mcp-proxy route', () => {
     })
   })
 
+  describe('MCP re-authentication', () => {
+    it('completes initialize locally for an MCP already marked auth_required', async () => {
+      mockValidateProxyToken.mockResolvedValue('my-agent')
+      setupDbMocks(buildMcp({ status: 'auth_required' }))
+
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 7,
+          method: 'initialize',
+          params: { protocolVersion: '2025-06-18' },
+        }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(await res.json()).toMatchObject({
+        jsonrpc: '2.0',
+        id: 7,
+        result: {
+          protocolVersion: '2025-06-18',
+          capabilities: { tools: { listChanged: false } },
+          serverInfo: { name: 'Test MCP' },
+        },
+      })
+      expect(res.headers.get('Mcp-Session-Id')).toBeTruthy()
+      expect(mockRequestMcpReauth).not.toHaveBeenCalled()
+      expect(mockFetch).not.toHaveBeenCalled()
+    })
+
+    it('binds the local session id to a stateful upstream session before resuming', async () => {
+      mockValidateProxyToken.mockResolvedValue('my-agent')
+      const stale = buildMcp({ status: 'auth_required', accessToken: 'stale-token' })
+      const reconnected = buildMcp({ status: 'active', accessToken: 'fresh-token' })
+      setupDbMocks(stale)
+
+      const initialize = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: { protocolVersion: '2025-06-18' },
+        }),
+      })
+      const clientSessionId = initialize.headers.get('Mcp-Session-Id')
+      expect(clientSessionId).toBeTruthy()
+
+      mockLimit
+        .mockResolvedValueOnce([{ mcp: stale }])
+        .mockResolvedValueOnce([{ mcp: reconnected }])
+      mockFetch
+        .mockResolvedValueOnce(new Response(JSON.stringify({
+          jsonrpc: '2.0',
+          id: 'upstream-init',
+          result: {
+            protocolVersion: '2025-06-18',
+            capabilities: {},
+            serverInfo: { name: 'Stateful MCP', version: '1.0.0' },
+          },
+        }), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            'Mcp-Session-Id': 'upstream-session-1',
+          },
+        }))
+        .mockResolvedValueOnce(new Response(null, { status: 202 }))
+        .mockResolvedValueOnce(new Response('{"jsonrpc":"2.0","id":2,"result":{"ok":true}}', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }))
+
+      const resumed = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer synth_valid',
+          'Content-Type': 'application/json',
+          'Mcp-Session-Id': clientSessionId!,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'tools/call',
+          params: { name: 'search', arguments: { query: 'hello' } },
+        }),
+      })
+
+      expect(resumed.status).toBe(200)
+      expect(mockFetch).toHaveBeenCalledTimes(3)
+      expect(JSON.parse(String(mockFetch.mock.calls[0][1].body))).toMatchObject({
+        method: 'initialize',
+        params: { protocolVersion: '2025-06-18' },
+      })
+      expect(JSON.parse(String(mockFetch.mock.calls[1][1].body))).toMatchObject({
+        method: 'notifications/initialized',
+      })
+      const resumedHeaders = mockFetch.mock.calls[2][1].headers as Headers
+      expect(resumedHeaders.get('Mcp-Session-Id')).toBe('upstream-session-1')
+      expect(resumedHeaders.get('Authorization')).toBe('Bearer fresh-token')
+
+      // Later calls in the same SDK session keep using the stable synthetic id;
+      // the proxy rewrites it without re-initializing upstream again.
+      mockLimit.mockResolvedValue([{ mcp: reconnected }])
+      mockFetch.mockResolvedValueOnce(new Response('{"jsonrpc":"2.0","id":3,"result":{}}', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }))
+      const later = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer synth_valid',
+          'Content-Type': 'application/json',
+          'Mcp-Session-Id': clientSessionId!,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 3,
+          method: 'tools/call',
+          params: { name: 'search', arguments: { query: 'again' } },
+        }),
+      })
+      expect(later.status).toBe(200)
+      expect(mockFetch).toHaveBeenCalledTimes(4)
+      expect((mockFetch.mock.calls[3][1].headers as Headers).get('Mcp-Session-Id'))
+        .toBe('upstream-session-1')
+    })
+
+    it('serves cached tools locally while auth is required', async () => {
+      mockValidateProxyToken.mockResolvedValue('my-agent')
+      setupDbMocks(buildMcp({ status: 'auth_required' }))
+
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 'tools-1', method: 'tools/list' }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(await res.json()).toMatchObject({
+        id: 'tools-1',
+        result: {
+          tools: [{
+            name: 'search',
+            description: 'Search records',
+            inputSchema: { type: 'object' },
+          }],
+        },
+      })
+      expect(mockRequestMcpReauth).not.toHaveBeenCalled()
+      expect(mockFetch).not.toHaveBeenCalled()
+    })
+
+    it('rejects the optional SSE GET without parking session startup', async () => {
+      mockValidateProxyToken.mockResolvedValue('my-agent')
+      setupDbMocks(buildMcp({ status: 'auth_required' }))
+
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        headers: { Authorization: 'Bearer synth_valid' },
+      })
+
+      expect(res.status).toBe(405)
+      expect(res.headers.get('allow')).toBe('POST')
+      expect(mockRequestMcpReauth).not.toHaveBeenCalled()
+      expect(mockFetch).not.toHaveBeenCalled()
+    })
+
+    it('parks an actual tool call for an MCP already marked auth_required, then resumes it', async () => {
+      mockValidateProxyToken.mockResolvedValue('my-agent')
+      const stale = buildMcp({ status: 'auth_required', accessToken: 'stale-token' })
+      const reconnected = buildMcp({ status: 'active', accessToken: 'fresh-token' })
+      setupDbMocks(stale)
+      mockLimit
+        .mockResolvedValueOnce([{ mcp: stale }])
+        .mockResolvedValueOnce([{ mcp: reconnected }])
+      mockFetch.mockResolvedValueOnce(new Response('{"ok":true}', {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      }))
+
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'search', arguments: { query: 'hello' } },
+        }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(mockRequestMcpReauth).toHaveBeenCalledWith({
+        agentSlug: 'my-agent',
+        mcpId: 'mcp-1',
+        mcpName: 'Test MCP',
+        authType: 'oauth',
+      }, expect.any(AbortSignal))
+      const [, proxyInit] = mockFetch.mock.calls[0]
+      expect((proxyInit.headers as Headers).get('Authorization')).toBe('Bearer fresh-token')
+    })
+
+    it('retries once after an upstream 401 and returns the resumed response', async () => {
+      mockValidateProxyToken.mockResolvedValue('my-agent')
+      const initial = buildMcp({ accessToken: 'expired-token' })
+      const reconnected = buildMcp({ accessToken: 'fresh-token' })
+      setupDbMocks(initial)
+      mockLimit
+        .mockResolvedValueOnce([{ mcp: initial }])
+        .mockResolvedValueOnce([{ mcp: reconnected }])
+      mockFetch
+        .mockResolvedValueOnce(new Response('{"error":"unauthorized"}', { status: 401 }))
+        .mockResolvedValueOnce(new Response('{"ok":true}', {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        }))
+
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
+        headers: { Authorization: 'Bearer synth_valid' },
+      })
+
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true })
+      expect(mockFetch).toHaveBeenCalledTimes(2)
+      const [, retryInit] = mockFetch.mock.calls[1]
+      expect((retryInit.headers as Headers).get('Authorization')).toBe('Bearer fresh-token')
+    })
+  })
+
   // =========================================================================
   // 3. Token refresh logic (tryRefreshToken)
   // =========================================================================
@@ -261,7 +520,7 @@ describe('mcp-proxy route', () => {
         .mockResolvedValueOnce(
           new Response('{"ok":true}', {
             status: 200,
-            headers: { 'content-type': 'application/json' },
+            headers: { 'content-type': 'text/event-stream' },
           })
         )
 
@@ -312,7 +571,7 @@ describe('mcp-proxy route', () => {
             { status: 200 }
           )
         )
-        .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+        .mockResolvedValueOnce(new Response('{}', { status: 200, headers: { 'content-type': 'text/event-stream' } }))
 
       await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
@@ -338,7 +597,7 @@ describe('mcp-proxy route', () => {
             { status: 200 }
           )
         )
-        .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+        .mockResolvedValueOnce(new Response('{}', { status: 200, headers: { 'content-type': 'text/event-stream' } }))
 
       await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
@@ -364,7 +623,7 @@ describe('mcp-proxy route', () => {
             { status: 200 }
           )
         )
-        .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+        .mockResolvedValueOnce(new Response('{}', { status: 200, headers: { 'content-type': 'text/event-stream' } }))
 
       await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
@@ -390,7 +649,7 @@ describe('mcp-proxy route', () => {
             { status: 200 }
           )
         )
-        .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+        .mockResolvedValueOnce(new Response('{}', { status: 200, headers: { 'content-type': 'text/event-stream' } }))
 
       await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
@@ -401,24 +660,41 @@ describe('mcp-proxy route', () => {
       expect(body.has('resource')).toBe(false)
     })
 
-    it('returns 401 and marks auth_required when token refresh fails', async () => {
+    it('parks and resumes with the reconnected token when token refresh fails', async () => {
       mockValidateProxyToken.mockResolvedValue('my-agent')
       const mcp = buildMcp({
         tokenExpiresAt: new Date(Date.now() - 60_000), // expired
       })
       setupDbMocks(mcp)
+      const reconnected = buildMcp({
+        accessToken: 'reauthorized-access-token',
+        refreshToken: 'reauthorized-refresh-token',
+      })
+      mockLimit
+        .mockResolvedValueOnce([{ mcp }])
+        .mockResolvedValueOnce([{ mcp: reconnected }])
 
       // Refresh endpoint returns 400 (failure)
-      mockFetch.mockResolvedValueOnce(
-        new Response('{"error":"invalid_grant"}', { status: 400 })
-      )
+      mockFetch
+        .mockResolvedValueOnce(new Response('{"error":"invalid_grant"}', { status: 400 }))
+        .mockResolvedValueOnce(new Response('{"ok":true}', {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        }))
 
       const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
       })
-      expect(res.status).toBe(401)
-      const body = await res.json()
-      expect(body.error).toContain('re-authentication')
+      expect(res.status).toBe(200)
+      expect(mockRequestMcpReauth).toHaveBeenCalledWith({
+        agentSlug: 'my-agent',
+        mcpId: 'mcp-1',
+        mcpName: 'Test MCP',
+        authType: 'oauth',
+      }, expect.any(AbortSignal))
+
+      const [, proxyInit] = mockFetch.mock.calls[1]
+      expect((proxyInit.headers as Headers).get('Authorization')).toBe('Bearer reauthorized-access-token')
 
       // Verify status was updated to auth_required
       expect(mockUpdateSet).toHaveBeenCalledWith(
@@ -429,7 +705,7 @@ describe('mcp-proxy route', () => {
       )
     })
 
-    it('returns 401 when token is expired but no refresh token is available', async () => {
+    it('returns a timeout when an expired token has no refresh path and re-auth is abandoned', async () => {
       mockValidateProxyToken.mockResolvedValue('my-agent')
       const mcp = buildMcp({
         tokenExpiresAt: new Date(Date.now() - 60_000),
@@ -437,13 +713,14 @@ describe('mcp-proxy route', () => {
         accessToken: null, // expired, effectively null
       })
       setupDbMocks(mcp)
+      mockRequestMcpReauth.mockRejectedValueOnce(new Error('MCP re-authentication timed out'))
 
       const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
       })
-      expect(res.status).toBe(401)
+      expect(res.status).toBe(408)
       const body = await res.json()
-      expect(body.error).toContain('no access token')
+      expect(body.error).toBe('mcp_reauth_timeout')
     })
 
     it('skips refresh when token is not expired yet', async () => {
@@ -454,7 +731,7 @@ describe('mcp-proxy route', () => {
       setupDbMocks(mcp)
 
       mockFetch.mockResolvedValueOnce(
-        new Response('{"ok":true}', { status: 200 })
+        new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'text/event-stream' } })
       )
 
       const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
@@ -481,7 +758,7 @@ describe('mcp-proxy route', () => {
             { status: 200 }
           )
         )
-        .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+        .mockResolvedValueOnce(new Response('{}', { status: 200, headers: { 'content-type': 'text/event-stream' } }))
 
       await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
@@ -509,7 +786,7 @@ describe('mcp-proxy route', () => {
             { status: 200 }
           )
         )
-        .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+        .mockResolvedValueOnce(new Response('{}', { status: 200, headers: { 'content-type': 'text/event-stream' } }))
 
       await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
@@ -540,7 +817,7 @@ describe('mcp-proxy route', () => {
             { status: 200 }
           )
         )
-        .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+        .mockResolvedValueOnce(new Response('{}', { status: 200, headers: { 'content-type': 'text/event-stream' } }))
 
       await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
@@ -559,12 +836,13 @@ describe('mcp-proxy route', () => {
         accessToken: null,
       })
       setupDbMocks(mcp)
+      mockRequestMcpReauth.mockRejectedValueOnce(new Error('MCP re-authentication timed out'))
 
       const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
       })
-      // tryRefreshToken returns null -> accessToken still null -> 401
-      expect(res.status).toBe(401)
+      // tryRefreshToken returns null, so the request waits for interactive re-auth.
+      expect(res.status).toBe(408)
     })
 
     it('returns null from tryRefreshToken when missing oauthClientId', async () => {
@@ -576,11 +854,12 @@ describe('mcp-proxy route', () => {
         accessToken: null,
       })
       setupDbMocks(mcp)
+      mockRequestMcpReauth.mockRejectedValueOnce(new Error('MCP re-authentication timed out'))
 
       const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
       })
-      expect(res.status).toBe(401)
+      expect(res.status).toBe(408)
     })
 
     it('handles fetch error during token refresh gracefully', async () => {
@@ -592,13 +871,14 @@ describe('mcp-proxy route', () => {
 
       // Refresh fetch throws a network error
       mockFetch.mockRejectedValueOnce(new Error('ECONNREFUSED'))
+      mockRequestMcpReauth.mockRejectedValueOnce(new Error('MCP re-authentication timed out'))
 
       const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
       })
-      expect(res.status).toBe(401)
+      expect(res.status).toBe(408)
       const body = await res.json()
-      expect(body.error).toContain('re-authentication')
+      expect(body.error).toBe('mcp_reauth_timeout')
     })
 
     it('skips token check entirely when authType is none', async () => {
@@ -611,7 +891,7 @@ describe('mcp-proxy route', () => {
       setupDbMocks(mcp)
 
       mockFetch.mockResolvedValueOnce(
-        new Response('{"ok":true}', { status: 200 })
+        new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'text/event-stream' } })
       )
 
       const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
@@ -631,7 +911,7 @@ describe('mcp-proxy route', () => {
       setupDbMocks(mcp)
 
       mockFetch.mockResolvedValueOnce(
-        new Response('{"ok":true}', { status: 200 })
+        new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'text/event-stream' } })
       )
 
       await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
@@ -762,7 +1042,7 @@ describe('mcp-proxy route', () => {
       setupSuccessPath({
         upstreamHeaders: {
           'transfer-encoding': 'chunked',
-          'content-type': 'application/json',
+          'content-type': 'text/event-stream',
         },
       })
 
@@ -777,7 +1057,7 @@ describe('mcp-proxy route', () => {
       setupSuccessPath({
         upstreamHeaders: {
           'content-encoding': 'gzip',
-          'content-type': 'application/json',
+          'content-type': 'text/event-stream',
         },
       })
 
@@ -792,7 +1072,7 @@ describe('mcp-proxy route', () => {
       setupSuccessPath({
         upstreamHeaders: {
           'content-length': '123',
-          'content-type': 'application/json',
+          'content-type': 'text/event-stream',
         },
       })
 
@@ -813,8 +1093,14 @@ describe('mcp-proxy route', () => {
         },
       })
 
+      // POST: non-SSE content-type must not be rewritten (rewrite is GET-only).
       const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
-        headers: { Authorization: 'Bearer synth_valid' },
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer synth_valid',
+          'Content-Type': 'application/json',
+        },
+        body: '{}',
       })
 
       expect(res.headers.get('content-type')).toBe('application/json')
@@ -1376,7 +1662,7 @@ describe('mcp-proxy route', () => {
       expect(res.status).toBe(200)
     })
 
-    it('logs audit entry with token refresh failure error', async () => {
+    it('logs an abandoned re-auth wait after token refresh failure', async () => {
       mockValidateProxyToken.mockResolvedValue('my-agent')
       const mcp = buildMcp({
         tokenExpiresAt: new Date(Date.now() - 60_000),
@@ -1386,15 +1672,16 @@ describe('mcp-proxy route', () => {
       mockFetch.mockResolvedValueOnce(
         new Response('{"error":"invalid"}', { status: 400 })
       )
+      mockRequestMcpReauth.mockRejectedValueOnce(new Error('MCP re-authentication timed out'))
 
       await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
       })
 
-      // The audit log from the token refresh failure
       expect(mockInsertValues).toHaveBeenCalled()
       const entry = mockInsertValues.mock.calls[0][0]
-      expect(entry.errorMessage).toContain('Token refresh failed')
+      expect(entry.statusCode).toBe(408)
+      expect(entry.errorMessage).toContain('timed out while waiting')
     })
 
     it('records durationMs for successful requests', async () => {
@@ -1513,7 +1800,7 @@ describe('mcp-proxy route', () => {
       expect(headers.get('Authorization')).toBe('Bearer static-api-key-123')
     })
 
-    it('returns 401 when authType is bearer but no accessToken is set', async () => {
+    it('asks for a replacement when authType is bearer but no accessToken is set', async () => {
       mockValidateProxyToken.mockResolvedValue('my-agent')
       const mcp = buildMcp({
         authType: 'bearer',
@@ -1522,14 +1809,19 @@ describe('mcp-proxy route', () => {
         refreshToken: null,
       })
       setupDbMocks(mcp)
+      mockRequestMcpReauth.mockRejectedValueOnce(new Error('MCP re-authentication timed out'))
 
       const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
       })
 
-      expect(res.status).toBe(401)
+      expect(res.status).toBe(408)
       const body = await res.json()
-      expect(body.error).toContain('no access token')
+      expect(body.error).toBe('mcp_reauth_timeout')
+      expect(mockRequestMcpReauth).toHaveBeenCalledWith(expect.objectContaining({
+        mcpId: 'mcp-1',
+        authType: 'bearer',
+      }), expect.any(AbortSignal))
     })
 
     it('handles concurrent requests to different MCP servers', async () => {
@@ -1542,11 +1834,11 @@ describe('mcp-proxy route', () => {
 
       // First request setup
       mockDbFrom.mockReturnValueOnce({ innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ mcp: mcp1 }]) }) }) })
-      mockFetch.mockResolvedValueOnce(new Response('{"server":"one"}', { status: 200 }))
+      mockFetch.mockResolvedValueOnce(new Response('{"server":"one"}', { status: 200, headers: { 'content-type': 'text/event-stream' } }))
 
       // Second request setup
       mockDbFrom.mockReturnValueOnce({ innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ mcp: mcp2 }]) }) }) })
-      mockFetch.mockResolvedValueOnce(new Response('{"server":"two"}', { status: 200 }))
+      mockFetch.mockResolvedValueOnce(new Response('{"server":"two"}', { status: 200, headers: { 'content-type': 'text/event-stream' } }))
 
       const [res1, res2] = await Promise.all([
         makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
@@ -1632,7 +1924,8 @@ describe('mcp-proxy route', () => {
     })
 
     it('tools/call with policy "block" → 403', async () => {
-      setupSuccessPath()
+      mockValidateProxyToken.mockResolvedValue('my-agent')
+      setupDbMocks(buildMcp({ status: 'auth_required' }))
       mockResolveMcpPolicy.mockResolvedValue({
         decision: 'block',
         matchedScopes: ['search'],
@@ -1649,6 +1942,8 @@ describe('mcp-proxy route', () => {
       expect(res.status).toBe(403)
       const json = await res.json()
       expect(json.error).toBe('blocked_by_policy')
+      expect(mockRequestMcpReauth).not.toHaveBeenCalled()
+      expect(mockFetch).not.toHaveBeenCalled()
     })
 
     it('tools/call with policy "review" → await decision', async () => {
@@ -1783,6 +2078,95 @@ describe('mcp-proxy route', () => {
       expect(res.status).toBe(200)
       // The key assertion: reviewManager was called because fallback is 'review'
       expect(mockRequestReview).toHaveBeenCalledOnce()
+    })
+  })
+
+  // Non-SSE GET rewrite (SUP-525 / Attio reconnect storm)
+  describe('non-SSE GET rewrite', () => {
+    it('rewrites GET 200 text/html to 405 so Streamable HTTP clients stop reconnecting', async () => {
+      setupSuccessPath({
+        upstreamStatus: 200,
+        upstreamHeaders: { 'content-type': 'text/html; charset=utf-8' },
+        upstreamBody: '<!DOCTYPE html><title>MCP Server</title>',
+      })
+
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'GET',
+        headers: {
+          Authorization: 'Bearer synth_valid',
+          Accept: 'text/event-stream',
+        },
+      })
+
+      expect(res.status).toBe(405)
+      expect(res.headers.get('Allow')).toBe('POST')
+      expect(mockInsertValues).toHaveBeenCalled()
+      const entry = mockInsertValues.mock.calls[0][0]
+      expect(entry.statusCode).toBe(405)
+      expect(entry.method).toBe('GET')
+      expect(entry.errorMessage).toContain('rewrote non-SSE GET 200')
+      expect(entry.errorMessage).toContain('text/html')
+    })
+
+    it('passes through GET 200 text/event-stream unchanged', async () => {
+      setupSuccessPath({
+        upstreamStatus: 200,
+        upstreamHeaders: { 'content-type': 'text/event-stream' },
+        upstreamBody: 'event: ping\ndata: {}\n\n',
+      })
+
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'GET',
+        headers: {
+          Authorization: 'Bearer synth_valid',
+          Accept: 'text/event-stream',
+        },
+      })
+
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-type')).toContain('text/event-stream')
+      expect(await res.text()).toContain('event: ping')
+      const entry = mockInsertValues.mock.calls[0][0]
+      expect(entry.statusCode).toBe(200)
+      expect(entry.errorMessage).toBeNull()
+    })
+
+    it('passes through upstream GET 405 unchanged', async () => {
+      setupSuccessPath({
+        upstreamStatus: 405,
+        upstreamHeaders: { allow: 'POST' },
+        upstreamBody: '',
+      })
+
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer synth_valid', Accept: 'text/event-stream' },
+      })
+
+      expect(res.status).toBe(405)
+      const entry = mockInsertValues.mock.calls[0][0]
+      expect(entry.statusCode).toBe(405)
+      expect(entry.errorMessage).toBeNull()
+    })
+
+    it('does not rewrite POST 200 text/html', async () => {
+      setupSuccessPath({
+        upstreamStatus: 200,
+        upstreamHeaders: { 'content-type': 'text/html' },
+        upstreamBody: '<html>nope</html>',
+      })
+
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer synth_valid',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1 }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(await res.text()).toContain('<html>')
     })
   })
 })

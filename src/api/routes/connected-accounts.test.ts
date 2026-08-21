@@ -122,10 +122,30 @@ vi.mock('@shared/lib/services/audit-log-service', () => ({
 
 const mockCountActiveTriggersPerAccount = vi.fn()
 const mockCancelTriggersForConnectedAccount = vi.fn()
+const mockFindAgentsAssignedConnectedAccount = vi.fn()
+  .mockResolvedValue(['agent-a'])
+const mockSyncAgentsAssignedConnectedAccount = vi.fn().mockResolvedValue(true)
+const mockSyncConnectedAccountAgents = vi.fn().mockResolvedValue(true)
+const mockCompleteReauthAccount = vi.fn()
 
 vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   countActiveTriggersPerAccount: (...args: unknown[]) => mockCountActiveTriggersPerAccount(...args),
   cancelTriggersForConnectedAccount: (...args: unknown[]) => mockCancelTriggersForConnectedAccount(...args),
+}))
+
+vi.mock('@shared/lib/container/connection-runtime-sync', () => ({
+  findAgentsAssignedConnectedAccount: (...args: unknown[]) =>
+    mockFindAgentsAssignedConnectedAccount(...args),
+  syncAgentsAssignedConnectedAccount: (...args: unknown[]) =>
+    mockSyncAgentsAssignedConnectedAccount(...args),
+  syncConnectedAccountAgents: (...args: unknown[]) =>
+    mockSyncConnectedAccountAgents(...args),
+}))
+
+vi.mock('@shared/lib/proxy/account-reauth-manager', () => ({
+  accountReauthManager: {
+    completeAccount: (...args: unknown[]) => mockCompleteReauthAccount(...args),
+  },
 }))
 
 import connectedAccountsRouter from './connected-accounts'
@@ -217,6 +237,11 @@ describe('connected-accounts reconnect flow', () => {
         displayName: 'My GitHub',
       }))
       expect(mockDbInsertValues).not.toHaveBeenCalled()
+      expect(await res.json()).toMatchObject({ liveRefresh: true })
+      expect(mockSyncAgentsAssignedConnectedAccount).toHaveBeenCalledWith(
+        'existing-acc',
+      )
+      expect(mockCompleteReauthAccount).toHaveBeenCalledWith('existing-acc')
     })
 
     it('deletes old remote connection after reconnect', async () => {
@@ -278,6 +303,28 @@ describe('connected-accounts reconnect flow', () => {
       expect(res.status).toBe(200)
       expect(mockDbInsertValues).toHaveBeenCalled()
       expect(mockDbUpdateSet).not.toHaveBeenCalled()
+      expect(mockSyncAgentsAssignedConnectedAccount).toHaveBeenCalledWith(
+        expect.any(String),
+      )
+      expect(mockCompleteReauthAccount).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('GET /callback with reconnectAccountId', () => {
+    it('resumes parked proxy requests after the web OAuth callback activates the account', async () => {
+      mockGetConnection.mockResolvedValue({ id: 'new-web-conn', status: 'ACTIVE' })
+      mockGetAccountDisplayName.mockResolvedValue('My GitHub')
+      mockDbSelectLimit.mockResolvedValue([{ providerConnectionId: 'old-conn' }])
+
+      const res = await app.request(
+        'http://localhost/api/connected-accounts/callback' +
+        '?connectedAccountId=new-web-conn&status=success&toolkit=github' +
+        '&reconnectAccountId=existing-acc',
+      )
+
+      expect(res.status).toBe(200)
+      expect(await res.text()).toContain('Connected Successfully!')
+      expect(mockCompleteReauthAccount).toHaveBeenCalledWith('existing-acc')
     })
   })
 
@@ -294,7 +341,8 @@ describe('connected-accounts reconnect flow', () => {
         method: 'DELETE',
       })
 
-      expect(res.status).toBe(204)
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ success: true, liveRefresh: true })
       expect(mockCancelTriggersForConnectedAccount).toHaveBeenCalledWith('existing-acc')
       expect(mockDeleteConnection).toHaveBeenCalledWith('remote-conn', 'github')
       expect(mockDbDeleteWhere).toHaveBeenCalledWith({ col: 'id', val: 'existing-acc' })
@@ -310,6 +358,10 @@ describe('connected-accounts reconnect flow', () => {
         .toBeLessThan(mockDeleteConnection.mock.invocationCallOrder[0])
       expect(mockDeleteConnection.mock.invocationCallOrder[0])
         .toBeLessThan(mockDbDeleteWhere.mock.invocationCallOrder[0])
+      expect(mockFindAgentsAssignedConnectedAccount).toHaveBeenCalledWith(
+        'existing-acc',
+      )
+      expect(mockSyncConnectedAccountAgents).toHaveBeenCalledWith(['agent-a'])
     })
 
     it('still deletes the local row when remote provider cleanup fails', async () => {
@@ -327,7 +379,8 @@ describe('connected-accounts reconnect flow', () => {
         method: 'DELETE',
       })
 
-      expect(res.status).toBe(204)
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ success: true, liveRefresh: true })
       expect(mockCancelTriggersForConnectedAccount).toHaveBeenCalledWith('existing-acc')
       expect(mockDbDeleteWhere).toHaveBeenCalledWith({ col: 'id', val: 'existing-acc' })
       expect(warnSpy).toHaveBeenCalledWith('Failed to delete connection from provider:', expect.any(Error))

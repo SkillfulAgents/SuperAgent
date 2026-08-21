@@ -6,7 +6,8 @@ import { useBrowserStream } from '@renderer/hooks/use-browser-stream'
 import { Button } from '@renderer/components/ui/button'
 import { DeclineButton } from '@renderer/components/messages/decline-button'
 import { apiFetch } from '@renderer/lib/api'
-import { removeBrowserInputRequest, useMessageStream } from '@renderer/hooks/use-message-stream'
+import { linkify } from '@renderer/lib/linkify'
+import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useBrowserInputActions } from '@renderer/hooks/use-browser-input-actions'
 import { cn } from '@shared/lib/utils/cn'
 import {
@@ -86,7 +87,7 @@ export function BrowserTrayContent({
   const { submittingAction, error: actionError, complete, decline } = useBrowserInputActions({
     agentSlug,
     sessionId,
-    onResolved: (toolUseId) => removeBrowserInputRequest(sessionId, toolUseId),
+    onResolved: (toolUseId) => stream.dismissBrowserInputRequest(toolUseId),
   })
 
   return (
@@ -209,7 +210,7 @@ export function BrowserTrayContent({
         <div className="shrink-0 px-4 mt-3">
           <div className="rounded-lg border border-border/60 bg-muted/30 p-3 flex items-center gap-2">
             <span className="text-xs font-medium text-foreground flex-1 truncate">
-              {latestRequest.message || 'Your input needed'}
+              {latestRequest.message ? linkify(latestRequest.message) : 'Your input needed'}
             </span>
             <DeclineButton
               onDecline={(reason) => decline(latestRequest.toolUseId, reason)}
@@ -241,7 +242,7 @@ export function BrowserTrayContent({
 
       {/* Activity log */}
       <div className="flex items-center gap-1 py-1.5 border-b shrink-0 mx-4 mt-4">
-        <span className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground">Activity</span>
+        <span className="text-2xs font-medium uppercase tracking-wider text-muted-foreground">Activity</span>
       </div>
       <BrowserActivityLog sessionId={sessionId} agentSlug={agentSlug} />
 

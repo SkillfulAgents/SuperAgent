@@ -22,7 +22,8 @@ import {
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
-import { Authenticated, EntityAgentRole } from '../middleware/auth'
+import { toPublicWebhookTrigger } from '@shared/lib/webhook-triggers/public'
+import { Authenticated, EntityAgentRole, getAuthorizedAgentRole } from '../middleware/auth'
 
 const webhookTriggersRouter = new Hono()
 
@@ -38,8 +39,8 @@ const TriggerAgentRole = EntityAgentRole({
 // GET /api/webhook-triggers/:triggerId - Get a single trigger
 webhookTriggersRouter.get('/:triggerId', TriggerAgentRole('viewer'), async (c) => {
   try {
-    const trigger = c.get('webhookTrigger' as never)
-    return c.json(trigger)
+    const trigger = c.get('webhookTrigger' as never) as Awaited<ReturnType<typeof getWebhookTrigger>>
+    return c.json(toPublicWebhookTrigger(trigger!, getAuthorizedAgentRole(c)))
   } catch (error) {
     console.error('Failed to fetch webhook trigger:', error)
     return c.json({ error: 'Failed to fetch webhook trigger' }, 500)
@@ -71,8 +72,9 @@ webhookTriggersRouter.post('/:triggerId/pause', TriggerAgentRole('user'), async 
       return c.json({ error: 'Trigger is not active' }, 400)
     }
     const updated = await getWebhookTrigger(trigger!.id)
+    if (!updated) throw new Error('Webhook trigger disappeared after pause')
     logAuditEvent({ userId: getCurrentUserId(c), object: 'trigger', objectId: trigger!.id, action: 'paused' })
-    return c.json(updated)
+    return c.json(toPublicWebhookTrigger(updated, getAuthorizedAgentRole(c)))
   } catch (error) {
     console.error('Failed to pause webhook trigger:', error)
     return c.json({ error: 'Failed to pause webhook trigger' }, 500)
@@ -88,8 +90,9 @@ webhookTriggersRouter.post('/:triggerId/resume', TriggerAgentRole('user'), async
       return c.json({ error: 'Trigger is not paused' }, 400)
     }
     const updated = await getWebhookTrigger(trigger!.id)
+    if (!updated) throw new Error('Webhook trigger disappeared after resume')
     logAuditEvent({ userId: getCurrentUserId(c), object: 'trigger', objectId: trigger!.id, action: 'resumed' })
-    return c.json(updated)
+    return c.json(toPublicWebhookTrigger(updated, getAuthorizedAgentRole(c)))
   } catch (error) {
     console.error('Failed to resume webhook trigger:', error)
     return c.json({ error: 'Failed to resume webhook trigger' }, 500)
@@ -112,8 +115,9 @@ webhookTriggersRouter.patch('/:triggerId/prompt', TriggerAgentRole('user'), asyn
     }
 
     const refreshed = await getWebhookTrigger(trigger!.id)
+    if (!refreshed) throw new Error('Webhook trigger disappeared after prompt update')
     logAuditEvent({ userId: getCurrentUserId(c), object: 'trigger', objectId: trigger!.id, action: 'updated', details: { field: 'prompt' } })
-    return c.json(refreshed)
+    return c.json(toPublicWebhookTrigger(refreshed, getAuthorizedAgentRole(c)))
   } catch (error) {
     console.error('Failed to update webhook trigger prompt:', error)
     return c.json({ error: 'Failed to update prompt' }, 500)
@@ -141,8 +145,9 @@ webhookTriggersRouter.patch('/:triggerId/runtime-options', TriggerAgentRole('use
     }
 
     const refreshed = await getWebhookTrigger(trigger!.id)
+    if (!refreshed) throw new Error('Webhook trigger disappeared after runtime options update')
     logAuditEvent({ userId: getCurrentUserId(c), object: 'trigger', objectId: trigger!.id, action: 'updated', details: { field: 'runtime-options' } })
-    return c.json(refreshed)
+    return c.json(toPublicWebhookTrigger(refreshed, getAuthorizedAgentRole(c)))
   } catch (error) {
     console.error('Failed to update webhook trigger runtime options:', error)
     return c.json({ error: 'Failed to update runtime options' }, 500)

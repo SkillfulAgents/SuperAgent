@@ -1,9 +1,14 @@
 import { apiFetch } from '@renderer/lib/api'
+import { warnIfLiveRefreshFailed } from '@renderer/lib/connection-live-refresh'
 
 import { useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import type { Provider } from '@shared/lib/account-providers/service-catalog'
+import type {
+  AgentConnectedAccountDto,
+  PublicAgentConnectedAccount,
+} from '@shared/lib/agent-connections/public'
 
 export interface ConnectedAccount {
   id: string
@@ -17,10 +22,7 @@ export interface ConnectedAccount {
   provider?: Provider
 }
 
-export interface AgentConnectedAccount extends ConnectedAccount {
-  mappingId: string
-  mappedAt: string
-}
+export type AgentConnectedAccount = PublicAgentConnectedAccount
 
 interface ConnectedAccountsResponse {
   accounts: ConnectedAccount[]
@@ -50,7 +52,7 @@ export function useConnectedAccounts() {
  * Hook to fetch connected accounts assigned to a specific agent
  */
 export function useAgentConnectedAccounts(agentSlug: string) {
-  return useQuery<{ accounts: AgentConnectedAccount[] }>({
+  return useQuery<{ accounts: AgentConnectedAccountDto[] }>({
     queryKey: ['agent-connected-accounts', agentSlug],
     queryFn: async () => {
       const res = await apiFetch(`/api/agents/${agentSlug}/connected-accounts`)
@@ -120,6 +122,7 @@ export function useDeleteConnectedAccount() {
         const error = await res.json().catch(() => ({}))
         throw new Error(error.error || 'Failed to delete account')
       }
+      warnIfLiveRefreshFailed(await res.json().catch(() => ({})))
     },
     onSuccess: (_, accountId) => {
       queryClient.invalidateQueries({ queryKey: ['connected-accounts'] })
@@ -151,6 +154,7 @@ export function useRenameConnectedAccount() {
       }
 
       const data = await res.json()
+      warnIfLiveRefreshFailed(data)
       return data.account
     },
     onSuccess: () => {
@@ -178,6 +182,7 @@ export function useAssignAccountsToAgent() {
         const error = await res.json().catch(() => ({}))
         throw new Error(error.error || 'Failed to assign accounts to agent')
       }
+      warnIfLiveRefreshFailed(await res.json().catch(() => ({})))
     },
     onSuccess: (_, { accountIds }) => {
       // Bare prefix (not keyed on agentSlug): the agent-home Connections card keys
@@ -205,6 +210,7 @@ export function useRemoveAgentConnectedAccount() {
         method: 'DELETE',
       })
       if (!res.ok) throw new Error('Failed to remove account from agent')
+      warnIfLiveRefreshFailed(await res.json().catch(() => ({})))
     },
     onSuccess: (_, { accountId }) => {
       // Bare prefix — see useAssignAccountsToAgent: reaches the id-keyed home card too.

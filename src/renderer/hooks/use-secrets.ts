@@ -11,7 +11,10 @@ export function useAgentSecrets(agentSlug: string | null) {
     queryKey: ['agent-secrets', agentSlug],
     queryFn: async () => {
       const res = await apiFetch(`/api/agents/${agentSlug}/secrets`)
-      if (!res.ok) throw new Error('Failed to fetch secrets')
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as { error?: string } | null
+        throw new Error(body?.error || 'Failed to fetch secrets')
+      }
       return res.json()
     },
     enabled: !!agentSlug,
@@ -58,6 +61,7 @@ export function useUpdateSecret() {
   const queryClient = useQueryClient()
 
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({
       agentSlug,
       secretId,
@@ -84,6 +88,28 @@ export function useUpdateSecret() {
       queryClient.invalidateQueries({
         queryKey: ['agent-secrets', variables.agentSlug],
       })
+    },
+  })
+}
+
+export function useRevealSecretValue() {
+  return useMutation({
+    meta: { skipGlobalErrorToast: true },
+    gcTime: 0,
+    mutationFn: async ({
+      agentSlug,
+      secretId,
+    }: {
+      agentSlug: string
+      secretId: string
+    }) => {
+      const res = await apiFetch(`/api/agents/${agentSlug}/secrets/${secretId}/value`)
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({ error: 'Failed to reveal secret' }))
+        throw new Error(error.error || 'Failed to reveal secret')
+      }
+      const data = (await res.json()) as { value: string }
+      return data.value
     },
   })
 }

@@ -3,10 +3,37 @@ import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import {
   AGENT_BROWSER_BASH_WARNING,
   MessageQueue,
+  resolveRemoteMcpProxyUrl,
   resultNeedsResumeErrorFallback,
   startsWithAgentBrowserCommand,
   stillQueuedFromReceipt,
 } from './claude-code'
+
+describe('resolveRemoteMcpProxyUrl', () => {
+  it('re-origins a direct host-app proxyUrl onto the talk-back base', () => {
+    expect(
+      resolveRemoteMcpProxyUrl(
+        'http://10.20.108.29:3000/api/mcp-proxy/agent/mcp-1',
+        'http://127.0.0.1:9412/api',
+      ),
+    ).toBe('http://127.0.0.1:9412/api/mcp-proxy/agent/mcp-1')
+  })
+
+  it('is a no-op when the talk-back origin already matches', () => {
+    expect(
+      resolveRemoteMcpProxyUrl(
+        'http://host.docker.internal:3000/api/mcp-proxy/agent/mcp-1',
+        'http://host.docker.internal:3000/api',
+      ),
+    ).toBe('http://host.docker.internal:3000/api/mcp-proxy/agent/mcp-1')
+  })
+
+  it('returns the original URL when SUPERAGENT_HOST_API_URL is unset or invalid', () => {
+    const direct = 'http://10.20.108.29:3000/api/mcp-proxy/agent/mcp-1'
+    expect(resolveRemoteMcpProxyUrl(direct, undefined)).toBe(direct)
+    expect(resolveRemoteMcpProxyUrl(direct, 'not-a-url')).toBe(direct)
+  })
+})
 
 describe('startsWithAgentBrowserCommand', () => {
   it.each([
