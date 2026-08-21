@@ -96,7 +96,7 @@ The template structure:
     └── App.jsx          # Edit this to build your dashboard
 ```
 
-React dashboards are **built to static files** (`vite build`) and served via `serve.js` by default. The start script runs `bun run build && bun run serve.js`. The included adapter also supports the Vite dev server and keeps HMR beneath the artifact mount.
+React dashboards are **built to static files** (`vite build`) and served via `serve.js` by default. The start script runs `bun run build-if-needed.js && bun run serve.js` — the build is skipped when no source file is newer than `dist/` (container restarts reuse the previous build; set `DASHBOARD_FORCE_BUILD=1` to force one). The included adapter also supports the Vite dev server and keeps HMR beneath the artifact mount.
 
 **CRITICAL:** Keep `gamutDashboard()` in `vite.config.js`. The dashboard manager supplies `DASHBOARD_BASE_PATH`; in development the adapter applies it to Vite's entry modules and HMR client. Production assets, dynamic imports, CSS/worker URLs, fonts, and images remain relative, while `serve.js` and the injected runtime provide a stable document/router base. This keeps one production build relocatable.
 
