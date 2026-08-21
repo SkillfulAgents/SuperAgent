@@ -1,6 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { addErrorBreadcrumb, captureException } from '@shared/lib/error-reporting'
-import { RECOVERY_PROMPTS } from './runtime-death'
 import {
   recoverFromUnexpectedDeath,
   resetRuntimeRecoveryForTests,
@@ -16,12 +15,16 @@ vi.mock('@shared/lib/error-reporting', () => ({
 
 const MAX_LIFETIME_PROMPT =
   'The previous turn was cut off because the runtime hit its 8-hour lifetime. Continue from where you left off. Check what already completed before redoing work.'
+const RUNTIME_LOST_PROMPT =
+  'The previous turn was interrupted because the runtime stopped unexpectedly. Continue from where you left off.'
+const GUEST_OOM_PROMPT =
+  'The previous turn was killed because the process ran out of memory. Continue from where you left off.'
 
 function recoverPlan(overrides: Partial<Extract<UnexpectedDeathPlan, { action: 'recover' }>> = {}) {
   return {
     action: 'recover' as const,
     reason: 'runtime_lost',
-    resumePrompt: RECOVERY_PROMPTS.runtime_lost,
+    resumePrompt: RUNTIME_LOST_PROMPT,
     replaceGeneration: true,
     ...overrides,
   }
@@ -142,7 +145,7 @@ describe('recoverFromUnexpectedDeath', () => {
     deps.observeUnexpectedDeath.mockResolvedValue(
       recoverPlan({
         reason: 'guest_oom',
-        resumePrompt: RECOVERY_PROMPTS.guest_oom,
+        resumePrompt: GUEST_OOM_PROMPT,
         replaceGeneration: false,
       }),
     )
@@ -153,7 +156,7 @@ describe('recoverFromUnexpectedDeath', () => {
     expect(deps.ensureRunning).not.toHaveBeenCalled()
     expect(deps.sendMessage).toHaveBeenCalledWith(
       'sess-1',
-      RECOVERY_PROMPTS.guest_oom,
+      GUEST_OOM_PROMPT,
       expect.any(String),
       { shouldQuery: true },
     )
@@ -286,7 +289,7 @@ describe('recoverFromUnexpectedDeath', () => {
 
     expect(deps.sendMessage).toHaveBeenCalledTimes(1)
     expect(deps.sendMessage.mock.calls[0][1]).toBe(
-      `${RECOVERY_PROMPTS.runtime_lost}\n\nThe user also sent:\nkeep going`,
+      `${RUNTIME_LOST_PROMPT}\n\nThe user also sent:\nkeep going`,
     )
   })
 

@@ -1,16 +1,14 @@
-export const RUNTIME_DEATH_REASONS = ['guest_oom', 'runtime_lost'] as const
-
-export type RecoverableDeathReason = (typeof RUNTIME_DEATH_REASONS)[number]
-
 // Fatal kind the agent process reported just before the runtime died, if any.
 export type RuntimeFatalKind = 'oom_sigkill' | null
 
+// Reason vocabularies and prompt text are runtime-specific and live with each
+// runtime (e.g. microvm-death-classifier.ts); the generic contract only carries them.
 export type UnexpectedDeathPlan =
   | { action: 'ignore' }
   | { action: 'settle' }
   | {
       action: 'recover'
-      // Free-form for telemetry; runtimes may add reasons beyond RUNTIME_DEATH_REASONS.
+      // Free-form, for telemetry.
       reason: string
       resumePrompt: string
       replaceGeneration: boolean
@@ -19,13 +17,6 @@ export type UnexpectedDeathPlan =
 export type ObserveUnexpectedDeathInput = {
   lastFatalResult?: RuntimeFatalKind
   sessionIds?: string[]
-}
-
-export const RECOVERY_PROMPTS: Record<RecoverableDeathReason, string> = {
-  guest_oom:
-    'The previous turn was killed because the process ran out of memory. Continue from where you left off, and avoid large in-memory work or huge tool payloads. Check what already completed before redoing work.',
-  runtime_lost:
-    'The previous turn was interrupted because the runtime stopped unexpectedly. Continue from where you left off. Check what already completed before redoing work.',
 }
 
 export function buildRecoveryPrompt(resumePrompt: string, coalescedUserMessage?: string): string {

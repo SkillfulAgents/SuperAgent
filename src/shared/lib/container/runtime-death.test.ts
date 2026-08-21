@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { RECOVERY_PROMPTS, buildRecoveryPrompt, inferOomSigkillFatal } from './runtime-death'
+import { buildRecoveryPrompt, inferOomSigkillFatal } from './runtime-death'
 
 describe('inferOomSigkillFatal', () => {
   it('matches the container SIGKILL fatal result', () => {
@@ -22,9 +22,9 @@ describe('inferOomSigkillFatal', () => {
 
 describe('buildRecoveryPrompt', () => {
   it('appends a coalesced user message onto the same resume', () => {
-    expect(buildRecoveryPrompt(RECOVERY_PROMPTS.runtime_lost)).toBe(RECOVERY_PROMPTS.runtime_lost)
-    expect(buildRecoveryPrompt(RECOVERY_PROMPTS.guest_oom, '  keep going  ')).toBe(
-      `${RECOVERY_PROMPTS.guest_oom}\n\nThe user also sent:\nkeep going`,
+    expect(buildRecoveryPrompt('Resume the turn.')).toBe('Resume the turn.')
+    expect(buildRecoveryPrompt('Resume the turn.', '  keep going  ')).toBe(
+      'Resume the turn.\n\nThe user also sent:\nkeep going',
     )
   })
 })
