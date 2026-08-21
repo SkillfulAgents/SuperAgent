@@ -1238,13 +1238,12 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     }
   }
 
+  // getSession/deleteSession/cancelQueuedMessage/interruptSession go through
+  // this.fetch() rather than a raw fetch on getPortOrThrow()'s result: fetch()
+  // clears the cached port on connection errors, so a container recreated on
+  // another port costs one failed call instead of failing until restart.
   async getSession(sessionId: string): Promise<ContainerSession | null> {
-    const port = await this.getPortOrThrow()
-
-    const response = await fetch(
-      `${this.getBaseUrl(port)}/sessions/${sessionId}`,
-      { headers: this.getHostAuthHeaders() }
-    )
+    const response = await this.fetch(`/sessions/${sessionId}`)
 
     if (response.status === 404) return null
     if (!response.ok) {
@@ -1255,14 +1254,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   async deleteSession(sessionId: string): Promise<boolean> {
-    const port = await this.getPortOrThrow()
-
     this.closeTrackedWebSocket(sessionId)
 
-    const response = await fetch(
-      `${this.getBaseUrl(port)}/sessions/${sessionId}`,
-      { method: 'DELETE', headers: this.getHostAuthHeaders() }
-    )
+    const response = await this.fetch(`/sessions/${sessionId}`, { method: 'DELETE' })
 
     return response.ok
   }
@@ -1342,11 +1336,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   async cancelQueuedMessage(sessionId: string, uuid: string): Promise<boolean> {
-    const port = await this.getPortOrThrow()
-
-    const response = await fetch(
-      `http://127.0.0.1:${port}/sessions/${sessionId}/queued-messages/${encodeURIComponent(uuid)}`,
-      { method: 'DELETE', headers: this.getHostAuthHeaders() }
+    const response = await this.fetch(
+      `/sessions/${sessionId}/queued-messages/${encodeURIComponent(uuid)}`,
+      { method: 'DELETE' }
     )
     if (response.status === 404) {
       // Route missing = the container is running a build that predates the
@@ -1366,12 +1358,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   async interruptSession(sessionId: string): Promise<boolean> {
-    const port = await this.getPortOrThrow()
-
-    const response = await fetch(
-      `${this.getBaseUrl(port)}/sessions/${sessionId}/interrupt`,
-      { method: 'POST', headers: this.getHostAuthHeaders() }
-    )
+    const response = await this.fetch(`/sessions/${sessionId}/interrupt`, { method: 'POST' })
 
     return response.ok
   }
@@ -1433,12 +1420,18 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       })
 
       ws.on('error', (error) => {
+        const err = error instanceof Error ? error : new Error(String(error))
+        // A refused/reset socket may mean the cached port is stale (container
+        // recreated elsewhere) — clear it so the next attempt re-resolves.
+        if (this.isConnectionError(err)) {
+          this.handleConnectionError()
+        }
         // Only log and emit if this connection is still tracked (not cleaned up by stop())
         if (this.wsConnections.has(sessionId)) {
           console.error(`WebSocket error for session ${sessionId}:`, error)
           this.safeEmitError(error)
         }
-        rejectReady(error instanceof Error ? error : new Error(String(error)))
+        rejectReady(err)
       })
 
       ws.on('close', () => {

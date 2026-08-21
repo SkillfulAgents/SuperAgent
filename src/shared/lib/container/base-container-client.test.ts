@@ -761,6 +761,23 @@ describe('BaseContainerClient.fetch port caching', () => {
     expect(client.infoCalls).toBe(2)
   })
 
+  it('session-scoped calls clear a stale cached port on connection failure', async () => {
+    const client = new RunningTestClient({ agentId: 'test-agent' } as ContainerConfig)
+    const fetchMock = vi
+      .fn(async () => new Response('{}'))
+      .mockResolvedValueOnce(new Response('ok'))
+      .mockRejectedValueOnce(new Error('connect ECONNREFUSED 127.0.0.1:4123'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await client.fetch('/artifacts')
+    // Container was recreated on another port: the very next session call
+    // fails once, clears the cache, and the call after re-resolves the port.
+    await expect(client.getSession('sess-1')).rejects.toThrow('ECONNREFUSED')
+    await client.getSession('sess-1')
+
+    expect(client.infoCalls).toBe(2)
+  })
+
   it('does not clear the cached port on HTTP-level failures', async () => {
     const client = new RunningTestClient({ agentId: 'test-agent' } as ContainerConfig)
     const fetchMock = vi.fn(async () => new Response('nope', { status: 500 }))
