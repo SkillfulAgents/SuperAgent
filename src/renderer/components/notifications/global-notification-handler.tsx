@@ -23,6 +23,7 @@ import { usePlatformUnreadCount } from '@renderer/hooks/use-platform-notificatio
 import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { setMountWarning } from '@renderer/hooks/use-mount-warnings'
 import {
+  applyDashboardRuntimeStatus,
   invalidateAgentArtifacts,
   markDashboardScreenshotReady,
   updateAgentRuntimeCache,
@@ -394,6 +395,22 @@ export function GlobalNotificationHandler() {
             const dashboardSlug = data.dashboardSlug as string | undefined
             if (agentSlug && dashboardSlug) {
               markDashboardScreenshotReady(queryClient, agentSlug, dashboardSlug)
+            }
+            break
+          }
+
+          case 'dashboard_status_changed': {
+            // Patch the cached artifact status so a waiting DashboardView flips
+            // immediately, then refetch for the authoritative list (port,
+            // startup phase, entries the cache has not seen yet).
+            const agentSlug = data.agentSlug as string | undefined
+            const dashboardSlug = data.dashboardSlug as string | undefined
+            const status = data.status === 'running' || data.status === 'crashed'
+              ? data.status
+              : undefined
+            if (agentSlug && dashboardSlug && status) {
+              applyDashboardRuntimeStatus(queryClient, agentSlug, dashboardSlug, status)
+              invalidateAgentArtifacts(queryClient, agentSlug)
             }
             break
           }
