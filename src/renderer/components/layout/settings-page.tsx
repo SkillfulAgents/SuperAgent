@@ -2,6 +2,7 @@ import type { ReactNode, Ref } from 'react'
 import { ArrowLeft } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { cn } from '@shared/lib/utils/cn'
+import { ScrollAwarePageTitle } from './scroll-aware-title'
 
 interface SettingsPageContainerProps {
   children: ReactNode
@@ -51,14 +52,16 @@ interface PageTitleProps {
   title: ReactNode
   back?: { onClick: () => void; label?: string; testId?: string }
   actions?: ReactNode
+  /** Hide the matching nav title until this in-page heading scrolls away. */
+  scrollAware?: boolean
 }
 
 /**
  * Page heading with optional back button and right-aligned actions.
  */
-export function PageTitle({ title, back, actions }: PageTitleProps) {
-  return (
-    <div>
+export function PageTitle({ title, back, actions, scrollAware = false }: PageTitleProps) {
+  const content = (
+    <>
       {back && (
         <Button
           type="button"
@@ -80,6 +83,8 @@ export function PageTitle({ title, back, actions }: PageTitleProps) {
         )}
         {actions && <div className="shrink-0">{actions}</div>}
       </div>
-    </div>
+    </>
   )
+
+  return scrollAware ? <ScrollAwarePageTitle>{content}</ScrollAwarePageTitle> : <div>{content}</div>
 }

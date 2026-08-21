@@ -55,6 +55,7 @@ import { formatDistanceToNow } from 'date-fns'
 import { useNewSessionCarryover } from '@renderer/lib/new-session-carryover'
 import { useDraftsStore } from '@renderer/context/drafts-context'
 import { completeAgentTemplateHandoff } from '@renderer/lib/agent-template-handoff'
+import { ScrollAwarePageTitle } from '@renderer/components/layout/scroll-aware-title'
 
 interface AgentHomeProps {
   agent: ApiAgent
@@ -314,7 +315,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
       >
         {/* Left Column — Chat composer + Sessions */}
         <div className="space-y-6 w-full min-w-0 xl:min-w-[480px] xl:max-w-[720px]">
-          <div className="flex items-center justify-between gap-2 intro-step intro-step-1">
+          <ScrollAwarePageTitle className="flex items-center justify-between gap-2 intro-step intro-step-1">
             <AgentContextMenu agent={agent}>
               <div className="flex-1 min-w-0 cursor-context-menu">
                 <InlineEditableTitle
@@ -346,7 +347,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
             <Button type="button" size="icon" variant="ghost" className="h-8 w-8 shrink-0" onClick={() => handleOpenSettings()} aria-label="Agent settings" data-testid="agent-settings-button">
               <Settings2 className="h-4 w-4" />
             </Button>
-          </div>
+          </ScrollAwarePageTitle>
           {isViewOnly ? (
             <div className="flex items-center justify-center gap-2 text-sm font-medium text-muted-foreground border rounded-lg p-6" data-testid="view-only-banner">
               <Eye className="h-5 w-5" />
