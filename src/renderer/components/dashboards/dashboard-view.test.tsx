@@ -271,3 +271,101 @@ describe('DashboardView restart', () => {
     expect(mocks.openDashboardExternal).toHaveBeenCalledWith('agent', 'dashboard', 'Dashboard')
   })
 })
+
+describe('DashboardView optimistic mount and retry', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.agentSlug = 'agent'
+    mocks.agentStatus = 'running'
+    mocks.dashboardStatus = 'starting'
+    mocks.dashboardDescription = ''
+    mocks.dashboardStartupPhase = 'starting-server'
+    mocks.dashboardFirstRun = undefined
+  })
+
+  it('mounts the iframe behind the status overlay while the server is starting', () => {
+    renderDashboard()
+
+    expect(document.querySelector('iframe')).not.toBeNull()
+    expect(screen.getByText('Waiting for dashboard…')).toBeInTheDocument()
+  })
+
+  it('does not mount the iframe during dependency installation', () => {
+    mocks.dashboardStartupPhase = 'installing-dependencies'
+
+    renderDashboard()
+
+    expect(document.querySelector('iframe')).toBeNull()
+  })
+
+  it('drops the overlay once the dashboard reports running', () => {
+    const view = renderDashboard()
+    expect(screen.getByText('Waiting for dashboard…')).toBeInTheDocument()
+
+    mocks.dashboardStatus = 'running'
+    view.rerender(<DashboardHarness />)
+
+    expect(screen.queryByText('Waiting for dashboard…')).toBeNull()
+    expect(document.querySelector('iframe')).not.toBeNull()
+  })
+
+  it('refetches a document that finished loading before the dashboard was running', () => {
+    const view = renderDashboard()
+    const early = document.querySelector('iframe')!
+    fireEvent.load(early)
+
+    mocks.dashboardStatus = 'running'
+    view.rerender(<DashboardHarness />)
+
+    const current = document.querySelector('iframe')!
+    expect(current).not.toBe(early)
+  })
+
+  it('keeps a document loaded after running was already reported (no spurious reload)', () => {
+    mocks.dashboardStatus = 'running'
+    const view = renderDashboard()
+    const frame = document.querySelector('iframe')!
+    fireEvent.load(frame)
+
+    view.rerender(<DashboardHarness />)
+
+    expect(document.querySelector('iframe')).toBe(frame)
+  })
+
+  it('retries a network-failed load with backoff, bounded', () => {
+    vi.useFakeTimers()
+    try {
+      mocks.dashboardStatus = 'running'
+      renderDashboard()
+      const first = document.querySelector('iframe')!
+      fireEvent.error(first)
+
+      // Not yet — retry is delayed
+      expect(document.querySelector('iframe')).toBe(first)
+      act(() => {
+        vi.advanceTimersByTime(1_000)
+      })
+      const second = document.querySelector('iframe')!
+      expect(second).not.toBe(first)
+
+      // Exhaust the budget: 3 retries total, the 4th error is terminal
+      let frame = second
+      for (const delay of [2_000, 4_000]) {
+        fireEvent.error(frame)
+        act(() => {
+          vi.advanceTimersByTime(delay)
+        })
+        const next = document.querySelector('iframe')!
+        expect(next).not.toBe(frame)
+        frame = next
+      }
+      fireEvent.error(frame)
+      act(() => {
+        vi.advanceTimersByTime(60_000)
+      })
+      expect(document.querySelector('iframe')).toBe(frame)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

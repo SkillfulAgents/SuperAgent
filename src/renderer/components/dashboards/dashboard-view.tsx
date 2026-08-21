@@ -31,6 +31,15 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   const [restarting, setRestarting] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [frameLoading, setFrameLoading] = useState(true)
+  // Bumped to remount the iframe (a fresh document fetch); onError retries and
+  // the loaded-too-early reload below both go through it.
+  const [frameAttempt, setFrameAttempt] = useState(0)
+  // The frame finished loading while the dashboard was still 'starting' — the
+  // document may be a held request that timed out into an error body, so it
+  // must be refetched once the dashboard actually reports running.
+  const [frameLoadedEarly, setFrameLoadedEarly] = useState(false)
+  const frameErrorRetriesRef = useRef(0)
+  const frameRetryTimerRef = useRef<number | null>(null)
   const [restartError, setRestartError] = useState<string | null>(null)
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const waitStartedAtRef = useRef<number | null>(null)
@@ -205,7 +214,15 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
     }
   }, [agentSlug])
 
-  const showFrame = isAgentRunning && dashboard?.status === 'running'
+  const dashboardRunning = isAgentRunning && dashboard?.status === 'running'
+  // Mount the iframe while the dashboard server is still starting: the
+  // container proxy holds the document request until the server binds, so the
+  // fetch overlaps startup instead of following it. The install phase is
+  // excluded — it can outlast the proxy's hold.
+  const optimisticStart = isAgentRunning
+    && dashboard?.status === 'starting'
+    && dashboard.startupPhase !== 'installing-dependencies'
+  const showFrame = dashboardRunning || optimisticStart
   const actionPending = restarting || stopAgent.isPending || startAgent.isPending
 
   const dashboardHeader = useMemo(() => ({
@@ -238,6 +255,52 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   useEffect(() => {
     if (showFrame) setFrameLoading(true)
   }, [iframeSrc, showFrame])
+
+  // Navigating to a different dashboard resets the retry machinery.
+  useEffect(() => {
+    frameErrorRetriesRef.current = 0
+    setFrameLoadedEarly(false)
+    setFrameAttempt(0)
+  }, [iframeSrc])
+
+  // Refetch a document that finished loading before the dashboard reported
+  // running (it may be the proxy's timeout error body rather than the app).
+  useEffect(() => {
+    if (dashboardRunning && frameLoadedEarly) {
+      setFrameLoadedEarly(false)
+      setFrameLoading(true)
+      setFrameAttempt((attempt) => attempt + 1)
+    }
+  }, [dashboardRunning, frameLoadedEarly])
+
+  useEffect(() => () => {
+    if (frameRetryTimerRef.current !== null) window.clearTimeout(frameRetryTimerRef.current)
+  }, [])
+
+  const scheduleFrameRetry = useCallback(() => {
+    // Network-level load failure. Bounded backoff — a frame left in this
+    // state was previously blank forever with no recovery.
+    if (frameErrorRetriesRef.current >= 3) {
+      setFrameLoading(false)
+      return
+    }
+    const delay = 1_000 * 2 ** frameErrorRetriesRef.current
+    frameErrorRetriesRef.current += 1
+    setFrameLoading(true)
+    frameRetryTimerRef.current = window.setTimeout(() => {
+      setFrameAttempt((attempt) => attempt + 1)
+    }, delay)
+  }, [])
+
+  // React only wires the iframe 'load' event (an onError prop is never
+  // attached for iframes), so the error listener goes on the element itself.
+  // Re-attached per remount: frameAttempt keys the iframe.
+  useEffect(() => {
+    const frame = iframeRef.current
+    if (!frame) return
+    frame.addEventListener('error', scheduleFrameRetry)
+    return () => frame.removeEventListener('error', scheduleFrameRetry)
+  }, [scheduleFrameRetry, frameAttempt, showFrame])
 
   if (!showFrame) {
     return (
@@ -273,6 +336,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
       />
       <div className="flex-1 min-h-0 relative">
         <iframe
+          key={frameAttempt}
           ref={iframeRef}
           src={iframeSrc}
           className="h-full w-full border-0"
@@ -282,8 +346,24 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
           onLoad={() => {
             setFrameLoading(false)
             setRefreshing(false)
+            frameErrorRetriesRef.current = 0
+            setFrameLoadedEarly(!dashboardRunning)
           }}
         />
+        {!dashboardRunning && (
+          <div className="absolute inset-0 z-10 bg-background flex flex-col items-center justify-center p-8 text-muted-foreground">
+            <DashboardStatusBody
+              viewState={viewState}
+              startErrorMessage={startAgent.error?.message}
+              restartErrorMessage={restartError ?? undefined}
+              onRetry={handleStartAgent}
+              onRestart={handleRestartAgent}
+              retryPending={startAgent.isPending}
+              restartPending={actionPending}
+              canStart={canStart}
+            />
+          </div>
+        )}
       </div>
     </div>
   )
