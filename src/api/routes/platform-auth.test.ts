@@ -106,6 +106,27 @@ beforeEach(() => {
   mocks.getPlatformAuthStatus.mockReturnValue(CONNECTED_STATUS)
 })
 
+describe('GET /api/platform-auth/deployments', () => {
+  it('never includes cookie lines or signed session values', async () => {
+    const { getCloudWorkspace } = await import('@shared/lib/services/cloud-workspace-service')
+    vi.mocked(getCloudWorkspace).mockResolvedValue({
+      available: true,
+      found: true,
+      deploymentUrl: 'https://ws.example.com',
+      orgId: 'org_acme',
+      hasValidToken: true,
+      discoveryFailed: false,
+    })
+
+    const response = await makeApp().request('/api/platform-auth/deployments')
+    expect(response.status).toBe(200)
+    const body = await response.json()
+    expect(body).not.toHaveProperty('setCookies')
+    expect(JSON.stringify(body)).not.toMatch(/set-cookie/i)
+    expect(JSON.stringify(body)).not.toMatch(/session_token/)
+  })
+})
+
 describe('GET /api/platform-auth workspace icon contract (SUP-625)', () => {
   it('returns the configured Platform workspace icon with existing fields intact', async () => {
     mocks.getEnrichedPlatformAuthStatus.mockResolvedValue({

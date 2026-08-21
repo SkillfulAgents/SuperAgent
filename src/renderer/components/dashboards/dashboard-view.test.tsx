@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardHeaderProvider } from '@renderer/context/dashboard-header-context'
@@ -25,6 +25,9 @@ const mocks = vi.hoisted(() => ({
     isPending: false,
   },
   openDashboardExternal: vi.fn(),
+  isElectron: false,
+  targetIsRemote: false,
+  ensureCloudDashboardSession: vi.fn(),
 }))
 
 vi.mock('@renderer/hooks/use-agents', () => ({
@@ -73,8 +76,12 @@ vi.mock('@renderer/components/dashboards/pending-agent-reviews', () => ({
 vi.mock('@renderer/lib/env', () => ({
   getApiBaseUrl: () => '',
   getPlatform: () => 'web',
-  isElectron: () => false,
+  isElectron: () => mocks.isElectron,
   openDashboardExternal: mocks.openDashboardExternal,
+}))
+
+vi.mock('@renderer/lib/api-target', () => ({
+  targetIsRemote: () => mocks.targetIsRemote,
 }))
 
 vi.mock('@renderer/lib/dashboard-utils', () => ({
@@ -107,6 +114,10 @@ describe('DashboardView restart', () => {
     mocks.dashboardDescription = ''
     mocks.dashboardStartupPhase = undefined
     mocks.dashboardFirstRun = undefined
+    mocks.isElectron = false
+    mocks.targetIsRemote = false
+    mocks.ensureCloudDashboardSession.mockReset()
+    delete window.electronAPI
     mocks.start.mutateAsync.mockResolvedValue({})
   })
 
@@ -215,3 +226,92 @@ describe('DashboardView restart', () => {
     expect(mocks.openDashboardExternal).toHaveBeenCalledWith('agent', 'dashboard', 'Dashboard')
   })
 })
+
+describe('DashboardView cloud origin', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.agentSlug = 'abc1234567'
+    mocks.agentStatus = 'running'
+    mocks.dashboardStatus = 'running'
+    mocks.dashboardDescription = ''
+    mocks.dashboardStartupPhase = undefined
+    mocks.dashboardFirstRun = undefined
+    mocks.isElectron = true
+    mocks.targetIsRemote = true
+    mocks.ensureCloudDashboardSession.mockReset()
+    window.electronAPI = {
+      ensureCloudDashboardSession: mocks.ensureCloudDashboardSession,
+    } as unknown as Window['electronAPI']
+  })
+
+  it('does not mount the iframe until the session is settled', async () => {
+    let resolveSession!: (value: { useCloudOrigin: boolean; origin: string }) => void
+    mocks.ensureCloudDashboardSession.mockReturnValue(
+      new Promise((resolve) => {
+        resolveSession = resolve
+      }),
+    )
+    renderDashboard('My Agent-abc1234567')
+    expect(document.querySelector('iframe')).toBeNull()
+    await act(async () => {
+      resolveSession({ useCloudOrigin: true, origin: 'https://ws.example.com' })
+    })
+    await waitFor(() => {
+      expect(document.querySelector('iframe')?.getAttribute('src')).toBe(
+        'https://ws.example.com/api/agents/abc1234567/artifacts/dashboard/',
+      )
+    })
+  })
+
+  it('stays on the door when the window is driving Local', async () => {
+    mocks.targetIsRemote = false
+    mocks.ensureCloudDashboardSession.mockResolvedValue({
+      useCloudOrigin: true,
+      origin: 'https://ws.example.com',
+    })
+    renderDashboard('My Agent-abc1234567')
+    expect(mocks.ensureCloudDashboardSession).not.toHaveBeenCalled()
+    expect(document.querySelector('iframe')?.getAttribute('src')).toBe(
+      '/api/agents/abc1234567/artifacts/dashboard/',
+    )
+  })
+
+  it('switches the iframe to the cloud origin when the session says so', async () => {
+    mocks.ensureCloudDashboardSession.mockResolvedValue({
+      useCloudOrigin: true,
+      origin: 'https://ws.example.com/',
+    })
+    renderDashboard('My Agent-abc1234567')
+    await waitFor(() => {
+      expect(document.querySelector('iframe')?.getAttribute('src')).toBe(
+        'https://ws.example.com/api/agents/abc1234567/artifacts/dashboard/',
+      )
+    })
+  })
+
+  it('keeps the door when the session has no cookie', async () => {
+    mocks.ensureCloudDashboardSession.mockResolvedValue({
+      useCloudOrigin: false,
+      origin: 'https://ws.example.com',
+    })
+    renderDashboard('My Agent-abc1234567')
+    await waitFor(() => {
+      expect(mocks.ensureCloudDashboardSession).toHaveBeenCalled()
+    })
+    expect(document.querySelector('iframe')?.getAttribute('src')).toBe(
+      '/api/agents/abc1234567/artifacts/dashboard/',
+    )
+  })
+
+  it('keeps the door when the session payload is rejected', async () => {
+    mocks.ensureCloudDashboardSession.mockResolvedValue({ useCloudOrigin: 'yes' })
+    renderDashboard('My Agent-abc1234567')
+    await waitFor(() => {
+      expect(mocks.ensureCloudDashboardSession).toHaveBeenCalled()
+    })
+    expect(document.querySelector('iframe')?.getAttribute('src')).toBe(
+      '/api/agents/abc1234567/artifacts/dashboard/',
+    )
+  })
+})
+

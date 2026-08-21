@@ -5,6 +5,7 @@ import {
   _resetCloudWorkspaceFailureReportingForTest,
   getCloudWorkspace,
   isDeploymentUrlAllowed,
+  mintDeploymentSessionForDashboard,
 } from './cloud-workspace-service'
 import {
   exchangeGrantAtDeployment,
@@ -235,7 +236,7 @@ describe('getCloudWorkspace', () => {
   it('mints with the bearer of the account it recorded', async () => {
     mockFetchDeployments.mockResolvedValue([DEPLOYED])
     mockRequestGrant.mockResolvedValue('grant.jwt')
-    mockExchange.mockResolvedValue({ token: 'fresh', expiresInSec: 3600 })
+    mockExchange.mockResolvedValue({ token: 'fresh', expiresInSec: 3600, setCookies: [] })
 
     await getCloudWorkspace()
 
@@ -278,7 +279,7 @@ describe('getCloudWorkspace', () => {
       DEPLOYED,
     ])
     mockRequestGrant.mockResolvedValue('grant.jwt')
-    mockExchange.mockResolvedValue({ token: 'tok', expiresInSec: 3600 })
+    mockExchange.mockResolvedValue({ token: 'tok', expiresInSec: 3600, setCookies: [] })
 
     const status = await getCloudWorkspace()
 
@@ -368,7 +369,7 @@ describe('getCloudWorkspace', () => {
     process.env.SUPERAGENT_IS_PACKAGED = '0'
     mockFetchDeployments.mockResolvedValue([LOOPBACK])
     mockRequestGrant.mockResolvedValue('grant.jwt')
-    mockExchange.mockResolvedValue({ token: 'tok', expiresInSec: 3600 })
+    mockExchange.mockResolvedValue({ token: 'tok', expiresInSec: 3600, setCookies: [] })
 
     const status = await getCloudWorkspace()
 
@@ -381,7 +382,7 @@ describe('getCloudWorkspace', () => {
   it('mints a grant and exchanges it when no token is stored, then persists it', async () => {
     mockFetchDeployments.mockResolvedValue([DEPLOYED])
     mockRequestGrant.mockResolvedValue('grant.jwt')
-    mockExchange.mockResolvedValue({ token: 'deploy_tok', expiresInSec: 7 * 24 * 3600 })
+    mockExchange.mockResolvedValue({ token: 'deploy_tok', expiresInSec: 7 * 24 * 3600, setCookies: [] })
 
     const status = await getCloudWorkspace()
 
@@ -418,7 +419,7 @@ describe('getCloudWorkspace', () => {
     mockFetchDeployments.mockResolvedValue([DEPLOYED])
     mockReadRecord.mockReturnValue(storedRecord({ deploymentUrl: 'https://old.example.com' }))
     mockRequestGrant.mockResolvedValue('grant.jwt')
-    mockExchange.mockResolvedValue({ token: 'fresh', expiresInSec: 3600 })
+    mockExchange.mockResolvedValue({ token: 'fresh', expiresInSec: 3600, setCookies: [] })
 
     await getCloudWorkspace()
 
@@ -431,7 +432,7 @@ describe('getCloudWorkspace', () => {
     // 30 min out — inside the buffer.
     mockReadRecord.mockReturnValue(storedRecord({ expiresAt: isoIn(30 * 60_000) }))
     mockRequestGrant.mockResolvedValue('grant.jwt')
-    mockExchange.mockResolvedValue({ token: 'fresh', expiresInSec: 3600 })
+    mockExchange.mockResolvedValue({ token: 'fresh', expiresInSec: 3600, setCookies: [] })
 
     await getCloudWorkspace()
 
@@ -443,7 +444,7 @@ describe('getCloudWorkspace', () => {
     // Same org, same deployment, unexpired — but a different member.
     mockReadRecord.mockReturnValue(storedRecord({ userId: 'usr_other', memberId: 'sub_other' }))
     mockRequestGrant.mockResolvedValue('grant.jwt')
-    mockExchange.mockResolvedValue({ token: 'fresh', expiresInSec: 3600 })
+    mockExchange.mockResolvedValue({ token: 'fresh', expiresInSec: 3600, setCookies: [] })
 
     await getCloudWorkspace()
 
@@ -461,7 +462,7 @@ describe('getCloudWorkspace', () => {
       storedRecord({ userId: null, memberId: null, tokenFingerprint: null }),
     )
     mockRequestGrant.mockResolvedValue('grant.jwt')
-    mockExchange.mockResolvedValue({ token: 'fresh', expiresInSec: 3600 })
+    mockExchange.mockResolvedValue({ token: 'fresh', expiresInSec: 3600, setCookies: [] })
 
     await getCloudWorkspace()
 
@@ -481,7 +482,7 @@ describe('getCloudWorkspace', () => {
       }),
     )
     mockRequestGrant.mockResolvedValue('grant.jwt')
-    mockExchange.mockResolvedValue({ token: 'fresh', expiresInSec: 3600 })
+    mockExchange.mockResolvedValue({ token: 'fresh', expiresInSec: 3600, setCookies: [] })
 
     await getCloudWorkspace()
 
@@ -507,12 +508,12 @@ describe('getCloudWorkspace', () => {
     // the credential back over the disconnect's clear.
     mockFetchDeployments.mockResolvedValue([DEPLOYED])
     mockRequestGrant.mockResolvedValue('grant.jwt')
-    mockExchange.mockResolvedValue({ token: 'fresh', expiresInSec: 3600 })
+    mockExchange.mockResolvedValue({ token: 'fresh', expiresInSec: 3600, setCookies: [] })
     mockAuthStatus.mockReturnValue(connectedAs({ userId: null, memberId: null }))
     mockExchange.mockImplementation(async () => {
       mockAuthStatus.mockReturnValue(DISCONNECTED)
       mockGetToken.mockReturnValue(null)
-      return { token: 'fresh', expiresInSec: 3600 }
+      return { token: 'fresh', expiresInSec: 3600, setCookies: [] }
     })
 
     const status = await getCloudWorkspace()
@@ -530,7 +531,7 @@ describe('getCloudWorkspace', () => {
     mockExchange.mockImplementation(async () => {
       mockAuthStatus.mockReturnValue(DISCONNECTED)
       mockGetToken.mockReturnValue(null)
-      return { token: 'fresh', expiresInSec: 3600 }
+      return { token: 'fresh', expiresInSec: 3600, setCookies: [] }
     })
 
     const status = await getCloudWorkspace()
@@ -546,7 +547,7 @@ describe('getCloudWorkspace', () => {
     mockExchange.mockImplementation(async () => {
       mockAuthStatus.mockReturnValue(connectedAs({ userId: 'usr_2', memberId: 'sub_2' }))
       mockGetToken.mockReturnValue('plat_sa_other_account')
-      return { token: 'fresh', expiresInSec: 3600 }
+      return { token: 'fresh', expiresInSec: 3600, setCookies: [] }
     })
 
     const status = await getCloudWorkspace()
@@ -575,7 +576,7 @@ describe('getCloudWorkspace', () => {
       mockFetchDeployments.mockResolvedValue([DEPLOYED])
       mockReadRecord.mockReturnValue(storedRecord())
       mockRequestGrant.mockResolvedValue('grant')
-      mockExchange.mockResolvedValue({ token: 'fresh', expiresInSec: 86400 })
+      mockExchange.mockResolvedValue({ token: 'fresh', expiresInSec: 86400, setCookies: [] })
 
       const status = await getCloudWorkspace({ forceTokenRefresh: true })
 
@@ -607,6 +608,73 @@ describe('getCloudWorkspace', () => {
       expect(mockRequestGrant).not.toHaveBeenCalled()
       expect(status).toMatchObject({ discoveryFailed: true })
     })
+  })
+})
+
+describe('mintDeploymentSessionForDashboard', () => {
+  const originalProcessType = (process as { type?: string }).type
+  const originalIsPackaged = process.env.SUPERAGENT_IS_PACKAGED
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    _resetCloudWorkspaceFailureReportingForTest()
+    ;(process as { type?: string }).type = 'browser'
+    process.env.SUPERAGENT_IS_PACKAGED = '1'
+    delete process.env.E2E_MOCK
+    mockGetToken.mockReturnValue(TOKEN)
+    mockAuthStatus.mockReturnValue(connectedAs(PRINCIPAL))
+    mockReadRecord.mockReturnValue(null)
+  })
+
+  afterEach(() => {
+    ;(process as { type?: string }).type = originalProcessType
+    if (originalIsPackaged === undefined) delete process.env.SUPERAGENT_IS_PACKAGED
+    else process.env.SUPERAGENT_IS_PACKAGED = originalIsPackaged
+  })
+
+  it('returns Set-Cookie lines after a forced connect', async () => {
+    mockFetchDeployments.mockResolvedValue([DEPLOYED])
+    mockRequestGrant.mockResolvedValue('grant.jwt')
+    mockExchange.mockResolvedValue({
+      token: 'fresh',
+      expiresInSec: 3600,
+      setCookies: ['__Secure-better-auth.session_token=x; Max-Age=60; Path=/; HttpOnly; Secure; SameSite=None'],
+    })
+
+    await expect(mintDeploymentSessionForDashboard()).resolves.toEqual({
+      deploymentUrl: DEPLOYED.deployment_url,
+      setCookies: [
+        '__Secure-better-auth.session_token=x; Max-Age=60; Path=/; HttpOnly; Secure; SameSite=None',
+      ],
+    })
+  })
+
+  it('drops cookies when the account switches during the exchange', async () => {
+    mockFetchDeployments.mockResolvedValue([DEPLOYED])
+    mockRequestGrant.mockResolvedValue('grant.jwt')
+    mockExchange.mockImplementation(async () => {
+      mockAuthStatus.mockReturnValue(connectedAs({ userId: 'usr_2', memberId: 'sub_2' }))
+      mockGetToken.mockReturnValue('plat_sa_other_account')
+      return {
+        token: 'fresh',
+        expiresInSec: 3600,
+        setCookies: ['__Secure-better-auth.session_token=stale; Max-Age=60; Path=/; HttpOnly; Secure; SameSite=None'],
+      }
+    })
+
+    await expect(mintDeploymentSessionForDashboard()).resolves.toBeNull()
+    expect(mockWriteRecord).not.toHaveBeenCalled()
+  })
+
+  it('returns null when discovery throws', async () => {
+    mockFetchDeployments.mockRejectedValue(new Error('discovery down'))
+    await expect(mintDeploymentSessionForDashboard()).resolves.toBeNull()
+  })
+
+  it('returns null outside Electron main', async () => {
+    ;(process as { type?: string }).type = undefined
+    await expect(mintDeploymentSessionForDashboard()).resolves.toBeNull()
+    expect(mockFetchDeployments).not.toHaveBeenCalled()
   })
 })
 

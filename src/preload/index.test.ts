@@ -31,6 +31,7 @@ vi.mock('electron', () => ({
 type ExposedApi = {
   [key: string]: unknown
   getApiUrl: () => Promise<string>
+  ensureCloudDashboardSession: () => Promise<{ useCloudOrigin: boolean; origin: string | null }>
   platform: string
   osVersion: string
   openExternal: (url: string) => Promise<void>
@@ -93,6 +94,13 @@ describe('preload electronAPI bridge', () => {
     electronMocks.invoke.mockResolvedValueOnce('http://localhost:3173')
     await expect(api.getApiUrl()).resolves.toBe('http://localhost:3173')
     expect(electronMocks.invoke).toHaveBeenCalledWith('get-api-url')
+
+    electronMocks.invoke.mockResolvedValueOnce({ useCloudOrigin: false, origin: null })
+    await expect(api.ensureCloudDashboardSession()).resolves.toEqual({
+      useCloudOrigin: false,
+      origin: null,
+    })
+    expect(electronMocks.invoke).toHaveBeenCalledWith('ensure-cloud-dashboard-session')
 
     await api.openExternal('https://example.com')
     expect(electronMocks.invoke).toHaveBeenLastCalledWith('open-external', 'https://example.com')

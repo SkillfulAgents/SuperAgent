@@ -292,16 +292,18 @@ async function ensureDeploymentToken(
   account: CloudWorkspaceAccount,
   entry: DeploymentDiscoveryEntry,
   forceRefresh = false,
-): Promise<boolean> {
-  if (!forceRefresh && isRecordValidFor(readCloudWorkspaceRecord(), entry, account)) return true
+): Promise<{ ok: boolean; setCookies: string[] }> {
+  if (!forceRefresh && isRecordValidFor(readCloudWorkspaceRecord(), entry, account)) {
+    return { ok: true, setCookies: [] }
+  }
   // Nothing to attribute a new token to — don't mint one we couldn't safely
   // reuse anyway. (Unreachable via getCloudWorkspace, which snapshots a
   // connected account to get this far; belt-and-braces for any other caller.)
-  if (!account.connected || !account.token) return false
+  if (!account.connected || !account.token) return { ok: false, setCookies: [] }
 
   try {
     const grant = await requestDeploymentGrant(account.token, entry.authorization_server)
-    const { token, expiresInSec } = await exchangeGrantAtDeployment(
+    const { token, expiresInSec, setCookies = [] } = await exchangeGrantAtDeployment(
       entry.deployment_url,
       grant,
       deploymentHostPolicy(),
@@ -310,7 +312,7 @@ async function ensureDeploymentToken(
     // in flight, after the clear-on-identity-change has already run. Re-read it
     // here — the check and the (synchronous) write can't be interleaved — so a
     // stale refresh can never resurrect the old account's token.
-    if (!sameAccount(account, readAccount())) return false
+    if (!sameAccount(account, readAccount())) return { ok: false, setCookies: [] }
     writeCloudWorkspaceRecord({
       deploymentUrl: entry.deployment_url,
       orgId: entry.org_id,
@@ -322,13 +324,47 @@ async function ensureDeploymentToken(
       memberId: account.memberId,
       tokenFingerprint: account.tokenFingerprint,
     })
-    return true
+    return { ok: true, setCookies }
   } catch (error) {
     // Grant/exchange failure (e.g. a deployment without the exchange endpoint)
     // is non-fatal: the workspace still shows, just without a maintained token.
     reportFailureOnce('ensure-token', error)
-    return false
+    return { ok: false, setCookies: [] }
   }
+}
+
+/**
+ * Force a connect and return any Set-Cookie lines. Main plants them.
+ * Never put these on CloudWorkspaceStatus — that object is serialized over HTTP.
+ */
+export async function mintDeploymentSessionForDashboard(): Promise<{
+  deploymentUrl: string
+  setCookies: string[]
+} | null> {
+  if (!isElectronMain()) return null
+  const account = readAccount()
+  if (!account.connected || !account.token) return null
+
+  let deployments: DeploymentDiscoveryEntry[]
+  try {
+    deployments = await fetchDeployments(account.token)
+  } catch {
+    return null
+  }
+  if (!sameAccount(account, readAccount())) return null
+
+  const deployed = deployments.find(
+    (d) =>
+      d.status === DEPLOYED_STATUS &&
+      d.deployment_url.length > 0 &&
+      (!account.orgId || d.org_id === account.orgId),
+  )
+  if (!deployed) return null
+  if (!(await isDeploymentTargetSafe(deployed))) return null
+
+  const result = await ensureDeploymentToken(account, deployed, true)
+  if (!result.ok) return null
+  return { deploymentUrl: deployed.deployment_url, setCookies: result.setCookies }
 }
 
 /**
@@ -409,11 +445,12 @@ export async function getCloudWorkspace(
     return DISCOVERY_FAILED
   }
 
-  const hasValidToken = await ensureDeploymentToken(
+  const ensured = await ensureDeploymentToken(
     account,
     deployed,
     options.forceTokenRefresh,
   )
+  const hasValidToken = ensured.ok
   return {
     available: true,
     found: true,

@@ -38,6 +38,7 @@ import { detectAllProviders } from './host-browser'
 import { registerUpdateHandlers, initAutoUpdater, updateAutoUpdaterWindow } from './auto-updater'
 import { enableKeepAwake, disableKeepAwake, cleanupKeepAwake, restoreKeepAwakeOnStartup } from './keep-awake'
 import { openDashboardWindow, installPopupHandler, closeAllDashboardWindows } from './dashboard-window'
+import { ensureCloudDashboardSession, registerCloudDashboardCookieCleanup } from './cloud-dashboard-session'
 import {
   prewarmQuickDispatchWindow,
   toggleQuickDispatchWindow,
@@ -491,6 +492,11 @@ function activeApiTarget() {
 // proxy key, a secret owned by main (see cloud-proxy-key.ts).
 ipcMain.handle('get-api-target', () => activeApiTarget())
 
+ipcMain.handle('ensure-cloud-dashboard-session', () =>
+  ensureCloudDashboardSession(activeApiTarget().target),
+)
+registerCloudDashboardCookieCleanup()
+
 ipcMain.handle('set-preferred-api-target', (_event, target: unknown) => {
   applyPreferredApiTarget(target)
 })
@@ -928,7 +934,7 @@ ipcMain.handle('show-emoji-panel', () => {
 
 // IPC handler for opening a dashboard in a separate window
 ipcMain.handle('open-dashboard-window', (_event, { agentSlug, dashboardSlug }: { agentSlug: string; dashboardSlug: string }) => {
-  openDashboardWindow(agentSlug, dashboardSlug, activeApiTarget().baseUrl)
+  return openDashboardWindow(agentSlug, dashboardSlug, activeApiTarget().baseUrl)
 })
 
 // IPC handler for creating a macOS dock shortcut for a dashboard
@@ -1150,7 +1156,7 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
       const agentSlug = decodeURIComponent(parts[0])
       const dashboardSlug = decodeURIComponent(parts[1])
       if (apiReady) {
-        openDashboardWindow(agentSlug, dashboardSlug, activeApiTarget().baseUrl)
+        void openDashboardWindow(agentSlug, dashboardSlug, activeApiTarget().baseUrl)
       } else {
         pendingDashboardLinks.push({ agentSlug, dashboardSlug })
       }
@@ -1507,7 +1513,7 @@ async function startApp() {
   // Mark API as ready and process any queued dashboard deep links
   apiReady = true
   for (const link of pendingDashboardLinks) {
-    openDashboardWindow(link.agentSlug, link.dashboardSlug, activeApiTarget().baseUrl)
+    void openDashboardWindow(link.agentSlug, link.dashboardSlug, activeApiTarget().baseUrl)
   }
   pendingDashboardLinks.length = 0
   processPendingProtocolUrls()

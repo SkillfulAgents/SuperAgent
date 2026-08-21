@@ -119,13 +119,32 @@ describe('exchangeGrantAtDeployment', () => {
       allowLocalhost: false,
     })
 
-    expect(result).toEqual({ token: 'deploy_tok', expiresInSec: 604800 })
+    expect(result).toEqual({ token: 'deploy_tok', expiresInSec: 604800, setCookies: [] })
     const [url, init, policy] = mockSafeFetch.mock.calls[0]
     expect(url).toBe('https://ws.example.com/api/auth/token/exchange')
     const form = new URLSearchParams(init?.body as string)
     expect(form.get('grant_type')).toBe('urn:ietf:params:oauth:grant-type:jwt-bearer')
     expect(form.get('assertion')).toBe('grant.jwt')
     expect(policy).toEqual({ allowLocalhost: false })
+  })
+
+  it('returns Set-Cookie lines from the exchange response', async () => {
+    const headers = new Headers({ 'content-type': 'application/json' })
+    headers.append(
+      'set-cookie',
+      '__Secure-better-auth.session_token=tok.sig; Max-Age=60; Path=/; HttpOnly; Secure; SameSite=None',
+    )
+    mockSafeFetch.mockResolvedValue(
+      new Response(JSON.stringify({ access_token: 'deploy_tok', token_type: 'Bearer', expires_in: 60 }), {
+        status: 200,
+        headers,
+      }),
+    )
+    const result = await exchangeGrantAtDeployment('https://ws.example.com', 'grant.jwt', {
+      allowLocalhost: false,
+    })
+    expect(result.setCookies).toHaveLength(1)
+    expect(result.setCookies[0]).toContain('SameSite=None')
   })
 
   it('sends the grant through the pinned, manual-redirect fetch — never bare fetch', async () => {

@@ -28,11 +28,23 @@ export function writeCloudWorkspaceRecord(record: CloudWorkspaceSettings): void 
   })
 }
 
+let onRecordCleared: ((deploymentUrl: string) => void) | null = null
+
+/** Main registers this to drop the planted dashboard cookie. Shared code stays Electron-free. */
+export function setCloudWorkspaceRecordClearedListener(
+  listener: ((deploymentUrl: string) => void) | null,
+): void {
+  onRecordCleared = listener
+}
+
 export function clearCloudWorkspaceRecord(): void {
-  if (!getSettings().cloudWorkspace) return
+  const existing = getSettings().cloudWorkspace
+  if (!existing) return
+  const url = existing.deploymentUrl
   mutateSettings((settings) => {
     settings.cloudWorkspace = undefined
   })
+  if (url) onRecordCleared?.(url)
 }
 
 /** Short, non-sensitive preview of a token for display/logging. */

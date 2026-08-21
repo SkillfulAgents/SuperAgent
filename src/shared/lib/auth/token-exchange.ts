@@ -4,6 +4,7 @@ import { db } from '@shared/lib/db'
 import { tokenExchangeJti } from '@shared/lib/db/schema'
 import { decodeOrgIdFromToken } from '@shared/lib/platform-auth/decode-org-id'
 import { PLATFORM_AUTH_PROVIDER_ID } from '@shared/lib/services/platform-auth-service'
+import { makeSignature } from 'better-auth/crypto'
 import { getAuth } from './index'
 import { getAppBaseUrl } from './config'
 import { verifyOidcJwt } from './oidc-jwt'
@@ -308,7 +309,7 @@ async function resolveUser(ctx: AuthContext, claims: DeploymentGrantClaims) {
 export async function exchangeDeploymentGrant(
   assertion: string,
   meta: TokenExchangeRequestMeta = {},
-): Promise<TokenExchangeSuccess> {
+): Promise<{ body: TokenExchangeSuccess; sessionToken: string }> {
   const claims = await verifyGrant(assertion)
 
   // Only after full cryptographic + claim validation: burn the jti.
@@ -340,8 +341,39 @@ export async function exchangeDeploymentGrant(
   )
 
   return {
-    access_token: session.token,
-    token_type: 'Bearer',
-    expires_in: expiresIn,
+    body: {
+      access_token: session.token,
+      token_type: 'Bearer',
+      expires_in: expiresIn,
+    },
+    sessionToken: session.token,
   }
+}
+
+/**
+ * Sign the Better Auth session cookie the same way `setSessionCookie` does.
+ * This route is not an auth endpoint context, so we cannot call that helper.
+ * Desktop callers get SameSite=None; browser login stays Lax.
+ */
+export async function issueDesktopSessionCookieLine(
+  sessionToken: string,
+  maxAgeSec: number,
+): Promise<string> {
+  const ctx = await getAuth().$context
+  const name = ctx.authCookies.sessionToken.name
+  const signed = await signCookieValue(sessionToken, ctx.secret)
+  const parts = [
+    `${name}=${signed}`,
+    `Max-Age=${Math.max(0, Math.floor(maxAgeSec))}`,
+    'Path=/',
+    'HttpOnly',
+    'Secure',
+    'SameSite=None',
+  ]
+  return parts.join('; ')
+}
+
+async function signCookieValue(value: string, secret: string): Promise<string> {
+  const signature = await makeSignature(value, secret)
+  return encodeURIComponent(`${value}.${signature}`)
 }

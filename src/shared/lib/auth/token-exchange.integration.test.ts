@@ -228,11 +228,28 @@ describe('grant verification', () => {
     const who = await protectedRes.json()
     expect(typeof who.userId).toBe('string')
 
+    const cookie = res.headers.get('set-cookie') ?? ''
+    expect(cookie).toMatch(/better-auth\.session_token=/)
+    expect(cookie).toMatch(/SameSite=None/)
+    expect(cookie).toMatch(/Secure/)
+    expect(cookie).toMatch(/HttpOnly/)
+    expect(cookie).not.toMatch(/Domain=/)
+
     // Session hygiene: userAgent recorded for the sessions list.
     const session = dbModule.sqlite
       .prepare(`SELECT user_agent FROM session WHERE token = ?`)
       .get(body.access_token) as { user_agent: string }
     expect(session.user_agent).toBe('SuperagentDesktop/1.0')
+  })
+
+  it('does not set a session cookie for a browser Origin', async () => {
+    const res = await exchangeRequest(await signGrant(), {
+      headers: { origin: 'https://app.example.com' },
+    })
+    expect(res.status).toBe(200)
+    expect(res.headers.get('set-cookie')).toBeNull()
+    const body = await res.json()
+    expect(typeof body.access_token).toBe('string')
   })
 
   it('rejects a garbage bearer token on protected routes', async () => {

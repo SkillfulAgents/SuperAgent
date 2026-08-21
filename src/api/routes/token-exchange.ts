@@ -85,13 +85,18 @@ tokenExchange.post('/exchange', limitBody, async (c) => {
     return oauthError(c, 400, 'invalid_request', 'assertion is too large')
   }
 
-  const { exchangeDeploymentGrant, TokenExchangeError } = await import('@shared/lib/auth/token-exchange')
+  const { exchangeDeploymentGrant, issueDesktopSessionCookieLine, TokenExchangeError } = await import('@shared/lib/auth/token-exchange')
+  const { isDesktopCookieCaller } = await import('./token-exchange-cookie')
   try {
     const result = await exchangeDeploymentGrant(assertion, {
       userAgent: c.req.header('user-agent'),
       ipAddress: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || '',
     })
-    return c.json(result, 200, NO_STORE_HEADERS)
+    if (isDesktopCookieCaller(c.req.raw.headers) && result.body.expires_in > 0) {
+      const cookie = await issueDesktopSessionCookieLine(result.sessionToken, result.body.expires_in)
+      c.header('Set-Cookie', cookie)
+    }
+    return c.json(result.body, 200, NO_STORE_HEADERS)
   } catch (error) {
     if (error instanceof TokenExchangeError) {
       // Expected OAuth denials are normal control flow — never reported.
