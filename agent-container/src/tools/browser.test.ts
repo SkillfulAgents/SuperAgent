@@ -1,5 +1,10 @@
 import { afterEach, describe, it, expect, vi } from 'vitest'
-import { createBrowserTools, stripAnsi, extractScreenshotPath } from './browser'
+import {
+  BROWSER_USE_GUIDANCE_HINT,
+  createBrowserTools,
+  stripAnsi,
+  extractScreenshotPath,
+} from './browser'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -94,6 +99,7 @@ describe('browser_open location', () => {
     })
     expect(result.content[0].text).toContain('bundled Chromium inside the agent container')
     expect(result.content[0].text).toContain('previous host browser was closed')
+    expect(result.content[0].text).toContain(BROWSER_USE_GUIDANCE_HINT)
   })
 
   it('omits location so the server can preserve the current browser', async () => {
@@ -108,9 +114,29 @@ describe('browser_open location', () => {
 
     const openTool = createBrowserTools(() => 'session-2')
       .find(candidate => candidate.name === 'browser_open') as any
-    await openTool.handler({ url: 'https://example.com' })
+    const result = await openTool.handler({ url: 'https://example.com' })
 
     const [, request] = fetchMock.mock.calls[0]
     expect(JSON.parse(String(request?.body))).not.toHaveProperty('location')
+    expect(result.content[0].text).toContain('/opt/gamut/docs/browser-use.md')
+  })
+
+  it('returns the browser guide hint when switching to an existing tab', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      success: true,
+      location: 'container',
+      switchedToExisting: true,
+      tabId: 't2',
+      url: 'https://example.com',
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })))
+
+    const openTool = createBrowserTools(() => 'session-3')
+      .find(candidate => candidate.name === 'browser_open') as any
+    const result = await openTool.handler({ url: 'https://example.com' })
+
+    expect(result.content[0].text).toContain(BROWSER_USE_GUIDANCE_HINT)
   })
 })

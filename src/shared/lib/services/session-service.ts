@@ -38,6 +38,7 @@ import {
   type TransformedItem,
 } from '@shared/lib/utils/message-transform'
 import { findDeltaWindowStart } from '@shared/lib/messages-delta'
+import { replaceInlineMediaWithRefs } from './session-media'
 import { sessionMetadataMapSchema } from './session-metadata-schema'
 import { isHiddenAutomatedSession } from './session-visibility'
 import {
@@ -298,19 +299,25 @@ async function mutateSessionMetadata(
 }
 
 /**
- * Update metadata for a single session
+ * Update metadata for a single session. Returns the session's previous
+ * metadata entry (undefined when it had none), captured under the same lock
+ * as the write, so callers can tell whether an update actually changed a
+ * value without racing a concurrent update.
  */
 export async function updateSessionMetadata(
   agentSlug: string,
   sessionId: string,
   updates: Partial<SessionMetadata>
-): Promise<void> {
+): Promise<SessionMetadata | undefined> {
+  let previous: SessionMetadata | undefined
   await mutateSessionMetadata(agentSlug, (metadata) => {
+    previous = metadata[sessionId]
     metadata[sessionId] = {
       ...metadata[sessionId],
       ...updates,
     }
   })
+  return previous
 }
 
 export type AutomationStatusResult = 'updated' | 'not-automation' | 'already-final'
@@ -966,18 +973,22 @@ function pageCursor(messages: TransformedItem[], hasOlder: boolean): string | nu
 async function readTransformedTail(
   jsonlPath: string,
   maxLines: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  /** True replaces inline base64 images with refs (see session-media); the
+   * default keeps them inline, which is what pre-`media=ref` clients expect. */
+  media?: boolean
 ): Promise<{
   transformed: TransformedItem[]
   entries: (JsonlMessageEntry | JsonlSystemEntry)[]
   reachedStart: boolean
 }> {
-  const { lines, reachedStart } = await readJsonlTailLines(jsonlPath, maxLines, signal)
+  const { lines, offsets, reachedStart } = await readJsonlTailLines(jsonlPath, maxLines, signal)
   // An abort landing on the last chunk read still saves the parse/transform
   // below — on large transcripts that is seconds of synchronous work.
   signal?.throwIfAborted()
   const entries: (JsonlMessageEntry | JsonlSystemEntry)[] = []
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!
     const parsed = parseJsonlLine<JsonlEntry>(line)
     if (!parsed) continue
     const normalized = normalizeQueuedCommandEntry(parsed)
@@ -985,6 +996,9 @@ async function readTransformedTail(
       isMessageOrSystemDisplayEntry(normalized) &&
       !('isMeta' in normalized && normalized.isMeta)
     ) {
+      if (media) {
+        replaceInlineMediaWithRefs(normalized, { line, lineOffset: offsets[i]! })
+      }
       entries.push(normalized)
     }
   }
@@ -1384,9 +1398,14 @@ async function readEntriesRange(
   jsonlPath: string,
   startOffset: number,
   endOffset: number | undefined,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  media?: boolean
 ): Promise<(JsonlMessageEntry | JsonlSystemEntry)[]> {
   const entries: (JsonlMessageEntry | JsonlSystemEntry)[] = []
+  // Rows arrive in file order from a line-boundary start, so accumulating
+  // their lengths reproduces each row's absolute offset — what media refs
+  // address into. The +1 is the newline the reader strips.
+  let lineOffset = startOffset
   // The signal is threaded into the reader itself (checked per chunk): a
   // multi-MB row spans many chunks before it ever surfaces as a line here.
   for await (const line of streamFileLines(
@@ -1394,6 +1413,8 @@ async function readEntriesRange(
     { start: startOffset, end: endOffset },
     signal
   )) {
+    const offset = lineOffset
+    lineOffset += line.length + 1
     const parsed = parseJsonlLine<JsonlEntry>(line)
     if (!parsed) continue
     const normalized = normalizeQueuedCommandEntry(parsed)
@@ -1401,6 +1422,12 @@ async function readEntriesRange(
       isMessageOrSystemDisplayEntry(normalized) &&
       !('isMeta' in normalized && normalized.isMeta)
     ) {
+      // Before the entries accumulate: the window holds every row at once, so
+      // dropping the base64 here keeps it out of the page's peak memory too,
+      // not just off the wire.
+      if (media) {
+        replaceInlineMediaWithRefs(normalized, { line, lineOffset: offset })
+      }
       entries.push(normalized)
     }
   }
@@ -1420,7 +1447,14 @@ async function readEntriesRange(
 export async function getSessionMessagesPage(
   agentSlug: string,
   sessionId: string,
-  opts: { limit: number; cursor?: string; signal?: AbortSignal; byteBudget?: number }
+  opts: {
+    limit: number
+    cursor?: string
+    signal?: AbortSignal
+    byteBudget?: number
+    /** `'ref'` replaces inline base64 images with media refs (see session-media). */
+    media?: 'ref'
+  }
 ): Promise<SessionMessagesPage> {
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
   if (!(await fileExists(jsonlPath))) {
@@ -1445,7 +1479,13 @@ export async function getSessionMessagesPage(
     return { messages: [], nextCursor: null }
   }
 
-  const entries = await readEntriesRange(jsonlPath, scan.startOffset, scan.endOffset, signal)
+  const entries = await readEntriesRange(
+    jsonlPath,
+    scan.startOffset,
+    scan.endOffset,
+    signal,
+    opts.media === 'ref'
+  )
   signal?.throwIfAborted()
   const transformed = transformMessages(entries)
   const reachedStart = scan.reachedStart
@@ -1518,7 +1558,7 @@ const DELTA_MAX_TAIL_LINES = 10_000
 export async function getSessionMessagesDelta(
   agentSlug: string,
   sessionId: string,
-  opts: { after: string; signal?: AbortSignal }
+  opts: { after: string; signal?: AbortSignal; media?: 'ref' }
 ): Promise<SessionMessagesDelta> {
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
   if (!(await fileExists(jsonlPath))) {
@@ -1532,7 +1572,8 @@ export async function getSessionMessagesDelta(
     const { transformed, entries, reachedStart } = await readTransformedTail(
       jsonlPath,
       maxLines,
-      signal
+      signal,
+      opts.media === 'ref'
     )
     const canGrow = !reachedStart && maxLines < DELTA_MAX_TAIL_LINES
 
@@ -1625,7 +1666,8 @@ const TAIL_WINDOW_MAX_BYTES = 4 * 1024 * 1024
  */
 async function readSessionEntriesFromTail(
   jsonlPath: string,
-  windowBytes: number
+  windowBytes: number,
+  endOffset?: number,
 ): Promise<{
   entries: (JsonlMessageEntry | JsonlSystemEntry)[]
   coveredWholeFile: boolean
@@ -1639,8 +1681,14 @@ async function readSessionEntriesFromTail(
   }
   try {
     const { size } = await fileHandle.stat()
-    const offset = Math.max(0, size - windowBytes)
-    const length = size - offset
+    // Callers may anchor a read to a transcript byte offset captured at turn
+    // completion. Clamp it to the current file size so truncation/replacement
+    // degrades to the surviving prefix without crossing into a later turn.
+    const effectiveEnd = endOffset == null
+      ? size
+      : Math.min(size, Math.max(0, Math.floor(endOffset)))
+    const offset = Math.max(0, effectiveEnd - windowBytes)
+    const length = effectiveEnd - offset
     const buffer = Buffer.alloc(length)
     let bytesReadTotal = 0
     while (bytesReadTotal < length) {
@@ -1683,23 +1731,33 @@ async function readSessionEntriesFromTail(
  * merge or reorder lines, and compact boundaries are ordinary standalone
  * lines), so the newest matching entry within a complete-line tail window is
  * exactly the entry a full parse would select. A window with no match is only
- * trusted when it covered the whole file; otherwise the window escalates and
- * finally falls back to one full parse, so the result always equals the
- * full-parse result — it is just cheaper in the common case.
+ * trusted when it covered the whole file; otherwise the window escalates.
+ * Unanchored reads finally fall back to the existing streaming full parse so
+ * they remain exact. Anchored reads deliberately stop at the tail budget:
+ * materializing an arbitrarily large captured prefix would defeat the bounded
+ * reader, and their caller supports omitting request context.
+ *
+ * `endOffset` constrains the search to a byte position captured from this same
+ * transcript. It is the ordering primitive for completion-notification context:
+ * unlike timestamps, file offsets do not compare host and container clocks.
  */
 export async function findLastSessionEntry(
   agentSlug: string,
   sessionId: string,
-  predicate: (entry: JsonlMessageEntry | JsonlSystemEntry) => boolean
+  predicate: (entry: JsonlMessageEntry | JsonlSystemEntry) => boolean,
+  options: { endOffset?: number | null } = {},
 ): Promise<JsonlMessageEntry | JsonlSystemEntry | null> {
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+  const endOffset = options.endOffset == null || !Number.isFinite(options.endOffset)
+    ? undefined
+    : Math.max(0, Math.floor(options.endOffset))
 
   for (
     let windowBytes = TAIL_WINDOW_INITIAL_BYTES;
     windowBytes <= TAIL_WINDOW_MAX_BYTES;
     windowBytes *= TAIL_WINDOW_GROWTH_FACTOR
   ) {
-    const tail = await readSessionEntriesFromTail(jsonlPath, windowBytes)
+    const tail = await readSessionEntriesFromTail(jsonlPath, windowBytes, endOffset)
     if (tail === null) return null // no transcript file
     for (let i = tail.entries.length - 1; i >= 0; i--) {
       if (predicate(tail.entries[i])) return tail.entries[i]
@@ -1707,8 +1765,15 @@ export async function findLastSessionEntry(
     if (tail.coveredWholeFile) return null
   }
 
-  // The match (if any) starts earlier than the capped window: parse the whole
-  // file once so behavior is never worse than the pre-tail-read path.
+  // An anchored lookup must never turn its captured byte offset into an
+  // unbounded Buffer + UTF-16 string. Missing context is an explicit supported
+  // outcome for completion summaries, so stop after the 4 MB tail budget.
+  if (endOffset !== undefined) {
+    return null
+  }
+
+  // Unanchored callers keep exact pre-existing behavior via the line-streaming
+  // whole-file parser (never one readFile-sized string).
   const entries = await getSessionMessagesWithCompact(agentSlug, sessionId)
   for (let i = entries.length - 1; i >= 0; i--) {
     if (predicate(entries[i])) return entries[i]

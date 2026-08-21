@@ -7,6 +7,10 @@ description: Create interactive web dashboards to visualize data and provide UI 
 
 You can create web dashboards that are served to the user through the Gamut UI. Dashboards are full web applications (HTML/JS/React/Svelte/etc.) that run as servers inside the container.
 
+## When to Build a Dashboard
+
+Build one when the user needs a rich, reusable visual artifact rather than a chat reply or a static downloadable file — interactive charts, filters, or tables; a tracker, calculator, or data explorer; a multi-view report with controls; a visual interface over generated or fetched data. A one-off number or table belongs in the chat response instead.
+
 ## Available Tools
 
 - **`create_dashboard`** — Scaffold a new dashboard project with the correct structure and boilerplate
@@ -201,3 +205,39 @@ The following APIs are automatically available in all dashboards (injected by th
 - **Restart after changes** — use `start_dashboard` after modifying source code
 - **Verify interactively** — use `browser_open(..., location="container")` after every restart and exercise the changed behavior
 - **Static assets** — serve them from the same directory or use inline styles/scripts for simplicity
+
+## Design and Accessibility
+
+- Build mobile-first responsive layouts with grid or flexbox.
+- Establish hierarchy through typography, spacing, and grouping.
+- Use a small, consistent set of CSS custom properties for color, spacing, radius, and typography.
+- Meet WCAG AA contrast and never communicate state through color alone.
+- Use semantic HTML, proper headings, and associated labels; reach for ARIA only when native semantics are insufficient.
+- Provide loading, empty, error, and stale-data states rather than blank areas.
+- Keep dependencies proportional — a simple visualization does not need a large application framework.
+- Make important metrics understandable without requiring hover.
+- For charts, pick a representation that matches the question and keep axes, units, legends, and tooltips unambiguous. Test interaction and keyboard access, not just the initial render.
+
+## Common Failure Causes
+
+- not listening on `DASHBOARD_PORT`;
+- failing to install a newly added dependency;
+- using root-relative browser URLs instead of the injected helper;
+- using the host browser for a private container URL;
+- configuring a router with `/` rather than `routerBasePath`;
+- assuming the screenshot proves controls or client routing work;
+- restarting repeatedly without fixing a crash loop's root cause.
+
+Clear logs before a fresh reproduction when old output makes diagnosis ambiguous.
+
+## Completion Checklist
+
+- The dashboard starts successfully after the final change.
+- The returned screenshot has no obvious layout or content failure.
+- The exact returned URL works in container Chromium.
+- Primary controls and routes were exercised.
+- Loading, empty, and error behavior are present where relevant.
+- Browser diagnostics and server logs contain no unexplained errors.
+- Dashboard-owned URLs use the runtime helper.
+- The validation browser is closed when no longer needed.
+- The final response names the dashboard slug and current status.

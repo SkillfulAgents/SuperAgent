@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 import { runInNewContext } from 'node:vm'
-import { Writable } from 'node:stream'
+import { Readable, Writable } from 'node:stream'
 import { createHash } from 'node:crypto'
 
 // ============================================================================
@@ -297,6 +297,11 @@ vi.mock('@shared/lib/services/agent-service', () => ({
   agentExists: (...args: unknown[]) => mockAgentExists(...args),
 }))
 
+vi.mock('@shared/lib/services/session-media', () => ({
+  decodeMediaRef: vi.fn(),
+  openMediaBlob: vi.fn(),
+}))
+
 vi.mock('@shared/lib/services/session-service', () => ({
   listSessions: vi.fn(),
   listSessionsByIds: vi.fn(),
@@ -413,6 +418,7 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
 vi.mock('@shared/lib/services/agent-template-service', () => ({
   exportAgentTemplate: vi.fn(),
   exportAgentFull: vi.fn(),
+  isHostExportBusy: vi.fn(() => false),
   importAgentFromTemplate: vi.fn(),
   MAX_COMPRESSED_SIZE: 500 * 1024 * 1024,
   installAgentFromSkillset: vi.fn(),
@@ -501,6 +507,9 @@ vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => ({
   getAgentSessionsDir: vi.fn(() => '/mock/sessions'),
   readJsonlFile: vi.fn(),
   getAgentWorkspaceDir: (slug: string) => mockGetAgentWorkspaceDir(slug),
+  // The skills-files route checks the skill dir via directoryExists; delegate
+  // to the same mock the tests already use for fs.existsSync.
+  directoryExists: async (p: string) => mockFsExistsSync(p),
   getAgentPreferencesPath: vi.fn((slug: string) => `/mock/workspace/${slug}/agent-preferences.json`),
   getTempUploadsDir: vi.fn(() => '/mock/tmp/uploads'),
   ensureDirectory: vi.fn(),
@@ -550,8 +559,12 @@ vi.mock('hono/streaming', () => ({ streamSSE: (...args: unknown[]) => mockStream
 
 // Import the agents router after all mocks are set up
 import agents from './agents'
+import { decodeMediaRef, openMediaBlob } from '@shared/lib/services/session-media'
 import { UploadTooLargeError } from '@shared/lib/utils/chunked-upload'
 import {
+  exportAgentFull,
+  exportAgentTemplate,
+  isHostExportBusy,
   importAgentFromTemplate,
   hasOnboardingSkill,
   getAgentTemplatePrompt,
@@ -562,7 +575,7 @@ import {
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
 import { getAgent, getAgentWithStatus, listAgentsWithStatus } from '@shared/lib/services/agent-service'
-import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
+import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { listPendingScheduledTasks } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
@@ -572,7 +585,7 @@ import { computerUsePermissionManager } from '@shared/lib/computer-use/permissio
 import { containerManager } from '@shared/lib/container/container-manager'
 import { listUserSecrets, setSecret, updateSecret, getSecret, getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { keyToEnvVar } from '@shared/lib/utils/secrets'
-import { logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
+import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
 import { readJsonFileStrict, readJsonlFile, writeJsonFileAtomic, readFileOrNull } from '@shared/lib/utils/file-storage'
 import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
 import { listWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
@@ -3565,6 +3578,52 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     const res = await postJson(app, URL, { content: 'hello', model: 'claude-haiku-4-5' })
     expect(res.status).toBe(201)
     expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), { model: 'claude-haiku-4-5' })
+    expect(updateSessionMetadata).toHaveBeenCalledWith('test-agent', 'sess-1', {
+      model: 'claude-haiku-4-5',
+    })
+    expect(messagePersister.broadcastSessionUpdate).toHaveBeenCalledWith('sess-1')
+    expect(messagePersister.broadcastGlobal).toHaveBeenCalledWith({
+      type: 'session_updated',
+      sessionId: 'sess-1',
+      agentSlug: 'test-agent',
+    })
+  })
+
+  it('does not broadcast when the accepted selection matches the stored metadata', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+    // Seeded composers re-send their whole selection on every fresh turn; a
+    // value the metadata already records must not fan out list/detail
+    // refetches to every open window.
+    vi.mocked(updateSessionMetadata).mockResolvedValueOnce({ model: 'claude-haiku-4-5' } as never)
+
+    const res = await postJson(app, URL, { content: 'hello again', model: 'claude-haiku-4-5' })
+    expect(res.status).toBe(201)
+    expect(updateSessionMetadata).toHaveBeenCalledWith('test-agent', 'sess-1', {
+      model: 'claude-haiku-4-5',
+    })
+    expect(messagePersister.broadcastSessionUpdate).not.toHaveBeenCalled()
+    expect(messagePersister.broadcastGlobal).not.toHaveBeenCalled()
+  })
+
+  it('broadcasts when any one option differs from the stored metadata', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+    vi.mocked(updateSessionMetadata).mockResolvedValueOnce({
+      model: 'claude-haiku-4-5',
+      effort: 'medium',
+    } as never)
+
+    const res = await postJson(app, URL, {
+      content: 'hello',
+      model: 'claude-haiku-4-5',
+      effort: 'high',
+    })
+    expect(res.status).toBe(201)
+    expect(messagePersister.broadcastSessionUpdate).toHaveBeenCalledWith('sess-1')
+    expect(messagePersister.broadcastGlobal).toHaveBeenCalledWith({
+      type: 'session_updated',
+      sessionId: 'sess-1',
+      agentSlug: 'test-agent',
+    })
   })
 
   it('forwards both effort and model when both are present', async () => {
@@ -3626,6 +3685,8 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     const body = await res.json()
     expect(body.queued).toBe(true)
     expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), {})
+    expect(updateSessionMetadata).not.toHaveBeenCalled()
+    expect(messagePersister.broadcastSessionUpdate).not.toHaveBeenCalled()
   })
 })
 
@@ -3816,6 +3877,57 @@ describe('GET /:id/sessions/:sessionId/messages pagination', () => {
     expect(getSessionMessagesPage).not.toHaveBeenCalled()
   })
 
+  it('forwards the media mode to the page reader', async () => {
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({ messages: [], nextCursor: null })
+
+    const res = await getReq(app, `${URL}?limit=2&media=ref`)
+    expect(res.status).toBe(200)
+    expect(getSessionMessagesPage).toHaveBeenCalledWith(
+      'test-agent',
+      'sess-1',
+      expect.objectContaining({ media: 'ref' })
+    )
+  })
+
+  it('forwards the media mode to the delta reader', async () => {
+    vi.mocked(getSessionMessagesDelta).mockResolvedValue({ messages: [], anchor: null })
+
+    const res = await getReq(app, `${URL}?after=m1&media=ref`)
+    expect(res.status).toBe(200)
+    expect(getSessionMessagesDelta).toHaveBeenCalledWith(
+      'test-agent',
+      'sess-1',
+      expect.objectContaining({ media: 'ref' })
+    )
+  })
+
+  it('rejects an unknown media mode rather than silently serving inline', async () => {
+    const res = await getReq(app, `${URL}?limit=2&media=inline`)
+    expect(res.status).toBe(400)
+    expect(getSessionMessagesPage).not.toHaveBeenCalled()
+  })
+
+  it('honors media on its own, without any pagination parameter', async () => {
+    // Otherwise asking for refs quietly returns the full inline transcript.
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({ messages: [], nextCursor: null })
+
+    const res = await getReq(app, `${URL}?media=ref`)
+    expect(res.status).toBe(200)
+    expect(getSessionMessagesPage).toHaveBeenCalledWith(
+      'test-agent',
+      'sess-1',
+      expect.objectContaining({ media: 'ref' })
+    )
+    expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
+  })
+
+  it('validates a media value even when it arrives alone', async () => {
+    const res = await getReq(app, `${URL}?media=bogus`)
+    expect(res.status).toBe(400)
+    expect(getSessionMessagesPage).not.toHaveBeenCalled()
+    expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
+  })
+
   it('caps first-page limit to MESSAGES_PAGE_LIMIT', async () => {
     process.env.MESSAGES_PAGE_LIMIT = '100'
     vi.mocked(getSessionMessagesPage).mockResolvedValue({
@@ -3982,6 +4094,80 @@ describe('GET /:id/sessions/:sessionId/messages forward delta (?after=)', () => 
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.messages[0].toolCalls[0].result).toBe('User provided input')
+  })
+})
+
+// The read itself (offsets, validity, decoding) is covered against real files
+// in session-media.test.ts; `fs` is mocked wholesale here, so these cover what
+// the route owns: status codes, headers, and passing the stream through.
+describe('GET /:id/sessions/:sessionId/media/:ref', () => {
+  let app: ReturnType<typeof createApp>
+  const image = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.alloc(4096, 0x7f),
+  ])
+  const REF = 'encoded-ref'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(sessionExists).mockResolvedValue(true)
+    vi.mocked(sessionBelongsToAgent).mockResolvedValue(true)
+    vi.mocked(decodeMediaRef).mockReturnValue({ v: 1, u: 'u-1', o: 10, s: 100, l: 200, h: 'fp' })
+    vi.mocked(openMediaBlob).mockResolvedValue({
+      stream: Readable.from([image]),
+      mimeType: 'image/png',
+      bytes: image.length,
+    })
+  })
+
+  it('streams the addressed image with its sniffed type', async () => {
+    const res = await getReq(app, `/api/agents/test-agent/sessions/sess-1/media/${REF}`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Content-Type')).toBe('image/png')
+    expect(res.headers.get('Content-Length')).toBe(String(image.length))
+    expect(res.headers.get('Cache-Control')).toContain('immutable')
+    expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff')
+    expect(Buffer.from(await res.arrayBuffer()).equals(image)).toBe(true)
+  })
+
+  it('answers 410 once the transcript no longer holds the referenced bytes', async () => {
+    vi.mocked(openMediaBlob).mockResolvedValue(undefined)
+    const res = await getReq(app, `/api/agents/test-agent/sessions/sess-1/media/${REF}`)
+    expect(res.status).toBe(410)
+  })
+
+  it('answers 500, not 410, when the read fails for operational reasons', async () => {
+    // A disk error says nothing about whether the media still exists; 410
+    // would strand the client on a placeholder it never retries.
+    vi.mocked(openMediaBlob).mockRejectedValue(
+      Object.assign(new Error('I/O error'), { code: 'EIO' })
+    )
+    const res = await getReq(app, `/api/agents/test-agent/sessions/sess-1/media/${REF}`)
+    expect(res.status).toBe(500)
+  })
+
+  it('rejects a ref it could not have minted', async () => {
+    vi.mocked(decodeMediaRef).mockReturnValue(undefined)
+    const res = await getReq(app, '/api/agents/test-agent/sessions/sess-1/media/not-a-ref')
+    expect(res.status).toBe(400)
+    expect(openMediaBlob).not.toHaveBeenCalled()
+  })
+
+  it('does not preflight existence, so storage failures are not read as gone', async () => {
+    // fileExists() answers false for any stat failure, so a preflight here
+    // would 404 on EIO/EACCES before the read could report anything.
+    vi.mocked(sessionExists).mockResolvedValue(false)
+    const res = await getReq(app, `/api/agents/test-agent/sessions/sess-1/media/${REF}`)
+    expect(res.status).toBe(200)
+    expect(sessionExists).not.toHaveBeenCalled()
+  })
+
+  it('404s for a session the agent does not own', async () => {
+    vi.mocked(sessionBelongsToAgent).mockResolvedValue(false)
+    const res = await getReq(app, `/api/agents/test-agent/sessions/sess-1/media/${REF}`)
+    expect(res.status).toBe(404)
+    expect(openMediaBlob).not.toHaveBeenCalled()
   })
 })
 
@@ -5978,6 +6164,194 @@ describe('POST /api/agents/:id/keep-alive', () => {
 // Skill ZIP Export / Import Tests
 // ============================================================================
 
+describe('POST /api/agents/:id/export-full', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockAgentExists.mockResolvedValue(true)
+    app = createApp()
+  })
+
+  it('streams the zip without Content-Length', async () => {
+    const fakeZip = Buffer.from('PK\x03\x04full-export')
+    vi.mocked(exportAgentFull).mockResolvedValue(Readable.from(fakeZip))
+    vi.mocked(getAgent).mockResolvedValue({ frontmatter: { name: 'Nutrition Agent' } } as any)
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-full', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Content-Type')).toBe('application/octet-stream')
+    expect(res.headers.get('Content-Disposition')).toContain('Nutrition%20Agent-full.agent')
+    expect(res.headers.get('Content-Length')).toBeNull()
+    expect(Buffer.from(await res.arrayBuffer())).toEqual(fakeZip)
+    expect(exportAgentFull).toHaveBeenCalledWith('pvb86kldy6', expect.any(AbortSignal))
+  })
+
+  it('returns 500 when export throws before the stream starts', async () => {
+    vi.mocked(exportAgentFull).mockRejectedValue(new Error('Agent workspace not found'))
+
+    const res = await app.request('http://localhost/api/agents/missing/export-full', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'Agent workspace not found' })
+  })
+
+  it('returns 409 when another export is already in progress', async () => {
+    const err = new Error('An export is already in progress')
+    err.name = 'ExportInProgressError'
+    vi.mocked(exportAgentFull).mockRejectedValue(err)
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-full', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({ error: 'An export is already in progress' })
+  })
+
+  it('never starts the export (and its lock) when getAgent fails', async () => {
+    vi.mocked(getAgent).mockRejectedValue(new Error('agent metadata unreadable'))
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-full', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(500)
+    expect(exportAgentFull).not.toHaveBeenCalled()
+  })
+
+  it('destroys the zip stream when packaging the download throws', async () => {
+    const zipStream = Readable.from(Buffer.from('PK\x03\x04full-export'))
+    const destroy = vi.spyOn(zipStream, 'destroy')
+    vi.mocked(exportAgentFull).mockResolvedValue(zipStream)
+    vi.mocked(getAgent).mockResolvedValue({ frontmatter: { name: 'Nutrition Agent' } } as any)
+    vi.mocked(logAuditEvent).mockImplementationOnce(() => {
+      throw new Error('audit failed')
+    })
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-full', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(500)
+    expect(destroy).toHaveBeenCalled()
+
+    const nextZip = Readable.from(Buffer.from('PK\x03\x04next'))
+    vi.mocked(exportAgentFull).mockResolvedValue(nextZip)
+    const next = await app.request('http://localhost/api/agents/pvb86kldy6/export-full', {
+      method: 'POST',
+    })
+    expect(next.status).toBe(200)
+    expect(Buffer.from(await next.arrayBuffer())).toEqual(Buffer.from('PK\x03\x04next'))
+  })
+})
+
+describe('POST /api/agents/:id/export-template', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockAgentExists.mockResolvedValue(true)
+    app = createApp()
+  })
+
+  it('streams the template zip', async () => {
+    const fakeZip = Buffer.from('PK\x03\x04template')
+    vi.mocked(exportAgentTemplate).mockResolvedValue(Readable.from(fakeZip))
+    vi.mocked(getAgent).mockResolvedValue({ frontmatter: { name: 'Nutrition Agent' } } as any)
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-template', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Content-Disposition')).toContain('Nutrition%20Agent-template.agent')
+    expect(res.headers.get('Content-Length')).toBeNull()
+    expect(Buffer.from(await res.arrayBuffer())).toEqual(fakeZip)
+    expect(exportAgentTemplate).toHaveBeenCalledWith('pvb86kldy6', expect.any(AbortSignal))
+  })
+
+  it('returns 409 when another export is already in progress', async () => {
+    const err = new Error('An export is already in progress')
+    err.name = 'ExportInProgressError'
+    vi.mocked(exportAgentTemplate).mockRejectedValue(err)
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-template', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({ error: 'An export is already in progress' })
+  })
+
+  it('never starts the export (and its lock) when getAgent fails', async () => {
+    vi.mocked(getAgent).mockRejectedValue(new Error('agent metadata unreadable'))
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-template', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(500)
+    expect(exportAgentTemplate).not.toHaveBeenCalled()
+  })
+
+  it('destroys the zip stream when packaging the download throws', async () => {
+    const zipStream = Readable.from(Buffer.from('PK\x03\x04template'))
+    const destroy = vi.spyOn(zipStream, 'destroy')
+    vi.mocked(exportAgentTemplate).mockResolvedValue(zipStream)
+    vi.mocked(getAgent).mockResolvedValue({ frontmatter: { name: 'Nutrition Agent' } } as any)
+    vi.mocked(logAuditEvent).mockImplementationOnce(() => {
+      throw new Error('audit failed')
+    })
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-template', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(500)
+    expect(destroy).toHaveBeenCalled()
+
+    const nextZip = Readable.from(Buffer.from('PK\x03\x04next'))
+    vi.mocked(exportAgentTemplate).mockResolvedValue(nextZip)
+    const next = await app.request('http://localhost/api/agents/pvb86kldy6/export-template', {
+      method: 'POST',
+    })
+    expect(next.status).toBe(200)
+  })
+})
+
+describe('GET /api/agents/export-status', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(isHostExportBusy).mockReturnValue(false)
+    app = createApp()
+  })
+
+  it('returns inProgress false when the host is idle', async () => {
+    const res = await app.request('http://localhost/api/agents/export-status')
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ inProgress: false })
+    expect(getAgent).not.toHaveBeenCalled()
+  })
+
+  it('returns inProgress true while an export is running', async () => {
+    vi.mocked(isHostExportBusy).mockReturnValue(true)
+
+    const res = await app.request('http://localhost/api/agents/export-status')
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ inProgress: true })
+  })
+})
+
 describe('POST /api/agents/:id/skills/:dir/export', () => {
   let app: ReturnType<typeof createApp>
 
@@ -6523,6 +6897,7 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     vi.mocked(readJsonFileStrict).mockResolvedValue({
       defaultModel: 'haiku',
       defaultEffort: 'high',
+      defaultSpeed: 'fast',
     } as never)
 
     const res = await postJson(app, SESSIONS_URL, { message: 'hello' })
@@ -6532,8 +6907,15 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     const args = mockCreateSession.mock.calls[0][0]
     expect(args.model).toBe('haiku')
     expect(args.effort).toBe('high')
+    expect(args.speed).toBe('fast')
     expect(args.prewarmDefaults.model).toBe('haiku')
     expect(args.prewarmDefaults.effort).toBe('high')
+    expect(registerSession).toHaveBeenCalledWith('test-agent', 'session-123', 'New Session', {
+      model: 'haiku',
+      effort: 'high',
+      speed: 'fast',
+    })
+    expect(await res.json()).toMatchObject({ model: 'haiku', effort: 'high', speed: 'fast' })
   })
 
   it('reserves ownership before publishing global lifecycle state', async () => {
@@ -6565,6 +6947,12 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     expect(args.effort).toBe('low')
     expect(args.prewarmDefaults.model).toBe('haiku')
     expect(args.prewarmDefaults.effort).toBe('high')
+    expect(registerSession).toHaveBeenCalledWith(
+      'test-agent',
+      'session-123',
+      'New Session',
+      expect.objectContaining({ model: 'claude-opus-4', effort: 'low' }),
+    )
   })
 
   it('uses the global default model and effort when the agent has no preferences', async () => {
@@ -6577,6 +6965,12 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     expect(args.effort).toBe('medium')
     expect(args.prewarmDefaults.model).toBe('global-agent-model')
     expect(args.prewarmDefaults.effort).toBe('medium')
+    expect(registerSession).toHaveBeenCalledWith(
+      'test-agent',
+      'session-123',
+      'New Session',
+      expect.objectContaining({ model: 'global-agent-model', effort: 'medium' }),
+    )
   })
 })
 

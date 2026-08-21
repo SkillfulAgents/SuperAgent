@@ -10,6 +10,13 @@ import { z } from 'zod'
 import { resizeBase64Screenshot } from '../image-utils'
 import { inputManager } from '../input-manager'
 
+// Conditional to match the prompt, which tells a parent with a computer-use
+// subagent to delegate rather than read. See BROWSER_USE_GUIDANCE_HINT.
+export const COMPUTER_USE_GUIDANCE_HINT =
+  'Guidance: if you will drive the app yourself rather than delegate to the computer-use agent, read `/opt/gamut/docs/computer-use.md` before interacting (unless you already read it in this conversation).'
+
+const COMPUTER_USE_GUIDANCE_METHODS = new Set(['apps', 'windows', 'launch', 'grab'])
+
 /**
  * Shared helper: creates a pending input request that blocks until the host
  * resolves (executes) or rejects (denies) the computer use command.
@@ -67,8 +74,12 @@ async function computerUseRequest(
       }
     }
 
+    const text = output || `${method} completed successfully.`
+    const guidance = COMPUTER_USE_GUIDANCE_METHODS.has(method)
+      ? `\n\n${COMPUTER_USE_GUIDANCE_HINT}`
+      : ''
     return {
-      content: [{ type: 'text' as const, text: output || `${method} completed successfully.` }],
+      content: [{ type: 'text' as const, text: `${text}${guidance}` }],
     }
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error'

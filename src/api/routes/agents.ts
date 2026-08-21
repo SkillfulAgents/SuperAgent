@@ -72,7 +72,8 @@ import {
   removeMessage,
   removeToolCall,
 } from '@shared/lib/services/session-service'
-import { getSessionJsonlPath, getAgentSessionsDir, readJsonlFile, writeJsonFileAtomic, displaySlug, createJsonArrayStringifyTransform } from '@shared/lib/utils/file-storage'
+import { decodeMediaRef, openMediaBlob } from '@shared/lib/services/session-media'
+import { getSessionJsonlPath, getAgentSessionsDir, readJsonlFile, writeJsonFileAtomic, displaySlug, createJsonArrayStringifyTransform, directoryExists } from '@shared/lib/utils/file-storage'
 import {
   MAX_UPLOAD_TOTAL_SIZE,
   UploadTooLargeError,
@@ -148,6 +149,7 @@ import {
 import {
   exportAgentTemplate,
   exportAgentFull,
+  isHostExportBusy,
   importAgentFromTemplate,
   MAX_COMPRESSED_SIZE,
   installAgentFromSkillset,
@@ -715,6 +717,11 @@ agents.get('/discoverable-agents', async (c) => {
     console.error('Failed to fetch discoverable agents:', error)
     return c.json({ error: 'Failed to fetch discoverable agents' }, 500)
   }
+})
+
+// GET /api/agents/export-status — host-wide; registered before /:id
+agents.get('/export-status', (c) => {
+  return c.json({ inProgress: isHostExportBusy() })
 })
 
 // POST /api/agents/install-from-skillset - Install agent from skillset
@@ -1679,14 +1686,15 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     // still wins the race with early container output.
     await reserveSessionOwnership(slug, sessionId)
 
-    // Persist only what the user explicitly chose. The server-side fallback is
-    // applied at session creation but should not masquerade as a user choice in
-    // metadata — otherwise a later change to the global default wouldn't be
-    // reflected when the composer reloads.
-    const initialMetadata: Parameters<typeof updateSessionMetadata>[2] = {}
-    if (runtimeOptions.effort) initialMetadata.effort = runtimeOptions.effort
-    if (runtimeOptions.speed) initialMetadata.speed = runtimeOptions.speed
-    if (runtimeOptions.model) initialMetadata.model = runtimeOptions.model
+    // Runtime choices are SESSION state once the first turn starts, including
+    // inherited defaults. Persist the effective values, not merely explicit
+    // overrides, so changing an agent/app default later cannot silently change
+    // an existing conversation's next turn or make the composer claim it will.
+    const initialMetadata: Parameters<typeof updateSessionMetadata>[2] = {
+      model: resolved.model,
+      ...(resolved.effort ? { effort: resolved.effort } : {}),
+      ...(resolved.speed ? { speed: resolved.speed } : {}),
+    }
     if (isAuthMode()) {
       initialMetadata.createdByUserId = getCurrentUserId(c)
       // Origin-device stamp: which mobile device family (if any) started this
@@ -1749,6 +1757,9 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         lastActivityAt: new Date(),
         messageCount: 0,
         isActive: true,
+        model: resolved.model,
+        ...(resolved.effort ? { effort: resolved.effort } : {}),
+        ...(resolved.speed ? { speed: resolved.speed } : {}),
         initialMessageUuid,
       },
       201
@@ -1764,6 +1775,10 @@ const messagesListQuerySchema = z
     limit: z.coerce.number().int().min(1).max(MESSAGES_PAGE_MAX_LIMIT).optional(),
     cursor: z.string().min(1).max(200).optional(),
     after: z.string().min(1).max(200).optional(),
+    // Opt-in: images ship as refs to the media endpoint instead of inline
+    // base64. Absent means inline, so clients that predate the media endpoint
+    // (and the unpaginated path below) are unaffected.
+    media: z.literal('ref').optional(),
   })
   // Backward paging and the forward delta are different protocols; a request
   // mixing them has no coherent meaning.
@@ -1864,11 +1879,21 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     const rawLimit = c.req.query('limit')
     const rawCursor = c.req.query('cursor')
     const rawAfter = c.req.query('after')
-    if (rawLimit !== undefined || rawCursor !== undefined || rawAfter !== undefined) {
+    const rawMedia = c.req.query('media')
+    // `media` selects this branch too: it is only honored on the paginated
+    // path, so leaving it out would silently serve a full inline response to a
+    // client that asked for refs — and skip validating the value at all.
+    if (
+      rawLimit !== undefined ||
+      rawCursor !== undefined ||
+      rawAfter !== undefined ||
+      rawMedia !== undefined
+    ) {
       const parsed = messagesListQuerySchema.safeParse({
         ...(rawLimit !== undefined ? { limit: rawLimit } : {}),
         ...(rawCursor !== undefined ? { cursor: rawCursor } : {}),
         ...(rawAfter !== undefined ? { after: rawAfter } : {}),
+        ...(rawMedia !== undefined ? { media: rawMedia } : {}),
       })
       if (!parsed.success) {
         return c.json({ error: 'Invalid pagination' }, 400)
@@ -1886,6 +1911,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
         const delta = await getSessionMessagesDelta(agentSlug, sessionId, {
           after: parsed.data.after,
           signal: c.req.raw.signal,
+          media: parsed.data.media,
         })
         c.req.raw.signal.throwIfAborted()
         await annotateAndRecoverMessages(delta.messages, agentSlug, sessionId)
@@ -1900,6 +1926,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
         limit: capMessagesPageLimit(parsed.data.limit, parsed.data.cursor),
         cursor: parsed.data.cursor,
         signal: c.req.raw.signal,
+        media: parsed.data.media,
       })
       c.req.raw.signal.throwIfAborted()
       await annotateAndRecoverMessages(page.messages, agentSlug, sessionId)
@@ -2013,6 +2040,51 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     }
     console.error('Failed to fetch messages:', error)
     return c.json({ error: 'Failed to fetch messages' }, 500)
+  }
+})
+
+// GET /api/agents/:id/sessions/:sessionId/media/:ref - Bytes of one image a
+// `media=ref` page addressed. Served straight off the transcript as a ranged,
+// streaming base64 decode: the row holding it is multi-MB, and none of it is
+// materialized here.
+agents.get('/:id/sessions/:sessionId/media/:ref', AgentRead(), async (c) => {
+  try {
+    const agentSlug = getAgentId(c)
+    const sessionId = c.req.param('sessionId')
+    // Ownership only. There is deliberately no existence preflight here:
+    // fileExists() answers false for any stat failure, so EIO/EACCES/EMFILE
+    // would 404 — telling the client the image is gone when the truth is that
+    // this machine could not look. openMediaBlob distinguishes the two, and a
+    // genuinely missing transcript surfaces there as 410.
+    if (!(await sessionBelongsToAgent(agentSlug, sessionId))) {
+      return c.json({ error: 'Session transcript not found' }, 404)
+    }
+
+    const ref = decodeMediaRef(c.req.param('ref'))
+    if (!ref) return c.json({ error: 'Invalid media reference' }, 400)
+
+    const blob = await openMediaBlob(getSessionJsonlPath(agentSlug, sessionId), ref, c.req.raw.signal)
+    // Deletion and retention rewrite transcripts in place, so a ref the client
+    // still holds can address bytes that have moved or gone. Gone for good —
+    // the client shows a placeholder rather than retrying.
+    if (!blob) return c.json({ error: 'Media no longer available' }, 410)
+
+    return c.body(Readable.toWeb(blob.stream) as ReadableStream, 200, {
+      'Content-Type': blob.mimeType,
+      'Content-Length': String(blob.bytes),
+      // A ref names an immutable byte span: any edit to the transcript
+      // invalidates it rather than changing what it points at.
+      'Cache-Control': 'private, max-age=31536000, immutable',
+      // The type comes from a magic-number sniff, never from the ref — keep
+      // the browser from second-guessing it.
+      'X-Content-Type-Options': 'nosniff',
+    })
+  } catch (error) {
+    if (c.req.raw.signal.aborted) {
+      return new Response(null, { status: 499 })
+    }
+    console.error('Failed to fetch session media:', error)
+    return c.json({ error: 'Failed to fetch media' }, 500)
   }
 })
 
@@ -2272,7 +2344,24 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     }
     if (Object.keys(updates).length > 0) {
       try {
-        await updateSessionMetadata(agentSlug, sessionId, updates)
+        const previous = await updateSessionMetadata(agentSlug, sessionId, updates)
+        // The composer re-sends its whole selection on every fresh turn, so
+        // option presence alone doesn't mean anything changed. Compare against
+        // the previous metadata (captured under the update's lock) — otherwise
+        // every send would make every open window refetch the session list and
+        // detail for a no-op. A failed metadata write skips the broadcast too:
+        // peers would only refetch the stale values.
+        const runtimeSelectionChanged =
+          (updates.effort !== undefined && previous?.effort !== updates.effort) ||
+          (updates.speed !== undefined && previous?.speed !== updates.speed) ||
+          (updates.model !== undefined && previous?.model !== updates.model)
+        if (runtimeSelectionChanged) {
+          // Other windows/devices may already have seeded their composer from
+          // the previous session metadata. Tell both the local session stream
+          // and the global event stream to refresh before their next send.
+          messagePersister.broadcastSessionUpdate(sessionId)
+          messagePersister.broadcastGlobal({ type: 'session_updated', sessionId, agentSlug })
+        }
       } catch (error) {
         console.error(error)
       }
@@ -4719,30 +4808,50 @@ agents.post('/:id/skills/:dir/publish', AgentAdmin(), async (c) => {
  * display name (slugs are opaque minted ids), encoded per the same quoted +
  * RFC 5987 `filename*` convention as workspace-file downloads.
  */
-function packageDownloadResponse(zipBuffer: Buffer, filename: string): Response {
+function packageDownloadResponse(body: Readable | Buffer, filename: string): Response {
   const encoded = encodeURIComponent(filename)
-  return new Response(new Uint8Array(zipBuffer), {
-    status: 200,
-    headers: {
-      'Content-Type': 'application/octet-stream',
-      'Content-Disposition': `attachment; filename="${encoded}"; filename*=UTF-8''${encoded}`,
-      'Content-Length': zipBuffer.byteLength.toString(),
-    },
-  })
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/octet-stream',
+    'Content-Disposition': `attachment; filename="${encoded}"; filename*=UTF-8''${encoded}`,
+  }
+  if (Buffer.isBuffer(body)) {
+    headers['Content-Length'] = body.byteLength.toString()
+  }
+  const nodeStream = Buffer.isBuffer(body) ? Readable.from(body) : body
+  return new Response(Readable.toWeb(nodeStream) as ReadableStream, { status: 200, headers })
+}
+
+// Lock lives on the stream ('close' releases it). Destroy if Response construction throws.
+function sendLockedExportStream(zipStream: Readable, build: () => Response): Response {
+  try {
+    return build()
+  } catch (err) {
+    zipStream.destroy()
+    throw err
+  }
+}
+
+function exportRouteError(c: Context, error: unknown, fallback: string) {
+  if (error instanceof Error && error.name === 'ExportInProgressError') {
+    return c.json({ error: error.message }, 409)
+  }
+  const message = error instanceof Error ? error.message : fallback
+  console.error(fallback, error)
+  return c.json({ error: message }, 500)
 }
 
 // POST /api/agents/:id/export-template - Export agent as ZIP download
 agents.post('/:id/export-template', AgentAdmin(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const [agent, zipBuffer] = await Promise.all([getAgent(slug), exportAgentTemplate(slug)])
-
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'template' } })
-    return packageDownloadResponse(zipBuffer, `${agent?.frontmatter.name || slug}-template${AGENT_PACKAGE_EXTENSION}`)
+    const agent = await getAgent(slug)
+    const zipStream = await exportAgentTemplate(slug, c.req.raw.signal)
+    return sendLockedExportStream(zipStream, () => {
+      logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'template' } })
+      return packageDownloadResponse(zipStream, `${agent?.frontmatter.name || slug}-template${AGENT_PACKAGE_EXTENSION}`)
+    })
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to export template'
-    console.error('Failed to export template:', error)
-    return c.json({ error: message }, 500)
+    return exportRouteError(c, error, 'Failed to export template')
   }
 })
 
@@ -4750,14 +4859,14 @@ agents.post('/:id/export-template', AgentAdmin(), async (c) => {
 agents.post('/:id/export-full', AgentAdmin(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const [agent, zipBuffer] = await Promise.all([getAgent(slug), exportAgentFull(slug)])
-
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'full' } })
-    return packageDownloadResponse(zipBuffer, `${agent?.frontmatter.name || slug}-full${AGENT_PACKAGE_EXTENSION}`)
+    const agent = await getAgent(slug)
+    const zipStream = await exportAgentFull(slug, c.req.raw.signal)
+    return sendLockedExportStream(zipStream, () => {
+      logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'full' } })
+      return packageDownloadResponse(zipStream, `${agent?.frontmatter.name || slug}-full${AGENT_PACKAGE_EXTENSION}`)
+    })
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to export agent'
-    console.error('Failed to export full agent:', error)
-    return c.json({ error: message }, 500)
+    return exportRouteError(c, error, 'Failed to export agent')
   }
 })
 
@@ -4972,7 +5081,7 @@ agents.get('/:id/skills/:dir/files', AgentAdmin(), async (c) => {
 
     const skillDir = path.join(getAgentWorkspaceDir(agentSlug), '.claude', 'skills', dir)
 
-    if (!fs.existsSync(skillDir)) {
+    if (!(await directoryExists(skillDir))) {
       return c.json({ error: 'Skill directory not found' }, 404)
     }
 
@@ -5357,7 +5466,7 @@ agents.post('/:id/sessions/:sessionId/upload-folder', AgentUser(), async (c) => 
 agents.get('/:id/mounts', AgentRead(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
-    const mounts = getMountsWithHealth(agentSlug)
+    const mounts = await getMountsWithHealth(agentSlug)
     return c.json(mounts)
   } catch (error) {
     console.error('Failed to list mounts:', error)
@@ -5374,7 +5483,7 @@ agents.post('/:id/mounts', AgentUser(), async (c) => {
 
     let mount
     try {
-      mount = addMount(agentSlug, hostPath)
+      mount = await addMount(agentSlug, hostPath)
     } catch (err: any) {
       return c.json({ error: err.message || 'Invalid path' }, 400)
     }
@@ -5401,7 +5510,7 @@ agents.delete('/:id/mounts/:mountId', AgentUser(), async (c) => {
     const mountId = c.req.param('mountId')
     const restart = c.req.query('restart') === 'true'
 
-    removeMount(agentSlug, mountId)
+    await removeMount(agentSlug, mountId)
 
     if (restart) {
       const cachedInfo = containerManager.getCachedInfo(agentSlug)

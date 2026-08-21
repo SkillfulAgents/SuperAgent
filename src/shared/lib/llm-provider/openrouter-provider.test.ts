@@ -228,6 +228,12 @@ describe('OpenRouterLlmProvider.searchModels — error paths', () => {
 })
 
 describe('OpenRouterLlmProvider — capabilities and defaults', () => {
+  // OpenRouter 400s deferred custom tools for every non-Anthropic model, so
+  // the var stays unset and the CLI's own guard turns tool search off.
+  it('declares no ENABLE_TOOL_SEARCH value', () => {
+    expect(provider.toolSearchEnv).toBeUndefined()
+  })
+
   it('opts into model search and exposes bare-alias purpose defaults', () => {
     expect(provider.supportsModelSearch).toBe(true)
     expect(provider.getDefaultModel('summarizer')).toBe('haiku')

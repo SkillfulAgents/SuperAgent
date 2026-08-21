@@ -909,6 +909,46 @@ describe('MessageInput', () => {
     })
   })
 
+  it('keeps a model pick unsent when the server authoritatively queues the message', async () => {
+    // Simulate stale SSE state: this window thinks the session is idle, but a
+    // peer already has a turn in flight. The server strips runtime options and
+    // reports the message as queued.
+    mockSendMessage.mutateAsync.mockResolvedValueOnce({
+      success: true,
+      uuid: 'server-uuid-queued',
+      queued: true,
+    })
+    const user = userEvent.setup()
+    const onMessageUuidAssigned = vi.fn()
+    const { rerender } = renderWithProviders(
+      <MessageInput
+        sessionId="s-1"
+        agentSlug="agent-1"
+        initialModel="opus"
+        onMessageUuidAssigned={onMessageUuidAssigned}
+      />
+    )
+
+    await user.click(screen.getByTestId('composer-options-trigger'))
+    await user.click(await screen.findByTestId('model-pinned-claude-haiku-4-5'))
+    await user.type(screen.getByTestId('message-input'), 'Queue this')
+    await user.keyboard('{Enter}')
+    await waitFor(() => {
+      expect(onMessageUuidAssigned).toHaveBeenCalledWith(
+        expect.any(String),
+        'server-uuid-queued',
+        true,
+      )
+    })
+
+    // A peer/cache refresh must not erase Haiku: the queued message did not
+    // apply that choice to the live session, so it remains a local unsent edit.
+    rerender(
+      <MessageInput sessionId="s-1" agentSlug="agent-1" initialModel="sonnet" />
+    )
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Haiku')
+  })
+
   it('sends both effort and model on submit', async () => {
     const user = userEvent.setup()
     renderWithProviders(

@@ -881,6 +881,9 @@ export class ClaudeCodeProcess extends EventEmitter {
             'Write',
             'Edit',
             'Bash',
+            // create_dashboard's result points at the `dashboards` skill, so the
+            // builder needs Skill to act on its own tool output.
+            'Skill',
           ],
           prompt: DASHBOARD_BUILDER_AGENT_PROMPT,
           maxTurns: 200,

@@ -107,4 +107,68 @@ test.describe('Transcript live-edge follow', () => {
       .toBeLessThan(90)
     await expect(pill).toBeHidden()
   })
+
+  test('holds the reading line steady while the agent works', async ({ page }) => {
+    // The slow-work scenario streams a working indicator, then (~5s in) swaps
+    // it for its shorter persisted copy — a content shrink under the held
+    // reserve. The browser clamps scrollTop against the momentarily smaller
+    // scroll range; the transcript must restore the reading line in the same
+    // pass, not leave the held turn visibly sagging until content grows again.
+    await sessionPage.sendMessage('work slowly please')
+    await expect(page.getByTestId('turn-anchor-spacer')).toBeVisible({ timeout: 15000 })
+    await expect
+      .poll(async () => (await scrollMetrics(page)).distanceFromBottom, { timeout: 15000 })
+      .toBeLessThan(5)
+
+    // Ride through the swap: the persisted copy appearing means the clamp has
+    // already happened. The follow spring may trail transiently after content
+    // changes (by design), but the clamp's sag has no growth to recover it —
+    // only the same-pass restore can. So the discriminating assertion is that
+    // the viewport re-converges to the reading line and the reserve is still
+    // holding; without the restore the sag freezes ~40px deep and never comes
+    // back.
+    await expect(page.getByText('Finished the slow work.')).toBeVisible({ timeout: 20000 })
+    await expect(page.getByTestId('turn-anchor-spacer')).toBeVisible()
+    await expect
+      .poll(async () => (await scrollMetrics(page)).distanceFromBottom, { timeout: 3000 })
+      .toBeLessThan(5)
+    await expect(page.getByRole('button', { name: 'Scroll to bottom' })).toBeHidden()
+  })
+
+  test('keeps the live edge pinned through vertical window resizes', async ({ page }) => {
+    await sessionPage.sendMessage(SAGA_PROMPT)
+    await sessionPage.waitForResponse(15000)
+    // Get past the new-turn reserve, whose spacer handles resizes on its own.
+    await expect(page.getByTestId('turn-anchor-spacer')).toBeHidden({ timeout: 20000 })
+    await expect
+      .poll(async () => (await scrollMetrics(page)).distanceFromBottom, { timeout: 15000 })
+      .toBeLessThan(90)
+
+    // Browsers anchor the top edge on a viewport shrink, which would slide
+    // the newest content behind the fold — the transcript must re-pin so
+    // content leaves from the top, not the bottom.
+    const viewport = page.viewportSize()!
+    await page.setViewportSize({ width: viewport.width, height: viewport.height - 250 })
+    await expect
+      .poll(async () => (await scrollMetrics(page)).distanceFromBottom, { timeout: 5000 })
+      .toBeLessThan(90)
+
+    // Growing back stays pinned too — the browser's own clamp scroll must
+    // not be misread as the reader escaping.
+    await page.setViewportSize({ width: viewport.width, height: viewport.height })
+    await expect
+      .poll(async () => (await scrollMetrics(page)).distanceFromBottom, { timeout: 5000 })
+      .toBeLessThan(90)
+
+    // Following survived both resizes: as the stream continues, the viewport
+    // keeps up and the escape affordance never appears.
+    const mark = (await scrollMetrics(page)).contentHeight
+    await expect
+      .poll(async () => (await scrollMetrics(page)).contentHeight, { timeout: 10000 })
+      .toBeGreaterThan(mark + 150)
+    await expect
+      .poll(async () => (await scrollMetrics(page)).distanceFromBottom, { timeout: 15000 })
+      .toBeLessThan(90)
+    await expect(page.getByRole('button', { name: 'Scroll to bottom' })).toBeHidden()
+  })
 })

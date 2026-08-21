@@ -2,8 +2,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+import http from 'node:http'
+import { Readable } from 'node:stream'
+import type { AddressInfo } from 'node:net'
+import { Hono } from 'hono'
+import { serve } from '@hono/node-server'
+import type { ServerType } from '@hono/node-server'
 import { createZipBuffer, openZipFromBuffer, type ZipEntryMeta } from '@shared/lib/utils/zip'
 import type { SkillsetConfig, InstalledAgentMetadata } from '@shared/lib/types/skillset'
+import { armAbortSignal } from '@/api/middleware/arm-abort-signal'
 
 // ============================================================================
 // Hoisted Mocks - must come before imports of the module under test
@@ -55,8 +62,11 @@ vi.mock('@shared/lib/platform-auth/config', () => ({
 import {
   validateAgentTemplate,
   validateTemplateEntries,
-  exportAgentTemplate,
-  exportAgentFull,
+  exportAgentTemplate as exportAgentTemplateStream,
+  exportAgentFull as exportAgentFullStream,
+  ExportInProgressError,
+  isHostExportBusy,
+  resetHostExportLockForTests,
   importAgentFromTemplate,
   installAgentFromSkillset,
   computeAgentTemplateHash,
@@ -73,6 +83,35 @@ import { getSkillsetIndex } from '@shared/lib/services/skillset-service'
 // ============================================================================
 // Shared Constants & Helpers
 // ============================================================================
+
+async function readableToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
+  const chunks: Buffer[] = []
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+  }
+  return Buffer.concat(chunks)
+}
+
+async function waitUntil(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) return
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  throw new Error('timed out waiting for condition')
+}
+
+async function exportAgentTemplate(slug: string): Promise<Buffer> {
+  return readableToBuffer(await exportAgentTemplateStream(slug))
+}
+
+async function exportAgentFull(slug: string): Promise<Buffer> {
+  return readableToBuffer(await exportAgentFullStream(slug))
+}
+
+afterEach(() => {
+  resetHostExportLockForTests()
+})
 
 const MINIMAL_CLAUDE_MD = `---
 name: Test Agent
@@ -1883,6 +1922,7 @@ describe('exportAgentTemplate - error cases', () => {
   })
 
   afterEach(async () => {
+    resetHostExportLockForTests()
     process.env.SUPERAGENT_DATA_DIR = originalEnv
     await fs.promises.rm(testDir, { recursive: true, force: true })
   })
@@ -1901,6 +1941,18 @@ describe('exportAgentTemplate - error cases', () => {
     await expect(exportAgentTemplate('no-claude')).rejects.toThrow(
       'CLAUDE.md not found'
     )
+  })
+
+  it('does not hold the lock when CLAUDE.md is missing', async () => {
+    const missingDir = path.join(testDir, 'agents', 'no-claude', 'workspace')
+    fs.mkdirSync(missingDir, { recursive: true })
+    await expect(exportAgentTemplate('no-claude')).rejects.toThrow('CLAUDE.md not found')
+
+    const workspaceDir = path.join(testDir, 'agents', 'ok-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    const zipBuffer = await exportAgentTemplate('ok-agent')
+    expect(zipBuffer.length).toBeGreaterThan(0)
   })
 })
 
@@ -1921,6 +1973,7 @@ describe('exportAgentFull', () => {
   })
 
   afterEach(async () => {
+    resetHostExportLockForTests()
     process.env.SUPERAGENT_DATA_DIR = originalEnv
     await fs.promises.rm(testDir, { recursive: true, force: true })
   })
@@ -1929,6 +1982,49 @@ describe('exportAgentFull', () => {
     await expect(exportAgentFull('nonexistent-agent')).rejects.toThrow(
       'Agent workspace not found'
     )
+  })
+
+  it('rejects a second export while the first stream is still open', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+
+    expect(isHostExportBusy()).toBe(false)
+    const first = await exportAgentFullStream('full-agent')
+    expect(isHostExportBusy()).toBe(true)
+    await expect(exportAgentFullStream('full-agent')).rejects.toBeInstanceOf(ExportInProgressError)
+    await expect(exportAgentTemplateStream('full-agent')).rejects.toBeInstanceOf(ExportInProgressError)
+
+    await readableToBuffer(first)
+    expect(isHostExportBusy()).toBe(false)
+    const second = await exportAgentFullStream('full-agent')
+    const zipBuffer = await readableToBuffer(second)
+    const reader = await openZipFromBuffer(zipBuffer)
+    reader.close()
+    expect(reader.entries.some((e) => e.fileName === 'CLAUDE.md')).toBe(true)
+  })
+
+  it('does not hold the lock when the workspace is missing', async () => {
+    await expect(exportAgentFull('missing')).rejects.toThrow('Agent workspace not found')
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    const zipBuffer = await exportAgentFull('full-agent')
+    expect(zipBuffer.length).toBeGreaterThan(0)
+  })
+
+  it('returns a readable zip stream', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+
+    const stream = await exportAgentFullStream('full-agent')
+    expect(typeof stream.pipe).toBe('function')
+    const zipBuffer = await readableToBuffer(stream)
+    const reader = await openZipFromBuffer(zipBuffer)
+    const entryNames = reader.entries.map((e) => e.fileName)
+    reader.close()
+    expect(entryNames).toContain('CLAUDE.md')
   })
 
   it('includes .env in the export', async () => {
@@ -2011,6 +2107,97 @@ describe('exportAgentFull', () => {
     reader.close()
 
     expect(entryNames).not.toContain('.browser-profile/cookies.db')
+  })
+
+  it('releases the lock when the caller destroys the stream before reading it', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+
+    const first = await exportAgentFullStream('full-agent')
+    expect(isHostExportBusy()).toBe(true)
+    first.destroy()
+    await waitUntil(() => !isHostExportBusy())
+
+    const second = await exportAgentFullStream('full-agent')
+    const zipBuffer = await readableToBuffer(second)
+    expect(zipBuffer.length).toBeGreaterThan(0)
+    expect(isHostExportBusy()).toBe(false)
+  })
+
+  it('releases the lock when the abort signal fires mid-export', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    for (let i = 0; i < 40; i++) {
+      const blob = Buffer.alloc(64 * 1024)
+      for (let j = 0; j < blob.length; j++) blob[j] = (i + j * 31) & 0xff
+      fs.writeFileSync(path.join(workspaceDir, `blob-${i}.bin`), blob)
+    }
+
+    const ac = new AbortController()
+    const first = await exportAgentFullStream('full-agent', ac.signal)
+    first.resume()
+    ac.abort()
+    await waitUntil(() => !isHostExportBusy())
+
+    const second = await exportAgentFullStream('full-agent')
+    const zipBuffer = await readableToBuffer(second)
+    expect(zipBuffer.length).toBeGreaterThan(0)
+  })
+
+  it('releases the lock when the HTTP client hangs up mid-download', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    for (let i = 0; i < 8; i++) {
+      const blob = Buffer.alloc(256 * 1024)
+      for (let j = 0; j < blob.length; j++) blob[j] = (i * 17 + j * 13) & 0xff
+      fs.writeFileSync(path.join(workspaceDir, `blob-${i}.bin`), blob)
+    }
+
+    const app = new Hono()
+    app.use('*', armAbortSignal)
+    app.post('/export/:slug', async (c) => {
+      const zipStream = await exportAgentFullStream(c.req.param('slug'), c.req.raw.signal)
+      return new Response(Readable.toWeb(zipStream) as ReadableStream)
+    })
+
+    let server: ServerType | undefined
+    const port = await new Promise<number>((resolve) => {
+      server = serve({ fetch: app.fetch, port: 0, hostname: '127.0.0.1' }, (info) =>
+        resolve((info as AddressInfo).port)
+      )
+    })
+
+    try {
+      await new Promise<void>((resolve) => {
+        const req = http.request(
+          { host: '127.0.0.1', port, path: '/export/full-agent', method: 'POST' },
+          (res) => {
+            let received = 0
+            res.on('data', (chunk: Buffer) => {
+              received += chunk.length
+              if (received >= 64 * 1024) req.destroy()
+            })
+            res.on('error', () => {})
+            res.on('close', () => resolve())
+          },
+        )
+        req.on('error', () => resolve())
+        req.end()
+      })
+
+      await waitUntil(() => !isHostExportBusy())
+      const second = await exportAgentFullStream('full-agent')
+      const zipBuffer = await readableToBuffer(second)
+      expect(zipBuffer.length).toBeGreaterThan(0)
+    } finally {
+      await new Promise<void>((resolve) => {
+        if (!server) return resolve()
+        server.close(() => resolve())
+      })
+    }
   })
 })
 

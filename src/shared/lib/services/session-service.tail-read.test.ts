@@ -153,6 +153,30 @@ describe('findLastSessionEntry', () => {
     expect(result).toMatchObject({ uuid: 'assistant-2' })
   })
 
+  it('limits an anchored lookup to the transcript prefix captured at completion', async () => {
+    const completedTurn = toJsonl([
+      userEntry(1, 'request answered by the completed turn'),
+      assistantEntry(1, 'completed answer'),
+    ])
+    const completionOffset = Buffer.byteLength(completedTurn)
+    // Give the later request an older-looking timestamp to prove the boundary
+    // is transcript order, not a comparison between clock domains.
+    const laterRequest = userEntry(2, 'request from the next turn') as {
+      timestamp: string
+    }
+    laterRequest.timestamp = '2020-01-01T00:00:00.000Z'
+    await writeTranscript(completedTurn + toJsonl([laterRequest]))
+
+    const result = await findLastSessionEntry(
+      AGENT,
+      SESSION,
+      (entry) => entry.type === 'user',
+      { endOffset: completionOffset },
+    )
+
+    expect(result).toMatchObject({ uuid: 'user-1' })
+  })
+
   it('trailing tool_result/user frames after the last assistant entry', async () => {
     await writeTranscript(
       toJsonl([
@@ -241,6 +265,28 @@ describe('findLastSessionEntry', () => {
     expect(openSpy).toHaveBeenCalledTimes(4)
     expect(result).toMatchObject({ uuid: 'assistant-1' })
     expect(result).toEqual(await fullParseOracle(isAssistant))
+  })
+
+  it('anchored lookup returns null instead of materializing a prefix beyond the tail budget', async () => {
+    const filler: object[] = []
+    for (let i = 0; i < 6; i++) filler.push(bigLine(i, 900 * KB)) // ~5.4MB
+    await writeTranscript(toJsonl([
+      userEntry(1, 'request before a very large tool-heavy turn'),
+      ...filler,
+    ]))
+    const endOffset = (await fs.promises.stat(jsonlPath())).size
+    const openSpy = vi.spyOn(fs.promises, 'open')
+
+    const result = await findLastSessionEntry(
+      AGENT,
+      SESSION,
+      (entry) => entry.type === 'user' && typeof entry.message.content === 'string',
+      { endOffset },
+    )
+
+    expect(result).toBeNull()
+    // 256KB → 1MB → 4MB, then stop. No anchored whole-prefix read.
+    expect(openSpy).toHaveBeenCalledTimes(3)
   })
 
   it('match misses capped windows but file smaller than cap: found without fallback', async () => {

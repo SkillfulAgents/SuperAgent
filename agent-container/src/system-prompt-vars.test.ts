@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { buildSystemPromptVars, generateSystemPrompt } from './claude-code'
+import { SERVICES } from './tools/search-connected-account-services'
+import { BROWSER_USE_GUIDANCE_HINT } from './tools/browser'
+import { COMPUTER_USE_GUIDANCE_HINT } from './tools/computer-use'
 
 const KEYS = ['COMPOSIO_PLATFORM_MODE', 'PLATFORM_AUTH_ACTIVE', 'CONNECTED_ACCOUNTS', 'REMOTE_MCPS', 'CLAUDE_CONFIG_DIR', 'HOST_PLATFORM']
 let saved: Record<string, string | undefined>
@@ -38,10 +42,186 @@ describe('generateSystemPrompt rendering', () => {
     expect(out.includes('### Custom Webhook Endpoints')).toBe(composio && webhook) // child heading needs a sibling
     expect(out.includes('Prefer `setup_trigger`')).toBe(composio && webhook)  // composio-only bullet nested in webhook body
     expect(out.includes('platform-dependent')).toBe(!composio && !webhook)    // disconnected fallback
-    // platformServices shares PLATFORM_AUTH_ACTIVE with webhookEndpoints
+    // platformServices shares PLATFORM_AUTH_ACTIVE with webhookEndpoints, but
+    // its procedural API details now live in the on-demand guide.
     expect(out.includes('## Built-in media generation')).toBe(webhook)
-    expect(out.includes('v1/replicate')).toBe(webhook)
-    expect(out.includes('ANTHROPIC_AUTH_TOKEN')).toBe(webhook)
+    expect(out.includes('/opt/gamut/docs/media-generation.md')).toBe(webhook)
+    // Spending the user's money is an approval rule, so the cost confirmation
+    // and the no-invented-slugs rule stay in the prompt even though the API
+    // procedure moved out.
+    expect(out.includes('cost from that model')).toBe(webhook)
+    expect(out.includes('Never invent a model slug')).toBe(webhook)
+    expect(out).not.toContain('v1/replicate')
+    expect(out).not.toContain('ANTHROPIC_AUTH_TOKEN')
+  })
+
+  // The platform's model table replaced a scraped catalog: listing is filtered
+  // by `kind`, the list row carries the cost the confirmation must quote, and a
+  // 403 means re-list rather than retry.
+  it('teaches the list-then-schema-then-create Replicate contract in the guide', () => {
+    const guide = readFileSync(join(__dirname, '..', 'docs', 'media-generation.md'), 'utf8')
+
+    expect(guide).toContain('/v1/replicate/models?kind=')
+    for (const kind of ['image', 'video', 'audio', 'talking_head', '3d', 'document']) {
+      expect(guide, `kind ${kind} must be documented`).toContain(`\`${kind}\``)
+    }
+    expect(guide).toContain('GET /models/{owner}/{name}')
+    expect(guide).toContain('POST /models/{owner}/{name}/predictions')
+    expect(guide).toContain('403')
+    expect(guide).toMatch(/`Prefer: wait`/)
+
+    // The scraped-catalog endpoint and its error-message fallback are gone.
+    expect(guide).not.toContain('models/_/_')
+    expect(guide).not.toContain('Available models')
+  })
+
+  it('references every image-owned capability guide and keeps its source file present', () => {
+    process.env.COMPOSIO_PLATFORM_MODE = 'true'
+    process.env.PLATFORM_AUTH_ACTIVE = 'true'
+    process.env.HOST_PLATFORM = 'darwin'
+    const out = generateSystemPrompt()
+    const guides = [
+      'scheduling-and-resuming.md',
+      'webhooks.md',
+      'media-generation.md',
+      'chat-integrations.md',
+      'browser-use.md',
+      'computer-use.md',
+    ]
+
+    for (const guide of guides) {
+      expect(out).toContain(`/opt/gamut/docs/${guide}`)
+      const sourcePath = join(__dirname, '..', 'docs', basename(guide))
+      expect(existsSync(sourcePath), `${guide} must be copied into the image`).toBe(true)
+      expect(readFileSync(sourcePath, 'utf8').trim().length).toBeGreaterThan(100)
+    }
+  })
+
+  // A `/opt/gamut/docs/...` path the prompt names but the image does not ship
+  // sends the agent into a failed Read mid-task, so the reference set and the
+  // shipped set must match exactly in both directions.
+  it('never names a guide path the image does not ship, in any gate combination', () => {
+    const referenced = new Set<string>()
+    for (const composio of [false, true]) {
+      for (const webhook of [false, true]) {
+        for (const host of ['linux', 'darwin']) {
+          for (const subagents of ['allow', 'block'] as const) {
+            process.env.COMPOSIO_PLATFORM_MODE = String(composio)
+            process.env.PLATFORM_AUTH_ACTIVE = String(webhook)
+            process.env.HOST_PLATFORM = host
+            const out = generateSystemPrompt(undefined, undefined, undefined, undefined, undefined, { subagents })
+            for (const match of out.matchAll(/\/opt\/gamut\/docs\/([\w./-]+\.md)/g)) {
+              referenced.add(match[1])
+            }
+          }
+        }
+      }
+    }
+
+    expect(referenced.size).toBeGreaterThan(0)
+    for (const path of referenced) {
+      expect(existsSync(join(__dirname, '..', 'docs', path)), `${path} is referenced but not shipped`).toBe(true)
+    }
+    const shipped = readdirSync(join(__dirname, '..', 'docs'))
+      .filter(name => name.endsWith('.md') && name !== 'README.md')
+    expect([...referenced].sort()).toEqual(shipped.sort())
+  })
+
+  // The tool-result hints and the prompt must agree. When a specialist subagent
+  // exists the prompt says to delegate instead of reading; an unconditional
+  // "read this now" hint on the same call either undoes that or teaches the
+  // model to ignore these hints — including where the read is the only source.
+  it('keeps the browser and computer-use hints conditional, matching the delegate-first prompt', () => {
+    process.env.HOST_PLATFORM = 'darwin'
+    const delegating = generateSystemPrompt(undefined, undefined, undefined, undefined, undefined, { subagents: 'allow' })
+    expect(delegating).toContain('only when you drive the browser yourself')
+    expect(delegating).toContain('only when you drive the app yourself')
+
+    for (const hint of [BROWSER_USE_GUIDANCE_HINT, COMPUTER_USE_GUIDANCE_HINT]) {
+      expect(hint).toContain('rather than delegate')
+      expect(hint).not.toContain('Required guidance')
+    }
+
+    // Without a specialist there is nothing to delegate to, so the prompt must
+    // ask for the read outright.
+    const solo = generateSystemPrompt(undefined, undefined, undefined, undefined, undefined, { subagents: 'block' })
+    expect(solo).toContain('Read `/opt/gamut/docs/browser-use.md` before browser work')
+    expect(solo).toContain('Read `/opt/gamut/docs/computer-use.md` before app interaction')
+  })
+
+  // Dashboard guidance lives in the `dashboards` skill, not a docs guide — a
+  // second copy under docs/ is what this PR removed.
+  it('routes dashboard work to the skill rather than a docs guide', () => {
+    for (const subagents of ['allow', 'block'] as const) {
+      const out = generateSystemPrompt(undefined, undefined, undefined, undefined, undefined, { subagents })
+      expect(out).toContain('`dashboards` skill')
+      expect(out).not.toContain('building-dashboards.md')
+    }
+    expect(existsSync(join(__dirname, '..', 'skills', 'dashboards', 'SKILL.md'))).toBe(true)
+  })
+
+  // Every relative link inside the shipped docs resolves to a shipped file.
+  // Links to a docs tree that only exists on the website leave the agent
+  // Read-ing a path that is not in the image.
+  it('keeps every relative link inside the shipped docs resolvable', () => {
+    const docsDir = join(__dirname, '..', 'docs')
+    const files = [
+      ...readdirSync(docsDir).filter(name => name.endsWith('.md')).map(name => join(docsDir, name)),
+      ...readdirSync(join(docsDir, 'faqs')).map(name => join(docsDir, 'faqs', name)),
+    ]
+
+    for (const file of files) {
+      for (const match of readFileSync(file, 'utf8').matchAll(/]\((?!https?:|#)([^)]+)\)/g)) {
+        const target = join(dirname(file), match[1])
+        expect(existsSync(target), `${basename(file)} links to missing ${match[1]}`).toBe(true)
+      }
+    }
+  })
+
+  // The prompt's toolkit list is what the agent picks a `request_connected_account`
+  // slug from without a discovery round-trip, so it has to stay in step with the
+  // catalog `search_connected_account_services` answers from.
+  it('keeps the prompt toolkit list in step with the searchable service catalog', () => {
+    const line = generateSystemPrompt()
+      .split('\n')
+      .find(candidate => candidate.startsWith('**Supported services include:**'))
+    expect(line, 'prompt no longer has a "Supported services include" line').toBeDefined()
+
+    const promptSlugs = [...line!.matchAll(/`([a-z_0-9]+)`/g)].map(match => match[1])
+    expect(new Set(promptSlugs).size, 'prompt lists a slug twice').toBe(promptSlugs.length)
+    expect(promptSlugs.sort()).toEqual(SERVICES.map(service => service.slug).sort())
+  })
+
+  // The FAQ used to carry its own copy of the toolkit list, which drifted
+  // silently against the two real sources.
+  it('does not let the integrations FAQ grow a second toolkit list', () => {
+    const faq = readFileSync(join(__dirname, '..', 'docs', 'faqs', 'what-integrations-are-supported.md'), 'utf8')
+    const catalogSlugs = SERVICES.map(service => service.slug)
+    const echoed = catalogSlugs.filter(slug => new RegExp(`\`${slug}\``).test(faq))
+    expect(echoed, 'FAQ should point at the prompt/search tool, not restate slugs').toEqual([])
+  })
+
+  it('routes product questions through the complete image-owned FAQ directory', () => {
+    const out = generateSystemPrompt()
+    const faqDir = join(__dirname, '..', 'docs', 'faqs')
+    const expectedFaqs = [
+      'how-do-i-get-help-or-report-a-bug.md',
+      'is-my-data-secure.md',
+      'what-can-the-agent-do.md',
+      'what-integrations-are-supported.md',
+      'what-is-gamut-and-how-does-it-work.md',
+    ]
+
+    expect(out).toContain('## Product Knowledge FAQs')
+    expect(out).toContain('ls /opt/gamut/docs/faqs')
+    expect(out).toContain('Use Read specifically')
+    expect(out).toContain('do not read FAQ contents with Bash')
+    expect(readdirSync(faqDir).sort()).toEqual(expectedFaqs)
+    for (const faq of expectedFaqs) {
+      const content = readFileSync(join(faqDir, faq), 'utf8')
+      expect(content).toMatch(/^---\n/)
+      expect(content.trim().length).toBeGreaterThan(100)
+    }
   })
 
   // The pause/resume guidance must always render: without it agents reach for

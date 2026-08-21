@@ -76,6 +76,16 @@ export interface ApiDiscoverableAgent {
   description: string
   version: string
   path: string
+  /** Long-form markdown for the details page. */
+  details?: string
+  /** Marketplace category, e.g. "Marketing", "Customer Success". */
+  category?: string
+  /** kebab-case lucide icon name, e.g. "badge-dollar-sign". */
+  icon?: string
+  tags?: string[]
+  /** Services the template connects to; `slug` matches the service-icon set. */
+  worksWith?: { type: string; slug: string }[]
+  developer?: { name: string; url?: string }
 }
 
 // ============================================================================

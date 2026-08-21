@@ -98,14 +98,19 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
       // a parameter change would interrupt/restart the in-flight query.
       // (The server also strips them when it sees the session is active.)
       const queued = isActive && !isWaitingBackground
+      const runtimeOptions = queued ? {} : composerOptions.toRuntimeOptions()
       onMessageSent?.(content, localId, queued)
       try {
         const result = await sendMessage.mutateAsync({
           sessionId,
           agentSlug,
           content,
-          ...(queued ? {} : composerOptions.toRuntimeOptions()),
+          ...runtimeOptions,
         })
+        // Only a fresh turn accepts runtime-option changes. The server's
+        // queued decision is authoritative and may differ from our SSE-based
+        // guess, so keep a user pick dirty when the server stripped it.
+        if (!result.queued) composerOptions.markSubmitted(runtimeOptions)
         // Reconcile against the server's authoritative decision: our local
         // `queued` guess is derived from SSE state that can be stale (reconnect,
         // a peer's turn, background-task flag), and a mismatch otherwise strands

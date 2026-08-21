@@ -388,7 +388,8 @@ async function readFileRangeFully(
   return filled
 }
 
-/** Last `maxLines` JSONL rows from disk. Older rows are never read into a line buffer.
+/** Last `maxLines` JSONL rows from disk, with each row's byte offset. Older
+ * rows are never read into a line buffer.
  *
  * `signal` (optional) aborts the backward walk between chunk reads: transcripts
  * run to tens of MB and network filesystems make each read slow, so a caller
@@ -398,23 +399,23 @@ export async function readJsonlTailLines(
   filePath: string,
   maxLines: number,
   signal?: AbortSignal
-): Promise<{ lines: Buffer[]; reachedStart: boolean }> {
+): Promise<{ lines: Buffer[]; offsets: number[]; reachedStart: boolean }> {
   signal?.throwIfAborted()
-  if (maxLines <= 0) return { lines: [], reachedStart: true }
+  if (maxLines <= 0) return { lines: [], offsets: [], reachedStart: true }
 
   let fileHandle: fs.promises.FileHandle
   try {
     fileHandle = await fs.promises.open(filePath, 'r')
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { lines: [], reachedStart: true }
+      return { lines: [], offsets: [], reachedStart: true }
     }
     throw error
   }
 
   try {
     const stat = await fileHandle.stat()
-    if (stat.size === 0) return { lines: [], reachedStart: true }
+    if (stat.size === 0) return { lines: [], offsets: [], reachedStart: true }
 
     let pos = stat.size
     const parts: Buffer[] = []
@@ -448,23 +449,36 @@ export async function readJsonlTailLines(
 
     const combined = parts.length === 1 ? parts[0]! : Buffer.concat(parts)
     const lines: Buffer[] = []
+    // Kept in lockstep with `lines` through every trim below, so consumers that
+    // address into the file (media refs) can do so without a second pass.
+    const offsets: number[] = []
     let start = 0
     for (let i = 0; i < combined.length; i++) {
       if (combined[i] === NEWLINE_BYTE) {
         lines.push(combined.subarray(start, i))
+        offsets.push(pos + start)
         start = i + 1
       }
     }
-    if (start < combined.length) lines.push(combined.subarray(start))
+    if (start < combined.length) {
+      lines.push(combined.subarray(start))
+      offsets.push(pos + start)
+    }
 
     const reachedStart = pos === 0 && !truncated
-    if (!reachedStart && lines.length > 0) lines.shift()
-    if (lines.length > 0 && lines[lines.length - 1]!.length === 0) lines.pop()
+    if (!reachedStart && lines.length > 0) {
+      lines.shift()
+      offsets.shift()
+    }
+    if (lines.length > 0 && lines[lines.length - 1]!.length === 0) {
+      lines.pop()
+      offsets.pop()
+    }
 
     if (lines.length > maxLines) {
-      return { lines: lines.slice(-maxLines), reachedStart: false }
+      return { lines: lines.slice(-maxLines), offsets: offsets.slice(-maxLines), reachedStart: false }
     }
-    return { lines, reachedStart }
+    return { lines, offsets, reachedStart }
   } finally {
     await fileHandle.close()
   }

@@ -19,6 +19,7 @@ vi.mock('@renderer/lib/upload', () => ({
 
 import {
   useMessages,
+  useSendMessage,
   useDeleteToolCall,
   useSubagentMessages,
   useWorkflowTree,
@@ -73,7 +74,7 @@ describe('useMessages abort wiring', () => {
     renderHook(() => useMessages('s1', 'agent-1'), { wrapper })
 
     await waitFor(() => expect(inflight).toHaveLength(1))
-    expect(inflight[0].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300')
+    expect(inflight[0].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300&media=ref')
     expect(inflight[0].init?.signal).toBeInstanceOf(AbortSignal)
     expect(inflight[0].init?.signal?.aborted).toBe(false)
   })
@@ -137,6 +138,68 @@ describe('useMessages abort wiring', () => {
   })
 })
 
+describe('useSendMessage session runtime cache', () => {
+  const session = {
+    id: 's1',
+    agentSlug: 'agent-1',
+    name: 'Session',
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+    lastActivityAt: new Date('2026-01-01T00:00:00Z'),
+    messageCount: 2,
+    model: 'claude-opus-4-6',
+    effort: 'medium' as const,
+  }
+
+  it('patches all cached session-detail spellings with accepted runtime options', async () => {
+    const wrapper = createWrapper()
+    wrapper.queryClient.setQueryData(['session', 's1', 'agent-1'], session)
+    wrapper.queryClient.setQueryData(['session', 's1', 'display-agent-1'], session)
+    apiFetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ success: true, uuid: 'u1', queued: false }),
+    })
+    const { result } = renderHook(() => useSendMessage(), { wrapper })
+
+    await act(() => result.current.mutateAsync({
+      sessionId: 's1',
+      agentSlug: 'agent-1',
+      content: 'use sonnet',
+      model: 'claude-sonnet-4-6',
+      effort: 'high',
+    }))
+
+    expect(wrapper.queryClient.getQueryData(['session', 's1', 'agent-1'])).toMatchObject({
+      model: 'claude-sonnet-4-6',
+      effort: 'high',
+    })
+    expect(wrapper.queryClient.getQueryData(['session', 's1', 'display-agent-1'])).toMatchObject({
+      model: 'claude-sonnet-4-6',
+      effort: 'high',
+    })
+  })
+
+  it('does not claim a queued message changed the session model', async () => {
+    const wrapper = createWrapper()
+    wrapper.queryClient.setQueryData(['session', 's1', 'agent-1'], session)
+    apiFetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ success: true, uuid: 'u1', queued: true }),
+    })
+    const { result } = renderHook(() => useSendMessage(), { wrapper })
+
+    await act(() => result.current.mutateAsync({
+      sessionId: 's1',
+      agentSlug: 'agent-1',
+      content: 'queued',
+      model: 'claude-sonnet-4-6',
+    }))
+
+    expect(wrapper.queryClient.getQueryData(['session', 's1', 'agent-1'])).toMatchObject({
+      model: 'claude-opus-4-6',
+    })
+  })
+})
+
 describe('useMessages forward delta', () => {
   const user = (id: string, text = 'q') => ({
     id,
@@ -159,7 +222,7 @@ describe('useMessages forward delta', () => {
     messages: unknown[]
   ) {
     await waitFor(() => expect(inflight).toHaveLength(1))
-    expect(inflight[0].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300')
+    expect(inflight[0].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300&media=ref')
     inflight[0].resolve({ messages, nextCursor: 'older-cursor' })
     await waitFor(() => expect(result.current.isFetching).toBe(false))
   }
@@ -174,7 +237,7 @@ describe('useMessages forward delta', () => {
       void wrapper.queryClient.invalidateQueries({ queryKey: ['messages', 's1'] })
     })
     await waitFor(() => expect(inflight).toHaveLength(2))
-    expect(inflight[1].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300&after=u1')
+    expect(inflight[1].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300&after=u1&media=ref')
 
     inflight[1].resolve({
       messages: [user('u1'), assistant('a1', 'fresh'), assistant('a2', 'new')],
@@ -199,7 +262,7 @@ describe('useMessages forward delta', () => {
     inflight[1].resolve({ messages: [], anchor: null, resync: true })
 
     await waitFor(() => expect(inflight).toHaveLength(3))
-    expect(inflight[2].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300')
+    expect(inflight[2].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300&media=ref')
     inflight[2].resolve({ messages: [user('u9')], nextCursor: null })
     // Resync means the transcript was rewritten: u1/a1 may no longer exist, so
     // they must NOT survive in the older-history buffer.
@@ -236,7 +299,7 @@ describe('useMessages forward delta', () => {
         void wrapper.queryClient.invalidateQueries({ queryKey: ['messages', 's1'] })
       })
       await waitFor(() => expect(inflight).toHaveLength(2))
-      expect(inflight[1].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300')
+      expect(inflight[1].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300&media=ref')
       inflight[1].resolve({ messages: [user('u1'), assistant('a1')], nextCursor: null })
       await waitFor(() => expect(result.current.isFetching).toBe(false))
 
@@ -245,7 +308,7 @@ describe('useMessages forward delta', () => {
         void wrapper.queryClient.invalidateQueries({ queryKey: ['messages', 's1'] })
       })
       await waitFor(() => expect(inflight).toHaveLength(3))
-      expect(inflight[2].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300&after=u1')
+      expect(inflight[2].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300&after=u1&media=ref')
     } finally {
       vi.useRealTimers()
     }
@@ -260,7 +323,7 @@ describe('useMessages forward delta', () => {
       void wrapper.queryClient.invalidateQueries({ queryKey: ['messages', 's1'] })
     })
     await waitFor(() => expect(inflight).toHaveLength(2))
-    expect(inflight[1].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300')
+    expect(inflight[1].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300&media=ref')
   })
 
   it('a tool-call deletion forces the next refetch to be a full page', async () => {
@@ -292,7 +355,7 @@ describe('useMessages forward delta', () => {
     })
 
     await waitFor(() => expect(inflight).toHaveLength(3))
-    expect(inflight[2].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300')
+    expect(inflight[2].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300&media=ref')
 
     // The refetch omits the rewritten-away assistant. That omission is
     // authoritative — the item must vanish, not slide into the older-history
@@ -401,7 +464,7 @@ describe('useMessages forward delta', () => {
     inflight[1].resolve({ messages: [user('u0'), user('u1'), assistant('a1')], anchor: 'u1' })
 
     await waitFor(() => expect(inflight).toHaveLength(3))
-    expect(inflight[2].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300')
+    expect(inflight[2].url).toBe('/api/agents/agent-1/sessions/s1/messages?limit=300&media=ref')
   })
 })
 
