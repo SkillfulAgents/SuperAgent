@@ -479,6 +479,7 @@ vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveAgentLimits: () => ({}),
   getCustomEnvVars: () => ({}),
   getSettings: () => mockRuntimeSettings(),
+  isAutoResumeOnUnexpectedDeathEnabled: () => true,
   mutateSettings: vi.fn(),
   getModelCatalogSettings: () => ({}),
   VALID_SCRIPT_TYPES: {

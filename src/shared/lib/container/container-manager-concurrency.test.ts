@@ -89,6 +89,7 @@ vi.mock('drizzle-orm', () => ({
 
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({ container: { agentImage: 'test-image', containerRunner: 'docker' }, app: {} }),
+  isAutoResumeOnUnexpectedDeathEnabled: () => true,
   updateSettings: vi.fn(),
 }))
 

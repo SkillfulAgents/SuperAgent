@@ -39,6 +39,13 @@ export function isWarmStartOnTypeEnabled(
   return settings?.app?.warmStartOnType !== false
 }
 
+/** Default-on preference; treat missing as enabled. */
+export function isAutoResumeOnUnexpectedDeathEnabled(
+  settings?: Pick<GlobalSettingsResponse, 'app'> | null,
+): boolean {
+  return settings?.app?.autoResumeOnUnexpectedDeath !== false
+}
+
 /**
  * Whether warm-start-on-type should fire. Returns false until settings have
  * loaded so a disabled preference cannot race a speculative start.
