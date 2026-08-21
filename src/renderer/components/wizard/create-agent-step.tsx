@@ -10,7 +10,7 @@ export function CreateAgentStep({ onAgentCreated }: CreateAgentStepProps) {
       <div>
         <h2 className="text-2xl font-normal max-w-sm">Let&apos;s create your first agent</h2>
       </div>
-      <CreateAgentForm onAgentCreated={onAgentCreated} />
+      <CreateAgentForm onAgentCreated={onAgentCreated} onNavigateAway={onAgentCreated} />
     </div>
   )
 }

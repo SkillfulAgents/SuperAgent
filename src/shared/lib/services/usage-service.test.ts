@@ -338,16 +338,16 @@ describe('usage-service', () => {
       expect(costs.get('anthropic/claude-4.6-opus-20260205')).toBeCloseTo(0.19845875, 10)
       expect(costs.get('anthropic/claude-4.6-sonnet-20260217')).toBeCloseTo(0.1221165, 10)
       expect(costs.get('openai/gpt-5.5-20260423')).toBeCloseTo(0.12104, 10)
-      expect(costs.get('x-ai/grok-4.5-20260708')).toBeCloseTo(0.0552996, 10)
+      expect(costs.get('x-ai/grok-4.5-20260708')).toBeCloseTo(0.0553124, 10)
       expect(costs.get('anthropic/claude-4.5-haiku-20251001')).toBeCloseTo(0.04190125, 10)
-      expect(day.totalCost).toBeCloseTo(0.5388161, 10)
+      expect(day.totalCost).toBeCloseTo(0.5388289, 10)
     })
 
     it('returns corrected all-time totals through the session calculation path', async () => {
       await expect(
         loadSessionUsageTotals({ sessionPath, providerId: 'anthropic' }),
       ).resolves.toEqual({
-        totalCost: 0.8979443,
+        totalCost: 0.8979571,
         totalTokens: 286_966,
         priceMissing: false,
         usageIncomplete: false,
@@ -784,7 +784,32 @@ describe('usage-service', () => {
         9,
       )
     })
+  })
 
+  describe('calculateCost — Grok 200K long-context cliff', () => {
+    it('bills grok-4.6 below 200k at $2 / $6', () => {
+      expect(calculateCost('grok-4.6', 100_000, 1_000, 0, 0)).toBeCloseTo(
+        (100_000 * 2 + 1_000 * 6) / 1_000_000,
+        9,
+      )
+    })
+
+    it('reprices grok-4.6 above 200k at $4 / $12', () => {
+      expect(calculateCost('grok-4.6', 250_000, 2_000, 0, 0)).toBeCloseTo(
+        (250_000 * 4 + 2_000 * 12) / 1_000_000,
+        9,
+      )
+    })
+
+    it('reprices grok-4.5 above 200k at $4 / $12 with cache read $0.60', () => {
+      expect(calculateCost('grok-4.5', 150_000, 2_000, 0, 100_000)).toBeCloseTo(
+        (150_000 * 4 + 2_000 * 12 + 100_000 * 0.6) / 1_000_000,
+        9,
+      )
+    })
+  })
+
+  describe('calculateCost — catalog overrides and unknown ids', () => {
     it('returns 0 for unknown models', () => {
       expect(calculateCost('totally-unknown', 100_000, 1_000, 0, 0)).toBe(0)
     })
@@ -912,6 +937,8 @@ describe('usage-service', () => {
       ['x-ai/grok-4.5-latest', 2, 6],
       ['grok-build-latest', 2, 6],
       ['x-ai/grok-build-latest', 2, 6],
+      ['grok-4.6', 2, 6],
+      ['x-ai/grok-4.6', 2, 6],
     ])('prices %s through its canonical rate card', (model, inputRate, outputRate) => {
       expect(calculateCost(model, 100_000, 1_000, 0, 0)).toBeCloseTo(
         (100_000 * inputRate + 1_000 * outputRate) / 1_000_000,
@@ -1243,6 +1270,7 @@ describe('usage-service', () => {
       )
       const grokBase = (100_000 * 2 + 1_000 * 6) / 1_000_000
       expect(await costOf('grok-4.5', { speed: 'fast' }, 'platform')).toBeCloseTo(grokBase * 2, 9)
+      expect(await costOf('grok-4.6', { speed: 'fast' }, 'platform')).toBeCloseTo(grokBase * 2, 9)
     })
 
     it('bills kimi-k3 on the Fireworks fast router at 1.5x', async () => {

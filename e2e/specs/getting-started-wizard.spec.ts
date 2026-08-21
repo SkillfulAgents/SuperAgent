@@ -201,6 +201,60 @@ test.describe('Getting Started Wizard', () => {
     await wizardPage.expectNotVisible()
   })
 
+  test('finishes onboarding after creating the first agent from a template', async ({ page, request }) => {
+    await request.put('/api/user-settings', {
+      data: { setupCompleted: false, onboardingProgress: null },
+    })
+
+    await appPage.goto()
+    await appPage.waitForAppLoaded()
+    await wizardPage.expectVisible()
+    await wizardPage.chooseManualSetup()
+
+    await wizardPage.clickNext() // LLM -> Model
+    await wizardPage.expectStep(1)
+    await wizardPage.clickNext() // Model -> Browser
+    await wizardPage.expectStep(2)
+    await wizardPage.clickNext() // Browser -> Composio
+    await wizardPage.expectStep(3)
+    await wizardPage.clickSkip() // Composio -> Runtime
+    await wizardPage.expectStep(4)
+    await wizardPage.clickNext() // Runtime -> Privacy
+    await wizardPage.expectStep(5)
+    await wizardPage.clickNext() // Privacy -> Agent
+    await wizardPage.expectStep(6)
+
+    // Browsing templates leaves the wizard for the marketplace page. The wizard
+    // renders above the router, so it must finish itself on the way out —
+    // that's what completes onboarding here, before anything is installed.
+    await page.getByRole('button', { name: /Browse Templates/ }).click()
+    await wizardPage.expectNotVisible()
+    await expect(page.locator('[data-testid="explore-view"]')).toBeVisible()
+
+    // Card → details page → install. The agent takes the template's own name;
+    // there is no naming step.
+    await page.getByRole('button', { name: /E2E Onboarding Template/ }).first().click()
+    await expect(page.locator('[data-testid="template-detail-view"]')).toBeVisible()
+    await page.locator('[data-testid="template-detail-install"]').click()
+
+    // Both assertions have to be things the details page itself cannot satisfy.
+    // A bare `app-sidebar` check is not one: /explore renders inside the same
+    // shell, so it is already visible. Neither is an unscoped name match — the
+    // details page heading IS the template name. The install opens the new
+    // agent, so the URL leaves /explore and the name appears in the sidebar.
+    await expect(page).toHaveURL(/\/agents\//)
+    await expect(
+      page
+        .locator('[data-testid="app-sidebar"]')
+        .getByText('E2E Onboarding Template', { exact: true }),
+    ).toBeVisible()
+
+    const response = await request.get('/api/user-settings')
+    const settings = await response.json()
+    expect(settings.setupCompleted).toBe(true)
+    expect(settings.onboardingProgress).toBeNull()
+  })
+
   test('sets setupCompleted after finishing', async ({ request }) => {
     await request.put('/api/user-settings', {
       data: { setupCompleted: false },

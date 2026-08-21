@@ -429,6 +429,25 @@ describe('loadSettings', () => {
       expect(result.skillsets).toEqual(skillsets)
     })
 
+    it('preserves skillset credentials without copying them into skillset metadata', () => {
+      const skillsetCredentials = {
+        skillcred_test: {
+          id: 'skillcred_test',
+          type: 'token',
+          token: 'github_pat_secret',
+          tokenPreview: '••••cret',
+          createdAt: '2026-08-06T00:00:00.000Z',
+          updatedAt: '2026-08-06T00:00:00.000Z',
+        },
+      }
+      mockSettingsFile(JSON.stringify({ skillsetCredentials }))
+
+      const result = loadSettings()
+
+      expect(result.skillsetCredentials).toEqual(skillsetCredentials)
+      expect(JSON.stringify(result.skillsets)).not.toContain('github_pat_secret')
+    })
+
     it('handles completely empty JSON object', () => {
       mockSettingsFile('{}')
 
@@ -1211,6 +1230,32 @@ describe('getEffectiveModels', () => {
       agentEffort: 'medium',
     })
   })
+
+  it('uses the selected provider catalog defaults when model fields are missing', () => {
+    mockSettingsFile(JSON.stringify({ llmProvider: 'platform' }))
+
+    expect(getEffectiveModels()).toEqual({
+      summarizerModel: 'haiku',
+      agentModel: 'grok',
+      browserModel: 'sonnet',
+      dashboardBuilderModel: 'opus',
+      agentEffort: 'medium',
+    })
+  })
+
+  it('falls back to Anthropic defaults for an unknown persisted provider', () => {
+    // A downgrade can load a provider id written by a newer app version. The
+    // settings file is not schema-validated, so this must remain a soft fallback.
+    mockSettingsFile(JSON.stringify({ llmProvider: 'some-future-provider' }))
+
+    expect(getEffectiveModels()).toEqual({
+      summarizerModel: 'haiku',
+      agentModel: 'opus',
+      browserModel: 'sonnet',
+      dashboardBuilderModel: 'opus',
+      agentEffort: 'medium',
+    })
+  })
 })
 
 // ============================================================================
@@ -1362,6 +1407,7 @@ describe('DEFAULT_AUTH_SETTINGS', () => {
       sessionMaxLifetimeHrs: 24,
       sessionIdleTimeoutMin: 60,
       maxConcurrentSessions: 5,
+      mobileDeviceLifetimeDays: 90,
       accountLockoutThreshold: 10,
       accountLockoutDurationMin: 30,
     })

@@ -37,7 +37,7 @@ test.describe('Background Bash Task Tracking', () => {
 
     // Wait for the background task to complete and agent to respond.
     // The BackgroundBashScenario has a 2s delay, then the agent processes the notification.
-    await sessionPage.expectAssistantMessage('Background command completed', 1, 30000)
+    await sessionPage.expectAssistantMessage('Background command completed', 0, 30000)
     await sessionPage.waitForInputEnabled(30000)
 
     // Agent should go back to idle after everything completes
@@ -60,7 +60,7 @@ test.describe('Background Bash Task Tracking', () => {
     await sessionPage.sendMessage('run background command')
 
     // Should have the final response mentioning the command output
-    await sessionPage.expectAssistantMessage('Background command completed', 1, 30000)
+    await sessionPage.expectAssistantMessage('Background command completed', 0, 30000)
     await sessionPage.waitForInputEnabled(30000)
   })
 

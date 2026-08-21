@@ -228,7 +228,9 @@ export const createWebhookEndpointTool = tool(
   'create_webhook_endpoint',
   `Mint a dedicated public webhook URL for ANY external service — including ones with no Composio trigger. When the service delivers a webhook to the URL, a new agent session runs with your prompt plus the request details.
 
-Returns the public URL. You then register it with the third-party service yourself (via its API or by telling the user where to paste it). Registration handshakes (Slack url_verification, Dropbox/Meta GET challenges, MS Graph validationToken) are answered automatically.
+Returns the public URL. Register it with the third-party service YOURSELF whenever you can — through a connected account's API, a direct API call with a requested key, or the browser — and hand the URL to the user to paste only as a last resort.
+
+Registration handshakes (Slack url_verification, Dropbox/Meta GET challenges, MS Graph validationToken) are answered automatically. Zoom's crypto challenge and AWS SNS subscription confirmation are NOT supported — do not tell the user those will work.
 
 If the service reveals a signing secret only AFTER registration, attach it afterwards with update_webhook_endpoint — until then events are marked unverified. Prefer setup_trigger when a Composio trigger exists for the service.`,
   {

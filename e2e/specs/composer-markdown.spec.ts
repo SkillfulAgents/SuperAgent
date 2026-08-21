@@ -79,6 +79,22 @@ test.describe('composer Markdown blocks', () => {
     await expect.poll(() => input.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
   })
 
+  test('keeps contextual ligatures enabled in the editor', async ({ page }) => {
+    const input = page.locator('[data-testid="home-message-input"]')
+    // prosemirror-view's stylesheet disables ligatures on .ProseMirror, which
+    // would also kill Inter's -> / => arrow substitutions; globals.css must win.
+    await expect(input).toHaveClass(/ProseMirror/)
+    const styles = await input.evaluate((element) => {
+      const computed = window.getComputedStyle(element)
+      return {
+        ligatures: computed.fontVariantLigatures,
+        features: computed.fontFeatureSettings,
+      }
+    })
+    expect(styles.ligatures).toBe('normal')
+    expect(styles.features).toBe('normal')
+  })
+
   test('creates a code block before session Enter-to-send', async ({ page }) => {
     const agentPage = new AgentPage(page)
     const sessionPage = new SessionPage(page)

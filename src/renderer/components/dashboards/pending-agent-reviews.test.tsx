@@ -22,6 +22,16 @@ vi.mock('@renderer/components/messages/x-agent-review-request-item', () => ({
     <div data-testid={`xagent-review-${reviewId}`} />
   ),
 }))
+vi.mock('@renderer/components/messages/account-reauth-request-item', () => ({
+  AccountReauthRequestItem: ({ proxyRequestId }: { proxyRequestId: string }) => (
+    <div data-testid={`account-reauth-${proxyRequestId}`} />
+  ),
+}))
+vi.mock('@renderer/components/messages/mcp-reauth-request-item', () => ({
+  McpReauthRequestItem: ({ proxyRequestId }: { proxyRequestId: string }) => (
+    <div data-testid={`mcp-reauth-${proxyRequestId}`} />
+  ),
+}))
 
 function envelope(overrides: Record<string, unknown>) {
   return {
@@ -79,7 +89,40 @@ describe('PendingAgentReviews', () => {
     expect(mockUsePendingUserRequests).toHaveBeenCalledWith('agent-a', undefined)
   })
 
-  it('ignores non-review kinds in the snapshot', () => {
+  it('renders account and MCP re-auth cards from the agent-scoped snapshot', () => {
+    mockUsePendingUserRequests.mockReturnValue({
+      data: [
+        envelope({
+          id: 'account-card-1',
+          kind: 'account_reauth_required',
+          payload: {
+            accountId: 'account-1',
+            toolkit: 'gmail',
+            accountStatus: 'expired',
+            proxyRequestId: 'account-proxy-1',
+          },
+        }),
+        envelope({
+          id: 'mcp-card-1',
+          kind: 'mcp_reauth_required',
+          payload: {
+            mcpId: 'mcp-1',
+            mcpName: 'Cal.com',
+            authType: 'oauth',
+            proxyRequestId: 'mcp-proxy-1',
+          },
+        }),
+      ],
+      refetch: vi.fn(),
+    })
+
+    render(<PendingAgentReviews agentSlug="agent-a" />)
+
+    expect(screen.getByTestId('account-reauth-account-proxy-1')).toBeTruthy()
+    expect(screen.getByTestId('mcp-reauth-mcp-proxy-1')).toBeTruthy()
+  })
+
+  it('ignores non-agent-action kinds in the snapshot', () => {
     mockUsePendingUserRequests.mockReturnValue({
       data: [
         envelope({ id: 'rev-proxy-2' }),

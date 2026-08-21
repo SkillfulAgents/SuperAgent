@@ -313,7 +313,7 @@ export function LlmTab() {
           <SettingRow
             name="Tool search"
             htmlFor="enable-tool-search"
-            subtitle="Load tool definitions on demand to save ~15-20K tokens per turn. Disable only when debugging. Requires Sonnet/Opus 4+; ignored on Haiku."
+            subtitle="Load tool definitions on demand to save ~15-20K tokens per turn. Disable only when debugging. Requires Sonnet/Opus 4+; ignored on Haiku, and on OpenRouter or a custom endpoint, which can't expand deferred tools."
             right={
               <Switch
                 id="enable-tool-search"

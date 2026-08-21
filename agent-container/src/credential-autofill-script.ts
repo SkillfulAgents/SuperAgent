@@ -5,13 +5,40 @@ export const CREDENTIAL_AUTOFILL_FUNCTION = `function(username, password, expect
     return { ok: false, reason: 'origin_changed', usernameFilled: false, passwordFilled: false };
   }
 
-  const visible = (input) => {
-    const style = getComputedStyle(input);
-    const rect = input.getBoundingClientRect();
-    return !input.disabled && !input.readOnly && input.type !== 'hidden' &&
-      style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+  const rendered = (element) => {
+    const view = element.ownerDocument.defaultView;
+    if (!view) return false;
+    const style = view.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' &&
+      rect.width > 0 && rect.height > 0;
   };
-  const inputs = Array.from(document.querySelectorAll('input')).filter(visible);
+  const collectInputs = (root, seen = new Set()) => {
+    if (!root || seen.has(root)) return [];
+    seen.add(root);
+
+    const inputs = Array.from(root.querySelectorAll('input'));
+    for (const element of root.querySelectorAll('*')) {
+      if (element.shadowRoot) inputs.push(...collectInputs(element.shadowRoot, seen));
+    }
+    for (const frame of root.querySelectorAll('iframe, frame')) {
+      try {
+        // Cross-origin access normally throws, but legacy document.domain can
+        // relax it. Require the frame's actual origin to preserve the boundary.
+        if (rendered(frame) && frame.contentWindow?.location.origin === expectedOrigin &&
+            frame.contentDocument) {
+          inputs.push(...collectInputs(frame.contentDocument, seen));
+        }
+      } catch {
+        // Cross-origin or otherwise inaccessible frame.
+      }
+    }
+    return inputs;
+  };
+  const visible = (input) => {
+    return !input.disabled && !input.readOnly && input.type !== 'hidden' && rendered(input);
+  };
+  const inputs = collectInputs(document).filter(visible);
   const passwordField = inputs.find((input) => input.type === 'password');
   if (!passwordField) {
     return { ok: false, reason: 'no_password_field', usernameFilled: false, passwordFilled: false };
@@ -31,20 +58,27 @@ export const CREDENTIAL_AUTOFILL_FUNCTION = `function(username, password, expect
       .filter(Boolean).join(' ').toLowerCase();
     let value = 0;
     if (passwordForm && input.form === passwordForm) value += 100;
+    if (input.getRootNode() === passwordField.getRootNode()) value += 50;
+    if (input.ownerDocument === passwordField.ownerDocument) value += 30;
     if (autocomplete.includes('username')) value += 80;
     if (autocomplete.includes('email')) value += 70;
     if (input.type === 'email') value += 60;
     if (/(user|login|email|account)/i.test(identity)) value += 40;
-    if (input.compareDocumentPosition(passwordField) & Node.DOCUMENT_POSITION_FOLLOWING) value += 20;
+    const position = input.compareDocumentPosition(passwordField);
+    const NodeConstructor = input.ownerDocument.defaultView.Node;
+    if (!(position & NodeConstructor.DOCUMENT_POSITION_DISCONNECTED) &&
+        (position & NodeConstructor.DOCUMENT_POSITION_FOLLOWING)) value += 20;
     return value;
   };
   const usernameField = pool.sort((a, b) => score(b) - score(a))[0];
 
   const setValue = (input, value) => {
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    const view = input.ownerDocument.defaultView;
+    const inputPrototype = view.HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(inputPrototype, 'value').set;
     setter.call(input, value);
-    input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+    input.dispatchEvent(new view.Event('input', { bubbles: true, composed: true }));
+    input.dispatchEvent(new view.Event('change', { bubbles: true, composed: true }));
   };
 
   let usernameFilled = false;

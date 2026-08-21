@@ -15,6 +15,8 @@ describe('StaleSessionNotice', () => {
 
     expect(screen.getByText('Start a new conversation?')).toBeInTheDocument()
     expect(screen.getByTestId('stale-toast')).toHaveClass('mb-2')
+    expect(screen.getByTestId('stale-toast-card')).toHaveClass('bg-card')
+    expect(screen.getByTestId('stale-toast-card')).not.toHaveClass('bg-muted/50')
     await user.click(screen.getByTestId('stale-toast-ignore'))
     await user.click(screen.getByTestId('stale-new-chat'))
     expect(onIgnore).toHaveBeenCalledOnce()

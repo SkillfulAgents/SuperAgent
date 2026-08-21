@@ -9,11 +9,24 @@ import {
   SLUG_REGEX,
   ARTIFACTS_DIR,
   getDashboardBasePath,
+  getDashboardValidationUrl,
   truncateOversizedLog,
 } from './dashboard-manager'
 
 const spawnHolder = vi.hoisted(() => ({
   impl: null as ((command: string, args: string[], options: unknown) => unknown) | null,
+}))
+const screenshotMocks = vi.hoisted(() => ({
+  capture: vi.fn(),
+  notifyReady: vi.fn(),
+}))
+
+vi.mock('./dashboard-screenshot', () => ({
+  captureDashboardScreenshot: (...args: unknown[]) => screenshotMocks.capture(...args),
+}))
+
+vi.mock('./host-events', () => ({
+  notifyDashboardScreenshotReady: (...args: unknown[]) => screenshotMocks.notifyReady(...args),
 }))
 
 vi.mock('child_process', async (importOriginal) => {
@@ -123,6 +136,20 @@ describe('getDashboardBasePath', () => {
   })
 })
 
+describe('getDashboardValidationUrl', () => {
+  it('uses the local root for stripped dashboards', () => {
+    expect(getDashboardValidationUrl('slides', 5000, 'stripped', 'agent-123')).toBe(
+      'http://localhost:5000/',
+    )
+  })
+
+  it('uses the public mount for mounted dashboards', () => {
+    expect(getDashboardValidationUrl('slides', 5000, 'mounted', 'agent-123')).toBe(
+      'http://localhost:5000/api/agents/agent-123/artifacts/slides/',
+    )
+  })
+})
+
 describe('truncateOversizedLog', () => {
   let testDir: string
 
@@ -171,6 +198,14 @@ describe('DashboardManager log stream lifecycle', () => {
     }>
     stopDashboard(slug: string): Promise<boolean>
     stopAll(): Promise<void>
+    getDashboardUpstreamPathMode(slug: string): 'stripped' | 'mounted'
+    captureScreenshot(slug: string): Promise<{ ok: true; path: string } | { ok: false; reason: string }>
+    listDashboards(): Array<{
+      slug: string
+      status: string
+      startupPhase?: string
+      firstRun?: boolean
+    }>
   }
   let procs: FakeChildProcess[]
   let slugCounter = 0
@@ -186,6 +221,8 @@ describe('DashboardManager log stream lifecycle', () => {
 
     // waitForPort probes the port over HTTP — pretend the server is up
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('ok'))
+    screenshotMocks.capture.mockReset().mockResolvedValue({ ok: false, reason: 'not captured' })
+    screenshotMocks.notifyReady.mockReset().mockResolvedValue(true)
 
     // Fresh module (and singleton) pointed at the temp artifacts dir
     vi.resetModules()
@@ -202,19 +239,40 @@ describe('DashboardManager log stream lifecycle', () => {
   })
 
   /** Scaffold a dashboard dir whose node_modules is fresh (skips bun install). */
-  async function scaffoldDashboard(): Promise<string> {
+  async function scaffoldDashboard(packageFields: Record<string, unknown> = {}): Promise<string> {
     const slug = `dash-${++slugCounter}`
     const dir = path.join(testDir, slug)
     await fs.promises.mkdir(path.join(dir, 'node_modules'), { recursive: true })
     await fs.promises.writeFile(
       path.join(dir, 'package.json'),
-      JSON.stringify({ name: slug, scripts: { start: 'true' } })
+      JSON.stringify({ name: slug, scripts: { start: 'true' }, ...packageFields })
     )
     // node_modules must be at least as new as package.json to skip install
     const future = new Date(Date.now() + 60_000)
     await fs.promises.utimes(path.join(dir, 'node_modules'), future, future)
     return slug
   }
+
+  it('publishes a precise host event after a dashboard screenshot succeeds', async () => {
+    const slug = await scaffoldDashboard()
+    await manager.startDashboard(slug, { forceInstall: false })
+    const screenshotPath = path.join(testDir, slug, 'screenshot.png')
+    screenshotMocks.capture.mockResolvedValueOnce({ ok: true, path: screenshotPath })
+
+    await expect(manager.captureScreenshot(slug)).resolves.toEqual({ ok: true, path: screenshotPath })
+
+    expect(screenshotMocks.notifyReady).toHaveBeenCalledWith(slug)
+  })
+
+  it('does not publish readiness when screenshot capture fails', async () => {
+    const slug = await scaffoldDashboard()
+    await manager.startDashboard(slug, { forceInstall: false })
+    screenshotMocks.capture.mockResolvedValueOnce({ ok: false, reason: 'browser failed' })
+
+    await expect(manager.captureScreenshot(slug)).resolves.toEqual({ ok: false, reason: 'browser failed' })
+
+    expect(screenshotMocks.notifyReady).not.toHaveBeenCalled()
+  })
 
   it('closes the log stream when the process exits cleanly', async () => {
     const slug = await scaffoldDashboard()
@@ -293,6 +351,35 @@ describe('DashboardManager log stream lifecycle', () => {
     expect(stat.size).toBeLessThan(1024 * 1024)
   })
 
+  it('loads an explicit mounted upstream path contract from package metadata', async () => {
+    const slug = await scaffoldDashboard({ gamut: { upstreamPath: 'mounted' } })
+
+    await manager.startDashboard(slug, { forceInstall: false })
+
+    expect(manager.getDashboardUpstreamPathMode(slug)).toBe('mounted')
+  })
+
+  it('defaults dashboards to the stripped upstream path contract', async () => {
+    const slug = await scaffoldDashboard()
+
+    await manager.startDashboard(slug, { forceInstall: false })
+
+    expect(manager.getDashboardUpstreamPathMode(slug)).toBe('stripped')
+  })
+
+  it('warns and safely defaults an invalid upstream path mode', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const slug = await scaffoldDashboard({ gamut: { upstreamPath: 'Mounted' } })
+
+    await manager.startDashboard(slug, { forceInstall: false })
+
+    expect(manager.getDashboardUpstreamPathMode(slug)).toBe('stripped')
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining(`Invalid package.json metadata for ${slug}`),
+      expect.anything(),
+    )
+  })
+
   describe('install semantics', () => {
     /** Record every spawn; auto-exit `bun install` procs with queued codes. */
     function recordSpawns(installExitCodes: number[]) {
@@ -316,8 +403,41 @@ describe('DashboardManager log stream lifecycle', () => {
 
       const info = await manager.startDashboard(slug)
 
-      expect(spawns.map((s) => s.args)).toEqual([['install'], ['run', 'start']])
+      expect(spawns.map((s) => s.args)).toEqual([
+        ['install', '--network-concurrency=8'],
+        ['run', 'start'],
+      ])
       expect(info.status).toBe('running')
+    })
+
+    it('publishes a distinct first-run phase while dependencies install', async () => {
+      const slug = await scaffoldDashboard()
+      await fs.promises.rm(path.join(testDir, slug, 'node_modules'), { recursive: true })
+      let installProc: FakeChildProcess | undefined
+      spawnHolder.impl = (_command, args) => {
+        const proc = new FakeChildProcess()
+        procs.push(proc)
+        if (args[0] === 'install') installProc = proc
+        return proc
+      }
+
+      const start = manager.startDashboard(slug, { forceInstall: false })
+
+      await vi.waitFor(() => expect(installProc).toBeDefined())
+      expect(manager.listDashboards()).toContainEqual(expect.objectContaining({
+        slug,
+        status: 'starting',
+        startupPhase: 'installing-dependencies',
+        firstRun: true,
+      }))
+
+      installProc!.exit(0)
+      await start
+
+      const running = manager.listDashboards().find((dashboard) => dashboard.slug === slug)
+      expect(running).toEqual(expect.objectContaining({ status: 'running' }))
+      expect(running).not.toHaveProperty('startupPhase')
+      expect(running).not.toHaveProperty('firstRun')
     })
 
     it('passes dashboard mount metadata to the dashboard process', async () => {
@@ -369,8 +489,8 @@ describe('DashboardManager log stream lifecycle', () => {
       const info = await manager.startDashboard(slug, { forceInstall: false })
 
       expect(spawns.map((s) => s.args)).toEqual([
-        ['install', '--frozen-lockfile'],
-        ['install'],
+        ['install', '--network-concurrency=8', '--frozen-lockfile'],
+        ['install', '--network-concurrency=8'],
         ['run', 'start'],
       ])
       expect(info.status).toBe('running')

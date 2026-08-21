@@ -1,5 +1,5 @@
 import { memo, type ReactNode } from 'react'
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, Settings2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Separator } from '@renderer/components/ui/separator'
@@ -20,15 +20,14 @@ interface ComposerOptionsPopoverProps {
 }
 
 function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true, footer }: ComposerOptionsPopoverProps) {
-  const { effort, setEffort, speed, setSpeed, model, setModel, catalog, webProvider } = state
+  const { effort, setEffort, speed, setSpeed, model, setModel, catalog, defaultModel, webProvider } = state
 
   // Trigger display fallback for the brief window before useComposerOptions
   // seeds `model`. Order: resolve the selection against the catalog (exact id
-  // or family-latest) → the catalog's latest Sonnet (codebase-wide default,
-  // beats falling through to the first entry) → first entry.
+  // or family-latest) → the active provider's catalog default → first entry.
   const selectedModel =
     findCatalogModel(model, catalog)
-    ?? catalog.find((m) => m.family === 'sonnet' && m.isLatest)
+    ?? findCatalogModel(defaultModel, catalog)
     ?? catalog[0]
 
   useEffortClamp(includeEffort ? selectedModel : undefined, effort, setEffort)
@@ -64,12 +63,13 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true, foo
           variant="outline"
           size="sm"
           disabled={disabled}
-          className="h-[34px] gap-1.5 px-2 text-xs font-medium"
+          className="h-[34px] min-w-0 gap-1.5 px-2 text-xs font-medium max-[420px]:w-[34px] max-[420px]:shrink-0 max-[420px]:justify-center max-[420px]:px-0"
           aria-label={`${includeEffort ? 'Model and effort' : 'Model'}: ${triggerAriaLabel}. Click to change.`}
           data-testid="composer-options-trigger"
         >
-          {selectedModel && <ModelIcon icon={selectedModel.icon} className="h-3.5 w-3.5 shrink-0" />}
-          <span>
+          {selectedModel && <ModelIcon icon={selectedModel.icon} className="h-3.5 w-3.5 shrink-0 max-[420px]:hidden" />}
+          <Settings2 className="hidden h-3.5 w-3.5 max-[420px]:block" aria-hidden="true" />
+          <span className="max-[420px]:hidden">
             {selectedModelLabel}
             {includeEffort && (
               <span className="text-muted-foreground">
@@ -77,7 +77,7 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true, foo
               </span>
             )}
           </span>
-          <ChevronDown className="h-3.5 w-3.5" />
+          <ChevronDown className="h-3.5 w-3.5 max-[420px]:hidden" />
         </Button>
       </PopoverTrigger>
       <PopoverContent

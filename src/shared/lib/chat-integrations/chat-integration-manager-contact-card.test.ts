@@ -42,8 +42,8 @@ function registerConnector(): void {
   mgr.connections.set(INT, { connector: { sendFile } })
 }
 
-function mockIntegration(provider: string): void {
-  vi.mocked(getChatIntegration).mockReturnValue({ provider, agentSlug: 'ada' } as never)
+function mockIntegration(provider: string, name?: string | null): void {
+  vi.mocked(getChatIntegration).mockReturnValue({ provider, agentSlug: 'ada', name: name ?? null } as never)
 }
 
 function mockAgent(): void {
@@ -105,6 +105,21 @@ describe('sendContactCard', () => {
     expect((data as Buffer).toString('utf8')).toContain('BEGIN:VCARD')
     expect(filename).toBe('Ada.vcf')
     expect(caption).toBeTruthy()
+  })
+
+  it('uses the Bot Name on the card when setup stored one, not the agent name', async () => {
+    mockIntegration('imessage', 'Phone Ada')
+    registerConnector()
+    mockAgent()
+
+    await chatIntegrationManager.sendContactCard(INT)
+
+    const [, data, filename] = sendFile.mock.calls[0]
+    const vcf = (data as Buffer).toString('utf8')
+    expect(vcf).toContain('FN:Phone Ada')
+    expect(vcf).toContain('N:Phone Ada;;;;')
+    expect(filename).toBe('Phone_Ada.vcf')
+    expect(vcf).not.toMatch(/^FN:Ada\r?$/m)
   })
 
   it('strips path characters out of the agent name before it becomes a filename', async () => {

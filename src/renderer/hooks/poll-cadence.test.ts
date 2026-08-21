@@ -19,8 +19,15 @@ vi.mock('@tanstack/react-query', async (importOriginal) => {
   }
 })
 
+import { createElement } from 'react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useMessages } from './use-messages'
 import { useChatIntegrationSessions } from './use-chat-integrations'
+
+// useMessages reads the query cache via useQueryClient (delta anchoring), so a
+// real provider is needed even with useQuery itself mocked out.
+const wrapper = ({ children }: { children: React.ReactNode }) =>
+  createElement(QueryClientProvider, { client: new QueryClient() }, children)
 
 describe('polling cadence (reviewed interval constants)', () => {
   beforeEach(() => {
@@ -28,8 +35,12 @@ describe('polling cadence (reviewed interval constants)', () => {
   })
 
   it('useMessages polls every 15s as the SSE safety net', () => {
-    renderHook(() => useMessages('session-1', 'agent-1'))
-    expect(capturedOptions.at(-1)?.refetchInterval).toBe(15000)
+    renderHook(() => useMessages('session-1', 'agent-1'), { wrapper })
+    const messagesQuery = capturedOptions.find((opts) => {
+      const key = opts.queryKey as unknown[] | undefined
+      return Array.isArray(key) && key[0] === 'messages'
+    })
+    expect(messagesQuery?.refetchInterval).toBe(15000)
   })
 
   it('useChatIntegrationSessions polls every 20s and not while backgrounded', () => {

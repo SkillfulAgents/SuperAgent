@@ -126,9 +126,9 @@ export function ChatComposerBox({
           onSecure={secureSecrets.onSecure}
         />
       )}
-      <div className="mt-1 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-1">{leftActions}</div>
-        <div className="flex items-center gap-2">{rightActions}</div>
+      <div className="mt-1 flex min-w-0 items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-1">{leftActions}</div>
+        <div className="flex shrink-0 items-center gap-2">{rightActions}</div>
       </div>
       {footer}
     </div>

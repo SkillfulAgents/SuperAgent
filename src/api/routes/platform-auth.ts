@@ -3,6 +3,7 @@ import type { MiddlewareHandler } from 'hono'
 
 import { Authenticated } from '../middleware/auth'
 import { isAuthMode } from '@shared/lib/auth/mode'
+import { isPlatformControlledAuth } from '@shared/lib/auth/auth-settings'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { buildPlatformLoginUrl, getPlatformBaseUrl } from '@shared/lib/platform-auth/config'
 import {
@@ -57,6 +58,8 @@ platformAuth.get('/', async (c) => {
   return c.json({
     ...(await getEnrichedPlatformAuthStatus(userId)),
     platformBaseUrl: getPlatformBaseUrl(),
+    // Same predicate as resolveAuthSettings (AUTH_MODE + org JWT, not opaque key).
+    platformControlled: isPlatformControlledAuth(),
   })
 })
 

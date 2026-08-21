@@ -7,6 +7,10 @@ description: Create interactive web dashboards to visualize data and provide UI 
 
 You can create web dashboards that are served to the user through the Gamut UI. Dashboards are full web applications (HTML/JS/React/Svelte/etc.) that run as servers inside the container.
 
+## When to Build a Dashboard
+
+Build one when the user needs a rich, reusable visual artifact rather than a chat reply or a static downloadable file — interactive charts, filters, or tables; a tracker, calculator, or data explorer; a multi-view report with controls; a visual interface over generated or fetched data. A one-off number or table belongs in the chat response instead.
+
 ## Available Tools
 
 - **`create_dashboard`** — Scaffold a new dashboard project with the correct structure and boilerplate
@@ -118,7 +122,7 @@ Dashboards are served through a proxy chain:
 Browser → Main App (/api/agents/:id/artifacts/:slug/) → Container → Dashboard Server
 ```
 
-Gamut strips the public artifact prefix before forwarding requests to the dashboard server. It communicates that mount through `DASHBOARD_BASE_PATH` in the process, `X-Forwarded-Prefix` on HTTP/WebSocket requests, and `window.__GAMUT_DASHBOARD__` in browser HTML.
+Gamut always communicates the public artifact mount through `DASHBOARD_BASE_PATH` in the process and `window.__GAMUT_DASHBOARD__` in browser HTML. The default `stripped` mode also sends `X-Forwarded-Prefix` on HTTP/WebSocket requests. The opt-in `mounted` mode retains the prefix in the upstream request path and omits that header on the final dashboard hop to avoid applying the prefix twice.
 
 Use the injected helper for dashboard-owned URLs. It stays correct on nested client routes and when another trusted proxy adds its own prefix:
 
@@ -144,11 +148,28 @@ Frameworks that accept a base at startup can consume the manager-provided value 
 import type { OpenSlideConfig } from '@open-slide/core';
 
 const config: OpenSlideConfig = {
-  base: process.env.DASHBOARD_BASE_PATH || './',
+  // OpenSlide uses this value for both Vite assets and BrowserRouter.
+  base: process.env.DASHBOARD_BASE_PATH || '/',
+  port: Number(process.env.DASHBOARD_PORT) || 5173,
 };
 
 export default config;
 ```
+
+OpenSlide's built-in Vite configuration cannot install Gamut's prefix-restoring
+middleware. Opt its dashboard server into mounted upstream paths so HTTP modules
+and HMR WebSockets both reach Vite beneath the same absolute base:
+
+```json
+{
+  "scripts": { "start": "open-slide dev" },
+  "gamut": { "upstreamPath": "mounted" }
+}
+```
+
+The default upstream-path mode is `stripped`, which keeps existing dashboard
+servers receiving root-local paths such as `/api/data`. Use `mounted` only when
+the framework requires inbound requests to retain `DASHBOARD_BASE_PATH`.
 
 For an app-owned React Router, prefer the injected runtime value:
 
@@ -162,7 +183,7 @@ Do not patch generated bundles after Vite hashes them and do not add a query str
 
 ## Interactive Validation
 
-- **Validate every dashboard in container Chromium.** After `start_dashboard`, open its localhost URL with `browser_open(url="http://localhost:<port>", location="container")`. The explicit location forces the bundled browser that can reach private container ports.
+- **Validate every dashboard in container Chromium.** After `start_dashboard`, open the exact localhost URL it returns with `browser_open(..., location="container")`. Mounted dashboards include `DASHBOARD_BASE_PATH` in that URL; do not trim it back to `/`. The explicit location forces the bundled browser that can reach private container ports.
 - **Test behavior, not just appearance.** Exercise the primary controls and workflows, inspect rendered and accessibility state, and check browser console/errors for client-side failures.
 - **Use both diagnostic surfaces.** Use `get_dashboard_logs` for server failures and browser diagnostics for rendering or client-side failures.
 - **Close the browser when validation is complete.**
@@ -184,3 +205,39 @@ The following APIs are automatically available in all dashboards (injected by th
 - **Restart after changes** — use `start_dashboard` after modifying source code
 - **Verify interactively** — use `browser_open(..., location="container")` after every restart and exercise the changed behavior
 - **Static assets** — serve them from the same directory or use inline styles/scripts for simplicity
+
+## Design and Accessibility
+
+- Build mobile-first responsive layouts with grid or flexbox.
+- Establish hierarchy through typography, spacing, and grouping.
+- Use a small, consistent set of CSS custom properties for color, spacing, radius, and typography.
+- Meet WCAG AA contrast and never communicate state through color alone.
+- Use semantic HTML, proper headings, and associated labels; reach for ARIA only when native semantics are insufficient.
+- Provide loading, empty, error, and stale-data states rather than blank areas.
+- Keep dependencies proportional — a simple visualization does not need a large application framework.
+- Make important metrics understandable without requiring hover.
+- For charts, pick a representation that matches the question and keep axes, units, legends, and tooltips unambiguous. Test interaction and keyboard access, not just the initial render.
+
+## Common Failure Causes
+
+- not listening on `DASHBOARD_PORT`;
+- failing to install a newly added dependency;
+- using root-relative browser URLs instead of the injected helper;
+- using the host browser for a private container URL;
+- configuring a router with `/` rather than `routerBasePath`;
+- assuming the screenshot proves controls or client routing work;
+- restarting repeatedly without fixing a crash loop's root cause.
+
+Clear logs before a fresh reproduction when old output makes diagnosis ambiguous.
+
+## Completion Checklist
+
+- The dashboard starts successfully after the final change.
+- The returned screenshot has no obvious layout or content failure.
+- The exact returned URL works in container Chromium.
+- Primary controls and routes were exercised.
+- Loading, empty, and error behavior are present where relevant.
+- Browser diagnostics and server logs contain no unexplained errors.
+- Dashboard-owned URLs use the runtime helper.
+- The validation browser is closed when no longer needed.
+- The final response names the dashboard slug and current status.

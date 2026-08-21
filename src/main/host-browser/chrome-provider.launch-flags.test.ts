@@ -65,7 +65,7 @@ const h = vi.hoisted(() => {
 
   // When set, fs.mkdirSync throws ENOSPC — simulates disk pressure failing a
   // launch before Chrome is spawned or the instance registered.
-  const state = { failMkdir: false }
+  const state = { failMkdir: false, hasCopiedProfile: true }
 
   return { netMock, spawnMock, execSyncMock, state }
 })
@@ -82,7 +82,9 @@ vi.mock('net', () => ({ default: h.netMock, ...h.netMock }))
 
 vi.mock('fs', () => {
   const m = {
-    existsSync: () => true,
+    existsSync: (filePath: string) => filePath.endsWith('/Default/Cookies')
+      ? h.state.hasCopiedProfile
+      : true,
     mkdirSync: () => {
       if (h.state.failMkdir) {
         throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' })
@@ -120,9 +122,12 @@ vi.mock('@shared/lib/config/data-dir', () => ({
   getAgentDownloadsDir: () => '/tmp/sa-launch-flags-downloads',
 }))
 
+const chromeProfile = vi.hoisted(() => ({
+  copy: vi.fn((_profileId: string, _destDir: string): boolean | Promise<boolean> => false),
+}))
 vi.mock('@shared/lib/browser/chrome-profile', () => ({
   listChromeProfiles: () => [],
-  copyChromeProfileData: () => false,
+  copyChromeProfileData: chromeProfile.copy,
 }))
 
 vi.mock('@shared/lib/error-reporting', () => ({
@@ -151,6 +156,8 @@ describe('ChromeProvider launch flags (profile disk growth)', () => {
   beforeEach(async () => {
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
     h.spawnMock.mockClear()
+    h.state.hasCopiedProfile = true
+    chromeProfile.copy.mockClear().mockReturnValue(false)
     pm.markProfileInUse.mockClear()
     pm.unmarkProfileInUse.mockClear()
     pm.waitForBrowserProfileCleanup.mockClear()
@@ -196,6 +203,24 @@ describe('ChromeProvider launch flags (profile disk growth)', () => {
     const spawnOrder = h.spawnMock.mock.invocationCallOrder[0]
     expect(markOrder).toBeLessThan(waitOrder)
     expect(waitOrder).toBeLessThan(spawnOrder)
+  })
+
+  it('waits for an asynchronous source-profile copy before spawning Chrome', async () => {
+    h.spawnMock.mockClear()
+    h.state.hasCopiedProfile = false
+    let finishCopy!: (copied: boolean) => void
+    chromeProfile.copy.mockReturnValueOnce(new Promise<boolean>((resolve) => {
+      finishCopy = resolve
+    }))
+
+    const launchPromise = provider.launch('agent-with-profile', { chromeProfileId: 'Default' })
+    await vi.waitFor(() => expect(chromeProfile.copy).toHaveBeenCalled())
+    expect(h.spawnMock).not.toHaveBeenCalled()
+
+    finishCopy(true)
+    await launchPromise
+    expect(h.spawnMock).toHaveBeenCalledOnce()
+    h.state.hasCopiedProfile = true
   })
 
   it('releases the profile claim on stop', async () => {

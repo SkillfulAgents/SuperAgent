@@ -346,6 +346,41 @@ describe('ModelFamilyList', () => {
     expect(screen.queryByTestId('model-no-websearch-warning')).not.toBeInTheDocument()
   })
 
+  it('warns when the picked model feeds the provider’s product improvement, and not otherwise', () => {
+    // Two entries on one vendor tab so the warning is proven to follow the
+    // SELECTION, not merely the presence of such a model in the catalog.
+    const museCatalog: ModelDefinition[] = [
+      {
+        id: 'muse-spark-1.2',
+        label: 'Muse Spark 1.2',
+        family: 'muse',
+        isLatest: true,
+        isDefault: true,
+        icon: 'meta',
+        supportedEfforts: STD,
+      },
+      {
+        id: 'muse-spark-1.2-contributor',
+        label: 'Muse Spark 1.2c',
+        family: 'muse',
+        icon: 'meta',
+        supportedEfforts: STD,
+        dataUsedForProductImprovement: true,
+      },
+    ]
+
+    const { rerender } = render(
+      <ModelFamilyList catalog={museCatalog} value="muse-spark-1.2-contributor" onPick={vi.fn()} />,
+    )
+    expect(screen.getByTestId('model-data-use-warning')).toHaveTextContent(
+      /may be used by the provider to improve its products/,
+    )
+    expect(screen.getByTestId('model-data-use-warning')).toHaveTextContent(/Avoid customer data/)
+
+    rerender(<ModelFamilyList catalog={museCatalog} value="muse-spark-1.2" onPick={vi.fn()} />)
+    expect(screen.queryByTestId('model-data-use-warning')).not.toBeInTheDocument()
+  })
+
   it('warns fetch-only for Platform Responses models (search works, native fetch does not)', () => {
     const platformCatalog: ModelDefinition[] = [
       {

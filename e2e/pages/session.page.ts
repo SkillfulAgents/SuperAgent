@@ -123,6 +123,21 @@ export class SessionPage {
   }
 
   /**
+   * Expand the newest completed turn so assertions can inspect work that is
+   * intentionally hidden behind the turn summary once the agent is idle.
+   */
+  async expandLatestCompletedTurn(timeout = 10000) {
+    const summary = this.page.getByTestId('turn-summary').last()
+    await expect(summary).toBeVisible({ timeout })
+
+    if (await summary.getAttribute('aria-expanded') !== 'true') {
+      await summary.click()
+    }
+
+    await expect(summary).toHaveAttribute('aria-expanded', 'true', { timeout })
+  }
+
+  /**
    * Type a message into the input
    */
   async typeMessage(content: string) {

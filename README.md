@@ -7,7 +7,7 @@ SuperAgent is a super app for building and running personal agents. You can crea
 
 | Windows | Mac |
 |:-------:|:---:|
-| [Download for Windows](https://github.com/SkillfulAgents/SuperAgent/releases/latest/download/Superagent-Setup.exe) | [Download for Mac](https://github.com/SkillfulAgents/SuperAgent/releases/latest/download/Superagent-arm64.dmg) |
+| [Download for Windows](https://updates.gamutagents.com/download/win) | [Download for Mac](https://updates.gamutagents.com/download/mac) |
 
 **Features:**
 

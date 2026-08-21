@@ -25,6 +25,13 @@ beforeEach(() => {
   currentAttribution.mockReturnValue(null)
 })
 
+describe('PlatformLlmProvider — tool search', () => {
+  // The proxy expands the CLI's deferred tools for every model it serves.
+  it('turns ENABLE_TOOL_SEARCH on', () => {
+    expect(new PlatformLlmProvider().toolSearchEnv).toBe('true')
+  })
+})
+
 describe('getContainerEnvVars agent identity', () => {
   it('injects agent id and name env vars when identity is provided', () => {
     const env = provider.getContainerEnvVars({ id: 'abc123', name: 'My Agent' })

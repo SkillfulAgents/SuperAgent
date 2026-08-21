@@ -15,6 +15,9 @@ import { Separator } from '@renderer/components/ui/separator'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverTrigger, PopoverContent } from '@renderer/components/ui/popover'
+import { HoverScrollText } from '@renderer/components/ui/hover-scroll-text'
+import { useDashboardHeader } from '@renderer/context/dashboard-header-context'
+import { DashboardHeaderActions } from '@renderer/components/dashboards/dashboard-header-actions'
 import type { ContainerStatus } from '@shared/lib/container/types'
 
 interface AgentHeaderProps {
@@ -22,6 +25,14 @@ interface AgentHeaderProps {
   isViewOnly: boolean
   startAgent: ReturnType<typeof useStartAgent>
   stopAgent: ReturnType<typeof useStopAgent>
+}
+
+function BreadcrumbSeparator() {
+  return (
+    <span aria-hidden="true" className="mx-1.5 text-sm font-light text-muted-foreground">
+      /
+    </span>
+  )
 }
 
 /**
@@ -41,6 +52,8 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
   const secretsOpen = view.kind === 'secrets'
   const xAgentPermissionsOpen = view.kind === 'xAgentPermissions'
   const connectionsOpen = view.kind === 'connections'
+  const dashboardSlug = view.kind === 'dashboard' ? view.slug : null
+  const dashboardHeader = useDashboardHeader(slug, dashboardSlug)
 
   const { data: agent } = useAgent(slug)
   const { data: sessions } = useSessions(slug)
@@ -57,48 +70,50 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
 
   return (
     <>
-      <div className="flex flex-col md:flex-row md:items-center gap-0 md:gap-1.5 min-w-0 flex-1">
-        <div className="flex items-center gap-2 min-w-0">
-          {agent ? (
-            <AgentContextMenu agent={agent}>
-              <AppLink
-                to="/agents/$slug"
-                params={{ slug }}
-                activeOptions={{ exact: true }}
-                noDrag
-                // Route-derived leaf styling: foreground only when this link is the
-                // exact active route (`data-status=active`), muted/clickable otherwise.
-                className="text-sm font-light truncate transition-colors text-muted-foreground hover:text-foreground data-[status=active]:text-foreground cursor-context-menu"
-                data-testid="agent-breadcrumb"
-              >
-                {agent.name}
-              </AppLink>
-            </AgentContextMenu>
-          ) : (
+      <div className="min-w-0 flex-1" data-testid="breadcrumb-drag-area">
+        <HoverScrollText
+          className="w-fit max-w-full app-no-drag"
+          data-testid="breadcrumb-trail"
+        >
+        {agent ? (
+          <AgentContextMenu agent={agent}>
             <AppLink
               to="/agents/$slug"
               params={{ slug }}
               activeOptions={{ exact: true }}
               noDrag
-              className="text-sm font-light truncate transition-colors text-muted-foreground hover:text-foreground data-[status=active]:text-foreground"
+              // Route-derived leaf styling: foreground only when this link is the
+              // exact active route (`data-status=active`), muted/clickable otherwise.
+              className="text-sm font-light transition-colors text-muted-foreground hover:text-foreground data-[status=active]:text-foreground cursor-context-menu"
               data-testid="agent-breadcrumb"
             >
-              Loading...
+              {agent.name}
             </AppLink>
-          )}
-        </div>
+          </AgentContextMenu>
+        ) : (
+          <AppLink
+            to="/agents/$slug"
+            params={{ slug }}
+            activeOptions={{ exact: true }}
+            noDrag
+            className="text-sm font-light transition-colors text-muted-foreground hover:text-foreground data-[status=active]:text-foreground"
+            data-testid="agent-breadcrumb"
+          >
+            Loading...
+          </AppLink>
+        )}
         {(() => {
           const taskCrumbId = scheduledTaskId ?? (sessionId ? session?.scheduledTaskId ?? null : null)
           const taskCrumbName = scheduledTask?.name ?? (sessionId ? session?.scheduledTaskName : null)
           if (!taskCrumbId) return null
           const isLeaf = !!scheduledTaskId
           return (
-            <div className="flex items-center gap-1.5 min-w-0">
-              <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
+            <>
+              <BreadcrumbSeparator />
               {isLeaf ? (
-                <span className="flex items-center gap-1 text-muted-foreground app-no-drag">
-                  <Clock className="h-4 w-4" />
-                  <span className="truncate text-sm font-light text-foreground">
+                <span className="inline-flex items-center gap-1 align-middle text-muted-foreground app-no-drag">
+                  <Clock className="h-4 w-4 shrink-0" />
+                  <span className="text-sm font-light text-foreground">
                     {taskCrumbName || 'Scheduled Task'}
                   </span>
                 </span>
@@ -107,15 +122,15 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
                   to="/agents/$slug/tasks/$taskId"
                   params={{ slug, taskId: taskCrumbId }}
                   noDrag
-                  className="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors"
+                  className="inline-flex items-center gap-1 align-middle text-muted-foreground hover:text-foreground transition-colors"
                 >
-                  <Clock className="h-4 w-4" />
-                  <span className="truncate text-sm font-light">
+                  <Clock className="h-4 w-4 shrink-0" />
+                  <span className="text-sm font-light">
                     {taskCrumbName || 'Scheduled Task'}
                   </span>
                 </AppLink>
               )}
-            </div>
+            </>
           )
         })()}
         {(() => {
@@ -124,12 +139,12 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
           if (!webhookCrumbId) return null
           const isLeaf = !!webhookTriggerId
           return (
-            <div className="flex items-center gap-1.5 min-w-0">
-              <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
+            <>
+              <BreadcrumbSeparator />
               {isLeaf ? (
-                <span className="flex items-center gap-1 text-muted-foreground app-no-drag">
-                  <Zap className="h-4 w-4" />
-                  <span className="truncate text-sm font-light text-foreground">
+                <span className="inline-flex items-center gap-1 align-middle text-muted-foreground app-no-drag">
+                  <Zap className="h-4 w-4 shrink-0" />
+                  <span className="text-sm font-light text-foreground">
                     {webhookCrumbName || 'Webhook Trigger'}
                   </span>
                 </span>
@@ -138,51 +153,62 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
                   to="/agents/$slug/webhooks/$webhookId"
                   params={{ slug, webhookId: webhookCrumbId }}
                   noDrag
-                  className="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors"
+                  className="inline-flex items-center gap-1 align-middle text-muted-foreground hover:text-foreground transition-colors"
                 >
-                  <Zap className="h-4 w-4" />
-                  <span className="truncate text-sm font-light">
+                  <Zap className="h-4 w-4 shrink-0" />
+                  <span className="text-sm font-light">
                     {webhookCrumbName || 'Webhook Trigger'}
                   </span>
                 </AppLink>
               )}
-            </div>
+            </>
           )
         })()}
         {sessionId && session?.agentSlug === agent?.slug && (
-          <div className="flex items-center gap-1.5 min-w-0">
-            <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
+          <>
+            <BreadcrumbSeparator />
             <SessionContextMenu
               sessionId={sessionId}
               sessionName={session?.name || 'Session'}
               agentSlug={slug}
             >
               <span
-                className="text-sm font-light text-foreground truncate cursor-context-menu app-no-drag"
+                className="text-sm font-light text-foreground cursor-context-menu app-no-drag"
                 data-testid="session-breadcrumb"
               >
                 {session?.name || 'Loading...'}
               </span>
             </SessionContextMenu>
-          </div>
+          </>
+        )}
+        {dashboardSlug && (
+          <>
+            <BreadcrumbSeparator />
+            <span
+              className="text-sm font-light text-foreground app-no-drag"
+              data-testid="dashboard-breadcrumb"
+            >
+              {dashboardHeader?.dashboardName || dashboardSlug}
+            </span>
+          </>
         )}
         {apiLogsOpen && (
-          <div className="flex items-center gap-1.5 min-w-0">
-            <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
-            <span className="truncate text-sm font-light text-foreground">API Logs</span>
-          </div>
+          <>
+            <BreadcrumbSeparator />
+            <span className="text-sm font-light text-foreground">API Logs</span>
+          </>
         )}
         {secretsOpen && (
-          <div className="flex items-center gap-1.5 min-w-0">
-            <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
-            <span className="truncate text-sm font-light text-foreground">Secrets</span>
-          </div>
+          <>
+            <BreadcrumbSeparator />
+            <span className="text-sm font-light text-foreground">Secrets</span>
+          </>
         )}
         {xAgentPermissionsOpen && (
-          <div className="flex items-center gap-1.5 min-w-0">
-            <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
-            <span className="truncate text-sm font-light text-foreground">Agent-to-agent Connections</span>
-          </div>
+          <>
+            <BreadcrumbSeparator />
+            <span className="text-sm font-light text-foreground">Agent-to-agent Connections</span>
+          </>
         )}
         {connectionsOpen && (
           <ConnectionsCrumbs
@@ -190,8 +216,13 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
             detail={view.kind === 'connections' ? view.detail ?? null : null}
           />
         )}
+        </HoverScrollText>
       </div>
       <div className="flex items-center gap-0 md:gap-2 shrink-0 app-no-drag">
+        <DashboardHeaderActions agentSlug={slug} dashboardSlug={dashboardSlug} />
+        {dashboardHeader?.actions && (
+          <Separator orientation="vertical" className="hidden h-5 md:block" />
+        )}
         {agent && (
           <AgentStatus
             status={agent.status}
@@ -204,7 +235,7 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
         )}
         {!isViewOnly && (
           <>
-            <Separator orientation="vertical" className="h-5 hidden md:block ml-2" />
+            <Separator orientation="vertical" className="hidden h-5 md:block" />
             <div className="hidden md:flex items-center gap-2" data-testid="agent-power-controls">
               {agent?.status === 'running' ? (
                 <TooltipProvider delayDuration={0}>
@@ -391,16 +422,12 @@ function ConnectionsCrumbs({
   const { data: accountsData } = useConnectedAccounts()
   const { data: mcpsData } = useRemoteMcps()
 
-  const separator = (
-    <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
-  )
-
   if (!detail) {
     return (
-      <div className="flex items-center gap-1.5 min-w-0">
-        {separator}
-        <span className="truncate text-sm font-light text-foreground">Connections</span>
-      </div>
+      <>
+        <BreadcrumbSeparator />
+        <span className="text-sm font-light text-foreground">Connections</span>
+      </>
     )
   }
 
@@ -414,41 +441,39 @@ function ConnectionsCrumbs({
   return (
     <>
       {detail.source === 'list' && (
-        <div className="flex items-center gap-1.5 min-w-0">
-          {separator}
+        <>
+          <BreadcrumbSeparator />
           <AppLink
             to="/agents/$slug/connections"
             params={{ slug }}
             // No `search` → drops `?detail`/`?source`, returning to the list.
             noDrag
-            className="truncate text-sm font-light text-muted-foreground hover:text-foreground transition-colors"
+            className="text-sm font-light text-muted-foreground hover:text-foreground transition-colors"
             data-testid="connections-breadcrumb"
           >
             Connections
           </AppLink>
-        </div>
+        </>
       )}
-      <div className="flex items-center gap-1.5 min-w-0">
-        {separator}
-        {detail.view === 'logs' ? (
-          <AppLink
-            to="/agents/$slug/connections"
-            params={{ slug }}
-            search={{ detail: detail.rowKey, source: detail.source }}
-            noDrag
-            className="truncate text-sm font-light text-muted-foreground hover:text-foreground transition-colors"
-          >
-            {connectionName}
-          </AppLink>
-        ) : (
-          <span className="truncate text-sm font-light text-foreground">{connectionName}</span>
-        )}
-      </div>
+      <BreadcrumbSeparator />
+      {detail.view === 'logs' ? (
+        <AppLink
+          to="/agents/$slug/connections"
+          params={{ slug }}
+          search={{ detail: detail.rowKey, source: detail.source }}
+          noDrag
+          className="text-sm font-light text-muted-foreground hover:text-foreground transition-colors"
+        >
+          {connectionName}
+        </AppLink>
+      ) : (
+        <span className="text-sm font-light text-foreground">{connectionName}</span>
+      )}
       {detail.view === 'logs' && (
-        <div className="flex items-center gap-1.5 min-w-0">
-          {separator}
-          <span className="truncate text-sm font-light text-foreground">Logs</span>
-        </div>
+        <>
+          <BreadcrumbSeparator />
+          <span className="text-sm font-light text-foreground">Logs</span>
+        </>
       )}
     </>
   )

@@ -1,14 +1,20 @@
 import Anthropic from '@anthropic-ai/sdk'
 import AnthropicBedrock from '@anthropic-ai/bedrock-sdk'
 import { getSettings, type ApiKeyStatus } from '../config/settings'
-import { BaseLlmProvider, type ModelPurpose } from './base-llm-provider'
+import { BaseLlmProvider } from './base-llm-provider'
 import type { ModelDefinition } from './model-catalog-schema'
-import { BEDROCK_CATALOG } from './builtin-catalogs'
+import { BEDROCK_CATALOG, CLAUDE_DEFAULT_MODEL_OPTIONS } from './builtin-catalogs'
+import { BEDROCK_CATALOG_DEFAULT_MODELS } from './model-catalog-defaults'
 
 export class BedrockLlmProvider extends BaseLlmProvider {
   readonly id = 'bedrock' as const
   readonly name = 'AWS Bedrock'
+  readonly defaultModelOptions = CLAUDE_DEFAULT_MODEL_OPTIONS
+  readonly catalogDefaultModels = BEDROCK_CATALOG_DEFAULT_MODELS
   // Used for simple Bedrock API Key auth (AWS_BEARER_TOKEN_BEDROCK)
+  // Bedrock serves Claude models, and the CLI's own guard (which only fires
+  // for custom first-party base URLs) never applies in Bedrock mode.
+  override readonly toolSearchEnv = 'true' as const
   protected readonly settingsKeyField = 'bedrockApiKey' as const
   protected readonly envVarName = 'AWS_BEARER_TOKEN_BEDROCK'
 
@@ -74,15 +80,6 @@ export class BedrockLlmProvider extends BaseLlmProvider {
 
   getBuiltinCatalog(): ModelDefinition[] {
     return BEDROCK_CATALOG
-  }
-
-  getDefaultModel(purpose: ModelPurpose): string {
-    switch (purpose) {
-      case 'summarizer': return 'haiku'
-      case 'agent': return 'sonnet'
-      case 'browser': return 'sonnet'
-      case 'dashboard': return 'opus'
-    }
   }
 
   getContainerEnvVars(): Record<string, string | undefined> {

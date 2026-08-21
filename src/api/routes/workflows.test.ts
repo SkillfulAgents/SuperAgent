@@ -70,10 +70,47 @@ describe('workflow agent-messages route', () => {
       `/api/agents/my-agent/sessions/${SID}/workflows/${RUN}/agents/ae6ffae379942dd19/messages`
     )
     expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toContain('application/json')
     const body = await res.json()
     expect(Array.isArray(body)).toBe(true)
     expect(body.length).toBeGreaterThanOrEqual(1)
     expect(JSON.stringify(body)).toContain('alpha')
+  })
+
+  it('returns a large transcript parse-identically', async () => {
+    const os = await import('os')
+    const fs = await import('fs')
+    const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'wf-large-'))
+    const runDir = path.join(tmpRoot, SID, 'subagents', 'workflows', RUN)
+    await fs.promises.mkdir(runDir, { recursive: true })
+    const lines = Array.from({ length: 800 }, (_, i) =>
+      JSON.stringify({
+        parentUuid: null,
+        isSidechain: true,
+        agentId: 'bigagent',
+        type: 'user',
+        message: { role: 'user', content: `entry ${i} ${'x'.repeat(200)}` },
+        uuid: `uuid-${i}`,
+        timestamp: '2026-06-23T20:00:23.404Z',
+      })
+    )
+    await fs.promises.writeFile(path.join(runDir, 'agent-bigagent.jsonl'), lines.join('\n'))
+
+    const previousDir = mockSessionsDir.value
+    mockSessionsDir.value = tmpRoot
+    try {
+      const res = await get(
+        `/api/agents/my-agent/sessions/${SID}/workflows/${RUN}/agents/bigagent/messages`
+      )
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body).toHaveLength(800)
+      expect(body[0].content.text).toContain('entry 0')
+      expect(body[799].content.text).toContain('entry 799')
+    } finally {
+      mockSessionsDir.value = previousDir
+      await fs.promises.rm(tmpRoot, { recursive: true, force: true })
+    }
   })
 
   it('returns [] for a valid-but-missing agent id (no 500)', async () => {

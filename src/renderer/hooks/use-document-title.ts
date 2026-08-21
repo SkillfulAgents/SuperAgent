@@ -12,6 +12,7 @@ const VIEW_SEPARATOR = ' \u2014 '
 
 const SETTINGS_TAB_TITLES = {
   profile: 'Profile & Login',
+  mobile: 'Mobile',
   general: 'General',
   notifications: 'Notifications',
   platform: 'Account',

@@ -189,6 +189,11 @@ vi.mock('@shared/lib/db/schema', () => ({
   xAgentPolicies: {},
   apiScopePolicies: {},
   tokenExchangeJti: {},
+  mobilePairingToken: {},
+  mobileDevice: {},
+  apnsDevices: {},
+  pushSubscriptions: {},
+  pushVapidKeys: {},
 }))
 
 vi.mock('fs', () => ({
@@ -1091,6 +1096,19 @@ describe('settings route', () => {
       expect(saved.models).toEqual({
         summarizerModel: 'haiku',
         agentModel: 'sonnet',
+        browserModel: 'sonnet',
+        dashboardBuilderModel: 'opus',
+      })
+    })
+
+    it('resets the global agent model to Grok when switching to Platform', async () => {
+      const res = await putSettings({ llmProvider: 'platform' })
+
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.models).toEqual({
+        summarizerModel: 'haiku',
+        agentModel: 'grok',
         browserModel: 'sonnet',
         dashboardBuilderModel: 'opus',
       })

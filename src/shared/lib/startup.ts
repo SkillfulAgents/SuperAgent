@@ -1,7 +1,10 @@
 import type { ServerType } from '@hono/node-server'
+import pLimit from 'p-limit'
 import { containerManager } from './container/container-manager'
 import { shutdownActiveRunner } from './container/client-factory'
 import { reviewManager } from './proxy/review-manager'
+import { accountReauthManager } from './proxy/account-reauth-manager'
+import { mcpReauthManager } from './proxy/mcp-reauth-manager'
 import { taskScheduler } from './scheduler/task-scheduler'
 import { triggerManager } from './scheduler/trigger-manager'
 import { platformNotificationsManager } from './scheduler/platform-notifications-manager'
@@ -16,6 +19,7 @@ import { getActiveProvider, stopAllProviders } from '../../main/host-browser'
 import { startBrowserProfileCleanup, stopBrowserProfileCleanup } from '../../main/host-browser/profile-maintenance'
 import { listAgents } from './services/agent-service'
 import { isAuthMode } from './auth/mode'
+import { clearPendingApprovalBans } from './auth/clear-pending-approval-bans'
 import { validateAuthModeStartup } from './auth/startup-validation'
 import {
   decodeOrgIdFromToken,
@@ -31,17 +35,69 @@ import { shutdownAC } from './computer-use/executor'
 import { reconcileSkillsetConfigsForCurrentAuth } from './services/skillset-reconcile'
 import { initErrorReporting, setErrorReportingUser } from './error-reporting'
 import { getSettings } from './config/settings'
+import { logBootTiming, markBoot } from './boot-timing'
 import { credentialBroker } from '../../api/credentials/credential-broker'
 
+const STARTUP_IO_CONCURRENCY = 3
+const startupIoLimit = pLimit(STARTUP_IO_CONCURRENCY)
+let servicesShuttingDown = false
+let servicesInitPromise: Promise<void> | null = null
+let servicesInitError: string | null = null
+
 /**
- * Initialize all background services.
- *
- * Called from two places:
- * - api/index.ts: for non-Electron environments (Vite dev server, standalone web server)
- * - main/index.ts: for Electron, after SUPERAGENT_DATA_DIR is set
+ * Start post-bind I/O through one shared lane so image inspection, overdue
+ * tasks, realtime handshakes, and chat connections do not all hit the host at
+ * once. Callers remain non-blocking, matching the previous startup contract.
  */
-// TODO: this fires a lot of work on startup, which can create a big workload on initial start. We should defer some work and limit concurrency.
-export async function initializeServices() {
+function scheduleStartupIo(
+  start: () => Promise<unknown>,
+  stop?: () => void,
+): Promise<unknown> {
+  return startupIoLimit(async () => {
+    if (servicesShuttingDown) return
+    try {
+      return await start()
+    } finally {
+      // A start already in flight can outlive shutdown. Give it a second stop
+      // after settling so it cannot resurrect intervals or sockets.
+      if (servicesShuttingDown) stop?.()
+    }
+  })
+}
+
+/** Non-null when background-service init failed and the server runs degraded. */
+export function getServicesInitError(): string | null {
+  return servicesInitError
+}
+
+/** Idempotent; call only via afterBindInitialize (or tests). */
+export function initializeServices(): Promise<void> {
+  servicesInitPromise ??= initializeServicesInner()
+  return servicesInitPromise
+}
+
+export type AfterBindInitOptions = {
+  /** Keep serving on failure (Docker/web). Default: log and continue without Sentry. */
+  degradedOnFailure?: boolean
+}
+
+/** Mark bound → init services → emit boot_timing. Shared by web / Electron / Vite. */
+export async function afterBindInitialize(options: AfterBindInitOptions = {}): Promise<void> {
+  markBoot('bound')
+  try {
+    await initializeServices()
+  } catch (error) {
+    console.error('Failed to initialize services:', error)
+    servicesInitError = error instanceof Error ? error.message : String(error)
+    if (options.degradedOnFailure) {
+      captureException(error, { tags: { component: 'startup', operation: 'initialize-services' } })
+    }
+  } finally {
+    logBootTiming()
+  }
+}
+
+async function initializeServicesInner() {
   // Initialize error reporting for non-Electron environments (Electron inits in main/index.ts).
   // initErrorReporting is a no-op if already initialized, so this is safe.
   // Skip in dev mode — dev errors are too noisy and pollute Sentry.
@@ -60,6 +116,8 @@ export async function initializeServices() {
     }
   } catch {
     // Non-critical
+  } finally {
+    markBoot('settingsRead')
   }
 
   // Initialize server-side analytics version
@@ -68,33 +126,41 @@ export async function initializeServices() {
   // Register account providers (Composio, Nango if configured)
   registerAllAccountProviders()
 
-  // Drop any skillset configs invalid for the current auth state (e.g. a
-  // platform skillset left over from a previous org). Filesystem cleanup of
-  // installed skills happens lazily in the metadata readers, so we don't
-  // walk every agent workspace on startup.
   try {
     reconcileSkillsetConfigsForCurrentAuth()
   } catch (error) {
     captureException(error, { tags: { component: 'startup', operation: 'skillset-reconcile' } })
   }
 
-  // Validate auth mode startup requirements before anything else
-  if (isAuthMode()) {
-    await validateAuthModeStartup()
-  }
+  // Auth validation and agent discovery are independent reads. Run them
+  // together, then join before container initialization so a failed auth gate
+  // still prevents any runtime side effects.
+  const [, agents] = await Promise.all([
+    (async () => {
+      if (isAuthMode()) {
+        await validateAuthModeStartup()
+        try {
+          clearPendingApprovalBans()
+        } catch (error) {
+          captureException(error, {
+            tags: { component: 'startup', operation: 'clear-pending-approval-bans' },
+          })
+        }
+      }
 
-  // Install fetch interceptor for org JWTs (opaque keys don't need attribution).
-  try {
-    const platformToken = getPlatformAccessToken()
-    if (platformToken && decodeOrgIdFromToken(platformToken) !== null) {
-      installPlatformFetchInterceptor()
-    }
-  } catch (error) {
-    captureException(error, { tags: { component: 'startup', operation: 'install-fetch-interceptor' } })
-  }
-
-  // Initialize container manager with all agents
-  const agents = await listAgents()
+      // Install fetch interceptor for org JWTs (opaque keys don't need attribution).
+      try {
+        const platformToken = getPlatformAccessToken()
+        if (platformToken && decodeOrgIdFromToken(platformToken) !== null) {
+          installPlatformFetchInterceptor()
+        }
+      } catch (error) {
+        captureException(error, { tags: { component: 'startup', operation: 'install-fetch-interceptor' } })
+      }
+    })(),
+    listAgents(),
+  ])
+  markBoot('dbReady')
   const slugs = agents.map((a) => a.slug)
   await containerManager.initializeAgents(slugs)
 
@@ -114,8 +180,36 @@ export async function initializeServices() {
     }
   }
 
-  // Check/pull container image (non-blocking)
-  containerManager.ensureImageReady().catch((error) => {
+  // Lane order is priority: the limiter grants slots FIFO, and the last three
+  // starts below are open-ended (image pull on fresh installs; the task
+  // scheduler's catch-up scan boots a container per overdue task; the trigger
+  // manager's initial poll processes claimed webhook events). The two
+  // user-facing connects are cheap handshakes — schedule them first so chat
+  // messages and notifications cannot go dark behind minutes of catch-up work.
+
+  // Desktop-only platform-notifications subscription (OS notifications from
+  // Supabase Realtime INSERTs). The manager self-gates on auth mode and
+  // platform connectivity; connect/disconnect after launch is handled by the
+  // platform auth-changed notifier.
+  scheduleStartupIo(
+    () => platformNotificationsManager.start(),
+    () => platformNotificationsManager.stop(),
+  ).catch((error) => {
+    console.error('Failed to start platform notifications manager:', error)
+  })
+
+  // Start chat integration manager
+  scheduleStartupIo(
+    () => chatIntegrationManager.start(),
+    () => chatIntegrationManager.stop(),
+  ).catch((error) => {
+    console.error('Failed to start chat integration manager:', error)
+    // TODO add exception capturing for all other services that start in this file
+    captureException(error, { tags: { component: 'chat-integration', operation: 'startup' } })
+  })
+
+  // Check/pull container image (non-blocking, bounded with other startup I/O)
+  scheduleStartupIo(() => containerManager.ensureImageReady()).catch((error) => {
     console.error('Failed to ensure image ready:', error)
   })
 
@@ -124,7 +218,10 @@ export async function initializeServices() {
   containerManager.startHealthMonitor()
 
   // Start task scheduler
-  taskScheduler.start().catch((error) => {
+  scheduleStartupIo(
+    () => taskScheduler.start(),
+    () => taskScheduler.stop(),
+  ).catch((error) => {
     console.error('Failed to start task scheduler:', error)
   })
 
@@ -134,25 +231,13 @@ export async function initializeServices() {
   // delivery — same trap as the endpoint tool/teardown gating. The manager
   // itself no-ops per-poll when the token is missing.
   if (getPlatformAccessToken()) {
-    triggerManager.start().catch((error) => {
+    scheduleStartupIo(
+      () => triggerManager.start(),
+      () => triggerManager.stop(),
+    ).catch((error) => {
       console.error('Failed to start trigger manager:', error)
     })
   }
-
-  // Desktop-only platform-notifications subscription (OS notifications from
-  // Supabase Realtime INSERTs). The manager self-gates on auth mode and
-  // platform connectivity; connect/disconnect after launch is handled by the
-  // platform auth-changed notifier.
-  platformNotificationsManager.start().catch((error) => {
-    console.error('Failed to start platform notifications manager:', error)
-  })
-
-  // Start chat integration manager
-  chatIntegrationManager.start().catch((error) => {
-    console.error('Failed to start chat integration manager:', error)
-    // TODO add exception capturing for all other services that start in this file
-    captureException(error, { tags: { component: 'chat-integration', operation: 'startup' } })
-  })
 
   // Start auto-sleep monitor
   autoSleepMonitor.start().catch((error) => {
@@ -173,14 +258,7 @@ export async function initializeServices() {
   platformService.start()
 }
 
-/**
- * Set up server-level handlers that require the HTTP server instance.
- *
- * Called from all entry points after creating the HTTP server:
- * - main/index.ts: Electron
- * - web/server.ts: standalone web server (Docker)
- * - vite.config.ts: Vite dev server
- */
+/** WebSocket proxies etc. Call after HTTP bind, before or with afterBindInitialize. */
 export function setupServerHandlers(server: ServerType): void {
   setupBrowserStreamProxy(server)
   setupArtifactStreamProxy(server)
@@ -197,7 +275,10 @@ export function setupServerHandlers(server: ServerType): void {
  * - vite.config.ts: Vite dev server close
  */
 export async function shutdownServices() {
+  servicesShuttingDown = true
   reviewManager.rejectAll()
+  accountReauthManager.rejectAll()
+  mcpReauthManager.rejectAll()
   stopBrowserProfileCleanup()
   chatIntegrationManager.stop()
   await credentialBroker.shutdown()

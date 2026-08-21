@@ -25,6 +25,7 @@ import {
   type ChatProvider,
 } from '@shared/lib/chat-integrations/config-schema'
 import { getSessionJsonlPath } from '@shared/lib/utils/file-storage'
+import { recordSessionActivity } from '@shared/lib/services/session-summary-cache'
 import { captureException } from '@shared/lib/error-reporting'
 import { isChatAllowed } from '@shared/lib/services/chat-integration-access-service'
 
@@ -452,6 +453,9 @@ async function notifySessionOfOutboundMessage(
   } catch {
     appendAssistantMessage(agentSlug, sessionId, notificationText)
   }
+  // Both paths advance the transcript without emitting the stream frames the
+  // message persister watches, so the warm summary must be told directly.
+  recordSessionActivity(agentSlug, sessionId)
 }
 
 function appendAssistantMessage(agentSlug: string, sessionId: string, text: string): void {

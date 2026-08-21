@@ -1,7 +1,8 @@
 import http from 'http'
-import https from 'https'
+import http2 from 'http2'
 import tls from 'tls'
 import net, { AddressInfo } from 'net'
+import { pipeline } from 'stream/promises'
 import { randomBytes, randomUUID } from 'crypto'
 import { z } from 'zod'
 import {
@@ -222,6 +223,26 @@ export interface ProxyOptions {
   agentPort: number
   /** Mints a fresh auth-token map ({ "X-aws-proxy-auth": "<jwe>", ... }). */
   mintToken: () => Promise<MicrovmAuthToken>
+  /** Override HTTP/2 connect (tests). */
+  http2Connect?: typeof http2.connect
+}
+
+const INGRESS_RATE_LIMIT_RETRY_DELAY_MS = 150
+const INGRESS_RATE_LIMIT_RETRY_BUDGET_MS = 8_000
+const INGRESS_RATE_LIMIT_RETRY_MAX_DELAY_MS = 2_000
+const H2_FORBIDDEN_HEADERS = new Set([
+  'host', 'connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'te',
+])
+
+function isRoutineClientAbort(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException)?.code
+  return code === 'ABORT_ERR' || code === 'ERR_STREAM_PREMATURE_CLOSE'
+}
+
+// Equal-jitter exponential backoff so a sustained 429 does not stampede.
+function ingressRateLimitDelayMs(attempt: number): number {
+  const exp = Math.min(INGRESS_RATE_LIMIT_RETRY_DELAY_MS * 2 ** attempt, INGRESS_RATE_LIMIT_RETRY_MAX_DELAY_MS)
+  return exp / 2 + Math.random() * (exp / 2)
 }
 
 export class LocalAuthForwardProxy {
@@ -229,6 +250,8 @@ export class LocalAuthForwardProxy {
   private port: number | null = null
   private tokenCache: { token: MicrovmAuthToken; expiresAt: number } | null = null
   private refreshing: Promise<MicrovmAuthToken> | null = null
+  private h2: http2.ClientHttp2Session | null = null
+  private h2connecting: Promise<http2.ClientHttp2Session> | null = null
 
   constructor(private readonly options: ProxyOptions) {}
 
@@ -250,6 +273,9 @@ export class LocalAuthForwardProxy {
     this.server = null
     this.port = null
     this.tokenCache = null
+    this.h2?.close()
+    this.h2 = null
+    this.h2connecting = null
   }
 
   // Single-flight token refresh so a burst of requests can't trigger a token storm.
@@ -290,19 +316,106 @@ export class LocalAuthForwardProxy {
     })
   }
 
-  private forwardOnce(method: string, path: string, headers: Record<string, string>, body: Buffer): Promise<http.IncomingMessage> {
-    return new Promise((resolve, reject) => {
-      const upstream = https.request(
-        { host: this.options.endpoint, port: 443, method, path, servername: this.options.endpoint, headers, timeout: UPSTREAM_IDLE_TIMEOUT_MS },
-        resolve,
-      )
-      upstream.on('error', reject)
-      // A hung socket fires 'timeout' (not 'error'); destroy so the caller's
-      // retry loop sees a real error instead of blocking on it indefinitely.
-      upstream.on('timeout', () => upstream.destroy(new Error('microvm upstream request timed out')))
-      if (body.length) upstream.write(body)
-      upstream.end()
+  // One HTTP/2 session = one AWS ingress connection. Agent is plaintext HTTP/1.1
+  // inside the VM — do not send x-aws-proxy-force-h2; AWS translates streams.
+  private async ensureHttp2(): Promise<http2.ClientHttp2Session> {
+    if (this.h2 && !this.h2.closed && !this.h2.destroyed) return this.h2
+    if (this.h2connecting) return this.h2connecting
+    this.h2connecting = this.connectHttp2().finally(() => {
+      this.h2connecting = null
     })
+    return this.h2connecting
+  }
+
+  private connectHttp2(): Promise<http2.ClientHttp2Session> {
+    return new Promise((resolve, reject) => {
+      let settled = false
+      const finishOk = (session: http2.ClientHttp2Session) => {
+        if (settled) return
+        settled = true
+        resolve(session)
+      }
+      const finishErr = (error: Error) => {
+        if (settled) return
+        settled = true
+        reject(error)
+      }
+      const connect = this.options.http2Connect ?? http2.connect
+      const session = connect(`https://${this.options.endpoint}`, {
+        servername: this.options.endpoint,
+      })
+      const timer = setTimeout(() => {
+        const error = new Error('microvm http2 connect timed out')
+        session.destroy(error)
+        finishErr(error)
+      }, UPSTREAM_IDLE_TIMEOUT_MS)
+      const onConnectError = (error: Error) => {
+        clearTimeout(timer)
+        finishErr(error)
+      }
+      session.once('error', onConnectError)
+      session.once('connect', () => {
+        session.off('error', onConnectError)
+        clearTimeout(timer)
+        if (!this.server) {
+          session.close()
+          finishErr(new Error('microvm http2 connect aborted: proxy stopped'))
+          return
+        }
+        this.h2 = session
+        session.once('close', () => { if (this.h2 === session) this.h2 = null })
+        session.on('error', (error) => {
+          if (this.h2 === session) this.h2 = null
+          captureException(error, { tags: { area: 'container', op: 'microvm.proxy.http2.session' }, extra: { endpoint: this.options.endpoint } })
+        })
+        finishOk(session)
+      })
+    })
+  }
+
+  private forwardOnceH2(
+    session: http2.ClientHttp2Session,
+    method: string,
+    path: string,
+    headers: Record<string, string>,
+    body: Buffer,
+  ): Promise<http.IncomingMessage> {
+    return new Promise((resolve, reject) => {
+      const h2headers: http2.OutgoingHttpHeaders = {
+        ':method': method,
+        ':path': path,
+        ':scheme': 'https',
+        ':authority': this.options.endpoint,
+      }
+      for (const [key, value] of Object.entries(headers)) {
+        if (H2_FORBIDDEN_HEADERS.has(key.toLowerCase())) continue
+        h2headers[key] = value
+      }
+      const stream = session.request(h2headers)
+      // Idle timeout (resets on data), including after response headers.
+      stream.setTimeout(UPSTREAM_IDLE_TIMEOUT_MS, () => {
+        stream.destroy(new Error('microvm upstream request timed out'))
+      })
+      stream.once('response', (resHeaders) => {
+        const incoming = stream as unknown as http.IncomingMessage
+        incoming.statusCode = Number(resHeaders[':status'] ?? 502)
+        const out: http.IncomingHttpHeaders = {}
+        for (const [key, value] of Object.entries(resHeaders)) {
+          if (key.startsWith(':') || value === undefined) continue
+          out[key] = value
+        }
+        incoming.headers = out
+        resolve(incoming)
+      })
+      stream.once('error', reject)
+      if (body.length) stream.write(body)
+      stream.end()
+    })
+  }
+
+  private async forwardOnce(method: string, path: string, headers: Record<string, string>, body: Buffer): Promise<http.IncomingMessage> {
+    const session = await this.ensureHttp2()
+    return this.forwardOnceH2(session, method, path, headers, body)
   }
 
   // Confirm the MicroVM agent serves before we start an unreplayable WS pipe.
@@ -311,6 +424,7 @@ export class LocalAuthForwardProxy {
   private async waitForUpstreamReady(): Promise<boolean> {
     const deadline = Date.now() + RESUME_KICK_TIMEOUT_MS
     for (;;) {
+      if (!this.server) return false
       let auth: Record<string, string>
       try {
         auth = await this.authHeaders()
@@ -321,7 +435,7 @@ export class LocalAuthForwardProxy {
       try {
         const res = await this.forwardOnce('GET', '/health', { host: this.options.endpoint, ...auth }, Buffer.alloc(0))
         res.resume()
-        if (res.statusCode !== 502) return true
+        if (res.statusCode !== 502 && res.statusCode !== 429) return true
       } catch {
         // Connection refused/reset/timeout = VM still waking; retry below.
       }
@@ -340,8 +454,31 @@ export class LocalAuthForwardProxy {
       res.end()
       return
     }
+    try {
+      await this.forwardRequest(req, res, body)
+    } catch (error) {
+      if (!isRoutineClientAbort(error)) {
+        captureException(error, { tags: { area: 'container', op: 'microvm.proxy.request' }, extra: { endpoint: this.options.endpoint, path: req.url } })
+      }
+      if (!res.headersSent) res.writeHead(502)
+      res.end()
+    }
+  }
+
+  private async forwardRequest(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    body: Buffer,
+  ): Promise<void> {
     const deadline = Date.now() + RESUME_KICK_TIMEOUT_MS
+    const rateLimitDeadline = Date.now() + INGRESS_RATE_LIMIT_RETRY_BUDGET_MS
+    let rateLimitAttempts = 0
     for (;;) {
+      if (!this.server) {
+        if (!res.headersSent) res.writeHead(502)
+        res.end()
+        return
+      }
       let auth: Record<string, string>
       try {
         auth = await this.authHeaders()
@@ -356,6 +493,11 @@ export class LocalAuthForwardProxy {
       try {
         upstreamRes = await this.forwardOnce(req.method ?? 'GET', req.url ?? '/', headers, body)
       } catch (error) {
+        if (!this.server) {
+          if (!res.headersSent) res.writeHead(502)
+          res.end()
+          return
+        }
         // Connection error = VM still waking; retry within the resume budget.
         if (Date.now() < deadline) {
           await new Promise((r) => setTimeout(r, RESUME_RETRY_DELAY_MS))
@@ -372,8 +514,14 @@ export class LocalAuthForwardProxy {
         await new Promise((r) => setTimeout(r, RESUME_RETRY_DELAY_MS))
         continue
       }
+      if (upstreamRes.statusCode === 429 && Date.now() < rateLimitDeadline) {
+        upstreamRes.resume()
+        await new Promise((r) => setTimeout(r, ingressRateLimitDelayMs(rateLimitAttempts)))
+        rateLimitAttempts++
+        continue
+      }
       res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers)
-      upstreamRes.pipe(res)
+      await pipeline(upstreamRes, res)
       return
     }
   }
@@ -679,8 +827,9 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     return this.isAvailable()
   }
 
-  async start(options?: StartOptions): Promise<void> {
-    if ((await this.getInfoFromRuntime()).status === 'running') return
+  async start(options?: StartOptions): Promise<ContainerInfo> {
+    const info = await this.getInfoFromRuntime()
+    if (info.status === 'running') return info
 
     const config = getMicrovmRuntimeConfig()
     // Full env exceeds the 4096-byte payload cap, so stash it host-side and pass the
@@ -748,6 +897,8 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
       await this.teardown()
       throw error
     }
+
+    return { status: 'running', port: proxyPort }
   }
 
   // On connect-refused against a dead generation (lifetime-cap / stop race),

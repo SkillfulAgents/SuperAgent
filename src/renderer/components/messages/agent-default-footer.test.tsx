@@ -49,6 +49,7 @@ function stateWith(overrides: Partial<ComposerOptionsState> = {}): ComposerOptio
     model: 'claude-opus-4-8',
     setModel: vi.fn(),
     catalog: CATALOG as ComposerOptionsState['catalog'],
+    defaultModel: 'opus',
     webProvider: undefined,
     toRuntimeOptions: () => ({}),
     ...overrides,
