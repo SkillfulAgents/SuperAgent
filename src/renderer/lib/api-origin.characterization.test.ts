@@ -129,6 +129,8 @@ const DIRECT_BASE_URL_CONSUMERS: Record<string, string> = {
   'lib/auth-client.ts':
     "better-auth composes its own request URLs from a baseURL it is constructed with — it never sees apiFetch. Read lazily so cloud mode's prefix is known by then.",
   'lib/env.ts': 'defines it; openDashboardExternal() builds a window.open() URL',
+  'lib/markdown-url-transform.ts':
+    '<img src> — file:///workspace Markdown images resolved to the authenticated workspace file route',
   'lib/parse-tool-result.ts':
     '<img src> — media-ref images in tool results, resolved to a URL here so every result renderer gets one without threading the session identity down to it',
   'components/ui/model-icon.tsx': '<img src> — model icon asset',

@@ -40,6 +40,27 @@ export interface ParsedToolResult {
   images: ParsedToolResultImage[]
 }
 
+/**
+ * Image sources reported by tools are often container-local files. The final
+ * answer may embed one of those paths as Markdown, but the renderer cannot (and
+ * must not) read an arbitrary `file:` URL from the host. This map ties only a
+ * path explicitly reported alongside a real image block to the already-trusted
+ * image source produced above.
+ */
+export type EmbeddedImageAliases = ReadonlyMap<string, string>
+
+/** Preserve a verified alias map's identity when a refetch rebuilds equal contents. */
+export function reuseEqualEmbeddedImageAliases(
+  previous: EmbeddedImageAliases | null,
+  next: EmbeddedImageAliases
+): EmbeddedImageAliases {
+  if (!previous || previous.size !== next.size) return next
+  for (const [path, src] of previous) {
+    if (next.get(path) !== src) return next
+  }
+  return previous
+}
+
 /** Media ids are base64url — anything else cannot have been minted here, and
  * must never reach a URL. */
 const MEDIA_ID_PATTERN = /^[A-Za-z0-9_-]{1,4096}$/
@@ -131,4 +152,56 @@ export function parseToolResult(
 
   // Fallback: stringify
   return { text: JSON.stringify(result, null, 2), images }
+}
+
+// Browser/image tools use lines such as:
+//   Screenshot saved to: /home/claude/.../shot.png
+//   **Screenshot:** /home/claude/.../shot.png
+// Keep this deliberately narrower than a general filesystem-path matcher: a
+// random path mentioned in tool output must not authorize a Markdown image.
+const REPORTED_IMAGE_PATH =
+  /^\*{0,2}(?:screenshot|image)[^:\r\n]{0,80}:\*{0,2}\s*`?((?:file:\/\/)?\/[^\r\n`]*?\.(?:avif|gif|jpe?g|png|webp))(?=[\s`]|$)/gimu
+
+function reportedImagePaths(text: string): string[] {
+  return Array.from(text.matchAll(REPORTED_IMAGE_PATH), (match) => match[1])
+}
+
+function addImagePathAliases(aliases: Map<string, string>, path: string, src: string): void {
+  aliases.set(path, src)
+  if (path.startsWith('/')) {
+    aliases.set(`file://${path}`, src)
+  } else if (path.startsWith('file:///')) {
+    aliases.set(path.slice('file://'.length), src)
+  }
+}
+
+/**
+ * Build the allowlist used to resolve container-local Markdown image URLs.
+ *
+ * A result is usable only when it contains both image bytes/a server media ref
+ * and a tool-reported image path. A single image may have multiple textual
+ * aliases; multiple images are paired only when the tool reports the same
+ * number of paths, avoiding a guess that could display the wrong capture.
+ */
+export function collectEmbeddedImageAliases(
+  results: Iterable<unknown>,
+  media?: ToolResultMediaContext
+): EmbeddedImageAliases {
+  const aliases = new Map<string, string>()
+
+  for (const result of results) {
+    const parsed = parseToolResult(result, media)
+    if (!parsed.text || parsed.images.length === 0) continue
+
+    const paths = reportedImagePaths(parsed.text)
+    if (paths.length === 0) continue
+
+    if (parsed.images.length === 1) {
+      for (const path of paths) addImagePathAliases(aliases, path, parsed.images[0].src)
+    } else if (paths.length === parsed.images.length) {
+      paths.forEach((path, index) => addImagePathAliases(aliases, path, parsed.images[index].src))
+    }
+  }
+
+  return aliases
 }

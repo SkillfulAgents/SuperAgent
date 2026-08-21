@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { parseToolResult } from './parse-tool-result'
+import {
+  collectEmbeddedImageAliases,
+  parseToolResult,
+  reuseEqualEmbeddedImageAliases,
+} from './parse-tool-result'
 
 describe('parseToolResult', () => {
   describe('null/undefined input', () => {
@@ -256,6 +260,87 @@ describe('parseToolResult', () => {
       const result = parseToolResult(obj)
       expect(result.text).toBe(JSON.stringify(obj, null, 2))
       expect(result.images).toEqual([])
+    })
+  })
+
+  describe('embedded image aliases', () => {
+    const ctx = { agentSlug: 'agent-1', sessionId: 'session-1' }
+
+    it('ties the browser screenshot path to its persisted media ref', () => {
+      const aliases = collectEmbeddedImageAliases([
+        [
+          { type: 'media_ref', id: 'ref_123', mimeType: 'image/jpeg', bytes: 230000 },
+          {
+            type: 'text',
+            text: 'Screenshot saved to: /home/claude/.agent-browser/tmp/screenshots/shot.png',
+          },
+        ],
+      ], ctx)
+
+      const expected =
+        '/api/agents/agent-1/sessions/session-1/media/ref_123'
+      expect(aliases.get('/home/claude/.agent-browser/tmp/screenshots/shot.png')).toBe(expected)
+      expect(aliases.get('file:///home/claude/.agent-browser/tmp/screenshots/shot.png')).toBe(expected)
+    })
+
+    it('supports the emphasized Screenshot label returned by browser state', () => {
+      const aliases = collectEmbeddedImageAliases([
+        [
+          { type: 'image', data: 'abc123', mimeType: 'image/png' },
+          { type: 'text', text: '**Screenshot:** /home/claude/browser-state.png' },
+        ],
+      ])
+
+      expect(aliases.get('file:///home/claude/browser-state.png')).toBe(
+        'data:image/png;base64,abc123'
+      )
+    })
+
+    it('does not guess which path belongs to which image', () => {
+      const aliases = collectEmbeddedImageAliases([
+        [
+          { type: 'image', data: 'one', mimeType: 'image/png' },
+          { type: 'image', data: 'two', mimeType: 'image/png' },
+          { type: 'text', text: 'Screenshot saved to: /home/claude/only-one-path.png' },
+        ],
+      ])
+
+      expect(aliases.size).toBe(0)
+    })
+
+    it('ignores page-controlled image paths inside browser state text', () => {
+      const aliases = collectEmbeddedImageAliases([
+        [
+          { type: 'image', data: 'browser-state', mimeType: 'image/png' },
+          {
+            type: 'text',
+            text: [
+              '**Current URL:** https://example.com/image at: /workspace/url-logo.png',
+              '**Accessibility Snapshot:**',
+              '- text: see image at: /workspace/page-logo.png',
+            ].join('\n'),
+          },
+        ],
+      ])
+
+      expect(aliases.size).toBe(0)
+    })
+
+    it('reuses an equal alias map across transcript refetches', () => {
+      const previous = new Map([
+        ['/home/claude/shot.png', '/api/media/one'],
+        ['file:///home/claude/shot.png', '/api/media/one'],
+      ])
+      const rebuilt = new Map(previous)
+
+      expect(reuseEqualEmbeddedImageAliases(previous, rebuilt)).toBe(previous)
+    })
+
+    it('returns the rebuilt map when an alias changes', () => {
+      const previous = new Map([['/home/claude/shot.png', '/api/media/one']])
+      const changed = new Map([['/home/claude/shot.png', '/api/media/two']])
+
+      expect(reuseEqualEmbeddedImageAliases(previous, changed)).toBe(changed)
     })
   })
 })

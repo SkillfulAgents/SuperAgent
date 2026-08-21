@@ -1,4 +1,5 @@
 import { defaultUrlTransform, type UrlTransform } from 'react-markdown'
+import { getApiBaseUrl } from './env'
 
 // react-markdown's defaultUrlTransform passes only URLs whose scheme matches
 // ^(https?|ircs?|mailto|xmpp)$ and rewrites everything else to '' (an empty
@@ -41,4 +42,59 @@ export const markdownUrlTransform: UrlTransform = (url, key) => {
     return safeHref(url)
   }
   return defaultUrlTransform(url)
+}
+
+export interface MarkdownImageContext {
+  /** Exact container paths proven to belong to image blocks in tool results. */
+  aliases?: ReadonlyMap<string, string>
+  /** Enables file:///workspace images through the authenticated workspace route. */
+  agentSlug?: string
+}
+
+const IMAGE_FILE_EXTENSION = /\.(?:avif|gif|jpe?g|png|webp)$/i
+
+/** Resolve an agent-workspace file without ever handing `file:` to Chromium. */
+function workspaceImageUrl(url: string, agentSlug: string): string | null {
+  let pathname: string
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol !== 'file:' || parsed.hostname !== '') return null
+    pathname = decodeURIComponent(parsed.pathname)
+  } catch {
+    return null
+  }
+
+  const prefix = '/workspace/'
+  if (!pathname.startsWith(prefix) || !IMAGE_FILE_EXTENSION.test(pathname)) return null
+
+  const parts = pathname.slice(prefix.length).split('/')
+  if (parts.length === 0 || parts.some((part) => !part || part === '.' || part === '..')) return null
+
+  const encodedPath = parts.map(encodeURIComponent).join('/')
+  return (
+    `${getApiBaseUrl()}/api/agents/${encodeURIComponent(agentSlug)}` +
+    `/files/${encodedPath}?inline=true`
+  )
+}
+
+/**
+ * Per-message Markdown policy for embedded images. Links and ordinary images
+ * retain the shared default policy. A blocked `file:` image is widened only
+ * when it resolves to a verified tool-result alias or an authenticated file in
+ * that agent's `/workspace`; arbitrary host/container paths stay blocked.
+ */
+export function createMarkdownUrlTransform(context: MarkdownImageContext = {}): UrlTransform {
+  return (url, key, node) => {
+    if (key === 'src' && typeof url === 'string') {
+      const alias = context.aliases?.get(url)
+      if (alias) return alias
+
+      if (context.agentSlug) {
+        const workspaceUrl = workspaceImageUrl(url, context.agentSlug)
+        if (workspaceUrl) return workspaceUrl
+      }
+    }
+
+    return markdownUrlTransform(url, key, node)
+  }
 }
