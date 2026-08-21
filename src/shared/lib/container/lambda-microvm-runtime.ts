@@ -879,7 +879,10 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
         tags: { area: 'container', op: 'microvm.observeDeath' },
         extra: { agentId: this.config.agentId, microvmId: installed.microvmId },
       })
-      return { action: 'ignore' }
+      // Control plane unreachable (throttle/outage): fall back to the live
+      // probe. Reachable + still running is safe to leave alone; anything
+      // unconfirmable fails closed to settle.
+      return probeResult === 'ok' ? { action: 'ignore' } : { action: 'settle' }
     }
   }
 

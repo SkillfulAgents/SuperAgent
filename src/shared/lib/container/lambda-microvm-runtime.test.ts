@@ -1564,6 +1564,36 @@ describe('LambdaMicroVmRuntimeClient.observeUnexpectedDeath', () => {
     })
   })
 
+  function failGetMicrovm() {
+    sendMock.mockImplementation(async (cmd: { type: string }) => {
+      if (cmd.type === 'Get') throw new Error('ThrottlingException')
+      if (cmd.type === 'Token') return { authToken: { 'X-aws-proxy-auth': 'tok' } }
+      return {}
+    })
+  }
+
+  it('ignores when GetMicrovm fails but the live probe still sees the session running', async () => {
+    const client = newClient()
+    await client.start()
+    sessionFetch(true)
+    failGetMicrovm()
+
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['sess-1'] })).resolves.toEqual({
+      action: 'ignore',
+    })
+  })
+
+  it('fails closed to settle when GetMicrovm fails and the probe cannot confirm the session', async () => {
+    const client = newClient()
+    await client.start()
+    sessionFetch(false)
+    failGetMicrovm()
+
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['sess-1'] })).resolves.toEqual({
+      action: 'settle',
+    })
+  })
+
   it('defers SIGKILL fatals and settles other fatals', () => {
     const client = newClient()
     expect(client.onFatalResult('oom_sigkill')).toBe('defer_for_recovery')
