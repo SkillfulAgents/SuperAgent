@@ -700,6 +700,23 @@ class DashboardManager {
     return info.port
   }
 
+  getDashboardStatus(slug: string): DashboardStatus | null {
+    return this.dashboards.get(slug)?.status ?? null
+  }
+
+  /**
+   * Resolve once a 'starting' dashboard reaches a terminal outcome (or the
+   * bound elapses). Lets the proxy hold an early document request instead of
+   * answering 503 — an optimistically-mounted iframe then paints the moment
+   * the server binds. Returns immediately for any non-'starting' status.
+   */
+  async waitForStartupOutcome(slug: string, timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline && this.dashboards.get(slug)?.status === 'starting') {
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+  }
+
   getDashboardUpstreamPathMode(slug: string): DashboardUpstreamPathMode {
     return this.dashboards.get(slug)?.upstreamPathMode ?? 'stripped'
   }

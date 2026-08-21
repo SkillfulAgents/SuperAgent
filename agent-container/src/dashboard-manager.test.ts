@@ -200,6 +200,9 @@ describe('DashboardManager log stream lifecycle', () => {
     }>
     stopDashboard(slug: string): Promise<boolean>
     stopAll(): Promise<void>
+    getDashboardStatus(slug: string): string | null
+    getDashboardPort(slug: string): number | null
+    waitForStartupOutcome(slug: string, timeoutMs: number): Promise<void>
     getDashboardUpstreamPathMode(slug: string): 'stripped' | 'mounted'
     captureScreenshot(slug: string): Promise<{ ok: true; path: string } | { ok: false; reason: string }>
     listDashboards(): Array<{
@@ -381,6 +384,38 @@ describe('DashboardManager log stream lifecycle', () => {
       expect.stringContaining(`Invalid package.json metadata for ${slug}`),
       expect.anything(),
     )
+  })
+
+  describe('waitForStartupOutcome', () => {
+    it('resolves immediately for an untracked dashboard', async () => {
+      const start = Date.now()
+      await manager.waitForStartupOutcome('nope', 5_000)
+      expect(Date.now() - start).toBeLessThan(500)
+    })
+
+    it('resolves once a starting dashboard reaches its outcome', async () => {
+      const slug = await scaffoldDashboard()
+      await fs.promises.rm(path.join(testDir, slug, 'node_modules'), { recursive: true })
+      let installProc: FakeChildProcess | undefined
+      spawnHolder.impl = (_command, args) => {
+        const proc = new FakeChildProcess()
+        procs.push(proc)
+        if (args[0] === 'install') installProc = proc
+        return proc
+      }
+
+      const start = manager.startDashboard(slug, { forceInstall: false })
+      await vi.waitFor(() => expect(installProc).toBeDefined())
+      expect(manager.getDashboardStatus(slug)).toBe('starting')
+
+      const outcome = manager.waitForStartupOutcome(slug, 10_000)
+      installProc!.exit(0)
+      await outcome
+      await start
+
+      expect(manager.getDashboardStatus(slug)).toBe('running')
+      expect(manager.getDashboardPort(slug)).not.toBeNull()
+    })
   })
 
   describe('status change events', () => {
