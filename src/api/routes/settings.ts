@@ -48,6 +48,7 @@ import {
   resolveEffectiveWebVendor,
 } from '@shared/lib/web-provider'
 import { containerManager } from '@shared/lib/container/container-manager'
+import { messagePersister } from '@shared/lib/container/message-persister'
 import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, getContainerClientClass, getRunnerDisplayName, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
 import { detectAllProviders } from '../../main/host-browser'
 import { revokePlatformToken } from '@shared/lib/services/platform-auth-service'
@@ -492,6 +493,21 @@ settings.put(
         )
       }
 
+      // Block any settings change while a running agent is mid-turn.
+      if (hasRunningAgents) {
+        const busyAgents = containerManager
+          .getRunningAgentIds()
+          .filter((agentId) => messagePersister.hasActiveSessionsForAgent(agentId))
+        if (busyAgents.length > 0) {
+          const first = busyAgents[0]
+          const error =
+            busyAgents.length === 1
+              ? `${first} is still working. Finish or stop that session, then try again.`
+              : `${first} and ${busyAgents.length - 1} more are still working. Finish or stop those sessions, then try again.`
+          return c.json({ error, busyAgents }, 409)
+        }
+      }
+
       updateSettings(newSettings)
 
       // If account provider settings changed, re-register providers
@@ -532,13 +548,27 @@ settings.put(
         action: 'updated',
         details: buildSettingsAuditDetails(currentSettings, newSettings),
       })
-      return c.json(buildSettingsResponse(newSettings, hasRunningAgents, runnerAvailability))
+
+      // Stop running agents after any settings change so the next start picks up
+      // fresh config. Mid-turn work was blocked above.
+      if (hasRunningAgents) {
+        await containerManager.stopAll()
+      }
+
+      return c.json(
+        buildSettingsResponse(
+          newSettings,
+          containerManager.hasRunningAgents(),
+          runnerAvailability,
+        ),
+      )
     } catch (error) {
       console.error('Failed to update settings:', error)
       return c.json({ error: 'Failed to update settings' }, 500)
     }
   },
 )
+
 
 // POST /api/settings/start-runner - Start a container runtime
 settings.post('/start-runner', async (c) => {

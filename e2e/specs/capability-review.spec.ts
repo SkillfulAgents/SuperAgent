@@ -2,6 +2,10 @@ import { test, expect } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
+import {
+  clearBusyAgentsForSettingsSave,
+  waitForSettingsPutOk,
+} from '../helpers/settings'
 
 /**
  * Allow/review/block launch policies for subagents (Task) and workflows.
@@ -102,7 +106,7 @@ test.describe('Capability launch review', () => {
 })
 
 test.describe('Capability policy settings', () => {
-  test('three-way controls persist and blocking subagents warns first', async ({ page }) => {
+  test('three-way controls persist and blocking subagents warns first', async ({ page, request }) => {
     const appPage = new AppPage(page)
     await appPage.goto()
     await appPage.waitForAgentsLoaded()
@@ -130,12 +134,18 @@ test.describe('Capability policy settings', () => {
     // Take the recommended path — review is applied, not block
     await subagentsToggle.locator('[data-testid="policy-toggle-block"]').click()
     await expect(page.locator('[data-testid="block-subagents-use-review"]')).toBeVisible()
+    await clearBusyAgentsForSettingsSave(request)
+    const applyReview = waitForSettingsPutOk(page)
     await page.locator('[data-testid="block-subagents-use-review"]').click()
+    await applyReview
     await expect(subagentsToggle.locator('[data-testid="policy-toggle-review"]')).toHaveAttribute('data-active', 'true', { timeout: 10000 })
     await expect(subagentsToggle.locator('[data-testid="policy-toggle-block"]')).toHaveAttribute('data-active', 'false')
 
     // Workflows -> allow persists across reload
+    await clearBusyAgentsForSettingsSave(request)
+    const allowWorkflows = waitForSettingsPutOk(page)
     await workflowsToggle.locator('[data-testid="policy-toggle-allow"]').click()
+    await allowWorkflows
     await expect(workflowsToggle.locator('[data-testid="policy-toggle-allow"]')).toHaveAttribute('data-active', 'true', { timeout: 10000 })
 
     await page.reload()
@@ -143,10 +153,16 @@ test.describe('Capability policy settings', () => {
     await expect(page.locator('[data-testid="capability-policy-workflows"] [data-testid="policy-toggle-allow"]')).toHaveAttribute('data-active', 'true', { timeout: 10000 })
 
     // Restore defaults so other specs see the stock policy
+    await clearBusyAgentsForSettingsSave(request)
+    const restoreWorkflows = waitForSettingsPutOk(page)
     await page.locator('[data-testid="capability-policy-workflows"] [data-testid="policy-toggle-review"]').click()
+    await restoreWorkflows
     await expect(page.locator('[data-testid="capability-policy-workflows"] [data-testid="policy-toggle-review"]')).toHaveAttribute('data-active', 'true', { timeout: 10000 })
     const subagents = page.locator('[data-testid="capability-policy-subagents"]')
+    await clearBusyAgentsForSettingsSave(request)
+    const restoreSubagents = waitForSettingsPutOk(page)
     await subagents.locator('[data-testid="policy-toggle-allow"]').click()
+    await restoreSubagents
     await expect(subagents.locator('[data-testid="policy-toggle-allow"]')).toHaveAttribute('data-active', 'true', { timeout: 10000 })
   })
 })
