@@ -321,6 +321,7 @@ export interface ApiSkillsetConfig {
   id: string
   url: string
   name: string
+  displayName: string
   description: string
   skillCount: number
   agentCount: number

@@ -26,7 +26,7 @@ const SETTINGS_TAB_TITLES = {
   'computer-use': 'Computer Use',
   'account-provider': 'Account Provider',
   voice: 'Voice',
-  skillsets: 'Skillsets',
+  skillsets: 'Libraries',
   analytics: 'Analytics',
   'audit-log': 'Audit Log',
   admin: 'Admin',

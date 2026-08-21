@@ -99,9 +99,9 @@ export function SkillsetsTab() {
   return (
     <div className="space-y-6">
       <div>
-        <h3 className="text-sm font-medium mb-1">Skillsets</h3>
+        <h3 className="text-sm font-medium mb-1">Libraries</h3>
         <p className="text-xs text-muted-foreground">
-          Add skillset repositories to discover and install skills for your agents.
+          Add library repositories to discover and install skills for your agents.
         </p>
       </div>
 
@@ -176,7 +176,7 @@ export function SkillsetsTab() {
             <li>
               Under <span className="font-medium text-foreground">Repository access</span>, choose{' '}
               <span className="font-medium text-foreground">Only select repositories</span> and
-              select this skillset repository.
+              select this library repository.
             </li>
             <li>
               Under <span className="font-medium text-foreground">Repository permissions</span>,
@@ -218,9 +218,9 @@ export function SkillsetsTab() {
         ) : !skillsets || skillsets.length === 0 ? (
           <div className="text-center py-6">
             <Library className="h-8 w-8 mx-auto text-muted-foreground mb-3" />
-            <p className="text-sm text-muted-foreground">No skillsets configured yet.</p>
+            <p className="text-sm text-muted-foreground">No libraries configured yet.</p>
             <p className="text-xs text-muted-foreground mt-1">
-              Add a skillset repository URL above to get started.
+              Add a library repository URL above to get started.
             </p>
           </div>
         ) : (
@@ -232,7 +232,7 @@ export function SkillsetsTab() {
               <Library className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
-                  <p className="text-sm font-medium truncate">{ss.name}</p>
+                  <p className="text-sm font-medium truncate">{ss.displayName}</p>
                   <span className="text-xs text-muted-foreground">
                     {ss.skillCount} {ss.skillCount === 1 ? 'skill' : 'skills'}
                   </span>
@@ -269,7 +269,7 @@ export function SkillsetsTab() {
                       <Input
                         type="password"
                         autoComplete="off"
-                        aria-label={`Repository token for ${ss.name}`}
+                        aria-label={`Repository token for ${ss.displayName}`}
                         placeholder={ss.credential ? 'Replace repository token' : 'Add repository token'}
                         value={replacementToken}
                         onChange={(e) => {
@@ -339,7 +339,7 @@ export function SkillsetsTab() {
                   className="h-7 w-7"
                   onClick={() => refreshSkillset.mutate(ss.id)}
                   disabled={refreshSkillset.isPending}
-                  title="Refresh skillset"
+                  title="Refresh library"
                 >
                   <RefreshCw className={`h-3.5 w-3.5 ${refreshSkillset.isPending ? 'animate-spin' : ''}`} />
                 </Button>
@@ -349,7 +349,7 @@ export function SkillsetsTab() {
                   className="h-7 w-7 text-destructive hover:text-destructive"
                   onClick={() => removeSkillset.mutate(ss.id)}
                   disabled={removeSkillset.isPending}
-                  title="Remove skillset"
+                  title="Remove library"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </Button>

@@ -73,6 +73,10 @@ export type SkillsetSourceInfo = {
 export type SkillsetDisplayInfo = {
   badgeLabel?: string
   showUrl: boolean
+  /** List title. When omitted, callers use the stored skillset name. */
+  title?: string
+  /** List subtitle. When omitted, callers use the stored skillset description. */
+  description?: string
 }
 
 export abstract class BaseSkillsetProvider {
@@ -104,7 +108,7 @@ export abstract class BaseSkillsetProvider {
     return { skillsetName, sourceLabel: skillsetName }
   }
 
-  getDisplayInfo(): SkillsetDisplayInfo {
+  getDisplayInfo(_config?: SkillsetConfig): SkillsetDisplayInfo {
     return { showUrl: true }
   }
 

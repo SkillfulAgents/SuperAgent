@@ -90,7 +90,7 @@ describe('skillsets routes', () => {
           id: 'platform--repo-current--local',
           url: 'http://platform/v1/skills/repo',
           name: 'local',
-          description: 'Current org local',
+          description: 'Default skillset for Current Org',
           addedAt: '2026-01-01T00:00:00.000Z',
           provider: 'platform',
           providerData: {
@@ -107,11 +107,17 @@ describe('skillsets routes', () => {
     const res = await app.request('/api/skillsets')
     expect(res.status).toBe(200)
 
-    const body = await res.json() as Array<{ id: string }>
+    const body = await res.json() as Array<{ id: string; name: string; displayName: string }>
     expect(body.map((item) => item.id)).toEqual([
       'github-demo',
       'platform--repo-current--local',
     ])
+    expect(body[0]).toMatchObject({ name: 'github-demo', displayName: 'github-demo' })
+    expect(body[1]).toMatchObject({
+      name: 'local',
+      displayName: 'Current Org Team Library',
+      description: 'Default library for Current Org',
+    })
   })
 
   it('backfills providerData access fields when syncing existing platform skillsets', async () => {
