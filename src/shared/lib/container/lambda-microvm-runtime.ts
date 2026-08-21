@@ -30,6 +30,14 @@ import type {
 } from './types'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { setBootstrapEnv, clearBootstrapEnv } from './agent-bootstrap-env-store'
+import {
+  classifyMicrovmDeath,
+  planFromClassification,
+  type MicrovmDeathReason,
+  type MicrovmFatalResult,
+  type MicrovmProbeResult,
+} from './microvm-death-classifier'
+import type { ObserveUnexpectedDeathInput, UnexpectedDeathPlan } from './runtime-death'
 
 // RunMicrovm caps runHookPayload at 4096 bytes. We only put a small bootstrap
 // credential + mount params here; the full agent env is fetched at boot (see
@@ -614,7 +622,12 @@ interface AgentMicrovmState {
 }
 const agentStates = new Map<string, AgentMicrovmState>()
 
-type MicrovmDetail = { state?: string; endpoint?: string }
+const microvmDetailSchema = z.object({
+  state: z.string().optional(),
+  endpoint: z.string().optional(),
+  stateReason: z.string().optional(),
+})
+type MicrovmDetail = z.infer<typeof microvmDetailSchema>
 
 // Control plane selection, keyed on MICROVM_PROXY_URL:
 //
@@ -732,11 +745,19 @@ async function runMicrovm(
 
 async function getMicrovm(region: string, microvmId: string): Promise<MicrovmDetail> {
   const svc = microvmService()
-  if (svc) return serviceFetch(svc, 'GET', `/microvm/${encodeURIComponent(microvmId)}`)
+  if (svc) {
+    return microvmDetailSchema.parse(
+      await serviceFetch<unknown>(svc, 'GET', `/microvm/${encodeURIComponent(microvmId)}`),
+    )
+  }
   const res = (await getMicrovmClient(region).send(
     new GetMicrovmCommand({ microvmIdentifier: microvmId }),
   )) as GetMicrovmCommandOutput
-  return { state: res.state, endpoint: res.endpoint }
+  return microvmDetailSchema.parse({
+    state: res.state,
+    endpoint: res.endpoint,
+    stateReason: res.stateReason,
+  })
 }
 
 async function terminateMicrovm(region: string, microvmId: string): Promise<void> {
@@ -805,9 +826,79 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
   static readonly supportsCustomAgentImage = false
 
   private replaceInFlight: Promise<void> | null = null
+  private lastFatalResult: MicrovmFatalResult = null
 
   constructor(config: ContainerConfig) {
     super(config)
+  }
+
+  onFatalResult(kind: MicrovmFatalResult): 'settle' | 'defer_for_recovery' {
+    if (kind !== 'oom_sigkill') return 'settle'
+    this.lastFatalResult = kind
+    return 'defer_for_recovery'
+  }
+
+  getRuntimeGenerationId(): string | null {
+    return agentStates.get(this.config.agentId)?.microvmId ?? null
+  }
+
+  async observeUnexpectedDeath(input?: ObserveUnexpectedDeathInput): Promise<UnexpectedDeathPlan> {
+    const lastFatalResult = input?.lastFatalResult ?? this.lastFatalResult
+    this.lastFatalResult = null
+    const sessionIds = input?.sessionIds ?? []
+    const installed = agentStates.get(this.config.agentId)
+    const probeResult = await this.probeUnexpectedDeath(sessionIds, installed?.proxyPort)
+
+    if (!installed) {
+      return planFromClassification(
+        classifyMicrovmDeath({ notFound: true, lastFatalResult, probeResult }),
+        { probeResult },
+      )
+    }
+
+    const config = getMicrovmRuntimeConfig()
+    try {
+      const mvm = await getMicrovm(config.region, installed.microvmId)
+      return planFromClassification(
+        classifyMicrovmDeath({
+          state: mvm.state,
+          stateReason: mvm.stateReason,
+          lastFatalResult,
+          probeResult,
+        }),
+        { state: mvm.state, probeResult },
+      )
+    } catch (error) {
+      if (isNotFound(error)) {
+        return planFromClassification(
+          classifyMicrovmDeath({ notFound: true, lastFatalResult, probeResult }),
+          { probeResult },
+        )
+      }
+      captureException(error, {
+        tags: { area: 'container', op: 'microvm.observeDeath' },
+        extra: { agentId: this.config.agentId, microvmId: installed.microvmId },
+      })
+      return { action: 'ignore' }
+    }
+  }
+
+  // Health fail, or HTTP up but no mid-turn process still running.
+  private async probeUnexpectedDeath(
+    sessionIds: string[],
+    knownPort?: number,
+  ): Promise<MicrovmProbeResult> {
+    if (!(await this.isHealthy(knownPort))) return 'fail'
+    if (sessionIds.length === 0) return 'ok'
+    for (const sessionId of sessionIds) {
+      try {
+        const session = await this.getSession(sessionId)
+        if (session?.isRunning) return 'ok'
+      } catch {
+        // Session probe failed; keep checking siblings / treat as fail below.
+      }
+    }
+    return 'fail'
   }
 
   protected getRunnerCommand(): string {
@@ -1025,13 +1116,35 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
   }
 
   private async replaceGenerationInner(reason: string, observedId: string | null): Promise<void> {
+    const config = getMicrovmRuntimeConfig()
+    let classification: MicrovmDeathReason = 'runtime_lost'
+    let state: string | undefined
+    let stateReason: string | undefined
+    if (observedId) {
+      try {
+        const mvm = await getMicrovm(config.region, observedId)
+        state = mvm.state
+        stateReason = mvm.stateReason
+        classification = classifyMicrovmDeath({ state, stateReason })
+      } catch (error) {
+        if (isNotFound(error)) classification = classifyMicrovmDeath({ notFound: true })
+      }
+    }
+
     console.warn(
-      `[LambdaMicroVmRuntimeClient] Replacing dead MicroVM generation agent=${this.config.agentId} reason=${reason} old=${observedId ?? 'none'}`,
+      `[LambdaMicroVmRuntimeClient] Replacing dead MicroVM generation agent=${this.config.agentId} reason=${reason} old=${observedId ?? 'none'} classification=${classification}`,
     )
     addErrorBreadcrumb({
       category: 'container',
       message: `MicroVM generation replaced: ${reason}`,
-      data: { agentId: this.config.agentId, oldMicrovmId: observedId, reason },
+      data: {
+        agentId: this.config.agentId,
+        oldMicrovmId: observedId,
+        reason,
+        classification,
+        state,
+        stateReason,
+      },
       level: 'warning',
     })
 
