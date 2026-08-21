@@ -9,8 +9,8 @@ import {
   SelectValue,
 } from '@renderer/components/ui/select'
 import { useUpdateChatIntegration } from '@renderer/hooks/use-chat-integrations'
+import { useInheritedRuntimeSelection } from '@renderer/hooks/use-inherited-runtime-selection'
 import { SettingsModelSelect } from '@renderer/components/settings/settings-model-select'
-import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { PublicChatIntegration as ChatIntegration } from '@shared/lib/chat-integrations/public'
 
 export function ToggleRow({ label, helperText, checked, onCheckedChange, disabled }: {
@@ -135,19 +135,22 @@ export function SessionTimeoutSelect({ value, onCommit, disabled, id, descriptio
 
 export function IntegrationModelEffort({ integration }: { integration: ChatIntegration }) {
   const updateIntegration = useUpdateChatIntegration()
+  const { selection } = useInheritedRuntimeSelection(integration.agentSlug, integration)
 
-  // Drive directly off the integration; useUpdateChatIntegration invalidates the
-  // detail query, so an edit (or an integration switch) flows back through props -
-  // a local mirror would go stale when the same component renders another chat.
+  if (!selection?.model || !selection.effort || !selection.displayEffort) {
+    return <span className="text-xs text-muted-foreground" data-testid="runtime-inherit-pending">—</span>
+  }
+
+  // Drive display off the inherit ladder; writes stay on pick. Clamp is display-only.
   return (
     <SettingsModelSelect
-      model={integration.model ?? undefined}
+      model={selection.model}
       onModelChange={(m) => updateIntegration.mutate({ id: integration.id, model: m })}
       includeEffort
-      effort={(integration.effort as EffortLevel) ?? 'medium'}
+      effort={selection.displayEffort}
       onEffortChange={(e) => updateIntegration.mutate({ id: integration.id, effort: e })}
       includeSpeed
-      speed={(integration.speed as SpeedLevel) ?? 'normal'}
+      speed={selection.displaySpeed ?? 'normal'}
       onSpeedChange={(s) => updateIntegration.mutate({ id: integration.id, speed: s })}
       // Left-aligned in its DetailCard, so the LEFT edge is the fixed one —
       // anchoring 'end' would slide the popover on every pick.

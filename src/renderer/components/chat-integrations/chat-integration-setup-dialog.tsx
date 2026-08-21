@@ -195,7 +195,7 @@ function SetupForm({
   const [integrationName, setIntegrationName] = useState('')
   const [showToolCalls, setShowToolCalls] = useState(false)
   const [sessionTimeout, setSessionTimeout] = useState<number | null>(null)
-  const [onlyMentioned, setOnlyMentioned] = useState(false)
+  const [onlyMentioned, setOnlyMentioned] = useState(true)
   const [answerInThread, setAnswerInThread] = useState(false)
   const [newSessionPerThread, setNewSessionPerThread] = useState(false)
   const [testResult, setTestResult] = useState<{ valid: boolean; info?: string } | null>(null)

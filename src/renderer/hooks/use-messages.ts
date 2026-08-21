@@ -1,9 +1,13 @@
 import { apiFetch } from '@renderer/lib/api'
+import { captureRendererException } from '@renderer/lib/error-reporting'
 import { uploadFileChunked } from '@renderer/lib/upload'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import type { ApiMessage, ApiMessageOrBoundary } from '@shared/lib/types/api'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import type { ApiMessage, ApiMessageOrBoundary, ApiSession } from '@shared/lib/types/api'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { WorkflowTree } from '@shared/lib/workflows/workflow-schemas'
+import { MESSAGES_PAGE_LIMIT, MESSAGES_PAGE_OLDER_LIMIT } from '@shared/lib/messages-page'
+import { pickDeltaAnchor, mergeDeltaMessages } from '@shared/lib/messages-delta'
 
 // Re-export for convenience
 export type { ApiMessage, ApiMessageOrBoundary }
@@ -20,30 +24,280 @@ export class TranscriptNotFoundError extends Error {
   }
 }
 
+interface MessagesPage {
+  messages: ApiMessageOrBoundary[]
+  nextCursor: string | null
+  /** Client-only bookkeeping: when this cache entry was last built from a full
+   * page fetch (delta merges carry it forward). Drives the periodic full
+   * refetch that repairs drift and re-bounds the delta-grown page. */
+  fetchedFullAt?: number
+  /** Client-only: set when this full page was fetched because the server
+   * answered resync (the transcript was rewritten and the delta anchor
+   * vanished). Tells the hook to drop its older-history buffer, which may
+   * hold items that no longer exist. */
+  resyncedAt?: number
+}
+
+interface MessagesDelta {
+  messages: ApiMessageOrBoundary[]
+  anchor: string | null
+  resync?: true
+}
+
+/** Full-page cadence while deltas are in use: periodic drift repair (deletions
+ * from other clients, missed rewrites) and the bound on how far past
+ * MESSAGES_PAGE_LIMIT the delta-merged page can grow before it resets to the
+ * trailing page (overflow slides into the `older` buffer). */
+export const MESSAGES_FULL_REFETCH_INTERVAL_MS = 60_000
+
+const EMPTY_MESSAGES: ApiMessageOrBoundary[] = []
+const EMPTY_IDS: string[] = []
+
+function deletedMessagesKey(sessionId: string) {
+  return ['messages-deleted', sessionId] as const
+}
+
+async function fetchMessagesPage(
+  agentSlug: string,
+  sessionId: string,
+  opts: { limit: number; cursor?: string; signal?: AbortSignal }
+): Promise<MessagesPage> {
+  const params = new URLSearchParams({ limit: String(opts.limit), media: 'ref' })
+  if (opts.cursor) params.set('cursor', opts.cursor)
+  const res = await apiFetch(
+    `/api/agents/${agentSlug}/sessions/${sessionId}/messages?${params.toString()}`,
+    { signal: opts.signal }
+  )
+  if (res.status === 404) throw new TranscriptNotFoundError()
+  if (!res.ok) throw new Error('Failed to fetch messages')
+  return res.json() as Promise<MessagesPage>
+}
+
+// `limit` rides along so a server that predates the delta protocol (rolling
+// deploy) answers with a plain trailing page instead of the legacy unpaginated
+// array; the caller detects which one it got by the `anchor` field.
+async function fetchMessagesDelta(
+  agentSlug: string,
+  sessionId: string,
+  opts: { after: string; signal?: AbortSignal }
+): Promise<MessagesDelta | MessagesPage> {
+  const params = new URLSearchParams({
+    limit: String(MESSAGES_PAGE_LIMIT),
+    after: opts.after,
+    media: 'ref',
+  })
+  const res = await apiFetch(
+    `/api/agents/${agentSlug}/sessions/${sessionId}/messages?${params.toString()}`,
+    { signal: opts.signal }
+  )
+  if (res.status === 404) throw new TranscriptNotFoundError()
+  if (!res.ok) throw new Error('Failed to fetch messages')
+  return res.json() as Promise<MessagesDelta | MessagesPage>
+}
+
+function isDeltaResponse(body: MessagesDelta | MessagesPage): body is MessagesDelta {
+  return 'anchor' in body || (body as { resync?: boolean }).resync === true
+}
+
+// Trailing page only unless the caller uses fetchOlder (MessageList). Other hook instances see ~MESSAGES_PAGE_LIMIT.
 export function useMessages(sessionId: string | null, agentSlug: string | null) {
-  return useQuery<ApiMessageOrBoundary[]>({
+  const queryClient = useQueryClient()
+  const latest = useQuery<MessagesPage>({
     queryKey: ['messages', sessionId, agentSlug],
-    queryFn: async () => {
-      const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/messages`)
-      if (res.status === 404) throw new TranscriptNotFoundError()
-      if (!res.ok) throw new Error('Failed to fetch messages')
-      return res.json()
+    // Take React Query's per-fetch signal so a superseding invalidation aborts
+    // the in-flight HTTP request instead of orphaning it — without the signal,
+    // superseded /messages responses (multi-MB on long sessions) keep being
+    // produced and buffered server-side while the client has already moved on.
+    queryFn: async ({ signal }) => {
+      if (!sessionId || !agentSlug) throw new Error('Missing session')
+      // Forward delta when possible: SSE-driven refetches only care about
+      // lines appended since the last read, so ask for upserts at-or-after the
+      // last settled item instead of re-reading the whole trailing page
+      // (multi-MB on long sessions). Fall back to the full page when nothing
+      // is cached, no item is safely settled yet, the anchor vanished
+      // server-side (resync), the server predates the delta protocol, or the
+      // periodic full-refetch drift repair is due.
+      const cached = queryClient.getQueryData<MessagesPage>(['messages', sessionId, agentSlug])
+      const anchor =
+        cached && cached.messages.length > 0 ? pickDeltaAnchor(cached.messages) : null
+      const fullIsFresh =
+        Date.now() - (cached?.fetchedFullAt ?? 0) < MESSAGES_FULL_REFETCH_INTERVAL_MS
+      // fetchedFullAt === 0 is the rewrite-mutation marker (see
+      // forceNextMessagesRefetchFull): the transcript changed shape, so this
+      // full fetch is authoritative the same way a resync one is — items it
+      // omits were rewritten away, not paged out, and must not slide into the
+      // older-history buffer.
+      const forcedFull = cached?.fetchedFullAt === 0
+      let sawResync = forcedFull
+      if (cached && anchor && fullIsFresh) {
+        const body = await fetchMessagesDelta(agentSlug, sessionId, { after: anchor, signal })
+        if (!isDeltaResponse(body)) {
+          // Pre-delta server answered with a plain trailing page — a full fetch.
+          return { ...body, fetchedFullAt: Date.now() }
+        }
+        if (body.resync) {
+          sawResync = true
+        } else {
+          const merged = mergeDeltaMessages(cached.messages, body.messages)
+          if (merged) {
+            return {
+              messages: merged,
+              nextCursor: cached.nextCursor,
+              fetchedFullAt: cached.fetchedFullAt,
+            }
+          }
+        }
+      }
+      const page = await fetchMessagesPage(agentSlug, sessionId, {
+        limit: MESSAGES_PAGE_LIMIT,
+        signal,
+      })
+      return {
+        ...page,
+        fetchedFullAt: Date.now(),
+        ...(sawResync ? { resyncedAt: Date.now() } : {}),
+      }
     },
     enabled: !!sessionId && !!agentSlug,
-    // A missing transcript won't reappear — don't hammer it with retries.
     retry: (failureCount, error) =>
       !(error instanceof TranscriptNotFoundError) && failureCount < 3,
-    // Safety-net poll for any messages the SSE stream missed. The stream
-    // (use-message-stream) is the primary, near-instant path; this only
-    // backstops out-of-band edits / a silently-stalled SSE.
-    // TODO: conservative first step down from the original 5s. Once we've
-    // confirmed nothing relies on tight polling, this can be raised further
-    // (e.g. 30s) or gated on SSE-connection health.
     refetchInterval: 15000,
   })
+
+  const { data: deletedIds = EMPTY_IDS } = useQuery({
+    queryKey: deletedMessagesKey(sessionId ?? ''),
+    queryFn: async (): Promise<string[]> => [],
+    enabled: false,
+    staleTime: Infinity,
+    initialData: EMPTY_IDS,
+  })
+  const deleted = useMemo(() => new Set(deletedIds), [deletedIds])
+
+  const [older, setOlder] = useState<ApiMessageOrBoundary[]>([])
+  const [olderCursor, setOlderCursor] = useState<string | null | undefined>(undefined)
+  const [isFetchingOlder, setIsFetchingOlder] = useState(false)
+  const prevLatestRef = useRef<ApiMessageOrBoundary[]>(EMPTY_MESSAGES)
+  const lastResyncRef = useRef<number | undefined>(undefined)
+  // Bumped whenever older-history state is reset (session switch, resync).
+  // An in-flight fetchOlder from a previous generation must not commit — it
+  // could repopulate rewritten-away history or latch a stale terminal cursor.
+  // The request is also aborted outright: fencing alone leaves a hung request
+  // holding isFetchingOlder, which blocks every fresh fetchOlder call.
+  const olderGenRef = useRef(0)
+  const olderAbortRef = useRef<AbortController | null>(null)
+
+  useEffect(() => {
+    olderGenRef.current++
+    olderAbortRef.current?.abort()
+    olderAbortRef.current = null
+    setOlder([])
+    setOlderCursor(undefined)
+    prevLatestRef.current = EMPTY_MESSAGES
+    lastResyncRef.current = undefined
+  }, [sessionId, agentSlug])
+
+  const latestMessages = latest.data?.messages ?? EMPTY_MESSAGES
+  const resyncedAt = latest.data?.resyncedAt
+
+  // A resync full fetch means the transcript was rewritten server-side: items
+  // held in the older-history buffer may no longer exist. Drop the buffer and
+  // reset the slide-off baseline BEFORE the effect below runs, so the vanished
+  // items aren't captured as "slid off" and re-rendered forever.
+  useLayoutEffect(() => {
+    if (resyncedAt === undefined || resyncedAt === lastResyncRef.current) return
+    lastResyncRef.current = resyncedAt
+    olderGenRef.current++
+    olderAbortRef.current?.abort()
+    olderAbortRef.current = null
+    prevLatestRef.current = EMPTY_MESSAGES
+    setOlder([])
+    setOlderCursor(undefined)
+  }, [resyncedAt])
+
+  useLayoutEffect(() => {
+    const prev = prevLatestRef.current
+    prevLatestRef.current = latestMessages
+    if (prev.length === 0) return
+    const nextIds = new Set(latestMessages.map((m) => m.id))
+    // Only items that sat BEFORE the new page's first item can have slid off
+    // the trailing window. An item missing from within the still-covered
+    // range was rewritten away (e.g. deleted by another client) — retaining
+    // it as scrolled-off history would resurrect it indefinitely. When the
+    // new first item isn't in prev (the page advanced wholesale between
+    // fetches), fall back to treating everything missing as turnover.
+    const firstId = latestMessages[0]?.id
+    const boundary = firstId !== undefined ? prev.findIndex((m) => m.id === firstId) : -1
+    const candidates = boundary >= 0 ? prev.slice(0, boundary) : prev
+    const slidOff = candidates.filter((m) => !nextIds.has(m.id) && !deleted.has(m.id))
+    if (slidOff.length === 0) return
+    setOlder((cur) => {
+      const seen = new Set(cur.map((m) => m.id))
+      return [...cur, ...slidOff.filter((m) => !seen.has(m.id))]
+    })
+  }, [latestMessages, deleted])
+
+  const data = useMemo(() => {
+    if (!latest.data && older.length === 0) return undefined
+    const latestIds = new Set(latestMessages.map((m) => m.id))
+    return [...older.filter((m) => !latestIds.has(m.id) && !deleted.has(m.id)), ...latestMessages.filter((m) => !deleted.has(m.id))]
+  }, [latest.data, older, latestMessages, deleted])
+
+  const hasOlder =
+    olderCursor !== undefined ? olderCursor !== null : latest.data?.nextCursor != null
+
+  const fetchOlder = useCallback(async (onBeforePrepend?: () => void): Promise<boolean> => {
+    if (!sessionId || !agentSlug || isFetchingOlder || !hasOlder) return false
+    const cursor =
+      olderCursor ?? latest.data?.nextCursor ?? older[0]?.id ?? latestMessages[0]?.id
+    if (!cursor) return false
+    const gen = olderGenRef.current
+    const controller = new AbortController()
+    olderAbortRef.current = controller
+    setIsFetchingOlder(true)
+    try {
+      const page = await fetchMessagesPage(agentSlug, sessionId, {
+        limit: MESSAGES_PAGE_OLDER_LIMIT,
+        cursor,
+        signal: controller.signal,
+      })
+      // Older-history state was reset while this page was in flight (resync
+      // or session switch): the response belongs to the previous transcript
+      // generation and must not commit.
+      if (gen !== olderGenRef.current) return false
+      const existing = new Set(older.map((m) => m.id))
+      const prepended = page.messages.filter((m) => !existing.has(m.id) && !deleted.has(m.id))
+      if (prepended.length > 0) onBeforePrepend?.()
+      setOlder((cur) => {
+        const seen = new Set(cur.map((m) => m.id))
+        return [...page.messages.filter((m) => !seen.has(m.id) && !deleted.has(m.id)), ...cur]
+      })
+      setOlderCursor(page.nextCursor)
+      return prepended.length > 0
+    } catch (error) {
+      // Rejection caused by our own generation reset (abort) — not an error.
+      if (gen !== olderGenRef.current) return false
+      console.warn('Failed to fetch older messages:', error)
+      if (!(error instanceof TranscriptNotFoundError)) {
+        captureRendererException(error, { tags: { area: 'messages', op: 'fetch-older' } })
+      }
+      return false
+    } finally {
+      if (olderAbortRef.current === controller) olderAbortRef.current = null
+      setIsFetchingOlder(false)
+    }
+  }, [sessionId, agentSlug, isFetchingOlder, hasOlder, older, olderCursor, latest.data?.nextCursor, latestMessages, deleted])
+
+  return {
+    ...latest,
+    data,
+    fetchOlder,
+    hasOlder,
+    isFetchingOlder,
+  }
 }
 
 export function useSendMessage() {
+  const queryClient = useQueryClient()
   return useMutation({
     mutationFn: async (data: { sessionId: string; agentSlug: string; content: string; effort?: EffortLevel; speed?: SpeedLevel; model?: string }) => {
       const res = await apiFetch(`/api/agents/${data.agentSlug}/sessions/${data.sessionId}/messages`, {
@@ -61,7 +315,26 @@ export function useSendMessage() {
       // optimistic pending copy by exact id match.
       return res.json() as Promise<{ success: boolean; uuid: string; queued: boolean }>
     },
-    // No onSuccess - we'll handle the pending message via props
+    onSuccess: (result, variables) => {
+      // Keep every cached spelling of this session detail (canonical agent id
+      // or a pre-resolution display slug) aligned with the runtime options the
+      // server accepted. Without this, leaving and returning to the session
+      // remounts the composer from the old model and the next request can
+      // switch the live session back. Queued messages intentionally carry no
+      // runtime changes; trust the server's decision rather than the client's
+      // possibly stale activity snapshot.
+      if (result.queued) return
+      const patch = {
+        ...(variables.effort !== undefined ? { effort: variables.effort } : {}),
+        ...(variables.speed !== undefined ? { speed: variables.speed } : {}),
+        ...(variables.model !== undefined ? { model: variables.model } : {}),
+      }
+      if (Object.keys(patch).length === 0) return
+      queryClient.setQueriesData<ApiSession>(
+        { queryKey: ['session', variables.sessionId] },
+        (session) => (session ? { ...session, ...patch } : session),
+      )
+    },
   })
 }
 
@@ -119,10 +392,28 @@ export function useDeleteMessage() {
       })
       if (!res.ok) throw new Error('Failed to delete message')
     },
-    onSuccess: (_, { sessionId, agentSlug }) => {
+    onSuccess: (_, { sessionId, agentSlug, messageId }) => {
+      queryClient.setQueryData<string[]>(deletedMessagesKey(sessionId), (cur = []) =>
+        cur.includes(messageId) ? cur : [...cur, messageId]
+      )
+      forceNextMessagesRefetchFull(queryClient, sessionId, agentSlug)
       queryClient.invalidateQueries({ queryKey: ['messages', sessionId, agentSlug] })
     },
   })
+}
+
+// Rewrite mutations edit the transcript ANYWHERE, including items before the
+// delta anchor, which deltas by design never re-serve. Expire the cached
+// full-fetch stamp so the invalidation's refetch is authoritative instead of
+// leaving the rewritten item stale until the periodic full repair.
+function forceNextMessagesRefetchFull(
+  queryClient: ReturnType<typeof useQueryClient>,
+  sessionId: string,
+  agentSlug: string
+) {
+  queryClient.setQueryData<MessagesPage>(['messages', sessionId, agentSlug], (cur) =>
+    cur ? { ...cur, fetchedFullAt: 0 } : cur
+  )
 }
 
 export function useDeleteToolCall() {
@@ -136,6 +427,7 @@ export function useDeleteToolCall() {
       if (!res.ok) throw new Error('Failed to delete tool call')
     },
     onSuccess: (_, { sessionId, agentSlug }) => {
+      forceNextMessagesRefetchFull(queryClient, sessionId, agentSlug)
       queryClient.invalidateQueries({ queryKey: ['messages', sessionId, agentSlug] })
     },
   })
@@ -148,9 +440,10 @@ export function useSubagentMessages(
 ) {
   return useQuery<ApiMessageOrBoundary[]>({
     queryKey: ['subagent-messages', sessionId, agentSlug, subagentId],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const res = await apiFetch(
-        `/api/agents/${agentSlug}/sessions/${sessionId}/subagent/${subagentId}/messages`
+        `/api/agents/${agentSlug}/sessions/${sessionId}/subagent/${subagentId}/messages`,
+        { signal }
       )
       if (!res.ok) throw new Error('Failed to fetch subagent messages')
       return res.json()
@@ -174,9 +467,10 @@ export function useWorkflowTree(
 ) {
   return useQuery<WorkflowTree>({
     queryKey: ['workflow-tree', sessionId, agentSlug, runId],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const res = await apiFetch(
-        `/api/agents/${agentSlug}/sessions/${sessionId}/workflows/${runId}/tree`
+        `/api/agents/${agentSlug}/sessions/${sessionId}/workflows/${runId}/tree`,
+        { signal }
       )
       if (!res.ok) throw new Error('Failed to fetch workflow tree')
       return res.json()
@@ -204,9 +498,10 @@ export function useWorkflowAgentMessages(
 ) {
   return useQuery<ApiMessageOrBoundary[]>({
     queryKey: ['workflow-agent-messages', sessionId, agentSlug, runId, agentId],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const res = await apiFetch(
-        `/api/agents/${agentSlug}/sessions/${sessionId}/workflows/${runId}/agents/${agentId}/messages`
+        `/api/agents/${agentSlug}/sessions/${sessionId}/workflows/${runId}/agents/${agentId}/messages`,
+        { signal }
       )
       if (!res.ok) throw new Error('Failed to fetch workflow agent messages')
       return res.json()

@@ -38,6 +38,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     file \
     tree \
+    # Document/media reading (formats the product renders)
+    poppler-utils \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js 20.x
@@ -192,6 +195,12 @@ RUN if [ -d /root/.agent-browser/browsers ]; then \
 # (see agent-container/src/session-manager.ts:ensureClaudeSettings).
 COPY --chown=claude:claude skills/ /home/claude/.claude/skills/
 
+# Platform capability guides are image-owned rather than stored in /workspace,
+# which is replaced by a writable per-agent bind mount at runtime. The agent can
+# read these guides on demand but cannot edit them.
+COPY --chown=root:root docs/ /opt/gamut/docs/
+RUN chmod -R a-w /opt/gamut/docs
+
 # Switch to non-root user
 USER claude
 
@@ -215,8 +224,11 @@ ENV AGENT_BROWSER_ARGS="--no-sandbox,--disable-dev-shm-usage,--disable-blink-fea
 ENV AGENT_BROWSER_USER_AGENT="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 ENV AGENT_BROWSER_PROFILE=/workspace/.browser-profile
 ENV DISABLE_AUTOUPDATER=1
-# Default to on; the host overrides at `docker run` from LLM settings.
-ENV ENABLE_TOOL_SEARCH=true
+# ENABLE_TOOL_SEARCH is deliberately NOT set here. The host passes it at
+# `docker run` only for providers whose endpoint expands deferred tools; for
+# the rest it must stay unset so the CLI applies its own guard (it disables
+# tool search for base URLs that aren't first-party Anthropic hosts). An image
+# default would make "unset" impossible to express.
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

@@ -7,6 +7,8 @@ export interface ArtifactInfo {
   description: string
   status: 'running' | 'stopped' | 'crashed' | 'starting'
   port: number
+  startupPhase?: 'installing-dependencies' | 'starting-server'
+  firstRun?: boolean
 }
 
 /**

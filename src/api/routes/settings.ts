@@ -75,6 +75,11 @@ import {
   xAgentPolicies,
   apiScopePolicies,
   tokenExchangeJti,
+  mobilePairingToken,
+  mobileDevice,
+  apnsDevices,
+  pushSubscriptions,
+  pushVapidKeys,
 } from '@shared/lib/db/schema'
 import fs from 'fs'
 import { credentialBroker } from '../credentials/credential-broker'
@@ -194,6 +199,16 @@ const FACTORY_RESET_TABLES: SQLiteTable[] = [
   auditLog,
   // transient single-use jti replay guard for the token-exchange endpoint
   tokenExchangeJti,
+  // transient single-use mobile pairing tokens
+  mobilePairingToken,
+  // APNs registrations before mobile devices: the cascade covers paired rows,
+  // but nullable mobile_device_id rows would survive it
+  apnsDevices,
+  // stable mobile devices; deleting them cascades their access sessions
+  mobileDevice,
+  // web push device subscriptions + the VAPID keypair they were minted against
+  pushSubscriptions,
+  pushVapidKeys,
 ]
 
 // Custom model icons are used in regular model pickers, so any authenticated

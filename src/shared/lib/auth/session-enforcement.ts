@@ -19,10 +19,18 @@ import type { SessionCreationMethod } from './session-audit'
  * direction, a few browser logins would silently evict the installed client's
  * session — which re-mints, evicting another browser session.
  *
+ * Mobile-paired sessions live on the same side of the line: they belong to an
+ * installed app, are long-lived by design (90 days), and are revoked from the
+ * paired-devices list rather than by signing out — letting browser logins
+ * evict them (or vice versa) would be the same failure mode.
+ *
  * Type-only import so this stays free of the audit service at runtime; the
  * annotation is what keeps the string in step with the method list.
  */
-const NON_INTERACTIVE_CREATION_METHODS: readonly SessionCreationMethod[] = ['token-exchange']
+const NON_INTERACTIVE_CREATION_METHODS: readonly SessionCreationMethod[] = [
+  'token-exchange',
+  'mobile',
+]
 
 /**
  * Ceiling on *live* non-interactive sessions per user.

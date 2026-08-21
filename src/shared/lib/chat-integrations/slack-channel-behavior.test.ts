@@ -54,11 +54,29 @@ describe('routeSlackMessage', () => {
       expect(result.shouldProcess).toBe(true)
     })
 
-    it('never filters group DMs regardless of onlyMentioned', () => {
+    it('filters group DMs without mention when onlyMentioned is on', () => {
       const result = routeSlackMessage(makeParams({
         rawText: 'hello',
         channelType: 'mpim',
         config: { onlyMentioned: true },
+      }))
+      expect(result.shouldProcess).toBe(false)
+    })
+
+    it('processes group DMs that mention the bot when onlyMentioned is on', () => {
+      const result = routeSlackMessage(makeParams({
+        rawText: 'hey <@U_BOT> help me',
+        channelType: 'mpim',
+        config: { onlyMentioned: true },
+      }))
+      expect(result.shouldProcess).toBe(true)
+    })
+
+    it('processes all group DM messages when onlyMentioned is off', () => {
+      const result = routeSlackMessage(makeParams({
+        rawText: 'hello',
+        channelType: 'mpim',
+        config: { onlyMentioned: false },
       }))
       expect(result.shouldProcess).toBe(true)
     })
@@ -188,6 +206,14 @@ describe('routeSlackMessage', () => {
     it('does not set thread context for DMs', () => {
       const result = routeSlackMessage(makeParams({
         channelType: 'im',
+        config: { answerInThread: true },
+      }))
+      expect(result.threadContext).toBeUndefined()
+    })
+
+    it('does not set thread context for group DMs', () => {
+      const result = routeSlackMessage(makeParams({
+        channelType: 'mpim',
         config: { answerInThread: true },
       }))
       expect(result.threadContext).toBeUndefined()

@@ -238,9 +238,32 @@
     "input": 2,
     "output": 6,
     "cacheCreation": 2,
-    "cacheRead": 0.2,
+    "cacheRead": 0.3,
     "speedMultipliers": {
       "fast": 2
+    },
+    "longContext": {
+      "thresholdTokens": 200000,
+      "input": 4,
+      "output": 12,
+      "cacheCreation": 4,
+      "cacheRead": 0.6
+    }
+  },
+  "grok-4.6": {
+    "input": 2,
+    "output": 6,
+    "cacheCreation": 2,
+    "cacheRead": 0.5,
+    "speedMultipliers": {
+      "fast": 2
+    },
+    "longContext": {
+      "thresholdTokens": 200000,
+      "input": 4,
+      "output": 12,
+      "cacheCreation": 4,
+      "cacheRead": 1
     }
   },
   "openai/gpt-5.4": {

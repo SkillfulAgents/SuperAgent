@@ -509,28 +509,74 @@ describe('provisioning and identity mapping', () => {
 })
 
 describe('approval and ban enforcement', () => {
-  it('refuses a session for a user pending admin approval', async () => {
+  it('ignores requireAdminApproval on platform-controlled deployments (org JWT PLATFORM_TOKEN)', async () => {
     // Seed a first user so the exchanged user is not the bootstrap admin.
     const first = await exchangeRequest(await signGrant())
     expect(first.status).toBe(200)
 
-    await writeAuthSettings({ requireAdminApproval: true })
+    // Persisted true must not ban: there is no local Users approve UI when
+    // PLATFORM_TOKEN is an org JWT (platform-controlled).
+    await writeAuthSettings({ requireAdminApproval: true, signupMode: 'open' })
     const res = await exchangeRequest(
       await signGrant({ payload: { sub: 'sub_member_2', email: 'second@example.com' } }),
     )
-    expect(res.status).toBe(400)
-    expect((await res.json()).error).toBe('invalid_grant')
+    expect(res.status).toBe(200)
 
-    // User row exists (pending), but no session was minted for it.
-    const pending = dbModule.sqlite
-      .prepare(`SELECT id, banned, ban_reason FROM user WHERE email = 'second@example.com'`)
-      .get() as { id: string; banned: number; ban_reason: string }
-    expect(pending.banned).toBe(1)
-    expect(pending.ban_reason).toBe('Pending admin approval')
-    const sessions = dbModule.sqlite
-      .prepare(`SELECT count(*) AS n FROM session WHERE user_id = ?`)
-      .get(pending.id) as { n: number }
-    expect(sessions.n).toBe(0)
+    const second = dbModule.sqlite
+      .prepare(`SELECT banned, ban_reason FROM user WHERE email = 'second@example.com'`)
+      .get() as { banned: number; ban_reason: string | null }
+    expect(second.banned).toBe(0)
+
+    const { getAuthSettings } = await import('./auth-settings')
+    expect(getAuthSettings().signupMode).toBe('closed')
+  })
+
+  // No PLATFORM_TOKEN → exchange fails closed at the org pin (covered above).
+
+  it('bans pending approval on email signup when self-hosted requireAdminApproval is on', async () => {
+    const prevToken = process.env.PLATFORM_TOKEN
+    delete process.env.PLATFORM_TOKEN
+    try {
+      await writeAuthSettings({
+        requireAdminApproval: true,
+        allowLocalAuth: true,
+        signupMode: 'open',
+      })
+      const { getAuth, resetAuth } = await import('./index')
+      resetAuth()
+
+      await getAuth().api.signUpEmail({
+        body: {
+          email: 'admin@example.com',
+          password: 'CorrectHorseBattery1!',
+          name: 'Admin',
+        },
+      })
+      await getAuth().api.signUpEmail({
+        body: {
+          email: 'pending@example.com',
+          password: 'CorrectHorseBattery1!',
+          name: 'Pending',
+        },
+      })
+
+      const pending = dbModule.sqlite
+        .prepare(`SELECT banned, ban_reason FROM user WHERE email = 'pending@example.com'`)
+        .get() as { banned: number; ban_reason: string | null }
+      expect(pending.banned).toBe(1)
+      expect(pending.ban_reason).toBe('Pending admin approval')
+
+      await expect(
+        getAuth().api.signInEmail({
+          body: { email: 'pending@example.com', password: 'CorrectHorseBattery1!' },
+        }),
+      ).rejects.toThrow()
+    } finally {
+      if (prevToken !== undefined) process.env.PLATFORM_TOKEN = prevToken
+      else delete process.env.PLATFORM_TOKEN
+      const { resetAuth } = await import('./index')
+      resetAuth()
+    }
   })
 
   it('refuses a session for a banned user', async () => {

@@ -313,6 +313,40 @@ describe('transformMessages', () => {
       expect(asMessage(result[1]).content.text).toBe('Second')
     })
 
+    it('preserves the highest usage snapshot for a merged provider response', () => {
+      const first = createAssistantMessage(
+        'uuid-1',
+        'msg-shared',
+        [{ type: 'text', text: 'Working' }]
+      )
+      first.message.usage = {
+        input_tokens: 10,
+        output_tokens: 5,
+        cache_creation_input_tokens: 20,
+        cache_read_input_tokens: 30,
+      }
+      const final = createAssistantMessage(
+        'uuid-2',
+        'msg-shared',
+        [{ type: 'text', text: ' done' }]
+      )
+      final.message.usage = {
+        input_tokens: 10,
+        output_tokens: 15,
+        cache_creation_input_tokens: 20,
+        cache_read_input_tokens: 30,
+      }
+
+      const result = transformMessages([first, final])
+
+      expect(asMessage(result[0]).usage).toEqual({
+        inputTokens: 10,
+        outputTokens: 15,
+        cacheCreationInputTokens: 20,
+        cacheReadInputTokens: 30,
+      })
+    })
+
     it('handles three-way merge (text + tool_use + more text)', () => {
       const entries: JsonlMessageEntry[] = [
         createAssistantMessage('uuid-1', 'msg-shared', [{ type: 'text', text: 'Starting. ' }]),
@@ -697,8 +731,24 @@ describe('transformMessages', () => {
       // derived from the gap to the previous entry's timestamp
       const message = asMessage(result[1])
       expect(message.content.text).toBe('Here is my answer.')
-      expect(message.thinking).toEqual([{ text: 'Let me think about this...', durationMs: 5000 }])
+      expect(message.thinking).toEqual([{ id: 'msg-1:0', text: 'Let me think about this...', durationMs: 5000 }])
       expect(message.toolCalls).toHaveLength(0)
+    })
+
+    it('assigns persisted thinking the same message-id and content-index identity as the stream', () => {
+      const entries: JsonlMessageEntry[] = [
+        createAssistantMessage('uuid-1', 'msg-stable', [
+          { type: 'text', text: 'Preamble.' },
+          { type: 'thinking', thinking: 'Stable reasoning.' } as ContentBlock,
+          { type: 'tool_use', id: 'tool-1', name: 'Bash', input: {} },
+        ]),
+      ]
+
+      const result = transformMessages(entries)
+
+      expect(asMessage(result[0]).thinking).toEqual([
+        { id: 'msg-stable:1', text: 'Stable reasoning.' },
+      ])
     })
 
     it('extracts multiple thinking blocks in order, skipping empty ones', () => {
@@ -717,7 +767,10 @@ describe('transformMessages', () => {
       const result = transformMessages(entries)
 
       // No preceding entry — durations are underivable and omitted
-      expect(asMessage(result[0]).thinking).toEqual([{ text: 'First episode.' }, { text: 'Second episode.' }])
+      expect(asMessage(result[0]).thinking).toEqual([
+        { id: 'msg-1:0', text: 'First episode.' },
+        { id: 'msg-1:4', text: 'Second episode.' },
+      ])
       expect(asMessage(result[0]).toolCalls).toHaveLength(1)
     })
 
@@ -742,8 +795,8 @@ describe('transformMessages', () => {
       const result = transformMessages(entries)
 
       // Message 1: thinking took user→entry gap; message 2: tool_result→entry gap
-      expect(asMessage(result[1]).thinking).toEqual([{ text: 'First episode.', durationMs: 3000 }])
-      expect(asMessage(result[2]).thinking).toEqual([{ text: 'Second episode.', durationMs: 4000 }])
+      expect(asMessage(result[1]).thinking).toEqual([{ id: 'msg-1:0', text: 'First episode.', durationMs: 3000 }])
+      expect(asMessage(result[2]).thinking).toEqual([{ id: 'msg-2:0', text: 'Second episode.', durationMs: 4000 }])
     })
 
     it('omits durationMs when the previous entry belongs to the same message', () => {
@@ -765,7 +818,7 @@ describe('transformMessages', () => {
 
       // No duration — the 5ms sibling gap must not be reported as thinking time
       expect(asMessage(result[1]).thinking).toEqual([
-        { text: 'Reasoning that arrived after the text entry.' },
+        { id: 'msg-1:1', text: 'Reasoning that arrived after the text entry.' },
       ])
     })
 
@@ -796,7 +849,7 @@ describe('transformMessages', () => {
       const result = transformMessages(entries)
 
       expect(asMessage(result[0]).content.text).toBe('Answer.')
-      expect(asMessage(result[0]).thinking).toEqual([{ text: 'Valid episode.' }])
+      expect(asMessage(result[0]).thinking).toEqual([{ id: 'msg-1:2', text: 'Valid episode.' }])
     })
 
     it('handles tool result for non-existent tool (orphaned result)', () => {
@@ -886,7 +939,7 @@ describe('transformMessages', () => {
       // (no preceding entry, so no derivable duration)
       expect(result).toHaveLength(1)
       expect(asMessage(result[0]).content.text).toBe('')
-      expect(asMessage(result[0]).thinking).toEqual([{ text: 'Deep thoughts...' }])
+      expect(asMessage(result[0]).thinking).toEqual([{ id: 'msg-1:0', text: 'Deep thoughts...' }])
       expect(asMessage(result[0]).toolCalls).toHaveLength(0)
     })
 

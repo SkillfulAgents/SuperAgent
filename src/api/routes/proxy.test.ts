@@ -77,6 +77,7 @@ vi.mock('@shared/lib/platform-attribution', () => ({
 const mockMatchScopes = vi.fn()
 const mockResolveApiPolicy = vi.fn()
 const mockRequestReview = vi.fn()
+const mockRequestReauth = vi.fn()
 
 vi.mock('@shared/lib/proxy/scope-matcher', () => ({
   matchScopes: (...args: unknown[]) => mockMatchScopes(...args),
@@ -89,6 +90,12 @@ vi.mock('@shared/lib/proxy/policy-resolver', () => ({
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: {
     requestReview: (...args: unknown[]) => mockRequestReview(...args),
+  },
+}))
+
+vi.mock('@shared/lib/proxy/account-reauth-manager', () => ({
+  accountReauthManager: {
+    requestReauth: (...args: unknown[]) => mockRequestReauth(...args),
   },
 }))
 
@@ -133,6 +140,7 @@ describe('proxy route', () => {
       scopeDescriptions: {},
       resolvedFrom: 'global_default',
     })
+    mockRequestReauth.mockResolvedValue(undefined)
   })
 
   async function makeRequest(
@@ -198,7 +206,7 @@ describe('proxy route', () => {
           toolkitSlug: 'gmail',
           providerConnectionId: 'comp-123',
             providerName: 'composio',
-          status: 'active',
+          status: 'expired',
         },
       },
     ])
@@ -211,6 +219,7 @@ describe('proxy route', () => {
     expect(res.status).toBe(403)
     const body = await res.json()
     expect(body.error).toContain('not allowed')
+    expect(mockRequestReauth).not.toHaveBeenCalled()
   })
 
   it('returns 502 when provider makeApiCall fails', async () => {
@@ -733,12 +742,13 @@ describe('proxy route', () => {
   // Account status checks
   // =========================================================================
   describe('account status checks', () => {
-    it('returns 403 when local account status is expired', async () => {
+    it('holds and resumes when local account status is expired', async () => {
       mockValidateProxyToken.mockResolvedValue('my-agent')
       mockDbFrom.mockReturnValue({ innerJoin: mockInnerJoin })
       mockInnerJoin.mockReturnValue({ where: mockWhere })
       mockWhere.mockReturnValue({ limit: mockLimit })
-      mockLimit.mockResolvedValue([
+      mockLimit
+        .mockResolvedValueOnce([
         {
           account: {
             id: 'acc-123',
@@ -748,19 +758,38 @@ describe('proxy route', () => {
             status: 'expired',
           },
         },
-      ])
+        ])
+        .mockResolvedValueOnce([
+          {
+            account: {
+              id: 'acc-123',
+              toolkitSlug: 'gmail',
+              providerConnectionId: 'comp-reconnected',
+              providerName: 'composio',
+              status: 'active',
+            },
+          },
+        ])
+      mockIsHostAllowed.mockReturnValue(true)
+      mockMakeApiCall.mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
 
       const res = await makeRequest(
         '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
         { headers: { Authorization: 'Bearer synth_valid' } }
       )
-      expect(res.status).toBe(403)
-      const body = await res.json()
-      expect(body.accountStatus).toBe('expired')
-      expect(body.error).toContain('expired')
+      expect(res.status).toBe(200)
+      expect(mockRequestReauth).toHaveBeenCalledWith({
+        agentSlug: 'my-agent',
+        accountId: 'acc-123',
+        toolkit: 'gmail',
+        accountStatus: 'expired',
+      }, expect.any(AbortSignal))
+      expect(mockMakeApiCall).toHaveBeenCalledWith(expect.objectContaining({
+        providerConnectionId: 'comp-reconnected',
+      }))
     })
 
-    it('returns 403 when local account status is revoked', async () => {
+    it('returns a clear timeout when local account re-authentication is abandoned', async () => {
       mockValidateProxyToken.mockResolvedValue('my-agent')
       mockDbFrom.mockReturnValue({ innerJoin: mockInnerJoin })
       mockInnerJoin.mockReturnValue({ where: mockWhere })
@@ -776,22 +805,25 @@ describe('proxy route', () => {
           },
         },
       ])
+      mockRequestReauth.mockRejectedValue(new Error('Account re-authentication timed out'))
 
       const res = await makeRequest(
         '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
         { headers: { Authorization: 'Bearer synth_valid' } }
       )
-      expect(res.status).toBe(403)
+      expect(res.status).toBe(408)
       const body = await res.json()
       expect(body.accountStatus).toBe('revoked')
+      expect(body.error).toBe('account_reauth_timeout')
     })
 
-    it('does not call makeApiCall when local status is non-active', async () => {
+    it('does not call makeApiCall while local re-authentication is pending', async () => {
       mockValidateProxyToken.mockResolvedValue('my-agent')
       mockDbFrom.mockReturnValue({ innerJoin: mockInnerJoin })
       mockInnerJoin.mockReturnValue({ where: mockWhere })
       mockWhere.mockReturnValue({ limit: mockLimit })
-      mockLimit.mockResolvedValue([
+      mockLimit
+        .mockResolvedValueOnce([
         {
           account: {
             id: 'acc-123',
@@ -801,18 +833,37 @@ describe('proxy route', () => {
             status: 'expired',
           },
         },
-      ])
+        ])
+        .mockResolvedValueOnce([
+          {
+            account: {
+              id: 'acc-123',
+              toolkitSlug: 'gmail',
+              providerConnectionId: 'comp-new',
+              providerName: 'composio',
+              status: 'active',
+            },
+          },
+        ])
+      mockIsHostAllowed.mockReturnValue(true)
+      mockMakeApiCall.mockResolvedValue(new Response('{}', { status: 200 }))
+      let resume!: () => void
+      mockRequestReauth.mockReturnValue(new Promise<void>((resolve) => { resume = resolve }))
 
-      await makeRequest(
+      const request = makeRequest(
         '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
         { headers: { Authorization: 'Bearer synth_valid' } }
       )
 
+      await vi.waitFor(() => expect(mockRequestReauth).toHaveBeenCalledOnce())
+
       expect(mockMakeApiCall).not.toHaveBeenCalled()
       expect(mockGetConnection).not.toHaveBeenCalled()
+      resume()
+      expect((await request).status).toBe(200)
     })
 
-    it('returns 403 when remote status check returns non-ACTIVE', async () => {
+    it('holds and resumes when remote status check returns non-ACTIVE', async () => {
       setupSuccessPath()
       mockGetConnection.mockResolvedValueOnce({ id: 'comp-123', status: 'EXPIRED' })
 
@@ -821,10 +872,11 @@ describe('proxy route', () => {
         { headers: { Authorization: 'Bearer synth_valid' } }
       )
 
-      expect(res.status).toBe(403)
-      const body = await res.json()
-      expect(body.accountStatus).toBe('expired')
-      expect(mockMakeApiCall).not.toHaveBeenCalled()
+      expect(res.status).toBe(200)
+      expect(mockRequestReauth).toHaveBeenCalledWith(expect.objectContaining({
+        accountStatus: 'expired',
+      }), expect.any(AbortSignal))
+      expect(mockMakeApiCall).toHaveBeenCalledOnce()
     })
 
     it('updates DB status when remote returns EXPIRED', async () => {
@@ -854,7 +906,7 @@ describe('proxy route', () => {
       expect(mockDbUpdateSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'revoked' }))
     })
 
-    it('returns 403 with revoked when remote status is FAILED', async () => {
+    it('holds and resumes with revoked when remote status is FAILED', async () => {
       setupSuccessPath()
       mockGetConnection.mockResolvedValueOnce({ id: 'comp-123', status: 'FAILED' })
 
@@ -863,9 +915,10 @@ describe('proxy route', () => {
         { headers: { Authorization: 'Bearer synth_valid' } }
       )
 
-      expect(res.status).toBe(403)
-      const body = await res.json()
-      expect(body.accountStatus).toBe('revoked')
+      expect(res.status).toBe(200)
+      expect(mockRequestReauth).toHaveBeenCalledWith(expect.objectContaining({
+        accountStatus: 'revoked',
+      }), expect.any(AbortSignal))
     })
 
     it('proceeds with request when remote status check fails (network error)', async () => {
@@ -879,6 +932,50 @@ describe('proxy route', () => {
 
       expect(res.status).toBe(200)
       expect(mockMakeApiCall).toHaveBeenCalled()
+    })
+
+    it('re-authenticates and retries once when token retrieval reports expiry', async () => {
+      mockValidateProxyToken.mockResolvedValue('my-agent')
+      mockDbFrom.mockReturnValue({ innerJoin: mockInnerJoin })
+      mockInnerJoin.mockReturnValue({ where: mockWhere })
+      mockWhere.mockReturnValue({ limit: mockLimit })
+      mockLimit
+        .mockResolvedValueOnce([{
+          account: {
+            id: 'acc-123',
+            toolkitSlug: 'gmail',
+            providerConnectionId: 'comp-old',
+            providerName: 'composio',
+            status: 'active',
+          },
+        }])
+        .mockResolvedValueOnce([{
+          account: {
+            id: 'acc-123',
+            toolkitSlug: 'gmail',
+            providerConnectionId: 'comp-new',
+            providerName: 'composio',
+            status: 'active',
+          },
+        }])
+      mockIsHostAllowed.mockReturnValue(true)
+      mockMakeApiCall
+        .mockRejectedValueOnce(new Error('Access token expired'))
+        .mockResolvedValueOnce(new Response('{"ok":true}', { status: 200 }))
+
+      const res = await makeRequest(
+        '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+        { headers: { Authorization: 'Bearer synth_valid' } },
+      )
+
+      expect(res.status).toBe(200)
+      expect(mockRequestReauth).toHaveBeenCalledWith(expect.objectContaining({
+        accountStatus: 'expired',
+      }), expect.any(AbortSignal))
+      expect(mockMakeApiCall).toHaveBeenCalledTimes(2)
+      expect(mockMakeApiCall.mock.calls[1][0]).toEqual(expect.objectContaining({
+        providerConnectionId: 'comp-new',
+      }))
     })
   })
 })
@@ -903,7 +1000,7 @@ describe('proxy policy enforcement', () => {
   }
 
   // Set up mocks through host validation, then let policy take over
-  function setupThroughHostValidation() {
+  function setupThroughHostValidation(status: 'active' | 'expired' = 'active') {
     mockValidateProxyToken.mockResolvedValue('my-agent')
     mockDbFrom.mockReturnValue({ innerJoin: mockInnerJoin })
     mockInnerJoin.mockReturnValue({ where: mockWhere })
@@ -915,7 +1012,7 @@ describe('proxy policy enforcement', () => {
           toolkitSlug: 'gmail',
           providerConnectionId: 'comp-123',
             providerName: 'composio',
-          status: 'active',
+          status,
           userId: 'user-1',
         },
       },
@@ -943,7 +1040,7 @@ describe('proxy policy enforcement', () => {
   })
 
   it('policy "block" → returns 403, body has error: "blocked_by_policy"', async () => {
-    setupThroughHostValidation()
+    setupThroughHostValidation('expired')
     mockMatchScopes.mockReturnValue({ matched: true, scopes: ['gmail.full'], descriptions: {} })
     mockResolveApiPolicy.mockResolvedValue({
       decision: 'block',
@@ -959,6 +1056,7 @@ describe('proxy policy enforcement', () => {
     expect(res.status).toBe(403)
     const body = await res.json()
     expect(body.error).toBe('blocked_by_policy')
+    expect(mockRequestReauth).not.toHaveBeenCalled()
   })
 
   it('block does NOT call provider.makeApiCall', async () => {

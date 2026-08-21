@@ -157,7 +157,11 @@ export type HostPortProbeResult = 'reachable' | 'unreachable' | 'unknown'
 
 export interface ContainerClient {
   // Lifecycle management
-  start(options?: StartOptions): Promise<void>
+  // Returns the state already proven by the runtime's health gate. All
+  // in-tree clients return it; `void` stays in the contract so an
+  // implementation that can't cheaply report state may omit it, in which
+  // case ContainerManager falls back to getInfoFromRuntime().
+  start(options?: StartOptions): Promise<ContainerInfo | void>
   stop(options?: StopOptions): Promise<StopResult>
   stopSync(): void // Synchronous stop for exit handlers
 

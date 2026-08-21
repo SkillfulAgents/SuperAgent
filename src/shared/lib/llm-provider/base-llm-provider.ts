@@ -1,12 +1,30 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { getSettings, type ApiKeySettings, type ApiKeyStatus } from '../config/settings'
 import type { ModelDefinition, ModelSearchResult } from './model-catalog-schema'
+import type { CatalogDefaultModels } from './model-catalog-defaults'
 import type { LlmProviderId } from './provider-types'
 
 export { LLM_PROVIDER_IDS } from './provider-types'
 export type { LlmProviderId } from './provider-types'
 
 export type ModelPurpose = 'agent' | 'summarizer' | 'browser' | 'dashboard'
+
+/**
+ * A curated default-model choice shown during onboarding. The selection may be
+ * a bare family alias (so it rides catalog upgrades) or a concrete model id.
+ * Keeping this on the provider lets each provider offer a different shortlist
+ * and provider-specific copy while the renderer remains catalog-agnostic.
+ */
+export interface ProviderDefaultModelOption {
+  model: string
+  /** Stable fallback label, also used when the option names a model family. */
+  label: string
+  /** Display the currently resolved catalog entry's label when available. */
+  resolveLabelFromCatalog?: boolean
+  tag: string
+  description: string
+  subdescription?: string
+}
 
 /**
  * Identity of the agent a container belongs to, resolved at env-build time.
@@ -23,6 +41,8 @@ export interface AgentIdentity {
 export abstract class BaseLlmProvider {
   abstract readonly id: LlmProviderId
   abstract readonly name: string
+  abstract readonly defaultModelOptions: readonly ProviderDefaultModelOption[]
+  abstract readonly catalogDefaultModels: CatalogDefaultModels
 
   /** Which field in ApiKeySettings stores this provider's key. */
   protected abstract readonly settingsKeyField: keyof ApiKeySettings
@@ -30,6 +50,22 @@ export abstract class BaseLlmProvider {
   protected abstract readonly envVarName: string
   /** Whether this provider can discover remote catalog models by search query. */
   readonly supportsModelSearch: boolean = false
+
+  /**
+   * Value of `ENABLE_TOOL_SEARCH` for containers on this provider, or
+   * undefined to leave the variable unset so the CLI decides for itself.
+   *
+   * Tool search omits tool definitions from the request and loads them back on
+   * demand, which the endpoint has to expand: the CLI re-sends a loaded tool
+   * with `defer_loading: true`, and since agent SDK 0.3.219 it also sends a
+   * `DeferredToolPlaceholder` tool carrying that flag on EVERY request.
+   * Endpoints that don't understand the flag reject the whole request
+   * (OpenRouter 400s it for every non-Anthropic model), so only providers whose
+   * endpoint handles it turn this on. Left unset, the CLI disables tool search
+   * for any base URL that isn't a first-party Anthropic host — the right
+   * default for endpoints we can't vouch for.
+   */
+  readonly toolSearchEnv: 'true' | undefined = undefined
 
   /** Check whether an API key is configured and its source. */
   getApiKeyStatus(): ApiKeyStatus {
@@ -69,7 +105,14 @@ export abstract class BaseLlmProvider {
    * this to a concrete id; it is the ultimate fallback when a selection
    * can't be matched.
    */
-  abstract getDefaultModel(purpose: ModelPurpose): string
+  getDefaultModel(purpose: ModelPurpose): string {
+    switch (purpose) {
+      case 'summarizer': return this.catalogDefaultModels.summarizerModel
+      case 'agent': return this.catalogDefaultModels.agentModel
+      case 'browser': return this.catalogDefaultModels.browserModel
+      case 'dashboard': return this.catalogDefaultModels.dashboardBuilderModel
+    }
+  }
 
   /**
    * All three per-purpose defaults as bare aliases, keyed to match the

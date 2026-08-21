@@ -14,7 +14,7 @@ import { MessageErrorBoundary } from './message-error-boundary'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { parseAttachedFiles, parseMountedFolders } from '@shared/lib/utils/attached-files'
 import { parseSenderPrefix } from '@shared/lib/utils/sender-prefix'
-import ReactMarkdown, { type Components } from 'react-markdown'
+import ReactMarkdown, { type Components, type Options as ReactMarkdownOptions } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { splitStreamingMarkdown } from './split-streaming-markdown'
 import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
@@ -22,6 +22,7 @@ import type { ApiMessage, ApiToolCall } from '@shared/lib/types/api'
 import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
+import { rehypeStreamingWordReveal } from './streaming-word-reveal'
 
 // Re-export for use by other components
 export type { ApiToolCall }
@@ -206,6 +207,42 @@ export const MarkdownBlock = memo(function MarkdownBlock({ text }: { text: strin
   )
 })
 
+// Only the still-growing Markdown tail uses the word wrapper. Settled blocks
+// switch back to MarkdownBlock, keeping the filter-animation surface small even
+// during long responses.
+const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({ text }: { text: string }) {
+  const previousTextRef = useRef('')
+  const batchStartsRef = useRef<number[]>([0])
+  const previousText = previousTextRef.current
+
+  if (text !== previousText) {
+    if (previousText && text.startsWith(previousText)) {
+      batchStartsRef.current = [...batchStartsRef.current, previousText.length]
+    } else {
+      batchStartsRef.current = [0]
+    }
+    previousTextRef.current = text
+  }
+
+  // The plugin keeps each batch's delays stable across subsequent renders, so
+  // existing words do not restart while newly appended words get their own
+  // compact stagger sequence.
+  const rehypePlugins: ReactMarkdownOptions['rehypePlugins'] = [[rehypeStreamingWordReveal, {
+    batchStarts: batchStartsRef.current,
+  }]]
+
+  return (
+    <ReactMarkdown
+      remarkPlugins={REMARK_PLUGINS}
+      rehypePlugins={rehypePlugins}
+      components={MARKDOWN_COMPONENTS}
+      urlTransform={markdownUrlTransform}
+    >
+      {text}
+    </ReactMarkdown>
+  )
+})
+
 interface MessageItemProps {
   message: ApiMessage
   isStreaming?: boolean
@@ -219,6 +256,10 @@ interface MessageItemProps {
   /** Read-only mirror (chat-integration replay): no edit actions; lift the
    *  connector's inline sender prefix into the sender label. */
   readOnly?: boolean
+  /** Optional reveal animation for work restored on turn expansion. */
+  workDetailClassName?: string
+  /** Tool calls that were hidden while the containing work phase was collapsed. */
+  revealedToolCallIds?: ReadonlySet<string>
 }
 
 function resolveSubagentRun(
@@ -243,7 +284,7 @@ function resolveSubagentRun(
   }
 }
 
-function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall, readOnly }: MessageItemProps) {
+function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall, readOnly, workDetailClassName, revealedToolCallIds }: MessageItemProps) {
   useRenderTracker('MessageItem')
   const isUser = message.type === 'user'
   const isAssistant = message.type === 'assistant'
@@ -324,7 +365,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
             episode. Same card the live stream uses, minus timing (the transcript
             doesn't carry it). */}
         {thinking.length > 0 && (
-          <div className="w-full space-y-2">
+          <div className={cn('w-full space-y-2', workDetailClassName)}>
             {thinking.map((t, i) => (
               <MessageErrorBoundary key={i} kind="thinking block" raw={t} itemId={`${message.id}-thinking-${i}`}>
                 <ThinkingBlockItem text={t.text} durationMs={t.durationMs} active={false} />
@@ -383,7 +424,12 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                       {streamingSplit.settled.map((block, i) => (
                         <MarkdownBlock key={i} text={block} />
                       ))}
-                      {streamingSplit.tail && <MarkdownBlock text={streamingSplit.tail} />}
+                      {streamingSplit.tail && (
+                        <StreamingMarkdownBlock
+                          key={`tail-${streamingSplit.settled.length}`}
+                          text={streamingSplit.tail}
+                        />
+                      )}
                     </>
                   ) : (
                     <MarkdownBlock text={text} />
@@ -444,7 +490,13 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
               const subagentRun = resolveSubagentRun(toolCall, activeSubagents, completedSubagents)
               return (
                 <MessageContextMenu key={toolCall.id} text={toolCall.name} onRemove={onRemoveToolCall ? () => onRemoveToolCall(toolCall.id) : undefined}>
-                  <div>
+                  <div
+                    className={
+                      revealedToolCallIds?.has(toolCall.id)
+                        ? workDetailClassName
+                        : undefined
+                    }
+                  >
                     <MessageErrorBoundary kind="tool call" raw={toolCall} itemId={toolCall.id}>
                       {(toolCall.name === 'Task' || toolCall.name === 'Agent') && sessionId ? (
                         <SubAgentBlock
@@ -462,7 +514,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                           isCompleted={completedSubagents?.has(toolCall.id) ?? false}
                         />
                       ) : (
-                        <ToolCallItem toolCall={toolCall} messageCreatedAt={message.createdAt} agentSlug={agentSlug} isSessionActive={isSessionActive} />
+                        <ToolCallItem toolCall={toolCall} messageCreatedAt={message.createdAt} agentSlug={agentSlug} sessionId={sessionId} isSessionActive={isSessionActive} />
                       )}
                     </MessageErrorBoundary>
                   </div>

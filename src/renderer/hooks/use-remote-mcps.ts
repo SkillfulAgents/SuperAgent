@@ -37,6 +37,21 @@ export function useRemoteMcps() {
   })
 }
 
+/** Whether the current viewer owns this MCP server or is an administrator. */
+export function useCanManageRemoteMcp(mcpId: string) {
+  return useQuery<boolean>({
+    queryKey: ['remote-mcp-manage-access', mcpId],
+    queryFn: async () => {
+      const res = await apiFetch(`/api/remote-mcps/${mcpId}`)
+      if (res.status === 403 || res.status === 404) return false
+      if (!res.ok) throw new Error('Failed to check MCP reconnect access')
+      return true
+    },
+    enabled: !!mcpId,
+    retry: false,
+  })
+}
+
 /**
  * Fetch remote MCPs assigned to a specific agent
  */
@@ -286,10 +301,15 @@ export function useInitiateMcpOAuth() {
   return useMutation<{ redirectUrl: string; state: string }, Error, { mcpId?: string; name?: string; url?: string; electron?: boolean; clientName?: string; clientId?: string; clientSecret?: string }>({
     meta: { skipGlobalErrorToast: true },
     mutationFn: async (data) => {
+      // The deep-link scheme travels with the request: a cloud deployment
+      // serving this initiate has no SUPERAGENT_PROTOCOL of its own (SUP-560).
+      const payload = data.electron
+        ? { protocol: window.electronAPI?.desktopProtocol, ...data }
+        : data
       const res = await apiFetch('/api/remote-mcps/initiate-oauth', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
+        body: JSON.stringify(payload),
       })
       if (!res.ok) {
         const error = await res.json()

@@ -98,14 +98,19 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
       // a parameter change would interrupt/restart the in-flight query.
       // (The server also strips them when it sees the session is active.)
       const queued = isActive && !isWaitingBackground
+      const runtimeOptions = queued ? {} : composerOptions.toRuntimeOptions()
       onMessageSent?.(content, localId, queued)
       try {
         const result = await sendMessage.mutateAsync({
           sessionId,
           agentSlug,
           content,
-          ...(queued ? {} : composerOptions.toRuntimeOptions()),
+          ...runtimeOptions,
         })
+        // Only a fresh turn accepts runtime-option changes. The server's
+        // queued decision is authoritative and may differ from our SSE-based
+        // guess, so keep a user pick dirty when the server stripped it.
+        if (!result.queued) composerOptions.markSubmitted(runtimeOptions)
         // Reconcile against the server's authoritative decision: our local
         // `queued` guess is derived from SSE state that can be stale (reconnect,
         // a peer's turn, background-task flag), and a mismatch otherwise strands
@@ -251,7 +256,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
   return (
     <form
       onSubmit={composer.handleSubmit}
-      className={`relative px-4 pt-0 ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
+      className={`relative z-10 isolate px-4 pt-0 ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
       {...composer.dragHandlers}
     >
       <MountChoiceDialog
@@ -267,6 +272,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
         filter={slashFilter ?? ''}
       />
       <ChatComposerBox
+        className="relative z-10 border-border/70 bg-background/85 shadow-[0_0_24px_rgba(15,23,42,0.07),0_2px_10px_-4px_rgba(15,23,42,0.08)] backdrop-blur-md supports-[backdrop-filter]:bg-background/65 dark:shadow-[0_0_26px_rgba(0,0,0,0.22),0_2px_12px_-4px_rgba(0,0,0,0.16)]"
         attachments={composer.attachments}
         onRemoveAttachment={composer.removeAttachment}
         textareaRef={textareaRef}

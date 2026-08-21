@@ -54,6 +54,11 @@ import {
   type Capability,
 } from './capability-policies';
 import { createCapabilityGateHook, CAPABILITY_REVIEW_HOOK_TIMEOUT_S } from './capability-gate-hook';
+import {
+  buildModelSubagentDefinitions,
+  type SubagentModelDefinition,
+} from './subagent-model-catalog';
+import { mergeCanonicalSlashCommands } from './slash-commands';
 
 // Prefix for system-injected user messages that should be hidden in the UI.
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in src/renderer/components/messages/message-list.tsx
@@ -93,6 +98,7 @@ const DASHBOARD_BUILDER_AGENT_PROMPT = loadPrompt('dashboard-builder-agent-promp
 interface RemoteMcpConfig {
   id: string;
   name: string;
+  status?: 'active' | 'auth_required';
   proxyUrl: string;
   tools: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>;
 }
@@ -138,18 +144,33 @@ function runtimeConnectionConfigSnapshot(): string {
 
 /**
  * Parses connected accounts metadata from the CONNECTED_ACCOUNTS env var.
- * Format: {"toolkit": [{"name": "Display Name", "id": "uuid"}, ...]}
+ * Format: {"toolkit": [{"name": "Display Name", "id": "uuid", "status": "active"}, ...]}
  */
-function parseConnectedAccounts(): Map<string, Array<{ name: string; id: string }>> {
-  const accounts = new Map<string, Array<{ name: string; id: string }>>();
+type ConnectedAccountStatus = 'active' | 'expired' | 'revoked';
+interface ConnectedAccountConfig {
+  name: string;
+  id: string;
+  status?: ConnectedAccountStatus;
+}
+interface ConnectedAccountView extends ConnectedAccountConfig {
+  status: ConnectedAccountStatus;
+}
+
+function parseConnectedAccounts(): Map<string, ConnectedAccountView[]> {
+  const accounts = new Map<string, ConnectedAccountView[]>();
   const raw = process.env.CONNECTED_ACCOUNTS;
   if (!raw) return accounts;
 
   try {
-    const parsed = JSON.parse(raw) as Record<string, Array<{ name: string; id: string }>>;
+    const parsed = JSON.parse(raw) as Record<string, ConnectedAccountConfig[]>;
     for (const [toolkit, entries] of Object.entries(parsed)) {
       if (entries.length > 0) {
-        accounts.set(toolkit, entries);
+        // Older hosts did not serialize status; treat those entries as active
+        // so upgrading a running container remains backward-compatible.
+        accounts.set(toolkit, entries.map((entry) => ({
+          ...entry,
+          status: entry.status ?? 'active',
+        })));
       }
     }
   } catch {
@@ -162,7 +183,7 @@ function parseConnectedAccounts(): Map<string, Array<{ name: string; id: string 
 /** One toolkit's connected accounts, as the template's `connectedAccounts` list. */
 interface ConnectedAccountGroup {
   displayName: string;
-  entries: Array<{ name: string; id: string }>;
+  entries: ConnectedAccountView[];
 }
 
 /** One remote MCP server, as the template's `remoteMcps` list. */
@@ -170,6 +191,8 @@ interface RemoteMcpView {
   name: string;
   tools: string;
   sanitizedName: string;
+  hasTools: boolean;
+  needsReauth: boolean;
 }
 
 function connectedAccountGroups(): ConnectedAccountGroup[] {
@@ -184,6 +207,8 @@ function remoteMcpViews(): RemoteMcpView[] {
     name: mcp.name,
     tools: mcp.tools.map(t => t.name).join(', '),
     sanitizedName: sanitizeMcpName(mcp.name),
+    hasTools: mcp.tools.length > 0,
+    needsReauth: mcp.status === 'auth_required',
   }));
 }
 
@@ -251,9 +276,12 @@ export interface SystemPromptVars {
   webSearchToolName: string;
   webFetchToolName: string;
   subagentsEnabled: boolean;
+  hasModelRoutedSubagents: boolean;
   composioTriggers: boolean;
   webhookEndpoints: boolean;
   anyTriggers: boolean;
+  /** Platform token present — media prompt section (agent calls platform `/v1/replicate`). */
+  platformServices: boolean;
   computerUse: boolean;
   hasModelHints: boolean;
   modelHints: string[];
@@ -279,9 +307,13 @@ export function buildSystemPromptVars(
   webSearchProvider?: string,
   webFetchProvider?: string,
   capabilityPolicies?: AgentCapabilityPolicies,
+  subagentModels?: SubagentModelDefinition[],
 ): SystemPromptVars {
   const composioTriggers = process.env.COMPOSIO_PLATFORM_MODE === 'true';
   const webhookEndpoints = process.env.PLATFORM_AUTH_ACTIVE === 'true';
+  // Same gate as webhookEndpoints — do not tighten to also require proxy URL
+  // (PLATFORM_AUTH_ACTIVE also gates webhook tools in mcp-server.ts).
+  const platformServices = webhookEndpoints;
   const modelHints = modelPromptHints || [];
   const connectedAccounts = connectedAccountGroups();
   const remoteMcps = remoteMcpViews();
@@ -294,9 +326,11 @@ export function buildSystemPromptVars(
     // Blocked subagents must not be advertised anywhere in the prompt; review
     // still advertises them (the gate happens at call time).
     subagentsEnabled: policyFor(capabilityPolicies, 'subagents') !== 'block',
+    hasModelRoutedSubagents: (subagentModels?.length ?? 0) > 0,
     composioTriggers,
     webhookEndpoints,
     anyTriggers: composioTriggers || webhookEndpoints,
+    platformServices,
     computerUse: isComputerUseHost(),
     hasModelHints: modelHints.length > 0,
     modelHints,
@@ -322,8 +356,17 @@ export function generateSystemPrompt(
   webSearchProvider?: string,
   webFetchProvider?: string,
   capabilityPolicies?: AgentCapabilityPolicies,
+  subagentModels?: SubagentModelDefinition[],
 ): string {
-  const vars = buildSystemPromptVars(availableEnvVars, userSystemPrompt, modelPromptHints, webSearchProvider, webFetchProvider, capabilityPolicies);
+  const vars = buildSystemPromptVars(
+    availableEnvVars,
+    userSystemPrompt,
+    modelPromptHints,
+    webSearchProvider,
+    webFetchProvider,
+    capabilityPolicies,
+    subagentModels,
+  );
   return renderPrompt(SYSTEM_PROMPT, vars);
 }
 
@@ -403,6 +446,7 @@ export interface ClaudeCodeProcessOptions {
   model?: string;
   browserModel?: string;
   dashboardBuilderModel?: string;
+  subagentModels?: SubagentModelDefinition[];
   webSearchProvider?: string;
   webFetchProvider?: string;
   maxOutputTokens?: number;
@@ -427,6 +471,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   private model: string | undefined;
   private browserModel: string | undefined;
   private dashboardBuilderModel: string | undefined;
+  private subagentModels: SubagentModelDefinition[];
   private webSearchProvider: string | undefined;
   private webFetchProvider: string | undefined;
   private maxOutputTokens: number | undefined;
@@ -505,6 +550,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.model = options.model;
     this.browserModel = options.browserModel;
     this.dashboardBuilderModel = options.dashboardBuilderModel;
+    this.subagentModels = options.subagentModels ?? [];
     this.webSearchProvider = options.webSearchProvider;
     this.webFetchProvider = options.webFetchProvider;
     this.maxOutputTokens = options.maxOutputTokens;
@@ -525,7 +571,8 @@ export class ClaudeCodeProcess extends EventEmitter {
       options.modelPromptHints,
       options.webSearchProvider,
       options.webFetchProvider,
-      options.capabilityPolicies
+      options.capabilityPolicies,
+      this.subagentModels,
     );
   }
 
@@ -595,19 +642,21 @@ export class ClaudeCodeProcess extends EventEmitter {
    * model believes it, calls mcp__<server>__<tool>, and gets "No such tool
    * available": the exact symptom of a connection that never arrived.
    *
-   * Only the connection-config-changed path calls this. An unchanged config
-   * means no re-query at all, hence no handshake in flight and nothing to wait
-   * for. The other re-query triggers (effort/speed/capability change, cold-start
-   * restart) race the same handshake, but there the user has not just connected
-   * a server they are about to ask about — and gating every wake-from-idle would
-   * tax a far more common path for a far rarer payoff.
+   * Active connection changes call this. Auth-required servers are excluded
+   * individually because they complete discovery through the host's local
+   * handshake; an unrelated active server must still reach a terminal status.
+   * Other re-query triggers (effort/speed/capability change) do not wait because
+   * the remote MCP set itself did not change.
    */
   private async waitForRemoteMcpsReady(
     timeoutMs: number = REMOTE_MCP_READY_TIMEOUT_MS
   ): Promise<void> {
     // Keys are already sanitized, and they are exactly the keys handed to
     // query() as mcpServers — so they match the names the SDK reports back.
-    const expected = Object.keys(this.buildRemoteMcpServers());
+    // Only the auth-required entries are exempt; active siblings still gate.
+    const expected = parseRemoteMcps()
+      .filter((mcp) => mcp.status !== 'auth_required')
+      .map((mcp) => sanitizeMcpName(mcp.name));
     if (expected.length === 0 || !this.queryInstance) return;
 
     const deadline = Date.now() + timeoutMs;
@@ -789,6 +838,11 @@ export class ClaudeCodeProcess extends EventEmitter {
         ...remoteMcpConfigs,
       },
       agents: {
+        ...buildModelSubagentDefinitions(
+          this.subagentModels,
+          this.webSearchProvider,
+          this.webFetchProvider,
+        ),
         'web-browser': {
           description: 'Web browsing specialist. Delegate any task that requires interacting with websites — navigating pages, filling forms, clicking buttons, extracting information, searching for products, changing settings on web services, or any multi-step web interaction. The browser should already be open (use browser_open first). This agent runs on a cheaper model and handles all browser interactions autonomously.',
           // Host-resolved concrete wire id for the browser model (any provider/
@@ -827,6 +881,9 @@ export class ClaudeCodeProcess extends EventEmitter {
             'Write',
             'Edit',
             'Bash',
+            // create_dashboard's result points at the `dashboards` skill, so the
+            // builder needs Skill to act on its own tool output.
+            'Skill',
           ],
           prompt: DASHBOARD_BUILDER_AGENT_PROMPT,
           maxTurns: 200,
@@ -1138,10 +1195,15 @@ export class ClaudeCodeProcess extends EventEmitter {
           }
           console.log(`[Session ${this.sessionId}] Captured Claude session ID:`, this.claudeSessionId);
           this.emit('claude-session-id', this.claudeSessionId);
-          // Fetch rich slash command info from SDK
+          // The init list owns the executable names. supportedCommands adds
+          // descriptions/hints, but skill entries may use display titles there.
+          const canonicalCommandNames = Array.isArray(message.slash_commands)
+            ? message.slash_commands.filter((name): name is string => typeof name === 'string')
+            : [];
+          this.slashCommands = mergeCanonicalSlashCommands(canonicalCommandNames, []);
           try {
             const cmds = await this.queryInstance!.supportedCommands();
-            this.slashCommands = cmds.map(c => ({ name: c.name, description: c.description, argumentHint: c.argumentHint }));
+            this.slashCommands = mergeCanonicalSlashCommands(canonicalCommandNames, cmds);
           } catch (err) {
             console.error(`[Session ${this.sessionId}] Failed to fetch slash commands:`, err);
           }
@@ -1234,7 +1296,6 @@ export class ClaudeCodeProcess extends EventEmitter {
     const model = options?.model;
     const runtimeConnectionConfigChanged =
       runtimeConnectionConfigSnapshot() !== this.runtimeConnectionSnapshot;
-
     if (runtimeConnectionConfigChanged) {
       // The prompt's connected-account and remote-MCP sections are generated
       // from runtime env metadata, so refresh them alongside the query config.
@@ -1244,7 +1305,8 @@ export class ClaudeCodeProcess extends EventEmitter {
         this.modelPromptHints,
         this.webSearchProvider,
         this.webFetchProvider,
-        this.capabilityPolicies
+        this.capabilityPolicies,
+        this.subagentModels,
       );
     }
 
@@ -1278,7 +1340,8 @@ export class ClaudeCodeProcess extends EventEmitter {
           this.modelPromptHints,
           this.webSearchProvider,
           this.webFetchProvider,
-          nextPolicies
+          nextPolicies,
+          this.subagentModels,
         );
       }
       this.reconcilePendingCapabilityReviews();
@@ -1303,7 +1366,12 @@ export class ClaudeCodeProcess extends EventEmitter {
         await this.currentStop.catch(() => undefined);
       }
       await this.restart();
-    } else if (effortChanged || speedChanged || capabilityBlockChanged || runtimeConnectionConfigChanged) {
+    } else if (
+      effortChanged ||
+      speedChanged ||
+      capabilityBlockChanged ||
+      runtimeConnectionConfigChanged
+    ) {
       // Effort can only be set at query creation time — the SDK has no setEffort
       // facility — so any effort change forces an interrupt + re-query. Speed
       // lives in the query env (ANTHROPIC_CUSTOM_HEADERS), which is likewise
@@ -1335,8 +1403,8 @@ export class ClaudeCodeProcess extends EventEmitter {
 
     // Deliberately outside the branch chain above: BOTH the cold-session
     // restart() and the interrupt() re-query rebuild the query with the new
-    // connection set, so both race the handshake. Guarded by the flag rather
-    // than by the branch, so an effort- or speed-only re-query pays nothing.
+    // connection set, so both race the handshake. Effort- or speed-only
+    // re-queries pay nothing because the runtime connection set is unchanged.
     if (runtimeConnectionConfigChanged) {
       await this.waitForRemoteMcpsReady();
     }

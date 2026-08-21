@@ -12,6 +12,7 @@ import scheduledTasks from './routes/scheduled-tasks'
 import webhookTriggers from './routes/webhook-triggers'
 import chatIntegrationsRouter from './routes/chat-integrations'
 import notifications from './routes/notifications'
+import pushRouter from './routes/push'
 import platformNotifications from './routes/platform-notifications'
 import proxy from './routes/proxy'
 import mcpProxy from './routes/mcp-proxy'
@@ -32,7 +33,6 @@ import llmRouter from './routes/llm'
 import faviconRouter from './routes/favicon'
 import { getPolyfillJs } from './speech-recognition-polyfill'
 import { getLlmPolyfillJs } from './llm-polyfill'
-import { ANTHROPIC_SDK_BUNDLE } from './llm-sdk-bundle'
 import adminUsersRouter from './routes/admin-users'
 import auditLogRouter from './routes/audit-log'
 import connectionLogsRouter from './routes/connection-logs'
@@ -40,26 +40,27 @@ import debugRouter from './routes/debug'
 import platformAuth from './routes/platform-auth'
 import platformSsoStart from './routes/platform-sso-start'
 import tokenExchange from './routes/token-exchange'
+import mobilePairing from './routes/mobile-pairing'
 import agentBootstrap from './routes/agent-bootstrap'
 import activityRouter from './routes/activity'
-import { initializeServices } from '@shared/lib/startup'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { user as userTable } from '@shared/lib/db/schema'
-import { authEnforcementMiddleware, getAuthSettings } from './middleware/auth-enforcement'
+import { authEnforcementMiddleware } from './middleware/auth-enforcement'
+import { getAuthSettings } from '@shared/lib/auth/auth-settings'
 import { getPublicAuthProviders } from '@shared/lib/auth/provider-config'
 import { LocalModeAuth, isContainerFacingPath } from './middleware/local-mode-auth'
+import { armAbortSignal } from './middleware/arm-abort-signal'
 
 const app = new Hono()
 
-// Initialize services for non-Electron environments (Vite dev server).
-// In Electron, these are started in main/index.ts after SUPERAGENT_DATA_DIR is set.
-if (process.type !== 'browser') {
-  initializeServices().catch((error) => {
-    console.error('Failed to initialize services:', error)
-  })
-}
+// Background services start AFTER HTTP bind (web/server.ts, main/index.ts,
+// vite.config.ts) so cold-wake health is not gated on settings/DB/auth.
+
+// Must run before any middleware that awaits: a client hangup during those
+// awaits is otherwise invisible to every later signal check (see the module).
+app.use('*', armAbortSignal)
 
 // Enable CORS for all routes
 const trustedOrigins = process.env.TRUSTED_ORIGINS?.split(',').map(o => o.trim()).filter(Boolean)
@@ -138,6 +139,12 @@ if (isAuthMode()) {
   app.route('/api/auth/token', tokenExchange)
 }
 
+// Mobile pairing endpoints — same placement rationale as the token endpoint:
+// before the Better Auth wildcard, behind the /api/auth/* middleware stack.
+if (isAuthMode()) {
+  app.route('/api/auth/mobile', mobilePairing)
+}
+
 // Mount Better Auth handler (only when AUTH_MODE is enabled)
 if (isAuthMode()) {
   app.on(['POST', 'GET'], '/api/auth/*', async (c) => {
@@ -188,7 +195,8 @@ app.get('/api/llm/anthropic-polyfill.js', (c) => {
     'Cache-Control': 'public, max-age=3600',
   })
 })
-app.get('/api/llm/anthropic-sdk.js', (c) => {
+app.get('/api/llm/anthropic-sdk.js', async (c) => {
+  const { ANTHROPIC_SDK_BUNDLE } = await import('./llm-sdk-bundle')
   return c.body(ANTHROPIC_SDK_BUNDLE, 200, {
     'Content-Type': 'application/javascript; charset=utf-8',
     'Cache-Control': 'public, max-age=86400',
@@ -209,6 +217,7 @@ app.route('/api/scheduled-tasks', scheduledTasks)
 app.route('/api/webhook-triggers', webhookTriggers)
 app.route('/api/chat-integrations', chatIntegrationsRouter)
 app.route('/api/notifications', notifications)
+app.route('/api/push', pushRouter)
 app.route('/api/platform-notifications', platformNotifications)
 app.route('/api/proxy', proxy)
 app.route('/api/agent-bootstrap', agentBootstrap)

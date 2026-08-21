@@ -64,6 +64,22 @@ describe('SubAgentBlock', () => {
     expect(screen.getByText('Find config files')).toBeInTheDocument()
   })
 
+  it('renders model-routed agent types without their internal prefix and hash', () => {
+    const tc = createToolCall({
+      name: 'Agent',
+      input: {
+        subagent_type: 'model-gpt-5-5-1iimw9e',
+        description: 'Run with another model',
+      },
+      result: 'Done',
+    })
+
+    render(<SubAgentBlock toolCall={tc} sessionId="s-1" agentSlug="agent-1" />)
+
+    expect(screen.getByText('GPT 5.5')).toBeInTheDocument()
+    expect(screen.queryByText('model-gpt-5-5-1iimw9e')).not.toBeInTheDocument()
+  })
+
   it('shows stats footer for completed subagent when expanded', async () => {
     const user = userEvent.setup()
     const tc = createToolCall({

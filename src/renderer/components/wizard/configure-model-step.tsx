@@ -1,64 +1,78 @@
-import { useSettings, useUpdateSettings, type GlobalSettingsResponse } from '@renderer/hooks/use-settings'
+import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { SettingsModelSelect } from '@renderer/components/settings/settings-model-select'
+import { findCatalogModel } from '@renderer/components/messages/model-family-list'
+import { useSettings, useUpdateSettings, type GlobalSettingsResponse } from '@renderer/hooks/use-settings'
+import type { ModelDefinition, ProviderDefaultModelOption } from '@shared/lib/llm-provider'
 
-/** Onboarding offers just the two headline families; both store a bare alias. */
-type WizardFamily = 'opus' | 'sonnet'
-
-const MODEL_OPTIONS: Array<{
-  family: WizardFamily
-  label: string
-  tag: string
-  description: string
-  subdescription: string
-}> = [
-  {
-    family: 'opus',
-    label: 'Opus',
-    tag: 'Most capable',
-    description: 'Best for complex, multi-step tasks.',
-    subdescription: 'Slower, and uses 5x more credits than Sonnet.',
-  },
-  {
-    family: 'sonnet',
-    label: 'Sonnet',
-    tag: 'Fast & efficient',
-    description: 'Best for everyday tasks and most agent work.',
-    subdescription: 'Far lower credit cost than Opus.',
-  },
-]
+/**
+ * Match a stored id/alias to a curated option by model family. A pinned Opus
+ * version should still light the Opus card; models outside the shortlist use
+ * the Other card and the full catalog picker.
+ */
+export function findDefaultModelOption(
+  selection: string | undefined,
+  options: readonly ProviderDefaultModelOption[],
+  catalog: ModelDefinition[],
+): ProviderDefaultModelOption | undefined {
+  if (!selection) return undefined
+  const selected = findCatalogModel(selection, catalog)
+  return options.find((option) => {
+    if (option.model === selection) return true
+    const optionModel = findCatalogModel(option.model, catalog)
+    return Boolean(selected?.family && optionModel?.family === selected.family)
+  })
+}
 
 export function ConfigureModelStep() {
   const { data: settings } = useSettings()
   const updateSettings = useUpdateSettings()
   const queryClient = useQueryClient()
+  const [showOther, setShowOther] = useState(false)
 
-  // The global "Default model" setting (LLM tab) persists `models.agentModel`
-  // as a bare family alias or a pinned id. Derive the headline family from it
-  // so onboarding and settings stay in sync; unknown/other → 'opus'.
-  const agentModel = settings?.models?.agentModel
-  const selectedFamily: WizardFamily = agentModel && /sonnet/.test(agentModel) ? 'sonnet' : 'opus'
+  const activeProvider = settings?.llmProvider ?? 'anthropic'
+  const provider = settings?.llmProviderStatus?.find((candidate) => candidate.id === activeProvider)
+  const options = provider?.defaultModelOptions ?? []
+  const catalog = provider?.catalog ?? []
+  // The provider default is the last-resort selection while settings load or
+  // when no global model has been persisted. Platform declares Grok here.
+  const agentModel = settings?.models?.agentModel ?? provider?.defaultModels?.agent
+  const matchedOption = findDefaultModelOption(agentModel, options, catalog)
+  const otherSelected = showOther || (Boolean(agentModel) && !matchedOption)
 
-  const handleSelect = async (family: WizardFamily) => {
-    if (family === selectedFamily) return
+  const persistSelection = (model: string) => {
+    // The full-catalog picker may land back on a curated family. Reflect that
+    // immediately, including when it re-selects the same pinned model.
+    setShowOther(!findDefaultModelOption(model, options, catalog))
+    if (model === agentModel) return
     // Optimistically reflect the choice in the settings cache so the card
     // updates instantly. The mutation's onSuccess invalidation refetches to
     // reconcile with the server; onError rolls back to the previous value.
-    await queryClient.cancelQueries({ queryKey: ['settings'] })
-    const previous = queryClient.getQueryData<GlobalSettingsResponse>(['settings'])
-    if (previous) {
-      queryClient.setQueryData<GlobalSettingsResponse>(['settings'], {
-        ...previous,
-        models: { ...previous.models, agentModel: family },
-      })
-    }
-    updateSettings.mutate(
-      { models: { agentModel: family } },
-      {
-        onError: () => {
-          if (previous) queryClient.setQueryData(['settings'], previous)
+    void queryClient.cancelQueries({ queryKey: ['settings'] }).then(() => {
+      const previous = queryClient.getQueryData<GlobalSettingsResponse>(['settings'])
+      if (previous) {
+        queryClient.setQueryData<GlobalSettingsResponse>(['settings'], {
+          ...previous,
+          models: { ...previous.models, agentModel: model },
+        })
+      }
+      updateSettings.mutate(
+        { models: { agentModel: model } },
+        {
+          onError: () => {
+            if (previous) queryClient.setQueryData(['settings'], previous)
+          },
         },
-      },
-    )
+      )
+    })
+  }
+
+  const selectRecommended = (model: string) => {
+    setShowOther(false)
+    // A pinned concrete version lights its family card. Clicking that already-
+    // selected card must not replace the pin with the bare family alias.
+    if (matchedOption?.model === model) return
+    persistSelection(model)
   }
 
   return (
@@ -71,11 +85,14 @@ export function ConfigureModelStep() {
       </div>
 
       <div className="space-y-3" role="radiogroup" aria-label="Default model">
-        {MODEL_OPTIONS.map((option) => {
-          const isSelected = selectedFamily === option.family
+        {options.map((option) => {
+          const isSelected = !showOther && matchedOption?.model === option.model
+          const label = option.resolveLabelFromCatalog
+            ? findCatalogModel(option.model, catalog)?.label ?? option.label
+            : option.label
           return (
             <div
-              key={option.family}
+              key={option.model}
               className={`rounded-lg border text-left transition-colors ${
                 isSelected ? 'border-primary bg-muted/50' : 'hover:border-muted-foreground/50'
               }`}
@@ -85,32 +102,72 @@ export function ConfigureModelStep() {
                 role="radio"
                 aria-checked={isSelected}
                 className="w-full flex items-start gap-3 p-3 text-left"
-                onClick={() => handleSelect(option.family)}
-                data-testid={`wizard-model-${option.family}`}
+                onClick={() => selectRecommended(option.model)}
+                data-testid={`wizard-model-${option.model}`}
               >
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="font-medium text-sm">{option.label}</span>
+                    <span className="font-medium text-sm">{label}</span>
                     <span className="text-xs text-muted-foreground">{option.tag}</span>
                   </div>
                   <p className="text-xs text-muted-foreground mt-1">
-                    {option.description}<br />{option.subdescription}
+                    {option.description}
+                    {option.subdescription && <><br />{option.subdescription}</>}
                   </p>
                 </div>
-                <div className={`mt-1 h-4 w-4 rounded-full border-2 shrink-0 flex items-center justify-center ${
-                  isSelected ? 'border-primary' : 'border-muted-foreground/40'
-                }`}>
-                  {isSelected && <div className="h-2 w-2 rounded-full bg-primary" />}
-                </div>
+                <RadioIndicator selected={isSelected} />
               </button>
             </div>
           )
         })}
+
+        <div
+          className={`rounded-lg border text-left transition-colors ${
+            otherSelected ? 'border-primary bg-muted/50' : 'hover:border-muted-foreground/50'
+          }`}
+        >
+          <button
+            type="button"
+            role="radio"
+            aria-checked={otherSelected}
+            className="w-full flex items-start gap-3 p-3 text-left"
+            onClick={() => setShowOther(true)}
+            data-testid="wizard-model-other"
+          >
+            <div className="flex-1 min-w-0">
+              <span className="font-medium text-sm">Other</span>
+              <p className="text-xs text-muted-foreground mt-1">
+                Choose any model from this provider&apos;s full catalogue.
+              </p>
+            </div>
+            <RadioIndicator selected={otherSelected} />
+          </button>
+          {otherSelected && (
+            <div className="flex items-center justify-between gap-3 border-t px-3 py-3">
+              <span className="text-xs text-muted-foreground">Model</span>
+              <SettingsModelSelect
+                model={agentModel}
+                onModelChange={persistSelection}
+                align="end"
+              />
+            </div>
+          )}
+        </div>
       </div>
 
       <p className="text-sm text-muted-foreground">
         Change this default at any time in the settings.
       </p>
+    </div>
+  )
+}
+
+function RadioIndicator({ selected }: { selected: boolean }) {
+  return (
+    <div className={`mt-1 h-4 w-4 rounded-full border-2 shrink-0 flex items-center justify-center ${
+      selected ? 'border-primary' : 'border-muted-foreground/40'
+    }`}>
+      {selected && <div className="h-2 w-2 rounded-full bg-primary" />}
     </div>
   )
 }

@@ -379,6 +379,7 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
           </DetailCard>
 
           <RuntimeOptionsCard
+            agentSlug={agentSlug}
             model={trigger.model ?? null}
             effort={trigger.effort ?? null}
             speed={trigger.speed ?? null}

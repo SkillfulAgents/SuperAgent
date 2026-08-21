@@ -45,6 +45,7 @@ import {
   RuntimeUnavailableSidebarBanner,
   RuntimeCheckingSidebarBanner,
   RuntimePullingSidebarBanner,
+  ServicesDegradedSidebarBanner,
   SidebarBannerStack,
   type FirewallFixUiState,
 } from '@renderer/components/runtime/runtime-status-banners'
@@ -58,6 +59,7 @@ import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
+import { SIDEBAR_TREE_CONNECTORS } from '@renderer/components/ui/tree-connectors'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { DashboardContextMenu } from '@renderer/components/dashboards/dashboard-context-menu'
@@ -99,7 +101,9 @@ import { useRenderTracker } from '@renderer/lib/perf'
 import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
 import { useSkillsets } from '@renderer/hooks/use-skillsets'
 import { useRememberedFlag } from '@renderer/hooks/use-remembered-flag'
-import { AgentTemplateBrowseDialog } from '@renderer/components/agents/agent-template-browse-dialog'
+
+/** Set once Explore has been opened, which retires its "New" badge. */
+const EXPLORE_SEEN_KEY = 'explore.seen'
 
 // 4px-wide thin scrollbar with a muted-foreground/20 thumb. Reused on the
 // agents-list group; pull out as a constant so the call site stays readable.
@@ -107,27 +111,6 @@ const THIN_SCROLLBAR =
   '[scrollbar-width:thin] [scrollbar-color:hsl(var(--muted-foreground)/0.2)_transparent] ' +
   '[&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:bg-transparent ' +
   '[&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/20'
-
-// Tree connectors on the agent submenu: a vertical rail hanging from
-// the agent row's chevron plus an elbow into each sub-item row. Geometry is
-// coupled to the surrounding layout: the rail sits 15px from the submenu's
-// left edge (chevron = left-1.5 + p-0.5 + half a 14px icon) and rows are
-// indented pl-5 (20px), so connectors anchor at -5px from each <li>. Elbows
-// sit at 14px = half the h-7 row. Each row draws its own rail segment
-// (stretched -top-1 to bridge the gap-1 between rows) so the rail tracks
-// variable row heights; the last row's segment stops at its elbow. The
-// first row instead starts at -top-0.5 so the rail tops out flush with the
-// agent row's bottom edge (the ul's py-0.5) rather than poking 2px up into
-// the agent row's highlight.
-const TREE_CONNECTORS =
-  '[&>li]:relative ' +
-  '[&>li]:before:absolute [&>li]:before:-left-[5px] [&>li]:before:top-[14px] [&>li]:before:w-[5px] ' +
-  '[&>li]:before:border-t [&>li]:before:border-muted-foreground/25 ' +
-  '[&>li]:after:absolute [&>li]:after:-left-[5px] [&>li]:after:-top-1 [&>li]:after:bottom-0 ' +
-  '[&>li]:after:border-l [&>li]:after:border-muted-foreground/25 ' +
-  '[&>li:first-child]:after:-top-0.5 ' +
-  '[&>li:last-child]:after:bottom-auto [&>li:last-child]:after:h-[18px] ' +
-  '[&>li:first-child:last-child]:after:h-[16px]'
 
 // Session sub-item that tracks its streaming state
 function SessionSubItem({
@@ -530,7 +513,7 @@ export const AgentMenuItem = React.forwardRef<
         {hasExpandableContent ? (
           <>
             <CollapsibleContent>
-              <SidebarMenuSub className={cn('pb-2', TREE_CONNECTORS)}>
+              <SidebarMenuSub className={cn('pb-2', SIDEBAR_TREE_CONNECTORS)}>
                 {isOpen && sessionsLoading && showSkeleton ? (
                   <SessionsSkeleton />
                 ) : (
@@ -768,7 +751,13 @@ export function AppSidebar() {
           ? null
           : discoverableAgents.length > 0
   const hasMarketplace = useRememberedFlag('marketplace', marketplaceAnswer)
-  const [marketplaceOpen, setMarketplaceOpen] = useState(false)
+  const exploreVisited = pathname === '/explore' || pathname.startsWith('/explore/')
+  // Sticky across reloads, and read once at mount so the badge doesn't vanish
+  // out from under the pointer mid-click.
+  const [seenExplore] = useState(() => localStorage.getItem(EXPLORE_SEEN_KEY) === '1')
+  useEffect(() => {
+    if (exploreVisited) localStorage.setItem(EXPLORE_SEEN_KEY, '1')
+  }, [exploreVisited])
   const { data: userSettings } = useUserSettings()
   const updateSettings = useUpdateUserSettings()
   const { data: runtimeStatus } = useRuntimeStatus()
@@ -831,6 +820,7 @@ export function AppSidebar() {
       : 'idle'
 
   const readiness = runtimeStatus?.runtimeReadiness
+  const servicesInitError = runtimeStatus?.servicesInitError ?? null
   const isRuntimeUnavailable = readiness?.status === 'RUNTIME_UNAVAILABLE' || readiness?.status === 'ERROR'
   const isPullingOrBuilding = readiness?.status === 'PULLING_IMAGE'
   const isChecking = readiness?.status === 'CHECKING'
@@ -848,10 +838,9 @@ export function AppSidebar() {
       {/*
         The sidebar's title bar: one 48px row holding everything that acts on the
         window rather than on an agent — where agents run, history, search — and,
-        on macOS, the traffic lights it leaves room for. There is no app name
-        here on purpose: it named the window in a window that is already named,
-        and its row was the only thing standing between the traffic lights and
-        the controls.
+        on macOS, the traffic lights it leaves room for. The browser restores the
+        app name in the space left by the Electron-only target and history
+        controls.
 
         The left padding (not the height) is what changes on a fullscreen
         toggle, so the row itself never moves and only the traffic-light gap
@@ -865,6 +854,10 @@ export function AppSidebar() {
             expands it in place, which pushes the buttons after it past the right
             edge rather than squeezing them. */}
         <div className="flex items-center h-12 px-2 gap-1 overflow-hidden">
+          {__WEB__ && (
+            <span className="shrink-0 select-none text-base font-medium">Gamut</span>
+          )}
+
           {isWindowsElectron && (
             <button
               className="app-no-drag shrink-0 p-0.5 rounded hover:bg-foreground/10 transition-colors cursor-default"
@@ -920,9 +913,10 @@ export function AppSidebar() {
                 SidebarBannerStack wrapper owns horizontal padding, inter-banner
                 gap, and trailing space; render it only when at least one banner
                 is visible to avoid a stray padded div. */}
-            {(!isOnline || isRuntimeUnavailable || isChecking || isPullingOrBuilding || isFirewallBlocked) && (
+            {(!isOnline || isRuntimeUnavailable || isChecking || isPullingOrBuilding || isFirewallBlocked || servicesInitError) && (
               <SidebarBannerStack>
                 {!isOnline && <OfflineSidebarBanner />}
+                {servicesInitError && <ServicesDegradedSidebarBanner message={servicesInitError} />}
                 {isRuntimeUnavailable && (
                   <RuntimeUnavailableSidebarBanner
                     message={readiness?.message}
@@ -968,11 +962,22 @@ export function AppSidebar() {
                 {hasMarketplace && (
                   <SidebarMenuItem>
                     <SidebarMenuButton
-                      onClick={() => setMarketplaceOpen(true)}
+                      asChild
+                      // Prefix match: the details page (/explore/...) is still Explore.
+                      isActive={exploreVisited}
                       data-testid="marketplace-button"
                     >
-                      <Compass className="h-4 w-4" />
-                      <span>Explore</span>
+                      <AppLink to="/explore">
+                        <Compass className="h-4 w-4" />
+                        <span>Discover New Agents</span>
+                        {/* Retires itself the first time the page is opened —
+                            a badge that says "New" forever says nothing. */}
+                        {!seenExplore && (
+                          <span className="rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium leading-tight text-white">
+                            New
+                          </span>
+                        )}
+                      </AppLink>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 )}
@@ -1053,8 +1058,6 @@ export function AppSidebar() {
 
       <SidebarRail />
       </Sidebar>
-
-      <AgentTemplateBrowseDialog open={marketplaceOpen} onOpenChange={setMarketplaceOpen} />
     </>
   )
 }

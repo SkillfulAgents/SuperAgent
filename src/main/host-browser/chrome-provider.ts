@@ -322,7 +322,7 @@ export class ChromeProvider implements HostBrowserProvider {
       // should keep the session data (cookies, local storage, etc.) that the
       // agent accumulated during its browsing sessions.
       const alreadyHasProfile = fs.existsSync(path.join(destProfileDir, 'Cookies'))
-      if (!alreadyHasProfile && copyChromeProfileData(profileId, destProfileDir)) {
+      if (!alreadyHasProfile && await copyChromeProfileData(profileId, destProfileDir)) {
         console.log(`[ChromeProvider] Copied Chrome profile "${profileId}" for instance ${instanceId}`)
       }
     }

@@ -14,6 +14,8 @@ import {
   listSessionsByIds,
   getSession,
   getSessionMessages,
+  getSessionMessagesPage,
+  getSessionMessagesDelta,
   deleteSession,
   deleteSessionsBatch,
   readSessionMetadata,
@@ -737,6 +739,1089 @@ describe('session-service', () => {
       expect(queued.uuid).toBe('queue-source-uuid')
       expect(queued.timestamp).toBe('2025-01-01T00:01:00.000Z')
       expect(queued.message.content).toEqual([{ type: 'text', text: 'Queued mid-turn message' }])
+    })
+  })
+
+  describe('getSessionMessagesPage', () => {
+    function makeThread(n: number) {
+      const entries: object[] = []
+      for (let i = 0; i < n; i++) {
+        entries.push({
+          type: 'user',
+          uuid: `u-${i}`,
+          timestamp: new Date(Date.UTC(2026, 0, 1, 0, 0, i * 2)).toISOString(),
+          sessionId: 'page-session',
+          parentUuid: null,
+          message: { role: 'user', content: `q${i}` },
+        })
+        entries.push({
+          type: 'assistant',
+          uuid: `a-${i}`,
+          timestamp: new Date(Date.UTC(2026, 0, 1, 0, 0, i * 2 + 1)).toISOString(),
+          sessionId: 'page-session',
+          parentUuid: `u-${i}`,
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: `a${i}` }],
+          },
+        })
+      }
+      return entries
+    }
+
+    it('returns the trailing page and a cursor when more remain', async () => {
+      await createSessionFile('test-agent', 'page-session', makeThread(10))
+
+      const page = await getSessionMessagesPage('test-agent', 'page-session', { limit: 5 })
+      expect(page.messages.map((m) => m.id)).toEqual(['a-7', 'u-8', 'a-8', 'u-9', 'a-9'])
+      expect(page.nextCursor).toBe('a-7')
+    })
+
+    it('returns the page before a cursor', async () => {
+      await createSessionFile('test-agent', 'page-session', makeThread(10))
+
+      const page = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 5,
+        cursor: 'a-7',
+      })
+      expect(page.messages.map((m) => m.id)).toEqual(['u-5', 'a-5', 'u-6', 'a-6', 'u-7'])
+      expect(page.nextCursor).toBe('u-5')
+    })
+
+    it('returns no cursor on the oldest page', async () => {
+      await createSessionFile('test-agent', 'page-session', makeThread(3))
+
+      const page = await getSessionMessagesPage('test-agent', 'page-session', { limit: 20 })
+      expect(page.messages).toHaveLength(6)
+      expect(page.nextCursor).toBeNull()
+    })
+
+    it('does not include a huge prefix row in the trailing page', async () => {
+      const prefix = {
+        type: 'user',
+        uuid: 'huge-prefix',
+        timestamp: '2026-01-01T00:00:00.000Z',
+        sessionId: 'page-session',
+        parentUuid: null,
+        message: { role: 'user', content: 'x'.repeat(80 * 1024) },
+      }
+      await createSessionFile('test-agent', 'page-session', [prefix, ...makeThread(20)])
+
+      const page = await getSessionMessagesPage('test-agent', 'page-session', { limit: 4 })
+      expect(page.messages.map((m) => m.id)).toEqual(['u-18', 'a-18', 'u-19', 'a-19'])
+      expect(page.messages.some((m) => m.id === 'huge-prefix')).toBe(false)
+      expect(page.nextCursor).toBe('u-18')
+    })
+
+    it('does not use a mid-merge assistant uuid as the page cursor', async () => {
+      const meta = Array.from({ length: 27 }, (_, i) => ({
+        type: 'user',
+        uuid: `meta-${i}`,
+        timestamp: new Date(Date.UTC(2026, 0, 1, 0, 2, i)).toISOString(),
+        sessionId: 'page-session',
+        parentUuid: null,
+        isMeta: true,
+        message: { role: 'user', content: 'meta' },
+      }))
+      const tailUsers = Array.from({ length: 4 }, (_, i) => ({
+        type: 'user',
+        uuid: `tail-u-${i + 1}`,
+        timestamp: new Date(Date.UTC(2026, 0, 1, 0, 1, i + 1)).toISOString(),
+        sessionId: 'page-session',
+        parentUuid: null,
+        message: { role: 'user', content: `tail-${i + 1}` },
+      }))
+      const splitAsst = [
+        {
+          type: 'assistant',
+          uuid: 'X-0',
+          timestamp: '2026-01-01T00:00:50.000Z',
+          sessionId: 'page-session',
+          parentUuid: null,
+          message: {
+            id: 'msg-X',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'leading' }],
+          },
+        },
+        {
+          type: 'assistant',
+          uuid: 'X-1',
+          timestamp: '2026-01-01T00:00:51.000Z',
+          sessionId: 'page-session',
+          parentUuid: null,
+          message: {
+            id: 'msg-X',
+            role: 'assistant',
+            content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } }],
+          },
+        },
+      ]
+      await createSessionFile('test-agent', 'page-session', [
+        ...makeThread(20),
+        ...splitAsst,
+        ...tailUsers,
+        ...meta,
+      ])
+
+      const first = await getSessionMessagesPage('test-agent', 'page-session', { limit: 5 })
+      expect(first.messages.map((m) => m.id)).not.toContain('X-1')
+      expect(first.messages[0]?.id).toBe('X-0')
+      expect(first.nextCursor).toBe('X-0')
+      expect(first.messages.find((m) => m.id === 'X-0')).toMatchObject({
+        type: 'assistant',
+        content: { text: 'leading' },
+      })
+
+      const older = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 5,
+        cursor: first.nextCursor!,
+      })
+      expect(older.messages.length).toBeGreaterThan(0)
+      expect(older.messages.map((m) => m.id)).not.toContain('X-1')
+    })
+
+    it('returns an empty terminal page when the cursor id has vanished', async () => {
+      await createSessionFile('test-agent', 'page-session', makeThread(40))
+      const page = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 5,
+        cursor: 'vanished-id',
+      })
+      expect(page.messages).toEqual([])
+      expect(page.nextCursor).toBeNull()
+    })
+
+    it('sequential scroll-up paging reaches the start of a long transcript', async () => {
+      // 300 pairs = 600 lines, far deeper than the initial tail window (limit*4).
+      await createSessionFile('test-agent', 'page-session', makeThread(300))
+
+      const loaded = new Set<string>()
+      const first = await getSessionMessagesPage('test-agent', 'page-session', { limit: 5 })
+      for (const m of first.messages) loaded.add(m.id)
+
+      let cursor = first.nextCursor
+      for (let i = 0; i < 300 && cursor; i++) {
+        const page = await getSessionMessagesPage('test-agent', 'page-session', {
+          limit: 5,
+          cursor,
+        })
+        for (const m of page.messages) loaded.add(m.id)
+        cursor = page.nextCursor
+      }
+
+      expect(cursor).toBeNull()
+      expect(loaded.size).toBe(600)
+    })
+
+    // The signal lets the /messages route stop paying for transcript reads when
+    // the HTTP client has already aborted (superseded refetch). Rejection must
+    // be the standard AbortError so the route can map it to 499.
+    it('rejects with AbortError when the signal is already aborted', async () => {
+      await createSessionFile('test-agent', 'page-session', makeThread(10))
+
+      const controller = new AbortController()
+      controller.abort()
+      await expect(
+        getSessionMessagesPage('test-agent', 'page-session', {
+          limit: 5,
+          signal: controller.signal,
+        })
+      ).rejects.toMatchObject({ name: 'AbortError' })
+    })
+
+    it('a never-aborted signal changes nothing', async () => {
+      await createSessionFile('test-agent', 'page-session', makeThread(10))
+
+      const controller = new AbortController()
+      const page = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 5,
+        signal: controller.signal,
+      })
+      expect(page.messages.map((m) => m.id)).toEqual(['a-7', 'u-8', 'a-8', 'u-9', 'a-9'])
+      expect(page.nextCursor).toBe('a-7')
+    })
+
+    it('byte budget truncates a page short and cursor paging walks the remainder', async () => {
+      await createSessionFile('test-agent', 'page-session', makeThread(30))
+
+      // ~1KB budget against ~180-byte rows: each window holds a handful of
+      // items, far fewer than the requested limit.
+      const first = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 20,
+        byteBudget: 1024,
+      })
+      expect(first.messages.length).toBeGreaterThan(0)
+      expect(first.messages.length).toBeLessThan(20)
+      expect(first.nextCursor).toBe(first.messages[0]!.id)
+
+      const collected = [...first.messages.map((m) => m.id)]
+      let cursor = first.nextCursor
+      for (let i = 0; i < 100 && cursor; i++) {
+        const page = await getSessionMessagesPage('test-agent', 'page-session', {
+          limit: 20,
+          cursor,
+          byteBudget: 1024,
+        })
+        collected.unshift(...page.messages.map((m) => m.id))
+        cursor = page.nextCursor
+      }
+
+      const expected: string[] = []
+      for (let i = 0; i < 30; i++) expected.push(`u-${i}`, `a-${i}`)
+      expect(collected).toEqual(expected)
+    })
+
+    it('serves a single item larger than the whole byte budget', async () => {
+      const giant = {
+        type: 'assistant',
+        uuid: 'a-giant',
+        timestamp: '2026-01-01T00:10:00.000Z',
+        sessionId: 'page-session',
+        parentUuid: null,
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'G'.repeat(64 * 1024) }],
+        },
+      }
+      await createSessionFile('test-agent', 'page-session', [...makeThread(5), giant])
+
+      const page = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 5,
+        byteBudget: 1024,
+      })
+      // The budget floor guarantees at least one servable item beyond the
+      // sacrificial head — the giant trailing item must not become an empty page.
+      expect(page.messages.map((m) => m.id)).toEqual(['a-giant'])
+      expect(page.nextCursor).toBe('a-giant')
+
+      const older = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 5,
+        cursor: 'a-giant',
+        byteBudget: 1024,
+      })
+      expect(older.messages.length).toBeGreaterThan(0)
+    })
+
+    it('paged walk over a mixed transcript matches the full transform', async () => {
+      // Every classification the backward index scan replicates: meta rows,
+      // split assistant merges with tool results, queued_command attachments,
+      // task notifications, informational banners with their synthetic user
+      // copy, memory recalls, compact boundaries with summaries.
+      const ts = (s: number) => new Date(Date.UTC(2026, 0, 2, 0, 0, s)).toISOString()
+      const entries: object[] = [
+        { type: 'user', uuid: 'u-0', timestamp: ts(0), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'q0' } },
+        { type: 'assistant', uuid: 'a-0', timestamp: ts(1), sessionId: 's', parentUuid: 'u-0', message: { role: 'assistant', content: [{ type: 'text', text: 'r0' }] } },
+        { type: 'user', uuid: 'meta-0', timestamp: ts(2), sessionId: 's', parentUuid: null, isMeta: true, message: { role: 'user', content: 'meta' } },
+        { type: 'user', uuid: 'u-1', timestamp: ts(3), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'q1' } },
+        { type: 'assistant', uuid: 'A1a', timestamp: ts(4), sessionId: 's', parentUuid: 'u-1', message: { id: 'msg-1', role: 'assistant', content: [{ type: 'text', text: 'part1 ' }] } },
+        { type: 'assistant', uuid: 'A1b', timestamp: ts(5), sessionId: 's', parentUuid: 'u-1', message: { id: 'msg-1', role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } }] } },
+        { type: 'user', uuid: 'r-1', timestamp: ts(6), sessionId: 's', parentUuid: 'A1b', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] } },
+        { type: 'user', uuid: 'task-note', timestamp: ts(7), sessionId: 's', parentUuid: null, origin: { kind: 'task-notification' }, message: { role: 'user', content: 'subagent done' } },
+        { type: 'attachment', uuid: 'qc-raw', timestamp: ts(8), parentUuid: null, attachment: { type: 'queued_command', commandMode: 'prompt', prompt: 'steer', source_uuid: 'qc-u' } },
+        { type: 'assistant', uuid: 'a-2', timestamp: ts(9), sessionId: 's', parentUuid: null, message: { role: 'assistant', content: [{ type: 'text', text: 'r2' }] } },
+        { type: 'user', uuid: 'stop-user', timestamp: ts(10), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'Operation stopped by hook: X' } },
+        { type: 'system', uuid: 'info-1', subtype: 'informational', content: 'Operation stopped by hook: X', isMeta: false, timestamp: ts(11) },
+        { type: 'system', uuid: 'mr-1', subtype: 'memory_recall', content: '', isMeta: false, timestamp: ts(12), memory_paths: ['MEMORY.md'] },
+        { type: 'system', uuid: 'cb-1', subtype: 'compact_boundary', content: '', isMeta: false, timestamp: ts(13), compactMetadata: { trigger: 'manual', preTokens: 5 } },
+        { type: 'user', uuid: 'cs-1', timestamp: ts(14), sessionId: 's', parentUuid: null, isCompactSummary: true, message: { role: 'user', content: 'summary' } },
+        { type: 'user', uuid: 'u-3', timestamp: ts(15), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'q3' } },
+        { type: 'assistant', uuid: 'a-3', timestamp: ts(16), sessionId: 's', parentUuid: null, message: { role: 'assistant', content: [{ type: 'text', text: 'r3' }] } },
+      ]
+      await createSessionFile('test-agent', 'page-session', entries)
+
+      // Reference: one page big enough to hold everything.
+      const full = await getSessionMessagesPage('test-agent', 'page-session', { limit: 100 })
+      expect(full.messages.map((m) => m.id)).toEqual([
+        'u-0', 'a-0', 'u-1', 'A1a', 'qc-u', 'a-2', 'mr-1', 'cb-1', 'info-1', 'u-3', 'a-3',
+      ])
+
+      // Small pages + small budget: the same items must come back, in order,
+      // with the split assistant still merged and its tool result attached.
+      const first = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 3,
+        byteBudget: 600,
+      })
+      const collected = [...first.messages]
+      let cursor = first.nextCursor
+      for (let i = 0; i < 50 && cursor; i++) {
+        const page = await getSessionMessagesPage('test-agent', 'page-session', {
+          limit: 3,
+          cursor,
+          byteBudget: 600,
+        })
+        collected.unshift(...page.messages)
+        cursor = page.nextCursor
+      }
+
+      expect(collected.map((m) => m.id)).toEqual(full.messages.map((m) => m.id))
+      const merged = collected.find((m) => m.id === 'A1a')
+      expect(merged).toMatchObject({ type: 'assistant', content: { text: 'part1 ' } })
+      expect(merged!.type === 'assistant' && merged!.toolCalls[0]).toMatchObject({
+        id: 't1',
+        result: 'ok',
+      })
+      const queued = collected.find((m) => m.id === 'qc-u')
+      expect(queued).toMatchObject({ type: 'user', queued: true, content: { text: 'steer' } })
+    })
+
+    it('terminates and returns each item once when history is replayed verbatim', async () => {
+      // Session resume can re-append prior history to the transcript with the
+      // SAME uuids. The transform canonicalizes duplicates to their oldest
+      // occurrence; cursor resolution must do the same, or paging anchors on
+      // the newest copy and cycles over the same pages forever.
+      const six = makeThread(3)
+      await createSessionFile('test-agent', 'page-session', [...six, ...six])
+
+      const first = await getSessionMessagesPage('test-agent', 'page-session', { limit: 3 })
+      const collected = [...first.messages.map((m) => m.id)]
+      let cursor = first.nextCursor
+      for (let i = 0; i < 10 && cursor; i++) {
+        const page = await getSessionMessagesPage('test-agent', 'page-session', {
+          limit: 3,
+          cursor,
+        })
+        collected.unshift(...page.messages.map((m) => m.id))
+        cursor = page.nextCursor
+      }
+
+      expect(cursor).toBeNull()
+      expect(collected).toEqual(['u-0', 'a-0', 'u-1', 'a-1', 'u-2', 'a-2'])
+    })
+
+    it('returns every trailing system item across pages despite display reordering', async () => {
+      // The transform orders adjacent system items by type (recalls, then
+      // boundaries, then informationals) regardless of file order. A window
+      // boundary landing inside such a run must not make pagination skip the
+      // reordered items.
+      const ts = (s: number) => new Date(Date.UTC(2026, 0, 6, 0, 0, s)).toISOString()
+      await createSessionFile('test-agent', 'page-session', [
+        { type: 'user', uuid: 'u-0', timestamp: ts(0), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'q0' } },
+        { type: 'system', uuid: 'info1', subtype: 'informational', content: 'note one', isMeta: false, timestamp: ts(1) },
+        { type: 'system', uuid: 'mr', subtype: 'memory_recall', content: '', isMeta: false, timestamp: ts(2), memory_paths: ['M.md'] },
+        { type: 'system', uuid: 'cb', subtype: 'compact_boundary', content: '', isMeta: false, timestamp: ts(3), compactMetadata: { trigger: 'manual', preTokens: 1 } },
+        { type: 'system', uuid: 'info2', subtype: 'informational', content: 'note two', isMeta: false, timestamp: ts(4) },
+      ])
+
+      const full = await getSessionMessagesPage('test-agent', 'page-session', { limit: 100 })
+      expect(full.messages.map((m) => m.id)).toEqual(['u-0', 'mr', 'cb', 'info1', 'info2'])
+
+      const first = await getSessionMessagesPage('test-agent', 'page-session', { limit: 1 })
+      const collected = [...first.messages.map((m) => m.id)]
+      let cursor = first.nextCursor
+      for (let i = 0; i < 10 && cursor; i++) {
+        const page = await getSessionMessagesPage('test-agent', 'page-session', {
+          limit: 1,
+          cursor,
+        })
+        collected.unshift(...page.messages.map((m) => m.id))
+        cursor = page.nextCursor
+      }
+
+      expect(cursor).toBeNull()
+      expect(collected).toEqual(['u-0', 'mr', 'cb', 'info1', 'info2'])
+    })
+
+    it('attaches an oversized tool result that starts inside the grace region', async () => {
+      // The window past the cursor must end on a LINE boundary: a fixed byte
+      // end would cut this 600KB result row mid-line and drop it as
+      // malformed, leaving the historical call permanently unresolved.
+      const ts = (s: number) => new Date(Date.UTC(2026, 0, 7, 0, 0, s)).toISOString()
+      const big = 'X'.repeat(600 * 1024)
+      await createSessionFile('test-agent', 'page-session', [
+        ...makeThread(2),
+        { type: 'user', uuid: 'u-ask', timestamp: ts(10), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'run it' } },
+        { type: 'assistant', uuid: 'X-use', timestamp: ts(11), sessionId: 's', parentUuid: 'u-ask', message: { id: 'msg-X', role: 'assistant', content: [{ type: 'tool_use', id: 't9', name: 'Bash', input: {} }] } },
+        { type: 'attachment', uuid: 'qc-raw', timestamp: ts(12), parentUuid: null, attachment: { type: 'queued_command', commandMode: 'prompt', prompt: 'steer', source_uuid: 'qc-2' } },
+        { type: 'user', uuid: 'r-9', timestamp: ts(13), sessionId: 's', parentUuid: 'X-use', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't9', content: big }] } },
+        { type: 'assistant', uuid: 'a-done', timestamp: ts(14), sessionId: 's', parentUuid: null, message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
+      ])
+
+      const page = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 2,
+        cursor: 'qc-2',
+      })
+      expect(page.messages.map((m) => m.id)).toEqual(['u-ask', 'X-use'])
+      const use = page.messages[1]
+      expect(use!.type === 'assistant' && use!.toolCalls[0]?.result?.length).toBe(big.length)
+    })
+
+    it('hard cap bounds a huge non-display gap and still serves the trailing item', async () => {
+      // Tool-result-only rows are not display items, so the two-item budget
+      // floor alone would scan through an arbitrarily large run of them. The
+      // hard cap stops the scan once its one-servable-item floor is met; the
+      // trailing item (complete, single-entry) must be served rather than
+      // sacrificed, and cursor paging must cross the gap to older history.
+      const ts = (s: number) => new Date(Date.UTC(2026, 0, 8, 0, 0, s)).toISOString()
+      const rows: object[] = [
+        ...makeThread(2),
+        { type: 'assistant', uuid: 'A-use', timestamp: ts(10), sessionId: 's', parentUuid: null, message: { id: 'msg-A', role: 'assistant', content: [{ type: 'tool_use', id: 'tg', name: 'Bash', input: {} }] } },
+      ]
+      for (let i = 0; i < 20; i++) {
+        rows.push({ type: 'user', uuid: `rg-${i}`, timestamp: ts(11 + i), sessionId: 's', parentUuid: 'A-use', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tg', content: 'y'.repeat(1024) }] } })
+      }
+      rows.push({ type: 'assistant', uuid: 'a-done', timestamp: ts(40), sessionId: 's', parentUuid: null, message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } })
+      await createSessionFile('test-agent', 'page-session', rows)
+
+      // budget 1024 → hard cap 2048, far below the ~20KB result gap.
+      const first = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 5,
+        byteBudget: 1024,
+      })
+      expect(first.messages.map((m) => m.id)).toEqual(['a-done'])
+
+      let cursor = first.nextCursor
+      let hops = 0
+      for (let i = 0; i < 5 && cursor; i++) {
+        const page = await getSessionMessagesPage('test-agent', 'page-session', {
+          limit: 5,
+          cursor,
+          byteBudget: 1024,
+        })
+        hops++
+        cursor = page.nextCursor
+      }
+      expect(cursor).toBeNull()
+      expect(hops).toBeLessThanOrEqual(2)
+    })
+
+    it('serves the visible history behind a capped trailing tool-result run', async () => {
+      // A turn that just wrote its tool results leaves only non-display rows
+      // at EOF. The hard cap must not settle before at least one servable
+      // item is in the window — an empty terminal page here would blank the
+      // whole session in the client.
+      const ts = (s: number) => new Date(Date.UTC(2026, 0, 9, 0, 0, s)).toISOString()
+      const rows: object[] = [
+        { type: 'user', uuid: 'u-0', timestamp: ts(0), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'q0' } },
+        { type: 'assistant', uuid: 'A-use', timestamp: ts(1), sessionId: 's', parentUuid: null, message: { id: 'msg-A', role: 'assistant', content: [{ type: 'tool_use', id: 'tg', name: 'Bash', input: {} }] } },
+      ]
+      for (let i = 0; i < 10; i++) {
+        rows.push({ type: 'user', uuid: `rg-${i}`, timestamp: ts(2 + i), sessionId: 's', parentUuid: 'A-use', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tg', content: 'y'.repeat(1024) }] } })
+      }
+      await createSessionFile('test-agent', 'page-session', rows)
+
+      // budget 512 -> hard cap 1024, far below the trailing 10KB result run.
+      const page = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 5,
+        byteBudget: 512,
+      })
+      expect(page.messages.map((m) => m.id)).toEqual(['u-0', 'A-use'])
+      const use = page.messages[1]
+      expect(use!.type === 'assistant' && use!.toolCalls[0]?.result).toBeDefined()
+    })
+
+    it('never cuts a merge group split by an interleaved queued message', async () => {
+      // old -> A0(id=M) -> queued Q -> A1(id=M) -> N: the group's older entry
+      // lies below the queued row. A window boundary between Q and A0 would
+      // serve a partial item under A1's non-canonical id, which then vanishes
+      // from the next window and terminates pagination.
+      const ts = (s: number) => new Date(Date.UTC(2026, 0, 10, 0, 0, s)).toISOString()
+      await createSessionFile('test-agent', 'page-session', [
+        { type: 'user', uuid: 'old', timestamp: ts(0), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'earlier' } },
+        { type: 'assistant', uuid: 'A0', timestamp: ts(1), sessionId: 's', parentUuid: null, message: { id: 'M', role: 'assistant', content: [{ type: 'text', text: 'part one ' }] } },
+        { type: 'attachment', uuid: 'q-raw', timestamp: ts(2), parentUuid: null, attachment: { type: 'queued_command', commandMode: 'prompt', prompt: 'steer', source_uuid: 'Q' } },
+        { type: 'assistant', uuid: 'A1', timestamp: ts(3), sessionId: 's', parentUuid: null, message: { id: 'M', role: 'assistant', content: [{ type: 'text', text: 'part two' }] } },
+        { type: 'user', uuid: 'N', timestamp: ts(4), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'newest' } },
+      ])
+
+      const first = await getSessionMessagesPage('test-agent', 'page-session', { limit: 2 })
+      expect(first.messages.map((m) => m.id)).toEqual(['Q', 'N'])
+
+      const older = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 2,
+        cursor: first.nextCursor!,
+      })
+      expect(older.messages.map((m) => m.id)).toEqual(['old', 'A0'])
+      expect(older.messages[1]).toMatchObject({ content: { text: 'part one part two' } })
+      expect(older.nextCursor).toBeNull()
+    })
+
+    it('walks system runs split by meta rows without losing items', async () => {
+      // A meta row between system entries is filtered out before the
+      // transform runs, so the entries on either side are adjacent in
+      // transform semantics and reorder as one run — the scan boundary must
+      // treat them the same way.
+      const ts = (s: number) => new Date(Date.UTC(2026, 0, 11, 0, 0, s)).toISOString()
+      const sys = (uuid: string, subtype: string, s: number, extra: object = {}) => ({
+        type: 'system', uuid, subtype, content: '', isMeta: false, timestamp: ts(s), ...extra,
+      })
+      await createSessionFile('test-agent', 'page-session', [
+        { type: 'user', uuid: 'u-0', timestamp: ts(0), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'q0' } },
+        sys('info1', 'informational', 1, { content: 'note one' }),
+        { type: 'user', uuid: 'meta-x', timestamp: ts(2), sessionId: 's', parentUuid: null, isMeta: true, message: { role: 'user', content: 'meta' } },
+        sys('mr', 'memory_recall', 3, { memory_paths: ['M.md'] }),
+        sys('cb', 'compact_boundary', 4, { compactMetadata: { trigger: 'manual', preTokens: 1 } }),
+        sys('info2', 'informational', 5, { content: 'note two' }),
+      ])
+
+      const full = await getSessionMessagesPage('test-agent', 'page-session', { limit: 100 })
+      const first = await getSessionMessagesPage('test-agent', 'page-session', { limit: 1 })
+      const collected = [...first.messages.map((m) => m.id)]
+      let cursor = first.nextCursor
+      for (let i = 0; i < 10 && cursor; i++) {
+        const page = await getSessionMessagesPage('test-agent', 'page-session', {
+          limit: 1,
+          cursor,
+        })
+        collected.unshift(...page.messages.map((m) => m.id))
+        cursor = page.nextCursor
+      }
+
+      expect(cursor).toBeNull()
+      expect(collected).toEqual(full.messages.map((m) => m.id))
+      expect(collected).toContain('info1')
+    })
+
+    it('pages across a capped gap when the cursor sits in a reordered system run', async () => {
+      // The system run after the gap reorders (recalls before boundaries
+      // before informationals), so the raw rows below a system cursor can
+      // transform to display-AFTER it. If they satisfied the item count, the
+      // page would come out empty and terminate paging while older visible
+      // history exists behind the gap.
+      const ts = (s: number) => new Date(Date.UTC(2026, 0, 12, 0, 0, s)).toISOString()
+      const rows: object[] = [
+        { type: 'user', uuid: 'old-u', timestamp: ts(0), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'older q' } },
+        { type: 'assistant', uuid: 'old-a', timestamp: ts(1), sessionId: 's', parentUuid: null, message: { role: 'assistant', content: [{ type: 'text', text: 'older r' }] } },
+        { type: 'assistant', uuid: 'A-use', timestamp: ts(2), sessionId: 's', parentUuid: null, message: { id: 'msg-A', role: 'assistant', content: [{ type: 'tool_use', id: 'tg', name: 'Bash', input: {} }] } },
+      ]
+      for (let i = 0; i < 10; i++) {
+        rows.push({ type: 'user', uuid: `rg-${i}`, timestamp: ts(3 + i), sessionId: 's', parentUuid: 'A-use', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tg', content: 'y'.repeat(1024) }] } })
+      }
+      rows.push(
+        { type: 'system', uuid: 'cb', subtype: 'compact_boundary', content: '', isMeta: false, timestamp: ts(20), compactMetadata: { trigger: 'auto', preTokens: 1 } },
+        { type: 'system', uuid: 'mr', subtype: 'memory_recall', content: '', isMeta: false, timestamp: ts(21), memory_paths: ['M.md'] },
+        { type: 'system', uuid: 'info', subtype: 'informational', content: 'note', isMeta: false, timestamp: ts(22) },
+        { type: 'user', uuid: 'new-u', timestamp: ts(23), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'new q' } },
+        { type: 'assistant', uuid: 'new-a', timestamp: ts(24), sessionId: 's', parentUuid: null, message: { role: 'assistant', content: [{ type: 'text', text: 'new r' }] } },
+      )
+      await createSessionFile('test-agent', 'page-session', rows)
+
+      const full = await getSessionMessagesPage('test-agent', 'page-session', { limit: 100 })
+      const first = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 5,
+        byteBudget: 512,
+      })
+      expect(first.messages.map((m) => m.id)).toEqual(['mr', 'cb', 'info', 'new-u', 'new-a'])
+      const collected = [...first.messages.map((m) => m.id)]
+      let cursor = first.nextCursor
+      for (let i = 0; i < 10 && cursor; i++) {
+        const page = await getSessionMessagesPage('test-agent', 'page-session', {
+          limit: 5,
+          cursor,
+          byteBudget: 512,
+        })
+        collected.unshift(...page.messages.map((m) => m.id))
+        cursor = page.nextCursor
+      }
+      expect(cursor).toBeNull()
+      expect(collected).toEqual(full.messages.map((m) => m.id))
+    })
+
+    it('keeps a heterogeneous system run whole under a small hard cap', async () => {
+      // Every row is individually below the cap, but the run collectively
+      // exceeds it: run completion is cap-exempt, so no window boundary may
+      // land inside the reorderable group.
+      const ts = (s: number) => new Date(Date.UTC(2026, 0, 13, 0, 0, s)).toISOString()
+      const pad = 'p'.repeat(300)
+      await createSessionFile('test-agent', 'page-session', [
+        { type: 'user', uuid: 'older-u', timestamp: ts(0), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'older' } },
+        { type: 'assistant', uuid: 'older-a', timestamp: ts(1), sessionId: 's', parentUuid: null, message: { role: 'assistant', content: [{ type: 'text', text: 'older r' }] } },
+        { type: 'system', uuid: 'recall', subtype: 'memory_recall', content: pad, isMeta: false, timestamp: ts(2), memory_paths: ['M.md'] },
+        { type: 'system', uuid: 'boundary', subtype: 'compact_boundary', content: pad, isMeta: false, timestamp: ts(3), compactMetadata: { trigger: 'auto', preTokens: 1 } },
+        { type: 'system', uuid: 'info1', subtype: 'informational', content: `note one ${pad}`, isMeta: false, timestamp: ts(4) },
+        { type: 'system', uuid: 'info2', subtype: 'informational', content: `note two ${pad}`, isMeta: false, timestamp: ts(5) },
+        { type: 'user', uuid: 'newer-u', timestamp: ts(6), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'newer' } },
+        { type: 'assistant', uuid: 'newer-a', timestamp: ts(7), sessionId: 's', parentUuid: null, message: { role: 'assistant', content: [{ type: 'text', text: 'newer r' }] } },
+      ])
+
+      const full = await getSessionMessagesPage('test-agent', 'page-session', { limit: 100 })
+      for (const [limit, byteBudget] of [[2, 400], [3, 700], [1, 400]] as const) {
+        const first = await getSessionMessagesPage('test-agent', 'page-session', { limit, byteBudget })
+        const collected = [...first.messages.map((m) => m.id)]
+        let cursor = first.nextCursor
+        for (let i = 0; i < 15 && cursor; i++) {
+          const page = await getSessionMessagesPage('test-agent', 'page-session', {
+            limit,
+            cursor,
+            byteBudget,
+          })
+          collected.unshift(...page.messages.map((m) => m.id))
+          cursor = page.nextCursor
+        }
+        expect(cursor).toBeNull()
+        expect(collected).toEqual(full.messages.map((m) => m.id))
+      }
+    })
+
+    it('collapses repeated compact boundaries like the transform does', async () => {
+      // Boundary/summary pairs with no message between them all share one
+      // anchor; the transform keeps only the newest. Counting each would
+      // satisfy the page target with items that never display, and the
+      // system-cursor page below the surviving boundary must reach the real
+      // older messages.
+      const ts = (s: number) => new Date(Date.UTC(2026, 0, 14, 0, 0, s)).toISOString()
+      const rows: object[] = [
+        { type: 'user', uuid: 'U', timestamp: ts(0), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'q' } },
+        { type: 'assistant', uuid: 'A', timestamp: ts(1), sessionId: 's', parentUuid: null, message: { role: 'assistant', content: [{ type: 'text', text: 'r' }] } },
+      ]
+      for (let i = 1; i <= 4; i++) {
+        rows.push({ type: 'system', uuid: `c${i}`, subtype: 'compact_boundary', content: '', isMeta: false, timestamp: ts(1 + i), compactMetadata: { trigger: 'auto', preTokens: i } })
+        rows.push({ type: 'user', uuid: `s${i}`, timestamp: ts(6 + i), sessionId: 's', parentUuid: null, isCompactSummary: true, message: { role: 'user', content: `summary ${i}` } })
+      }
+      rows.push({ type: 'user', uuid: 'N', timestamp: ts(20), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'after' } })
+      await createSessionFile('test-agent', 'page-session', rows)
+
+      const full = await getSessionMessagesPage('test-agent', 'page-session', { limit: 100 })
+      expect(full.messages.map((m) => m.id)).toEqual(['U', 'A', 'c4', 'N'])
+
+      const first = await getSessionMessagesPage('test-agent', 'page-session', { limit: 2 })
+      expect(first.messages.map((m) => m.id)).toEqual(['c4', 'N'])
+      const older = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 2,
+        cursor: first.nextCursor!,
+      })
+      expect(older.messages.map((m) => m.id)).toEqual(['U', 'A'])
+      expect(older.nextCursor).toBeNull()
+    })
+
+    it('replayed duplicate anchors do not reopen a collapsed boundary span', async () => {
+      // Byte-identical replayed rows share their original's uuid, and the
+      // transform keys boundary collapse BY uuid — so boundaries separated
+      // only by duplicates of one anchor all collapse to the newest. If each
+      // duplicate reset the span, the collapsed boundaries would satisfy the
+      // page target and the cursor page below the survivor would come out
+      // empty, hiding the real older messages.
+      const ts = (s: number) => new Date(Date.UTC(2026, 0, 15, 0, 0, s)).toISOString()
+      const boundary = (uuid: string, s: number) => ({
+        type: 'system', uuid, subtype: 'compact_boundary', content: '', isMeta: false,
+        timestamp: ts(s), compactMetadata: { trigger: 'auto', preTokens: 1 },
+      })
+      const X = { type: 'user', uuid: 'X', timestamp: ts(10), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'anchor msg' } }
+      await createSessionFile('test-agent', 'page-session', [
+        { type: 'user', uuid: 'U', timestamp: ts(0), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'q' } },
+        { type: 'assistant', uuid: 'A', timestamp: ts(1), sessionId: 's', parentUuid: null, message: { role: 'assistant', content: [{ type: 'text', text: 'r' }] } },
+        boundary('c1', 2), X,
+        boundary('c2', 3), X,
+        boundary('c3', 4), X,
+        boundary('c4', 5), X,
+      ])
+
+      const full = await getSessionMessagesPage('test-agent', 'page-session', { limit: 100 })
+      expect(full.messages.map((m) => m.id)).toEqual(['U', 'A', 'c4', 'X'])
+
+      const first = await getSessionMessagesPage('test-agent', 'page-session', { limit: 2 })
+      const collected = [...first.messages.map((m) => m.id)]
+      let cursor = first.nextCursor
+      for (let i = 0; i < 10 && cursor; i++) {
+        const page = await getSessionMessagesPage('test-agent', 'page-session', {
+          limit: 2,
+          cursor,
+        })
+        collected.unshift(...page.messages.map((m) => m.id))
+        cursor = page.nextCursor
+      }
+      expect(cursor).toBeNull()
+      expect(collected).toEqual(['U', 'A', 'c4', 'X'])
+    })
+
+    it('attaches a tool result recorded past the cursor line', async () => {
+      // A queued user message lands between a tool_use and its result, and
+      // becomes the page cursor: the result then sits ABOVE the cursor line,
+      // inside the window's forward grace region.
+      const ts = (s: number) => new Date(Date.UTC(2026, 0, 3, 0, 0, s)).toISOString()
+      const entries: object[] = [
+        ...makeThread(2),
+        { type: 'user', uuid: 'u-ask', timestamp: ts(10), sessionId: 's', parentUuid: null, message: { role: 'user', content: 'run it' } },
+        { type: 'assistant', uuid: 'X-use', timestamp: ts(11), sessionId: 's', parentUuid: 'u-ask', message: { id: 'msg-X', role: 'assistant', content: [{ type: 'tool_use', id: 't9', name: 'Bash', input: { command: 'sleep' } }] } },
+        { type: 'attachment', uuid: 'qc2-raw', timestamp: ts(12), parentUuid: null, attachment: { type: 'queued_command', commandMode: 'prompt', prompt: 'steer2', source_uuid: 'qc-2' } },
+        { type: 'user', uuid: 'r-9', timestamp: ts(13), sessionId: 's', parentUuid: 'X-use', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't9', content: 'late-ok' }] } },
+        { type: 'assistant', uuid: 'a-done', timestamp: ts(14), sessionId: 's', parentUuid: null, message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
+      ]
+      await createSessionFile('test-agent', 'page-session', entries)
+
+      const page = await getSessionMessagesPage('test-agent', 'page-session', {
+        limit: 2,
+        cursor: 'qc-2',
+      })
+      expect(page.messages.map((m) => m.id)).toEqual(['u-ask', 'X-use'])
+      const use = page.messages[1]
+      expect(use!.type === 'assistant' && use!.toolCalls[0]).toMatchObject({
+        id: 't9',
+        result: 'late-ok',
+      })
+    })
+  })
+
+  describe('getSessionMessagesDelta', () => {
+    function makeThread(n: number, sessionId = 'delta-session') {
+      const entries: object[] = []
+      for (let i = 0; i < n; i++) {
+        entries.push({
+          type: 'user',
+          uuid: `u-${i}`,
+          timestamp: new Date(Date.UTC(2026, 0, 1, 0, 0, i * 2)).toISOString(),
+          sessionId,
+          parentUuid: null,
+          message: { role: 'user', content: `q${i}` },
+        })
+        entries.push({
+          type: 'assistant',
+          uuid: `a-${i}`,
+          timestamp: new Date(Date.UTC(2026, 0, 1, 0, 0, i * 2 + 1)).toISOString(),
+          sessionId,
+          parentUuid: `u-${i}`,
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: `a${i}` }],
+          },
+        })
+      }
+      return entries
+    }
+
+    it('returns upserts at-or-after the anchor plus items appended since', async () => {
+      await createSessionFile('test-agent', 'delta-session', makeThread(10))
+
+      const delta = await getSessionMessagesDelta('test-agent', 'delta-session', {
+        after: 'u-8',
+      })
+      expect(delta.resync).toBeUndefined()
+      expect(delta.messages.map((m) => m.id)).toEqual(['u-8', 'a-8', 'u-9', 'a-9'])
+      // The trailing assistant may still merge streamed blocks, so the settled
+      // anchor is the user message before it.
+      expect(delta.anchor).toBe('u-9')
+    })
+
+    it('a tool_result landing after the anchor updates the already-served assistant item', async () => {
+      // Assistant X calls a tool; a queued (mid-turn) user message follows, so a
+      // client could legitimately anchor past X while X's call is still open.
+      const base = [
+        ...makeThread(3),
+        {
+          type: 'assistant',
+          uuid: 'X',
+          timestamp: '2026-01-01T00:01:00.000Z',
+          sessionId: 'delta-session',
+          parentUuid: 'a-2',
+          message: {
+            id: 'msg-X',
+            role: 'assistant',
+            content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } }],
+          },
+        },
+        {
+          type: 'attachment',
+          uuid: 'q-attachment',
+          timestamp: '2026-01-01T00:01:05.000Z',
+          sessionId: 'delta-session',
+          attachment: {
+            type: 'queued_command',
+            prompt: [{ type: 'text', text: 'steering note' }],
+            source_uuid: 'q-1',
+            commandMode: 'prompt',
+          },
+        },
+      ]
+      await createSessionFile('test-agent', 'delta-session', base)
+
+      const before = await getSessionMessagesDelta('test-agent', 'delta-session', {
+        after: 'q-1',
+      })
+      // Defensive widening: the open tool call before the anchor is re-emitted.
+      expect(before.messages.map((m) => m.id)).toEqual(['X', 'q-1'])
+      const openCall = before.messages.find((m) => m.id === 'X')
+      expect(openCall).toMatchObject({ toolCalls: [{ id: 't1', result: undefined }] })
+
+      await createSessionFile('test-agent', 'delta-session', [
+        ...base,
+        {
+          type: 'user',
+          uuid: 'tr-1',
+          timestamp: '2026-01-01T00:01:10.000Z',
+          sessionId: 'delta-session',
+          parentUuid: 'X',
+          message: {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: 't1', content: 'file1\nfile2' }],
+          },
+        },
+      ])
+
+      const after = await getSessionMessagesDelta('test-agent', 'delta-session', {
+        after: 'q-1',
+      })
+      expect(after.messages.map((m) => m.id)).toEqual(['X', 'q-1'])
+      const resolvedCall = after.messages.find((m) => m.id === 'X')
+      expect(resolvedCall).toMatchObject({ toolCalls: [{ id: 't1', result: 'file1\nfile2' }] })
+    })
+
+    it('widens the window to the trailing assistant when the anchor sits after it', async () => {
+      // e.g. the client anchored on a trailing informational banner while the
+      // assistant message before it can still merge streamed blocks.
+      await createSessionFile('test-agent', 'delta-session', [
+        ...makeThread(3),
+        {
+          type: 'system',
+          subtype: 'informational',
+          uuid: 'info-1',
+          timestamp: '2026-01-01T00:02:00.000Z',
+          sessionId: 'delta-session',
+          content: 'a hook blocked something',
+        },
+      ])
+
+      const delta = await getSessionMessagesDelta('test-agent', 'delta-session', {
+        after: 'info-1',
+      })
+      expect(delta.messages.map((m) => m.id)).toEqual(['a-2', 'info-1'])
+      expect(delta.anchor).toBe('u-2')
+    })
+
+    it('grows the tail window until a deep anchor resolves', async () => {
+      // 200 pairs = 400 raw lines, past the initial 128-line window.
+      await createSessionFile('test-agent', 'delta-session', makeThread(200))
+
+      const delta = await getSessionMessagesDelta('test-agent', 'delta-session', {
+        after: 'u-30',
+      })
+      expect(delta.resync).toBeUndefined()
+      expect(delta.messages[0]?.id).toBe('u-30')
+      expect(delta.messages.at(-1)?.id).toBe('a-199')
+      expect(delta.messages).toHaveLength(340)
+    })
+
+    it('answers resync when the anchor id is not in the transcript', async () => {
+      await createSessionFile('test-agent', 'delta-session', makeThread(10))
+
+      const delta = await getSessionMessagesDelta('test-agent', 'delta-session', {
+        after: 'vanished-id',
+      })
+      expect(delta).toEqual({ messages: [], anchor: null, resync: true })
+    })
+
+    it('answers resync when the transcript file is gone', async () => {
+      await createSessionsDir('test-agent')
+
+      const delta = await getSessionMessagesDelta('test-agent', 'nonexistent', {
+        after: 'u-1',
+      })
+      expect(delta).toEqual({ messages: [], anchor: null, resync: true })
+    })
+
+    it('answers resync instead of scanning past the bounded tail', async () => {
+      // 5100 pairs = 10200 raw lines; u-0 sits beyond the 10k-line delta cap.
+      await createSessionFile('test-agent', 'delta-session', makeThread(5100))
+
+      const delta = await getSessionMessagesDelta('test-agent', 'delta-session', {
+        after: 'u-0',
+      })
+      expect(delta).toEqual({ messages: [], anchor: null, resync: true })
+    })
+
+    it('rejects with AbortError when the signal is already aborted', async () => {
+      await createSessionFile('test-agent', 'delta-session', makeThread(10))
+
+      const controller = new AbortController()
+      controller.abort()
+      await expect(
+        getSessionMessagesDelta('test-agent', 'delta-session', {
+          after: 'u-8',
+          signal: controller.signal,
+        })
+      ).rejects.toMatchObject({ name: 'AbortError' })
+    })
+
+    it('re-serves the still-streaming assistant when the anchor is a queued message after it', async () => {
+      // Steering input lands mid-turn; more blocks for the assistant before it
+      // can still arrive. Anchoring on the queued message must not freeze the
+      // assistant's partial text on the client.
+      await createSessionFile('test-agent', 'delta-session', [
+        ...makeThread(2),
+        {
+          type: 'assistant',
+          uuid: 'S-0',
+          timestamp: '2026-01-01T00:01:00.000Z',
+          sessionId: 'delta-session',
+          parentUuid: 'a-1',
+          message: {
+            id: 'msg-S',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'streaming ' }],
+          },
+        },
+        {
+          type: 'attachment',
+          uuid: 'q-attachment',
+          timestamp: '2026-01-01T00:01:05.000Z',
+          sessionId: 'delta-session',
+          attachment: {
+            type: 'queued_command',
+            prompt: [{ type: 'text', text: 'steering note' }],
+            source_uuid: 'q-1',
+            commandMode: 'prompt',
+          },
+        },
+        {
+          type: 'assistant',
+          uuid: 'S-1',
+          timestamp: '2026-01-01T00:01:10.000Z',
+          sessionId: 'delta-session',
+          parentUuid: 'q-attachment',
+          message: {
+            id: 'msg-S',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'continued' }],
+          },
+        },
+      ])
+
+      const delta = await getSessionMessagesDelta('test-agent', 'delta-session', {
+        after: 'q-1',
+      })
+      expect(delta.messages.map((m) => m.id)).toEqual(['S-0', 'q-1'])
+      expect(delta.messages[0]).toMatchObject({ content: { text: 'streaming continued' } })
+    })
+
+    it('grows the window until a late tool_result finds its parent assistant item', async () => {
+      // The parent call sits well past the initial 128-line window; its result
+      // lands after the anchor. Without growth the parent's upsert would be
+      // silently skipped and the client's copy stay unresolved forever.
+      const parent = {
+        type: 'assistant',
+        uuid: 'P',
+        timestamp: '2026-01-01T00:00:00.000Z',
+        sessionId: 'delta-session',
+        parentUuid: null,
+        message: {
+          id: 'msg-P',
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'deep-t1', name: 'AskUserQuestion', input: {} }],
+        },
+      }
+      const filler = makeThread(100).map((e, i) => ({
+        ...e,
+        uuid: `f-${i}`,
+        timestamp: new Date(Date.UTC(2026, 0, 1, 1, 0, i)).toISOString(),
+      }))
+      const anchorMsg = {
+        type: 'user',
+        uuid: 'anchor-u',
+        timestamp: '2026-01-01T02:00:00.000Z',
+        sessionId: 'delta-session',
+        parentUuid: null,
+        message: { role: 'user', content: 'latest question' },
+      }
+      const lateResult = {
+        type: 'user',
+        uuid: 'tr-deep',
+        timestamp: '2026-01-01T02:00:10.000Z',
+        sessionId: 'delta-session',
+        parentUuid: 'P',
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'deep-t1', content: 'answered' }],
+        },
+      }
+      await createSessionFile('test-agent', 'delta-session', [
+        parent,
+        ...filler,
+        anchorMsg,
+        lateResult,
+      ])
+
+      const delta = await getSessionMessagesDelta('test-agent', 'delta-session', {
+        after: 'anchor-u',
+      })
+      expect(delta.resync).toBeUndefined()
+      expect(delta.messages[0]?.id).toBe('P')
+      expect(delta.messages[0]).toMatchObject({
+        toolCalls: [{ id: 'deep-t1', result: 'answered' }],
+      })
+    })
+
+    it('a trailing orphan tool_result on a transcript beyond the tail cap does not resync-loop', async () => {
+      // The parent (if any) lies deeper than the bounded tail can reach; a
+      // resync here would repeat on EVERY poll — full fetch, new delta, same
+      // orphan — recreating the refetch cascade. Serve the delta without the
+      // unreachable parent instead.
+      await createSessionFile('test-agent', 'delta-session', [
+        ...makeThread(5100),
+        {
+          type: 'user',
+          uuid: 'tr-beyond-cap',
+          timestamp: '2026-01-01T06:00:00.000Z',
+          sessionId: 'delta-session',
+          parentUuid: null,
+          message: {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: 'unreachable-t1', content: 'late' }],
+          },
+        },
+      ])
+
+      const delta = await getSessionMessagesDelta('test-agent', 'delta-session', {
+        after: 'u-5099',
+      })
+      expect(delta.resync).toBeUndefined()
+      expect(delta.messages[0]?.id).toBe('u-5099')
+    })
+
+    it('an orphaned tool_result (parent rewritten away) does not force resync', async () => {
+      await createSessionFile('test-agent', 'delta-session', [
+        ...makeThread(3),
+        {
+          type: 'user',
+          uuid: 'tr-orphan',
+          timestamp: '2026-01-01T00:05:00.000Z',
+          sessionId: 'delta-session',
+          parentUuid: null,
+          message: {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: 'gone-t1', content: 'orphan' }],
+          },
+        },
+      ])
+
+      const delta = await getSessionMessagesDelta('test-agent', 'delta-session', {
+        after: 'u-2',
+      })
+      expect(delta.resync).toBeUndefined()
+      expect(delta.messages[0]?.id).toBe('u-2')
+    })
+
+    it('merges a block-split assistant message into one upsert item', async () => {
+      await createSessionFile('test-agent', 'delta-session', [
+        ...makeThread(2),
+        {
+          type: 'assistant',
+          uuid: 'X-0',
+          timestamp: '2026-01-01T00:01:00.000Z',
+          sessionId: 'delta-session',
+          parentUuid: 'a-1',
+          message: {
+            id: 'msg-X',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'leading ' }],
+          },
+        },
+        {
+          type: 'assistant',
+          uuid: 'X-1',
+          timestamp: '2026-01-01T00:01:01.000Z',
+          sessionId: 'delta-session',
+          parentUuid: 'X-0',
+          message: {
+            id: 'msg-X',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'trailing' }],
+          },
+        },
+      ])
+
+      const delta = await getSessionMessagesDelta('test-agent', 'delta-session', {
+        after: 'u-1',
+      })
+      expect(delta.messages.map((m) => m.id)).toEqual(['u-1', 'a-1', 'X-0'])
+      expect(delta.messages.at(-1)).toMatchObject({ content: { text: 'leading trailing' } })
     })
   })
 

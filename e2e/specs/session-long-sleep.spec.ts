@@ -59,6 +59,8 @@ test.describe('Session long sleep (schedule_resume)', () => {
     await agentPage.createAgent(agentName, { waitForSidebarName: false })
 
     await sessionPage.sendMessage('schedule resume until the review is approved')
+    await sessionPage.waitForInputEnabled(15000)
+    await sessionPage.expandLatestCompletedTurn(15000)
     await sessionPage.expectToolCall('mcp__user-input__schedule_resume', 15000)
 
     const agentSlug = getCurrentAgentSlug(page)

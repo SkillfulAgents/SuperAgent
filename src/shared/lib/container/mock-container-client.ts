@@ -230,6 +230,92 @@ export class ThinkingResponseScenario implements MockScenario {
 }
 
 /**
+ * Reproduces a live/persisted thinking mismatch while the session is still
+ * active. The stream intentionally begins mid-thought, but the JSONL contains
+ * the full block under the same stable message/index identity. The delayed
+ * result leaves enough time for E2E to assert the live card was handed off by
+ * identity rather than stranded at the transcript tail.
+ */
+export class ActiveDivergentThinkingScenario implements MockScenario {
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    const messageId = `msg-active-divergent-${sessionId}`
+    const persistedThinking = 'The full persisted reasoning begins before the fragment delivered after reconnect.'
+    const responseText = 'Persisted divergent-thinking checkpoint.'
+
+    setTimeout(() => {
+      client.writeJsonlEntry(sessionId, {
+        type: 'user',
+        message: { content: userMessage },
+        timestamp: new Date().toISOString(),
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: {
+          type: 'stream_event',
+          event: { type: 'message_start', message: { id: messageId } },
+        },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: {
+          type: 'stream_event',
+          event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } },
+        },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: {
+          type: 'stream_event',
+          event: {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'thinking_delta', thinking: 'fragment delivered after reconnect' },
+          },
+        },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+      })
+
+      client.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: {
+          id: messageId,
+          content: [
+            { type: 'thinking', thinking: persistedThinking, signature: 'mock-signature' },
+            { type: 'text', text: responseText },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'assistant',
+        content: {
+          type: 'assistant',
+          message: {
+            id: messageId,
+            role: 'assistant',
+            content: [
+              { type: 'thinking', thinking: persistedThinking, signature: 'mock-signature' },
+              { type: 'text', text: responseText },
+            ],
+          },
+        },
+      })
+    }, 20)
+
+    // Keep the session active well after the persisted message is visible.
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'result',
+        content: { type: 'result', subtype: 'success' },
+      })
+    }, 10_000)
+  }
+}
+
+/**
  * Multi-pass extended-thinking scenario — streams several thinking blocks in
  * one turn, persisting each block's assistant JSONL entry as it completes
  * (the real CLI writes one transcript entry per assistant message mid-turn).
@@ -877,6 +963,8 @@ export class DeadSubagentInputScenario implements MockScenario {
   execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
     const parentToolId = `agent_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
     const subToolId = `subtool_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
+    const subagentDeathDelayMs = 5_000
+    const mainTurnCompletionDelayMs = subagentDeathDelayMs + 2_500
 
     client.writeJsonlEntry(sessionId, {
       type: 'user',
@@ -915,9 +1003,8 @@ export class DeadSubagentInputScenario implements MockScenario {
       })
     }, 60)
 
-    // The subagent dies ~2.5s later: its terminal sidechain 'result' frame
-    // arrives while the browser_input has no tool_result. Long enough for a
-    // spec to assert the card + awaiting window first.
+    // Keep the parked phase observable under a loaded, multi-worker browser
+    // run before the terminal sidechain 'result' invalidates the request.
     setTimeout(() => {
       client.emitStreamMessage(sessionId, {
         type: 'result',
@@ -927,7 +1014,7 @@ export class DeadSubagentInputScenario implements MockScenario {
           subtype: 'success',
         },
       })
-    }, 2500)
+    }, subagentDeathDelayMs)
 
     // The main turn continues briefly, then settles on its own — the parked
     // ask must NOT be what ends it.
@@ -943,7 +1030,7 @@ export class DeadSubagentInputScenario implements MockScenario {
         type: 'result',
         content: { type: 'result', subtype: 'success' },
       })
-    }, 5000)
+    }, mainTurnCompletionDelayMs)
   }
 }
 
@@ -1488,6 +1575,9 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       'so I will stream a few sentences of summarized reasoning before replying.',
       'Done thinking — here is the answer.'
     )],
+    // Persist while active with deliberately divergent live text — regression
+    // for completed thinking cards stranding at the transcript tail.
+    ['think with missing deltas', new ActiveDivergentThinkingScenario()],
     // Register the "list files" scenario for tool use tests
     ['list files', new ToolUseScenario(
       'Bash',
@@ -1503,6 +1593,12 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     ['slow response', new DelayedTextResponseScenario(
       'This is a delayed mock response.',
       3000
+    )],
+    // A viewport-overflowing streamed reply (~1200 words over ~6s) so
+    // transcript follow/scroll behavior can be observed while it grows
+    ['stream a long story', new SimpleTextResponseScenario(
+      'Here begins a long story that overflows the viewport so live-edge following can be observed while it streams. ' +
+      'The quick brown fox jumps over the lazy dog while the transcript keeps growing line after line without pause. '.repeat(70),
     )],
     // Register user input request scenarios for E2E testing
     ['ask secret', new UserInputRequestScenario([
@@ -1739,10 +1835,28 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       'src/index.ts\nsrc/utils.ts\nsrc/types.ts',
       'I found 3 TypeScript files.'
     )],
+    // Mirrors the real formatter output (agent-container/src/tools/web/format-results.ts):
+    // Links JSON contract line (title/url/published, optional favicon), then the numbered list.
     ['search web', new ToolUseScenario(
       'WebSearch',
       { query: 'TypeScript best practices 2025' },
-      'Web search results for query: TypeScript best practices 2025\n\n1. Use strict mode\n2. Prefer interfaces over types',
+      [
+        'Links: ' + JSON.stringify([
+          { title: 'TypeScript Handbook', url: 'https://www.typescriptlang.org/docs/handbook/intro.html', published: '2026-05-12', favicon: 'https://www.typescriptlang.org/favicon-32x32.png' },
+          { title: 'TypeScript Wiki', url: 'https://github.com/microsoft/TypeScript/wiki', published: '', favicon: 'https://github.com/favicon.ico' },
+          { title: 'Strict mode tips', url: 'https://stackoverflow.com/questions/tagged/typescript', published: '2026-03-02', favicon: 'https://stackoverflow.com/favicon.ico' },
+          { title: 'tsconfig reference', url: 'https://example.org/tsconfig', published: '' },
+          { title: 'Effective TypeScript', url: 'https://effectivetypescript.com/', published: '2026-01-20', favicon: 'https://effectivetypescript.com/favicon.ico' },
+          { title: 'Type-level tricks', url: 'https://example.net/tricks', published: '' },
+        ]),
+        '',
+        '1. TypeScript Handbook', '   https://www.typescriptlang.org/docs/handbook/intro.html', '   Published: 2026-05-12', '   Use strict mode from day one.', '',
+        '2. TypeScript Wiki', '   https://github.com/microsoft/TypeScript/wiki', '   Prefer interfaces over type aliases for public APIs.', '',
+        '3. Strict mode tips', '   https://stackoverflow.com/questions/tagged/typescript', '   Published: 2026-03-02', '   Common strictness pitfalls.', '',
+        '4. tsconfig reference', '   https://example.org/tsconfig', '   Every compiler flag explained.', '',
+        '5. Effective TypeScript', '   https://effectivetypescript.com/', '   Published: 2026-01-20', '   62 specific ways to improve your TypeScript.', '',
+        '6. Type-level tricks', '   https://example.net/tricks', '   Advanced conditional types.', '',
+      ].join('\n'),
       'Here are the search results.'
     )],
     // Connected account request scenario
@@ -1889,7 +2003,12 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   private config: ContainerConfig
   private running: boolean = false
-  private activeBrowserSessionId: string | null = null
+  // Agent-keyed, class-level: scenarios execute against a per-generation
+  // scenarioView (prototype-chained onto the client), so an instance field
+  // written through the view SHADOWS instead of mutating the underlying
+  // client — /browser/status (served by the map instance) would then always
+  // read null. Static state is immune to view shadowing.
+  private static activeBrowserSessions = new Map<string, string>()
   private sessions: Map<string, ContainerSession> = new Map()
   private streamCallbacks: Map<string, Set<(message: StreamMessage) => void>> = new Map()
   // Map from containerSessionId to our internal sessionId (which is the same as the API sessionId)
@@ -1941,7 +2060,15 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   }
 
   setActiveBrowserSession(sessionId: string | null): void {
-    this.activeBrowserSessionId = sessionId
+    if (sessionId === null) {
+      MockContainerClient.activeBrowserSessions.delete(this.config.agentId)
+    } else {
+      MockContainerClient.activeBrowserSessions.set(this.config.agentId, sessionId)
+    }
+  }
+
+  private get activeBrowserSessionId(): string | null {
+    return MockContainerClient.activeBrowserSessions.get(this.config.agentId) ?? null
   }
 
   /**
@@ -2108,7 +2235,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   // Lifecycle management
 
-  async start(options?: StartOptions): Promise<void> {
+  async start(options?: StartOptions): Promise<ContainerInfo> {
     this.running = true
     // Surface the container env that carries the proxy credentials so E2E
     // specs can call the API/MCP proxies the way a real container would
@@ -2123,12 +2250,13 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       })
     }
     console.log(`[MockContainerClient] Started mock container for agent ${this.config.agentId}`)
+    return this.getInfoFromRuntime()
   }
 
   async stop(_options?: StopOptions): Promise<{ forceStopUsed: boolean; stopped: boolean }> {
     if (this.activeBrowserSessionId && cleanupBrowserSessionFn) {
       cleanupBrowserSessionFn(this.activeBrowserSessionId)
-      this.activeBrowserSessionId = null
+      this.setActiveBrowserSession(null)
     }
     this.running = false
     this.sessions.clear()
@@ -2140,7 +2268,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   stopSync(): void {
     if (this.activeBrowserSessionId && cleanupBrowserSessionFn) {
       cleanupBrowserSessionFn(this.activeBrowserSessionId)
-      this.activeBrowserSessionId = null
+      this.setActiveBrowserSession(null)
     }
     this.running = false
     this.sessions.clear()
@@ -2216,6 +2344,33 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
           error: error instanceof Error ? error.message : 'Workspace operation failed',
         }), { status, headers: { 'Content-Type': 'application/json' } })
       }
+    }
+
+    // Browser close — mirror the real container: kill the scenario's Chrome,
+    // drop the active-session marker, and broadcast browser_active:false so
+    // connected clients dismiss their previews. Without this the generic
+    // catch-all 200 {} left the browser "active" forever.
+    if (fetchPath === '/browser/close' && init?.method === 'POST') {
+      let requestedSessionId: string | undefined
+      try {
+        requestedSessionId = (JSON.parse(String(init?.body ?? '{}')) as { sessionId?: string })
+          .sessionId
+      } catch {
+        // No/invalid body — fall back to whatever browser is active.
+      }
+      const sessionId = requestedSessionId ?? this.activeBrowserSessionId
+      if (sessionId) {
+        if (cleanupBrowserSessionFn) cleanupBrowserSessionFn(sessionId)
+        this.setActiveBrowserSession(null)
+        this.emitStreamMessage(sessionId, {
+          type: 'browser_active',
+          content: { type: 'browser_active', active: false, sessionId },
+        })
+      }
+      return new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
     }
 
     // Browser status — used by frontend when WebSocket closes to check if browser is still active

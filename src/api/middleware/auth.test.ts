@@ -66,6 +66,7 @@ import {
   Or,
   EntityAgentRole,
   getAuthorizedAgentRole,
+  getRequestDeviceId,
 } from './auth'
 
 // ---------------------------------------------------------------------------
@@ -186,6 +187,68 @@ describe('Auth Middleware', () => {
       const res = await request(app, '/')
       expect(res.status).toBe(200)
       expect(capturedUser).toEqual(adminUser)
+    })
+  })
+
+  // =========================================================================
+  // getRequestDeviceId()
+  // =========================================================================
+
+  describe('getRequestDeviceId()', () => {
+    function buildDeviceIdApp() {
+      let captured: string | null | undefined
+      const app = new Hono()
+      app.get('/', Authenticated(), (c) => {
+        captured = getRequestDeviceId(c)
+        return c.json({ ok: true })
+      })
+      return { app, getCaptured: () => captured }
+    }
+
+    it('returns the deviceId for a mobile session carrying one', async () => {
+      mockGetSession.mockResolvedValue({
+        user: { id: 'user-1', role: 'user' },
+        session: { id: 'sess-1', userId: 'user-1', deviceId: 'device-family-1' },
+      })
+      const { app, getCaptured } = buildDeviceIdApp()
+
+      const res = await request(app, '/')
+      expect(res.status).toBe(200)
+      expect(getCaptured()).toBe('device-family-1')
+    })
+
+    it('returns null for a browser/desktop session without a deviceId', async () => {
+      mockGetSession.mockResolvedValue({
+        user: { id: 'user-1', role: 'user' },
+        session: { id: 'sess-1', userId: 'user-1', deviceId: null },
+      })
+      const { app, getCaptured } = buildDeviceIdApp()
+
+      const res = await request(app, '/')
+      expect(res.status).toBe(200)
+      expect(getCaptured()).toBeNull()
+    })
+
+    it('returns null when the session object omits deviceId entirely', async () => {
+      mockGetSession.mockResolvedValue({
+        user: { id: 'user-1', role: 'user' },
+        session: { id: 'sess-1', userId: 'user-1' },
+      })
+      const { app, getCaptured } = buildDeviceIdApp()
+
+      const res = await request(app, '/')
+      expect(res.status).toBe(200)
+      expect(getCaptured()).toBeNull()
+    })
+
+    it('returns null in local (non-auth) mode where no session is stored', async () => {
+      mockIsAuthMode.mockReturnValue(false)
+      const { app, getCaptured } = buildDeviceIdApp()
+
+      const res = await request(app, '/')
+      expect(res.status).toBe(200)
+      expect(getCaptured()).toBeNull()
+      expect(mockGetSession).not.toHaveBeenCalled()
     })
   })
 

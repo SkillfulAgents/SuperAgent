@@ -56,17 +56,19 @@ describe('requestCardFromRegistry', () => {
     expect(requestCardFromRegistry(request('script_run', { script: 'ls' }, { autoApproved: true }))).toBeNull()
   })
 
-  it('stays quiet for reviews — those render off the global channel', () => {
+  it('stays quiet for agent-scoped app requests', () => {
     expect(requestCardFromRegistry(request('proxy_review', {}, { sessionId: null }))).toBeNull()
     expect(requestCardFromRegistry(request('x_agent_review', {}, { sessionId: null }))).toBeNull()
+    expect(requestCardFromRegistry(request('account_reauth_required', {}, { sessionId: null }))).toBeNull()
+    expect(requestCardFromRegistry(request('mcp_reauth_required', {}, { sessionId: null }))).toBeNull()
   })
 
   it('maps every request kind to a decision — no kind can go silent by omission', () => {
     // The regression this guards: before the unified wire, a new kind fell
     // through processSSEEvent's else-if chain and chat users waited on a card
     // that was never coming. Every kind must either render or be one of the
-    // two documented quiet cases.
-    const quiet = new Set(['proxy_review', 'x_agent_review'])
+    // documented quiet cases.
+    const quiet = new Set(['proxy_review', 'x_agent_review', 'account_reauth_required', 'mcp_reauth_required'])
     for (const kind of USER_INPUT_REQUEST_KINDS) {
       const card = requestCardFromRegistry(request(kind, {}, { sessionId: quiet.has(kind) ? null : 'session-1' }))
       if (quiet.has(kind)) {

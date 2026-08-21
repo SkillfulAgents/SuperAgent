@@ -12,6 +12,8 @@ export interface ArtifactInfo {
   status: 'running' | 'stopped' | 'crashed' | 'starting'
   port: number
   hasScreenshot?: boolean
+  startupPhase?: 'installing-dependencies' | 'starting-server'
+  firstRun?: boolean
 }
 
 /**
@@ -46,6 +48,7 @@ export async function listArtifactsFromFilesystem(
         ARTIFACT_SCREENSHOT_FILENAME
       )
       const hasScreenshot = await fileExists(screenshotPath)
+      const firstRun = !(await directoryExists(path.join(artifactsDir, entry.name, 'node_modules')))
       const info: ArtifactInfo = {
         slug: entry.name,
         name: pkg.name || entry.name,
@@ -56,6 +59,10 @@ export async function listArtifactsFromFilesystem(
       // Only include hasScreenshot when true — keeps the API shape minimal
       // and avoids spurious `hasScreenshot: false` fields in common responses.
       if (hasScreenshot) info.hasScreenshot = true
+      // The host can report this before the agent container is running. That
+      // lets the dashboard view explain first-run preparation during container
+      // startup instead of flashing the state only during a fast install.
+      if (firstRun) info.firstRun = true
       dashboards.push(info)
     } catch {
       // No valid package.json, skip
@@ -69,6 +76,14 @@ async function fileExists(p: string): Promise<boolean> {
   try {
     await fs.promises.access(p, fs.constants.R_OK)
     return true
+  } catch {
+    return false
+  }
+}
+
+async function directoryExists(p: string): Promise<boolean> {
+  try {
+    return (await fs.promises.stat(p)).isDirectory()
   } catch {
     return false
   }

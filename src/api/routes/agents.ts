@@ -1,4 +1,5 @@
 import { Hono, type Context } from 'hono'
+import { bodyLimit } from 'hono/body-limit'
 import { streamSSE } from 'hono/streaming'
 import { getConnInfo } from '@hono/node-server/conninfo'
 import type Anthropic from '@anthropic-ai/sdk'
@@ -13,7 +14,9 @@ import {
   injectDashboardRuntime,
 } from '../dashboard-runtime'
 import { parsePagination } from '../pagination'
-import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getAuthorizedAgentRole } from '../middleware/auth'
+import { MESSAGES_PAGE_MAX_LIMIT, capMessagesPageLimit } from '@shared/lib/messages-page'
+import { streamJsonArrayResponse } from '../stream-json-array'
+import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getAuthorizedAgentRole, getRequestDeviceId } from '../middleware/auth'
 import {
   listAgentsWithStatus,
   createAgent,
@@ -30,7 +33,7 @@ import {
   updateConnectedAccountsEnvironment,
   updateRemoteMcpEnvironment,
 } from '@shared/lib/container/connection-runtime-sync'
-import { parseRuntimeOptions } from '@shared/lib/container/runtime-options'
+import { parseRuntimeOptions, resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
@@ -39,6 +42,7 @@ import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
 import { parseByteRange } from '@shared/lib/utils/http-range'
 import { messagePersister } from '@shared/lib/container/message-persister'
+import { repairLegacySlashCommands } from '@shared/lib/container/slash-commands'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { credentialBroker } from '../credentials/credential-broker'
 import { CredentialBrokerError } from '../credentials/types'
@@ -54,6 +58,8 @@ import {
   updateSessionName,
   registerSession,
   getSessionMessagesWithCompact,
+  getSessionMessagesPage,
+  getSessionMessagesDelta,
   getSession,
   getSessionMetadata,
   sessionExists,
@@ -66,7 +72,8 @@ import {
   removeMessage,
   removeToolCall,
 } from '@shared/lib/services/session-service'
-import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, readJsonlFile, writeJsonFileAtomic, displaySlug } from '@shared/lib/utils/file-storage'
+import { decodeMediaRef, openMediaBlob } from '@shared/lib/services/session-media'
+import { getSessionJsonlPath, getAgentSessionsDir, readJsonlFile, writeJsonFileAtomic, displaySlug, createJsonArrayStringifyTransform, directoryExists } from '@shared/lib/utils/file-storage'
 import {
   MAX_UPLOAD_TOTAL_SIZE,
   UploadTooLargeError,
@@ -142,6 +149,7 @@ import {
 import {
   exportAgentTemplate,
   exportAgentFull,
+  isHostExportBusy,
   importAgentFromTemplate,
   MAX_COMPRESSED_SIZE,
   installAgentFromSkillset,
@@ -155,6 +163,7 @@ import {
   publishAgentToSkillset,
   refreshAgentTemplates,
   hasOnboardingSkill,
+  getAgentTemplatePrompt,
 } from '@shared/lib/services/agent-template-service'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import type { SkillsetConfig } from '@shared/lib/types/skillset'
@@ -179,7 +188,8 @@ import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-
 import { loadSessionUsageTotals } from '@shared/lib/services/usage-service'
 import { captureException } from '@shared/lib/error-reporting'
 import * as fs from 'fs'
-import { Readable } from 'stream'
+import { Readable, pipeline } from 'stream'
+import { pipeline as streamPipeline } from 'stream/promises'
 import pLimit from 'p-limit'
 import * as path from 'path'
 import type { ApiAgent } from '@shared/lib/types/api'
@@ -682,9 +692,12 @@ async function processImport(c: Context, zipBuffer: Buffer, formData: FormData) 
 
   const agent = await importAgentFromTemplate(zipBuffer, nameOverride || undefined, importMode)
   await createOwnerAclOrRollback(c, agent.slug)
-  const hasOnboarding = await hasOnboardingSkill(agent.slug)
+  const [hasOnboarding, templatePrompt] = await Promise.all([
+    hasOnboardingSkill(agent.slug),
+    getAgentTemplatePrompt(agent.slug),
+  ])
   logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: agent.slug, action: 'imported', details: { name: agent.name } })
-  return c.json({ ...agent, hasOnboarding }, 201)
+  return c.json({ ...agent, hasOnboarding, templatePrompt }, 201)
 }
 
 // GET /api/agents/discoverable-agents - List agents available from skillsets
@@ -704,6 +717,11 @@ agents.get('/discoverable-agents', async (c) => {
     console.error('Failed to fetch discoverable agents:', error)
     return c.json({ error: 'Failed to fetch discoverable agents' }, 500)
   }
+})
+
+// GET /api/agents/export-status — host-wide; registered before /:id
+agents.get('/export-status', (c) => {
+  return c.json({ inProgress: isHostExportBusy() })
 })
 
 // POST /api/agents/install-from-skillset - Install agent from skillset
@@ -728,9 +746,12 @@ agents.post('/install-from-skillset', async (c) => {
     )
 
     await createOwnerAclOrRollback(c, agent.slug)
-    const hasOnboarding = await hasOnboardingSkill(agent.slug)
+    const [hasOnboarding, templatePrompt] = await Promise.all([
+      hasOnboardingSkill(agent.slug),
+      getAgentTemplatePrompt(agent.slug),
+    ])
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: agent.slug, action: 'imported', details: { name: agent.name, skillsetId } })
-    return c.json({ ...agent, hasOnboarding }, 201)
+    return c.json({ ...agent, hasOnboarding, templatePrompt }, 201)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to install agent from skillset'
     console.error('Failed to install agent from skillset:', error)
@@ -902,30 +923,37 @@ async function generateAndUpdateSessionNameAsync(
   agentName: string
 ): Promise<void> {
   let sessionName: string | null = null
-  try {
-    const anthropic = getLlmClient()
-    sessionName = await createSummarizerText(anthropic, {
-      model: getSummarizerModel(),
-      messages: [
-        {
-          role: 'user',
-          content: `Generate a short, descriptive session name (3-6 words max) for a conversation with an AI agent named "${agentName}". The first message in the conversation is:
+  // The E2E mock avoids all real provider calls — but this host-direct SDK
+  // call bypassed it, so every test session made a doomed HTTPS round trip
+  // (plus SDK retries) and logged an auth-error stack. Skip straight to the
+  // truncated-message fallback below.
+  const skipProviderNaming = process.env.E2E_MOCK === 'true'
+  if (!skipProviderNaming) {
+    try {
+      const anthropic = getLlmClient()
+      sessionName = await createSummarizerText(anthropic, {
+        model: getSummarizerModel(),
+        messages: [
+          {
+            role: 'user',
+            content: `Generate a short, descriptive session name (3-6 words max) for a conversation with an AI agent named "${agentName}". The first message in the conversation is:
 
 "${message}"
 
 Respond with ONLY the session name, nothing else. No quotes, no explanation.`,
-        },
-      ],
-    })
-  } catch (error) {
-    console.error('Failed to generate session name after retries:', error)
+          },
+        ],
+      })
+    } catch (error) {
+      console.error('Failed to generate session name after retries:', error)
+    }
   }
   try {
     // Naming can fail outright (misconfigured summarizer model) or return no
     // text (thinking-first ruminators like small qwen burn the whole budget);
     // fall back to the truncated first message so the session is still
     // identifiable in the sidebar instead of staying "New Session".
-    if (!sessionName) {
+    if (!sessionName && !skipProviderNaming) {
       console.warn(`Session name generation returned no text; falling back to truncated message for session ${sessionId}`)
     }
     const finalName = sessionName
@@ -959,7 +987,10 @@ agents.get('/', async (c) => {
         .where(eq(agentAcl.userId, userId))
       const agentLimit = pLimit(10)
       const agents = await Promise.all(
-        rows.map((r) => agentLimit(() => getAgentWithStatus(r.agentSlug)))
+        rows.map((r) => agentLimit(() => getAgentWithStatus(
+          r.agentSlug,
+          { includeSummary: false },
+        )))
       )
       agentList = agents.filter((a): a is ApiAgent => a !== null)
       // The ACL query has no ORDER BY, so rows arrive in index-scan order — i.e.
@@ -1008,7 +1039,7 @@ agents.post('/', async (c) => {
 agents.get('/:id', ResolveAgent(), AgentRead(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const agent = await getAgentWithStatus(slug)
+    const agent = await getAgentWithStatus(slug, { includeSummary: false })
 
     if (!agent) {
       return c.json({ error: 'Agent not found' }, 404)
@@ -1421,9 +1452,11 @@ agents.post('/:id/start', AgentUser(), async (c) => {
   try {
     const slug = getAgentId(c)
 
-
     await containerManager.ensureRunning(slug)
-    const agent = await getAgentWithStatus(slug)
+
+    // Skip the session-summary enrichment: it stats every transcript, and every
+    // caller of this command discards the body and refetches agent data anyway.
+    const agent = await getAgentWithStatus(slug, { includeSummary: false })
 
     // Note: agent_status_changed is broadcast by containerManager.ensureRunning()
 
@@ -1617,31 +1650,33 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
 
     // Model/effort/speed preference order: explicit per-session pick > agent default > global default.
     const agentPrefs = await readAgentPreferences(slug)
-    const sessionModel = runtimeOptions.model ?? agentPrefs.defaultModel ?? getEffectiveModels().agentModel
+    const models = getEffectiveModels()
+    const resolved = resolveRuntimeInherit(runtimeOptions, agentPrefs, models)
+    const prewarm = resolveRuntimeInherit({}, agentPrefs, models)
 
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: message.trim(),
       initialMessageUuid,
-      model: sessionModel,
-      browserModel: getEffectiveModels().browserModel,
-      dashboardBuilderModel: getEffectiveModels().dashboardBuilderModel,
+      model: resolved.model,
+      browserModel: models.browserModel,
+      dashboardBuilderModel: models.dashboardBuilderModel,
       maxOutputTokens: agentLimits.maxOutputTokens,
       maxThinkingTokens: agentLimits.maxThinkingTokens,
       maxTurns: agentLimits.maxTurns,
       maxBudgetUsd: agentLimits.maxBudgetUsd,
       customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
       maxBrowserTabs: getSettings().app?.maxBrowserTabs,
-      effort: runtimeOptions.effort ?? agentPrefs.defaultEffort,
-      speed: runtimeOptions.speed ?? agentPrefs.defaultSpeed,
+      effort: resolved.effort,
+      speed: resolved.speed,
       // Same preference chain MINUS the per-session pick: this is what the
       // composer will send next time (it only puts model/effort/speed on the
       // wire when the user explicitly chooses one), so it is what the
       // container should pre-warm for.
       prewarmDefaults: {
-        model: agentPrefs.defaultModel ?? getEffectiveModels().agentModel,
-        effort: agentPrefs.defaultEffort,
-        speed: agentPrefs.defaultSpeed,
+        model: prewarm.model,
+        effort: prewarm.effort,
+        speed: prewarm.speed,
       },
     })
     const sessionId = containerSession.id
@@ -1650,6 +1685,26 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     // Metadata registration below is intentionally later so stream attachment
     // still wins the race with early container output.
     await reserveSessionOwnership(slug, sessionId)
+
+    // Runtime choices are SESSION state once the first turn starts, including
+    // inherited defaults. Persist the effective values, not merely explicit
+    // overrides, so changing an agent/app default later cannot silently change
+    // an existing conversation's next turn or make the composer claim it will.
+    const initialMetadata: Parameters<typeof updateSessionMetadata>[2] = {
+      model: resolved.model,
+      ...(resolved.effort ? { effort: resolved.effort } : {}),
+      ...(resolved.speed ? { speed: resolved.speed } : {}),
+    }
+    if (isAuthMode()) {
+      initialMetadata.createdByUserId = getCurrentUserId(c)
+      // Origin-device stamp: which mobile device family (if any) started this
+      // session. ApnsRelayChannel routes visible alert pushes only to it, so
+      // it must land in the INITIAL registration write — a fast completion
+      // would beat a fire-and-forget update and demote the origin's alert to
+      // a silent push.
+      const deviceId = getRequestDeviceId(c)
+      if (deviceId) initialMetadata.createdByDeviceId = deviceId
+    }
 
     // Attach lifecycle state and the stream before slower metadata/DB work. The
     // first turn can start emitting shortly after createSession returns, and a
@@ -1672,25 +1727,13 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         })
       }
 
-      await registerSession(slug, sessionId, 'New Session')
+      await registerSession(slug, sessionId, 'New Session', initialMetadata)
       sessionRegistered = true
     } catch (error) {
       if (lifecycleStarted && !sessionRegistered) {
         messagePersister.unsubscribeFromSession(sessionId)
       }
       throw error
-    }
-    // Persist only what the user explicitly chose. The server-side fallback is
-    // applied at session creation but should not masquerade as a user choice in
-    // metadata — otherwise a later change to the global default wouldn't be
-    // reflected when the composer reloads.
-    const initialMetadata: Parameters<typeof updateSessionMetadata>[2] = {}
-    if (runtimeOptions.effort) initialMetadata.effort = runtimeOptions.effort
-    if (runtimeOptions.speed) initialMetadata.speed = runtimeOptions.speed
-    if (runtimeOptions.model) initialMetadata.model = runtimeOptions.model
-    if (isAuthMode()) initialMetadata.createdByUserId = getCurrentUserId(c)
-    if (Object.keys(initialMetadata).length > 0) {
-      updateSessionMetadata(slug, sessionId, initialMetadata).catch(console.error)
     }
     // Store slash commands from container's init event (captured during session creation)
     if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
@@ -1714,6 +1757,9 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         lastActivityAt: new Date(),
         messageCount: 0,
         isActive: true,
+        model: resolved.model,
+        ...(resolved.effort ? { effort: resolved.effort } : {}),
+        ...(resolved.speed ? { speed: resolved.speed } : {}),
         initialMessageUuid,
       },
       201
@@ -1724,6 +1770,96 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
   }
 })
 
+const messagesListQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(MESSAGES_PAGE_MAX_LIMIT).optional(),
+    cursor: z.string().min(1).max(200).optional(),
+    after: z.string().min(1).max(200).optional(),
+    // Opt-in: images ship as refs to the media endpoint instead of inline
+    // base64. Absent means inline, so clients that predate the media endpoint
+    // (and the unpaginated path below) are unaffected.
+    media: z.literal('ref').optional(),
+  })
+  // Backward paging and the forward delta are different protocols; a request
+  // mixing them has no coherent meaning.
+  .refine((q) => !(q.cursor && q.after), { message: 'cursor and after are mutually exclusive' })
+
+async function annotateAndRecoverMessages(
+  transformed: TransformedItem[],
+  agentSlug: string,
+  sessionId: string,
+): Promise<void> {
+  await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
+
+  const settledRequests = messagePersister.getSettledInputRequests(sessionId)
+  if (settledRequests.size > 0) {
+    for (const item of transformed) {
+      if (item.type !== 'assistant') continue
+      for (const toolCall of item.toolCalls) {
+        if (toolCall.result !== undefined) continue
+        const outcome = settledRequests.get(toolCall.id)
+        if (outcome !== undefined) {
+          toolCall.result =
+            outcome === 'answered' ? 'User provided input' : 'User declined the request'
+        }
+      }
+    }
+  }
+
+  if (messagePersister.isSessionActive(sessionId)) {
+    const unresolvedRequests = getUnresolvedBlockingInputRequests(transformed)
+    if (unresolvedRequests.length > 0) {
+      messagePersister.recoverSessionAwaitingInput(sessionId, agentSlug, unresolvedRequests)
+    }
+  }
+
+  if (!isAuthMode()) return
+
+  const userMessageIds = transformed.filter((m) => m.type === 'user').map((m) => m.id)
+  if (userMessageIds.length === 0) return
+
+  // Scope the lookup to the ids actually in this response — a delta window is
+  // a handful of items, and loading the whole session's author history per
+  // refetch would erase the bounded-memory benefit on auth deployments.
+  const authors = await db
+    .select({
+      messageId: messageAuthor.id,
+      userId: messageAuthor.userId,
+      userName: userTable.name,
+      userEmail: userTable.email,
+    })
+    .from(messageAuthor)
+    .innerJoin(userTable, eq(messageAuthor.userId, userTable.id))
+    .where(and(eq(messageAuthor.sessionId, sessionId), inArray(messageAuthor.id, userMessageIds)))
+
+  const authorMap = new Map(authors.map((a) => [a.messageId, a]))
+  for (const msg of transformed) {
+    if (msg.type !== 'user') continue
+    const author = authorMap.get(msg.id)
+    if (author) {
+      msg.sender = {
+        id: author.userId,
+        name: author.userName,
+        email: author.userEmail,
+      }
+    }
+  }
+}
+
+// Buffers, not strings: Readable.toWeb hands chunks straight to the web
+// ReadableStream, whose byte consumers reject non-Uint8Array chunks.
+function* messagesPageJsonChunks(page: {
+  messages: TransformedItem[]
+  nextCursor: string | null
+}): Generator<Buffer> {
+  yield Buffer.from('{"messages":[')
+  for (let i = 0; i < page.messages.length; i++) {
+    yield Buffer.from((i === 0 ? '' : ',') + JSON.stringify(page.messages[i]))
+  }
+  yield Buffer.from(`],"nextCursor":${JSON.stringify(page.nextCursor)}}`)
+}
+
+// Unpaginated path stays inlined so the stream-pipe PR can still land on `return c.json(transformed)`.
 // GET /api/agents/:id/sessions/:sessionId/messages - Get messages for a session
 agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
   try {
@@ -1740,7 +1876,76 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
       return c.json({ error: 'Session transcript not found' }, 404)
     }
 
+    const rawLimit = c.req.query('limit')
+    const rawCursor = c.req.query('cursor')
+    const rawAfter = c.req.query('after')
+    const rawMedia = c.req.query('media')
+    // `media` selects this branch too: it is only honored on the paginated
+    // path, so leaving it out would silently serve a full inline response to a
+    // client that asked for refs — and skip validating the value at all.
+    if (
+      rawLimit !== undefined ||
+      rawCursor !== undefined ||
+      rawAfter !== undefined ||
+      rawMedia !== undefined
+    ) {
+      const parsed = messagesListQuerySchema.safeParse({
+        ...(rawLimit !== undefined ? { limit: rawLimit } : {}),
+        ...(rawCursor !== undefined ? { cursor: rawCursor } : {}),
+        ...(rawAfter !== undefined ? { after: rawAfter } : {}),
+        ...(rawMedia !== undefined ? { media: rawMedia } : {}),
+      })
+      if (!parsed.success) {
+        return c.json({ error: 'Invalid pagination' }, 400)
+      }
+      // The renderer aborts superseded refetches; honor that server-side too.
+      // The signal threads down to the tail reader so an abandoned request
+      // stops paying for transcript reads (multi-second on network volumes)
+      // instead of running the full read/parse/serialize pipeline to
+      // completion for a client that hung up.
+      if (parsed.data.after !== undefined) {
+        // Forward delta: upserted items at-or-after the anchor (a live-session
+        // refetch only cares about lines appended since the last read). The
+        // window is bounded by the active turn near EOF, so this stays a few
+        // KB while the full trailing page is multi-MB on long sessions.
+        const delta = await getSessionMessagesDelta(agentSlug, sessionId, {
+          after: parsed.data.after,
+          signal: c.req.raw.signal,
+          media: parsed.data.media,
+        })
+        c.req.raw.signal.throwIfAborted()
+        await annotateAndRecoverMessages(delta.messages, agentSlug, sessionId)
+        c.req.raw.signal.throwIfAborted()
+        return c.json({
+          messages: delta.messages,
+          anchor: delta.anchor,
+          ...(delta.resync ? { resync: true as const } : {}),
+        })
+      }
+      const page = await getSessionMessagesPage(agentSlug, sessionId, {
+        limit: capMessagesPageLimit(parsed.data.limit, parsed.data.cursor),
+        cursor: parsed.data.cursor,
+        signal: c.req.raw.signal,
+        media: parsed.data.media,
+      })
+      c.req.raw.signal.throwIfAborted()
+      await annotateAndRecoverMessages(page.messages, agentSlug, sessionId)
+      c.req.raw.signal.throwIfAborted()
+      // Serialize item-by-item instead of one JSON.stringify of the whole
+      // envelope: pages hold multi-MB tool results, and a monolithic response
+      // string was one of the transients that made concurrent page fetches
+      // OOM the process. Readable.from pulls lazily, so writes see real
+      // backpressure from the socket.
+      return c.body(Readable.toWeb(Readable.from(messagesPageJsonChunks(page))) as ReadableStream, 200, {
+        'Content-Type': 'application/json',
+      })
+    }
+
     const messages = await getSessionMessagesWithCompact(agentSlug, sessionId)
+    // The legacy full read above predates abort support (reworked wholesale by
+    // the streaming-page follow-up); at least skip transform + serialization
+    // when the client is already gone.
+    c.req.raw.signal.throwIfAborted()
     const filtered = messages.filter((m) => !('isMeta' in m && m.isMeta))
     const transformed = transformMessages(filtered)
 
@@ -1812,10 +2017,74 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
       }
     }
 
-    return c.json(transformed)
+    const source = Readable.from(transformed)
+    const stringify = createJsonArrayStringifyTransform()
+    const reportStreamError = (err: unknown) => {
+      const code = (err as NodeJS.ErrnoException)?.code
+      if (code === 'ABORT_ERR' || code === 'ERR_STREAM_PREMATURE_CLOSE') return
+      console.error('Failed to stream messages:', err)
+      captureException(err, { tags: { component: 'agents', operation: 'stream-messages' } })
+    }
+    pipeline(source, stringify, (err) => {
+      if (err) reportStreamError(err)
+    })
+    return c.body(Readable.toWeb(stringify) as ReadableStream, 200, {
+      'Content-Type': 'application/json',
+    })
   } catch (error) {
+    // Client hung up mid-request (the renderer aborts superseded refetches):
+    // the read path threw AbortError. Nothing receives this response — answer
+    // with the conventional 499 instead of logging a failure that isn't one.
+    if (c.req.raw.signal.aborted) {
+      return new Response(null, { status: 499 })
+    }
     console.error('Failed to fetch messages:', error)
     return c.json({ error: 'Failed to fetch messages' }, 500)
+  }
+})
+
+// GET /api/agents/:id/sessions/:sessionId/media/:ref - Bytes of one image a
+// `media=ref` page addressed. Served straight off the transcript as a ranged,
+// streaming base64 decode: the row holding it is multi-MB, and none of it is
+// materialized here.
+agents.get('/:id/sessions/:sessionId/media/:ref', AgentRead(), async (c) => {
+  try {
+    const agentSlug = getAgentId(c)
+    const sessionId = c.req.param('sessionId')
+    // Ownership only. There is deliberately no existence preflight here:
+    // fileExists() answers false for any stat failure, so EIO/EACCES/EMFILE
+    // would 404 — telling the client the image is gone when the truth is that
+    // this machine could not look. openMediaBlob distinguishes the two, and a
+    // genuinely missing transcript surfaces there as 410.
+    if (!(await sessionBelongsToAgent(agentSlug, sessionId))) {
+      return c.json({ error: 'Session transcript not found' }, 404)
+    }
+
+    const ref = decodeMediaRef(c.req.param('ref'))
+    if (!ref) return c.json({ error: 'Invalid media reference' }, 400)
+
+    const blob = await openMediaBlob(getSessionJsonlPath(agentSlug, sessionId), ref, c.req.raw.signal)
+    // Deletion and retention rewrite transcripts in place, so a ref the client
+    // still holds can address bytes that have moved or gone. Gone for good —
+    // the client shows a placeholder rather than retrying.
+    if (!blob) return c.json({ error: 'Media no longer available' }, 410)
+
+    return c.body(Readable.toWeb(blob.stream) as ReadableStream, 200, {
+      'Content-Type': blob.mimeType,
+      'Content-Length': String(blob.bytes),
+      // A ref names an immutable byte span: any edit to the transcript
+      // invalidates it rather than changing what it points at.
+      'Cache-Control': 'private, max-age=31536000, immutable',
+      // The type comes from a magic-number sniff, never from the ref — keep
+      // the browser from second-guessing it.
+      'X-Content-Type-Options': 'nosniff',
+    })
+  } catch (error) {
+    if (c.req.raw.signal.aborted) {
+      return new Response(null, { status: 499 })
+    }
+    console.error('Failed to fetch session media:', error)
+    return c.json({ error: 'Failed to fetch media' }, 500)
   }
 })
 
@@ -1874,7 +2143,12 @@ agents.get('/:id/sessions/:sessionId/subagent/:agentId/messages', AgentRead(), a
       (e) => e.type === 'user' || e.type === 'assistant'
     )
     const transformed = transformMessages(messageEntries)
-    return c.json(transformed)
+    // Fanned out in parallel across all subagent ids by the activity log, so
+    // stream the serialization instead of building one JSON string per request.
+    return streamJsonArrayResponse(c, transformed, {
+      logLabel: 'subagent messages',
+      tags: { component: 'agents', operation: 'stream-subagent-messages' },
+    })
   } catch (error) {
     console.error('Failed to fetch subagent messages:', error)
     return c.json({ error: 'Failed to fetch subagent messages' }, 500)
@@ -1889,13 +2163,49 @@ agents.get('/:id/sessions/:sessionId/raw-log', AgentRead(), async (c) => {
 
 
     const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
-    const content = await readFileOrNull(jsonlPath)
 
-    if (content === null) {
+    // Transcripts routinely reach tens of MB, so stream the file instead of
+    // buffering it whole. Open before committing to a 200 so a missing file
+    // still returns the 404 below (ENOENT → null, mirroring readFileOrNull).
+    const fileHandle = await fs.promises.open(jsonlPath, 'r').catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return null
+      throw error
+    })
+    if (fileHandle === null) {
       return c.json({ error: 'Session log not found' }, 404)
     }
 
-    return c.text(content)
+    // Bound the read to the size at open so the byte count always matches the
+    // Content-Length we advertise, even if the live transcript keeps growing.
+    const { size } = await fileHandle.stat().catch(async (error: unknown) => {
+      await fileHandle.close().catch(() => {})
+      throw error
+    })
+    // An empty-at-open file must answer with an empty body even if the live
+    // transcript gains its first append before the read starts — an unbounded
+    // stream there would overrun the advertised Content-Length of 0.
+    if (size === 0) {
+      await fileHandle.close().catch(() => {})
+      return c.body('', 200, {
+        'Content-Type': 'text/plain; charset=UTF-8',
+        'Content-Length': '0',
+      })
+    }
+    // autoClose (default) closes the handle on end/destroy.
+    const source = fileHandle.createReadStream({ end: size - 1 })
+    source.on('error', (err) => {
+      // Client disconnects surface here as stream aborts and are routine on a
+      // multi-MB endpoint; only report real read failures.
+      const code = (err as NodeJS.ErrnoException)?.code
+      if (code === 'ABORT_ERR' || code === 'ERR_STREAM_PREMATURE_CLOSE') return
+      console.error('Failed to stream raw log:', err)
+      captureException(err, { tags: { component: 'agents', operation: 'stream-raw-log' } })
+    })
+    // Same headers the buffered c.text() response carried on the wire.
+    return c.body(Readable.toWeb(source) as ReadableStream, 200, {
+      'Content-Type': 'text/plain; charset=UTF-8',
+      'Content-Length': String(size),
+    })
   } catch (error) {
     console.error('Failed to fetch raw log:', error)
     return c.json({ error: 'Failed to fetch raw log' }, 500)
@@ -2022,8 +2332,39 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     if (runtimeOptions.effort) updates.effort = runtimeOptions.effort
     if (runtimeOptions.speed) updates.speed = runtimeOptions.speed
     if (runtimeOptions.model) updates.model = runtimeOptions.model
+    if (isAuthMode()) {
+      // Alert claim: the device that spoke last in a session is the one
+      // awaiting its outcome, so visible pushes follow it. A send with no
+      // device identity (web/desktop) CLEARS the claim — the user moved to a
+      // surface where a phone alert for this session would be noise (web push
+      // covers them there). Explicit null ≠ absent: absent falls back to the
+      // creation stamp in ApnsRelayChannel. Awaited via the metadata write
+      // below so a fast turn can't complete ahead of its own claim.
+      updates.alertDeviceId = getRequestDeviceId(c)
+    }
     if (Object.keys(updates).length > 0) {
-      updateSessionMetadata(agentSlug, sessionId, updates).catch(console.error)
+      try {
+        const previous = await updateSessionMetadata(agentSlug, sessionId, updates)
+        // The composer re-sends its whole selection on every fresh turn, so
+        // option presence alone doesn't mean anything changed. Compare against
+        // the previous metadata (captured under the update's lock) — otherwise
+        // every send would make every open window refetch the session list and
+        // detail for a no-op. A failed metadata write skips the broadcast too:
+        // peers would only refetch the stale values.
+        const runtimeSelectionChanged =
+          (updates.effort !== undefined && previous?.effort !== updates.effort) ||
+          (updates.speed !== undefined && previous?.speed !== updates.speed) ||
+          (updates.model !== undefined && previous?.model !== updates.model)
+        if (runtimeSelectionChanged) {
+          // Other windows/devices may already have seeded their composer from
+          // the previous session metadata. Tell both the local session stream
+          // and the global event stream to refresh before their next send.
+          messagePersister.broadcastSessionUpdate(sessionId)
+          messagePersister.broadcastGlobal({ type: 'session_updated', sessionId, agentSlug })
+        }
+      } catch (error) {
+        console.error(error)
+      }
     }
 
     return c.json({ success: true, uuid: messageUuid, queued: wasQueued }, 201)
@@ -2253,8 +2594,12 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
       if (slashCommands.length === 0) {
         const meta = await getSessionMetadata(agentSlug, sessionId)
         if (meta?.slashCommands && meta.slashCommands.length > 0) {
-          slashCommands = meta.slashCommands
+          const repaired = repairLegacySlashCommands(meta.slashCommands)
+          slashCommands = repaired.commands
           messagePersister.setSlashCommands(sessionId, slashCommands)
+          if (repaired.changed) {
+            updateSessionMetadata(agentSlug, sessionId, { slashCommands }).catch(console.error)
+          }
         }
       }
       const backgroundTasks = messagePersister.getActiveBackgroundTasks(sessionId)
@@ -2947,6 +3292,7 @@ const credentialFillResponseSchema = z.object({
 })
 const credentialErrorResponseSchema = z.object({
   error: z.string(),
+  reason: z.enum(['origin_changed', 'no_password_field']).optional(),
 })
 const browserInputContextSchema = z.object({
   url: z.string().min(1),
@@ -3106,6 +3452,22 @@ agents.post(
       const fillError = credentialErrorResponseSchema.safeParse(
         await fillResponse.json().catch(() => null),
       )
+      if (fillResponse.status === 409 && fillError.success &&
+          fillError.data.reason === 'no_password_field') {
+        // Keep the browser request open so the user can paste the values and
+        // complete the step themselves. This is intentionally limited to the
+        // stable-origin, missing-field case; never disclose on navigation or
+        // an unclassified browser failure.
+        c.header('Cache-Control', 'no-store')
+        return c.json({
+          error: fillError.data.error,
+          reason: fillError.data.reason,
+          manualCredential: {
+            username: credential.username,
+            password: credential.password,
+          },
+        }, 409)
+      }
       return c.json({
         error: fillError.success ? fillError.data.error : 'Credential autofill failed',
       }, fillResponse.status === 409 ? 409 : 502)
@@ -4446,30 +4808,50 @@ agents.post('/:id/skills/:dir/publish', AgentAdmin(), async (c) => {
  * display name (slugs are opaque minted ids), encoded per the same quoted +
  * RFC 5987 `filename*` convention as workspace-file downloads.
  */
-function packageDownloadResponse(zipBuffer: Buffer, filename: string): Response {
+function packageDownloadResponse(body: Readable | Buffer, filename: string): Response {
   const encoded = encodeURIComponent(filename)
-  return new Response(new Uint8Array(zipBuffer), {
-    status: 200,
-    headers: {
-      'Content-Type': 'application/octet-stream',
-      'Content-Disposition': `attachment; filename="${encoded}"; filename*=UTF-8''${encoded}`,
-      'Content-Length': zipBuffer.byteLength.toString(),
-    },
-  })
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/octet-stream',
+    'Content-Disposition': `attachment; filename="${encoded}"; filename*=UTF-8''${encoded}`,
+  }
+  if (Buffer.isBuffer(body)) {
+    headers['Content-Length'] = body.byteLength.toString()
+  }
+  const nodeStream = Buffer.isBuffer(body) ? Readable.from(body) : body
+  return new Response(Readable.toWeb(nodeStream) as ReadableStream, { status: 200, headers })
+}
+
+// Lock lives on the stream ('close' releases it). Destroy if Response construction throws.
+function sendLockedExportStream(zipStream: Readable, build: () => Response): Response {
+  try {
+    return build()
+  } catch (err) {
+    zipStream.destroy()
+    throw err
+  }
+}
+
+function exportRouteError(c: Context, error: unknown, fallback: string) {
+  if (error instanceof Error && error.name === 'ExportInProgressError') {
+    return c.json({ error: error.message }, 409)
+  }
+  const message = error instanceof Error ? error.message : fallback
+  console.error(fallback, error)
+  return c.json({ error: message }, 500)
 }
 
 // POST /api/agents/:id/export-template - Export agent as ZIP download
 agents.post('/:id/export-template', AgentAdmin(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const [agent, zipBuffer] = await Promise.all([getAgent(slug), exportAgentTemplate(slug)])
-
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'template' } })
-    return packageDownloadResponse(zipBuffer, `${agent?.frontmatter.name || slug}-template${AGENT_PACKAGE_EXTENSION}`)
+    const agent = await getAgent(slug)
+    const zipStream = await exportAgentTemplate(slug, c.req.raw.signal)
+    return sendLockedExportStream(zipStream, () => {
+      logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'template' } })
+      return packageDownloadResponse(zipStream, `${agent?.frontmatter.name || slug}-template${AGENT_PACKAGE_EXTENSION}`)
+    })
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to export template'
-    console.error('Failed to export template:', error)
-    return c.json({ error: message }, 500)
+    return exportRouteError(c, error, 'Failed to export template')
   }
 })
 
@@ -4477,14 +4859,14 @@ agents.post('/:id/export-template', AgentAdmin(), async (c) => {
 agents.post('/:id/export-full', AgentAdmin(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const [agent, zipBuffer] = await Promise.all([getAgent(slug), exportAgentFull(slug)])
-
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'full' } })
-    return packageDownloadResponse(zipBuffer, `${agent?.frontmatter.name || slug}-full${AGENT_PACKAGE_EXTENSION}`)
+    const agent = await getAgent(slug)
+    const zipStream = await exportAgentFull(slug, c.req.raw.signal)
+    return sendLockedExportStream(zipStream, () => {
+      logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'full' } })
+      return packageDownloadResponse(zipStream, `${agent?.frontmatter.name || slug}-full${AGENT_PACKAGE_EXTENSION}`)
+    })
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to export agent'
-    console.error('Failed to export full agent:', error)
-    return c.json({ error: message }, 500)
+    return exportRouteError(c, error, 'Failed to export agent')
   }
 })
 
@@ -4699,7 +5081,7 @@ agents.get('/:id/skills/:dir/files', AgentAdmin(), async (c) => {
 
     const skillDir = path.join(getAgentWorkspaceDir(agentSlug), '.claude', 'skills', dir)
 
-    if (!fs.existsSync(skillDir)) {
+    if (!(await directoryExists(skillDir))) {
       return c.json({ error: 'Skill directory not found' }, 404)
     }
 
@@ -4867,22 +5249,6 @@ function resolveUploadDestPath(agentSlug: string, filename: string, relativePath
   return { uploadPath, fullPath }
 }
 
-// Shared upload logic - writes a buffer to the agent workspace
-async function writeUploadedFile(agentSlug: string, filename: string, buffer: Buffer, relativePath?: string) {
-  const { uploadPath, fullPath } = resolveUploadDestPath(agentSlug, filename, relativePath)
-
-  // Write directly to host filesystem (volume-mounted into container)
-  await fs.promises.mkdir(path.dirname(fullPath), { recursive: true })
-  await fs.promises.writeFile(fullPath, buffer)
-
-  return {
-    success: true,
-    path: `/workspace/${uploadPath}`,
-    filename,
-    size: buffer.byteLength,
-  }
-}
-
 async function writeUploadedFileFromPath(agentSlug: string, filename: string, srcPath: string, relativePath?: string) {
   const { uploadPath, fullPath } = resolveUploadDestPath(agentSlug, filename, relativePath)
   const size = await moveUploadedFile(srcPath, fullPath)
@@ -4898,8 +5264,34 @@ async function handleFileUpload(agentSlug: string, file: File, relativePath?: st
   if (file.size > MAX_UPLOAD_TOTAL_SIZE) {
     throw new UploadTooLargeError(file.size, MAX_UPLOAD_TOTAL_SIZE)
   }
-  const buffer = Buffer.from(await file.arrayBuffer())
-  return writeUploadedFile(agentSlug, file.name, buffer, relativePath)
+  const { uploadPath, fullPath } = resolveUploadDestPath(agentSlug, file.name, relativePath)
+  await fs.promises.mkdir(path.dirname(fullPath), { recursive: true })
+
+  // Stream to disk instead of Buffer.from(await file.arrayBuffer()) — avoids a
+  // second full in-memory copy of the file on top of formData()'s buffering.
+  try {
+    await streamPipeline(
+      Readable.fromWeb(file.stream() as import('stream/web').ReadableStream),
+      fs.createWriteStream(fullPath),
+    )
+  } catch (err) {
+    // Don't leave a partial file behind (pipeline already closed the fd).
+    try {
+      await fs.promises.unlink(fullPath)
+    } catch (cleanupErr) {
+      if ((cleanupErr as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        console.warn('[agents] failed to remove partial upload:', cleanupErr)
+      }
+    }
+    throw err
+  }
+
+  return {
+    success: true,
+    path: `/workspace/${uploadPath}`,
+    filename: file.name,
+    size: file.size,
+  }
 }
 
 // Shared by both upload-file routes. When a `chunk` field is present, persist it
@@ -4908,7 +5300,7 @@ async function handleFileUpload(agentSlug: string, file: File, relativePath?: st
 // `chunk_received` ack) or `{ uploadResult }` once the file is fully assembled.
 type ChunkedFileUploadOutcome = {
   pending: Response | null
-  uploadResult?: Awaited<ReturnType<typeof writeUploadedFile>>
+  uploadResult?: Awaited<ReturnType<typeof writeUploadedFileFromPath>>
 }
 
 async function handleChunkedFileUpload(c: Context, agentSlug: string, formData: FormData, chunk: File): Promise<ChunkedFileUploadOutcome> {
@@ -4987,11 +5379,29 @@ async function respondUploadFile(c: Context) {
   }
 }
 
+// Per-request body cap for the upload-file routes. formData() buffers the whole
+// multipart body in memory, so without this any client (curl, proxies) could
+// POST a single multi-GB body and the server would hold it all in RAM. The web
+// client splits files above 50MB into chunks, so no legitimate request body
+// exceeds ~50MB plus multipart framing; 64MB leaves comfortable headroom.
+// Content-Length requests are rejected from the header alone; bodies without a
+// length (chunked transfer-encoding) are counted and cut off at the cap.
+const MAX_UPLOAD_REQUEST_SIZE = 64 * 1024 * 1024
+
+const uploadRequestBodyLimit = bodyLimit({
+  maxSize: MAX_UPLOAD_REQUEST_SIZE,
+  onError: (c) =>
+    c.json(
+      { error: `Request body too large (max ${MAX_UPLOAD_REQUEST_SIZE / 1024 / 1024}MB per request); use chunked upload for larger files` },
+      413,
+    ),
+})
+
 // POST /api/agents/:id/upload-file - Upload a file to the agent workspace (no session required)
-agents.post('/:id/upload-file', AgentUser(), respondUploadFile)
+agents.post('/:id/upload-file', AgentUser(), uploadRequestBodyLimit, respondUploadFile)
 
 // POST /api/agents/:id/sessions/:sessionId/upload-file - Upload a file to the agent workspace
-agents.post('/:id/sessions/:sessionId/upload-file', AgentUser(), respondUploadFile)
+agents.post('/:id/sessions/:sessionId/upload-file', AgentUser(), uploadRequestBodyLimit, respondUploadFile)
 
 async function handleFolderUpload(agentSlug: string, sourcePath: string) {
   const stat = await fs.promises.stat(sourcePath)
@@ -5056,7 +5466,7 @@ agents.post('/:id/sessions/:sessionId/upload-folder', AgentUser(), async (c) => 
 agents.get('/:id/mounts', AgentRead(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
-    const mounts = getMountsWithHealth(agentSlug)
+    const mounts = await getMountsWithHealth(agentSlug)
     return c.json(mounts)
   } catch (error) {
     console.error('Failed to list mounts:', error)
@@ -5073,7 +5483,7 @@ agents.post('/:id/mounts', AgentUser(), async (c) => {
 
     let mount
     try {
-      mount = addMount(agentSlug, hostPath)
+      mount = await addMount(agentSlug, hostPath)
     } catch (err: any) {
       return c.json({ error: err.message || 'Invalid path' }, 400)
     }
@@ -5100,7 +5510,7 @@ agents.delete('/:id/mounts/:mountId', AgentUser(), async (c) => {
     const mountId = c.req.param('mountId')
     const restart = c.req.query('restart') === 'true'
 
-    removeMount(agentSlug, mountId)
+    await removeMount(agentSlug, mountId)
 
     if (restart) {
       const cachedInfo = containerManager.getCachedInfo(agentSlug)
@@ -5688,29 +6098,43 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
       document.title = (name || artifactSlug) + ' \\u2014 Gamut';
     }
 
-    async function fetchDashboardName() {
+    // undefined means the status check itself was inconclusive; null means
+    // it completed and the requested dashboard was absent.
+    async function fetchDashboard() {
       try {
         const res = await fetch(basePath + '/artifacts');
-        if (res.ok) {
-          const artifacts = await res.json();
-          const d = Array.isArray(artifacts) && artifacts.find(a => a.slug === artifactSlug);
-          if (d && d.name) { setTitle(d.name); return d.name; }
-        }
+        if (!res.ok) return undefined;
+        const artifacts = await res.json();
+        if (!Array.isArray(artifacts)) return undefined;
+        const dashboard = artifacts.find(a => a.slug === artifactSlug) || null;
+        if (dashboard && dashboard.name) setTitle(dashboard.name);
+        return dashboard;
       } catch {}
-      return null;
+      return undefined;
+    }
+
+    function showDashboard() {
+      loadingEl.remove();
+      const iframe = document.createElement('iframe');
+      iframe.src = dashboardUrl;
+      iframe.sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups allow-downloads';
+      iframe.allow = 'microphone; camera';
+      document.body.appendChild(iframe);
     }
 
     async function run() {
       try {
-        // 1. Resolve dashboard name (works even when agent is stopped)
-        await fetchDashboardName();
+        // 1. Seed both dashboard metadata and live status. This works while the
+        // agent is stopped too, though that fallback reports stopped.
+        const initialDashboard = await fetchDashboard();
 
         // 2. Check agent status
         const agentRes = await fetch(basePath);
         if (!agentRes.ok) { throw new Error('Failed to fetch agent info'); }
         const agent = await agentRes.json();
+        const agentWasRunning = agent.status === 'running';
 
-        if (agent.status !== 'running') {
+        if (!agentWasRunning) {
           // 3. Start the agent
           statusEl.textContent = 'Starting agent…';
           const startRes = await fetch(basePath + '/start', { method: 'POST' });
@@ -5720,17 +6144,24 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
           }
         }
 
+        // The initial artifacts request already gave us a fresh status. When
+        // both processes were running, avoid flashing a redundant wait screen
+        // and let the iframe paint immediately.
+        if (agentWasRunning && initialDashboard !== undefined) {
+          if (!initialDashboard) { throw new Error('Dashboard not found.'); }
+          if (initialDashboard.status === 'crashed') { throw new Error('Dashboard crashed.'); }
+          if (initialDashboard.status === 'running') {
+            showDashboard();
+            return;
+          }
+        }
+
         // 4. Poll until dashboard is running
         statusEl.textContent = 'Waiting for dashboard…';
         await pollDashboard();
 
         // 5. Show the dashboard
-        loadingEl.remove();
-        const iframe = document.createElement('iframe');
-        iframe.src = dashboardUrl;
-        iframe.sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups';
-        iframe.allow = 'microphone; camera';
-        document.body.appendChild(iframe);
+        showDashboard();
       } catch (err) {
         statusEl.textContent = err.message;
         statusEl.classList.add('error');
@@ -5750,6 +6181,13 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
           if (!d) { throw new Error('Dashboard not found.'); }
           if (d.status === 'crashed') { throw new Error('Dashboard crashed.'); }
           if (d.status === 'running') { setTitle(d.name); return; }
+          if (d.status === 'starting' && d.startupPhase === 'installing-dependencies') {
+            statusEl.textContent = d.firstRun
+              ? 'Preparing dashboard for first use…'
+              : 'Installing dashboard dependencies…';
+          } else {
+            statusEl.textContent = 'Starting dashboard…';
+          }
         }
         await new Promise(r => setTimeout(r, 1000));
       }

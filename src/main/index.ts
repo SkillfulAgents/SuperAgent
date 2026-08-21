@@ -54,6 +54,7 @@ import {
 import { registerGlobalDispatchShortcut, unregisterGlobalDispatchShortcut } from './global-dispatch-shortcut'
 import { filesFromCommandLine } from './opened-files'
 import { parseAgentDeepLink } from './agent-deep-link'
+import { planMcpOAuthCallback, parseMcpOAuthCompletionResponse } from './mcp-oauth-callback'
 import { classifyImportPackage } from './import-packages'
 import { isImportPackagePath } from '@shared/lib/utils/package-extensions'
 import { safeOpenExternalFromApp } from './safe-open-external'
@@ -116,8 +117,7 @@ registerUpdateHandlers()
 // Now safe to import API (env var is set)
 import { serve } from '@hono/node-server'
 import api from '../api'
-import { initializeServices, shutdownServices } from '@shared/lib/startup'
-import { setupServerHandlers } from '@shared/lib/startup'
+import { afterBindInitialize, setupServerHandlers, shutdownServices } from '@shared/lib/startup'
 import { bindServerWithRetry } from '@shared/lib/server-bind'
 import { configureDownloadNonceRecovery } from '@shared/lib/services/download-nonce-service'
 import { CLOUD_PROXY_PREFIX, isCloudProxyEnabled } from '../api/routes/cloud-proxy'
@@ -1188,52 +1188,45 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
 
   // MCP OAuth callback
   if (url.startsWith(`${PROTOCOL_SCHEME}://mcp-oauth-callback`)) {
-    try {
-      const callbackUrl = new URL(url)
-      const params = callbackUrl.searchParams
-
-      if (params.has('success')) {
-        // http-loopback path: the local API server already completed the token
-        // exchange (and any error/issuer validation) in the external browser and
-        // bounced the result back here — the hand-off page always carries
-        // `success`. Notify the renderer directly; no second exchange needed.
-        const success = params.get('success') === 'true'
-        mainWindow?.webContents.send('mcp-oauth-callback', {
-          success,
-          mcpId: params.get('mcpId') || null,
-          error: success ? null : (params.get('error') || 'OAuth failed'),
-        })
-      } else {
-        // Custom-scheme path: the app received the raw code/state, so forward to
-        // the local API server to complete the token exchange.
-        const apiUrl = `http://localhost:${actualApiPort}/api/remote-mcps/oauth-callback${callbackUrl.search}`
-        fetch(apiUrl)
-          .then(async (res) => {
-            const text = await res.text()
-            const success = text.includes('OAuth successful')
-            const mcpIdMatch = text.match(/mcpId:\s*'([^']+)'/)
-            mainWindow?.webContents.send('mcp-oauth-callback', {
-              success,
-              mcpId: mcpIdMatch?.[1] || null,
-              error: success ? null : 'OAuth failed',
-            })
-          })
-          .catch((err) => {
-            console.error('Failed to complete MCP OAuth callback:', err)
-            mainWindow?.webContents.send('mcp-oauth-callback', {
-              success: false,
-              error: err.message || 'Failed to complete OAuth',
-            })
-          })
-      }
-      mainWindow?.focus()
-    } catch (error) {
-      console.error('Failed to parse MCP OAuth callback URL:', error)
+    // Planned against the active target, not always the local API: with the
+    // Cloud toggle on, the pending OAuth state lives in the cloud deployment's
+    // memory, so the completion fetch must go through the cloud proxy (SUP-560).
+    const plan = planMcpOAuthCallback(url, activeApiTarget().baseUrl)
+    if (!plan) {
+      console.error('Failed to parse MCP OAuth callback URL:', url)
       mainWindow?.webContents.send('mcp-oauth-callback', {
         success: false,
         error: 'Invalid callback URL',
       })
+      return
     }
+
+    if (plan.action === 'notify') {
+      // http-loopback path: the initiating API server already completed the
+      // token exchange (and any error/issuer validation) in the external
+      // browser and bounced the result back here — the hand-off page always
+      // carries `success`. Notify the renderer directly; no second exchange.
+      mainWindow?.webContents.send('mcp-oauth-callback', plan.result)
+    } else {
+      // Custom-scheme path: the app received the raw code/state, so forward to
+      // the active Superagent's API to complete the token exchange.
+      fetch(plan.completionUrl)
+        .then(async (res) => {
+          const text = await res.text()
+          mainWindow?.webContents.send(
+            'mcp-oauth-callback',
+            parseMcpOAuthCompletionResponse(text),
+          )
+        })
+        .catch((err) => {
+          console.error('Failed to complete MCP OAuth callback:', err)
+          mainWindow?.webContents.send('mcp-oauth-callback', {
+            success: false,
+            error: err.message || 'Failed to complete OAuth',
+          })
+        })
+    }
+    mainWindow?.focus()
   }
 
   if (url.startsWith(`${PROTOCOL_SCHEME}://platform-auth-callback`)) {
@@ -1502,10 +1495,7 @@ async function startApp() {
     return
   }
 
-  // Initialize all background services
-  initializeServices().catch((error) => {
-    console.error('Failed to initialize services:', error)
-  })
+  void afterBindInitialize()
 
   // Reconnect chat integrations after system sleep
   powerMonitor.on('resume', () => {

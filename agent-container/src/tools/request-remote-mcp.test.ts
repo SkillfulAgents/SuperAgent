@@ -52,9 +52,8 @@ describe('requestRemoteMcpTool', () => {
   })
 
   it('returns an explicit error when the resolved server is missing from REMOTE_MCPS', async () => {
-    // The host filters non-active servers out of REMOTE_MCPS — a stale server
-    // can be approved yet never registered. The model must not be told
-    // "granted" in that case.
+    // A server that is not assigned to this agent must not look like a
+    // successful grant to the model.
     process.env.REMOTE_MCPS = JSON.stringify([])
     const toolUseId = `mcp-test-${Date.now()}-2`
     inputManager.setCurrentToolUseId(toolUseId)

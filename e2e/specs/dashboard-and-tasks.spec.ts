@@ -63,6 +63,7 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
     await sessionPage.waitForResponse(15000)
 
     // Verify the schedule task tool call is rendered
+    await sessionPage.expandLatestCompletedTurn(15000)
     await sessionPage.expectToolCall('mcp__user-input__schedule_task', 15000)
     const toolCall = sessionPage.getToolCall('mcp__user-input__schedule_task')
     await expect(toolCall).toBeVisible()
@@ -77,6 +78,7 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
 
     await sessionPage.sendMessage('schedule task for daily issues')
     await sessionPage.waitForResponse(15000)
+    await sessionPage.expandLatestCompletedTurn(15000)
 
     const toolCall = sessionPage.getToolCall('mcp__user-input__schedule_task')
     await expect(toolCall).toBeVisible()
@@ -100,6 +102,7 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
     await sessionPage.waitForResponse(15000)
 
     // Wait for the tool call to complete
+    await sessionPage.expandLatestCompletedTurn(15000)
     await sessionPage.expectToolCall('mcp__user-input__schedule_task', 15000)
     await waitForDailyIssueSummaryTask(request, agentSlug)
 
@@ -123,6 +126,7 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
 
     await sessionPage.sendMessage('schedule task for daily issues')
     await sessionPage.waitForResponse(15000)
+    await sessionPage.expandLatestCompletedTurn(15000)
     await sessionPage.expectToolCall('mcp__user-input__schedule_task', 15000)
     await waitForDailyIssueSummaryTask(request, agentSlug)
 
@@ -156,6 +160,7 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
     const ownerApiSlug = getCurrentAgentSlug(page)
     await sessionPage.sendMessage('schedule task for daily issues')
     await sessionPage.waitForResponse(15000)
+    await sessionPage.expandLatestCompletedTurn(15000)
     await sessionPage.expectToolCall('mcp__user-input__schedule_task', 15000)
     await waitForDailyIssueSummaryTask(request, ownerApiSlug)
 

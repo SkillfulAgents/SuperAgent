@@ -1,8 +1,8 @@
-import type { ReactNode } from 'react'
+import { Children, isValidElement, type ReactNode } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { linkify } from '@renderer/lib/linkify'
-import { RequestItemErrorContext } from './request-item-actions'
+import { RequestItemActions, RequestItemErrorContext } from './request-item-actions'
 import { usePagination } from './pending-request-stack'
 import { StopSessionButton } from './stop-session-button'
 
@@ -12,6 +12,10 @@ export const THEME_CLASSES: Record<RequestTheme, { waitBadge: string }> = {
   blue: { waitBadge: 'text-blue-600 dark:text-blue-400' },
   orange: { waitBadge: 'text-orange-600 dark:text-orange-400' },
 }
+
+// Pending requests sit on top of the scrolling transcript. Keep every shell
+// fully opaque so message content cannot bleed through interactive controls.
+const REQUEST_CARD_CLASS = 'border rounded-[12px] bg-card shadow-md text-sm'
 
 interface CompletedConfig {
   icon: ReactNode
@@ -71,7 +75,7 @@ export function RequestItemShell({
 
   if (completed) {
     return (
-      <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm" {...dataAttrs}>
+      <div className={REQUEST_CARD_CLASS} {...dataAttrs}>
         <div className="flex items-center gap-2 p-4">
           {completed.icon}
           <span className="text-sm">{completed.label}</span>
@@ -103,7 +107,7 @@ export function RequestItemShell({
   if (readOnly) {
     const roConfig = typeof readOnly === 'object' ? readOnly : {}
     return (
-      <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm" {...dataAttrs}>
+      <div className={REQUEST_CARD_CLASS} {...dataAttrs}>
         <div className="flex items-start gap-3 p-4">
           <div className="flex-1 min-w-0">
             <div className="flex items-start justify-between gap-3">
@@ -161,12 +165,32 @@ export function RequestItemShell({
   const headerRightContent = paginationControls ?? headerRight
   const showStopButton = !!(sessionId && agentSlug)
 
+  // Action rows used to be sticky children of this scroll container. Safari
+  // can fail to paint that combination when the whole request card lives in
+  // the absolutely-positioned composer overlay. Split direct action rows into
+  // a real, non-scrolling footer instead. Inline action rows belong to their
+  // surrounding content and deliberately stay in the scrolling body.
+  const childNodes = Children.toArray(children)
+  const bodyChildren: ReactNode[] = []
+  const footerActions: ReactNode[] = []
+  for (const child of childNodes) {
+    if (
+      isValidElement<{ inline?: boolean }>(child) &&
+      child.type === RequestItemActions &&
+      !child.props.inline
+    ) {
+      footerActions.push(child)
+    } else {
+      bodyChildren.push(child)
+    }
+  }
+
   return (
     <div
-      className="max-h-[50vh] overflow-y-auto border rounded-[12px] bg-muted/30 shadow-md text-sm"
+      className={cn('flex max-h-[50vh] flex-col overflow-hidden', REQUEST_CARD_CLASS)}
       {...dataAttrs}
     >
-      <div className="p-4">
+      <div className="min-h-0 overflow-y-auto p-4" data-request-item-body>
         <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between gap-3">
             {titleNode}
@@ -186,10 +210,15 @@ export function RequestItemShell({
           </div>
           {subtitleNode}
           <RequestItemErrorContext.Provider value={error ?? null}>
-            {children}
+            {bodyChildren}
           </RequestItemErrorContext.Provider>
         </div>
       </div>
+      {footerActions.length > 0 && (
+        <RequestItemErrorContext.Provider value={error ?? null}>
+          {footerActions}
+        </RequestItemErrorContext.Provider>
+      )}
     </div>
   )
 }

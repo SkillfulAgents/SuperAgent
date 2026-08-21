@@ -1,7 +1,7 @@
 import { createRouter } from '@tanstack/react-router'
 import { createAppHistory } from './history'
 import { routeTree, type RouterContext } from './routes'
-import { RouteNotFound, RouteError } from './route-fallbacks'
+import { RouteNotFound, RouteError, RoutePending } from './route-fallbacks'
 
 /**
  * The router singleton. MUST be module-scope (never recreated in a component) so
@@ -29,6 +29,10 @@ export const router = createRouter({
   // agent layout's notFound/error) still take precedence.
   defaultNotFoundComponent: RouteNotFound,
   defaultErrorComponent: RouteError,
+  // Suspense fallback while a lazy route chunk downloads with nothing else to
+  // show (cold-boot deep links; in-app navigations keep the previous view via
+  // startTransition, and first-mounted boundaries flash this only past 150ms).
+  defaultPendingComponent: RoutePending,
 })
 
 /**
