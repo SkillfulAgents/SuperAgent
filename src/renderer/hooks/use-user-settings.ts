@@ -15,16 +15,35 @@ export function useUserSettings() {
   })
 }
 
+/**
+ * A settings write: either the fields to store, or a function of the latest
+ * cached settings returning them. Use the function form whenever the payload
+ * is derived from current settings (e.g. "add one assignment to the map") —
+ * it resolves when the mutation actually RUNS, not when it was queued. The
+ * scope below serializes runs, and each run writes the server's response into
+ * the cache before releasing the scope, so the function form always sees the
+ * writes queued ahead of it; a plain object built from `useUserSettings` data
+ * captures whatever the cache held at call time and silently reverts any
+ * write that was still in flight.
+ */
+export type UserSettingsPatch =
+  | Partial<UserSettingsData>
+  | ((current: UserSettingsData | undefined) => Partial<UserSettingsData>)
+
 export function useUpdateUserSettings() {
   const queryClient = useQueryClient()
 
-  return useMutation<UserSettingsData, Error, Partial<UserSettingsData>>({
+  return useMutation<UserSettingsData, Error, UserSettingsPatch>({
     // Settings writes are partial read/merge/write operations on one document.
     // Serialize every instance of this mutation so rapid layout/visibility
     // changes cannot complete out of order and restore an older snapshot.
     scope: { id: 'user-settings' },
     meta: { skipGlobalErrorToast: true },
-    mutationFn: async (data) => {
+    mutationFn: async (patch) => {
+      const data =
+        typeof patch === 'function'
+          ? patch(queryClient.getQueryData<UserSettingsData>(['user-settings']))
+          : patch
       const res = await apiFetch('/api/user-settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },

@@ -3,6 +3,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { cloneElement, isValidElement, type ReactElement } from 'react'
 import { act, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { pointerWithin } from '@dnd-kit/core'
 import { AppSidebar } from './app-sidebar'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
@@ -66,9 +67,16 @@ vi.mock('@renderer/hooks/use-settings', () => ({
   }),
 }))
 
+const { mockUserSettings, mockUpdateSettings, dndContextProps } = vi.hoisted(() => ({
+  mockUserSettings: vi.fn(),
+  mockUpdateSettings: vi.fn(),
+  // The latest props AppSidebar passed to the mocked DndContext, so tests can
+  // drive the drag orchestration (collision detection → move → end) directly.
+  dndContextProps: { current: null as any },
+}))
 vi.mock('@renderer/hooks/use-user-settings', () => ({
-  useUserSettings: () => ({ data: { setupCompleted: true, agentOrder: [] } }),
-  useUpdateUserSettings: () => ({ mutate: vi.fn() }),
+  useUserSettings: () => ({ data: mockUserSettings() }),
+  useUpdateUserSettings: () => ({ mutate: mockUpdateSettings }),
 }))
 
 vi.mock('@renderer/hooks/use-runtime-status', () => ({
@@ -254,12 +262,24 @@ vi.mock('@renderer/components/ui/alert', () => ({
 // Stub out @dnd-kit so SortableAgentMenuItem renders the real AgentMenuItem
 // directly — drag-and-drop is out of scope for these tests.
 vi.mock('@dnd-kit/core', () => ({
-  DndContext: ({ children }: any) => <>{children}</>,
-  closestCenter: vi.fn(),
+  DndContext: (props: any) => {
+    dndContextProps.current = props
+    return <>{props.children}</>
+  },
+  DragOverlay: ({ children }: any) => <>{children}</>,
+  MeasuringStrategy: { Always: 'always' },
+  // Faithful enough for the sticky-snap tests: returns whatever candidates it
+  // was given, nearest-first ordering not modeled (callers take [0]).
+  closestCenter: vi.fn(({ droppableContainers }: any) =>
+    (droppableContainers ?? []).map((d: any) => ({ id: d.id }))
+  ),
+  pointerWithin: vi.fn(() => []),
+  rectIntersection: vi.fn(() => []),
   PointerSensor: vi.fn(),
   KeyboardSensor: vi.fn(),
   useSensor: vi.fn(),
   useSensors: vi.fn(() => []),
+  useDroppable: () => ({ setNodeRef: vi.fn(), isOver: false }),
 }))
 vi.mock('@dnd-kit/sortable', () => ({
   SortableContext: ({ children }: any) => <>{children}</>,
@@ -270,9 +290,11 @@ vi.mock('@dnd-kit/sortable', () => ({
     attributes: {},
     listeners: {},
     setNodeRef: vi.fn(),
+    setActivatorNodeRef: vi.fn(),
     transform: null,
     transition: null,
     isDragging: false,
+    isOver: false,
   }),
 }))
 vi.mock('@dnd-kit/utilities', () => ({
@@ -342,6 +364,7 @@ beforeEach(() => {
     isLoading: false,
   }))
   mockUnreadCount.mockReturnValue({ data: { count: 0 } })
+  mockUserSettings.mockReturnValue({ setupCompleted: true, agentOrder: [] })
 })
 
 describe('AppSidebar — layout & top nav', () => {
@@ -388,9 +411,9 @@ describe('AppSidebar — layout & top nav', () => {
     expect(screen.getByTestId('notifications-button')).toHaveAttribute('data-active', 'true')
   })
 
-  it('renders the "Your Agents" group label', () => {
+  it('renders "Your Agents" as the default folder header', () => {
     renderWithProviders(<AppSidebar />)
-    expect(screen.getByText('Your Agents')).toBeInTheDocument()
+    expect(screen.getByTestId('agent-folder-root')).toHaveTextContent('Your Agents')
   })
 
   it('renders Settings + version in the footer', () => {
@@ -740,4 +763,523 @@ describe('TargetSwitcher placement', () => {
     renderWithProviders(<AppSidebar />)
     expect(screen.queryByTestId('target-switcher')).not.toBeInTheDocument()
   })
+})
+
+describe('AppSidebar — agent folders', () => {
+  const FOLDERS = [
+    { id: 'f1', name: 'Work' },
+    { id: 'f2', name: 'Personal' },
+  ]
+  const FOLDER_1 = 'agent-folder::f1'
+  const FOLDER_2 = 'agent-folder::f2'
+  const ROOT = 'agent-folder::root'
+
+  function withThreeAgents() {
+    mockUseAgents.mockReturnValue({
+      data: [
+        makeAgent(),
+        makeAgent({ slug: 'other-agent', name: 'Other Agent' }),
+        makeAgent({ slug: 'third-agent', name: 'Third Agent' }),
+      ],
+      isLoading: false,
+      error: null,
+    })
+  }
+
+  /**
+   * The left nav top to bottom: agent slugs and `folder:<id>` in DOM order,
+   * which is the order the user reads them in.
+   */
+  function listOrder(): string[] {
+    return Array.from(
+      document.querySelectorAll('[data-testid^="agent-item-"], [data-testid^="agent-folder-"]')
+    )
+      .map((el) => el.getAttribute('data-testid')!)
+      .filter(
+        (id) =>
+          !id.startsWith('agent-folder-empty-') &&
+          !id.startsWith('agent-folder-count-') &&
+          !id.startsWith('agent-folder-chevron-')
+      )
+      .map((id) =>
+        id.startsWith('agent-item-')
+          ? id.replace('agent-item-', '')
+          : id.replace('agent-folder-', 'folder:')
+      )
+  }
+
+  it('renders every agent under the always-present default folder', () => {
+    renderWithProviders(<AppSidebar />)
+    expect(listOrder()).toEqual(['folder:root', 'test-agent', 'other-agent'])
+    expect(screen.getByTestId('agent-folder-root')).toHaveTextContent('Your Agents')
+  })
+
+  it('renders a folder with its name and how many agents are in it', () => {
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [FOLDERS[0]],
+      agentFolderAssignments: { 'test-agent': 'f1', 'other-agent': 'f1' },
+    })
+    renderWithProviders(<AppSidebar />)
+
+    const folder = screen.getByTestId('agent-folder-f1')
+    expect(folder).toHaveTextContent('Work')
+    expect(folder).toHaveTextContent('2')
+  })
+
+  it('defaults the default folder first before anything is arranged', () => {
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [FOLDERS[0]],
+      agentFolderAssignments: { 'test-agent': 'f1' },
+    })
+    renderWithProviders(<AppSidebar />)
+
+    expect(listOrder()).toEqual(['folder:root', 'other-agent', 'folder:f1', 'test-agent'])
+  })
+
+  it('lets the default folder be placed among the others', () => {
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [FOLDERS[0]],
+      agentFolderAssignments: { 'other-agent': 'f1' },
+      agentListOrder: [FOLDER_1, ROOT],
+    })
+    renderWithProviders(<AppSidebar />)
+
+    expect(listOrder()).toEqual(['folder:f1', 'other-agent', 'folder:root', 'test-agent'])
+  })
+
+  it('orders several folders by the stored order', () => {
+    withThreeAgents()
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent', 'third-agent'],
+      agentFolders: FOLDERS,
+      agentFolderAssignments: { 'other-agent': 'f1' },
+      agentListOrder: [FOLDER_2, ROOT, FOLDER_1],
+    })
+    renderWithProviders(<AppSidebar />)
+
+    expect(listOrder()).toEqual([
+      'folder:f2', 'folder:root', 'test-agent', 'third-agent', 'folder:f1', 'other-agent',
+    ])
+  })
+
+  it('ignores stored order entries in the old interleaved format', () => {
+    // The top level used to store agent slugs between folder markers; those
+    // blobs must render under the new model with folders keeping their order.
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [FOLDERS[0]],
+      agentListOrder: ['test-agent', FOLDER_1, 'other-agent'],
+    })
+    renderWithProviders(<AppSidebar />)
+
+    // The slug entries are ignored; the unmarked default folder ranks first.
+    expect(listOrder()).toEqual(['folder:root', 'test-agent', 'other-agent', 'folder:f1'])
+  })
+
+  it('hides a collapsed folder’s agents but keeps its header', () => {
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [FOLDERS[0]],
+      agentFolderAssignments: { 'test-agent': 'f1' },
+      collapsedAgentFolders: ['f1'],
+    })
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByTestId('agent-folder-f1')).toBeInTheDocument()
+    // Hidden, not unmounted — expanding a big folder must not mount every row.
+    expect(screen.getByTestId('agent-item-test-agent')).not.toBeVisible()
+    expect(screen.getByTestId('agent-item-other-agent')).toBeVisible()
+  })
+
+  it('collapses the default folder too, and records it in settings', async () => {
+    mockUserSettings.mockReturnValue({ agentOrder: ['test-agent', 'other-agent'] })
+    renderWithProviders(<AppSidebar />)
+
+    await userEvent.click(screen.getByTestId('agent-folder-root'))
+
+    expect(mockUpdateSettings).toHaveBeenCalledWith(
+      { collapsedAgentFolders: ['root'] },
+      expect.anything()
+    )
+    // Painted locally rather than waiting on the write, so it feels instant
+    // even against a cloud workspace.
+    expect(screen.getByTestId('agent-item-test-agent')).not.toBeVisible()
+  })
+
+  it('shows an agent whose folder was deleted under the default folder', () => {
+    // Deleting a folder leaves dangling assignments on purpose — this is the
+    // behaviour that lets folder and agent deletion skip a cascade.
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [],
+      agentFolderAssignments: { 'test-agent': 'deleted-folder' },
+    })
+    renderWithProviders(<AppSidebar />)
+
+    expect(listOrder()).toEqual(['folder:root', 'test-agent', 'other-agent'])
+  })
+
+  // Folder create/rename use the updater form — a function of the latest
+  // cached settings, resolved when the serialized mutation runs — so tests
+  // resolve the captured payload against explicit "current" settings.
+  const patchWith = (settings: Record<string, unknown>, call = 0) => {
+    const arg = mockUpdateSettings.mock.calls[call][0]
+    return typeof arg === 'function' ? arg(settings) : arg
+  }
+
+  it('adds a uniquely-named folder from the default folder’s header', async () => {
+    renderWithProviders(<AppSidebar />)
+
+    await userEvent.click(screen.getByTestId('new-folder-button'))
+
+    expect(mockUpdateSettings).toHaveBeenCalledTimes(1)
+    const patch = patchWith({ agentFolders: [] })
+    expect(patch.agentFolders).toHaveLength(1)
+    expect(patch.agentFolders[0].name).toBe('New Folder')
+    expect(patch.agentFolders[0].id).toBeTruthy()
+  })
+
+  it('does not reuse an existing folder name when adding another', async () => {
+    const settings = {
+      agentOrder: [],
+      agentFolders: [{ id: 'f1', name: 'New Folder' }],
+    }
+    mockUserSettings.mockReturnValue(settings)
+    renderWithProviders(<AppSidebar />)
+
+    await userEvent.click(screen.getByTestId('new-folder-button'))
+
+    const patch = patchWith(settings)
+    expect(patch.agentFolders[1].name).toBe('New Folder 2')
+  })
+
+  it('names a created folder against the folder list at mutation run time', async () => {
+    // A create queued behind an in-flight write resolves after it settles: if
+    // that write added "New Folder", this one must come out "New Folder 2" —
+    // and must carry the other write's folder rather than reverting it.
+    renderWithProviders(<AppSidebar />)
+
+    await userEvent.click(screen.getByTestId('new-folder-button'))
+
+    const patch = patchWith({ agentFolders: [{ id: 'f9', name: 'New Folder' }] })
+    expect(patch.agentFolders).toHaveLength(2)
+    expect(patch.agentFolders[0]).toEqual({ id: 'f9', name: 'New Folder' })
+    expect(patch.agentFolders[1].name).toBe('New Folder 2')
+  })
+
+  it('puts a newly created folder at the end of the list', () => {
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [FOLDERS[0]],
+      agentListOrder: [ROOT],
+    })
+    renderWithProviders(<AppSidebar />)
+
+    expect(listOrder()).toEqual(['folder:root', 'test-agent', 'other-agent', 'folder:f1'])
+  })
+
+  it('still renders folders when the user has no agents at all', () => {
+    // The "No agents yet" empty state must not swallow the folder the user
+    // just created on an empty install.
+    mockUseAgents.mockReturnValue({ data: [], isLoading: false, error: null })
+    mockUserSettings.mockReturnValue({ agentOrder: [], agentFolders: [FOLDERS[0]] })
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByTestId('agent-folder-f1')).toBeInTheDocument()
+    expect(screen.queryByText('No agents yet. Create one to get started.')).not.toBeInTheDocument()
+  })
+
+  it('keeps the empty state when there are neither agents nor folders', () => {
+    mockUseAgents.mockReturnValue({ data: [], isLoading: false, error: null })
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByText('No agents yet. Create one to get started.')).toBeInTheDocument()
+  })
+
+  it('invites a drop into an empty folder', () => {
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [FOLDERS[0]],
+      agentFolderAssignments: {},
+    })
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByText('Drag agents here')).toBeInTheDocument()
+  })
+})
+
+
+describe('AppSidebar — drag orchestration', () => {
+  // These drive the real handlers through the props AppSidebar hands the
+  // (mocked) DndContext: collision detection computes the folder drop cue,
+  // onDragMove commits it for the insert line, onDragEnd resolves the drop.
+  const dnd = () => dndContextProps.current
+
+  const folderBlock = (folderId: string, top: number, height = 40) => ({
+    id: `agent-folder::${folderId}`,
+    data: { current: { type: 'folder' } },
+    rect: { current: { top, bottom: top + height, height, left: 0, right: 200, width: 200 } },
+  })
+
+  const folderActive = (folderId: string) => ({
+    id: `agent-folder::${folderId}`,
+    data: { current: { type: 'folder', folderId } },
+  })
+
+  const agentActive = (slug: string) => ({
+    id: slug,
+    data: { current: { type: 'agent' } },
+  })
+
+  const patchWith = (settings: Record<string, unknown>, call = 0) => {
+    const arg = mockUpdateSettings.mock.calls[call][0]
+    return typeof arg === 'function' ? arg(settings) : arg
+  }
+
+  const THREE_FOLDERS = [
+    { id: 'f1', name: 'A' },
+    { id: 'f2', name: 'B' },
+    { id: 'f3', name: 'C' },
+  ]
+  const THREE_FOLDER_ORDER = [
+    'agent-folder::root',
+    'agent-folder::f1',
+    'agent-folder::f2',
+    'agent-folder::f3',
+  ]
+  const THREE_FOLDER_BLOCKS = [
+    folderBlock('root', 0),
+    folderBlock('f1', 40),
+    folderBlock('f2', 80),
+    folderBlock('f3', 120),
+  ]
+
+  function renderThreeFolders() {
+    const settings = {
+      setupCompleted: true,
+      agentOrder: [],
+      agentFolders: THREE_FOLDERS,
+      agentListOrder: THREE_FOLDER_ORDER,
+    }
+    mockUserSettings.mockReturnValue(settings)
+    renderWithProviders(<AppSidebar />)
+    return settings
+  }
+
+  /** Run one collision pass with the pointer over `folderId` at height `y`. */
+  function hoverFolder(active: any, folderId: string, y: number) {
+    vi.mocked(pointerWithin).mockReturnValueOnce([{ id: `agent-folder::${folderId}` }])
+    dnd().collisionDetection({
+      active,
+      droppableContainers: THREE_FOLDER_BLOCKS,
+      pointerCoordinates: { x: 10, y },
+    })
+  }
+
+  it('lands a folder dragged DOWN on the upper half where the line showed, before the target', () => {
+    // The two quadrants the E2E does not walk (down+above, up+below) are
+    // exactly where cue semantics and "take the target's slot" disagree — a
+    // drop handler that loses the cue still passes the other two by luck.
+    const settings = renderThreeFolders()
+    const active = folderActive('f1')
+
+    act(() => dnd().onDragStart({ active }))
+    hoverFolder(active, 'f3', 125) // upper half of f3 (120..160)
+    act(() => dnd().onDragMove({}))
+    const line = screen.getByTestId('folder-insert-indicator-f3')
+    expect(line).toHaveAttribute('data-edge', 'above')
+    act(() => dnd().onDragEnd({ active, over: { id: 'agent-folder::f3' } }))
+
+    expect(patchWith(settings).agentListOrder).toEqual([
+      'agent-folder::root',
+      'agent-folder::f2',
+      'agent-folder::f1',
+      'agent-folder::f3',
+    ])
+  })
+
+  it('lands a folder dragged UP on the lower half where the line showed, after the target', () => {
+    const settings = renderThreeFolders()
+    const active = folderActive('f3')
+
+    act(() => dnd().onDragStart({ active }))
+    hoverFolder(active, 'f1', 75) // lower half of f1 (40..80)
+    act(() => dnd().onDragMove({}))
+    expect(screen.getByTestId('folder-insert-indicator-f1')).toHaveAttribute('data-edge', 'below')
+    act(() => dnd().onDragEnd({ active, over: { id: 'agent-folder::f1' } }))
+
+    expect(patchWith(settings).agentListOrder).toEqual([
+      'agent-folder::root',
+      'agent-folder::f1',
+      'agent-folder::f3',
+      'agent-folder::f2',
+    ])
+  })
+
+  it('falls back to slot semantics without a pointer cue, as keyboard drags have none', () => {
+    const settings = renderThreeFolders()
+    const active = folderActive('f3')
+
+    act(() => dnd().onDragStart({ active }))
+    act(() => dnd().onDragEnd({ active, over: { id: 'agent-folder::f1' } }))
+
+    expect(patchWith(settings).agentListOrder).toEqual([
+      'agent-folder::root',
+      'agent-folder::f3',
+      'agent-folder::f1',
+      'agent-folder::f2',
+    ])
+  })
+
+  it('keeps a collapsed folder header as the drop target instead of its hidden rows', () => {
+    // Hidden member rows measure 0×0 — inert for containment/overlap
+    // detectors but perfectly valid for the DISTANCE snap. Unfiltered, the
+    // snap steals `over` from the header one tick after the live re-parent,
+    // killing the drop highlight and landing the agent at the hidden row's
+    // index instead of appending.
+    mockUserSettings.mockReturnValue({
+      setupCompleted: true,
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [{ id: 'f1', name: 'Work' }],
+      agentFolderAssignments: { 'test-agent': 'f1' },
+      agentListOrder: ['agent-folder::root', 'agent-folder::f1'],
+      collapsedAgentFolders: ['f1'],
+    })
+    renderWithProviders(<AppSidebar />)
+
+    const active = agentActive('test-agent')
+    const collapsedBlock = folderBlock('f1', 40)
+    const hiddenRow = {
+      id: 'test-agent',
+      data: { current: { type: 'agent' } },
+      rect: { current: { top: 0, bottom: 0, height: 0, left: 0, right: 0, width: 0 } },
+    }
+    act(() => dnd().onDragStart({ active }))
+    vi.mocked(pointerWithin).mockReturnValueOnce([{ id: 'agent-folder::f1' }])
+    const result = dnd().collisionDetection({
+      active,
+      droppableContainers: [folderBlock('root', 0), collapsedBlock, hiddenRow],
+      pointerCoordinates: { x: 10, y: 60 },
+    })
+
+    expect(result.map((c: any) => c.id)).toEqual(['agent-folder::f1'])
+  })
+
+  it('puts a live cross-folder re-parent back where it was when the drag cancels', () => {
+    mockUserSettings.mockReturnValue({
+      setupCompleted: true,
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [{ id: 'f1', name: 'Work' }],
+      agentListOrder: ['agent-folder::root', 'agent-folder::f1'],
+    })
+    renderWithProviders(<AppSidebar />)
+    const active = agentActive('test-agent')
+
+    act(() => dnd().onDragStart({ active }))
+    act(() => dnd().onDragOver({ active, over: { id: 'agent-section::f1' } }))
+    expect(listOrderOf()).toEqual(['folder:root', 'other-agent', 'folder:f1', 'test-agent'])
+
+    act(() => dnd().onDragCancel())
+    expect(listOrderOf()).toEqual(['folder:root', 'test-agent', 'other-agent', 'folder:f1'])
+    expect(mockUpdateSettings).not.toHaveBeenCalled()
+  })
+
+  it("an older drop settling does not clear a newer drop's optimistic tree", () => {
+    mockUseAgents.mockReturnValue({
+      data: [
+        makeAgent(),
+        makeAgent({ slug: 'other-agent', name: 'Other Agent' }),
+        makeAgent({ slug: 'third-agent', name: 'Third Agent' }),
+      ],
+      isLoading: false,
+      error: null,
+    })
+    mockUserSettings.mockReturnValue({
+      setupCompleted: true,
+      agentOrder: ['test-agent', 'other-agent', 'third-agent'],
+    })
+    renderWithProviders(<AppSidebar />)
+
+    const first = agentActive('third-agent')
+    act(() => dnd().onDragStart({ active: first }))
+    act(() => dnd().onDragEnd({ active: first, over: { id: 'test-agent' } }))
+    const second = agentActive('other-agent')
+    act(() => dnd().onDragStart({ active: second }))
+    act(() => dnd().onDragEnd({ active: second, over: { id: 'third-agent' } }))
+    expect(listOrderOf()).toEqual(['folder:root', 'other-agent', 'third-agent', 'test-agent'])
+
+    // The FIRST drop's write settles now, after the second was issued. Its
+    // stale token must not tear down the second drop's optimistic view.
+    act(() => mockUpdateSettings.mock.calls[0][1].onSettled())
+    expect(listOrderOf()).toEqual(['folder:root', 'other-agent', 'third-agent', 'test-agent'])
+  })
+
+  it("a drop settling mid-drag does not clear the active drag's re-parent", () => {
+    mockUserSettings.mockReturnValue({
+      setupCompleted: true,
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [{ id: 'f1', name: 'Work' }],
+      agentListOrder: ['agent-folder::root', 'agent-folder::f1'],
+    })
+    renderWithProviders(<AppSidebar />)
+
+    const first = agentActive('other-agent')
+    act(() => dnd().onDragStart({ active: first }))
+    act(() => dnd().onDragEnd({ active: first, over: { id: 'test-agent' } }))
+    expect(listOrderOf()).toEqual(['folder:root', 'other-agent', 'test-agent', 'folder:f1'])
+
+    // A second drag is live and has re-parented a row when the drop's write
+    // settles. Over-change events only fire when `over` CHANGES, so a
+    // mid-drag snap-back would stick for the rest of the drag.
+    const second = agentActive('test-agent')
+    act(() => dnd().onDragStart({ active: second }))
+    act(() => dnd().onDragOver({ active: second, over: { id: 'agent-section::f1' } }))
+    act(() => mockUpdateSettings.mock.calls[0][1].onSettled())
+    expect(listOrderOf()).toEqual(['folder:root', 'other-agent', 'folder:f1', 'test-agent'])
+  })
+
+  it('an earlier collapse settling does not reopen a folder collapsed after it', async () => {
+    mockUserSettings.mockReturnValue({
+      setupCompleted: true,
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [
+        { id: 'f1', name: 'Work' },
+        { id: 'f2', name: 'Personal' },
+      ],
+      agentFolderAssignments: { 'test-agent': 'f1', 'other-agent': 'f2' },
+    })
+    renderWithProviders(<AppSidebar />)
+
+    await userEvent.click(screen.getByTestId('agent-folder-f1'))
+    await userEvent.click(screen.getByTestId('agent-folder-f2'))
+    expect(screen.getByTestId('agent-item-other-agent')).not.toBeVisible()
+
+    // The first toggle's write settles after the second was issued; its stale
+    // token must not drop the fold back to the cached (all-open) state.
+    act(() => mockUpdateSettings.mock.calls[0][1].onSettled())
+    expect(screen.getByTestId('agent-item-other-agent')).not.toBeVisible()
+  })
+
+  /** Same reading as the folders describe's listOrder, local to this one. */
+  function listOrderOf(): string[] {
+    return Array.from(
+      document.querySelectorAll('[data-testid^="agent-item-"], [data-testid^="agent-folder-"]')
+    )
+      .map((el) => el.getAttribute('data-testid')!)
+      .filter(
+        (id) =>
+          !id.startsWith('agent-folder-empty-') &&
+          !id.startsWith('agent-folder-count-') &&
+          !id.startsWith('agent-folder-chevron-') &&
+          !id.startsWith('agent-folder-insert-indicator-')
+      )
+      .map((id) =>
+        id.startsWith('agent-item-')
+          ? id.replace('agent-item-', '')
+          : id.replace('agent-folder-', 'folder:')
+      )
+  }
 })
