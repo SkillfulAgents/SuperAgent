@@ -22,17 +22,31 @@ export const DASHBOARD_DISPATCH_ACK_TYPE = 'gamut:dispatch-session-ack'
 export const DASHBOARD_DISPATCH_RESULT_TYPE = 'gamut:dispatch-session-result'
 
 export const DASHBOARD_DISPATCH_PROMPT_MAX = 8000
+export const DASHBOARD_DISPATCH_ID_MAX = 128
+export const DASHBOARD_DISPATCH_TITLE_MAX = 200
+
+/** Host-side cooldown after a dialog resolves before the next request is accepted. */
+export const DASHBOARD_DISPATCH_COOLDOWN_MS = 2000
+
+/**
+ * The consent sentence both hosts render, split around the agent name:
+ * `PREFIX + <agent name> + SUFFIX`. Shared so the in-app modal and the /view
+ * wrapper can never show divergent consent language.
+ */
+export const DASHBOARD_DISPATCH_CONSENT_PREFIX = 'This dashboard wants to start a new session on '
+export const DASHBOARD_DISPATCH_CONSENT_SUFFIX =
+  '. Review the prompt before dispatching — it runs in the background.'
 
 export const dashboardDispatchRequestSchema = z.object({
   type: z.literal(DASHBOARD_DISPATCH_REQUEST_TYPE),
-  id: z.string().min(1).max(128),
+  id: z.string().min(1).max(DASHBOARD_DISPATCH_ID_MAX),
   // Sessions always run on the agent that owns the dashboard — there is
   // deliberately no agent field. Slash-command prompts are agent-local, so a
   // redirect would usually break them; cross-agent invocation belongs to the
   // x-agent machinery (ACLs, policy review), not a dispatch dialog.
   payload: z.object({
     prompt: z.string().min(1).max(DASHBOARD_DISPATCH_PROMPT_MAX),
-    title: z.string().min(1).max(200).optional(),
+    title: z.string().min(1).max(DASHBOARD_DISPATCH_TITLE_MAX).optional(),
   }),
 })
 
@@ -49,10 +63,11 @@ export type DashboardDispatchResult =
 /**
  * Optional provenance block on `POST /api/agents/:id/sessions` marking the
  * session as confirmed from a dashboard's dispatch dialog. Client-supplied
- * metadata only — it grants nothing, it just labels the session.
+ * metadata only — it grants nothing, it just labels the session. The owning
+ * agent is NOT client-supplied: the server derives it from the route's own
+ * slug (dispatch always targets the owning agent), so it cannot be spoofed.
  */
 export const sessionDashboardDispatchSchema = z.object({
-  agentSlug: z.string().min(1).max(200),
   dashboardSlug: z.string().min(1).max(200),
 })
 

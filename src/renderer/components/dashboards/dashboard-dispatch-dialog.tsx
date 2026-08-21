@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState, type MutableRefObject } from 'react'
 import { Send } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import {
@@ -12,7 +12,11 @@ import {
 import { Label } from '@renderer/components/ui/label'
 import { Textarea } from '@renderer/components/ui/textarea'
 import { useCreateSession } from '@renderer/hooks/use-sessions'
-import type { DashboardDispatchResult } from '@shared/lib/dashboard-dispatch-schema'
+import {
+  DASHBOARD_DISPATCH_CONSENT_PREFIX,
+  DASHBOARD_DISPATCH_CONSENT_SUFFIX,
+  type DashboardDispatchResult,
+} from '@shared/lib/dashboard-dispatch-schema'
 import type { PendingDashboardDispatch } from './use-dashboard-dispatch'
 
 interface DashboardDispatchDialogProps {
@@ -39,8 +43,18 @@ export function DashboardDispatchDialog({
   dashboardSlug,
   onResolve,
 }: DashboardDispatchDialogProps) {
+  // While the create request is in flight, every dismissal path (Escape,
+  // outside click, the X button) funnels through onOpenChange — ignoring it
+  // keeps the controlled dialog open, so the dashboard can't be told
+  // "cancelled" while a real session gets created.
+  const dispatchingRef = useRef(false)
   return (
-    <Dialog open={request !== null} onOpenChange={(open) => { if (!open) onResolve({ cancelled: true }) }}>
+    <Dialog
+      open={request !== null}
+      onOpenChange={(open) => {
+        if (!open && !dispatchingRef.current) onResolve({ cancelled: true })
+      }}
+    >
       {request && (
         <DispatchDialogContent
           key={request.id}
@@ -49,6 +63,7 @@ export function DashboardDispatchDialog({
           dashboardAgentName={dashboardAgentName}
           dashboardSlug={dashboardSlug}
           onResolve={onResolve}
+          dispatchingRef={dispatchingRef}
         />
       )}
     </Dialog>
@@ -61,7 +76,11 @@ function DispatchDialogContent({
   dashboardAgentName,
   dashboardSlug,
   onResolve,
-}: DashboardDispatchDialogProps & { request: PendingDashboardDispatch }) {
+  dispatchingRef,
+}: DashboardDispatchDialogProps & {
+  request: PendingDashboardDispatch
+  dispatchingRef: MutableRefObject<boolean>
+}) {
   const createSession = useCreateSession()
   const [prompt, setPrompt] = useState(request.prompt)
   const [error, setError] = useState<string | null>(null)
@@ -70,26 +89,31 @@ function DispatchDialogContent({
     const message = prompt.trim()
     if (!message) return
     setError(null)
+    dispatchingRef.current = true
     try {
       const session = await createSession.mutateAsync({
         agentSlug: dashboardAgentSlug,
         message,
-        dashboardDispatch: { agentSlug: dashboardAgentSlug, dashboardSlug },
+        dashboardDispatch: { dashboardSlug },
       })
       onResolve({ sessionId: session.id, agentSlug: dashboardAgentSlug })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create session')
+    } finally {
+      dispatchingRef.current = false
     }
-  }, [prompt, createSession, dashboardAgentSlug, dashboardSlug, onResolve])
+  }, [prompt, createSession, dashboardAgentSlug, dashboardSlug, onResolve, dispatchingRef])
 
   return (
     <DialogContent className="sm:max-w-lg">
       <DialogHeader>
         <DialogTitle>{request.title || 'Dispatch agent session'}</DialogTitle>
+        {/* Consent sentence shared with the /view wrapper's dialog so the two
+            surfaces can never show divergent consent language. */}
         <DialogDescription>
-          This dashboard wants to start a new session on{' '}
-          <span className="font-medium text-foreground">{dashboardAgentName || dashboardAgentSlug}</span>.
-          Review the prompt before dispatching — it runs in the background.
+          {DASHBOARD_DISPATCH_CONSENT_PREFIX}
+          <span className="font-medium text-foreground">{dashboardAgentName || dashboardAgentSlug}</span>
+          {DASHBOARD_DISPATCH_CONSENT_SUFFIX}
         </DialogDescription>
       </DialogHeader>
 
@@ -106,7 +130,11 @@ function DispatchDialogContent({
       </div>
 
       <DialogFooter>
-        <Button variant="outline" onClick={() => onResolve({ cancelled: true })}>
+        <Button
+          variant="outline"
+          disabled={createSession.isPending}
+          onClick={() => onResolve({ cancelled: true })}
+        >
           Cancel
         </Button>
         <Button onClick={handleDispatch} disabled={createSession.isPending || !prompt.trim()}>

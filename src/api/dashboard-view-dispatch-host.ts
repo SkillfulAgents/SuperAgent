@@ -1,8 +1,13 @@
 import {
   DASHBOARD_DISPATCH_ACK_TYPE,
+  DASHBOARD_DISPATCH_CONSENT_PREFIX,
+  DASHBOARD_DISPATCH_CONSENT_SUFFIX,
+  DASHBOARD_DISPATCH_COOLDOWN_MS,
+  DASHBOARD_DISPATCH_ID_MAX,
   DASHBOARD_DISPATCH_PROMPT_MAX,
   DASHBOARD_DISPATCH_REQUEST_TYPE,
   DASHBOARD_DISPATCH_RESULT_TYPE,
+  DASHBOARD_DISPATCH_TITLE_MAX,
 } from '@shared/lib/dashboard-dispatch-schema'
 
 /**
@@ -12,17 +17,16 @@ import {
  *
  * Mirrors the in-app host (`use-dashboard-dispatch.ts` + the dispatch dialog)
  * in plain DOM: validates requests from the wrapped iframe, shows a native
- * <dialog> with the editable prompt and an agent picker, and only creates the
- * session after the user clicks Dispatch. The same throttle applies — one open
- * request, then a cooldown — so a buggy dashboard can at worst re-open one
- * dialog. Message types and limits are interpolated from the shared schema
+ * <dialog> with the editable prompt (sessions always run on the dashboard's
+ * owning agent — no picker), and only creates the session after the user
+ * clicks Dispatch. The same throttle applies — one open request, then a
+ * cooldown — so a buggy dashboard can at worst re-open one dialog. Message
+ * types, limits, and consent copy are interpolated from the shared schema
  * constants so the protocol cannot drift per surface.
  *
  * The wrapper calls `window.__gamutDispatchHost.attach(...)` once it creates
  * the dashboard iframe.
  */
-
-const COOLDOWN_MS = 2000
 
 let cached: string | null = null
 
@@ -40,7 +44,11 @@ function buildSource(): string {
   var ACK_TYPE = ${JSON.stringify(DASHBOARD_DISPATCH_ACK_TYPE)};
   var RESULT_TYPE = ${JSON.stringify(DASHBOARD_DISPATCH_RESULT_TYPE)};
   var PROMPT_MAX = ${DASHBOARD_DISPATCH_PROMPT_MAX};
-  var COOLDOWN_MS = ${COOLDOWN_MS};
+  var ID_MAX = ${DASHBOARD_DISPATCH_ID_MAX};
+  var TITLE_MAX = ${DASHBOARD_DISPATCH_TITLE_MAX};
+  var COOLDOWN_MS = ${DASHBOARD_DISPATCH_COOLDOWN_MS};
+  var CONSENT_PREFIX = ${JSON.stringify(DASHBOARD_DISPATCH_CONSENT_PREFIX)};
+  var CONSENT_SUFFIX = ${JSON.stringify(DASHBOARD_DISPATCH_CONSENT_SUFFIX)};
 
   var STYLE = ""
     + ".gamut-dispatch-dialog { margin: auto; background: #171717; color: #e5e5e5; border: 1px solid #333; border-radius: 10px; padding: 1.25rem; width: min(480px, calc(100vw - 2rem)); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }"
@@ -59,11 +67,11 @@ function buildSource(): string {
   function validRequest(data) {
     if (!data || typeof data !== "object") return null;
     if (data.type !== REQUEST_TYPE) return null;
-    if (typeof data.id !== "string" || !data.id || data.id.length > 128) return null;
+    if (typeof data.id !== "string" || !data.id || data.id.length > ID_MAX) return null;
     var p = data.payload;
     if (!p || typeof p !== "object") return null;
     if (typeof p.prompt !== "string" || !p.prompt || p.prompt.length > PROMPT_MAX) return null;
-    if (p.title != null && (typeof p.title !== "string" || !p.title || p.title.length > 200)) return null;
+    if (p.title != null && (typeof p.title !== "string" || !p.title || p.title.length > TITLE_MAX)) return null;
     return {
       id: data.id,
       prompt: p.prompt,
@@ -102,15 +110,14 @@ function buildSource(): string {
 
     function openDialog(request) {
       var finished = false;
+      var dispatching = false;
       var dialog = el("dialog", "gamut-dispatch-dialog");
       var title = el("h2", null, request.title || "Dispatch agent session");
-      var desc = el("p", "gamut-dispatch-desc",
-        "This dashboard wants to start a new session on ");
+      var desc = el("p", "gamut-dispatch-desc", CONSENT_PREFIX);
       var agentStrong = document.createElement("strong");
       agentStrong.textContent = agentName;
       desc.appendChild(agentStrong);
-      desc.appendChild(document.createTextNode(
-        ". Review the prompt before dispatching \\u2014 it runs in the background."));
+      desc.appendChild(document.createTextNode(CONSENT_SUFFIX));
 
       var promptLabel = el("label", null, "Prompt");
       var textarea = document.createElement("textarea");
@@ -143,11 +150,20 @@ function buildSource(): string {
       }
 
       cancelButton.addEventListener("click", function () { finish({ cancelled: true }); });
+      // Escape fires 'cancel' before 'close' — swallow it while the create
+      // request is in flight, or the dashboard would be told cancelled while
+      // a real session gets created.
+      dialog.addEventListener("cancel", function (event) {
+        if (dispatching) event.preventDefault();
+      });
       // Covers Escape and any other programmatic close.
-      dialog.addEventListener("close", function () { finish({ cancelled: true }); });
+      dialog.addEventListener("close", function () {
+        if (!dispatching) finish({ cancelled: true });
+      });
       confirmButton.addEventListener("click", function () {
         var message = textarea.value.trim();
         if (!message) return;
+        dispatching = true;
         confirmButton.disabled = true;
         cancelButton.disabled = true;
         error.textContent = "";
@@ -156,7 +172,7 @@ function buildSource(): string {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             message: message,
-            dashboardDispatch: { agentSlug: agentSlug, dashboardSlug: artifactSlug }
+            dashboardDispatch: { dashboardSlug: artifactSlug }
           })
         }).then(function (res) {
           if (!res.ok) throw new Error("Failed to create session");
@@ -164,6 +180,7 @@ function buildSource(): string {
         }).then(function (session) {
           finish({ sessionId: session.id, agentSlug: agentSlug });
         }).catch(function (err) {
+          dispatching = false;
           confirmButton.disabled = false;
           cancelButton.disabled = false;
           error.textContent = err && err.message ? err.message : "Failed to create session";

@@ -46,8 +46,10 @@ function runtimeHarness(
     querySelector: () => null,
   }
   new Function('window', 'document', source)(windowObject, documentObject)
-  const deliverMessage = (data: unknown) => {
-    for (const listener of messageListeners) listener({ data })
+  const deliverMessage = (data: unknown, source?: unknown) => {
+    // Default to the parent frame — the shim ignores any other source.
+    const from = source === undefined ? windowObject.parent : source
+    for (const listener of messageListeners) listener({ source: from, data })
   }
   return { runtime: windowObject.__GAMUT_DASHBOARD__ as RuntimeApi, deliverMessage }
 }
@@ -213,6 +215,28 @@ describe('dashboard session dispatch shim', () => {
     const assertion = expect(pending).rejects.toThrow(/not available in this window/)
     vi.advanceTimersByTime(2001)
     await assertion
+  })
+
+  it('ignores results that do not come from the parent frame', async () => {
+    const posted: any[] = []
+    const { runtime, deliverMessage } = runtimeHarness(href, fallback, 'slides', {
+      parentPostMessage: (message) => posted.push(message),
+    })
+
+    const pending = runtime.dispatchSession({ prompt: 'do it' })
+    deliverMessage({ type: DASHBOARD_DISPATCH_ACK_TYPE, id: posted[0].id })
+    // A spoofed result from a non-parent window must not settle the promise…
+    deliverMessage(
+      { type: DASHBOARD_DISPATCH_RESULT_TYPE, id: posted[0].id, result: { sessionId: 'fake', agentSlug: 'x' } },
+      { some: 'other-window' },
+    )
+    // …so the genuine result from the parent still wins.
+    deliverMessage({
+      type: DASHBOARD_DISPATCH_RESULT_TYPE,
+      id: posted[0].id,
+      result: { cancelled: true },
+    })
+    await expect(pending).resolves.toEqual({ cancelled: true })
   })
 
   it('waits on the user decision indefinitely once acked', async () => {

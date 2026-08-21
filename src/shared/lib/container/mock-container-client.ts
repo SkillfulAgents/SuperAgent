@@ -2,6 +2,7 @@ import { EventEmitter } from 'events'
 import { randomUUID } from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
+import { z } from 'zod'
 import type {
   ContainerClient,
   ContainerConfig,
@@ -21,6 +22,16 @@ import { db } from '../db'
 import { connectedAccounts } from '../db/schema'
 
 export const MOCK_ACCOUNT_ID = 'mock-account-id'
+
+// Validate seeded dashboard package.json at the file boundary (project
+// convention). Minimal mirror of agent-container's DashboardPackageSchema —
+// that package can't be imported from here.
+const seededDashboardPackageSchema = z
+  .object({
+    name: z.string().optional(),
+    description: z.string().optional(),
+  })
+  .loose()
 
 // E2E mock scenarios reference a fake connected account by id. The
 // /proxy-review/.../always endpoint persists an apiScopePolicies row whose
@@ -2394,8 +2405,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         for (const entry of fs.readdirSync(artifactsDir, { withFileTypes: true })) {
           if (!entry.isDirectory()) continue
           try {
-            const pkg = JSON.parse(
-              fs.readFileSync(path.join(artifactsDir, entry.name, 'package.json'), 'utf-8')
+            const pkg = seededDashboardPackageSchema.parse(
+              JSON.parse(fs.readFileSync(path.join(artifactsDir, entry.name, 'package.json'), 'utf-8'))
             )
             artifacts.push({
               slug: entry.name,

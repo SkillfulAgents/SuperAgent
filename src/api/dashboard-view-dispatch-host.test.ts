@@ -135,7 +135,7 @@ describe('dashboard /view dispatch host', () => {
     )
     expect(body).toEqual({
       message: '/research-user jane',
-      dashboardDispatch: { agentSlug: 'agent-a', dashboardSlug: 'dash' },
+      dashboardDispatch: { dashboardSlug: 'dash' },
     })
     expect(posted()).toContainEqual({
       type: DASHBOARD_DISPATCH_RESULT_TYPE,
@@ -143,6 +143,21 @@ describe('dashboard /view dispatch host', () => {
       result: { sessionId: 's-1', agentSlug: 'agent-a' },
     })
     expect(dialog()).toBeNull()
+  })
+
+  it('ignores a dialog close during an in-flight dispatch instead of reporting cancelled', async () => {
+    attachHost()
+    sendFromSource(contentWindow, validRequest('r1'))
+    await flushPromises()
+    ;(dialog()!.querySelector('.gamut-dispatch-confirm') as HTMLButtonElement).click()
+    // Simulate Escape landing while the POST is pending.
+    dialog()!.dispatchEvent(new Event('close'))
+    await flushPromises()
+
+    const results = posted().filter((m) => m.id === 'r1' && m.type === DASHBOARD_DISPATCH_RESULT_TYPE)
+    expect(results).toEqual([
+      { type: DASHBOARD_DISPATCH_RESULT_TYPE, id: 'r1', result: { sessionId: 's-1', agentSlug: 'agent-a' } },
+    ])
   })
 
   it('posts cancelled and removes the dialog on Cancel', async () => {

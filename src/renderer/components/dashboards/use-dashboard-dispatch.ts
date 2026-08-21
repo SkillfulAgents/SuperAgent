@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import {
   DASHBOARD_DISPATCH_ACK_TYPE,
+  DASHBOARD_DISPATCH_COOLDOWN_MS,
   DASHBOARD_DISPATCH_REQUEST_TYPE,
   DASHBOARD_DISPATCH_RESULT_TYPE,
   dashboardDispatchRequestSchema,
@@ -18,9 +19,6 @@ import {
  * `rate_limited` — so a buggy dashboard loop can at worst re-open one dialog,
  * never stack them or create sessions on its own.
  */
-
-/** Cooldown after a dialog resolves before the next request is accepted. */
-export const DASHBOARD_DISPATCH_COOLDOWN_MS = 2000
 
 export interface PendingDashboardDispatch {
   id: string

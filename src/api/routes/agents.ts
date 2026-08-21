@@ -1714,7 +1714,9 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       ...(dashboardDispatch
         ? {
             dispatchedByDashboardSlug: dashboardDispatch.dashboardSlug,
-            dispatchedByDashboardAgentSlug: dashboardDispatch.agentSlug,
+            // Derived from the route, never client-supplied: dispatch always
+            // targets the dashboard's owning agent, so the label can't be spoofed.
+            dispatchedByDashboardAgentSlug: slug,
           }
         : {}),
     }
@@ -6116,7 +6118,6 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
     <div class="spinner"></div>
     <div id="status" class="status">Checking agent status…</div>
   </div>
-  <script>${getDashboardViewDispatchHostJs()}</script>
   <script>
     const agentSlug = ${JSON.stringify(agentSlug)};
     const artifactSlug = ${JSON.stringify(artifactSlug)};
@@ -6152,8 +6153,10 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
       iframe.sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups allow-downloads';
       iframe.allow = 'microphone; camera';
       document.body.appendChild(iframe);
-      // Host the session-dispatch confirmation dialog for the wrapped dashboard.
-      if (window.__gamutDispatchHost) {
+      // Host the session-dispatch confirmation dialog for the wrapped
+      // dashboard. typeof-guarded: unit tests run this script in a bare vm
+      // context that has no window at all.
+      if (typeof window !== 'undefined' && window.__gamutDispatchHost) {
         window.__gamutDispatchHost.attach({ iframe, agentSlug, agentName, artifactSlug, basePath });
       }
     }
@@ -6233,6 +6236,10 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
 
     run();
   </script>
+  <!-- After the main wrapper script: existing tests extract "the" wrapper
+       script with a first-match regex, and parse order doesn't matter — the
+       host is only referenced from showDashboard(), long after both parse. -->
+  <script>${getDashboardViewDispatchHostJs()}</script>
 </body>
 </html>`
 

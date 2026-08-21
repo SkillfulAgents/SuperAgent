@@ -4,13 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RefObject } from 'react'
 import {
   DASHBOARD_DISPATCH_ACK_TYPE,
+  DASHBOARD_DISPATCH_COOLDOWN_MS,
   DASHBOARD_DISPATCH_REQUEST_TYPE,
   DASHBOARD_DISPATCH_RESULT_TYPE,
 } from '@shared/lib/dashboard-dispatch-schema'
-import {
-  DASHBOARD_DISPATCH_COOLDOWN_MS,
-  useDashboardDispatch,
-} from './use-dashboard-dispatch'
+import { useDashboardDispatch } from './use-dashboard-dispatch'
 
 function makeFrame() {
   const contentWindow = { postMessage: vi.fn() }
