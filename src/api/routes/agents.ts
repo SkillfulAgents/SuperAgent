@@ -34,6 +34,11 @@ import {
   updateRemoteMcpEnvironment,
 } from '@shared/lib/container/connection-runtime-sync'
 import { parseRuntimeOptions, resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
+import {
+  sessionDashboardDispatchSchema,
+  type SessionDashboardDispatch,
+} from '@shared/lib/dashboard-dispatch-schema'
+import { getDashboardViewDispatchHostJs } from '../dashboard-view-dispatch-host'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
@@ -1633,6 +1638,24 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
 
     const runtimeOptions = parseRuntimeOptions(body)
 
+    // Optional provenance: the renderer's dashboard-dispatch dialog marks the
+    // sessions it creates so they can show where they came from. This is a
+    // LABEL, not proof of user consent: dashboard iframes share the API's
+    // origin and ambient credentials, so dashboard JS can already POST here
+    // directly, with or without this field. The consent dialog is therefore a
+    // guarantee about host-built UI paths (and a throttle on well-behaved
+    // dashboards), not a server-enforced boundary — enforcing consent
+    // server-side requires isolating dashboards onto their own origin with a
+    // host-issued capability, which is deliberately out of scope here.
+    let dashboardDispatch: SessionDashboardDispatch | undefined
+    if (body.dashboardDispatch !== undefined) {
+      const parsed = sessionDashboardDispatchSchema.safeParse(body.dashboardDispatch)
+      if (!parsed.success) {
+        return c.json({ error: 'Invalid dashboardDispatch' }, 400)
+      }
+      dashboardDispatch = parsed.data
+    }
+
     const agent = await getAgent(slug)
     if (!agent) {
       return c.json({ error: 'Agent not found' }, 404)
@@ -1695,6 +1718,14 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       model: resolved.model,
       ...(resolved.effort ? { effort: resolved.effort } : {}),
       ...(resolved.speed ? { speed: resolved.speed } : {}),
+      ...(dashboardDispatch
+        ? {
+            dispatchedByDashboardSlug: dashboardDispatch.dashboardSlug,
+            // Derived from the route, never client-supplied: dispatch always
+            // targets the dashboard's owning agent, so the label can't be spoofed.
+            dispatchedByDashboardAgentSlug: slug,
+          }
+        : {}),
     }
     if (isAuthMode()) {
       initialMetadata.createdByUserId = getCurrentUserId(c)
@@ -6078,6 +6109,9 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
   const agentSlug = getAgentId(c)
   const artifactSlug = c.req.param('artifactSlug')
   const basePath = `/api/agents/${agentSlug}`
+  // For the dispatch-consent dialog: resolved at render time so the wrapper
+  // never needs a client-side agent-info fetch (removed by the fast-path work).
+  const agentName = (await getAgent(agentSlug))?.frontmatter.name ?? null
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -6108,6 +6142,7 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
     const dashboardUrl = basePath + '/artifacts/' + encodeURIComponent(artifactSlug) + '/';
     const statusEl = document.getElementById('status');
     const loadingEl = document.getElementById('loading');
+    const agentName = ${JSON.stringify(agentName).replace(/</g, '\\u003c')};
 
     function setTitle(name) {
       document.title = (name || artifactSlug) + ' \\u2014 Gamut';
@@ -6159,6 +6194,12 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
         else loadedEarly = true;
       };
       document.body.appendChild(iframe);
+      // Host the session-dispatch confirmation dialog for the wrapped
+      // dashboard. typeof-guarded: unit tests run this script in a bare vm
+      // context that has no window at all.
+      if (typeof window !== 'undefined' && window.__gamutDispatchHost) {
+        window.__gamutDispatchHost.attach({ iframe, agentSlug, agentName, artifactSlug, basePath });
+      }
     }
 
     function onRunning(name) {
@@ -6233,6 +6274,10 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
 
     run();
   </script>
+  <!-- After the main wrapper script: existing tests extract "the" wrapper
+       script with a first-match regex, and parse order doesn't matter — the
+       host is only referenced from showDashboard(), long after both parse. -->
+  <script>${getDashboardViewDispatchHostJs()}</script>
 </body>
 </html>`
 

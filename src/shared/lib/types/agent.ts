@@ -126,6 +126,11 @@ export interface SessionMetadata {
   // X-Agent: present when this session was created by another agent invoking this one.
   // Such sessions are hidden as automated until promoted for human input.
   invokedByAgentSlug?: string
+  // Dashboard dispatch: present when the session was started from a dashboard's
+  // dispatch confirmation dialog. Provenance only — a human clicked Dispatch,
+  // so these sessions stay interactive (never hidden as automated).
+  dispatchedByDashboardSlug?: string
+  dispatchedByDashboardAgentSlug?: string
 }
 
 /**
