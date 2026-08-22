@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { Switch } from '@renderer/components/ui/switch'
-import { AlertTriangle, Lock } from 'lucide-react'
+import { Lock } from 'lucide-react'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { ProviderApiKeyInput } from './provider-api-key-input'
@@ -8,6 +8,7 @@ import { BedrockCredentialsInput } from './bedrock-credentials-input'
 import { GenericCredentialsInput } from './generic-credentials-input'
 import { SettingsModelSelect } from './settings-model-select'
 import { CatalogEditor } from './model-catalog/catalog-editor'
+import { RunningAgentsWarning } from './running-agents-warning'
 import type { LlmProviderId } from '@shared/lib/config/settings'
 import type { EffortLevel } from '@shared/lib/container/types'
 
@@ -200,6 +201,16 @@ export function LlmTab() {
 
   return (
     <div className="space-y-6">
+      {settings?.hasRunningAgents && (
+        <RunningAgentsWarning
+          runningAgentIds={settings.runningAgentIds}
+          action="restart"
+          actionLabel="Restart now"
+        >
+          Running agents will use the previous provider until restarted.
+        </RunningAgentsWarning>
+      )}
+
       {/* Provider selection — radio cards, expanded card shows credentials + models */}
       <div className="space-y-3">
         <div role="radiogroup" aria-label="LLM provider" className="space-y-3">
@@ -297,13 +308,6 @@ export function LlmTab() {
           )
         })}
         </div>
-
-        {settings?.hasRunningAgents && (
-          <div className="flex gap-2 rounded-md bg-yellow-500/10 px-2.5 py-2 text-[11px] text-yellow-700 dark:text-yellow-500/90 leading-relaxed">
-            <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-            <p>Running agents will use the previous provider until restarted.</p>
-          </div>
-        )}
       </div>
 
       {/* Advanced */}

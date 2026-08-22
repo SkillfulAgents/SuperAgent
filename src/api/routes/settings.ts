@@ -383,6 +383,7 @@ function getGenericBaseUrl(): string | undefined {
 function buildSettingsResponse(
   appSettings: AppSettings,
   hasRunningAgents: boolean,
+  runningAgentIds: string[],
   runnerAvailability: Awaited<ReturnType<typeof checkAllRunnersAvailability>>,
 ): GlobalSettingsResponse {
   return {
@@ -391,6 +392,7 @@ function buildSettingsResponse(
     container: appSettings.container,
     app: appSettings.app || { showMenuBarIcon: true },
     hasRunningAgents,
+    runningAgentIds,
     runnerAvailability,
     llmProvider: appSettings.llmProvider ?? 'anthropic',
     llmProviderStatus: getAllProviderInfo(),
@@ -436,8 +438,9 @@ settings.get('/', async (c) => {
   try {
     const currentSettings = getSettings()
     const hasRunningAgents = containerManager.hasRunningAgents()
+    const runningAgentIds = containerManager.getRunningAgentIds()
     const runnerAvailability = await checkAllRunnersAvailability()
-    return c.json(buildSettingsResponse(currentSettings, hasRunningAgents, runnerAvailability))
+    return c.json(buildSettingsResponse(currentSettings, hasRunningAgents, runningAgentIds, runnerAvailability))
   } catch (error) {
     console.error('Failed to fetch settings:', error)
     return c.json({ error: 'Failed to fetch settings' }, 500)
@@ -525,6 +528,7 @@ settings.put(
       }
 
       const runnerAvailability = await checkAllRunnersAvailability()
+      const runningAgentIds = containerManager.getRunningAgentIds()
       logAuditEvent({
         userId: getCurrentUserId(c),
         object: 'settings',
@@ -532,13 +536,89 @@ settings.put(
         action: 'updated',
         details: buildSettingsAuditDetails(currentSettings, newSettings),
       })
-      return c.json(buildSettingsResponse(newSettings, hasRunningAgents, runnerAvailability))
+      return c.json(buildSettingsResponse(newSettings, hasRunningAgents, runningAgentIds, runnerAvailability))
     } catch (error) {
       console.error('Failed to update settings:', error)
       return c.json({ error: 'Failed to update settings' }, 500)
     }
   },
 )
+
+type RunningAgentsAction = 'stop' | 'restart'
+
+interface RunningAgentActionFailure {
+  agentId: string
+  error: string
+}
+
+/**
+ * Apply an action to the running set captured at click time. Restart is
+ * deliberately two-phase: stop every affected container before starting any
+ * of them, so a shared runtime force-stop cannot kill an agent that was just
+ * restarted earlier in the loop.
+ */
+async function actOnRunningAgents(action: RunningAgentsAction): Promise<{
+  agentIds: string[]
+  failures: RunningAgentActionFailure[]
+}> {
+  const agentIds = containerManager.getRunningAgentIds()
+  const stoppedAgentIds: string[] = []
+  const failures: RunningAgentActionFailure[] = []
+
+  for (const agentId of agentIds) {
+    try {
+      // An earlier force-stop may have taken down the shared runtime and marked
+      // the remaining containers stopped already.
+      if (containerManager.getCachedInfo(agentId).status === 'running') {
+        await containerManager.stopContainer(agentId)
+      }
+      stoppedAgentIds.push(agentId)
+    } catch (error) {
+      failures.push({
+        agentId,
+        error: error instanceof Error ? error.message : `Failed to stop agent ${agentId}`,
+      })
+    }
+  }
+
+  if (action === 'restart') {
+    for (const agentId of stoppedAgentIds) {
+      try {
+        await containerManager.ensureRunning(agentId)
+      } catch (error) {
+        failures.push({
+          agentId,
+          error: error instanceof Error ? error.message : `Failed to restart agent ${agentId}`,
+        })
+      }
+    }
+  }
+
+  return { agentIds, failures }
+}
+
+async function handleRunningAgentsAction(c: Context, action: RunningAgentsAction): Promise<Response> {
+  try {
+    const result = await actOnRunningAgents(action)
+    if (result.failures.length > 0) {
+      const verb = action === 'restart' ? 'restart' : 'stop'
+      return c.json({
+        error: `Failed to ${verb} ${result.failures.length} running ${result.failures.length === 1 ? 'agent' : 'agents'}.`,
+        ...result,
+      }, 500)
+    }
+    return c.json({ success: true, ...result })
+  } catch (error) {
+    console.error(`Failed to ${action} running agents:`, error)
+    return c.json({ error: `Failed to ${action} running agents` }, 500)
+  }
+}
+
+// POST /api/settings/running-agents/stop - Stop every currently running agent
+settings.post('/running-agents/stop', (c) => handleRunningAgentsAction(c, 'stop'))
+
+// POST /api/settings/running-agents/restart - Restart every currently running agent
+settings.post('/running-agents/restart', (c) => handleRunningAgentsAction(c, 'restart'))
 
 // POST /api/settings/start-runner - Start a container runtime
 settings.post('/start-runner', async (c) => {
