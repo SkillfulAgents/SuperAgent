@@ -88,6 +88,10 @@ function DispatchDialogContent({
   const handleDispatch = useCallback(async () => {
     const message = prompt.trim()
     if (!message) return
+    // Synchronous re-entry guard: the buttons' disabled={isPending} lags a
+    // React Query notification behind, so two same-turn clicks would both
+    // reach mutateAsync and create two sessions.
+    if (dispatchingRef.current) return
     setError(null)
     dispatchingRef.current = true
     try {
@@ -133,7 +137,12 @@ function DispatchDialogContent({
         <Button
           variant="outline"
           disabled={createSession.isPending}
-          onClick={() => onResolve({ cancelled: true })}
+          onClick={() => {
+            // Same synchronous guard as dismissal: a Cancel click landing in
+            // the pre-re-render window after Dispatch must not report
+            // cancelled while the session is still being created.
+            if (!dispatchingRef.current) onResolve({ cancelled: true })
+          }}
         >
           Cancel
         </Button>

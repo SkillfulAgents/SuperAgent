@@ -1639,7 +1639,14 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     const runtimeOptions = parseRuntimeOptions(body)
 
     // Optional provenance: the renderer's dashboard-dispatch dialog marks the
-    // sessions it creates so they can show where they came from.
+    // sessions it creates so they can show where they came from. This is a
+    // LABEL, not proof of user consent: dashboard iframes share the API's
+    // origin and ambient credentials, so dashboard JS can already POST here
+    // directly, with or without this field. The consent dialog is therefore a
+    // guarantee about host-built UI paths (and a throttle on well-behaved
+    // dashboards), not a server-enforced boundary — enforcing consent
+    // server-side requires isolating dashboards onto their own origin with a
+    // host-issued capability, which is deliberately out of scope here.
     let dashboardDispatch: SessionDashboardDispatch | undefined
     if (body.dashboardDispatch !== undefined) {
       const parsed = sessionDashboardDispatchSchema.safeParse(body.dashboardDispatch)

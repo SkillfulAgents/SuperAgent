@@ -113,14 +113,23 @@ function buildSource(): string {
       var dispatching = false;
       var dialog = el("dialog", "gamut-dispatch-dialog");
       var title = el("h2", null, request.title || "Dispatch agent session");
+      title.id = "gamut-dispatch-title";
       var desc = el("p", "gamut-dispatch-desc", CONSENT_PREFIX);
+      desc.id = "gamut-dispatch-desc";
       var agentStrong = document.createElement("strong");
       agentStrong.textContent = agentName;
       desc.appendChild(agentStrong);
       desc.appendChild(document.createTextNode(CONSENT_SUFFIX));
+      // Name the dialog and the edit field for assistive technology — the
+      // native <dialog> gets no accessible name on its own, and a <label>
+      // without for/id association names nothing.
+      dialog.setAttribute("aria-labelledby", "gamut-dispatch-title");
+      dialog.setAttribute("aria-describedby", "gamut-dispatch-desc");
 
       var promptLabel = el("label", null, "Prompt");
+      promptLabel.htmlFor = "gamut-dispatch-prompt";
       var textarea = document.createElement("textarea");
+      textarea.id = "gamut-dispatch-prompt";
       textarea.value = request.prompt;
       var error = el("p", "gamut-dispatch-error", "");
       var footer = el("div", "gamut-dispatch-footer");
