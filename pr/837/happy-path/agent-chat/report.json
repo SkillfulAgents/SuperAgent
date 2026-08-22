@@ -1,17 +1,24 @@
 {
   "storyId": "agent-chat",
-  "passed": false,
-  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: esponded within timeout (response received in approximately 5 seconds)\n\n**[STEP]** Step 6: Verify response mentions \"4\" and take screenshot — Agent response is exactly \"4\", screenshot captured showing complete conversation\n\nAll test steps executed successfully with no errors or unexpected behavior.\n",
-  "steps": [],
+  "passed": true,
+  "reason": "Successfully navigated to the app, selected the target agent, sent a message asking \"What is 2+2?\", waited for the response, and verified it correctly contains \"4\".",
+  "steps": [
+    "Step 1: Navigated to http://localhost:47891 — Page loaded successfully with title \"Gamut\"",
+    "Step 2: Located and clicked the \"QA-20260822-002726-vjon\" agent in the sidebar — Successfully navigated to the agent's detail page",
+    "Step 3: Verified agent status is \"idle\" — Status indicator in header confirms agent is in \"idle\" state (acceptable per requirements: running or idle)",
+    "Step 4: Sent message \"Hello! What is 2+2?\" — Message typed into input field and sent successfully",
+    "Step 5: Waited for agent response (up to 3 minutes) — Agent responded within approximately 3 seconds",
+    "Step 6: Verified response mentions \"4\" — Agent's response clearly displays \"4\" as the answer to 2+2"
+  ],
   "bugs": [],
-  "durationMs": 61332,
-  "sessionId": "34e4ef63-6d8b-4a69-b9bc-4e6a60f51d55",
+  "durationMs": 65999,
+  "sessionId": "80657c42-b410-4be4-a6a3-e7fbde6ac2ce",
   "cost": {
-    "inputTokens": 320,
-    "outputTokens": 9593,
-    "cacheCreationTokens": 112187,
-    "cacheReadTokens": 841021,
+    "inputTokens": 368,
+    "outputTokens": 9072,
+    "cacheCreationTokens": 60797,
+    "cacheReadTokens": 983662,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.272621
+    "totalCostUsd": 0.22009
   }
 }

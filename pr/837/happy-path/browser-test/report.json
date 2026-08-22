@@ -1,23 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the agent successfully opens a browser, navigates to https://example.com, retrieves the page title \"Example Domain\", and returns the information in the chat response.",
+  "reason": "Browser-use feature successfully executed: agent opened a browser, navigated to https://example.com, captured the page title, and reported \"Example Domain\" in the response",
   "steps": [
-    "Step 1 - Navigated to http://localhost:47891 — Successfully loaded the Gamut application homepage showing available agents in the sidebar.",
-    "Step 2 - Clicked on the \"QA-20260821-234105-ng3p\" agent in the sidebar — Successfully opened the agent chat interface.",
-    "Step 3 - Typed and sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Successfully composed and sent the message via the chat input field.",
-    "Step 4 - Waited for the agent to complete the task — Agent completed the task in 32 seconds, using 4 tool calls and 187,880 tokens.",
-    "Step 5 - Verified the response mentions \"Example Domain\" — The agent response states: \"The page title is \"Example Domain\" — the page just has that heading, a line of explanatory text, and a \"Learn more\" link. Browser is closed.\" The response correctly identifies the page title and mentions \"Example Domain\" as required."
+    "Navigated to http://localhost:47891 — page loaded successfully showing Gamut dashboard with agent list",
+    "Clicked on \"QA-20260822-002728-431f\" agent in sidebar — agent page loaded with chat interface ready",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in input field — message appeared in text box",
+    "Clicked \"Send message\" button — message sent successfully, agent status changed to \"working\"",
+    "Waited up to 3 minutes for response mentioning \"Example Domain\" — response received in 12 seconds",
+    "Took screenshot of final response — screenshot shows agent response: \"The page title is \"Example Domain\" — browser closed.\""
   ],
   "bugs": [],
-  "durationMs": 141787,
-  "sessionId": "83a5c84c-0103-4e96-b97b-b7b3e77c9d5f",
+  "durationMs": 58151,
+  "sessionId": "d6d8ca3a-db54-499f-b1b6-117ecd8764d0",
   "cost": {
-    "inputTokens": 494,
-    "outputTokens": 14795,
-    "cacheCreationTokens": 87905,
-    "cacheReadTokens": 1586643,
+    "inputTokens": 398,
+    "outputTokens": 10953,
+    "cacheCreationTokens": 60372,
+    "cacheReadTokens": 1090644,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.343015
+    "totalCostUsd": 0.239692
   }
 }
