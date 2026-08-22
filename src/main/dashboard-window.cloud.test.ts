@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { runInNewContext } from 'node:vm'
 
 /**
  * A dashboard popout is built in main, so it is told which Superagent it is
@@ -8,7 +9,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
  */
 
 type FakeWindow = {
-  webContents: { setWindowOpenHandler: ReturnType<typeof vi.fn>; downloadURL: ReturnType<typeof vi.fn> }
+  webContents: {
+    setWindowOpenHandler: ReturnType<typeof vi.fn>
+    downloadURL: ReturnType<typeof vi.fn>
+    on: ReturnType<typeof vi.fn>
+    executeJavaScript: ReturnType<typeof vi.fn>
+  }
   loadURL: ReturnType<typeof vi.fn>
   on: ReturnType<typeof vi.fn>
   setTitle: ReturnType<typeof vi.fn>
@@ -16,6 +22,7 @@ type FakeWindow = {
   focus: ReturnType<typeof vi.fn>
   close: ReturnType<typeof vi.fn>
   isDestroyed: ReturnType<typeof vi.fn>
+  removeMenu: ReturnType<typeof vi.fn>
   options: Record<string, any>
   handlers: Record<string, (...args: any[]) => void>
 }
@@ -30,7 +37,14 @@ vi.mock('electron', () => {
   const BrowserWindow = vi.fn(function (options: Record<string, any>) {
     const handlers: Record<string, (...args: any[]) => void> = {}
     const win: FakeWindow = {
-      webContents: { setWindowOpenHandler: vi.fn(), downloadURL: vi.fn() },
+      webContents: {
+        setWindowOpenHandler: vi.fn(),
+        downloadURL: vi.fn(),
+        on: vi.fn((event: string, cb: (...args: any[]) => void) => {
+          handlers[`webContents:${event}`] = cb
+        }),
+        executeJavaScript: vi.fn(() => Promise.resolve()),
+      },
       loadURL: vi.fn(),
       on: vi.fn((event: string, cb: (...args: any[]) => void) => {
         handlers[event] = cb
@@ -40,6 +54,7 @@ vi.mock('electron', () => {
       focus: vi.fn(),
       close: vi.fn(),
       isDestroyed: vi.fn(() => false),
+      removeMenu: vi.fn(),
       options,
       handlers,
     }
@@ -164,5 +179,92 @@ describe('marking a cloud popout', () => {
   it('leaves a local popout’s title to the dashboard', () => {
     openDashboardWindow('sales', 'weekly', LOCAL)
     expect(createdWindows[0].handlers['page-title-updated']).toBeUndefined()
+  })
+})
+
+describe('dashboard popout chrome', () => {
+  it('installs a draggable refresh control in each loaded wrapper document', () => {
+    openDashboardWindow('sales', 'weekly', CLOUD)
+    const win = createdWindows[0]
+
+    expect(win.options.autoHideMenuBar).toBe(true)
+    expect(win.handlers['webContents:dom-ready']).toBeTypeOf('function')
+
+    win.handlers['webContents:dom-ready']()
+
+    expect(win.webContents.executeJavaScript).toHaveBeenCalledOnce()
+    const script = win.webContents.executeJavaScript.mock.calls[0][0] as string
+    expect(script).toContain('gamut-dashboard-window-chrome')
+    expect(script).toContain('-webkit-app-region: drag')
+    expect(script).toContain('env(titlebar-area-x, 0px)')
+    expect(script).toContain('env(titlebar-area-width, calc(100% - 138px))')
+    expect(script).not.toContain('padding: 0 148px')
+    expect(script).toContain("classList.add('is-refreshing')")
+
+    // Exercise the injected script as JavaScript, not only as an opaque string:
+    // the button should enter its spinner state and reload the outer lifecycle
+    // wrapper so a stopped dashboard gets another chance to start.
+    const elements: Array<Record<string, any>> = []
+    const makeElement = (tagName: string) => {
+      const listeners: Record<string, () => void> = {}
+      const classes = new Set<string>()
+      const element: Record<string, any> = {
+        tagName,
+        listeners,
+        children: [] as unknown[],
+        classList: { add: (name: string) => classes.add(name), contains: (name: string) => classes.has(name) },
+        addEventListener: (event: string, callback: () => void) => { listeners[event] = callback },
+        append(...children: unknown[]) { element.children.push(...children) },
+        setAttribute(name: string, value: string) { element[name] = value },
+      }
+      elements.push(element)
+      return element
+    }
+    const reload = vi.fn()
+    const titleElement = makeElement('title')
+    const observe = vi.fn()
+    const document = {
+      title: 'Weekly — Gamut',
+      head: { appendChild: vi.fn() },
+      body: { appendChild: vi.fn() },
+      createElement: makeElement,
+      getElementById: vi.fn(() => null),
+      querySelector: vi.fn(() => titleElement),
+    }
+
+    runInNewContext(script, {
+      document,
+      window: { location: { reload } },
+      MutationObserver: class { observe = observe },
+    })
+
+    const refresh = elements.find((element) => element.id === 'gamut-dashboard-refresh')
+    const title = elements.find((element) => element.id === 'gamut-dashboard-window-title')
+    expect(title?.textContent).toBe('Cloud workspace — Weekly — Gamut')
+    expect(refresh).toBeDefined()
+    refresh!.listeners.click()
+    expect(refresh!.classList.contains('is-refreshing')).toBe(true)
+    expect(refresh!.disabled).toBe(true)
+    expect(refresh!['aria-busy']).toBe('true')
+    expect(reload).toHaveBeenCalledOnce()
+  })
+
+  it('uses native window controls but removes the inherited menu on Windows', () => {
+    const originalPlatform = process.platform
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+    try {
+      openDashboardWindow('sales', 'windows-dashboard', LOCAL)
+      const win = createdWindows[0]
+
+      expect(win.options.titleBarStyle).toBe('hidden')
+      expect(win.options.titleBarOverlay).toEqual({
+        color: '#111111',
+        symbolColor: '#d4d4d4',
+        height: 30,
+      })
+      expect(win.removeMenu).toHaveBeenCalledOnce()
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true })
+    }
   })
 })
