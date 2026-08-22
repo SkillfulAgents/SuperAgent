@@ -111,6 +111,9 @@ export interface ApiSession {
   scheduledTaskName?: string
   webhookTriggerId?: string
   webhookTriggerName?: string
+  // Present when another agent created this session through x-agent.
+  invokedByAgentSlug?: string
+  invokedByAgentName?: string
   // Last effort level used on this session (seeds the composer selector)
   effort?: EffortLevel
   // Last processing speed used on this session (seeds the composer selector)
