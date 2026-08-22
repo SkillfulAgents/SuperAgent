@@ -304,6 +304,41 @@ export function dissolveFolder(sections: FolderSection[], folderId: string): Fol
     )
 }
 
+/**
+ * A structural change to the tree, expressed as the moved thing's FINAL
+ * position rather than as a settings snapshot. A drop's snapshot goes stale
+ * the moment a concurrent write (a folder create, a context-menu filing)
+ * lands first — writing it back would replace agentFolders, assignments and
+ * order wholesale and silently undo that work. Re-applying the operation to
+ * the settings as they are when the write actually runs keeps concurrent
+ * work; with nothing in flight it reproduces the snapshot byte for byte,
+ * because every primitive here has final-position semantics.
+ */
+export type TreeOperation =
+  | { kind: 'placeAgent'; slug: string; folderId: string; index: number }
+  | { kind: 'placeFolder'; folderId: string; index: number }
+  | { kind: 'dissolveFolder'; folderId: string }
+
+export function applyTreeOperation(
+  sections: FolderSection[],
+  operation: TreeOperation
+): FolderSection[] {
+  switch (operation.kind) {
+    case 'placeAgent':
+      // Out-of-range indexes clamp/append; a slug or folder that vanished
+      // concurrently leaves the sections untouched — the same dangling
+      // tolerance every read path already has.
+      return moveAgent(sections, operation.slug, {
+        folderId: operation.folderId,
+        index: operation.index,
+      })
+    case 'placeFolder':
+      return moveFolder(sections, operation.folderId, operation.index)
+    case 'dissolveFolder':
+      return dissolveFolder(sections, operation.folderId)
+  }
+}
+
 // ─── Mutations on the stored fields ──────────────────────────────────────────
 
 /**

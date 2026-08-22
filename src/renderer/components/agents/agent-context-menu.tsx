@@ -23,7 +23,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
-import { useDeleteAgent, useRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
+import { useAgents, useDeleteAgent, useRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { AgentSettingsDialog } from './agent-settings-dialog'
@@ -32,14 +32,18 @@ import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { Settings, FolderOpen, Copy, Trash2, LogOut, Move, FolderInput } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Input } from '@renderer/components/ui/input'
-import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
+import { useUserSettings, useUpdateUserSettings, type UserSettingsData } from '@renderer/hooks/use-user-settings'
+import { applyAgentOrder } from '@renderer/lib/agent-ordering'
 import {
   ROOT_FOLDER_ID,
   ROOT_FOLDER_NAME,
-  assignAgentToFolder,
+  applyTreeOperation,
+  buildFolderSections,
   newFolderId,
   sanitizeFolders,
+  sectionsToSettings,
   uniqueFolderName,
+  type FolderSection,
 } from '@renderer/lib/agent-folders'
 
 interface AgentContextMenuProps {
@@ -84,6 +88,7 @@ export function AgentContextMenu({
   // else. It is also the only way to file an agent on touch, where dragging a
   // row between folders is not a realistic gesture.
   const { data: userSettings } = useUserSettings()
+  const { data: allAgents } = useAgents()
   const updateSettings = useUpdateUserSettings()
   const folders = useMemo(() => sanitizeFolders(userSettings?.agentFolders), [userSettings?.agentFolders])
   const currentFolderId = userSettings?.agentFolderAssignments?.[agent.slug]
@@ -94,42 +99,65 @@ export function AgentContextMenu({
       ? currentFolderId
       : ROOT_FOLDER_ID
 
-  // Only the assignment changes: the agent keeps its position in agentOrder, so
-  // it lands in the folder wherever its existing place in the list puts it.
-  // Both writes below use the updater form: the payload is a whole-field
-  // replacement derived from current settings, and the sidebar's drag path
-  // writes the same fields. A snapshot captured at click time would silently
-  // revert whatever write was still in flight (file A by drag, quickly file B
-  // here → A pops back out); the updater resolves against the settled cache.
-  const handleMoveToFolder = useCallback((value: string) => {
-    updateSettings.mutate((current) => ({
-      // assignAgentToFolder treats the default folder as "delete the key".
-      agentFolderAssignments: assignAgentToFolder(
-        current?.agentFolderAssignments,
-        agent.slug,
-        value
+  // Filing writes the whole canonical tree — the same shape a drag writes —
+  // so the two filing paths leave identical settings and the flat agentOrder
+  // the home grid, graph and tray read always matches the sidebar's reading
+  // order. (An assignment-only write left agentOrder stale until the next
+  // drag.) Both writes use the updater form: they resolve against the
+  // settings as of when the (scope-serialized) mutation runs, so a filing
+  // queued behind an in-flight write cannot revert it. Filing appends to the
+  // target folder, matching a drop on the folder's header.
+  const buildSections = useCallback(
+    (current: UserSettingsData) =>
+      buildFolderSections(
+        applyAgentOrder(allAgents ?? [], current.agentOrder),
+        current.agentFolders,
+        current.agentFolderAssignments,
+        current.agentListOrder
       ),
-    }))
-  }, [agent.slug, updateSettings])
+    [allAgents]
+  )
+
+  const handleMoveToFolder = useCallback((value: string) => {
+    // Radix reports a selection even when the checked item is re-picked; the
+    // agent is already there, so there is nothing to write (and nothing to
+    // move to the folder's end).
+    if (value === selectedFolderValue) return
+    updateSettings.mutate((current) =>
+      sectionsToSettings(
+        applyTreeOperation(buildSections(current), {
+          kind: 'placeAgent',
+          slug: agent.slug,
+          folderId: value,
+          index: Number.MAX_SAFE_INTEGER,
+        })
+      )
+    )
+  }, [agent.slug, buildSections, selectedFolderValue, updateSettings])
 
   const handleCreateFolderWithAgent = useCallback(() => {
     const name = newFolderName.trim()
     if (!name) return
     const id = newFolderId()
     updateSettings.mutate((current) => {
-      const currentFolders = sanitizeFolders(current?.agentFolders)
-      return {
-        agentFolders: [...currentFolders, { id, name: uniqueFolderName(currentFolders, name) }],
-        agentFolderAssignments: assignAgentToFolder(
-          current?.agentFolderAssignments,
-          agent.slug,
-          id
-        ),
-      }
+      const sections = buildSections(current)
+      const currentFolders = sections.filter((s) => !s.isRoot).map((s) => s.folder)
+      const withFolder: FolderSection[] = [
+        ...sections,
+        { folder: { id, name: uniqueFolderName(currentFolders, name) }, isRoot: false, agents: [] },
+      ]
+      return sectionsToSettings(
+        applyTreeOperation(withFolder, {
+          kind: 'placeAgent',
+          slug: agent.slug,
+          folderId: id,
+          index: 0,
+        })
+      )
     })
     setShowNewFolderDialog(false)
     setNewFolderName('')
-  }, [agent.slug, newFolderName, updateSettings])
+  }, [agent.slug, buildSections, newFolderName, updateSettings])
 
   // `open: true` makes the API run the file manager on ITS OWN host. That is
   // what you want when the API is this computer; against a cloud workspace it

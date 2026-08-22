@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const { mockApiFetch } = vi.hoisted(() => ({ mockApiFetch: vi.fn() }))
 vi.mock('@renderer/lib/api', () => ({ apiFetch: mockApiFetch }))
 
+const { mockUseAgents } = vi.hoisted(() => ({ mockUseAgents: vi.fn() }))
 vi.mock('@renderer/hooks/use-agents', () => ({
+  useAgents: () => mockUseAgents(),
   useDeleteAgent: () => ({ mutateAsync: vi.fn() }),
   useUpdateAgent: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useRouteAgentId: () => undefined,
@@ -80,6 +82,12 @@ import { AgentContextMenu } from './agent-context-menu'
  */
 
 const AGENT = { slug: 'sales', name: 'Sales', status: 'running' } as never
+// The canonical filing write rebuilds the whole tree from the agent list, so
+// the mock provides the agents the tests file and order-assert against.
+const ALL_AGENTS = [
+  { slug: 'sales', name: 'Sales', status: 'running' },
+  { slug: 'support', name: 'Support', status: 'stopped' },
+]
 
 function drive(target: 'local' | 'cloud') {
   _resetApiTargetForTest() // the global setup already settled it to 'local'
@@ -90,6 +98,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   mockApiFetch.mockResolvedValue({ ok: true, json: async () => ({ path: '/srv/agents/sales' }) })
   mockUserSettings.mockReturnValue({ agentFolders: [], agentFolderAssignments: {} })
+  mockUseAgents.mockReturnValue({ data: ALL_AGENTS, isLoading: false, error: null })
   window.electronAPI = { platform: 'darwin' } as never
   drive('local')
 })
@@ -168,15 +177,38 @@ describe('moving an agent into a left-nav folder', () => {
     expect(screen.getByTestId('move-agent-to-folder-f2')).toHaveTextContent('Personal')
   })
 
-  it('writes only the assignment, leaving the agent where it sits in the order', async () => {
+  it('files the agent at the end of the folder and keeps agentOrder canonical', async () => {
+    // Filing writes the same whole-tree shape a drag writes, so the flat
+    // agentOrder the home grid/graph/tray read always matches the sidebar's
+    // reading order — an assignment-only write left it stale until the next
+    // drag.
     mockUserSettings.mockReturnValue({ agentFolders: FOLDERS, agentFolderAssignments: {} })
     render(<AgentContextMenu agent={AGENT}><span>row</span></AgentContextMenu>)
 
     await userEvent.click(screen.getByTestId('move-agent-to-folder-f1'))
 
-    expect(patchWith({ agentFolders: FOLDERS, agentFolderAssignments: {} })).toEqual({
+    const patch = patchWith({ agentFolders: FOLDERS, agentFolderAssignments: {} })
+    expect(patch.agentFolderAssignments).toEqual({ sales: 'f1' })
+    // sales appended to f1, which follows the root block in reading order.
+    expect(patch.agentOrder).toEqual(['support', 'sales'])
+    expect(patch.agentListOrder).toEqual([
+      'agent-folder::root',
+      'agent-folder::f1',
+      'agent-folder::f2',
+    ])
+    expect(patch.agentFolders).toEqual(FOLDERS)
+  })
+
+  it('does not write anything when the current folder is re-selected', async () => {
+    mockUserSettings.mockReturnValue({
+      agentFolders: FOLDERS,
       agentFolderAssignments: { sales: 'f1' },
     })
+    render(<AgentContextMenu agent={AGENT}><span>row</span></AgentContextMenu>)
+
+    await userEvent.click(screen.getByTestId('move-agent-to-folder-f1'))
+
+    expect(mockUpdateSettings).not.toHaveBeenCalled()
   })
 
   it('preserves other agents\u2019 assignments when filing this one', async () => {
@@ -186,8 +218,9 @@ describe('moving an agent into a left-nav folder', () => {
 
     await userEvent.click(screen.getByTestId('move-agent-to-folder-f1'))
 
-    expect(patchWith(settings)).toEqual({
-      agentFolderAssignments: { support: 'f2', sales: 'f1' },
+    expect(patchWith(settings).agentFolderAssignments).toEqual({
+      support: 'f2',
+      sales: 'f1',
     })
   })
 
@@ -201,9 +234,10 @@ describe('moving an agent into a left-nav folder', () => {
 
     await userEvent.click(screen.getByTestId('move-agent-to-folder-f1'))
 
-    expect(patchWith({ agentFolders: FOLDERS, agentFolderAssignments: { support: 'f2' } })).toEqual({
-      agentFolderAssignments: { support: 'f2', sales: 'f1' },
-    })
+    expect(
+      patchWith({ agentFolders: FOLDERS, agentFolderAssignments: { support: 'f2' } })
+        .agentFolderAssignments
+    ).toEqual({ support: 'f2', sales: 'f1' })
   })
 
   it('moving to "Your Agents" drops the key rather than storing a folder id', async () => {
@@ -213,7 +247,11 @@ describe('moving an agent into a left-nav folder', () => {
 
     await userEvent.click(screen.getByTestId('move-agent-to-no-folder-item'))
 
-    expect(patchWith(settings)).toEqual({ agentFolderAssignments: {} })
+    const patch = patchWith(settings)
+    expect(patch.agentFolderAssignments).toEqual({})
+    // Un-filing appends to the end of "Your Agents", mirroring how filing
+    // appends to a folder.
+    expect(patch.agentOrder).toEqual(['support', 'sales'])
   })
 
   it('marks the folder the agent is currently in', () => {

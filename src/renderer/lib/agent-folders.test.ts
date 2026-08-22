@@ -9,6 +9,7 @@ import {
   moveAgent,
   moveFolder,
   newFolderId,
+  applyTreeOperation,
   resolveAgentDrop,
   resolveFolderDrop,
   sanitizeFolders,
@@ -343,6 +344,64 @@ describe('uniqueFolderName', () => {
     ]
     expect(uniqueFolderName(folders, 'Clients')).toBe('Clients 3')
     expect(uniqueFolderName(folders, 'Fresh')).toBe('Fresh')
+  })
+})
+
+describe('applyTreeOperation', () => {
+  const base = () =>
+    buildFolderSections([a, b, c], [work, personal], { a: 'f1' }, undefined)
+  // base: root[b,c] f1[a] f2[]
+
+  it('reproduces a drop exactly when nothing changed in between', () => {
+    // placeAgent records the agent's FINAL member index; on the same sections
+    // it must land precisely there — the serial case is byte-for-byte.
+    const next = applyTreeOperation(base(), { kind: 'placeAgent', slug: 'b', folderId: 'f1', index: 0 })
+    expect(shapeOf(next)).toEqual(['root[c]', 'f1[b,a]', 'f2[]'])
+  })
+
+  it('appends on an out-of-range index, which is how menu filing lands', () => {
+    const next = applyTreeOperation(base(), {
+      kind: 'placeAgent',
+      slug: 'b',
+      folderId: 'f1',
+      index: Number.MAX_SAFE_INTEGER,
+    })
+    expect(shapeOf(next)).toEqual(['root[c]', 'f1[a,b]', 'f2[]'])
+  })
+
+  it('leaves the tree alone when the agent or folder vanished concurrently', () => {
+    const sections = base()
+    expect(applyTreeOperation(sections, { kind: 'placeAgent', slug: 'ghost', folderId: 'f1', index: 0 }))
+      .toBe(sections)
+    expect(applyTreeOperation(sections, { kind: 'placeAgent', slug: 'b', folderId: 'gone', index: 0 }))
+      .toBe(sections)
+    expect(applyTreeOperation(sections, { kind: 'placeFolder', folderId: 'gone', index: 0 }))
+      .toBe(sections)
+  })
+
+  it('moves a folder to its recorded final slot, clamped past the end', () => {
+    expect(shapeOf(applyTreeOperation(base(), { kind: 'placeFolder', folderId: 'f2', index: 0 })))
+      .toEqual(['f2[]', 'root[b,c]', 'f1[a]'])
+    expect(shapeOf(applyTreeOperation(base(), { kind: 'placeFolder', folderId: 'root', index: 99 })))
+      .toEqual(['f1[a]', 'f2[]', 'root[b,c]'])
+  })
+
+  it('dissolves a folder into the default one', () => {
+    expect(shapeOf(applyTreeOperation(base(), { kind: 'dissolveFolder', folderId: 'f1' })))
+      .toEqual(['root[b,c,a]', 'f2[]'])
+  })
+
+  it('keeps work that landed while the drop was in flight', () => {
+    // The whole point: a drop recorded against [root,f1,f2] re-applied to
+    // sections where a THIRD folder was created concurrently keeps it.
+    const withExtra = buildFolderSections(
+      [a, b, c],
+      [work, personal, { id: 'f9', name: 'Fresh' }],
+      { a: 'f1', c: 'f9' },
+      undefined
+    )
+    const next = applyTreeOperation(withExtra, { kind: 'placeAgent', slug: 'b', folderId: 'f1', index: 1 })
+    expect(shapeOf(next)).toEqual(['root[]', 'f1[a,b]', 'f2[]', 'f9[c]'])
   })
 })
 

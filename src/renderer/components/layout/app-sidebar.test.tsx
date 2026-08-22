@@ -1168,6 +1168,62 @@ describe('AppSidebar — drag orchestration', () => {
     expect(result.map((c: any) => c.id)).toEqual(['agent-folder::f1'])
   })
 
+  it("a drop's write keeps a folder created while the drop was in flight", () => {
+    // The drop below was aimed while settings held [root,f1,f2,f3]; by the
+    // time its (scope-serialized) write runs, a concurrent create added f9.
+    // Writing the drop's snapshot back would erase f9 — the write must
+    // re-apply the drop to the settings it actually lands on.
+    renderThreeFolders()
+    const active = folderActive('f1')
+
+    act(() => dnd().onDragStart({ active }))
+    hoverFolder(active, 'f3', 125)
+    act(() => dnd().onDragEnd({ active, over: { id: 'agent-folder::f3' } }))
+
+    const patch = patchWith({
+      agentOrder: [],
+      agentFolders: [...THREE_FOLDERS, { id: 'f9', name: 'Fresh' }],
+      agentListOrder: [...THREE_FOLDER_ORDER, 'agent-folder::f9'],
+    })
+    expect(patch.agentFolders.map((f: { id: string }) => f.id)).toContain('f9')
+    expect(patch.agentListOrder).toEqual([
+      'agent-folder::root',
+      'agent-folder::f2',
+      'agent-folder::f1',
+      'agent-folder::f3',
+      'agent-folder::f9',
+    ])
+  })
+
+  it("a drop's write keeps a filing made while the drop was in flight", () => {
+    // While the drop's write was queued, a context-menu filing moved
+    // test-agent into f1. The drop recorded other-agent's FINAL place (top of
+    // "Your Agents" — the place the user saw it land), so the write puts it
+    // there and carries the concurrent filing. The pre-fix snapshot write
+    // carried the pre-drag assignment map instead, silently un-filing
+    // test-agent.
+    mockUserSettings.mockReturnValue({
+      setupCompleted: true,
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [{ id: 'f1', name: 'Work' }],
+      agentListOrder: ['agent-folder::root', 'agent-folder::f1'],
+    })
+    renderWithProviders(<AppSidebar />)
+
+    const active = agentActive('other-agent')
+    act(() => dnd().onDragStart({ active }))
+    act(() => dnd().onDragEnd({ active, over: { id: 'test-agent' } }))
+
+    const patch = patchWith({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [{ id: 'f1', name: 'Work' }],
+      agentFolderAssignments: { 'test-agent': 'f1' },
+      agentListOrder: ['agent-folder::root', 'agent-folder::f1'],
+    })
+    expect(patch.agentFolderAssignments).toEqual({ 'test-agent': 'f1' })
+    expect(patch.agentOrder[0]).toBe('other-agent')
+  })
+
   it('puts a live cross-folder re-parent back where it was when the drag cancels', () => {
     mockUserSettings.mockReturnValue({
       setupCompleted: true,

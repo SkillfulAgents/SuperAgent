@@ -117,7 +117,8 @@ import {
   sectionsToSettings,
   sortableIdForFolder,
   uniqueFolderName,
-  type FolderSection,
+  applyTreeOperation,
+  type TreeOperation,
 } from '@renderer/lib/agent-folders'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
@@ -899,6 +900,10 @@ export function AppSidebar() {
   // before React has re-derived `sections` from the state the first one set.
   const sectionsRef = React.useRef(sections)
   sectionsRef.current = sections
+  // The raw agent list for the write-time rebase in writeTree below, which
+  // rebuilds sections from the settings as of when the mutation runs.
+  const agentsRef = React.useRef<ApiAgent[]>([])
+  agentsRef.current = agents ?? []
   // Whether this drag has actually changed anything, so a drag that ends where
   // it started does not write settings.
   const dragDirtyRef = React.useRef(false)
@@ -909,22 +914,36 @@ export function AppSidebar() {
   // flight and clearing its optimistic view.
   const pendingTreeRef = React.useRef<AgentTreeSettings | null>(null)
 
-  const writeTree = useCallback((patch: AgentTreeSettings & { collapsedAgentFolders?: string[] }) => {
-    pendingTreeRef.current = patch
-    setLocalTree(patch)
+  const writeTree = useCallback((
+    optimistic: AgentTreeSettings & { collapsedAgentFolders?: string[] },
+    operation: TreeOperation
+  ) => {
+    pendingTreeRef.current = optimistic
+    setLocalTree(optimistic)
     updateSettings.mutate(
       (current) => {
-        // A drag changes structure, never names. A rename that settled after
-        // this drop's sections were captured must survive the wholesale
-        // agentFolders write, so names are rebased onto the freshest settings
-        // when the (scope-serialized) mutation actually runs.
-        const names = new Map(sanitizeFolders(current?.agentFolders).map((f) => [f.id, f.name]))
+        // Re-derive the change against the settings as of when this
+        // (scope-serialized) mutation actually runs. The drop's sections
+        // snapshot goes stale the moment a concurrent write — a folder
+        // create, a rename, a context-menu filing — lands first, and writing
+        // the snapshot back would replace agentFolders, assignments and
+        // order wholesale, silently undoing that work. The snapshot stays
+        // exactly right for the optimistic paint above, and with nothing in
+        // flight the rebase reproduces it byte for byte (the operation
+        // records the moved thing's FINAL position).
+        const sections = buildFolderSections(
+          applyAgentOrder(agentsRef.current, current?.agentOrder),
+          current?.agentFolders,
+          current?.agentFolderAssignments,
+          current?.agentListOrder
+        )
+        const rebased = sectionsToSettings(applyTreeOperation(sections, operation))
+        if (operation.kind !== 'dissolveFolder') return rebased
         return {
-          ...patch,
-          agentFolders: patch.agentFolders.map((f) => ({
-            ...f,
-            name: names.get(f.id) ?? f.name,
-          })),
+          ...rebased,
+          collapsedAgentFolders: (current?.collapsedAgentFolders ?? []).filter(
+            (id) => id !== operation.folderId
+          ),
         }
       },
       {
@@ -935,7 +954,7 @@ export function AppSidebar() {
           toast.error("Couldn't save the new layout")
         },
         onSettled: () => {
-          if (pendingTreeRef.current !== patch) return
+          if (pendingTreeRef.current !== optimistic) return
           pendingTreeRef.current = null
           // A newer drag may be holding its own mid-drag re-parent in
           // localTree; clearing it now would snap the dragged row back to its
@@ -948,10 +967,6 @@ export function AppSidebar() {
     )
   }, [updateSettings])
 
-  const commitSections = useCallback(
-    (next: FolderSection[]) => writeTree(sectionsToSettings(next)),
-    [writeTree]
-  )
 
   // Prefer whatever the pointer is directly inside, falling back to rect
   // overlap when a fast drag has outrun every droppable. Then bias toward the
@@ -1174,8 +1189,33 @@ export function AppSidebar() {
       setLocalTree(pendingTreeRef.current)
       return
     }
-    commitSections(next)
-  }, [commitSections, clearFolderDropCue])
+
+    // Record the drop as the moved thing's FINAL position in `next`, so the
+    // write can re-apply it to whatever the settings say by the time it runs
+    // (see writeTree). Deriving from `next` makes the serial case exact.
+    let operation: TreeOperation | null = null
+    if (active.data.current?.type === 'folder') {
+      const folderId = String(active.data.current.folderId)
+      const index = next.findIndex((s) => s.folder.id === folderId)
+      if (index !== -1) operation = { kind: 'placeFolder', folderId, index }
+    } else {
+      const slug = String(active.id)
+      const location = locateAgent(next, slug)
+      if (location) {
+        operation = {
+          kind: 'placeAgent',
+          slug,
+          folderId: next[location.sectionIndex].folder.id,
+          index: location.memberIndex,
+        }
+      }
+    }
+    if (!operation) {
+      setLocalTree(pendingTreeRef.current)
+      return
+    }
+    writeTree(sectionsToSettings(next), operation)
+  }, [writeTree, clearFolderDropCue])
 
   /**
    * The shift preview opens a gap by displacing the rows between the dragged
@@ -1228,10 +1268,13 @@ export function AppSidebar() {
     const current = sectionsRef.current
     const next = dissolveFolder(current, folderId)
     if (next === current) return
-    writeTree({
-      ...sectionsToSettings(next),
-      collapsedAgentFolders: (collapsedFolders ?? []).filter((id) => id !== folderId),
-    })
+    writeTree(
+      {
+        ...sectionsToSettings(next),
+        collapsedAgentFolders: (collapsedFolders ?? []).filter((id) => id !== folderId),
+      },
+      { kind: 'dissolveFolder', folderId }
+    )
   }, [collapsedFolders, writeTree])
 
   const handleToggleFolder = useCallback((folderId: string) => {
