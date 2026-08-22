@@ -103,6 +103,17 @@ describe('ApplePasswordsProvider', () => {
     expect(backend.beginPairing).not.toHaveBeenCalled()
   })
 
+  it('refuses retrieve when the selected login has no username', async () => {
+    const backend = runtime()
+    await expect(new ApplePasswordsProvider(backend).retrieve(context, {
+      providerKey: 'opaque', domain: 'example.com',
+    })).rejects.toMatchObject({
+      code: 'provider_error',
+      message: 'The selected login has no username',
+    })
+    expect(backend.retrieve).not.toHaveBeenCalled()
+  })
+
   it('retrieves a password only on demand', async () => {
     const backend = runtime({
       retrieve: vi.fn().mockResolvedValue({

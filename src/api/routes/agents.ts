@@ -3347,7 +3347,7 @@ function credentialBrokerErrorResponse(
 function configuredPasswordManagers(): string[] {
   const configured = getSettings().app?.configuredPasswordManagers
   return Array.isArray(configured)
-    ? configured.filter((provider): provider is string => typeof provider === 'string')
+    ? configured.filter((provider): provider is string => typeof provider === 'string').slice(0, 1)
     : []
 }
 
@@ -3404,16 +3404,45 @@ async function refreshBrowserInputUrl(
   return url
 }
 
+const browserCredentialQuerySchema = z.object({
+  toolUseId: z.string().min(1),
+  refresh: z.string().optional(),
+  q: z.string().min(1).max(100).optional(),
+})
+
 // GET /api/agents/:id/sessions/:sessionId/browser-credentials - Metadata-only suggestions
-agents.get('/:id/sessions/:sessionId/browser-credentials', IsAdmin(), async (c) => {
-  const toolUseId = c.req.query('toolUseId')
-  if (!toolUseId) return c.json({ error: 'toolUseId is required' }, 400)
+agents.get(
+  '/:id/sessions/:sessionId/browser-credentials',
+  IsAdmin(),
+  zValidator('query', browserCredentialQuerySchema),
+  async (c) => {
+  const { toolUseId, q } = c.req.valid('query')
   const gated = gateOpenRequestAccess(c, toolUseId, 'browser_input')
   if (gated) return gated
 
   const agentSlug = getAgentId(c)
   const sessionId = c.req.param('sessionId')
   try {
+    const configured = configuredPasswordManagers()
+    const warming = credentialBroker.warmingProviderId(configured)
+    if (warming) {
+      const captured = userInputRequestManager.getOpenRequest(toolUseId)
+      const parsed = browserInputContextSchema.safeParse(captured?.payload?.browserContext)
+      let origin = ''
+      if (parsed.success) {
+        try { origin = new URL(parsed.data.url).origin } catch { /* malformed capture: origin stays '' */ }
+      }
+      return c.json({
+        provider: warming,
+        providerLabel: credentialBroker.providerLabel(warming),
+        status: 'warming',
+        installable: true,
+        searchable: true,
+        origin,
+        suggestions: [],
+      })
+    }
+
     // New requests carry a harness-probed URL. Explicit refreshes and stale or
     // recovered requests re-probe the live browser and replace that context.
     const forceRefresh = c.req.query('refresh') === 'true'
@@ -3422,7 +3451,8 @@ agents.get('/:id/sessions/:sessionId/browser-credentials', IsAdmin(), async (c) 
     const result = await credentialBroker.suggest(
       { agentSlug, sessionId, toolUseId },
       url,
-      configuredPasswordManagers(),
+      configured,
+      q,
     )
     return c.json(result)
   } catch (error) {
@@ -3507,6 +3537,7 @@ agents.post(
       { agentSlug, sessionId, toolUseId: body.toolUseId },
       body.credentialId,
       url,
+      configuredPasswordManagers(),
     )
     const credential = retrieved.credential
 

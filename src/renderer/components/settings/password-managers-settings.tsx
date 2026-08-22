@@ -1,42 +1,34 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Check, ExternalLink, Lock, RefreshCw } from 'lucide-react'
+import { ExternalLink, Lock, RefreshCw } from 'lucide-react'
+import { z } from 'zod'
 import { apiFetch } from '@renderer/lib/api'
 import { Button } from '@renderer/components/ui/button'
-
-interface PasswordManagerRemediation {
-  code: string
-  title: string
-  instructions: string[]
-  action?: {
-    kind: 'open_url' | 'open_in_chrome'
-    label: string
-    url: string
-  }
-}
-
-interface PasswordManagerConnection {
-  provider: string
-  providerLabel: string
-  configured: boolean
-  installable: boolean
-  status: 'connected' | 'disconnected' | 'unavailable' | 'error'
-  message?: string
-  remediation?: PasswordManagerRemediation
-}
+import {
+  passwordManagerCardSchema,
+  type PasswordManagerCard,
+} from '@shared/lib/credentials/schemas'
 
 const PROVIDER_DESCRIPTIONS: Record<string, string> = {
   'apple-passwords': 'Fill logins saved in Apple Passwords during browser tasks.',
+  onepassword: 'Fill logins saved in 1Password during browser tasks.',
 }
 
-function availabilityText(provider: PasswordManagerConnection): string {
+const DISCONNECTED_COPY: Record<string, string> = {
+  'apple-passwords': 'You’ll enter a six-digit code from a login request when needed.',
+  onepassword: 'You’ll approve access in the 1Password app when needed.',
+}
+
+function availabilityText(provider: PasswordManagerCard): string {
   if (provider.status === 'connected') return 'Available in this app session.'
   if (provider.status === 'disconnected') {
-    return 'You’ll enter a six-digit code from a login request when needed.'
+    return DISCONNECTED_COPY[provider.provider] || 'You’ll enter a six-digit code from a login request when needed.'
   }
   return provider.message || 'This password manager is not available on this device.'
 }
 
-async function openRemediation(action: NonNullable<PasswordManagerRemediation['action']>) {
+type RemediationAction = NonNullable<NonNullable<PasswordManagerCard['remediation']>['action']>
+
+async function openRemediation(action: RemediationAction) {
   if (action.kind === 'open_in_chrome' && window.electronAPI?.openApplePasswordsExtension) {
     await window.electronAPI.openApplePasswordsExtension()
     return
@@ -48,8 +40,12 @@ async function openRemediation(action: NonNullable<PasswordManagerRemediation['a
   window.open(action.url, '_blank', 'noopener,noreferrer')
 }
 
+const passwordManagersResponseSchema = z.object({
+  providers: z.array(passwordManagerCardSchema),
+})
+
 export function PasswordManagersSettings() {
-  const [providers, setProviders] = useState<PasswordManagerConnection[]>([])
+  const [providers, setProviders] = useState<PasswordManagerCard[]>([])
   const [loading, setLoading] = useState(true)
   const [workingProvider, setWorkingProvider] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -59,12 +55,10 @@ export function PasswordManagersSettings() {
     setError(null)
     try {
       const response = await apiFetch('/api/settings/password-managers')
-      const result = await response.json() as {
-        error?: string
-        providers?: PasswordManagerConnection[]
-      }
+      const result = await response.json() as { error?: string }
       if (!response.ok) throw new Error(result.error || 'Could not load password managers')
-      setProviders(result.providers || [])
+      const parsed = passwordManagersResponseSchema.parse(result)
+      setProviders(parsed.providers)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Could not load password managers')
     } finally {
@@ -76,7 +70,7 @@ export function PasswordManagersSettings() {
     void load()
   }, [load])
 
-  const setConfigured = useCallback(async (provider: PasswordManagerConnection) => {
+  const setConfigured = useCallback(async (provider: PasswordManagerCard) => {
     const configured = !provider.configured
     setWorkingProvider(provider.provider)
     setError(null)
@@ -91,25 +85,24 @@ export function PasswordManagersSettings() {
       )
       const result = await response.json() as {
         error?: string
-        provider?: PasswordManagerConnection
+        provider?: unknown
       }
       if (!response.ok) {
-        if (result.provider) {
+        const card = passwordManagerCardSchema.safeParse(result.provider)
+        if (card.success) {
           setProviders((current) => current.map((candidate) =>
-            candidate.provider === result.provider?.provider ? result.provider : candidate
+            candidate.provider === card.data.provider ? card.data : candidate
           ))
         }
         throw new Error(result.error || `Could not update ${provider.providerLabel}`)
       }
-      setProviders((current) => current.map((candidate) =>
-        candidate.provider === provider.provider ? { ...candidate, configured } : candidate
-      ))
+      await load()
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : `Could not update ${provider.providerLabel}`)
     } finally {
       setWorkingProvider(null)
     }
-  }, [])
+  }, [load])
 
   return (
     <div id="password-managers" className="space-y-2" data-testid="password-managers-settings">
@@ -124,7 +117,7 @@ export function PasswordManagersSettings() {
           No password managers are available on this device.
         </div>
       ) : (
-        <div role="group" aria-label="Password managers" className="space-y-3">
+        <div role="radiogroup" aria-label="Password managers" className="space-y-3">
           {providers.map((provider) => {
             const isWorking = workingProvider === provider.provider
             const unavailable = provider.status === 'unavailable' || provider.status === 'error'
@@ -143,7 +136,7 @@ export function PasswordManagersSettings() {
               >
                 <button
                   type="button"
-                  role="checkbox"
+                  role="radio"
                   aria-checked={provider.configured}
                   aria-disabled={disabled || undefined}
                   disabled={disabled}
@@ -151,17 +144,17 @@ export function PasswordManagersSettings() {
                   onClick={() => void setConfigured(provider)}
                 >
                   <div
-                    className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] border-2 ${
-                      provider.configured ? 'border-primary bg-primary text-primary-foreground' : 'border-muted-foreground/40'
+                    className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 ${
+                      provider.configured ? 'border-primary' : 'border-muted-foreground/40'
                     }`}
                     aria-hidden="true"
                   >
-                    {provider.configured && <Check className="h-3 w-3" />}
+                    {provider.configured && <div className="h-2 w-2 rounded-full bg-primary" />}
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium">{provider.providerLabel}</span>
-                      {provider.provider === 'apple-passwords' && (
+                      {['apple-passwords', 'onepassword'].includes(provider.provider) && (
                         <span className="text-[11px] text-muted-foreground">Experimental</span>
                       )}
                       {unavailable && (

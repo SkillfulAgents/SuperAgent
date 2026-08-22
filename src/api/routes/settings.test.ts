@@ -151,10 +151,12 @@ vi.mock('@shared/lib/services/audit-log-service', () => ({
 
 const mockCredentialConnectionStatuses = vi.hoisted(() => vi.fn())
 const mockCredentialHasProvider = vi.hoisted(() => vi.fn())
+const mockCredentialShutdown = vi.hoisted(() => vi.fn())
 vi.mock('../credentials/credential-broker', () => ({
   credentialBroker: {
     connectionStatuses: (...args: unknown[]) => mockCredentialConnectionStatuses(...args),
     hasProvider: (...args: unknown[]) => mockCredentialHasProvider(...args),
+    shutdown: (...args: unknown[]) => mockCredentialShutdown(...args),
   },
 }))
 
@@ -288,10 +290,17 @@ function setupDefaults() {
   mockEnsureImageReady.mockResolvedValue(undefined)
   mockClearClients.mockReturnValue(undefined)
   mockTotalmem.mockReturnValue(64 * 1024 ** 3)
-  mockCredentialHasProvider.mockImplementation((provider: string) => provider === 'apple-passwords')
+  mockCredentialHasProvider.mockImplementation((provider: string) =>
+    provider === 'apple-passwords' || provider === 'onepassword')
+  mockCredentialShutdown.mockResolvedValue(undefined)
   mockCredentialConnectionStatuses.mockResolvedValue([{
     provider: 'apple-passwords',
     providerLabel: 'Apple Passwords',
+    installable: true,
+    status: 'disconnected',
+  }, {
+    provider: 'onepassword',
+    providerLabel: '1Password',
     installable: true,
     status: 'disconnected',
   }])
@@ -480,6 +489,85 @@ describe('settings route', () => {
         configured: true,
       })
       expect(mockGetSettings().app.configuredPasswordManagers).toEqual(['apple-passwords'])
+    })
+
+    it('replaces the configured manager and awaits shutdown of the previous one', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        app: { showMenuBarIcon: true, configuredPasswordManagers: ['apple-passwords'] },
+      })
+      const order: string[] = []
+      mockCredentialShutdown.mockImplementation(async () => {
+        order.push('shutdown')
+      })
+
+      const res = await app.request(
+        'http://localhost/api/settings/password-managers/onepassword',
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ configured: true }),
+        },
+      )
+
+      order.push('response')
+      expect(res.status).toBe(200)
+      expect(mockGetSettings().app.configuredPasswordManagers).toEqual(['onepassword'])
+      expect(mockCredentialShutdown).toHaveBeenCalledWith('apple-passwords')
+      expect(order).toEqual(['shutdown', 'response'])
+    })
+
+    it('disabling the configured provider empties the list and shuts it down', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        app: { showMenuBarIcon: true, configuredPasswordManagers: ['onepassword'] },
+      })
+
+      const res = await app.request(
+        'http://localhost/api/settings/password-managers/onepassword',
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ configured: false }),
+        },
+      )
+
+      expect(res.status).toBe(200)
+      expect(mockGetSettings().app.configuredPasswordManagers).toEqual([])
+      expect(mockCredentialShutdown).toHaveBeenCalledWith('onepassword')
+    })
+
+    it('disabling a provider that is not configured is a no-op', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        app: { showMenuBarIcon: true, configuredPasswordManagers: ['onepassword'] },
+      })
+
+      const res = await app.request(
+        'http://localhost/api/settings/password-managers/apple-passwords',
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ configured: false }),
+        },
+      )
+
+      expect(res.status).toBe(200)
+      expect(mockGetSettings().app.configuredPasswordManagers).toEqual(['onepassword'])
+      expect(mockCredentialShutdown).not.toHaveBeenCalled()
+    })
+
+    it('marks at most the first stored manager as configured', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        app: { showMenuBarIcon: true, configuredPasswordManagers: ['apple-passwords', 'onepassword'] },
+      })
+
+      const res = await app.request('http://localhost/api/settings/password-managers')
+      expect(res.status).toBe(200)
+      const json = await res.json() as { providers: Array<{ provider: string; configured: boolean }> }
+      expect(json.providers.find((provider) => provider.provider === 'apple-passwords')?.configured).toBe(true)
+      expect(json.providers.find((provider) => provider.provider === 'onepassword')?.configured).toBe(false)
     })
 
     it('rejects an invalid configuration value', async () => {
