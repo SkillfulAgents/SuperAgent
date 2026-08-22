@@ -28,8 +28,16 @@ import type {
   StopOptions,
   StopResult,
 } from './types'
+import { getSettings, isAutoResumeOnUnexpectedDeathEnabled } from '@shared/lib/config/settings'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { setBootstrapEnv, clearBootstrapEnv } from './agent-bootstrap-env-store'
+import {
+  classifyMicrovmDeath,
+  planFromClassification,
+  type MicrovmDeathReason,
+  type MicrovmFatalResult,
+} from './microvm-death-classifier'
+import type { ObserveUnexpectedDeathInput, UnexpectedDeathPlan } from './runtime-death'
 
 // RunMicrovm caps runHookPayload at 4096 bytes. We only put a small bootstrap
 // credential + mount params here; the full agent env is fetched at boot (see
@@ -614,7 +622,12 @@ interface AgentMicrovmState {
 }
 const agentStates = new Map<string, AgentMicrovmState>()
 
-type MicrovmDetail = { state?: string; endpoint?: string }
+const microvmDetailSchema = z.object({
+  state: z.string().optional(),
+  endpoint: z.string().optional(),
+  stateReason: z.string().optional(),
+})
+type MicrovmDetail = z.infer<typeof microvmDetailSchema>
 
 // Control plane selection, keyed on MICROVM_PROXY_URL:
 //
@@ -732,11 +745,19 @@ async function runMicrovm(
 
 async function getMicrovm(region: string, microvmId: string): Promise<MicrovmDetail> {
   const svc = microvmService()
-  if (svc) return serviceFetch(svc, 'GET', `/microvm/${encodeURIComponent(microvmId)}`)
+  if (svc) {
+    return microvmDetailSchema.parse(
+      await serviceFetch<unknown>(svc, 'GET', `/microvm/${encodeURIComponent(microvmId)}`),
+    )
+  }
   const res = (await getMicrovmClient(region).send(
     new GetMicrovmCommand({ microvmIdentifier: microvmId }),
   )) as GetMicrovmCommandOutput
-  return { state: res.state, endpoint: res.endpoint }
+  return microvmDetailSchema.parse({
+    state: res.state,
+    endpoint: res.endpoint,
+    stateReason: res.stateReason,
+  })
 }
 
 async function terminateMicrovm(region: string, microvmId: string): Promise<void> {
@@ -797,6 +818,13 @@ function isUnreachableCreateSessionError(error: unknown): boolean {
   return false
 }
 
+function honorMicrovmAutoResume(plan: UnexpectedDeathPlan): UnexpectedDeathPlan {
+  if (plan.action === 'recover' && !isAutoResumeOnUnexpectedDeathEnabled(getSettings())) {
+    return { action: 'settle' }
+  }
+  return plan
+}
+
 export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
   static readonly runnerName = 'lambda-microvm'
   // Image is built once via create-microvm-image and run by AWS; nothing local.
@@ -808,6 +836,68 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
 
   constructor(config: ContainerConfig) {
     super(config)
+  }
+
+  onFatalResult(kind: MicrovmFatalResult): 'settle' | 'defer_for_recovery' {
+    // The persister records the fatal and runtime-recovery hands it back via
+    // ObserveUnexpectedDeathInput; keeping a second copy here would go stale.
+    return kind === 'oom_sigkill' ? 'defer_for_recovery' : 'settle'
+  }
+
+  getRuntimeGenerationId(): string | null {
+    return agentStates.get(this.config.agentId)?.microvmId ?? null
+  }
+
+  async observeUnexpectedDeath(input?: ObserveUnexpectedDeathInput): Promise<UnexpectedDeathPlan> {
+    const lastFatalResult = input?.lastFatalResult ?? null
+    const sessionIds = input?.sessionIds ?? []
+    const installed = agentStates.get(this.config.agentId)
+    const probe = await this.probeRuntimeDeath(sessionIds, installed?.proxyPort)
+
+    if (!installed) {
+      return honorMicrovmAutoResume(
+        planFromClassification(
+          classifyMicrovmDeath({ notFound: true, lastFatalResult, probe }),
+          { probe },
+        ),
+      )
+    }
+
+    const config = getMicrovmRuntimeConfig()
+    try {
+      const mvm = await getMicrovm(config.region, installed.microvmId)
+      return honorMicrovmAutoResume(
+        planFromClassification(
+          classifyMicrovmDeath({
+            state: mvm.state,
+            stateReason: mvm.stateReason,
+            lastFatalResult,
+            probe,
+          }),
+          { state: mvm.state, probe },
+        ),
+      )
+    } catch (error) {
+      if (isNotFound(error)) {
+        return honorMicrovmAutoResume(
+          planFromClassification(
+            classifyMicrovmDeath({ notFound: true, lastFatalResult, probe }),
+            { probe },
+          ),
+        )
+      }
+      captureException(error, {
+        tags: { area: 'container', op: 'microvm.observeDeath' },
+        extra: { agentId: this.config.agentId, microvmId: installed.microvmId },
+      })
+      // Control plane unreachable (throttle/outage): fall back to the live
+      // probe. Reachable + still running is safe to leave alone; anything
+      // unconfirmable fails closed to settle.
+      if (probe.status === 'live') {
+        return { action: 'ignore', liveSessionIds: probe.liveSessionIds }
+      }
+      return { action: 'settle' }
+    }
   }
 
   protected getRunnerCommand(): string {
@@ -1025,13 +1115,46 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
   }
 
   private async replaceGenerationInner(reason: string, observedId: string | null): Promise<void> {
+    const config = getMicrovmRuntimeConfig()
+    let classification: MicrovmDeathReason = 'runtime_lost'
+    let state: string | undefined
+    let stateReason: string | undefined
+    if (observedId) {
+      try {
+        const mvm = await getMicrovm(config.region, observedId)
+        state = mvm.state
+        stateReason = mvm.stateReason
+        classification = classifyMicrovmDeath({ state, stateReason })
+      } catch (error) {
+        if (isNotFound(error)) {
+          classification = classifyMicrovmDeath({ notFound: true })
+        } else {
+          // Classification is telemetry-only here; the replace proceeds regardless.
+          console.warn(
+            `[LambdaMicroVmRuntimeClient] GetMicrovm failed while classifying replaced generation agent=${this.config.agentId} microvm=${observedId}: ${String(error)}`,
+          )
+          captureException(error, {
+            tags: { area: 'container', op: 'microvm.replaceClassify' },
+            extra: { agentId: this.config.agentId, microvmId: observedId },
+          })
+        }
+      }
+    }
+
     console.warn(
-      `[LambdaMicroVmRuntimeClient] Replacing dead MicroVM generation agent=${this.config.agentId} reason=${reason} old=${observedId ?? 'none'}`,
+      `[LambdaMicroVmRuntimeClient] Replacing dead MicroVM generation agent=${this.config.agentId} reason=${reason} old=${observedId ?? 'none'} classification=${classification}`,
     )
     addErrorBreadcrumb({
       category: 'container',
       message: `MicroVM generation replaced: ${reason}`,
-      data: { agentId: this.config.agentId, oldMicrovmId: observedId, reason },
+      data: {
+        agentId: this.config.agentId,
+        oldMicrovmId: observedId,
+        reason,
+        classification,
+        state,
+        stateReason,
+      },
       level: 'warning',
     })
 
