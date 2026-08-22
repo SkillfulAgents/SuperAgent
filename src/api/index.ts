@@ -3,6 +3,8 @@ import { cors } from 'hono/cors'
 import agents from './routes/agents'
 import xAgent from './routes/x-agent'
 import xAgentChat from './routes/x-agent-chat'
+import brainAgent from './routes/brain-agent'
+import brainAdmin from './routes/brain-admin'
 import webSearch from './routes/web-search'
 import webFetch from './routes/web-fetch'
 import connectedAccounts from './routes/connected-accounts'
@@ -208,6 +210,8 @@ app.route('/api/agents', agents)
 app.route('/api/activity', activityRouter)
 app.route('/api/x-agent', xAgent)
 app.route('/api/x-agent/chat', xAgentChat)
+app.route('/api/brain/agent', brainAgent)
+app.route('/api/brain', brainAdmin)
 app.route('/api/web-search', webSearch)
 app.route('/api/web-fetch', webFetch)
 app.route('/api/connected-accounts', connectedAccounts)

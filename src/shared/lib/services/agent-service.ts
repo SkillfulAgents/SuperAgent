@@ -34,6 +34,7 @@ import { containerManager } from '@shared/lib/container/container-manager'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
 import { getSessionSummary } from './session-service'
+import { clearCuratorIfSlug } from './brain-service'
 
 // ============================================================================
 // Internal to API Type Conversion
@@ -363,6 +364,7 @@ export async function deleteAgent(slug: string): Promise<boolean> {
 
   // Remove directory only after the container has been confirmed stopped.
   await removeDirectory(agentDir)
+  clearCuratorIfSlug(slug)
 
   return true
 }

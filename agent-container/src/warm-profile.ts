@@ -33,6 +33,7 @@ export const warmProfileSchema = z.object({
   effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
   speed: speedLevelSchema,
   capabilityPolicies: agentCapabilityPoliciesSchema,
+  teamBrain: z.boolean().optional(),
 });
 
 export type WarmProfile = z.infer<typeof warmProfileSchema>;
@@ -80,6 +81,7 @@ function buildProfile(
     effort: defaults ? defaults.effort : request.effort,
     speed: defaults ? defaults.speed : request.speed,
     capabilityPolicies: request.capabilityPolicies,
+    teamBrain: request.teamBrain,
   });
 }
 

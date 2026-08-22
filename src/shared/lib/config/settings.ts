@@ -307,6 +307,8 @@ export interface AppSettings {
    * expand deferred tools (see BaseLlmProvider.toolSearchEnv).
    */
   enableToolSearch?: boolean
+  /** Workspace Team Brain. Off by default. New sessions pick this up. */
+  teamBrain?: boolean
   /** Launch policies for subagents (Task/Agent) and workflows (Workflow tool). */
   agentCapabilities?: AgentCapabilitySettings
   /**
@@ -398,6 +400,7 @@ export interface GlobalSettingsResponse {
   analyticsTargets?: AnalyticsTarget[]
   shareErrorReports: boolean
   enableToolSearch: boolean
+  teamBrain: boolean
   agentCapabilities: AgentCapabilitySettings
 }
 
@@ -455,6 +458,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     agentEffort: 'medium',
   },
   enableToolSearch: true,
+  teamBrain: false,
   agentCapabilities: DEFAULT_AGENT_CAPABILITIES,
   skillsets: [DEFAULT_PUBLIC_SKILLSET],
 }
@@ -598,6 +602,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     apiTarget: coerceApiTarget(loaded.apiTarget),
     platformNotifications: loaded.platformNotifications,
     enableToolSearch: loaded.enableToolSearch ?? DEFAULT_SETTINGS.enableToolSearch,
+    teamBrain: loaded.teamBrain ?? DEFAULT_SETTINGS.teamBrain,
     // Sanitize per-field: an unknown tier (hand-edited file, future version)
     // falls back to that field's default instead of poisoning the section —
     // resetting the whole section would silently lift a valid 'block'.

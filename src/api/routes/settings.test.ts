@@ -110,6 +110,7 @@ vi.mock('@shared/lib/container/client-factory', () => ({
 vi.mock('@shared/lib/config/data-dir', () => ({
   getDataDir: () => '/mock/data',
   getAgentsDataDir: () => '/mock/data/agents',
+  getBrainDir: () => '/mock/data/brain',
 }))
 
 vi.mock('../../main/host-browser', () => ({
@@ -374,6 +375,7 @@ describe('settings route', () => {
       ['shareAnalytics', { shareAnalytics: 'yes' }],
       ['shareErrorReports', { shareErrorReports: 1 }],
       ['enableToolSearch', { enableToolSearch: 'enabled' }],
+      ['teamBrain', { teamBrain: 'enabled' }],
     ])('rejects a non-boolean %s', async (_name, request) => {
       const res = await putSettings(request)
 

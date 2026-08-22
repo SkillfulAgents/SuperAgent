@@ -41,6 +41,35 @@ export function getAgentsDataDir(): string {
 }
 
 /**
+ * Shared Team Brain directory. Sibling of agents/, not inside any agent
+ * workspace, so it survives agent deletion. On cloud this is the org data dir.
+ */
+export const BRAIN_INDEX_FILENAME = 'INDEX.md'
+export const BRAIN_CURATOR_FILENAME = 'CURATOR'
+
+const BRAIN_INDEX_STARTER = `# Team Brain
+
+Curator-owned catalog. One line per page: \`- name — one-line description\`.
+Update this file whenever you add, merge, or delete a page.
+`
+
+export function getBrainDir(): string {
+  return path.join(getDataDir(), 'brain')
+}
+
+export function ensureBrainDir(): string {
+  const dir = getBrainDir()
+  fs.mkdirSync(dir, { recursive: true })
+  const indexPath = path.join(dir, BRAIN_INDEX_FILENAME)
+  try {
+    fs.writeFileSync(indexPath, BRAIN_INDEX_STARTER, { encoding: 'utf8', flag: 'wx' })
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+  }
+  return dir
+}
+
+/**
  * Get the workspace directory for a specific agent.
  */
 export function getAgentWorkspaceDir(agentId: string): string {

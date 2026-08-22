@@ -15,6 +15,12 @@ describe('buildSystemPromptVars', () => {
   it('defaults CLAUDE_CONFIG_DIR when the host env is unset', () => {
     expect(buildSystemPromptVars(undefined, undefined, undefined, undefined).CLAUDE_CONFIG_DIR).toBe('/workspace/.claude')
   })
+
+  it('omits Team Brain unless the host flag is on', () => {
+    expect(buildSystemPromptVars().teamBrain).toBe(false)
+    expect(generateSystemPrompt()).not.toContain('## Team Brain')
+    expect(generateSystemPrompt(undefined, undefined, undefined, undefined, undefined, undefined, undefined, true)).toContain('## Team Brain')
+  })
 })
 
 describe('generateSystemPrompt rendering', () => {

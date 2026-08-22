@@ -5,7 +5,7 @@ import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { EffortLevel, SpeedLevel } from './types';
-import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpServer, createDashboardsMcpServer, createAgentsMcpServer, createChatMcpServer, createWebMcpServer } from './mcp-server';
+import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpServer, createDashboardsMcpServer, createAgentsMcpServer, createChatMcpServer, createWebMcpServer, createBrainMcpServer } from './mcp-server';
 import { createBrowserTools } from './tools/browser';
 import { renameBrowserSession } from './browser-state';
 import { computerUseTools } from './tools/computer-use';
@@ -292,6 +292,7 @@ export interface SystemPromptVars {
   hasEnvVars: boolean;
   envVars: string[];
   userInstructions: string;
+  teamBrain: boolean;
 }
 
 /**
@@ -308,6 +309,7 @@ export function buildSystemPromptVars(
   webFetchProvider?: string,
   capabilityPolicies?: AgentCapabilityPolicies,
   subagentModels?: SubagentModelDefinition[],
+  teamBrain = false,
 ): SystemPromptVars {
   const composioTriggers = process.env.COMPOSIO_PLATFORM_MODE === 'true';
   const webhookEndpoints = process.env.PLATFORM_AUTH_ACTIVE === 'true';
@@ -341,6 +343,7 @@ export function buildSystemPromptVars(
     hasEnvVars: envVars.length > 0,
     envVars,
     userInstructions,
+    teamBrain,
   };
 }
 
@@ -357,6 +360,7 @@ export function generateSystemPrompt(
   webFetchProvider?: string,
   capabilityPolicies?: AgentCapabilityPolicies,
   subagentModels?: SubagentModelDefinition[],
+  teamBrain = false,
 ): string {
   const vars = buildSystemPromptVars(
     availableEnvVars,
@@ -366,6 +370,7 @@ export function generateSystemPrompt(
     webFetchProvider,
     capabilityPolicies,
     subagentModels,
+    teamBrain,
   );
   return renderPrompt(SYSTEM_PROMPT, vars);
 }
@@ -458,6 +463,7 @@ export interface ClaudeCodeProcessOptions {
   speed?: SpeedLevel;
   capabilityPolicies?: AgentCapabilityPolicies;
   sessionCapabilityGrants?: Capability[];
+  teamBrain?: boolean;
 }
 
 export class ClaudeCodeProcess extends EventEmitter {
@@ -497,6 +503,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   private availableEnvVars: string[] | undefined;
   private userSystemPrompt: string | undefined;
   private modelPromptHints: string[] | undefined;
+  private teamBrain: boolean;
   private isReady: boolean = false;
   private isProcessing: boolean = false;
   // Monotonic id of the current query; bumped by initializeQuery. A previous
@@ -565,6 +572,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.availableEnvVars = options.availableEnvVars;
     this.userSystemPrompt = options.userSystemPrompt;
     this.modelPromptHints = options.modelPromptHints;
+    this.teamBrain = options.teamBrain === true;
     this.systemPrompt = generateSystemPrompt(
       options.availableEnvVars,
       options.userSystemPrompt,
@@ -573,6 +581,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       options.webFetchProvider,
       options.capabilityPolicies,
       this.subagentModels,
+      this.teamBrain,
     );
   }
 
@@ -838,6 +847,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         'dashboards': createDashboardsMcpServer(),
         'agents': createAgentsMcpServer(() => this.sessionId),
         'chat': createChatMcpServer(() => this.sessionId),
+        ...(this.teamBrain ? { 'brain': createBrainMcpServer(() => this.sessionId) } : {}),
         ...((this.webSearchProvider || this.webFetchProvider)
           ? { 'web': createWebMcpServer({ search: !!this.webSearchProvider, fetch: !!this.webFetchProvider }) }
           : {}),
@@ -1314,6 +1324,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         this.webFetchProvider,
         this.capabilityPolicies,
         this.subagentModels,
+        this.teamBrain,
       );
     }
 
@@ -1349,6 +1360,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           this.webFetchProvider,
           nextPolicies,
           this.subagentModels,
+          this.teamBrain,
         );
       }
       this.reconcilePendingCapabilityReviews();

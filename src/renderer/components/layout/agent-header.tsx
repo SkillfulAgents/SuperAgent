@@ -10,6 +10,8 @@ import { useRemoteMcps } from '@renderer/hooks/use-remote-mcps'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
+import { BrainCuratorBadge } from '@renderer/components/agents/brain-curator-badge'
+import { useBrainCurator } from '@renderer/hooks/use-brain-curator'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { Separator } from '@renderer/components/ui/separator'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
@@ -58,6 +60,8 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
   const dashboardHeader = useDashboardHeader(slug, dashboardSlug)
 
   const { data: agent } = useAgent(slug)
+  const { data: curator } = useBrainCurator()
+  const isCurator = curator?.agentSlug === slug
   const { data: sessions } = useSessions(slug)
   const { data: session } = useSession(sessionId, slug)
   const { data: scheduledTask } = useScheduledTask(scheduledTaskId)
@@ -92,6 +96,11 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
                 data-testid="agent-breadcrumb"
               >
                 {agent.name}
+                {isCurator && (
+                  <span className="ml-1.5">
+                    <BrainCuratorBadge />
+                  </span>
+                )}
               </AppLink>
             </AgentContextMenu>
           ) : (
