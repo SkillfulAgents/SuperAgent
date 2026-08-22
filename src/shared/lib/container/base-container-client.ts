@@ -318,6 +318,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
    * Handle a connection error - notify via callback if configured.
    */
   protected handleConnectionError(): void {
+    // The port may have changed if the container was restarted out from under
+    // us — force the next fetch() to re-resolve it from the runtime.
+    this.cachedRunningPort = null
     if (this.config.onConnectionError) {
       this.config.onConnectionError()
     }
@@ -630,6 +633,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const info = await this.getInfo()
     if (info.status === 'running') {
       console.log(`Container ${this.getContainerName()} is already running on port ${info.port}`)
+      this.cachedRunningPort = info.port
       return info
     }
 
@@ -801,6 +805,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       }
 
       console.log(`Container ${containerName} is now running on port ${port}`)
+      this.cachedRunningPort = port
       return { status: 'running', port }
     } catch (error: any) {
       // Only capture if not already captured (health check errors are captured
@@ -841,6 +846,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   async stop(options?: StopOptions): Promise<StopResult> {
+    this.cachedRunningPort = null
     let forceStopUsed = false
     const stopTimeoutMs = options?.stopTimeoutMs ?? 10_000
     const killTimeoutMs = options?.killTimeoutMs ?? 5_000
@@ -1038,7 +1044,16 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     }
   }
 
+  // Host port of the running container. A port mapping is immutable for the
+  // container's lifetime, so once known it never needs re-resolving — without
+  // this, every fetch() paid a runtime CLI inspect (an SSH round trip on Lima)
+  // before the HTTP request even started. Cleared on stop() and on connection
+  // errors; a stale value degrades to one failed fetch followed by a live
+  // re-resolve, which is exactly the pre-cache behavior.
+  private cachedRunningPort: number | null = null
+
   private async getPortOrThrow(): Promise<number> {
+    if (this.cachedRunningPort !== null) return this.cachedRunningPort
     const info = await this.getInfo()
     if (info.status !== 'running' || !info.port) {
       // Container is not running - trigger connection error handler
@@ -1046,6 +1061,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       this.handleConnectionError()
       throw new Error('Container is not running')
     }
+    this.cachedRunningPort = info.port
     return info.port
   }
 
@@ -1222,13 +1238,12 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     }
   }
 
+  // getSession/deleteSession/cancelQueuedMessage/interruptSession go through
+  // this.fetch() rather than a raw fetch on getPortOrThrow()'s result: fetch()
+  // clears the cached port on connection errors, so a container recreated on
+  // another port costs one failed call instead of failing until restart.
   async getSession(sessionId: string): Promise<ContainerSession | null> {
-    const port = await this.getPortOrThrow()
-
-    const response = await fetch(
-      `${this.getBaseUrl(port)}/sessions/${sessionId}`,
-      { headers: this.getHostAuthHeaders() }
-    )
+    const response = await this.fetch(`/sessions/${sessionId}`)
 
     if (response.status === 404) return null
     if (!response.ok) {
@@ -1239,14 +1254,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   async deleteSession(sessionId: string): Promise<boolean> {
-    const port = await this.getPortOrThrow()
-
     this.closeTrackedWebSocket(sessionId)
 
-    const response = await fetch(
-      `${this.getBaseUrl(port)}/sessions/${sessionId}`,
-      { method: 'DELETE', headers: this.getHostAuthHeaders() }
-    )
+    const response = await this.fetch(`/sessions/${sessionId}`, { method: 'DELETE' })
 
     return response.ok
   }
@@ -1326,11 +1336,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   async cancelQueuedMessage(sessionId: string, uuid: string): Promise<boolean> {
-    const port = await this.getPortOrThrow()
-
-    const response = await fetch(
-      `http://127.0.0.1:${port}/sessions/${sessionId}/queued-messages/${encodeURIComponent(uuid)}`,
-      { method: 'DELETE', headers: this.getHostAuthHeaders() }
+    const response = await this.fetch(
+      `/sessions/${sessionId}/queued-messages/${encodeURIComponent(uuid)}`,
+      { method: 'DELETE' }
     )
     if (response.status === 404) {
       // Route missing = the container is running a build that predates the
@@ -1350,12 +1358,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   async interruptSession(sessionId: string): Promise<boolean> {
-    const port = await this.getPortOrThrow()
-
-    const response = await fetch(
-      `${this.getBaseUrl(port)}/sessions/${sessionId}/interrupt`,
-      { method: 'POST', headers: this.getHostAuthHeaders() }
-    )
+    const response = await this.fetch(`/sessions/${sessionId}/interrupt`, { method: 'POST' })
 
     return response.ok
   }
@@ -1417,12 +1420,18 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       })
 
       ws.on('error', (error) => {
+        const err = error instanceof Error ? error : new Error(String(error))
+        // A refused/reset socket may mean the cached port is stale (container
+        // recreated elsewhere) — clear it so the next attempt re-resolves.
+        if (this.isConnectionError(err)) {
+          this.handleConnectionError()
+        }
         // Only log and emit if this connection is still tracked (not cleaned up by stop())
         if (this.wsConnections.has(sessionId)) {
           console.error(`WebSocket error for session ${sessionId}:`, error)
           this.safeEmitError(error)
         }
-        rejectReady(error instanceof Error ? error : new Error(String(error)))
+        rejectReady(err)
       })
 
       ws.on('close', () => {

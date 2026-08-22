@@ -573,7 +573,16 @@ app.get('/artifacts/:slug/logs', async (c) => {
 // Shared handler for proxying requests to a dashboard server
 async function proxyToDashboard(c: any) {
   const slug = c.req.param('slug');
-  const port = dashboardManager.getDashboardPort(slug);
+  let port = dashboardManager.getDashboardPort(slug);
+
+  // A request during startup is held until the dashboard reaches an outcome
+  // rather than bounced with a 503 — the renderer mounts its iframe while the
+  // dashboard is still 'starting', so the first paint happens the moment the
+  // server binds. Stopped/crashed/unknown dashboards still fail fast.
+  if (!port && dashboardManager.getDashboardStatus(slug) === 'starting') {
+    await dashboardManager.waitForStartupOutcome(slug, 20_000);
+    port = dashboardManager.getDashboardPort(slug);
+  }
 
   if (!port) {
     return c.json({ error: `Dashboard ${slug} is not running` }, 503);

@@ -562,6 +562,40 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(invalidateSpy).not.toHaveBeenCalled()
   })
 
+  it('applies a pushed dashboard status to cached artifacts and refetches the list', () => {
+    queryClient.setQueryData(['agents'], [{
+      slug: 'agent-a',
+      displaySlug: 'agent-a-display',
+      name: 'Agent A',
+      status: 'running',
+      containerPort: 3456,
+    }])
+    queryClient.setQueryData(['artifacts', 'agent-a'], [
+      { slug: 'sales', name: 'Sales', description: '', status: 'starting', port: 5000 },
+      { slug: 'support', name: 'Support', description: '', status: 'stopped', port: 0 },
+    ])
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'dashboard_status_changed',
+      agentSlug: 'agent-a',
+      dashboardSlug: 'sales',
+      status: 'running',
+    })
+
+    expect(queryClient.getQueryData<Array<{ slug: string; status: string }>>(['artifacts', 'agent-a']))
+      .toEqual([
+        expect.objectContaining({ slug: 'sales', status: 'running' }),
+        expect.objectContaining({ slug: 'support', status: 'stopped' }),
+      ])
+    expect(queryClient.getQueryState(['artifacts', 'agent-a'])?.isInvalidated).toBe(true)
+  })
+
   it('agent_created invalidates visible agents and personal roles together', () => {
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 

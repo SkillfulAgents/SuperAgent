@@ -648,18 +648,26 @@ describe('GET /:id/artifacts/:artifactSlug/view', () => {
     mockAgentExists.mockResolvedValue(true)
   })
 
-  it('reuses the initial running status instead of entering the poll loop', async () => {
-    const res = await getReq(createApp(), '/api/agents/test-agent/artifacts/sales/view')
-    const html = await res.text()
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify([
-        { slug: 'sales', name: 'Sales', status: 'running' },
-      ]), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'running' }), { status: 200 }))
-    const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1]
+  /** Iframe stand-in with a src-assignment counter (reload = second set). */
+  function makeIframe() {
+    const iframe: Record<string, unknown> & { style: Record<string, string> } = { style: {} }
+    let srcSets = 0
+    Object.defineProperty(iframe, 'src', {
+      set(value: string) {
+        srcSets++
+        ;(this as Record<string, unknown>)._src = value
+      },
+      get() {
+        return (this as Record<string, unknown>)._src
+      },
+    })
+    return { iframe, srcSetCount: () => srcSets }
+  }
+
+  function makeDom() {
     const loadingRemove = vi.fn()
     const appendChild = vi.fn()
-    const iframe: Record<string, string> = {}
+    const { iframe, srcSetCount } = makeIframe()
     const statusElement = { textContent: '', classList: { add: vi.fn() } }
     const loadingElement = { remove: loadingRemove }
     const document = {
@@ -668,24 +676,89 @@ describe('GET /:id/artifacts/:artifactSlug/view', () => {
       createElement: () => iframe,
       body: { appendChild },
     }
+    return { document, iframe, srcSetCount, loadingRemove, appendChild, statusElement }
+  }
+
+  it('paints the warm path from one artifacts fetch, without awaiting the start call', async () => {
+    const res = await getReq(createApp(), '/api/agents/test-agent/artifacts/sales/view')
+    const html = await res.text()
+    const fetchMock = vi.fn()
+      // The start is fired first (idempotent), artifacts resolves the state
+      .mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([
+        { slug: 'sales', name: 'Sales', status: 'running' },
+      ]), { status: 200 }))
+    const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1]
+    const dom = makeDom()
 
     expect(script).toBeDefined()
     runInNewContext(script!, {
-      document,
+      document: dom.document,
       fetch: fetchMock,
       setTimeout,
     })
 
     await vi.waitFor(() => {
-      expect(appendChild).toHaveBeenCalledWith(iframe)
+      expect(dom.appendChild).toHaveBeenCalledWith(dom.iframe)
     })
 
     expect(fetchMock).toHaveBeenCalledTimes(2)
-    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/agents/test-agent/artifacts')
-    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/agents/test-agent')
-    expect(loadingRemove).toHaveBeenCalledOnce()
-    expect(iframe.src).toBe('/api/agents/test-agent/artifacts/sales/')
-    expect(iframe.sandbox).toContain('allow-downloads')
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/agents/test-agent/start', { method: 'POST' })
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/agents/test-agent/artifacts')
+    expect(dom.iframe.src).toBe('/api/agents/test-agent/artifacts/sales/')
+    expect(dom.iframe.sandbox).toContain('allow-downloads')
+
+    // The spinner stays until the document actually loads
+    expect(dom.loadingRemove).not.toHaveBeenCalled()
+    ;(dom.iframe.onload as () => void)()
+    expect(dom.loadingRemove).toHaveBeenCalledOnce()
+    expect(dom.iframe.style.visibility).toBe('visible')
+  })
+
+  it('reloads a document that finished loading before the dashboard was running', async () => {
+    const res = await getReq(createApp(), '/api/agents/test-agent/artifacts/sales/view')
+    const html = await res.text()
+    let releaseRunning: (value: Response) => void = () => {}
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([
+        { slug: 'sales', name: 'Sales', status: 'starting', startupPhase: 'starting-server' },
+      ]), { status: 200 }))
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => {
+        releaseRunning = resolve
+      }))
+    const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1]
+    const dom = makeDom()
+
+    expect(script).toBeDefined()
+    runInNewContext(script!, {
+      document: dom.document,
+      fetch: fetchMock,
+      setTimeout,
+    })
+
+    // Optimistically mounted while still starting
+    await vi.waitFor(() => {
+      expect(dom.appendChild).toHaveBeenCalledWith(dom.iframe)
+    })
+    expect(dom.srcSetCount()).toBe(1)
+
+    // The held document resolves before the poll observes 'running'
+    ;(dom.iframe.onload as () => void)()
+    expect(dom.loadingRemove).not.toHaveBeenCalled()
+
+    releaseRunning(new Response(JSON.stringify([
+      { slug: 'sales', name: 'Sales', status: 'running' },
+    ]), { status: 200 }))
+
+    // 'running' arrives → the early document is refetched exactly once
+    await vi.waitFor(() => {
+      expect(dom.srcSetCount()).toBe(2)
+    })
+    expect(dom.loadingRemove).not.toHaveBeenCalled()
+    ;(dom.iframe.onload as () => void)()
+    expect(dom.loadingRemove).toHaveBeenCalledOnce()
+    expect(dom.iframe.style.visibility).toBe('visible')
   })
 
   it('shows the first-run dependency phase while the standalone view waits', async () => {
@@ -699,27 +772,18 @@ describe('GET /:id/artifacts/:artifactSlug/view', () => {
       firstRun: true,
     }
     const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([installing]), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'running' }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([installing]), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([
         { slug: 'sales', name: 'Sales', status: 'running' },
       ]), { status: 200 }))
     const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1]
-    const appendChild = vi.fn()
-    const iframe: Record<string, string> = {}
-    const statusElement = { textContent: '', classList: { add: vi.fn() } }
-    const loadingElement = { remove: vi.fn() }
-    const document = {
-      title: '',
-      getElementById: (id: string) => id === 'status' ? statusElement : loadingElement,
-      createElement: () => iframe,
-      body: { appendChild },
-    }
+    const dom = makeDom()
 
     expect(script).toBeDefined()
     runInNewContext(script!, {
-      document,
+      document: dom.document,
       fetch: fetchMock,
       setTimeout: (callback: () => void) => {
         callback()
@@ -728,11 +792,13 @@ describe('GET /:id/artifacts/:artifactSlug/view', () => {
     })
 
     await vi.waitFor(() => {
-      expect(appendChild).toHaveBeenCalledWith(iframe)
+      expect(dom.appendChild).toHaveBeenCalledWith(dom.iframe)
     })
 
-    expect(statusElement.textContent).toBe('Preparing dashboard for first use…')
-    expect(fetchMock).toHaveBeenCalledTimes(4)
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(4)
+    })
+    expect(dom.statusElement.textContent).toBe('Preparing dashboard for first use…')
   })
 })
 

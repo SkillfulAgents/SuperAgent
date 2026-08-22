@@ -6,6 +6,7 @@ import { useKeepAlive } from '@renderer/hooks/use-keep-alive'
 import { useArtifacts } from '@renderer/hooks/use-artifacts'
 import { useUser } from '@renderer/context/user-context'
 import { getApiBaseUrl, isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
+import { apiFetch } from '@renderer/lib/api'
 import { buildDashboardArtifactPath } from '@shared/lib/dashboard-url'
 import { AddToDockDialog } from './add-to-dock-dialog'
 import { DashboardDispatchDialog } from './dashboard-dispatch-dialog'
@@ -28,16 +29,29 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   useRenderTracker('DashboardView')
   const [dockDialogOpen, setDockDialogOpen] = useState(false)
   const [pollFast, setPollFast] = useState(false)
+  const [pollWatching, setPollWatching] = useState(false)
   const [now, setNow] = useState(() => Date.now())
   const [restarting, setRestarting] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [frameLoading, setFrameLoading] = useState(true)
+  // Bumped to remount the iframe (a fresh document fetch); onError retries and
+  // the loaded-too-early reload below both go through it.
+  const [frameAttempt, setFrameAttempt] = useState(0)
+  // The frame finished loading while the dashboard was still 'starting' — the
+  // document may be a held request that timed out into an error body, so it
+  // must be refetched once the dashboard actually reports running.
+  const [frameLoadedEarly, setFrameLoadedEarly] = useState(false)
+  const frameErrorRetriesRef = useRef(0)
+  const frameRetryTimerRef = useRef<number | null>(null)
+  // Monotonic token so a probe finishing after a navigation/remount is ignored.
+  const frameProbeSeqRef = useRef(0)
   const [restartError, setRestartError] = useState<string | null>(null)
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const waitStartedAtRef = useRef<number | null>(null)
   const autoStartedRef = useRef<string | null>(null)
-  const { data: agent } = useAgent(agentSlug)
-  const { data: artifacts } = useArtifacts(agentSlug, { pollFast })
+  const wasDocumentHiddenRef = useRef(document.visibilityState === 'hidden')
+  const { data: agent, refetch: refetchAgent } = useAgent(agentSlug)
+  const { data: artifacts } = useArtifacts(agentSlug, { pollFast, watching: pollWatching })
   const startAgent = useStartAgent()
   const stopAgent = useStopAgent()
   const { canUseAgent } = useUser()
@@ -82,16 +96,21 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   })
 
   const nextPollFast = 'pollFast' in viewState && viewState.pollFast
+  // Any state carrying pollFast is a mounted-and-unresolved view; it keeps a
+  // 1s polling floor even after pollFast turns off at the slow bound.
+  const nextPollWatching = 'pollFast' in viewState
   useEffect(() => {
     setPollFast((prev) => (prev === nextPollFast ? prev : nextPollFast))
-  }, [nextPollFast])
+    setPollWatching((prev) => (prev === nextPollWatching ? prev : nextPollWatching))
+  }, [nextPollFast, nextPollWatching])
 
   const baseUrl = getApiBaseUrl()
   // Dashboard processes receive the canonical agent id in
   // DASHBOARD_BASE_PATH. Keep their browser-visible URL on that same stable
   // id even when the surrounding app route uses a decorative display slug.
   const dashboardAgentSlug = agent?.slug ?? agentSlug
-  const iframeSrc = `${baseUrl}${buildDashboardArtifactPath(dashboardAgentSlug, dashboardSlug)}`
+  const dashboardPath = buildDashboardArtifactPath(dashboardAgentSlug, dashboardSlug)
+  const iframeSrc = `${baseUrl}${dashboardPath}`
   const dashboardDispatch = useDashboardDispatch(iframeRef)
 
   const handleRefresh = useCallback(() => {
@@ -133,21 +152,91 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
     }
   }, [isAgentRunning, stopAgent, startAgent, agentSlug])
 
-  useEffect(() => {
-    if (autoStartedRef.current === agentSlug) return
-    if (!agent || isAgentRunning || isAgentStarting || !canStart) return
+  const autoStartAgent = useCallback((currentAgent = agent, force = false) => {
+    // A hidden dashboard must be allowed to auto-sleep. It is explicitly
+    // re-armed by the visibility listener below when the user returns.
+    if (document.visibilityState === 'hidden') return
+
+    // Treat the current foreground visit as handled while the agent is
+    // running. This keeps a deliberate stop from being immediately undone.
+    if (currentAgent?.status === 'running') {
+      autoStartedRef.current = agentSlug
+      return
+    }
+
+    if (!force && autoStartedRef.current === agentSlug) return
+    if (!currentAgent || isAgentStarting || restarting || !canStart) return
     if (startAgent.isError) return
     autoStartedRef.current = agentSlug
     startAgent.mutate(agentSlug)
-  }, [agent, agentSlug, isAgentRunning, isAgentStarting, canStart, startAgent])
+  }, [
+    agent,
+    agentSlug,
+    isAgentStarting,
+    restarting,
+    canStart,
+    startAgent,
+  ])
+  const autoStartAgentRef = useRef(autoStartAgent)
+  const refetchAgentRef = useRef(refetchAgent)
+  autoStartAgentRef.current = autoStartAgent
+  refetchAgentRef.current = refetchAgent
 
-  const showFrame = isAgentRunning && dashboard?.status === 'running'
+  useEffect(() => {
+    autoStartAgent()
+  }, [autoStartAgent])
+
+  useEffect(() => {
+    let visibilityCheck = 0
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        wasDocumentHiddenRef.current = true
+        visibilityCheck += 1
+        return
+      }
+      if (!wasDocumentHiddenRef.current) return
+      wasDocumentHiddenRef.current = false
+      const currentCheck = ++visibilityCheck
+
+      // Reconcile first: the browser may deliver the stopped status only after
+      // visibilitychange, so the cached agent can still say "running" here.
+      // The old one-shot latch otherwise survives for the component's entire
+      // mounted life, which is why navigation used to be the only recovery.
+      void refetchAgentRef.current()
+        .then(({ data: currentAgent }) => {
+          if (
+            currentCheck !== visibilityCheck
+            || document.visibilityState === 'hidden'
+          ) return
+          autoStartAgentRef.current(currentAgent, true)
+        })
+        .catch(() => {})
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => {
+      visibilityCheck += 1
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [agentSlug])
+
+  const dashboardRunning = isAgentRunning && dashboard?.status === 'running'
+  // Mount the iframe while the dashboard server is still starting: the
+  // container proxy holds the document request until the server binds, so the
+  // fetch overlaps startup instead of following it. The install phase is
+  // excluded — it can outlast the proxy's hold.
+  const optimisticStart = isAgentRunning
+    && dashboard?.status === 'starting'
+    && dashboard.startupPhase !== 'installing-dependencies'
+  const showFrame = dashboardRunning || optimisticStart
   const actionPending = restarting || stopAgent.isPending || startAgent.isPending
 
   const dashboardHeader = useMemo(() => ({
     agentSlug,
     dashboardSlug,
     dashboardName: dashboard?.name || dashboardSlug,
+    isAgentStarting,
     actions: showFrame
       ? {
           onOpenExternal: handlePopOut,
@@ -160,6 +249,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
     agentSlug,
     dashboardSlug,
     dashboard?.name,
+    isAgentStarting,
     showFrame,
     handlePopOut,
     handleRefresh,
@@ -172,6 +262,66 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   useEffect(() => {
     if (showFrame) setFrameLoading(true)
   }, [iframeSrc, showFrame])
+
+  // Navigating to a different dashboard resets the retry machinery.
+  useEffect(() => {
+    frameErrorRetriesRef.current = 0
+    frameProbeSeqRef.current++
+    setFrameLoadedEarly(false)
+    setFrameAttempt(0)
+  }, [iframeSrc])
+
+  // Refetch a document that finished loading before the dashboard reported
+  // running (it may be the proxy's timeout error body rather than the app).
+  useEffect(() => {
+    if (dashboardRunning && frameLoadedEarly) {
+      setFrameLoadedEarly(false)
+      setFrameLoading(true)
+      setFrameAttempt((attempt) => attempt + 1)
+    }
+  }, [dashboardRunning, frameLoadedEarly])
+
+  useEffect(() => () => {
+    if (frameRetryTimerRef.current !== null) window.clearTimeout(frameRetryTimerRef.current)
+  }, [])
+
+  const scheduleFrameRetry = useCallback(() => {
+    // Failed document load. Bounded backoff — a frame left in this state was
+    // previously blank forever with no recovery.
+    if (frameErrorRetriesRef.current >= 3) {
+      setFrameLoading(false)
+      return
+    }
+    const delay = 1_000 * 2 ** frameErrorRetriesRef.current
+    frameErrorRetriesRef.current += 1
+    setFrameLoading(true)
+    frameRetryTimerRef.current = window.setTimeout(() => {
+      setFrameAttempt((attempt) => attempt + 1)
+    }, delay)
+  }, [])
+
+  // Browsers fire 'load' even for a failed iframe navigation (they render an
+  // error document), and iframes get no 'error' event for it — the load event
+  // alone cannot confirm the dashboard actually answered. Probe the same URL
+  // right after each load while the dashboard reports running: a healthy
+  // response means the loaded document was real; a failure schedules a retry.
+  const verifyFrameDocument = useCallback(async () => {
+    const seq = ++frameProbeSeqRef.current
+    let ok = false
+    try {
+      const res = await apiFetch(dashboardPath, { method: 'HEAD', cache: 'no-store' })
+      ok = res.ok
+    } catch {
+      ok = false
+    }
+    if (seq !== frameProbeSeqRef.current) return
+    if (ok) {
+      setFrameLoading(false)
+      frameErrorRetriesRef.current = 0
+    } else {
+      scheduleFrameRetry()
+    }
+  }, [dashboardPath, scheduleFrameRetry])
 
   if (!showFrame) {
     return (
@@ -214,6 +364,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
       />
       <div className="flex-1 min-h-0 relative">
         <iframe
+          key={frameAttempt}
           ref={iframeRef}
           src={iframeSrc}
           className="h-full w-full border-0"
@@ -221,10 +372,29 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
           sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"
           allow="microphone; camera"
           onLoad={() => {
-            setFrameLoading(false)
             setRefreshing(false)
+            if (!dashboardRunning) {
+              setFrameLoading(false)
+              setFrameLoadedEarly(true)
+              return
+            }
+            void verifyFrameDocument()
           }}
         />
+        {!dashboardRunning && (
+          <div className="absolute inset-0 z-10 bg-background flex flex-col items-center justify-center p-8 text-muted-foreground">
+            <DashboardStatusBody
+              viewState={viewState}
+              startErrorMessage={startAgent.error?.message}
+              restartErrorMessage={restartError ?? undefined}
+              onRetry={handleStartAgent}
+              onRestart={handleRestartAgent}
+              retryPending={startAgent.isPending}
+              restartPending={actionPending}
+              canStart={canStart}
+            />
+          </div>
+        )}
       </div>
     </div>
   )
