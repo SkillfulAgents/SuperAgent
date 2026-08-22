@@ -1,6 +1,15 @@
 import { test, expect, type Locator, type Page } from '@playwright/test'
 import { createAgent, uniqueName } from '../helpers/agents'
 
+// Every test here mutates ONE user's settings row (folders are a per-user
+// projection), and folder writes replace whole fields — so two of these tests
+// in different workers silently erase each other's folders: created folders
+// vanish across reloads, the move-to-folder menu misses them, order
+// assertions find foreign rows. `default` pins the file to one worker in
+// order, without `serial`'s failure cascade — the tests stay independent and
+// retry individually. Other spec files still parallelize around this one.
+test.describe.configure({ mode: 'default' })
+
 /**
  * Left-nav agent folders.
  *
@@ -66,6 +75,65 @@ async function steerOnto(page: Page, x: number, target: Locator, list: Locator):
   const reflowed = await target.boundingBox()
   if (reflowed) await page.mouse.move(x, reflowed.y + reflowed.height / 2, { steps: 4 })
   return true
+}
+
+/**
+ * Engage a drag on the block with `testId`, retrying dnd-kit's 5px activation
+ * threshold, and return the pointer's x. For folder drags aimed at a block
+ * EDGE — dropping at a target's centre resolves by the pointer's half of the
+ * block, which encodes the block's current height into the gesture; agents
+ * accumulated by other suites make the same centre land on the other half.
+ */
+async function startBlockDrag(page: Page, testId: string): Promise<number> {
+  const overlay = page.getByTestId('agent-drag-overlay')
+  // The previous drop's overlay animates out for ~250ms; a new press in that
+  // window can miss while the old overlay still reads as visible.
+  await expect(overlay).toBeHidden()
+  const row = page.getByTestId(testId)
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await row.scrollIntoViewIfNeeded()
+    const box = await row.boundingBox()
+    expect(box, 'drag source is off screen').not.toBeNull()
+    const x = box!.x + box!.width / 2
+    await page.mouse.move(x, box!.y + box!.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(x, box!.y + box!.height / 2 + 10, { steps: 4 })
+    if (await overlay.isVisible().catch(() => false)) return x
+    await page.mouse.up()
+  }
+  throw new Error('drag never engaged')
+}
+
+/**
+ * Mid-drag, park the pointer just inside the TOP edge of `block` and wait for
+ * its insert line to promise the ABOVE edge, then release. `steerOnto` gets
+ * the block into the scroller's band first when it is off screen.
+ */
+async function dropAboveBlock(page: Page, x: number, block: Locator, folderId: string): Promise<void> {
+  const list = page.getByTestId('agent-list-scroll')
+  expect(await steerOnto(page, x, block, list), 'target block never scrolled into view').toBe(true)
+  // Park the block's top edge mid-band before aiming. An aim point inside the
+  // scroller's auto-scroll zone (the top 20% of the container) keeps the list
+  // crawling under the stationary pointer and the block slides away from the
+  // cue. Centering the top edge both consumes the upward scroll headroom and
+  // puts the aim point outside both zones; dnd-kit honors mid-drag ancestor
+  // scrolls by offsetting its droppable rects.
+  await block.evaluate((el) => {
+    const scroller = el.closest('[data-testid="agent-list-scroll"]')
+    if (!scroller) return
+    const row = el.getBoundingClientRect()
+    const band = scroller.getBoundingClientRect()
+    scroller.scrollTop += row.top - (band.top + band.height / 2)
+  })
+  const box = await block.boundingBox()
+  expect(box).not.toBeNull()
+  await page.mouse.move(x, box!.y + Math.min(12, box!.height / 4), { steps: 6 })
+  await expect(page.getByTestId(`folder-insert-indicator-${folderId}`)).toHaveAttribute(
+    'data-edge',
+    'above'
+  )
+  await page.mouse.up()
+  await expect(page.getByTestId('agent-drag-overlay')).toBeHidden()
 }
 
 /**
@@ -298,16 +366,38 @@ test.describe('agent folders in the left nav', () => {
       )
     }
 
-    /** Assert `first` renders above `second` in the left nav. */
+    /** Assert `first` renders above `second`, polling past the drop's commit. */
     const expectAbove = async (first: string, second: string) => {
-      const ids = await mine()
-      expect(ids.indexOf(first), `${first} should render above ${second}: ${ids.join(' → ')}`)
-        .toBeLessThan(ids.indexOf(second))
+      await expect
+        .poll(
+          async () => {
+            const ids = await mine()
+            const a = ids.indexOf(first)
+            const b = ids.indexOf(second)
+            // A missing row must read as failure — indexOf's -1 would
+            // otherwise pass "above" for a row that is not there at all.
+            if (a === -1 || b === -1) return Number.POSITIVE_INFINITY
+            return a - b
+          },
+          { message: `${first} should render above ${second}` }
+        )
+        .toBeLessThan(0)
     }
 
-    await dragRowOnto(page, secondRow, looseRow, () =>
-      expectAbove(`agent-folder-${secondId}`, `agent-item-${loose.slug}`)
-    )
+    const blockFor = (testId: string) =>
+      page.locator('li').filter({ has: page.getByTestId(testId) }).first()
+
+    // Folders interleave with the whole ROOT block at the top level (a folder
+    // dropped "on a loose agent" resolves against the block that HOLDS it),
+    // so putting the second folder above every unfiled agent means dropping
+    // on the root block's ABOVE edge — aimed explicitly, because the block's
+    // height, and with it which half a given row sits in, depends on how many
+    // agents other suites have accumulated.
+    {
+      const x = await startBlockDrag(page, `agent-folder-${secondId}`)
+      await dropAboveBlock(page, x, blockFor('agent-folder-root'), 'root')
+      await expectAbove(`agent-folder-${secondId}`, `agent-item-${loose.slug}`)
+    }
 
     // And the arrangement is user settings, so it survives a reload.
     const arranged = await mine()
@@ -316,9 +406,11 @@ test.describe('agent folders in the left nav', () => {
     expect(await mine()).toEqual(arranged)
 
     // Folders still reorder past each other.
-    await dragRowOnto(page, firstRow, secondRow, () =>
-      expectAbove(`agent-folder-${firstId}`, `agent-folder-${secondId}`)
-    )
+    {
+      const x = await startBlockDrag(page, `agent-folder-${firstId}`)
+      await dropAboveBlock(page, x, blockFor(`agent-folder-${secondId}`), secondId)
+      await expectAbove(`agent-folder-${firstId}`, `agent-folder-${secondId}`)
+    }
   })
 
   test.describe('with the whole list on screen', () => {
