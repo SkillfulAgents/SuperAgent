@@ -328,7 +328,10 @@ export class MultiPassThinkingScenario implements MockScenario {
     private passes: string[],
     private responseText: string,
     /** Delay between thinking chunks — sets how long each pass streams. */
-    private chunkDelayMs = 200
+    private chunkDelayMs = 200,
+    /** Gap between a pass ending and the next one starting. The real CLI can
+     * emit thinking_stop and the next thinking_start nearly back-to-back. */
+    private interPassGapMs = 100
   ) {}
 
   execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
@@ -377,7 +380,7 @@ export class MultiPassThinkingScenario implements MockScenario {
           timestamp: new Date().toISOString(),
         })
       }, passEnd)
-      offset = passEnd + 100
+      offset = passEnd + this.interPassGapMs
     }
 
     setTimeout(() => {
@@ -1560,6 +1563,20 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   static scenarios = new Map<string, MockScenario>([
     // Slow response window for message-queueing tests (send mid-turn → queued)
     ['work slowly', new SlowWorkScenario()],
+    // Long thinking passes: each pass overfills the card's max-height so the
+    // card scrolls internally while live, then collapses by its full body
+    // height when the pass ends — the shrink-at-the-live-edge shape behind
+    // follow-loss reports on real long-thinking turns.
+    ['think long passes', new MultiPassThinkingScenario(
+      [
+        `First pass. ${'Surveying the problem space in detail, listing every moving part and its constraints before committing to an approach. '.repeat(12)}End of first pass.`,
+        `Second pass. ${'Weighing the tradeoffs between the candidate approaches carefully, checking each against the constraints found earlier. '.repeat(12)}End of second pass.`,
+        `Third pass. ${'Sanity-checking the chosen approach against the edge cases one at a time before writing the final answer. '.repeat(12)}End of third pass.`,
+      ],
+      'Done with all long thinking passes — here is the answer.',
+      15,
+      10
+    )],
     // Several thinking passes persisted one-by-one — an interruptible thinking turn
     ['think in passes', new MultiPassThinkingScenario(
       [

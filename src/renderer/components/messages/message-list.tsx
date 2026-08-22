@@ -37,8 +37,10 @@ import {
   useMemo,
   Fragment,
   type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type UIEvent as ReactUIEvent,
+  type WheelEvent as ReactWheelEvent,
 } from 'react'
 import { useStickToBottom } from 'use-stick-to-bottom'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
@@ -77,8 +79,24 @@ const TURN_ANCHOR_TOP = 100
 // a held-down pointer for scrollbar drags). A layout clamp from shrinking
 // content carries no fresh gesture and passes through untouched.
 const SCROLL_GESTURE_WINDOW_MS = 400
+// A press only becomes a drag (and thereby a scroll gesture) once the pointer
+// travels this far from where it went down.
+const POINTER_DRAG_THRESHOLD_PX = 4
 const TURN_WORK_REVEAL_CLASS = 'animate-in fade-in-0 slide-in-from-top-2 duration-200 ease-out motion-reduce:animate-none'
 const SCROLL_KEYS = new Set(['ArrowDown', 'ArrowUp', 'End', 'Home', 'PageDown', 'PageUp', ' '])
+const UPWARD_SCROLL_KEYS = new Set(['ArrowUp', 'PageUp', 'Home'])
+
+// Mirrors the browser's scroll chaining for wheel input: a nested scrollable
+// consumes the wheel while it can still move in that direction; only at its
+// edge does the event scroll the ancestor.
+function nestedScrollableConsumesWheel(el: HTMLElement, deltaY: number): boolean {
+  if (el.scrollHeight <= el.clientHeight) return false
+  const { overflowY } = getComputedStyle(el)
+  if (overflowY !== 'auto' && overflowY !== 'scroll') return false
+  if (deltaY < 0) return el.scrollTop > 0
+  if (deltaY > 0) return el.scrollTop < el.scrollHeight - el.clientHeight - 1
+  return false
+}
 const isManualCompactCommand = (text: string) => /^\/compact(?:\s|$)/.test(text.trim())
 
 const prefersReducedMotion = () =>
@@ -461,11 +479,25 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   const anchoredTurnRef = useRef<{ localId: string; scrollTop: number } | null>(null)
   const lastScrollTopRef = useRef(0)
   const lastGestureAtRef = useRef(0)
-  // Stamped when a gesture-attributed scroll event actually moved the reader
-  // upward — a stronger signal than lastGestureAtRef (which a downward wheel
-  // also stamps), used to honor escapes the transition shield swallowed.
+  // Stamped only by gestures that can justify LEAVING the live edge: wheel-up
+  // reaching this scroller, touch, upward scroll keys, an actual drag. A
+  // downward wheel or a bare click stamps lastGestureAtRef but never this —
+  // otherwise a browser clamp landing near such input reads as the user
+  // scrolling away and kills following (idle trackpad noise near a thinking
+  // card collapse was enough).
+  const lastEscapeIntentAtRef = useRef(0)
+  // Stamped when a gesture-attributed scroll event moved the reader upward
+  // AND escape intent backs it — used to honor escapes the transition shield
+  // swallowed.
   const lastUpwardGestureAtRef = useRef(0)
   const pointerDownRef = useRef(false)
+  const pointerDownAtRef = useRef(0)
+  // A press only becomes a scroll gesture once the pointer moves (a scrollbar
+  // drag); a motionless press — or one whose release was swallowed by a native
+  // context menu or a focus change — must not gesture-attribute scroll events
+  // indefinitely.
+  const pointerDragRef = useRef(false)
+  const pointerDownPosRef = useRef<{ x: number; y: number } | null>(null)
   // True from a send until its scroll-to-reading-line settles. The library
   // only assigns state.animation in its first animation frame, so this is the
   // signal that covers the whole interval (a commit landing between the send
@@ -589,6 +621,51 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // reversal, so a reader who actually leaves during the window stays left.
   const verifyFollowTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   useEffect(() => () => clearTimeout(verifyFollowTimerRef.current), [])
+  // Verify shortly after a transition — or after a gesture-driven scroll —
+  // that following's engagement still matches what the user actually did.
+  // `intentBacked` marks an arming scroll produced by a live escape intent:
+  // any latch it caused is genuine and must not be reversed.
+  const armFollowVerification = useCallback((intentBacked: boolean) => {
+    const transitionAt = performance.now()
+    // Only a disengage that HAPPENS inside this window is suspect. A reader
+    // who left the live edge long ago and then scrolls (even downward) must
+    // never be yanked back — reversal applies solely to follows that were
+    // still engaged when the window opened.
+    const wasFollowing = stickState.isAtBottom
+    clearTimeout(verifyFollowTimerRef.current)
+    verifyFollowTimerRef.current = setTimeout(() => {
+      // A disengage inside the window with nothing to justify it can only be
+      // a clamp echo or a follow-write misread as an upward scroll — reverse
+      // it. An active drag, escape intent inside the window, or a press
+      // around the transition (a scrollbar track click pages without moving
+      // the pointer) all say the reader may genuinely own their position.
+      const userMayOwnPosition =
+        intentBacked ||
+        (pointerDownRef.current && pointerDragRef.current) ||
+        lastEscapeIntentAtRef.current >= transitionAt ||
+        (pointerDownRef.current &&
+          pointerDownAtRef.current >= transitionAt - SCROLL_GESTURE_WINDOW_MS)
+      if (!userMayOwnPosition && wasFollowing && !stickState.isAtBottom) {
+        void stickScrollToBottom(prefersReducedMotion() ? 'instant' : undefined)
+        return
+      }
+      // The shield cuts both ways: while it holds, the library also discards
+      // the scroll classification of genuine keyboard, touch, and scrollbar
+      // escapes (wheel-up escapes through its own handler and is unaffected).
+      // If an intent-backed gesture moved the reader upward during the window
+      // yet following still reads engaged and they are beyond the re-stick
+      // range, that escape was swallowed — honor it, or the next growth would
+      // yank them back down. Reserve eating is unaffected: it re-bases the
+      // reading line onto the reader, keeping them within the re-stick range.
+      if (
+        stickState.isAtBottom &&
+        lastUpwardGestureAtRef.current >= transitionAt &&
+        !stickState.isNearBottom
+      ) {
+        stickStopScroll()
+      }
+    }, 40)
+  }, [stickState, stickScrollToBottom, stickStopScroll])
   const protectFollowTransition = useCallback(() => {
     if (stickState.resizeDifference === 0) {
       stickState.resizeDifference = 1
@@ -602,32 +679,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         }, 1)
       })
     }
-    const transitionAt = performance.now()
-    clearTimeout(verifyFollowTimerRef.current)
-    verifyFollowTimerRef.current = setTimeout(() => {
-      const gestured =
-        pointerDownRef.current || lastGestureAtRef.current >= transitionAt
-      if (!gestured && !stickState.isAtBottom) {
-        void stickScrollToBottom(prefersReducedMotion() ? 'instant' : undefined)
-        return
-      }
-      // The shield cuts both ways: while it holds, the library also discards
-      // the scroll classification of genuine keyboard, touch, and scrollbar
-      // escapes (wheel-up escapes through its own handler and is unaffected).
-      // If a gesture moved the reader upward during the window yet following
-      // still reads engaged and they are beyond the re-stick range, that
-      // escape was swallowed — honor it, or the next growth would yank them
-      // back down. Reserve eating is unaffected: it re-bases the reading line
-      // onto the reader, keeping them within the re-stick range.
-      if (
-        stickState.isAtBottom &&
-        lastUpwardGestureAtRef.current >= transitionAt &&
-        !stickState.isNearBottom
-      ) {
-        stickStopScroll()
-      }
-    }, 40)
-  }, [stickState, stickScrollToBottom, stickStopScroll])
+    armFollowVerification(false)
+  }, [stickState, armFollowVerification])
 
   // Keep the newly-sent turn fixed at its reading line while the response uses
   // up the reserved room below it. The spacer inflates scrollHeight so that the
@@ -663,7 +716,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     // below the target by construction), and while any other scroll
     // animation is in flight.
     const gestureDriven =
-      pointerDownRef.current ||
+      (pointerDownRef.current && pointerDragRef.current) ||
       performance.now() - lastGestureAtRef.current < SCROLL_GESTURE_WINDOW_MS
     const target = Math.max(0, stickState.calculatedTargetScrollTop)
     if (
@@ -700,10 +753,24 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     // Only scroll events that closely follow a real gesture may adjust the
     // reserve. Programmatic writes (the follow animation) and layout clamps
     // from shrinking content reach this handler too, but carry no fresh
-    // wheel/touch/key stamp and no held pointer, so they pass through.
+    // wheel/touch/key stamp and no moving drag, so they pass through. A held
+    // pointer counts only while it is an actual drag — a stale press (its
+    // release swallowed by a context menu or a focus change) must not keep
+    // attributing clamps to the user indefinitely.
+    const now = performance.now()
+    const activeDrag = pointerDownRef.current && pointerDragRef.current
     const gestureDriven =
-      pointerDownRef.current ||
-      performance.now() - lastGestureAtRef.current < SCROLL_GESTURE_WINDOW_MS
+      activeDrag || now - lastGestureAtRef.current < SCROLL_GESTURE_WINDOW_MS
+    const escapeIntentLive =
+      activeDrag || now - lastEscapeIntentAtRef.current < SCROLL_GESTURE_WINDOW_MS
+
+    // A gesture-driven scroll can be misread by the follow library as an
+    // upward escape even when the input pointed down (its follow writes and
+    // the native scroll fight over scrollTop, and the loser's position reads
+    // as "scrolled up"). Re-verify shortly after every gesture-driven scroll
+    // so a latch with no escape intent behind it gets reversed. Armed before
+    // the upward stamp below so that stamp postdates the verification window.
+    if (gestureDriven) armFollowVerification(escapeIntentLive)
 
     // Blank reserve is one-way. When the reader moves upward, consume the same
     // number of pixels from the spacer. The new scroll position becomes the
@@ -711,7 +778,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     const anchoredTurn = anchoredTurnRef.current
     const upwardDelta = Math.max(0, previousScrollTop - el.scrollTop)
     const downwardDelta = Math.max(0, el.scrollTop - previousScrollTop)
-    if (gestureDriven && upwardDelta > 0) {
+    if (gestureDriven && upwardDelta > 0 && escapeIntentLive) {
       lastUpwardGestureAtRef.current = performance.now()
     }
     if (gestureDriven && anchoredTurn && upwardDelta > 0 && bottomSpacerHeightRef.current > 0) {
@@ -760,7 +827,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         })
       }
     }
-  }, [hiddenCount, hasOlder, isFetchingOlder, fetchOlder, setBottomSpacerHeight, scrollRef])
+  }, [hiddenCount, hasOlder, isFetchingOlder, fetchOlder, setBottomSpacerHeight, scrollRef, armFollowVerification])
 
   // After a scroll-up expansion adds older messages above the viewport, restore the
   // scroll position so the content the user was reading stays put (no jump).
@@ -1321,33 +1388,94 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   }, [syncTurnReserve, scrollRef, stickState, protectFollowTransition, isLoading, error])
 
   // Escape from following is owned by the stick-to-bottom library (wheel
-  // direction, scroll direction, selection). These stamps exist only so the
-  // scroll handler can attribute reserve adjustments to a live gesture.
-  const handleUserScrollIntent = useCallback(() => {
-    lastGestureAtRef.current = performance.now()
+  // direction, scroll direction, selection). These stamps exist so the scroll
+  // handler can attribute reserve adjustments to a live gesture, and so the
+  // deferred verification can tell escape-capable input (wheel-up, touch,
+  // upward keys, a drag) from input that never leaves the live edge.
+  // A wheel consumed by a nested scrollable (the thinking card's body, a code
+  // block) never moves the transcript and must not count as a transcript
+  // gesture; scroll chaining hands the wheel to us only once the inner
+  // scroller is at its edge, which the walk below mirrors.
+  const handleWheelGesture = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
+    const outer = scrollRef.current
+    if (!outer) return
+    let node = event.target as HTMLElement | null
+    while (node && node !== outer) {
+      if (nestedScrollableConsumesWheel(node, event.deltaY)) return
+      node = node.parentElement
+    }
+    const now = performance.now()
+    lastGestureAtRef.current = now
+    if (event.deltaY < 0) lastEscapeIntentAtRef.current = now
+  }, [scrollRef])
+
+  // Touch direction isn't knowable from a single event without tracking touch
+  // points; treat any touch scroll as escape-capable.
+  const handleTouchGesture = useCallback(() => {
+    const now = performance.now()
+    lastGestureAtRef.current = now
+    lastEscapeIntentAtRef.current = now
   }, [])
 
-  // Scrollbar drags emit no wheel/touch/key events — track the held pointer so
-  // a multi-second drag stays attributable beyond the gesture window.
-  const handlePointerDown = useCallback(() => {
+  // Scrollbar interactions emit no wheel/touch/key events — track the held
+  // pointer. Only a pointer that actually moves is a drag; a motionless press
+  // (or one whose release never arrived) must not stay a gesture forever.
+  const handlePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return
     pointerDownRef.current = true
+    pointerDragRef.current = false
+    pointerDownAtRef.current = performance.now()
+    pointerDownPosRef.current = { x: event.clientX, y: event.clientY }
     lastGestureAtRef.current = performance.now()
   }, [])
   useEffect(() => {
     const release = () => {
       pointerDownRef.current = false
+      pointerDragRef.current = false
+      pointerDownPosRef.current = null
+    }
+    const move = (event: PointerEvent) => {
+      if (!pointerDownRef.current) return
+      if (!pointerDragRef.current) {
+        const start = pointerDownPosRef.current
+        if (!start) return
+        if (
+          Math.abs(event.clientX - start.x) + Math.abs(event.clientY - start.y) <
+          POINTER_DRAG_THRESHOLD_PX
+        ) {
+          return
+        }
+        pointerDragRef.current = true
+      }
+      const now = performance.now()
+      lastGestureAtRef.current = now
+      lastEscapeIntentAtRef.current = now
     }
     window.addEventListener('pointerup', release)
     window.addEventListener('pointercancel', release)
+    window.addEventListener('pointermove', move)
+    // A native context menu (two-finger tap) or a focus change can swallow the
+    // pointerup — without these, the "held pointer" would outlive the gesture
+    // indefinitely and every later browser clamp would read as user scrolling.
+    window.addEventListener('blur', release)
+    window.addEventListener('contextmenu', release)
     return () => {
       window.removeEventListener('pointerup', release)
       window.removeEventListener('pointercancel', release)
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('blur', release)
+      window.removeEventListener('contextmenu', release)
     }
   }, [])
 
   const handleScrollKey = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (SCROLL_KEYS.has(event.key)) handleUserScrollIntent()
-  }, [handleUserScrollIntent])
+    if (!SCROLL_KEYS.has(event.key)) return
+    const now = performance.now()
+    lastGestureAtRef.current = now
+    const upward =
+      UPWARD_SCROLL_KEYS.has(event.key) || (event.key === ' ' && event.shiftKey)
+    if (upward) lastEscapeIntentAtRef.current = now
+  }, [])
 
   // Peer messages still worth showing optimistically: not our own, and the
   // persisted copy (by uuid, or — for queued/steering messages whose uuid the
@@ -1546,8 +1674,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         style={{ overflowAnchor: 'none' }}
         ref={scrollRef}
         onScroll={handleScroll}
-        onWheel={handleUserScrollIntent}
-        onTouchMove={handleUserScrollIntent}
+        onWheel={handleWheelGesture}
+        onTouchMove={handleTouchGesture}
         onPointerDown={handlePointerDown}
         onKeyDown={handleScrollKey}
         role="region"
