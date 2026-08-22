@@ -1,23 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the agent can successfully use browser tools to navigate to a URL and retrieve page title information",
+  "reason": "Verified that the SuperAgent application can successfully execute browser commands and report page titles through the chat interface.",
   "steps": [
-    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application home page",
-    "Found and clicked the \"QA-20260821-222807-7o9n\" agent in the left sidebar — Successfully opened the agent chat interface for \"Browser Page Title Lookup\"",
-    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully transmitted and agent began processing",
-    "Waited for agent response (up to 3 minutes) — Agent completed processing in 14 seconds with 4 tool calls and 187,869 tokens",
-    "Verified response mentions \"Example Domain\" — Response confirmed: \"The page title is 'Example Domain' — the standard IANA placeholder page. Browser closed.\""
+    "Step 1: Navigated to http://localhost:47891 - Successfully loaded the Gamut application home page with the agent list visible in the sidebar.",
+    "Step 2: Clicked on the \"QA-20260822-000815-eqvd\" agent in the sidebar - Successfully opened the agent chat interface with the page title \"QA-20260822-000815-eqvd · Gamut\".",
+    "Step 3: Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" into the message input box - Message was successfully typed and visible in the input field with the Send button enabled.",
+    "Step 4: Sent the message by clicking the Send button - Message was successfully sent and the agent changed to \"working\" status while processing the request.",
+    "Step 5: Waited up to 3 minutes for the agent's response - Agent completed processing in 10 seconds and returned the response: \"The page title is \"Example Domain\" — a placeholder page reserved for documentation examples. Browser closed.\"",
+    "Step 6: Verified the response mentions \"Example Domain\" and took a screenshot - The response clearly mentions \"Example Domain\" in the chat message, confirming the browser functionality is working correctly. Screenshot captured showing the complete chat interaction."
   ],
   "bugs": [],
-  "durationMs": 138324,
-  "sessionId": "0e36a86b-90a7-4069-bdb9-3e6a120f69f3",
+  "durationMs": 119713,
+  "sessionId": "904f1ccf-e9bb-48d0-92f3-92db93e21efa",
   "cost": {
     "inputTokens": 368,
-    "outputTokens": 10447,
-    "cacheCreationTokens": 49347,
-    "cacheReadTokens": 920963,
+    "outputTokens": 9025,
+    "cacheCreationTokens": 60743,
+    "cacheReadTokens": 972536,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.206383
+    "totalCostUsd": 0.218675
   }
 }
