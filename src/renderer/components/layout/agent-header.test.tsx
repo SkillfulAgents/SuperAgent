@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
     slug?: string
   },
   agentStatus: 'running' as 'running' | 'stopped',
+  invokedByAgentSlug: undefined as string | undefined,
 }))
 
 const agent: ApiAgent = {
@@ -45,6 +46,7 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
       id: 'session-1',
       name: 'Test Session',
       agentSlug: 'test-agent',
+      invokedByAgentSlug: mocks.invokedByAgentSlug,
     },
   }),
 }))
@@ -132,6 +134,7 @@ describe('AgentHeader breadcrumbs', () => {
   beforeEach(() => {
     mocks.routeView = { kind: 'session', id: 'session-1' }
     mocks.agentStatus = 'running'
+    mocks.invokedByAgentSlug = undefined
     vi.clearAllMocks()
   })
 
@@ -159,6 +162,26 @@ describe('AgentHeader breadcrumbs', () => {
     expect(sessionMenu).toHaveAttribute('data-session-name', 'Test Session')
     expect(sessionMenu).toHaveAttribute('data-agent-slug', 'test-agent')
     expect(sessionMenu).toContainElement(screen.getByTestId('session-breadcrumb'))
+  })
+
+  it('inserts Called from Other Agents as the parent crumb for x-agent sessions', () => {
+    mocks.invokedByAgentSlug = 'caller-agent'
+    const mutation = { mutate: vi.fn(), isPending: false }
+
+    render(
+      <AgentHeader
+        slug="test-agent"
+        isViewOnly={false}
+        startAgent={mutation as never}
+        stopAgent={mutation as never}
+      />,
+    )
+
+    const trail = screen.getByTestId('breadcrumb-trail')
+    const parentCrumb = screen.getByTestId('inbound-x-agent-breadcrumb')
+    expect(parentCrumb).toHaveTextContent('Called from Other Agents')
+    expect(trail).toContainElement(parentCrumb)
+    expect(trail).toContainElement(screen.getByTestId('session-breadcrumb'))
   })
 
   it('clips and hover-scrolls the complete breadcrumb trail as one unit', () => {

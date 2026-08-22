@@ -2440,6 +2440,9 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
     const isActive = messagePersister.isSessionActive(sessionId)
     const metadata = await getSessionMetadata(agentSlug, sessionId)
     const pendingWake = await getPendingWakeForSession(agentSlug, sessionId)
+    const invokingAgent = metadata?.invokedByAgentSlug
+      ? await getAgent(metadata.invokedByAgentSlug)
+      : null
 
     return c.json({
       id: session.id,
@@ -2454,6 +2457,10 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       scheduledTaskName: metadata?.scheduledTaskName,
       webhookTriggerId: metadata?.webhookTriggerId,
       webhookTriggerName: metadata?.webhookTriggerName,
+      invokedByAgentSlug: metadata?.invokedByAgentSlug,
+      invokedByAgentName: metadata?.invokedByAgentSlug
+        ? invokingAgent?.frontmatter.name ?? metadata.invokedByAgentSlug
+        : undefined,
       effort: metadata?.effort,
       speed: metadata?.speed,
       model: metadata?.model,
