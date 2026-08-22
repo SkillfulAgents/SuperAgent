@@ -172,6 +172,8 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     subscribeToSession: vi.fn(),
     unsubscribeFromSession: vi.fn(),
     promoteAutomatedSession: vi.fn(),
+    coalesceIfRecovering: vi.fn(() => false),
+    dropCoalescedUserMessage: vi.fn(() => false),
     markSessionActive: vi.fn(),
     markSessionInterrupted: vi.fn(),
     cancelAwaitingInput: vi.fn(),
@@ -5696,6 +5698,21 @@ describe('user message SSE broadcast — POST /:id/sessions/:sessionId/messages'
     }))
   })
 
+  it('coalesces a user message during recovery and does not send to the container', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    vi.mocked(messagePersister.coalesceIfRecovering).mockReturnValueOnce(true)
+
+    const res = await postJson(app, URL, { content: 'keep going' })
+    expect(res.status).toBe(201)
+    const body = await res.json()
+    expect(body.queued).toBe(true)
+    expect(messagePersister.coalesceIfRecovering).toHaveBeenCalledWith('sess-1', {
+      uuid: expect.any(String),
+      text: 'keep going',
+    })
+    expect(mockSendMessage).not.toHaveBeenCalled()
+  })
+
   it('does not broadcast user_message in non-auth mode', async () => {
     mockIsAuthMode.mockReturnValue(false)
 
@@ -5736,6 +5753,16 @@ describe('cancel queued message — DELETE /:id/sessions/:sessionId/queued-messa
   it('rejects a malformed uuid with 400 without calling the container', async () => {
     const res = await deleteReq(app, '/api/agents/test-agent/sessions/sess-1/queued-messages/not-a-uuid')
     expect(res.status).toBe(400)
+    expect(mockCancelQueuedMessage).not.toHaveBeenCalled()
+  })
+
+  it('cancels a coalesced recovery message without calling the container', async () => {
+    vi.mocked(messagePersister.dropCoalescedUserMessage).mockReturnValueOnce(true)
+
+    const res = await deleteReq(app, URL)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ cancelled: true })
+    expect(messagePersister.dropCoalescedUserMessage).toHaveBeenCalledWith('sess-1', UUID)
     expect(mockCancelQueuedMessage).not.toHaveBeenCalled()
   })
 })
@@ -7770,6 +7797,27 @@ describe('cross-agent session scoping', () => {
 
   // GET …/stream is gated too, but by its own inline check with dedicated
   // coverage above ('session stream access') — not repeated here.
+
+  describe('DELETE /sessions/:sessionId/queued-messages/:uuid', () => {
+    const UUID = '123e4567-e89b-12d3-a456-426614174000'
+
+    it('404s on a foreign session and never drops its coalesced buffer', async () => {
+      const res = await deleteReq(app, url(VICTIM_SESSION, `/queued-messages/${UUID}`))
+
+      expect(res.status).toBe(404)
+      expect(messagePersister.dropCoalescedUserMessage).not.toHaveBeenCalled()
+      expect(mockCancelQueuedMessage).not.toHaveBeenCalled()
+    })
+
+    it('still cancels a queued message on the caller’s own session', async () => {
+      mockCancelQueuedMessage.mockResolvedValue(true)
+
+      const res = await deleteReq(app, url(OWN_SESSION, `/queued-messages/${UUID}`))
+
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ cancelled: true })
+    })
+  })
 
   describe('POST /sessions/:sessionId/messages', () => {
     it('404s on a foreign session and never touches its live state', async () => {

@@ -924,3 +924,58 @@ describe('BaseContainerClient.isHealthy', () => {
     await expect(client.isHealthy(0)).resolves.toBe(false)
   })
 })
+
+describe('BaseContainerClient.observeUnexpectedDeath', () => {
+  const client = new TestContainerClient({ agentId: 'test-agent' })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('ignores a healthy container with a still-running session', async () => {
+    vi.spyOn(client, 'isHealthy').mockResolvedValue(true)
+    vi.spyOn(client, 'getSession').mockResolvedValue({ isRunning: true } as never)
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['s1'] })).resolves.toEqual({
+      action: 'ignore',
+      liveSessionIds: ['s1'],
+    })
+  })
+
+  it('settles dead sessions and ignores siblings that are still running', async () => {
+    vi.spyOn(client, 'isHealthy').mockResolvedValue(true)
+    vi.spyOn(client, 'getSession').mockImplementation(async (sessionId: string) => {
+      if (sessionId === 'live') return { isRunning: true } as never
+      return { isRunning: false } as never
+    })
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['live', 'dead'] })).resolves.toEqual({
+      action: 'ignore',
+      liveSessionIds: ['live'],
+    })
+  })
+
+  it('settles when the container is unhealthy', async () => {
+    vi.spyOn(client, 'isHealthy').mockResolvedValue(false)
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['s1'] })).resolves.toEqual({
+      action: 'settle',
+    })
+  })
+
+  it('settles when health check throws', async () => {
+    vi.spyOn(client, 'isHealthy').mockRejectedValue(new Error('health exploded'))
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['s1'] })).resolves.toEqual({
+      action: 'settle',
+    })
+  })
+
+  it('treats a failed session probe as not live and keeps live siblings', async () => {
+    vi.spyOn(client, 'isHealthy').mockResolvedValue(true)
+    vi.spyOn(client, 'getSession').mockImplementation(async (sessionId: string) => {
+      if (sessionId === 'dead') throw new Error('probe failed')
+      return { isRunning: true } as never
+    })
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['live', 'dead'] })).resolves.toEqual({
+      action: 'ignore',
+      liveSessionIds: ['live'],
+    })
+  })
+})

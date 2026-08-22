@@ -255,6 +255,9 @@ function createMockClient(): ContainerClient & {
     }),
     on: vi.fn(),
     off: vi.fn(),
+    onFatalResult: vi.fn(() => 'settle'),
+    observeUnexpectedDeath: vi.fn(async () => ({ action: 'settle' })),
+    getRuntimeGenerationId: vi.fn(() => null),
   }
 
   return client as any
@@ -7413,5 +7416,167 @@ describe('MessagePersister connection lost mid-turn', () => {
     await dropConnection()
 
     expect(sseEvents.filter((e) => e.type === 'session_error')).toHaveLength(0)
+  })
+})
+
+describe('MessagePersister mid-turn recovery snapshot', () => {
+  const SESSION_ID = 'recover-session'
+  const AGENT_SLUG = 'recover-agent'
+  let mockClient: ReturnType<typeof createMockClient>
+
+  beforeEach(async () => {
+    mockClient = createMockClient()
+    await messagePersister.subscribeToSession(SESSION_ID, mockClient, SESSION_ID, AGENT_SLUG)
+  })
+
+  afterEach(() => {
+    messagePersister.unsubscribeFromSession(SESSION_ID)
+    vi.clearAllMocks()
+  })
+
+  it('snapshots active sessions and skips session_error while they are recovering', () => {
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    expect(messagePersister.snapshotMidTurnSessions(AGENT_SLUG)).toEqual([SESSION_ID])
+    expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(true)
+    expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+
+    messagePersister.markAllSessionsInactiveForAgent(AGENT_SLUG)
+    expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+    expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(true)
+  })
+
+  it('snapshots only the requested session ids', async () => {
+    const otherId = 'recover-session-2'
+    await messagePersister.subscribeToSession(otherId, mockClient, otherId, AGENT_SLUG)
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    messagePersister.markSessionActive(otherId, AGENT_SLUG)
+
+    expect(messagePersister.snapshotMidTurnSessions(AGENT_SLUG, [SESSION_ID])).toEqual([SESSION_ID])
+    expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(true)
+    expect(messagePersister.isSessionRecovering(otherId)).toBe(false)
+
+    messagePersister.unsubscribeFromSession(otherId)
+  })
+
+  it('settles recovering sessions when the agent is stopped', () => {
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    messagePersister.snapshotMidTurnSessions(AGENT_SLUG)
+    messagePersister.markAllSessionsInactiveForAgent(AGENT_SLUG, { settleRecovering: true })
+    expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+    expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(false)
+  })
+
+  it('does not snapshot idle or interrupted sessions', async () => {
+    expect(messagePersister.snapshotMidTurnSessions(AGENT_SLUG)).toEqual([])
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    await messagePersister.markSessionInterrupted(SESSION_ID)
+    expect(messagePersister.snapshotMidTurnSessions(AGENT_SLUG)).toEqual([])
+  })
+
+  it('coalesces user text while recovering and keeps each message uuid', () => {
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    messagePersister.snapshotMidTurnSessions(AGENT_SLUG)
+    expect(messagePersister.coalesceIfRecovering(SESSION_ID, { uuid: 'u1', text: 'first' })).toBe(true)
+    expect(messagePersister.coalesceIfRecovering(SESSION_ID, { uuid: 'u2', text: 'second' })).toBe(true)
+    expect(messagePersister.takeCoalescedUserMessages(SESSION_ID)).toEqual([
+      { uuid: 'u1', text: 'first' },
+      { uuid: 'u2', text: 'second' },
+    ])
+    expect(messagePersister.coalesceIfRecovering('other', { uuid: 'u3', text: 'nope' })).toBe(false)
+  })
+
+  it('drops a coalesced user message by uuid', () => {
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    messagePersister.snapshotMidTurnSessions(AGENT_SLUG)
+    messagePersister.coalesceIfRecovering(SESSION_ID, { uuid: 'u1', text: 'first' })
+    messagePersister.coalesceIfRecovering(SESSION_ID, { uuid: 'u2', text: 'second' })
+    expect(messagePersister.dropCoalescedUserMessage(SESSION_ID, 'u1')).toBe(true)
+    expect(messagePersister.takeCoalescedUserMessages(SESSION_ID)).toEqual([{ uuid: 'u2', text: 'second' }])
+  })
+
+  it('does not log coalesced message content when settling', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    messagePersister.snapshotMidTurnSessions(AGENT_SLUG)
+    messagePersister.coalesceIfRecovering(SESSION_ID, { uuid: 'u1', text: 'secret user text' })
+    messagePersister.settleRecoveringSessions([SESSION_ID])
+    expect(warn).toHaveBeenCalled()
+    expect(warn.mock.calls.flat().join(' ')).not.toContain('secret user text')
+    warn.mockRestore()
+  })
+
+  it('settles recovering sessions as connection_lost and writes automation status', () => {
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    messagePersister.snapshotMidTurnSessions(AGENT_SLUG)
+    messagePersister.settleRecoveringSessions([SESSION_ID])
+    expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+    expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(false)
+    expect(finalizeAutomationStatus).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID, 'failed')
+  })
+
+  it('defers a fatal SIGKILL result to unexpected-death recovery', async () => {
+    const onDeath = vi.fn()
+    messagePersister.setUnexpectedDeathCallback(onDeath)
+    mockClient.onFatalResult = vi.fn(() => 'defer_for_recovery' as const)
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+    mockClient._sendMessage({
+      type: 'result',
+      subtype: 'error',
+      fatal: true,
+      error: 'The agent process was killed due to running out of memory.',
+    })
+
+    expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+    expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(false)
+    expect(onDeath).toHaveBeenCalledWith(AGENT_SLUG)
+    expect(messagePersister.consumeLastFatal(AGENT_SLUG)).toBe('oom_sigkill')
+    messagePersister.setUnexpectedDeathCallback(null)
+  })
+
+  it('does not snapshot a fatal SIGKILL when no recovery callback is registered', async () => {
+    messagePersister.setUnexpectedDeathCallback(null)
+    mockClient.onFatalResult = vi.fn(() => 'defer_for_recovery' as const)
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+    mockClient._sendMessage({
+      type: 'result',
+      subtype: 'error',
+      fatal: true,
+      error: 'The agent process was killed due to running out of memory.',
+    })
+
+    expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(false)
+    expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+  })
+
+  it('does not settle mid-turn on connection_closed when recovery is registered', async () => {
+    const otherId = 'recover-session-2'
+    const otherClient = createMockClient()
+    await messagePersister.subscribeToSession(otherId, otherClient, otherId, AGENT_SLUG)
+    const onDeath = vi.fn()
+    messagePersister.setUnexpectedDeathCallback(onDeath)
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    messagePersister.markSessionActive(otherId, AGENT_SLUG)
+
+    mockClient._messageCallback!({
+      type: 'connection_closed',
+      content: { type: 'connection_closed' },
+      timestamp: new Date(),
+      sessionId: SESSION_ID,
+    })
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(onDeath).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID)
+    expect(onDeath).toHaveBeenCalledTimes(1)
+    expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+    expect(messagePersister.isSessionActive(otherId)).toBe(true)
+    expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(false)
+    expect(messagePersister.isSessionRecovering(otherId)).toBe(false)
+    // Dead transport is detached so recovery's isSubscribed gate resubscribes.
+    expect(messagePersister.isSubscribed(SESSION_ID)).toBe(false)
+    expect(messagePersister.isSubscribed(otherId)).toBe(true)
+    messagePersister.setUnexpectedDeathCallback(null)
+    messagePersister.unsubscribeFromSession(otherId)
   })
 })
