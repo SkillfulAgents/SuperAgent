@@ -53,6 +53,9 @@ import type {
 import {
   listSessions,
   listSessionsByIds,
+  sortSessionsNewestFirst,
+  SESSIONS_LIST_MAX_LIMIT,
+  type SessionSortBy,
   getSessionSummary,
   readSessionMetadata,
   updateSessionName,
@@ -406,12 +409,83 @@ function toSkillsetRef(config: Pick<SkillsetConfig, 'id' | 'url' | 'name' | 'pro
   }
 }
 
+const strictBooleanQuerySchema = z
+  .enum(['true', 'false'])
+  .transform((value) => value === 'true')
+
+const positiveIntegerQuerySchema = z
+  .string()
+  .regex(/^[1-9]\d*$/)
+  .transform(Number)
+  .refine((value) => Number.isSafeInteger(value))
+
+const sessionsListQuerySchema = z.object({
+  sortBy: z.literal('last_activity_at').optional(),
+  notable: strictBooleanQuerySchema.optional(),
+  limit: positiveIntegerQuerySchema.optional(),
+})
+
+const agentsListQuerySchema = z.object({
+  includeLatestVisibleSessionTail: strictBooleanQuerySchema.optional(),
+})
+
+// Agent-list hydration only needs enough recent display items to derive a
+// preview. Keep both item count and raw tail window far below the chat page
+// limits because this cost is multiplied by the number of agents.
+const LATEST_VISIBLE_SESSION_TAIL_LIMIT = 20
+const LATEST_VISIBLE_SESSION_TAIL_BYTE_BUDGET = 256 * 1024
+
+interface AgentSummaryOptions {
+  includeLatestVisibleSessionTail?: boolean
+  signal?: AbortSignal
+}
+
+async function getLatestVisibleSessionTail(
+  agentSlug: string,
+  unreadSessionIds: Set<string>,
+  signal?: AbortSignal,
+): Promise<NonNullable<ApiAgent['latestVisibleSession']> | null> {
+  const [session] = await listSessions(agentSlug, {
+    excludeAutomated: true,
+    sortBy: 'last_activity_at',
+    limit: 1,
+  })
+  if (!session) return null
+
+  signal?.throwIfAborted()
+  if (!(await sessionExists(agentSlug, session.id))) {
+    throw new Error(
+      'Latest visible session transcript not found for ' + agentSlug + '/' + session.id,
+    )
+  }
+  const messageTail = await getSessionMessagesPage(agentSlug, session.id, {
+    limit: LATEST_VISIBLE_SESSION_TAIL_LIMIT,
+    byteBudget: LATEST_VISIBLE_SESSION_TAIL_BYTE_BUDGET,
+    media: 'ref',
+    signal,
+  })
+  signal?.throwIfAborted()
+
+  return {
+    session: {
+      ...session,
+      isActive: messagePersister.isSessionActive(session.id),
+      isAwaitingInput: messagePersister.isSessionAwaitingInput(session.id),
+      hasUnreadNotifications: unreadSessionIds.has(session.id),
+    },
+    messageTail,
+  }
+}
+
 /**
  * Enrich an array of ApiAgent objects with summary fields:
  * active/awaiting sessions, last activity, and dashboards.
  * Batch notification lookup upfront, then parallelize per-agent FS operations.
  */
-async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> {
+async function enrichAgentsWithSummary(
+  agents: ApiAgent[],
+  options: AgentSummaryOptions = {},
+): Promise<ApiAgent[]> {
   const slugs = agents.map(a => a.slug)
 
   const unreadByAgent = await getUnreadNotificationsByAgents(slugs)
@@ -419,14 +493,31 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
   const limit = pLimit(5)
   return Promise.all(
     agents.map((agent) => limit(async () => {
-      // Only FS operations remain per-agent (parallelized)
-      const [sessionSummary, artifacts, sessionMetadata] = await Promise.all([
+      const unreadSessionIds = unreadByAgent.get(agent.slug) ?? new Set<string>()
+      const latestVisibleSessionPromise = options.includeLatestVisibleSessionTail
+        ? getLatestVisibleSessionTail(agent.slug, unreadSessionIds, options.signal)
+            .catch((error): null => {
+              if (options.signal?.aborted) throw error
+              console.error(
+                'Failed to fetch latest visible session tail for agent ' + agent.slug + ':',
+                error,
+              )
+              captureException(error, {
+                tags: { component: 'agents', operation: 'latest-visible-session-tail' },
+                extra: { agentSlug: agent.slug },
+              })
+              return null
+            })
+        : Promise.resolve(undefined)
+
+      // Only FS operations remain per-agent (parallelized and bounded by the
+      // outer p-limit).
+      const [sessionSummary, artifacts, sessionMetadata, latestVisibleSession] = await Promise.all([
         getSessionSummary(agent.slug),
         listArtifactsFromFilesystem(agent.slug),
         readSessionMetadata(agent.slug),
+        latestVisibleSessionPromise,
       ])
-
-      const unreadSessionIds = unreadByAgent.get(agent.slug) ?? new Set<string>()
 
       // Compute session flags from in-memory state (no I/O needed).
       // `unreadByAgent` is already filtered to user-actionable notification types
@@ -479,6 +570,9 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
           name: a.name || a.slug,
           ...(a.hasScreenshot ? { hasScreenshot: true } : {}),
         })),
+        ...(options.includeLatestVisibleSessionTail
+          ? { latestVisibleSession: latestVisibleSession ?? null }
+          : {}),
       }
     }))
   )
@@ -971,8 +1065,20 @@ Respond with ONLY the session name, nothing else. No quotes, no explanation.`,
 
 // GET /api/agents - List agents with status (filtered by ACL in auth mode)
 // Response includes pre-aggregated summary: session activity and dashboards.
+// ?include_latest_visible_session_tail=true additionally returns one
+// visibility-safe session and a small media-ref transcript page per agent.
 agents.get('/', async (c) => {
   try {
+    const includeTailRaw = c.req.query('include_latest_visible_session_tail')
+    const parsedQuery = agentsListQuerySchema.safeParse({
+      ...(includeTailRaw === undefined
+        ? {}
+        : { includeLatestVisibleSessionTail: includeTailRaw }),
+    })
+    if (!parsedQuery.success) {
+      return c.json({ error: 'Invalid agent list query' }, 400)
+    }
+
     // In auth mode, only return agents the user has explicit ACL entries for.
     // Note: Admins do NOT get implicit access to all agents in the listing.
     // This is intentional — admin privileges grant bypass access to individual
@@ -1004,7 +1110,11 @@ agents.get('/', async (c) => {
       agentList = await listAgentsWithStatus()
     }
 
-    return c.json(await enrichAgentsWithSummary(agentList))
+    return c.json(await enrichAgentsWithSummary(agentList, {
+      includeLatestVisibleSessionTail:
+        parsedQuery.data.includeLatestVisibleSessionTail === true,
+      signal: c.req.raw.signal,
+    }))
   } catch (error) {
     console.error('Failed to fetch agents:', error)
     return c.json({ error: 'Failed to fetch agents' }, 500)
@@ -1553,16 +1663,33 @@ agents.post('/:id/open-directory', AgentAdmin(), async (c) => {
 })
 
 // GET /api/agents/:id/sessions - List sessions for an agent
-// ?notable=true&limit=N — fast path for badge/toolbar consumers: only
-// sessions that are live or carry unread notifications, built from targeted
-// stats instead of statting every transcript in the directory.
+// ?notable=true means active/awaiting-input or unread. Its fast path intersects
+// those targeted IDs with server-visible sessions before sort_by and limit,
+// avoiding a stat of every transcript. Supported ordering is deterministic
+// newest-first activity via sort_by=last_activity_at.
 agents.get('/:id/sessions', AgentRead(), async (c) => {
   try {
     const slug = getAgentId(c)
+    const sortByRaw = c.req.query('sort_by')
+    const notableRaw = c.req.query('notable')
+    const limitRaw = c.req.query('limit')
+    const parsedQuery = sessionsListQuerySchema.safeParse({
+      ...(sortByRaw === undefined ? {} : { sortBy: sortByRaw }),
+      ...(notableRaw === undefined ? {} : { notable: notableRaw }),
+      ...(limitRaw === undefined ? {} : { limit: limitRaw }),
+    })
+    if (!parsedQuery.success) {
+      return c.json({ error: 'Invalid sessions query' }, 400)
+    }
 
-    if (c.req.query('notable') === 'true') {
-      const limitRaw = Number(c.req.query('limit'))
-      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.trunc(limitRaw), 100) : 25
+    const sortBy: SessionSortBy = parsedQuery.data.sortBy ?? 'last_activity_at'
+    const isNotable = parsedQuery.data.notable === true
+    const requestedLimit = parsedQuery.data.limit === undefined
+      ? undefined
+      : Math.min(parsedQuery.data.limit, SESSIONS_LIST_MAX_LIMIT)
+    const resultLimit = requestedLimit ?? (isNotable ? 25 : undefined)
+
+    if (isNotable) {
       const unreadIds = await getSessionIdsWithUnreadNotifications(slug)
       const activeIds = messagePersister.getActiveSessionIdsForAgent(slug)
       const infos = await listSessionsByIds(slug, [...new Set([...activeIds, ...unreadIds])], {
@@ -1579,17 +1706,25 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
           hasUnreadNotifications: unreadIds.has(session.id),
         }
       })
-      // Live sessions must survive the cap; within each band, newest first.
-      enriched.sort((a, b) => {
-        const aLive = a.isActive || a.isAwaitingInput ? 1 : 0
-        const bLive = b.isActive || b.isAwaitingInput ? 1 : 0
-        if (aLive !== bLive) return bLive - aLive
-        return b.lastActivityAt.getTime() - a.lastActivityAt.getTime()
-      })
-      return c.json(enriched.slice(0, limit))
+      const ordered = sortSessionsNewestFirst(enriched, sortBy)
+      if (sortByRaw === undefined) {
+        // Preserve the existing notable-only contract when no explicit order
+        // was requested: live sessions survive the default/caller cap. The
+        // stable sort retains deterministic newest-first ordering per band.
+        ordered.sort((a, b) => {
+          const aLive = a.isActive || a.isAwaitingInput ? 1 : 0
+          const bLive = b.isActive || b.isAwaitingInput ? 1 : 0
+          return bLive - aLive
+        })
+      }
+      return c.json(ordered.slice(0, resultLimit ?? 25))
     }
 
-    const sessionList = await listSessions(slug, { excludeAutomated: true })
+    const sessionList = await listSessions(slug, {
+      excludeAutomated: true,
+      ...(sortByRaw === undefined ? {} : { sortBy }),
+      ...(resultLimit === undefined ? {} : { limit: resultLimit }),
+    })
     const unreadSessionIds = await getSessionIdsWithUnreadNotifications(slug)
     const pendingWakes = await listPendingWakesByAgent(slug)
     const wakesBySession = new Map(pendingWakes.map((w) => [w.resumeSessionId!, w]))

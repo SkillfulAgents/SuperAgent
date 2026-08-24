@@ -35,6 +35,8 @@ export interface ApiAgent {
   sessionCount?: number
   lastActivityAt?: Date | null
   dashboards?: ApiAgentDashboard[]
+  /** Opt-in expansion from GET /api/agents?include_latest_visible_session_tail=true. */
+  latestVisibleSession?: ApiLatestVisibleSession | null
 }
 
 /** Response returned when an agent template has been installed or imported. */
@@ -48,6 +50,16 @@ export interface ApiAgentDashboard {
   slug: string
   name: string
   hasScreenshot?: boolean
+}
+
+export interface ApiLatestVisibleSession {
+  session: ApiSession
+  messageTail: ApiTranscriptPage
+}
+
+export interface ApiTranscriptPage {
+  messages: ApiMessageOrBoundary[]
+  nextCursor: string | null
 }
 
 /**
