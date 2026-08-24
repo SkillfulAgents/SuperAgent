@@ -2,6 +2,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { createElement } from 'react'
+import type { Attachment } from '@renderer/components/messages/attachment-preview'
+import type { FolderGroup } from '@renderer/lib/file-utils'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { DraftsProvider, useDraft } from '@renderer/context/drafts-context'
 
@@ -43,6 +45,7 @@ const mockAttachments = {
   addMounts: vi.fn(),
   setAttachmentError: vi.fn(),
   clearAttachmentErrors: vi.fn(),
+  updateAttachment: vi.fn(),
   removeAttachment: vi.fn(),
   clearAttachments: vi.fn(),
   handleFileSelect: vi.fn(),
@@ -54,21 +57,33 @@ const mockAttachments = {
   },
 }
 
-let capturedOnFoldersReceived: ((folders: any[]) => void) | undefined
+let capturedOnFoldersReceived: ((folders: FolderGroup[]) => void) | undefined
+let capturedOnAttachmentsAdded: ((added: Attachment[]) => void) | undefined
 
 vi.mock('@renderer/hooks/use-attachments', () => ({
-  useAttachments: (opts?: { onFoldersReceived?: (folders: any[]) => void }) => {
-    capturedOnFoldersReceived = opts?.onFoldersReceived
+  useAttachments: (options?: { onFoldersReceived?: (folders: FolderGroup[]) => void; onAttachmentsAdded?: (added: Attachment[]) => void }) => {
+    capturedOnFoldersReceived = options?.onFoldersReceived
+    capturedOnAttachmentsAdded = options?.onAttachmentsAdded
     return mockAttachments
   },
 }))
+
+const mockQueue = {
+  enqueue: vi.fn(),
+  retry: vi.fn(),
+  retryAndWait: vi.fn().mockResolvedValue({ ok: true }),
+  remove: vi.fn(),
+  clear: vi.fn(),
+  requeueAll: vi.fn(),
+}
+vi.mock('./use-upload-queue', () => ({ useUploadQueue: () => mockQueue }))
 
 vi.mock('@renderer/lib/file-utils', () => ({
   zipFolderFiles: vi.fn().mockResolvedValue(new Blob(['zipped'])),
 }))
 
 vi.mock('@shared/lib/utils/attached-files', () => ({
-  appendAttachedFiles: vi.fn((msg: string, paths: string[]) => `${msg}\n[Attached files:]\n${paths.join('\n')}`),
+  appendAttachedFiles: vi.fn((msg: string, paths: string[]) => paths.length === 0 ? msg : `${msg}\n[Attached files:]\n${paths.join('\n')}`),
   appendMountedFolders: vi.fn((msg: string, mounts: any[]) => `${msg}\n[Mounted folders:]\n${mounts.map((m: any) => m.containerPath).join('\n')}`),
 }))
 
@@ -108,7 +123,9 @@ describe('useMessageComposer', () => {
     mockVoiceInput.isConnecting = false
     mockVoiceInput.stopRecording.mockReturnValue(undefined)
     capturedOnFoldersReceived = undefined
+    capturedOnAttachmentsAdded = undefined
     capturedTranscriptUpdate = undefined
+    mockQueue.retryAndWait.mockResolvedValue({ ok: true })
   })
 
   // --- Basic state ---
@@ -240,7 +257,7 @@ describe('useMessageComposer', () => {
 
     expect(opts.onSubmit).toHaveBeenCalledWith('Hello world')
     expect(result.current.message).toBe('')
-    expect(mockAttachments.clearAttachments).toHaveBeenCalled()
+    expect(mockQueue.clear).toHaveBeenCalled()
   })
 
   it('does not submit empty message', async () => {
@@ -317,146 +334,94 @@ describe('useMessageComposer', () => {
     expect(opts.onSubmit).toHaveBeenCalledWith('flushed tail text')
   })
 
-  // --- File upload orchestration ---
-
-  it('uploads file attachments and appends paths to message', async () => {
-    mockAttachments.attachments = [
-      { type: 'file', file: new File(['content'], 'doc.txt'), id: '1' },
-    ]
-    const opts = defaultOptions()
-    const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
-
-    act(() => result.current.setMessage('Check this'))
-
-    await act(async () => {
-      await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
+  describe('upload lifecycle', () => {
+    it('enqueues file and folder chips as they are added, never mounts', () => {
+      const opts = defaultOptions()
+      renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+      const file: Attachment = { type: 'file', id: 'f', file: new File([''], 'a.txt') }
+      const mount: Attachment = { type: 'mount', id: 'm', folderName: 'x', hostPath: '/x' }
+      act(() => capturedOnAttachmentsAdded!([file, mount]))
+      expect(mockQueue.enqueue).toHaveBeenCalledTimes(1)
+      expect(mockQueue.enqueue).toHaveBeenCalledWith(file)
     })
 
-    expect(opts.uploadFile).toHaveBeenCalledWith({ file: expect.any(File) })
-    // Content should have file paths appended
-    expect(opts.onSubmit).toHaveBeenCalledWith(expect.stringContaining('[Attached files:]'))
-    expect(opts.onSubmit).toHaveBeenCalledWith(expect.stringContaining('/tmp/uploaded-file.txt'))
-  })
-
-  it('uploads folder via Electron path', async () => {
-    mockAttachments.attachments = [
-      { type: 'folder', folderName: 'src', folderPath: '/home/user/src', files: [], totalSize: 100, id: '2' },
-    ]
-    const opts = defaultOptions()
-    const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
-
-    act(() => result.current.setMessage('Here'))
-
-    await act(async () => {
-      await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
+    it('canSubmit is false while a chip is queued or uploading', () => {
+      mockAttachments.attachments = [{ type: 'file', file: new File([''], 't.txt'), id: '1', upload: { status: 'uploading', agentSlug: 'a' } }]
+      const opts = defaultOptions()
+      const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+      expect(result.current.canSubmit).toBe(false)
     })
 
-    expect(opts.uploadFolder).toHaveBeenCalledWith({ sourcePath: '/home/user/src' })
-    expect(opts.onSubmit).toHaveBeenCalledWith(expect.stringContaining('/tmp/uploaded-folder'))
-  })
-
-  it('zips and uploads folder for web (no folderPath)', async () => {
-    const files = [{ file: new File(['a'], 'a.txt'), relativePath: 'a.txt' }]
-    mockAttachments.attachments = [
-      { type: 'folder', folderName: 'mydir', folderPath: undefined, files, totalSize: 1, id: '3' },
-    ]
-    const opts = defaultOptions()
-    const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
-
-    act(() => result.current.setMessage('Folder'))
-
-    await act(async () => {
-      await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
+    it('submit sends the done paths in chip order without re-uploading', async () => {
+      mockAttachments.attachments = [
+        { type: 'file', file: new File([''], 'a.txt'), id: '1', upload: { status: 'done', path: '/a', agentSlug: 'x' } },
+        { type: 'file', file: new File([''], 'b.txt'), id: '2', upload: { status: 'done', path: '/b', agentSlug: 'x' } },
+      ]
+      const opts = defaultOptions()
+      const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+      act(() => result.current.setMessage('hi'))
+      await act(async () => { await result.current.handleSubmit({ preventDefault: vi.fn() }) })
+      expect(mockQueue.retryAndWait).not.toHaveBeenCalled()
+      expect(opts.uploadFile).not.toHaveBeenCalled()
+      const content = opts.onSubmit.mock.calls[0][0] as string
+      expect(content.indexOf('/a')).toBeLessThan(content.indexOf('/b'))
     })
 
-    // Should use uploadFile with a .zip file
-    expect(opts.uploadFile).toHaveBeenCalledWith({
-      file: expect.objectContaining({ name: 'mydir.zip' }),
-    })
-  })
-
-  it('handles mount attachments via addMountMutation', async () => {
-    mockAttachments.attachments = [
-      { type: 'mount', folderName: 'data', hostPath: '/data/shared', id: '4' },
-    ]
-    const opts = defaultOptions()
-    const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
-
-    act(() => result.current.setMessage('Mount this'))
-
-    await act(async () => {
-      await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
+    it('submit re-uploads errored chips first and stops if they fail again', async () => {
+      mockAttachments.attachments = [{ type: 'file', file: new File([''], 'a.txt'), id: '1', error: 'boom' }]
+      mockQueue.retryAndWait.mockResolvedValueOnce({ ok: false })
+      const opts = defaultOptions()
+      const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+      act(() => result.current.setMessage('keep me'))
+      await act(async () => { await result.current.handleSubmit({ preventDefault: vi.fn() }) })
+      expect(mockQueue.retryAndWait).toHaveBeenCalled()
+      expect(opts.onSubmit).not.toHaveBeenCalled()
+      expect(result.current.message).toBe('keep me')
+      expect(result.current.uploadError).toBeNull()
     })
 
-    expect(mockAddMount.mutateAsync).toHaveBeenCalledWith({
-      agentSlug: 'test-agent',
-      hostPath: '/data/shared',
-      restart: true,
-    })
-    expect(opts.onSubmit).toHaveBeenCalledWith(expect.stringContaining('[Mounted folders:]'))
-  })
-
-  it('flags the mount chip and aborts submit when the mount request fails', async () => {
-    mockAttachments.attachments = [
-      { type: 'mount', folderName: 'data', hostPath: '/data/shared', id: 'm1' },
-    ]
-    mockAddMount.mutateAsync.mockRejectedValueOnce(new Error('hostPath is required'))
-    const opts = defaultOptions()
-    const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
-
-    act(() => result.current.setMessage('Mount this'))
-
-    await act(async () => {
-      await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
+    it('submit continues after a successful retry', async () => {
+      mockAttachments.attachments = [{ type: 'file', file: new File([''], 'a.txt'), id: '1', error: 'boom' }]
+      mockQueue.retryAndWait.mockImplementationOnce(async () => {
+        // Same array object: the composer's attachmentsRef points at it
+        mockAttachments.attachments.splice(0, 1, { type: 'file', file: new File([''], 'a.txt'), id: '1', upload: { status: 'done', path: '/a', agentSlug: 'x' } })
+        return { ok: true }
+      })
+      const opts = defaultOptions()
+      const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+      act(() => result.current.setMessage('go'))
+      await act(async () => { await result.current.handleSubmit({ preventDefault: vi.fn() }) })
+      expect(opts.onSubmit).toHaveBeenCalledWith(expect.stringContaining('/a'))
     })
 
-    expect(opts.onSubmit).not.toHaveBeenCalled()
-    expect(mockAttachments.setAttachmentError).toHaveBeenCalledWith('m1', 'hostPath is required')
-    expect(result.current.uploadError).toBe('hostPath is required')
-    // Stale chip errors are cleared at the start of the next attempt
-    expect(mockAttachments.clearAttachmentErrors).toHaveBeenCalled()
-  })
-
-  it('appends mounts before files in content', async () => {
-    const { appendMountedFolders, appendAttachedFiles } = await import('@shared/lib/utils/attached-files')
-    mockAttachments.attachments = [
-      { type: 'mount', folderName: 'data', hostPath: '/data', id: '1' },
-      { type: 'file', file: new File(['x'], 'x.txt'), id: '2' },
-    ]
-    const opts = defaultOptions()
-    const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
-
-    act(() => result.current.setMessage('Both'))
-
-    await act(async () => {
-      await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
+    it('a mount failure sets the banner and stops the send', async () => {
+      mockAttachments.attachments = [{ type: 'mount', id: 'm', folderName: 'src', hostPath: '/home/u/src' }]
+      mockAddMount.mutateAsync.mockRejectedValueOnce(new Error('mount boom'))
+      const opts = defaultOptions()
+      const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+      act(() => result.current.setMessage('x'))
+      await act(async () => { await result.current.handleSubmit({ preventDefault: vi.fn() }) })
+      expect(result.current.uploadError).toBe('mount boom')
+      expect(mockAttachments.setAttachmentError).toHaveBeenCalledWith('m', 'mount boom')
+      expect(opts.onSubmit).not.toHaveBeenCalled()
     })
 
-    // appendMountedFolders should be called first, then appendAttachedFiles
-    const mountCall = (appendMountedFolders as any).mock.invocationCallOrder[0]
-    const fileCall = (appendAttachedFiles as any).mock.invocationCallOrder[0]
-    expect(mountCall).toBeLessThan(fileCall)
-  })
-
-  it('aborts submit on upload error and preserves message', async () => {
-    mockAttachments.attachments = [
-      { type: 'file', file: new File(['x'], 'x.txt'), id: '1' },
-    ]
-    const opts = defaultOptions()
-    opts.uploadFile.mockRejectedValue(new Error('Network error'))
-    const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
-
-    act(() => result.current.setMessage('Will fail'))
-
-    await act(async () => {
-      await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
+    it('retryAttachment, removeAttachment and clearAttachments go through the queue', () => {
+      const opts = defaultOptions()
+      const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+      act(() => { result.current.retryAttachment('1'); result.current.removeAttachment('1'); result.current.clearAttachments() })
+      expect(mockQueue.retry).toHaveBeenCalledWith('1')
+      expect(mockQueue.remove).toHaveBeenCalledWith('1')
+      expect(mockQueue.clear).toHaveBeenCalled()
     })
 
-    expect(opts.onSubmit).not.toHaveBeenCalled()
-    // Message should NOT be cleared since upload failed
-    expect(result.current.message).toBe('Will fail')
-    // The failing attachment's chip is flagged so it doesn't keep looking successful
-    expect(mockAttachments.setAttachmentError).toHaveBeenCalledWith('1', 'Network error')
+    it('agent change re-queues every chip', () => {
+      const opts = defaultOptions()
+      const { rerender } = renderHook(({ slug }) => useMessageComposer({ ...opts, agentSlug: slug }), { initialProps: { slug: 'a' }, wrapper: createWrapper() })
+      rerender({ slug: 'b' })
+      expect(mockQueue.requeueAll).toHaveBeenCalledTimes(1)
+    })
+
   })
 
   it('preserves message when onSubmit fails', async () => {
@@ -639,7 +604,7 @@ describe('useMessageComposer', () => {
 
     expect(result.current.attachments).toBe(mockAttachments.attachments)
     expect(result.current.isDragOver).toBe(mockAttachments.isDragOver)
-    expect(result.current.removeAttachment).toBe(mockAttachments.removeAttachment)
+    expect(result.current.removeAttachment).toBe(mockQueue.remove)
     expect(result.current.handleFileSelect).toBe(mockAttachments.handleFileSelect)
     expect(result.current.handleFolderSelect).toBe(mockAttachments.handleFolderSelect)
     expect(result.current.dragHandlers).toBe(mockAttachments.dragHandlers)

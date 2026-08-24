@@ -27,6 +27,7 @@ interface SecureSecretsProps {
 interface ChatComposerBoxProps {
   attachments: Attachment[]
   onRemoveAttachment: (id: string) => void
+  onRetryAttachment?: (id: string) => void
   textareaRef?: Ref<HTMLDivElement>
   value: string
   onChange: (value: string) => void
@@ -52,6 +53,7 @@ interface ChatComposerBoxProps {
 export function ChatComposerBox({
   attachments,
   onRemoveAttachment,
+  onRetryAttachment,
   textareaRef,
   value,
   onChange,
@@ -94,7 +96,7 @@ export function ChatComposerBox({
       {topRightActions && (
         <div className="absolute top-2 right-2 z-10 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 touch:opacity-100">{topRightActions}</div>
       )}
-      <AttachmentPreview attachments={attachments} onRemove={onRemoveAttachment} />
+      <AttachmentPreview attachments={attachments} onRemove={onRemoveAttachment} onRetry={onRetryAttachment} />
       <div
         className={cn('relative', attachments.length > 0 && 'mt-2')}
         onPaste={onPaste}

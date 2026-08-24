@@ -24,6 +24,7 @@ const composerMock = vi.hoisted(() => ({
   clearAttachments: vi.fn(),
   removeAttachment: vi.fn(),
   handleSubmit: vi.fn((e?: { preventDefault?: () => void }) => e?.preventDefault?.()),
+  retryAttachment: vi.fn(),
   handlePaste: vi.fn(),
   handleFileSelect: vi.fn(),
   handleFolderSelect: vi.fn(),
@@ -174,6 +175,17 @@ describe('QuickDispatch', () => {
 
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(composerMock.handleSubmit).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not dispatch on Enter when canSubmit is false', async () => {
+    composerMock.canSubmit = false
+    installElectronAPI()
+    render(<QuickDispatch />)
+    await waitFor(() =>
+      expect(screen.getByTestId('quick-dispatch-agent-trigger')).toHaveTextContent('Agent One'),
+    )
+    fireEvent.keyDown(screen.getByTestId('quick-dispatch-input'), { key: 'Enter' })
+    expect(composerMock.handleSubmit).not.toHaveBeenCalled()
   })
 
   it('live-renders Markdown and keeps Markdown in composer state', async () => {

@@ -5,7 +5,7 @@ import { targetIsRemote } from '@renderer/lib/api-target'
 import { Button } from '@renderer/components/ui/button'
 import { ModelIcon } from '@renderer/components/ui/model-icon'
 import { apiFetch } from '@renderer/lib/api'
-import { uploadFileChunked } from '@renderer/lib/upload'
+import { uploadFileChunked, type UploadProgress } from '@renderer/lib/upload'
 import { readLocalFileAsFile } from '@renderer/lib/read-local-file'
 import { useAgents, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useCreateSession } from '@renderer/hooks/use-sessions'
@@ -111,8 +111,8 @@ export function QuickDispatch() {
   const composer = useMessageComposer({
     agentSlug,
     uploadFile: useCallback(
-      ({ file }: { file: File }) =>
-        uploadFileChunked<{ path: string }>({ url: `/api/agents/${agentSlug}/upload-file`, file }),
+      ({ file, onProgress, signal, stallMs }: { file: File; onProgress?: (p: UploadProgress) => void; signal?: AbortSignal; stallMs?: number }) =>
+        uploadFileChunked<{ path: string }>({ url: `/api/agents/${agentSlug}/upload-file`, file, onProgress, signal, stallMs }),
       [agentSlug],
     ),
     uploadFolder: useCallback(
@@ -329,6 +329,7 @@ export function QuickDispatch() {
     // Matches the main app's composer (submit on `Enter && !shiftKey`).
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
+      if (!composer.canSubmit) return
       void composer.handleSubmit(e)
     }
   }
@@ -387,7 +388,7 @@ export function QuickDispatch() {
         >
           {composer.attachments.length > 0 && (
             <div className="mb-2">
-              <AttachmentPreview attachments={composer.attachments} onRemove={composer.removeAttachment} />
+              <AttachmentPreview attachments={composer.attachments} onRemove={composer.removeAttachment} onRetry={composer.retryAttachment} />
             </div>
           )}
           <MarkdownComposerEditor

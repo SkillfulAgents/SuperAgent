@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act } from '@testing-library/react'
+import { act, screen } from '@testing-library/react'
 import { CreateAgentForm } from './create-agent-form'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import {
@@ -188,5 +188,10 @@ describe('CreateAgentForm', () => {
     expect(mockCreateSession.mutateAsync).toHaveBeenCalledTimes(1)
     expect(peekPendingSessionSeed('session-123')).toBeDefined()
     expect(mockNavigate).toHaveBeenCalled()
+  })
+
+  it('does not offer file attachments', () => {
+    renderWithProviders(<CreateAgentForm />)
+    expect(screen.queryByRole('button', { name: 'Add files' })).toBeNull()
   })
 })

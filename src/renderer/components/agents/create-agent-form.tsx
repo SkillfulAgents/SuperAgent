@@ -3,7 +3,6 @@ import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@renderer/components/ui/button'
 import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
-import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { AgentCreationAids, type ImportResult } from '@renderer/components/agents/agent-creation-aids'
 import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-session'
@@ -203,9 +202,8 @@ export function CreateAgentForm({ onAgentCreated, onNavigateAway, className, exi
   const composer = useMessageComposer({
     agentSlug: '',
     onVoiceTranscript: forfeitHandoffTemplate,
-    // Attachments/uploads aren't available in the create-agent flow — the agent
-    // doesn't exist yet. These throw if invoked, but AttachmentPicker doesn't
-    // expose them in this layout so they're unreachable in practice.
+    // No agent workspace exists yet, so this host does not offer attachments.
+    // These throw if a caller still reaches them.
     uploadFile: useCallback(async () => { throw new Error('Cannot upload before agent is created') }, []),
     uploadFolder: useCallback(async () => { throw new Error('Cannot upload before agent is created') }, []),
     // Keep typed text visible while create runs; seed the session ghost before
@@ -386,7 +384,6 @@ export function CreateAgentForm({ onAgentCreated, onNavigateAway, className, exi
               composer.setMessage(value)
             }}
             onKeyDown={handleKeyDown}
-            onPaste={composer.handlePaste}
             placeholder={displayedPlaceholder}
             disabled={isDisabled}
             rows={3}
@@ -394,14 +391,7 @@ export function CreateAgentForm({ onAgentCreated, onNavigateAway, className, exi
             dataTestId="create-agent-prompt"
             textareaClassName="min-h-[60px]"
             leftActions={(
-              <>
-                <AttachmentPicker
-                  onFileSelect={composer.handleFileSelect}
-                  onFolderSelect={composer.handleFolderSelect}
-                  disabled={isDisabled}
-                />
-                <ComposerOptions state={composerOptions} disabled={isDisabled} />
-              </>
+              <ComposerOptions state={composerOptions} disabled={isDisabled} />
             )}
             rightActions={(
               <>
