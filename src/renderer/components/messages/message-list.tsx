@@ -819,10 +819,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     hasTurnStartingPendingMessage,
   ])
 
-  // All scrolling behavior — live-edge following with gesture attribution,
-  // the new-turn reading-line reserve, windowed rendering of long histories.
-  // The domain values passed through exist so the hook re-syncs its reserve
-  // and guards its transitions on the commits that change transcript layout.
+  // All scrolling behavior — live-edge following (the owned engine), the
+  // new-turn reading-line reserve, windowed rendering of long histories. The
+  // domain values passed through exist so the hook re-syncs its reserve on
+  // the commits that change transcript layout.
   const {
     scrollRef,
     contentRef,
@@ -834,13 +834,14 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     hiddenCount,
     handleScroll,
     handleWheelGesture,
-    handleTouchGesture,
     handlePointerDown,
     handleScrollKey,
+    handleTouchStart,
+    handleTouchMove,
+    handleTouchEnd,
   } = useMessageListScroll({
     visibleMessages,
     pendingUserMessages,
-    completedTurnCount: completedTurns.length,
     bottomInset,
     hasOlder,
     isFetchingOlder,
@@ -1081,7 +1082,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         ref={scrollRef}
         onScroll={handleScroll}
         onWheel={handleWheelGesture}
-        onTouchMove={handleTouchGesture}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onTouchCancel={handleTouchEnd}
         onPointerDown={handlePointerDown}
         onKeyDown={handleScrollKey}
         role="region"

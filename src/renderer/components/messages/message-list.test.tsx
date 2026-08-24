@@ -2224,7 +2224,7 @@ describe('MessageList', () => {
   })
 
   describe('windowing (long threads)', () => {
-    // BASE_WINDOW=300, LOAD_STEP=200 in message-list.tsx. Each message renders a
+    // BASE_WINDOW=300, LOAD_STEP=200 in use-message-list-scroll.ts. Each message renders a
     // bubble whose exact text is `m{i}`, so getByText/queryByText tells us precisely
     // which messages are mounted in the DOM.
     const manyMessages = (n: number): ApiMessageOrBoundary[] =>
@@ -2356,11 +2356,9 @@ describe('MessageList', () => {
       mockMessagesData.data = base
       const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
       const el = screen.getByTestId('message-list')
-      // The follow library derives "the reader left the bottom" from scroll
-      // direction, so an escape needs a baseline event followed by an upward
-      // one; its classification is deferred a tick (to out-wait resize
-      // coincidence), hence the flush. Target lands mid-thread, not near the
-      // top, so no load-more expand triggers.
+      // An escape needs a baseline event followed by an upward one with
+      // stable geometry. Target lands mid-thread, not near the top, so no
+      // load-more expand triggers.
       mockScrollGeometry(el, { scrollHeight: 10000, clientHeight: 500, scrollTop: 9500 })
       fireEvent.scroll(el)
       el.scrollTop = 5000
@@ -2401,10 +2399,10 @@ describe('MessageList', () => {
   describe('new-turn scroll anchoring', () => {
     const pending = { localId: 'pending-turn', text: 'What changed?', sentAt: Date.now() }
 
-    // Live-edge following runs inside use-stick-to-bottom, driven by a
-    // ResizeObserver on the content wrapper. jsdom's stub never fires, so
-    // tests that assert the follow handoff install this controllable fake
-    // and fire content resizes explicitly.
+    // Live-edge following is convergence-driven: the scroll hook's
+    // ResizeObserver on the content wrapper re-pins after every resize.
+    // jsdom has no ResizeObserver, so tests that assert the follow handoff
+    // install this controllable fake and fire content resizes explicitly.
     class FakeResizeObserver {
       static instances: FakeResizeObserver[] = []
       observed: Element[] = []
@@ -2429,8 +2427,8 @@ describe('MessageList', () => {
         realResizeObserver = undefined
       }
     })
-    // Fires only the observers watching `contentEl` (the library's), not the
-    // component's own layout-sync observers on other elements.
+    // Fires only the observers watching `contentEl` (the follow engine's),
+    // not the reserve-sync observers on other elements.
     const fireContentResize = (contentEl: Element, height: number) => {
       for (const observer of FakeResizeObserver.instances) {
         if (observer.observed.includes(contentEl)) {
@@ -2521,8 +2519,8 @@ describe('MessageList', () => {
       )
 
       const anchor = screen.getByText('What changed?').closest('[data-turn-anchor-id]') as HTMLElement
-      // The follow library keeps a 1px allowance at the live edge (its target
-      // is scrollHeight - 1 - clientHeight), so the reading line settles at
+      // The engine keeps a 1px allowance at the live edge (its target is
+      // scrollHeight - 1 - clientHeight), so the reading line settles at
       // TURN_ANCHOR_TOP + 1.
       expect(anchor.getBoundingClientRect().top).toBe(101)
       expect(geometry.scrollTop).toBe(1099)
@@ -2535,8 +2533,8 @@ describe('MessageList', () => {
       const el = screen.getByTestId('message-list')
       const geometry = mockTurnGeometry(el)
 
-      // Escape by scrolling up (baseline event, then an upward one; the
-      // library's classification is deferred a tick).
+      // Escape by scrolling up (baseline event, then an upward one with
+      // stable geometry — the shape only a user can produce).
       fireEvent.scroll(el)
       geometry.setScrollTop(300)
       fireEvent.scroll(el)
@@ -2683,18 +2681,16 @@ describe('MessageList', () => {
         await new Promise((resolve) => setTimeout(resolve, 40))
       })
 
-      // The turn completes and collapses — the transition shield arms, and the
-      // browser clamp's echo is rightly discarded…
+      // The turn completes and collapses — the browser clamp's echo carries
+      // a size change and is rightly discarded…
       mockStreamState.isActive = false
       rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
       geometry.setNaturalScrollHeight(900)
       geometry.setScrollTop(300)
       fireEvent.scroll(el)
 
-      // …but inside the same window the reader pages up. The shield swallows
-      // that scroll's classification too (only wheel escapes bypass it), so
-      // the deferred verification must recognize the upward gesture and mark
-      // the escape itself.
+      // …but right after, the reader pages up. The key input itself must
+      // disengage following — no scroll-event inference involved.
       fireEvent.keyDown(el, { key: 'PageUp' })
       geometry.setScrollTop(100)
       fireEvent.scroll(el)
@@ -2807,9 +2803,8 @@ describe('MessageList', () => {
       const geometry = mockTurnGeometry(el)
       const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
       fireEvent.scroll(el) // baseline at the live edge
-      // Give the library's ResizeObserver its baseline height, so the
-      // collapse below registers as a real (shielded) shrink rather than a
-      // first observation.
+      // Give the engine's ResizeObserver a baseline observation before the
+      // collapse.
       await act(async () => {
         fireContentResize(contentWrapper, 1300)
       })
@@ -2821,18 +2816,16 @@ describe('MessageList', () => {
       fireEvent.wheel(el, { deltaY: 40 })
 
       // The turn completes and collapses — the browser clamp fires an upward
-      // scroll event inside the tick's gesture window. The shield rightly
-      // discards the clamp's classification; the danger is the verification
-      // reading the clamp as a user's upward gesture.
+      // scroll event near the tick. Its size change marks it as layout-caused;
+      // it must not read as the user leaving the live edge.
       mockStreamState.isActive = false
       rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
       geometry.setNaturalScrollHeight(900)
       geometry.setScrollTop(300)
       fireEvent.scroll(el)
 
-      // The next block mounts below inside the verification window: the
-      // reader now sits beyond the re-stick range (net shrink, so the
-      // library has nothing to chase yet).
+      // The next block mounts below: the reader now sits well behind the
+      // live edge (net shrink so far).
       geometry.setNaturalScrollHeight(1000)
       await act(async () => {
         fireContentResize(contentWrapper, 1000)
@@ -2852,30 +2845,34 @@ describe('MessageList', () => {
       expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
     })
 
-    it('reverses an escape latched during follow with only downward wheel input behind it', async () => {
+    it('ignores a bounce-back settling inside the live-edge band after a downward wheel', async () => {
+      installFakeResizeObserver()
       mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
       renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
       const el = screen.getByTestId('message-list')
       const geometry = mockTurnGeometry(el)
+      const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
       fireEvent.scroll(el) // baseline at the live edge
+
+      // A downward wheel at the bottom can overshoot into elastic overscroll;
+      // the bounce-back is an upward, size-stable scroll with only downward
+      // input behind it. Inside the live-edge band it must not read as an
+      // escape and disengage following.
+      fireEvent.wheel(el, { deltaY: 40 })
+      geometry.setScrollTop(690)
+      fireEvent.scroll(el)
       await act(async () => {
         await new Promise((resolve) => setTimeout(resolve, 40))
       })
-
-      // A downward wheel tick, then a scroll event landing ABOVE the last
-      // position — the shape left behind when a follow write loses to
-      // concurrent native scrolling: the library reads it as the user
-      // scrolling up and latches an escape.
-      fireEvent.wheel(el, { deltaY: 40 })
-      geometry.setScrollTop(500)
-      fireEvent.scroll(el)
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 80))
-      })
-
-      // No escape intent backs the latch — following must recover on its own.
       expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
-      expect(geometry.scrollTop).toBe(699)
+
+      // Following stayed engaged: the next content growth re-pins the live edge.
+      geometry.setNaturalScrollHeight(1400)
+      await act(async () => {
+        fireContentResize(contentWrapper, 1400)
+      })
+      await waitFor(() => expect(geometry.scrollTop).toBe(799))
+      expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
     })
 
     it('never yanks a long-escaped reader who scrolls downward without reaching the bottom', async () => {
@@ -2913,8 +2910,8 @@ describe('MessageList', () => {
       mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
       const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
       const el = screen.getByTestId('message-list')
-      // Real motion: the send scrolls via the animated glide, which the
-      // library only registers in its first animation frame.
+      // Real motion: the send travels via the animated glide, whose first
+      // write lands in its first animation frame.
       const geometry = mockTurnGeometry(el, { reducedMotion: false })
 
       rerender(
@@ -2923,9 +2920,9 @@ describe('MessageList', () => {
       expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
       expect(geometry.scrollTop).toBe(700) // pre-glide position; the glide travels from here
 
-      // The POST response assigns the uuid before the glide's first frame —
-      // a commit in the gap where state.animation is still unset. The reserve
-      // restore must not fire here and snap the viewport to the reading line.
+      // The POST response assigns the uuid before the glide's first frame.
+      // The reserve restore must not fire in that gap and snap the viewport
+      // to the reading line.
       rerender(
         <MessageList
           sessionId="s-1"
@@ -2951,7 +2948,7 @@ describe('MessageList', () => {
       expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
 
       // While the reserve holds, growth is absorbed by the spacer: the reader
-      // does not move (net-zero resize from the follow library's perspective).
+      // does not move (net-zero resize from the engine's perspective).
       geometry.setNaturalScrollHeight(1550)
       mockStreamState.streamingMessage = 'The response is growing'
       mockStreamState.isStreaming = true
@@ -2970,7 +2967,7 @@ describe('MessageList', () => {
       expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '0px' })
 
       // …and real content growth hands off to live-edge following, driven by
-      // the library's ResizeObserver on the content wrapper.
+      // the engine's ResizeObserver on the content wrapper.
       await act(async () => {
         fireContentResize(contentWrapper, 1800)
       })
@@ -2988,7 +2985,7 @@ describe('MessageList', () => {
       )
       expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
 
-      // The hold sits at 1099 (the library's 1px live-edge allowance), so an
+      // The hold sits at 1099 (the engine's 1px live-edge allowance), so an
       // upward move to 1020 consumes 79px of the reserve.
       fireEvent.wheel(el, { deltaY: -80 })
       geometry.setScrollTop(1020)
@@ -3091,9 +3088,8 @@ describe('MessageList', () => {
       const el = screen.getByTestId('message-list')
       const geometry = mockTurnGeometry(el)
       const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
-      // Long enough for the library's deferred scroll classification AND its
-      // resize-difference window (one rAF + a tick) to close — a scroll event
-      // arriving inside that window is discarded as resize-caused.
+      // Escape/attach classification is synchronous now; the flush only
+      // drains timers (the brief upward-gesture pin hold).
       const flushClassification = () =>
         act(async () => {
           await new Promise((resolve) => setTimeout(resolve, 40))
@@ -3146,8 +3142,8 @@ describe('MessageList', () => {
       renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
       const el = screen.getByTestId('message-list')
       const geometry = mockTurnGeometry(el)
-      // The component's own observer watches the viewport (`el`); the follow
-      // library's watches only the content wrapper and never sees this.
+      // The engine observes the viewport (`el`) as well as the content
+      // wrapper; a viewport resize re-pins the live edge.
       const fireViewportResize = () => fireContentResize(el, 0)
 
       // At the live edge, a vertical shrink keeps the newest content at the
@@ -3157,8 +3153,7 @@ describe('MessageList', () => {
       fireViewportResize()
       expect(geometry.scrollTop).toBe(849)
 
-      // Let the resize's classification shield drain (one frame + a tick)
-      // before gesturing, mirroring a real pause between resize and scroll.
+      // A beat between resize and gesture, mirroring a real pause.
       await act(async () => {
         await new Promise((resolve) => setTimeout(resolve, 40))
       })
