@@ -37,6 +37,8 @@ export interface ApiAgent {
   dashboards?: ApiAgentDashboard[]
   /** Opt-in expansion from GET /api/agents?include_latest_visible_session_tail=true. */
   latestVisibleSession?: ApiLatestVisibleSession | null
+  /** Attention on visible sessions other than latestVisibleSession. Null means unavailable. */
+  attentionOutsideLatest?: ApiAttentionOutsideLatest | null
 }
 
 /** Response returned when an agent template has been installed or imported. */
@@ -55,6 +57,11 @@ export interface ApiAgentDashboard {
 export interface ApiLatestVisibleSession {
   session: ApiSession
   messageTail: ApiTranscriptPage
+}
+
+export interface ApiAttentionOutsideLatest {
+  hasUnreadNotification: boolean
+  hasPendingInput: boolean
 }
 
 export interface ApiTranscriptPage {

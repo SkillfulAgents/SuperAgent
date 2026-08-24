@@ -197,6 +197,7 @@ import { pipeline as streamPipeline } from 'stream/promises'
 import pLimit from 'p-limit'
 import * as path from 'path'
 import type { ApiAgent } from '@shared/lib/types/api'
+import type { SessionInfo, SessionMetadataMap } from '@shared/lib/types/agent'
 import { toPublicChatIntegration } from '@shared/lib/chat-integrations/public'
 import { toPublicWebhookTrigger } from '@shared/lib/webhook-triggers/public'
 import {
@@ -440,18 +441,92 @@ interface AgentSummaryOptions {
   signal?: AbortSignal
 }
 
+function attentionSessionCountsOutsideLatest(
+  sessionId: string,
+  latestSessionId: string | undefined,
+  visibleSessionIds: Set<string>,
+  sessionMetadata: SessionMetadataMap,
+): boolean {
+  if (sessionId === latestSessionId) return false
+  if (visibleSessionIds.has(sessionId)) return true
+
+  // An ID absent from the visible snapshot is either confirmed-hidden or
+  // unresolved (for example a just-created or stale attention source). Only a
+  // metadata-confirmed hidden automation is safe to ignore. Unknown ordinary
+  // and promoted sessions conservatively count as outside.
+  return !isHiddenAutomatedSession(sessionMetadata[sessionId])
+}
+
+function getAttentionOutsideLatest(
+  agentSlug: string,
+  visibleSessions: SessionInfo[],
+  unreadSessionIds: Set<string>,
+  sessionMetadata: SessionMetadataMap,
+): NonNullable<ApiAgent['attentionOutsideLatest']> {
+  const latestSessionId = visibleSessions[0]?.id
+  const visibleSessionIds = new Set(visibleSessions.map((session) => session.id))
+  const countsOutside = (sessionId: string) => attentionSessionCountsOutsideLatest(
+    sessionId,
+    latestSessionId,
+    visibleSessionIds,
+    sessionMetadata,
+  )
+
+  const hasUnreadNotification = [...unreadSessionIds].some(countsOutside)
+
+  let hasPendingInput = false
+  let observedPendingInput = false
+
+  // The registry is authoritative for open requests and exposes explicit
+  // session attribution when it exists. Agent-scoped requests have no unique
+  // session, so they must conservatively count as outside latest.
+  for (const request of userInputRequestManager.getOpenRequestsForAgent(agentSlug)) {
+    if (!request.blocking || request.autoApproved) continue
+    observedPendingInput = true
+    const sessionId = request.scope.sessionId
+    if (sessionId === undefined || countsOutside(sessionId)) {
+      hasPendingInput = true
+      break
+    }
+  }
+
+  // Also sample the persister projection. It covers recovered/racing state and
+  // lets us classify hidden active sessions without ever returning their IDs.
+  if (!hasPendingInput) {
+    const candidateIds = new Set([
+      ...visibleSessionIds,
+      ...messagePersister.getActiveSessionIdsForAgent(agentSlug),
+    ])
+    for (const sessionId of candidateIds) {
+      if (!messagePersister.isSessionAwaitingInput(sessionId)) continue
+      observedPendingInput = true
+      if (countsOutside(sessionId)) {
+        hasPendingInput = true
+        break
+      }
+    }
+  }
+
+  // A positive aggregate with no attributable request/session is unresolved.
+  // Never collapse that uncertainty to false: iOS uses false/false to open the
+  // latest session directly.
+  if (
+    !hasPendingInput &&
+    !observedPendingInput &&
+    messagePersister.hasSessionsAwaitingInputForAgent(agentSlug)
+  ) {
+    hasPendingInput = true
+  }
+
+  return { hasUnreadNotification, hasPendingInput }
+}
+
 async function getLatestVisibleSessionTail(
   agentSlug: string,
+  session: SessionInfo,
   unreadSessionIds: Set<string>,
   signal?: AbortSignal,
-): Promise<NonNullable<ApiAgent['latestVisibleSession']> | null> {
-  const [session] = await listSessions(agentSlug, {
-    excludeAutomated: true,
-    sortBy: 'last_activity_at',
-    limit: 1,
-  })
-  if (!session) return null
-
+): Promise<NonNullable<ApiAgent['latestVisibleSession']>> {
   signal?.throwIfAborted()
   if (!(await sessionExists(agentSlug, session.id))) {
     throw new Error(
@@ -477,6 +552,77 @@ async function getLatestVisibleSessionTail(
   }
 }
 
+interface AgentVisibleSessionExpansion {
+  latestVisibleSession: ApiAgent['latestVisibleSession']
+  attentionOutsideLatest: ApiAgent['attentionOutsideLatest']
+}
+
+async function getVisibleSessionExpansion(
+  agentSlug: string,
+  unreadSessionIds: Set<string>,
+  sessionMetadataPromise: Promise<SessionMetadataMap>,
+  signal?: AbortSignal,
+): Promise<AgentVisibleSessionExpansion> {
+  let visibleSessions: SessionInfo[]
+  try {
+    // Keep the complete visibility-filtered snapshot: its first item selects
+    // latest, while the remaining metadata-only items answer the two attention
+    // booleans without loading older transcripts.
+    visibleSessions = await listSessions(agentSlug, {
+      excludeAutomated: true,
+      sortBy: 'last_activity_at',
+    })
+  } catch (error) {
+    if (signal?.aborted) throw error
+    console.error('Failed to select latest visible session for agent ' + agentSlug + ':', error)
+    captureException(error, {
+      tags: { component: 'agents', operation: 'latest-visible-session-selection' },
+      extra: { agentSlug },
+    })
+    return { latestVisibleSession: null, attentionOutsideLatest: null }
+  }
+
+  const latestSession = visibleSessions[0]
+  const attentionOutsideLatestPromise = sessionMetadataPromise
+    .then((sessionMetadata) => getAttentionOutsideLatest(
+      agentSlug,
+      visibleSessions,
+      unreadSessionIds,
+      sessionMetadata,
+    ))
+    .catch((error): null => {
+      if (signal?.aborted) throw error
+      console.error('Failed to compute attention outside latest for agent ' + agentSlug + ':', error)
+      captureException(error, {
+        tags: { component: 'agents', operation: 'attention-outside-latest' },
+        extra: { agentSlug },
+      })
+      return null
+    })
+
+  const latestVisibleSessionPromise = latestSession
+    ? getLatestVisibleSessionTail(agentSlug, latestSession, unreadSessionIds, signal)
+        .catch((error): null => {
+          if (signal?.aborted) throw error
+          console.error(
+            'Failed to fetch latest visible session tail for agent ' + agentSlug + ':',
+            error,
+          )
+          captureException(error, {
+            tags: { component: 'agents', operation: 'latest-visible-session-tail' },
+            extra: { agentSlug },
+          })
+          return null
+        })
+    : Promise.resolve(null)
+
+  const [latestVisibleSession, attentionOutsideLatest] = await Promise.all([
+    latestVisibleSessionPromise,
+    attentionOutsideLatestPromise,
+  ])
+  return { latestVisibleSession, attentionOutsideLatest }
+}
+
 /**
  * Enrich an array of ApiAgent objects with summary fields:
  * active/awaiting sessions, last activity, and dashboards.
@@ -494,30 +640,25 @@ async function enrichAgentsWithSummary(
   return Promise.all(
     agents.map((agent) => limit(async () => {
       const unreadSessionIds = unreadByAgent.get(agent.slug) ?? new Set<string>()
-      const latestVisibleSessionPromise = options.includeLatestVisibleSessionTail
-        ? getLatestVisibleSessionTail(agent.slug, unreadSessionIds, options.signal)
-            .catch((error): null => {
-              if (options.signal?.aborted) throw error
-              console.error(
-                'Failed to fetch latest visible session tail for agent ' + agent.slug + ':',
-                error,
-              )
-              captureException(error, {
-                tags: { component: 'agents', operation: 'latest-visible-session-tail' },
-                extra: { agentSlug: agent.slug },
-              })
-              return null
-            })
+      const sessionMetadataPromise = readSessionMetadata(agent.slug)
+      const visibleSessionExpansionPromise = options.includeLatestVisibleSessionTail
+        ? getVisibleSessionExpansion(
+            agent.slug,
+            unreadSessionIds,
+            sessionMetadataPromise,
+            options.signal,
+          )
         : Promise.resolve(undefined)
 
       // Only FS operations remain per-agent (parallelized and bounded by the
       // outer p-limit).
-      const [sessionSummary, artifacts, sessionMetadata, latestVisibleSession] = await Promise.all([
-        getSessionSummary(agent.slug),
-        listArtifactsFromFilesystem(agent.slug),
-        readSessionMetadata(agent.slug),
-        latestVisibleSessionPromise,
-      ])
+      const [sessionSummary, artifacts, sessionMetadata, visibleSessionExpansion] =
+        await Promise.all([
+          getSessionSummary(agent.slug),
+          listArtifactsFromFilesystem(agent.slug),
+          sessionMetadataPromise,
+          visibleSessionExpansionPromise,
+        ])
 
       // Compute session flags from in-memory state (no I/O needed).
       // `unreadByAgent` is already filtered to user-actionable notification types
@@ -571,7 +712,11 @@ async function enrichAgentsWithSummary(
           ...(a.hasScreenshot ? { hasScreenshot: true } : {}),
         })),
         ...(options.includeLatestVisibleSessionTail
-          ? { latestVisibleSession: latestVisibleSession ?? null }
+          ? {
+              latestVisibleSession: visibleSessionExpansion?.latestVisibleSession ?? null,
+              attentionOutsideLatest:
+                visibleSessionExpansion?.attentionOutsideLatest ?? null,
+            }
           : {}),
       }
     }))
