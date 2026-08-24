@@ -3,7 +3,6 @@ import { ArrowUp, AtSign, ChevronDown, Cloud, Loader2, Paperclip } from 'lucide-
 import { cn } from '@shared/lib/utils'
 import { targetIsRemote } from '@renderer/lib/api-target'
 import { Button } from '@renderer/components/ui/button'
-import { ModelIcon } from '@renderer/components/ui/model-icon'
 import { apiFetch } from '@renderer/lib/api'
 import { uploadFileChunked } from '@renderer/lib/upload'
 import { readLocalFileAsFile } from '@renderer/lib/read-local-file'
@@ -417,7 +416,6 @@ export function QuickDispatch() {
             <Paperclip className="h-3.5 w-3.5 shrink-0" />
           </TriggerButton>
           <TriggerButton active={openMenu === 'model'} onClick={() => toggleMenu('model')} testId="composer-options-trigger">
-            {selectedModel && <ModelIcon icon={selectedModel.icon} className="h-3.5 w-3.5 shrink-0" />}
             <span className="truncate">
               {selectedModel?.label}
               <span className="text-muted-foreground">

@@ -3,7 +3,6 @@ import { ChevronDown, RotateCcw, Settings } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Separator } from '@renderer/components/ui/separator'
-import { ModelIcon } from '@renderer/components/ui/model-icon'
 import { useModelSettings } from '@renderer/hooks/use-settings'
 import { DialogContext } from '@renderer/context/dialog-context'
 import { useUser } from '@renderer/context/user-context'
@@ -112,7 +111,6 @@ function SettingsModelSelectImpl({
           aria-label={`Model: ${triggerLabel ?? 'select'}. Click to change.`}
           data-testid="settings-model-trigger"
         >
-          {resolved && <ModelIcon icon={resolved.icon} className="h-3.5 w-3.5 shrink-0" />}
           <span>
             {triggerLabel ?? 'Select model'}
             {includeEffort && (
