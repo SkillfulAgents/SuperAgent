@@ -394,6 +394,8 @@ const getTranscriptBodySchema = z.object({
   slug: z.string(),
   sessionId: z.string(),
   sync: z.boolean().optional(),
+  // Most recent N compacted messages. Omitted = full transcript.
+  limit: z.number().int().min(1).max(500).optional(),
 })
 
 /**
@@ -646,7 +648,7 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
   // a human decision) so the total response time stays under the transport cap.
   const syncDeadline = Date.now() + SYNC_WAIT_TIMEOUT_MS
   const callerSlug = getCallerSlug(c)
-  const { slug: rawTargetSlug, sessionId, sync } = c.req.valid('json')
+  const { slug: rawTargetSlug, sessionId, sync, limit } = c.req.valid('json')
 
   // Resolve the model-supplied display slug to the canonical id and rebind.
   const targetSlug = await resolveAgentId(rawTargetSlug)
@@ -714,11 +716,12 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
       : 'idle'
 
   const entries = await getSessionMessagesWithCompact(targetSlug, sessionId)
-  const messages = entries
+  const all = entries
     .map(compactMessage)
     .filter((m): m is NonNullable<ReturnType<typeof compactMessage>> => m !== null)
+  const messages = limit ? all.slice(-limit) : all
 
-  return c.json({ status, messages })
+  return c.json({ status, messages, total: all.length })
 })
 
 // ----------------------------------------------------------------------------

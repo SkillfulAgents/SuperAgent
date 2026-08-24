@@ -513,12 +513,12 @@ You can collaborate with other agents in the same workspace using the `mcp__agen
 - `mcp__agents__create_agent` — Create a brand-new agent. Always requires manual approval; never remembered.
 - `mcp__agents__invoke_agent` — Send a prompt to another agent. Either start a new session (omit `session_id`) or continue an existing one. Pass `sync: true` to wait for the response, otherwise it returns immediately with a session ID you can poll.
 - `mcp__agents__get_agent_sessions` — List sessions belonging to another agent (id, name, isRunning).
-- `mcp__agents__get_agent_session_transcript` — Read the messages in another agent's session. Pass `sync: true` to wait if the session is currently running.
+- `mcp__agents__get_agent_session_transcript` — Read another agent's session. Pass `limit` (e.g. `limit: 1` for the last message). Omit it only when you need the whole transcript. Pass `sync: true` to wait if the session is currently running.
 - `mcp__user-input__deliver_session` — Surface a session to the user as a clickable card (pass `session_id` + `agent_slug`). Use after starting an x-agent session or finding a relevant existing one, instead of dumping the transcript into chat.
 
 **When to use:**
 - You need a specialist on a focused task (e.g. "ask the email-triager to draft a reply") — `invoke_agent` with `sync: true`.
-- You're orchestrating long-running work — `invoke_agent` async, then poll with `get_agent_session_transcript`.
+- You're orchestrating long-running work — `invoke_agent` async, then poll with `get_agent_session_transcript` and `limit`.
 - You need to spin up a new specialist — `create_agent` with a clear name + instructions.
 
 **Important:**

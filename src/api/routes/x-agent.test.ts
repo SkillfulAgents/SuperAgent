@@ -1733,6 +1733,87 @@ describe('/get-transcript', () => {
     // must short-circuit before the response transcript is assembled.
     expect(mockGetTranscript).toHaveBeenCalledTimes(1)
   })
+
+  it('returns only the last `limit` messages and the total count', async () => {
+    reviewDecisions.push('allow')
+    mockGetTranscript.mockResolvedValue([
+      { type: 'user', message: { role: 'user', content: 'first' } },
+      { type: 'assistant', message: { role: 'assistant', content: 'one' } },
+      { type: 'user', message: { role: 'user', content: 'second' } },
+      { type: 'assistant', message: { role: 'assistant', content: 'two' } },
+      { type: 'assistant', message: { role: 'assistant', content: 'three' } },
+    ])
+    const res = await authedFetch('/x-agent/get-transcript', {
+      slug: TARGET_SLUG,
+      sessionId: 'sess-1',
+      limit: 2,
+    })
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.total).toBe(5)
+    expect(body.messages).toHaveLength(2)
+    expect(body.messages.map((m: { content: string }) => m.content)).toEqual(['two', 'three'])
+  })
+
+  it('returns the full transcript and total when limit is omitted', async () => {
+    reviewDecisions.push('allow')
+    mockGetTranscript.mockResolvedValue([
+      { type: 'user', message: { role: 'user', content: 'a' } },
+      { type: 'assistant', message: { role: 'assistant', content: 'b' } },
+    ])
+    const res = await authedFetch('/x-agent/get-transcript', {
+      slug: TARGET_SLUG,
+      sessionId: 'sess-1',
+    })
+    const body = await res.json()
+    expect(body.total).toBe(2)
+    expect(body.messages).toHaveLength(2)
+  })
+
+  it('rejects limit below 1 and above 500', async () => {
+    reviewDecisions.push('allow')
+    for (const limit of [0, 501]) {
+      const res = await authedFetch('/x-agent/get-transcript', {
+        slug: TARGET_SLUG,
+        sessionId: 'sess-1',
+        limit,
+      })
+      expect(res.status).toBe(400)
+    }
+  })
+
+  it('slices after compaction, so thinking and tool_use count as messages', async () => {
+    reviewDecisions.push('allow')
+    mockGetTranscript.mockResolvedValue([
+      {
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'thinking', thinking: 'do not leak this' }],
+        },
+      },
+      {
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'secret' } }],
+        },
+      },
+      { type: 'assistant', message: { role: 'assistant', content: 'final' } },
+    ])
+    const res = await authedFetch('/x-agent/get-transcript', {
+      slug: TARGET_SLUG,
+      sessionId: 'sess-1',
+      limit: 1,
+    })
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.total).toBe(3)
+    expect(body.messages).toHaveLength(1)
+    expect(body.messages[0].content).toBe('final')
+    expect(JSON.stringify(body)).not.toContain('do not leak this')
+    expect(JSON.stringify(body)).not.toContain('secret')
+  })
 })
 
 describe('resolveSyncWaitTimeoutMs', () => {
