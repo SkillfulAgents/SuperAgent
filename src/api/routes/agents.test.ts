@@ -303,20 +303,15 @@ vi.mock('@shared/lib/services/session-media', () => ({
   openMediaBlob: vi.fn(),
 }))
 
-vi.mock('@shared/lib/services/session-service', () => ({
+vi.mock('@shared/lib/services/session-service', async (importOriginal) => {
+  // The route's ordering and cap contracts must exercise the real sort helper
+  // and constant — a reimplementation here can drift from what ships.
+  const actual = await importOriginal<typeof import('@shared/lib/services/session-service')>()
+  return {
   listSessions: vi.fn(),
   listSessionsByIds: vi.fn(),
-  sortSessionsNewestFirst: vi.fn((sessions: Array<{
-    id: string
-    createdAt: Date
-    lastActivityAt?: Date | null
-  }>) => [...sessions].sort((a, b) => {
-    const byActivity =
-      (b.lastActivityAt ?? b.createdAt).getTime() -
-      (a.lastActivityAt ?? a.createdAt).getTime()
-    return byActivity || a.id.localeCompare(b.id)
-  })),
-  SESSIONS_LIST_MAX_LIMIT: 100,
+  sortSessionsNewestFirst: actual.sortSessionsNewestFirst,
+  SESSIONS_LIST_MAX_LIMIT: actual.SESSIONS_LIST_MAX_LIMIT,
   updateSessionName: vi.fn(),
   registerSession: vi.fn(),
   getSessionMessagesWithCompact: vi.fn(),
@@ -335,7 +330,8 @@ vi.mock('@shared/lib/services/session-service', () => ({
   removeToolCall: vi.fn(),
   getSessionSummary: vi.fn().mockResolvedValue({ sessionIds: [], sessionCount: 0, lastActivityAt: null }),
   readSessionMetadata: vi.fn(() => Promise.resolve({})),
-}))
+  }
+})
 
 const mockLoadSessionUsageTotals = vi.fn()
 vi.mock('@shared/lib/services/usage-service', () => ({
@@ -5959,6 +5955,37 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
   })
 
+  it('annotates the tail like a transcript page read', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('latest-visible')])
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({
+      messages: [
+        {
+          id: 'message-1',
+          type: 'assistant',
+          content: { text: '' },
+          toolCalls: [{ id: 'tool-1', name: 'AskUserQuestion', input: {}, result: undefined }],
+          createdAt: new Date('2026-01-01T12:00:00.000Z'),
+        },
+      ],
+      nextCursor: null,
+    })
+    vi.mocked(messagePersister.getSettledInputRequests).mockReturnValueOnce(
+      new Map([['tool-1', 'answered']])
+    )
+
+    const res = await getReq(
+      app,
+      '/api/agents?include_latest_visible_session_tail=true',
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+
+    expect(body[0].latestVisibleSession.messageTail.messages[0].toolCalls[0].result)
+      .toBe('User provided input')
+    expect(messagePersister.getSettledInputRequests).toHaveBeenCalledWith('latest-visible')
+  })
+
   it('reports unread and pending attention on an older visible session', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
     vi.mocked(listSessions).mockResolvedValue([
@@ -6140,10 +6167,11 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(getSessionMessagesPage).not.toHaveBeenCalled()
   })
 
-  it('returns null and reports a latest visible session whose transcript is missing', async () => {
+  it('returns null and reports a latest visible session with neither transcript nor registration', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
     vi.mocked(listSessions).mockResolvedValue([sessionInfo('missing-transcript')])
     vi.mocked(sessionExists).mockResolvedValue(false)
+    vi.mocked(sessionIsKnown).mockResolvedValue(false)
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
 
     try {
@@ -6166,6 +6194,36 @@ describe('GET /api/agents (enriched summary)', () => {
           message: 'Latest visible session transcript not found for agent-1/missing-transcript',
         }),
       )
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+
+  it('serves a registered session with an empty tail before its first transcript write', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('registered-pending')])
+    vi.mocked(sessionExists).mockResolvedValue(false)
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    try {
+      const res = await getReq(
+        app,
+        '/api/agents?include_latest_visible_session_tail=true',
+      )
+      expect(res.status).toBe(200)
+      const body = await res.json()
+
+      expect(body[0].latestVisibleSession).toMatchObject({
+        session: { id: 'registered-pending' },
+        messageTail: { messages: [], nextCursor: null },
+      })
+      expect(body[0].attentionOutsideLatest).toEqual({
+        hasUnreadNotification: false,
+        hasPendingInput: false,
+      })
+      expect(sessionIsKnown).toHaveBeenCalledWith('agent-1', 'registered-pending')
+      expect(getSessionMessagesPage).not.toHaveBeenCalled()
+      expect(consoleError).not.toHaveBeenCalled()
     } finally {
       consoleError.mockRestore()
     }

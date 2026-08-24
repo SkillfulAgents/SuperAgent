@@ -528,17 +528,29 @@ async function getLatestVisibleSessionTail(
   signal?: AbortSignal,
 ): Promise<NonNullable<ApiAgent['latestVisibleSession']>> {
   signal?.throwIfAborted()
-  if (!(await sessionExists(agentSlug, session.id))) {
+  // A registered session with no transcript yet (created, nothing streamed) is
+  // a normal state and serves an empty tail. Only an id with neither a
+  // transcript nor a registration — a session that vanished after listing —
+  // is an error.
+  const transcriptExists = await sessionExists(agentSlug, session.id)
+  if (!transcriptExists && !(await sessionIsKnown(agentSlug, session.id))) {
     throw new Error(
       'Latest visible session transcript not found for ' + agentSlug + '/' + session.id,
     )
   }
-  const messageTail = await getSessionMessagesPage(agentSlug, session.id, {
-    limit: LATEST_VISIBLE_SESSION_TAIL_LIMIT,
-    byteBudget: LATEST_VISIBLE_SESSION_TAIL_BYTE_BUDGET,
-    media: 'ref',
-    signal,
-  })
+  const messageTail = transcriptExists
+    ? await getSessionMessagesPage(agentSlug, session.id, {
+        limit: LATEST_VISIBLE_SESSION_TAIL_LIMIT,
+        byteBudget: LATEST_VISIBLE_SESSION_TAIL_BYTE_BUDGET,
+        media: 'ref',
+        signal,
+      })
+    : { messages: [], nextCursor: null }
+  signal?.throwIfAborted()
+  // Same treatment as the transcript page endpoint, so the tail matches what
+  // opening the session shows. Must run before the session flags below so
+  // recovered awaiting-input state is reflected in them.
+  await annotateAndRecoverMessages(messageTail.messages, agentSlug, session.id)
   signal?.throwIfAborted()
 
   return {
@@ -604,6 +616,8 @@ async function getVisibleSessionExpansion(
     ? getLatestVisibleSessionTail(agentSlug, latestSession, unreadSessionIds, signal)
         .catch((error): null => {
           if (signal?.aborted) throw error
+          // Attention still excludes this session as latest, so on this path
+          // its own unread/pending is reported nowhere until the next poll.
           console.error(
             'Failed to fetch latest visible session tail for agent ' + agentSlug + ':',
             error,
@@ -1862,7 +1876,7 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
           return bLive - aLive
         })
       }
-      return c.json(ordered.slice(0, resultLimit ?? 25))
+      return c.json(ordered.slice(0, resultLimit))
     }
 
     const sessionList = await listSessions(slug, {
