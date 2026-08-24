@@ -28,7 +28,6 @@ import {
   requestedWebSocketProtocols,
 } from './dashboard-proxy';
 import { tabManager } from './tab-manager';
-import { startQueueWireTapFromEnv } from './queue-wire-tap';
 import { startTabPolling, stopTabPolling } from './tab-poll';
 import { runBrowserUpload } from './browser-upload';
 import { runBrowserDownload } from './browser-download';
@@ -1915,9 +1914,6 @@ async function buildFileTree(
 void healEnvFilePermissions('/workspace/.env').then((healed) => {
   if (healed) console.log('[ENV] Healed /workspace/.env permissions back to 0666');
 });
-if (process.env.SUPERAGENT_DEBUG_QUEUE === '1') {
-  startQueueWireTapFromEnv();
-}
 
 // Start the server
 const port = parseInt(process.env.PORT || '3000');

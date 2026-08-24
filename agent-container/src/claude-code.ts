@@ -59,53 +59,10 @@ import {
   type SubagentModelDefinition,
 } from './subagent-model-catalog';
 import { mergeCanonicalSlashCommands } from './slash-commands';
-import { ensureQueueWireTapSync, noteQueuedWireText } from './queue-wire-tap';
 
 // Prefix for system-injected user messages that should be hidden in the UI.
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in src/renderer/components/messages/message-list.tsx
 const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] ';
-
-const QUEUE_DEBUG_DIR = '/workspace/.superagent-debug';
-const QUEUE_DEBUG_FILE = '/workspace/.superagent-debug/cli-debug.log';
-
-let queueDebugMemo: boolean | undefined;
-
-function isQueueDebug(): boolean {
-  if (queueDebugMemo !== undefined) return queueDebugMemo;
-  if (process.env.SUPERAGENT_DEBUG_QUEUE === '1') {
-    queueDebugMemo = true;
-    return true;
-  }
-  // Node does not load /workspace/.env at boot; read the flag so debug
-  // survives autosleep even when the host has not re-injected env yet.
-  try {
-    const env = fs.readFileSync('/workspace/.env', 'utf8');
-    queueDebugMemo = /(?:^|\n)SUPERAGENT_DEBUG_QUEUE=["']?1["']?(?:\n|$)/.test(env);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-      console.warn('[queue-debug] failed to read /workspace/.env', err);
-    }
-    queueDebugMemo = false;
-  }
-  return queueDebugMemo;
-}
-
-function queueDebug(msg: string, extra?: Record<string, unknown>): void {
-  if (!isQueueDebug()) return;
-  if (extra) console.log(`[queue-debug] ${msg}`, extra);
-  else console.log(`[queue-debug] ${msg}`);
-}
-
-function queueDebugFilePath(): string | undefined {
-  if (!isQueueDebug()) return undefined;
-  try {
-    fs.mkdirSync(QUEUE_DEBUG_DIR, { recursive: true });
-  } catch (err) {
-    console.warn('[queue-debug] failed to create debug dir', err);
-    return undefined;
-  }
-  return QUEUE_DEBUG_FILE;
-}
 
 // Upper bound on how long a message waits for freshly (re)connected remote MCP
 // servers to finish their handshake. Comfortably inside the 5-minute interactive
@@ -803,18 +760,6 @@ export class ClaudeCodeProcess extends EventEmitter {
       ],
     });
 
-    const debugFile = queueDebugFilePath();
-    if (debugFile) {
-      console.log(`[queue-debug] CLI debugFile=${debugFile}`);
-    }
-    const upstreamBase =
-      this.customEnvVars?.ANTHROPIC_BASE_URL || process.env.ANTHROPIC_BASE_URL;
-    const wireTapUrl =
-      isQueueDebug() && upstreamBase ? ensureQueueWireTapSync(upstreamBase) : undefined;
-    if (wireTapUrl) {
-      console.log(`[queue-debug] CLI ANTHROPIC_BASE_URL=${wireTapUrl}`);
-    }
-
     return {
       model: this.model,
       cwd: this.workingDirectory,
@@ -854,9 +799,6 @@ export class ClaudeCodeProcess extends EventEmitter {
         // vars, and anything else set on the container.
         ...process.env,
         ...this.customEnvVars,
-        // Debug-only: point the CLI at the in-process wire tap. Never persist
-        // this override to /workspace/.env — that outlives the tap.
-        ...(wireTapUrl ? { ANTHROPIC_BASE_URL: wireTapUrl } : {}),
         // Emit `session_state_changed` system events (idle/running/requires_action).
         // The host treats `idle` as the authoritative end-of-session signal (a
         // 'result' alone doesn't end it — queued messages can keep the run going).
@@ -1184,7 +1126,6 @@ export class ClaudeCodeProcess extends EventEmitter {
         ],
       },
       systemPrompt: this.systemPrompt,
-      ...(debugFile ? { debugFile } : {}),
     };
   }
 
@@ -1279,22 +1220,6 @@ export class ClaudeCodeProcess extends EventEmitter {
         // Emit the SDK message
         console.log(`[Session ${this.sessionId}] SDK message:`, message.type,
           'subtype' in message ? (message as any).subtype : '');
-        const debugMsg = message as {
-          type?: string;
-          command_uuid?: string;
-          state?: string;
-          subtype?: string;
-          status?: string;
-        };
-        if (debugMsg.type === 'command_lifecycle') {
-          queueDebug('command_lifecycle', {
-            sessionId: this.sessionId,
-            uuid: debugMsg.command_uuid ?? null,
-            state: debugMsg.state ?? null,
-          });
-        } else if (debugMsg.type === 'system' && debugMsg.subtype === 'status' && debugMsg.status === 'requesting') {
-          queueDebug('cli requesting (draining command queue)', { sessionId: this.sessionId });
-        }
 
 
 
@@ -1437,27 +1362,6 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
     if (modelChanged) {
       this.model = model;
-    }
-
-    const midTurn = Boolean(this.queryInstance && this.isProcessing && this.isReady && this.messageQueue);
-    const willRequery = effortChanged || speedChanged || capabilityBlockChanged || runtimeConnectionConfigChanged;
-    queueDebug('sendMessage', {
-      sessionId: this.sessionId,
-      uuid: uuid ?? null,
-      preview: content.slice(0, 80),
-      midTurn,
-      isProcessing: this.isProcessing,
-      isReady: this.isReady,
-      userMessageCount: this.userMessageCount + (content.startsWith(SYSTEM_MESSAGE_PREFIX) ? 0 : 1),
-      willRequery,
-      effortChanged,
-      speedChanged,
-      capabilityBlockChanged,
-      runtimeConnectionConfigChanged,
-      modelChanged,
-    });
-    if (midTurn && !content.startsWith(SYSTEM_MESSAGE_PREFIX)) {
-      noteQueuedWireText(content);
     }
 
     if (this.stopping || !this.messageQueue || !this.isReady) {
@@ -1778,9 +1682,6 @@ export class ClaudeCodeProcess extends EventEmitter {
     // queue is replaced below.
     for (const message of this.messageQueue?.drain() ?? []) {
       if (message.uuid) discardedUuids.push(message.uuid);
-    }
-    if (discardedUuids.length > 0) {
-      queueDebug('interrupt discarded queued uuids', { sessionId: this.sessionId, discardedUuids });
     }
 
     // Abort the current query
