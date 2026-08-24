@@ -49,6 +49,7 @@ import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { captureException } from '@shared/lib/error-reporting'
 import type { JsonlMessageEntry, JsonlSystemEntry } from '@shared/lib/types/agent'
+import { compactMessage, pageTranscript } from './x-agent-transcript-view'
 
 const X_AGENT_SENTRY = { area: 'x-agent', op: 'invoke' } as const
 
@@ -394,68 +395,11 @@ const getTranscriptBodySchema = z.object({
   slug: z.string(),
   sessionId: z.string(),
   sync: z.boolean().optional(),
+  // Most recent N view-rows. Omitted = the whole view.
+  limit: z.number().int().min(1).max(500).optional(),
+  // Default quiet: spoken turns, internals collapsed. true = today's compact view.
+  fullTranscript: z.boolean().optional(),
 })
-
-/**
- * Convert a JSONL message entry into a compact { role, content, toolName? } shape.
- * Strips internal SDK fields, keeps text and tool name only.
- */
-function compactMessage(entry: JsonlMessageEntry | JsonlSystemEntry): {
-  role: string
-  content: string
-  toolName?: string
-} | null {
-  if (entry.type === 'system') {
-    if (entry.subtype === 'compact_boundary') {
-      return { role: 'system', content: '[context compacted]' }
-    }
-    // Surface unknown system subtypes rather than silently dropping them — keeps
-    // future SDK additions visible to invoking agents (and to debugging).
-    return { role: 'system', content: `[system: ${entry.subtype ?? 'unknown'}]` }
-  }
-  const msg = entry.message
-  if (typeof msg.content === 'string') {
-    return { role: entry.type, content: msg.content }
-  }
-  // Array of content blocks: collapse text + summarize tool calls.
-  // Thinking blocks are stripped (internal), but we track whether the turn
-  // *only* had thinking so we can surface a placeholder rather than returning
-  // empty content (which would otherwise look like "the agent didn't respond").
-  const parts: string[] = []
-  let firstToolName: string | undefined
-  let hadThinking = false
-  for (const block of msg.content) {
-    if (block.type === 'text') {
-      parts.push(block.text)
-    } else if (block.type === 'tool_use') {
-      firstToolName = firstToolName ?? block.name
-      parts.push(`[tool_use: ${block.name}]`)
-    } else if (block.type === 'tool_result') {
-      const text = Array.isArray(block.content)
-        ? block.content
-            .filter((p) => p && typeof p === 'object' && 'text' in p)
-            .map((p) => (p as { text: string }).text)
-            .join('\n')
-        : typeof block.content === 'string'
-          ? block.content
-          : ''
-      parts.push(text ? `[tool_result] ${text}` : '[tool_result]')
-    } else if (block.type === 'thinking') {
-      hadThinking = true
-    }
-  }
-  let content = parts.join('\n').trim()
-  if (!content) {
-    // Distinguish thinking-only turns from genuinely-empty turns so callers
-    // (especially sync invoke's lastMessage) don't silently look "blank".
-    content = hadThinking ? '[thinking only — no text response]' : '[no text response]'
-  }
-  return {
-    role: entry.type,
-    content,
-    ...(firstToolName ? { toolName: firstToolName } : {}),
-  }
-}
 
 /**
  * After a sync invoke, the SDK may emit 'result' (which clears isActive) before
@@ -632,7 +576,13 @@ async function readLastAssistantMessage(
     const isStaleBoundary = boundaryUuid !== undefined && entry?.uuid === boundaryUuid
     if (entry && !isStaleBoundary) {
       const compact = compactMessage(entry)
-      if (compact) return compact
+      if (compact) {
+        return {
+          role: compact.role,
+          content: compact.content,
+          ...(compact.toolName ? { toolName: compact.toolName } : {}),
+        }
+      }
     }
     if (i < READ_RETRY_ATTEMPTS - 1) {
       await new Promise((r) => setTimeout(r, READ_RETRY_INTERVAL_MS))
@@ -646,7 +596,7 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
   // a human decision) so the total response time stays under the transport cap.
   const syncDeadline = Date.now() + SYNC_WAIT_TIMEOUT_MS
   const callerSlug = getCallerSlug(c)
-  const { slug: rawTargetSlug, sessionId, sync } = c.req.valid('json')
+  const { slug: rawTargetSlug, sessionId, sync, limit, fullTranscript } = c.req.valid('json')
 
   // Resolve the model-supplied display slug to the canonical id and rebind.
   const targetSlug = await resolveAgentId(rawTargetSlug)
@@ -714,11 +664,9 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
       : 'idle'
 
   const entries = await getSessionMessagesWithCompact(targetSlug, sessionId)
-  const messages = entries
-    .map(compactMessage)
-    .filter((m): m is NonNullable<ReturnType<typeof compactMessage>> => m !== null)
+  const { messages, total } = pageTranscript(entries, { fullTranscript, limit })
 
-  return c.json({ status, messages })
+  return c.json({ status, messages, total })
 })
 
 // ----------------------------------------------------------------------------
