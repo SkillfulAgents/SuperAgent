@@ -47,6 +47,7 @@ import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
 import { parseByteRange } from '@shared/lib/utils/http-range'
 import { messagePersister } from '@shared/lib/container/message-persister'
+import { queueDebug } from '@shared/lib/container/queue-debug'
 import { repairLegacySlashCommands } from '@shared/lib/container/slash-commands'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { credentialBroker } from '../credentials/credential-broker'
@@ -2363,6 +2364,13 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     // Captured before markSessionActive: a message sent while the agent is
     // mid-turn is queued by the agent loop rather than starting a new turn.
     const wasQueued = messagePersister.isSessionActive(sessionId)
+    queueDebug('host send', {
+      sessionId,
+      agentSlug,
+      uuid: messageUuid,
+      queued: wasQueued,
+      preview: text.slice(0, 80),
+    })
 
     messagePersister.markSessionActive(sessionId, agentSlug)
 

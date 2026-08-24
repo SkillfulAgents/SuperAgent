@@ -20,6 +20,7 @@ import { classifyResult } from './result-classification'
 import { inferOomSigkillFatal, type CoalescedUserMessage, type RuntimeFatalKind } from './runtime-death'
 import { parseBackgroundTasksChanged } from './background-tasks-changed'
 import { parseCommandLifecycle } from './command-lifecycle'
+import { queueDebug } from './queue-debug'
 import { captureException } from '@shared/lib/error-reporting'
 import {
   createScheduledTask,
@@ -1929,6 +1930,7 @@ class MessagePersister {
             // here are persisted as queued_command attachments with no stream
             // event of their own, so broadcast a refetch to materialize their
             // ghosts promptly.
+            queueDebug('host cli requesting', { sessionId })
             this.broadcastToSSE(sessionId, { type: 'messages_updated' })
           }
         } else if (content.subtype === 'compact_boundary') {
@@ -2228,6 +2230,11 @@ class MessagePersister {
         // dropped (nothing downstream can act without a uuid).
         const lifecycle = parseCommandLifecycle(content)
         if (lifecycle) {
+          queueDebug('host lifecycle', {
+            sessionId,
+            commandUuid: lifecycle.commandUuid,
+            state: lifecycle.state,
+          })
           this.broadcastToSSE(sessionId, {
             type: 'command_lifecycle',
             commandUuid: lifecycle.commandUuid,

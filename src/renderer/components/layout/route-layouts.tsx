@@ -124,6 +124,16 @@ export function RootLayout() {
     if (setupCompleted) setBootSettledLatch()
   }, [setupCompleted])
 
+  // A failed settings fetch releases the gate: home-without-wizard (the
+  // pre-gate behavior) beats a boot stuck on a blank surface. MUST be latched,
+  // not read live in render: any outlet consumer of the same settings query
+  // resets the error on mount (retryOnMount), so a raw isError condition
+  // flaps the gate — outlet mounts, its observer resets the error, the gate
+  // closes, the refetch fails, the gate reopens, forever.
+  useEffect(() => {
+    if (userSettingsError || globalSettingsError) setBootSettled(true)
+  }, [userSettingsError, globalSettingsError])
+
   useEffect(() => {
     if (hasAutoOpened.current) return
 
@@ -179,9 +189,7 @@ export function RootLayout() {
             <Suspense fallback={null}>
               <GettingStartedWizard agentOnly={wizardAgentOnly} onClose={() => setWizardOpen(false)} />
             </Suspense>
-          ) : bootSettled || userSettingsError || globalSettingsError ? (
-            // A failed settings fetch releases the gate: home-without-wizard
-            // (the pre-gate behavior) beats a boot stuck on a blank surface.
+          ) : bootSettled ? (
             <Outlet />
           ) : (
             <div data-boot-surface className="h-screen bg-background" />
