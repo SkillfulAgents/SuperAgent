@@ -118,7 +118,12 @@ test.describe('Composer failure recovery', () => {
     await expect(attachmentPreview(page, 'guarded.txt')).toBeVisible()
     await expect(sessionPage.getUserMessages()).toHaveCount(1)
 
-    // The inline error is dismissible
+    // The inline error is dismissible. The toast copy of the error sits over
+    // this button, and the click's actionability retries hover it — which
+    // pauses sonner's auto-dismiss, deadlocking the click until timeout. Park
+    // the mouse and let the toast clear before clicking.
+    await page.mouse.move(0, 0)
+    await expect(page.locator('[data-sonner-toast]')).toHaveCount(0, { timeout: 15000 })
     await page.getByTestId('main-content').getByRole('button', { name: 'Dismiss' }).click()
     await expect(inlineError).not.toBeVisible()
 
