@@ -47,11 +47,15 @@ export function RootLayout() {
 
   const [wizardOpen, setWizardOpen] = useState(false)
   const [wizardAgentOnly, setWizardAgentOnly] = useState(false)
+  // Latched true once the auto-open decision has played out (wizard open, or no
+  // wizard). Until then the outlet is held back so the home page never flashes
+  // for the duration of the settings fetches + wizard chunk preload.
+  const [bootSettled, setBootSettled] = useState(false)
   // Latched on first open so the dialog stays mounted afterwards — unmounting
   // an open Radix dialog would skip its close animation and focus restore.
   const [searchEverOpened, setSearchEverOpened] = useState(false)
-  const { data: userSettings } = useUserSettings()
-  const { data: globalSettings } = useSettings()
+  const { data: userSettings, isError: userSettingsError } = useUserSettings()
+  const { data: globalSettings, isError: globalSettingsError } = useSettings()
   const { isAuthMode, isAdmin, user } = useUser()
   const { open: searchOpen } = useSearch()
   const { identify } = useAnalyticsTracking()
@@ -87,7 +91,10 @@ export function RootLayout() {
   // slow networks). preload() resolves even on failure — the render then hits
   // lazyRouteComponent's reload-once / error path instead of never opening.
   const openWizard = useCallback(() => {
-    void (GettingStartedWizard.preload?.() ?? Promise.resolve()).then(() => setWizardOpen(true))
+    void (GettingStartedWizard.preload?.() ?? Promise.resolve()).then(() => {
+      setWizardOpen(true)
+      setBootSettled(true)
+    })
   }, [])
 
   const shareErrorReports = globalSettings?.shareErrorReports
@@ -109,7 +116,10 @@ export function RootLayout() {
     if (hasAutoOpened.current) return
     if (!userSettings || !globalSettings) return
 
-    if (userSettings.setupCompleted) return
+    if (userSettings.setupCompleted) {
+      setBootSettled(true)
+      return
+    }
 
     if (!isAuthMode) {
       hasAutoOpened.current = true
@@ -123,6 +133,9 @@ export function RootLayout() {
       hasAutoOpened.current = true
       setWizardAgentOnly(true)
       openWizard()
+    } else {
+      // AUTH_MODE, global setup incomplete, non-admin: wizard never auto-opens.
+      setBootSettled(true)
     }
   }, [userSettings, globalSettings, isAuthMode, isAdmin, openWizard])
 
@@ -161,8 +174,12 @@ export function RootLayout() {
             <Suspense fallback={null}>
               <GettingStartedWizard agentOnly={wizardAgentOnly} onClose={() => setWizardOpen(false)} />
             </Suspense>
-          ) : (
+          ) : bootSettled || userSettingsError || globalSettingsError ? (
+            // A failed settings fetch releases the gate: home-without-wizard
+            // (the pre-gate behavior) beats a boot stuck on a blank surface.
             <Outlet />
+          ) : (
+            <div data-boot-surface className="h-screen bg-background" />
           )}
         </OnboardingProvider>
       </UpdateStatusProvider>
