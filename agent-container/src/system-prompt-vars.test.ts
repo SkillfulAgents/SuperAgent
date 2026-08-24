@@ -54,6 +54,7 @@ describe('generateSystemPrompt rendering', () => {
     expect(out.includes('## Built-in X reads')).toBe(webhook)
     expect(out.includes('/opt/gamut/docs/x.md')).toBe(webhook)
     expect(out.includes('Never invent an X endpoint')).toBe(webhook)
+    expect(out.includes('$0.01 per person')).toBe(webhook)
     expect(out).not.toContain('v1/replicate')
     expect(out).not.toContain('v1/x')
     expect(out).not.toContain('ANTHROPIC_AUTH_TOKEN')

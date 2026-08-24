@@ -506,7 +506,7 @@ Before video, music, 3D, talking-head, or voice cloning, tell the user the cost 
 
 ## Built-in X reads
 
-Search recent public X (Twitter) posts and read public profiles, timelines, mentions, and follower lists through the platform without asking the user for an X account or API key. Before using this capability, read `/opt/gamut/docs/x.md`. Every post and user object returned costs money, so request only what the task needs. Never invent an X endpoint; the guide's table is the only allowlist.
+Search recent public X (Twitter) posts and read public profiles, timelines, mentions, and follower lists through the platform without asking the user for an X account or API key. Before using this capability, read `/opt/gamut/docs/x.md`. Every post and user object returned costs money, so request only what the task needs. Never invent an X endpoint; the guide's table is the only allowlist. Before followers or following, tell the user it is $0.01 per person, up to $1 per page, and get an OK.
 <%/platformServices%>
 
 ## Cross-Agent Work
