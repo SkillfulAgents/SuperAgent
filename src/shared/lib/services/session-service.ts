@@ -707,13 +707,64 @@ export async function getSessionSummary(agentSlug: string): Promise<{
   }
 }
 
+export type SessionSortBy = 'last_activity_at'
+
+export const SESSIONS_LIST_MAX_LIMIT = 100
+
+export interface ListSessionsOptions {
+  excludeAutomated?: boolean
+  sortBy?: SessionSortBy
+  limit?: number
+}
+
+type SessionOrderFields = {
+  id: string
+  createdAt: Date
+  lastActivityAt?: Date | null
+}
+
+function sessionActivityTimestamp(session: SessionOrderFields): number {
+  const lastActivity = session.lastActivityAt?.getTime()
+  if (Number.isFinite(lastActivity)) return lastActivity!
+  const created = session.createdAt.getTime()
+  return Number.isFinite(created) ? created : Number.NEGATIVE_INFINITY
+}
+
+/**
+ * Return a deterministically ordered copy of a session list.
+ *
+ * Keep this shared between the full sessions endpoint, its notable projection,
+ * and aggregate agent responses. In particular, callers must visibility-filter
+ * before invoking this helper and applying a limit.
+ */
+export function sortSessionsNewestFirst<T extends SessionOrderFields>(
+  sessions: readonly T[],
+  sortBy: SessionSortBy = 'last_activity_at',
+): T[] {
+  return [...sessions].sort((a, b) => {
+    let aTimestamp: number
+    let bTimestamp: number
+    switch (sortBy) {
+      case 'last_activity_at':
+        aTimestamp = sessionActivityTimestamp(a)
+        bTimestamp = sessionActivityTimestamp(b)
+        break
+    }
+    if (aTimestamp < bTimestamp) return 1
+    if (aTimestamp > bTimestamp) return -1
+    if (a.id < b.id) return -1
+    if (a.id > b.id) return 1
+    return 0
+  })
+}
+
 /**
  * List all sessions for an agent using file stats and metadata.
  * Does NOT read full JSONL file contents — safe for large session directories.
  */
 export async function listSessions(
   agentSlug: string,
-  options?: { excludeAutomated?: boolean },
+  options?: ListSessionsOptions,
 ): Promise<SessionInfo[]> {
   const sessionsDir = getAgentSessionsDir(agentSlug)
 
@@ -789,10 +840,13 @@ export async function listSessions(
     }
   }
 
-  // Sort by last activity, newest first
-  sessions.sort((a, b) => b.lastActivityAt.getTime() - a.lastActivityAt.getTime())
+  // Visibility filtering above must happen before ordering and limiting: a
+  // newer hidden automation must never consume a mobile client's limit.
+  const ordered = sortSessionsNewestFirst(sessions, options?.sortBy)
 
-  return sessions
+  return options?.limit === undefined
+    ? ordered
+    : ordered.slice(0, options.limit)
 }
 
 /**
