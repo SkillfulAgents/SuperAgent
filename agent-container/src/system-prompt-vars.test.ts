@@ -51,7 +51,11 @@ describe('generateSystemPrompt rendering', () => {
     // procedure moved out.
     expect(out.includes('cost from that model')).toBe(webhook)
     expect(out.includes('Never invent a model slug')).toBe(webhook)
+    expect(out.includes('## Built-in X reads')).toBe(webhook)
+    expect(out.includes('/opt/gamut/docs/x.md')).toBe(webhook)
+    expect(out.includes('Never invent an X endpoint')).toBe(webhook)
     expect(out).not.toContain('v1/replicate')
+    expect(out).not.toContain('v1/x')
     expect(out).not.toContain('ANTHROPIC_AUTH_TOKEN')
   })
 
@@ -75,6 +79,16 @@ describe('generateSystemPrompt rendering', () => {
     expect(guide).not.toContain('Available models')
   })
 
+  it('teaches the X read contract in the guide', () => {
+    const guide = readFileSync(join(__dirname, '..', 'docs', 'x.md'), 'utf8')
+    expect(guide).toContain('/2/tweets/search/recent')
+    expect(guide).toContain('/2/users/by/username/{username}')
+    expect(guide).toContain('/tweets`')
+    expect(guide).toContain('7 days')
+    expect(guide).toContain('followers')
+    expect(guide).toContain('Never print either environment variable')
+  })
+
   it('references every image-owned capability guide and keeps its source file present', () => {
     process.env.COMPOSIO_PLATFORM_MODE = 'true'
     process.env.PLATFORM_AUTH_ACTIVE = 'true'
@@ -87,6 +101,7 @@ describe('generateSystemPrompt rendering', () => {
       'chat-integrations.md',
       'browser-use.md',
       'computer-use.md',
+      'x.md',
     ]
 
     for (const guide of guides) {
