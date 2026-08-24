@@ -506,14 +506,17 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
    * Whether a run failure means the image's unpacked snapshot in the runtime's
    * store is corrupt — containerd's "mount callback failed on /tmp/containerd-
    * mountNNN: ..." (e.g. ": no users found" when resolving the Dockerfile USER
-   * against a truncated /etc/passwd). Seen after disk exhaustion during image
+   * against a truncated /etc/passwd), or "failed to stat parent: stat /var/lib/
+   * containerd/.../snapshots/N/fs: no such file or directory" when the
+   * snapshotter's metadata references a layer directory missing from disk.
+   * Seen after disk exhaustion or a dirty VM shutdown during image
    * pull/unpack. The corruption lives in the image store, not in this
    * container, so retrying the same run can never succeed — recovery is
    * removing the image (removeCorruptImage) and rebuilding it.
    */
   protected isCorruptImageSnapshotError(error: any): boolean {
     const msg = String(error?.message || error?.stderr || error || '')
-    return /mount callback failed on/i.test(msg)
+    return /mount callback failed on|failed to stat parent/i.test(msg)
   }
 
   /**
