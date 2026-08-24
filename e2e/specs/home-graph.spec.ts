@@ -149,13 +149,17 @@ test.describe('home connections graph', () => {
     const wrapper = (slug: string) => page.locator(`.react-flow__node[data-id="agent:${slug}"]`)
 
     // Same re-fit loop as the hover spec, for the same layout churn.
+    // Drop any leftover hover from the previous attempt before re-selecting —
+    // a dimmed-but-unselected bystander is what failed this spec on CI.
     await expect(async () => {
+      await page.mouse.move(0, 0)
       await page.getByRole('button', { name: 'Fit View' }).click()
       await bystanderNode.click({ force: true })
       await expect(wrapper(bystander.slug)).toHaveClass(/selected/, { timeout: 1000 })
+      await expect(wrapper(bystander.slug)).not.toHaveAttribute('data-graph-dimmed', '', { timeout: 200 })
       await callerNode.hover({ force: true })
       await expect(wrapper(bystander.slug)).toHaveAttribute('data-graph-dimmed', '', { timeout: 1000 })
-    }).toPass({ timeout: 15_000 })
+    }).toPass({ timeout: 20_000 })
 
     // Selection moves to the hovered card; the bystander stays faded.
     await callerNode.click({ force: true })

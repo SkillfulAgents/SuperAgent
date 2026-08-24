@@ -24,6 +24,7 @@ import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { useDocumentTitle } from '@renderer/hooks/use-document-title'
 import { setRendererErrorReportingEnabled, setRendererErrorReportingUser } from '@renderer/lib/error-reporting'
+import { decideWizardAutoOpen } from '@renderer/lib/boot-gate'
 import { hasBootSettledLatch, setBootSettledLatch } from '@renderer/lib/boot-settled'
 
 const SearchDialog = lazyRouteComponent(
@@ -46,22 +47,21 @@ export function RootLayout() {
   useDocumentTitle()
   useKeyboardViewport()
 
+  const { isAuthMode, isAdmin, user } = useUser()
   const [wizardOpen, setWizardOpen] = useState(false)
   const [wizardAgentOnly, setWizardAgentOnly] = useState(false)
-  // Latched true once the auto-open decision has played out (wizard open, or no
-  // wizard). Until then the outlet is held back so the home page never flashes
-  // for the duration of the settings fetches + wizard chunk preload.
-  // Boots after setup completes skip the wait: the localStorage latch is read
-  // synchronously, so home renders immediately and the settings fetches overlap
-  // with it. A stale latch (other user on this browser) degrades to the
-  // pre-gate behavior — home flashes, then the wizard opens over it.
-  const [bootSettled, setBootSettled] = useState(() => hasBootSettledLatch())
+  // Held until the auto-open decision finishes. Latch (setup done) and
+  // non-admin (settings 403; wizard never auto-opens) skip the wait on first paint.
+  const [bootSettled, setBootSettled] = useState(
+    () => hasBootSettledLatch() || (isAuthMode && !isAdmin),
+  )
   // Latched on first open so the dialog stays mounted afterwards — unmounting
   // an open Radix dialog would skip its close animation and focus restore.
   const [searchEverOpened, setSearchEverOpened] = useState(false)
   const { data: userSettings, isError: userSettingsError } = useUserSettings()
-  const { data: globalSettings, isError: globalSettingsError } = useSettings()
-  const { isAuthMode, isAdmin, user } = useUser()
+  const { data: globalSettings, isError: globalSettingsError } = useSettings({
+    enabled: !isAuthMode || isAdmin,
+  })
   const { open: searchOpen } = useSearch()
   const { identify } = useAnalyticsTracking()
   const hasAutoOpened = useRef(false)
@@ -126,29 +126,22 @@ export function RootLayout() {
 
   useEffect(() => {
     if (hasAutoOpened.current) return
-    if (!userSettings || !globalSettings) return
 
-    if (userSettings.setupCompleted) {
+    const decision = decideWizardAutoOpen({
+      userSettings,
+      globalSettings,
+      isAuthMode,
+      isAdmin,
+    })
+    if (decision === 'wait') return
+    if (decision === 'release') {
       setBootSettled(true)
       return
     }
 
-    if (!isAuthMode) {
-      hasAutoOpened.current = true
-      setWizardAgentOnly(false)
-      openWizard()
-    } else if (!globalSettings.setupCompleted && isAdmin) {
-      hasAutoOpened.current = true
-      setWizardAgentOnly(false)
-      openWizard()
-    } else if (globalSettings.setupCompleted) {
-      hasAutoOpened.current = true
-      setWizardAgentOnly(true)
-      openWizard()
-    } else {
-      // AUTH_MODE, global setup incomplete, non-admin: wizard never auto-opens.
-      setBootSettled(true)
-    }
+    hasAutoOpened.current = true
+    setWizardAgentOnly(decision === 'open-agent-only')
+    openWizard()
   }, [userSettings, globalSettings, isAuthMode, isAdmin, openWizard])
 
   return (

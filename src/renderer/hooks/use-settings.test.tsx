@@ -3,7 +3,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
-import { useStartRunner, useRestartRunner, RunnerSetupFailedError } from './use-settings'
+import { HttpError } from '@renderer/lib/api'
+import { useSettings, useStartRunner, useRestartRunner, RunnerSetupFailedError } from './use-settings'
 import type { RunnerSetupRemediation } from '@shared/lib/container/wsl2-setup-errors'
 
 const apiFetchMock = vi.fn()
@@ -13,9 +14,17 @@ vi.mock('@renderer/lib/api', async (importOriginal) => ({
   apiFetch: (...args: unknown[]) => apiFetchMock(...args),
 }))
 
+function makeWrapper(queries: { retry?: boolean | number } = { retry: false }) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { gcTime: 0, retryDelay: 0, ...queries }, mutations: { retry: false } },
+  })
+  return function wrapper({ children }: { children: ReactNode }) {
+    return <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  }
+}
+
 function wrapper({ children }: { children: ReactNode }) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } } })
-  return <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  return makeWrapper()({ children })
 }
 
 const setupPayload: RunnerSetupRemediation = {
@@ -27,6 +36,38 @@ const setupPayload: RunnerSetupRemediation = {
   originalStderr: 'HCS_E_HYPERV_NOT_INSTALLED',
   userResolvable: true,
 }
+
+describe('useSettings', () => {
+  beforeEach(() => {
+    apiFetchMock.mockReset()
+  })
+
+  it('does not retry a 403', async () => {
+    apiFetchMock.mockResolvedValue({ ok: false, status: 403 })
+
+    const { result } = renderHook(() => useSettings(), { wrapper: makeWrapper({ retry: 3 }) })
+
+    await waitFor(() => expect(result.current.isError).toBe(true))
+    expect(result.current.error).toBeInstanceOf(HttpError)
+    expect(apiFetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not retry a 401', async () => {
+    apiFetchMock.mockResolvedValue({ ok: false, status: 401 })
+
+    const { result } = renderHook(() => useSettings(), { wrapper: makeWrapper({ retry: 3 }) })
+
+    await waitFor(() => expect(result.current.isError).toBe(true))
+    expect(apiFetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not fetch when disabled', () => {
+    const { result } = renderHook(() => useSettings({ enabled: false }), { wrapper: makeWrapper() })
+
+    expect(result.current.fetchStatus).toBe('idle')
+    expect(apiFetchMock).not.toHaveBeenCalled()
+  })
+})
 
 describe('useStartRunner', () => {
   beforeEach(() => {
