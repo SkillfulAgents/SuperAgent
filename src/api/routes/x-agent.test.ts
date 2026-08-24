@@ -1575,6 +1575,30 @@ describe('/get-transcript', () => {
     expect(body.status).toBe('idle')
     expect(body.messages).toHaveLength(2)
     expect(body.messages[0]).toEqual({ role: 'user', content: 'hello' })
+    expect(body.messages[1]).toEqual({ role: 'assistant', content: 'hi' })
+  })
+
+  it('keeps tool stubs when fullTranscript is true', async () => {
+    reviewDecisions.push('allow')
+    mockGetTranscript.mockResolvedValue([
+      { type: 'user', message: { role: 'user', content: 'hello' } },
+      {
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: 'hi' },
+            { type: 'tool_use', id: 't1', name: 'Bash', input: {} },
+          ],
+        },
+      },
+    ])
+    const res = await authedFetch('/x-agent/get-transcript', {
+      slug: TARGET_SLUG,
+      sessionId: 'sess-1',
+      fullTranscript: true,
+    })
+    const body = await res.json()
     expect(body.messages[1]).toEqual({
       role: 'assistant',
       content: 'hi\n[tool_use: Bash]',
@@ -1782,7 +1806,7 @@ describe('/get-transcript', () => {
     }
   })
 
-  it('slices after compaction, so thinking and tool_use count as messages', async () => {
+  it('slices after the quiet view, so limit 1 is the last spoken turn', async () => {
     reviewDecisions.push('allow')
     mockGetTranscript.mockResolvedValue([
       {
@@ -1808,7 +1832,7 @@ describe('/get-transcript', () => {
     })
     expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.total).toBe(3)
+    expect(body.total).toBe(2)
     expect(body.messages).toHaveLength(1)
     expect(body.messages[0].content).toBe('final')
     expect(JSON.stringify(body)).not.toContain('do not leak this')

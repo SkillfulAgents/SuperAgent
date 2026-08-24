@@ -14,7 +14,12 @@ describe('get_agent_session_transcript limit rendering', () => {
     mockCallHost.mockReset()
   })
 
-  async function invoke(args: { slug: string; session_id: string; limit?: number }) {
+  async function invoke(args: {
+    slug: string
+    session_id: string
+    limit?: number
+    full_transcript?: boolean
+  }) {
     const { getSessionTranscriptTool } = await import('./get-session-transcript')
     return (getSessionTranscriptTool as { handler: (a: unknown) => Promise<{ content: Array<{ text: string }> }> }).handler(args)
   }
@@ -43,5 +48,22 @@ describe('get_agent_session_transcript limit rendering', () => {
     expect(text).toContain('--- #5 assistant ---')
     expect(text).toContain('two')
     expect(text).toContain('three')
+  })
+
+  it('forwards full_transcript when set', async () => {
+    mockCallHost.mockResolvedValue({
+      status: 'idle',
+      total: 1,
+      messages: [{ role: 'assistant', content: '[tool_use: Bash]', toolName: 'Bash' }],
+    })
+
+    await invoke({ slug: 'target', session_id: 'sess-1', full_transcript: true })
+
+    expect(mockCallHost).toHaveBeenCalledWith('get-transcript', {
+      slug: 'target',
+      sessionId: 'sess-1',
+      sync: false,
+      fullTranscript: true,
+    })
   })
 })
