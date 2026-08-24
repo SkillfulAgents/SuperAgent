@@ -1,4 +1,5 @@
-import { apiFetch } from '@renderer/lib/api'
+import { apiFetch, HttpError } from '@renderer/lib/api'
+import { clearBootSettledLatch } from '@renderer/lib/boot-settled'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type {
   GlobalSettingsResponse,
@@ -24,9 +25,14 @@ export function useSettings(options?: { enabled?: boolean }) {
     queryKey: ['settings'],
     queryFn: async () => {
       const res = await apiFetch('/api/settings')
-      if (!res.ok) throw new Error('Failed to fetch settings')
+      if (!res.ok) throw new HttpError(res.status)
       return res.json()
     },
+    // 401/403 is deterministic (endpoint is admin-gated in auth mode): retrying
+    // only stretches the boot gate in route-layouts for non-admins.
+    retry: (failureCount, error) =>
+      !(error instanceof HttpError && (error.status === 401 || error.status === 403)) &&
+      failureCount < 3,
     refetchInterval: 60000, // Poll less frequently - container status is cached server-side
     enabled: options?.enabled,
   })
@@ -161,6 +167,7 @@ export function useFactoryReset() {
     },
     onSuccess: () => {
       window.localStorage.removeItem('superagent-auth-choice')
+      clearBootSettledLatch()
       queryClient.invalidateQueries()
     },
   })

@@ -8,7 +8,8 @@ import type { RunnerSetupRemediation } from '@shared/lib/container/wsl2-setup-er
 
 const apiFetchMock = vi.fn()
 
-vi.mock('@renderer/lib/api', () => ({
+vi.mock('@renderer/lib/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@renderer/lib/api')>()),
   apiFetch: (...args: unknown[]) => apiFetchMock(...args),
 }))
 

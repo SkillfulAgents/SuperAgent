@@ -24,6 +24,7 @@ import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { useDocumentTitle } from '@renderer/hooks/use-document-title'
 import { setRendererErrorReportingEnabled, setRendererErrorReportingUser } from '@renderer/lib/error-reporting'
+import { hasBootSettledLatch, setBootSettledLatch } from '@renderer/lib/boot-settled'
 
 const SearchDialog = lazyRouteComponent(
   () => import('@renderer/components/search/search-dialog'),
@@ -50,7 +51,11 @@ export function RootLayout() {
   // Latched true once the auto-open decision has played out (wizard open, or no
   // wizard). Until then the outlet is held back so the home page never flashes
   // for the duration of the settings fetches + wizard chunk preload.
-  const [bootSettled, setBootSettled] = useState(false)
+  // Boots after setup completes skip the wait: the localStorage latch is read
+  // synchronously, so home renders immediately and the settings fetches overlap
+  // with it. A stale latch (other user on this browser) degrades to the
+  // pre-gate behavior — home flashes, then the wizard opens over it.
+  const [bootSettled, setBootSettled] = useState(() => hasBootSettledLatch())
   // Latched on first open so the dialog stays mounted afterwards — unmounting
   // an open Radix dialog would skip its close animation and focus restore.
   const [searchEverOpened, setSearchEverOpened] = useState(false)
@@ -111,6 +116,13 @@ export function RootLayout() {
       setRendererErrorReportingUser(null)
     }
   }, [user])
+
+  // Written here (not in the decision effect below) so the wizard-completion
+  // path latches too: the decision effect early-returns once it has auto-opened.
+  const setupCompleted = userSettings?.setupCompleted
+  useEffect(() => {
+    if (setupCompleted) setBootSettledLatch()
+  }, [setupCompleted])
 
   useEffect(() => {
     if (hasAutoOpened.current) return
