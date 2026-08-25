@@ -107,6 +107,7 @@ import {
   listScheduledTasks,
   listPendingScheduledTasks,
   listCancelledScheduledTasks,
+  listCompletedOneTimeTasks,
   cancelPendingWakeForSession,
   getPendingWakeForSession,
   listPendingWakesByAgent,
@@ -4336,6 +4337,45 @@ agents.get('/:id/scheduled-tasks', AgentRead(), async (c) => {
   } catch (error) {
     console.error('Failed to fetch scheduled tasks:', error)
     return c.json({ error: 'Failed to fetch scheduled tasks' }, 500)
+  }
+})
+
+// GET /api/agents/:id/scheduled-tasks/completed-sessions - List settled
+// sessions created by completed one-time scheduled tasks. These sessions are
+// intentionally hidden from the agent's ordinary session list, so this is the
+// discoverable history path for one-off automations.
+agents.get('/:id/scheduled-tasks/completed-sessions', AgentRead(), async (c) => {
+  try {
+    const slug = getAgentId(c)
+    const tasks = await listCompletedOneTimeTasks(slug)
+    const metadata = await readSessionMetadata(slug)
+
+    const completedSessionIds = tasks
+      .map((task) => task.lastSessionId)
+      .filter((sessionId): sessionId is string => {
+        if (!sessionId) return false
+        // Missing status is a legacy completed run. A persisted `running` run
+        // is still in flight only while its session is live; after an app
+        // restart, or during the tiny idle-event/metadata-write race, the same
+        // inactive run is settled. This mirrors activity-stats semantics.
+        return metadata[sessionId]?.automationStatus !== 'running'
+          || !messagePersister.isSessionActive(sessionId)
+      })
+
+    const sessions = await listSessionsByIds(slug, completedSessionIds)
+    const sessionsWithStatus = sessions.map((session) => ({
+      ...session,
+      isActive: messagePersister.isSessionActive(session.id),
+      isAwaitingInput: messagePersister.isSessionAwaitingInput(session.id),
+    }))
+    sessionsWithStatus.sort(
+      (a, b) => b.lastActivityAt.getTime() - a.lastActivityAt.getTime()
+    )
+
+    return c.json(sessionsWithStatus)
+  } catch (error) {
+    console.error('Failed to fetch completed one-time sessions:', error)
+    return c.json({ error: 'Failed to fetch completed one-time sessions' }, 500)
   }
 })
 

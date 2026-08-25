@@ -26,6 +26,7 @@ import {
   useCancelScheduledTask,
   usePauseScheduledTask,
   useResumeScheduledTask,
+  useCompletedOneTimeSessions,
 } from '@renderer/hooks/use-scheduled-tasks'
 import {
   useWebhookTriggers,
@@ -48,6 +49,7 @@ interface HomeTriggersProps {
   onSelectTask: (taskId: string) => void
   onSelectWebhook: (webhookId: string) => void
   onSelectInboundXAgent: () => void
+  onSelectCompletedTasks: () => void
   className?: string
 }
 
@@ -65,11 +67,13 @@ export function HomeTriggers({
   onSelectTask,
   onSelectWebhook,
   onSelectInboundXAgent,
+  onSelectCompletedTasks,
   className,
 }: HomeTriggersProps) {
   const { data: webhookTriggersData } = useWebhookTriggers(agentSlug, 'active')
   const { data: cancelledWebhooksData } = useWebhookTriggers(agentSlug, 'cancelled')
   const { data: cancelledTasksData } = useScheduledTasks(agentSlug, 'cancelled')
+  const { data: completedSessionsData } = useCompletedOneTimeSessions(agentSlug)
   const { data: activityStats, isPending: activityPending } = useAgentActivityStats(agentSlug)
   const [showDeleted, setShowDeleted] = useState(false)
 
@@ -110,11 +114,13 @@ export function HomeTriggers({
     return [...cronItems, ...webhookItems].sort((a, b) => b.createdAtMs - a.createdAtMs)
   }, [cancelledTasksData, cancelledWebhooksData])
 
+  const completedCount = completedSessionsData?.length ?? 0
   const hasDeleted = deletedItems.length > 0
+  const hasCompleted = completedCount > 0
 
   return (
     <HomeCollapsible title="Triggers" className={className}>
-      {items.length > 0 || hasDeleted ? (
+      {items.length > 0 || hasDeleted || hasCompleted ? (
         <div className="mt-2 divide-y divide-border/50">
           {items.map((item) =>
             item.kind === 'cron' ? (
@@ -179,6 +185,17 @@ export function HomeTriggers({
                 ),
               )}
             </>
+          )}
+          {hasCompleted && (
+            <button
+              type="button"
+              className="flex w-full items-center justify-between px-4 py-3 text-xs text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+              onClick={onSelectCompletedTasks}
+              aria-label={`View ${completedCount} completed one-time ${completedCount === 1 ? 'session' : 'sessions'}`}
+            >
+              <span>Completed ({completedCount})</span>
+              <ChevronRight className="h-3.5 w-3.5" />
+            </button>
           )}
         </div>
       ) : (

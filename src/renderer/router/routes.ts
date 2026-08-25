@@ -40,6 +40,7 @@ const AgentShell = lazyRouteComponent(
 )
 const AgentHomeRoute = lazyRouteComponent(() => import('./lazy-routes/agent-home-route'), 'AgentHomeRoute')
 const InboundXAgentRoute = lazyRouteComponent(() => import('./lazy-routes/inbound-x-agent-route'), 'InboundXAgentRoute')
+const CompletedTasksRoute = lazyRouteComponent(() => import('./lazy-routes/completed-tasks-route'), 'CompletedTasksRoute')
 const XAgentPermissionsRoute = lazyRouteComponent(() => import('./lazy-routes/x-agent-permissions-route'), 'XAgentPermissionsRoute')
 const ApiLogsRoute = lazyRouteComponent(() => import('./lazy-routes/api-logs-route'), 'ApiLogsRoute')
 const ChatRoute = lazyRouteComponent(() => import('./lazy-routes/chat-route'), 'ChatRoute')
@@ -186,6 +187,12 @@ export const inboundXAgentRoute = createRoute({
   component: InboundXAgentRoute,
 })
 
+export const completedTasksRoute = createRoute({
+  getParentRoute: () => agentLayoutRoute,
+  path: 'completed-tasks',
+  component: CompletedTasksRoute,
+})
+
 export const chatRoute = createRoute({
   getParentRoute: () => agentLayoutRoute,
   path: 'chat/$integrationId',
@@ -272,6 +279,7 @@ export const routeTree = rootRoute.addChildren([
       taskRoute,
       webhookRoute,
       inboundXAgentRoute,
+      completedTasksRoute,
       chatRoute,
       dashboardRoute,
       apiLogsRoute,

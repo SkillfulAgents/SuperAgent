@@ -363,6 +363,7 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   listScheduledTasks: vi.fn(),
   listPendingScheduledTasks: vi.fn(),
   listCancelledScheduledTasks: vi.fn(),
+  listCompletedOneTimeTasks: vi.fn(),
   listPendingWakesByAgent: vi.fn(() => Promise.resolve([])),
   getPendingWakeForSession: vi.fn(() => Promise.resolve(null)),
   cancelPendingWakeForSession: vi.fn(() => Promise.resolve(false)),
@@ -586,7 +587,7 @@ import {
 } from '@shared/lib/services/skillset-service'
 import { getAgent, getAgentWithStatus, listAgentsWithStatus } from '@shared/lib/services/agent-service'
 import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
-import { listPendingScheduledTasks } from '@shared/lib/services/scheduled-task-service'
+import { listCompletedOneTimeTasks, listPendingScheduledTasks } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
@@ -5843,6 +5844,74 @@ describe('GET /api/agents/:id/inbound-x-agent', () => {
       }],
       callers: [],
     })
+  })
+})
+
+describe('GET /api/agents/:id/scheduled-tasks/completed-sessions', () => {
+  const URL = '/api/agents/test-agent/scheduled-tasks/completed-sessions'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockIsAuthMode.mockReturnValue(false)
+    mockAgentExists.mockResolvedValue(true)
+  })
+
+  it('returns settled and legacy one-time sessions while excluding running runs', async () => {
+    vi.mocked(listCompletedOneTimeTasks).mockResolvedValue([
+      { lastSessionId: 'settled-session' },
+      { lastSessionId: 'running-session' },
+      { lastSessionId: 'legacy-session' },
+    ] as Awaited<ReturnType<typeof listCompletedOneTimeTasks>>)
+    vi.mocked(readSessionMetadata).mockResolvedValue({
+      'settled-session': { isScheduledExecution: true, automationStatus: 'succeeded' },
+      'running-session': { isScheduledExecution: true, automationStatus: 'running' },
+      'legacy-session': { isScheduledExecution: true },
+    })
+    vi.mocked(listSessionsByIds).mockResolvedValue([
+      {
+        id: 'legacy-session',
+        agentSlug: 'test-agent',
+        name: 'Legacy run',
+        createdAt: new Date('2026-08-20T10:00:00.000Z'),
+        lastActivityAt: new Date('2026-08-20T10:05:00.000Z'),
+        messageCount: 2,
+      },
+      {
+        id: 'settled-session',
+        agentSlug: 'test-agent',
+        name: 'Settled run',
+        createdAt: new Date('2026-08-21T10:00:00.000Z'),
+        lastActivityAt: new Date('2026-08-21T10:05:00.000Z'),
+        messageCount: 3,
+      },
+    ])
+    vi.mocked(messagePersister.isSessionActive).mockImplementation(
+      (sessionId: string) => sessionId === 'running-session',
+    )
+    vi.mocked(messagePersister.isSessionAwaitingInput).mockImplementation(
+      (sessionId: string) => sessionId === 'legacy-session',
+    )
+
+    const res = await getReq(createApp(), URL)
+
+    expect(res.status).toBe(200)
+    expect(vi.mocked(listCompletedOneTimeTasks)).toHaveBeenCalledWith('test-agent')
+    expect(vi.mocked(listSessionsByIds)).toHaveBeenCalledWith(
+      'test-agent',
+      ['settled-session', 'legacy-session'],
+    )
+    expect(await res.json()).toEqual([
+      expect.objectContaining({
+        id: 'settled-session',
+        isActive: false,
+        isAwaitingInput: false,
+      }),
+      expect.objectContaining({
+        id: 'legacy-session',
+        isActive: false,
+        isAwaitingInput: true,
+      }),
+    ])
   })
 })
 

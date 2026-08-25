@@ -5,13 +5,14 @@
  */
 
 import { apiFetch } from '@renderer/lib/api'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ApiScheduledTask } from '@shared/lib/types/api'
 import {
   useAutomationList,
   useAutomationDetail,
   useCancelAutomation,
   useAutomationSessions,
+  type AutomationSessionInfo,
 } from './use-agent-automations'
 
 // Re-export for convenience
@@ -45,6 +46,23 @@ export function useCancelScheduledTask() {
  */
 export function useScheduledTaskSessions(taskId: string | null) {
   return useAutomationSessions(TYPE, taskId)
+}
+
+/**
+ * Fetch settled sessions created by completed one-time scheduled tasks.
+ * Keep this under the agent's sessions query prefix so session lifecycle,
+ * rename, and delete invalidations refresh the footer count and history page.
+ */
+export function useCompletedOneTimeSessions(agentSlug: string | null) {
+  return useQuery<AutomationSessionInfo[]>({
+    queryKey: ['sessions', agentSlug, 'completed-one-time'],
+    queryFn: async () => {
+      const res = await apiFetch(`/api/agents/${agentSlug}/scheduled-tasks/completed-sessions`)
+      if (!res.ok) throw new Error('Failed to fetch completed one-time sessions')
+      return res.json()
+    },
+    enabled: !!agentSlug,
+  })
 }
 
 // ---------------------------------------------------------------------------

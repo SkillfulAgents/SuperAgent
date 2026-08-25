@@ -447,7 +447,8 @@ const AgentMenuItemInner = React.forwardRef<
       view.kind === 'task' ||
       view.kind === 'webhook' ||
       view.kind === 'chat' ||
-      view.kind === 'dashboard')
+      view.kind === 'dashboard' ||
+      view.kind === 'completedTasks')
   useEffect(() => {
     if (isViewingSubItem) setIsOpen(true)
   }, [isViewingSubItem])
