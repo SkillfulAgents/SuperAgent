@@ -1,22 +1,19 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { AudioLines, Upload, ArrowDownToLine, FileArchive, Loader2, Shapes } from 'lucide-react'
+import { AudioLines, ArrowDownToLine, Shapes } from 'lucide-react'
 import { toast } from 'sonner'
-import { Button } from '@renderer/components/ui/button'
 import { OptionCard } from '@renderer/components/ui/option-card'
-import { Checkbox } from '@renderer/components/ui/checkbox'
 import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@renderer/components/ui/dialog'
 import { VoiceAgent } from '@renderer/components/ui/voice-agent'
 import { apiFetch } from '@renderer/lib/api'
-import { useImportAgentTemplate, useDiscoverableAgents, type ImportProgress } from '@renderer/hooks/use-agent-templates'
-import { AGENT_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
+import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
+import { ImportAgentDialog } from '@renderer/components/agents/import-agent-dialog'
 import { useIsVoiceAgentConfigured } from '@renderer/hooks/use-voice-input'
 import { captureRendererException } from '@renderer/lib/error-reporting'
 import type { VoiceAgentConfig } from '@renderer/lib/voice-agent'
@@ -131,72 +128,8 @@ export function AgentCreationAids({
     setVoiceAgentConfig(null)
   }, [])
 
-  // --- Import flow ---
+  // --- Import flow (dialog extracted to ImportAgentDialog) ---
   const [showImportDialog, setShowImportDialog] = useState(false)
-  const [importFile, setImportFile] = useState<File | null>(null)
-  const [importFull, setImportFull] = useState(false)
-  const [uploadProgress, setUploadProgress] = useState<ImportProgress | null>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const importTemplate = useImportAgentTemplate()
-
-  const acceptFile = useCallback((file: File | null | undefined) => {
-    if (!file) return
-    const name = file.name.toLowerCase()
-    if (!name.endsWith(AGENT_PACKAGE_EXTENSION) && !name.endsWith('.zip')) {
-      toast.error(`Only ${AGENT_PACKAGE_EXTENSION} or .zip template files are supported`)
-      return
-    }
-    setImportFile(file)
-  }, [])
-
-  const resetImport = useCallback(() => {
-    setImportFile(null)
-    setImportFull(false)
-    setUploadProgress(null)
-    importTemplate.reset()
-  }, [importTemplate])
-
-  const closeImportDialog = useCallback(() => {
-    setShowImportDialog(false)
-    resetImport()
-  }, [resetImport])
-
-  const finishImport = useCallback(
-    async (agent: ApiAgentTemplateInstallResult) => {
-      await onImportComplete(agent)
-    },
-    [onImportComplete],
-  )
-
-  const handleImport = useCallback(
-    async (e: React.FormEvent) => {
-      e.preventDefault()
-      if (!importFile) return
-
-      try {
-        setUploadProgress({ phase: 'uploading', percent: 0 })
-        const result = await importTemplate.mutateAsync({
-          file: importFile,
-          mode: importFull ? 'full' : 'template',
-          onProgress: setUploadProgress,
-        })
-        setUploadProgress(null)
-
-        setShowImportDialog(false)
-        resetImport()
-        await finishImport(result)
-      } catch (error) {
-        setUploadProgress(null)
-        console.error('Failed to import template:', error)
-      }
-    },
-    [importFile, importFull, importTemplate, resetImport, finishImport],
-  )
-
-  const handleFileDrop = (e: React.DragEvent) => {
-    e.preventDefault()
-    acceptFile(e.dataTransfer.files[0])
-  }
 
   return (
     <div className={className}>
@@ -250,144 +183,11 @@ export function AgentCreationAids({
         </DialogContent>
       </Dialog>
 
-      <Dialog open={showImportDialog} onOpenChange={(open) => { if (!open) closeImportDialog() }}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle className="font-medium">Import an Agent</DialogTitle>
-            <DialogDescription className="sr-only">
-              Upload a .agent or .zip template to create a new agent.
-            </DialogDescription>
-          </DialogHeader>
-          <form onSubmit={handleImport}>
-            <div className="py-4 space-y-4">
-              <div
-                className={`border border-dashed rounded-lg p-6 text-center transition-colors bg-muted/50 ${
-                  importTemplate.isPending
-                    ? 'opacity-50 pointer-events-none'
-                    : 'cursor-pointer'
-                }`}
-                role="button"
-                tabIndex={0}
-                onClick={() => !importTemplate.isPending && fileInputRef.current?.click()}
-                onKeyDown={(e) => {
-                  if ((e.key === 'Enter' || e.key === ' ') && !importTemplate.isPending) {
-                    e.preventDefault()
-                    fileInputRef.current?.click()
-                  }
-                }}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={importTemplate.isPending ? undefined : handleFileDrop}
-              >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept={`${AGENT_PACKAGE_EXTENSION},.zip`}
-                  className="hidden"
-                  disabled={importTemplate.isPending}
-                  onChange={(e) => {
-                    acceptFile(e.target.files?.[0])
-                    e.target.value = ''
-                  }}
-                />
-                {importFile ? (
-                  <div className="flex items-center justify-center gap-2">
-                    <FileArchive className="h-5 w-5 text-primary" />
-                    <span className="text-sm font-medium">{importFile.name}</span>
-                    {!importTemplate.isPending && (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 text-xs"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          setImportFile(null)
-                        }}
-                      >
-                        Remove
-                      </Button>
-                    )}
-                  </div>
-                ) : (
-                  <>
-                    <Upload className="h-5 w-5 mx-auto text-muted-foreground mb-2" />
-                    <p className="text-sm text-muted-foreground">
-                      Drop a .agent or .zip template file here<br />
-                      or click to browse
-                    </p>
-                  </>
-                )}
-              </div>
-
-              <div className="flex items-center gap-2">
-                <Checkbox
-                  id="creation-aids-import-full"
-                  checked={importFull}
-                  onCheckedChange={(checked) => setImportFull(checked === true)}
-                  disabled={importTemplate.isPending}
-                />
-                <label
-                  htmlFor="creation-aids-import-full"
-                  className="text-sm text-muted-foreground cursor-pointer select-none"
-                >
-                  Import includes env. variables and session data
-                </label>
-              </div>
-
-              {uploadProgress && (
-                <div className="space-y-1">
-                  <div className="flex justify-between text-xs text-muted-foreground">
-                    <span className="flex items-center gap-1.5">
-                      {uploadProgress.phase === 'processing' && (
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                      )}
-                      {uploadProgress.phase === 'uploading' ? 'Uploading...' : 'Processing...'}
-                    </span>
-                    {uploadProgress.phase === 'uploading' && (
-                      <span>{Math.round(uploadProgress.percent)}%</span>
-                    )}
-                  </div>
-                  <div className="h-2 rounded-full bg-muted overflow-hidden">
-                    <div
-                      className="h-full bg-primary rounded-full transition-all duration-300"
-                      style={{
-                        width: uploadProgress.phase === 'processing'
-                          ? '100%'
-                          : `${uploadProgress.percent}%`,
-                      }}
-                    />
-                  </div>
-                </div>
-              )}
-
-              {importTemplate.error && (
-                <p className="text-sm text-destructive">{importTemplate.error.message}</p>
-              )}
-            </div>
-
-            <DialogFooter className="mt-4">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={closeImportDialog}
-                disabled={importTemplate.isPending}
-              >
-                Cancel
-              </Button>
-              <Button type="submit" disabled={!importFile || importTemplate.isPending}>
-                {importTemplate.isPending ? (
-                  <>
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    {uploadProgress?.phase === 'uploading' ? 'Uploading...' : 'Processing...'}
-                  </>
-                ) : (
-                  'Import'
-                )}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+      <ImportAgentDialog
+        open={showImportDialog}
+        onClose={() => setShowImportDialog(false)}
+        onComplete={onImportComplete}
+      />
 
     </div>
   )

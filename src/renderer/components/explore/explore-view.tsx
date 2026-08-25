@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from '@tanstack/react-router'
-import { ArrowRight, Check, Filter, Plus, Search, Settings2 } from 'lucide-react'
+import { Check, Filter, Search, Settings2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
@@ -8,31 +8,22 @@ import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { PageTitle, SettingsPageContainer } from '@renderer/components/layout/settings-page'
 import { slugFromAgentPath } from '@renderer/hooks/use-agent-templates'
-import { ExploreTemplateCard } from './explore-template-card'
-import { NoTemplatesEmptyState, useExploreTemplates } from './explore-templates'
+import { ExploreTemplateCard, SeeMoreCard } from './explore-template-card'
+import {
+  groupTemplatesByCategory,
+  NoTemplatesEmptyState,
+  useExploreTemplates,
+} from './explore-templates'
 import {
   getRememberedExploreScrollPosition,
   rememberExploreScrollPosition,
 } from './explore-scroll-restoration'
-import {
-  connectionLabel,
-  FEATURED_SECTION_LABEL,
-  getTemplateAccent,
-  getTemplateIcon,
-  isFeaturedTemplate,
-  templateCategory,
-} from './template-meta'
+import { connectionLabel, templateCategory } from './template-meta'
 import type { ApiDiscoverableAgent } from '@shared/lib/types/api'
 
 /** Cards shown per category. The "see more" tile takes the sixth slot, so a
  *  full section is three even grid rows at the two-column breakpoint. */
 const SECTION_PREVIEW_COUNT = 5
-
-/** Templates named on the see-more tile before the "+ N more" line. */
-const SEE_MORE_NAMED_COUNT = 3
-
-/** Bucket for templates whose skillset predates the category field. */
-const OTHER_CATEGORY = 'Other'
 
 /**
  * The full-page agent template marketplace behind the sidebar's Explore item.
@@ -148,31 +139,10 @@ export function ExploreView() {
    * grid of results is what they want.
    */
   const isBrowsing = !debouncedSearch.trim() && filterCount === 0
-  const grouped = useMemo(() => {
-    if (!isBrowsing) return null
-    const byCategory = new Map<string, ApiDiscoverableAgent[]>()
-    const featured: ApiDiscoverableAgent[] = []
-    for (const t of filtered) {
-      // First-party templates lead the page, and stay in their category below
-      // — they're the best of that category, not a separate kind of thing.
-      if (isFeaturedTemplate(t)) featured.push(t)
-      const c = templateCategory(t) ?? OTHER_CATEGORY
-      const list = byCategory.get(c)
-      if (list) list.push(t)
-      else byCategory.set(c, [t])
-    }
-    const sections = [...byCategory.entries()]
-      .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))
-      .map(([category, items]) => ({ category, items }))
-    if (featured.length > 0) {
-      sections.unshift({ category: FEATURED_SECTION_LABEL, items: featured })
-    }
-    return sections.map(({ category, items }) => ({
-      category,
-      shown: items.slice(0, SECTION_PREVIEW_COUNT),
-      rest: items.slice(SECTION_PREVIEW_COUNT),
-    }))
-  }, [filtered, isBrowsing])
+  const grouped = useMemo(
+    () => (isBrowsing ? groupTemplatesByCategory(filtered, SECTION_PREVIEW_COUNT) : null),
+    [filtered, isBrowsing],
+  )
 
   const openTemplate = (template: ApiDiscoverableAgent) => {
     rememberExploreScrollPosition(historyEntryKey, scrollContainerRef.current?.scrollTop ?? 0)
@@ -445,68 +415,6 @@ function FilterRow({
       <span className="min-w-0 truncate text-sm">{label}</span>
       <span className="shrink-0 text-xs text-muted-foreground/60">{count}</span>
       {checked && <Check className="ml-auto h-3.5 w-3.5 shrink-0 text-foreground" />}
-    </button>
-  )
-}
-
-/**
- * The section's sixth grid slot: a few of the hidden templates by name over a
- * call to action. Clicking anywhere opens that category's page.
- *
- * The call to action is unconditional — the tile is only ever a link, so one
- * without it reads as a card that failed to render. Only the "+ N" count is
- * conditional, since a section hiding no more than it names has no remainder
- * to count (Featured, at eight templates, is exactly that case).
- */
-function SeeMoreCard({ rest, onClick }: { rest: ApiDiscoverableAgent[]; onClick: () => void }) {
-  const unnamed = rest.length - Math.min(rest.length, SEE_MORE_NAMED_COUNT)
-  return (
-    <button
-      type="button"
-      data-testid="explore-see-more"
-      onClick={onClick}
-      className="group flex h-[180px] w-full flex-col gap-3 rounded-2xl bg-muted/50 p-4 text-left transition-colors duration-200 hover:bg-muted"
-    >
-      <span className="flex min-w-0 flex-1 flex-col justify-center gap-2">
-        {rest.slice(0, SEE_MORE_NAMED_COUNT).map((template) => {
-          const Icon = getTemplateIcon(template)
-          return (
-            <span
-              key={`${template.skillsetId}/${template.path}`}
-              className="flex min-w-0 items-center gap-2"
-            >
-              <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-card shadow-[0_1px_2px_0_rgba(0,0,0,0.06)]">
-                <Icon className={`size-4 ${getTemplateAccent(template.name)}`} aria-hidden />
-              </span>
-              <span className="truncate text-[13px] text-muted-foreground">{template.name}</span>
-            </span>
-          )
-        })}
-        {/* The glyph sits in the same column as the icons above, so the label
-            lines up with the names. */}
-        <span className="flex min-w-0 items-center gap-2">
-          <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-card shadow-[0_1px_2px_0_rgba(0,0,0,0.06)]">
-            {unnamed > 0 ? (
-              <Plus className="size-4 text-muted-foreground/50" aria-hidden />
-            ) : (
-              <ArrowRight
-                className="size-4 text-muted-foreground/50 transition-transform duration-200 group-hover:translate-x-0.5"
-                aria-hidden
-              />
-            )}
-          </span>
-          <span className="flex min-w-0 items-center gap-1 truncate text-[13px] text-muted-foreground/70">
-            {unnamed > 0 ? `Show ${unnamed} more` : 'See all'}
-            {unnamed > 0 && (
-              <ArrowRight
-                className="size-3.5 shrink-0 transition-transform duration-200 group-hover:translate-x-0.5"
-                aria-hidden
-              />
-            )}
-          </span>
-        </span>
-      </span>
-
     </button>
   )
 }
