@@ -971,7 +971,9 @@ describe('AppSidebar — agent folders', () => {
     expect(patch.agentFolders[1].name).toBe('New Folder 2')
   })
 
-  it('puts a newly created folder at the end of the list', () => {
+  it('renders a folder with no recorded place at the end of the list', () => {
+    // The read-side fallback doubles as the upgrade path for folders stored
+    // before places existed; creation itself now records a place up front.
     mockUserSettings.mockReturnValue({
       agentOrder: ['test-agent', 'other-agent'],
       agentFolders: [FOLDERS[0]],
@@ -980,6 +982,32 @@ describe('AppSidebar — agent folders', () => {
     renderWithProviders(<AppSidebar />)
 
     expect(listOrder()).toEqual(['folder:root', 'test-agent', 'other-agent', 'folder:f1'])
+  })
+
+  it('places a created folder directly above the default folder', async () => {
+    renderWithProviders(<AppSidebar />)
+
+    await userEvent.click(screen.getByTestId('new-folder-button'))
+
+    // Untouched install: no stored places yet, so root's marker is written
+    // too — without one it would default ahead of the new folder (place -1).
+    const fresh = patchWith({ agentFolders: [] })
+    expect(fresh.agentListOrder).toEqual([
+      `agent-folder::${fresh.agentFolders[0].id}`,
+      ROOT,
+    ])
+
+    // A root the user moved off the top stays put; the new folder splices in
+    // just above it and other folders keep their places.
+    const arranged = patchWith({
+      agentFolders: [FOLDERS[0]],
+      agentListOrder: ['agent-folder::f1', ROOT],
+    })
+    expect(arranged.agentListOrder).toEqual([
+      'agent-folder::f1',
+      `agent-folder::${arranged.agentFolders[1].id}`,
+      ROOT,
+    ])
   })
 
   it('still renders folders when the user has no agents at all', () => {

@@ -570,8 +570,12 @@ test.describe('agent folders in the left nav', () => {
       throw new Error('drag never engaged')
     }
 
-    // A freshly created folder lands last, so Edges starts at the bottom.
-    expect((await folders()).at(-1)).toBe(edgesId)
+    // A freshly created folder mounts directly above the default folder — in
+    // view next to the + that made it, not below the scroll fold.
+    {
+      const order = await folders()
+      expect(order.indexOf(edgesId)).toBe(order.indexOf('agent-folder-root') - 1)
+    }
 
     // ── The natural "make it first" gesture: drop in the space ABOVE the
     // first block. There used to be nothing droppable there, so the drag
