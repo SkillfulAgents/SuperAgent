@@ -10,9 +10,10 @@ vi.mock('@tanstack/react-router', () => ({ useNavigate: () => navigate }))
 let skillsets: { id: string; name: string }[] | undefined = []
 let discoverable: ApiDiscoverableAgent[] | undefined
 let isLoading = false
+let isError = false
 vi.mock('@renderer/hooks/use-skillsets', () => ({ useSkillsets: () => ({ data: skillsets }) }))
 vi.mock('@renderer/hooks/use-agent-templates', () => ({
-  useDiscoverableAgents: () => ({ data: discoverable, isLoading }),
+  useDiscoverableAgents: () => ({ data: discoverable, isLoading, isError }),
 }))
 vi.mock('@renderer/context/dialog-context', () => ({ useDialogs: () => ({ openSettings: vi.fn() }) }))
 
@@ -41,6 +42,7 @@ beforeEach(() => {
   skillsets = [{ id: 'skillset-1', name: 'Public' }]
   discoverable = roster(7)
   isLoading = false
+  isError = false
 })
 
 describe('CreateAgentTemplates', () => {
@@ -145,7 +147,7 @@ describe('CreateAgentTemplates', () => {
     expect(screen.queryByTestId('import-agent-card')).not.toBeInTheDocument()
   })
 
-  it('renders nothing when no skillset supplies templates', () => {
+  it('renders nothing when no skillset supplies templates and no import is wired', () => {
     skillsets = []
     discoverable = []
     const { container } = render(<CreateAgentTemplates onSelect={vi.fn()} />)
@@ -153,5 +155,32 @@ describe('CreateAgentTemplates', () => {
     // Deliberately silent rather than an empty state — the composer above is
     // already a complete way to create an agent.
     expect(container).toBeEmptyDOMElement()
+  })
+
+  it('keeps the import tile — and only it — when the roster is empty', async () => {
+    const user = userEvent.setup()
+    const onImportClick = vi.fn()
+    skillsets = []
+    discoverable = []
+    render(<CreateAgentTemplates onSelect={vi.fn()} onImportClick={onImportClick} />)
+
+    // No cards and no "Or start from a template" heading (it would promise
+    // templates that are not there) — but importing a file must survive: the
+    // aid chips this roster replaced offered it unconditionally.
+    expect(screen.queryAllByTestId('explore-template-card')).toHaveLength(0)
+    expect(screen.queryByText('Or start from a template')).not.toBeInTheDocument()
+    await user.click(screen.getByTestId('import-agent-card'))
+    expect(onImportClick).toHaveBeenCalledOnce()
+  })
+
+  it('settles to the import tile when the template fetch fails, not a forever-skeleton', () => {
+    // After react-query gives up, data stays undefined with isLoading false —
+    // only isError distinguishes this from "still waiting".
+    discoverable = undefined
+    isError = true
+    render(<CreateAgentTemplates onSelect={vi.fn()} onImportClick={vi.fn()} />)
+
+    expect(screen.queryByTestId('create-agent-templates-loading')).not.toBeInTheDocument()
+    expect(screen.getByTestId('import-agent-card')).toBeInTheDocument()
   })
 })

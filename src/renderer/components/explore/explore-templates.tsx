@@ -20,21 +20,29 @@ import type { ApiDiscoverableAgent } from '@shared/lib/types/api'
  * `hasSkillsets` optimistically reads true and `isLoading` covers the wait —
  * flashing "connect a skillset" at someone who has one is worse than a beat of
  * skeleton.
+ *
+ * Either query ERRORING settles the roster as empty rather than loading:
+ * `data` stays `undefined` after react-query gives up, so without the
+ * `isError` terms the skeleton would spin forever on a failed fetch. Empty is
+ * the degrade every consumer already handles — Explore falls through to its
+ * empty state, the wizard to its composer-plus-import-tile floor.
  */
 export function useExploreTemplates(): {
   templates: ApiDiscoverableAgent[]
   hasSkillsets: boolean
   isLoading: boolean
 } {
-  const { data: skillsets } = useSkillsets()
-  const { data: discoverableAgents, isLoading } = useDiscoverableAgents()
+  const { data: skillsets, isError: skillsetsFailed } = useSkillsets()
+  const { data: discoverableAgents, isLoading, isError: templatesFailed } = useDiscoverableAgents()
 
   const hasSkillsets = skillsets === undefined || skillsets.length > 0
   return {
     templates: useMemo(() => discoverableAgents ?? [], [discoverableAgents]),
     hasSkillsets,
     isLoading:
-      skillsets === undefined || (hasSkillsets && (isLoading || discoverableAgents === undefined)),
+      !skillsetsFailed &&
+      !templatesFailed &&
+      (skillsets === undefined || (hasSkillsets && (isLoading || discoverableAgents === undefined))),
   }
 }
 

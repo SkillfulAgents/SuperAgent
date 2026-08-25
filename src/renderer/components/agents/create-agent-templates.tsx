@@ -41,10 +41,14 @@ const MOBILE_SECTION_PREVIEW_COUNT = 3
  * wizard pins the composer and scrolls this component underneath it, so the
  * main event stays put while the roster runs as deep as it needs to.
  *
- * Renders nothing at all when the roster is empty. There is no "connect a
- * skillset" empty state here on purpose — the composer above is a complete way
- * to create an agent, and a first-run user with no skillsets should see a
- * clean page rather than a dead end for a feature they never asked for.
+ * An empty roster (no skillsets, none supplying templates, or the fetch
+ * failed) renders only the import tile. There is no "connect a skillset"
+ * empty state here on purpose — the composer above is a complete way to
+ * create an agent, and a first-run user with no skillsets should see a clean
+ * page rather than a dead end for a feature they never asked for. But the
+ * import tile is not part of the browsing teaser: it is the wizard's only
+ * import-a-file path (the aid chips it replaced offered it unconditionally),
+ * so it must not disappear with the cards.
  */
 export function CreateAgentTemplates({
   onSelect,
@@ -114,7 +118,17 @@ export function CreateAgentTemplates({
     )
   }
 
-  if (templates.length === 0) return null
+  if (templates.length === 0) {
+    // No cards to browse, but the import path survives: no heading ("Or start
+    // from a template" would promise templates that are not there), just the
+    // tile the roster would have ended with anyway.
+    if (!onImportClick) return null
+    return (
+      <div className={className} data-testid="create-agent-templates">
+        <ImportTile onClick={onImportClick} />
+      </div>
+    )
+  }
 
   return (
     <div className={className} data-testid="create-agent-templates">
