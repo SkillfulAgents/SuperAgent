@@ -1,9 +1,10 @@
 import { useMemo, useState, type ReactNode } from 'react'
-import { ArrowUpRight, BadgeX, Loader2, RefreshCw } from 'lucide-react'
+import { ArrowUpRight, BadgeX, ChevronsUpDown, Loader2, RefreshCw } from 'lucide-react'
 
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
+import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Progress } from '@renderer/components/ui/progress'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { RequestError } from '@renderer/components/messages/request-error'
@@ -196,7 +197,7 @@ function CloudWorkspaceCard({
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between px-1">
-        <h3 className="text-xs font-medium text-muted-foreground">Cloud Workspace</h3>
+        <h3 className="text-xs font-medium text-muted-foreground">Cloud Agents</h3>
         <Button
           size="sm"
           variant="ghost"
@@ -213,11 +214,11 @@ function CloudWorkspaceCard({
         {isLoading ? (
           <div className="flex items-center gap-2 py-6 px-4 text-xs text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
-            Loading cloud workspace…
+            Loading cloud agents…
           </div>
         ) : data?.found && data.deploymentUrl ? (
           <SettingRow
-            name="Cloud workspace"
+            name="Cloud agents"
             subtitle={data.deploymentUrl}
             right={
               <Button
@@ -235,8 +236,8 @@ function CloudWorkspaceCard({
           // exists. Offer a retry — claiming "none yet" here would push the user
           // to create a second one.
           <SettingRow
-            name="Cloud workspace"
-            subtitle="Couldn't check for a cloud workspace right now"
+            name="Cloud agents"
+            subtitle="Couldn't check for cloud agents right now"
             right={
               <Button
                 size="sm"
@@ -252,8 +253,8 @@ function CloudWorkspaceCard({
           // Discovery succeeded and listed none — CTA to create one on the web
           // dashboard.
           <SettingRow
-            name="Cloud workspace"
-            subtitle="No cloud workspace yet for this organization"
+            name="Cloud agents"
+            subtitle="No cloud agents yet for this organization"
             right={
               <Button
                 size="sm"
@@ -267,7 +268,7 @@ function CloudWorkspaceCard({
                 }}
                 disabled={!platformBaseUrl || !orgId}
               >
-                Create workspace
+                Set up cloud agents
                 <HoverArrow />
               </Button>
             }
@@ -290,7 +291,7 @@ function SeatCreditsRow({ seat }: { seat: NonNullable<ParsedPlatformBillingInfo[
         <span className="text-xs font-medium">Seat credits</span>
         <span className="text-xs text-muted-foreground">{Math.round(pct)}% remaining</span>
       </div>
-      <Progress percent={pct} />
+      <Progress percent={pct} thresholds={{ warning: 20, critical: 5 }} />
       <div className="text-[11px] text-muted-foreground">
         {formatCents(seat.balanceCents)} of {formatCents(seat.startingBalanceCents)}
       </div>
@@ -303,6 +304,47 @@ function HoverArrow() {
     <span className="inline-flex overflow-hidden w-0 ml-0 opacity-0 transition-all duration-150 group-hover:w-4 group-hover:ml-2 group-hover:opacity-100 group-focus-visible:w-4 group-focus-visible:ml-2 group-focus-visible:opacity-100">
       <ArrowUpRight className="h-4 w-4 shrink-0" />
     </span>
+  )
+}
+
+interface WorkspaceSwitcherProps {
+  orgName: string
+  /** Re-auth is rejected in auth mode and pointless mid-launch — see ReconnectRow. */
+  switchDisabled: boolean
+  onSwitch: () => void
+}
+
+function WorkspaceSwitcher({ orgName, switchDisabled, onSwitch }: WorkspaceSwitcherProps) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-expanded={open}
+          className="flex items-center gap-1 max-w-[260px] rounded-sm text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <span className="truncate">{orgName}</span>
+          <ChevronsUpDown className="h-3 w-3 shrink-0 text-foreground" aria-hidden />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-auto p-1">
+        <Button
+          size="sm"
+          variant="ghost"
+          className="w-full justify-between gap-6 text-xs font-normal"
+          disabled={switchDisabled}
+          onClick={() => {
+            setOpen(false)
+            onSwitch()
+          }}
+        >
+          Switch workspace
+          <ArrowUpRight className="h-3.5 w-3.5 shrink-0" />
+        </Button>
+      </PopoverContent>
+    </Popover>
   )
 }
 
@@ -487,12 +529,20 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
       {isConnected && (
         <div className={CARD_CLASS}>
           <SettingRow
-            name="Email"
-            right={<span className={valueClass}>{data?.email ?? '—'}</span>}
+            name="Workspace"
+            right={
+              // Switching workspaces means re-authenticating, so the popover's
+              // action opens the same platform login Reconnect below launches.
+              <WorkspaceSwitcher
+                orgName={data?.orgName ?? '—'}
+                switchDisabled={readOnly || isLaunching}
+                onSwitch={handleConnect}
+              />
+            }
           />
           <SettingRow
-            name="Organization"
-            right={<span className={valueClass}>{data?.orgName ?? '—'}</span>}
+            name="Email"
+            right={<span className={valueClass}>{data?.email ?? '—'}</span>}
           />
           <SettingRow
             name="Role"

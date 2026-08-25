@@ -71,6 +71,8 @@ export const sessionMetadataSchema = z
     speed: z.string().optional(),
     model: z.string().optional(),
     invokedByAgentSlug: z.string().optional(),
+    dispatchedByDashboardSlug: z.string().optional(),
+    dispatchedByDashboardAgentSlug: z.string().optional(),
   })
   .loose()
 

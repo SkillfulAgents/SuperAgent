@@ -6,7 +6,7 @@ on:
 
 jobs:
   build-win:
-    runs-on: windows-latest
+    runs-on: blacksmith-4vcpu-windows-2025
     steps:
       - name: Checkout
         uses: actions/checkout@v6

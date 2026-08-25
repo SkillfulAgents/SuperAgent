@@ -326,7 +326,12 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     supportedEfforts: NON_CLAUDE_EFFORTS,
     supportsWebSearch: false,
     // Baked from OpenRouter's live model list (per-Mtok USD), fetched 2026-06-18.
-    pricing: { inputPerMtok: 1.2, outputPerMtok: 4.2 },
+    pricing: {
+      inputPerMtok: 1.2,
+      outputPerMtok: 4.2,
+      cacheCreationPerMtok: 0,
+      cacheCreation1hPerMtok: 0,
+    },
   },
   {
     id: 'x-ai/grok-4.6',

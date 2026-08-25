@@ -113,5 +113,6 @@ export interface SendMessageRequest {
   speed?: SpeedLevel; // If set and different from current session speed, triggers interrupt+restart with new speed
   model?: string; // If set and different from current session model, triggers interrupt+restart with new model
   shouldQuery?: boolean; // When false, appends to transcript without triggering an assistant turn
+  isAutomated?: boolean; // Agent-originated follow-up: preserve the session's automated runtime class
   capabilityPolicies?: AgentCapabilityPolicies; // Current launch policies; a block-boundary change triggers interrupt+restart
 }

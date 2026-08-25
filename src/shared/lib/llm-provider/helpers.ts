@@ -6,7 +6,7 @@
  */
 
 import { getActiveLlmProvider } from './index'
-import { withRetry } from '../utils/retry'
+import { NonRetryableError, withRetry } from '../utils/retry'
 import type Anthropic from '@anthropic-ai/sdk'
 
 /**
@@ -61,9 +61,30 @@ export function extractTextFromLlmResponse(
 export async function createSummarizerText(
   client: Anthropic,
   request: Omit<Anthropic.MessageCreateParamsNonStreaming, 'max_tokens'>,
+  signal?: AbortSignal,
 ): Promise<string | null> {
+  const create = async (
+    params: Anthropic.MessageCreateParamsNonStreaming,
+  ): Promise<Anthropic.Message> => {
+    if (signal?.aborted) {
+      throw new NonRetryableError('Summarizer request aborted')
+    }
+    try {
+      return signal
+        ? await client.messages.create(params, { signal })
+        : await client.messages.create(params)
+    } catch (error) {
+      // An aborted provider request must not enter withRetry's backoff loop or
+      // start another billable attempt after its caller has already fallen back.
+      if (signal?.aborted) {
+        throw new NonRetryableError('Summarizer request aborted')
+      }
+      throw error
+    }
+  }
+
   const response = await withRetry(() =>
-    client.messages.create({ ...request, max_tokens: SUMMARIZER_MAX_TOKENS }),
+    create({ ...request, max_tokens: SUMMARIZER_MAX_TOKENS }),
   )
   const text = extractTextFromLlmResponse(response)
   // Retry on ANY text-less response, not just stop_reason 'max_tokens' — some
@@ -74,7 +95,7 @@ export async function createSummarizerText(
 
   try {
     const retried = await withRetry(() =>
-      client.messages.create({
+      create({
         ...request,
         max_tokens: SUMMARIZER_MAX_TOKENS,
         thinking: { type: 'enabled', budget_tokens: SUMMARIZER_THINKING_BUDGET },

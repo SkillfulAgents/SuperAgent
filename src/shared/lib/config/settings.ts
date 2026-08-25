@@ -108,6 +108,8 @@ export interface AppPreferences {
   autoSleepTimeoutMinutes?: number
   /** Pre-start the agent container when the user begins typing a first message. */
   warmStartOnType?: boolean
+  /** MicroVM-only. Resume mid-turn sessions after unexpected VM death. Default on. */
+  autoResumeOnUnexpectedDeath?: boolean
   autoDeleteInactiveDays?: number
   setupCompleted?: boolean
   accountProvider?: AccountProviderType
@@ -135,6 +137,13 @@ export interface AppPreferences {
   browserbaseProxyCountry?: string
   browserbaseProxyState?: string
   browserbaseProxyCity?: string
+}
+
+/** Default-on MicroVM preference; other runtimes ignore this setting. */
+export function isAutoResumeOnUnexpectedDeathEnabled(
+  settings?: { app?: Pick<AppPreferences, 'autoResumeOnUnexpectedDeath'> } | null,
+): boolean {
+  return settings?.app?.autoResumeOnUnexpectedDeath !== false
 }
 
 export interface AuthSettings {
@@ -292,7 +301,11 @@ export interface AppSettings {
   platformNotifications?: PlatformNotificationsSettings
   /** APNs relay push delivery for the native iOS companion app. */
   push?: PushSettings
-  /** Anthropic SDK tool search — defaults on; passed as `ENABLE_TOOL_SEARCH` to the container. */
+  /**
+   * Master switch for CLI tool search. Only ever switches it OFF: whether it
+   * may be on is the active provider's call, because the endpoint has to
+   * expand deferred tools (see BaseLlmProvider.toolSearchEnv).
+   */
   enableToolSearch?: boolean
   /** Launch policies for subagents (Task/Agent) and workflows (Workflow tool). */
   agentCapabilities?: AgentCapabilitySettings
@@ -426,6 +439,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     showMenuBarIcon: true,
     autoSleepTimeoutMinutes: 30,
     warmStartOnType: true,
+    autoResumeOnUnexpectedDeath: true,
     globalDispatchShortcut: DEFAULT_GLOBAL_DISPATCH_SHORTCUT,
     notifications: {
       enabled: true,

@@ -31,6 +31,7 @@ import {
   getCustomEnvVars,
   DEFAULT_SETTINGS,
   DEFAULT_AUTH_SETTINGS,
+  isAutoResumeOnUnexpectedDeathEnabled,
 } from './settings'
 import type { AppSettings } from './settings'
 
@@ -1366,6 +1367,10 @@ describe('DEFAULT_SETTINGS', () => {
     expect(DEFAULT_SETTINGS.app?.showMenuBarIcon).toBe(true)
     expect(DEFAULT_SETTINGS.app?.autoSleepTimeoutMinutes).toBe(30)
     expect(DEFAULT_SETTINGS.app?.warmStartOnType).toBe(true)
+    expect(DEFAULT_SETTINGS.app?.autoResumeOnUnexpectedDeath).toBe(true)
+    expect(isAutoResumeOnUnexpectedDeathEnabled(undefined)).toBe(true)
+    expect(isAutoResumeOnUnexpectedDeathEnabled({ app: {} })).toBe(true)
+    expect(isAutoResumeOnUnexpectedDeathEnabled({ app: { autoResumeOnUnexpectedDeath: false } })).toBe(false)
   })
 
   it('has expected notification defaults', () => {

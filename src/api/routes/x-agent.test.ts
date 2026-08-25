@@ -546,16 +546,20 @@ describe('/invoke', () => {
     expect(body).toEqual({ sessionId: 'new-sess-id', status: 'running' })
     expect(mockEnsureRunning).toHaveBeenCalledWith(TARGET_SLUG)
     expect(mockCreateSession).toHaveBeenCalledWith(
-      expect.objectContaining({ initialMessage: 'hello' }),
+      expect.objectContaining({
+        initialMessage: 'hello',
+        metadata: { isAutomated: true },
+      }),
     )
     expect(mockCreateSession.mock.calls[0][0]).not.toHaveProperty('initialMessageUuid')
     expect(mockReserveSessionOwnership).toHaveBeenCalledWith(TARGET_SLUG, 'new-sess-id')
     expect(mockReserveSessionOwnership.mock.invocationCallOrder[0]).toBeLessThan(
       mockMarkSessionActive.mock.invocationCallOrder[0],
     )
-    expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(
+    expect(mockRegisterSession).toHaveBeenCalledWith(
       TARGET_SLUG,
       'new-sess-id',
+      expect.any(String),
       expect.objectContaining({ invokedByAgentSlug: CALLER_SLUG }),
     )
   })
@@ -587,6 +591,7 @@ describe('/invoke', () => {
       TARGET_SLUG,
       'new-sess-id',
       'Invoked by Business Analyst Agent',
+      expect.objectContaining({ invokedByAgentSlug: CALLER_SLUG }),
     )
   })
 
@@ -611,6 +616,7 @@ describe('/invoke', () => {
       TARGET_SLUG,
       'new-sess-id',
       `Invoked by ${CALLER_SLUG}`,
+      expect.objectContaining({ invokedByAgentSlug: CALLER_SLUG }),
     )
   })
 
@@ -661,9 +667,10 @@ describe('/invoke', () => {
         userId: OTHER_USER_ID,
       }),
     ])
-    expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(
+    expect(mockRegisterSession).toHaveBeenCalledWith(
       TARGET_SLUG,
       'new-sess-id',
+      expect.any(String),
       expect.objectContaining({ createdByUserId: OTHER_USER_ID }),
     )
   })
@@ -693,9 +700,10 @@ describe('/invoke', () => {
     expect(targetAuthors).toEqual([
       expect.objectContaining({ userId: OTHER_USER_ID }),
     ])
-    expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(
+    expect(mockRegisterSession).toHaveBeenCalledWith(
       TARGET_SLUG,
       'new-sess-id',
+      expect.any(String),
       expect.objectContaining({ createdByUserId: OTHER_USER_ID }),
     )
   })
@@ -719,9 +727,10 @@ describe('/invoke', () => {
     expect(targetAuthors).toEqual([
       expect.objectContaining({ userId: OWNER_USER_ID }),
     ])
-    expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(
+    expect(mockRegisterSession).toHaveBeenCalledWith(
       TARGET_SLUG,
       'new-sess-id',
+      expect.any(String),
       expect.objectContaining({ createdByUserId: OWNER_USER_ID }),
     )
   })
@@ -749,9 +758,10 @@ describe('/invoke', () => {
       .from(schema.messageAuthor)
       .where(eq(schema.messageAuthor.sessionId, 'new-sess-id'))
     expect(targetAuthors).toEqual([])
-    expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(
+    expect(mockRegisterSession).toHaveBeenCalledWith(
       TARGET_SLUG,
       'new-sess-id',
+      expect.any(String),
       { invokedByAgentSlug: CALLER_SLUG },
     )
   })
@@ -781,6 +791,7 @@ describe('/invoke', () => {
       'existing-sess',
       'follow-up',
       expect.any(String),
+      { isAutomated: true },
     )
     const sentMessageUuid = mockSendMessage.mock.calls[0][2]
     const targetAuthors = await testDb
@@ -1363,7 +1374,12 @@ describe('/invoke', () => {
       sessionId: 'existing-sess',
     })
     expect(res.status).toBe(200)
-    expect(mockSendMessage).toHaveBeenCalledWith('existing-sess', 'follow-up')
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      'existing-sess',
+      'follow-up',
+      undefined,
+      { isAutomated: true },
+    )
     expect(mockCreateSession).not.toHaveBeenCalled()
   })
 
@@ -1559,6 +1575,30 @@ describe('/get-transcript', () => {
     expect(body.status).toBe('idle')
     expect(body.messages).toHaveLength(2)
     expect(body.messages[0]).toEqual({ role: 'user', content: 'hello' })
+    expect(body.messages[1]).toEqual({ role: 'assistant', content: 'hi' })
+  })
+
+  it('keeps tool stubs when fullTranscript is true', async () => {
+    reviewDecisions.push('allow')
+    mockGetTranscript.mockResolvedValue([
+      { type: 'user', message: { role: 'user', content: 'hello' } },
+      {
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: 'hi' },
+            { type: 'tool_use', id: 't1', name: 'Bash', input: {} },
+          ],
+        },
+      },
+    ])
+    const res = await authedFetch('/x-agent/get-transcript', {
+      slug: TARGET_SLUG,
+      sessionId: 'sess-1',
+      fullTranscript: true,
+    })
+    const body = await res.json()
     expect(body.messages[1]).toEqual({
       role: 'assistant',
       content: 'hi\n[tool_use: Bash]',
@@ -1717,6 +1757,87 @@ describe('/get-transcript', () => {
     // must short-circuit before the response transcript is assembled.
     expect(mockGetTranscript).toHaveBeenCalledTimes(1)
   })
+
+  it('returns only the last `limit` messages and the total count', async () => {
+    reviewDecisions.push('allow')
+    mockGetTranscript.mockResolvedValue([
+      { type: 'user', message: { role: 'user', content: 'first' } },
+      { type: 'assistant', message: { role: 'assistant', content: 'one' } },
+      { type: 'user', message: { role: 'user', content: 'second' } },
+      { type: 'assistant', message: { role: 'assistant', content: 'two' } },
+      { type: 'assistant', message: { role: 'assistant', content: 'three' } },
+    ])
+    const res = await authedFetch('/x-agent/get-transcript', {
+      slug: TARGET_SLUG,
+      sessionId: 'sess-1',
+      limit: 2,
+    })
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.total).toBe(5)
+    expect(body.messages).toHaveLength(2)
+    expect(body.messages.map((m: { content: string }) => m.content)).toEqual(['two', 'three'])
+  })
+
+  it('returns the full transcript and total when limit is omitted', async () => {
+    reviewDecisions.push('allow')
+    mockGetTranscript.mockResolvedValue([
+      { type: 'user', message: { role: 'user', content: 'a' } },
+      { type: 'assistant', message: { role: 'assistant', content: 'b' } },
+    ])
+    const res = await authedFetch('/x-agent/get-transcript', {
+      slug: TARGET_SLUG,
+      sessionId: 'sess-1',
+    })
+    const body = await res.json()
+    expect(body.total).toBe(2)
+    expect(body.messages).toHaveLength(2)
+  })
+
+  it('rejects limit below 1 and above 500', async () => {
+    reviewDecisions.push('allow')
+    for (const limit of [0, 501]) {
+      const res = await authedFetch('/x-agent/get-transcript', {
+        slug: TARGET_SLUG,
+        sessionId: 'sess-1',
+        limit,
+      })
+      expect(res.status).toBe(400)
+    }
+  })
+
+  it('slices after the quiet view, so limit 1 is the last spoken turn', async () => {
+    reviewDecisions.push('allow')
+    mockGetTranscript.mockResolvedValue([
+      {
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'thinking', thinking: 'do not leak this' }],
+        },
+      },
+      {
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'secret' } }],
+        },
+      },
+      { type: 'assistant', message: { role: 'assistant', content: 'final' } },
+    ])
+    const res = await authedFetch('/x-agent/get-transcript', {
+      slug: TARGET_SLUG,
+      sessionId: 'sess-1',
+      limit: 1,
+    })
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.total).toBe(2)
+    expect(body.messages).toHaveLength(1)
+    expect(body.messages[0].content).toBe('final')
+    expect(JSON.stringify(body)).not.toContain('do not leak this')
+    expect(JSON.stringify(body)).not.toContain('secret')
+  })
 })
 
 describe('resolveSyncWaitTimeoutMs', () => {
@@ -1778,7 +1899,12 @@ describe('display-slug resolution', () => {
     await setPolicy(CALLER_SLUG, 'invoke', TARGET_ID, 'allow')
     const res = await authedFetch('/x-agent/invoke', { slug: DISPLAY_SLUG, prompt: 'hello' })
     expect(res.status).toBe(200)
-    expect(mockRegisterSession).toHaveBeenCalledWith(TARGET_ID, expect.any(String), expect.any(String))
+    expect(mockRegisterSession).toHaveBeenCalledWith(
+      TARGET_ID,
+      expect.any(String),
+      expect.any(String),
+      expect.objectContaining({ invokedByAgentSlug: CALLER_SLUG }),
+    )
   })
 
   it('/invoke accepts a wrong-prefix slug (the prefix is decorative)', async () => {

@@ -32,6 +32,7 @@ describe('activity hooks', () => {
       generatedAt: '2026-07-09T12:00:00.000Z',
       cronByTaskId: { task: [{ scheduledAt: '2026-07-09T10:00:00.000Z', status: 'succeeded' }] },
       webhookByTriggerId: { hook: [] },
+      inboundXAgent: { total: 0, lastInvokedAt: null, activity: [] },
       connectionById: { 'account-a': [{ date: '2026-07-09', succeeded: 1, failed: 0 }] },
     }
     mockApiFetch.mockResolvedValue(jsonResponse(payload))

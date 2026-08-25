@@ -12,6 +12,7 @@ import {
 import {
   listSessions,
   listSessionsByIds,
+  sortSessionsNewestFirst,
   getSession,
   getSessionMessages,
   getSessionMessagesPage,
@@ -306,18 +307,20 @@ describe('session-service', () => {
       expect(sessions[0].messageCount).toBe(0)
     })
 
-    it('excludes scheduled/webhook sessions when excludeAutomated is set', async () => {
+    it('excludes scheduled/webhook/x-agent sessions when excludeAutomated is set', async () => {
       await createSessionFile('test-agent', 'manual-session', SAMPLE_JSONL_ENTRIES)
       await createSessionFile('test-agent', 'scheduled-session', SAMPLE_JSONL_ENTRIES)
       await createSessionFile('test-agent', 'webhook-session', SAMPLE_JSONL_ENTRIES)
+      await createSessionFile('test-agent', 'x-agent-session', SAMPLE_JSONL_ENTRIES)
       await createSessionMetadata('test-agent', {
         'manual-session': { name: 'Manual' },
         'scheduled-session': { name: 'Scheduled', isScheduledExecution: true, scheduledTaskId: 'task-1' },
         'webhook-session': { name: 'Webhook', isWebhookExecution: true, webhookTriggerId: 'trigger-1' },
+        'x-agent-session': { name: 'X-Agent', invokedByAgentSlug: 'caller-agent' },
       })
 
       const allSessions = await listSessions('test-agent')
-      expect(allSessions.length).toBe(3)
+      expect(allSessions.length).toBe(4)
 
       const filtered = await listSessions('test-agent', { excludeAutomated: true })
       expect(filtered.length).toBe(1)
@@ -384,6 +387,99 @@ describe('session-service', () => {
       const filtered = await listSessions('test-agent', { excludeAutomated: true })
       expect(filtered.length).toBe(1)
       expect(filtered[0].name).toBe('Promoted Pending')
+    })
+
+    it('filters newer hidden automations before ordering and limit', async () => {
+      await createSessionsDir('test-agent')
+      await createSessionMetadata('test-agent', {
+        'manual-visible': {
+          name: 'Manual',
+          createdAt: '2026-01-24T10:00:00.000Z',
+        },
+        'scheduled-hidden': {
+          name: 'Scheduled',
+          createdAt: '2026-01-24T11:00:00.000Z',
+          isScheduledExecution: true,
+        },
+        'webhook-hidden': {
+          name: 'Webhook',
+          createdAt: '2026-01-24T12:00:00.000Z',
+          isWebhookExecution: true,
+        },
+        'chat-hidden': {
+          name: 'Chat',
+          createdAt: '2026-01-24T13:00:00.000Z',
+          isChatIntegrationSession: true,
+        },
+      })
+
+      const sessions = await listSessions('test-agent', {
+        excludeAutomated: true,
+        sortBy: 'last_activity_at',
+        limit: 1,
+      })
+
+      expect(sessions.map((session) => session.id)).toEqual(['manual-visible'])
+    })
+
+    it('keeps promoted automation eligible before ordering and limit', async () => {
+      await createSessionsDir('test-agent')
+      await createSessionMetadata('test-agent', {
+        'manual-visible': {
+          createdAt: '2026-01-24T10:00:00.000Z',
+        },
+        'promoted-scheduled': {
+          createdAt: '2026-01-24T11:00:00.000Z',
+          isScheduledExecution: true,
+          promotedToInteractive: true,
+        },
+        'newer-hidden': {
+          createdAt: '2026-01-24T12:00:00.000Z',
+          isScheduledExecution: true,
+        },
+      })
+
+      const sessions = await listSessions('test-agent', {
+        excludeAutomated: true,
+        sortBy: 'last_activity_at',
+        limit: 1,
+      })
+
+      expect(sessions.map((session) => session.id)).toEqual(['promoted-scheduled'])
+    })
+
+    it('uses createdAt fallback, sorts invalid dates last, and breaks ties by id', () => {
+      const ordered = sortSessionsNewestFirst([
+        {
+          id: 'z-tied',
+          createdAt: new Date('2026-01-24T11:00:00.000Z'),
+          lastActivityAt: null,
+        },
+        {
+          id: 'older',
+          createdAt: new Date('2026-01-24T10:00:00.000Z'),
+          lastActivityAt: null,
+        },
+        {
+          id: 'a-tied',
+          createdAt: new Date('2026-01-24T11:00:00.000Z'),
+          lastActivityAt: null,
+        },
+        {
+          id: 'z-invalid',
+          createdAt: new Date('invalid'),
+          lastActivityAt: null,
+        },
+        {
+          id: 'a-invalid',
+          createdAt: new Date('invalid'),
+          lastActivityAt: null,
+        },
+      ])
+
+      expect(ordered.map((session) => session.id)).toEqual([
+        'a-tied', 'z-tied', 'older', 'a-invalid', 'z-invalid',
+      ])
     })
 
     it('sorts sessions by last activity (newest first)', async () => {
@@ -3742,15 +3838,19 @@ describe('session-service', () => {
       await createSessionFile('test-agent', 'cron-run', SAMPLE_JSONL_ENTRIES)
       await createSessionFile('test-agent', 'promoted', SAMPLE_JSONL_ENTRIES)
       await createSessionFile('test-agent', 'chat-run', SAMPLE_JSONL_ENTRIES)
+      await createSessionFile('test-agent', 'x-agent-run', SAMPLE_JSONL_ENTRIES)
       await createSessionMetadata('test-agent', {
         'cron-run': { createdAt: '2026-01-01T00:00:00Z', isScheduledExecution: true },
         promoted: { createdAt: '2026-01-01T00:00:00Z', isScheduledExecution: true, promotedToInteractive: true },
         'chat-run': { createdAt: '2026-01-01T00:00:00Z', isChatIntegrationSession: true },
+        'x-agent-run': { createdAt: '2026-01-01T00:00:00Z', invokedByAgentSlug: 'caller-agent' },
       })
 
-      const sessions = await listSessionsByIds('test-agent', ['cron-run', 'promoted', 'chat-run'], {
-        excludeAutomated: true,
-      })
+      const sessions = await listSessionsByIds(
+        'test-agent',
+        ['cron-run', 'promoted', 'chat-run', 'x-agent-run'],
+        { excludeAutomated: true },
+      )
       expect(sessions.map((s) => s.id)).toEqual(['promoted'])
     })
 

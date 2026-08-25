@@ -91,6 +91,24 @@ describe('MessageItem', () => {
       expect(link).toHaveAttribute('href', 'https://example.com')
     })
 
+    it('renders a container screenshot through its verified tool-result alias', () => {
+      const fileUrl = 'file:///home/claude/.agent-browser/tmp/screenshots/shot.png'
+      const mediaUrl = '/api/agents/a/sessions/s/media/ref_123'
+      const msg = createAssistantMessage({
+        content: { text: `![Captured page](${fileUrl})` },
+      })
+
+      const { container } = render(
+        <MessageItem
+          message={msg}
+          embeddedImageAliases={new Map([[fileUrl, mediaUrl]])}
+        />
+      )
+
+      expect(container.querySelector('img')).toHaveAttribute('src', mediaUrl)
+      expect(container.querySelector('img')).toHaveAttribute('alt', 'Captured page')
+    })
+
     it('renders code blocks', () => {
       const msg = createAssistantMessage({ content: { text: '```js\nconsole.log("hi")\n```' } })
       render(<MessageItem message={msg} />)

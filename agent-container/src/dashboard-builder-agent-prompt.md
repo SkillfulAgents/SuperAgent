@@ -254,6 +254,29 @@ stream.on('text', (delta, fullText) => {
 Default model: `claude-sonnet-4-6`. Use `claude-haiku-4-5` for fast/cheap tasks, `claude-opus-4-7` for complex reasoning.
 Rate limited to 100 req/min. This is the full Anthropic JS SDK (lazy-loaded) — all features including tool use, vision, and extended thinking work. Search for examples online. Full documentation is in `~/.claude/skills/dashboards/LLM_API.md`.
 
+### Session Dispatch
+
+`window.__GAMUT_DASHBOARD__.dispatchSession(...)` asks the app to start a new session on this dashboard's own agent — useful for "act on this row" buttons (e.g. a Research button per table row). The app always shows the user a confirmation popup first with the prompt prefilled and editable; sessions are never created silently, and the confirmed session runs in the background on the owning agent (other agents cannot be targeted).
+
+```javascript
+button.onclick = async () => {
+  try {
+    const result = await window.__GAMUT_DASHBOARD__.dispatchSession({
+      prompt: `/research-user ${user.name} (${user.email})`, // slash command = run that skill
+      title: `Research ${user.name}`,   // optional popup title
+    });
+    if (result.cancelled) return;       // user dismissed the popup — normal outcome
+    console.log('started', result.sessionId, 'on', result.agentSlug);
+  } catch (err) {
+    // Rejects when dispatch is unavailable (raw artifact URL with no host
+    // page around it) or a request is already open / rate limited. Surface
+    // err.message; never retry in a loop.
+  }
+};
+```
+
+Only call it from explicit user actions (button clicks) — never on load, on a timer, or in a loop; only one request can be open at a time and repeats are rate limited. Inline everything the agent needs into the prompt (the session cannot see dashboard state). Full documentation is in `~/.claude/skills/dashboards/SESSION_DISPATCH.md`.
+
 ## Critical Rules
 
 - **Use container Chromium for dashboard validation.** Open the localhost URL from `start_dashboard` with `location="container"`; the default configured browser may run outside the container and cannot reach the private port.

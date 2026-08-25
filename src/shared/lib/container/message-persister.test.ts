@@ -72,6 +72,7 @@ vi.mock('fs', () => ({
 }))
 vi.mock('@shared/lib/utils/file-storage', () => ({
   getAgentSessionsDir: vi.fn(() => '/mock/sessions'),
+  getSessionJsonlPath: vi.fn(() => '/mock/sessions/test-session-1.jsonl'),
 }))
 
 // Mock computer-use modules
@@ -174,6 +175,7 @@ vi.mock('./container-manager', () => ({
 
 // Import after mocks are set up
 import { messagePersister, redactStreamedToolInput, WaitForIdleTimeoutError } from './message-persister'
+import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 
@@ -253,6 +255,9 @@ function createMockClient(): ContainerClient & {
     }),
     on: vi.fn(),
     off: vi.fn(),
+    onFatalResult: vi.fn(() => 'settle'),
+    observeUnexpectedDeath: vi.fn(async () => ({ action: 'settle' })),
+    getRuntimeGenerationId: vi.fn(() => null),
   }
 
   return client as any
@@ -334,6 +339,393 @@ describe('MessagePersister', () => {
       })
 
       expect(mockRecordSessionActivity).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('completion notification response selection', () => {
+    it('passes only the newest merged textual assistant response at authoritative idle', async () => {
+      mockStat.mockResolvedValueOnce({ size: 12_345 })
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'capabilities',
+        session_state_events: true,
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'working-entry',
+        message: {
+          id: 'msg-working',
+          content: [{ type: 'text', text: 'I am still working.' }],
+        },
+      })
+      // A new late frame for that older message ID also merges into its
+      // original UI bubble; arrival order must not make it the final answer.
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'working-late-tool-entry',
+        message: {
+          id: 'msg-working',
+          content: [
+            { type: 'tool_use', id: 'tool-late', name: 'Read', input: {} },
+          ],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'final-thinking-entry',
+        message: {
+          id: 'msg-final',
+          content: [{ type: 'thinking', thinking: 'Hidden reasoning' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'final-text-entry-1',
+        message: {
+          id: 'msg-final',
+          content: [{ type: 'text', text: 'Final ' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'final-tool-entry',
+        message: {
+          id: 'msg-final',
+          content: [
+            { type: 'tool_use', id: 'tool-1', name: 'Read', input: {} },
+          ],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'final-text-entry-2',
+        message: {
+          id: 'msg-final',
+          content: [{ type: 'text', text: 'answer.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'working-late-after-final',
+        message: {
+          id: 'msg-working',
+          content: [
+            { type: 'tool_use', id: 'tool-latest', name: 'Read', input: {} },
+          ],
+        },
+      })
+      // Replaying an older group after the final group must not roll the
+      // candidate backward either; transcript UUID dedupe is turn-wide.
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'working-entry',
+        replayed: true,
+        message: {
+          id: 'msg-working',
+          content: [{ type: 'text', text: 'I am still working.' }],
+        },
+      })
+      // A reattached CLI can replay a persisted frame verbatim. The UI
+      // deduplicates by UUID, so the notification source must do the same.
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'final-text-entry-2',
+        replayed: true,
+        message: {
+          id: 'msg-final',
+          content: [{ type: 'text', text: 'answer.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+
+      expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'session_state_changed',
+        state: 'idle',
+      })
+
+      const call = vi.mocked(notificationManager.triggerSessionComplete).mock.calls.at(-1)
+      expect(call?.slice(0, 2)).toEqual([SESSION_ID, AGENT_SLUG])
+      expect(call?.[2]?.responseText).toBe('Final answer.')
+      await expect(call?.[2]?.responseTranscriptEndOffset).resolves.toBe(12_345)
+    })
+
+    it('dispatches completion without waiting for the transcript stat', async () => {
+      let resolveStat: ((value: { size: number }) => void) | undefined
+      mockStat.mockImplementationOnce(
+        () => new Promise<{ size: number }>((resolve) => {
+          resolveStat = resolve
+        }),
+      )
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'final-entry',
+        message: {
+          id: 'msg-final',
+          content: [{ type: 'text', text: 'Finished.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
+      const offset = vi.mocked(notificationManager.triggerSessionComplete)
+        .mock.calls[0][2]?.responseTranscriptEndOffset
+      resolveStat?.({ size: 99 })
+      await expect(offset).resolves.toBe(99)
+    })
+
+    it('does not reuse working text when the newest assistant item is tool-only', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'working-entry',
+        message: {
+          id: 'msg-working',
+          content: [{ type: 'text', text: 'Earlier working note.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'tool-only-entry',
+        message: {
+          id: 'msg-tool-only',
+          content: [
+            { type: 'tool_use', id: 'tool-2', name: 'Read', input: {} },
+          ],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledWith(
+        SESSION_ID,
+        AGENT_SLUG,
+        {
+          responseText: '',
+          responseTranscriptEndOffset: expect.any(Promise),
+        },
+      )
+    })
+
+    it('does not reuse the prior answer when a queued turn produces no assistant item', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'capabilities',
+        session_state_events: true,
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'turn-a-answer',
+        message: {
+          id: 'msg-turn-a',
+          content: [{ type: 'text', text: 'Answer for the first request.' }],
+        },
+      })
+
+      // The second request is queued before turn A's result. It then ends with
+      // no assistant frame (for example, a prompt hook blocks it).
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+      // A delayed frame for turn A must still merge into turn A in the UI; it
+      // cannot resurrect A as turn B's notification response.
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'turn-a-late-frame',
+        message: {
+          id: 'msg-turn-a',
+          content: [{ type: 'text', text: 'Stale turn-A text.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 0,
+        usage: { input_tokens: 0, output_tokens: 0 },
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'session_state_changed',
+        state: 'idle',
+      })
+
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledWith(
+        SESSION_ID,
+        AGENT_SLUG,
+        { responseText: '', responseTranscriptEndOffset: expect.any(Promise) },
+      )
+    })
+
+    it.each([
+      {
+        label: 'resume',
+        result: {
+          type: 'result',
+          subtype: 'resume',
+          is_error: false,
+          num_turns: 1,
+          usage: { input_tokens: 1, output_tokens: 0 },
+        },
+      },
+      {
+        label: 'graceful interrupt',
+        result: {
+          type: 'result',
+          subtype: 'error_during_execution',
+          is_error: true,
+          terminal_reason: 'aborted_tools',
+          num_turns: 1,
+          usage: { input_tokens: 1, output_tokens: 0 },
+        },
+      },
+    ])('does not consume the queued-turn guard on $label results', ({ result }) => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'capabilities',
+        session_state_events: true,
+      })
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      mockClient._sendMessage(result)
+
+      const state = (messagePersister as any).streamingStates.get(SESSION_ID)
+      expect(state.queuedTurnCount).toBe(1)
+      expect(state.resetAssistantBeforeNextTurnOutput).toBe(false)
+
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+
+      expect(state.queuedTurnCount).toBe(0)
+      expect(state.resetAssistantBeforeNextTurnOutput).toBe(true)
+    })
+
+    it('settles a self-healed running event followed by idle without a new result', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'capabilities',
+        session_state_events: true,
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'completed-answer',
+        message: {
+          id: 'msg-completed',
+          content: [{ type: 'text', text: 'Completed.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'session_state_changed',
+        state: 'idle',
+      })
+      vi.mocked(notificationManager.triggerSessionComplete).mockClear()
+
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'session_state_changed',
+        state: 'running',
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'session_state_changed',
+        state: 'idle',
+      })
+
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledWith(
+        SESSION_ID,
+        AGENT_SLUG,
+        { responseText: '', responseTranscriptEndOffset: expect.any(Promise) },
+      )
+    })
+
+    it('does not notify for a modern success-subtype error result', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'capabilities',
+        session_state_events: true,
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: true,
+        terminal_reason: 'api_error',
+        errors: ['provider failed'],
+        num_turns: 0,
+        usage: { input_tokens: 0, output_tokens: 0 },
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'session_state_changed',
+        state: 'idle',
+      })
+
+      expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
+    })
+
+    it('does not notify when a legacy turn exits for resume', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'resume-answer',
+        message: {
+          id: 'msg-resume',
+          content: [{ type: 'text', text: 'Pausing for resume.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'resume',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+
+      expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
     })
   })
 
@@ -3706,6 +4098,24 @@ describe('MessagePersister', () => {
       })
     })
 
+    it('promotes an x-agent session when user input is requested', async () => {
+      vi.mocked(getSessionMetadata).mockResolvedValueOnce({
+        invokedByAgentSlug: 'caller-agent',
+      })
+
+      simulateToolUse('AskUserQuestion', 'tool-1', {
+        questions: [{ question: 'Pick?', header: 'Q', options: [], multiSelect: false }],
+      })
+
+      await vi.waitFor(() => {
+        expect(updateSessionMetadata).toHaveBeenCalledWith(
+          AGENT_SLUG,
+          SESSION_ID,
+          { promotedToInteractive: true },
+        )
+      })
+    })
+
     it('does not promote a regular (non-automated) session', async () => {
       vi.mocked(getSessionMetadata).mockResolvedValueOnce({
         name: 'Regular session',
@@ -3984,6 +4394,14 @@ describe('MessagePersister', () => {
 
     it('releases the stream when a webhook session settles', async () => {
       await resubscribeWithMetadata({ isWebhookExecution: true, webhookTriggerId: 'trigger-1' })
+
+      settleSession()
+
+      expect(messagePersister.isSubscribed(SESSION_ID)).toBe(false)
+    })
+
+    it('releases the stream when an x-agent session settles', async () => {
+      await resubscribeWithMetadata({ invokedByAgentSlug: 'caller-agent' })
 
       settleSession()
 
@@ -6998,5 +7416,167 @@ describe('MessagePersister connection lost mid-turn', () => {
     await dropConnection()
 
     expect(sseEvents.filter((e) => e.type === 'session_error')).toHaveLength(0)
+  })
+})
+
+describe('MessagePersister mid-turn recovery snapshot', () => {
+  const SESSION_ID = 'recover-session'
+  const AGENT_SLUG = 'recover-agent'
+  let mockClient: ReturnType<typeof createMockClient>
+
+  beforeEach(async () => {
+    mockClient = createMockClient()
+    await messagePersister.subscribeToSession(SESSION_ID, mockClient, SESSION_ID, AGENT_SLUG)
+  })
+
+  afterEach(() => {
+    messagePersister.unsubscribeFromSession(SESSION_ID)
+    vi.clearAllMocks()
+  })
+
+  it('snapshots active sessions and skips session_error while they are recovering', () => {
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    expect(messagePersister.snapshotMidTurnSessions(AGENT_SLUG)).toEqual([SESSION_ID])
+    expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(true)
+    expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+
+    messagePersister.markAllSessionsInactiveForAgent(AGENT_SLUG)
+    expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+    expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(true)
+  })
+
+  it('snapshots only the requested session ids', async () => {
+    const otherId = 'recover-session-2'
+    await messagePersister.subscribeToSession(otherId, mockClient, otherId, AGENT_SLUG)
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    messagePersister.markSessionActive(otherId, AGENT_SLUG)
+
+    expect(messagePersister.snapshotMidTurnSessions(AGENT_SLUG, [SESSION_ID])).toEqual([SESSION_ID])
+    expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(true)
+    expect(messagePersister.isSessionRecovering(otherId)).toBe(false)
+
+    messagePersister.unsubscribeFromSession(otherId)
+  })
+
+  it('settles recovering sessions when the agent is stopped', () => {
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    messagePersister.snapshotMidTurnSessions(AGENT_SLUG)
+    messagePersister.markAllSessionsInactiveForAgent(AGENT_SLUG, { settleRecovering: true })
+    expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+    expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(false)
+  })
+
+  it('does not snapshot idle or interrupted sessions', async () => {
+    expect(messagePersister.snapshotMidTurnSessions(AGENT_SLUG)).toEqual([])
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    await messagePersister.markSessionInterrupted(SESSION_ID)
+    expect(messagePersister.snapshotMidTurnSessions(AGENT_SLUG)).toEqual([])
+  })
+
+  it('coalesces user text while recovering and keeps each message uuid', () => {
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    messagePersister.snapshotMidTurnSessions(AGENT_SLUG)
+    expect(messagePersister.coalesceIfRecovering(SESSION_ID, { uuid: 'u1', text: 'first' })).toBe(true)
+    expect(messagePersister.coalesceIfRecovering(SESSION_ID, { uuid: 'u2', text: 'second' })).toBe(true)
+    expect(messagePersister.takeCoalescedUserMessages(SESSION_ID)).toEqual([
+      { uuid: 'u1', text: 'first' },
+      { uuid: 'u2', text: 'second' },
+    ])
+    expect(messagePersister.coalesceIfRecovering('other', { uuid: 'u3', text: 'nope' })).toBe(false)
+  })
+
+  it('drops a coalesced user message by uuid', () => {
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    messagePersister.snapshotMidTurnSessions(AGENT_SLUG)
+    messagePersister.coalesceIfRecovering(SESSION_ID, { uuid: 'u1', text: 'first' })
+    messagePersister.coalesceIfRecovering(SESSION_ID, { uuid: 'u2', text: 'second' })
+    expect(messagePersister.dropCoalescedUserMessage(SESSION_ID, 'u1')).toBe(true)
+    expect(messagePersister.takeCoalescedUserMessages(SESSION_ID)).toEqual([{ uuid: 'u2', text: 'second' }])
+  })
+
+  it('does not log coalesced message content when settling', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    messagePersister.snapshotMidTurnSessions(AGENT_SLUG)
+    messagePersister.coalesceIfRecovering(SESSION_ID, { uuid: 'u1', text: 'secret user text' })
+    messagePersister.settleRecoveringSessions([SESSION_ID])
+    expect(warn).toHaveBeenCalled()
+    expect(warn.mock.calls.flat().join(' ')).not.toContain('secret user text')
+    warn.mockRestore()
+  })
+
+  it('settles recovering sessions as connection_lost and writes automation status', () => {
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    messagePersister.snapshotMidTurnSessions(AGENT_SLUG)
+    messagePersister.settleRecoveringSessions([SESSION_ID])
+    expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+    expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(false)
+    expect(finalizeAutomationStatus).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID, 'failed')
+  })
+
+  it('defers a fatal SIGKILL result to unexpected-death recovery', async () => {
+    const onDeath = vi.fn()
+    messagePersister.setUnexpectedDeathCallback(onDeath)
+    mockClient.onFatalResult = vi.fn(() => 'defer_for_recovery' as const)
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+    mockClient._sendMessage({
+      type: 'result',
+      subtype: 'error',
+      fatal: true,
+      error: 'The agent process was killed due to running out of memory.',
+    })
+
+    expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+    expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(false)
+    expect(onDeath).toHaveBeenCalledWith(AGENT_SLUG)
+    expect(messagePersister.consumeLastFatal(AGENT_SLUG)).toBe('oom_sigkill')
+    messagePersister.setUnexpectedDeathCallback(null)
+  })
+
+  it('does not snapshot a fatal SIGKILL when no recovery callback is registered', async () => {
+    messagePersister.setUnexpectedDeathCallback(null)
+    mockClient.onFatalResult = vi.fn(() => 'defer_for_recovery' as const)
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+    mockClient._sendMessage({
+      type: 'result',
+      subtype: 'error',
+      fatal: true,
+      error: 'The agent process was killed due to running out of memory.',
+    })
+
+    expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(false)
+    expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+  })
+
+  it('does not settle mid-turn on connection_closed when recovery is registered', async () => {
+    const otherId = 'recover-session-2'
+    const otherClient = createMockClient()
+    await messagePersister.subscribeToSession(otherId, otherClient, otherId, AGENT_SLUG)
+    const onDeath = vi.fn()
+    messagePersister.setUnexpectedDeathCallback(onDeath)
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    messagePersister.markSessionActive(otherId, AGENT_SLUG)
+
+    mockClient._messageCallback!({
+      type: 'connection_closed',
+      content: { type: 'connection_closed' },
+      timestamp: new Date(),
+      sessionId: SESSION_ID,
+    })
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(onDeath).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID)
+    expect(onDeath).toHaveBeenCalledTimes(1)
+    expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+    expect(messagePersister.isSessionActive(otherId)).toBe(true)
+    expect(messagePersister.isSessionRecovering(SESSION_ID)).toBe(false)
+    expect(messagePersister.isSessionRecovering(otherId)).toBe(false)
+    // Dead transport is detached so recovery's isSubscribed gate resubscribes.
+    expect(messagePersister.isSubscribed(SESSION_ID)).toBe(false)
+    expect(messagePersister.isSubscribed(otherId)).toBe(true)
+    messagePersister.setUnexpectedDeathCallback(null)
+    messagePersister.unsubscribeFromSession(otherId)
   })
 })

@@ -34,6 +34,11 @@ import {
   updateRemoteMcpEnvironment,
 } from '@shared/lib/container/connection-runtime-sync'
 import { parseRuntimeOptions, resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
+import {
+  sessionDashboardDispatchSchema,
+  type SessionDashboardDispatch,
+} from '@shared/lib/dashboard-dispatch-schema'
+import { getDashboardViewDispatchHostJs } from '../dashboard-view-dispatch-host'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
@@ -53,6 +58,9 @@ import type {
 import {
   listSessions,
   listSessionsByIds,
+  sortSessionsNewestFirst,
+  SESSIONS_LIST_MAX_LIMIT,
+  type SessionSortBy,
   getSessionSummary,
   readSessionMetadata,
   updateSessionName,
@@ -72,7 +80,8 @@ import {
   removeMessage,
   removeToolCall,
 } from '@shared/lib/services/session-service'
-import { getSessionJsonlPath, getAgentSessionsDir, readJsonlFile, writeJsonFileAtomic, displaySlug, createJsonArrayStringifyTransform } from '@shared/lib/utils/file-storage'
+import { decodeMediaRef, openMediaBlob } from '@shared/lib/services/session-media'
+import { getSessionJsonlPath, getAgentSessionsDir, readJsonlFile, writeJsonFileAtomic, displaySlug, createJsonArrayStringifyTransform, directoryExists } from '@shared/lib/utils/file-storage'
 import {
   MAX_UPLOAD_TOTAL_SIZE,
   UploadTooLargeError,
@@ -98,6 +107,7 @@ import {
   listScheduledTasks,
   listPendingScheduledTasks,
   listCancelledScheduledTasks,
+  listCompletedOneTimeTasks,
   cancelPendingWakeForSession,
   getPendingWakeForSession,
   listPendingWakesByAgent,
@@ -130,6 +140,7 @@ import {
 import { type ArtifactInfo, listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
 import { getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents, deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
+import { getInboundXAgentDetails } from '@shared/lib/services/inbound-x-agent-service'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
 import { isValidApiScope } from '@shared/lib/proxy/scope-matcher'
 import { isLabelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
@@ -148,6 +159,7 @@ import {
 import {
   exportAgentTemplate,
   exportAgentFull,
+  isHostExportBusy,
   importAgentFromTemplate,
   MAX_COMPRESSED_SIZE,
   installAgentFromSkillset,
@@ -191,6 +203,7 @@ import { pipeline as streamPipeline } from 'stream/promises'
 import pLimit from 'p-limit'
 import * as path from 'path'
 import type { ApiAgent } from '@shared/lib/types/api'
+import type { SessionInfo, SessionMetadataMap } from '@shared/lib/types/agent'
 import { toPublicChatIntegration } from '@shared/lib/chat-integrations/public'
 import { toPublicWebhookTrigger } from '@shared/lib/webhook-triggers/public'
 import {
@@ -403,12 +416,242 @@ function toSkillsetRef(config: Pick<SkillsetConfig, 'id' | 'url' | 'name' | 'pro
   }
 }
 
+const strictBooleanQuerySchema = z
+  .enum(['true', 'false'])
+  .transform((value) => value === 'true')
+
+const positiveIntegerQuerySchema = z
+  .string()
+  .regex(/^[1-9]\d*$/)
+  .transform(Number)
+  .refine((value) => Number.isSafeInteger(value))
+
+const sessionsListQuerySchema = z.object({
+  sortBy: z.literal('last_activity_at').optional(),
+  notable: strictBooleanQuerySchema.optional(),
+  limit: positiveIntegerQuerySchema.optional(),
+})
+
+const agentsListQuerySchema = z.object({
+  includeLatestVisibleSessionTail: strictBooleanQuerySchema.optional(),
+})
+
+// Agent-list hydration only needs enough recent display items to derive a
+// preview. Keep both item count and raw tail window far below the chat page
+// limits because this cost is multiplied by the number of agents.
+const LATEST_VISIBLE_SESSION_TAIL_LIMIT = 20
+const LATEST_VISIBLE_SESSION_TAIL_BYTE_BUDGET = 256 * 1024
+
+interface AgentSummaryOptions {
+  includeLatestVisibleSessionTail?: boolean
+  signal?: AbortSignal
+}
+
+function attentionSessionCountsOutsideLatest(
+  sessionId: string,
+  latestSessionId: string | undefined,
+  visibleSessionIds: Set<string>,
+  sessionMetadata: SessionMetadataMap,
+): boolean {
+  if (sessionId === latestSessionId) return false
+  if (visibleSessionIds.has(sessionId)) return true
+
+  // An ID absent from the visible snapshot is either confirmed-hidden or
+  // unresolved (for example a just-created or stale attention source). Only a
+  // metadata-confirmed hidden automation is safe to ignore. Unknown ordinary
+  // and promoted sessions conservatively count as outside.
+  return !isHiddenAutomatedSession(sessionMetadata[sessionId])
+}
+
+function getAttentionOutsideLatest(
+  agentSlug: string,
+  visibleSessions: SessionInfo[],
+  unreadSessionIds: Set<string>,
+  sessionMetadata: SessionMetadataMap,
+): NonNullable<ApiAgent['attentionOutsideLatest']> {
+  const latestSessionId = visibleSessions[0]?.id
+  const visibleSessionIds = new Set(visibleSessions.map((session) => session.id))
+  const countsOutside = (sessionId: string) => attentionSessionCountsOutsideLatest(
+    sessionId,
+    latestSessionId,
+    visibleSessionIds,
+    sessionMetadata,
+  )
+
+  const hasUnreadNotification = [...unreadSessionIds].some(countsOutside)
+
+  let hasPendingInput = false
+  let observedPendingInput = false
+
+  // The registry is authoritative for open requests and exposes explicit
+  // session attribution when it exists. Agent-scoped requests have no unique
+  // session, so they must conservatively count as outside latest.
+  for (const request of userInputRequestManager.getOpenRequestsForAgent(agentSlug)) {
+    if (!request.blocking || request.autoApproved) continue
+    observedPendingInput = true
+    const sessionId = request.scope.sessionId
+    if (sessionId === undefined || countsOutside(sessionId)) {
+      hasPendingInput = true
+      break
+    }
+  }
+
+  // Also sample the persister projection. It covers recovered/racing state and
+  // lets us classify hidden active sessions without ever returning their IDs.
+  if (!hasPendingInput) {
+    const candidateIds = new Set([
+      ...visibleSessionIds,
+      ...messagePersister.getActiveSessionIdsForAgent(agentSlug),
+    ])
+    for (const sessionId of candidateIds) {
+      if (!messagePersister.isSessionAwaitingInput(sessionId)) continue
+      observedPendingInput = true
+      if (countsOutside(sessionId)) {
+        hasPendingInput = true
+        break
+      }
+    }
+  }
+
+  // A positive aggregate with no attributable request/session is unresolved.
+  // Never collapse that uncertainty to false: iOS uses false/false to open the
+  // latest session directly.
+  if (
+    !hasPendingInput &&
+    !observedPendingInput &&
+    messagePersister.hasSessionsAwaitingInputForAgent(agentSlug)
+  ) {
+    hasPendingInput = true
+  }
+
+  return { hasUnreadNotification, hasPendingInput }
+}
+
+async function getLatestVisibleSessionTail(
+  agentSlug: string,
+  session: SessionInfo,
+  unreadSessionIds: Set<string>,
+  signal?: AbortSignal,
+): Promise<NonNullable<ApiAgent['latestVisibleSession']>> {
+  signal?.throwIfAborted()
+  // A registered session with no transcript yet (created, nothing streamed) is
+  // a normal state and serves an empty tail. Only an id with neither a
+  // transcript nor a registration — a session that vanished after listing —
+  // is an error.
+  const transcriptExists = await sessionExists(agentSlug, session.id)
+  if (!transcriptExists && !(await sessionIsKnown(agentSlug, session.id))) {
+    throw new Error(
+      'Latest visible session transcript not found for ' + agentSlug + '/' + session.id,
+    )
+  }
+  const messageTail = transcriptExists
+    ? await getSessionMessagesPage(agentSlug, session.id, {
+        limit: LATEST_VISIBLE_SESSION_TAIL_LIMIT,
+        byteBudget: LATEST_VISIBLE_SESSION_TAIL_BYTE_BUDGET,
+        media: 'ref',
+        signal,
+      })
+    : { messages: [], nextCursor: null }
+  signal?.throwIfAborted()
+  // Same treatment as the transcript page endpoint, so the tail matches what
+  // opening the session shows. Must run before the session flags below so
+  // recovered awaiting-input state is reflected in them.
+  await annotateAndRecoverMessages(messageTail.messages, agentSlug, session.id)
+  signal?.throwIfAborted()
+
+  return {
+    session: {
+      ...session,
+      isActive: messagePersister.isSessionActive(session.id),
+      isAwaitingInput: messagePersister.isSessionAwaitingInput(session.id),
+      hasUnreadNotifications: unreadSessionIds.has(session.id),
+    },
+    messageTail,
+  }
+}
+
+interface AgentVisibleSessionExpansion {
+  latestVisibleSession: ApiAgent['latestVisibleSession']
+  attentionOutsideLatest: ApiAgent['attentionOutsideLatest']
+}
+
+async function getVisibleSessionExpansion(
+  agentSlug: string,
+  unreadSessionIds: Set<string>,
+  sessionMetadataPromise: Promise<SessionMetadataMap>,
+  signal?: AbortSignal,
+): Promise<AgentVisibleSessionExpansion> {
+  let visibleSessions: SessionInfo[]
+  try {
+    // Keep the complete visibility-filtered snapshot: its first item selects
+    // latest, while the remaining metadata-only items answer the two attention
+    // booleans without loading older transcripts.
+    visibleSessions = await listSessions(agentSlug, {
+      excludeAutomated: true,
+      sortBy: 'last_activity_at',
+    })
+  } catch (error) {
+    if (signal?.aborted) throw error
+    console.error('Failed to select latest visible session for agent ' + agentSlug + ':', error)
+    captureException(error, {
+      tags: { component: 'agents', operation: 'latest-visible-session-selection' },
+      extra: { agentSlug },
+    })
+    return { latestVisibleSession: null, attentionOutsideLatest: null }
+  }
+
+  const latestSession = visibleSessions[0]
+  const attentionOutsideLatestPromise = sessionMetadataPromise
+    .then((sessionMetadata) => getAttentionOutsideLatest(
+      agentSlug,
+      visibleSessions,
+      unreadSessionIds,
+      sessionMetadata,
+    ))
+    .catch((error): null => {
+      if (signal?.aborted) throw error
+      console.error('Failed to compute attention outside latest for agent ' + agentSlug + ':', error)
+      captureException(error, {
+        tags: { component: 'agents', operation: 'attention-outside-latest' },
+        extra: { agentSlug },
+      })
+      return null
+    })
+
+  const latestVisibleSessionPromise = latestSession
+    ? getLatestVisibleSessionTail(agentSlug, latestSession, unreadSessionIds, signal)
+        .catch((error): null => {
+          if (signal?.aborted) throw error
+          // Attention still excludes this session as latest, so on this path
+          // its own unread/pending is reported nowhere until the next poll.
+          console.error(
+            'Failed to fetch latest visible session tail for agent ' + agentSlug + ':',
+            error,
+          )
+          captureException(error, {
+            tags: { component: 'agents', operation: 'latest-visible-session-tail' },
+            extra: { agentSlug },
+          })
+          return null
+        })
+    : Promise.resolve(null)
+
+  const [latestVisibleSession, attentionOutsideLatest] = await Promise.all([
+    latestVisibleSessionPromise,
+    attentionOutsideLatestPromise,
+  ])
+  return { latestVisibleSession, attentionOutsideLatest }
+}
+
 /**
  * Enrich an array of ApiAgent objects with summary fields:
  * active/awaiting sessions, last activity, and dashboards.
  * Batch notification lookup upfront, then parallelize per-agent FS operations.
  */
-async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> {
+async function enrichAgentsWithSummary(
+  agents: ApiAgent[],
+  options: AgentSummaryOptions = {},
+): Promise<ApiAgent[]> {
   const slugs = agents.map(a => a.slug)
 
   const unreadByAgent = await getUnreadNotificationsByAgents(slugs)
@@ -416,14 +659,26 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
   const limit = pLimit(5)
   return Promise.all(
     agents.map((agent) => limit(async () => {
-      // Only FS operations remain per-agent (parallelized)
-      const [sessionSummary, artifacts, sessionMetadata] = await Promise.all([
-        getSessionSummary(agent.slug),
-        listArtifactsFromFilesystem(agent.slug),
-        readSessionMetadata(agent.slug),
-      ])
-
       const unreadSessionIds = unreadByAgent.get(agent.slug) ?? new Set<string>()
+      const sessionMetadataPromise = readSessionMetadata(agent.slug)
+      const visibleSessionExpansionPromise = options.includeLatestVisibleSessionTail
+        ? getVisibleSessionExpansion(
+            agent.slug,
+            unreadSessionIds,
+            sessionMetadataPromise,
+            options.signal,
+          )
+        : Promise.resolve(undefined)
+
+      // Only FS operations remain per-agent (parallelized and bounded by the
+      // outer p-limit).
+      const [sessionSummary, artifacts, sessionMetadata, visibleSessionExpansion] =
+        await Promise.all([
+          getSessionSummary(agent.slug),
+          listArtifactsFromFilesystem(agent.slug),
+          sessionMetadataPromise,
+          visibleSessionExpansionPromise,
+        ])
 
       // Compute session flags from in-memory state (no I/O needed).
       // `unreadByAgent` is already filtered to user-actionable notification types
@@ -476,6 +731,13 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
           name: a.name || a.slug,
           ...(a.hasScreenshot ? { hasScreenshot: true } : {}),
         })),
+        ...(options.includeLatestVisibleSessionTail
+          ? {
+              latestVisibleSession: visibleSessionExpansion?.latestVisibleSession ?? null,
+              attentionOutsideLatest:
+                visibleSessionExpansion?.attentionOutsideLatest ?? null,
+            }
+          : {}),
       }
     }))
   )
@@ -715,6 +977,11 @@ agents.get('/discoverable-agents', async (c) => {
     console.error('Failed to fetch discoverable agents:', error)
     return c.json({ error: 'Failed to fetch discoverable agents' }, 500)
   }
+})
+
+// GET /api/agents/export-status — host-wide; registered before /:id
+agents.get('/export-status', (c) => {
+  return c.json({ inProgress: isHostExportBusy() })
 })
 
 // POST /api/agents/install-from-skillset - Install agent from skillset
@@ -963,8 +1230,20 @@ Respond with ONLY the session name, nothing else. No quotes, no explanation.`,
 
 // GET /api/agents - List agents with status (filtered by ACL in auth mode)
 // Response includes pre-aggregated summary: session activity and dashboards.
+// ?include_latest_visible_session_tail=true additionally returns one
+// visibility-safe session and a small media-ref transcript page per agent.
 agents.get('/', async (c) => {
   try {
+    const includeTailRaw = c.req.query('include_latest_visible_session_tail')
+    const parsedQuery = agentsListQuerySchema.safeParse({
+      ...(includeTailRaw === undefined
+        ? {}
+        : { includeLatestVisibleSessionTail: includeTailRaw }),
+    })
+    if (!parsedQuery.success) {
+      return c.json({ error: 'Invalid agent list query' }, 400)
+    }
+
     // In auth mode, only return agents the user has explicit ACL entries for.
     // Note: Admins do NOT get implicit access to all agents in the listing.
     // This is intentional — admin privileges grant bypass access to individual
@@ -996,7 +1275,11 @@ agents.get('/', async (c) => {
       agentList = await listAgentsWithStatus()
     }
 
-    return c.json(await enrichAgentsWithSummary(agentList))
+    return c.json(await enrichAgentsWithSummary(agentList, {
+      includeLatestVisibleSessionTail:
+        parsedQuery.data.includeLatestVisibleSessionTail === true,
+      signal: c.req.raw.signal,
+    }))
   } catch (error) {
     console.error('Failed to fetch agents:', error)
     return c.json({ error: 'Failed to fetch agents' }, 500)
@@ -1545,16 +1828,33 @@ agents.post('/:id/open-directory', AgentAdmin(), async (c) => {
 })
 
 // GET /api/agents/:id/sessions - List sessions for an agent
-// ?notable=true&limit=N — fast path for badge/toolbar consumers: only
-// sessions that are live or carry unread notifications, built from targeted
-// stats instead of statting every transcript in the directory.
+// ?notable=true means active/awaiting-input or unread. Its fast path intersects
+// those targeted IDs with server-visible sessions before sort_by and limit,
+// avoiding a stat of every transcript. Supported ordering is deterministic
+// newest-first activity via sort_by=last_activity_at.
 agents.get('/:id/sessions', AgentRead(), async (c) => {
   try {
     const slug = getAgentId(c)
+    const sortByRaw = c.req.query('sort_by')
+    const notableRaw = c.req.query('notable')
+    const limitRaw = c.req.query('limit')
+    const parsedQuery = sessionsListQuerySchema.safeParse({
+      ...(sortByRaw === undefined ? {} : { sortBy: sortByRaw }),
+      ...(notableRaw === undefined ? {} : { notable: notableRaw }),
+      ...(limitRaw === undefined ? {} : { limit: limitRaw }),
+    })
+    if (!parsedQuery.success) {
+      return c.json({ error: 'Invalid sessions query' }, 400)
+    }
 
-    if (c.req.query('notable') === 'true') {
-      const limitRaw = Number(c.req.query('limit'))
-      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.trunc(limitRaw), 100) : 25
+    const sortBy: SessionSortBy = parsedQuery.data.sortBy ?? 'last_activity_at'
+    const isNotable = parsedQuery.data.notable === true
+    const requestedLimit = parsedQuery.data.limit === undefined
+      ? undefined
+      : Math.min(parsedQuery.data.limit, SESSIONS_LIST_MAX_LIMIT)
+    const resultLimit = requestedLimit ?? (isNotable ? 25 : undefined)
+
+    if (isNotable) {
       const unreadIds = await getSessionIdsWithUnreadNotifications(slug)
       const activeIds = messagePersister.getActiveSessionIdsForAgent(slug)
       const infos = await listSessionsByIds(slug, [...new Set([...activeIds, ...unreadIds])], {
@@ -1571,17 +1871,25 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
           hasUnreadNotifications: unreadIds.has(session.id),
         }
       })
-      // Live sessions must survive the cap; within each band, newest first.
-      enriched.sort((a, b) => {
-        const aLive = a.isActive || a.isAwaitingInput ? 1 : 0
-        const bLive = b.isActive || b.isAwaitingInput ? 1 : 0
-        if (aLive !== bLive) return bLive - aLive
-        return b.lastActivityAt.getTime() - a.lastActivityAt.getTime()
-      })
-      return c.json(enriched.slice(0, limit))
+      const ordered = sortSessionsNewestFirst(enriched, sortBy)
+      if (sortByRaw === undefined) {
+        // Preserve the existing notable-only contract when no explicit order
+        // was requested: live sessions survive the default/caller cap. The
+        // stable sort retains deterministic newest-first ordering per band.
+        ordered.sort((a, b) => {
+          const aLive = a.isActive || a.isAwaitingInput ? 1 : 0
+          const bLive = b.isActive || b.isAwaitingInput ? 1 : 0
+          return bLive - aLive
+        })
+      }
+      return c.json(ordered.slice(0, resultLimit))
     }
 
-    const sessionList = await listSessions(slug, { excludeAutomated: true })
+    const sessionList = await listSessions(slug, {
+      excludeAutomated: true,
+      ...(sortByRaw === undefined ? {} : { sortBy }),
+      ...(resultLimit === undefined ? {} : { limit: resultLimit }),
+    })
     const unreadSessionIds = await getSessionIdsWithUnreadNotifications(slug)
     const pendingWakes = await listPendingWakesByAgent(slug)
     const wakesBySession = new Map(pendingWakes.map((w) => [w.resumeSessionId!, w]))
@@ -1624,6 +1932,24 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     }
 
     const runtimeOptions = parseRuntimeOptions(body)
+
+    // Optional provenance: the renderer's dashboard-dispatch dialog marks the
+    // sessions it creates so they can show where they came from. This is a
+    // LABEL, not proof of user consent: dashboard iframes share the API's
+    // origin and ambient credentials, so dashboard JS can already POST here
+    // directly, with or without this field. The consent dialog is therefore a
+    // guarantee about host-built UI paths (and a throttle on well-behaved
+    // dashboards), not a server-enforced boundary — enforcing consent
+    // server-side requires isolating dashboards onto their own origin with a
+    // host-issued capability, which is deliberately out of scope here.
+    let dashboardDispatch: SessionDashboardDispatch | undefined
+    if (body.dashboardDispatch !== undefined) {
+      const parsed = sessionDashboardDispatchSchema.safeParse(body.dashboardDispatch)
+      if (!parsed.success) {
+        return c.json({ error: 'Invalid dashboardDispatch' }, 400)
+      }
+      dashboardDispatch = parsed.data
+    }
 
     const agent = await getAgent(slug)
     if (!agent) {
@@ -1679,14 +2005,23 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     // still wins the race with early container output.
     await reserveSessionOwnership(slug, sessionId)
 
-    // Persist only what the user explicitly chose. The server-side fallback is
-    // applied at session creation but should not masquerade as a user choice in
-    // metadata — otherwise a later change to the global default wouldn't be
-    // reflected when the composer reloads.
-    const initialMetadata: Parameters<typeof updateSessionMetadata>[2] = {}
-    if (runtimeOptions.effort) initialMetadata.effort = runtimeOptions.effort
-    if (runtimeOptions.speed) initialMetadata.speed = runtimeOptions.speed
-    if (runtimeOptions.model) initialMetadata.model = runtimeOptions.model
+    // Runtime choices are SESSION state once the first turn starts, including
+    // inherited defaults. Persist the effective values, not merely explicit
+    // overrides, so changing an agent/app default later cannot silently change
+    // an existing conversation's next turn or make the composer claim it will.
+    const initialMetadata: Parameters<typeof updateSessionMetadata>[2] = {
+      model: resolved.model,
+      ...(resolved.effort ? { effort: resolved.effort } : {}),
+      ...(resolved.speed ? { speed: resolved.speed } : {}),
+      ...(dashboardDispatch
+        ? {
+            dispatchedByDashboardSlug: dashboardDispatch.dashboardSlug,
+            // Derived from the route, never client-supplied: dispatch always
+            // targets the dashboard's owning agent, so the label can't be spoofed.
+            dispatchedByDashboardAgentSlug: slug,
+          }
+        : {}),
+    }
     if (isAuthMode()) {
       initialMetadata.createdByUserId = getCurrentUserId(c)
       // Origin-device stamp: which mobile device family (if any) started this
@@ -1749,6 +2084,9 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         lastActivityAt: new Date(),
         messageCount: 0,
         isActive: true,
+        model: resolved.model,
+        ...(resolved.effort ? { effort: resolved.effort } : {}),
+        ...(resolved.speed ? { speed: resolved.speed } : {}),
         initialMessageUuid,
       },
       201
@@ -1764,6 +2102,10 @@ const messagesListQuerySchema = z
     limit: z.coerce.number().int().min(1).max(MESSAGES_PAGE_MAX_LIMIT).optional(),
     cursor: z.string().min(1).max(200).optional(),
     after: z.string().min(1).max(200).optional(),
+    // Opt-in: images ship as refs to the media endpoint instead of inline
+    // base64. Absent means inline, so clients that predate the media endpoint
+    // (and the unpaginated path below) are unaffected.
+    media: z.literal('ref').optional(),
   })
   // Backward paging and the forward delta are different protocols; a request
   // mixing them has no coherent meaning.
@@ -1864,11 +2206,21 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     const rawLimit = c.req.query('limit')
     const rawCursor = c.req.query('cursor')
     const rawAfter = c.req.query('after')
-    if (rawLimit !== undefined || rawCursor !== undefined || rawAfter !== undefined) {
+    const rawMedia = c.req.query('media')
+    // `media` selects this branch too: it is only honored on the paginated
+    // path, so leaving it out would silently serve a full inline response to a
+    // client that asked for refs — and skip validating the value at all.
+    if (
+      rawLimit !== undefined ||
+      rawCursor !== undefined ||
+      rawAfter !== undefined ||
+      rawMedia !== undefined
+    ) {
       const parsed = messagesListQuerySchema.safeParse({
         ...(rawLimit !== undefined ? { limit: rawLimit } : {}),
         ...(rawCursor !== undefined ? { cursor: rawCursor } : {}),
         ...(rawAfter !== undefined ? { after: rawAfter } : {}),
+        ...(rawMedia !== undefined ? { media: rawMedia } : {}),
       })
       if (!parsed.success) {
         return c.json({ error: 'Invalid pagination' }, 400)
@@ -1886,6 +2238,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
         const delta = await getSessionMessagesDelta(agentSlug, sessionId, {
           after: parsed.data.after,
           signal: c.req.raw.signal,
+          media: parsed.data.media,
         })
         c.req.raw.signal.throwIfAborted()
         await annotateAndRecoverMessages(delta.messages, agentSlug, sessionId)
@@ -1900,6 +2253,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
         limit: capMessagesPageLimit(parsed.data.limit, parsed.data.cursor),
         cursor: parsed.data.cursor,
         signal: c.req.raw.signal,
+        media: parsed.data.media,
       })
       c.req.raw.signal.throwIfAborted()
       await annotateAndRecoverMessages(page.messages, agentSlug, sessionId)
@@ -2013,6 +2367,51 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     }
     console.error('Failed to fetch messages:', error)
     return c.json({ error: 'Failed to fetch messages' }, 500)
+  }
+})
+
+// GET /api/agents/:id/sessions/:sessionId/media/:ref - Bytes of one image a
+// `media=ref` page addressed. Served straight off the transcript as a ranged,
+// streaming base64 decode: the row holding it is multi-MB, and none of it is
+// materialized here.
+agents.get('/:id/sessions/:sessionId/media/:ref', AgentRead(), async (c) => {
+  try {
+    const agentSlug = getAgentId(c)
+    const sessionId = c.req.param('sessionId')
+    // Ownership only. There is deliberately no existence preflight here:
+    // fileExists() answers false for any stat failure, so EIO/EACCES/EMFILE
+    // would 404 — telling the client the image is gone when the truth is that
+    // this machine could not look. openMediaBlob distinguishes the two, and a
+    // genuinely missing transcript surfaces there as 410.
+    if (!(await sessionBelongsToAgent(agentSlug, sessionId))) {
+      return c.json({ error: 'Session transcript not found' }, 404)
+    }
+
+    const ref = decodeMediaRef(c.req.param('ref'))
+    if (!ref) return c.json({ error: 'Invalid media reference' }, 400)
+
+    const blob = await openMediaBlob(getSessionJsonlPath(agentSlug, sessionId), ref, c.req.raw.signal)
+    // Deletion and retention rewrite transcripts in place, so a ref the client
+    // still holds can address bytes that have moved or gone. Gone for good —
+    // the client shows a placeholder rather than retrying.
+    if (!blob) return c.json({ error: 'Media no longer available' }, 410)
+
+    return c.body(Readable.toWeb(blob.stream) as ReadableStream, 200, {
+      'Content-Type': blob.mimeType,
+      'Content-Length': String(blob.bytes),
+      // A ref names an immutable byte span: any edit to the transcript
+      // invalidates it rather than changing what it points at.
+      'Cache-Control': 'private, max-age=31536000, immutable',
+      // The type comes from a magic-number sniff, never from the ref — keep
+      // the browser from second-guessing it.
+      'X-Content-Type-Options': 'nosniff',
+    })
+  } catch (error) {
+    if (c.req.raw.signal.aborted) {
+      return new Response(null, { status: 499 })
+    }
+    console.error('Failed to fetch session media:', error)
+    return c.json({ error: 'Failed to fetch media' }, 500)
   }
 })
 
@@ -2160,6 +2559,28 @@ agents.get('/:id/sessions/:sessionId/usage', AgentRead(), async (c) => {
   }
 })
 
+async function persistAndBroadcastUserMessage(
+  c: Context,
+  args: { messageUuid: string; sessionId: string; agentSlug: string; content: string; queued: boolean },
+): Promise<void> {
+  if (!isAuthMode()) return
+  const userId = getCurrentUserId(c)
+  await db.insert(messageAuthor).values({
+    id: args.messageUuid,
+    sessionId: args.sessionId,
+    agentSlug: args.agentSlug,
+    userId,
+  })
+  const user = c.get('user' as never) as { id: string; name: string }
+  messagePersister.broadcastSessionEvent(args.sessionId, {
+    type: 'user_message',
+    content: args.content,
+    sender: { id: user.id, name: user.name },
+    uuid: args.messageUuid,
+    queued: args.queued,
+  })
+}
+
 // POST /api/agents/:id/sessions/:sessionId/messages - Send a message
 agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
   try {
@@ -2185,6 +2606,32 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     const agent = await getAgent(agentSlug)
     if (!agent) {
       return c.json({ error: 'Agent not found' }, 404)
+    }
+
+    // A message through this AgentUser route is human-originated. Promote any
+    // hidden automation before delivery so the host and container agree that
+    // a person has joined the session. This must precede sendMessage: a fast
+    // turn can settle immediately, and completion notification visibility is
+    // decided from the host-side promotedToInteractive marker.
+    await messagePersister.promoteAutomatedSession(sessionId, agentSlug)
+
+    // Server-generated message uuid (never client-supplied — the uuid keys the
+    // messageAuthor attribution row, so a client-chosen value could collide
+    // with another user's message and misattribute it). It is forwarded to the
+    // container, becomes the JSONL entry id, and is returned in the response
+    // so the client can materialize its optimistic copy by exact id match.
+    const messageUuid = randomUUID()
+    const text = content.trim()
+
+    if (messagePersister.coalesceIfRecovering(sessionId, { uuid: messageUuid, text })) {
+      await persistAndBroadcastUserMessage(c, {
+        messageUuid,
+        sessionId,
+        agentSlug,
+        content: text,
+        queued: true,
+      })
+      return c.json({ success: true, uuid: messageUuid, queued: true }, 201)
     }
 
     const client = containerManager.getClient(agentSlug)
@@ -2225,37 +2672,15 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       delete runtimeOptions.model
     }
 
-    // Server-generated message uuid (never client-supplied — the uuid keys the
-    // messageAuthor attribution row, so a client-chosen value could collide
-    // with another user's message and misattribute it). It is forwarded to the
-    // container, becomes the JSONL entry id, and is returned in the response
-    // so the client can materialize its optimistic copy by exact id match.
-    const messageUuid = randomUUID()
+    await persistAndBroadcastUserMessage(c, {
+      messageUuid,
+      sessionId,
+      agentSlug,
+      content: text,
+      queued: wasQueued,
+    })
 
-    // In auth mode, record the sender for message attribution
-    if (isAuthMode()) {
-      const userId = getCurrentUserId(c)
-      await db.insert(messageAuthor).values({
-        id: messageUuid,
-        sessionId,
-        agentSlug,
-        userId,
-      })
-    }
-
-    // Broadcast user message to other SSE viewers (auth mode shared agents)
-    if (isAuthMode()) {
-      const user = c.get('user' as never) as { id: string; name: string }
-      messagePersister.broadcastSessionEvent(sessionId, {
-        type: 'user_message',
-        content: content.trim(),
-        sender: { id: user.id, name: user.name },
-        uuid: messageUuid,
-        queued: wasQueued,
-      })
-    }
-
-    await client.sendMessage(sessionId, content.trim(), messageUuid, runtimeOptions)
+    await client.sendMessage(sessionId, text, messageUuid, runtimeOptions)
     const updates: Parameters<typeof updateSessionMetadata>[2] = {}
     if (runtimeOptions.effort) updates.effort = runtimeOptions.effort
     if (runtimeOptions.speed) updates.speed = runtimeOptions.speed
@@ -2272,7 +2697,24 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     }
     if (Object.keys(updates).length > 0) {
       try {
-        await updateSessionMetadata(agentSlug, sessionId, updates)
+        const previous = await updateSessionMetadata(agentSlug, sessionId, updates)
+        // The composer re-sends its whole selection on every fresh turn, so
+        // option presence alone doesn't mean anything changed. Compare against
+        // the previous metadata (captured under the update's lock) — otherwise
+        // every send would make every open window refetch the session list and
+        // detail for a no-op. A failed metadata write skips the broadcast too:
+        // peers would only refetch the stale values.
+        const runtimeSelectionChanged =
+          (updates.effort !== undefined && previous?.effort !== updates.effort) ||
+          (updates.speed !== undefined && previous?.speed !== updates.speed) ||
+          (updates.model !== undefined && previous?.model !== updates.model)
+        if (runtimeSelectionChanged) {
+          // Other windows/devices may already have seeded their composer from
+          // the previous session metadata. Tell both the local session stream
+          // and the global event stream to refresh before their next send.
+          messagePersister.broadcastSessionUpdate(sessionId)
+          messagePersister.broadcastGlobal({ type: 'session_updated', sessionId, agentSlug })
+        }
       } catch (error) {
         console.error(error)
       }
@@ -2295,6 +2737,14 @@ agents.delete('/:id/sessions/:sessionId/queued-messages/:uuid', AgentUser(), asy
     const uuidParam = z.string().uuid().safeParse(c.req.param('uuid'))
     if (!uuidParam.success) {
       return c.json({ error: 'Invalid message uuid' }, 400)
+    }
+
+    if (!(await sessionIsKnown(agentSlug, sessionId))) {
+      return c.json({ error: 'Session not found' }, 404)
+    }
+
+    if (messagePersister.dropCoalescedUserMessage(sessionId, uuidParam.data)) {
+      return c.json({ cancelled: true })
     }
 
     const client = containerManager.getClient(agentSlug)
@@ -2343,6 +2793,9 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
     const isActive = messagePersister.isSessionActive(sessionId)
     const metadata = await getSessionMetadata(agentSlug, sessionId)
     const pendingWake = await getPendingWakeForSession(agentSlug, sessionId)
+    const invokingAgent = metadata?.invokedByAgentSlug
+      ? await getAgent(metadata.invokedByAgentSlug)
+      : null
 
     return c.json({
       id: session.id,
@@ -2357,6 +2810,10 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       scheduledTaskName: metadata?.scheduledTaskName,
       webhookTriggerId: metadata?.webhookTriggerId,
       webhookTriggerName: metadata?.webhookTriggerName,
+      invokedByAgentSlug: metadata?.invokedByAgentSlug,
+      invokedByAgentName: metadata?.invokedByAgentSlug
+        ? invokingAgent?.frontmatter.name ?? metadata.invokedByAgentSlug
+        : undefined,
       effort: metadata?.effort,
       speed: metadata?.speed,
       model: metadata?.model,
@@ -3883,6 +4340,45 @@ agents.get('/:id/scheduled-tasks', AgentRead(), async (c) => {
   }
 })
 
+// GET /api/agents/:id/scheduled-tasks/completed-sessions - List settled
+// sessions created by completed one-time scheduled tasks. These sessions are
+// intentionally hidden from the agent's ordinary session list, so this is the
+// discoverable history path for one-off automations.
+agents.get('/:id/scheduled-tasks/completed-sessions', AgentRead(), async (c) => {
+  try {
+    const slug = getAgentId(c)
+    const tasks = await listCompletedOneTimeTasks(slug)
+    const metadata = await readSessionMetadata(slug)
+
+    const completedSessionIds = tasks
+      .map((task) => task.lastSessionId)
+      .filter((sessionId): sessionId is string => {
+        if (!sessionId) return false
+        // Missing status is a legacy completed run. A persisted `running` run
+        // is still in flight only while its session is live; after an app
+        // restart, or during the tiny idle-event/metadata-write race, the same
+        // inactive run is settled. This mirrors activity-stats semantics.
+        return metadata[sessionId]?.automationStatus !== 'running'
+          || !messagePersister.isSessionActive(sessionId)
+      })
+
+    const sessions = await listSessionsByIds(slug, completedSessionIds)
+    const sessionsWithStatus = sessions.map((session) => ({
+      ...session,
+      isActive: messagePersister.isSessionActive(session.id),
+      isAwaitingInput: messagePersister.isSessionAwaitingInput(session.id),
+    }))
+    sessionsWithStatus.sort(
+      (a, b) => b.lastActivityAt.getTime() - a.lastActivityAt.getTime()
+    )
+
+    return c.json(sessionsWithStatus)
+  } catch (error) {
+    console.error('Failed to fetch completed one-time sessions:', error)
+    return c.json({ error: 'Failed to fetch completed one-time sessions' }, 500)
+  }
+})
+
 // GET /api/agents/:id/webhook-triggers - List webhook triggers for an agent
 agents.get('/:id/webhook-triggers', AgentRead(), async (c) => {
   try {
@@ -4719,30 +5215,50 @@ agents.post('/:id/skills/:dir/publish', AgentAdmin(), async (c) => {
  * display name (slugs are opaque minted ids), encoded per the same quoted +
  * RFC 5987 `filename*` convention as workspace-file downloads.
  */
-function packageDownloadResponse(zipBuffer: Buffer, filename: string): Response {
+function packageDownloadResponse(body: Readable | Buffer, filename: string): Response {
   const encoded = encodeURIComponent(filename)
-  return new Response(new Uint8Array(zipBuffer), {
-    status: 200,
-    headers: {
-      'Content-Type': 'application/octet-stream',
-      'Content-Disposition': `attachment; filename="${encoded}"; filename*=UTF-8''${encoded}`,
-      'Content-Length': zipBuffer.byteLength.toString(),
-    },
-  })
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/octet-stream',
+    'Content-Disposition': `attachment; filename="${encoded}"; filename*=UTF-8''${encoded}`,
+  }
+  if (Buffer.isBuffer(body)) {
+    headers['Content-Length'] = body.byteLength.toString()
+  }
+  const nodeStream = Buffer.isBuffer(body) ? Readable.from(body) : body
+  return new Response(Readable.toWeb(nodeStream) as ReadableStream, { status: 200, headers })
+}
+
+// Lock lives on the stream ('close' releases it). Destroy if Response construction throws.
+function sendLockedExportStream(zipStream: Readable, build: () => Response): Response {
+  try {
+    return build()
+  } catch (err) {
+    zipStream.destroy()
+    throw err
+  }
+}
+
+function exportRouteError(c: Context, error: unknown, fallback: string) {
+  if (error instanceof Error && error.name === 'ExportInProgressError') {
+    return c.json({ error: error.message }, 409)
+  }
+  const message = error instanceof Error ? error.message : fallback
+  console.error(fallback, error)
+  return c.json({ error: message }, 500)
 }
 
 // POST /api/agents/:id/export-template - Export agent as ZIP download
 agents.post('/:id/export-template', AgentAdmin(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const [agent, zipBuffer] = await Promise.all([getAgent(slug), exportAgentTemplate(slug)])
-
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'template' } })
-    return packageDownloadResponse(zipBuffer, `${agent?.frontmatter.name || slug}-template${AGENT_PACKAGE_EXTENSION}`)
+    const agent = await getAgent(slug)
+    const zipStream = await exportAgentTemplate(slug, c.req.raw.signal)
+    return sendLockedExportStream(zipStream, () => {
+      logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'template' } })
+      return packageDownloadResponse(zipStream, `${agent?.frontmatter.name || slug}-template${AGENT_PACKAGE_EXTENSION}`)
+    })
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to export template'
-    console.error('Failed to export template:', error)
-    return c.json({ error: message }, 500)
+    return exportRouteError(c, error, 'Failed to export template')
   }
 })
 
@@ -4750,14 +5266,14 @@ agents.post('/:id/export-template', AgentAdmin(), async (c) => {
 agents.post('/:id/export-full', AgentAdmin(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const [agent, zipBuffer] = await Promise.all([getAgent(slug), exportAgentFull(slug)])
-
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'full' } })
-    return packageDownloadResponse(zipBuffer, `${agent?.frontmatter.name || slug}-full${AGENT_PACKAGE_EXTENSION}`)
+    const agent = await getAgent(slug)
+    const zipStream = await exportAgentFull(slug, c.req.raw.signal)
+    return sendLockedExportStream(zipStream, () => {
+      logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'full' } })
+      return packageDownloadResponse(zipStream, `${agent?.frontmatter.name || slug}-full${AGENT_PACKAGE_EXTENSION}`)
+    })
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to export agent'
-    console.error('Failed to export full agent:', error)
-    return c.json({ error: message }, 500)
+    return exportRouteError(c, error, 'Failed to export agent')
   }
 })
 
@@ -4972,7 +5488,7 @@ agents.get('/:id/skills/:dir/files', AgentAdmin(), async (c) => {
 
     const skillDir = path.join(getAgentWorkspaceDir(agentSlug), '.claude', 'skills', dir)
 
-    if (!fs.existsSync(skillDir)) {
+    if (!(await directoryExists(skillDir))) {
       return c.json({ error: 'Skill directory not found' }, 404)
     }
 
@@ -5357,7 +5873,7 @@ agents.post('/:id/sessions/:sessionId/upload-folder', AgentUser(), async (c) => 
 agents.get('/:id/mounts', AgentRead(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
-    const mounts = getMountsWithHealth(agentSlug)
+    const mounts = await getMountsWithHealth(agentSlug)
     return c.json(mounts)
   } catch (error) {
     console.error('Failed to list mounts:', error)
@@ -5374,7 +5890,7 @@ agents.post('/:id/mounts', AgentUser(), async (c) => {
 
     let mount
     try {
-      mount = addMount(agentSlug, hostPath)
+      mount = await addMount(agentSlug, hostPath)
     } catch (err: any) {
       return c.json({ error: err.message || 'Invalid path' }, 400)
     }
@@ -5401,7 +5917,7 @@ agents.delete('/:id/mounts/:mountId', AgentUser(), async (c) => {
     const mountId = c.req.param('mountId')
     const restart = c.req.query('restart') === 'true'
 
-    removeMount(agentSlug, mountId)
+    await removeMount(agentSlug, mountId)
 
     if (restart) {
       const cachedInfo = containerManager.getCachedInfo(agentSlug)
@@ -5954,6 +6470,9 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
   const agentSlug = getAgentId(c)
   const artifactSlug = c.req.param('artifactSlug')
   const basePath = `/api/agents/${agentSlug}`
+  // For the dispatch-consent dialog: resolved at render time so the wrapper
+  // never needs a client-side agent-info fetch (removed by the fast-path work).
+  const agentName = (await getAgent(agentSlug))?.frontmatter.name ?? null
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -5984,6 +6503,7 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
     const dashboardUrl = basePath + '/artifacts/' + encodeURIComponent(artifactSlug) + '/';
     const statusEl = document.getElementById('status');
     const loadingEl = document.getElementById('loading');
+    const agentName = ${JSON.stringify(agentName).replace(/</g, '\\u003c')};
 
     function setTitle(name) {
       document.title = (name || artifactSlug) + ' \\u2014 Gamut';
@@ -6004,55 +6524,84 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
       return undefined;
     }
 
-    function showDashboard() {
+    // The iframe is mounted (hidden behind the spinner) as soon as the agent
+    // start is underway: the container proxy holds a document request for a
+    // 'starting' dashboard until its server binds, so the fetch overlaps
+    // startup instead of following it. The spinner drops once a load event
+    // arrives after 'running' has been observed; a document that finished
+    // loading earlier (e.g. the hold timed out into an error body) is
+    // refetched exactly once when 'running' arrives.
+    let iframe = null;
+    let confirmedRunning = false;
+    let loadedEarly = false;
+    let revealed = false;
+
+    function reveal() {
+      if (revealed) return;
+      revealed = true;
       loadingEl.remove();
-      const iframe = document.createElement('iframe');
+      iframe.style.visibility = 'visible';
+    }
+
+    function mountFrame() {
+      if (iframe) return;
+      iframe = document.createElement('iframe');
+      iframe.style.visibility = 'hidden';
       iframe.src = dashboardUrl;
       iframe.sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups allow-downloads';
       iframe.allow = 'microphone; camera';
+      iframe.onload = () => {
+        if (confirmedRunning) reveal();
+        else loadedEarly = true;
+      };
       document.body.appendChild(iframe);
+      // Host the session-dispatch confirmation dialog for the wrapped
+      // dashboard. typeof-guarded: unit tests run this script in a bare vm
+      // context that has no window at all.
+      if (typeof window !== 'undefined' && window.__gamutDispatchHost) {
+        window.__gamutDispatchHost.attach({ iframe, agentSlug, agentName, artifactSlug, basePath });
+      }
+    }
+
+    function onRunning(name) {
+      if (confirmedRunning) return;
+      confirmedRunning = true;
+      setTitle(name);
+      mountFrame();
+      if (loadedEarly) {
+        loadedEarly = false;
+        iframe.src = dashboardUrl;
+      }
     }
 
     async function run() {
       try {
-        // 1. Seed both dashboard metadata and live status. This works while the
-        // agent is stopped too, though that fallback reports stopped.
+        statusEl.textContent = 'Starting agent…';
+        // Fire the start immediately — it is idempotent and returns fast for a
+        // running agent — and fetch dashboard metadata/status in parallel.
+        const startPromise = fetch(basePath + '/start', { method: 'POST' });
+        startPromise.catch(() => {});
         const initialDashboard = await fetchDashboard();
 
-        // 2. Check agent status
-        const agentRes = await fetch(basePath);
-        if (!agentRes.ok) { throw new Error('Failed to fetch agent info'); }
-        const agent = await agentRes.json();
-        const agentWasRunning = agent.status === 'running';
-
-        if (!agentWasRunning) {
-          // 3. Start the agent
-          statusEl.textContent = 'Starting agent…';
-          const startRes = await fetch(basePath + '/start', { method: 'POST' });
-          if (!startRes.ok) {
-            const err = await startRes.json().catch(() => ({}));
-            throw new Error(err.error || 'Failed to start agent');
-          }
+        if (initialDashboard === null) { throw new Error('Dashboard not found.'); }
+        if (initialDashboard && initialDashboard.status === 'running') {
+          // Warm path: both processes already up — paint without waiting for
+          // the start round trip.
+          onRunning(initialDashboard.name);
+          return;
         }
 
-        // The initial artifacts request already gave us a fresh status. When
-        // both processes were running, avoid flashing a redundant wait screen
-        // and let the iframe paint immediately.
-        if (agentWasRunning && initialDashboard !== undefined) {
-          if (!initialDashboard) { throw new Error('Dashboard not found.'); }
-          if (initialDashboard.status === 'crashed') { throw new Error('Dashboard crashed.'); }
-          if (initialDashboard.status === 'running') {
-            showDashboard();
-            return;
-          }
+        const startRes = await startPromise;
+        if (!startRes.ok) {
+          const err = await startRes.json().catch(() => ({}));
+          throw new Error(err.error || 'Failed to start agent');
         }
 
-        // 4. Poll until dashboard is running
+        // Optimistic mount: the held document request resolves the moment the
+        // dashboard server binds, while the poll below confirms the outcome.
+        mountFrame();
         statusEl.textContent = 'Waiting for dashboard…';
         await pollDashboard();
-
-        // 5. Show the dashboard
-        showDashboard();
       } catch (err) {
         statusEl.textContent = err.message;
         statusEl.classList.add('error');
@@ -6060,33 +6609,36 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
     }
 
     async function pollDashboard() {
-      for (let i = 0; i < 120; i++) {
+      // Fast cadence while startup is expected to be quick, then back off.
+      for (let i = 0; i < 280; i++) {
         const res = await fetch(basePath + '/artifacts');
         if (res.ok) {
           const artifacts = await res.json();
-          if (!Array.isArray(artifacts)) {
-            await new Promise(r => setTimeout(r, 1000));
-            continue;
-          }
-          const d = artifacts.find(a => a.slug === artifactSlug);
-          if (!d) { throw new Error('Dashboard not found.'); }
-          if (d.status === 'crashed') { throw new Error('Dashboard crashed.'); }
-          if (d.status === 'running') { setTitle(d.name); return; }
-          if (d.status === 'starting' && d.startupPhase === 'installing-dependencies') {
-            statusEl.textContent = d.firstRun
-              ? 'Preparing dashboard for first use…'
-              : 'Installing dashboard dependencies…';
-          } else {
-            statusEl.textContent = 'Starting dashboard…';
+          if (Array.isArray(artifacts)) {
+            const d = artifacts.find(a => a.slug === artifactSlug);
+            if (!d) { throw new Error('Dashboard not found.'); }
+            if (d.status === 'crashed') { throw new Error('Dashboard crashed.'); }
+            if (d.status === 'running') { onRunning(d.name); return; }
+            if (d.status === 'starting' && d.startupPhase === 'installing-dependencies') {
+              statusEl.textContent = d.firstRun
+                ? 'Preparing dashboard for first use…'
+                : 'Installing dashboard dependencies…';
+            } else {
+              statusEl.textContent = 'Starting dashboard…';
+            }
           }
         }
-        await new Promise(r => setTimeout(r, 1000));
+        await new Promise(r => setTimeout(r, i < 100 ? 300 : 1000));
       }
       throw new Error('Dashboard did not start in time');
     }
 
     run();
   </script>
+  <!-- After the main wrapper script: existing tests extract "the" wrapper
+       script with a first-match regex, and parse order doesn't matter — the
+       host is only referenced from showDashboard(), long after both parse. -->
+  <script>${getDashboardViewDispatchHostJs()}</script>
 </body>
 </html>`
 
@@ -6473,6 +7025,27 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
 // =============================================================================
 // X-Agent invoke policies (per-agent remembered cross-agent permissions)
 // =============================================================================
+
+// GET /api/agents/:id/inbound-x-agent - Sessions created by other agents, plus
+// every agent currently eligible to invoke this target. The target's read ACL
+// protects the page; caller rows remain visible but carry canAccess=false when
+// the viewing user cannot open that caller agent.
+agents.get('/:id/inbound-x-agent', AgentRead(), async (c) => {
+  try {
+    const authMode = isAuthMode()
+    const viewer = authMode
+      ? c.get('user' as never) as { role?: string } | undefined
+      : undefined
+    return c.json(await getInboundXAgentDetails(getAgentId(c), {
+      authMode,
+      viewerUserId: authMode ? getCurrentUserId(c) : undefined,
+      viewerCanAccessAll: viewer?.role === 'admin',
+    }))
+  } catch (error) {
+    console.error('Failed to fetch inbound x-agent activity:', error)
+    return c.json({ error: 'Failed to fetch calls from other agents' }, 500)
+  }
+})
 
 /**
  * Agents the caller may see: their agentAcl entries in auth mode, everything

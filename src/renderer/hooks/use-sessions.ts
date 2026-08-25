@@ -4,6 +4,7 @@ import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useAgents, resolveRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
 import type { ApiSession } from '@shared/lib/types/api'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
+import type { SessionDashboardDispatch } from '@shared/lib/dashboard-dispatch-schema'
 
 // Re-export for convenience
 export type { ApiSession }
@@ -84,7 +85,15 @@ export function useCreateSession() {
   const { track } = useAnalyticsTracking()
 
   return useMutation({
-    mutationFn: async (data: { agentSlug: string; message: string; effort?: EffortLevel; speed?: SpeedLevel; model?: string }) => {
+    mutationFn: async (data: {
+      agentSlug: string
+      message: string
+      effort?: EffortLevel
+      speed?: SpeedLevel
+      model?: string
+      // Provenance for sessions confirmed via a dashboard's dispatch dialog.
+      dashboardDispatch?: SessionDashboardDispatch
+    }) => {
       const res = await apiFetch(`/api/agents/${data.agentSlug}/sessions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -93,6 +102,7 @@ export function useCreateSession() {
           ...(data.effort ? { effort: data.effort } : {}),
           ...(data.speed ? { speed: data.speed } : {}),
           ...(data.model ? { model: data.model } : {}),
+          ...(data.dashboardDispatch ? { dashboardDispatch: data.dashboardDispatch } : {}),
         }),
       })
       if (!res.ok) throw new Error('Failed to create session')

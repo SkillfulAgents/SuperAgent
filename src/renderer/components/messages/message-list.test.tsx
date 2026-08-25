@@ -919,6 +919,7 @@ describe('MessageList', () => {
     try {
       mockMessagesData.data = []
       mockStreamState.isActive = true
+      mockStreamState.isCompacting = true
 
       const CompactRaceHarness = () => {
         const [pending, setPending] = useState([
@@ -948,10 +949,12 @@ describe('MessageList', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Type next message' }))
       expect(screen.getByTestId('draft-probe')).toHaveTextContent('the next message')
 
-      // Manual compaction persists a boundary, not a user message carrying the
-      // POST uuid. The compact command must still be considered delivered.
-      mockMessagesData.data = [createCompactBoundary({ createdAt: new Date() })]
+      // The completion event can reach the renderer before the refetched compact
+      // boundary. The accepted command has no persisted user-message counterpart,
+      // so the generic idle rescue must not mistake it for lost user text while
+      // the boundary is still absent.
       mockStreamState.isActive = false
+      mockStreamState.isCompacting = false
       rerender(<CompactRaceHarness />)
 
       await act(async () => {
@@ -960,6 +963,7 @@ describe('MessageList', () => {
 
       expect(screen.getByTestId('draft-probe')).toHaveTextContent('the next message')
       expect(screen.getByTestId('draft-probe')).not.toHaveTextContent('/compact')
+      expect(screen.queryByText('/compact')).not.toBeInTheDocument()
     } finally {
       vi.useRealTimers()
     }
@@ -2441,6 +2445,7 @@ describe('MessageList', () => {
     function mockTurnGeometry(el: HTMLElement, { reducedMotion = true } = {}) {
       let naturalScrollHeight = 1300
       let scrollTop = 700
+      let clientHeight = 600
       const anchorDocumentTop = 1200
       const spacerHeight = () => Number.parseFloat(
         (el.querySelector('[data-testid="turn-anchor-spacer"]') as HTMLElement | null)?.style.height || '0',
@@ -2461,7 +2466,7 @@ describe('MessageList', () => {
         configurable: true,
         get: () => naturalScrollHeight + spacerHeight(),
       })
-      Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => 600 })
+      Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => clientHeight })
       Object.defineProperty(el, 'scrollTop', {
         configurable: true,
         // Browsers clamp scrollTop when removing the turn spacer lowers the
@@ -2469,7 +2474,7 @@ describe('MessageList', () => {
         // same observable effect as it does in the real transcript.
         get: () => Math.min(
           scrollTop,
-          Math.max(0, naturalScrollHeight + spacerHeight() - 600),
+          Math.max(0, naturalScrollHeight + spacerHeight() - clientHeight),
         ),
         set: (value: number) => { scrollTop = value },
       })
@@ -2497,6 +2502,7 @@ describe('MessageList', () => {
         get scrollTop() { return el.scrollTop },
         setScrollTop(value: number) { scrollTop = value },
         setNaturalScrollHeight(value: number) { naturalScrollHeight = value },
+        setClientHeight(value: number) { clientHeight = value },
       }
     }
 
@@ -2547,6 +2553,195 @@ describe('MessageList', () => {
       expect(geometry.scrollTop).toBe(1099)
       expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
       expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
+    })
+
+    it('does not read the send-time collapse clamp as an escape', async () => {
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+
+      // The finished turn collapsing above the ghost (same commit as the
+      // send) shrinks content, and the browser clamps scrollTop — a
+      // browser-originated upward scroll event with no user gesture behind
+      // it. It must not latch an escape and surface the pill over the blank
+      // reading-line reserve.
+      geometry.setScrollTop(900)
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 80))
+      })
+      expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
+    })
+
+    it('does not read the idle-time turn collapse clamp as an escape', async () => {
+      installFakeResizeObserver()
+      // An active turn with collapsible work, reader at the live edge.
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Long question' } }),
+        createAssistantMessage({
+          content: { text: 'Final answer' },
+          toolCalls: [createToolCall({ name: 'Bash' })],
+        }),
+      ]
+      mockStreamState.isActive = true
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
+      fireEvent.scroll(el) // baseline at the live edge
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 40))
+      })
+
+      // The turn completes: the work collapses into a summary row — a large
+      // one-commit shrink whose browser clamp fires an upward scroll event
+      // with no user gesture behind it.
+      mockStreamState.isActive = false
+      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getByTestId('turn-summary')).toBeInTheDocument()
+      geometry.setNaturalScrollHeight(900)
+      geometry.setScrollTop(300)
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 80))
+      })
+
+      // The final answer then renders below the summary and grows the
+      // content. Following must still be engaged: the reader is carried to
+      // the full response, with no stranded escape affordance.
+      geometry.setNaturalScrollHeight(1600)
+      await act(async () => {
+        fireContentResize(contentWrapper, 1600)
+      })
+      await waitFor(() => expect(geometry.scrollTop).toBe(999))
+      expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
+    })
+
+    it('restores the reading line when a transient shrink clamps the held reserve', async () => {
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+      expect(geometry.scrollTop).toBe(1099)
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
+      fireEvent.scroll(el) // baseline at the reading line
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 40))
+      })
+
+      // A working indicator swapping forms (streamed block replaced by its
+      // shorter persisted copy) shrinks natural content while the reserve
+      // holds. The browser clamps scrollTop against the momentarily smaller
+      // scroll range and leaves it there — the spacer re-inflating afterwards
+      // restores the range but not the position. Model the sticky clamp.
+      geometry.setNaturalScrollHeight(1240)
+      geometry.setScrollTop(1040)
+      fireEvent.scroll(el)
+      mockStreamState.streamingMessage = 'A different working indicator'
+      mockStreamState.isStreaming = true
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+
+      // The reserve re-inflates AND the viewport returns to the reading line
+      // in the same pass — the held turn must not visibly sag.
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '460px' })
+      expect(geometry.scrollTop).toBe(1099)
+      // The clamp's scroll echo must not have latched an escape either.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 80))
+      })
+      expect(geometry.scrollTop).toBe(1099)
+      expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
+    })
+
+    it('honors a keyboard escape whose scroll classification the collapse shield swallowed', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Long question' } }),
+        createAssistantMessage({
+          content: { text: 'Final answer' },
+          toolCalls: [createToolCall({ name: 'Bash' })],
+        }),
+      ]
+      mockStreamState.isActive = true
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
+      fireEvent.scroll(el) // baseline at the live edge
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 40))
+      })
+
+      // The turn completes and collapses — the transition shield arms, and the
+      // browser clamp's echo is rightly discarded…
+      mockStreamState.isActive = false
+      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      geometry.setNaturalScrollHeight(900)
+      geometry.setScrollTop(300)
+      fireEvent.scroll(el)
+
+      // …but inside the same window the reader pages up. The shield swallows
+      // that scroll's classification too (only wheel escapes bypass it), so
+      // the deferred verification must recognize the upward gesture and mark
+      // the escape itself.
+      fireEvent.keyDown(el, { key: 'PageUp' })
+      geometry.setScrollTop(100)
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 80))
+      })
+      expect(screen.getByText('Scroll to bottom')).toBeInTheDocument()
+
+      // Following stays disengaged: later growth must not pull the reader
+      // back down to the live edge.
+      geometry.setNaturalScrollHeight(1600)
+      await act(async () => {
+        fireContentResize(contentWrapper, 1600)
+      })
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 80))
+      })
+      expect(geometry.scrollTop).toBe(100)
+      expect(screen.getByText('Scroll to bottom')).toBeInTheDocument()
+    })
+
+    it('does not let the reserve restore preempt the send glide before its first frame', () => {
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      // Real motion: the send scrolls via the animated glide, which the
+      // library only registers in its first animation frame.
+      const geometry = mockTurnGeometry(el, { reducedMotion: false })
+
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
+      expect(geometry.scrollTop).toBe(700) // pre-glide position; the glide travels from here
+
+      // The POST response assigns the uuid before the glide's first frame —
+      // a commit in the gap where state.animation is still unset. The reserve
+      // restore must not fire here and snap the viewport to the reading line.
+      rerender(
+        <MessageList
+          sessionId="s-1"
+          agentSlug="agent-1"
+          pendingUserMessages={[{ ...pending, uuid: 'server-uuid-1' }]}
+        />,
+      )
+      expect(geometry.scrollTop).toBe(700)
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
     })
 
     it('spends the reserved room before following streamed content at the live edge', async () => {
@@ -2750,6 +2945,42 @@ describe('MessageList', () => {
       })
       await waitFor(() => expect(geometry.scrollTop).toBe(999))
       expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
+    })
+
+    it('keeps the live edge pinned when the viewport shrinks, but not while escaped', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      // The component's own observer watches the viewport (`el`); the follow
+      // library's watches only the content wrapper and never sees this.
+      const fireViewportResize = () => fireContentResize(el, 0)
+
+      // At the live edge, a vertical shrink keeps the newest content at the
+      // bottom (content leaves from the top, not the bottom): the pin writes
+      // scrollTop to the new target, 1300 - 1 - 450.
+      geometry.setClientHeight(450)
+      fireViewportResize()
+      expect(geometry.scrollTop).toBe(849)
+
+      // Let the resize's classification shield drain (one frame + a tick)
+      // before gesturing, mirroring a real pause between resize and scroll.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 40))
+      })
+
+      // Escaped readers keep their place instead: browsers anchor the top
+      // edge on resize, and the pin must not yank them to the bottom.
+      fireEvent.scroll(el)
+      geometry.setScrollTop(500)
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 40))
+      })
+      geometry.setClientHeight(300)
+      fireViewportResize()
+      expect(geometry.scrollTop).toBe(500)
     })
   })
 

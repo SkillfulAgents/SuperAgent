@@ -13,6 +13,7 @@ import { db } from '@shared/lib/db'
 import { authAccount } from '@shared/lib/db/schema'
 import { runWithRequestUser } from '@shared/lib/platform-attribution/request-context'
 import { clearCloudWorkspaceRecord } from '@shared/lib/platform-auth/cloud-workspace-record'
+import { isPrivateHost, tryParseUrl } from '@shared/lib/utils/url-safety'
 
 export type PlatformAuthRecord = PlatformAuthSettings
 
@@ -74,6 +75,12 @@ export interface PlatformAuthStatus {
   label: string | null
   orgId: string | null
   orgName: string | null
+  /**
+   * Public HTTPS workspace icon returned for Platform-managed deployments.
+   * Absent for disconnected and settings-backed/self-hosted connections; null
+   * means the connected organization has no safe icon configured.
+   */
+  orgIconUrl?: string | null
   role: string | null
   /** Global platform user identity (Supabase auth UUID) — used for analytics. */
   userId: string | null
@@ -358,7 +365,30 @@ export function getPlatformAuthStatus(userId?: string): PlatformAuthStatus {
 interface EnrichedEnvAccount {
   email: string | null
   orgName: string | null
+  orgIconUrl: string | null
   role: string | null
+}
+
+/**
+ * Defense in depth for an upstream display URL. Platform stores workspace
+ * icons in a public bucket, so URL credentials, private hosts, query strings,
+ * and fragments are neither needed nor safe to forward to native clients.
+ */
+function normalizeOrgIconUrl(value: string | null): string | null {
+  if (!value) return null
+  const url = tryParseUrl(value.trim())
+  if (
+    !url ||
+    url.protocol !== 'https:' ||
+    url.username.length > 0 ||
+    url.password.length > 0 ||
+    isPrivateHost(url.hostname)
+  ) {
+    return null
+  }
+  url.search = ''
+  url.hash = ''
+  return url.toString()
 }
 
 // Introspection is memoized per user: the Account screen re-fetches the status
@@ -384,7 +414,12 @@ async function introspectEnvManagedAccount(userId: string): Promise<EnrichedEnvA
         mapStatusError: (status) => ({ message: 'Account introspection failed', status }),
       }),
     )
-    return { email: account.email, orgName: account.orgName, role: account.role }
+    return {
+      email: account.email,
+      orgName: account.orgName,
+      orgIconUrl: normalizeOrgIconUrl(account.orgIconUrl),
+      role: account.role,
+    }
   } catch (error) {
     captureException(error, { tags: { area: 'platform-auth', op: 'introspect-env-account' } })
     return null
@@ -416,6 +451,7 @@ export async function getEnrichedPlatformAuthStatus(userId?: string): Promise<Pl
     ...base,
     email: account.email,
     orgName: account.orgName,
+    orgIconUrl: account.orgIconUrl,
     role: account.role,
   }
 }

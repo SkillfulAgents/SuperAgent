@@ -4,7 +4,6 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import { BaseContainerClient, checkCommandAvailable, execWithPath, writeEnvFile } from './base-container-client'
-import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import type { ContainerConfig, HostPortProbeResult } from './types'
 import { getDataDir } from '@shared/lib/config/data-dir'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
@@ -447,16 +446,9 @@ export class WSL2ContainerClient extends BaseContainerClient {
    * translate the path for WSL2.
    */
   protected buildEnvFile(additionalEnvVars?: Record<string, string>): { flag: string; cleanup: () => void } {
-    const envVars: Record<string, string | undefined> = {
-      ...getActiveLlmProvider().getContainerEnvVars(this.agentIdentityForEnv()),
-      CLAUDE_CONFIG_DIR: '/workspace/.claude',
-      ...this.config.envVars,
-      ...additionalEnvVars,
-    }
-
     const home = os.homedir()
     const tmpDir = path.join(home, '.superagent', 'tmp')
-    const { filePath, cleanup } = writeEnvFile(envVars, this.config.agentId, tmpDir)
+    const { filePath, cleanup } = writeEnvFile(this.buildAgentEnv(additionalEnvVars), this.config.agentId, tmpDir)
 
     // Translate the Windows file path to a WSL2 path for the --env-file flag
     const wslPath = windowsToWSLPath(filePath)
