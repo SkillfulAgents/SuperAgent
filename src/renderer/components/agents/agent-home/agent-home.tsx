@@ -565,6 +565,9 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
               onSelectWebhook={(webhookId: string) => {
                 void navigate({ to: '/agents/$slug/webhooks/$webhookId', params: { slug: agent.slug, webhookId } })
               }}
+              onSelectCompletedTasks={() => {
+                void navigate({ to: '/agents/$slug/completed-tasks', params: { slug: agent.slug } })
+              }}
               onSelectInboundXAgent={() => {
                 void navigate({ to: '/agents/$slug/called-from-agents', params: { slug: agent.slug } })
               }}

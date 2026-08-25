@@ -79,6 +79,9 @@ describe('getDocumentTitle', () => {
       getDocumentTitle({ location: location({ kind: 'inboundXAgent' }, 'agent-one'), agentName: 'Agent One' }),
     ).toBe(`Agent One${DASH}Called from Other Agents`)
     expect(
+      getDocumentTitle({ location: location({ kind: 'completedTasks' }, 'agent-one'), agentName: 'Agent One' }),
+    ).toBe(`Agent One${DASH}Completed One-time Tasks`)
+    expect(
       getDocumentTitle({
         location: location({ kind: 'dashboard', slug: 'sales-dashboard' }, 'agent-one'),
         agentName: 'Agent One',
