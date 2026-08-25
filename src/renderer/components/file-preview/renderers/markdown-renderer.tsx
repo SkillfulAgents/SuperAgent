@@ -34,13 +34,20 @@ export function MarkdownRenderer({ url, filePath, commentsEnabled = true }: Mark
           <span>Failed to load file</span>
         </div>
       ) : (
-        <div className="prose prose-sm max-w-none min-w-0 break-words dark:prose-invert" data-testid="markdown-renderer">
+        <div
+          className="prose prose-sm max-w-none min-w-0 break-words dark:prose-invert [&_pre_code]:bg-transparent [&_pre_code]:p-0"
+          data-testid="markdown-renderer"
+        >
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             urlTransform={markdownUrlTransform}
             components={{
+              // `prose` colours a code block for its own dark `pre` background
+              // (--tw-prose-pre-code is gray-200). This one is a light tinted
+              // card, so the text colour has to come back to the body colour or
+              // it reads as grey-on-grey. Matches the chat transcript's block.
               pre: ({ children }) => (
-                <pre className="rounded-lg p-3 text-sm overflow-x-auto bg-black/[0.03] dark:bg-white/[0.06]">
+                <pre className="rounded-lg p-3 text-sm overflow-x-auto border border-border/60 bg-black/[0.03] dark:bg-white/[0.06] text-foreground">
                   {children}
                 </pre>
               ),
@@ -49,7 +56,7 @@ export function MarkdownRenderer({ url, filePath, commentsEnabled = true }: Mark
                   return <code className={className}>{children}</code>
                 }
                 return (
-                  <code className="rounded px-1.5 py-0.5 text-sm font-medium bg-black/[0.03] dark:bg-white/[0.06]">
+                  <code className="rounded px-1.5 py-0.5 text-sm font-medium bg-black/[0.03] dark:bg-white/[0.06] text-foreground">
                     {children}
                   </code>
                 )
