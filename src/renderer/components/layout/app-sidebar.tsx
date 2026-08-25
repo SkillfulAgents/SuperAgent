@@ -101,12 +101,13 @@ import {
 import { restrictToVerticalAxis } from '@dnd-kit/modifiers'
 import { SortableAgentMenuItem } from './sortable-agent-item'
 import { SidebarDragProvider, useSidebarDragActive } from './sidebar-drag-context'
-import { AgentDragOverlayRow, AgentFolderBlock } from './agent-folder-block'
+import { AgentDragOverlayRow, AgentFolderBlock, agentDropAnimation } from './agent-folder-block'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
 import {
   containerIdForFolder,
   buildFolderSections,
   dissolveFolder,
+  ROOT_FOLDER_ID,
   locateAgent,
   moveAgent,
   moveFolder,
@@ -1247,13 +1248,27 @@ export function AppSidebar() {
   // click time would revert whatever folder write was still in flight.
   const handleCreateFolder = useCallback(() => {
     const id = newFolderId()
-    // A folder with no recorded place renders at the end of the list, which is
-    // where the user just asked for it. The row mounts in rename mode, so
-    // creating a folder and naming it is one gesture.
+    // The + lives on the default folder's header, so the new folder goes
+    // directly ABOVE that folder — in view next to the button that made it,
+    // where the row's rename input mounts. Ranking it last put it below the
+    // scroll fold on a long list, which read as the button doing nothing.
     setPendingRenameFolderId(id)
     updateSettings.mutate((current) => {
       const folders = sanitizeFolders(current?.agentFolders)
-      return { agentFolders: [...folders, { id, name: uniqueFolderName(folders) }] }
+      const marker = sortableIdForFolder(id)
+      const rootMarker = sortableIdForFolder(ROOT_FOLDER_ID)
+      const order = (current?.agentListOrder ?? []).filter((key) => key !== marker)
+      const rootIndex = order.indexOf(rootMarker)
+      return {
+        agentFolders: [...folders, { id, name: uniqueFolderName(folders) }],
+        // Splice in just above the default folder wherever the user keeps it;
+        // an untouched install has no stored places yet, so root's marker is
+        // written too — without one it would default ahead (place -1).
+        agentListOrder:
+          rootIndex >= 0
+            ? [...order.slice(0, rootIndex), marker, ...order.slice(rootIndex)]
+            : [marker, rootMarker, ...order],
+      }
     })
   }, [updateSettings])
 
@@ -1568,7 +1583,7 @@ export function AppSidebar() {
                           </AgentFolderBlock>
                         ))}
                       </SortableContext>
-                      <DragOverlay>
+                      <DragOverlay dropAnimation={agentDropAnimation}>
                         {activeDrag ? (
                           <AgentDragOverlayRow
                             label={activeDrag.label}

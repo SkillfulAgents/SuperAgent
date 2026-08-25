@@ -3,16 +3,27 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
-const { mockUseSortable, mockUseDroppable } = vi.hoisted(() => ({
+const { mockUseSortable, mockUseDroppable, mockDefaultKeyframes } = vi.hoisted(() => ({
   mockUseSortable: vi.fn(),
   mockUseDroppable: vi.fn(),
+  mockDefaultKeyframes: vi.fn(() => [] as Keyframe[]),
 }))
 
 vi.mock('@dnd-kit/sortable', () => ({
   useSortable: (args: unknown) => mockUseSortable(args),
 }))
-vi.mock('@dnd-kit/core', () => ({ useDroppable: (args: unknown) => mockUseDroppable(args) }))
-vi.mock('@dnd-kit/utilities', () => ({ CSS: { Transform: { toString: () => '' } } }))
+vi.mock('@dnd-kit/core', () => ({
+  useDroppable: (args: unknown) => mockUseDroppable(args),
+  defaultDropAnimation: { duration: 250, easing: 'ease', keyframes: mockDefaultKeyframes },
+}))
+vi.mock('@dnd-kit/utilities', () => ({
+  CSS: {
+    Transform: {
+      toString: (t: { x: number; y: number; scaleX: number; scaleY: number } | null) =>
+        t ? `translate3d(${t.x}px, ${t.y}px, 0) scaleX(${t.scaleX}) scaleY(${t.scaleY})` : '',
+    },
+  },
+}))
 
 // Radix context menus never open in jsdom without a real pointer; render the
 // items inline so the folder actions are reachable.
@@ -31,7 +42,8 @@ vi.mock('@renderer/components/ui/sidebar', () => ({
   ),
 }))
 
-import { AgentDragOverlayRow, AgentFolderBlock } from './agent-folder-block'
+import { AgentDragOverlayRow, AgentFolderBlock, overlayDropKeyframes } from './agent-folder-block'
+import type { DropAnimationKeyframeResolver } from '@dnd-kit/core'
 
 const FOLDER = { id: 'f1', name: 'Work' }
 
@@ -392,5 +404,44 @@ describe('AgentDragOverlayRow', () => {
   it('names what is being dragged', () => {
     render(<AgentDragOverlayRow label="Sales" isFolder={false} />)
     expect(screen.getByText('Sales')).toBeInTheDocument()
+  })
+})
+
+describe('overlayDropKeyframes', () => {
+  const RECT = { top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 }
+
+  function dropParams(activeRect: Partial<typeof RECT>) {
+    return {
+      active: { id: 'a1', data: { current: undefined }, node: document.createElement('div'), rect: { ...RECT, ...activeRect } },
+      dragOverlay: { node: document.createElement('div'), rect: { ...RECT, top: 530, left: 17, width: 240, height: 36 } },
+      draggableNodes: new Map(),
+      droppableContainers: new Map(),
+      measuringConfiguration: {},
+      transform: {
+        initial: { x: 4, y: 260, scaleX: 1, scaleY: 1 },
+        final: { x: -13, y: -530, scaleX: 1, scaleY: 1 },
+      },
+    } as unknown as Parameters<DropAnimationKeyframeResolver>[0]
+  }
+
+  it('fades out where it was dropped when the landing spot is hidden', () => {
+    // A row filed into a collapsed folder sits in the folder's hidden body,
+    // which measures 0×0 at the viewport origin — the default keyframes
+    // would fly the overlay to the window's top-left corner.
+    const frames = overlayDropKeyframes(dropParams({ width: 0, height: 0 }))
+    expect(frames).toHaveLength(2)
+    expect(frames[1].transform).toBe(frames[0].transform)
+    expect(frames[0].transform).toContain('translate3d(4px, 260px')
+    expect(frames[0].opacity).toBe(1)
+    expect(frames[1].opacity).toBe(0)
+    expect(mockDefaultKeyframes).not.toHaveBeenCalled()
+  })
+
+  it('keeps the stock flight to a visible landing spot', () => {
+    const stockFrames = [{ transform: 'from' }, { transform: 'to' }]
+    mockDefaultKeyframes.mockReturnValueOnce(stockFrames)
+    const params = dropParams({ width: 240, height: 32, top: 700, left: 17 })
+    expect(overlayDropKeyframes(params)).toBe(stockFrames)
+    expect(mockDefaultKeyframes).toHaveBeenCalledWith(params)
   })
 })
