@@ -1,24 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "QA agent successfully executed browser navigation task and retrieved page title \"Example Domain\" from https://example.com",
+  "reason": "Browser Use feature test - agent successfully navigated to example.com and reported the page title",
   "steps": [
-    "Navigated to http://localhost:47891 - Successfully loaded Gamut application with agent sidebar visible",
-    "Found and clicked \"QA-20260819-013459-ux4h\" agent in sidebar - Agent details page opened at /agents/qa-20260819-013459-ux4h-i3jplhmvz8",
-    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message successfully submitted and session created with title \"Browser Navigation and Page Title Check\"",
-    "Waited for agent response - Agent processed request in 10 seconds using 4 tool calls and 199,354 tokens",
-    "Verified response mentions \"Example Domain\" - Response clearly states: 'The page title is \"Example Domain\" — the page has that heading plus a short paragraph and a \"Learn more\" link. Browser closed.'",
-    "Took screenshot of response - Full page screenshot captured showing complete agent response with \"Example Domain\" text visible in the message"
+    "Navigated to http://localhost:47891 — Page loaded successfully showing the Gamut home screen with agent list in sidebar",
+    "Clicked on \"QA-20260825-215810-udr8\" agent in sidebar — Agent detail page opened with chat interface ready",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into chat input field — Message successfully entered in input field",
+    "Sent message using Ctrl+Enter keyboard shortcut — Message sent successfully, page transitioned to session view with \"Browser Page Title Retrieval\" title",
+    "Waited up to 3 minutes for agent response — Agent processed request and responded within ~10 seconds",
+    "Verified response mentions \"Example Domain\" — Response clearly states: 'The page title is \"Example Domain\" — the page just has that heading, a line noting the domain is for use in documentation examples, and a \"Learn more\" link. Browser is closed.'"
   ],
   "bugs": [],
-  "durationMs": 124052,
-  "sessionId": "34f9f84e-c32f-42c2-87ec-631b92869eac",
+  "durationMs": 116053,
+  "sessionId": "61224b1c-b1a0-41d7-866b-67c8a61274c8",
   "cost": {
-    "inputTokens": 314,
-    "outputTokens": 12056,
-    "cacheCreationTokens": 51948,
-    "cacheReadTokens": 775503,
+    "inputTokens": 464,
+    "outputTokens": 9902,
+    "cacheCreationTokens": 62078,
+    "cacheReadTokens": 1253831,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.203079
+    "totalCostUsd": 0.252955
   }
 }

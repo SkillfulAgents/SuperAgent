@@ -1,25 +1,26 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "Successfully navigated to agent, verified status was \"idle\", sent message \"Hello! What is 2+2?\", and received response containing \"4\"",
+  "reason": "Verified that agent QA-20260825-215809-dr3y successfully receives messages and responds with correct answers.",
   "steps": [
-    "Navigated to http://localhost:47891 — app loaded successfully showing home page with two agents listed",
-    "Found agent \"QA-20260819-013458-soqs\" in the sidebar and clicked it (ref=e56) — navigated to agent page with status \"idle\"",
-    "Verified agent status is \"idle\" — confirmed in the status indicator at top of agent page",
-    "Clicked on message input box and typed \"Hello! What is 2+2?\" — message appeared in input field",
-    "Clicked Send button to submit message — message was sent and agent began processing",
-    "Waited for agent response — agent responded within seconds with \"4\"",
-    "Verified response mentions \"4\" and took screenshot — response clearly shows \"4\" as the agent's answer to the math question"
+    "Navigate to http://localhost:47891 — Successfully loaded the Gamut app home page showing agents list",
+    "Find and click QA-20260825-215809-dr3y in sidebar — Successfully navigated to agent detail page at /agents/qa-20260825-215809-dr3y-txlclfc8na",
+    "Verify agent status is \"running\" or \"idle\" — Confirmed status shows \"idle\" in the agent header",
+    "Click message input field — Input field focused and ready for text entry",
+    "Type message \"Hello! What is 2+2?\" — Text successfully entered into input field",
+    "Click Send button — Message submitted and new chat session created",
+    "Wait for agent response — Response received in approximately 1-2 seconds (well within 3-minute timeout)",
+    "Verify response contains \"4\" — Agent response is exactly \"4\" which correctly answers the math question, displayed in chat message area"
   ],
   "bugs": [],
-  "durationMs": 72181,
-  "sessionId": "8b1127e6-179a-4c77-bd4b-5744a6f4a8a4",
+  "durationMs": 61484,
+  "sessionId": "521f45e3-d9b9-46a5-9a43-133ede84eb93",
   "cost": {
-    "inputTokens": 410,
-    "outputTokens": 10715,
-    "cacheCreationTokens": 130932,
-    "cacheReadTokens": 1227918,
+    "inputTokens": 360,
+    "outputTokens": 10369,
+    "cacheCreationTokens": 110890,
+    "cacheReadTokens": 949698,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.340442
+    "totalCostUsd": 0.285787
   }
 }
