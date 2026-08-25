@@ -55,7 +55,7 @@ describe('getBrainDir / ensureBrainDir', () => {
 
   it('sits beside agents/, not under it', () => {
     process.env.SUPERAGENT_DATA_DIR = '/tmp/sa-brain-path'
-    expect(getBrainDir()).toBe(path.join(path.resolve('/tmp/sa-brain-path'), 'brain'))
+    expect(getBrainDir()).toBe(path.join(path.resolve('/tmp/sa-brain-path'), 'brains', 'global'))
     expect(getBrainDir()).not.toMatch(/\/agents\//)
   })
 
@@ -64,7 +64,7 @@ describe('getBrainDir / ensureBrainDir', () => {
     process.env.SUPERAGENT_DATA_DIR = tmp
     const first = ensureBrainDir()
     const second = ensureBrainDir()
-    expect(first).toBe(path.join(tmp, 'brain'))
+    expect(first).toBe(path.join(tmp, 'brains', 'global'))
     expect(first).toBe(second)
     expect(fs.statSync(first).isDirectory()).toBe(true)
   })

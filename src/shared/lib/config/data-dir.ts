@@ -41,9 +41,12 @@ export function getAgentsDataDir(): string {
 }
 
 /**
- * Shared Team Brain directory. Sibling of agents/, not inside any agent
- * workspace, so it survives agent deletion. On cloud this is the org data dir.
+ * Shared Team Brain directory: brains/<name>/ beside agents/, not inside any
+ * agent workspace, so it survives agent deletion. v1 has one brain, `global`.
+ * Every agent container mounts this folder at BRAIN_CONTAINER_PATH, read/write
+ * for the curator and read-only for everyone else.
  */
+export const BRAIN_CONTAINER_PATH = '/brains/global'
 export const BRAIN_INDEX_FILENAME = 'INDEX.md'
 export const BRAIN_CURATOR_FILENAME = 'CURATOR'
 
@@ -54,7 +57,7 @@ Update this file whenever you add, merge, or delete a page.
 `
 
 export function getBrainDir(): string {
-  return path.join(getDataDir(), 'brain')
+  return path.join(getDataDir(), 'brains', 'global')
 }
 
 export function ensureBrainDir(): string {

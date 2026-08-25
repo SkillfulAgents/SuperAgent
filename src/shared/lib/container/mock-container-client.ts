@@ -2258,6 +2258,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         agentSlug: this.config.agentId,
         proxyToken: options.envVars['PROXY_TOKEN'],
         remoteMcps: options.envVars['REMOTE_MCPS'] ?? null,
+        brain: options?.brain ?? null,
         timestamp: new Date().toISOString(),
       })
     }

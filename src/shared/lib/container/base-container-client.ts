@@ -26,7 +26,7 @@ import type {
   RuntimeFatalKind,
   UnexpectedDeathPlan,
 } from './runtime-death'
-import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
+import { BRAIN_CONTAINER_PATH, getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import { getAgentCapabilitySettings, getSettings } from '@shared/lib/config/settings'
 import { getActiveLlmProvider } from '@shared/lib/llm-provider'
@@ -422,11 +422,13 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   /**
-   * Returns a suffix to append to volume mount specifications (e.g., ':U' for Podman).
-   * Subclasses can override this for runtime-specific volume options.
+   * Runtime-specific mount options appended to user bind mounts (e.g. ['U']
+   * on podman). System mounts (the Team Brain folder) skip these: podman's U
+   * re-owns the host folder, which must not happen to a folder every agent
+   * shares and the host itself rewrites.
    */
-  protected getVolumeMountSuffix(): string {
-    return ''
+  protected getVolumeMountOptions(): string[] {
+    return []
   }
 
   /**
@@ -440,13 +442,22 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
   /**
    * Build a -v flag value for a volume mount.
-   * Encapsulates hostPathForRuntime() + getVolumeMountSuffix().
+   * Encapsulates hostPathForRuntime() + getVolumeMountOptions().
    */
-  public buildVolumeFlag(hostPath: string, containerPath: string): string {
-    // hostPath is user-controlled (a selected mount). shellEscape() (not raw
+  public buildVolumeFlag(
+    hostPath: string,
+    containerPath: string,
+    opts: { readOnly?: boolean; system?: boolean } = {},
+  ): string {
+    const options = [
+      ...(opts.readOnly ? ['ro'] : []),
+      ...(opts.system ? [] : this.getVolumeMountOptions()),
+    ]
+    const suffix = options.length > 0 ? `:${options.join(',')}` : ''
+    // hostPath may be user-controlled (a selected mount). shellEscape() (not raw
     // double quotes) so a path like `/tmp/a$(...)` can't trigger command
     // substitution when start() runs the joined command through a real shell.
-    return shellEscape(`${this.hostPathForRuntime(hostPath)}:${containerPath}${this.getVolumeMountSuffix()}`)
+    return shellEscape(`${this.hostPathForRuntime(hostPath)}:${containerPath}${suffix}`)
   }
 
   /**
@@ -718,13 +729,17 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       // cloud-synced folder the VM helper is denied) is dropped from this list
       // on retry so the container can still start without it.
       let volumes = [...(options?.additionalVolumes || [])]
+      const brainVolume = options?.brain
+        ? ['-v', this.buildVolumeFlag(options.brain.hostDir, BRAIN_CONTAINER_PATH, { readOnly: options.brain.readOnly, system: true })]
+        : []
 
       const buildRunCmd = () =>
         [
           runner, 'run', '-d',
           '--name', containerName,
           '-p', `${port}:${CONTAINER_INTERNAL_PORT}`,
-          '-v', shellEscape(`${this.hostPathForRuntime(workspaceDir)}:/workspace${this.getVolumeMountSuffix()}`),
+          '-v', this.buildVolumeFlag(workspaceDir, '/workspace'),
+          ...brainVolume,
           ...volumes.flatMap(v => ['-v', v]),
           resourceFlags,
           additionalFlags,

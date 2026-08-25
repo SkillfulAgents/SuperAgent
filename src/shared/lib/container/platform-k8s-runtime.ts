@@ -1,6 +1,7 @@
 import { createHash } from 'crypto'
 import fs from 'fs'
 import https from 'https'
+import { posix } from 'path'
 import { z } from 'zod'
 import { BaseContainerClient, CONTAINER_INTERNAL_PORT } from './base-container-client'
 import type { ContainerConfig, ContainerInfo, ContainerStats, StartOptions, StopOptions, StopResult } from './types'
@@ -117,7 +118,7 @@ export class PlatformK8sRuntimeClient extends BaseContainerClient {
     await deleteResource(`/api/v1/namespaces/${kube.namespace}/pods/${this.podName()}`)
     await deleteResource(`/api/v1/namespaces/${kube.namespace}/services/${this.serviceName()}`)
     await createResource(`/api/v1/namespaces/${kube.namespace}/services`, buildAgentServiceManifest(kube, this.serviceName(), this.podName(), ownerRef))
-    await createResource(`/api/v1/namespaces/${kube.namespace}/pods`, buildAgentPodManifest(kube, this.podName(), this.config, this.buildAgentEnv(options?.envVars), ownerRef))
+    await createResource(`/api/v1/namespaces/${kube.namespace}/pods`, buildAgentPodManifest(kube, this.podName(), this.config, this.buildAgentEnv(options?.envVars), ownerRef, options?.brain && { readOnly: options.brain.readOnly }))
 
     await waitForPodReady(kube.namespace, this.podName(), 300_000)
 
@@ -283,6 +284,7 @@ export function buildAgentPodManifest(
   config: ContainerConfig,
   envVars: Record<string, string>,
   ownerRef?: OwnerReference | null,
+  brain?: { readOnly: boolean },
 ): KubeResource {
   const settings = getSettings()
   const image = process.env.K8S_AGENT_IMAGE || settings.container.agentImage
@@ -314,11 +316,19 @@ export function buildAgentPodManifest(
         allowPrivilegeEscalation: false,
         capabilities: { drop: ['ALL'] },
       },
-      volumeMounts: [{
-        name: 'workspaces',
-        mountPath: '/workspace',
-        subPath: workspaceSubPath(kube.workspaceSubPathPrefix, config.agentId),
-      }],
+      volumeMounts: [
+        {
+          name: 'workspaces',
+          mountPath: '/workspace',
+          subPath: workspaceSubPath(kube.workspaceSubPathPrefix, config.agentId),
+        },
+        ...(brain ? [{
+          name: 'workspaces',
+          mountPath: '/brains/global',
+          subPath: brainSubPath(kube.workspaceSubPathPrefix),
+          readOnly: brain.readOnly,
+        }] : []),
+      ],
     }],
     volumes: [{
       name: 'workspaces',
@@ -473,6 +483,19 @@ function agentResourceLabels(kube: KubeConfig, podName: string): Record<string, 
 function workspaceSubPath(prefix: string, agentId: string): string {
   const tail = `${agentId}/workspace`
   return prefix ? `${prefix}/${tail}` : tail
+}
+
+/**
+ * The brain folder sits one level above the agents prefix on the shared
+ * volume: the host reads <dataDir>/agents/<slug>/workspace off the same
+ * volume the pod mounts at <prefix>/<slug>/workspace, so prefix ===
+ * <dataDir>/agents by invariant. Empty prefix means the data dir is the
+ * volume root.
+ */
+export function brainSubPath(workspacePrefix: string): string {
+  const parent = workspacePrefix ? posix.dirname(workspacePrefix) : ''
+  const tail = 'brains/global'
+  return parent && parent !== '.' ? `${parent}/${tail}` : tail
 }
 
 const stringMapSchema = z.record(z.string(), z.string())

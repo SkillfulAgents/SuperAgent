@@ -14,5 +14,7 @@ describe('REQUEST_PROMPT', () => {
     expect(prompt).toContain('decline still needs a request-log line with a why')
     expect(prompt).not.toContain('no other callback')
     expect(prompt).not.toContain('Caller session excerpt')
+    expect(prompt).toContain('/brains/global')
+    expect(prompt).not.toContain('mcp__brain__brain_write')
   })
 })

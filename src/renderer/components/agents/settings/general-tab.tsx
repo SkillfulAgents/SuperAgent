@@ -104,7 +104,7 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
         <div className="space-y-1">
           <Label htmlFor="brain-curator">Team Brain curator</Label>
           <p className="text-xs text-muted-foreground">
-            This agent is the only writer of the shared Team Brain.
+            This agent is the only writer of the shared Team Brain. Changing this restarts the agent.
           </p>
         </div>
         <Switch

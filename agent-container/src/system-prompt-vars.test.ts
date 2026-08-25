@@ -16,10 +16,16 @@ describe('buildSystemPromptVars', () => {
     expect(buildSystemPromptVars(undefined, undefined, undefined, undefined).CLAUDE_CONFIG_DIR).toBe('/workspace/.claude')
   })
 
-  it('omits Team Brain unless the host flag is on', () => {
-    expect(buildSystemPromptVars().teamBrain).toBe(false)
-    expect(generateSystemPrompt()).not.toContain('## Team Brain')
-    expect(generateSystemPrompt(undefined, undefined, undefined, undefined, undefined, undefined, undefined, true)).toContain('## Team Brain')
+  it('renders the Team Brain section only when the folder is mounted, in two variants', () => {
+    const off = generateSystemPrompt(undefined, undefined, undefined, undefined, undefined, undefined, undefined, false, false)
+    expect(off).not.toContain('## Team Brain')
+    const member = generateSystemPrompt(undefined, undefined, undefined, undefined, undefined, undefined, undefined, true, false)
+    expect(member).toContain('mounted read-only')
+    expect(member).toContain('mcp__brain__brain_write')
+    expect(member).not.toContain('brain_read')
+    const curator = generateSystemPrompt(undefined, undefined, undefined, undefined, undefined, undefined, undefined, true, true)
+    expect(curator).toContain('mounted read/write')
+    expect(curator).not.toContain('mcp__brain__brain_write')
   })
 })
 
@@ -115,9 +121,11 @@ describe('generateSystemPrompt rendering', () => {
             process.env.COMPOSIO_PLATFORM_MODE = String(composio)
             process.env.PLATFORM_AUTH_ACTIVE = String(webhook)
             process.env.HOST_PLATFORM = host
-            const out = generateSystemPrompt(undefined, undefined, undefined, undefined, undefined, { subagents })
-            for (const match of out.matchAll(/\/opt\/gamut\/docs\/([\w./-]+\.md)/g)) {
-              referenced.add(match[1])
+            for (const brainMounted of [false, true]) {
+              const out = generateSystemPrompt(undefined, undefined, undefined, undefined, undefined, { subagents }, undefined, brainMounted)
+              for (const match of out.matchAll(/\/opt\/gamut\/docs\/([\w./-]+\.md)/g)) {
+                referenced.add(match[1])
+              }
             }
           }
         }

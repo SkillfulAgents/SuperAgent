@@ -292,7 +292,27 @@ export interface SystemPromptVars {
   hasEnvVars: boolean;
   envVars: string[];
   userInstructions: string;
-  teamBrain: boolean;
+  brainMounted: boolean;
+  brainCurator: boolean;
+}
+
+export const BRAIN_CONTAINER_PATH = '/brains/global';
+
+/**
+ * The host mounts the Team Brain folder into every container while the
+ * feature is on: read/write for the curator, read-only for members. The
+ * folder is the signal. The session option still gates the section so a
+ * container with a stale mount after the flag went off says nothing.
+ */
+export function readBrainSignals(teamBrain: boolean): { mounted: boolean; curator: boolean } {
+  const mounted = teamBrain && fs.existsSync(BRAIN_CONTAINER_PATH);
+  if (!mounted) return { mounted: false, curator: false };
+  try {
+    fs.accessSync(BRAIN_CONTAINER_PATH, fs.constants.W_OK);
+    return { mounted: true, curator: true };
+  } catch {
+    return { mounted: true, curator: false };
+  }
 }
 
 /**
@@ -309,7 +329,8 @@ export function buildSystemPromptVars(
   webFetchProvider?: string,
   capabilityPolicies?: AgentCapabilityPolicies,
   subagentModels?: SubagentModelDefinition[],
-  teamBrain = false,
+  brainMounted = false,
+  brainCurator = false,
 ): SystemPromptVars {
   const composioTriggers = process.env.COMPOSIO_PLATFORM_MODE === 'true';
   const webhookEndpoints = process.env.PLATFORM_AUTH_ACTIVE === 'true';
@@ -343,7 +364,8 @@ export function buildSystemPromptVars(
     hasEnvVars: envVars.length > 0,
     envVars,
     userInstructions,
-    teamBrain,
+    brainMounted,
+    brainCurator,
   };
 }
 
@@ -360,7 +382,8 @@ export function generateSystemPrompt(
   webFetchProvider?: string,
   capabilityPolicies?: AgentCapabilityPolicies,
   subagentModels?: SubagentModelDefinition[],
-  teamBrain = false,
+  brainMounted = false,
+  brainCurator = false,
 ): string {
   const vars = buildSystemPromptVars(
     availableEnvVars,
@@ -370,7 +393,8 @@ export function generateSystemPrompt(
     webFetchProvider,
     capabilityPolicies,
     subagentModels,
-    teamBrain,
+    brainMounted,
+    brainCurator,
   );
   return renderPrompt(SYSTEM_PROMPT, vars);
 }
@@ -504,6 +528,8 @@ export class ClaudeCodeProcess extends EventEmitter {
   private userSystemPrompt: string | undefined;
   private modelPromptHints: string[] | undefined;
   private teamBrain: boolean;
+  private brainMounted: boolean;
+  private brainCurator: boolean;
   private isReady: boolean = false;
   private isProcessing: boolean = false;
   // Monotonic id of the current query; bumped by initializeQuery. A previous
@@ -573,6 +599,9 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.userSystemPrompt = options.userSystemPrompt;
     this.modelPromptHints = options.modelPromptHints;
     this.teamBrain = options.teamBrain === true;
+    const brain = readBrainSignals(this.teamBrain);
+    this.brainMounted = brain.mounted;
+    this.brainCurator = brain.curator;
     this.systemPrompt = generateSystemPrompt(
       options.availableEnvVars,
       options.userSystemPrompt,
@@ -581,7 +610,8 @@ export class ClaudeCodeProcess extends EventEmitter {
       options.webFetchProvider,
       options.capabilityPolicies,
       this.subagentModels,
-      this.teamBrain,
+      this.brainMounted,
+      this.brainCurator,
     );
   }
 
@@ -847,7 +877,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         'dashboards': createDashboardsMcpServer(),
         'agents': createAgentsMcpServer(() => this.sessionId),
         'chat': createChatMcpServer(() => this.sessionId),
-        ...(this.teamBrain ? { 'brain': createBrainMcpServer(() => this.sessionId) } : {}),
+        ...(this.brainMounted && !this.brainCurator ? { 'brain': createBrainMcpServer(() => this.sessionId) } : {}),
         ...((this.webSearchProvider || this.webFetchProvider)
           ? { 'web': createWebMcpServer({ search: !!this.webSearchProvider, fetch: !!this.webFetchProvider }) }
           : {}),
@@ -1324,11 +1354,12 @@ export class ClaudeCodeProcess extends EventEmitter {
         this.webFetchProvider,
         this.capabilityPolicies,
         this.subagentModels,
-        this.teamBrain,
+        this.brainMounted,
+        this.brainCurator,
       );
     }
 
-    // Treat undefined stored effort as 'high' so pre-existing sessions (created before
+    // Treat undefined stored effort as 'high' so pre-existing sessions (created before)
     // this feature) don't trigger a spurious restart on their first post-upgrade message.
     const currentEffort: EffortLevel = this.effort ?? 'high';
     const effortChanged = effort !== undefined && effort !== currentEffort;
@@ -1360,7 +1391,8 @@ export class ClaudeCodeProcess extends EventEmitter {
           this.webFetchProvider,
           nextPolicies,
           this.subagentModels,
-          this.teamBrain,
+          this.brainMounted,
+          this.brainCurator,
         );
       }
       this.reconcilePendingCapabilityReviews();

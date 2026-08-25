@@ -9,7 +9,8 @@ import { eq } from 'drizzle-orm'
 import { getOrCreateProxyToken } from '@shared/lib/proxy/token-store'
 import { getOrCreateHostToken } from '@shared/lib/container/host-token-store'
 import { getSettings, mutateSettings } from '@shared/lib/config/settings'
-import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
+import { ensureBrainDir, getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
+import { getCuratorSlug } from '@shared/lib/services/brain-service'
 import { copyChromeProfileData } from '@shared/lib/browser/chrome-profile'
 import { messagePersister } from './message-persister'
 import { ungrabAC } from '@shared/lib/computer-use/executor'
@@ -701,6 +702,13 @@ class ContainerManager {
         client.buildVolumeFlag(m.hostPath, m.containerPath)
       )
 
+      // Team Brain: every container mounts the folder while the feature is on.
+      // Only the curator gets it read/write. Inside the container the folder's
+      // presence and writability are the signals; nothing else carries the role.
+      const brain = settings.teamBrain === true
+        ? { hostDir: ensureBrainDir(), readOnly: getCuratorSlug() !== agentId }
+        : undefined
+
       // Start container (user secrets are in .env file in workspace).
       // If a mount turns out to be inaccessible to the container runtime at run
       // time (e.g. a cloud-synced folder the Lima VM helper is denied — passes
@@ -711,6 +719,7 @@ class ContainerManager {
       const startedInfo = await client.start({
         envVars,
         additionalVolumes,
+        brain,
         onMountDropped: (hostPath) => {
           const dropped = healthyMounts.find((m) => m.hostPath === hostPath)
           console.warn(`[ContainerManager] Mount inaccessible to runtime, dropped for ${agentId}: ${hostPath}`)

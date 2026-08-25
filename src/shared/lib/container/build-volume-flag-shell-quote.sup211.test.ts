@@ -103,4 +103,26 @@ describe('SUP-211 buildVolumeFlag shell escaping', () => {
     const stdout = execSync(`printf %s ${flag}`, { shell: '/bin/sh' }).toString()
     expect(stdout).toBe('/home/user/project:/workspace')
   })
+
+  it('emits :ro for a read-only mount and keeps runtime options after it', () => {
+    expect(makeClient().buildVolumeFlag('/host/brains/global', '/brains/global', { readOnly: true })).toBe("'/host/brains/global:/brains/global:ro'")
+  })
+})
+
+class PodmanTestClient extends BaseContainerClient {
+  protected getRunnerCommand(): string {
+    return 'podman'
+  }
+  protected getVolumeMountOptions(): string[] {
+    return ['U']
+  }
+}
+
+describe('buildVolumeFlag podman system mounts', () => {
+  it('podman: user mounts get U, system mounts do not', () => {
+    const podman = new PodmanTestClient({ agentId: 'sup211-podman' } as ContainerConfig)
+    expect(podman.buildVolumeFlag('/h/x', '/mounts/x')).toBe("'/h/x:/mounts/x:U'")
+    expect(podman.buildVolumeFlag('/h/b', '/brains/global', { readOnly: true, system: true })).toBe("'/h/b:/brains/global:ro'")
+    expect(podman.buildVolumeFlag('/h/b', '/brains/global', { readOnly: false, system: true })).toBe("'/h/b:/brains/global'")
+  })
 })

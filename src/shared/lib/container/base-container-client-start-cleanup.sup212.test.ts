@@ -92,6 +92,7 @@ vi.mock('@shared/lib/llm-provider', () => ({
 
 vi.mock('@shared/lib/config/data-dir', () => ({
   getAgentWorkspaceDir: vi.fn(() => '/tmp/sup212-workspace'),
+  BRAIN_CONTAINER_PATH: '/brains/global',
 }))
 
 vi.mock('fs', () => {
@@ -159,5 +160,12 @@ describe('SUP-212 start() cleans up an unhealthy container', () => {
   it('still surfaces the health-check error to the caller', async () => {
     const client = new TestContainerClient({ agentId: 'abc123' } as ContainerConfig)
     await expect(client.start()).rejects.toThrow(/failed to become healthy/i)
+  })
+
+  it('renders the brain mount as its own -v outside additionalVolumes', async () => {
+    const client = new TestContainerClient({ agentId: 'brain-agent' } as ContainerConfig)
+    await expect(client.start({ brain: { hostDir: '/host/brains/global', readOnly: true }, additionalVolumes: [] })).rejects.toThrow()
+    const run = execCommands.find((c) => /run\s+-d/.test(c))!
+    expect(run).toContain("-v '/host/brains/global:/brains/global:ro'")
   })
 })

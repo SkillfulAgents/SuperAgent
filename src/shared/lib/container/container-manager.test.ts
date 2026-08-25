@@ -116,6 +116,7 @@ const mockSettingsState = {
   containerRunner: 'docker' as string,
   chromeProfileId: undefined as string | undefined,
   hostBrowserProvider: undefined as string | undefined,
+  teamBrain: false,
 }
 
 vi.mock('@shared/lib/config/settings', () => ({
@@ -125,6 +126,7 @@ vi.mock('@shared/lib/config/settings', () => ({
       chromeProfileId: mockSettingsState.chromeProfileId,
       hostBrowserProvider: mockSettingsState.hostBrowserProvider,
     },
+    teamBrain: mockSettingsState.teamBrain,
   }),
   updateSettings: vi.fn(),
   // the runner auto-switch now persists via mutateSettings; apply the
@@ -141,6 +143,12 @@ vi.mock('@shared/lib/config/settings', () => ({
 
 vi.mock('@shared/lib/config/data-dir', () => ({
   getAgentWorkspaceDir: (id: string) => `/workspace/${id}`,
+  ensureBrainDir: () => '/mock/data/brains/global',
+}))
+
+const mockGetCuratorSlug = vi.fn()
+vi.mock('@shared/lib/services/brain-service', () => ({
+  getCuratorSlug: (...a: unknown[]) => mockGetCuratorSlug(...a),
 }))
 
 vi.mock('./message-persister', () => ({
@@ -207,6 +215,8 @@ describe('containerManager.ensureRunning — env var construction', () => {
     containerManager.removeClient('test-agent')
     mockSettingsState.chromeProfileId = undefined
     mockSettingsState.hostBrowserProvider = undefined
+    mockSettingsState.teamBrain = false
+    mockGetCuratorSlug.mockReturnValue(null)
 
     mockGetOrCreateProxyToken.mockResolvedValue('synth-token-123')
     mockGetContainerHostUrl.mockReturnValue('192.168.1.100')
@@ -465,6 +475,8 @@ describe('containerManager.ensureRunning — mount volumes', () => {
     containerManager.updateCachedStatus('test-agent', 'stopped', null)
     mockStart.mockResolvedValue(undefined)
     mockGetInfoFromRuntime.mockResolvedValue({ status: 'running', port: 8080 })
+    mockSettingsState.teamBrain = false
+    mockGetCuratorSlug.mockReturnValue(null)
 
     // Default DB mocks (no accounts, no MCPs)
     mockDbInnerJoin.mockReturnValue({ where: mockDbWhere })
@@ -518,6 +530,55 @@ describe('containerManager.ensureRunning — mount volumes', () => {
 
     const opts = mockStart.mock.calls[0][0]
     expect(opts.additionalVolumes).toEqual([])
+  })
+})
+
+describe('containerManager.ensureRunning — Team Brain mount', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    containerManager.removeClient('test-agent')
+    mockGetOrCreateProxyToken.mockResolvedValue('token')
+    mockGetContainerHostUrl.mockReturnValue('127.0.0.1')
+    mockGetAppPort.mockReturnValue(3000)
+    mockGetMountsWithHealth.mockReturnValue([])
+    containerManager.updateCachedStatus('test-agent', 'stopped', null)
+    mockStart.mockResolvedValue(undefined)
+    mockGetInfoFromRuntime.mockResolvedValue({ status: 'running', port: 8080 })
+    mockSettingsState.teamBrain = false
+    mockGetCuratorSlug.mockReturnValue(null)
+    mockDbInnerJoin.mockReturnValue({ where: mockDbWhere })
+    mockDbWhere.mockResolvedValue([])
+    mockMcpInnerJoin.mockReturnValue({ where: mockMcpWhere })
+    mockMcpWhere.mockResolvedValue([])
+  })
+
+  it('mounts the brain read/write for the curator when Team Brain is on', async () => {
+    mockSettingsState.teamBrain = true
+    mockGetCuratorSlug.mockReturnValue('test-agent')
+    await containerManager.ensureRunning('test-agent')
+    expect(mockStart.mock.calls[0][0].brain).toEqual({ hostDir: '/mock/data/brains/global', readOnly: false })
+    expect(mockStart.mock.calls[0][0].additionalVolumes).toEqual([])
+  })
+
+  it('mounts the brain read-only for a member', async () => {
+    mockSettingsState.teamBrain = true
+    mockGetCuratorSlug.mockReturnValue('someone-else')
+    await containerManager.ensureRunning('test-agent')
+    expect(mockStart.mock.calls[0][0].brain).toEqual({ hostDir: '/mock/data/brains/global', readOnly: true })
+  })
+
+  it('mounts the brain read-only when no curator is set', async () => {
+    mockSettingsState.teamBrain = true
+    mockGetCuratorSlug.mockReturnValue(null)
+    await containerManager.ensureRunning('test-agent')
+    expect(mockStart.mock.calls[0][0].brain?.readOnly).toBe(true)
+  })
+
+  it('omits the brain when Team Brain is off', async () => {
+    mockSettingsState.teamBrain = false
+    mockGetCuratorSlug.mockReturnValue('test-agent')
+    await containerManager.ensureRunning('test-agent')
+    expect(mockStart.mock.calls[0][0].brain).toBeUndefined()
   })
 })
 

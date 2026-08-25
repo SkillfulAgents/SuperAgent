@@ -23,6 +23,7 @@ vi.mock('@shared/lib/error-reporting', () => ({
 import {
   PlatformK8sRuntimeClient,
   buildAgentContainerResources,
+  brainSubPath,
   buildAgentPodManifest,
   buildAgentServiceManifest,
   kubeResourceName,
@@ -154,6 +155,29 @@ describe('PlatformK8sRuntimeClient manifests', () => {
       requests: { cpu: '2', memory: '4Gi' },
       limits: { cpu: '2', memory: '4Gi' },
     })
+  })
+
+  it('derives the brain subPath one level above the workspace prefix', () => {
+    expect(brainSubPath('staging-usw2/org-abc123/superagent-data/agents')).toBe('staging-usw2/org-abc123/superagent-data/brains/global')
+    expect(brainSubPath('agents')).toBe('brains/global')
+    expect(brainSubPath('')).toBe('brains/global')
+  })
+
+  it('adds a second volumeMount, read-only for members', () => {
+    const config: ContainerConfig = { agentId: 'member-bot', envVars: {} }
+    const member = buildAgentPodManifest(kube, 'pod', config, {}, null, { readOnly: true })
+    const mounts = (member.spec as any).containers[0].volumeMounts
+    expect(mounts).toHaveLength(2)
+    expect(mounts[1]).toEqual({
+      name: 'workspaces',
+      mountPath: '/brains/global',
+      subPath: 'staging-usw2/org-abc123/superagent-data/brains/global',
+      readOnly: true,
+    })
+    const curator = buildAgentPodManifest(kube, 'pod', config, {}, null, { readOnly: false })
+    expect((curator.spec as any).containers[0].volumeMounts[1].readOnly).toBe(false)
+    const off = buildAgentPodManifest(kube, 'pod', config, {}, null)
+    expect((off.spec as any).containers[0].volumeMounts).toHaveLength(1)
   })
 
   it('uses settings resourceLimits in the pod manifest', () => {

@@ -385,6 +385,28 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     expect(payload.mount).toEqual({ fsId: 'fs-1', accessPoint: 'fsap-1', mountTargetIp: '10.0.0.5', subPath: 'agents/agent-xyz/workspace' })
   })
 
+  it('adds mount.brainSubPath and brainMode when start receives brain', async () => {
+    Object.assign(process.env, { MICROVM_FS_ID: 'fs-1', MICROVM_ACCESS_POINT: 'fsap-1', MICROVM_MOUNT_TARGET_IP: '10.0.0.5' })
+    resetMicrovmRuntimeForTests()
+    await newClient().start({ brain: { hostDir: '/data/brains/global', readOnly: true } })
+    const input = sendMock.mock.calls.find((c) => c[0].type === 'Run')![0].input
+    const payload = JSON.parse(input.runHookPayload)
+    expect(payload.mount.brainSubPath).toBe('brains/global')
+    expect(payload.mount.brainMode).toBe('ro')
+  })
+
+  it('keeps a full payload under the RunMicrovm cap with the controller mtls block', async () => {
+    Object.assign(process.env, { MICROVM_FS_ID: 'fs-1', MICROVM_ACCESS_POINT: 'fsap-1', MICROVM_MOUNT_TARGET_IP: '10.0.0.5', K8S_WORKSPACES_SUBPATH_PREFIX: 'staging-usw2/org-abc123/superagent-data/agents' })
+    resetMicrovmRuntimeForTests()
+    await newClient().start({ brain: { hostDir: '/data/brains/global', readOnly: false }, envVars: { PROXY_TOKEN: 'p'.repeat(64) } })
+    const input = sendMock.mock.calls.find((c) => c[0].type === 'Run')![0].input
+    expect(JSON.parse(input.runHookPayload).mount.brainMode).toBe('rw')
+    // Controller issues ECDSA P-256 (microvm-workload-cert.ts:69, ~240-byte key).
+    // Conservative RSA-2048 stand-in still used as the overflow bound.
+    const withMtls = JSON.stringify({ ...JSON.parse(input.runHookPayload), mtls: { certPem: 'c'.repeat(1300), keyPem: 'k'.repeat(1700), gatewayUrl: 'https://agent-gateway.staging-use2.gamut.internal' } })
+    expect(Buffer.byteLength(withMtls, 'utf8')).toBeLessThan(4096)
+  })
+
   it('omits mount when the mount params are not fully configured', async () => {
     Object.assign(process.env, { MICROVM_FS_ID: 'fs-1' }) // accessPoint/mtip missing
     resetMicrovmRuntimeForTests()

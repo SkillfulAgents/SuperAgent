@@ -25,8 +25,8 @@ export class PodmanContainerClient extends BaseContainerClient {
    * for bind mounts — the host user's UID is preserved inside the container,
    * which prevents the non-root container user from writing to mounted volumes.
    */
-  protected getVolumeMountSuffix(): string {
-    return ':U'
+  protected getVolumeMountOptions(): string[] {
+    return ['U']
   }
 
   /**

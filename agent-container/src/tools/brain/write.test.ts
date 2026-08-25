@@ -1,16 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const mockCallBrainHost = vi.fn()
-const mockGetBrainCurator = vi.fn()
 const mockCallHost = vi.fn()
+const mockReadFileSync = vi.fn<(p: string, enc: string) => string>()
 
-vi.mock('./host-client', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./host-client')>()
-  return {
-    ...actual,
-    callBrainHost: (...args: unknown[]) => mockCallBrainHost(...args),
-    getBrainCurator: (...args: unknown[]) => mockGetBrainCurator(...args),
-  }
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs')>()
+  return { ...actual, readFileSync: (p: string, enc: string) => (p === '/brains/global/CURATOR' ? mockReadFileSync(p, enc) : actual.readFileSync(p, enc)) }
 })
 
 vi.mock('../agents/host-client', async (importOriginal) => {
@@ -22,16 +17,15 @@ vi.mock('../agents/host-client', async (importOriginal) => {
 })
 
 import { REQUEST_PROMPT } from './request-prompt'
-import { persistResponseSchema } from './schemas'
+import { brainWriteShape } from './tools'
 import { executeBrainWrite } from './write'
 
 describe('executeBrainWrite', () => {
   const prevSlug = process.env.SUPERAGENT_AGENT_SLUG
 
   beforeEach(() => {
-    mockCallBrainHost.mockReset()
-    mockGetBrainCurator.mockReset()
     mockCallHost.mockReset()
+    mockReadFileSync.mockReset()
     process.env.SUPERAGENT_AGENT_SLUG = 'sales-bot'
   })
 
@@ -40,31 +34,14 @@ describe('executeBrainWrite', () => {
     else process.env.SUPERAGENT_AGENT_SLUG = prevSlug
   })
 
-  it('reports a curator write', async () => {
-    mockCallBrainHost.mockResolvedValue({
-      status: 'wrote',
-      name: 'pricing-decisions.md',
-      updatedAt: '2026-08-21T00:00:00.000Z',
-    })
-    const result = await executeBrainWrite({ name: 'pricing-decisions', body: '# Why\n' }, 'sess-1')
-    expect(result.isError).toBeUndefined()
-    expect(result.content[0].text).toBe('Wrote pricing-decisions.md.')
-    expect(mockCallBrainHost).toHaveBeenCalledWith(
-      'write',
-      { name: 'pricing-decisions', body: '# Why\n' },
-      persistResponseSchema,
-    )
-    expect(mockCallHost).not.toHaveBeenCalled()
-  })
-
   it('invokes the curator on the x-agent path', async () => {
-    mockGetBrainCurator.mockResolvedValue('curator-bot')
+    mockReadFileSync.mockReturnValue('curator-bot\n')
     mockCallHost.mockResolvedValue({
       sessionId: 'curator-sess-1',
       status: 'completed',
       lastMessage: 'Wrote pricing-decisions.md',
     })
-    const completed = await executeBrainWrite({ request: 'Remember pricing' }, 'sess-1')
+    const completed = await executeBrainWrite('Remember pricing', 'sess-1')
     expect(completed.content[0].text).toBe([
       'session_id: curator-sess-1',
       'status: completed',
@@ -72,7 +49,6 @@ describe('executeBrainWrite', () => {
       '--- last message from agent ---',
       'Wrote pricing-decisions.md',
     ].join('\n'))
-    expect(mockCallBrainHost).not.toHaveBeenCalled()
     expect(mockCallHost).toHaveBeenCalledWith(
       'invoke',
       {
@@ -84,23 +60,31 @@ describe('executeBrainWrite', () => {
     )
 
     mockCallHost.mockResolvedValue({ sessionId: 'curator-sess-1', status: 'running' })
-    const running = await executeBrainWrite({ request: 'Remember pricing' }, 'sess-1')
+    const running = await executeBrainWrite('Remember pricing', 'sess-1')
     expect(running.content[0].text).toBe('session_id: curator-sess-1\nstatus: running')
   })
 
   it('surfaces no curator as a tool error', async () => {
-    mockGetBrainCurator.mockResolvedValue(null)
-    const result = await executeBrainWrite({ request: 'Remember pricing' })
-    expect(result.isError).toBe(true)
-    expect(result.content[0].text).toBe('Failed to write brain page: No curator')
+    mockReadFileSync.mockImplementation(() => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }) })
+    const missing = await executeBrainWrite('Remember pricing')
+    expect(missing.isError).toBe(true)
+    expect(missing.content[0].text).toBe('Failed to write brain page: No curator')
+    expect(mockCallHost).not.toHaveBeenCalled()
+
+    mockReadFileSync.mockReturnValue('  \n')
+    const blank = await executeBrainWrite('Remember pricing')
+    expect(blank.isError).toBe(true)
+    expect(blank.content[0].text).toBe('Failed to write brain page: No curator')
     expect(mockCallHost).not.toHaveBeenCalled()
   })
 
-  it('tells the curator to persist instead of invoking itself', async () => {
-    mockGetBrainCurator.mockResolvedValue('sales-bot')
-    const result = await executeBrainWrite({ request: 'Remember pricing' })
+  it('rejects a request with no text', async () => {
+    const result = await executeBrainWrite('   ', 'sess-1')
     expect(result.isError).toBe(true)
-    expect(result.content[0].text).toBe('You are the curator. Write or delete a named page.')
     expect(mockCallHost).not.toHaveBeenCalled()
+  })
+
+  it('exposes request as the only parameter', () => {
+    expect(Object.keys(brainWriteShape)).toEqual(['request'])
   })
 })

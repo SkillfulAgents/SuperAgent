@@ -70,7 +70,7 @@ vi.mock('@shared/lib/container/client-factory', () => ({
 vi.mock('@shared/lib/config/data-dir', () => ({
   getDataDir: () => '/mock/data',
   getAgentsDataDir: () => '/mock/data/agents',
-  getBrainDir: () => '/mock/data/brain',
+  getBrainDir: () => '/mock/data/brains/global',
 }))
 
 vi.mock('../../main/host-browser', () => ({
@@ -113,7 +113,10 @@ vi.mock('@shared/lib/analytics/tenant-id', () => ({
 }))
 
 vi.mock('path', () => ({
-  default: { join: (...args: string[]) => args.join('/') },
+  default: {
+    join: (...args: string[]) => args.join('/'),
+    dirname: (p: string) => p.split('/').slice(0, -1).join('/'),
+  },
 }))
 
 import settings from './settings'
@@ -194,7 +197,7 @@ describe('POST /api/settings/factory-reset — agent/app-owned table cleanup', (
     const fs = await import('fs')
     const res = await factoryReset()
     expect(res.status).toBe(200)
-    expect(fs.default.promises.rm).toHaveBeenCalledWith('/mock/data/brain', {
+    expect(fs.default.promises.rm).toHaveBeenCalledWith('/mock/data/brains', {
       recursive: true,
       force: true,
     })

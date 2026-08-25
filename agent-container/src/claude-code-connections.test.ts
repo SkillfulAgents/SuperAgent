@@ -1,5 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+const mockExistsSync = vi.fn<(p: string) => boolean | undefined>()
+const mockAccessSync = vi.fn<(p: string, mode?: number) => void>()
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs')>()
+  return {
+    ...actual,
+    // Pin /brains/global so the test never depends on the host machine's filesystem.
+    existsSync: (p: string) => (p === '/brains/global' ? (mockExistsSync(p) ?? false) : actual.existsSync(p)),
+    accessSync: (p: string, mode?: number) => (p === '/brains/global' ? mockAccessSync(p, mode) : actual.accessSync(p, mode)),
+  }
+})
+
 type MockQueryCall = { options: Record<string, unknown> }
 type MockMcpStatus = { name: string; status: string }
 const calls: MockQueryCall[] = []
@@ -111,6 +123,10 @@ describe('ClaudeCodeProcess runtime connection handling', () => {
     calls.length = 0
     mcpServerStatusImpl = null
     mcpServerStatusCalls = 0
+    mockExistsSync.mockReset()
+    mockAccessSync.mockReset()
+    mockExistsSync.mockReturnValue(false)
+    mockAccessSync.mockImplementation(() => { throw Object.assign(new Error('EROFS'), { code: 'EROFS' }) })
     originalRemoteMcps = process.env.REMOTE_MCPS
     originalConnectedAccounts = process.env.CONNECTED_ACCOUNTS
     delete process.env.REMOTE_MCPS
@@ -213,6 +229,10 @@ describe('ClaudeCodeProcess Team Brain MCP gate', () => {
     calls.length = 0
     mcpServerStatusImpl = null
     mcpServerStatusCalls = 0
+    mockExistsSync.mockReset()
+    mockAccessSync.mockReset()
+    mockExistsSync.mockReturnValue(false)
+    mockAccessSync.mockImplementation(() => { throw Object.assign(new Error('EROFS'), { code: 'EROFS' }) })
     delete process.env.REMOTE_MCPS
     delete process.env.CONNECTED_ACCOUNTS
   })
@@ -222,24 +242,32 @@ describe('ClaudeCodeProcess Team Brain MCP gate', () => {
     claudeProcess = undefined
   })
 
-  it('registers the brain server only when the workspace flag is on', async () => {
-    claudeProcess = new ClaudeCodeProcess({
-      sessionId: 'test-brain-gate-off',
-      workingDirectory: '/tmp',
-    })
+  it('registers brain_write only for a mounted member, never for the curator or when unmounted', async () => {
+    claudeProcess = new ClaudeCodeProcess({ sessionId: 'tb-unmounted', workingDirectory: '/tmp', teamBrain: true })
     await claudeProcess.start()
     expect(calls[calls.length - 1].options.mcpServers).not.toHaveProperty('brain')
+    expect(calls[calls.length - 1].options.systemPrompt).not.toContain('## Team Brain')
     await claudeProcess.stop()
-    claudeProcess = undefined
 
-    claudeProcess = new ClaudeCodeProcess({
-      sessionId: 'test-brain-gate-on',
-      workingDirectory: '/tmp',
-      teamBrain: true,
-    })
+    mockExistsSync.mockReturnValue(true)
+    claudeProcess = new ClaudeCodeProcess({ sessionId: 'tb-member', workingDirectory: '/tmp', teamBrain: true })
     await claudeProcess.start()
     expect(calls[calls.length - 1].options.mcpServers).toHaveProperty('brain')
-    expect(calls[calls.length - 1].options.systemPrompt).toContain('## Team Brain')
+    expect(calls[calls.length - 1].options.systemPrompt).toContain('mounted read-only')
+    await claudeProcess.stop()
+
+    mockAccessSync.mockImplementation(() => undefined)
+    claudeProcess = new ClaudeCodeProcess({ sessionId: 'tb-curator', workingDirectory: '/tmp', teamBrain: true })
+    await claudeProcess.start()
+    expect(calls[calls.length - 1].options.mcpServers).not.toHaveProperty('brain')
+    expect(calls[calls.length - 1].options.systemPrompt).toContain('mounted read/write')
+    await claudeProcess.stop()
+
+    // Flag off with a stale mount: nothing renders, nothing registers.
+    claudeProcess = new ClaudeCodeProcess({ sessionId: 'tb-stale', workingDirectory: '/tmp' })
+    await claudeProcess.start()
+    expect(calls[calls.length - 1].options.mcpServers).not.toHaveProperty('brain')
+    expect(calls[calls.length - 1].options.systemPrompt).not.toContain('## Team Brain')
   })
 })
 
@@ -277,6 +305,10 @@ describe('ClaudeCodeProcess remote MCP handshake gate', () => {
     calls.length = 0
     mcpServerStatusImpl = null
     mcpServerStatusCalls = 0
+    mockExistsSync.mockReset()
+    mockAccessSync.mockReset()
+    mockExistsSync.mockReturnValue(false)
+    mockAccessSync.mockImplementation(() => { throw Object.assign(new Error('EROFS'), { code: 'EROFS' }) })
     originalRemoteMcps = process.env.REMOTE_MCPS
     originalConnectedAccounts = process.env.CONNECTED_ACCOUNTS
     delete process.env.REMOTE_MCPS

@@ -38,6 +38,7 @@ import {
   type MicrovmFatalResult,
 } from './microvm-death-classifier'
 import type { ObserveUnexpectedDeathInput, UnexpectedDeathPlan } from './runtime-death'
+import { brainSubPath } from './platform-k8s-runtime'
 
 // RunMicrovm caps runHookPayload at 4096 bytes. We only put a small bootstrap
 // credential + mount params here; the full agent env is fetched at boot (see
@@ -927,12 +928,16 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     const env = this.buildAgentEnv(options?.envVars)
     const hasEnv = Object.keys(env).length > 0
     // Mount the same per-agent workspace path the k8s runtime uses.
+    const workspacePrefix = process.env.K8S_WORKSPACES_SUBPATH_PREFIX || 'agents'
     const mount = config.fsId && config.accessPoint && config.mountTargetIp
       ? {
           fsId: config.fsId,
           accessPoint: config.accessPoint,
           mountTargetIp: config.mountTargetIp,
-          subPath: `${process.env.K8S_WORKSPACES_SUBPATH_PREFIX || 'agents'}/${this.config.agentId}/workspace`,
+          subPath: `${workspacePrefix}/${this.config.agentId}/workspace`,
+          ...(options?.brain
+            ? { brainSubPath: brainSubPath(workspacePrefix), brainMode: options.brain.readOnly ? 'ro' : 'rw' }
+            : {}),
         }
       : undefined
     const hostApiBaseUrl = await this.getHostApiBaseUrl()

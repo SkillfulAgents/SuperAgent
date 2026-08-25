@@ -52,7 +52,7 @@ import { listChatUsersTool } from './tools/chat/list-chat-users'
 import { listChatChannelsTool } from './tools/chat/list-chat-channels'
 import { addChatIntegrationTool } from './tools/chat/add-chat-integration'
 import { makeSendChatMessageTool } from './tools/chat/send-chat-message'
-import { brainReadTool, makeBrainWriteTool } from './tools/brain/tools'
+import { makeBrainWriteTool } from './tools/brain/tools'
 
 // TODO: refactor - every MCP should be exported from its own file instead of having one giant factory with conditional logic for which tools to include. This will make it easier to maintain and add new MCPs in the future without modifying existing code.
 
@@ -129,7 +129,7 @@ export function createBrainMcpServer(getCallerSessionId: () => string) {
   return createSdkMcpServer({
     name: 'brain',
     version: '1.0.0',
-    tools: [brainReadTool, makeBrainWriteTool(getCallerSessionId)],
+    tools: [makeBrainWriteTool(getCallerSessionId)],
   })
 }
 

@@ -319,7 +319,7 @@ export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
             name="Team Brain"
             htmlFor="team-brain"
             badge={<span className="text-[11px] text-muted-foreground">Experimental</span>}
-            subtitle="Shared pages other agents can read. New sessions pick this up."
+            subtitle="Shared pages every agent can read. Agents that are running pick up a change after they restart. The curator restarts now."
             right={
               <Switch
                 id="team-brain"

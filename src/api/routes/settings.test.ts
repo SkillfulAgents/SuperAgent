@@ -76,6 +76,8 @@ const mockGetReadiness = vi.fn()
 const mockResetReadiness = vi.fn()
 const mockMarkRuntimeUnavailable = vi.fn()
 const mockUpdateStartProgress = vi.fn()
+const mockGetCachedInfo = vi.fn()
+const mockRestartContainer = vi.fn()
 
 vi.mock('@shared/lib/container/container-manager', () => ({
   containerManager: {
@@ -88,7 +90,14 @@ vi.mock('@shared/lib/container/container-manager', () => ({
     markRuntimeUnavailable: (...args: unknown[]) => mockMarkRuntimeUnavailable(...args),
     updateStartProgress: (...args: unknown[]) => mockUpdateStartProgress(...args),
     stopAll: vi.fn(),
+    getCachedInfo: (...args: unknown[]) => mockGetCachedInfo(...args),
+    restartContainer: (...args: unknown[]) => mockRestartContainer(...args),
   },
+}))
+
+const mockGetCuratorSlug = vi.fn()
+vi.mock('@shared/lib/services/brain-service', () => ({
+  getCuratorSlug: (...a: unknown[]) => mockGetCuratorSlug(...a),
 }))
 
 const mockCheckAllRunnersAvailability = vi.fn()
@@ -110,7 +119,7 @@ vi.mock('@shared/lib/container/client-factory', () => ({
 vi.mock('@shared/lib/config/data-dir', () => ({
   getDataDir: () => '/mock/data',
   getAgentsDataDir: () => '/mock/data/agents',
-  getBrainDir: () => '/mock/data/brain',
+  getBrainDir: () => '/mock/data/brains/global',
 }))
 
 vi.mock('../../main/host-browser', () => ({
@@ -288,6 +297,9 @@ function setupDefaults() {
   mockGetReadiness.mockReturnValue({ ready: true })
   mockEnsureImageReady.mockResolvedValue(undefined)
   mockClearClients.mockReturnValue(undefined)
+  mockGetCuratorSlug.mockReturnValue(null)
+  mockGetCachedInfo.mockReturnValue({ status: 'stopped' })
+  mockRestartContainer.mockResolvedValue(undefined)
   mockTotalmem.mockReturnValue(64 * 1024 ** 3)
   mockCredentialHasProvider.mockImplementation((provider: string) => provider === 'apple-passwords')
   mockCredentialConnectionStatuses.mockResolvedValue([{
@@ -322,6 +334,35 @@ describe('settings route', () => {
       body: JSON.stringify(body),
     })
   }
+
+  it('restarts the running curator when teamBrain flips, in either direction', async () => {
+    const seededSettings = defaultSettings()
+    mockGetCuratorSlug.mockReturnValue('sales-bot')
+    mockGetCachedInfo.mockReturnValue({ status: 'running' })
+
+    mockGetSettings.mockReturnValue({ ...seededSettings, teamBrain: false })
+    await putSettings({ teamBrain: true })
+    expect(mockRestartContainer).toHaveBeenCalledWith('sales-bot')
+
+    mockRestartContainer.mockClear()
+    mockGetSettings.mockReturnValue({ ...seededSettings, teamBrain: true })
+    await putSettings({ teamBrain: false })
+    expect(mockRestartContainer).toHaveBeenCalledWith('sales-bot')
+
+    mockRestartContainer.mockClear()
+    mockGetSettings.mockReturnValue({ ...seededSettings, teamBrain: true })
+    await putSettings({ teamBrain: true })
+    expect(mockRestartContainer).not.toHaveBeenCalled()
+  })
+
+  it('does not restart a stopped curator when teamBrain flips', async () => {
+    const seededSettings = defaultSettings()
+    mockGetCuratorSlug.mockReturnValue('sales-bot')
+    mockGetCachedInfo.mockReturnValue({ status: 'stopped' })
+    mockGetSettings.mockReturnValue({ ...seededSettings, teamBrain: false })
+    await putSettings({ teamBrain: true })
+    expect(mockRestartContainer).not.toHaveBeenCalled()
+  })
 
   // =========================================================================
   // PUT request boundary validation

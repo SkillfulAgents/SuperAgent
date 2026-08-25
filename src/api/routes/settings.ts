@@ -8,6 +8,7 @@ import { getLlmProvider, getAllProviderInfo, GenericLlmProvider } from '@shared/
 import type { LlmProviderId } from '@shared/lib/llm-provider'
 import type { BedrockLlmProvider } from '@shared/lib/llm-provider/bedrock-provider'
 import { getDataDir, getAgentsDataDir, getBrainDir } from '@shared/lib/config/data-dir'
+import { getCuratorSlug } from '@shared/lib/services/brain-service'
 import { assertPathWithinDir } from '@shared/lib/utils/path-safety'
 import { Authenticated, IsAdmin } from '../middleware/auth'
 import { isAuthMode } from '@shared/lib/auth/mode'
@@ -495,6 +496,16 @@ settings.put(
 
       updateSettings(newSettings)
 
+      // Team Brain flag: the curator's read/write mount attaches at container
+      // start, so a flag flip restarts the running curator. Members are not
+      // restarted; they pick the change up on their next start.
+      if (newSettings.teamBrain !== currentSettings.teamBrain) {
+        const curator = getCuratorSlug()
+        if (curator && containerManager.getCachedInfo(curator).status === 'running') {
+          await containerManager.restartContainer(curator)
+        }
+      }
+
       // If account provider settings changed, re-register providers
       if (body.apiKeys?.nangoSecretKey !== undefined || body.app?.accountProvider !== undefined) {
         try {
@@ -892,7 +903,7 @@ settings.post('/factory-reset', async (c) => {
     const agentsDir = getAgentsDataDir()
     await fs.promises.rm(agentsDir, { recursive: true, force: true })
 
-    await fs.promises.rm(getBrainDir(), { recursive: true, force: true })
+    await fs.promises.rm(path.dirname(getBrainDir()), { recursive: true, force: true })
 
     // Clear every agent/app-owned relational table (children before parents).
     // Better Auth tables (user/session/account/verification) are preserved.

@@ -103,7 +103,14 @@ export interface CreateSessionOptions {
 
 export interface StartOptions {
   envVars?: Record<string, string>
-  additionalVolumes?: string[] // Extra -v flag values for bind mounts
+  additionalVolumes?: string[] // Extra -v flag values for user bind mounts
+  /**
+   * Team Brain folder, mounted at /brains/global in every container while the
+   * feature is on: read/write for the curator, read-only for everyone else.
+   * Kept out of additionalVolumes on purpose: that list is user mounts, which
+   * the Lima retry path may drop and report as a mount-health warning.
+   */
+  brain?: { hostDir: string; readOnly: boolean }
   /**
    * Called when a bind mount is dropped at run time because the container
    * runtime can't access it (e.g. a cloud-synced folder the Lima VM helper is
@@ -173,7 +180,7 @@ export interface ContainerClient {
   stopSync(): void // Synchronous stop for exit handlers
 
   // Build a -v flag value for a volume mount (hostPath:containerPath with runtime-specific suffix)
-  buildVolumeFlag(hostPath: string, containerPath: string): string
+  buildVolumeFlag(hostPath: string, containerPath: string, opts?: { readOnly?: boolean; system?: boolean }): string
 
   // Host-internal bridge IP that a host-side service must bind to so THIS runner's
   // containers can reach it via host.docker.internal, or null when containers reach
