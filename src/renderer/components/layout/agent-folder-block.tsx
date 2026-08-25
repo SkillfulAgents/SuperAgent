@@ -1,7 +1,12 @@
 import React, { useState } from 'react'
 import { ChevronRight, Folder, FolderPlus, Pencil, Trash2 } from 'lucide-react'
 import { useSortable } from '@dnd-kit/sortable'
-import { useDroppable } from '@dnd-kit/core'
+import {
+  defaultDropAnimation,
+  useDroppable,
+  type DropAnimation,
+  type DropAnimationKeyframeResolver,
+} from '@dnd-kit/core'
 import { CSS } from '@dnd-kit/utilities'
 import { cn } from '@shared/lib/utils/cn'
 import {
@@ -343,6 +348,30 @@ export function AgentFolderBlock({
         </div>
     </li>
   )
+}
+
+/**
+ * Where the overlay flies once released. The default keyframes aim at the
+ * dropped row's post-drop rect — but a row filed into a COLLAPSED folder sits
+ * in the folder's `hidden` body, and a hidden node measures 0×0 at the
+ * viewport origin, so the overlay would fly to the window's top-left corner.
+ * A landing spot with no visible rect gets a fade-out in place instead.
+ */
+export const overlayDropKeyframes: DropAnimationKeyframeResolver = (params) => {
+  const { width, height } = params.active.rect
+  if (!width && !height) {
+    const transform = CSS.Transform.toString(params.transform.initial)
+    return [
+      { transform, opacity: 1 },
+      { transform, opacity: 0 },
+    ]
+  }
+  return defaultDropAnimation.keyframes(params)
+}
+
+export const agentDropAnimation: DropAnimation = {
+  ...defaultDropAnimation,
+  keyframes: overlayDropKeyframes,
 }
 
 /** The row that follows the cursor during a drag. */

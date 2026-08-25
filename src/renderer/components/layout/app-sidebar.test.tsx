@@ -280,6 +280,7 @@ vi.mock('@dnd-kit/core', () => ({
   useSensor: vi.fn(),
   useSensors: vi.fn(() => []),
   useDroppable: () => ({ setNodeRef: vi.fn(), isOver: false }),
+  defaultDropAnimation: { duration: 250, easing: 'ease', keyframes: vi.fn(() => []) },
 }))
 vi.mock('@dnd-kit/sortable', () => ({
   SortableContext: ({ children }: any) => <>{children}</>,

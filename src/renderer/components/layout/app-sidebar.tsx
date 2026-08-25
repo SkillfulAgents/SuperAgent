@@ -101,7 +101,7 @@ import {
 import { restrictToVerticalAxis } from '@dnd-kit/modifiers'
 import { SortableAgentMenuItem } from './sortable-agent-item'
 import { SidebarDragProvider, useSidebarDragActive } from './sidebar-drag-context'
-import { AgentDragOverlayRow, AgentFolderBlock } from './agent-folder-block'
+import { AgentDragOverlayRow, AgentFolderBlock, agentDropAnimation } from './agent-folder-block'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
 import {
   containerIdForFolder,
@@ -1567,7 +1567,7 @@ export function AppSidebar() {
                           </AgentFolderBlock>
                         ))}
                       </SortableContext>
-                      <DragOverlay>
+                      <DragOverlay dropAnimation={agentDropAnimation}>
                         {activeDrag ? (
                           <AgentDragOverlayRow
                             label={activeDrag.label}
