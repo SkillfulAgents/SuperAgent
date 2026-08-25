@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Agent successfully opened browser, navigated to https://example.com, and correctly identified and reported the page title as \"Example Domain\"",
+  "steps": [
+    "Navigated to http://localhost:47891 — App loaded successfully, showing home page with two agents in the sidebar",
+    "Clicked on \"QA-20260825-011303-hvkj\" agent in the sidebar — Agent page opened with chat interface ready for input",
+    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully submitted, agent began processing",
+    "Waited up to 3 minutes for response — Agent completed the task in 9 seconds with 4 tool calls, providing complete response",
+    "Verified response mentions \"Example Domain\" — Response clearly states: \"The page title is \"Example Domain\" — the page has one heading of the same text, a short paragraph, and a \"Learn more\" link. Browser is closed.\" ✓ VERIFIED"
+  ],
+  "bugs": [],
+  "durationMs": 106682,
+  "sessionId": "5f191334-12d8-4356-83df-d34168a5c5e0",
+  "cost": {
+    "inputTokens": 434,
+    "outputTokens": 12126,
+    "cacheCreationTokens": 76776,
+    "cacheReadTokens": 1241430,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.281177
+  }
+}
