@@ -129,6 +129,10 @@ export function CreateAgentTemplates({
                   key={`${template.skillsetId}/${template.path}`}
                   template={template}
                   onOpen={onSelect}
+                  // Here a click installs in place — there is no details page
+                  // between the card and the agent, so "details" would promise
+                  // a preview the click does not give.
+                  action="install"
                 />
               ))}
               {rest.length > 0 && (

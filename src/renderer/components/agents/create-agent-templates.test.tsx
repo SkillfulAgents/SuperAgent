@@ -106,7 +106,9 @@ describe('CreateAgentTemplates', () => {
     discoverable = [template('Inbox Zero')]
     render(<CreateAgentTemplates onSelect={onSelect} />)
 
-    await user.click(screen.getByTestId('explore-template-card'))
+    // By accessible name: unlike Explore (where a card opens a details page),
+    // clicking here installs in place, and the card must say so.
+    await user.click(screen.getByRole('button', { name: 'Inbox Zero — install' }))
 
     expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ name: 'Inbox Zero' }))
   })

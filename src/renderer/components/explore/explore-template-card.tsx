@@ -76,15 +76,20 @@ export function TemplateAvatar({
 
 /**
  * Marketplace card for one agent template: the icon stacked above the name,
- * blurb, and the services it connects to. The whole card opens the details
- * page, which is where installing happens.
+ * blurb, and the services it connects to. On Explore the whole card opens the
+ * details page, which is where installing happens; the wizard's roster wires
+ * `onOpen` to an immediate install instead, so the accessible name has to say
+ * which one a click actually does.
  */
 export function ExploreTemplateCard({
   template,
   onOpen,
+  action = 'details',
 }: {
   template: ApiDiscoverableAgent
   onOpen: (template: ApiDiscoverableAgent) => void
+  /** What clicking the card does, for the aria-label: "{name} — {action}". */
+  action?: string
 }) {
   const Icon = getTemplateIcon(template)
   return (
@@ -102,7 +107,7 @@ export function ExploreTemplateCard({
       type="button"
       data-testid="explore-template-card"
       onClick={() => onOpen(template)}
-      aria-label={`${template.name} — details`}
+      aria-label={`${template.name} — ${action}`}
       // 200ms: hover is feedback, not an animation. The lift is 2px, so a
       // longer curve spends its tail finishing a sub-pixel move that already
       // looks arrived — which reads as lag. Matches the renderer's dominant
