@@ -24,6 +24,7 @@ const composerMock = vi.hoisted(() => ({
   clearAttachments: vi.fn(),
   removeAttachment: vi.fn(),
   handleSubmit: vi.fn((e?: { preventDefault?: () => void }) => e?.preventDefault?.()),
+  retryAttachment: vi.fn(),
   handlePaste: vi.fn(),
   handleFileSelect: vi.fn(),
   handleFolderSelect: vi.fn(),
@@ -94,6 +95,7 @@ vi.mock('@renderer/lib/upload', () => ({ uploadFileChunked: vi.fn() }))
 vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
 
 import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
+import { uploadFileChunked } from '@renderer/lib/upload'
 import { QuickDispatch } from './quick-dispatch'
 
 /** Install a window.electronAPI stub; returns captured main→renderer callbacks. */
@@ -174,6 +176,17 @@ describe('QuickDispatch', () => {
 
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(composerMock.handleSubmit).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not dispatch on Enter when canSubmit is false', async () => {
+    composerMock.canSubmit = false
+    installElectronAPI()
+    render(<QuickDispatch />)
+    await waitFor(() =>
+      expect(screen.getByTestId('quick-dispatch-agent-trigger')).toHaveTextContent('Agent One'),
+    )
+    fireEvent.keyDown(screen.getByTestId('quick-dispatch-input'), { key: 'Enter' })
+    expect(composerMock.handleSubmit).not.toHaveBeenCalled()
   })
 
   it('live-renders Markdown and keeps Markdown in composer state', async () => {
@@ -282,6 +295,15 @@ describe('QuickDispatch', () => {
       listeners.attachPending()
     })
     expect(drain).toHaveBeenCalledTimes(2) // ping drain
+  })
+
+  it('does not post to a blank agent before the list loads', async () => {
+    state.agents = []
+    installElectronAPI()
+    render(<QuickDispatch />)
+    const uploadFile = composerOptionsSpy.value?.uploadFile as (args: { file: File }) => Promise<unknown>
+    await expect(uploadFile({ file: new File(['x'], 'a.txt') })).rejects.toThrow('No agent selected')
+    expect(uploadFileChunked).not.toHaveBeenCalled()
   })
 })
 

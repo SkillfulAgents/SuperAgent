@@ -1,6 +1,6 @@
 import { apiFetch } from '@renderer/lib/api'
 import { captureRendererException } from '@renderer/lib/error-reporting'
-import { uploadFileChunked } from '@renderer/lib/upload'
+import { uploadFileChunked, type UploadProgress } from '@renderer/lib/upload'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ApiMessage, ApiMessageOrBoundary, ApiSession } from '@shared/lib/types/api'
@@ -355,11 +355,22 @@ export function useCancelQueuedMessage() {
 
 export function useUploadFile() {
   return useMutation({
-    mutationFn: async (data: { sessionId: string; agentSlug: string; file: File; relativePath?: string }) => {
+    mutationFn: async (data: {
+      sessionId: string
+      agentSlug: string
+      file: File
+      relativePath?: string
+      onProgress?: (p: UploadProgress) => void
+      signal?: AbortSignal
+      stallMs?: number
+    }) => {
       return uploadFileChunked<{ path: string; filename: string; size: number }>({
         url: `/api/agents/${data.agentSlug}/sessions/${data.sessionId}/upload-file`,
         file: data.file,
         fields: data.relativePath ? { relativePath: data.relativePath } : undefined,
+        onProgress: data.onProgress,
+        signal: data.signal,
+        stallMs: data.stallMs,
       })
     },
   })

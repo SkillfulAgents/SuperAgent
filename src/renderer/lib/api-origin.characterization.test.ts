@@ -133,6 +133,8 @@ const DIRECT_BASE_URL_CONSUMERS: Record<string, string> = {
     '<img src> — file:///workspace Markdown images resolved to the authenticated workspace file route',
   'lib/parse-tool-result.ts':
     '<img src> — media-ref images in tool results, resolved to a URL here so every result renderer gets one without threading the session identity down to it',
+  'lib/upload.ts':
+    'XHR upload transport — fetch cannot report request-body progress, so sendUploadRequest prefixes getApiBaseUrl() the way apiFetch does',
   'components/ui/model-icon.tsx': '<img src> — model icon asset',
   'components/home/dashboard-card.tsx': '<img src> — dashboard screenshot',
   'components/dashboards/dashboard-view.tsx': '<iframe src> — embedded dashboard',

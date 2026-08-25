@@ -1,5 +1,5 @@
-import { useState, useCallback, useEffect } from 'react'
-import { type Attachment } from '@renderer/components/messages/attachment-preview'
+import { useState, useCallback, useEffect, useRef } from 'react'
+import { type Attachment, type UploadState } from '@renderer/components/messages/attachment-preview'
 import { getItemsFromDataTransfer, getFolderFromDirectoryInput, type FileWithPath, type FolderGroup } from '@renderer/lib/file-utils'
 
 // 500 MB max folder size for in-browser zip upload (no Electron fs.cp available)
@@ -8,17 +8,25 @@ const MAX_WEB_FOLDER_SIZE = 500 * 1024 * 1024
 interface UseAttachmentsOptions {
   onFoldersReceived?: (folders: FolderGroup[]) => void
   initialAttachments?: Attachment[]
+  onAttachmentsAdded?: (added: Attachment[]) => void
 }
 
+export type UploadPatch = { upload?: UploadState; error?: string }
+
 export function useAttachments(options?: UseAttachmentsOptions) {
+  // Carried-over chips (stale-session → agent home) always re-upload: their
+  // paths belong to the composer that uploaded them.
   const [attachments, setAttachments] = useState<Attachment[]>(() =>
-    (options?.initialAttachments ?? []).map((attachment) =>
-      attachment.type === 'file' && attachment.file.type.startsWith('image/') && !attachment.preview
-        ? { ...attachment, preview: URL.createObjectURL(attachment.file) }
-        : attachment,
-    ),
+    (options?.initialAttachments ?? []).map((attachment) => {
+      const stripped = attachment.type === 'mount' ? attachment : { ...attachment, upload: undefined, error: undefined }
+      return stripped.type === 'file' && stripped.file.type.startsWith('image/') && !stripped.preview
+        ? { ...stripped, preview: URL.createObjectURL(stripped.file) }
+        : stripped
+    }),
   )
   const [isDragOver, setIsDragOver] = useState(false)
+  const onAddedRef = useRef(options?.onAttachmentsAdded)
+  onAddedRef.current = options?.onAttachmentsAdded
 
   const addFiles = useCallback((files: FileWithPath[]) => {
     const newAttachments: Attachment[] = files.map(({ file }) => {
@@ -33,6 +41,7 @@ export function useAttachments(options?: UseAttachmentsOptions) {
       return attachment
     })
     setAttachments((prev) => [...prev, ...newAttachments])
+    onAddedRef.current?.(newAttachments)
   }, [])
 
   const addFolders = useCallback((folders: FolderGroup[]) => {
@@ -55,6 +64,7 @@ export function useAttachments(options?: UseAttachmentsOptions) {
     }
     if (newAttachments.length > 0) {
       setAttachments((prev) => [...prev, ...newAttachments])
+      onAddedRef.current?.(newAttachments)
     }
   }, [])
 
@@ -71,6 +81,10 @@ export function useAttachments(options?: UseAttachmentsOptions) {
       hostPath: m.hostPath,
     }))
     setAttachments((prev) => [...prev, ...newAttachments])
+  }, [])
+
+  const updateAttachment = useCallback((id: string, patch: UploadPatch) => {
+    setAttachments((prev) => prev.map((a) => (a.id === id && a.type !== 'mount' ? { ...a, ...patch } : a)))
   }, [])
 
   const setAttachmentError = useCallback((id: string, error: string | undefined) => {
@@ -166,6 +180,7 @@ export function useAttachments(options?: UseAttachmentsOptions) {
     addFiles,
     addFolders,
     addMounts,
+    updateAttachment,
     setAttachmentError,
     clearAttachmentErrors,
     removeAttachment,

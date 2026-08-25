@@ -291,7 +291,7 @@ function SeatCreditsRow({ seat }: { seat: NonNullable<ParsedPlatformBillingInfo[
         <span className="text-xs font-medium">Seat credits</span>
         <span className="text-xs text-muted-foreground">{Math.round(pct)}% remaining</span>
       </div>
-      <Progress percent={pct} />
+      <Progress percent={pct} thresholds={{ warning: 20, critical: 5 }} />
       <div className="text-[11px] text-muted-foreground">
         {formatCents(seat.balanceCents)} of {formatCents(seat.startingBalanceCents)}
       </div>
