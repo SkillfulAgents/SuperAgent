@@ -111,12 +111,15 @@ export function QuickDispatch() {
   const composer = useMessageComposer({
     agentSlug,
     uploadFile: useCallback(
-      ({ file, onProgress, signal, stallMs }: { file: File; onProgress?: (p: UploadProgress) => void; signal?: AbortSignal; stallMs?: number }) =>
-        uploadFileChunked<{ path: string }>({ url: `/api/agents/${agentSlug}/upload-file`, file, onProgress, signal, stallMs }),
+      ({ file, onProgress, signal, stallMs }: { file: File; onProgress?: (p: UploadProgress) => void; signal?: AbortSignal; stallMs?: number }) => {
+        if (!agentSlug) return Promise.reject(new Error('No agent selected'))
+        return uploadFileChunked<{ path: string }>({ url: `/api/agents/${agentSlug}/upload-file`, file, onProgress, signal, stallMs })
+      },
       [agentSlug],
     ),
     uploadFolder: useCallback(
       async ({ sourcePath }: { sourcePath: string }) => {
+        if (!agentSlug) throw new Error('No agent selected')
         const res = await apiFetch(`/api/agents/${agentSlug}/upload-folder`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

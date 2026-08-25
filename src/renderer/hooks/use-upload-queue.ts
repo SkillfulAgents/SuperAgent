@@ -42,6 +42,9 @@ export function useUploadQueue(options: UploadQueueOptions) {
   // Synchronous mirror of which chips carry an error. React state lags a
   // microtask behind the chain, so the waiter reads this, never the ref.
   const failedRef = useRef(new Set<string>())
+  // Same lag: Send reads finished paths here when the chip has not committed yet.
+  // Owner rides along so a stale chip cannot attach another agent's path.
+  const pathsRef = useRef(new Map<string, { path: string; agentSlug: string }>())
   const generationRef = useRef(0)
 
   const uploadOne = useCallback(async (attachment: Uploadable, generation: number) => {
@@ -76,6 +79,7 @@ export function useUploadQueue(options: UploadQueueOptions) {
         result = await opts.uploadFile({ file: attachment.file, onProgress, signal: controller.signal, stallMs: UPLOAD_STALL_MS })
       }
       if (!live()) return
+      pathsRef.current.set(id, { path: result.path, agentSlug })
       opts.updateAttachment(id, { upload: { status: 'done', path: result.path, agentSlug } })
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') return
@@ -83,6 +87,7 @@ export function useUploadQueue(options: UploadQueueOptions) {
       console.error('Failed to upload attachment:', error)
       captureRendererException(error, { tags: { source: 'attachment-upload' }, extra: { agentSlug } })
       failedRef.current.add(id)
+      pathsRef.current.delete(id)
       opts.updateAttachment(id, { upload: undefined, error: error instanceof Error ? error.message : 'Upload failed. Please try again.' })
     } finally {
       controllersRef.current.delete(id)
@@ -92,7 +97,12 @@ export function useUploadQueue(options: UploadQueueOptions) {
   const enqueue = useCallback((attachment: Uploadable) => {
     removedRef.current.delete(attachment.id)
     failedRef.current.delete(attachment.id)
-    optionsRef.current.updateAttachment(attachment.id, { upload: { status: 'queued', agentSlug: optionsRef.current.agentSlug }, error: undefined })
+    pathsRef.current.delete(attachment.id)
+    const slug = optionsRef.current.agentSlug
+    optionsRef.current.updateAttachment(attachment.id, { upload: { status: 'queued', agentSlug: slug }, error: undefined })
+    // No agent yet (Quick Dispatch before the list loads): keep the chip waiting.
+    // requeueAll runs when the slug arrives.
+    if (!slug) return
     const generation = generationRef.current
     chainRef.current = chainRef.current.then(() => uploadOne(attachment, generation))
   }, [uploadOne])
@@ -123,11 +133,15 @@ export function useUploadQueue(options: UploadQueueOptions) {
     controllersRef.current.clear()
     removedRef.current.clear()
     failedRef.current.clear()
+    pathsRef.current.clear()
   }, [])
+
+  const pathFor = useCallback((id: string) => pathsRef.current.get(id), [])
 
   const remove = useCallback((id: string) => {
     removedRef.current.add(id)
     failedRef.current.delete(id)
+    pathsRef.current.delete(id)
     controllersRef.current.get(id)?.abort()
     controllersRef.current.delete(id)
     optionsRef.current.removeAttachment(id)
@@ -149,5 +163,5 @@ export function useUploadQueue(options: UploadQueueOptions) {
 
   useEffect(() => abortAll, [abortAll])
 
-  return { enqueue, retry, retryAndWait, remove, clear, requeueAll }
+  return { enqueue, retry, retryAndWait, pathFor, remove, clear, requeueAll }
 }

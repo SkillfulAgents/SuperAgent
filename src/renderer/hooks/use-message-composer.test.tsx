@@ -72,6 +72,7 @@ const mockQueue = {
   enqueue: vi.fn(),
   retry: vi.fn(),
   retryAndWait: vi.fn().mockResolvedValue({ ok: true }),
+  pathFor: vi.fn(),
   remove: vi.fn(),
   clear: vi.fn(),
   requeueAll: vi.fn(),
@@ -354,8 +355,8 @@ describe('useMessageComposer', () => {
 
     it('submit sends the done paths in chip order without re-uploading', async () => {
       mockAttachments.attachments = [
-        { type: 'file', file: new File([''], 'a.txt'), id: '1', upload: { status: 'done', path: '/a', agentSlug: 'x' } },
-        { type: 'file', file: new File([''], 'b.txt'), id: '2', upload: { status: 'done', path: '/b', agentSlug: 'x' } },
+        { type: 'file', file: new File([''], 'a.txt'), id: '1', upload: { status: 'done', path: '/a', agentSlug: 'test-agent' } },
+        { type: 'file', file: new File([''], 'b.txt'), id: '2', upload: { status: 'done', path: '/b', agentSlug: 'test-agent' } },
       ]
       const opts = defaultOptions()
       const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
@@ -384,7 +385,7 @@ describe('useMessageComposer', () => {
       mockAttachments.attachments = [{ type: 'file', file: new File([''], 'a.txt'), id: '1', error: 'boom' }]
       mockQueue.retryAndWait.mockImplementationOnce(async () => {
         // Same array object: the composer's attachmentsRef points at it
-        mockAttachments.attachments.splice(0, 1, { type: 'file', file: new File([''], 'a.txt'), id: '1', upload: { status: 'done', path: '/a', agentSlug: 'x' } })
+        mockAttachments.attachments.splice(0, 1, { type: 'file', file: new File([''], 'a.txt'), id: '1', upload: { status: 'done', path: '/a', agentSlug: 'test-agent' } })
         return { ok: true }
       })
       const opts = defaultOptions()
@@ -392,6 +393,40 @@ describe('useMessageComposer', () => {
       act(() => result.current.setMessage('go'))
       await act(async () => { await result.current.handleSubmit({ preventDefault: vi.fn() }) })
       expect(opts.onSubmit).toHaveBeenCalledWith(expect.stringContaining('/a'))
+    })
+
+    it('submit omits a path that belongs to a different agent', async () => {
+      mockAttachments.attachments = [{
+        type: 'file',
+        file: new File([''], 'a.txt'),
+        id: '1',
+        upload: { status: 'done', path: '/other/a.txt', agentSlug: 'other-agent' },
+      }]
+      const opts = defaultOptions()
+      const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+      act(() => result.current.setMessage('go'))
+      await act(async () => { await result.current.handleSubmit({ preventDefault: vi.fn() }) })
+      expect(opts.onSubmit).toHaveBeenCalledWith('go')
+    })
+
+    it('submit uses the live list when the chip has no path yet', async () => {
+      mockAttachments.attachments = [{ type: 'file', file: new File([''], 'a.txt'), id: '1' }]
+      mockQueue.pathFor.mockReturnValueOnce({ path: '/workspace/a.txt', agentSlug: 'test-agent' })
+      const opts = defaultOptions()
+      const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+      act(() => result.current.setMessage('go'))
+      await act(async () => { await result.current.handleSubmit({ preventDefault: vi.fn() }) })
+      expect(opts.onSubmit).toHaveBeenCalledWith(expect.stringContaining('/workspace/a.txt'))
+    })
+
+    it('submit omits a live-list path that belongs to a different agent', async () => {
+      mockAttachments.attachments = [{ type: 'file', file: new File([''], 'b.txt'), id: '2' }]
+      mockQueue.pathFor.mockReturnValueOnce({ path: '/other/b.txt', agentSlug: 'other-agent' })
+      const opts = defaultOptions()
+      const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+      act(() => result.current.setMessage('go'))
+      await act(async () => { await result.current.handleSubmit({ preventDefault: vi.fn() }) })
+      expect(opts.onSubmit).toHaveBeenCalledWith('go')
     })
 
     it('a mount failure sets the banner and stops the send', async () => {

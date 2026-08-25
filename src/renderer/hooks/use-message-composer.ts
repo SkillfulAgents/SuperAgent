@@ -301,7 +301,14 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
       content = appendMountedFolders(content, mountResults)
     }
 
-    const paths = attachmentsRef.current.flatMap((a) => (a.type !== 'mount' && a.upload?.status === 'done' && a.upload.path ? [a.upload.path] : []))
+    const paths = attachmentsRef.current.flatMap((a) => {
+      if (a.type === 'mount') return []
+      const done = a.upload?.path
+        ? { path: a.upload.path, agentSlug: a.upload.agentSlug }
+        : queue.pathFor(a.id)
+      if (!done?.path || done.agentSlug !== agentSlug) return []
+      return [done.path]
+    })
     content = appendAttachedFiles(content, paths)
 
     if (!keepMessageUntilComplete) {

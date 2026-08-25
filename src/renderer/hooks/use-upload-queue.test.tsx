@@ -36,12 +36,13 @@ function useHarness(
   uploadFile: UploadQueueOptions['uploadFile'],
   initial: Attachment[] = [],
   uploadFolder: UploadQueueOptions['uploadFolder'] = vi.fn(),
+  agentSlug = 'agent-a',
 ) {
   const [attachments, setAttachments] = useState<Attachment[]>(initial)
   const attachmentsRef = useRef(attachments)
   attachmentsRef.current = attachments
   const queue = useUploadQueue({
-    agentSlug: 'agent-a',
+    agentSlug,
     attachmentsRef,
     updateAttachment: (id, patch) => setAttachments((p) => p.map((a) => (a.id === id ? { ...a, ...patch } : a))),
     removeAttachment: (id) => setAttachments((p) => p.filter((a) => a.id !== id)),
@@ -72,6 +73,7 @@ describe('useUploadQueue', () => {
     expect(uploadOf(result.current.attachments[1])?.status).toBe('queued')
     await act(async () => { d1.resolve({ path: '/a' }) })
     expect(uploadOf(result.current.attachments[0])).toMatchObject({ status: 'done', path: '/a', agentSlug: 'agent-a' })
+    expect(result.current.queue.pathFor('a')).toEqual({ path: '/a', agentSlug: 'agent-a' })
     expect(uploadFile).toHaveBeenCalledTimes(2)
     await act(async () => { d2.resolve({ path: '/b' }) })
     expect(uploadOf(result.current.attachments[1])?.status).toBe('done')
@@ -82,6 +84,7 @@ describe('useUploadQueue', () => {
     const { result } = renderHook(() => useHarness(uploadFile, [fileAttachment('a'), fileAttachment('b')]))
     await act(async () => { result.current.queue.enqueue(fileAttachment('a')); result.current.queue.enqueue(fileAttachment('b')) })
     expect(result.current.attachments[0]).toMatchObject({ error: 'boom', upload: undefined })
+    expect(result.current.queue.pathFor('a')).toBeUndefined()
     expect(uploadOf(result.current.attachments[1])?.status).toBe('done')
   })
 
@@ -180,5 +183,13 @@ describe('useUploadQueue', () => {
       file: expect.objectContaining({ name: 'docs.zip', type: 'application/zip' }),
     }))
     expect(uploadOf(result.current.attachments[0])).toMatchObject({ status: 'done', path: '/workspace/docs.zip' })
+  })
+
+  it('does not start an upload when the agent slug is empty', async () => {
+    const uploadFile = vi.fn()
+    const { result } = renderHook(() => useHarness(uploadFile, [fileAttachment('a')], vi.fn(), ''))
+    await act(async () => { result.current.queue.enqueue(fileAttachment('a')) })
+    expect(uploadFile).not.toHaveBeenCalled()
+    expect(uploadOf(result.current.attachments[0])?.status).toBe('queued')
   })
 })
