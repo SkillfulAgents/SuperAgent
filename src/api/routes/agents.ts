@@ -34,6 +34,11 @@ import {
   updateRemoteMcpEnvironment,
 } from '@shared/lib/container/connection-runtime-sync'
 import { parseRuntimeOptions, resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
+import {
+  sessionDashboardDispatchSchema,
+  type SessionDashboardDispatch,
+} from '@shared/lib/dashboard-dispatch-schema'
+import { getDashboardViewDispatchHostJs } from '../dashboard-view-dispatch-host'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
@@ -53,6 +58,9 @@ import type {
 import {
   listSessions,
   listSessionsByIds,
+  sortSessionsNewestFirst,
+  SESSIONS_LIST_MAX_LIMIT,
+  type SessionSortBy,
   getSessionSummary,
   readSessionMetadata,
   updateSessionName,
@@ -195,6 +203,7 @@ import { pipeline as streamPipeline } from 'stream/promises'
 import pLimit from 'p-limit'
 import * as path from 'path'
 import type { ApiAgent } from '@shared/lib/types/api'
+import type { SessionInfo, SessionMetadataMap } from '@shared/lib/types/agent'
 import { toPublicChatIntegration } from '@shared/lib/chat-integrations/public'
 import { toPublicWebhookTrigger } from '@shared/lib/webhook-triggers/public'
 import {
@@ -407,12 +416,242 @@ function toSkillsetRef(config: Pick<SkillsetConfig, 'id' | 'url' | 'name' | 'pro
   }
 }
 
+const strictBooleanQuerySchema = z
+  .enum(['true', 'false'])
+  .transform((value) => value === 'true')
+
+const positiveIntegerQuerySchema = z
+  .string()
+  .regex(/^[1-9]\d*$/)
+  .transform(Number)
+  .refine((value) => Number.isSafeInteger(value))
+
+const sessionsListQuerySchema = z.object({
+  sortBy: z.literal('last_activity_at').optional(),
+  notable: strictBooleanQuerySchema.optional(),
+  limit: positiveIntegerQuerySchema.optional(),
+})
+
+const agentsListQuerySchema = z.object({
+  includeLatestVisibleSessionTail: strictBooleanQuerySchema.optional(),
+})
+
+// Agent-list hydration only needs enough recent display items to derive a
+// preview. Keep both item count and raw tail window far below the chat page
+// limits because this cost is multiplied by the number of agents.
+const LATEST_VISIBLE_SESSION_TAIL_LIMIT = 20
+const LATEST_VISIBLE_SESSION_TAIL_BYTE_BUDGET = 256 * 1024
+
+interface AgentSummaryOptions {
+  includeLatestVisibleSessionTail?: boolean
+  signal?: AbortSignal
+}
+
+function attentionSessionCountsOutsideLatest(
+  sessionId: string,
+  latestSessionId: string | undefined,
+  visibleSessionIds: Set<string>,
+  sessionMetadata: SessionMetadataMap,
+): boolean {
+  if (sessionId === latestSessionId) return false
+  if (visibleSessionIds.has(sessionId)) return true
+
+  // An ID absent from the visible snapshot is either confirmed-hidden or
+  // unresolved (for example a just-created or stale attention source). Only a
+  // metadata-confirmed hidden automation is safe to ignore. Unknown ordinary
+  // and promoted sessions conservatively count as outside.
+  return !isHiddenAutomatedSession(sessionMetadata[sessionId])
+}
+
+function getAttentionOutsideLatest(
+  agentSlug: string,
+  visibleSessions: SessionInfo[],
+  unreadSessionIds: Set<string>,
+  sessionMetadata: SessionMetadataMap,
+): NonNullable<ApiAgent['attentionOutsideLatest']> {
+  const latestSessionId = visibleSessions[0]?.id
+  const visibleSessionIds = new Set(visibleSessions.map((session) => session.id))
+  const countsOutside = (sessionId: string) => attentionSessionCountsOutsideLatest(
+    sessionId,
+    latestSessionId,
+    visibleSessionIds,
+    sessionMetadata,
+  )
+
+  const hasUnreadNotification = [...unreadSessionIds].some(countsOutside)
+
+  let hasPendingInput = false
+  let observedPendingInput = false
+
+  // The registry is authoritative for open requests and exposes explicit
+  // session attribution when it exists. Agent-scoped requests have no unique
+  // session, so they must conservatively count as outside latest.
+  for (const request of userInputRequestManager.getOpenRequestsForAgent(agentSlug)) {
+    if (!request.blocking || request.autoApproved) continue
+    observedPendingInput = true
+    const sessionId = request.scope.sessionId
+    if (sessionId === undefined || countsOutside(sessionId)) {
+      hasPendingInput = true
+      break
+    }
+  }
+
+  // Also sample the persister projection. It covers recovered/racing state and
+  // lets us classify hidden active sessions without ever returning their IDs.
+  if (!hasPendingInput) {
+    const candidateIds = new Set([
+      ...visibleSessionIds,
+      ...messagePersister.getActiveSessionIdsForAgent(agentSlug),
+    ])
+    for (const sessionId of candidateIds) {
+      if (!messagePersister.isSessionAwaitingInput(sessionId)) continue
+      observedPendingInput = true
+      if (countsOutside(sessionId)) {
+        hasPendingInput = true
+        break
+      }
+    }
+  }
+
+  // A positive aggregate with no attributable request/session is unresolved.
+  // Never collapse that uncertainty to false: iOS uses false/false to open the
+  // latest session directly.
+  if (
+    !hasPendingInput &&
+    !observedPendingInput &&
+    messagePersister.hasSessionsAwaitingInputForAgent(agentSlug)
+  ) {
+    hasPendingInput = true
+  }
+
+  return { hasUnreadNotification, hasPendingInput }
+}
+
+async function getLatestVisibleSessionTail(
+  agentSlug: string,
+  session: SessionInfo,
+  unreadSessionIds: Set<string>,
+  signal?: AbortSignal,
+): Promise<NonNullable<ApiAgent['latestVisibleSession']>> {
+  signal?.throwIfAborted()
+  // A registered session with no transcript yet (created, nothing streamed) is
+  // a normal state and serves an empty tail. Only an id with neither a
+  // transcript nor a registration — a session that vanished after listing —
+  // is an error.
+  const transcriptExists = await sessionExists(agentSlug, session.id)
+  if (!transcriptExists && !(await sessionIsKnown(agentSlug, session.id))) {
+    throw new Error(
+      'Latest visible session transcript not found for ' + agentSlug + '/' + session.id,
+    )
+  }
+  const messageTail = transcriptExists
+    ? await getSessionMessagesPage(agentSlug, session.id, {
+        limit: LATEST_VISIBLE_SESSION_TAIL_LIMIT,
+        byteBudget: LATEST_VISIBLE_SESSION_TAIL_BYTE_BUDGET,
+        media: 'ref',
+        signal,
+      })
+    : { messages: [], nextCursor: null }
+  signal?.throwIfAborted()
+  // Same treatment as the transcript page endpoint, so the tail matches what
+  // opening the session shows. Must run before the session flags below so
+  // recovered awaiting-input state is reflected in them.
+  await annotateAndRecoverMessages(messageTail.messages, agentSlug, session.id)
+  signal?.throwIfAborted()
+
+  return {
+    session: {
+      ...session,
+      isActive: messagePersister.isSessionActive(session.id),
+      isAwaitingInput: messagePersister.isSessionAwaitingInput(session.id),
+      hasUnreadNotifications: unreadSessionIds.has(session.id),
+    },
+    messageTail,
+  }
+}
+
+interface AgentVisibleSessionExpansion {
+  latestVisibleSession: ApiAgent['latestVisibleSession']
+  attentionOutsideLatest: ApiAgent['attentionOutsideLatest']
+}
+
+async function getVisibleSessionExpansion(
+  agentSlug: string,
+  unreadSessionIds: Set<string>,
+  sessionMetadataPromise: Promise<SessionMetadataMap>,
+  signal?: AbortSignal,
+): Promise<AgentVisibleSessionExpansion> {
+  let visibleSessions: SessionInfo[]
+  try {
+    // Keep the complete visibility-filtered snapshot: its first item selects
+    // latest, while the remaining metadata-only items answer the two attention
+    // booleans without loading older transcripts.
+    visibleSessions = await listSessions(agentSlug, {
+      excludeAutomated: true,
+      sortBy: 'last_activity_at',
+    })
+  } catch (error) {
+    if (signal?.aborted) throw error
+    console.error('Failed to select latest visible session for agent ' + agentSlug + ':', error)
+    captureException(error, {
+      tags: { component: 'agents', operation: 'latest-visible-session-selection' },
+      extra: { agentSlug },
+    })
+    return { latestVisibleSession: null, attentionOutsideLatest: null }
+  }
+
+  const latestSession = visibleSessions[0]
+  const attentionOutsideLatestPromise = sessionMetadataPromise
+    .then((sessionMetadata) => getAttentionOutsideLatest(
+      agentSlug,
+      visibleSessions,
+      unreadSessionIds,
+      sessionMetadata,
+    ))
+    .catch((error): null => {
+      if (signal?.aborted) throw error
+      console.error('Failed to compute attention outside latest for agent ' + agentSlug + ':', error)
+      captureException(error, {
+        tags: { component: 'agents', operation: 'attention-outside-latest' },
+        extra: { agentSlug },
+      })
+      return null
+    })
+
+  const latestVisibleSessionPromise = latestSession
+    ? getLatestVisibleSessionTail(agentSlug, latestSession, unreadSessionIds, signal)
+        .catch((error): null => {
+          if (signal?.aborted) throw error
+          // Attention still excludes this session as latest, so on this path
+          // its own unread/pending is reported nowhere until the next poll.
+          console.error(
+            'Failed to fetch latest visible session tail for agent ' + agentSlug + ':',
+            error,
+          )
+          captureException(error, {
+            tags: { component: 'agents', operation: 'latest-visible-session-tail' },
+            extra: { agentSlug },
+          })
+          return null
+        })
+    : Promise.resolve(null)
+
+  const [latestVisibleSession, attentionOutsideLatest] = await Promise.all([
+    latestVisibleSessionPromise,
+    attentionOutsideLatestPromise,
+  ])
+  return { latestVisibleSession, attentionOutsideLatest }
+}
+
 /**
  * Enrich an array of ApiAgent objects with summary fields:
  * active/awaiting sessions, last activity, and dashboards.
  * Batch notification lookup upfront, then parallelize per-agent FS operations.
  */
-async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> {
+async function enrichAgentsWithSummary(
+  agents: ApiAgent[],
+  options: AgentSummaryOptions = {},
+): Promise<ApiAgent[]> {
   const slugs = agents.map(a => a.slug)
 
   const unreadByAgent = await getUnreadNotificationsByAgents(slugs)
@@ -420,14 +659,26 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
   const limit = pLimit(5)
   return Promise.all(
     agents.map((agent) => limit(async () => {
-      // Only FS operations remain per-agent (parallelized)
-      const [sessionSummary, artifacts, sessionMetadata] = await Promise.all([
-        getSessionSummary(agent.slug),
-        listArtifactsFromFilesystem(agent.slug),
-        readSessionMetadata(agent.slug),
-      ])
-
       const unreadSessionIds = unreadByAgent.get(agent.slug) ?? new Set<string>()
+      const sessionMetadataPromise = readSessionMetadata(agent.slug)
+      const visibleSessionExpansionPromise = options.includeLatestVisibleSessionTail
+        ? getVisibleSessionExpansion(
+            agent.slug,
+            unreadSessionIds,
+            sessionMetadataPromise,
+            options.signal,
+          )
+        : Promise.resolve(undefined)
+
+      // Only FS operations remain per-agent (parallelized and bounded by the
+      // outer p-limit).
+      const [sessionSummary, artifacts, sessionMetadata, visibleSessionExpansion] =
+        await Promise.all([
+          getSessionSummary(agent.slug),
+          listArtifactsFromFilesystem(agent.slug),
+          sessionMetadataPromise,
+          visibleSessionExpansionPromise,
+        ])
 
       // Compute session flags from in-memory state (no I/O needed).
       // `unreadByAgent` is already filtered to user-actionable notification types
@@ -480,6 +731,13 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
           name: a.name || a.slug,
           ...(a.hasScreenshot ? { hasScreenshot: true } : {}),
         })),
+        ...(options.includeLatestVisibleSessionTail
+          ? {
+              latestVisibleSession: visibleSessionExpansion?.latestVisibleSession ?? null,
+              attentionOutsideLatest:
+                visibleSessionExpansion?.attentionOutsideLatest ?? null,
+            }
+          : {}),
       }
     }))
   )
@@ -972,8 +1230,20 @@ Respond with ONLY the session name, nothing else. No quotes, no explanation.`,
 
 // GET /api/agents - List agents with status (filtered by ACL in auth mode)
 // Response includes pre-aggregated summary: session activity and dashboards.
+// ?include_latest_visible_session_tail=true additionally returns one
+// visibility-safe session and a small media-ref transcript page per agent.
 agents.get('/', async (c) => {
   try {
+    const includeTailRaw = c.req.query('include_latest_visible_session_tail')
+    const parsedQuery = agentsListQuerySchema.safeParse({
+      ...(includeTailRaw === undefined
+        ? {}
+        : { includeLatestVisibleSessionTail: includeTailRaw }),
+    })
+    if (!parsedQuery.success) {
+      return c.json({ error: 'Invalid agent list query' }, 400)
+    }
+
     // In auth mode, only return agents the user has explicit ACL entries for.
     // Note: Admins do NOT get implicit access to all agents in the listing.
     // This is intentional — admin privileges grant bypass access to individual
@@ -1005,7 +1275,11 @@ agents.get('/', async (c) => {
       agentList = await listAgentsWithStatus()
     }
 
-    return c.json(await enrichAgentsWithSummary(agentList))
+    return c.json(await enrichAgentsWithSummary(agentList, {
+      includeLatestVisibleSessionTail:
+        parsedQuery.data.includeLatestVisibleSessionTail === true,
+      signal: c.req.raw.signal,
+    }))
   } catch (error) {
     console.error('Failed to fetch agents:', error)
     return c.json({ error: 'Failed to fetch agents' }, 500)
@@ -1554,16 +1828,33 @@ agents.post('/:id/open-directory', AgentAdmin(), async (c) => {
 })
 
 // GET /api/agents/:id/sessions - List sessions for an agent
-// ?notable=true&limit=N — fast path for badge/toolbar consumers: only
-// sessions that are live or carry unread notifications, built from targeted
-// stats instead of statting every transcript in the directory.
+// ?notable=true means active/awaiting-input or unread. Its fast path intersects
+// those targeted IDs with server-visible sessions before sort_by and limit,
+// avoiding a stat of every transcript. Supported ordering is deterministic
+// newest-first activity via sort_by=last_activity_at.
 agents.get('/:id/sessions', AgentRead(), async (c) => {
   try {
     const slug = getAgentId(c)
+    const sortByRaw = c.req.query('sort_by')
+    const notableRaw = c.req.query('notable')
+    const limitRaw = c.req.query('limit')
+    const parsedQuery = sessionsListQuerySchema.safeParse({
+      ...(sortByRaw === undefined ? {} : { sortBy: sortByRaw }),
+      ...(notableRaw === undefined ? {} : { notable: notableRaw }),
+      ...(limitRaw === undefined ? {} : { limit: limitRaw }),
+    })
+    if (!parsedQuery.success) {
+      return c.json({ error: 'Invalid sessions query' }, 400)
+    }
 
-    if (c.req.query('notable') === 'true') {
-      const limitRaw = Number(c.req.query('limit'))
-      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.trunc(limitRaw), 100) : 25
+    const sortBy: SessionSortBy = parsedQuery.data.sortBy ?? 'last_activity_at'
+    const isNotable = parsedQuery.data.notable === true
+    const requestedLimit = parsedQuery.data.limit === undefined
+      ? undefined
+      : Math.min(parsedQuery.data.limit, SESSIONS_LIST_MAX_LIMIT)
+    const resultLimit = requestedLimit ?? (isNotable ? 25 : undefined)
+
+    if (isNotable) {
       const unreadIds = await getSessionIdsWithUnreadNotifications(slug)
       const activeIds = messagePersister.getActiveSessionIdsForAgent(slug)
       const infos = await listSessionsByIds(slug, [...new Set([...activeIds, ...unreadIds])], {
@@ -1580,17 +1871,25 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
           hasUnreadNotifications: unreadIds.has(session.id),
         }
       })
-      // Live sessions must survive the cap; within each band, newest first.
-      enriched.sort((a, b) => {
-        const aLive = a.isActive || a.isAwaitingInput ? 1 : 0
-        const bLive = b.isActive || b.isAwaitingInput ? 1 : 0
-        if (aLive !== bLive) return bLive - aLive
-        return b.lastActivityAt.getTime() - a.lastActivityAt.getTime()
-      })
-      return c.json(enriched.slice(0, limit))
+      const ordered = sortSessionsNewestFirst(enriched, sortBy)
+      if (sortByRaw === undefined) {
+        // Preserve the existing notable-only contract when no explicit order
+        // was requested: live sessions survive the default/caller cap. The
+        // stable sort retains deterministic newest-first ordering per band.
+        ordered.sort((a, b) => {
+          const aLive = a.isActive || a.isAwaitingInput ? 1 : 0
+          const bLive = b.isActive || b.isAwaitingInput ? 1 : 0
+          return bLive - aLive
+        })
+      }
+      return c.json(ordered.slice(0, resultLimit))
     }
 
-    const sessionList = await listSessions(slug, { excludeAutomated: true })
+    const sessionList = await listSessions(slug, {
+      excludeAutomated: true,
+      ...(sortByRaw === undefined ? {} : { sortBy }),
+      ...(resultLimit === undefined ? {} : { limit: resultLimit }),
+    })
     const unreadSessionIds = await getSessionIdsWithUnreadNotifications(slug)
     const pendingWakes = await listPendingWakesByAgent(slug)
     const wakesBySession = new Map(pendingWakes.map((w) => [w.resumeSessionId!, w]))
@@ -1633,6 +1932,24 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     }
 
     const runtimeOptions = parseRuntimeOptions(body)
+
+    // Optional provenance: the renderer's dashboard-dispatch dialog marks the
+    // sessions it creates so they can show where they came from. This is a
+    // LABEL, not proof of user consent: dashboard iframes share the API's
+    // origin and ambient credentials, so dashboard JS can already POST here
+    // directly, with or without this field. The consent dialog is therefore a
+    // guarantee about host-built UI paths (and a throttle on well-behaved
+    // dashboards), not a server-enforced boundary — enforcing consent
+    // server-side requires isolating dashboards onto their own origin with a
+    // host-issued capability, which is deliberately out of scope here.
+    let dashboardDispatch: SessionDashboardDispatch | undefined
+    if (body.dashboardDispatch !== undefined) {
+      const parsed = sessionDashboardDispatchSchema.safeParse(body.dashboardDispatch)
+      if (!parsed.success) {
+        return c.json({ error: 'Invalid dashboardDispatch' }, 400)
+      }
+      dashboardDispatch = parsed.data
+    }
 
     const agent = await getAgent(slug)
     if (!agent) {
@@ -1696,6 +2013,14 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       model: resolved.model,
       ...(resolved.effort ? { effort: resolved.effort } : {}),
       ...(resolved.speed ? { speed: resolved.speed } : {}),
+      ...(dashboardDispatch
+        ? {
+            dispatchedByDashboardSlug: dashboardDispatch.dashboardSlug,
+            // Derived from the route, never client-supplied: dispatch always
+            // targets the dashboard's owning agent, so the label can't be spoofed.
+            dispatchedByDashboardAgentSlug: slug,
+          }
+        : {}),
     }
     if (isAuthMode()) {
       initialMetadata.createdByUserId = getCurrentUserId(c)
@@ -2234,6 +2559,28 @@ agents.get('/:id/sessions/:sessionId/usage', AgentRead(), async (c) => {
   }
 })
 
+async function persistAndBroadcastUserMessage(
+  c: Context,
+  args: { messageUuid: string; sessionId: string; agentSlug: string; content: string; queued: boolean },
+): Promise<void> {
+  if (!isAuthMode()) return
+  const userId = getCurrentUserId(c)
+  await db.insert(messageAuthor).values({
+    id: args.messageUuid,
+    sessionId: args.sessionId,
+    agentSlug: args.agentSlug,
+    userId,
+  })
+  const user = c.get('user' as never) as { id: string; name: string }
+  messagePersister.broadcastSessionEvent(args.sessionId, {
+    type: 'user_message',
+    content: args.content,
+    sender: { id: user.id, name: user.name },
+    uuid: args.messageUuid,
+    queued: args.queued,
+  })
+}
+
 // POST /api/agents/:id/sessions/:sessionId/messages - Send a message
 agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
   try {
@@ -2267,6 +2614,25 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     // turn can settle immediately, and completion notification visibility is
     // decided from the host-side promotedToInteractive marker.
     await messagePersister.promoteAutomatedSession(sessionId, agentSlug)
+
+    // Server-generated message uuid (never client-supplied — the uuid keys the
+    // messageAuthor attribution row, so a client-chosen value could collide
+    // with another user's message and misattribute it). It is forwarded to the
+    // container, becomes the JSONL entry id, and is returned in the response
+    // so the client can materialize its optimistic copy by exact id match.
+    const messageUuid = randomUUID()
+    const text = content.trim()
+
+    if (messagePersister.coalesceIfRecovering(sessionId, { uuid: messageUuid, text })) {
+      await persistAndBroadcastUserMessage(c, {
+        messageUuid,
+        sessionId,
+        agentSlug,
+        content: text,
+        queued: true,
+      })
+      return c.json({ success: true, uuid: messageUuid, queued: true }, 201)
+    }
 
     const client = containerManager.getClient(agentSlug)
     // Use cached status to avoid spawning docker process
@@ -2306,37 +2672,15 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       delete runtimeOptions.model
     }
 
-    // Server-generated message uuid (never client-supplied — the uuid keys the
-    // messageAuthor attribution row, so a client-chosen value could collide
-    // with another user's message and misattribute it). It is forwarded to the
-    // container, becomes the JSONL entry id, and is returned in the response
-    // so the client can materialize its optimistic copy by exact id match.
-    const messageUuid = randomUUID()
+    await persistAndBroadcastUserMessage(c, {
+      messageUuid,
+      sessionId,
+      agentSlug,
+      content: text,
+      queued: wasQueued,
+    })
 
-    // In auth mode, record the sender for message attribution
-    if (isAuthMode()) {
-      const userId = getCurrentUserId(c)
-      await db.insert(messageAuthor).values({
-        id: messageUuid,
-        sessionId,
-        agentSlug,
-        userId,
-      })
-    }
-
-    // Broadcast user message to other SSE viewers (auth mode shared agents)
-    if (isAuthMode()) {
-      const user = c.get('user' as never) as { id: string; name: string }
-      messagePersister.broadcastSessionEvent(sessionId, {
-        type: 'user_message',
-        content: content.trim(),
-        sender: { id: user.id, name: user.name },
-        uuid: messageUuid,
-        queued: wasQueued,
-      })
-    }
-
-    await client.sendMessage(sessionId, content.trim(), messageUuid, runtimeOptions)
+    await client.sendMessage(sessionId, text, messageUuid, runtimeOptions)
     const updates: Parameters<typeof updateSessionMetadata>[2] = {}
     if (runtimeOptions.effort) updates.effort = runtimeOptions.effort
     if (runtimeOptions.speed) updates.speed = runtimeOptions.speed
@@ -2395,6 +2739,14 @@ agents.delete('/:id/sessions/:sessionId/queued-messages/:uuid', AgentUser(), asy
       return c.json({ error: 'Invalid message uuid' }, 400)
     }
 
+    if (!(await sessionIsKnown(agentSlug, sessionId))) {
+      return c.json({ error: 'Session not found' }, 404)
+    }
+
+    if (messagePersister.dropCoalescedUserMessage(sessionId, uuidParam.data)) {
+      return c.json({ cancelled: true })
+    }
+
     const client = containerManager.getClient(agentSlug)
     const cancelled = await client.cancelQueuedMessage(sessionId, uuidParam.data)
     return c.json({ cancelled })
@@ -2441,6 +2793,9 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
     const isActive = messagePersister.isSessionActive(sessionId)
     const metadata = await getSessionMetadata(agentSlug, sessionId)
     const pendingWake = await getPendingWakeForSession(agentSlug, sessionId)
+    const invokingAgent = metadata?.invokedByAgentSlug
+      ? await getAgent(metadata.invokedByAgentSlug)
+      : null
 
     return c.json({
       id: session.id,
@@ -2455,6 +2810,10 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       scheduledTaskName: metadata?.scheduledTaskName,
       webhookTriggerId: metadata?.webhookTriggerId,
       webhookTriggerName: metadata?.webhookTriggerName,
+      invokedByAgentSlug: metadata?.invokedByAgentSlug,
+      invokedByAgentName: metadata?.invokedByAgentSlug
+        ? invokingAgent?.frontmatter.name ?? metadata.invokedByAgentSlug
+        : undefined,
       effort: metadata?.effort,
       speed: metadata?.speed,
       model: metadata?.model,
@@ -6111,6 +6470,9 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
   const agentSlug = getAgentId(c)
   const artifactSlug = c.req.param('artifactSlug')
   const basePath = `/api/agents/${agentSlug}`
+  // For the dispatch-consent dialog: resolved at render time so the wrapper
+  // never needs a client-side agent-info fetch (removed by the fast-path work).
+  const agentName = (await getAgent(agentSlug))?.frontmatter.name ?? null
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -6141,6 +6503,7 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
     const dashboardUrl = basePath + '/artifacts/' + encodeURIComponent(artifactSlug) + '/';
     const statusEl = document.getElementById('status');
     const loadingEl = document.getElementById('loading');
+    const agentName = ${JSON.stringify(agentName).replace(/</g, '\\u003c')};
 
     function setTitle(name) {
       document.title = (name || artifactSlug) + ' \\u2014 Gamut';
@@ -6192,6 +6555,12 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
         else loadedEarly = true;
       };
       document.body.appendChild(iframe);
+      // Host the session-dispatch confirmation dialog for the wrapped
+      // dashboard. typeof-guarded: unit tests run this script in a bare vm
+      // context that has no window at all.
+      if (typeof window !== 'undefined' && window.__gamutDispatchHost) {
+        window.__gamutDispatchHost.attach({ iframe, agentSlug, agentName, artifactSlug, basePath });
+      }
     }
 
     function onRunning(name) {
@@ -6266,6 +6635,10 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
 
     run();
   </script>
+  <!-- After the main wrapper script: existing tests extract "the" wrapper
+       script with a first-match regex, and parse order doesn't matter — the
+       host is only referenced from showDashboard(), long after both parse. -->
+  <script>${getDashboardViewDispatchHostJs()}</script>
 </body>
 </html>`
 

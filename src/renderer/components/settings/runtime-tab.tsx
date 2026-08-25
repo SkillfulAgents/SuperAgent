@@ -26,6 +26,7 @@ import {
   useRestartRunner,
   useRefreshAvailability,
   isWarmStartOnTypeEnabled,
+  isAutoResumeOnUnexpectedDeathEnabled,
 } from '@renderer/hooks/use-settings'
 import { AlertCircle, AlertTriangle, Play, Download, Loader2, RefreshCw, Plus, X } from 'lucide-react'
 import { RunnerSetupErrorPanel, getRunnerSetupPayload } from '@renderer/components/settings/runner-setup-error-panel'
@@ -806,6 +807,25 @@ export function RuntimeTab() {
           disabled={isLoading}
         />
       </div>
+
+      {containerRunner === 'lambda-microvm' && (
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-0.5 min-w-0">
+            <Label htmlFor="auto-resume-on-unexpected-death">Auto-resume mid-turn sessions</Label>
+            <p className="text-xs text-muted-foreground">
+              If the MicroVM dies while a session is still working, continue the turn instead of showing a connection-lost error.
+            </p>
+          </div>
+          <Switch
+            id="auto-resume-on-unexpected-death"
+            checked={isAutoResumeOnUnexpectedDeathEnabled(settings)}
+            onCheckedChange={(checked: boolean) => {
+              updateSettings.mutate({ app: { autoResumeOnUnexpectedDeath: checked } })
+            }}
+            disabled={isLoading}
+          />
+        </div>
+      )}
 
       {/* Agent Limits */}
       <div className="space-y-4 pt-2">

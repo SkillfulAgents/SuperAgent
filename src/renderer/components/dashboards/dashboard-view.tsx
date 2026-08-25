@@ -9,6 +9,8 @@ import { getApiBaseUrl, isElectron, getPlatform, openDashboardExternal } from '@
 import { apiFetch } from '@renderer/lib/api'
 import { buildDashboardArtifactPath } from '@shared/lib/dashboard-url'
 import { AddToDockDialog } from './add-to-dock-dialog'
+import { DashboardDispatchDialog } from './dashboard-dispatch-dialog'
+import { useDashboardDispatch } from './use-dashboard-dispatch'
 import { PendingAgentReviews } from './pending-agent-reviews'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { useRegisterDashboardHeader } from '@renderer/context/dashboard-header-context'
@@ -109,6 +111,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   const dashboardAgentSlug = agent?.slug ?? agentSlug
   const dashboardPath = buildDashboardArtifactPath(dashboardAgentSlug, dashboardSlug)
   const iframeSrc = `${baseUrl}${dashboardPath}`
+  const dashboardDispatch = useDashboardDispatch(iframeRef)
 
   const handleRefresh = useCallback(() => {
     if (iframeRef.current) {
@@ -351,6 +354,13 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
         agentSlug={dashboardAgentSlug}
         dashboardSlug={dashboardSlug}
         dashboardName={dashboard?.name || dashboardSlug}
+      />
+      <DashboardDispatchDialog
+        request={dashboardDispatch.pending}
+        dashboardAgentSlug={dashboardAgentSlug}
+        dashboardAgentName={agent?.name}
+        dashboardSlug={dashboardSlug}
+        onResolve={dashboardDispatch.resolvePending}
       />
       <div className="flex-1 min-h-0 relative">
         <iframe

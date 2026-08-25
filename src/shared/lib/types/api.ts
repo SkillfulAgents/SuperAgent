@@ -35,6 +35,10 @@ export interface ApiAgent {
   sessionCount?: number
   lastActivityAt?: Date | null
   dashboards?: ApiAgentDashboard[]
+  /** Opt-in expansion from GET /api/agents?include_latest_visible_session_tail=true. */
+  latestVisibleSession?: ApiLatestVisibleSession | null
+  /** Attention on visible sessions other than latestVisibleSession. Null means unavailable. */
+  attentionOutsideLatest?: ApiAttentionOutsideLatest | null
 }
 
 /** Response returned when an agent template has been installed or imported. */
@@ -48,6 +52,21 @@ export interface ApiAgentDashboard {
   slug: string
   name: string
   hasScreenshot?: boolean
+}
+
+export interface ApiLatestVisibleSession {
+  session: ApiSession
+  messageTail: ApiTranscriptPage
+}
+
+export interface ApiAttentionOutsideLatest {
+  hasUnreadNotification: boolean
+  hasPendingInput: boolean
+}
+
+export interface ApiTranscriptPage {
+  messages: ApiMessageOrBoundary[]
+  nextCursor: string | null
 }
 
 /**
@@ -111,6 +130,9 @@ export interface ApiSession {
   scheduledTaskName?: string
   webhookTriggerId?: string
   webhookTriggerName?: string
+  // Present when another agent created this session through x-agent.
+  invokedByAgentSlug?: string
+  invokedByAgentName?: string
   // Last effort level used on this session (seeds the composer selector)
   effort?: EffortLevel
   // Last processing speed used on this session (seeds the composer selector)

@@ -6,16 +6,18 @@ interface ProgressProps {
   /**
    * Color thresholds on the REMAINING percent: at/below `critical` → red,
    * at/below `warning` → amber, otherwise primary. Mirrors the platform web
-   * app's seat-quota bar.
+   * app's seat-quota bar. Omit for a plain primary bar (an upload bar must
+   * not read as "failing" at 3%).
    */
   thresholds?: { warning: number; critical: number }
   className?: string
 }
 
-export function Progress({ percent, thresholds = { warning: 20, critical: 5 }, className }: ProgressProps) {
+export function Progress({ percent, thresholds, className }: ProgressProps) {
   const pct = Math.max(0, Math.min(100, percent))
-  const color =
-    pct <= thresholds.critical
+  const color = !thresholds
+    ? 'bg-primary'
+    : pct <= thresholds.critical
       ? 'bg-red-500'
       : pct <= thresholds.warning
         ? 'bg-amber-500'

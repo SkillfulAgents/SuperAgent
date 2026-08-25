@@ -48,6 +48,8 @@ const SERVICES: McpServiceInfo[] = [
   { slug: 'ramp', displayName: 'Ramp', description: 'Corporate card and expense management', url: 'https://ramp-mcp-remote.ramp.com/mcp', authType: 'oauth', category: 'Payments & Finance' },
   // Analytics & Marketing
   { slug: 'amplitude', displayName: 'Amplitude', description: 'Charts, dashboards, experiments, feature flags', url: 'https://mcp.amplitude.com/mcp', authType: 'oauth', category: 'Analytics & Marketing' },
+  { slug: 'tiktok-ads', displayName: 'TikTok Ads (Full)', description: 'Campaign management, reporting, audiences, and creative — full ~400-tool set (recommended for Claude)', url: 'https://business-api.tiktok.com/open_mcp/tt-ads-mcp-flat', authType: 'oauth', category: 'Analytics & Marketing' },
+  { slug: 'tiktok-ads-progressive', displayName: 'TikTok Ads (Progressive)', description: 'Campaign management with ~40 core tools loaded upfront and additional tools discovered on demand', url: 'https://business-api.tiktok.com/open_mcp/tt-ads-mcp-layer', authType: 'oauth', category: 'Analytics & Marketing' },
   // Documents & Content
   { slug: 'dropbox', displayName: 'Dropbox', description: 'File operations — list, search, download, upload', url: 'https://mcp.dropbox.com/mcp', authType: 'oauth', category: 'Documents & Content' },
   { slug: 'canva', displayName: 'Canva', description: 'Design — search, create, autofill templates, export', url: 'https://mcp.canva.com/mcp', authType: 'oauth', category: 'Documents & Content' },

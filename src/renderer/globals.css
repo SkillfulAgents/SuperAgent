@@ -697,8 +697,32 @@ html[data-keyboard-open] [data-composer-footer] {
   transform: translateY(0);
 }
 
+/* Reveal variant for the create-agent composer, which carries backdrop-blur
+   glass: same entrance minus the blur filter and will-change. `filter` (even
+   blur(0)) and `will-change: filter/opacity` make the element a backdrop
+   root, which would blind the composer's backdrop-filter to the template
+   roster scrolling behind it — the glass sampled nothing and read as plain
+   transparency. Once settled (opacity 1, no filter) nothing groups, so the
+   blur sees the page like the session composer's does. */
+.create-agent-item-glass {
+  transition:
+    opacity 360ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 360ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.create-agent-item-glass[data-hidden="true"] {
+  opacity: 0;
+  transform: translateY(-10px);
+}
+
+.create-agent-item-glass[data-hidden="false"] {
+  opacity: 1;
+  transform: translateY(0);
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .create-agent-item {
+  .create-agent-item,
+  .create-agent-item-glass {
     transition-duration: 1ms;
   }
 }

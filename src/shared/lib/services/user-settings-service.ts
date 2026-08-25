@@ -25,6 +25,58 @@ const homeGridLayoutSchema = z.record(
   })
 )
 
+const agentFolderSchema = z.object({
+  id: z.string().min(1),
+  name: z.string(),
+})
+
+/**
+ * Read-tolerant list: a malformed element is dropped alone. Zod's array
+ * validation is all-or-nothing, so a plain `.catch(undefined)` would let one
+ * bad element discard every good sibling — and because writes re-serialize the
+ * whole document, the next unrelated write would persist that as real data
+ * loss.
+ */
+const lenientArray = <T extends z.ZodType>(element: T) =>
+  z
+    .array(z.unknown())
+    .transform((items) =>
+      items.flatMap((item) => {
+        const parsed = element.safeParse(item)
+        return parsed.success ? [parsed.data] : []
+      })
+    )
+    .optional()
+    .catch(undefined)
+
+/** Read-tolerant string map: a non-string value is dropped alone, same
+ * reasoning as `lenientArray`. */
+const lenientStringRecord = z
+  .record(z.string(), z.unknown())
+  .transform((record) => {
+    const out: Record<string, string> = {}
+    for (const [key, value] of Object.entries(record)) {
+      if (typeof value === 'string') out[key] = value
+    }
+    return out
+  })
+  .optional()
+  .catch(undefined)
+
+/**
+ * Strict shapes for the folder fields on the write path. The stored schema is
+ * deliberately lenient — reads must survive a corrupt blob — which means it
+ * can only drop bad input, never reject it. The API route validates incoming
+ * writes against this instead, so a malformed PUT is refused rather than
+ * silently erasing the user's folders.
+ */
+export const agentFolderSettingsWriteSchema = z.object({
+  agentFolders: z.array(agentFolderSchema).optional(),
+  agentFolderAssignments: z.record(z.string(), z.string()).optional(),
+  agentListOrder: z.array(z.string()).optional(),
+  collapsedAgentFolders: z.array(z.string()).optional(),
+})
+
 export const userSettingsSchema = z.object({
   theme: z.enum(['system', 'light', 'dark']).default('system'),
   notifications: notificationSettingsSchema.default({
@@ -41,6 +93,26 @@ export const userSettingsSchema = z.object({
   autoCheckUpdates: z.boolean().default(true),
   timezone: z.string().optional(),
   agentOrder: z.array(z.string()).optional(),
+  // Left-nav folders. A per-user projection over the shared agent list, like
+  // agentOrder — filing a shared agent never moves it for anyone else. Array
+  // order is the order folders render in. One level only, no nesting.
+  agentFolders: lenientArray(agentFolderSchema),
+  // agent slug → folder id. Both sides of this map are allowed to dangle: an
+  // id pointing at a deleted folder, or a slug for an agent the user can no
+  // longer see, resolves to the ungrouped root. That is what keeps folders
+  // free of referential cleanup on agent/folder deletion.
+  agentFolderAssignments: lenientStringRecord,
+  // Top level of the left nav, in order: `agent-folder::<id>` markers for
+  // every folder, the synthesized root included. Written wholesale from the
+  // rendered sections on every change; it cannot be derived from agentOrder
+  // because an empty folder has no member to sit behind. An earlier version of
+  // this model interleaved unfiled agent slugs here — those entries still
+  // parse and are ignored on read, which is the whole upgrade path. Entries
+  // naming something that no longer exists are ignored, and anything missing
+  // falls back to a sensible end of the list, so it never needs repairing.
+  agentListOrder: lenientArray(z.string()),
+  // Folder ids the user has collapsed. Absent id = expanded.
+  collapsedAgentFolders: lenientArray(z.string()),
   // Home graph view: user-dragged node positions, keyed by stable node id
   // (e.g. 'agent:{slug}', 'account:{id}'). Absent entries fall back to auto-layout.
   graphNodePositions: z.record(z.string(), z.object({ x: z.number(), y: z.number() })).optional(),

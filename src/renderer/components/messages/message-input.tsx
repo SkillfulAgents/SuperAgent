@@ -15,7 +15,7 @@ import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { registerSessionComposerFocus } from './composer-focus'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
-import { ChatComposerBox } from './chat-composer-box'
+import { ChatComposerBox, FLOATING_COMPOSER_CLASS } from './chat-composer-box'
 import { ComposerOptions, useComposerOptions } from './composer-options'
 import { AgentDefaultFooter } from './agent-default-footer'
 import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
@@ -81,7 +81,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
   const composer = useMessageComposer({
     agentSlug,
     uploadFile: useCallback(
-      ({ file }) => uploadFile.mutateAsync({ sessionId, agentSlug, file }),
+      ({ file, onProgress, signal, stallMs }) => uploadFile.mutateAsync({ sessionId, agentSlug, file, onProgress, signal, stallMs }),
       [uploadFile, sessionId, agentSlug]
     ),
     uploadFolder: useCallback(
@@ -242,6 +242,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
       // mid-thought. Desktop (fine pointer) keeps Enter-to-send unchanged.
       if (typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches) return
       e.preventDefault()
+      if (!composer.canSubmit) return
       void composer.handleSubmit(e)
     }
   }
@@ -272,9 +273,10 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
         filter={slashFilter ?? ''}
       />
       <ChatComposerBox
-        className="relative z-10 border-border/70 bg-background/85 shadow-[0_0_24px_rgba(15,23,42,0.07),0_2px_10px_-4px_rgba(15,23,42,0.08)] backdrop-blur-md supports-[backdrop-filter]:bg-background/65 dark:shadow-[0_0_26px_rgba(0,0,0,0.22),0_2px_12px_-4px_rgba(0,0,0,0.16)]"
+        className={FLOATING_COMPOSER_CLASS}
         attachments={composer.attachments}
         onRemoveAttachment={composer.removeAttachment}
+        onRetryAttachment={composer.retryAttachment}
         textareaRef={textareaRef}
         value={composer.message}
         onChange={handleChange}

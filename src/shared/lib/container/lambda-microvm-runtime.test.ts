@@ -38,11 +38,20 @@ vi.mock('@shared/lib/llm-provider', () => ({
 }))
 
 const autoSleepTimeoutMinutes = vi.fn((): number | undefined => 30)
+const autoResumeOnUnexpectedDeath = vi.fn((): boolean => true)
 vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: () => ({ app: { autoSleepTimeoutMinutes: autoSleepTimeoutMinutes() }, enableToolSearch: true }),
+  getSettings: () => ({
+    app: {
+      autoSleepTimeoutMinutes: autoSleepTimeoutMinutes(),
+      autoResumeOnUnexpectedDeath: autoResumeOnUnexpectedDeath(),
+    },
+    enableToolSearch: true,
+  }),
+  isAutoResumeOnUnexpectedDeathEnabled: (settings?: { app?: { autoResumeOnUnexpectedDeath?: boolean } }) =>
+    settings?.app?.autoResumeOnUnexpectedDeath !== false,
 }))
 
-import { captureException } from '@shared/lib/error-reporting'
+import { addErrorBreadcrumb, captureException } from '@shared/lib/error-reporting'
 import {
   LambdaMicroVmRuntimeClient,
   LocalAuthForwardProxy,
@@ -80,7 +89,9 @@ beforeEach(() => {
   tlsConnectMock.mockReset()
   sendMock.mockImplementation(async (cmd: { type: string }) => {
     if (cmd.type === 'Run') return { microvmId: 'mvm-1', endpoint: 'ep.lambda-microvm.aws' }
-    if (cmd.type === 'Get') return { state: responses.getState ?? 'RUNNING' }
+    if (cmd.type === 'Get') {
+      return { state: responses.getState ?? 'RUNNING', stateReason: responses.getStateReason }
+    }
     if (cmd.type === 'Token') return { authToken: { 'X-aws-proxy-auth': 'tok' } }
     return {}
   })
@@ -603,6 +614,58 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     await expect(client.createSession({ initialMessage: 'hi' })).resolves.toEqual({ id: 'sess-2' })
     expect(runCount).toBe(1)
     expect(superCreate).toHaveBeenCalledTimes(2)
+    expect(addErrorBreadcrumb).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          reason: 'post_create_unreachable',
+          classification: 'runtime_lost',
+          state: 'TERMINATED',
+        }),
+      }),
+    )
+    superCreate.mockRestore()
+  })
+
+  it('replaceGeneration breadcrumb classifies max-lifetime stateReason', async () => {
+    const { BaseContainerClient } = await import('./base-container-client')
+    const client = newClient()
+    await client.start()
+    sendMock.mockClear()
+    vi.mocked(addErrorBreadcrumb).mockClear()
+
+    sendMock.mockImplementation(async (cmd: { type: string }) => {
+      if (cmd.type === 'Run') {
+        responses.getState = 'RUNNING'
+        delete responses.getStateReason
+        return { microvmId: 'mvm-retry-8h', endpoint: 'ep.lambda-microvm.aws' }
+      }
+      if (cmd.type === 'Get') {
+        return { state: responses.getState ?? 'RUNNING', stateReason: responses.getStateReason }
+      }
+      if (cmd.type === 'Terminate') return {}
+      if (cmd.type === 'Token') return { authToken: { 'X-aws-proxy-auth': 'tok' } }
+      return {}
+    })
+
+    const superCreate = vi.spyOn(BaseContainerClient.prototype, 'createSession')
+    superCreate
+      .mockImplementationOnce(async () => {
+        responses.getState = 'TERMINATED'
+        responses.getStateReason = 'MicroVM exceeded maximum lifetime.'
+        throw refusedConnectError()
+      })
+      .mockResolvedValueOnce({ id: 'sess-8h' } as never)
+
+    await expect(client.createSession({ initialMessage: 'hi' })).resolves.toEqual({ id: 'sess-8h' })
+    expect(addErrorBreadcrumb).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          classification: 'max_lifetime',
+          state: 'TERMINATED',
+          stateReason: 'MicroVM exceeded maximum lifetime.',
+        }),
+      }),
+    )
     superCreate.mockRestore()
   })
 
@@ -1433,5 +1496,192 @@ describe('attachMicrovmUpstreamKeepalive', () => {
     vi.advanceTimersByTime(MICROVM_STREAM_KEEPALIVE_MS)
     expect(write).not.toHaveBeenCalled()
     dispose()
+  })
+})
+
+describe('LambdaMicroVmRuntimeClient.observeUnexpectedDeath', () => {
+  beforeEach(() => {
+    Object.assign(process.env, FULL_ENV)
+    resetMicrovmRuntimeForTests()
+    autoResumeOnUnexpectedDeath.mockReturnValue(true)
+  })
+
+  function newClient() {
+    return new LambdaMicroVmRuntimeClient({
+      agentId: 'agent-xyz',
+      envVars: { FOO: 'bar' },
+      restartAgent: async () => {},
+    })
+  }
+
+  function sessionFetchBy(running: Record<string, boolean>) {
+    vi.mocked(fetch).mockImplementation(async (input: Parameters<typeof fetch>[0]) => {
+      const url = String(input)
+      const match = url.match(/\/sessions\/([^/?]+)/)
+      if (match) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ id: match[1], isRunning: running[match[1]] ?? false }),
+        } as unknown as Response
+      }
+      return { ok: true } as Response
+    })
+  }
+
+  function sessionFetch(isRunning: boolean) {
+    sessionFetchBy({ 'sess-1': isRunning })
+  }
+
+  function healthDown() {
+    vi.mocked(fetch).mockImplementation(async (input: Parameters<typeof fetch>[0]) => {
+      const url = String(input)
+      if (url.includes('/health')) return { ok: false, status: 502 } as Response
+      return { ok: true } as Response
+    })
+  }
+
+  it('recovers max_lifetime with replace when GetMicrovm reports the 8h reason', async () => {
+    const client = newClient()
+    await client.start()
+    responses.getState = 'TERMINATED'
+    responses.getStateReason = 'MicroVM exceeded maximum lifetime.'
+    sessionFetch(false)
+
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['sess-1'] })).resolves.toEqual({
+      action: 'recover',
+      reason: 'max_lifetime',
+      resumePrompt: expect.stringContaining('8-hour lifetime'),
+      replaceGeneration: true,
+    })
+  })
+
+  it('settles a recover plan when the MicroVM auto-resume toggle is off', async () => {
+    autoResumeOnUnexpectedDeath.mockReturnValue(false)
+    const client = newClient()
+    await client.start()
+    responses.getState = 'TERMINATED'
+    responses.getStateReason = 'MicroVM exceeded maximum lifetime.'
+    sessionFetch(false)
+
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['sess-1'] })).resolves.toEqual({
+      action: 'settle',
+    })
+  })
+
+  it('recovers guest_oom without replace when SIGKILL + RUNNING + sessions idle over live HTTP', async () => {
+    const client = newClient()
+    await client.start()
+    responses.getState = 'RUNNING'
+    delete responses.getStateReason
+    sessionFetch(false)
+
+    await expect(
+      client.observeUnexpectedDeath({
+        lastFatalResult: 'oom_sigkill',
+        sessionIds: ['sess-1'],
+      }),
+    ).resolves.toEqual({
+      action: 'recover',
+      reason: 'guest_oom',
+      resumePrompt: expect.stringContaining('ran out of memory'),
+      replaceGeneration: false,
+    })
+  })
+
+  it('recovers guest_oom with replace when the container HTTP surface is unreachable', async () => {
+    const client = newClient()
+    await client.start()
+    responses.getState = 'RUNNING'
+    delete responses.getStateReason
+    healthDown()
+
+    await expect(
+      client.observeUnexpectedDeath({
+        lastFatalResult: 'oom_sigkill',
+        sessionIds: ['sess-1'],
+      }),
+    ).resolves.toEqual({
+      action: 'recover',
+      reason: 'guest_oom',
+      resumePrompt: expect.stringContaining('ran out of memory'),
+      replaceGeneration: true,
+    })
+  })
+
+  it('still ignores a WS blip when the MicroVM auto-resume toggle is off', async () => {
+    autoResumeOnUnexpectedDeath.mockReturnValue(false)
+    const client = newClient()
+    await client.start()
+    responses.getState = 'RUNNING'
+    sessionFetch(true)
+
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['sess-1'] })).resolves.toEqual({
+      action: 'ignore',
+      liveSessionIds: ['sess-1'],
+    })
+  })
+
+  it('ignores a WS blip when the VM is RUNNING and the session probe succeeds', async () => {
+    const client = newClient()
+    await client.start()
+    responses.getState = 'RUNNING'
+    sessionFetch(true)
+
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['sess-1'] })).resolves.toEqual({
+      action: 'ignore',
+      liveSessionIds: ['sess-1'],
+    })
+  })
+
+  it('reports only the still-running sessions so dead siblings settle', async () => {
+    const client = newClient()
+    await client.start()
+    responses.getState = 'RUNNING'
+    sessionFetchBy({ 'sess-1': true, 'sess-2': false })
+
+    await expect(
+      client.observeUnexpectedDeath({ sessionIds: ['sess-1', 'sess-2'] }),
+    ).resolves.toEqual({
+      action: 'ignore',
+      liveSessionIds: ['sess-1'],
+    })
+  })
+
+  function failGetMicrovm() {
+    sendMock.mockImplementation(async (cmd: { type: string }) => {
+      if (cmd.type === 'Get') throw new Error('ThrottlingException')
+      if (cmd.type === 'Token') return { authToken: { 'X-aws-proxy-auth': 'tok' } }
+      return {}
+    })
+  }
+
+  it('ignores when GetMicrovm fails but the live probe still sees the session running', async () => {
+    const client = newClient()
+    await client.start()
+    sessionFetch(true)
+    failGetMicrovm()
+
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['sess-1'] })).resolves.toEqual({
+      action: 'ignore',
+      liveSessionIds: ['sess-1'],
+    })
+  })
+
+  it('fails closed to settle when GetMicrovm fails and the probe cannot confirm the session', async () => {
+    const client = newClient()
+    await client.start()
+    sessionFetch(false)
+    failGetMicrovm()
+
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['sess-1'] })).resolves.toEqual({
+      action: 'settle',
+    })
+  })
+
+  it('defers SIGKILL fatals and settles other fatals', () => {
+    const client = newClient()
+    expect(client.onFatalResult('oom_sigkill')).toBe('defer_for_recovery')
+    expect(client.onFatalResult(null)).toBe('settle')
   })
 })

@@ -18,9 +18,9 @@ function attachmentPreview(page: import('@playwright/test').Page, fileName: stri
  * - a failed message POST restores the typed text into the composer (the
  *   optimistic ghost is dropped, nothing lands in the transcript), and the
  *   restored text can be resent as-is once the server recovers;
- * - a failed attachment upload short-circuits BEFORE the composer is cleared,
- *   surfacing a dismissible error while both the text and the attachment
- *   chips stay intact for a retry.
+ * - a failed attachment upload (now on drop, not on Send) flags the chip
+ *   with a retry control, keeps the typed text, and lets the user retry
+ *   from the chip or from Send.
  *
  * Failures are injected per-page with route interception (POST-only — the
  * transcript GETs on the same URL shape must keep flowing), so the tests are
@@ -91,39 +91,41 @@ test.describe('Composer failure recovery', () => {
     await expect(sessionPage.getMessageInput()).toHaveText('')
   })
 
-  test('a failed upload preserves text and attachment for a retry', async ({ page }) => {
+  test('a failed upload flags the chip, keeps the text, and retries from the chip or from Send', async ({ page }) => {
     const filePath = path.join(tmpDir, 'guarded.txt')
     fs.writeFileSync(filePath, 'file content that must not be lost')
     const text = 'upload failure must keep my work'
 
-    const fileInput = page.locator('input[type="file"]:not([webkitdirectory])')
-    await fileInput.setInputFiles(filePath)
-    await expect(attachmentPreview(page, 'guarded.txt')).toBeVisible()
-    await sessionPage.typeMessage(text)
-
+    // Upload starts on attach, so the failure must be armed before the file lands.
     await page.route('**/upload-file*', (route) => route.fulfill({
       status: 500,
       contentType: 'application/json',
       body: JSON.stringify({ error: 'Injected upload failure' }),
     }))
 
-    await sessionPage.getSendButton().click()
+    const fileInput = page.locator('input[type="file"]:not([webkitdirectory])')
+    await fileInput.setInputFiles(filePath)
+    const chip = attachmentPreview(page, 'guarded.txt')
+    await expect(chip).toHaveAttribute('data-attachment-status', 'error', { timeout: 10000 })
+    await expect(chip).toHaveAttribute('data-attachment-error', 'Injected upload failure')
+    await sessionPage.typeMessage(text)
 
-    // The inline upload error surfaces in the composer (the same message also
-    // fires as a toast, so scope to the content area), and BOTH the text and
-    // the attachment chip survive — the send never happened
-    const inlineError = page.getByTestId('main-content').getByText('Injected upload failure')
-    await expect(inlineError).toBeVisible({ timeout: 10000 })
+    // Chip retry while the server is still failing: stays errored, nothing sent
+    await chip.getByTestId('attachment-retry').click()
+    await expect(chip).toHaveAttribute('data-attachment-status', 'error', { timeout: 10000 })
     await expect(sessionPage.getMessageInput()).toHaveText(text)
-    await expect(attachmentPreview(page, 'guarded.txt')).toBeVisible()
     await expect(sessionPage.getUserMessages()).toHaveCount(1)
 
-    // The inline error is dismissible
-    await page.getByTestId('main-content').getByRole('button', { name: 'Dismiss' }).click()
-    await expect(inlineError).not.toBeVisible()
+    // Send with an errored chip re-uploads it; still failing, so the send stops
+    await sessionPage.getSendButton().click()
+    await expect(chip).toHaveAttribute('data-attachment-status', 'error', { timeout: 10000 })
+    await expect(sessionPage.getMessageInput()).toHaveText(text)
+    await expect(sessionPage.getUserMessages()).toHaveCount(1)
 
-    // Server recovers — the same composed message (text + file) sends through
+    // Server recovers: chip retry succeeds, then Send goes through with the file
     await page.unroute('**/upload-file*')
+    await chip.getByTestId('attachment-retry').click()
+    await expect(chip).toHaveAttribute('data-attachment-status', 'done', { timeout: 10000 })
     await sessionPage.getSendButton().click()
 
     await sessionPage.waitForUserMessageCount(2, 15000)

@@ -20,6 +20,12 @@ import type {
   StopResult,
   StreamMessage,
 } from './types'
+import type {
+  ObserveUnexpectedDeathInput,
+  RuntimeDeathProbe,
+  RuntimeFatalKind,
+  UnexpectedDeathPlan,
+} from './runtime-death'
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import { getAgentCapabilitySettings, getSettings } from '@shared/lib/config/settings'
@@ -374,6 +380,47 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return 'unknown'
   }
 
+  onFatalResult(_kind: RuntimeFatalKind): 'settle' | 'defer_for_recovery' {
+    return 'settle'
+  }
+
+  async observeUnexpectedDeath(input?: ObserveUnexpectedDeathInput): Promise<UnexpectedDeathPlan> {
+    try {
+      const probe = await this.probeRuntimeDeath(input?.sessionIds ?? [])
+      if (probe.status !== 'live') return { action: 'settle' }
+      return { action: 'ignore', liveSessionIds: probe.liveSessionIds }
+    } catch (error) {
+      captureException(error, {
+        tags: { area: 'container', op: 'runtime.observeDeath.default' },
+        extra: { agentId: this.config.agentId },
+      })
+      return { action: 'settle' }
+    }
+  }
+
+  protected async probeRuntimeDeath(sessionIds: string[], knownPort?: number): Promise<RuntimeDeathProbe> {
+    if (!(await this.isHealthy(knownPort))) return { status: 'unreachable' }
+    if (sessionIds.length === 0) return { status: 'live' }
+    const liveSessionIds: string[] = []
+    for (const sessionId of sessionIds) {
+      try {
+        const session = await this.getSession(sessionId)
+        if (session?.isRunning) liveSessionIds.push(sessionId)
+      } catch (error) {
+        // Not live; keep probing siblings.
+        captureException(error, {
+          tags: { area: 'container', op: 'runtime.observeDeath.probeSession' },
+          extra: { agentId: this.config.agentId, sessionId },
+        })
+      }
+    }
+    return { status: liveSessionIds.length > 0 ? 'live' : 'idle', liveSessionIds }
+  }
+
+  getRuntimeGenerationId(): string | null {
+    return null
+  }
+
   /**
    * Returns a suffix to append to volume mount specifications (e.g., ':U' for Podman).
    * Subclasses can override this for runtime-specific volume options.
@@ -459,14 +506,17 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
    * Whether a run failure means the image's unpacked snapshot in the runtime's
    * store is corrupt — containerd's "mount callback failed on /tmp/containerd-
    * mountNNN: ..." (e.g. ": no users found" when resolving the Dockerfile USER
-   * against a truncated /etc/passwd). Seen after disk exhaustion during image
+   * against a truncated /etc/passwd), or "failed to stat parent: stat /var/lib/
+   * containerd/.../snapshots/N/fs: no such file or directory" when the
+   * snapshotter's metadata references a layer directory missing from disk.
+   * Seen after disk exhaustion or a dirty VM shutdown during image
    * pull/unpack. The corruption lives in the image store, not in this
    * container, so retrying the same run can never succeed — recovery is
    * removing the image (removeCorruptImage) and rebuilding it.
    */
   protected isCorruptImageSnapshotError(error: any): boolean {
     const msg = String(error?.message || error?.stderr || error || '')
-    return /mount callback failed on/i.test(msg)
+    return /mount callback failed on|failed to stat parent/i.test(msg)
   }
 
   /**

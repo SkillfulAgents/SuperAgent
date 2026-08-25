@@ -17,6 +17,7 @@ import {
   type UserInputRequestOutcome,
 } from '@shared/lib/user-input/request-schema'
 import { classifyResult } from './result-classification'
+import { inferOomSigkillFatal, type CoalescedUserMessage, type RuntimeFatalKind } from './runtime-death'
 import { parseBackgroundTasksChanged } from './background-tasks-changed'
 import { parseCommandLifecycle } from './command-lifecycle'
 import { captureException } from '@shared/lib/error-reporting'
@@ -117,6 +118,8 @@ interface StreamingState {
   currentThinkingBlockIndex?: number | null // Content index within currentAssistantMessageId
   isActive: boolean // True from user message until result received
   isInterrupted: boolean // True after user interrupts, prevents race conditions
+  isRecovering: boolean // Mid-turn death claimed for resume; skip session_error until resume fails
+  coalescedUserMessages?: CoalescedUserMessage[] // User texts sent while recovering; delivered with their uuids
   isCompacting: boolean // True while compaction is in progress, cleared on compact completion
   agentSlug?: string // The agent slug for this session
   notAutomationSession?: boolean // Cached "not a cron/webhook session" verdict; skips the automation-status metadata write on later results
@@ -309,6 +312,8 @@ class MessagePersister {
   private containerClients: Map<string, ContainerClient> = new Map()
   // Callback to request stopping a container (registered by container-manager)
   private onStopContainerRequested: ((agentSlug: string) => void) | null = null
+  private onUnexpectedDeathRequested: ((agentSlug: string, sessionId?: string) => void) | null = null
+  private lastFatalByAgent: Map<string, RuntimeFatalKind> = new Map()
   // Dev-only capture for building fixture replay tests
   private capture: SubagentCapture | null = SubagentCapture.fromEnv()
 
@@ -483,6 +488,8 @@ class MessagePersister {
       currentToolInput: '',
       isActive: priorIsActive,
       isInterrupted: false,
+      isRecovering: prior?.isRecovering ?? false,
+      coalescedUserMessages: prior?.coalescedUserMessages,
       isCompacting: false,
       agentSlug,
       lastContextWindow: 200_000,
@@ -983,22 +990,125 @@ class MessagePersister {
   }
 
   // Mark all sessions for an agent as inactive and clean up subscriptions (e.g., when container stops)
-  markAllSessionsInactiveForAgent(agentSlug: string): void {
+  markAllSessionsInactiveForAgent(
+    agentSlug: string,
+    options?: { settleRecovering?: boolean },
+  ): void {
     for (const [sessionId, state] of this.streamingStates) {
       if (state.agentSlug === agentSlug) {
+        if (state.isRecovering) {
+          if (options?.settleRecovering) {
+            this.settleRecoveringSessions([sessionId])
+          } else {
+            this.detachSessionTransport(sessionId)
+          }
+          continue
+        }
         if (state.isActive) {
           console.log(`[MessagePersister] Marking session ${sessionId} inactive (container stopped)`)
           this.markSessionInactive(sessionId, state)
         }
-        // Clean up stale WebSocket subscription so next message re-subscribes to the new container
-        const unsubscribe = this.subscriptions.get(sessionId)
-        if (unsubscribe) {
-          unsubscribe()
-          this.subscriptions.delete(sessionId)
-        }
-        this.containerClients.delete(sessionId)
+        this.detachSessionTransport(sessionId)
       }
     }
+  }
+
+  snapshotMidTurnSessions(agentSlug: string, restrictToSessionIds?: string[]): string[] {
+    const restrict = restrictToSessionIds ? new Set(restrictToSessionIds) : null
+    const ids: string[] = []
+    for (const [sessionId, state] of this.streamingStates) {
+      if (restrict && !restrict.has(sessionId)) continue
+      if (state.agentSlug === agentSlug && state.isActive && !state.isInterrupted) {
+        state.isRecovering = true
+        ids.push(sessionId)
+      }
+    }
+    return ids
+  }
+
+  isSessionRecovering(sessionId: string): boolean {
+    return this.streamingStates.get(sessionId)?.isRecovering === true
+  }
+
+  coalesceIfRecovering(sessionId: string, message: CoalescedUserMessage): boolean {
+    const state = this.streamingStates.get(sessionId)
+    if (!state?.isRecovering) return false
+    const text = message.text.trim()
+    if (!text) return true
+    const entry = { uuid: message.uuid, text }
+    state.coalescedUserMessages = state.coalescedUserMessages
+      ? [...state.coalescedUserMessages, entry]
+      : [entry]
+    return true
+  }
+
+  takeCoalescedUserMessages(sessionId: string): CoalescedUserMessage[] {
+    const state = this.streamingStates.get(sessionId)
+    const messages = state?.coalescedUserMessages
+    if (!state || !messages?.length) return []
+    state.coalescedUserMessages = undefined
+    return messages
+  }
+
+  dropCoalescedUserMessage(sessionId: string, uuid: string): boolean {
+    const state = this.streamingStates.get(sessionId)
+    if (!state?.coalescedUserMessages) return false
+    const next = state.coalescedUserMessages.filter((message) => message.uuid !== uuid)
+    if (next.length === state.coalescedUserMessages.length) return false
+    state.coalescedUserMessages = next.length > 0 ? next : undefined
+    return true
+  }
+
+  markRecovered(sessionIds: string[]): void {
+    for (const sessionId of sessionIds) {
+      const state = this.streamingStates.get(sessionId)
+      if (!state) continue
+      state.isRecovering = false
+      state.coalescedUserMessages = undefined
+    }
+  }
+
+  settleRecoveringSessions(sessionIds: string[]): void {
+    for (const sessionId of sessionIds) {
+      const state = this.streamingStates.get(sessionId)
+      if (!state) continue
+      state.isRecovering = false
+      const dropped = state.coalescedUserMessages
+      if (dropped?.length) {
+        const messageLength = dropped.reduce((n, message) => n + message.text.length, 0)
+        console.warn(
+          `[MessagePersister] Dropping ${dropped.length} user message(s) coalesced during failed recovery for ${sessionId} (length=${messageLength})`,
+        )
+        captureException(new Error('Coalesced user message dropped on recovery settle'), {
+          tags: { area: 'container', op: 'runtime.recovery.dropCoalesced' },
+          extra: { sessionId, messageCount: dropped.length, messageLength },
+        })
+      }
+      state.coalescedUserMessages = undefined
+      if (state.isActive && !state.isInterrupted) {
+        this.markSessionInactive(sessionId, state)
+      }
+      this.detachSessionTransport(sessionId)
+    }
+  }
+
+  consumeLastFatal(agentSlug: string): RuntimeFatalKind {
+    const kind = this.lastFatalByAgent.get(agentSlug) ?? null
+    this.lastFatalByAgent.delete(agentSlug)
+    return kind
+  }
+
+  recordLastFatal(agentSlug: string, kind: RuntimeFatalKind): void {
+    this.lastFatalByAgent.set(agentSlug, kind)
+  }
+
+  private detachSessionTransport(sessionId: string): void {
+    const unsubscribe = this.subscriptions.get(sessionId)
+    if (unsubscribe) {
+      unsubscribe()
+      this.subscriptions.delete(sessionId)
+    }
+    this.containerClients.delete(sessionId)
   }
 
   // Broadcast to global notification clients only (e.g., sidebar updates, Electron main process)
@@ -1028,6 +1138,10 @@ class MessagePersister {
     this.onStopContainerRequested = callback
   }
 
+  setUnexpectedDeathCallback(callback: ((agentSlug: string, sessionId?: string) => void) | null): void {
+    this.onUnexpectedDeathRequested = callback
+  }
+
   // Check if there are any session-specific SSE clients connected
   hasAnySessionClients(): boolean {
     return this.sseClients.size > 0
@@ -1054,6 +1168,8 @@ class MessagePersister {
       // only the incremental map would leave the level set stale for the life of
       // the session — every later turn would end waiting-background, never idle.
       state.bgTasksSnapshot = null
+      state.isRecovering = false
+      state.coalescedUserMessages = undefined
       this.stopAllWorkflowTailers(sessionId)
     }
 
@@ -1129,6 +1245,7 @@ class MessagePersister {
         currentToolInput: '',
         isActive: false,
         isInterrupted: false,
+        isRecovering: false,
         isCompacting: false,
         agentSlug,
         lastContextWindow: 200_000,
@@ -2154,6 +2271,17 @@ class MessagePersister {
         // so re-derive instead: a blind clear would misreport "working" AND
         // eat the falling edge (the review's later settle would see
         // cache == derived and never broadcast session_input_provided).
+        if (
+          isError &&
+          inferOomSigkillFatal(content) &&
+          state.agentSlug &&
+          this.onUnexpectedDeathRequested &&
+          this.containerClients.get(sessionId)?.onFatalResult('oom_sigkill') === 'defer_for_recovery'
+        ) {
+          this.recordLastFatal(state.agentSlug, 'oom_sigkill')
+          this.onUnexpectedDeathRequested?.(state.agentSlug)
+          break
+        }
         if (isError || classification.isInterrupt) {
           state.isActive = false
           state.isAwaitingInput = false
@@ -2346,6 +2474,15 @@ class MessagePersister {
 
   // Handle connection closed - check container and mark inactive if session is done
   private handleConnectionClosed(sessionId: string, state: StreamingState): void {
+    const diedMidTurn = state.isActive && !state.isInterrupted
+    if (diedMidTurn && this.onUnexpectedDeathRequested && state.agentSlug) {
+      // The socket is gone; detach so isSubscribed reports the truth and the
+      // recovery orchestrator's ignore/recover paths actually resubscribe.
+      this.detachSessionTransport(sessionId)
+      this.onUnexpectedDeathRequested(state.agentSlug, sessionId)
+      return
+    }
+
     const client = this.containerClients.get(sessionId)
     if (!client) {
       // No client reference, assume session is done
@@ -2424,6 +2561,7 @@ class MessagePersister {
         'The agent stopped unexpectedly because the connection to its runtime was lost. ' +
         'The container may have crashed or run out of memory.'
       console.error(`[MessagePersister] Session ${sessionId} died mid-turn (connection lost)`)
+      this.persistAutomationStatus(sessionId, state, 'failed')
       this.broadcastToSSE(sessionId, {
         type: 'session_error',
         error: errorMessage,

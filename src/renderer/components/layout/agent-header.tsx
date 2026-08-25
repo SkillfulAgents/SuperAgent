@@ -170,6 +170,20 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
             </>
           )
         })()}
+        {sessionId && session?.invokedByAgentSlug && (
+          <>
+            <BreadcrumbSeparator />
+            <AppLink
+              to="/agents/$slug/called-from-agents"
+              params={{ slug }}
+              noDrag
+              className="text-sm font-light text-muted-foreground hover:text-foreground transition-colors"
+              data-testid="inbound-x-agent-breadcrumb"
+            >
+              Called from Other Agents
+            </AppLink>
+          </>
+        )}
         {sessionId && session?.agentSlug === agent?.slug && (
           <>
             <BreadcrumbSeparator />

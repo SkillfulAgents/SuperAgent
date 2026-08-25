@@ -1,13 +1,20 @@
-import { useMemo, useState } from 'react'
-import { ChevronRight, Loader2 } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { flushSync } from 'react-dom'
+import { AlertCircle, ChevronRight, Loader2 } from 'lucide-react'
 import { useNavigate } from '@tanstack/react-router'
 import { SettingsPageContainer, PageTitle } from '@renderer/components/layout/settings-page'
-import { IntegrationList, IntegrationRow } from '@renderer/components/connections/integration-row'
-import { DetailCard } from '@renderer/components/triggers/detail-card'
+import { IntegrationRow } from '@renderer/components/connections/integration-row'
 import { SortPopover } from '@renderer/components/sessions/sort-popover'
 import type { SortOrder } from '@renderer/components/sessions/related-sessions'
 import { SectionHeader } from '@renderer/components/ui/section-header'
-import { useInboundXAgentDetails } from '@renderer/hooks/use-inbound-x-agent'
+import { Switch } from '@renderer/components/ui/switch'
+import { useUser } from '@renderer/context/user-context'
+import { startViewTransition } from '@renderer/lib/view-transition'
+import {
+  useInboundXAgentDetails,
+  useSetInboundXAgentPermission,
+} from '@renderer/hooks/use-inbound-x-agent'
+import type { InboundXAgentCaller } from '@shared/lib/types/inbound-x-agent-schema'
 
 interface InboundXAgentViewProps {
   agentSlug: string
@@ -16,12 +23,71 @@ interface InboundXAgentViewProps {
 export function InboundXAgentView({ agentSlug }: InboundXAgentViewProps) {
   const navigate = useNavigate()
   const { data, isLoading, error } = useInboundXAgentDetails(agentSlug)
+  const setPermission = useSetInboundXAgentPermission(agentSlug)
+  const { isAuthMode, rolesReady, canAdminAgent } = useUser()
   const [sortOrder, setSortOrder] = useState<SortOrder>('newest')
+  const [decisionOverrides, setDecisionOverrides] = useState<Record<string, 'allow' | 'review'>>({})
+  const [pendingCallers, setPendingCallers] = useState<Set<string>>(() => new Set())
+  const [permissionError, setPermissionError] = useState<string | null>(null)
 
   const sessions = useMemo(() => {
     const rows = [...(data?.sessions ?? [])]
     return sortOrder === 'newest' ? rows : rows.reverse()
   }, [data?.sessions, sortOrder])
+
+  useEffect(() => {
+    if (!data || Object.keys(decisionOverrides).length === 0) return
+    const serverDecision = new Map(data.callers.map((caller) => [caller.slug, caller.decision]))
+    setDecisionOverrides((previous) => {
+      let changed = false
+      const next = { ...previous }
+      for (const [slug, decision] of Object.entries(previous)) {
+        if (serverDecision.get(slug) === decision) {
+          delete next[slug]
+          changed = true
+        }
+      }
+      return changed ? next : previous
+    })
+  }, [data, decisionOverrides])
+
+  const effectiveDecision = (caller: InboundXAgentCaller): 'allow' | 'review' =>
+    decisionOverrides[caller.slug] ?? caller.decision
+
+  const animateOverride = (slug: string, decision: 'allow' | 'review' | null) => {
+    startViewTransition(() => {
+      flushSync(() => {
+        setDecisionOverrides((previous) => {
+          const next = { ...previous }
+          if (decision === null) delete next[slug]
+          else next[slug] = decision
+          return next
+        })
+      })
+    })
+  }
+
+  const handlePermissionToggle = async (caller: InboundXAgentCaller, checked: boolean) => {
+    if (pendingCallers.has(caller.slug)) return
+    const decision = checked ? 'allow' : 'review'
+    setPermissionError(null)
+    setPendingCallers((previous) => new Set(previous).add(caller.slug))
+    animateOverride(caller.slug, decision)
+    try {
+      await setPermission.mutateAsync({ callerAgentSlug: caller.slug, decision })
+    } catch (mutationError) {
+      animateOverride(caller.slug, null)
+      setPermissionError(
+        mutationError instanceof Error ? mutationError.message : 'Failed to update caller permission',
+      )
+    } finally {
+      setPendingCallers((previous) => {
+        const next = new Set(previous)
+        next.delete(caller.slug)
+        return next
+      })
+    }
+  }
 
   if (isLoading) {
     return (
@@ -39,6 +105,75 @@ export function InboundXAgentView({ agentSlug }: InboundXAgentViewProps) {
       </div>
     )
   }
+
+  const automaticCallers = data.callers.filter((caller) => effectiveDecision(caller) === 'allow')
+  const approvalCallers = data.callers.filter((caller) => effectiveDecision(caller) === 'review')
+
+  const renderCallerRow = (caller: InboundXAgentCaller) => {
+    const allowed = effectiveDecision(caller) === 'allow'
+    const pending = pendingCallers.has(caller.slug)
+    const canManage = caller.canAccess && (!isAuthMode || (rolesReady && canAdminAgent(caller.slug)))
+    const accessNote = !caller.canAccess
+      ? 'No access'
+      : isAuthMode && !rolesReady
+        ? 'Checking permissions…'
+        : isAuthMode && !canAdminAgent(caller.slug)
+          ? 'Owner access required'
+          : null
+
+    return (
+      <IntegrationRow
+        key={caller.slug}
+        icon={null}
+        name={caller.name}
+        subtitle={(
+          <span className="min-w-0 truncate font-mono">
+            {caller.displaySlug}{accessNote ? ` · ${accessNote}` : ''}
+          </span>
+        )}
+        viewTransitionName={`inbound-xagent-${caller.slug}`}
+        right={(
+          <>
+            {pending && (
+              <Loader2
+                className="h-3.5 w-3.5 animate-spin text-muted-foreground"
+                aria-label={`Saving permission for ${caller.name}`}
+              />
+            )}
+            <Switch
+              checked={allowed}
+              disabled={!canManage || pending}
+              onCheckedChange={(checked) => { void handlePermissionToggle(caller, checked) }}
+              aria-label={`${allowed ? 'Require approval for' : 'Allow automatic'} calls from ${caller.name}`}
+              data-testid={`inbound-x-agent-toggle-${caller.slug}`}
+            />
+          </>
+        )}
+      />
+    )
+  }
+
+  const renderCallerSection = (
+    label: string,
+    callers: InboundXAgentCaller[],
+    emptyMessage: string,
+    testId: string,
+  ) => (
+    <section className="border-t" data-testid={testId}>
+      <div className="border-b bg-muted/25 px-4 py-2">
+        <h4 className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+          {label}
+        </h4>
+      </div>
+      {callers.length > 0 ? (
+        <div className="divide-y divide-border/50">
+          {callers.map(renderCallerRow)}
+        </div>
+      ) : (
+        <p className="px-4 py-3 text-xs text-muted-foreground">{emptyMessage}</p>
+      )}
+    </section>
+  )
 
   return (
     <SettingsPageContainer fullScreen>
@@ -105,39 +240,42 @@ export function InboundXAgentView({ agentSlug }: InboundXAgentViewProps) {
         </section>
 
         <div className="order-1 lg:order-2">
-          <DetailCard label="Agents that can trigger this agent">
+          <div
+            className="overflow-hidden rounded-xl border bg-background"
+            data-testid="inbound-x-agent-callers-card"
+          >
+            <div className="px-4 py-4">
+              <h3 className="text-sm font-medium text-muted-foreground">
+                Agents that can trigger this agent
+              </h3>
+              {permissionError && (
+                <div className="mt-2 flex items-center gap-1.5 text-xs text-destructive" role="alert">
+                  <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                  {permissionError}
+                </div>
+              )}
+            </div>
             {data.callers.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
+              <p className="border-t px-4 py-4 text-xs text-muted-foreground">
                 No other agents can currently trigger this agent.
               </p>
             ) : (
-              <IntegrationList>
-                {data.callers.map((caller) => (
-                  <IntegrationRow
-                    key={caller.slug}
-                    icon={null}
-                    name={caller.name}
-                    subtitle={caller.canAccess
-                      ? caller.decision === 'allow' ? 'Allowed' : 'Approval required'
-                      : `${caller.decision === 'allow' ? 'Allowed' : 'Approval required'} · No access`}
-                    disabled={!caller.canAccess}
-                    ariaLabel={caller.canAccess
-                      ? `Open ${caller.name}`
-                      : `${caller.name}, you do not have access`}
-                    onActivate={caller.canAccess ? () => {
-                      void navigate({
-                        to: '/agents/$slug',
-                        params: { slug: caller.displaySlug },
-                      })
-                    } : undefined}
-                    right={caller.canAccess ? (
-                      <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
-                    ) : undefined}
-                  />
-                ))}
-              </IntegrationList>
+              <>
+                {renderCallerSection(
+                  'Can automatically call',
+                  automaticCallers,
+                  'No agents can call automatically.',
+                  'automatic-callers-section',
+                )}
+                {renderCallerSection(
+                  'Require approval',
+                  approvalCallers,
+                  'No agents currently require approval.',
+                  'approval-callers-section',
+                )}
+              </>
             )}
-          </DetailCard>
+          </div>
         </div>
       </div>
     </SettingsPageContainer>

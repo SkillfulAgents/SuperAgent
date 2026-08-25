@@ -19,7 +19,7 @@ import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu
 import { SystemPromptDialog } from '@renderer/components/agents/system-prompt-dialog'
 import { toast } from 'sonner'
 import { apiFetch } from '@renderer/lib/api'
-import { uploadFileChunked } from '@renderer/lib/upload'
+import { uploadFileChunked, type UploadProgress } from '@renderer/lib/upload'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
@@ -161,11 +161,8 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
 
   const composer = useMessageComposer({
     agentSlug: agent.slug,
-    uploadFile: useCallback(({ file }: { file: File }) => {
-      return uploadFileChunked<{ path: string }>({
-        url: `/api/agents/${agent.slug}/upload-file`,
-        file,
-      })
+    uploadFile: useCallback(({ file, onProgress, signal, stallMs }: { file: File; onProgress?: (p: UploadProgress) => void; signal?: AbortSignal; stallMs?: number }) => {
+      return uploadFileChunked<{ path: string }>({ url: `/api/agents/${agent.slug}/upload-file`, file, onProgress, signal, stallMs })
     }, [agent.slug]),
     uploadFolder: useCallback(async ({ sourcePath }: { sourcePath: string }) => {
       const res = await apiFetch(
@@ -230,6 +227,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault()
+      if (!composer.canSubmit) return
       void composer.handleSubmit(e)
     }
   }
@@ -384,6 +382,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                   textareaRef={composerTextareaRef}
                   attachments={composer.attachments}
                   onRemoveAttachment={composer.removeAttachment}
+                  onRetryAttachment={composer.retryAttachment}
                   value={composer.message}
                   onChange={composer.setMessage}
                   onKeyDown={handleKeyDown}

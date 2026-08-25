@@ -2,6 +2,7 @@ import { EventEmitter } from 'events'
 import { randomUUID } from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
+import { z } from 'zod'
 import type {
   ContainerClient,
   ContainerConfig,
@@ -14,6 +15,7 @@ import type {
   StopOptions,
   StreamMessage,
 } from './types'
+import type { ObserveUnexpectedDeathInput, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
 import { resolveContainerModel } from './resolve-model'
 import { getAgentWorkspaceDir, getSessionJsonlPath } from '../utils/file-storage'
 import { reviewManager } from '../proxy/review-manager'
@@ -21,6 +23,16 @@ import { db } from '../db'
 import { connectedAccounts } from '../db/schema'
 
 export const MOCK_ACCOUNT_ID = 'mock-account-id'
+
+// Validate seeded dashboard package.json at the file boundary (project
+// convention). Minimal mirror of agent-container's DashboardPackageSchema —
+// that package can't be imported from here.
+const seededDashboardPackageSchema = z
+  .object({
+    name: z.string().optional(),
+    description: z.string().optional(),
+  })
+  .loose()
 
 // E2E mock scenarios reference a fake connected account by id. The
 // /proxy-review/.../always endpoint persists an apiScopePolicies row whose
@@ -2384,16 +2396,64 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       })
     }
 
-    // Endpoints that return arrays need to return [] not {}
+    // Mirror the real container: report the dashboards that exist under the
+    // agent's workspace artifacts dir (seeded by specs), as running. Specs
+    // that seed nothing keep getting [] exactly as before.
     if (fetchPath === '/artifacts') {
-      return new Response(JSON.stringify([]), {
+      const artifacts: Array<Record<string, unknown>> = []
+      try {
+        const artifactsDir = path.join(getAgentWorkspaceDir(this.getAgentId()), 'artifacts')
+        for (const entry of fs.readdirSync(artifactsDir, { withFileTypes: true })) {
+          if (!entry.isDirectory()) continue
+          try {
+            const pkg = seededDashboardPackageSchema.parse(
+              JSON.parse(fs.readFileSync(path.join(artifactsDir, entry.name, 'package.json'), 'utf-8'))
+            )
+            artifacts.push({
+              slug: entry.name,
+              name: pkg.name || entry.name,
+              description: pkg.description || '',
+              status: 'running',
+              port: 3000,
+            })
+          } catch {
+            // Not a dashboard directory — skip, like the real listing does.
+          }
+        }
+      } catch {
+        // No artifacts dir seeded for this agent.
+      }
+      return new Response(JSON.stringify(artifacts), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       })
     }
 
-    // Dashboard artifact HTML — serves a minimal page for E2E testing of polyfill injection
-    if (fetchPath.match(/^\/artifacts\/[^/]+\/?$/) || fetchPath.match(/^\/artifacts\/[^/]+\/index\.html$/)) {
+    // Dashboard artifact HTML — serves the seeded dashboard's own index.html
+    // when one exists in the agent's workspace (so specs and demo data dirs
+    // can exercise real dashboard content), else a minimal fixed page for
+    // polyfill-injection testing.
+    const artifactHtmlMatch = fetchPath.match(/^\/artifacts\/([^/]+)\/?(?:index\.html)?$/)
+    if (artifactHtmlMatch) {
+      try {
+        const artifactSlug = decodeURIComponent(artifactHtmlMatch[1])
+        if (!artifactSlug.includes('..')) {
+          const seededPath = path.join(
+            getAgentWorkspaceDir(this.getAgentId()),
+            'artifacts',
+            artifactSlug,
+            'index.html'
+          )
+          if (fs.existsSync(seededPath)) {
+            return new Response(fs.readFileSync(seededPath, 'utf-8'), {
+              status: 200,
+              headers: { 'Content-Type': 'text/html; charset=utf-8' },
+            })
+          }
+        }
+      } catch {
+        // Malformed escape or unreadable seed — fall through to the fixed page.
+      }
       const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Mock Dashboard</title></head><body><h1>Mock Dashboard</h1><script>window.__DASHBOARD_LOADED__ = true;</script></body></html>`
       return new Response(html, {
         status: 200,
@@ -2535,6 +2595,18 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   async isHealthy(_knownPort?: number): Promise<boolean> {
     return this.running
+  }
+
+  onFatalResult(_kind: RuntimeFatalKind): 'settle' | 'defer_for_recovery' {
+    return 'settle'
+  }
+
+  async observeUnexpectedDeath(_input?: ObserveUnexpectedDeathInput): Promise<UnexpectedDeathPlan> {
+    return { action: 'settle' }
+  }
+
+  getRuntimeGenerationId(): string | null {
+    return null
   }
 
   // Session management
