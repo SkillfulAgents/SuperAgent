@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@renderer/components/ui/button'
-import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
+import { ChatComposerBox, FLOATING_COMPOSER_CLASS } from '@renderer/components/messages/chat-composer-box'
+import { cn } from '@shared/lib/utils'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
-import { AgentCreationAids, type ImportResult } from '@renderer/components/agents/agent-creation-aids'
+import { CreateAgentTemplates } from '@renderer/components/agents/create-agent-templates'
+import { ImportAgentDialog } from '@renderer/components/agents/import-agent-dialog'
 import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-session'
 import { TemplateInstallDialog } from '@renderer/components/agents/template-install-dialog'
 import { useCreateAgent, useDeleteAgent, useUpdateAgent } from '@renderer/hooks/use-agents'
@@ -32,7 +34,7 @@ import {
 import { captureRendererException } from '@renderer/lib/error-reporting'
 import { useDiscoverableAgents, slugFromAgentPath } from '@renderer/hooks/use-agent-templates'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
-import type { ApiDiscoverableAgent } from '@shared/lib/types/api'
+import type { ApiAgentTemplateInstallResult, ApiDiscoverableAgent } from '@shared/lib/types/api'
 
 /**
  * Ceiling, not a delay: the offer resolves the instant the discoverable list
@@ -47,11 +49,33 @@ import type { ApiDiscoverableAgent } from '@shared/lib/types/api'
  */
 const HANDOFF_TEMPLATE_WAIT_MS = 10000
 
+/**
+ * Soft edges for the template roster's scroll viewport, same recipe as the
+ * voice-agent transcript: cards dissolve over 32px instead of clipping at the
+ * top of the composer above and the footer below. Top padding (the measured
+ * composer overlap plus this gap) keeps at-rest content clear of the bands,
+ * so nothing looks faded until it is actually leaving.
+ */
+const ROSTER_FADE_MASK =
+  'linear-gradient(to bottom, transparent 0, black 32px, black calc(100% - 32px), transparent 100%)'
+
+/** At-rest gap between the composer's bottom edge and the roster heading. */
+const ROSTER_TOP_GAP_PX = 64
+
 export interface CreateAgentFormProps {
   /**
-   * Awaited before the form navigates away (Browse Templates → the
-   * marketplace). The wizard uses it to finish itself first, since it renders
-   * above the router and would otherwise cover the page we just went to.
+   * Rendered directly above the composer, inside the block the form keeps
+   * vertically centered (the step's title). It has to live inside the form:
+   * the centering is a pair of equal flex spacers around the header+composer
+   * block, and a title rendered outside the form would sit above the top
+   * spacer instead of moving with the block it labels.
+   */
+  header?: React.ReactNode
+  /**
+   * Awaited before the form navigates away (a see-more tile → the Explore
+   * category page). The wizard uses it to finish itself first, since it
+   * renders above the router and would otherwise cover the page we just went
+   * to.
    */
   onNavigateAway?: () => Promise<void> | void
   /** Fires after an agent is successfully created (via any path). Parent uses this to close the overlay/wizard. */
@@ -62,7 +86,7 @@ export interface CreateAgentFormProps {
   exiting?: boolean
 }
 
-export function CreateAgentForm({ onAgentCreated, onNavigateAway, className, exiting = false }: CreateAgentFormProps) {
+export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, className, exiting = false }: CreateAgentFormProps) {
   // Staggered reveal: items start hidden on first render, flip to visible on the next frame,
   // then flip back to hidden when `exiting` becomes true. Reverse the stagger on exit.
   const [revealed, setRevealed] = useState(false)
@@ -72,8 +96,13 @@ export function CreateAgentForm({ onAgentCreated, onNavigateAway, className, exi
   }, [])
 
   const itemHidden = exiting || !revealed
-  const itemProps = (inDelayMs: number, outDelayMs: number) => ({
-    className: 'create-agent-item',
+  const itemProps = (
+    inDelayMs: number,
+    outDelayMs: number,
+    extraClassName = '',
+    base = 'create-agent-item',
+  ) => ({
+    className: `${base} ${extraClassName}`.trim(),
     'data-hidden': itemHidden ? 'true' : 'false',
     style: { transitionDelay: `${exiting ? outDelayMs : inDelayMs}ms` },
   })
@@ -177,7 +206,7 @@ export function CreateAgentForm({ onAgentCreated, onNavigateAway, className, exi
 
   const finishCreatedAgent = useCallback(
     async (
-      agent: ImportResult,
+      agent: ApiAgentTemplateInstallResult,
       source: 'import' | 'skillset',
     ) => {
       await discardWarmAgent()
@@ -340,19 +369,29 @@ export function CreateAgentForm({ onAgentCreated, onNavigateAway, className, exi
     }
   }, [])
 
-  const handleVoiceResult = useCallback(
-    ({ prompt }: { name: string; prompt: string }) => {
-      if (prompt) {
-        composer.setMessage(prompt)
-        setTimeout(() => textareaRef.current?.focus(), 0)
-      }
-    },
-    [composer],
+  const handleImportComplete = useCallback(
+    (agent: ApiAgentTemplateInstallResult) => finishCreatedAgent(agent, 'import'),
+    [finishCreatedAgent],
   )
 
-  const handleImportComplete = useCallback(
-    (agent: ImportResult) => finishCreatedAgent(agent, 'import'),
-    [finishCreatedAgent],
+  // The strip's end-cap card. Forfeits like the old aid chips did: an armed
+  // signup handoff resolving underneath the import dialog would stack the
+  // template-install dialog on top of it.
+  const [showImportDialog, setShowImportDialog] = useState(false)
+  const handleImportClick = useCallback(() => {
+    forfeitHandoffTemplate()
+    setShowImportDialog(true)
+  }, [forfeitHandoffTemplate])
+
+  // Picking a card is the user choosing a template outright, so it also
+  // forfeits any armed signup handoff — otherwise the handoff's own offer
+  // could still resolve and replace the one they just clicked.
+  const handleTemplateSelected = useCallback(
+    (template: ApiDiscoverableAgent) => {
+      forfeitHandoffTemplate()
+      setTemplateToInstall(template)
+    },
+    [forfeitHandoffTemplate],
   )
 
   const handleKeyDown = (e: KeyboardEvent) => {
@@ -364,66 +403,142 @@ export function CreateAgentForm({ onAgentCreated, onNavigateAway, className, exi
 
   const isDisabled = isSubmitting
 
-  return (
-    <div className={className}>
-      <div className="space-y-8">
-        <form
-          onSubmit={(e) => {
-            e.preventDefault()
-            void composer.handleSubmit(e)
-          }}
-          {...itemProps(80, 130)}
-        >
-          <ChatComposerBox
-            textareaRef={textareaRef}
-            attachments={composer.attachments}
-            onRemoveAttachment={composer.removeAttachment}
-            value={composer.message}
-            onChange={(value) => {
-              forfeitHandoffTemplate()
-              composer.setMessage(value)
-            }}
-            onKeyDown={handleKeyDown}
-            placeholder={displayedPlaceholder}
-            disabled={isDisabled}
-            rows={3}
-            autoFocus={!templateToInstall && !handoffTemplateSlug}
-            dataTestId="create-agent-prompt"
-            textareaClassName="min-h-[60px]"
-            leftActions={(
-              <ComposerOptions state={composerOptions} disabled={isDisabled} />
-            )}
-            rightActions={(
-              <>
-                <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} />
-                <Button
-                  type="submit"
-                  size="sm"
-                  data-testid="create-agent-submit"
-                >
-                  {isDisabled ? (
-                    <>
-                      <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                      Creating...
-                    </>
-                  ) : (
-                    'Create Agent'
-                  )}
-                </Button>
-              </>
-            )}
-            footer={(
-              <VoiceInputError error={composer.voiceInput.error} onDismiss={composer.voiceInput.clearError} className="mt-2 justify-center" />
-            )}
-          />
-        </form>
+  // How far the roster's scroll viewport reaches UP behind the composer. The
+  // composer's translucent chrome only reads as glass when something actually
+  // scrolls behind it (sessions overlay it on the message list for the same
+  // reason), so the viewport's top edge sits at the composer's top edge —
+  // measured, because attachments and errors change the composer's height —
+  // and matching top padding keeps every at-rest position unchanged.
+  const composerBlockRef = useRef<HTMLFormElement>(null)
+  const [composerOverlap, setComposerOverlap] = useState(0)
+  // At rest the composer sits flush on the page; its floating shadow appears
+  // only once the roster is scrolled, reading as the box lifting so the cards
+  // can pass underneath.
+  const [rosterScrolled, setRosterScrolled] = useState(false)
+  useLayoutEffect(() => {
+    const el = composerBlockRef.current
+    if (!el) return
+    const measure = () => {
+      const next = Math.ceil(el.getBoundingClientRect().height)
+      setComposerOverlap((current) => (current === next ? current : next))
+    }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
 
-        <div {...itemProps(160, 70)}>
-          <AgentCreationAids
-            onVoiceResult={handleVoiceResult}
-            onImportComplete={handleImportComplete}
-            onAidOpened={forfeitHandoffTemplate}
+  return (
+    // The header+composer block floats in the upper third of the screen —
+    // one part of the leftover height above it, five parts below — and stays
+    // pinned there; only the template roster below it scrolls. The flex
+    // spacers ARE the positioning: the empty spacer above and the roster's
+    // scroll viewport below split the leftover 1:5, which sits the block
+    // about a fifth of the screen above true center and gives the roster the
+    // difference. Height comes from the wizard (the step chain is h-full flex
+    // columns).
+    <div className={`flex h-full min-h-0 flex-col ${className ?? ''}`}>
+      <div className="min-h-0 flex-1 shrink" aria-hidden />
+
+      {header}
+
+      <form
+        ref={composerBlockRef}
+        onSubmit={(e) => {
+          e.preventDefault()
+          void composer.handleSubmit(e)
+        }}
+        // The -glass reveal variant: the plain item's filter/will-change
+        // would make this a backdrop root and blind the composer's
+        // backdrop-blur to the roster behind it (see globals.css). z-10: the
+        // roster viewport reaches up behind this block and both siblings are
+        // stacking contexts, so the later sibling (the roster) would paint
+        // over the composer without explicit z-order.
+        {...itemProps(80, 130, 'relative z-10 shrink-0', 'create-agent-item-glass')}
+      >
+        <ChatComposerBox
+          className={cn(
+            FLOATING_COMPOSER_CLASS,
+            'transition-shadow duration-500',
+            // twMerge keeps the last shadow per variant, so these override
+            // the floating shadows until the roster starts moving.
+            !rosterScrolled && 'shadow-none dark:shadow-none',
+          )}
+          textareaRef={textareaRef}
+          attachments={composer.attachments}
+          onRemoveAttachment={composer.removeAttachment}
+          value={composer.message}
+          onChange={(value) => {
+            forfeitHandoffTemplate()
+            composer.setMessage(value)
+          }}
+          onKeyDown={handleKeyDown}
+          placeholder={displayedPlaceholder}
+          disabled={isDisabled}
+          rows={3}
+          autoFocus={!templateToInstall && !handoffTemplateSlug}
+          dataTestId="create-agent-prompt"
+          // One line taller on phones: the typewriter placeholder wraps to
+          // three lines in a narrow composer, which reads as already full.
+          textareaClassName="min-h-[80px] sm:min-h-[60px]"
+          leftActions={(
+            <ComposerOptions state={composerOptions} disabled={isDisabled} />
+          )}
+          rightActions={(
+            <>
+              <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} />
+              <Button
+                type="submit"
+                size="sm"
+                data-testid="create-agent-submit"
+              >
+                {isDisabled ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                    Creating...
+                  </>
+                ) : (
+                  'Create Agent'
+                )}
+              </Button>
+            </>
+          )}
+          footer={(
+            <VoiceInputError error={composer.voiceInput.error} onDismiss={composer.voiceInput.clearError} className="mt-2 justify-center" />
+          )}
+        />
+      </form>
+
+      {/* No aid chips here: browsing lives in the roster below, the
+          composer's mic covers voice, and importing is the roster's own
+          final tile. The outer div is the flex layout box (and reveal-
+          animation item); the scroll viewport inside it is absolute so it can
+          extend `composerOverlap` px above the box — behind the glass —
+          without shifting the flex layout. The 2px side padding gives hovered
+          cards' lift shadow room inside the scroller instead of clipping at
+          its edge. */}
+      <div {...itemProps(160, 70, 'relative z-0 min-h-0 flex-[5_1_0%]')}>
+        <div
+          // Scrollbar hidden: it would run up behind the glass composer and
+          // fade oddly through the edge masks. Trackpad/wheel and the cards'
+          // own tab-into-view scrolling still work; the fade bands are the
+          // "there's more" signal.
+          onScroll={(e) => {
+            const scrolled = e.currentTarget.scrollTop > 4
+            setRosterScrolled((current) => (current === scrolled ? current : scrolled))
+          }}
+          className="absolute -left-2 -right-2 bottom-0 overflow-y-auto px-2 pb-10 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          style={{
+            top: -composerOverlap,
+            paddingTop: composerOverlap + ROSTER_TOP_GAP_PX,
+            maskImage: ROSTER_FADE_MASK,
+            WebkitMaskImage: ROSTER_FADE_MASK,
+          }}
+        >
+          <CreateAgentTemplates
+            onSelect={handleTemplateSelected}
             onNavigateAway={onNavigateAway}
+            onImportClick={handleImportClick}
           />
         </div>
       </div>
@@ -432,6 +547,12 @@ export function CreateAgentForm({ onAgentCreated, onNavigateAway, className, exi
         template={templateToInstall}
         onClose={() => setTemplateToInstall(null)}
         onInstalled={(agent) => finishCreatedAgent(agent, 'skillset')}
+      />
+
+      <ImportAgentDialog
+        open={showImportDialog}
+        onClose={() => setShowImportDialog(false)}
+        onComplete={handleImportComplete}
       />
     </div>
   )
