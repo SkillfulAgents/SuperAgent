@@ -1011,6 +1011,46 @@ export async function updateSessionName(
 }
 
 /**
+ * Set (or clear) the user's "mark as unread" flag on a session.
+ *
+ * Clearing deletes the key instead of storing `false` so the common path —
+ * every session open clearing a flag that was never set — collapses to a
+ * no-change mutation and skips the file write entirely.
+ */
+export async function setSessionMarkedUnread(
+  agentSlug: string,
+  sessionId: string,
+  markedUnread: boolean
+): Promise<void> {
+  await mutateSessionMetadata(agentSlug, (metadata) => {
+    const existing = metadata[sessionId]
+    if (Boolean(existing?.markedUnread) === markedUnread) return false
+    if (markedUnread) {
+      metadata[sessionId] = { ...existing, markedUnread: true }
+    } else {
+      const { markedUnread: _removed, ...rest } = existing ?? {}
+      metadata[sessionId] = rest
+    }
+  })
+}
+
+/**
+ * Session ids the user explicitly marked unread. Hidden automated sessions are
+ * excluded for the same reason unread notifications are: they never appear in
+ * any session list, so a dot raised by one could never be cleared.
+ */
+export async function getSessionIdsMarkedUnread(agentSlug: string): Promise<Set<string>> {
+  const metadata = await readSessionMetadata(agentSlug)
+  const ids = new Set<string>()
+  for (const [sessionId, sessionMeta] of Object.entries(metadata)) {
+    if (sessionMeta?.markedUnread && !isHiddenAutomatedSession(sessionMeta)) {
+      ids.add(sessionId)
+    }
+  }
+  return ids
+}
+
+/**
  * Check if a session exists
  */
 export async function sessionExists(

@@ -27,10 +27,10 @@ import {
 } from '@renderer/components/ui/dialog'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { useDeleteSession, useUpdateSessionName } from '@renderer/hooks/use-sessions'
+import { useDeleteSession, useUpdateSessionName, useSetSessionMarkedUnread } from '@renderer/hooks/use-sessions'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
-import { Trash2, ClipboardCopy, Pencil } from 'lucide-react'
+import { Trash2, ClipboardCopy, Pencil, Circle } from 'lucide-react'
 import { apiFetch } from '@renderer/lib/api'
 import type { SessionUsageTotals } from '@shared/lib/types/usage'
 
@@ -68,6 +68,7 @@ export function SessionContextMenu({
   const usageRequestRef = useRef(0)
   const deleteSession = useDeleteSession()
   const updateSessionName = useUpdateSessionName()
+  const setSessionMarkedUnread = useSetSessionMarkedUnread()
   const navigate = useNavigate()
   // strict:false → undefined when the menu is opened off the session route
   // (e.g. from the sidebar list), so the up-nav only fires when we're actually
@@ -102,6 +103,14 @@ export function SessionContextMenu({
       setShowRenameDialog(false)
     } catch (error) {
       console.error('Failed to rename session:', error)
+    }
+  }
+
+  const handleMarkUnread = async () => {
+    try {
+      await setSessionMarkedUnread.mutateAsync({ sessionId, agentSlug, markedUnread: true })
+    } catch (error) {
+      console.error('Failed to mark session as unread:', error)
     }
   }
 
@@ -159,6 +168,10 @@ export function SessionContextMenu({
               Rename Session
             </ContextMenuItem>
           )}
+          <ContextMenuItem data-testid="mark-unread-session-item" onClick={handleMarkUnread}>
+            <Circle className="h-4 w-4 mr-2 fill-blue-500 text-blue-500" />
+            Mark as Unread
+          </ContextMenuItem>
           <ContextMenuItem onClick={handleCopyRawLog}>
             <ClipboardCopy className="h-4 w-4 mr-2" />
             Copy Raw Log

@@ -295,6 +295,8 @@ vi.mock('@shared/lib/services/session-service', () => ({
   sessionIsKnown: vi.fn().mockResolvedValue(true),
   isSessionRegistered: vi.fn().mockResolvedValue(false),
   updateSessionMetadata: vi.fn().mockResolvedValue(undefined),
+  setSessionMarkedUnread: vi.fn().mockResolvedValue(undefined),
+  getSessionIdsMarkedUnread: vi.fn(() => Promise.resolve(new Set<string>())),
   deleteSession: vi.fn(),
   removeMessage: vi.fn(),
   removeToolCall: vi.fn(),
@@ -541,7 +543,7 @@ import {
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
 import { getAgent, getAgentWithStatus, listAgentsWithStatus } from '@shared/lib/services/agent-service'
-import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata } from '@shared/lib/services/session-service'
+import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata, setSessionMarkedUnread, getSessionIdsMarkedUnread } from '@shared/lib/services/session-service'
 import { listPendingScheduledTasks } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
@@ -4754,6 +4756,40 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(body[0].hasUnreadNotifications).toBe(true)
   })
 
+  it('raises hasUnreadNotifications for a session the user marked unread', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(getSessionSummary).mockResolvedValue({
+      sessionIds: ['sess-1'],
+      sessionCount: 1,
+      lastActivityAt: new Date(),
+    })
+    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
+    vi.mocked(readSessionMetadata).mockResolvedValue({ 'sess-1': { markedUnread: true } })
+
+    const res = await getReq(app, '/api/agents')
+    const body = await res.json()
+
+    expect(body[0].hasUnreadNotifications).toBe(true)
+  })
+
+  it('ignores a marked-unread flag on a hidden automated session', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(getSessionSummary).mockResolvedValue({
+      sessionIds: ['sess-cron'],
+      sessionCount: 1,
+      lastActivityAt: new Date(),
+    })
+    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
+    vi.mocked(readSessionMetadata).mockResolvedValue({
+      'sess-cron': { isScheduledExecution: true, markedUnread: true },
+    })
+
+    const res = await getReq(app, '/api/agents')
+    const body = await res.json()
+
+    expect(body[0].hasUnreadNotifications).toBe(false)
+  })
+
   it('detects awaiting input from agent-level proxy reviews on active sessions', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
     vi.mocked(getSessionSummary).mockResolvedValue({
@@ -6064,6 +6100,93 @@ describe('notable sessions fast path — GET /:id/sessions?notable=true', () => 
     const res = await getReq(app, `${NOTABLE_URL}&limit=zero`)
     const body = await res.json()
     expect(body).toHaveLength(25)
+  })
+})
+
+// ============================================================================
+// Mark as unread — SUP-686
+// ============================================================================
+
+describe('mark as unread — /:id/sessions/:sessionId/unread', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(sessionIsKnown).mockResolvedValue(true)
+    vi.mocked(getSessionIdsMarkedUnread).mockResolvedValue(new Set())
+  })
+
+  it('POST raises the flag', async () => {
+    const res = await app.request('http://localhost/api/agents/test-agent/sessions/sess-1/unread', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(200)
+    expect(vi.mocked(setSessionMarkedUnread)).toHaveBeenCalledWith('test-agent', 'sess-1', true)
+  })
+
+  it('DELETE clears the flag', async () => {
+    const res = await app.request('http://localhost/api/agents/test-agent/sessions/sess-1/unread', {
+      method: 'DELETE',
+    })
+
+    expect(res.status).toBe(200)
+    expect(vi.mocked(setSessionMarkedUnread)).toHaveBeenCalledWith('test-agent', 'sess-1', false)
+  })
+
+  it('404s on an unknown session instead of conjuring metadata for it', async () => {
+    vi.mocked(sessionIsKnown).mockResolvedValue(false)
+
+    const res = await app.request('http://localhost/api/agents/test-agent/sessions/ghost/unread', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(404)
+    expect(vi.mocked(setSessionMarkedUnread)).not.toHaveBeenCalled()
+  })
+
+  it('does not collide with DELETE of the session itself', async () => {
+    await app.request('http://localhost/api/agents/test-agent/sessions/sess-1/unread', {
+      method: 'DELETE',
+    })
+
+    expect(vi.mocked(deleteSession)).not.toHaveBeenCalled()
+  })
+
+  it('raises hasUnreadNotifications in the session list with no notification row behind it', async () => {
+    vi.mocked(listSessions).mockResolvedValue([
+      {
+        id: 'sess-1',
+        agentSlug: 'test-agent',
+        name: 'One',
+        createdAt: new Date('2026-01-01T00:00:00Z'),
+        lastActivityAt: new Date('2026-01-01T00:00:00Z'),
+        messageCount: 0,
+      },
+    ])
+    vi.mocked(getSessionIdsWithUnreadNotifications).mockResolvedValue(new Set())
+    vi.mocked(getSessionIdsMarkedUnread).mockResolvedValue(new Set(['sess-1']))
+
+    const res = await getReq(app, '/api/agents/test-agent/sessions')
+    const body = await res.json()
+
+    expect(body[0].hasUnreadNotifications).toBe(true)
+  })
+
+  it('pulls a marked-unread session into the notable fast path', async () => {
+    vi.mocked(listSessionsByIds).mockResolvedValue([])
+    vi.mocked(messagePersister.getActiveSessionIdsForAgent).mockReturnValue([])
+    vi.mocked(getSessionIdsWithUnreadNotifications).mockResolvedValue(new Set())
+    vi.mocked(getSessionIdsMarkedUnread).mockResolvedValue(new Set(['sess-marked']))
+
+    await getReq(app, '/api/agents/test-agent/sessions?notable=true')
+
+    expect(vi.mocked(listSessionsByIds)).toHaveBeenCalledWith(
+      'test-agent',
+      ['sess-marked'],
+      { excludeAutomated: true },
+    )
   })
 })
 

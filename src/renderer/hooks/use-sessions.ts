@@ -147,3 +147,33 @@ export function useUpdateSessionName() {
     },
   })
 }
+
+/**
+ * Raise ("Mark as unread") or clear the user-driven unread dot on a session.
+ * Clearing is fired when the session is opened; see SessionView.
+ */
+export function useSetSessionMarkedUnread() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    meta: { skipGlobalErrorToast: true },
+    mutationFn: async ({
+      sessionId,
+      agentSlug,
+      markedUnread,
+    }: { sessionId: string; agentSlug: string; markedUnread: boolean }) => {
+      const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/unread`, {
+        method: markedUnread ? 'POST' : 'DELETE',
+      })
+      if (!res.ok) throw new Error('Failed to update session unread flag')
+      return res.json()
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({
+        queryKey: ['sessions', resolveAgentSlugFromCache(queryClient, variables.agentSlug)],
+      })
+      // The agent row rolls session dots up into its own indicator.
+      queryClient.invalidateQueries({ queryKey: ['agents'] })
+    },
+  })
+}

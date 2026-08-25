@@ -63,6 +63,8 @@ import {
   sessionIsKnown,
   isSessionRegistered,
   updateSessionMetadata,
+  setSessionMarkedUnread,
+  getSessionIdsMarkedUnread,
   deleteSession,
   removeMessage,
   removeToolCall,
@@ -438,7 +440,8 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
         if (messagePersister.isSessionAwaitingInput(sessionId)) {
           hasSessionsAwaitingInput = true
         }
-        if (unreadSessionIds.has(sessionId) && !isHiddenAutomatedSession(sessionMetadata[sessionId])) {
+        const unread = unreadSessionIds.has(sessionId) || sessionMetadata[sessionId]?.markedUnread
+        if (unread && !isHiddenAutomatedSession(sessionMetadata[sessionId])) {
           hasUnreadNotifications = true
         }
       }
@@ -1543,10 +1546,13 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
       const limitRaw = Number(c.req.query('limit'))
       const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.trunc(limitRaw), 100) : 25
       const unreadIds = await getSessionIdsWithUnreadNotifications(slug)
+      const markedUnreadIds = await getSessionIdsMarkedUnread(slug)
       const activeIds = messagePersister.getActiveSessionIdsForAgent(slug)
-      const infos = await listSessionsByIds(slug, [...new Set([...activeIds, ...unreadIds])], {
-        excludeAutomated: true,
-      })
+      const infos = await listSessionsByIds(
+        slug,
+        [...new Set([...activeIds, ...unreadIds, ...markedUnreadIds])],
+        { excludeAutomated: true },
+      )
       const enriched = infos.map((session) => {
         const isActive = messagePersister.isSessionActive(session.id)
         return {
@@ -1555,7 +1561,7 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
           // The awaiting projection already counts agent-scoped reviews
           // against every active session of the agent — no review special-case.
           isAwaitingInput: messagePersister.isSessionAwaitingInput(session.id),
-          hasUnreadNotifications: unreadIds.has(session.id),
+          hasUnreadNotifications: unreadIds.has(session.id) || markedUnreadIds.has(session.id),
         }
       })
       // Live sessions must survive the cap; within each band, newest first.
@@ -1570,6 +1576,7 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
 
     const sessionList = await listSessions(slug, { excludeAutomated: true })
     const unreadSessionIds = await getSessionIdsWithUnreadNotifications(slug)
+    const markedUnreadSessionIds = await getSessionIdsMarkedUnread(slug)
     const pendingWakes = await listPendingWakesByAgent(slug)
     const wakesBySession = new Map(pendingWakes.map((w) => [w.resumeSessionId!, w]))
     const sessionsWithStatus = sessionList.map((session) => {
@@ -1581,7 +1588,8 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
         // The awaiting projection already counts agent-scoped reviews against
         // every active session of the agent — no review special-case.
         isAwaitingInput: messagePersister.isSessionAwaitingInput(session.id),
-        hasUnreadNotifications: unreadSessionIds.has(session.id),
+        hasUnreadNotifications:
+          unreadSessionIds.has(session.id) || markedUnreadSessionIds.has(session.id),
         ...(wake
           ? {
               pendingWakeAt: wake.nextExecutionAt.toISOString(),
@@ -2175,6 +2183,37 @@ agents.patch('/:id/sessions/:sessionId', AgentUser(), async (c) => {
     console.error('Failed to update session:', error)
     return c.json({ error: 'Failed to update session' }, 500)
   }
+})
+
+// POST /api/agents/:id/sessions/:sessionId/unread - Re-raise the unread dot
+// DELETE the same path clears it (fired when the session is next opened).
+// AgentRead, not AgentUser: this mirrors notification read state, which any
+// viewer already flips by opening a session — a read-only viewer that couldn't
+// clear the flag would be stuck looking at a dot forever.
+async function setUnreadFlag(c: Context, sessionId: string, markedUnread: boolean) {
+  try {
+    const agentSlug = getAgentId(c)
+
+    // Guard first: writing the flag registers metadata under this id, so an
+    // unknown session would otherwise be conjured into the map.
+    if (!(await sessionIsKnown(agentSlug, sessionId))) {
+      return c.json({ error: 'Session not found' }, 404)
+    }
+
+    await setSessionMarkedUnread(agentSlug, sessionId, markedUnread)
+    return c.json({ success: true, markedUnread })
+  } catch (error) {
+    console.error('Failed to update session unread flag:', error)
+    return c.json({ error: 'Failed to update session unread flag' }, 500)
+  }
+}
+
+agents.post('/:id/sessions/:sessionId/unread', AgentRead(), async (c) => {
+  return setUnreadFlag(c, c.req.param('sessionId'), true)
+})
+
+agents.delete('/:id/sessions/:sessionId/unread', AgentRead(), async (c) => {
+  return setUnreadFlag(c, c.req.param('sessionId'), false)
 })
 
 // DELETE /api/agents/:id/sessions/:sessionId - Delete a session

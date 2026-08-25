@@ -30,7 +30,9 @@ vi.mock('@renderer/components/ui/context-menu', () => ({
   ),
   ContextMenuTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   ContextMenuContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  ContextMenuItem: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  ContextMenuItem: ({ children, ...props }: { children: React.ReactNode }) => (
+    <div {...props}>{children}</div>
+  ),
   ContextMenuSeparator: () => <hr />,
 }))
 
@@ -56,13 +58,18 @@ vi.mock('@renderer/components/ui/dialog', () => ({
   DialogTitle: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }))
 
+const mockSetMarkedUnread = vi.fn().mockResolvedValue({ success: true })
+
 vi.mock('@renderer/hooks/use-sessions', () => ({
   useDeleteSession: () => ({ mutateAsync: vi.fn() }),
   useUpdateSessionName: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useSetSessionMarkedUnread: () => ({ mutateAsync: mockSetMarkedUnread, isPending: false }),
 }))
 
+const mockCanAdminAgent = vi.fn(() => true)
+
 vi.mock('@renderer/context/user-context', () => ({
-  useUser: () => ({ canAdminAgent: () => true }),
+  useUser: () => ({ canAdminAgent: mockCanAdminAgent }),
 }))
 
 vi.mock('@tanstack/react-router', async (importOriginal) => {
@@ -176,5 +183,46 @@ describe('SessionContextMenu usage totals', () => {
 
     expect(await screen.findByText('<$0.0001')).toBeInTheDocument()
     expect(screen.queryByText('$0.0000')).not.toBeInTheDocument()
+  })
+})
+
+describe('SessionContextMenu mark as unread', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockSetMarkedUnread.mockResolvedValue({ success: true })
+    mockCanAdminAgent.mockReturnValue(true)
+  })
+
+  it('raises the unread flag for the session it was opened on', async () => {
+    render(
+      <SessionContextMenu sessionId="session-9" sessionName="Session Nine" agentSlug="agent-2">
+        <button type="button">Session Nine</button>
+      </SessionContextMenu>,
+    )
+
+    fireEvent.click(screen.getByTestId('mark-unread-session-item'))
+
+    await waitFor(() => {
+      expect(mockSetMarkedUnread).toHaveBeenCalledWith({
+        sessionId: 'session-9',
+        agentSlug: 'agent-2',
+        markedUnread: true,
+      })
+    })
+  })
+
+  // Unlike rename/delete, marking unread is not owner-gated: it mirrors
+  // notification read state, which any viewer already flips by opening a session.
+  it('stays available to viewers who cannot admin the agent', () => {
+    mockCanAdminAgent.mockReturnValue(false)
+
+    render(
+      <SessionContextMenu sessionId="session-9" sessionName="Session Nine" agentSlug="agent-2">
+        <button type="button">Session Nine</button>
+      </SessionContextMenu>,
+    )
+
+    expect(screen.queryByTestId('rename-session-item')).not.toBeInTheDocument()
+    expect(screen.getByTestId('mark-unread-session-item')).toBeInTheDocument()
   })
 })
