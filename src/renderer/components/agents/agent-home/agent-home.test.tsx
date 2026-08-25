@@ -102,6 +102,7 @@ vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({
   useScheduledTasks: () => ({ data: [] }),
   useRunScheduledTaskNow: () => ({ mutate: vi.fn(), isPending: false }),
   useCancelScheduledTask: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+  useCompletedOneTimeSessions: () => ({ data: [] }),
 }))
 
 // The morph one-shots live in NavTransientContext. Controllable so the
