@@ -93,6 +93,7 @@ export interface CreateSessionRequest {
   effort?: EffortLevel; // Initial thinking effort level
   speed?: SpeedLevel; // Initial processing-speed tier (emitted as X-Superagent-Speed)
   capabilityPolicies?: AgentCapabilityPolicies; // Launch policies for subagents/workflows (absent = allow)
+  teamBrain?: boolean;
   // What the host expects the NEXT session to ask for (agent default model/
   // effort/speed with the global fallback applied), as opposed to this
   // session's own possibly one-off pick. Used to pre-warm a CLI subprocess for

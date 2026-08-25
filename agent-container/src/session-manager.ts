@@ -256,6 +256,7 @@ export class SessionManager extends EventEmitter {
         effort: request.effort,
         speed,
         capabilityPolicies,
+        teamBrain: request.teamBrain,
       });
 
     // Promise to capture Claude's session ID and slash commands (emitted after first message is sent)
@@ -392,6 +393,7 @@ export class SessionManager extends EventEmitter {
       effort: request.effort,
       speed,
       capabilityPolicies,
+      teamBrain: request.teamBrain,
       metadata: request.metadata,
     });
 
@@ -488,6 +490,7 @@ export class SessionManager extends EventEmitter {
         effort: profile.effort,
         speed: profile.speed,
         capabilityPolicies: profile.capabilityPolicies,
+        teamBrain: profile.teamBrain,
       });
       try {
         await process.prewarm();
@@ -602,6 +605,7 @@ export class SessionManager extends EventEmitter {
         speed: persisted.speed,
         capabilityPolicies: persisted.capabilityPolicies,
         sessionCapabilityGrants: persisted.sessionCapabilityGrants,
+        teamBrain: persisted.teamBrain,
       });
 
       const session: Session = {

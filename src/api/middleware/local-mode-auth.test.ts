@@ -48,6 +48,12 @@ describe('isContainerFacingPath', () => {
     expect(isContainerFacingPath('/api/web-search/search')).toBe(true)
   })
 
+  it('bypasses brain agent routes and not lookalikes', () => {
+    expect(isContainerFacingPath('/api/brain/agent/read')).toBe(true)
+    expect(isContainerFacingPath('/api/brain/admin/create')).toBe(false)
+    expect(isContainerFacingPath('/api/brainstuff')).toBe(false)
+  })
+
   it('does NOT bypass browser-facing API routes', () => {
     expect(isContainerFacingPath('/api/agents')).toBe(false)
     expect(isContainerFacingPath('/api/agents/foo/x-agent-policies')).toBe(false)
