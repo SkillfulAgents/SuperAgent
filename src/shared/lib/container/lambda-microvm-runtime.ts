@@ -919,7 +919,10 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
 
   async start(options?: StartOptions): Promise<ContainerInfo> {
     const info = await this.getInfoFromRuntime()
-    if (info.status === 'running') return info
+    if (info.status === 'running') {
+      this.rememberRunningPort(info.port)
+      return info
+    }
 
     const config = getMicrovmRuntimeConfig()
     // Full env exceeds the 4096-byte payload cap, so stash it host-side and pass the
@@ -977,6 +980,8 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     this.cleanupLocal()
     if (hasEnv) setBootstrapEnv(this.config.agentId, env)
     agentStates.set(this.config.agentId, { microvmId: run.microvmId, endpoint: run.endpoint, proxy, proxyPort })
+    // start()/stop() are overridden — report the proxy port to the base cache.
+    this.rememberRunningPort(proxyPort)
 
     try {
       await this.waitForRunning(config.region, run.microvmId, 300_000)
@@ -1241,6 +1246,9 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     state?.proxy.stop()
     agentStates.delete(this.config.agentId)
     clearBootstrapEnv(this.config.agentId)
+    // stop(), stopSync(), teardown, and getInfo's CAS drops all funnel through
+    // here — the base port cache must not outlive the local proxy.
+    this.rememberRunningPort(null)
   }
 
   // Compare-and-swap cleanup: only drop state if it still points at observedId.

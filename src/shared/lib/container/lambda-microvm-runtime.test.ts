@@ -505,6 +505,56 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
   })
 
+  // ---- base port cache sync (start/stop are fully overridden here, so the
+  // cache must be kept in sync by hand — a stale entry after auto-sleep
+  // terminate sent the first post-idle request to a dead loopback port) ----
+
+  it('start() primes the port cache: requests hit the proxy port with no runtime inspect', async () => {
+    const client = newClient()
+    const info = await client.start()
+    sendMock.mockClear()
+    vi.mocked(fetch).mockClear()
+
+    await client.fetch('/health')
+
+    expect(String(vi.mocked(fetch).mock.calls[0][0])).toBe(`http://127.0.0.1:${info.port}/health`)
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Get')).toBe(false)
+  })
+
+  it('stop() clears the cached port so the next request re-resolves instead of hitting the dead proxy', async () => {
+    const client = newClient()
+    await client.start()
+    await client.fetch('/health')
+    await client.stop()
+
+    // With a stale cache this would "succeed" against the terminated
+    // generation's loopback port; it must re-resolve and see the agent gone.
+    await expect(client.fetch('/health')).rejects.toThrow('Container is not running')
+  })
+
+  it('stopSync() clears the cached port like stop()', async () => {
+    const client = newClient()
+    await client.start()
+    await client.fetch('/health')
+    client.stopSync()
+
+    await expect(client.fetch('/health')).rejects.toThrow('Container is not running')
+  })
+
+  it('a restart re-primes the cache with the new generation proxy port', async () => {
+    const client = newClient()
+    await client.start()
+    await client.stop()
+    const second = await client.start()
+
+    sendMock.mockClear()
+    vi.mocked(fetch).mockClear()
+    await client.fetch('/health')
+
+    expect(String(vi.mocked(fetch).mock.calls[0][0])).toBe(`http://127.0.0.1:${second.port}/health`)
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Get')).toBe(false)
+  })
+
   it('start is a no-op when the agent is already running', async () => {
     const client = newClient()
     await client.start()
