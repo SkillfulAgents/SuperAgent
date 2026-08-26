@@ -587,7 +587,7 @@ import {
 } from '@shared/lib/services/skillset-service'
 import { getAgent, getAgentWithStatus, listAgentsWithStatus } from '@shared/lib/services/agent-service'
 import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
-import { listCompletedOneTimeTasks, listPendingScheduledTasks } from '@shared/lib/services/scheduled-task-service'
+import { listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesByAgent } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
@@ -8084,6 +8084,44 @@ describe('sessions list query contract — GET /:id/sessions', () => {
     expect(listSessions).toHaveBeenCalledWith('test-agent', {
       excludeAutomated: true,
     })
+  })
+
+  it('carries unread flags and pending-wake fields onto each row', async () => {
+    // The three lookups feeding this projection are independent; whichever
+    // order (or concurrency) the route runs them in, every row must still
+    // pick up its own unread flag and wake details.
+    vi.mocked(listSessions).mockResolvedValue([
+      sessionInfo('s-waking', '2026-01-02T00:00:00Z'),
+      sessionInfo('s-unread', '2026-01-01T00:00:00Z'),
+      sessionInfo('s-plain', '2025-12-31T00:00:00Z'),
+    ])
+    vi.mocked(getSessionIdsWithUnreadNotifications).mockResolvedValue(new Set(['s-unread']))
+    vi.mocked(listPendingWakesByAgent).mockResolvedValue([
+      {
+        id: 'wake-1',
+        resumeSessionId: 's-waking',
+        nextExecutionAt: new Date('2026-02-01T09:30:00.000Z'),
+        prompt: 'Check the deploy',
+      } as never,
+    ])
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+
+    expect(body).toEqual([
+      expect.objectContaining({
+        id: 's-waking',
+        hasUnreadNotifications: false,
+        pendingWakeAt: '2026-02-01T09:30:00.000Z',
+        pendingWakeTaskId: 'wake-1',
+        pendingWakeNote: 'Check the deploy',
+      }),
+      expect.objectContaining({ id: 's-unread', hasUnreadNotifications: true }),
+      expect.objectContaining({ id: 's-plain', hasUnreadNotifications: false }),
+    ])
+    expect(body[1]).not.toHaveProperty('pendingWakeAt')
+    expect(body[2]).not.toHaveProperty('pendingWakeAt')
   })
 
   it('forwards deterministic activity ordering and limit to the visibility-safe service', async () => {
