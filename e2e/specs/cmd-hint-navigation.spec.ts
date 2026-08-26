@@ -26,17 +26,47 @@ test.describe.configure({ mode: 'serial' })
 
 const HINT_BADGES = '[data-testid^="cmd-hint-"]'
 
+/**
+ * Move `agents` to the front of agentOrder, keeping everything else in its
+ * stored order. The folder spec arranges agents by drag in another worker and
+ * asserts the arrangement survives a reload — rebuilding the order from the
+ * agents API would scramble it out from under that test.
+ */
 async function pinAgentsFirst(request: APIRequestContext, agents: TestAgent[]) {
   const listResponse = await request.get('/api/agents')
   expect(listResponse.ok()).toBeTruthy()
   const all = await listResponse.json() as TestAgent[]
 
+  const settingsResponse = await request.get('/api/user-settings')
+  expect(settingsResponse.ok()).toBeTruthy()
+  const settings = await settingsResponse.json() as { agentOrder?: string[] }
+
   const pinned = agents.map((agent) => agent.slug)
-  const rest = all.map((agent) => agent.slug).filter((slug) => !pinned.includes(slug))
+  const seen = new Set(pinned)
+  const rest = [...(settings.agentOrder ?? []), ...all.map((agent) => agent.slug)].filter((slug) => {
+    if (seen.has(slug)) return false
+    seen.add(slug)
+    return true
+  })
   const response = await request.put('/api/user-settings', {
     data: { agentOrder: [...pinned, ...rest] },
   })
   expect(response.ok()).toBeTruthy()
+}
+
+/**
+ * Hide every folder body except "Your Agents" in THIS page only. agentOrder
+ * ranks the unfiled group, but folders render above it, so agents left inside
+ * an expanded folder by the folder spec (which may be mid-run in another
+ * worker) would take hint slots ahead of the pin. The overlay skips rows with
+ * no client rects, and a stylesheet touches no shared settings — collapsing
+ * the folders for real would hide the rows the folder spec is dragging.
+ */
+async function hideOtherFolders(page: Page) {
+  await page.addStyleTag({
+    content:
+      '[data-container-id^="agent-section::"]:not([data-container-id="agent-section::root"]) { display: none !important; }',
+  })
 }
 
 function hintNumber(testId: string | null): number {
@@ -52,16 +82,19 @@ async function holdModifierForHints(page: Page) {
 }
 
 test.describe('Cmd-hold sidebar navigation hints', () => {
+  let page: Page
   let appPage: AppPage
   let agentPage: AgentPage
 
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async ({ page: fixturePage }) => {
+    page = fixturePage
     appPage = new AppPage(page)
     agentPage = new AgentPage(page)
   })
 
   async function loadApp() {
     await appPage.goto()
+    await hideOtherFolders(page)
     await appPage.waitForAgentsLoaded()
   }
 
