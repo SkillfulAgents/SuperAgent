@@ -665,18 +665,25 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return usedPorts
   }
 
-  private isPortAvailable(port: number): Promise<boolean> {
-    return new Promise((resolve) => {
-      const server = net.createServer()
-      server.once('error', () => resolve(false))
-      server.once('listening', () => {
-        server.close()
-        resolve(true)
+  private async isPortAvailable(port: number): Promise<boolean> {
+    // Probe BOTH addresses. 0.0.0.0 matches docker/nerdctl's publish address
+    // (a 127.0.0.1-only bind would miss a conflict from a process already on
+    // 0.0.0.0:<port>) — but the converse also bites: a process holding ONLY
+    // 127.0.0.1:<port> (a Lima VM port-forward from another Superagent
+    // instance) does not block a wildcard publish, yet it shadows the
+    // loopback address this client actually connects to, so every request
+    // lands in the other instance's container.
+    const bindsOn = (host: string) =>
+      new Promise<boolean>((resolve) => {
+        const server = net.createServer()
+        server.once('error', () => resolve(false))
+        server.once('listening', () => {
+          server.close()
+          resolve(true)
+        })
+        server.listen(port, host)
       })
-      // Bind 0.0.0.0 to match docker/nerdctl's publish address — a 127.0.0.1
-      // bind would miss a conflict from a process already on 0.0.0.0:<port>.
-      server.listen(port, '0.0.0.0')
-    })
+    return (await bindsOn('0.0.0.0')) && (await bindsOn('127.0.0.1'))
   }
 
   async start(options?: StartOptions): Promise<ContainerInfo> {
