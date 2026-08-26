@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, cleanup, waitFor } from '@testing-library/react'
+import { act, render, cleanup, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 // ---------------------------------------------------------------------------
@@ -8,17 +8,24 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 // ---------------------------------------------------------------------------
 
 // Mock EventSource
-class MockEventSource {
+class MockEventSource extends EventTarget {
   static instances: MockEventSource[] = []
+  static CONNECTING = 0
+  static OPEN = 1
+  static CLOSED = 2
   onmessage: ((event: { data: string }) => void) | null = null
   onopen: (() => void) | null = null
   onerror: (() => void) | null = null
   url: string
+  readyState = MockEventSource.OPEN
   constructor(url: string) {
+    super()
     this.url = url
     MockEventSource.instances.push(this)
   }
-  close() {}
+  close() {
+    this.readyState = MockEventSource.CLOSED
+  }
 }
 
 vi.stubGlobal('EventSource', MockEventSource)
@@ -72,6 +79,7 @@ vi.mock('@renderer/hooks/use-mount-warnings', () => ({
   setMountWarning: vi.fn(),
 }))
 
+import { STREAM_RECONNECT_MS } from '@renderer/lib/stream-liveness'
 import { GlobalNotificationHandler } from './global-notification-handler'
 
 // ---------------------------------------------------------------------------
@@ -886,5 +894,63 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     es.onopen?.()
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
+  })
+})
+
+describe('stream healing', () => {
+  let queryClient: QueryClient
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    MockEventSource.instances = []
+    queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+  })
+
+  function renderHandler() {
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+  }
+
+  it('error at readyState 2 reopens and onopen invalidates agents + roles', async () => {
+    renderHandler()
+    expect(MockEventSource.instances).toHaveLength(1)
+
+    const first = getLatestEventSource()
+    first.readyState = MockEventSource.CLOSED
+    await act(async () => {
+      first.dispatchEvent(new Event('error'))
+      await vi.advanceTimersByTimeAsync(STREAM_RECONNECT_MS)
+    })
+
+    expect(MockEventSource.instances).toHaveLength(2)
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+    getLatestEventSource().onopen?.()
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
+  })
+
+  it('unmount does not reopen after a fatal close', async () => {
+    const { unmount } = renderHandler()
+    expect(MockEventSource.instances).toHaveLength(1)
+
+    const first = getLatestEventSource()
+    first.readyState = MockEventSource.CLOSED
+    unmount()
+    await act(async () => {
+      first.dispatchEvent(new Event('error'))
+      await vi.advanceTimersByTimeAsync(STREAM_RECONNECT_MS)
+    })
+
+    expect(MockEventSource.instances).toHaveLength(1)
   })
 })

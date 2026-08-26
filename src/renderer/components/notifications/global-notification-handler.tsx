@@ -10,7 +10,7 @@
  * - Scheduled task updates - updates task list
  */
 
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { getApiBaseUrl, isElectron } from '@renderer/lib/env'
 import { apiFetch } from '@renderer/lib/api'
@@ -46,6 +46,7 @@ import {
   USER_ACTIONABLE_NOTIFICATION_TYPES,
 } from '@shared/lib/notifications/notification-preferences'
 import { useRenderTracker } from '@renderer/lib/perf'
+import { STREAM_RECONNECT_MS, watchStreamLiveness } from '@renderer/lib/stream-liveness'
 
 // Optimistic status echo per session lifecycle event. Deliberately exhaustive
 // with NO fallback: an event type added to the lifecycle case group without a
@@ -92,6 +93,9 @@ export function GlobalNotificationHandler() {
   userSettingsRef.current = userSettings
   const canAccessAgentRef = useRef(canAccessAgent)
   canAccessAgentRef.current = canAccessAgent
+  const [reconnectKey, setReconnectKey] = useState(0)
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const streamRef = useRef<EventSource | null>(null)
 
   // Sync dock badge count with unread notifications (macOS Electron only)
   useEffect(() => {
@@ -227,6 +231,7 @@ export function GlobalNotificationHandler() {
     const baseUrl = getApiBaseUrl()
     const url = `${baseUrl}/api/notifications/stream`
     const es = new EventSource(url)
+    streamRef.current = es
 
     es.onmessage = (event) => {
       try {
@@ -562,13 +567,27 @@ export function GlobalNotificationHandler() {
     }
 
     es.onerror = () => {
-      // EventSource will auto-reconnect; onopen above catches up.
+      // Network errors reconnect in the browser. Fatal close is the watcher.
     }
 
+    const disposeLiveness = watchStreamLiveness(es, () => {
+      if (streamRef.current !== es) return
+      es.close()
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null
+        if (streamRef.current !== es) return
+        setReconnectKey((k) => k + 1)
+      }, STREAM_RECONNECT_MS)
+    })
+
     return () => {
+      disposeLiveness()
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
+      if (streamRef.current === es) streamRef.current = null
       es.close()
     }
-  }, [queryClient, navigate])
+  }, [queryClient, navigate, reconnectKey])
 
   return null
 }
