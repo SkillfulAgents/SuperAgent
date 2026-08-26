@@ -316,6 +316,32 @@ describe('MessagePersister', () => {
       expect(mockRecordSessionActivity).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID, timestamp)
     })
 
+    it('records the session as active the moment a message is sent to it', () => {
+      // The CLI appends the user entry as the turn starts but the SDK never
+      // echoes it, so without this the session would keep its old place in
+      // every cache-backed list until the first complete assistant frame.
+      vi.useFakeTimers({ now: new Date('2026-08-07T18:30:00.000Z') })
+      try {
+        messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      } finally {
+        vi.useRealTimers()
+      }
+
+      expect(mockRecordSessionActivity).toHaveBeenCalledTimes(1)
+      expect(mockRecordSessionActivity).toHaveBeenCalledWith(
+        AGENT_SLUG,
+        SESSION_ID,
+        new Date('2026-08-07T18:30:00.000Z'),
+      )
+    })
+
+    it('re-marking an active session for a queued message records again', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      expect(mockRecordSessionActivity).toHaveBeenCalledTimes(2)
+    })
+
     it('ignores replayed catch-up frames whose host timestamp is arrival time', () => {
       // On the wire, SDK result frames carry no timestamp field, so the host
       // stamps Date.now() at arrival — a reconnect replay recorded here would

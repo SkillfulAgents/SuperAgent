@@ -1312,6 +1312,16 @@ class MessagePersister {
       state.agentSlug = agentSlug
     }
 
+    // The user's message is appended to the transcript by the CLI as the turn
+    // starts, but the SDK does not echo it back, so nothing else records it:
+    // the first frame the persister sees is the first complete assistant
+    // message, which can be tens of seconds out. Session lists and the
+    // latest-visible-session pick read the summary cache, so bump it here —
+    // the session must move to the top the moment it is sent to.
+    if (state.agentSlug) {
+      recordSessionActivity(state.agentSlug, sessionId, new Date())
+    }
+
     // Broadcast to session-specific clients
     this.broadcastToSSE(sessionId, { type: 'session_active', isActive: true })
 
