@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from 'react'
 import { MessageSquare, ChevronLeft, ChevronRight, MoreVertical, MoonStar, Pencil, ClipboardCopy, Trash2 } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
+import { eventWakeWaitingLabel } from '@renderer/components/messages/pending-wake-copy'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
 import { HighlightMatch } from '@renderer/components/ui/highlight-match'
 import { Button } from '@renderer/components/ui/button'
@@ -45,6 +46,8 @@ interface SessionItem {
   isAwaitingInput?: boolean
   hasUnreadNotifications?: boolean
   pendingWakeAt?: string
+  pendingWakeTaskId?: string
+  pendingWakeWaitingOn?: string[]
 }
 
 interface RelatedSessionsProps {
@@ -250,13 +253,17 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
             ) : session.hasUnreadNotifications ? (
               <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500" />
             ) : null}
-            {session.pendingWakeAt && !session.isActive && !session.isAwaitingInput && (
+            {session.pendingWakeTaskId && !session.isActive && !session.isAwaitingInput && (
               <span
                 className="flex items-center gap-1 shrink-0 text-muted-foreground font-normal"
-                title={`Resumes ${formatDistanceToNow(new Date(session.pendingWakeAt), { addSuffix: true })}`}
+                title={session.pendingWakeAt
+                  ? `Resumes ${formatDistanceToNow(new Date(session.pendingWakeAt), { addSuffix: true })}`
+                  : eventWakeWaitingLabel(session.pendingWakeWaitingOn)}
               >
                 <MoonStar className="h-3 w-3" />
-                {formatDistanceToNow(new Date(session.pendingWakeAt), { addSuffix: true })}
+                {session.pendingWakeAt
+                  ? formatDistanceToNow(new Date(session.pendingWakeAt), { addSuffix: true })
+                  : 'waiting on agent'}
               </span>
             )}
             {dateAsTitle ? (

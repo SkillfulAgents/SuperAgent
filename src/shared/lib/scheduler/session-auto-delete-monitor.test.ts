@@ -50,10 +50,17 @@ vi.mock('@shared/lib/container/message-persister', () => ({
 const mockListSessionIdsWithPendingWakes = vi.fn((_slug: string) =>
   Promise.resolve(new Set<string>())
 )
+const mockSettleWakeTarget = vi.fn((..._args: unknown[]) => Promise.resolve([]))
 
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   listSessionIdsWithPendingWakes: (slug: string) =>
     mockListSessionIdsWithPendingWakes(slug),
+  settleWakeTarget: (...args: unknown[]) => mockSettleWakeTarget(...args),
+}))
+
+vi.mock('@shared/lib/scheduler/invoked-session-listener', () => ({
+  isCallerIdle: () => true,
+  kickIfWakeBecameDue: vi.fn(),
 }))
 
 vi.mock('@shared/lib/db', () => ({
@@ -314,6 +321,29 @@ describe('SessionAutoDeleteMonitor', () => {
 
     expect(mockUnsubscribeFromSession).toHaveBeenCalledWith('old1')
     expect(mockUnsubscribeFromSession).toHaveBeenCalledWith('old2')
+  })
+
+  it('stamps auto-deleted sessions on any wake waiting for them', async () => {
+    const now = Date.now()
+    const old1 = makeSession('old1', new Date(now - 60 * 86_400_000))
+    const old2 = makeSession('old2', new Date(now - 60 * 86_400_000))
+
+    mockGetSettings.mockReturnValue({ app: { autoDeleteInactiveDays: 30 } })
+    mockListAgents.mockResolvedValue([makeAgent('test-agent')])
+    mockReadAgentPreferences.mockResolvedValue({})
+    mockListSessions.mockResolvedValue([old1, old2])
+    mockReadSessionMetadata.mockResolvedValue({})
+
+    await startAndTrigger()
+
+    const deletedIds = ['old1', 'old2']
+    for (const id of deletedIds) {
+      expect(mockSettleWakeTarget).toHaveBeenCalledWith({
+        targetSessionId: id,
+        outcome: 'deleted',
+        callerIdle: expect.any(Function),
+      })
+    }
   })
 
   it('only cleans up DB records for actually-deleted sessions', async () => {

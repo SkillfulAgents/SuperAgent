@@ -13,6 +13,9 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   markTaskExecuted: (...args: unknown[]) => mockMarkTaskExecuted(...args),
   markTaskFailed: (...args: unknown[]) => mockMarkTaskFailed(...args),
   updateNextExecution: (...args: unknown[]) => mockUpdateNextExecution(...args),
+  createSessionWake: vi.fn(),
+  addWakeTarget: vi.fn(),
+  settleWakeTarget: vi.fn(),
 }))
 
 const mockCreateSession = vi.fn()
@@ -54,6 +57,8 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     cancelAwaitingInput: (...args: unknown[]) => mockCancelAwaitingInput(...args),
     broadcastGlobal: (...args: unknown[]) => mockBroadcastGlobal(...args),
     broadcastSessionUpdate: (...args: unknown[]) => mockBroadcastSessionUpdate(...args),
+    isSessionActive: () => false,
+    isSessionAwaitingInput: () => false,
   },
 }))
 
@@ -92,6 +97,7 @@ const mockAgentExists = vi.fn()
 
 vi.mock('@shared/lib/services/agent-service', () => ({
   agentExists: (...args: unknown[]) => mockAgentExists(...args),
+  getAgent: vi.fn(),
 }))
 
 const mockGetNextCronTime = vi.fn()
@@ -133,6 +139,7 @@ function createWakeTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
     effort: null,
     speed: null,
     resumeSessionId: 'sleeping-session-1',
+    wakeOnSessions: null,
     createdAt: new Date('2026-06-25T16:00:00.000Z'),
     cancelledAt: null,
     pausedAt: null,

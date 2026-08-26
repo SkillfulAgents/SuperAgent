@@ -48,6 +48,7 @@ import {
 import { useFirewallStatus, useFixFirewall } from '@renderer/hooks/use-firewall-status'
 import { useAgents, useRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useSessions, type ApiSession } from '@renderer/hooks/use-sessions'
+import { eventWakeWaitingLabel } from '@renderer/components/messages/pending-wake-copy'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
@@ -176,7 +177,7 @@ function SessionSubItem({
   // Pending-wake (long sleep) indicator: shown alongside the unread dot, but
   // suppressed while the session is actively working/awaiting (momentarily
   // redundant — the session clearly isn't asleep).
-  const showPendingWake = !!session.pendingWakeAt && !isWorking && !isAwaitingInput
+  const showPendingWake = !!session.pendingWakeTaskId && !isWorking && !isAwaitingInput
   const { ref: hintRef, hint } = useCmdHintTarget()
 
   return (
@@ -213,7 +214,9 @@ function SessionSubItem({
                     className="flex items-center"
                     role="img"
                     aria-label="scheduled to resume"
-                    title={`Resumes ${formatDistanceToNow(new Date(session.pendingWakeAt!), { addSuffix: true })}`}
+                    title={session.pendingWakeAt
+                      ? `Resumes ${formatDistanceToNow(new Date(session.pendingWakeAt), { addSuffix: true })}`
+                      : eventWakeWaitingLabel(session.pendingWakeWaitingOn)}
                     data-testid={`session-pending-wake-${session.id}`}
                   >
                     <MoonStar className="h-3 w-3 text-muted-foreground" />

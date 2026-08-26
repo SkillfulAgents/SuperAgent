@@ -91,7 +91,7 @@ describe('scheduled-task-service — SUP-205 paused cron schedule edit', () => {
     const afterEdit = await getScheduledTask(taskId)
     expect(afterEdit!.scheduleExpression).toBe('0 18 * * *')
     expect(afterEdit!.status).toBe('paused')
-    expect(afterEdit!.nextExecutionAt.getTime()).toBeGreaterThan(Date.now())
+    expect(afterEdit!.nextExecutionAt?.getTime()).toBeGreaterThan(Date.now())
   })
 
   it('still updates a pending recurring task (regression guard)', async () => {

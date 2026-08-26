@@ -120,7 +120,7 @@ describe('scheduled-task-service', () => {
 
       const task = await getScheduledTask(taskId)
       const expectedTime = new Date('2024-06-15T14:00:00.000Z')
-      expect(task!.nextExecutionAt.getTime()).toBe(expectedTime.getTime())
+      expect(task!.nextExecutionAt?.getTime()).toBe(expectedTime.getTime())
     })
 
     it('stores createdBySessionId when provided', async () => {
@@ -495,7 +495,7 @@ describe('scheduled-task-service', () => {
       await updateNextExecution(taskId, newTime, 'session-xyz')
 
       const updatedTask = await getScheduledTask(taskId)
-      expect(updatedTask!.nextExecutionAt.getTime()).toBe(newTime.getTime())
+      expect(updatedTask!.nextExecutionAt?.getTime()).toBe(newTime.getTime())
       expect(updatedTask!.lastSessionId).toBe('session-xyz')
       expect(updatedTask!.executionCount).toBe(initialCount + 1)
       expect(updatedTask!.status).toBe('pending') // Should stay pending for recurring

@@ -5,6 +5,7 @@ import { ScrollArea, ScrollBar } from '@renderer/components/ui/scroll-area'
 import { cn } from '@shared/lib/utils/cn'
 import { Loader2, MoonStar } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
+import { eventWakeWaitingLabel } from '@renderer/components/messages/pending-wake-copy'
 
 interface SessionListProps {
   agentSlug: string
@@ -52,9 +53,11 @@ function SessionTab({
           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-current opacity-75"></span>
           <span className="relative inline-flex rounded-full h-2 w-2 bg-current"></span>
         </span>
-      ) : session.pendingWakeAt ? (
+      ) : session.pendingWakeTaskId ? (
         <span
-          title={`Resumes ${formatDistanceToNow(new Date(session.pendingWakeAt), { addSuffix: true })}`}
+          title={session.pendingWakeAt
+            ? `Resumes ${formatDistanceToNow(new Date(session.pendingWakeAt), { addSuffix: true })}`
+            : eventWakeWaitingLabel(session.pendingWakeWaitingOn)}
           className="flex items-center"
         >
           <MoonStar className="h-3 w-3" />

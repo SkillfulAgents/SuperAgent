@@ -16,16 +16,19 @@ import { containerManager } from '@shared/lib/container/container-manager'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import {
+  createSessionWake,
   getScheduledTask,
   markTaskExecuted,
   type ScheduledTask,
 } from '@shared/lib/services/scheduled-task-service'
+import { openTargets, parseWakeOnSessions } from '@shared/lib/services/wake-on-sessions'
+import { isCallerIdle, trackInvokedSession } from './invoked-session-listener'
 import {
   getSessionMetadata,
   updateSessionMetadata,
 } from '@shared/lib/services/session-service'
 import { agentExists } from '@shared/lib/services/agent-service'
-import { buildWakeMessage } from './wake-message'
+import { buildWakeMessage, eventWakeWon } from './wake-message'
 import { randomUUID } from 'crypto'
 
 export type WakeDeliveryResult =
@@ -38,11 +41,36 @@ export type WakeDeliveryResult =
   | { outcome: 'not-pending'; status: string }
   | { outcome: 'session-missing' }
   | { outcome: 'agent-missing' }
+  // Event wake became due while A was idle; A started a turn or asked a
+  // question before the poll. Leave the row pending for the next idle.
+  | { outcome: 'caller-busy' }
+  // Scheduled delivery found the row no longer due (reopened, or the time
+  // moved into the future) after a slow step. Leave it pending.
+  | { outcome: 'not-due' }
 
 // Task ids currently being delivered. In-process is sufficient: all delivery
 // callers share this process, and cross-restart duplication is covered by the
 // lastWake metadata guard.
 const inFlightWakes = new Set<string>()
+
+function isDueNow(row: ScheduledTask): boolean {
+  return row.nextExecutionAt != null && row.nextExecutionAt.getTime() <= Date.now()
+}
+
+/** Scheduled delivery only. Manual Wake now ignores due/idle and still sends. */
+function scheduledHoldoff(
+  trigger: 'scheduled' | 'manual',
+  row: ScheduledTask,
+  sessionId: string,
+): WakeDeliveryResult | null {
+  if (trigger !== 'scheduled') return null
+  if (!isDueNow(row)) return { outcome: 'not-due' }
+  const wake = parseWakeOnSessions(row.wakeOnSessions)
+  if (eventWakeWon(row, wake) && !isCallerIdle(sessionId)) {
+    return { outcome: 'caller-busy' }
+  }
+  return null
+}
 
 /**
  * Deliver a session wake. Throws on transient delivery failure (container
@@ -82,12 +110,14 @@ export async function deliverSessionWake(
     // Duplicate-fire guard (mirrors getSessionForScheduledExecution on the
     // create path): if this exact wake slot was already delivered, the send
     // succeeded but recording the execution didn't — just reconcile.
-    const executionAt = task.nextExecutionAt.toISOString()
+    // Due rows carry a time. A "Wake now" on an event row that is not yet due
+    // has none; its creation instant is the stable slot for that row.
+    const executionAt = (task.nextExecutionAt ?? task.createdAt).toISOString()
     if (
       sessionMeta.lastWake?.taskId === task.id &&
       sessionMeta.lastWake.executionAt === executionAt
     ) {
-      await markTaskExecuted(task.id, sessionId)
+      await finalizeExecutedRow(task, sessionId)
       return { outcome: 'reconciled', sessionId }
     }
 
@@ -103,14 +133,33 @@ export async function deliverSessionWake(
       await messagePersister.subscribeToSession(sessionId, client, sessionId, task.agentSlug)
     }
 
-    // If the session went to sleep with a blocking user-input request still
-    // open (agent asked, nobody answered), cancel it so the wake message
-    // starts a fresh turn instead of deadlocking behind the blocked tool.
-    await messagePersister.cancelAwaitingInput(sessionId, task.agentSlug)
+    // Read the row once more: the listener may have stamped a target since the
+    // claim re-read, and the message must describe the row that gets executed.
+    const latest = (await getScheduledTask(task.id)) ?? task
+    const holdoffBeforeBuild = scheduledHoldoff(trigger, latest, sessionId)
+    if (holdoffBeforeBuild) return holdoffBeforeBuild
 
-    messagePersister.markSessionActive(sessionId, task.agentSlug)
+    // Build first: reading the finished agents' transcripts can fail, and a
+    // failure must leave the caller exactly as it was — no cancelled question,
+    // no phantom "working" state.
+    const message = await buildWakeMessage(latest, trigger)
+
+    // Re-read after the slow build. addWakeTarget can reopen and un-due the
+    // row, or A can start a turn / park on a question, while we waited.
+    const current = (await getScheduledTask(task.id)) ?? latest
+    const holdoffAfterBuild = scheduledHoldoff(trigger, current, sessionId)
+    if (holdoffAfterBuild) return holdoffAfterBuild
+    const currentWake = parseWakeOnSessions(current.wakeOnSessions)
+
+    // Event winners wait for a turn boundary, so they must not cancel a
+    // question we just reconfirmed is absent. Timed and manual still cancel.
+    if (trigger === 'manual' || !eventWakeWon(current, currentWake)) {
+      await messagePersister.cancelAwaitingInput(sessionId, current.agentSlug)
+    }
+
+    messagePersister.markSessionActive(sessionId, current.agentSlug)
     try {
-      await client.sendMessage(sessionId, buildWakeMessage(task, trigger), randomUUID(), {
+      await client.sendMessage(sessionId, message, randomUUID(), {
         shouldQuery: true,
       })
     } catch (error) {
@@ -122,10 +171,11 @@ export async function deliverSessionWake(
 
     // Side effect landed; record the slot so a crash between here and
     // markTaskExecuted can't double-deliver on the next attempt.
-    await updateSessionMetadata(task.agentSlug, sessionId, {
-      lastWake: { taskId: task.id, executionAt },
+    const deliveredAt = (current.nextExecutionAt ?? current.createdAt).toISOString()
+    await updateSessionMetadata(current.agentSlug, sessionId, {
+      lastWake: { taskId: current.id, executionAt: deliveredAt },
     })
-    await markTaskExecuted(task.id, sessionId)
+    await finalizeExecutedRow(current, sessionId)
 
     if (trigger === 'scheduled') {
       notificationManager
@@ -147,5 +197,46 @@ export async function deliverSessionWake(
     return { outcome: 'delivered', sessionId }
   } finally {
     inFlightWakes.delete(staleTask.id)
+  }
+}
+
+/**
+ * Mark the row executed and re-create whatever it still carried. A stamped
+ * target must not come back as open, so callers pass the freshest row they
+ * hold. The wake already landed, so a remainder failure is logged, not thrown.
+ */
+async function finalizeExecutedRow(row: ScheduledTask, sessionId: string): Promise<void> {
+  await markTaskExecuted(row.id, sessionId)
+  await recreateRemainder(row).catch((error) => {
+    console.error('[WakeDelivery] Failed to re-create wake remainder:', error)
+  })
+}
+
+async function recreateRemainder(task: ScheduledTask): Promise<void> {
+  const sessionId = task.resumeSessionId
+  const wake = parseWakeOnSessions(task.wakeOnSessions)
+  if (!wake || !sessionId) return
+  const createdByUserId = task.createdByUserId ?? undefined
+  const open = openTargets(wake)
+  if (open.length > 0) {
+    // Same path as a fresh invoke: a target that finished during delivery is
+    // settled straight away instead of waiting for an event that already fired.
+    for (const target of open) {
+      await trackInvokedSession({ callerAgentSlug: task.agentSlug, callerSessionId: sessionId, createdByUserId, target })
+    }
+    return
+  }
+  if (wake.deferredTimerAt) {
+    const wakeAt = new Date(wake.deferredTimerAt)
+    if (wakeAt.getTime() <= Date.now()) return
+    await createSessionWake({
+      agentSlug: task.agentSlug,
+      scheduleExpression: task.scheduleExpression,
+      note: task.prompt,
+      sessionId,
+      createdByUserId,
+      timezone: task.timezone ?? undefined,
+      wakeAt,
+    })
   }
 }

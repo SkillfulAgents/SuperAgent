@@ -81,6 +81,12 @@ vi.mock('@shared/lib/container/message-persister', () => ({
 
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   listSessionIdsWithPendingWakes: () => Promise.resolve(new Set<string>()),
+  settleWakeTarget: () => Promise.resolve([]),
+}))
+
+vi.mock('@shared/lib/scheduler/invoked-session-listener', () => ({
+  isCallerIdle: () => true,
+  kickIfWakeBecameDue: vi.fn(),
 }))
 
 vi.mock('@shared/lib/db', () => ({

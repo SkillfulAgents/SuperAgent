@@ -33,6 +33,7 @@ const EXPECTED_MARKERS = [
   '[ContainerManager] Starting status sync',
   '[ContainerManager] Starting health monitor',
   '[TaskScheduler] Scheduler started',
+  '[InvokedSessionListener] Started',
   '[ChatIntegrationManager] Started',
   '[AutoSleepMonitor] Monitor started',
   '[SessionAutoDeleteMonitor] Monitor started',

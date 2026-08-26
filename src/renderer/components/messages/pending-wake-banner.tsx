@@ -4,13 +4,15 @@ import { formatDistanceToNow, format } from 'date-fns'
 import { Button } from '@renderer/components/ui/button'
 import { apiFetch } from '@renderer/lib/api'
 import { useMutation } from '@tanstack/react-query'
+import { eventWakeWaitingLabel } from './pending-wake-copy'
 
 interface PendingWakeBannerProps {
   sessionId: string
   agentSlug: string
-  wakeAt: string
+  wakeAt?: string
   taskId: string
   note?: string
+  waitingOn?: string[]
   readOnly?: boolean
 }
 
@@ -25,6 +27,7 @@ export function PendingWakeBanner({
   wakeAt,
   taskId,
   note,
+  waitingOn,
   readOnly,
 }: PendingWakeBannerProps) {
   const queryClient = useQueryClient()
@@ -56,7 +59,6 @@ export function PendingWakeBanner({
     onSuccess: invalidateSession,
   })
 
-  const wakeDate = new Date(wakeAt)
   const isPending = wakeNow.isPending || cancelWake.isPending
 
   return (
@@ -66,10 +68,17 @@ export function PendingWakeBanner({
     >
       <MoonStar className="h-3.5 w-3.5 shrink-0" />
       <span className="min-w-0 flex-1 truncate">
-        This session will auto-resume{' '}
-        <span className="font-medium text-foreground" title={format(wakeDate, 'PPpp')}>
-          {formatDistanceToNow(wakeDate, { addSuffix: true })}
-        </span>
+        {wakeAt ? (
+          <>
+            This session will auto-resume{' '}
+            <span className="font-medium text-foreground" title={format(new Date(wakeAt), 'PPpp')}>
+              {formatDistanceToNow(new Date(wakeAt), { addSuffix: true })}
+            </span>
+            {waitingOn && waitingOn.length > 0 ? <>, and is also waiting for {waitingOn.join(', ')}</> : null}
+          </>
+        ) : (
+          <>{eventWakeWaitingLabel(waitingOn)}</>
+        )}
         {note ? <> — &ldquo;{note}&rdquo;</> : null}
       </span>
       {!readOnly && (

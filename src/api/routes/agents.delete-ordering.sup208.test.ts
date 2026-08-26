@@ -177,10 +177,17 @@ vi.mock('@shared/lib/services/secrets-service', () => ({
   getSecretEnvVars: vi.fn(),
 }))
 
+const mockSettleWakeTargetsForAgent = vi.fn((..._args: unknown[]) => Promise.resolve([]))
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   listScheduledTasks: vi.fn(), listPendingScheduledTasks: vi.fn(),
   listPendingScheduledTasksByAgents: vi.fn(() => Promise.resolve(new Map())),
   listCancelledScheduledTasks: vi.fn(),
+  settleWakeTargetsForAgent: (...args: unknown[]) => mockSettleWakeTargetsForAgent(...args),
+}))
+
+vi.mock('@shared/lib/scheduler/invoked-session-listener', () => ({
+  isCallerIdle: () => true,
+  kickIfWakeBecameDue: vi.fn(),
 }))
 
 vi.mock('@shared/lib/services/skillset-service', () => ({
@@ -305,6 +312,16 @@ describe('SUP-208: DELETE /api/agents/:id — peripheral cleanup precedes worksp
 
     expect(cleanupOrder).toBeLessThan(deleteOrder)
     expect(policyOrder).toBeLessThan(deleteOrder)
+  })
+
+  it('stamps every wake waiting on one of this agent\'s sessions', async () => {
+    const res = await deleteAgentReq()
+    expect(res.status).toBe(204)
+    expect(mockSettleWakeTargetsForAgent).toHaveBeenCalledWith({
+      targetAgentSlug: 'test-agent',
+      outcome: 'deleted',
+      callerIdle: expect.any(Function),
+    })
   })
 
   it('returns 404 and never touches the workspace when the agent does not exist', async () => {

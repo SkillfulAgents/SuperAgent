@@ -23,6 +23,7 @@ vi.mock('../db', async () => {
 
 // Import after mocking
 import {
+  addWakeTarget,
   cancelPendingWakeForSession,
   createScheduledTask,
   createSessionWake,
@@ -33,8 +34,14 @@ import {
   listSessionIdsWithPendingWakes,
   cancelScheduledTask,
   markTaskExecuted,
+  markWakeDueIfSettled,
+  resetScheduledTask,
+  settleWakeTarget,
+  settleWakeTargetsForAgent,
+  updateTaskTimezone,
   getDueTasks,
 } from './scheduled-task-service'
+import { parseWakeOnSessions } from './wake-on-sessions'
 
 describe('scheduled-task-service session wakes', () => {
   beforeEach(async () => {
@@ -438,3 +445,196 @@ describe('scheduled-task-service session wakes', () => {
     })
   })
 })
+
+describe('event wakes (invoked sessions)', () => {
+  const idle = () => true
+  const busy = () => false
+
+  beforeEach(async () => {
+    testSqlite = new Database(':memory:')
+    testDb = drizzle(testSqlite, { schema })
+
+    const migrationsFolder = path.join(process.cwd(), 'src/shared/lib/db/migrations')
+    migrate(testDb, { migrationsFolder })
+
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2024-06-15T12:00:00.000Z'))
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    testSqlite?.close()
+  })
+
+  it('addWakeTarget creates an event row with no time, then appends and dedupes', async () => {
+    const first = await addWakeTarget({
+      agentSlug: 'a', sessionId: 'sess-a',
+      target: { agentSlug: 'b', sessionId: 'sess-b', boundaryUuid: 'u-b' },
+    })
+    const second = await addWakeTarget({ agentSlug: 'a', sessionId: 'sess-a', target: { agentSlug: 'c', sessionId: 'sess-c' } })
+    const dup = await addWakeTarget({ agentSlug: 'a', sessionId: 'sess-a', target: { agentSlug: 'c', sessionId: 'sess-c' } })
+    expect(second.taskId).toBe(first.taskId)
+    expect(dup.taskId).toBe(first.taskId)
+    const task = (await getScheduledTask(first.taskId))!
+    expect(task.scheduleType).toBe('event')
+    expect(task.nextExecutionAt).toBeNull()
+    expect(task.resumeSessionId).toBe('sess-a')
+    expect(parseWakeOnSessions(task.wakeOnSessions)!.targets).toEqual([
+      { agentSlug: 'b', sessionId: 'sess-b', boundaryUuid: 'u-b' },
+      { agentSlug: 'c', sessionId: 'sess-c' },
+    ])
+    expect(await getDueTasks()).toHaveLength(0)
+  })
+
+  it('reopens a stamped target when the same conversation is invoked again', async () => {
+    const { taskId } = await addWakeTarget({
+      agentSlug: 'a',
+      sessionId: 'sess-a',
+      target: { agentSlug: 'b', sessionId: 'sess-b', boundaryUuid: 'u-1' },
+    })
+    await settleWakeTarget({ targetSessionId: 'sess-b', outcome: 'completed', callerIdle: idle })
+    expect((await getScheduledTask(taskId))!.nextExecutionAt).toEqual(new Date('2024-06-15T12:00:00.000Z'))
+
+    await addWakeTarget({
+      agentSlug: 'a',
+      sessionId: 'sess-a',
+      target: { agentSlug: 'b', sessionId: 'sess-b', boundaryUuid: 'u-2' },
+    })
+    const task = (await getScheduledTask(taskId))!
+    expect(task.nextExecutionAt).toBeNull()
+    expect(parseWakeOnSessions(task.wakeOnSessions)!.targets).toEqual([
+      { agentSlug: 'b', sessionId: 'sess-b', boundaryUuid: 'u-2' },
+    ])
+    expect(await getDueTasks()).toHaveLength(0)
+  })
+
+  it('restores a deferred timer when a stamped target is reopened on a due row', async () => {
+    const { taskId } = await addWakeTarget({
+      agentSlug: 'a',
+      sessionId: 'sess-a',
+      target: { agentSlug: 'b', sessionId: 'sess-b' },
+    })
+    await createSessionWake({ agentSlug: 'a', scheduleExpression: 'at now + 2 hours', note: 'later', sessionId: 'sess-a' })
+    await settleWakeTarget({ targetSessionId: 'sess-b', outcome: 'completed', callerIdle: idle })
+    expect(parseWakeOnSessions((await getScheduledTask(taskId))!.wakeOnSessions)!.deferredTimerAt)
+      .toBe('2024-06-15T14:00:00.000Z')
+
+    await addWakeTarget({
+      agentSlug: 'a',
+      sessionId: 'sess-a',
+      target: { agentSlug: 'b', sessionId: 'sess-b', boundaryUuid: 'u-new' },
+    })
+    const task = (await getScheduledTask(taskId))!
+    expect(task.nextExecutionAt).toEqual(new Date('2024-06-15T14:00:00.000Z'))
+    expect(parseWakeOnSessions(task.wakeOnSessions)).toEqual({
+      targets: [{ agentSlug: 'b', sessionId: 'sess-b', boundaryUuid: 'u-new' }],
+    })
+  })
+
+  it('settleWakeTarget stamps one target; the row is due only when all are stamped and the caller is idle', async () => {
+    const { taskId } = await addWakeTarget({ agentSlug: 'a', sessionId: 'sess-a', target: { agentSlug: 'b', sessionId: 'sess-b' } })
+    await addWakeTarget({ agentSlug: 'a', sessionId: 'sess-a', target: { agentSlug: 'c', sessionId: 'sess-c' } })
+
+    expect(await settleWakeTarget({ targetSessionId: 'sess-b', outcome: 'completed', callerIdle: idle })).toEqual([])
+    let task = (await getScheduledTask(taskId))!
+    expect(task.nextExecutionAt).toBeNull()
+    expect(parseWakeOnSessions(task.wakeOnSessions)!.targets.map((t) => t.outcome)).toEqual(['completed', undefined])
+
+    expect(await settleWakeTarget({ targetSessionId: 'sess-c', outcome: 'errored', callerIdle: busy })).toEqual([])
+    task = (await getScheduledTask(taskId))!
+    expect(task.nextExecutionAt).toBeNull()
+
+    expect(await markWakeDueIfSettled('sess-a')).toBe(true)
+    task = (await getScheduledTask(taskId))!
+    expect(task.nextExecutionAt).toEqual(new Date('2024-06-15T12:00:00.000Z'))
+    expect(await getDueTasks()).toHaveLength(1)
+  })
+
+  it('settleWakeTarget makes the row due immediately when the caller is idle', async () => {
+    const { taskId } = await addWakeTarget({ agentSlug: 'a', sessionId: 'sess-a', target: { agentSlug: 'b', sessionId: 'sess-b' } })
+    expect(await settleWakeTarget({ targetSessionId: 'sess-b', outcome: 'completed', callerIdle: idle })).toEqual([taskId])
+    expect((await getScheduledTask(taskId))!.nextExecutionAt).toEqual(new Date('2024-06-15T12:00:00.000Z'))
+  })
+
+  it('settleWakeTarget stamps only unstamped entries (first writer wins)', async () => {
+    const { taskId } = await addWakeTarget({ agentSlug: 'a', sessionId: 'sess-a', target: { agentSlug: 'b', sessionId: 'sess-b' } })
+    await settleWakeTarget({ targetSessionId: 'sess-b', outcome: 'errored', callerIdle: busy })
+    await settleWakeTarget({ targetSessionId: 'sess-b', outcome: 'deleted', callerIdle: busy })
+    expect(parseWakeOnSessions((await getScheduledTask(taskId))!.wakeOnSessions)!.targets[0].outcome).toBe('errored')
+  })
+
+  it('settleWakeTarget is a no-op for a session no row is waiting on', async () => {
+    expect(await settleWakeTarget({ targetSessionId: 'nobody', outcome: 'completed', callerIdle: idle })).toEqual([])
+    expect(await markWakeDueIfSettled('nobody')).toBe(false)
+  })
+
+  it('markWakeDueIfSettled is true when the row is already due', async () => {
+    const { taskId } = await addWakeTarget({ agentSlug: 'a', sessionId: 'sess-a', target: { agentSlug: 'b', sessionId: 'sess-b' } })
+    await settleWakeTarget({ targetSessionId: 'sess-b', outcome: 'completed', callerIdle: idle })
+    expect((await getScheduledTask(taskId))!.nextExecutionAt).toEqual(new Date('2024-06-15T12:00:00.000Z'))
+    expect(await markWakeDueIfSettled('sess-a')).toBe(true)
+  })
+
+  it('a timer merged onto an event row moves to deferredTimerAt when the targets make it due', async () => {
+    const { taskId } = await addWakeTarget({ agentSlug: 'a', sessionId: 'sess-a', target: { agentSlug: 'b', sessionId: 'sess-b' } })
+    const merged = await createSessionWake({ agentSlug: 'a', scheduleExpression: 'at now + 2 hours', note: 'check inbox', sessionId: 'sess-a' })
+    expect(merged.taskId).toBe(taskId)
+    expect(merged.merged).toBe(true)
+    expect(merged.replaced).toBeNull()
+    let task = (await getScheduledTask(taskId))!
+    expect(task.scheduleType).toBe('at')
+    expect(task.prompt).toBe('check inbox')
+    expect(task.nextExecutionAt).toEqual(new Date('2024-06-15T14:00:00.000Z'))
+
+    await settleWakeTarget({ targetSessionId: 'sess-b', outcome: 'completed', callerIdle: idle })
+    task = (await getScheduledTask(taskId))!
+    expect(task.nextExecutionAt).toEqual(new Date('2024-06-15T12:00:00.000Z'))
+    expect(parseWakeOnSessions(task.wakeOnSessions)!.deferredTimerAt).toBe('2024-06-15T14:00:00.000Z')
+  })
+
+  it('a timer merges onto a row whose targets are all stamped but not yet due (caller was busy)', async () => {
+    const { taskId } = await addWakeTarget({ agentSlug: 'a', sessionId: 'sess-a', target: { agentSlug: 'b', sessionId: 'sess-b' } })
+    await settleWakeTarget({ targetSessionId: 'sess-b', outcome: 'completed', callerIdle: busy })
+    const merged = await createSessionWake({ agentSlug: 'a', scheduleExpression: 'at now + 2 hours', note: 'later', sessionId: 'sess-a' })
+    expect(merged.taskId).toBe(taskId)
+    expect(merged.merged).toBe(true)
+    // B's outcome survived the merge, and the caller's next idle delivers it
+    // with the timer deferred, not the other way round.
+    expect(parseWakeOnSessions((await getScheduledTask(taskId))!.wakeOnSessions)!.targets[0].outcome).toBe('completed')
+    expect(await markWakeDueIfSettled('sess-a')).toBe(true)
+    const task = (await getScheduledTask(taskId))!
+    expect(task.nextExecutionAt).toEqual(new Date('2024-06-15T12:00:00.000Z'))
+    expect(parseWakeOnSessions(task.wakeOnSessions)!.deferredTimerAt).toBe('2024-06-15T14:00:00.000Z')
+  })
+
+  it('settleWakeTargetsForAgent stamps every open target of that agent', async () => {
+    const { taskId } = await addWakeTarget({ agentSlug: 'a', sessionId: 'sess-a', target: { agentSlug: 'b', sessionId: 'sess-b1' } })
+    await addWakeTarget({ agentSlug: 'a', sessionId: 'sess-a', target: { agentSlug: 'b', sessionId: 'sess-b2' } })
+    await addWakeTarget({ agentSlug: 'a', sessionId: 'sess-a', target: { agentSlug: 'c', sessionId: 'sess-c' } })
+    expect(await settleWakeTargetsForAgent({ targetAgentSlug: 'b', outcome: 'deleted', callerIdle: idle })).toEqual([])
+    const targets = parseWakeOnSessions((await getScheduledTask(taskId))!.wakeOnSessions)!.targets
+    expect(targets.map((t) => t.outcome)).toEqual(['deleted', 'deleted', undefined])
+  })
+
+  it('reset and timezone ops refuse an event row', async () => {
+    const { taskId } = await addWakeTarget({ agentSlug: 'a', sessionId: 'sess-a', target: { agentSlug: 'b', sessionId: 'sess-b' } })
+    expect(await resetScheduledTask(taskId)).toBe(false)
+    expect(await updateTaskTimezone(taskId, 'UTC')).toBe(false)
+    expect((await getScheduledTask(taskId))!.nextExecutionAt).toBeNull()
+  })
+
+  it('createSessionWake still replaces a pure timer, and a timer row accepts targets', async () => {
+    const first = await createSessionWake({ agentSlug: 'a', scheduleExpression: 'at now + 1 hour', note: 'n1', sessionId: 'sess-a' })
+    const second = await createSessionWake({ agentSlug: 'a', scheduleExpression: 'at now + 3 hours', note: 'n2', sessionId: 'sess-a' })
+    expect(second.replaced!.id).toBe(first.taskId)
+    expect(second.merged).toBe(false)
+
+    const added = await addWakeTarget({ agentSlug: 'a', sessionId: 'sess-a', target: { agentSlug: 'b', sessionId: 'sess-b' } })
+    expect(added.taskId).toBe(second.taskId)
+    const task = (await getScheduledTask(second.taskId))!
+    expect(task.scheduleType).toBe('at')
+    expect(task.nextExecutionAt).toEqual(new Date('2024-06-15T15:00:00.000Z'))
+  })
+
+})
+

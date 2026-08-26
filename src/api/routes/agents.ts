@@ -111,7 +111,12 @@ import {
   cancelPendingWakeForSession,
   getPendingWakeForSession,
   listPendingWakesByAgent,
+  settleWakeTarget,
+  settleWakeTargetsForAgent,
+  type ScheduledTask,
 } from '@shared/lib/services/scheduled-task-service'
+import { isCallerIdle, kickIfWakeBecameDue } from '@shared/lib/scheduler/invoked-session-listener'
+import { openTargets, parseWakeOnSessions } from '@shared/lib/services/wake-on-sessions'
 import { db } from '@shared/lib/db'
 import { connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, user as userTable, messageAuthor, apiScopePolicies, mcpToolPolicies } from '@shared/lib/db/schema'
 import { eq, and, inArray, desc, count, like, or } from 'drizzle-orm'
@@ -829,6 +834,26 @@ export async function resolveInterruptedSubagents(
   }
 }
 
+/** Session fields for a pending wake: time when it has one, and the agents it waits on. */
+async function pendingWakeFields(wake: ScheduledTask): Promise<{
+  pendingWakeAt?: string
+  pendingWakeTaskId: string
+  pendingWakeNote: string
+  pendingWakeWaitingOn?: string[]
+}> {
+  const parsed = parseWakeOnSessions(wake.wakeOnSessions)
+  const open = parsed ? openTargets(parsed) : []
+  const waitingOn = await Promise.all(
+    open.map(async (t) => (await getAgent(t.agentSlug))?.frontmatter.name ?? t.agentSlug),
+  )
+  return {
+    ...(wake.nextExecutionAt ? { pendingWakeAt: wake.nextExecutionAt.toISOString() } : {}),
+    pendingWakeTaskId: wake.id,
+    pendingWakeNote: wake.prompt,
+    ...(waitingOn.length > 0 ? { pendingWakeWaitingOn: waitingOn } : {}),
+  }
+}
+
 const agents = new Hono()
 
 agents.use('*', Authenticated())
@@ -1395,6 +1420,13 @@ agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
       return c.json({ error: 'Agent not found' }, 404)
     }
 
+    // None of this agent's sessions will ever emit a terminal event now.
+    await settleWakeTargetsForAgent({ targetAgentSlug: slug, outcome: 'deleted', callerIdle: isCallerIdle })
+      .then((due) => kickIfWakeBecameDue(due))
+      .catch((error) => {
+        console.error('Failed to settle wakes waiting on deleted agent:', error)
+      })
+
     // Remove the agent's dedicated host-browser Chrome profile. The container
     // teardown above only stops the browser on the ACTIVE provider — a Chrome
     // launched before the user switched providers survives it — so stop this
@@ -1893,7 +1925,7 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
     const unreadSessionIds = await getSessionIdsWithUnreadNotifications(slug)
     const pendingWakes = await listPendingWakesByAgent(slug)
     const wakesBySession = new Map(pendingWakes.map((w) => [w.resumeSessionId!, w]))
-    const sessionsWithStatus = sessionList.map((session) => {
+    const sessionsWithStatus = await Promise.all(sessionList.map(async (session) => {
       const isActive = messagePersister.isSessionActive(session.id)
       const wake = wakesBySession.get(session.id)
       return {
@@ -1903,15 +1935,9 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
         // every active session of the agent — no review special-case.
         isAwaitingInput: messagePersister.isSessionAwaitingInput(session.id),
         hasUnreadNotifications: unreadSessionIds.has(session.id),
-        ...(wake
-          ? {
-              pendingWakeAt: wake.nextExecutionAt.toISOString(),
-              pendingWakeTaskId: wake.id,
-              pendingWakeNote: wake.prompt,
-            }
-          : {}),
+        ...(wake ? await pendingWakeFields(wake) : {}),
       }
-    })
+    }))
 
     return c.json(sessionsWithStatus)
   } catch (error) {
@@ -2817,13 +2843,7 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       effort: metadata?.effort,
       speed: metadata?.speed,
       model: metadata?.model,
-      ...(pendingWake
-        ? {
-            pendingWakeAt: pendingWake.nextExecutionAt.toISOString(),
-            pendingWakeTaskId: pendingWake.id,
-            pendingWakeNote: pendingWake.prompt,
-          }
-        : {}),
+      ...(pendingWake ? await pendingWakeFields(pendingWake) : {}),
     })
   } catch (error) {
     console.error('Failed to fetch session:', error)
@@ -2912,6 +2932,13 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
     await cancelPendingWakeForSession(agentSlug, sessionId).catch((error) => {
       console.error('Failed to cancel pending wake for deleted session:', error)
     })
+
+    // A caller sleeping on this session must not sleep forever.
+    await settleWakeTarget({ targetSessionId: sessionId, outcome: 'deleted', callerIdle: isCallerIdle })
+      .then((due) => kickIfWakeBecameDue(due))
+      .catch((error) => {
+        console.error('Failed to settle wakes waiting on deleted session:', error)
+      })
 
     // Clean up message author records for this session (auth mode only).
     if (isAuthMode()) {

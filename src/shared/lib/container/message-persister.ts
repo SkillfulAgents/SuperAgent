@@ -3677,11 +3677,12 @@ class MessagePersister {
 
       let taskId: string
       let replaced: ScheduledTask | null
+      let merged: boolean
       let timezone: string | undefined
       try {
         timezone = input.timezone || resolveTimezoneForAgent(agentSlug)
         const sessionOwnerId = (await getSessionMetadata(agentSlug, sessionId))?.createdByUserId
-        ;({ taskId, replaced } = await createSessionWake({
+        ;({ taskId, replaced, merged } = await createSessionWake({
           agentSlug,
           scheduleExpression,
           note: input.note,
@@ -3724,7 +3725,14 @@ class MessagePersister {
           `Scheduled this session to auto-resume at ${resolvedTime}${timezone ? ` (${timezone})` : ''} (wake ID: ${taskId}).\n\n` +
           `Your note (echoed back to you on wake): "${input.note}"`
         if (replaced) {
-          resultMessage += `\n\nReplaced this session's previous pending wake (was scheduled for ${replaced.nextExecutionAt.toISOString()}). A session holds at most one pending wake.`
+          const was = replaced.nextExecutionAt
+            ? `was scheduled for ${replaced.nextExecutionAt.toISOString()}`
+            : 'was waiting on another agent'
+          resultMessage += `\n\nReplaced this session's previous pending wake (${was}). A session holds at most one pending wake.`
+        }
+        if (merged) {
+          resultMessage +=
+            '\n\nThis session is also waiting on another agent. Whichever comes first wakes you; the other still stands.'
         }
         resultMessage +=
           '\n\nEnd your turn now. This conversation will resume automatically at the scheduled time with full context; while sleeping it costs nothing and survives restarts.'

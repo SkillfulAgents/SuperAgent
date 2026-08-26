@@ -5,7 +5,8 @@ import { shutdownActiveRunner } from './container/client-factory'
 import { reviewManager } from './proxy/review-manager'
 import { accountReauthManager } from './proxy/account-reauth-manager'
 import { mcpReauthManager } from './proxy/mcp-reauth-manager'
-import { taskScheduler } from './scheduler/task-scheduler'
+import { kickDueWakes, taskScheduler } from './scheduler/task-scheduler'
+import { invokedSessionListener, setKickDueWakes } from './scheduler/invoked-session-listener'
 import { triggerManager } from './scheduler/trigger-manager'
 import { platformNotificationsManager } from './scheduler/platform-notifications-manager'
 import { chatIntegrationManager } from './chat-integrations/chat-integration-manager'
@@ -164,6 +165,12 @@ async function initializeServicesInner() {
   const slugs = agents.map((a) => a.slug)
   await containerManager.initializeAgents(slugs)
 
+  // Sleep-on-invoke: subscribe before any container can emit a terminal event.
+  // Kick the existing due-task scan when a row becomes due so the wake does
+  // not wait for the 60s poll.
+  setKickDueWakes(kickDueWakes)
+  invokedSessionListener.start()
+
   // Reclaim host-browser profile storage (orphaned/legacy dirs, regenerable
   // Chrome caches). Scheduled a few minutes out so it doesn't pile onto the
   // startup burst. The agent list is a supplier resolved when the sweep fires,
@@ -216,6 +223,12 @@ async function initializeServicesInner() {
   // Start container status sync and health monitor
   containerManager.startStatusSync()
   containerManager.startHealthMonitor()
+
+  // Reconcile invoked sessions that finished while the host was down, so the
+  // scheduler's first scan can pick up any wake that is now due.
+  scheduleStartupIo(() => invokedSessionListener.reconcileAtBoot()).catch((error) => {
+    console.error('Failed to reconcile invoked-session wakes:', error)
+  })
 
   // Start task scheduler
   scheduleStartupIo(
@@ -284,6 +297,8 @@ export async function shutdownServices() {
   await credentialBroker.shutdown()
   await stopAllProviders()
   taskScheduler.stop()
+  setKickDueWakes(null)
+  invokedSessionListener.stop()
   triggerManager.stop()
   platformNotificationsManager.stop()
   autoSleepMonitor.stop()

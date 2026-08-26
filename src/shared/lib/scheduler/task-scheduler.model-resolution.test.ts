@@ -12,6 +12,9 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   markTaskExecuted: (...args: unknown[]) => mockMarkTaskExecuted(...args),
   markTaskFailed: (...args: unknown[]) => mockMarkTaskFailed(...args),
   updateNextExecution: (...args: unknown[]) => mockUpdateNextExecution(...args),
+  createSessionWake: vi.fn(),
+  addWakeTarget: vi.fn(),
+  settleWakeTarget: vi.fn(),
 }))
 
 const mockCreateSession = vi.fn()
@@ -45,6 +48,8 @@ vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
     subscribeToSession: (...args: unknown[]) => mockSubscribeToSession(...args),
     markSessionActive: (...args: unknown[]) => mockMarkSessionActive(...args),
+    isSessionActive: () => false,
+    isSessionAwaitingInput: () => false,
   },
 }))
 
@@ -118,6 +123,7 @@ function createTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
     effort: null,
     speed: null,
     resumeSessionId: null,
+    wakeOnSessions: null,
     createdAt: new Date('2026-06-26T16:00:00.000Z'),
     cancelledAt: null,
     pausedAt: null,
