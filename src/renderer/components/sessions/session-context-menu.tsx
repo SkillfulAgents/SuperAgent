@@ -30,7 +30,7 @@ import { Input } from '@renderer/components/ui/input'
 import { useDeleteSession, useUpdateSessionName, useSetSessionMarkedUnread } from '@renderer/hooks/use-sessions'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
-import { Trash2, ClipboardCopy, Pencil, Circle } from 'lucide-react'
+import { Trash2, ClipboardCopy, Pencil, MessageSquareDot } from 'lucide-react'
 import { apiFetch } from '@renderer/lib/api'
 import type { SessionUsageTotals } from '@shared/lib/types/usage'
 
@@ -169,7 +169,7 @@ export function SessionContextMenu({
             </ContextMenuItem>
           )}
           <ContextMenuItem data-testid="mark-unread-session-item" onClick={handleMarkUnread}>
-            <Circle className="h-4 w-4 mr-2 fill-blue-500 text-blue-500" />
+            <MessageSquareDot className="h-4 w-4 mr-2" />
             Mark as Unread
           </ContextMenuItem>
           <ContextMenuItem onClick={handleCopyRawLog}>
