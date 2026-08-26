@@ -89,6 +89,10 @@ const USER_SCROLL_HOLD_MS = 100
 // The glide's exponential approach rate (per second) and its hard stop.
 const GLIDE_RATE_PER_S = 14
 const GLIDE_MAX_MS = 1500
+// While following, only gaps up to this ride the glide — the steady-state lag
+// of chasing streamed growth. A larger gap means the viewport was thrown
+// backward (collapse clamp, compositor rollback) and is closed instantly.
+const FOLLOW_GLIDE_MAX_GAP_PX = 120
 
 const UPWARD_SCROLL_KEYS = new Set(['ArrowUp', 'PageUp', 'Home'])
 // A press only becomes a drag once the pointer travels this far from where it
@@ -228,7 +232,7 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
   // re-computed each frame) target, used only for explicit trips. Its first
   // write is deferred a frame so a commit landing between the send effect and
   // the glide's start still sees the pre-glide viewport.
-  const glideRef = useRef<{ cancel: () => void } | null>(null)
+  const glideRef = useRef<{ kind: 'trip' | 'follow'; cancel: () => void } | null>(null)
 
   // How many trailing (visible) messages to render. Grows on scroll-up and while
   // the user is scrolled up during streaming. Starts at BASE_WINDOW; the component
@@ -280,43 +284,7 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
     )
   }, [])
 
-  // Re-assert the live edge. Convergence, not classification: called after
-  // every content/viewport resize and every reserve sync while following, so
-  // any clamp or missed event self-heals on the next change. Skipped while
-  // the user owns the viewport (drag/scrollbar/touch/selection — their
-  // interaction's end re-derives and pins) and while a glide is making the
-  // trip. A fresh upward gesture still in motion also defers the pin — but
-  // with a scheduled retry, since the growth that requested it may have been
-  // the last one.
-  const pinRetryRef = useRef<() => void>(() => {})
-  const pinRetryTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-  useEffect(() => () => clearTimeout(pinRetryTimerRef.current), [])
-  const pinToLiveEdge = useCallback(() => {
-    const el = scrollRef.current
-    if (!el || !followingRef.current) return
-    if (glideRef.current) return
-    if (pointerDragRef.current || pointerOnScrollbarRef.current || touchActiveRef.current) return
-    const sinceUserScrollUp = performance.now() - lastUserScrollUpAtRef.current
-    if (sinceUserScrollUp < USER_SCROLL_HOLD_MS) {
-      clearTimeout(pinRetryTimerRef.current)
-      pinRetryTimerRef.current = setTimeout(
-        () => pinRetryRef.current(),
-        USER_SCROLL_HOLD_MS - sinceUserScrollUp + 10,
-      )
-      return
-    }
-    if (selectionInProgress()) return
-    const target = liveEdgeTarget(el)
-    if (el.scrollTop < target) {
-      el.scrollTop = target
-      rememberPosition()
-    }
-  }, [rememberPosition, selectionInProgress])
-  useLayoutEffect(() => {
-    pinRetryRef.current = pinToLiveEdge
-  }, [pinToLiveEdge])
-
-  const glideToLiveEdge = useCallback(() => {
+  const glideToLiveEdge = useCallback((kind: 'trip' | 'follow' = 'trip') => {
     const el = scrollRef.current
     if (!el) return
     glideRef.current?.cancel()
@@ -329,6 +297,7 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
     let last = 0
     let startedAt = 0
     const handle = {
+      kind,
       cancel: () => {
         cancelAnimationFrame(frameId)
         if (glideRef.current === handle) glideRef.current = null
@@ -360,6 +329,58 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
     }
     frameId = requestAnimationFrame(step)
   }, [rememberPosition])
+
+  // Re-assert the live edge. Convergence, not classification: called after
+  // every content/viewport resize and every reserve sync while following, so
+  // any clamp or missed event self-heals on the next change. Skipped while
+  // the user owns the viewport (drag/scrollbar/touch/selection — their
+  // interaction's end re-derives and pins) and while a glide is making the
+  // trip. A fresh upward gesture still in motion also defers the pin — but
+  // with a scheduled retry, since the growth that requested it may have been
+  // the last one.
+  const pinRetryRef = useRef<() => void>(() => {})
+  const pinRetryTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(() => () => clearTimeout(pinRetryTimerRef.current), [])
+  const pinToLiveEdge = useCallback(() => {
+    const el = scrollRef.current
+    if (!el || !followingRef.current) return
+    if (pointerDragRef.current || pointerOnScrollbarRef.current || touchActiveRef.current) return
+    const sinceUserScrollUp = performance.now() - lastUserScrollUpAtRef.current
+    if (sinceUserScrollUp < USER_SCROLL_HOLD_MS) {
+      clearTimeout(pinRetryTimerRef.current)
+      pinRetryTimerRef.current = setTimeout(
+        () => pinRetryRef.current(),
+        USER_SCROLL_HOLD_MS - sinceUserScrollUp + 10,
+      )
+      return
+    }
+    if (selectionInProgress()) return
+    const target = liveEdgeTarget(el)
+    const gap = target - el.scrollTop
+    if (gap <= 0) return
+    // A gap this large means the viewport was thrown backward (a collapse
+    // clamp, a compositor rollback) — snap it closed in the same frame, as
+    // instant convergence always did, so the throw is never visible. Only
+    // steady growth-chasing gaps ride the glide. A running follow chase is
+    // preempted by the snap; a send/pill trip glide keeps the viewport.
+    if (glideRef.current) {
+      if (glideRef.current.kind === 'trip' || gap <= FOLLOW_GLIDE_MAX_GAP_PX) return
+      glideRef.current.cancel()
+    }
+    if (prefersReducedMotion() || gap > FOLLOW_GLIDE_MAX_GAP_PX) {
+      el.scrollTop = target
+      rememberPosition()
+    } else {
+      // Convergence itself is animated: the chase re-targets every frame,
+      // so the moving live edge is followed smoothly instead of snapped to
+      // on every content tick. The glide-in-flight guard above keeps one
+      // chase alive across ticks.
+      glideToLiveEdge('follow')
+    }
+  }, [glideToLiveEdge, rememberPosition, selectionInProgress])
+  useLayoutEffect(() => {
+    pinRetryRef.current = pinToLiveEdge
+  }, [pinToLiveEdge])
 
   const engageFollow = useCallback((trip: 'instant' | 'glide') => {
     followingRef.current = true

@@ -2847,6 +2847,33 @@ describe('MessageList', () => {
       expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
     })
 
+    it('chases streaming growth through the animated glide when motion is allowed', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el, { reducedMotion: false })
+      const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
+      fireEvent.scroll(el) // baseline at the live edge
+
+      // With motion allowed, a growth-sized gap rides the glide instead of
+      // being written in one jump — and still lands exactly on the live edge.
+      geometry.setNaturalScrollHeight(1400)
+      await act(async () => {
+        fireContentResize(contentWrapper, 1400)
+      })
+      await waitFor(() => expect(geometry.scrollTop).toBe(799), { timeout: 3000 })
+      expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
+
+      // A throw-sized gap (collapse clamp, rollback) closes in the same
+      // commit — the glide never gets to make a backward jump visible.
+      geometry.setNaturalScrollHeight(1800)
+      await act(async () => {
+        fireContentResize(contentWrapper, 1800)
+      })
+      expect(geometry.scrollTop).toBe(1199)
+    })
+
     it('converges back instead of escaping when an upward scroll has no input behind it', async () => {
       installFakeResizeObserver()
       mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
