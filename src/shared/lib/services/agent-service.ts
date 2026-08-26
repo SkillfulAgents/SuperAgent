@@ -22,6 +22,7 @@ import {
   generateAgentId,
   displaySlug,
 } from '@shared/lib/utils/file-storage'
+import pLimit from 'p-limit'
 import {
   AgentFrontmatter,
   AgentConfig,
@@ -117,13 +118,21 @@ export async function listAgentSlugs(): Promise<string[]> {
  * Get a single agent by slug
  */
 export async function getAgent(slug: string): Promise<AgentConfig | null> {
-  const agentDir = getAgentDir(slug)
-
-  if (!(await directoryExists(agentDir))) {
+  // No directory pre-check on the happy path: a missing agent surfaces as a
+  // missing CLAUDE.md (readFileOrNull → null), and every stat is a round trip
+  // on network filesystems. This runs once per agent on the auth-mode list.
+  //
+  // The contract is still "null unless this is an agent directory": slugs
+  // reach here from request bodies and stored policy rows, not only from
+  // ResolveAgent, so a path that is a regular file (ENOTDIR), too long
+  // (ENAMETOOLONG) or malformed (a NUL byte) must be null, not a throw. Only
+  // that failure path pays the stat.
+  try {
+    return await parseAgentClaudeMd(slug)
+  } catch (error) {
+    if (await directoryExists(getAgentDir(slug)).catch(() => false)) throw error
     return null
   }
-
-  return parseAgentClaudeMd(slug)
 }
 
 /**
@@ -185,14 +194,13 @@ export async function listAgents(): Promise<AgentConfig[]> {
   await ensureDirectory(agentsDir)
 
   const slugs = await listDirectories(agentsDir)
-  const agents: AgentConfig[] = []
 
-  for (const slug of slugs) {
-    const agent = await parseAgentClaudeMd(slug)
-    if (agent) {
-      agents.push(agent)
-    }
-  }
+  // One CLAUDE.md read per agent; concurrent, bounded. Sequential reads made
+  // the agents list cost N round trips before any per-agent summary work
+  // could start.
+  const limit = pLimit(10)
+  const parsed = await Promise.all(slugs.map((slug) => limit(() => parseAgentClaudeMd(slug))))
+  const agents = parsed.filter((agent): agent is AgentConfig => agent !== null)
 
   // Sort by creation date, newest first
   agents.sort((a, b) => {

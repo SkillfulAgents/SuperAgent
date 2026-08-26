@@ -56,7 +56,7 @@ import type {
   UserInputRequestScope,
 } from '@shared/lib/user-input/request-schema'
 import {
-  listSessions,
+  listSessionsFromSummary,
   listSessionsByIds,
   sortSessionsNewestFirst,
   SESSIONS_LIST_MAX_LIMIT,
@@ -534,28 +534,34 @@ async function getLatestVisibleSessionTail(
   agentSlug: string,
   session: SessionInfo,
   unreadSessionIds: Set<string>,
+  sessionMetadata: SessionMetadataMap,
   signal?: AbortSignal,
 ): Promise<NonNullable<ApiAgent['latestVisibleSession']>> {
+  signal?.throwIfAborted()
+  // Read first, check existence only if the read came back empty: the page
+  // reader answers a missing transcript with an empty page, so the common
+  // case (a transcript with messages) costs no stat at all.
+  const messageTail = await getSessionMessagesPage(agentSlug, session.id, {
+    limit: LATEST_VISIBLE_SESSION_TAIL_LIMIT,
+    byteBudget: LATEST_VISIBLE_SESSION_TAIL_BYTE_BUDGET,
+    media: 'ref',
+    signal,
+  })
   signal?.throwIfAborted()
   // A registered session with no transcript yet (created, nothing streamed) is
   // a normal state and serves an empty tail. Only an id with neither a
   // transcript nor a registration — a session that vanished after listing —
-  // is an error.
-  const transcriptExists = await sessionExists(agentSlug, session.id)
-  if (!transcriptExists && !(await sessionIsKnown(agentSlug, session.id))) {
+  // is an error. Registration is answered from the metadata map already in
+  // hand; the stat runs only for an unregistered empty tail.
+  if (
+    messageTail.messages.length === 0 &&
+    !(Object.hasOwn(sessionMetadata, session.id) && sessionMetadata[session.id]?.createdAt) &&
+    !(await sessionExists(agentSlug, session.id))
+  ) {
     throw new Error(
       'Latest visible session transcript not found for ' + agentSlug + '/' + session.id,
     )
   }
-  const messageTail = transcriptExists
-    ? await getSessionMessagesPage(agentSlug, session.id, {
-        limit: LATEST_VISIBLE_SESSION_TAIL_LIMIT,
-        byteBudget: LATEST_VISIBLE_SESSION_TAIL_BYTE_BUDGET,
-        media: 'ref',
-        signal,
-      })
-    : { messages: [], nextCursor: null }
-  signal?.throwIfAborted()
   // Same treatment as the transcript page endpoint, so the tail matches what
   // opening the session shows. Must run before the session flags below so
   // recovered awaiting-input state is reflected in them.
@@ -585,18 +591,18 @@ async function getVisibleSessionExpansion(
   signal?: AbortSignal,
 ): Promise<AgentVisibleSessionExpansion> {
   let visibleSessions: SessionInfo[]
+  let sessionMetadata: SessionMetadataMap
   try {
     // Keep the complete visibility-filtered snapshot: its first item selects
     // latest, while the remaining metadata-only items answer the two attention
-    // booleans without loading older transcripts.
-    // The caller already has this read in flight (it started before this
-    // function was called, and is strictly cheaper than the directory scan
-    // below), so handing it down costs nothing and saves listSessions a second
-    // parse of the same file.
-    visibleSessions = await listSessions(agentSlug, {
+    // booleans without loading older transcripts. Built from the summary
+    // cache with the metadata map the caller already read, so a warm poll
+    // costs one directory stat per agent instead of one stat per transcript.
+    sessionMetadata = await sessionMetadataPromise
+    visibleSessions = await listSessionsFromSummary(agentSlug, {
+      metadata: sessionMetadata,
       excludeAutomated: true,
       sortBy: 'last_activity_at',
-      metadata: await sessionMetadataPromise,
     })
   } catch (error) {
     if (signal?.aborted) throw error
@@ -609,38 +615,31 @@ async function getVisibleSessionExpansion(
   }
 
   const latestSession = visibleSessions[0]
-  // Sessions explicitly marked unread carry the dot without a notification row
-  // behind them, so they have to join the projection here too. Chained off the
-  // metadata read already in flight (no extra I/O), and degraded to the
-  // notification-only set if that read fails, so a metadata failure costs the
-  // dot rather than the whole tail.
-  const unreadWithMarkedPromise = sessionMetadataPromise
-    .then((sessionMetadata) => withSessionIdsMarkedUnread(unreadSessionIds, sessionMetadata))
-    .catch(() => unreadSessionIds)
+  // Sessions explicitly marked unread carry the dot with no notification row
+  // behind them, so they join the projection both halves below read from.
+  // Derived from the map already in hand — no extra read.
+  const unreadIds = withSessionIdsMarkedUnread(unreadSessionIds, sessionMetadata)
 
-  const attentionOutsideLatestPromise = Promise.all([
-    sessionMetadataPromise,
-    unreadWithMarkedPromise,
-  ])
-    .then(([sessionMetadata, unreadIds]) => getAttentionOutsideLatest(
+  let attentionOutsideLatest: ApiAgent['attentionOutsideLatest']
+  try {
+    attentionOutsideLatest = getAttentionOutsideLatest(
       agentSlug,
       visibleSessions,
       unreadIds,
       sessionMetadata,
-    ))
-    .catch((error): null => {
-      if (signal?.aborted) throw error
-      console.error('Failed to compute attention outside latest for agent ' + agentSlug + ':', error)
-      captureException(error, {
-        tags: { component: 'agents', operation: 'attention-outside-latest' },
-        extra: { agentSlug },
-      })
-      return null
+    )
+  } catch (error) {
+    if (signal?.aborted) throw error
+    console.error('Failed to compute attention outside latest for agent ' + agentSlug + ':', error)
+    captureException(error, {
+      tags: { component: 'agents', operation: 'attention-outside-latest' },
+      extra: { agentSlug },
     })
+    attentionOutsideLatest = null
+  }
 
-  const latestVisibleSessionPromise = latestSession
-    ? unreadWithMarkedPromise
-        .then((unreadIds) => getLatestVisibleSessionTail(agentSlug, latestSession, unreadIds, signal))
+  const latestVisibleSession = latestSession
+    ? await getLatestVisibleSessionTail(agentSlug, latestSession, unreadIds, sessionMetadata, signal)
         .catch((error): null => {
           if (signal?.aborted) throw error
           // Attention still excludes this session as latest, so on this path
@@ -655,12 +654,8 @@ async function getVisibleSessionExpansion(
           })
           return null
         })
-    : Promise.resolve(null)
+    : null
 
-  const [latestVisibleSession, attentionOutsideLatest] = await Promise.all([
-    latestVisibleSessionPromise,
-    attentionOutsideLatestPromise,
-  ])
   return { latestVisibleSession, attentionOutsideLatest }
 }
 
@@ -1916,18 +1911,28 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
       return c.json(ordered.slice(0, resultLimit))
     }
 
-    // Single metadata read, shared by the listing and the marked-unread set —
-    // see the notable path above.
-    const sessionMetadata = await readSessionMetadata(slug)
-    const sessionList = await listSessions(slug, {
-      excludeAutomated: true,
-      metadata: sessionMetadata,
-      ...(sortByRaw === undefined ? {} : { sortBy }),
-      ...(resultLimit === undefined ? {} : { limit: resultLimit }),
-    })
-    const unreadSessionIds = await getSessionIdsWithUnreadNotifications(slug)
+    // Independent lookups (filesystem summary, notifications table, scheduled
+    // tasks table) — overlap them rather than paying their latencies in series.
+    // The metadata read is shared: the listing needs it for names and
+    // visibility, and the marked-unread set is derived from the same map
+    // rather than re-reading and re-validating the file. Chaining the listing
+    // off it costs nothing — it would have done that read itself — while the
+    // two table lookups still overlap the whole thing.
+    const sessionMetadataPromise = readSessionMetadata(slug)
+    const [sessionMetadata, sessionList, unreadSessionIds, pendingWakes] = await Promise.all([
+      sessionMetadataPromise,
+      sessionMetadataPromise.then((metadata) =>
+        listSessionsFromSummary(slug, {
+          metadata,
+          excludeAutomated: true,
+          ...(sortByRaw === undefined ? {} : { sortBy }),
+          ...(resultLimit === undefined ? {} : { limit: resultLimit }),
+        }),
+      ),
+      getSessionIdsWithUnreadNotifications(slug),
+      listPendingWakesByAgent(slug),
+    ])
     const markedUnreadSessionIds = collectSessionIdsMarkedUnread(sessionMetadata)
-    const pendingWakes = await listPendingWakesByAgent(slug)
     const wakesBySession = new Map(pendingWakes.map((w) => [w.resumeSessionId!, w]))
     const sessionsWithStatus = sessionList.map((session) => {
       const isActive = messagePersister.isSessionActive(session.id)

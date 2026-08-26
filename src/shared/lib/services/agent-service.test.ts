@@ -103,6 +103,36 @@ describe('agent-service', () => {
       expect(agent).toBeNull()
     })
 
+    it('returns null when the agent directory exists but CLAUDE.md is missing', async () => {
+      await fs.promises.mkdir(path.join(testDir, 'agents', 'hollow', 'workspace'), { recursive: true })
+
+      const agent = await getAgent('hollow')
+
+      expect(agent).toBeNull()
+    })
+
+    // Slugs reach getAgent from request bodies and stored policy rows, not
+    // only from ResolveAgent, so "not an agent directory" must be null for
+    // every way a path can fail — not a thrown read.
+    it('returns null when the slug names a regular file in the agents dir', async () => {
+      await fs.promises.mkdir(path.join(testDir, 'agents'), { recursive: true })
+      await fs.promises.writeFile(path.join(testDir, 'agents', 'stray-file'), 'not an agent')
+
+      await expect(getAgent('stray-file')).resolves.toBeNull()
+    })
+
+    it('returns null for a slug that is not a valid path component', async () => {
+      await expect(getAgent('bad\0slug')).resolves.toBeNull()
+      await expect(getAgent('x'.repeat(300))).resolves.toBeNull()
+    })
+
+    it('still surfaces a real read error on an existing agent directory', async () => {
+      // CLAUDE.md is a directory: the agent exists, its config is unreadable.
+      await fs.promises.mkdir(path.join(testDir, 'agents', 'broken', 'workspace', 'CLAUDE.md'), { recursive: true })
+
+      await expect(getAgent('broken')).rejects.toMatchObject({ code: 'EISDIR' })
+    })
+
     it('returns agent config for existing agent', async () => {
       await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
 
@@ -258,6 +288,39 @@ Instructions`
 
       expect(agents.length).toBe(1)
       expect(agents[0].slug).toBe('valid-agent')
+    })
+
+    it('orders many agents newest-first regardless of directory or creation order', async () => {
+      // Slug order, directory-creation order and createdAt order all disagree,
+      // so a listing that reads CLAUDE.md files concurrently (in any completion
+      // order) must still sort purely by createdAt.
+      const agents = [
+        ['agent-c', '2026-03-01T00:00:00.000Z'],
+        ['agent-a', '2026-05-01T00:00:00.000Z'],
+        ['agent-e', '2026-01-01T00:00:00.000Z'],
+        ['agent-b', '2026-04-01T00:00:00.000Z'],
+        ['agent-d', '2026-02-01T00:00:00.000Z'],
+        ['agent-f', '2026-06-01T00:00:00.000Z'],
+      ] as const
+      for (const [slug, createdAt] of agents) {
+        await createTestAgent(slug, `---\nname: ${slug}\ncreatedAt: "${createdAt}"\n---\nInstructions`)
+      }
+
+      const listed = await listAgents()
+
+      expect(listed.map((a) => a.slug)).toEqual([
+        'agent-f', 'agent-a', 'agent-b', 'agent-c', 'agent-d', 'agent-e',
+      ])
+    })
+
+    it('skips an agent whose CLAUDE.md is missing while keeping its siblings', async () => {
+      await createTestAgent('first', SAMPLE_CLAUDE_MD)
+      await fs.promises.mkdir(path.join(testDir, 'agents', 'hollow', 'workspace'), { recursive: true })
+      await createTestAgent('last', SAMPLE_CLAUDE_MD)
+
+      const listed = await listAgents()
+
+      expect(listed.map((a) => a.slug).sort()).toEqual(['first', 'last'])
     })
   })
 

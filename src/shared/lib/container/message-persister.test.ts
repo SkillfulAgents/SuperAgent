@@ -29,8 +29,16 @@ vi.mock('@shared/lib/services/session-service', () => ({
   finalizeAutomationStatus: vi.fn(() => Promise.resolve('updated')),
 }))
 const mockRecordSessionActivity = vi.fn()
+const mockRecordProvisionalSessionActivity = vi.fn((_slug: string, _id: string, at: number) => ({
+  recordedAtMs: at,
+  previous: { mtimeMs: at - 60_000, size: 10 },
+}))
+const mockRevertSessionActivity = vi.fn()
 vi.mock('@shared/lib/services/session-summary-cache', () => ({
   recordSessionActivity: (...args: unknown[]) => mockRecordSessionActivity(...args),
+  recordProvisionalSessionActivity: (...args: unknown[]) =>
+    mockRecordProvisionalSessionActivity(...(args as [string, string, number])),
+  revertSessionActivity: (...args: unknown[]) => mockRevertSessionActivity(...args),
 }))
 const mockAppendInformationalEntry = vi.fn((..._args: unknown[]) => Promise.resolve())
 vi.mock('@shared/lib/services/session-transcript-append', () => ({
@@ -316,6 +324,57 @@ describe('MessagePersister', () => {
       expect(mockRecordSessionActivity).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID, timestamp)
     })
 
+    it('records the session as active the moment a message is sent to it', () => {
+      // The CLI appends the user entry as the turn starts but the SDK never
+      // echoes it, so without this the session would keep its old place in
+      // every cache-backed list until the first complete assistant frame.
+      vi.useFakeTimers({ now: new Date('2026-08-07T18:30:00.000Z') })
+      try {
+        messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      } finally {
+        vi.useRealTimers()
+      }
+
+      expect(mockRecordProvisionalSessionActivity).toHaveBeenCalledTimes(1)
+      expect(mockRecordProvisionalSessionActivity).toHaveBeenCalledWith(
+        AGENT_SLUG,
+        SESSION_ID,
+        Date.parse('2026-08-07T18:30:00.000Z'),
+      )
+    })
+
+    it('re-marking an active session for a queued message records again', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      expect(mockRecordProvisionalSessionActivity).toHaveBeenCalledTimes(2)
+    })
+
+    it('reverts the send record when the send is rolled back before reaching the container', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      const mark = mockRecordProvisionalSessionActivity.mock.results[0]!.value
+
+      messagePersister.markSessionIdle(SESSION_ID)
+
+      expect(mockRevertSessionActivity).toHaveBeenCalledTimes(1)
+      expect(mockRevertSessionActivity).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID, mark)
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+    })
+
+    it('does not revert once the container has answered the send', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._messageCallback!({
+        type: 'message',
+        content: { type: 'assistant', message: { role: 'assistant', content: 'working' } },
+        timestamp: new Date('2026-08-07T18:31:00.000Z'),
+        sessionId: SESSION_ID,
+      })
+
+      messagePersister.markSessionIdle(SESSION_ID)
+
+      expect(mockRevertSessionActivity).not.toHaveBeenCalled()
+    })
+
     it('ignores replayed catch-up frames whose host timestamp is arrival time', () => {
       // On the wire, SDK result frames carry no timestamp field, so the host
       // stamps Date.now() at arrival — a reconnect replay recorded here would
@@ -328,6 +387,23 @@ describe('MessagePersister', () => {
       })
 
       expect(mockRecordSessionActivity).not.toHaveBeenCalled()
+    })
+
+    it('refreshes a session that finished while detached from its transcript mtime, not the replay time', async () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockRecordSessionActivity.mockClear()
+      mockStat.mockResolvedValueOnce({ mtimeMs: 1_754_600_000_000, size: 4096 })
+
+      mockClient._messageCallback!({
+        type: 'message',
+        content: { type: 'result', subtype: 'success', replayed: true },
+        timestamp: new Date('2026-08-07T20:00:00.000Z'),
+        sessionId: SESSION_ID,
+      })
+      await vi.waitFor(() => expect(mockRecordSessionActivity).toHaveBeenCalled())
+
+      expect(mockStat).toHaveBeenCalledWith(expect.stringContaining(`${SESSION_ID}.jsonl`))
+      expect(mockRecordSessionActivity).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID, 1_754_600_000_000)
     })
 
     it('does not attribute a sidechain transcript frame to the parent session', () => {
