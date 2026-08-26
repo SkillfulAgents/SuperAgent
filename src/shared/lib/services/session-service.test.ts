@@ -553,6 +553,32 @@ describe('session-service', () => {
       )
     })
 
+    it('prefers the recorded metadata createdAt over the first transcript message', async () => {
+      await createSessionFile('test-agent', 'test-session', SAMPLE_JSONL_ENTRIES)
+      await createSessionMetadata('test-agent', {
+        'test-session': { name: 'Named', createdAt: '2026-01-24T01:31:30.000Z' },
+      })
+
+      const session = await getSession('test-agent', 'test-session')
+
+      // Registration time wins (it is what the list already shows); lastActivity
+      // still comes from the transcript.
+      expect(session?.createdAt.toISOString()).toBe('2026-01-24T01:31:30.000Z')
+      expect(session?.lastActivityAt.toISOString()).toBe('2026-01-24T01:31:19.827Z')
+    })
+
+    it('ignores an unparsable metadata createdAt and keeps the transcript timestamp', async () => {
+      await createSessionFile('test-agent', 'test-session', SAMPLE_JSONL_ENTRIES)
+      await createSessionMetadata('test-agent', {
+        'test-session': { name: 'Named', createdAt: 'not-a-date' },
+      })
+
+      const session = await getSession('test-agent', 'test-session')
+
+      expect(session?.createdAt.toISOString()).toBe('2026-01-24T01:30:58.661Z')
+      expect(session?.lastActivityAt.toISOString()).toBe('2026-01-24T01:31:19.827Z')
+    })
+
     it('returns an empty session for a registered session with no JSONL yet', async () => {
       // A just-created session is registered in metadata before the agent
       // streams its first message (which is what writes the JSONL). getSession
@@ -2044,6 +2070,10 @@ describe('session-service', () => {
 
       const metadata = await getSessionMetadata('test-agent', 'test-session')
       expect(metadata?.name).toBe('New Name')
+      expect(metadata?.createdAt).toBeUndefined()
+
+      const session = await getSession('test-agent', 'test-session')
+      expect(session?.createdAt.toISOString()).toBe('2026-01-24T01:30:58.661Z')
     })
   })
 

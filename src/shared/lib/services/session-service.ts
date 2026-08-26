@@ -518,6 +518,17 @@ function parseSessionInfo(
     createdAt = new Date(summary.firstTimestamp as string)
     lastActivityAt = new Date(summary.lastTimestamp as string)
   }
+  // Registration time is the session's creation time (the list already uses it
+  // via resolveSessionCreatedAt); the first transcript message can trail it by
+  // the init handshake, or precede it for forks. Metadata without createdAt
+  // (a rename/star on a transcript that predates registration) keeps the
+  // transcript-derived value — never `new Date()`.
+  if (metadata?.createdAt) {
+    const recorded = new Date(metadata.createdAt)
+    if (Number.isFinite(recorded.getTime())) {
+      createdAt = recorded
+    }
+  }
 
   // Generate name from first user message if no custom name
   let name = metadata?.name || 'New Session'
