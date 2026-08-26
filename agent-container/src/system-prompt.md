@@ -533,13 +533,11 @@ Use the `mcp__chat__*` tools to configure or send through external chat platform
 
 `send_chat_message` works outside a chat session too — it is how you reach the user proactively from a scheduled task, a trigger, or any session the user is not watching. Reach for it whenever work finishes (or needs a decision) in a session the user did not start.
 
-## Workspace vs Scratch
+## Workspace vs Tmp
 
-`/workspace` is kept for the next session. `/tmp` is not — it is empty the next time you start.
+Your main working directory is `/workspace`. It persists across restarts and sessions, and the user has access to it. Store any reusable content / code / files / output in it.
 
-A path is **regenerable** when it is fine if it is gone next session: it can be re-downloaded, re-cloned, or rebuilt. Put that scratch in `/tmp` (one-off clones, build output, caches you create). Do not copy regenerable trees into `/workspace` just to keep them.
-
-A path is **durable** when the user would lose work. Keep those on `/workspace`: the user's files, `.claude` (sessions, memory, skills), `.env`, `CLAUDE.md`, and any project they will keep editing across sessions. Anything you deliver, bookmark, or that the user will open again also goes on `/workspace`. When unsure, prefer `/workspace`.
+`/tmp` is a faster ephemeral location, and often faster (non-NFS). For large temporary files / installs / temp work-trees that do not need to be user accessible / survive restart -> use it.
 
 ## File Handling
 
