@@ -78,11 +78,12 @@ export interface SessionUsage {
 export interface SessionMetadata {
   name?: string
   starred?: boolean
-  // User asked to see the unread dot again ("Mark as unread"). Kept here rather
-  // than by un-reading notification rows: read state on those rows is shared
-  // across users and drives the notification inbox, and a session that never
-  // produced an actionable notification has no row to flip. Cleared when the
-  // session is next opened.
+  // Someone asked to see the unread dot again ("Mark as unread"). Kept here
+  // rather than by un-reading notification rows: read state on those rows is
+  // shared across users and drives the notification inbox, and a session that
+  // never produced an actionable notification has no row to flip. Like that
+  // read state, this flag is SHARED — not per-user: whoever next opens the
+  // session clears it for everyone.
   markedUnread?: boolean
   createdAt?: string // ISO date string - set when session is first created
   createdByUserId?: string

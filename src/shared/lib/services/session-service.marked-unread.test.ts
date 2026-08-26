@@ -77,6 +77,36 @@ describe('setSessionMarkedUnread', () => {
     expect(fs.statSync(metadataPath('agent')).mtimeMs).toBe(before)
   })
 
+  // The clear fires on every session open and the client skips its cache
+  // invalidation when nothing was written — refetching the session list and
+  // re-enriching every agent for a no-op is what this return value avoids.
+  it('reports whether it actually wrote, so a no-op clear can skip invalidation', async () => {
+    const { registerSession, setSessionMarkedUnread } = await importService()
+    makeAgent('agent')
+    await registerSession('agent', 'session-1', 'One')
+
+    expect(await setSessionMarkedUnread('agent', 'session-1', false)).toBe(false)
+    expect(await setSessionMarkedUnread('agent', 'session-1', true)).toBe(true)
+    expect(await setSessionMarkedUnread('agent', 'session-1', true)).toBe(false)
+    expect(await setSessionMarkedUnread('agent', 'session-1', false)).toBe(true)
+  })
+
+  // A session with a transcript on disk but no metadata registration gets its
+  // entry conjured by the raise. Clearing must take the entry with it: `{}` is
+  // truthy, so leaving one behind would defeat the `stat.size === 0 &&
+  // !metadata[sessionId]` guard that hides empty SDK-subagent JSONLs.
+  it('drops the whole entry when the flag was its only field', async () => {
+    const { setSessionMarkedUnread, readSessionMetadata } = await importService()
+    makeAgent('agent')
+
+    await setSessionMarkedUnread('agent', 'unregistered', true)
+    expect(await readSessionMetadata('agent')).toEqual({ unregistered: { markedUnread: true } })
+
+    await setSessionMarkedUnread('agent', 'unregistered', false)
+
+    expect(await readSessionMetadata('agent')).toEqual({})
+  })
+
   it('survives a metadata read-write round trip through the Zod boundary', async () => {
     const { registerSession, setSessionMarkedUnread, updateSessionName, readSessionMetadata } =
       await importService()

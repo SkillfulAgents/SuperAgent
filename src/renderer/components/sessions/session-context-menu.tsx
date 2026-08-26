@@ -50,6 +50,12 @@ interface SessionContextMenuProps {
   sessionId: string
   sessionName: string
   agentSlug: string
+  /**
+   * Session is working or awaiting input. Every list suppresses the unread dot
+   * in that state, so "Mark as Unread" is hidden rather than offered as a
+   * silent no-op.
+   */
+  sessionIsLive?: boolean
   children: React.ReactNode
 }
 
@@ -57,6 +63,7 @@ export function SessionContextMenu({
   sessionId,
   sessionName,
   agentSlug,
+  sessionIsLive = false,
   children,
 }: SessionContextMenuProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
@@ -74,8 +81,12 @@ export function SessionContextMenu({
   // (e.g. from the sidebar list), so the up-nav only fires when we're actually
   // viewing the session being deleted.
   const params = useParams({ strict: false }) as { sessionId?: string }
-  const { canAdminAgent } = useUser()
+  const { canAdminAgent, canUseAgent } = useUser()
   const isOwner = canAdminAgent(agentSlug)
+  // Raising the flag writes shared metadata every user of the agent sees, so it
+  // takes the same AgentUser permission the route enforces. Clearing (on
+  // session open) stays open to viewers — see the route comment.
+  const canMarkUnread = canUseAgent(agentSlug) && !sessionIsLive
 
   const handleDelete = async () => {
     setIsDeleting(true)
@@ -168,10 +179,12 @@ export function SessionContextMenu({
               Rename Session
             </ContextMenuItem>
           )}
-          <ContextMenuItem data-testid="mark-unread-session-item" onClick={handleMarkUnread}>
-            <MessageSquareDot className="h-4 w-4 mr-2" />
-            Mark as Unread
-          </ContextMenuItem>
+          {canMarkUnread && (
+            <ContextMenuItem data-testid="mark-unread-session-item" onClick={handleMarkUnread}>
+              <MessageSquareDot className="h-4 w-4 mr-2" />
+              Mark as Unread
+            </ContextMenuItem>
+          )}
           <ContextMenuItem onClick={handleCopyRawLog}>
             <ClipboardCopy className="h-4 w-4 mr-2" />
             Copy Raw Log

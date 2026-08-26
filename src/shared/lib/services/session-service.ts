@@ -1011,31 +1011,49 @@ export async function updateSessionName(
 }
 
 /**
- * Set (or clear) the user's "mark as unread" flag on a session.
+ * Set (or clear) the "mark as unread" flag on a session. The flag lives on
+ * shared session metadata, so it is visible to — and clearable by — every user
+ * with access to the agent, exactly like notification read state.
  *
  * Clearing deletes the key instead of storing `false` so the common path —
  * every session open clearing a flag that was never set — collapses to a
  * no-change mutation and skips the file write entirely.
+ *
+ * Returns whether anything actually changed, so callers can skip the cache
+ * invalidation that a no-op clear would otherwise trigger.
  */
 export async function setSessionMarkedUnread(
   agentSlug: string,
   sessionId: string,
   markedUnread: boolean
-): Promise<void> {
+): Promise<boolean> {
+  let changed = false
   await mutateSessionMetadata(agentSlug, (metadata) => {
     const existing = metadata[sessionId]
     if (Boolean(existing?.markedUnread) === markedUnread) return false
+    changed = true
     if (markedUnread) {
       metadata[sessionId] = { ...existing, markedUnread: true }
+      return
+    }
+    const { markedUnread: _removed, ...rest } = existing ?? {}
+    // The flag can be an entry's only field — a session with a transcript on
+    // disk but no metadata registration (CLI-created, or predating
+    // registration) gets its entry conjured by the raise. Drop the entry
+    // rather than leaving `{}` behind: an empty object is truthy, which would
+    // defeat the `stat.size === 0 && !metadata[sessionId]` guard that keeps
+    // empty SDK-subagent JSONLs out of listSessionsByIds.
+    if (Object.keys(rest).length === 0) {
+      delete metadata[sessionId]
     } else {
-      const { markedUnread: _removed, ...rest } = existing ?? {}
       metadata[sessionId] = rest
     }
   })
+  return changed
 }
 
 /**
- * Session ids the user explicitly marked unread. Hidden automated sessions are
+ * Session ids explicitly marked unread. Hidden automated sessions are
  * excluded for the same reason unread notifications are: they never appear in
  * any session list, so a dot raised by one could never be cleared.
  */

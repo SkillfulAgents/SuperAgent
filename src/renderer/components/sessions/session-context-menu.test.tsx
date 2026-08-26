@@ -67,9 +67,10 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
 }))
 
 const mockCanAdminAgent = vi.fn(() => true)
+const mockCanUseAgent = vi.fn(() => true)
 
 vi.mock('@renderer/context/user-context', () => ({
-  useUser: () => ({ canAdminAgent: mockCanAdminAgent }),
+  useUser: () => ({ canAdminAgent: mockCanAdminAgent, canUseAgent: mockCanUseAgent }),
 }))
 
 vi.mock('@tanstack/react-router', async (importOriginal) => {
@@ -191,6 +192,7 @@ describe('SessionContextMenu mark as unread', () => {
     vi.clearAllMocks()
     mockSetMarkedUnread.mockResolvedValue({ success: true })
     mockCanAdminAgent.mockReturnValue(true)
+    mockCanUseAgent.mockReturnValue(true)
   })
 
   it('raises the unread flag for the session it was opened on', async () => {
@@ -211,9 +213,9 @@ describe('SessionContextMenu mark as unread', () => {
     })
   })
 
-  // Unlike rename/delete, marking unread is not owner-gated: it mirrors
-  // notification read state, which any viewer already flips by opening a session.
-  it('stays available to viewers who cannot admin the agent', () => {
+  // Unlike rename/delete, marking unread is not owner-gated — a plain member
+  // can do it. It is AgentUser-gated, though; see the read-only case below.
+  it('stays available to members who cannot admin the agent', () => {
     mockCanAdminAgent.mockReturnValue(false)
 
     render(
@@ -224,5 +226,39 @@ describe('SessionContextMenu mark as unread', () => {
 
     expect(screen.queryByTestId('rename-session-item')).not.toBeInTheDocument()
     expect(screen.getByTestId('mark-unread-session-item')).toBeInTheDocument()
+  })
+
+  // The flag is shared metadata, so raising it plants a marker every user of
+  // the agent sees — the route gates POST on AgentUser and the menu matches it.
+  // (Clearing stays open to viewers, but that fires on session open, not here.)
+  it('hides the item from a read-only viewer, matching the AgentUser route gate', () => {
+    mockCanUseAgent.mockReturnValue(false)
+
+    render(
+      <SessionContextMenu sessionId="session-9" sessionName="Session Nine" agentSlug="agent-2">
+        <button type="button">Session Nine</button>
+      </SessionContextMenu>,
+    )
+
+    expect(screen.queryByTestId('mark-unread-session-item')).not.toBeInTheDocument()
+    // Still an ordinary menu, just without this item.
+    expect(screen.getByText('Copy Raw Log')).toBeInTheDocument()
+  })
+
+  // Every list suppresses the unread dot while a session is working or awaiting
+  // input, so offering the item there would be a silent no-op.
+  it('hides the item for a live session, where no list would render the dot', () => {
+    render(
+      <SessionContextMenu
+        sessionId="session-9"
+        sessionName="Session Nine"
+        agentSlug="agent-2"
+        sessionIsLive
+      >
+        <button type="button">Session Nine</button>
+      </SessionContextMenu>,
+    )
+
+    expect(screen.queryByTestId('mark-unread-session-item')).not.toBeInTheDocument()
   })
 })

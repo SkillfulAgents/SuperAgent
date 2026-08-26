@@ -156,6 +156,7 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
               sessionId={sessionId}
               sessionName={session?.name || 'Session'}
               agentSlug={slug}
+              sessionIsLive={!!session?.isActive || !!session?.isAwaitingInput}
             >
               <span
                 className="text-sm font-light text-foreground truncate cursor-context-menu app-no-drag"

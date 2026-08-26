@@ -2121,6 +2121,11 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       lastActivityAt: session.lastActivityAt,
       messageCount: session.messageCount,
       isActive,
+      // Carried so single-session consumers can gate on the same live/idle
+      // condition the session lists use (the breadcrumb context menu hides
+      // "Mark as Unread" while a session is working or awaiting input, since
+      // no list renders an unread dot in that state).
+      isAwaitingInput: messagePersister.isSessionAwaitingInput(sessionId),
       lastUsage: metadata?.lastUsage,
       scheduledTaskId: metadata?.scheduledTaskId,
       scheduledTaskName: metadata?.scheduledTaskName,
@@ -2187,9 +2192,17 @@ agents.patch('/:id/sessions/:sessionId', AgentUser(), async (c) => {
 
 // POST /api/agents/:id/sessions/:sessionId/unread - Re-raise the unread dot
 // DELETE the same path clears it (fired when the session is next opened).
-// AgentRead, not AgentUser: this mirrors notification read state, which any
-// viewer already flips by opening a session — a read-only viewer that couldn't
-// clear the flag would be stuck looking at a dot forever.
+//
+// The two verbs are deliberately gated differently. Raising is AgentUser, like
+// every other write under this path: the flag lives on shared session metadata,
+// so it plants a marker every user of the agent sees. Clearing is AgentRead —
+// a read-only viewer must always be able to dismiss a dot someone else raised,
+// or they'd be stuck looking at one forever. That mirrors notification read
+// state, which any viewer already flips just by opening a session.
+//
+// `changed` lets the client skip its cache invalidation on a no-op: the clear
+// fires on every session open, and the overwhelmingly common case is a flag
+// that was never set.
 async function setUnreadFlag(c: Context, sessionId: string, markedUnread: boolean) {
   try {
     const agentSlug = getAgentId(c)
@@ -2200,15 +2213,15 @@ async function setUnreadFlag(c: Context, sessionId: string, markedUnread: boolea
       return c.json({ error: 'Session not found' }, 404)
     }
 
-    await setSessionMarkedUnread(agentSlug, sessionId, markedUnread)
-    return c.json({ success: true, markedUnread })
+    const changed = await setSessionMarkedUnread(agentSlug, sessionId, markedUnread)
+    return c.json({ success: true, markedUnread, changed })
   } catch (error) {
     console.error('Failed to update session unread flag:', error)
     return c.json({ error: 'Failed to update session unread flag' }, 500)
   }
 }
 
-agents.post('/:id/sessions/:sessionId/unread', AgentRead(), async (c) => {
+agents.post('/:id/sessions/:sessionId/unread', AgentUser(), async (c) => {
   return setUnreadFlag(c, c.req.param('sessionId'), true)
 })
 

@@ -295,7 +295,7 @@ vi.mock('@shared/lib/services/session-service', () => ({
   sessionIsKnown: vi.fn().mockResolvedValue(true),
   isSessionRegistered: vi.fn().mockResolvedValue(false),
   updateSessionMetadata: vi.fn().mockResolvedValue(undefined),
-  setSessionMarkedUnread: vi.fn().mockResolvedValue(undefined),
+  setSessionMarkedUnread: vi.fn().mockResolvedValue(true),
   getSessionIdsMarkedUnread: vi.fn(() => Promise.resolve(new Set<string>())),
   deleteSession: vi.fn(),
   removeMessage: vi.fn(),
@@ -6115,6 +6115,7 @@ describe('mark as unread — /:id/sessions/:sessionId/unread', () => {
     app = createApp()
     vi.mocked(sessionIsKnown).mockResolvedValue(true)
     vi.mocked(getSessionIdsMarkedUnread).mockResolvedValue(new Set())
+    vi.mocked(setSessionMarkedUnread).mockResolvedValue(true)
   })
 
   it('POST raises the flag', async () => {
@@ -6133,6 +6134,27 @@ describe('mark as unread — /:id/sessions/:sessionId/unread', () => {
 
     expect(res.status).toBe(200)
     expect(vi.mocked(setSessionMarkedUnread)).toHaveBeenCalledWith('test-agent', 'sess-1', false)
+  })
+
+  // The clear fires on every session open; the client skips its session-list +
+  // agent-list invalidation when the service reports no write happened, so the
+  // flag has to survive to the response body.
+  it('reports a no-op clear as unchanged so the client can skip refetching', async () => {
+    vi.mocked(setSessionMarkedUnread).mockResolvedValue(false)
+
+    const res = await app.request('http://localhost/api/agents/test-agent/sessions/sess-1/unread', {
+      method: 'DELETE',
+    })
+
+    expect(await res.json()).toEqual({ success: true, markedUnread: false, changed: false })
+  })
+
+  it('reports a clear that actually wrote as changed', async () => {
+    const res = await app.request('http://localhost/api/agents/test-agent/sessions/sess-1/unread', {
+      method: 'DELETE',
+    })
+
+    expect(await res.json()).toEqual({ success: true, markedUnread: false, changed: true })
   })
 
   it('404s on an unknown session instead of conjuring metadata for it', async () => {

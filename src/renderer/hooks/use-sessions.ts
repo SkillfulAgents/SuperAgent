@@ -166,9 +166,15 @@ export function useSetSessionMarkedUnread() {
         method: markedUnread ? 'POST' : 'DELETE',
       })
       if (!res.ok) throw new Error('Failed to update session unread flag')
-      return res.json()
+      return res.json() as Promise<{ success: boolean; markedUnread: boolean; changed: boolean }>
     },
-    onSuccess: (_, variables) => {
+    onSuccess: (data, variables) => {
+      // The clear fires on every session open, and almost always clears a flag
+      // that was never set. Refetching on that no-op would re-stat every
+      // session in the agent's directory (the sessions list) and re-enrich
+      // every agent (the agents list) for nothing, so the server reports
+      // whether it actually wrote and we invalidate only then.
+      if (!data.changed) return
       queryClient.invalidateQueries({
         queryKey: ['sessions', resolveAgentSlugFromCache(queryClient, variables.agentSlug)],
       })
