@@ -279,6 +279,32 @@ export const notifications = sqliteTable('notifications', {
 }))
 
 /**
+ * Sessions a user asked to see the unread dot on again ("Mark as Unread") —
+ * one row per marked session, deleted when the session is next opened.
+ *
+ * Separate from `notifications` rather than un-reading a row there: read state
+ * on those rows drives the inbox, so flipping one would resurface an old
+ * "Session complete" entry, and a session that never produced an actionable
+ * notification has no row to flip at all.
+ *
+ * In the DB rather than on session metadata because the dot is projected on
+ * polled endpoints (the agents list, the notable fast path). Metadata lives in
+ * a per-agent JSON map that costs a file read plus a Zod parse of every
+ * session's entry — see the perf suite's op-count budgets, which pin the
+ * notable path at zero file reads.
+ *
+ * Shared, not per-user, matching the deliberate choice on `notifications`
+ * above: whoever next opens the session clears it for everyone.
+ */
+export const sessionUnreadMarks = sqliteTable('session_unread_marks', {
+  sessionId: text('session_id').primaryKey(),
+  agentSlug: text('agent_slug').notNull(),
+  markedAt: integer('marked_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  agentSlugIdx: index('session_unread_marks_agent_slug_idx').on(table.agentSlug),
+}))
+
+/**
  * Web Push subscriptions — one row per browser/device that opted into push
  * (installed-PWA "Enable on this device" flow). Unlike `notifications` above,
  * these rows ARE per-user in auth mode: a subscription addresses one person's

@@ -37,7 +37,6 @@ export const sessionMetadataSchema = z
   .object({
     name: z.string().optional(),
     starred: z.boolean().optional(),
-    markedUnread: z.boolean().optional(),
     createdAt: z.string().optional(),
     createdByUserId: z.string().optional(),
     createdByDeviceId: z.string().optional(),

@@ -955,14 +955,10 @@ export async function listSessionsFromSummary(
 export async function listSessionsByIds(
   agentSlug: string,
   sessionIds: string[],
-  options?: { excludeAutomated?: boolean; metadata?: SessionMetadataMap },
+  options?: { excludeAutomated?: boolean },
 ): Promise<SessionInfo[]> {
   if (sessionIds.length === 0) return []
-  // The caller may already hold the map: the notable path reads it to find the
-  // marked-unread ids, and re-reading here would re-parse and re-validate a
-  // file that is already in memory. Must be freshly read — it decides names,
-  // creation times and automation visibility for this listing.
-  const metadata = options?.metadata ?? (await readSessionMetadata(agentSlug))
+  const metadata = await readSessionMetadata(agentSlug)
   const isAutomated = (sessionId: string) => isHiddenAutomatedSession(metadata[sessionId])
   const limit = pLimit(10)
   const sessions = await Promise.all(
@@ -2050,89 +2046,6 @@ export async function updateSessionName(
   name: string
 ): Promise<void> {
   await updateSessionMetadata(agentSlug, sessionId, { name })
-}
-
-/**
- * Set (or clear) the "mark as unread" flag on a session. The flag lives on
- * shared session metadata, so it is visible to — and clearable by — every user
- * with access to the agent, exactly like notification read state.
- *
- * Clearing deletes the key instead of storing `false` so the common path —
- * every session open clearing a flag that was never set — collapses to a
- * no-change mutation and skips the file write entirely.
- *
- * Returns whether anything actually changed, so callers can skip the cache
- * invalidation that a no-op clear would otherwise trigger.
- */
-export async function setSessionMarkedUnread(
-  agentSlug: string,
-  sessionId: string,
-  markedUnread: boolean
-): Promise<boolean> {
-  let changed = false
-  await mutateSessionMetadata(agentSlug, (metadata) => {
-    const existing = metadata[sessionId]
-    if (Boolean(existing?.markedUnread) === markedUnread) return false
-    changed = true
-    if (markedUnread) {
-      metadata[sessionId] = { ...existing, markedUnread: true }
-      return
-    }
-    const { markedUnread: _removed, ...rest } = existing ?? {}
-    // The flag can be an entry's only field — a session with a transcript on
-    // disk but no metadata registration (CLI-created, or predating
-    // registration) gets its entry conjured by the raise. Drop the entry
-    // rather than leaving `{}` behind: an empty object is truthy, which would
-    // defeat the `stat.size === 0 && !metadata[sessionId]` guard that keeps
-    // empty SDK-subagent JSONLs out of listSessionsByIds.
-    if (Object.keys(rest).length === 0) {
-      delete metadata[sessionId]
-    } else {
-      metadata[sessionId] = rest
-    }
-  })
-  return changed
-}
-
-/**
- * Session ids explicitly marked unread, selected from a metadata map the
- * caller already holds. Every caller does hold one — the listing paths read it
- * for names and visibility, the agent summary for its rollup — so this takes
- * the map rather than the slug: re-reading would re-parse and re-validate a
- * file already in memory.
- *
- * Hidden automated sessions are excluded for the same reason unread
- * notifications are: they never appear in any session list, so a dot raised by
- * one could never be cleared.
- */
-export function collectSessionIdsMarkedUnread(metadata: SessionMetadataMap): Set<string> {
-  const ids = new Set<string>()
-  for (const [sessionId, sessionMeta] of Object.entries(metadata)) {
-    if (sessionMeta?.markedUnread && !isHiddenAutomatedSession(sessionMeta)) {
-      ids.add(sessionId)
-    }
-  }
-  return ids
-}
-
-/**
- * Union of the notification-derived unread ids and the explicitly marked ones.
- * `markedUnread` is a second source of truth for the unread dot, so EVERY
- * consumer of the unread projection has to OR it in. In the agents route that
- * is: the agent rollup, the full session list, the `?notable=true` fast path,
- * and the latest-visible-session expansion's two halves (its tail and the
- * attention-outside-latest booleans). Adding a sixth means wiring it here too.
- *
- * Returns the input set unchanged when nothing is marked, so the common case
- * allocates nothing.
- */
-export function withSessionIdsMarkedUnread(
-  unreadSessionIds: Set<string>,
-  metadata: SessionMetadataMap,
-): Set<string> {
-  const marked = collectSessionIdsMarkedUnread(metadata)
-  if (marked.size === 0) return unreadSessionIds
-  return new Set([...unreadSessionIds, ...marked])
 }
 
 /**

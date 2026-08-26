@@ -328,11 +328,6 @@ vi.mock('@shared/lib/services/session-service', async (importOriginal) => {
   sessionIsKnown: vi.fn().mockResolvedValue(true),
   isSessionRegistered: vi.fn().mockResolvedValue(false),
   updateSessionMetadata: vi.fn().mockResolvedValue(undefined),
-  setSessionMarkedUnread: vi.fn().mockResolvedValue(true),
-  collectSessionIdsMarkedUnread: actual.collectSessionIdsMarkedUnread,
-  // Pure projection helper — same reason as sortSessionsNewestFirst above: a
-  // reimplementation here could drift from the OR that actually ships.
-  withSessionIdsMarkedUnread: actual.withSessionIdsMarkedUnread,
   deleteSession: vi.fn(),
   removeMessage: vi.fn(),
   removeToolCall: vi.fn(),
@@ -413,6 +408,14 @@ vi.mock('@shared/lib/services/notification-service', () => ({
   getSessionIdsWithUnreadNotifications: vi.fn(() => Promise.resolve(new Set())),
   getUnreadNotificationsByAgents: vi.fn(() => Promise.resolve(new Map())),
   deleteNotificationsBySessionIds: vi.fn(() => Promise.resolve(0)),
+}))
+
+vi.mock('@shared/lib/services/session-unread-service', () => ({
+  markSessionUnread: vi.fn(() => Promise.resolve(true)),
+  clearSessionUnread: vi.fn(() => Promise.resolve(true)),
+  getSessionIdsMarkedUnread: vi.fn(() => Promise.resolve(new Set())),
+  getSessionIdsMarkedUnreadByAgents: vi.fn(() => Promise.resolve(new Map())),
+  deleteSessionUnreadMarks: vi.fn(() => Promise.resolve(0)),
 }))
 
 vi.mock('@shared/lib/proxy/host-url', () => ({
@@ -592,10 +595,11 @@ import {
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
 import { getAgent, getAgentWithStatus, listAgentsWithStatus } from '@shared/lib/services/agent-service'
-import { listSessionsFromSummary, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata, setSessionMarkedUnread } from '@shared/lib/services/session-service'
+import { listSessionsFromSummary, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesByAgent } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
+import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
@@ -5958,6 +5962,7 @@ describe('GET /api/agents (enriched summary)', () => {
     vi.mocked(readSessionMetadata).mockResolvedValue({})
     vi.mocked(sessionExists).mockResolvedValue(true)
     vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
+    vi.mocked(getSessionIdsMarkedUnreadByAgents).mockResolvedValue(new Map())
     vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
     vi.mocked(messagePersister.isSessionAwaitingInput).mockReturnValue(false)
     vi.mocked(messagePersister.getActiveSessionIdsForAgent).mockReturnValue([])
@@ -6233,19 +6238,19 @@ describe('GET /api/agents (enriched summary)', () => {
     })
   })
 
-  // `markedUnread` carries the dot with no notification row behind it, so this
-  // expansion has to OR it in the same way the three session-list projections
-  // do — otherwise a session marked unread reads as "nothing to see here".
+  // A mark carries the dot with no notification row behind it, so this
+  // expansion has to OR it in the same way the session-list projections do —
+  // otherwise a session marked unread reads as "nothing to see here".
   it('counts a marked-unread session outside latest with no notification row', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
     vi.mocked(listSessionsFromSummary).mockResolvedValue([
       sessionInfo('latest-visible'),
       sessionInfo('older-marked'),
     ])
-    vi.mocked(readSessionMetadata).mockResolvedValue({
-      'older-marked': { markedUnread: true },
-    })
     vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
+    vi.mocked(getSessionIdsMarkedUnreadByAgents).mockResolvedValue(
+      new Map([['agent-1', new Set(['older-marked'])]]),
+    )
 
     const res = await getReq(
       app,
@@ -6263,10 +6268,10 @@ describe('GET /api/agents (enriched summary)', () => {
   it('carries a marked-unread flag on the latest visible session tail', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
     vi.mocked(listSessionsFromSummary).mockResolvedValue([sessionInfo('latest-visible')])
-    vi.mocked(readSessionMetadata).mockResolvedValue({
-      'latest-visible': { markedUnread: true },
-    })
     vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
+    vi.mocked(getSessionIdsMarkedUnreadByAgents).mockResolvedValue(
+      new Map([['agent-1', new Set(['latest-visible'])]]),
+    )
 
     const res = await getReq(
       app,
@@ -6287,9 +6292,12 @@ describe('GET /api/agents (enriched summary)', () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
     vi.mocked(listSessionsFromSummary).mockResolvedValue([sessionInfo('latest-visible')])
     vi.mocked(readSessionMetadata).mockResolvedValue({
-      'hidden-scheduled': { isScheduledExecution: true, markedUnread: true },
+      'hidden-scheduled': { isScheduledExecution: true },
     })
     vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
+    vi.mocked(getSessionIdsMarkedUnreadByAgents).mockResolvedValue(
+      new Map([['agent-1', new Set(['hidden-scheduled'])]]),
+    )
 
     const res = await getReq(
       app,
@@ -6706,7 +6714,9 @@ describe('GET /api/agents (enriched summary)', () => {
       lastActivityAt: new Date(),
     })
     vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
-    vi.mocked(readSessionMetadata).mockResolvedValue({ 'sess-1': { markedUnread: true } })
+    vi.mocked(getSessionIdsMarkedUnreadByAgents).mockResolvedValue(
+      new Map([['agent-1', new Set(['sess-1'])]]),
+    )
 
     const res = await getReq(app, '/api/agents')
     const body = await res.json()
@@ -6723,8 +6733,11 @@ describe('GET /api/agents (enriched summary)', () => {
     })
     vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
     vi.mocked(readSessionMetadata).mockResolvedValue({
-      'sess-cron': { isScheduledExecution: true, markedUnread: true },
+      'sess-cron': { isScheduledExecution: true },
     })
+    vi.mocked(getSessionIdsMarkedUnreadByAgents).mockResolvedValue(
+      new Map([['agent-1', new Set(['sess-cron'])]]),
+    )
 
     const res = await getReq(app, '/api/agents')
     const body = await res.json()
@@ -8204,7 +8217,6 @@ describe('sessions list query contract — GET /:id/sessions', () => {
     ])
     expect(listSessionsFromSummary).toHaveBeenCalledWith('test-agent', {
       excludeAutomated: true,
-      metadata: {},
     })
   })
 
@@ -8261,7 +8273,6 @@ describe('sessions list query contract — GET /:id/sessions', () => {
       .toEqual(['newest-visible'])
     expect(listSessionsFromSummary).toHaveBeenCalledWith('test-agent', {
       excludeAutomated: true,
-      metadata: {},
       sortBy: 'last_activity_at',
       limit: 1,
     })
@@ -8273,7 +8284,6 @@ describe('sessions list query contract — GET /:id/sessions', () => {
     expect(res.status).toBe(200)
     expect(listSessionsFromSummary).toHaveBeenCalledWith('test-agent', {
       excludeAutomated: true,
-      metadata: {},
       limit: 100,
     })
   })
@@ -8284,7 +8294,6 @@ describe('sessions list query contract — GET /:id/sessions', () => {
     expect(res.status).toBe(200)
     expect(listSessionsFromSummary).toHaveBeenCalledWith('test-agent', {
       excludeAutomated: true,
-      metadata: {},
       limit: 2,
     })
     expect(listSessionsByIds).not.toHaveBeenCalled()
@@ -8354,7 +8363,7 @@ describe('notable sessions fast path — GET /:id/sessions?notable=true', () => 
     expect(vi.mocked(listSessionsByIds)).toHaveBeenCalledWith(
       'test-agent',
       ['s-live', 's-awaiting', 's-both', 's-unread'],
-      { excludeAutomated: true, metadata: {} },
+      { excludeAutomated: true },
     )
     const ids = (await res.json()).map((session: { id: string }) => session.id)
     expect(ids.sort()).toEqual(['s-awaiting', 's-both', 's-live', 's-unread'])
@@ -8471,32 +8480,35 @@ describe('mark as unread — /:id/sessions/:sessionId/unread', () => {
     app = createApp()
     vi.mocked(sessionIsKnown).mockResolvedValue(true)
     vi.mocked(readSessionMetadata).mockResolvedValue({})
-    vi.mocked(setSessionMarkedUnread).mockResolvedValue(true)
+    vi.mocked(markSessionUnread).mockResolvedValue(true)
+    vi.mocked(clearSessionUnread).mockResolvedValue(true)
   })
 
-  it('POST raises the flag', async () => {
+  it('POST raises the mark', async () => {
     const res = await app.request('http://localhost/api/agents/test-agent/sessions/sess-1/unread', {
       method: 'POST',
     })
 
     expect(res.status).toBe(200)
-    expect(vi.mocked(setSessionMarkedUnread)).toHaveBeenCalledWith('test-agent', 'sess-1', true)
+    expect(vi.mocked(markSessionUnread)).toHaveBeenCalledWith('test-agent', 'sess-1')
+    expect(vi.mocked(clearSessionUnread)).not.toHaveBeenCalled()
   })
 
-  it('DELETE clears the flag', async () => {
+  it('DELETE clears the mark', async () => {
     const res = await app.request('http://localhost/api/agents/test-agent/sessions/sess-1/unread', {
       method: 'DELETE',
     })
 
     expect(res.status).toBe(200)
-    expect(vi.mocked(setSessionMarkedUnread)).toHaveBeenCalledWith('test-agent', 'sess-1', false)
+    expect(vi.mocked(clearSessionUnread)).toHaveBeenCalledWith('sess-1')
+    expect(vi.mocked(markSessionUnread)).not.toHaveBeenCalled()
   })
 
   // The clear fires on every session open; the client skips its session-list +
   // agent-list invalidation when the service reports no write happened, so the
   // flag has to survive to the response body.
   it('reports a no-op clear as unchanged so the client can skip refetching', async () => {
-    vi.mocked(setSessionMarkedUnread).mockResolvedValue(false)
+    vi.mocked(clearSessionUnread).mockResolvedValue(false)
 
     const res = await app.request('http://localhost/api/agents/test-agent/sessions/sess-1/unread', {
       method: 'DELETE',
@@ -8513,7 +8525,7 @@ describe('mark as unread — /:id/sessions/:sessionId/unread', () => {
     expect(await res.json()).toEqual({ success: true, markedUnread: false, changed: true })
   })
 
-  it('404s on an unknown session instead of conjuring metadata for it', async () => {
+  it('404s on an unknown session instead of marking an id nothing owns', async () => {
     vi.mocked(sessionIsKnown).mockResolvedValue(false)
 
     const res = await app.request('http://localhost/api/agents/test-agent/sessions/ghost/unread', {
@@ -8521,7 +8533,7 @@ describe('mark as unread — /:id/sessions/:sessionId/unread', () => {
     })
 
     expect(res.status).toBe(404)
-    expect(vi.mocked(setSessionMarkedUnread)).not.toHaveBeenCalled()
+    expect(vi.mocked(markSessionUnread)).not.toHaveBeenCalled()
   })
 
   it('does not collide with DELETE of the session itself', async () => {
@@ -8544,7 +8556,7 @@ describe('mark as unread — /:id/sessions/:sessionId/unread', () => {
       },
     ])
     vi.mocked(getSessionIdsWithUnreadNotifications).mockResolvedValue(new Set())
-    vi.mocked(readSessionMetadata).mockResolvedValue({ 'sess-1': { markedUnread: true } })
+    vi.mocked(getSessionIdsMarkedUnread).mockResolvedValue(new Set(['sess-1']))
 
     const res = await getReq(app, '/api/agents/test-agent/sessions')
     const body = await res.json()
@@ -8556,20 +8568,19 @@ describe('mark as unread — /:id/sessions/:sessionId/unread', () => {
     vi.mocked(listSessionsByIds).mockResolvedValue([])
     vi.mocked(messagePersister.getActiveSessionIdsForAgent).mockReturnValue([])
     vi.mocked(getSessionIdsWithUnreadNotifications).mockResolvedValue(new Set())
-    const metadata = { 'sess-marked': { markedUnread: true } }
-    vi.mocked(readSessionMetadata).mockResolvedValue(metadata)
+    vi.mocked(getSessionIdsMarkedUnread).mockResolvedValue(new Set(['sess-marked']))
 
     await getReq(app, '/api/agents/test-agent/sessions?notable=true')
 
-    // The map is handed down rather than re-read: listSessionsByIds needs it
-    // for names and visibility, and the route already parsed it to find the
-    // marked ids.
     expect(vi.mocked(listSessionsByIds)).toHaveBeenCalledWith(
       'test-agent',
       ['sess-marked'],
-      { excludeAutomated: true, metadata },
+      { excludeAutomated: true },
     )
-    expect(vi.mocked(readSessionMetadata)).toHaveBeenCalledTimes(1)
+    // The perf suite pins this route at zero file reads: with nothing notable
+    // the id set is empty and listSessionsByIds returns before it stats
+    // anything, so the marks must NOT come from session metadata.
+    expect(vi.mocked(readSessionMetadata)).not.toHaveBeenCalled()
   })
 })
 
