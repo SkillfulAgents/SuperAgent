@@ -31,49 +31,11 @@ describe('requestRemoteMcpTool', () => {
     }
   })
 
-  async function invokeTool(extra: Record<string, unknown> = {}) {
+  async function invokeTool() {
     const { createRequestRemoteMcpTool } = await import('./request-remote-mcp')
     const handler = (createRequestRemoteMcpTool(() => owningProcess) as any).handler
-    return handler({ url: 'https://mcp.granola.ai/mcp', name: 'Granola', authHint: 'oauth', ...extra })
+    return handler({ url: 'https://mcp.granola.ai/mcp', name: 'Granola', authHint: 'oauth' })
   }
-
-  it('forwards an agent-supplied client_id to the approval prompt', async () => {
-    process.env.REMOTE_MCPS = JSON.stringify([GRANOLA_MCP])
-    const toolUseId = `mcp-test-client-id`
-    inputManager.setCurrentToolUseId(toolUseId)
-    const createSpy = vi.spyOn(inputManager, 'createPendingWithType')
-    inputManager.resolve(toolUseId, GRANOLA_MCP.id)
-
-    await invokeTool({ clientId: '2476112079565355', clientName: 'Gamut MCP Connection' })
-
-    // Servers that reject dynamic registration need a client the user registered
-    // themselves; the prompt prefills it so they can check it before connecting.
-    expect(createSpy).toHaveBeenCalledWith(
-      toolUseId,
-      'remote_mcp',
-      expect.objectContaining({
-        clientId: '2476112079565355',
-        clientName: 'Gamut MCP Connection',
-      }),
-    )
-    createSpy.mockRestore()
-  })
-
-  it('never carries a client secret in the prompt payload', async () => {
-    process.env.REMOTE_MCPS = JSON.stringify([GRANOLA_MCP])
-    const toolUseId = `mcp-test-no-secret`
-    inputManager.setCurrentToolUseId(toolUseId)
-    const createSpy = vi.spyOn(inputManager, 'createPendingWithType')
-    inputManager.resolve(toolUseId, GRANOLA_MCP.id)
-
-    // A secret passed anyway must not reach a payload that gets persisted to the
-    // session transcript — it stays user-entered in the form only.
-    await invokeTool({ clientSecret: 'super-secret' })
-
-    const payload = createSpy.mock.calls[0][2] as Record<string, unknown>
-    expect(payload).not.toHaveProperty('clientSecret')
-    createSpy.mockRestore()
-  })
 
   it('reports registered tools when the resolved server is in REMOTE_MCPS', async () => {
     process.env.REMOTE_MCPS = JSON.stringify([GRANOLA_MCP])

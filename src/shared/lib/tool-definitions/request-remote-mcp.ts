@@ -3,8 +3,6 @@ export interface RequestRemoteMcpInput {
   name?: string
   reason?: string
   authHint?: 'oauth' | 'bearer'
-  clientId?: string
-  clientName?: string
 }
 
 function parseInput(input: unknown): RequestRemoteMcpInput {

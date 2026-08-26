@@ -85,8 +85,6 @@ export type UserRequestEvent =
       name?: string
       reason?: string
       authHint?: 'oauth' | 'bearer'
-      clientId?: string
-      clientName?: string
       agentSlug?: string
     }
   | {

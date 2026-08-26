@@ -87,11 +87,6 @@ export const pendingUserInputRequestSchema = z.discriminatedUnion('kind', [
       name: lenientString,
       reason: lenientString,
       authHint: lenientString,
-      // Prefilled into the connect form's Advanced section. A client_id is public
-      // by OAuth design; a client_secret is deliberately absent from this payload
-      // and stays user-entered only, so it never lands in a persisted transcript.
-      clientId: lenientString,
-      clientName: lenientString,
     }),
   }),
   baseRequest.extend({

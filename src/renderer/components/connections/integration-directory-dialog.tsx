@@ -36,14 +36,11 @@ import {
   useAddRemoteMcp,
   useInitiateMcpOAuth,
   useInvalidateRemoteMcps,
-  useMcpOAuthRedirectUris,
 } from '@renderer/hooks/use-remote-mcps'
 import { useMcpOAuthListener } from '@renderer/hooks/use-mcp-oauth-listener'
 import { useDelayedOAuthAbort } from '@renderer/hooks/use-delayed-oauth-abort'
 import type { Provider } from '@shared/lib/account-providers/service-catalog'
 import { COMMON_MCP_SERVERS, type CommonMcpServer } from '@shared/lib/mcp/common-servers'
-import { McpSetupGuide } from './mcp-setup-guide'
-import { McpAdvancedClientFields } from './mcp-advanced-client-fields'
 import { OAuthFlowCancel } from './oauth-flow-cancel'
 
 export type DirectoryTab = 'apis' | 'mcps'
@@ -341,7 +338,6 @@ function McpsPanel({ filter, onConnected, fallbackClose }: { filter: string; onC
   const addMcp = useAddRemoteMcp()
   const initiateOAuth = useInitiateMcpOAuth()
   const invalidateRemoteMcps = useInvalidateRemoteMcps()
-  const { data: redirectUris } = useMcpOAuthRedirectUris()
 
   const [error, setError] = useState<string | null>(null)
   const [draft, setDraft] = useState<DraftState | null>(null)
@@ -516,11 +512,8 @@ function McpsPanel({ filter, onConnected, fallbackClose }: { filter: string; onC
     if (!draft) return null
     const canSubmit = mcpDraftSchema.safeParse(draft).success
     const busy = submitting || oauthPending
-    // Provider-side setup for the picked catalog row, if it has any.
-    const setup = COMMON_MCP_SERVERS.find((s) => s.slug === draft.sourceSlug)?.setup
     return (
       <div className="space-y-2">
-        {setup && <McpSetupGuide guide={setup} redirectUri={redirectUris?.preferred} />}
         <div>
           <Label className="text-xs font-normal text-muted-foreground/70">Name</Label>
           <Input
@@ -571,16 +564,48 @@ function McpsPanel({ filter, onConnected, fallbackClose }: { filter: string; onC
           </div>
         )}
         {draft.authType === 'oauth' && (
-          <McpAdvancedClientFields
-            values={{
-              clientName: draft.clientName,
-              clientId: draft.clientId,
-              clientSecret: draft.clientSecret,
-            }}
-            onChange={(next) => setDraft({ ...draft, ...next })}
-            defaultOpen={setup?.requiresClientId}
-            testIdPrefix="mcp-form"
-          />
+          <details className="group rounded-md pt-2">
+            <summary className="cursor-pointer list-none text-xs text-muted-foreground/70 hover:text-muted-foreground select-none">
+              <span className="inline-block transition-transform group-open:rotate-90">›</span>
+              <span className="ml-1">Advanced</span>
+            </summary>
+            <div className="mt-2 space-y-2">
+              <div>
+                <Label className="text-xs font-normal text-muted-foreground/70">Client Name</Label>
+                <Input
+                  value={draft.clientName}
+                  onChange={(e) => setDraft({ ...draft, clientName: e.target.value })}
+                  placeholder="Override OAuth client_name (optional)"
+                  className="mt-1"
+                  data-testid="mcp-form-client-name"
+                />
+              </div>
+              <div>
+                <Label className="text-xs font-normal text-muted-foreground/70">Client ID</Label>
+                <Input
+                  value={draft.clientId}
+                  onChange={(e) => setDraft({ ...draft, clientId: e.target.value })}
+                  placeholder="Provide your own OAuth client_id (optional)"
+                  className="mt-1"
+                  data-testid="mcp-form-client-id"
+                />
+                <p className="mt-1 text-[11px] text-muted-foreground/70">
+                  For servers that don&apos;t support open dynamic client registration and have issued you a client ID directly.
+                </p>
+              </div>
+              <div>
+                <Label className="text-xs font-normal text-muted-foreground/70">Client Secret</Label>
+                <Input
+                  type="password"
+                  value={draft.clientSecret}
+                  onChange={(e) => setDraft({ ...draft, clientSecret: e.target.value })}
+                  placeholder="OAuth client_secret (optional, only if your provider requires one)"
+                  className="mt-1"
+                  data-testid="mcp-form-client-secret"
+                />
+              </div>
+            </div>
+          </details>
         )}
         {error && (
           <div className="rounded-md border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">

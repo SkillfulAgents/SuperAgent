@@ -32,11 +32,7 @@ export function createRequestRemoteMcpTool(getProcess: () => RemoteMcpInjectionT
   'request_remote_mcp',
   `Request access to a remote MCP server. The user will be prompted to connect the MCP server (potentially going through OAuth), then assign it to this agent. After approval, the MCP tools become available.
 
-Use this when you need to interact with an MCP server that hasn't been configured for this agent yet. You should know the URL of the MCP server you want to connect to.
-
-Some servers cannot be connected by approving this request alone: the user must first register an OAuth app in the provider's own console and allowlist our callback URL. search_remote_mcp_services flags those servers. When one is flagged, say so before calling this tool, so the user knows the approval prompt will ask them for setup they have to do outside this session. The prompt itself shows them the exact steps and callback URL.
-
-Never ask the user to paste a client secret into the chat. If they want you to look up a client_id in their provider console, do that with the browser tools and pass it as clientId — they can still edit it before connecting.`,
+Use this when you need to interact with an MCP server that hasn't been configured for this agent yet. You should know the URL of the MCP server you want to connect to.`,
   {
     url: z
       .url()
@@ -53,14 +49,6 @@ Never ask the user to paste a client secret into the chat. If they want you to l
       .enum(['oauth', 'bearer'])
       .optional()
       .describe('Authentication type hint if known (e.g., from reading the MCP server docs). Use "oauth" for servers requiring OAuth authorization, "bearer" for servers requiring a bearer token.'),
-    clientId: z
-      .string()
-      .optional()
-      .describe('OAuth client_id to prefill, for servers that reject dynamic client registration and require an app the user registered themselves. Only pass a value the user gave you or that you read from their provider console at their request — never invent one. The user can edit it before connecting.'),
-    clientName: z
-      .string()
-      .optional()
-      .describe('Override the client_name sent during dynamic client registration. Rarely needed.'),
   },
   async (args) => {
     console.log(
@@ -93,14 +81,7 @@ Never ask the user to paste a client secret into the chat. If they want you to l
       const resolvedRemoteMcpIds = await inputManager.createPendingWithType<string | string[]>(
         toolUseId,
         'remote_mcp',
-        {
-          url: args.url,
-          name: args.name,
-          reason: args.reason,
-          authHint: args.authHint,
-          clientId: args.clientId,
-          clientName: args.clientName,
-        }
+        { url: args.url, name: args.name, reason: args.reason, authHint: args.authHint }
       )
       const remoteMcpIds = Array.isArray(resolvedRemoteMcpIds) ? resolvedRemoteMcpIds : [resolvedRemoteMcpIds]
 

@@ -60,8 +60,6 @@ export function renderPendingRequest(
           name={d.name}
           reason={d.reason}
           authHint={d.authHint}
-          clientId={d.clientId}
-          clientName={d.clientName}
           sessionId={ctx.sessionId}
           agentSlug={ctx.agentSlug}
           readOnly={ctx.readOnly}
