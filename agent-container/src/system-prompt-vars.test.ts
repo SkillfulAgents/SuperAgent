@@ -46,12 +46,14 @@ describe('generateSystemPrompt rendering', () => {
     // its procedural API details now live in the on-demand guide.
     expect(out.includes('## Built-in media generation')).toBe(webhook)
     expect(out.includes('/opt/gamut/docs/media-generation.md')).toBe(webhook)
-    // Spending the user's money is an approval rule, so the cost confirmation
-    // and the no-invented-slugs rule stay in the prompt even though the API
-    // procedure moved out.
+    expect(out.includes('## Built-in lead enrichment')).toBe(webhook)
+    expect(out.includes('/opt/gamut/docs/lead-enrichment.md')).toBe(webhook)
+    // Approval rules stay in the prompt; API procedure lives in the guide.
     expect(out.includes('cost from that model')).toBe(webhook)
     expect(out.includes('Never invent a model slug')).toBe(webhook)
+    expect(out.includes('Phone reveal, email waterfall, and Apollo CRM writes are blocked')).toBe(webhook)
     expect(out).not.toContain('v1/replicate')
+    expect(out).not.toContain('v1/apollo')
     expect(out).not.toContain('ANTHROPIC_AUTH_TOKEN')
   })
 
@@ -75,6 +77,22 @@ describe('generateSystemPrompt rendering', () => {
     expect(guide).not.toContain('Available models')
   })
 
+  it('teaches the match-then-enrich Apollo contract in the guide', () => {
+    const guide = readFileSync(join(__dirname, '..', 'docs', 'lead-enrichment.md'), 'utf8')
+
+    expect(guide).toContain('/v1/apollo')
+    expect(guide).toContain('POST "$ANTHROPIC_BASE_URL/v1/apollo/people/match"')
+    expect(guide).toContain('GET /organizations/enrich?domain=')
+    expect(guide).toContain('POST /people/bulk_match')
+    expect(guide).toContain('POST /organizations/bulk_enrich')
+    expect(guide).toContain('POST /mixed_people/api_search')
+    expect(guide).toContain('reveal_phone_number')
+    expect(guide).toContain('run_waterfall_phone')
+    expect(guide).toContain('run_waterfall_email')
+    expect(guide).toContain('/contacts')
+    expect(guide).toContain('at most 10')
+  })
+
   it('references every image-owned capability guide and keeps its source file present', () => {
     process.env.COMPOSIO_PLATFORM_MODE = 'true'
     process.env.PLATFORM_AUTH_ACTIVE = 'true'
@@ -84,6 +102,7 @@ describe('generateSystemPrompt rendering', () => {
       'scheduling-and-resuming.md',
       'webhooks.md',
       'media-generation.md',
+      'lead-enrichment.md',
       'chat-integrations.md',
       'browser-use.md',
       'computer-use.md',

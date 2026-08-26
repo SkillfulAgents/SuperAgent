@@ -31,6 +31,7 @@ itself important.
 - `scheduling-and-resuming.md`
 - `webhooks.md`
 - `media-generation.md`
+- `lead-enrichment.md`
 - `chat-integrations.md`
 - `browser-use.md`
 - `computer-use.md`
