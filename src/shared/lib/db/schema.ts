@@ -200,8 +200,10 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   id: text('id').primaryKey(),
   agentSlug: text('agent_slug').notNull(),
 
-  // Schedule configuration
-  scheduleType: text('schedule_type', { enum: ['at', 'cron'] }).notNull(),
+  // Schedule configuration. 'event' rows are session wakes that fire when the
+  // sessions in wakeOnSessions finish, not on a clock; they carry no time
+  // until they become due.
+  scheduleType: text('schedule_type', { enum: ['at', 'cron', 'event'] }).notNull(),
   scheduleExpression: text('schedule_expression').notNull(),
 
   // Task details
@@ -213,8 +215,9 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
     .notNull()
     .default('pending'),
 
-  // Timing
-  nextExecutionAt: integer('next_execution_at', { mode: 'timestamp_ms' }).notNull(),
+  // Timing. Null only on 'event' session wakes that are not yet due; the
+  // scheduler's due query (nextExecutionAt <= now) never selects a null.
+  nextExecutionAt: integer('next_execution_at', { mode: 'timestamp_ms' }),
   lastExecutedAt: integer('last_executed_at', { mode: 'timestamp_ms' }),
 
   // Recurrence
@@ -228,6 +231,10 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   // When set, this task is a session "wake": firing resumes the referenced
   // existing session (sendMessage into it) instead of creating a new one.
   resumeSessionId: text('resume_session_id'),
+  // JSON string, session wakes only: the invoked sessions this wake waits on
+  // and the timer it deferred when they finished first. Parsed with Zod in
+  // src/shared/lib/services/wake-on-sessions.ts; never read raw elsewhere.
+  wakeOnSessions: text('wake_on_sessions'),
 
   // Timezone (IANA identifier, e.g. 'America/New_York')
   timezone: text('timezone'),

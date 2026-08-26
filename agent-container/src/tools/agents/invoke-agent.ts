@@ -7,6 +7,7 @@ interface InvokeResult {
   status: 'running' | 'completed'
   lastMessage?: string
   error?: string
+  wake?: boolean
 }
 
 export function makeInvokeAgentTool(getCallerSessionId: () => string) {
@@ -16,7 +17,7 @@ export function makeInvokeAgentTool(getCallerSessionId: () => string) {
 
 If session_id is omitted, a new session is started on the target agent. If session_id is provided, the message is appended to that existing session — the session must exist and not currently be running (use get_agent_session_transcript with sync to wait).
 
-If sync=true, the tool waits up to ~2 minutes for the target agent's turn to finish and returns its last message. If the target is still working after that, the call returns status 'running' with the session_id — the invocation was delivered and is in progress; do NOT re-invoke (that would start a duplicate run), poll get_agent_session_transcript instead. If sync=false (default), the tool returns immediately with status 'running' and you can later read the transcript with get_agent_session_transcript.
+If sync=true, the tool waits up to ~2 minutes for the target agent's turn to finish and returns its last message. If the target is still working after that, the call returns status 'running' with the session_id and wake: true — the invocation was delivered; do NOT re-invoke (that would start a duplicate run). End your turn; you will be woken with the result. If sync=false (default), the tool returns immediately with status 'running' and wake: true; end your turn and you will be woken when the agent finishes.
 
 Use list_agents first to discover available slugs.
 
@@ -38,6 +39,9 @@ Note: sessions started by another agent cannot themselves invoke other agents �
 
         const data = await callHost<InvokeResult>('invoke', body, { callerSessionId: getCallerSessionId() })
         const lines = [`session_id: ${data.sessionId}`, `status: ${data.status}`]
+        if (data.wake) {
+          lines.push('wake: you will be woken when this agent finishes. End your turn.')
+        }
         // Use !== undefined so an empty-string lastMessage is still surfaced
         // (compactMessage now returns "[no text response]" rather than "" for
         // empty turns, but be defensive — empty string is still semantically

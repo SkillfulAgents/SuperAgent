@@ -139,11 +139,12 @@ export interface ApiSession {
   speed?: SpeedLevel
   // Last model used on this session (seeds the composer selector)
   model?: string
-  // Present when the session has a pending scheduled wake (long sleep):
-  // it will auto-resume at pendingWakeAt with pendingWakeNote echoed back.
+  // Present when the session has a pending wake: a clock (pendingWakeAt) or
+  // invoked agents it is waiting on (pendingWakeWaitingOn), or both.
   pendingWakeAt?: string
   pendingWakeTaskId?: string
   pendingWakeNote?: string
+  pendingWakeWaitingOn?: string[]
 }
 
 // ============================================================================
@@ -368,12 +369,12 @@ export interface ApiSkillsetConfig {
 export interface ApiScheduledTask {
   id: string
   agentSlug: string
-  scheduleType: 'at' | 'cron'
+  scheduleType: 'at' | 'cron' | 'event'
   scheduleExpression: string
   prompt: string
   name: string | null
   status: 'pending' | 'paused' | 'executed' | 'cancelled' | 'failed'
-  nextExecutionAt: Date
+  nextExecutionAt: Date | null
   lastExecutedAt: Date | null
   isRecurring: boolean
   executionCount: number

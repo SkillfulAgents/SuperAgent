@@ -258,7 +258,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
     )
   }
 
-  const nextExecution = new Date(task.nextExecutionAt)
+  const nextExecution = task.nextExecutionAt ? new Date(task.nextExecutionAt) : null
   const isRecurring = task.isRecurring
 
   const headerActions = isActive && canCancel ? (
@@ -447,7 +447,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
                   {task.status === 'pending' && (
                     <div>
                       <dt className="text-xs text-muted-foreground">Next Run</dt>
-                      <dd className="text-xs font-normal">{formatInTaskTz(nextExecution)}</dd>
+                      <dd className="text-xs font-normal">{nextExecution ? formatInTaskTz(nextExecution) : 'When its agents finish'}</dd>
                     </div>
                   )}
                   {isRecurring && task.executionCount > 0 && (

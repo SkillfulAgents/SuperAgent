@@ -18,6 +18,18 @@ describe('buildSystemPromptVars', () => {
 })
 
 describe('generateSystemPrompt rendering', () => {
+  it('tells the agent to end its turn after an async invoke and never to poll', () => {
+    const out = generateSystemPrompt()
+    const section = out.slice(out.indexOf('## Cross-Agent Work'), out.indexOf('## Chat Integrations'))
+    expect(section).toContain('end your turn')
+    expect(section).toContain('You will be woken')
+    // The only mention of polling left is the prohibition.
+    const polls = section.match(/poll/gi) ?? []
+    expect(polls).toHaveLength(1)
+    expect(section).toMatch(/Never poll/)
+    expect(section).toContain('one hop deep')
+  })
+
   // Trigger gating across every env combination, in one table so each case is
   // named. The `## Webhook Triggers` header always renders (disconnected hosts
   // still get the disclaimer under it), but the `### Custom Webhook Endpoints`

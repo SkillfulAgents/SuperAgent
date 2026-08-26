@@ -359,14 +359,23 @@ vi.mock('@shared/lib/services/audit-log-service', () => ({
   logAuditEventOrThrow: vi.fn(),
 }))
 
+const mockSettleWakeTarget = vi.fn((..._args: unknown[]) => Promise.resolve([]))
+const mockSettleWakeTargetsForAgent = vi.fn((..._args: unknown[]) => Promise.resolve([]))
+const mockListPendingWakesByAgent = vi.fn<(...args: unknown[]) => Promise<unknown[]>>(() => Promise.resolve([]))
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   listScheduledTasks: vi.fn(),
   listPendingScheduledTasks: vi.fn(),
   listCancelledScheduledTasks: vi.fn(),
   listCompletedOneTimeTasks: vi.fn(),
-  listPendingWakesByAgent: vi.fn(() => Promise.resolve([])),
+  listPendingWakesByAgent: (...args: unknown[]) => mockListPendingWakesByAgent(...args),
   getPendingWakeForSession: vi.fn(() => Promise.resolve(null)),
   cancelPendingWakeForSession: vi.fn(() => Promise.resolve(false)),
+  settleWakeTarget: (...args: unknown[]) => mockSettleWakeTarget(...args),
+  settleWakeTargetsForAgent: (...args: unknown[]) => mockSettleWakeTargetsForAgent(...args),
+}))
+vi.mock('@shared/lib/scheduler/invoked-session-listener', () => ({
+  isCallerIdle: () => true,
+  kickIfWakeBecameDue: vi.fn(),
 }))
 
 vi.mock('@shared/lib/account-providers', () => ({
@@ -587,7 +596,7 @@ import {
 } from '@shared/lib/services/skillset-service'
 import { getAgent, getAgentWithStatus, listAgentsWithStatus } from '@shared/lib/services/agent-service'
 import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
-import { listCompletedOneTimeTasks, listPendingScheduledTasks } from '@shared/lib/services/scheduled-task-service'
+import { listCompletedOneTimeTasks, listPendingScheduledTasks, getPendingWakeForSession } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
@@ -4462,6 +4471,19 @@ describe('DELETE /:id/sessions/:sessionId', () => {
     expect(deleteSession).toHaveBeenCalledWith('test-agent', 'sess-1')
   })
 
+  it('stamps the session deleted on any wake waiting for it', async () => {
+    vi.mocked(deleteSession).mockResolvedValue(true)
+
+    const res = await deleteReq(app, URL)
+
+    expect(res.status).toBe(204)
+    expect(mockSettleWakeTarget).toHaveBeenCalledWith({
+      targetSessionId: 'sess-1',
+      outcome: 'deleted',
+      callerIdle: expect.any(Function),
+    })
+  })
+
   it('cleans up notification rows for the deleted session (both modes)', async () => {
     // SUP-228: deleting a session must not leave stale notification history
     // pointing at it. Notifications exist in non-auth mode too, so this runs
@@ -8067,6 +8089,37 @@ describe('sessions list query contract — GET /:id/sessions', () => {
     vi.mocked(listSessions).mockResolvedValue([])
   })
 
+  it('exposes who an event wake is waiting on', async () => {
+    const SEEDED_ID = 'newer-visible'
+    vi.mocked(listSessions).mockResolvedValue([
+      sessionInfo(SEEDED_ID, '2026-01-02T00:00:00Z'),
+    ])
+    mockListPendingWakesByAgent.mockResolvedValue([{
+      id: 'wake-1',
+      resumeSessionId: SEEDED_ID,
+      nextExecutionAt: null,
+      prompt: '',
+      wakeOnSessions: JSON.stringify({
+        targets: [
+          { agentSlug: 'agent-b', sessionId: 'sess-b' },
+          { agentSlug: 'agent-c', sessionId: 'sess-c', outcome: 'completed' },
+        ],
+      }),
+    }])
+    vi.mocked(getAgent).mockImplementation(async (slug: string) =>
+      slug === 'agent-b' ? { slug, frontmatter: { name: 'Researcher', createdAt: '2026-01-01T00:00:00Z' }, instructions: '' } : null,
+    )
+
+    const res = await getReq(app, URL)
+    const rows = await res.json()
+    const row = rows.find((r: { id: string }) => r.id === SEEDED_ID)
+
+    expect(row.pendingWakeAt).toBeUndefined()
+    expect(row.pendingWakeTaskId).toBe('wake-1')
+    expect(row.pendingWakeWaitingOn).toEqual(['Researcher'])
+    vi.mocked(getAgent).mockReset()
+  })
+
   it('preserves the full visible-list behavior when no query is supplied', async () => {
     vi.mocked(listSessions).mockResolvedValue([
       sessionInfo('newer-visible', '2026-01-02T00:00:00Z'),
@@ -8331,6 +8384,33 @@ describe('session existence guards read metadata, not the transcript', () => {
       invokedByAgentSlug: 'caller-agent',
       invokedByAgentName: 'Caller Agent',
     })
+  })
+
+  it('exposes an event wake without a time on the single-session payload', async () => {
+    vi.mocked(getSessionMetadata).mockResolvedValue(null)
+    vi.mocked(getPendingWakeForSession).mockResolvedValue({
+      id: 'wake-1',
+      resumeSessionId: 'sess-1',
+      nextExecutionAt: null,
+      prompt: '',
+      wakeOnSessions: JSON.stringify({
+        targets: [{ agentSlug: 'agent-b', sessionId: 'sess-b' }],
+      }),
+    } as never)
+    vi.mocked(getAgent).mockResolvedValue({
+      slug: 'agent-b',
+      frontmatter: { name: 'Researcher', createdAt: '2026-01-01T00:00:00Z' },
+      instructions: '',
+    } as never)
+
+    const res = await getReq(app, '/api/agents/test-agent/sessions/sess-1')
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.pendingWakeAt).toBeUndefined()
+    expect(body.pendingWakeTaskId).toBe('wake-1')
+    expect(body.pendingWakeWaitingOn).toEqual(['Researcher'])
+    vi.mocked(getAgent).mockReset()
+    vi.mocked(getPendingWakeForSession).mockResolvedValue(null)
   })
 
   it('renames a session with a single transcript read', async () => {

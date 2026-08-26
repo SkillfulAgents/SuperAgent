@@ -2420,6 +2420,23 @@ describe('MessagePersister', () => {
       expect(sseEvents.filter((e) => e.type === 'session_idle')).toHaveLength(1)
     })
 
+    it('puts sessionId on the global session_idle so the invoked-session listener can settle', () => {
+      const globalEvents: Array<Record<string, unknown>> = []
+      const remove = messagePersister.addGlobalNotificationClient((data) => {
+        globalEvents.push(data as Record<string, unknown>)
+      })
+      try {
+        messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+        messagePersister.markSessionIdle(SESSION_ID)
+        const idle = globalEvents.filter((e) => e.type === 'session_idle')
+        expect(idle).toHaveLength(1)
+        expect(idle[0].sessionId).toBe(SESSION_ID)
+        expect(idle[0].agentSlug).toBe(AGENT_SLUG)
+      } finally {
+        remove()
+      }
+    })
+
     it('is a no-op on an already-idle session', () => {
       sseEvents.length = 0
 

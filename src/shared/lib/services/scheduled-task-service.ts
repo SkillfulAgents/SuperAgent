@@ -10,6 +10,14 @@ import { scheduledTasks, type ScheduledTask, type NewScheduledTask } from '@shar
 import { eq, and, lte, inArray, isNotNull, isNull, desc } from 'drizzle-orm'
 import { getNextCronTime, parseAtSyntax } from './schedule-parser'
 import { trackServerEvent } from '../analytics/server-analytics'
+import {
+  openTargets,
+  parseWakeOnSessions,
+  serializeWakeOnSessions,
+  type WakeOnSessions,
+  type WakeOutcome,
+  type WakeTarget,
+} from './wake-on-sessions'
 
 // Re-export the ScheduledTask type for external use
 export type { ScheduledTask, NewScheduledTask }
@@ -47,6 +55,9 @@ export interface CreateSessionWakeParams {
   name?: string
   createdByUserId?: string
   timezone?: string
+  // Absolute time, used instead of parsing scheduleExpression. Set when a
+  // deferred timer is re-created after an event wake fired first.
+  wakeAt?: Date
 }
 
 export interface UpdateNextExecutionParams {
@@ -122,9 +133,9 @@ export async function createScheduledTask(
  */
 export async function createSessionWake(
   params: CreateSessionWakeParams
-): Promise<{ taskId: string; replaced: ScheduledTask | null }> {
+): Promise<{ taskId: string; replaced: ScheduledTask | null; merged: boolean }> {
   // Throws on unparseable/past expressions — before existing state is touched.
-  const nextExecutionAt = parseAtSyntax(params.scheduleExpression, params.timezone || undefined)
+  const nextExecutionAt = params.wakeAt ?? parseAtSyntax(params.scheduleExpression, params.timezone || undefined)
 
   const id = crypto.randomUUID()
   const now = new Date()
@@ -146,10 +157,10 @@ export async function createSessionWake(
     resumeSessionId: params.sessionId,
   }
 
-  // Synchronous better-sqlite3 transaction: read-existing → cancel → insert is
-  // one atomic unit, so no other caller can observe (or create) an
+  // Synchronous better-sqlite3 transaction: read-existing → merge-or-cancel →
+  // insert is one atomic unit, so no other caller can observe (or create) an
   // intermediate state.
-  const replaced = db.transaction((tx) => {
+  const result = db.transaction((tx) => {
     const existing = tx
       .select()
       .from(scheduledTasks)
@@ -162,6 +173,28 @@ export async function createSessionWake(
       )
       .all()
 
+    // A row that lists invoked sessions keeps them, open or already finished:
+    // the timer merges onto it, and whichever trigger comes first wakes the
+    // session. Replacing it would drop a finished target's outcome that is
+    // only waiting for the caller's turn to end.
+    const waiting = existing.find((w) => {
+      const wake = parseWakeOnSessions(w.wakeOnSessions)
+      return wake !== null && wake.targets.length > 0
+    })
+    if (waiting) {
+      tx.update(scheduledTasks)
+        .set({
+          scheduleType: 'at',
+          scheduleExpression: params.scheduleExpression,
+          prompt: params.note,
+          nextExecutionAt,
+          timezone: params.timezone || null,
+        })
+        .where(eq(scheduledTasks.id, waiting.id))
+        .run()
+      return { taskId: waiting.id, replaced: null, merged: true }
+    }
+
     for (const wake of existing) {
       tx.update(scheduledTasks)
         .set({ status: 'cancelled', cancelledAt: now })
@@ -171,17 +204,232 @@ export async function createSessionWake(
 
     tx.insert(scheduledTasks).values(newTask).run()
 
-    return existing[0] ?? null
+    return { taskId: id, replaced: existing[0] ?? null, merged: false }
   })
 
-  trackServerEvent('task_scheduled', {
-    scheduleType: 'at',
-    isRecurring: false,
-    scheduleExpression: params.scheduleExpression,
-    agentSlug: params.agentSlug,
-  })
+  // A merge and a deferred-timer re-creation (wakeAt) are the same user
+  // intent already counted once.
+  if (!result.merged && !params.wakeAt) {
+    trackServerEvent('task_scheduled', {
+      scheduleType: 'at',
+      isRecurring: false,
+      scheduleExpression: params.scheduleExpression,
+      agentSlug: params.agentSlug,
+    })
+  }
 
-  return { taskId: id, replaced }
+  return result
+}
+
+// ============================================================================
+// Event wakes: a session wake that fires when invoked sessions finish
+// ============================================================================
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0]
+
+function pendingWakeRow(tx: Tx, agentSlug: string, sessionId: string): ScheduledTask | undefined {
+  return tx
+    .select()
+    .from(scheduledTasks)
+    .where(
+      and(
+        eq(scheduledTasks.agentSlug, agentSlug),
+        eq(scheduledTasks.resumeSessionId, sessionId),
+        eq(scheduledTasks.status, 'pending')
+      )
+    )
+    .get()
+}
+
+/**
+ * Make a fully-settled row due now. A clock still in the future moves to
+ * deferredTimerAt so delivery can re-create it afterwards.
+ */
+function makeDue(tx: Tx, row: ScheduledTask, wake: WakeOnSessions, now: Date): void {
+  const deferredTimerAt =
+    row.nextExecutionAt && row.nextExecutionAt.getTime() > now.getTime()
+      ? row.nextExecutionAt.toISOString()
+      : wake.deferredTimerAt
+  tx.update(scheduledTasks)
+    .set({
+      nextExecutionAt: now,
+      wakeOnSessions: serializeWakeOnSessions({ ...wake, deferredTimerAt }),
+    })
+    .where(eq(scheduledTasks.id, row.id))
+    .run()
+}
+
+/**
+ * Record that `sessionId` is waiting on `target`. Appends to the session's
+ * pending wake (timer or event) or creates an event wake with no time.
+ * Idempotent on an open target session id. A stamped target for the same
+ * conversation is replaced so a second invoke waits for the new turn.
+ */
+export async function addWakeTarget(params: {
+  agentSlug: string
+  sessionId: string
+  target: WakeTarget
+  createdByUserId?: string
+}): Promise<{ taskId: string }> {
+  const now = new Date()
+  return db.transaction((tx) => {
+    const existing = pendingWakeRow(tx, params.agentSlug, params.sessionId)
+    if (existing) {
+      const wake = parseWakeOnSessions(existing.wakeOnSessions) ?? { targets: [] }
+      const match = wake.targets.findIndex((t) => t.sessionId === params.target.sessionId)
+      if (match === -1) {
+        wake.targets.push(params.target)
+        tx.update(scheduledTasks)
+          .set({ wakeOnSessions: serializeWakeOnSessions(wake) })
+          .where(eq(scheduledTasks.id, existing.id))
+          .run()
+        return { taskId: existing.id }
+      }
+      if (wake.targets[match].outcome === undefined) {
+        return { taskId: existing.id }
+      }
+      wake.targets[match] = params.target
+      let nextExecutionAt = existing.nextExecutionAt
+      let { deferredTimerAt } = wake
+      const due = nextExecutionAt !== null && nextExecutionAt.getTime() <= now.getTime()
+      if (due) {
+        if (deferredTimerAt) {
+          nextExecutionAt = new Date(deferredTimerAt)
+          deferredTimerAt = undefined
+        } else {
+          nextExecutionAt = null
+        }
+      }
+      tx.update(scheduledTasks)
+        .set({
+          wakeOnSessions: serializeWakeOnSessions({ ...wake, deferredTimerAt }),
+          nextExecutionAt,
+        })
+        .where(eq(scheduledTasks.id, existing.id))
+        .run()
+      return { taskId: existing.id }
+    }
+
+    const id = crypto.randomUUID()
+    const newTask: NewScheduledTask = {
+      id,
+      agentSlug: params.agentSlug,
+      scheduleType: 'event',
+      scheduleExpression: '',
+      prompt: '',
+      status: 'pending',
+      nextExecutionAt: null,
+      isRecurring: false,
+      executionCount: 0,
+      createdAt: now,
+      createdBySessionId: params.sessionId,
+      createdByUserId: params.createdByUserId,
+      resumeSessionId: params.sessionId,
+      wakeOnSessions: serializeWakeOnSessions({ targets: [params.target] }),
+    }
+    tx.insert(scheduledTasks).values(newTask).run()
+    return { taskId: id }
+  })
+}
+
+/**
+ * Pending session wakes that are waiting on invoked sessions.
+ */
+export async function listPendingEventWakes(): Promise<ScheduledTask[]> {
+  return db
+    .select()
+    .from(scheduledTasks)
+    .where(and(eq(scheduledTasks.status, 'pending'), isNotNull(scheduledTasks.wakeOnSessions)))
+}
+
+/**
+ * Stamp `outcome` on every pending wake waiting on `targetSessionId`. Only
+ * entries without an outcome change (first writer wins). A row whose entries
+ * are now all stamped becomes due when its caller session is idle; otherwise
+ * markWakeDueIfSettled makes it due on the caller's next idle.
+ * Returns the ids of rows made due.
+ */
+export async function settleWakeTarget(params: {
+  targetSessionId: string
+  outcome: WakeOutcome
+  callerIdle: (callerSessionId: string) => boolean
+}): Promise<string[]> {
+  return settleMatching((t) => t.sessionId === params.targetSessionId, params.outcome, params.callerIdle)
+}
+
+/**
+ * Same as settleWakeTarget for every open target that belongs to one agent.
+ * Used when the agent itself is deleted and none of its sessions will ever
+ * emit a terminal event.
+ */
+export async function settleWakeTargetsForAgent(params: {
+  targetAgentSlug: string
+  outcome: WakeOutcome
+  callerIdle: (callerSessionId: string) => boolean
+}): Promise<string[]> {
+  return settleMatching((t) => t.agentSlug === params.targetAgentSlug, params.outcome, params.callerIdle)
+}
+
+function settleMatching(
+  matches: (target: WakeTarget) => boolean,
+  outcome: WakeOutcome,
+  callerIdle: (callerSessionId: string) => boolean,
+): Promise<string[]> {
+  const now = new Date()
+  return Promise.resolve(
+    db.transaction((tx) => {
+      const rows = tx
+        .select()
+        .from(scheduledTasks)
+        .where(and(eq(scheduledTasks.status, 'pending'), isNotNull(scheduledTasks.wakeOnSessions)))
+        .all()
+      const due: string[] = []
+      for (const row of rows) {
+        const wake = parseWakeOnSessions(row.wakeOnSessions)
+        if (!wake || !row.resumeSessionId) continue
+        const entries = wake.targets.filter((t) => matches(t) && t.outcome === undefined)
+        if (entries.length === 0) continue
+        for (const entry of entries) entry.outcome = outcome
+        tx.update(scheduledTasks)
+          .set({ wakeOnSessions: serializeWakeOnSessions(wake) })
+          .where(eq(scheduledTasks.id, row.id))
+          .run()
+        if (openTargets(wake).length === 0 && callerIdle(row.resumeSessionId)) {
+          makeDue(tx, row, wake, now)
+          due.push(row.id)
+        }
+      }
+      return due
+    }),
+  )
+}
+
+/**
+ * Called when a caller session goes idle: if its pending wake has every target
+ * stamped, make it due now. Returns true when the row is due after this call
+ * (just made, or already due from a caller-busy holdoff).
+ */
+export async function markWakeDueIfSettled(callerSessionId: string): Promise<boolean> {
+  const now = new Date()
+  return db.transaction((tx) => {
+    const row = tx
+      .select()
+      .from(scheduledTasks)
+      .where(
+        and(
+          eq(scheduledTasks.resumeSessionId, callerSessionId),
+          eq(scheduledTasks.status, 'pending'),
+          isNotNull(scheduledTasks.wakeOnSessions)
+        )
+      )
+      .get()
+    if (!row) return false
+    const wake = parseWakeOnSessions(row.wakeOnSessions)
+    if (!wake || wake.targets.length === 0 || openTargets(wake).length > 0) return false
+    if (row.nextExecutionAt && row.nextExecutionAt.getTime() <= now.getTime()) return true
+    makeDue(tx, row, wake, now)
+    return true
+  })
 }
 
 // ============================================================================
@@ -491,6 +739,8 @@ export async function markTaskFailed(taskId: string, _error: string): Promise<vo
 export async function resetScheduledTask(taskId: string): Promise<boolean> {
   const task = await getScheduledTask(taskId)
   if (!task) return false
+  // Event wakes have no clock to recompute; they become due when their targets finish.
+  if (task.scheduleType === 'event') return false
 
   // Calculate next execution time (timezone-aware)
   const tz = task.timezone || undefined
@@ -519,6 +769,8 @@ export async function resetScheduledTask(taskId: string): Promise<boolean> {
 export async function updateTaskTimezone(taskId: string, timezone: string): Promise<boolean> {
   const task = await getScheduledTask(taskId)
   if (!task || (task.status !== 'pending' && task.status !== 'paused')) return false
+  // Event wakes have no clock to recompute; they become due when their targets finish.
+  if (task.scheduleType === 'event') return false
 
   const tz = timezone || undefined
   let nextExecutionAt: Date

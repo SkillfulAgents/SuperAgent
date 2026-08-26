@@ -191,6 +191,11 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
   },
 }))
 
+const mockTrackInvokedSession = vi.fn(async (..._args: unknown[]) => {})
+vi.mock('@shared/lib/scheduler/invoked-session-listener', () => ({
+  trackInvokedSession: (...args: unknown[]) => mockTrackInvokedSession(...args),
+}))
+
 const mockCaptureException = vi.fn()
 vi.mock('@shared/lib/error-reporting', () => ({
   captureException: (...args: unknown[]) => mockCaptureException(...args),
@@ -222,6 +227,15 @@ function authedFetch(path: string, body: unknown, token = CALLER_TOKEN) {
     },
     body: JSON.stringify(body),
   })
+}
+
+const CALLER_SESSION = 'caller-session-1'
+function stubCallerSession() {
+  mockGetSessionMetadata.mockImplementation(async (slug: unknown, sessionId: unknown) =>
+    slug === CALLER_SLUG && sessionId === CALLER_SESSION
+      ? { name: 'caller', createdAt: new Date().toISOString(), createdByUserId: 'user-owner' }
+      : null,
+  )
 }
 
 async function grantCallerOwnerTargetAccess() {
@@ -280,6 +294,7 @@ beforeEach(async () => {
   mockSessionIsKnown.mockResolvedValue(true)
   mockReadAgentPreferences.mockResolvedValue({})
   mockGetSessionMetadata.mockResolvedValue(null)
+  mockTrackInvokedSession.mockResolvedValue(undefined)
   mockEnsureRunning.mockClear()
   mockEnsureRunning.mockResolvedValue({
     createSession: mockCreateSession,
@@ -1404,6 +1419,118 @@ describe('/invoke', () => {
     })
     const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hi' })
     expect(res.status).toBe(200)
+  })
+})
+
+describe('/invoke registers a wake for the caller', () => {
+  beforeEach(() => {
+    mockGetAgent.mockResolvedValue({ slug: TARGET_SLUG, frontmatter: { name: 'Target', createdAt: '2024-01-01' }, instructions: '' })
+    mockCreateSession.mockResolvedValue({ id: 'new-sess-id' })
+    reviewDecisions.push('allow')
+    stubCallerSession()
+  })
+
+  it('async existing session: registers with the pre-send reply boundary', async () => {
+    mockGetTranscript.mockResolvedValue([
+      { type: 'user', uuid: 'u-user', message: { role: 'user', content: 'earlier' } },
+      { type: 'assistant', uuid: 'u-prev', message: { role: 'assistant', content: [{ type: 'text', text: 'previous reply' }] } },
+    ])
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'more', sessionId: 'existing-sess', _callerSessionId: CALLER_SESSION })
+    expect(res.status).toBe(200)
+    expect(mockTrackInvokedSession).toHaveBeenCalledWith(expect.objectContaining({
+      target: { agentSlug: TARGET_SLUG, sessionId: 'existing-sess', boundaryUuid: 'u-prev' },
+    }))
+    expect(mockTrackInvokedSession.mock.invocationCallOrder[0]).toBeGreaterThan(mockSendMessage.mock.invocationCallOrder[0])
+  })
+
+  it('sync completion registers nothing', async () => {
+    mockGetTranscript.mockResolvedValue([
+      { type: 'assistant', uuid: 'u-1', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
+    ])
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'quick', sync: true, _callerSessionId: CALLER_SESSION })
+    expect((await res.json()).status).toBe('completed')
+    expect(mockTrackInvokedSession).not.toHaveBeenCalled()
+  })
+
+  it('sync timeout registers and the note says to end the turn, not poll', async () => {
+    mockWaitForIdle.mockRejectedValueOnce(waitForIdleTimeoutError())
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'slow', sync: true, _callerSessionId: CALLER_SESSION })
+    const body = await res.json()
+    expect(body).toMatchObject({ sessionId: 'new-sess-id', status: 'running', wake: true })
+    expect(body.error).toMatch(/end your turn/i)
+    expect(body.error).not.toMatch(/poll/i)
+    expect(mockTrackInvokedSession).toHaveBeenCalledTimes(1)
+  })
+
+  it('sync wait error (non-timeout) on an existing session still registers', async () => {
+    mockWaitForIdle.mockRejectedValueOnce(new Error('stream broke'))
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'x', sync: true, sessionId: 'existing-sess', _callerSessionId: CALLER_SESSION })
+    const body = await res.json()
+    expect(body).toMatchObject({ sessionId: 'existing-sess', status: 'running', wake: true })
+    expect(mockTrackInvokedSession).toHaveBeenCalledTimes(1)
+  })
+
+  it('sync timeout on an existing session registers with the boundary', async () => {
+    mockGetTranscript.mockResolvedValue([
+      { type: 'assistant', uuid: 'u-prev', message: { role: 'assistant', content: [{ type: 'text', text: 'previous' }] } },
+    ])
+    mockWaitForIdle.mockRejectedValueOnce(waitForIdleTimeoutError())
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'slow', sync: true, sessionId: 'existing-sess', _callerSessionId: CALLER_SESSION })
+    const body = await res.json()
+    expect(body).toMatchObject({ sessionId: 'existing-sess', status: 'running', wake: true })
+    expect(body.error).toMatch(/end your turn/i)
+    expect(mockTrackInvokedSession).toHaveBeenCalledWith(expect.objectContaining({
+      target: { agentSlug: TARGET_SLUG, sessionId: 'existing-sess', boundaryUuid: 'u-prev' },
+    }))
+  })
+
+  it('sync wait error (non-timeout) on a new session still registers', async () => {
+    mockWaitForIdle.mockRejectedValueOnce(new Error('stream broke'))
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'x', sync: true, _callerSessionId: CALLER_SESSION })
+    const body = await res.json()
+    expect(body).toMatchObject({ sessionId: 'new-sess-id', status: 'running', wake: true })
+    expect(body.error).toMatch(/stream broke/)
+    expect(mockTrackInvokedSession).toHaveBeenCalledWith(expect.objectContaining({
+      target: { agentSlug: TARGET_SLUG, sessionId: 'new-sess-id', boundaryUuid: undefined },
+    }))
+  })
+
+  it('no _callerSessionId: no wake, poll guidance unchanged', async () => {
+    mockWaitForIdle.mockRejectedValueOnce(waitForIdleTimeoutError())
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'slow', sync: true })
+    const body = await res.json()
+    expect(body.wake).toBeUndefined()
+    expect(body.error).toMatch(/poll get_agent_session_transcript/i)
+    expect(mockTrackInvokedSession).not.toHaveBeenCalled()
+  })
+
+  it('a _callerSessionId that resolves to no session registers nothing', async () => {
+    mockGetSessionMetadata.mockResolvedValue(null)
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'go', _callerSessionId: 'forged' })
+    expect(res.status).toBe(200)
+    expect((await res.json()).wake).toBeUndefined()
+    expect(mockTrackInvokedSession).not.toHaveBeenCalled()
+  })
+
+  it('registration failure returns running with an honest note and no wake flag', async () => {
+    mockTrackInvokedSession.mockRejectedValueOnce(new Error('db locked'))
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'go', _callerSessionId: CALLER_SESSION })
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.status).toBe('running')
+    expect(body.wake).toBeUndefined()
+    expect(body.error).toMatch(/could not register a wake/i)
+    expect(mockCaptureException).toHaveBeenCalled()
+  })
+
+  it('registration failure on a sync timeout tells the caller to poll, never to end its turn', async () => {
+    mockTrackInvokedSession.mockRejectedValueOnce(new Error('db locked'))
+    mockWaitForIdle.mockRejectedValueOnce(waitForIdleTimeoutError())
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'slow', sync: true, _callerSessionId: CALLER_SESSION })
+    const body = await res.json()
+    expect(body.wake).toBeUndefined()
+    expect(body.error).toMatch(/poll get_agent_session_transcript/i)
+    expect(body.error).not.toMatch(/end your turn/i)
   })
 })
 

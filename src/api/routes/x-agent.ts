@@ -48,8 +48,9 @@ import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { captureException } from '@shared/lib/error-reporting'
-import type { JsonlMessageEntry, JsonlSystemEntry } from '@shared/lib/types/agent'
-import { compactMessage, pageTranscript } from './x-agent-transcript-view'
+import { pageTranscript } from './x-agent-transcript-view'
+import { isReturnableAssistantEntry, readLastAssistantMessage } from './x-agent-last-message'
+import { trackInvokedSession } from '@shared/lib/scheduler/invoked-session-listener'
 
 const X_AGENT_SENTRY = { area: 'x-agent', op: 'invoke' } as const
 
@@ -401,24 +402,6 @@ const getTranscriptBodySchema = z.object({
   fullTranscript: z.boolean().optional(),
 })
 
-/**
- * After a sync invoke, the SDK may emit 'result' (which clears isActive) before
- * the assistant message has been flushed to the JSONL file. Poll briefly so
- * we return the actual response, not the user prompt.
- *
- * Total wait: ~5s (10 × 500ms). Generous enough to absorb slow filesystems
- * (NFS, encrypted home, AV scanners) without keeping the HTTP handler open
- * indefinitely. Polling stops as soon as an assistant entry is found.
- *
- * Returns the compacted last assistant message, or null if no assistant entry
- * appears within the retry window. compactMessage always returns non-empty
- * content for assistant entries (placeholders for thinking-only / empty turns),
- * so a null return here specifically means "no assistant turn was persisted".
- */
-// Tests can shrink the retry budget via env to keep timeouts snappy.
-const READ_RETRY_ATTEMPTS = Number(process.env.X_AGENT_READ_RETRY_ATTEMPTS) || 10
-const READ_RETRY_INTERVAL_MS = Number(process.env.X_AGENT_READ_RETRY_INTERVAL_MS) || 500
-
 // Sync x-agent calls hold the HTTP response open with zero bytes written until
 // the target turn completes, and the container's fetch (undici) aborts any
 // request whose response headers don't arrive within 300s ("fetch failed").
@@ -544,51 +527,14 @@ async function waitForTurnWithinBudget(
   }
 }
 
-function syncWaitPromotedNote(timeoutMs: number): string {
+function syncWaitPromotedNote(timeoutMs: number, wake: boolean): string {
+  const next = wake
+    ? 'You will be woken when it finishes. End your turn now.'
+    : 'Poll get_agent_session_transcript with this session_id to retrieve the result.'
   return (
     `Sync wait timed out after ${Math.round(timeoutMs / 1000)}s, but the target agent is still ` +
-    'working on this prompt. Do NOT re-invoke — that would start a duplicate run. ' +
-    'Poll get_agent_session_transcript with this session_id to retrieve the result.'
+    `working on this prompt. Do NOT re-invoke — that would start a duplicate run. ${next}`
   )
-}
-
-function isReturnableAssistantEntry(e: JsonlMessageEntry | JsonlSystemEntry): boolean {
-  return e.type === 'assistant' && compactMessage(e) !== null
-}
-
-/**
- * `boundaryUuid` is the uuid of the last assistant entry persisted BEFORE the
- * current turn's prompt was delivered (undefined when the session is new or
- * had none). Seeing that entry still last means this turn's reply hasn't
- * flushed yet — keep polling rather than returning the previous turn's answer
- * as if it were this one's.
- */
-async function readLastAssistantMessage(
-  targetSlug: string,
-  sessionId: string,
-  boundaryUuid?: string,
-): Promise<{ role: string; content: string; toolName?: string } | null> {
-  for (let i = 0; i < READ_RETRY_ATTEMPTS; i++) {
-    // Only the most recent assistant entry matters, so read the transcript
-    // from the tail instead of full-parsing it (transcripts reach 100MB+, and
-    // this runs up to READ_RETRY_ATTEMPTS times per invoke).
-    const entry = await findLastSessionEntry(targetSlug, sessionId, isReturnableAssistantEntry)
-    const isStaleBoundary = boundaryUuid !== undefined && entry?.uuid === boundaryUuid
-    if (entry && !isStaleBoundary) {
-      const compact = compactMessage(entry)
-      if (compact) {
-        return {
-          role: compact.role,
-          content: compact.content,
-          ...(compact.toolName ? { toolName: compact.toolName } : {}),
-        }
-      }
-    }
-    if (i < READ_RETRY_ATTEMPTS - 1) {
-      await new Promise((r) => setTimeout(r, READ_RETRY_INTERVAL_MS))
-    }
-  }
-  return null
 }
 
 xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), async (c) => {
@@ -718,6 +664,47 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     )
   }
 
+  // Sleep-on-invoke: a caller session that resolves to a real session of the
+  // calling agent is put on the wake list for this target. Only `running`
+  // returns register; a sync call that completed has its answer already.
+  const runningResponse = async (
+    targetSessionId: string,
+    boundaryUuid: string | undefined,
+    reason: { promoted: true } | { waitError: string } | null,
+  ): Promise<{ sessionId: string; status: 'running'; wake?: true; error?: string }> => {
+    let wake = false
+    let trackNote: string | undefined
+    if (_callerSessionId && callerMeta) {
+      try {
+        await trackInvokedSession({
+          callerAgentSlug: callerSlug,
+          callerSessionId: _callerSessionId,
+          createdByUserId: callerMeta.createdByUserId,
+          target: { agentSlug: targetSlug, sessionId: targetSessionId, boundaryUuid },
+        })
+        wake = true
+      } catch (trackError) {
+        const message = trackError instanceof Error ? trackError.message : String(trackError)
+        console.error('[x-agent] failed to register wake for caller', { callerSlug, targetSlug, targetSessionId, error: message })
+        captureException(trackError, {
+          tags: { ...X_AGENT_SENTRY, stage: 'track_wake' },
+          extra: { callerSlug, targetSlug, sessionId: targetSessionId },
+        })
+        trackNote = `Could not register a wake for this session (${message}); poll get_agent_session_transcript instead.`
+      }
+    }
+    const notes: string[] = []
+    if (reason && 'promoted' in reason) notes.push(syncWaitPromotedNote(SYNC_WAIT_TIMEOUT_MS, wake))
+    if (reason && 'waitError' in reason) notes.push(reason.waitError)
+    if (trackNote) notes.push(trackNote)
+    return {
+      sessionId: targetSessionId,
+      status: 'running',
+      ...(wake ? { wake: true } : {}),
+      ...(notes.length > 0 ? { error: notes.join(' ') } : {}),
+    }
+  }
+
   // Capture the triggering message's author before a review prompt can pause
   // this request and newer messages can arrive in a shared caller session.
   // This remains a best-effort "latest author" heuristic until the container
@@ -779,9 +766,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         // Last reply flushed before THIS prompt goes out — used to make sure a
         // fast turn's answer isn't confused with the previous turn's while the
         // new entry is still being written to the JSONL file.
-        const replyBoundary = sync
-          ? await findLastSessionEntry(targetSlug, existingSessionId, isReturnableAssistantEntry)
-          : null
+        const replyBoundary = await findLastSessionEntry(targetSlug, existingSessionId, isReturnableAssistantEntry)
         stage = 'subscribe'
         if (!messagePersister.isSubscribed(existingSessionId)) {
           await subscribeWithTimeout(
@@ -830,22 +815,12 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           try {
             outcome = await waitForTurnWithinBudget(existingSessionId, syncDeadline)
           } catch (error) {
-            return c.json({
-              sessionId: existingSessionId,
-              status: 'running',
-              error: error instanceof Error ? error.message : String(error),
-            })
+            return c.json(await runningResponse(existingSessionId, replyBoundary?.uuid, {
+              waitError: error instanceof Error ? error.message : String(error),
+            }))
           }
           if (outcome === 'timeout') {
-            // Budget exhausted (whether before or during the wait) means the
-            // target is simply still working — promote to the async contract
-            // with explicit guidance so the caller polls instead of re-invoking
-            // (a re-invoke duplicates the whole run).
-            return c.json({
-              sessionId: existingSessionId,
-              status: 'running',
-              error: syncWaitPromotedNote(SYNC_WAIT_TIMEOUT_MS),
-            })
+            return c.json(await runningResponse(existingSessionId, replyBoundary?.uuid, { promoted: true }))
           }
           const lastMessage = await readLastAssistantMessage(
             targetSlug,
@@ -858,7 +833,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
             lastMessage: lastMessage?.content,
           })
         }
-        return c.json({ sessionId: existingSessionId, status: 'running' })
+        return c.json(await runningResponse(existingSessionId, replyBoundary?.uuid, null))
       }
 
       stage = 'ensure_running'
@@ -1023,22 +998,12 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         try {
           outcome = await waitForTurnWithinBudget(newSessionId, syncDeadline)
         } catch (error) {
-          return c.json({
-            sessionId: newSessionId,
-            status: 'running',
-            error: error instanceof Error ? error.message : String(error),
-          })
+          return c.json(await runningResponse(newSessionId, undefined, {
+            waitError: error instanceof Error ? error.message : String(error),
+          }))
         }
         if (outcome === 'timeout') {
-          // Budget exhausted (whether before or during the wait) means the
-          // target is simply still working — promote to the async contract
-          // with explicit guidance so the caller polls instead of re-invoking
-          // (a re-invoke duplicates the whole run).
-          return c.json({
-            sessionId: newSessionId,
-            status: 'running',
-            error: syncWaitPromotedNote(SYNC_WAIT_TIMEOUT_MS),
-          })
+          return c.json(await runningResponse(newSessionId, undefined, { promoted: true }))
         }
         const lastMessage = await readLastAssistantMessage(targetSlug, newSessionId)
         return c.json({
@@ -1047,7 +1012,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           lastMessage: lastMessage?.content,
         })
       }
-      return c.json({ sessionId: newSessionId, status: 'running' })
+      return c.json(await runningResponse(newSessionId, undefined, null))
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       console.error('[x-agent] invoke failed', {

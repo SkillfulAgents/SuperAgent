@@ -42,6 +42,7 @@ class TaskScheduler {
   private isRunning = false
   private pollIntervalMs = 60000 // Check every minute
   private isProcessing = false // Prevent concurrent execution
+  private pendingKick = false // A due-wake landed while a scan was already running
 
   /**
    * Start the scheduler.
@@ -110,6 +111,7 @@ class TaskScheduler {
   private async executeOverdueTasks(): Promise<void> {
     // Prevent concurrent execution
     if (this.isProcessing) {
+      this.pendingKick = true
       console.log('[TaskScheduler] Already processing, skipping this cycle')
       return
     }
@@ -140,7 +142,7 @@ class TaskScheduler {
           })
           // For recurring tasks, schedule next execution even on failure
           // For one-time tasks, mark as failed
-          if (!task.isRecurring && task.resumeSessionId &&
+          if (!task.isRecurring && task.resumeSessionId && task.nextExecutionAt &&
               Date.now() - task.nextExecutionAt.getTime() < WAKE_RETRY_WINDOW_MS) {
             // Session wakes stay pending on transient failure so the poll loop
             // retries them; they only fail once overdue past the retry window.
@@ -168,6 +170,13 @@ class TaskScheduler {
       }
     } finally {
       this.isProcessing = false
+      if (this.pendingKick) {
+        this.pendingKick = false
+        void this.executeOverdueTasks().catch((error) => {
+          console.error('[TaskScheduler] Error in trailing due-wake scan:', error)
+          captureException(error, { tags: { component: 'task-scheduler', phase: 'due-kick' } })
+        })
+      }
     }
   }
 
@@ -187,6 +196,11 @@ class TaskScheduler {
     if (task.resumeSessionId) {
       await this.executeSessionWake(task, task.resumeSessionId)
       return
+    }
+
+    if (!task.nextExecutionAt) {
+      // Only session wakes may lack a time, and they returned above.
+      throw new Error(`Task ${task.id} has no nextExecutionAt`)
     }
 
     const existingSession = await getSessionForScheduledExecution(
@@ -300,6 +314,15 @@ class TaskScheduler {
         // completion records the execution; nothing to do here.
         console.log(`[TaskScheduler] Wake ${task.id} delivery already in flight; skipping`)
         break
+      case 'caller-busy':
+        // Event wake is due but A started a turn or asked a question. Leave
+        // the row pending; the next poll after A is idle delivers it.
+        console.log(`[TaskScheduler] Wake ${task.id} caller is busy; leaving pending`)
+        break
+      case 'not-due':
+        // Reopened or the time moved into the future during a slow read.
+        console.log(`[TaskScheduler] Wake ${task.id} is no longer due; leaving pending`)
+        break
       case 'not-pending':
         // Fresh read shows the task already reached a terminal state (a manual
         // wake won the race) — the due-task batch was just stale.
@@ -336,7 +359,8 @@ class TaskScheduler {
   }
 
   /**
-   * Manually trigger execution of due tasks (for testing).
+   * Manually trigger execution of due tasks (for testing, and when an
+   * event wake becomes due so it does not wait for the next poll tick).
    */
   async triggerExecution(): Promise<void> {
     await this.executeOverdueTasks()
@@ -354,4 +378,12 @@ export const taskScheduler =
 
 if (process.env.NODE_ENV !== 'production') {
   globalForScheduler.taskScheduler = taskScheduler
+}
+
+/** Fire the existing due-task scan now. Same path as the 60s poll. */
+export function kickDueWakes(): void {
+  taskScheduler.triggerExecution().catch((error) => {
+    console.error('[TaskScheduler] Due-wake kick failed:', error)
+    captureException(error, { tags: { component: 'task-scheduler', phase: 'due-kick' } })
+  })
 }

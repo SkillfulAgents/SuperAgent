@@ -6,7 +6,8 @@ import {
 } from '@shared/lib/services/session-service'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
-import { listSessionIdsWithPendingWakes } from '@shared/lib/services/scheduled-task-service'
+import { listSessionIdsWithPendingWakes, settleWakeTarget } from '@shared/lib/services/scheduled-task-service'
+import { isCallerIdle, kickIfWakeBecameDue } from './invoked-session-listener'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { getSettings } from '@shared/lib/config/settings'
 import { isAuthMode } from '@shared/lib/auth/mode'
@@ -118,6 +119,14 @@ class SessionAutoDeleteMonitor {
 
     for (const sessionId of deletedIds) {
       messagePersister.unsubscribeFromSession(sessionId)
+    }
+
+    for (const sessionId of deletedIds) {
+      await settleWakeTarget({ targetSessionId: sessionId, outcome: 'deleted', callerIdle: isCallerIdle })
+        .then((due) => kickIfWakeBecameDue(due))
+        .catch((error) => {
+          console.error('[SessionAutoDeleteMonitor] Failed to settle wakes waiting on deleted session:', error)
+        })
     }
 
     if (isAuthMode() && deletedIds.length > 0) {

@@ -27,6 +27,9 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   updateTaskRuntimeOptions: (...args: unknown[]) => mockUpdateTaskRuntimeOptions(...args),
   pauseScheduledTask: (...args: unknown[]) => mockPauseScheduledTask(...args),
   resumeScheduledTask: (...args: unknown[]) => mockResumeScheduledTask(...args),
+  createSessionWake: vi.fn(),
+  addWakeTarget: vi.fn(),
+  settleWakeTarget: vi.fn(),
 }))
 
 const mockGetSessionsByScheduledTask = vi.fn()
@@ -71,6 +74,7 @@ vi.mock('@shared/lib/container/container-manager', () => ({
 
 const mockMessagePersister = vi.hoisted(() => ({
   isSessionActive: vi.fn(),
+  isSessionAwaitingInput: vi.fn(() => false),
   subscribeToSession: vi.fn(),
   markSessionActive: vi.fn(),
   markSessionIdle: vi.fn(),

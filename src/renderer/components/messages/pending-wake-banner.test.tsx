@@ -5,17 +5,32 @@ import { renderWithProviders } from '@renderer/test/test-utils'
 import { PendingWakeBanner } from './pending-wake-banner'
 
 describe('PendingWakeBanner', () => {
-  it('uses an opaque surface above the transcript', () => {
+  it('names the agents it is waiting on when there is no time', () => {
+    renderWithProviders(
+      <PendingWakeBanner sessionId="s" agentSlug="a" taskId="t" waitingOn={['Researcher', 'Writer']} />,
+    )
+    expect(screen.getByTestId('pending-wake-banner')).toHaveTextContent('Waiting for Researcher, Writer to finish')
+    expect(screen.getByTestId('pending-wake-wake-now')).toBeInTheDocument()
+  })
+
+  it('does not leave a blank name when every helper is already stamped', () => {
+    renderWithProviders(
+      <PendingWakeBanner sessionId="s" agentSlug="a" taskId="t" waitingOn={[]} />,
+    )
+    expect(screen.getByTestId('pending-wake-banner')).toHaveTextContent('Waiting for agents to finish')
+    expect(screen.getByTestId('pending-wake-banner')).not.toHaveTextContent('Waiting for  to finish')
+  })
+
+  it('shows both the time and the agents when it has both', () => {
     renderWithProviders(
       <PendingWakeBanner
-        sessionId="session-1"
-        agentSlug="agent-1"
-        wakeAt={new Date(Date.now() + 60_000).toISOString()}
-        taskId="task-1"
+        sessionId="s"
+        agentSlug="a"
+        taskId="t"
+        wakeAt={new Date(Date.now() + 3600_000).toISOString()}
+        waitingOn={['Researcher']}
       />,
     )
-
-    expect(screen.getByTestId('pending-wake-banner')).toHaveClass('bg-card')
-    expect(screen.getByTestId('pending-wake-banner')).not.toHaveClass('bg-muted/50')
+    expect(screen.getByTestId('pending-wake-banner')).toHaveTextContent(/auto-resume .* also waiting for Researcher/)
   })
 })

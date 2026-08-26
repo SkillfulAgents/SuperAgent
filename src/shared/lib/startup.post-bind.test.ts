@@ -6,6 +6,11 @@ const listAgents = vi.fn().mockResolvedValue([])
 const initializeAgents = vi.fn().mockResolvedValue(undefined)
 const ensureImageReady = vi.fn().mockResolvedValue(undefined)
 const taskSchedulerStart = vi.fn().mockResolvedValue(undefined)
+const invokedListenerStart = vi.fn()
+const invokedListenerStop = vi.fn()
+const invokedListenerReconcile = vi.fn().mockResolvedValue(undefined)
+const setKickDueWakes = vi.fn()
+const kickDueWakes = vi.fn()
 const triggerManagerStart = vi.fn().mockResolvedValue(undefined)
 const platformNotificationsStart = vi.fn().mockResolvedValue(undefined)
 const chatIntegrationStart = vi.fn().mockResolvedValue(undefined)
@@ -84,6 +89,15 @@ vi.mock('./proxy/account-reauth-manager', () => ({ accountReauthManager: { rejec
 vi.mock('./proxy/mcp-reauth-manager', () => ({ mcpReauthManager: { rejectAll: vi.fn() } }))
 vi.mock('./scheduler/task-scheduler', () => ({
   taskScheduler: { start: () => taskSchedulerStart(), stop: vi.fn() },
+  kickDueWakes,
+}))
+vi.mock('./scheduler/invoked-session-listener', () => ({
+  invokedSessionListener: {
+    start: () => invokedListenerStart(),
+    stop: () => invokedListenerStop(),
+    reconcileAtBoot: () => invokedListenerReconcile(),
+  },
+  setKickDueWakes,
 }))
 vi.mock('./scheduler/trigger-manager', () => ({
   triggerManager: { start: () => triggerManagerStart(), stop: vi.fn() },
@@ -122,6 +136,9 @@ describe('initializeServices post-bind critical path', () => {
     initializeAgents.mockReset().mockResolvedValue(undefined)
     ensureImageReady.mockReset().mockResolvedValue(undefined)
     taskSchedulerStart.mockReset().mockResolvedValue(undefined)
+    invokedListenerStart.mockReset()
+    invokedListenerStop.mockReset()
+    invokedListenerReconcile.mockReset().mockResolvedValue(undefined)
     triggerManagerStart.mockReset().mockResolvedValue(undefined)
     platformNotificationsStart.mockReset().mockResolvedValue(undefined)
     chatIntegrationStart.mockReset().mockResolvedValue(undefined)
@@ -261,5 +278,27 @@ describe('initializeServices post-bind critical path', () => {
     expect(getServicesInitError()).toBe('platform unreachable')
     expect(initializeAgents).not.toHaveBeenCalled()
     expect(logBootTiming).toHaveBeenCalledTimes(1)
+  })
+
+  it('starts the invoked-session listener after agent init, reconciles behind the chat connect, and stops it on shutdown', async () => {
+    const order: string[] = []
+    initializeAgents.mockImplementation(async () => { order.push('initializeAgents') })
+    invokedListenerStart.mockImplementation(() => { order.push('listener.start') })
+    chatIntegrationStart.mockImplementation(async () => { order.push('chat.start') })
+    invokedListenerReconcile.mockImplementation(async () => { order.push('listener.reconcile') })
+    taskSchedulerStart.mockImplementation(async () => { order.push('scheduler.start') })
+
+    const { initializeServices, shutdownServices } = await import('./startup')
+    await initializeServices()
+    await vi.waitFor(() => expect(order).toContain('scheduler.start'))
+
+    expect(order.indexOf('initializeAgents')).toBeLessThan(order.indexOf('listener.start'))
+    expect(order.indexOf('chat.start')).toBeLessThan(order.indexOf('listener.reconcile'))
+    expect(order.indexOf('listener.reconcile')).toBeLessThan(order.indexOf('scheduler.start'))
+    expect(setKickDueWakes).toHaveBeenCalledWith(kickDueWakes)
+
+    await shutdownServices()
+    expect(invokedListenerStop).toHaveBeenCalledTimes(1)
+    expect(setKickDueWakes).toHaveBeenLastCalledWith(null)
   })
 })

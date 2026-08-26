@@ -38,6 +38,7 @@ interface SessionChatColumnProps {
   pendingWakeAt?: string
   pendingWakeTaskId?: string
   pendingWakeNote?: string
+  pendingWakeWaitingOn?: string[]
 }
 
 export function SessionChatColumn({
@@ -59,6 +60,7 @@ export function SessionChatColumn({
   pendingWakeAt,
   pendingWakeTaskId,
   pendingWakeNote,
+  pendingWakeWaitingOn,
 }: SessionChatColumnProps) {
   const { isActive, browserActive, isWaitingBackground } = useMessageStream(sessionId, agentSlug)
   // Keep the phone awake (PWA only) while this session is actively working.
@@ -115,13 +117,14 @@ export function SessionChatColumn({
           </div>
         ) : (
           <>
-            {pendingWakeAt && pendingWakeTaskId && !isActive && (
+            {pendingWakeTaskId && !isActive && (
               <PendingWakeBanner
                 sessionId={sessionId}
                 agentSlug={agentSlug}
                 wakeAt={pendingWakeAt}
                 taskId={pendingWakeTaskId}
                 note={pendingWakeNote}
+                waitingOn={pendingWakeWaitingOn}
                 readOnly={isViewOnly}
               />
             )}

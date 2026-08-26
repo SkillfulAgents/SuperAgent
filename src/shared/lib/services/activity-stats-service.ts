@@ -52,7 +52,7 @@ export type ConnectionStatsOptions = ActivityStatsOptions
 
 interface AutomationTaskInput {
   id: string
-  scheduleType: 'at' | 'cron'
+  scheduleType: 'at' | 'cron' | 'event'
   scheduleExpression: string
   timezone?: string | null
   createdAt: Date
