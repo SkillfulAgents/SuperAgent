@@ -7,8 +7,10 @@
  * Provider-side setup a user must complete before a server will connect —
  * registering an OAuth app, allowlisting our callback, copying an app ID.
  *
- * `steps` are rendered in order in the connect form. Each may contain these
- * tokens, substituted with the redirect this deployment will actually send
+ * `steps` are rendered in order in the connect form. A step may use `code` spans
+ * for strings the user copies into a provider console and [label](https://url)
+ * links, and may contain these tokens, substituted with the redirect this
+ * deployment will actually send
  * (fetched from the API rather than rebuilt in the renderer, so the string the
  * user copies into a provider console cannot drift from the one we use):
  *
@@ -18,8 +20,6 @@
  */
 export interface McpSetupGuide {
   steps: string[]
-  /** Where the user goes to do all this. */
-  consoleUrl?: string
   /** The server has no usable dynamic registration; open Advanced by default. */
   requiresClientId?: boolean
   /** Shown only when the redirect is a desktop loopback URL. */
@@ -419,13 +419,12 @@ export const COMMON_MCP_SERVERS: CommonMcpServer[] = [
       // Meta advertises a registration_endpoint and then refuses it with
       // "Dynamic registration is not available for this client", so every
       // connection needs an app the user registered themselves.
-      consoleUrl: 'https://developers.facebook.com/apps/creation/',
       requiresClientId: true,
       steps: [
-        'Create an app in the Meta developer console, attached to the Business portfolio that owns the ad account you want to manage.',
-        'Settings → Basic → App Domains: add {{redirectHost}} — the bare host, with no scheme. A scheme-prefixed entry fails validation and silently discards the whole field.',
-        'Settings → Basic → Add Platform → Website → Site URL: {{redirectOrigin}}/ — App Domains is ignored until a platform anchors the app.',
-        'Facebook Login for Business → Settings → Valid OAuth Redirect URIs: add {{redirectUri}} exactly.',
+        'Create an app in the [Meta developer console](https://developers.facebook.com/apps/creation/), attached to the Business portfolio that owns the ad account you want to manage.',
+        'Settings → Basic → App Domains: add `{{redirectHost}}` — the bare host, with no scheme. A scheme-prefixed entry fails validation and silently discards the whole field.',
+        'Settings → Basic → Add Platform → Website → Site URL: `{{redirectOrigin}}/` — App Domains is ignored until a platform anchors the app.',
+        'Facebook Login for Business → Settings → Valid OAuth Redirect URIs: add `{{redirectUri}}` exactly.',
         'Copy the App ID into the Client ID field below. Leave Client Secret empty — Meta declares this a public client, so it authenticates with PKCE alone.',
         'Leave the app in Development mode. Standard Access already reaches ad accounts you have a role on; App Review is only for managing other businesses\u2019 accounts.',
       ],

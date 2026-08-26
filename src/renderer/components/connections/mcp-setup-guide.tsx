@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Check, Copy, ExternalLink } from 'lucide-react'
+import { Fragment, useState, type ReactNode } from 'react'
+import { Check, Copy } from 'lucide-react'
 import type { McpSetupGuide as McpSetupGuideData } from '@shared/lib/mcp/common-servers'
 import { Button } from '@renderer/components/ui/button'
 
@@ -26,6 +26,49 @@ export function resolveSetupStep(step: string, redirectUri: string): string {
     .replaceAll('{{redirectUri}}', redirectUri)
     .replaceAll('{{redirectOrigin}}', origin)
     .replaceAll('{{redirectHost}}', host)
+}
+
+/**
+ * Render the tiny inline subset a setup step may use: `code` for strings the user
+ * copies into a provider console, and [label](url) for the console itself. Split
+ * into React nodes rather than injected as HTML, so a step can never carry markup.
+ *
+ * Links are restricted to https to keep a catalog entry from introducing a
+ * javascript: or file: target.
+ */
+const STEP_INLINE = /`([^`]+)`|\[([^\]]+)\]\((https:\/\/[^\s)]+)\)/g
+
+export function renderStepInline(step: string): ReactNode[] {
+  const nodes: ReactNode[] = []
+  let last = 0
+  let key = 0
+  for (const match of step.matchAll(STEP_INLINE)) {
+    const index = match.index ?? 0
+    if (index > last) nodes.push(step.slice(last, index))
+    const [, code, label, href] = match
+    if (code !== undefined) {
+      nodes.push(
+        <code key={key++} className="rounded bg-muted px-1 py-0.5 font-mono text-[10.5px]">
+          {code}
+        </code>,
+      )
+    } else {
+      nodes.push(
+        <a
+          key={key++}
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-primary underline underline-offset-2"
+        >
+          {label}
+        </a>,
+      )
+    }
+    last = index + match[0].length
+  }
+  if (last < step.length) nodes.push(step.slice(last))
+  return nodes
 }
 
 /** Loopback redirects carry a port that can shift between runs. */
@@ -63,7 +106,13 @@ export function McpSetupGuide({ guide, redirectUri }: McpSetupGuideProps) {
 
       <ol className="list-decimal space-y-1 pl-4 text-[11px] text-muted-foreground">
         {guide.steps.map((step) => (
-          <li key={step}>{redirectUri ? resolveSetupStep(step, redirectUri) : step}</li>
+          <li key={step}>
+            {renderStepInline(redirectUri ? resolveSetupStep(step, redirectUri) : step).map(
+              (node, i) => (
+                <Fragment key={i}>{node}</Fragment>
+              ),
+            )}
+          </li>
         ))}
       </ol>
 
@@ -95,18 +144,6 @@ export function McpSetupGuide({ guide, redirectUri }: McpSetupGuideProps) {
 
       {guide.desktopNote && redirectUri && isLoopbackRedirect(redirectUri) && (
         <div className="text-[11px] text-muted-foreground/80">{guide.desktopNote}</div>
-      )}
-
-      {guide.consoleUrl && (
-        <a
-          href={guide.consoleUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
-        >
-          Open the provider console
-          <ExternalLink className="h-3 w-3" />
-        </a>
       )}
     </div>
   )

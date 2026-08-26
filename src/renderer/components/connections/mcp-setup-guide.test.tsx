@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { resolveSetupStep, isLoopbackRedirect } from './mcp-setup-guide'
+import { resolveSetupStep, isLoopbackRedirect, renderStepInline } from './mcp-setup-guide'
+import type { ReactElement } from 'react'
 import { COMMON_MCP_SERVERS } from '@shared/lib/mcp/common-servers'
 
 describe('resolveSetupStep', () => {
@@ -49,6 +50,39 @@ describe('isLoopbackRedirect', () => {
   it('does not treat a hosted deployment or an app scheme as loopback', () => {
     expect(isLoopbackRedirect('https://iddo.example.so/api/remote-mcps/oauth-callback')).toBe(false)
     expect(isLoopbackRedirect('superagent://mcp-oauth-callback')).toBe(false)
+  })
+})
+
+describe('renderStepInline', () => {
+  it('splits a code span out of surrounding text', () => {
+    const nodes = renderStepInline('add `example.com` here')
+    expect(nodes).toHaveLength(3)
+    expect(nodes[0]).toBe('add ')
+    expect(nodes[2]).toBe(' here')
+  })
+
+  it('renders a code span as <code>, so a host can be selected and copied', () => {
+    const [node] = renderStepInline('`example.com`') as ReactElement[]
+    expect(node.type).toBe('code')
+    expect(node.props.children).toBe('example.com')
+  })
+
+  it('renders a markdown link as an anchor that opens safely', () => {
+    const [node] = renderStepInline('[console](https://developers.facebook.com/apps/creation/)') as ReactElement[]
+    expect(node.type).toBe('a')
+    expect(node.props.href).toBe('https://developers.facebook.com/apps/creation/')
+    expect(node.props.children).toBe('console')
+    expect(node.props.rel).toBe('noopener noreferrer')
+  })
+
+  it('leaves a non-https link as literal text rather than linking it', () => {
+    // A catalog entry must not be able to introduce a javascript: target.
+    const nodes = renderStepInline('[x](javascript:alert(1))')
+    expect(nodes).toEqual(['[x](javascript:alert(1))'])
+  })
+
+  it('returns plain text unchanged', () => {
+    expect(renderStepInline('no markup here')).toEqual(['no markup here'])
   })
 })
 
