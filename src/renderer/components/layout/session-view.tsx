@@ -88,36 +88,42 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
     <>
       {session?.scheduledTaskId && (
         <SessionProvenanceBanner
-          icon={<CalendarClock className="h-3 w-3 shrink-0" />}
+          icon={CalendarClock}
           text={<>Session created by scheduled job{session.scheduledTaskName ? ` "${session.scheduledTaskName}"` : ''}</>}
-          backLabel="View schedule"
-          onBack={() => {
-            const taskId = session.scheduledTaskId!
-            void navigate({ to: '/agents/$slug/tasks/$taskId', params: { slug: agentSlug, taskId } })
+          back={{
+            label: 'View schedule',
+            onClick: () => {
+              const taskId = session.scheduledTaskId!
+              void navigate({ to: '/agents/$slug/tasks/$taskId', params: { slug: agentSlug, taskId } })
+            },
           }}
         />
       )}
       {session?.webhookTriggerId && (
         <SessionProvenanceBanner
-          icon={<Zap className="h-3 w-3 shrink-0" />}
+          icon={Zap}
           text={<>Session created by webhook trigger{session.webhookTriggerName ? ` "${session.webhookTriggerName}"` : ''}</>}
-          backLabel="View trigger"
-          onBack={() => {
-            const webhookId = session.webhookTriggerId!
-            void navigate({ to: '/agents/$slug/webhooks/$webhookId', params: { slug: agentSlug, webhookId } })
+          back={{
+            label: 'View trigger',
+            onClick: () => {
+              const webhookId = session.webhookTriggerId!
+              void navigate({ to: '/agents/$slug/webhooks/$webhookId', params: { slug: agentSlug, webhookId } })
+            },
           }}
         />
       )}
       {session?.invokedByAgentSlug && (
         <SessionProvenanceBanner
-          icon={<GitFork className="h-3 w-3 shrink-0" />}
+          icon={GitFork}
           text={<>Session created by x-agent call from &quot;{session.invokedByAgentName ?? session.invokedByAgentSlug}&quot;</>}
-          backLabel="Back"
-          onBack={() => {
-            void navigate({ to: '/agents/$slug/called-from-agents', params: { slug: agentSlug } })
+          back={{
+            label: 'Back',
+            onClick: () => {
+              void navigate({ to: '/agents/$slug/called-from-agents', params: { slug: agentSlug } })
+            },
+            testId: 'x-agent-session-back-button',
           }}
           testId="x-agent-session-banner"
-          backButtonTestId="x-agent-session-back-button"
         />
       )}
 

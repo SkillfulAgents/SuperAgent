@@ -307,6 +307,18 @@ describe('session-service', () => {
       expect(sessions[0].messageCount).toBe(0)
     })
 
+    it('ignores an unparsable metadata createdAt and keeps a real list date', async () => {
+      await createSessionFile('test-agent', 'test-session', SAMPLE_JSONL_ENTRIES)
+      await createSessionMetadata('test-agent', {
+        'test-session': { name: 'Named', createdAt: 'not-a-date' },
+      })
+
+      const [listed] = await listSessions('test-agent')
+
+      expect(listed).toBeDefined()
+      expect(Number.isNaN(listed.createdAt.getTime())).toBe(false)
+    })
+
     it('excludes scheduled/webhook/x-agent sessions when excludeAutomated is set', async () => {
       await createSessionFile('test-agent', 'manual-session', SAMPLE_JSONL_ENTRIES)
       await createSessionFile('test-agent', 'scheduled-session', SAMPLE_JSONL_ENTRIES)
@@ -577,6 +589,18 @@ describe('session-service', () => {
 
       expect(session?.createdAt.toISOString()).toBe('2026-01-24T01:30:58.661Z')
       expect(session?.lastActivityAt.toISOString()).toBe('2026-01-24T01:31:19.827Z')
+    })
+
+    it('ignores an unparsable metadata createdAt on a registered session with no transcript', async () => {
+      await createSessionsDir('test-agent')
+      await createSessionMetadata('test-agent', {
+        'settling-session': { name: 'Brand New', createdAt: 'not-a-date' },
+      })
+
+      const session = await getSession('test-agent', 'settling-session')
+
+      expect(session).not.toBeNull()
+      expect(Number.isNaN(session!.createdAt.getTime())).toBe(false)
     })
 
     it('returns an empty session for a registered session with no JSONL yet', async () => {

@@ -1,42 +1,38 @@
-import { ChevronLeft } from 'lucide-react'
+import { ChevronLeft, type LucideIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
 
 interface SessionProvenanceBannerProps {
-  icon: ReactNode
+  icon: LucideIcon
   text: ReactNode
-  backLabel: string
   /** Omit to render the sentence with no back button (e.g. the target is gone). */
-  onBack?: () => void
+  back?: { label: string; onClick: () => void; testId?: string }
   testId?: string
-  backButtonTestId?: string
 }
 
 /** One-line provenance strip above the chat column. Callers own copy, icon, and navigation. */
 export function SessionProvenanceBanner({
-  icon,
+  icon: Icon,
   text,
-  backLabel,
-  onBack,
+  back,
   testId,
-  backButtonTestId,
 }: SessionProvenanceBannerProps) {
   return (
     <div className="shrink-0 border-b bg-background px-4 py-2" data-testid={testId}>
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        {onBack && (
+        {back && (
           <>
             <button
-              onClick={onBack}
+              onClick={back.onClick}
               className="inline-flex items-center gap-1 text-primary hover:underline shrink-0"
-              data-testid={backButtonTestId}
+              data-testid={back.testId}
             >
               <ChevronLeft className="h-3 w-3" />
-              {backLabel}
+              {back.label}
             </button>
             <span className="mx-1 text-border">|</span>
           </>
         )}
-        {icon}
+        <Icon className="h-3 w-3 shrink-0" />
         <span>{text}</span>
       </div>
     </div>

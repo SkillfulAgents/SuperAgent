@@ -504,6 +504,12 @@ async function summarizeSessionTranscript(jsonlPath: string): Promise<Transcript
 /**
  * Project a transcript summary into the session's SessionInfo.
  */
+function parseStoredDate(value: string | undefined): Date | null {
+  if (!value) return null
+  const d = new Date(value)
+  return Number.isNaN(d.getTime()) ? null : d
+}
+
 function parseSessionInfo(
   sessionId: string,
   agentSlug: string,
@@ -523,11 +529,9 @@ function parseSessionInfo(
   // the init handshake, or precede it for forks. Metadata without createdAt
   // (a rename/star on a transcript that predates registration) keeps the
   // transcript-derived value — never `new Date()`.
-  if (metadata?.createdAt) {
-    const recorded = new Date(metadata.createdAt)
-    if (Number.isFinite(recorded.getTime())) {
-      createdAt = recorded
-    }
+  const recorded = parseStoredDate(metadata?.createdAt)
+  if (recorded) {
+    createdAt = recorded
   }
 
   // Generate name from first user message if no custom name
@@ -565,7 +569,7 @@ function emptySessionFromMetadata(
   agentSlug: string,
   meta: SessionMetadata
 ): SessionInfo {
-  const createdAt = meta.createdAt ? new Date(meta.createdAt) : new Date()
+  const createdAt = parseStoredDate(meta.createdAt) ?? new Date()
   return {
     id: sessionId,
     agentSlug,
@@ -582,7 +586,8 @@ function resolveSessionCreatedAt(
   meta: SessionMetadata | undefined,
   stat: { birthtimeMs: number; birthtime: Date; mtimeMs: number },
 ): Date {
-  if (meta?.createdAt) return new Date(meta.createdAt)
+  const recorded = parseStoredDate(meta?.createdAt)
+  if (recorded) return recorded
   if (stat.birthtimeMs > 0) return stat.birthtime
   return new Date(stat.mtimeMs)
 }
