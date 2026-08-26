@@ -125,6 +125,7 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
 // ----------------------------------------------------------------------------
 
 import agentsRouter from './agents'
+import { agentExists } from '@shared/lib/services/agent-service'
 import {
   setPolicy,
   getPolicy,
@@ -289,6 +290,20 @@ describe('PATCH /api/agents/:id/x-agent-policies', () => {
     expect(getPolicy(CALLER, 'invoke', TARGET_B)).toBeNull()
   })
 
+  it('returns 404 for a target with no agent directory without reading it', async () => {
+    // The target slug is raw request input. A slug that is not a directory
+    // (a stray file in the agents dir, a NUL byte, an over-long name) used to
+    // be caught by getAgent's directory check; now the route gates on it.
+    vi.mocked(agentExists).mockResolvedValueOnce(false)
+    mockGetAgent.mockClear()
+
+    const res = await patchPolicy({ operation: 'invoke', targetSlug: 'not-a-directory', decision: 'allow' })
+
+    expect(res.status).toBe(404)
+    expect(mockGetAgent).not.toHaveBeenCalledWith('not-a-directory')
+    expect(getPolicy(CALLER, 'invoke', 'not-a-directory')).toBeNull()
+  })
+
   it('rejects self-targeted and targeted list policies', async () => {
     const self = await patchPolicy({ operation: 'invoke', targetSlug: CALLER, decision: 'allow' })
     const targetedList = await patchPolicy({ operation: 'list', targetSlug: TARGET_A, decision: 'allow' })
@@ -443,6 +458,23 @@ describe('atomic single invoke policy endpoints', () => {
     })
     expect(await res.json()).toMatchObject({ created: false, previousDecision: 'block' })
     expect(getPolicy(CALLER, 'invoke', TARGET_A)?.decision).toBe('allow')
+  })
+
+  it('PUT returns 404 for a target with no agent directory without reading it', async () => {
+    // The caller is read directly; only the raw `:target` goes through the
+    // directory gate, so this single miss is the target's.
+    vi.mocked(agentExists).mockResolvedValueOnce(false)
+    mockGetAgent.mockClear()
+
+    const res = await app.request(invokeUrl(CALLER, 'not-a-directory'), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'allow' }),
+    })
+
+    expect(res.status).toBe(404)
+    expect(mockGetAgent).not.toHaveBeenCalledWith('not-a-directory')
+    expect(getPolicy(CALLER, 'invoke', 'not-a-directory')).toBeNull()
   })
 
   it('PUT rejects targeting the caller itself', async () => {

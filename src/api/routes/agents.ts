@@ -7141,7 +7141,10 @@ agents.patch('/:id/x-agent-policies', AgentAdmin(), async (c) => {
     return c.json({ error: 'Cannot set a policy targeting the same agent' }, 400)
   }
   if (targetSlug !== null) {
-    const targetAgent = await getAgent(targetSlug)
+    // The target comes straight from the body, not through ResolveAgent's
+    // charset gate: check the directory first so a malformed slug is a 404
+    // rather than a thrown read (getAgent no longer stats before reading).
+    const targetAgent = (await agentExists(targetSlug)) ? await getAgent(targetSlug) : null
     if (!targetAgent || !(await callerCanSeeAgent(c, targetSlug))) {
       return c.json({ error: 'Agent not found' }, 404)
     }
@@ -7194,7 +7197,12 @@ agents.put('/:id/x-agent-policies/invoke/:target', AgentAdmin(), async (c) => {
   // target must also be VISIBLE to the caller (same anti-topology-leak rule
   // the GET route enforces) — and an invisible target returns the SAME 404 as
   // a nonexistent one, so this can't be used as an agent-existence oracle.
-  const [callerAgent, targetAgent] = await Promise.all([getAgent(slug), getAgent(targetSlug)])
+  // `:target` is a raw path param, not resolved by ResolveAgent, so gate it
+  // on the directory first: a malformed slug must be a 404, not a thrown read.
+  const [callerAgent, targetAgent] = await Promise.all([
+    getAgent(slug),
+    agentExists(targetSlug).then((exists) => (exists ? getAgent(targetSlug) : null)),
+  ])
   if (!callerAgent || !targetAgent || !(await callerCanSeeAgent(c, targetSlug))) {
     return c.json({ error: 'Agent not found' }, 404)
   }
