@@ -19,6 +19,7 @@ import { cn } from '@shared/lib/utils/cn'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useInitiateMcpOAuth, useMcpOAuthRedirectUris } from '@renderer/hooks/use-remote-mcps'
 import { McpSetupGuide } from '@renderer/components/connections/mcp-setup-guide'
+import { McpAdvancedClientFields } from '@renderer/components/connections/mcp-advanced-client-fields'
 import { useMcpOAuthListener } from '@renderer/hooks/use-mcp-oauth-listener'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { type RemoteMcpServer, getMcpServiceKey, McpSourceIcon, McpServerCard } from './mcp-server-card'
@@ -749,47 +750,22 @@ export function RemoteMcpRequestItem({
               />
             )}
             {authHint !== 'bearer' && (
-              <details
-                className="group rounded-md"
-                open={setupGuide?.requiresClientId || !!clientId}
-                data-testid="mcp-request-advanced"
-              >
-                <summary className="cursor-pointer list-none text-xs text-muted-foreground/70 select-none hover:text-muted-foreground">
-                  <span className="inline-block transition-transform group-open:rotate-90">›</span>
-                  <span className="ml-1">Advanced</span>
-                </summary>
-                <div className="mt-2 space-y-2">
-                  <Input
-                    value={advClientName}
-                    onChange={(e) => setAdvClientName(e.target.value)}
-                    placeholder="Override OAuth client_name (optional)"
-                    className="h-8 text-sm"
-                    disabled={status !== 'pending'}
-                    data-testid="mcp-request-client-name"
-                  />
-                  <Input
-                    value={advClientId}
-                    onChange={(e) => setAdvClientId(e.target.value)}
-                    placeholder="Provide your own OAuth client_id (optional)"
-                    className="h-8 text-sm"
-                    disabled={status !== 'pending'}
-                    data-testid="mcp-request-client-id"
-                  />
-                  <Input
-                    type="password"
-                    value={advClientSecret}
-                    onChange={(e) => setAdvClientSecret(e.target.value)}
-                    placeholder="OAuth client_secret (optional)"
-                    className="h-8 text-sm"
-                    disabled={status !== 'pending'}
-                    data-testid="mcp-request-client-secret"
-                  />
-                  <p className="text-[11px] text-muted-foreground/70">
-                    For servers that don&apos;t support open dynamic client registration and
-                    have issued you a client ID directly.
-                  </p>
-                </div>
-              </details>
+              <McpAdvancedClientFields
+                values={{
+                  clientName: advClientName,
+                  clientId: advClientId,
+                  clientSecret: advClientSecret,
+                }}
+                onChange={(next) => {
+                  setAdvClientName(next.clientName)
+                  setAdvClientId(next.clientId)
+                  setAdvClientSecret(next.clientSecret)
+                }}
+                defaultOpen={setupGuide?.requiresClientId || !!clientId}
+                disabled={status !== 'pending'}
+                variant="compact"
+                testIdPrefix="mcp-request"
+              />
             )}
           </div>
         )}
