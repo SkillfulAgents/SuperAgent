@@ -4888,7 +4888,14 @@ ${continuation}`
         sessionId,
         'remote_mcp',
         toolUseId,
-        { url: input.url, name: input.name, reason: input.reason, authHint: input.authHint },
+        {
+          url: input.url,
+          name: input.name,
+          reason: input.reason,
+          authHint: input.authHint,
+          clientId: input.clientId,
+          clientName: input.clientName,
+        },
         { agentSlug, parentToolUseId },
       )
     } catch (error) {
