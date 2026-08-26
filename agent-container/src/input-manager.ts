@@ -65,6 +65,12 @@ class InputManager {
   // Pending requests keyed by toolUseId
   private pending: Map<string, PendingInput<InputValue>> = new Map()
 
+  // Fired after any change to the pending map. Consumers that derive state from
+  // "what is pending" subscribe here instead of being called by hand at every
+  // route that adds or removes an entry, which is a rule that only holds until
+  // someone adds a seventh route and does not know about it.
+  private pendingChangeListeners: Array<() => void> = []
+
   // Buffered results for resolve/reject calls that arrive before createPending.
   // This handles the race condition where the UI responds to a tool call before
   // the tool handler has registered its pending entry (e.g. parallel tool calls
@@ -182,6 +188,9 @@ class InputManager {
       console.log(
         `[InputManager] Created pending ${inputType} request ${toolUseId}${owner ? ` (session ${owner})` : ''}`
       )
+      // Synchronous, before this promise blocks on the user: a consumer deriving
+      // from the new pending acts now, not on the next unrelated event.
+      this.notifyPendingChange()
     })
   }
 
@@ -192,6 +201,15 @@ class InputManager {
    * still-live awaiter gets a clean error instead of a permanent hang.
    * @returns number of requests rejected
    */
+  /** Subscribe to pending-map changes. Fired after the map reaches its new state. */
+  onPendingChange(listener: () => void): void {
+    this.pendingChangeListeners.push(listener)
+  }
+
+  private notifyPendingChange(): void {
+    for (const listener of this.pendingChangeListeners) listener()
+  }
+
   rejectForSession(sessionId: string, reason = 'Input request abandoned: the session was deleted'): number {
     let rejected = 0
     for (const [toolUseId, pending] of this.pending) {
@@ -203,6 +221,7 @@ class InputManager {
       pending.reject(new Error(reason))
       rejected++
     }
+    if (rejected > 0) this.notifyPendingChange()
     return rejected
   }
 
@@ -227,6 +246,7 @@ class InputManager {
       pending.reject(new Error(reason))
       rejected++
     }
+    if (rejected > 0) this.notifyPendingChange()
     return rejected
   }
 
@@ -256,6 +276,7 @@ class InputManager {
     )
     this.pending.delete(toolUseId)
     pending.resolve(value)
+    this.notifyPendingChange()
     return true
   }
 
@@ -285,6 +306,7 @@ class InputManager {
     )
     this.pending.delete(toolUseId)
     pending.reject(new Error(error))
+    this.notifyPendingChange()
     return true
   }
 
@@ -322,6 +344,7 @@ class InputManager {
    * entries the host never answers live forever.
    */
   cleanupStale(nowMs: number = Date.now()): void {
+    let swept = 0
     for (const [toolUseId, pending] of this.pending) {
       const ttlMs = AUTOMATED_INPUT_TYPES.has(pending.inputType)
         ? AUTOMATED_INPUT_TTL_MS
@@ -332,8 +355,10 @@ class InputManager {
         )
         this.pending.delete(toolUseId)
         pending.reject(new Error('Input request timed out'))
+        swept++
       }
     }
+    if (swept > 0) this.notifyPendingChange()
     for (const [toolUseId, early] of this.earlyResults) {
       if (nowMs - early.createdAt.getTime() > EARLY_RESULT_TTL_MS) {
         console.log(`[InputManager] Dropping expired early result for ${toolUseId}`)

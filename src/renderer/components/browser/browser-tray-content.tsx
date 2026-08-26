@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Globe, MousePointerClick, PanelRightClose, Pause, Play, Square, Expand, Shrink } from 'lucide-react'
+import { Globe, MousePointerClick, PanelRightClose, Pause, Play, Square, Expand, Shrink, Monitor, Smartphone } from 'lucide-react'
 import { BrowserActivityLog } from './browser-activity-log'
 import { BrowserTabBar } from './browser-tab-bar'
 import { useBrowserStream } from '@renderer/hooks/use-browser-stream'
@@ -87,6 +87,7 @@ export function BrowserTrayContent({
   const { submittingAction, error: actionError, complete, decline } = useBrowserInputActions({
     agentSlug,
     sessionId,
+    activeToolUseId: latestRequest?.toolUseId ?? null,
     onResolved: (toolUseId) => stream.dismissBrowserInputRequest(toolUseId),
   })
 
@@ -125,7 +126,7 @@ export function BrowserTrayContent({
       )}
 
       {/* Canvas viewport */}
-      <div className={cn('relative shrink-0 overflow-hidden bg-background border-y border-border/40', isActive && !stream.needsAttention && 'browser-glow-container')}>
+      <div className={cn('relative min-h-0 overflow-hidden bg-background border-y border-border/40', isActive && !stream.needsAttention && 'browser-glow-container')}>
         <canvas
           ref={canvasRef}
           className={`w-full block ${stream.isViewOnly ? 'cursor-not-allowed' : 'cursor-default'}`}
@@ -212,6 +213,23 @@ export function BrowserTrayContent({
             <span className="text-xs font-medium text-foreground flex-1 truncate">
               {latestRequest.message ? linkify(latestRequest.message) : 'Your input needed'}
             </span>
+            <button
+              onClick={stream.toggleDesktopWidth}
+              disabled={!stream.connected}
+              className="p-1.5 rounded hover:bg-muted transition-colors text-muted-foreground hover:text-foreground shrink-0 disabled:opacity-50 disabled:pointer-events-none"
+              title={
+                !stream.connected
+                  ? 'Connecting…'
+                  : stream.desktopWidth
+                    ? 'Fit the page to the panel'
+                    : 'Show the full-width site'
+              }
+              data-testid="browser-tray-width-toggle"
+            >
+              {stream.desktopWidth
+                ? <Smartphone className="h-3.5 w-3.5" />
+                : <Monitor className="h-3.5 w-3.5" />}
+            </button>
             <DeclineButton
               onDecline={(reason) => decline(latestRequest.toolUseId, reason)}
               disabled={submittingAction !== null}
