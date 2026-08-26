@@ -1,0 +1,17 @@
+{
+  "storyId": "agent-chat",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: : Waited for agent response — Agent completed processing and returned response within timeout.\n\n**[STEP]** Step 6: Verified response mentions \"4\" — Agent response clearly displays \"4\" as the answer to the math question. Screenshot confirms correct response with message timestamp \"Today at 8:03 PM\".\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 67470,
+  "sessionId": "be565ea3-6a5f-410c-8a81-c6e869db2660",
+  "cost": {
+    "inputTokens": 368,
+    "outputTokens": 9385,
+    "cacheCreationTokens": 103410,
+    "cacheReadTokens": 937857,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.270341
+  }
+}
