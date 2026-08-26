@@ -68,13 +68,19 @@ export const modelDefinitionSchema = z.object({
   /** Extra system-prompt guidance needed by model families with weaker tool priors. */
   promptHints: z.array(z.string().min(1)).optional(),
   /**
-   * Optional display pricing (per-million-token). Built-ins seed this from
-   * model-pricing.json; actual cost accounting still keys off that file.
+   * Optional display and accounting pricing (per-million-token). Built-ins seed
+   * this from model-pricing.json; provider/user catalog overrides are honored.
    */
   pricing: z
     .object({
       inputPerMtok: z.number().nonnegative(),
       outputPerMtok: z.number().nonnegative(),
+      /** Five-minute prompt-cache write price per million tokens. */
+      cacheCreationPerMtok: z.number().nonnegative().optional(),
+      /** One-hour prompt-cache write price per million tokens. */
+      cacheCreation1hPerMtok: z.number().nonnegative().optional(),
+      /** Prompt-cache hit price per million tokens. */
+      cacheReadPerMtok: z.number().nonnegative().optional(),
       /**
        * Served-tier billing multipliers for the slow/fast speed tiers (e.g.
        * OpenAI flex 0.5x / priority 2x, Anthropic fast mode 2x). Applied on

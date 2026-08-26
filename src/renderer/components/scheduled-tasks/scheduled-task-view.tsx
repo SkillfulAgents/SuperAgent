@@ -462,6 +462,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
           </DetailCard>
 
           <RuntimeOptionsCard
+            agentSlug={agentSlug}
             model={task.model}
             effort={task.effort}
             speed={task.speed}

@@ -19,7 +19,7 @@ import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu
 import { SystemPromptDialog } from '@renderer/components/agents/system-prompt-dialog'
 import { toast } from 'sonner'
 import { apiFetch } from '@renderer/lib/api'
-import { uploadFileChunked } from '@renderer/lib/upload'
+import { uploadFileChunked, type UploadProgress } from '@renderer/lib/upload'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
@@ -53,6 +53,9 @@ import { useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { formatDistanceToNow } from 'date-fns'
 import { useNewSessionCarryover } from '@renderer/lib/new-session-carryover'
+import { useDraftsStore } from '@renderer/context/drafts-context'
+import { completeAgentTemplateHandoff } from '@renderer/lib/agent-template-handoff'
+import { ScrollAwarePageTitle } from '@renderer/components/layout/scroll-aware-title'
 
 interface AgentHomeProps {
   agent: ApiAgent
@@ -85,6 +88,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     if (introStagger) setJustCreatedSlug(null)
   }, [introStagger, setJustCreatedSlug])
   const startOnboardingSession = useStartOnboardingSession()
+  const draftsStore = useDraftsStore()
   const { canUseAgent, canAdminAgent } = useUser()
   const isViewOnly = !canUseAgent(agent.slug)
   const isOwner = canAdminAgent(agent.slug)
@@ -157,11 +161,8 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
 
   const composer = useMessageComposer({
     agentSlug: agent.slug,
-    uploadFile: useCallback(({ file }: { file: File }) => {
-      return uploadFileChunked<{ path: string }>({
-        url: `/api/agents/${agent.slug}/upload-file`,
-        file,
-      })
+    uploadFile: useCallback(({ file, onProgress, signal, stallMs }: { file: File; onProgress?: (p: UploadProgress) => void; signal?: AbortSignal; stallMs?: number }) => {
+      return uploadFileChunked<{ path: string }>({ url: `/api/agents/${agent.slug}/upload-file`, file, onProgress, signal, stallMs })
     }, [agent.slug]),
     uploadFolder: useCallback(async ({ sourcePath }: { sourcePath: string }) => {
       const res = await apiFetch(
@@ -201,7 +202,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   })
 
   const warmStartEnabled = useWarmStartOnTypeEnabled()
-  useWarmStartOnType({
+  const { noteProgrammaticChange } = useWarmStartOnType({
     agentSlug: agent.slug,
     message: composer.message,
     enabled: warmStartEnabled,
@@ -226,6 +227,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault()
+      if (!composer.canSubmit) return
       void composer.handleSubmit(e)
     }
   }
@@ -252,16 +254,23 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   )
 
   const handleImportComplete = useCallback(
-    async ({ agent: imported, hasOnboarding }: ImportResult) => {
-      void navigate({ to: '/agents/$slug', params: { slug: imported.slug } })
-      if (agent.name === UNTITLED_AGENT_NAME && sessions.length === 0 && agent.slug !== imported.slug) {
-        deleteAgent.mutate(agent.slug)
-      }
-      if (hasOnboarding) {
-        await startOnboardingSession(imported.slug)
-      }
+    async (imported: ImportResult) => {
+      await completeAgentTemplateHandoff({
+        draftsStore,
+        agentSlug: imported.slug,
+        hasOnboarding: imported.hasOnboarding,
+        templatePrompt: imported.templatePrompt,
+        noteProgrammaticChange,
+        openAgent: () => {
+          void navigate({ to: '/agents/$slug', params: { slug: imported.slug } })
+          if (agent.name === UNTITLED_AGENT_NAME && sessions.length === 0 && agent.slug !== imported.slug) {
+            deleteAgent.mutate(agent.slug)
+          }
+        },
+        startOnboardingSession,
+      })
     },
-    [navigate, agent.slug, agent.name, sessions.length, deleteAgent, startOnboardingSession],
+    [draftsStore, noteProgrammaticChange, navigate, agent.slug, agent.name, sessions.length, deleteAgent, startOnboardingSession],
   )
 
   const formatDate = useCallback(
@@ -304,7 +313,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
       >
         {/* Left Column — Chat composer + Sessions */}
         <div className="space-y-6 w-full min-w-0 xl:min-w-[480px] xl:max-w-[720px]">
-          <div className="flex items-center justify-between gap-2 intro-step intro-step-1">
+          <ScrollAwarePageTitle className="flex items-center justify-between gap-2 intro-step intro-step-1">
             <AgentContextMenu agent={agent}>
               <div className="flex-1 min-w-0 cursor-context-menu">
                 <InlineEditableTitle
@@ -336,7 +345,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
             <Button type="button" size="icon" variant="ghost" className="h-8 w-8 shrink-0" onClick={() => handleOpenSettings()} aria-label="Agent settings" data-testid="agent-settings-button">
               <Settings2 className="h-4 w-4" />
             </Button>
-          </div>
+          </ScrollAwarePageTitle>
           {isViewOnly ? (
             <div className="flex items-center justify-center gap-2 text-sm font-medium text-muted-foreground border rounded-lg p-6" data-testid="view-only-banner">
               <Eye className="h-5 w-5" />
@@ -373,6 +382,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                   textareaRef={composerTextareaRef}
                   attachments={composer.attachments}
                   onRemoveAttachment={composer.removeAttachment}
+                  onRetryAttachment={composer.retryAttachment}
                   value={composer.message}
                   onChange={composer.setMessage}
                   onKeyDown={handleKeyDown}
@@ -553,6 +563,12 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
               }}
               onSelectWebhook={(webhookId: string) => {
                 void navigate({ to: '/agents/$slug/webhooks/$webhookId', params: { slug: agent.slug, webhookId } })
+              }}
+              onSelectCompletedTasks={() => {
+                void navigate({ to: '/agents/$slug/completed-tasks', params: { slug: agent.slug } })
+              }}
+              onSelectInboundXAgent={() => {
+                void navigate({ to: '/agents/$slug/called-from-agents', params: { slug: agent.slug } })
               }}
             />
             <HomeConnections className="intro-step intro-step-5" agentSlug={agent.slug} />

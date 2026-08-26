@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act } from '@testing-library/react'
+import { act, screen } from '@testing-library/react'
 import { CreateAgentForm } from './create-agent-form'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import {
@@ -63,6 +63,13 @@ vi.mock('@renderer/components/messages/composer-options', () => ({
 vi.mock('@renderer/hooks/use-agent-templates', () => ({
   useDiscoverableAgents: () => ({ data: [], isError: false }),
   slugFromAgentPath: vi.fn(),
+  // The form mounts ImportAgentDialog (closed) for the strip's end-cap card.
+  useImportAgentTemplate: () => ({
+    mutateAsync: vi.fn(),
+    reset: vi.fn(),
+    isPending: false,
+    error: null,
+  }),
 }))
 
 vi.mock('@renderer/hooks/use-start-onboarding-session', () => ({
@@ -108,8 +115,8 @@ vi.mock('@renderer/hooks/use-message-composer', () => ({
   },
 }))
 
-vi.mock('@renderer/components/agents/agent-creation-aids', () => ({
-  AgentCreationAids: () => null,
+vi.mock('@renderer/components/agents/create-agent-templates', () => ({
+  CreateAgentTemplates: () => null,
 }))
 
 vi.mock('@renderer/components/agents/template-install-dialog', () => ({
@@ -188,5 +195,10 @@ describe('CreateAgentForm', () => {
     expect(mockCreateSession.mutateAsync).toHaveBeenCalledTimes(1)
     expect(peekPendingSessionSeed('session-123')).toBeDefined()
     expect(mockNavigate).toHaveBeenCalled()
+  })
+
+  it('does not offer file attachments', () => {
+    renderWithProviders(<CreateAgentForm />)
+    expect(screen.queryByRole('button', { name: 'Add files' })).toBeNull()
   })
 })

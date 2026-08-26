@@ -17,15 +17,28 @@ import {
   listDirectories,
   directoryExists,
   fileExists,
-  writeFile,
   writeJsonFileAtomic,
   readJsonFileStrict,
   withFileLock,
   CorruptFileError,
   readJsonlFile,
   streamJsonlFile,
+  readJsonlTailLines,
+  iterateJsonlLinesBackward,
+  parseJsonl,
+  streamFileLines,
+  parseJsonlLine,
+  writeFileAtomicStream,
   ensureDirectory,
 } from '@shared/lib/utils/file-storage'
+import {
+  transformMessages,
+  isToolResultOnlyMessage,
+  isTaskNotificationMessage,
+  type TransformedItem,
+} from '@shared/lib/utils/message-transform'
+import { findDeltaWindowStart } from '@shared/lib/messages-delta'
+import { replaceInlineMediaWithRefs } from './session-media'
 import { sessionMetadataMapSchema } from './session-metadata-schema'
 import { isHiddenAutomatedSession } from './session-visibility'
 import {
@@ -286,19 +299,25 @@ async function mutateSessionMetadata(
 }
 
 /**
- * Update metadata for a single session
+ * Update metadata for a single session. Returns the session's previous
+ * metadata entry (undefined when it had none), captured under the same lock
+ * as the write, so callers can tell whether an update actually changed a
+ * value without racing a concurrent update.
  */
 export async function updateSessionMetadata(
   agentSlug: string,
   sessionId: string,
   updates: Partial<SessionMetadata>
-): Promise<void> {
+): Promise<SessionMetadata | undefined> {
+  let previous: SessionMetadata | undefined
   await mutateSessionMetadata(agentSlug, (metadata) => {
+    previous = metadata[sessionId]
     metadata[sessionId] = {
       ...metadata[sessionId],
       ...updates,
     }
   })
+  return previous
 }
 
 export type AutomationStatusResult = 'updated' | 'not-automation' | 'already-final'
@@ -688,13 +707,64 @@ export async function getSessionSummary(agentSlug: string): Promise<{
   }
 }
 
+export type SessionSortBy = 'last_activity_at'
+
+export const SESSIONS_LIST_MAX_LIMIT = 100
+
+export interface ListSessionsOptions {
+  excludeAutomated?: boolean
+  sortBy?: SessionSortBy
+  limit?: number
+}
+
+type SessionOrderFields = {
+  id: string
+  createdAt: Date
+  lastActivityAt?: Date | null
+}
+
+function sessionActivityTimestamp(session: SessionOrderFields): number {
+  const lastActivity = session.lastActivityAt?.getTime()
+  if (Number.isFinite(lastActivity)) return lastActivity!
+  const created = session.createdAt.getTime()
+  return Number.isFinite(created) ? created : Number.NEGATIVE_INFINITY
+}
+
+/**
+ * Return a deterministically ordered copy of a session list.
+ *
+ * Keep this shared between the full sessions endpoint, its notable projection,
+ * and aggregate agent responses. In particular, callers must visibility-filter
+ * before invoking this helper and applying a limit.
+ */
+export function sortSessionsNewestFirst<T extends SessionOrderFields>(
+  sessions: readonly T[],
+  sortBy: SessionSortBy = 'last_activity_at',
+): T[] {
+  return [...sessions].sort((a, b) => {
+    let aTimestamp: number
+    let bTimestamp: number
+    switch (sortBy) {
+      case 'last_activity_at':
+        aTimestamp = sessionActivityTimestamp(a)
+        bTimestamp = sessionActivityTimestamp(b)
+        break
+    }
+    if (aTimestamp < bTimestamp) return 1
+    if (aTimestamp > bTimestamp) return -1
+    if (a.id < b.id) return -1
+    if (a.id > b.id) return 1
+    return 0
+  })
+}
+
 /**
  * List all sessions for an agent using file stats and metadata.
  * Does NOT read full JSONL file contents — safe for large session directories.
  */
 export async function listSessions(
   agentSlug: string,
-  options?: { excludeAutomated?: boolean },
+  options?: ListSessionsOptions,
 ): Promise<SessionInfo[]> {
   const sessionsDir = getAgentSessionsDir(agentSlug)
 
@@ -770,10 +840,13 @@ export async function listSessions(
     }
   }
 
-  // Sort by last activity, newest first
-  sessions.sort((a, b) => b.lastActivityAt.getTime() - a.lastActivityAt.getTime())
+  // Visibility filtering above must happen before ordering and limiting: a
+  // newer hidden automation must never consume a mobile client's limit.
+  const ordered = sortSessionsNewestFirst(sessions, options?.sortBy)
 
-  return sessions
+  return options?.limit === undefined
+    ? ordered
+    : ordered.slice(0, options.limit)
 }
 
 /**
@@ -899,6 +972,867 @@ export async function getSessionMessagesWithCompact(
 
   const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
   return entries.map(normalizeQueuedCommandEntry).filter(isMessageOrSystemDisplayEntry)
+}
+
+export interface SessionMessagesPage {
+  messages: TransformedItem[]
+  nextCursor: string | null
+}
+
+// Hard bound on how deep paging can reach: every cursor request re-scans from
+// EOF, so history beyond this many raw JSONL lines is unreachable (walk is
+// O(depth²)). Lifting it needs an offset-carrying cursor that seeks instead.
+const MAX_TAIL_LINES = 50_000
+// Soft cap on the raw bytes a single page window may materialize. A window
+// that hits it is served short with a nextCursor, and the client's existing
+// scroll-up paging fetches the rest — this is what makes the endpoint's
+// per-request memory bounded regardless of transcript geometry (a single turn
+// with huge tool results used to pull the whole file into one window). Soft:
+// the scan runs past it until the window holds at least two display items
+// (one sacrificial head plus one servable), so a single item larger than the
+// budget still serves instead of yielding an empty page.
+const MESSAGES_PAGE_BYTE_BUDGET = 4 * 1024 * 1024
+// Ceiling on the window — the structural memory bound. The true per-request
+// bound is O(hardCap + one turn's span + largest single row): the cap yields
+// only to three exceptions, each bounded by content that must be materialized
+// to serve anything at all — (a) at least one complete servable display item
+// (a session whose newest turn just wrote a huge tool-result run must still
+// render), (b) closing an assistant merge group whose entries straddle the
+// boundary (a cut group's item id vanishes on the next window and terminates
+// pagination), and (c) a single JSONL row, which has to be assembled whole
+// even to classify it. Multi-MB embedded content stops hitting this path
+// entirely when large payloads move behind references (the media-ref
+// follow-up ticket).
+const MESSAGES_PAGE_HARD_CAP_FACTOR = 2
+// A cursor page's window extends at least this far past the cursor line so
+// tool_use blocks near the page's newest edge still meet their tool_result
+// entries (results land within the same turn, typically adjacent lines). The
+// boundary is then rounded UP to the next line start, so any row that BEGINS
+// inside the grace region is included whole — a fixed byte end would cut a
+// large result row mid-line and drop it as malformed. The old implementation
+// read from the cursor to EOF; results starting beyond the grace region are
+// not attached — bounded staleness on a historical page, never on the
+// trailing page (whose window always ends at EOF).
+const CURSOR_WINDOW_GRACE_BYTES = 512 * 1024
+
+function pageCursor(messages: TransformedItem[], hasOlder: boolean): string | null {
+  return hasOlder && messages[0] ? messages[0].id : null
+}
+
+/** Tail-window read + parse + transform shared by the page and delta readers.
+ *
+ * `signal` aborts the read/parse work mid-flight (throws AbortError): the
+ * callers are HTTP routes whose clients cancel superseded refetches, and without
+ * the signal every abandoned request still pays full transcript reads server-side. */
+async function readTransformedTail(
+  jsonlPath: string,
+  maxLines: number,
+  signal?: AbortSignal,
+  /** True replaces inline base64 images with refs (see session-media); the
+   * default keeps them inline, which is what pre-`media=ref` clients expect. */
+  media?: boolean
+): Promise<{
+  transformed: TransformedItem[]
+  entries: (JsonlMessageEntry | JsonlSystemEntry)[]
+  reachedStart: boolean
+}> {
+  const { lines, offsets, reachedStart } = await readJsonlTailLines(jsonlPath, maxLines, signal)
+  // An abort landing on the last chunk read still saves the parse/transform
+  // below — on large transcripts that is seconds of synchronous work.
+  signal?.throwIfAborted()
+  const entries: (JsonlMessageEntry | JsonlSystemEntry)[] = []
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!
+    const parsed = parseJsonlLine<JsonlEntry>(line)
+    if (!parsed) continue
+    const normalized = normalizeQueuedCommandEntry(parsed)
+    if (
+      isMessageOrSystemDisplayEntry(normalized) &&
+      !('isMeta' in normalized && normalized.isMeta)
+    ) {
+      if (media) {
+        replaceInlineMediaWithRefs(normalized, { line, lineOffset: offsets[i]! })
+      }
+      entries.push(normalized)
+    }
+  }
+  return { transformed: transformMessages(entries), entries, reachedStart }
+}
+
+/** tool_use ids of tool_result blocks recorded after the anchor entry — new
+ * lines the client hasn't seen, whose parent assistant items (possibly before
+ * the anchor) they mutate. */
+function toolResultIdsAfterEntry(
+  entries: (JsonlMessageEntry | JsonlSystemEntry)[],
+  anchorUuid: string
+): Set<string> {
+  const ids = new Set<string>()
+  const anchorIdx = entries.findIndex((e) => e.uuid === anchorUuid)
+  for (let i = anchorIdx + 1; i < entries.length; i++) {
+    const entry = entries[i]
+    if (entry.type !== 'user') continue
+    const content = (entry as JsonlMessageEntry).message.content
+    if (!Array.isArray(content)) continue
+    for (const block of content as ContentBlock[]) {
+      if (block.type === 'tool_result') ids.add(block.tool_use_id)
+    }
+  }
+  return ids
+}
+
+/** Bookkeeping for the backward display-item count. Mirrors the parts of
+ * transformMessages that decide whether an entry STARTS a new display item;
+ * only counters, uuids, and message ids are retained — never entry content. */
+interface DisplayCountState {
+  seenUuids: Set<string>
+  seenAssistantMessageIds: Set<string>
+  /** Content of an informational banner whose synthetic user copy (the
+   * adjacent older entry with identical string content) must not count. */
+  pendingInformationalContent: string | null
+}
+
+/** Whether this (already normalized) entry starts a new display item, by the
+ * same rules transformMessages applies (uuid dedup, assistant merge by
+ * message.id, meta/tool-result-only/task-notification/compact-summary skips).
+ * Entries are visited NEWEST-FIRST, so "first occurrence" checks invert: the
+ * newest copy of a duplicate uuid / merged message.id is the one counted.
+ * That can place a count on a different line than the forward transform
+ * keeps, which shifts the window boundary by at most the affected item —
+ * absorbed by the sacrificial head item the page slicing drops when the
+ * window's deepest item may be partial. */
+function countsAsDisplayStart(entry: JsonlEntry, state: DisplayCountState): boolean {
+  if (!isMessageOrSystemDisplayEntry(entry)) return false
+  if ('isMeta' in entry && entry.isMeta) return false
+
+  if (entry.type === 'system') {
+    const sys = entry as JsonlSystemEntry
+    if (state.seenUuids.has(sys.uuid)) return false
+    state.seenUuids.add(sys.uuid)
+    state.pendingInformationalContent =
+      sys.subtype === 'informational' ? (sys.content ?? '') : null
+    return true
+  }
+
+  const msg = entry as JsonlMessageEntry
+  const pendingInfo = state.pendingInformationalContent
+  state.pendingInformationalContent = null
+  if (
+    pendingInfo !== null &&
+    msg.type === 'user' &&
+    typeof msg.message.content === 'string' &&
+    msg.message.content === pendingInfo
+  ) {
+    // The CLI's synthetic stop-text copy directly before an informational
+    // banner — hidden by the transform, the banner is the visible surface.
+    return false
+  }
+  if (msg.uuid) {
+    if (state.seenUuids.has(msg.uuid)) return false
+    state.seenUuids.add(msg.uuid)
+  }
+  if (msg.type === 'user') {
+    if (msg.isCompactSummary) return false
+    if (isToolResultOnlyMessage(msg)) return false
+    if (isTaskNotificationMessage(msg)) return false
+    return true
+  }
+  const messageId = msg.message.id
+  if (messageId) {
+    if (state.seenAssistantMessageIds.has(messageId)) return false
+    state.seenAssistantMessageIds.add(messageId)
+  }
+  return true
+}
+
+interface PageWindowScan {
+  /** Cursor located (always true for the no-cursor trailing page). */
+  found: boolean
+  /** Byte offset of the window's first line. */
+  startOffset: number
+  /** Exclusive end of the window; undefined = read to EOF (trailing page). */
+  endOffset: number | undefined
+  /** Window start coincides with the file start. */
+  reachedStart: boolean
+  /** The window's deepest display item may be partially merged (an assistant
+   * group whose older entries lie below the window start) — page slicing must
+   * sacrifice it. False when the deepest item is single-entry (user, system,
+   * id-less assistant): those are complete wherever the window starts, and
+   * dropping them would lose data (an empty page behind a huge tool-result
+   * run, a trailing system item swallowed by display reordering). */
+  dropHead: boolean
+}
+
+/** Smallest recorded line-start offset at or past the grace distance, so the
+ * window end lands on a line boundary: any row BEGINNING inside the grace
+ * region is included whole. undefined = grace reaches past the newest scanned
+ * line, read to EOF. `lineOffsets` is newest-first (descending). */
+function graceEndOffset(lineOffsets: number[], cursorLineEnd: number): number | undefined {
+  const target = cursorLineEnd + CURSOR_WINDOW_GRACE_BYTES
+  for (let i = lineOffsets.length - 1; i >= 0; i--) {
+    if (lineOffsets[i]! >= target) return lineOffsets[i]
+  }
+  return undefined
+}
+
+/** How a row behaves at the extension boundary after a counting stop.
+ *
+ * 'system': a system display item — the run continues, and the row becomes
+ * the window's deepest COMPLETE item. 'filtered': removed by readEntriesRange
+ * or skipped by the transform before ordering (meta rows, non-display entry
+ * types, malformed lines, compact summaries, an informational's synthetic
+ * user copy) — invisible to transform adjacency, so it cannot split a logical
+ * system run and the extension walks through it. 'settle': acts as an anchor
+ * in the transform (a real user/assistant row, including tool-result-only
+ * ones, which genuinely split the system-attachment grouping) — the run ends
+ * just above it. */
+function classifyExtensionRow(
+  normalized: JsonlEntry | undefined,
+  state: DisplayCountState
+): 'system' | 'filtered' | 'settle' {
+  if (normalized === undefined) return 'filtered'
+  if (!isMessageOrSystemDisplayEntry(normalized)) return 'filtered'
+  if ('isMeta' in normalized && normalized.isMeta) return 'filtered'
+  if (normalized.type === 'system') {
+    const sys = normalized as JsonlSystemEntry
+    // Mirror countsAsDisplayStart's synthetic-copy tracking so the copy of an
+    // informational consumed here is recognized on the next (older) line.
+    state.pendingInformationalContent =
+      sys.subtype === 'informational' ? (sys.content ?? '') : null
+    return 'system'
+  }
+  const msg = normalized as JsonlMessageEntry
+  const pendingInfo = state.pendingInformationalContent
+  state.pendingInformationalContent = null
+  if (msg.type === 'user') {
+    if (
+      pendingInfo !== null &&
+      typeof msg.message.content === 'string' &&
+      msg.message.content === pendingInfo
+    ) {
+      return 'filtered'
+    }
+    if (msg.isCompactSummary) return 'filtered'
+  }
+  return 'settle'
+}
+
+/** Pass 1 of the paged read: walk backward from EOF, parsing each line
+ * transiently to count display-item starts (and locate the cursor), retaining
+ * only offsets and id sets. Counting stops at `limit + 1` items, the byte
+ * budget (two-item floor), or unconditionally at the hard cap; the whole scan
+ * is bounded by MAX_TAIL_LINES and the file start. Never materializes
+ * entries, so scan depth costs CPU, not memory.
+ *
+ * Cursor resolution is canonical: the forward transform deduplicates uuids to
+ * their OLDEST occurrence, so the scan keeps byte-searching below the first
+ * match and re-anchors on every deeper verified occurrence (a resume-replayed
+ * transcript otherwise paginates in a cycle, serving the same pages forever).
+ * Between matches, lines are only JSON-parsed when their raw bytes contain
+ * the quoted cursor id — the search is memchr, not a parse of the transcript.
+ *
+ * When counting stops on a system entry, the scan extends through the rest of
+ * the contiguous system run: the transform reorders adjacent system items
+ * (recalls, then boundaries, then informationals) regardless of file order,
+ * and a window boundary inside the run makes pagination skip the reordered
+ * items entirely. */
+async function scanMessagesPageWindow(
+  jsonlPath: string,
+  opts: { limit: number; cursor?: string; byteBudget: number; signal?: AbortSignal }
+): Promise<PageWindowScan> {
+  const { limit, cursor, byteBudget, signal } = opts
+  const hardCap = byteBudget * MESSAGES_PAGE_HARD_CAP_FACTOR
+  const cursorNeedle = cursor !== undefined ? Buffer.from(JSON.stringify(cursor)) : null
+  // Items needed below the cursor (or below EOF): the page plus the head
+  // item that slicing sacrifices when the window start may cut it.
+  const targetItems = limit + 1
+  // Line-start offsets of every scanned line, for grace-boundary placement on
+  // (re-)anchor. Bounded by MAX_TAIL_LINES numbers. Cursor pages only.
+  const lineOffsets: number[] | null = cursorNeedle ? [] : null
+
+  let mode: 'searching' | 'counting' | 'extending' | 'settled' =
+    cursorNeedle ? 'searching' : 'counting'
+  let anchored = cursorNeedle === null
+  let state: DisplayCountState = {
+    seenUuids: new Set(),
+    seenAssistantMessageIds: new Set(),
+    pendingInformationalContent: null,
+  }
+  let endOffset: number | undefined
+  let linesScanned = 0
+  let displayCount = 0
+  let windowBytes = 0
+  let startOffset = 0
+  let hitLineCap = false
+  // Conservative default: with nothing counted, treat the head as partial.
+  let deepestCountedIsGroup = true
+  // message.id of an assistant merge group whose span may extend below the
+  // current line — set while walking its (possibly interleaved) turn.
+  let openGroupId: string | null = null
+  // While the cursor is a system item, rows below it may belong to the same
+  // contiguous system run and reorder display-AFTER the cursor (recalls sort
+  // before boundaries before informationals regardless of file order). Such
+  // rows must not satisfy the item count: a page counted from them can
+  // transform to empty and terminate paging while older history exists.
+  // Suppression lifts at the first anchor row below the cursor's run; every
+  // item counted after that is provably display-before the cursor.
+  let suppressUntilAnchorRow = false
+  // The transform keeps only the NEWEST compact boundary before each anchor
+  // (a single-slot map keyed by the next message), so deeper boundaries in
+  // the same span collapse away and must not count as display items.
+  let boundaryCountedSinceAnchor = false
+
+  for await (const { line, offset } of iterateJsonlLinesBackward(jsonlPath, signal)) {
+    linesScanned++
+    if (linesScanned > MAX_TAIL_LINES) {
+      // Same reachability contract as the old tail reader: history deeper
+      // than MAX_TAIL_LINES raw lines from EOF cannot be paged to.
+      hitLineCap = true
+      break
+    }
+    lineOffsets?.push(offset)
+
+    if (cursorNeedle && line.includes(cursorNeedle)) {
+      const parsed = parseJsonlLine<JsonlEntry>(line)
+      const normalized = parsed !== undefined ? normalizeQueuedCommandEntry(parsed) : undefined
+      if (normalized !== undefined && (normalized as { uuid?: string }).uuid === cursor) {
+        // (Re-)anchor at this occurrence — the deepest seen so far wins.
+        mode = 'counting'
+        anchored = true
+        state = {
+          seenUuids: new Set(),
+          seenAssistantMessageIds: new Set(),
+          pendingInformationalContent: null,
+        }
+        displayCount = 0
+        windowBytes = 0
+        deepestCountedIsGroup = true
+        openGroupId = null
+        suppressUntilAnchorRow = normalized.type === 'system'
+        boundaryCountedSinceAnchor = false
+        startOffset = offset
+        endOffset = graceEndOffset(lineOffsets!, offset + line.length + 1)
+        continue
+      }
+      // A quoted-id byte match inside content or parentUuid parses to a
+      // different uuid — not an occurrence.
+    }
+
+    if (mode === 'searching' || mode === 'settled') continue
+
+    const parsed = parseJsonlLine<JsonlEntry>(line)
+    const normalized = parsed !== undefined ? normalizeQueuedCommandEntry(parsed) : undefined
+
+    if (mode === 'extending') {
+      const kind = classifyExtensionRow(normalized, state)
+      if (kind !== 'settle') {
+        // Cap-exempt: the transform reorders an entire contiguous system run
+        // as one unit, so a cap-placed boundary inside it loses items exactly
+        // like a cut merge group would. Bounded by the run's span — system
+        // and filtered rows are small.
+        windowBytes += line.length + 1
+        startOffset = offset
+        if (kind === 'system') deepestCountedIsGroup = false
+        continue
+      }
+      mode = 'settled'
+      if (!cursorNeedle) break
+      continue
+    }
+
+    // counting
+    windowBytes += line.length + 1
+    startOffset = offset
+    const msgEntry =
+      normalized !== undefined && (normalized.type === 'user' || normalized.type === 'assistant')
+        ? (normalized as JsonlMessageEntry)
+        : undefined
+    const pendingInfoBefore = state.pendingInformationalContent
+    // Checked BEFORE the classifier registers this row's uuid: a
+    // byte-identical replayed row shares its original's uuid, and the
+    // transform keys system-item anchors BY uuid — a duplicate row is the
+    // same anchor, not a new one. Treating it as new would reset the
+    // boundary-collapse span and lift system-cursor suppression, letting the
+    // page target be satisfied by items that never display.
+    const isDuplicateRow =
+      msgEntry !== undefined && !!msgEntry.uuid && state.seenUuids.has(msgEntry.uuid)
+    const counted = normalized !== undefined && countsAsDisplayStart(normalized, state)
+    // An anchor row is one the transform attaches system items to — a real
+    // message entry, not a filtered/skipped one (meta rows, compact
+    // summaries, an informational's synthetic user copy) and not a replayed
+    // duplicate of an anchor already seen.
+    const isAnchorRow =
+      msgEntry !== undefined &&
+      !isDuplicateRow &&
+      !('isMeta' in msgEntry && msgEntry.isMeta) &&
+      !msgEntry.isCompactSummary &&
+      !(
+        pendingInfoBefore !== null &&
+        msgEntry.type === 'user' &&
+        typeof msgEntry.message.content === 'string' &&
+        msgEntry.message.content === pendingInfoBefore
+      )
+    if (isAnchorRow) {
+      suppressUntilAnchorRow = false
+      boundaryCountedSinceAnchor = false
+    }
+    if (counted && !suppressUntilAnchorRow) {
+      const isBoundary =
+        normalized!.type === 'system' &&
+        (normalized as JsonlSystemEntry).subtype === 'compact_boundary'
+      if (isBoundary && boundaryCountedSinceAnchor) {
+        // Collapsed by the transform — the newest boundary in this span,
+        // already counted, is the only one that displays.
+      } else {
+        if (isBoundary) boundaryCountedSinceAnchor = true
+        displayCount++
+        deepestCountedIsGroup = msgEntry?.type === 'assistant' && !!msgEntry.message.id
+      }
+    }
+    // Merge-group span tracking. An assistant group's older entries can lie
+    // below queued/system/filtered rows interleaved inside its turn, so a
+    // window boundary placed while a group is "open" would cut it — the cut
+    // item gets a non-canonical id that vanishes from the next (deeper)
+    // window, terminating the client's pagination. No stop condition may fire
+    // while a group is open; a group closes at the first row that proves the
+    // turn boundary (a different assistant response, or a non-queued user
+    // row), which bounds the overshoot by one turn's span.
+    if (msgEntry !== undefined) {
+      if (msgEntry.type === 'assistant') {
+        openGroupId = msgEntry.message.id ?? null
+      } else if (!msgEntry.isQueuedCommand && !('isMeta' in msgEntry && msgEntry.isMeta)) {
+        openGroupId = null
+      }
+    }
+    const groupOpen = openGroupId !== null
+    if (displayCount >= targetItems && !groupOpen) {
+      mode = 'extending'
+    } else if (windowBytes >= byteBudget && displayCount >= 2 && !groupOpen) {
+      // The budget stop waits for two items: one sacrificial head plus at
+      // least one servable item, so a single display item larger than the
+      // budget is still delivered instead of an empty page.
+      mode = 'extending'
+    } else if (
+      windowBytes >= hardCap &&
+      !groupOpen &&
+      displayCount >= (deepestCountedIsGroup ? 2 : 1)
+    ) {
+      // The hard cap has its own floor: at least one servable item (two when
+      // the deepest item is a merge group the head-drop would sacrifice), so
+      // a run of non-display rows at EOF — a turn's freshly written tool
+      // results — cannot produce an empty terminal page while visible
+      // history exists. Routed through extension rather than settling
+      // directly, so a cap landing on a system run still completes the run.
+      mode = 'extending'
+    }
+  }
+
+  if (!anchored) {
+    // Cursor never found: vanished id, or deeper than the line cap.
+    return {
+      found: false,
+      startOffset: 0,
+      endOffset: undefined,
+      reachedStart: !hitLineCap,
+      dropHead: true,
+    }
+  }
+  return {
+    found: true,
+    startOffset,
+    endOffset,
+    reachedStart: startOffset === 0,
+    dropHead: deepestCountedIsGroup,
+  }
+}
+
+/** Pass 2 of the paged read: parse + normalize + filter the entries of a byte
+ * range chosen by pass 1. Identical filtering to readTransformedTail; memory
+ * is bounded by the range, which pass 1 bounded by the byte budget. */
+async function readEntriesRange(
+  jsonlPath: string,
+  startOffset: number,
+  endOffset: number | undefined,
+  signal?: AbortSignal,
+  media?: boolean
+): Promise<(JsonlMessageEntry | JsonlSystemEntry)[]> {
+  const entries: (JsonlMessageEntry | JsonlSystemEntry)[] = []
+  // Rows arrive in file order from a line-boundary start, so accumulating
+  // their lengths reproduces each row's absolute offset — what media refs
+  // address into. The +1 is the newline the reader strips.
+  let lineOffset = startOffset
+  // The signal is threaded into the reader itself (checked per chunk): a
+  // multi-MB row spans many chunks before it ever surfaces as a line here.
+  for await (const line of streamFileLines(
+    jsonlPath,
+    { start: startOffset, end: endOffset },
+    signal
+  )) {
+    const offset = lineOffset
+    lineOffset += line.length + 1
+    const parsed = parseJsonlLine<JsonlEntry>(line)
+    if (!parsed) continue
+    const normalized = normalizeQueuedCommandEntry(parsed)
+    if (
+      isMessageOrSystemDisplayEntry(normalized) &&
+      !('isMeta' in normalized && normalized.isMeta)
+    ) {
+      // Before the entries accumulate: the window holds every row at once, so
+      // dropping the base64 here keeps it out of the page's peak memory too,
+      // not just off the wire.
+      if (media) {
+        replaceInlineMediaWithRefs(normalized, { line, lineOffset: offset })
+      }
+      entries.push(normalized)
+    }
+  }
+  return entries
+}
+
+/** Trailing (or `cursor`-before) display page.
+ *
+ * Two passes, O(window) memory: a backward index scan picks the window's byte
+ * range without materializing anything (see scanMessagesPageWindow), then a
+ * forward read parses only that range and hands it to the same
+ * transformMessages the whole-file path uses — so page content matches the
+ * old grow-and-re-read implementation, while a transcript's size no longer
+ * sets the request's memory footprint. Pages truncated by the byte budget are
+ * valid short pages: nextCursor points at their first item and the client's
+ * scroll-up paging walks the rest. */
+export async function getSessionMessagesPage(
+  agentSlug: string,
+  sessionId: string,
+  opts: {
+    limit: number
+    cursor?: string
+    signal?: AbortSignal
+    byteBudget?: number
+    /** `'ref'` replaces inline base64 images with media refs (see session-media). */
+    media?: 'ref'
+  }
+): Promise<SessionMessagesPage> {
+  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+  if (!(await fileExists(jsonlPath))) {
+    return { messages: [], nextCursor: null }
+  }
+
+  const { limit, cursor, signal } = opts
+  const byteBudget = opts.byteBudget ?? MESSAGES_PAGE_BYTE_BUDGET
+
+  const scan = await scanMessagesPageWindow(jsonlPath, { limit, cursor, byteBudget, signal })
+  signal?.throwIfAborted()
+  if (!scan.found) {
+    // Vanished id (or cursor deeper than MAX_TAIL_LINES): terminate paging.
+    // Never point the client at a newer message — it would loop on
+    // already-loaded pages.
+    if (!scan.reachedStart) {
+      console.warn(
+        `getSessionMessagesPage: cursor ${cursor} not found within ` +
+        `${MAX_TAIL_LINES} tail lines of session ${sessionId}; ending pagination`
+      )
+    }
+    return { messages: [], nextCursor: null }
+  }
+
+  const entries = await readEntriesRange(
+    jsonlPath,
+    scan.startOffset,
+    scan.endOffset,
+    signal,
+    opts.media === 'ref'
+  )
+  signal?.throwIfAborted()
+  const transformed = transformMessages(entries)
+  const reachedStart = scan.reachedStart
+  const dropHead = scan.dropHead && !reachedStart
+
+  if (cursor) {
+    const idx = transformed.findIndex((item) => item.id === cursor)
+    if (idx === -1) {
+      // The index scan located the cursor's line but the transform of the
+      // materialized window disagrees — a concurrent rewrite between the two
+      // passes, or a replayed duplicate id. Terminate like a vanished cursor
+      // rather than serving a mislabeled page.
+      console.warn(
+        `getSessionMessagesPage: cursor ${cursor} vanished between scan and ` +
+        `read for session ${sessionId}; ending pagination`
+      )
+      return { messages: [], nextCursor: null }
+    }
+    const start = Math.max(dropHead ? 1 : 0, idx - limit)
+    const messages = transformed.slice(start, idx)
+    const hasOlder = messages.length > 0 && (!reachedStart || start > 0)
+    // Sequential walks end here when a cap truncates the page to empty.
+    if (messages.length === 0 && !reachedStart) {
+      console.warn(
+        `getSessionMessagesPage: pagination for session ${sessionId} hit a ` +
+        `scan cap below cursor ${cursor}; deeper history is unreachable`
+      )
+    }
+    return { messages, nextCursor: pageCursor(messages, hasOlder) }
+  }
+
+  const usable = dropHead ? transformed.slice(1) : transformed
+  const messages = usable.slice(-limit)
+  const hasOlder = messages.length > 0 && (!reachedStart || usable.length > messages.length)
+  if (messages.length === 0 && !reachedStart) {
+    console.warn(
+      `getSessionMessagesPage: window for session ${sessionId} hit the byte ` +
+      `hard cap before a complete display item; serving an empty page`
+    )
+  }
+  return { messages, nextCursor: pageCursor(messages, hasOlder) }
+}
+
+export interface SessionMessagesDelta {
+  messages: TransformedItem[]
+  /** Last settled item in the server's current view — the client's next `after`. */
+  anchor: string | null
+  /** Anchor not found within a bounded tail (file rewritten by deletion or
+   * retention cleanup, or the anchor is deeper than a live tail can be):
+   * the client must fall back to a full page fetch. */
+  resync?: true
+}
+
+const DELTA_INITIAL_TAIL_LINES = 128
+// The anchor is by definition near EOF (the last settled item of a page the
+// client already holds); a miss deeper than this is drift, answered with
+// resync rather than an unbounded scan.
+const DELTA_MAX_TAIL_LINES = 10_000
+
+/** Forward delta: transformed display items at-or-after the `after` anchor, as
+ * upserts (full current versions — new lines can mutate items the client
+ * already holds, e.g. a tool_result attaching to an earlier assistant item).
+ *
+ * The window widens backward past the anchor to the first still-mutable item
+ * (open tool call in the live turn, trailing assistant message still merging
+ * streamed blocks) so a stale anchor still yields every pending upsert. A
+ * tail window that cuts an assistant message mid-merge gives the partial item
+ * a different id, so an anchor inside a cut group misses and forces growth —
+ * anchors always resolve against complete items. */
+export async function getSessionMessagesDelta(
+  agentSlug: string,
+  sessionId: string,
+  opts: { after: string; signal?: AbortSignal; media?: 'ref' }
+): Promise<SessionMessagesDelta> {
+  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+  if (!(await fileExists(jsonlPath))) {
+    return { messages: [], anchor: null, resync: true }
+  }
+
+  const { after, signal } = opts
+  let maxLines = DELTA_INITIAL_TAIL_LINES
+
+  for (let attempt = 0; attempt < 32; attempt++) {
+    const { transformed, entries, reachedStart } = await readTransformedTail(
+      jsonlPath,
+      maxLines,
+      signal,
+      opts.media === 'ref'
+    )
+    const canGrow = !reachedStart && maxLines < DELTA_MAX_TAIL_LINES
+
+    const idx = transformed.findIndex((item) => item.id === after)
+    if (idx === -1) {
+      if (canGrow) {
+        maxLines = Math.min(DELTA_MAX_TAIL_LINES, maxLines * 2)
+        continue
+      }
+      return { messages: [], anchor: null, resync: true }
+    }
+
+    const windowStart = findDeltaWindowStart(transformed)
+    let start = Math.min(idx, windowStart)
+    // Every tool_result recorded after the anchor must have its parent
+    // assistant item in the response: the result may have closed a call the
+    // client still holds open (e.g. it anchored past a call that annotation
+    // stamped as settled while the raw transcript still had it open), and
+    // only the parent item's upsert carries the resolution.
+    const lateResultIds = toolResultIdsAfterEntry(entries, after)
+    if (lateResultIds.size > 0) {
+      // A parent deeper than the current window would be silently skipped by
+      // the scan below — grow until every late result's parent is in view.
+      // When growth is exhausted, proceed WITHOUT the parent's upsert instead
+      // of resyncing: with the file fully read the id is a genuine orphan
+      // (its tool_use was rewritten away), and at the bounded-tail cap the
+      // parent sits deeper than any anchor the client could still hold open —
+      // a permanent orphan there would otherwise turn every poll into a
+      // resync + full-fetch cycle, recreating the cascade this delta exists
+      // to prevent.
+      if (!reachedStart && canGrow) {
+        const windowToolIds = new Set<string>()
+        for (const item of transformed) {
+          if (item.type !== 'assistant') continue
+          for (const toolCall of item.toolCalls) windowToolIds.add(toolCall.id)
+        }
+        if ([...lateResultIds].some((id) => !windowToolIds.has(id))) {
+          maxLines = Math.min(DELTA_MAX_TAIL_LINES, maxLines * 2)
+          continue
+        }
+      }
+      for (let i = 0; i < start; i++) {
+        const item = transformed[i]
+        if (item.type === 'assistant' && item.toolCalls.some((tc) => lateResultIds.has(tc.id))) {
+          start = i
+          break
+        }
+      }
+    }
+    // Item 0 of a window that didn't reach the file start may be a partially
+    // merged assistant message (its leading block entries cut off) — never
+    // serve it; grow until the window has context before the response.
+    if (start === 0 && !reachedStart) {
+      if (canGrow) {
+        maxLines = Math.min(DELTA_MAX_TAIL_LINES, maxLines * 2)
+        continue
+      }
+      return { messages: [], anchor: null, resync: true }
+    }
+
+    return {
+      messages: transformed.slice(start),
+      anchor: windowStart > 0 ? transformed[windowStart - 1].id : null,
+    }
+  }
+
+  throw new Error('getSessionMessagesDelta exceeded tail growth attempts')
+}
+
+// Tail-window sizing for findLastSessionEntry: start small (covers the last
+// few turns of a typical transcript), escalate when the window has no match,
+// and cap before falling back to a full parse.
+const TAIL_WINDOW_INITIAL_BYTES = 256 * 1024
+const TAIL_WINDOW_GROWTH_FACTOR = 4
+const TAIL_WINDOW_MAX_BYTES = 4 * 1024 * 1024
+
+/**
+ * Read the last `windowBytes` of a session transcript and return the entries
+ * parsed from the complete lines inside that window (same normalization and
+ * filtering as getSessionMessagesWithCompact). Returns null when the file does
+ * not exist.
+ *
+ * When the window starts mid-file, everything up to and including the first
+ * newline is discarded: that prefix is (almost always) the tail of a line
+ * whose start lies outside the window. If the window happens to start exactly
+ * on a line boundary this discards one complete line — harmless, because
+ * callers never conclude "absent" from a partial window (see
+ * findLastSessionEntry). Discarding to a newline also guarantees the decoded
+ * text never starts inside a multi-byte UTF-8 sequence.
+ */
+async function readSessionEntriesFromTail(
+  jsonlPath: string,
+  windowBytes: number,
+  endOffset?: number,
+): Promise<{
+  entries: (JsonlMessageEntry | JsonlSystemEntry)[]
+  coveredWholeFile: boolean
+} | null> {
+  let fileHandle: fs.promises.FileHandle
+  try {
+    fileHandle = await fs.promises.open(jsonlPath, 'r')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+  try {
+    const { size } = await fileHandle.stat()
+    // Callers may anchor a read to a transcript byte offset captured at turn
+    // completion. Clamp it to the current file size so truncation/replacement
+    // degrades to the surviving prefix without crossing into a later turn.
+    const effectiveEnd = endOffset == null
+      ? size
+      : Math.min(size, Math.max(0, Math.floor(endOffset)))
+    const offset = Math.max(0, effectiveEnd - windowBytes)
+    const length = effectiveEnd - offset
+    const buffer = Buffer.alloc(length)
+    let bytesReadTotal = 0
+    while (bytesReadTotal < length) {
+      const { bytesRead } = await fileHandle.read(
+        buffer,
+        bytesReadTotal,
+        length - bytesReadTotal,
+        offset + bytesReadTotal
+      )
+      if (bytesRead === 0) break // file shrank under us; parse what we got
+      bytesReadTotal += bytesRead
+    }
+    let window = buffer.subarray(0, bytesReadTotal)
+    if (offset > 0) {
+      const firstNewline = window.indexOf(0x0a) // '\n'
+      if (firstNewline === -1) {
+        // One line larger than the whole window — no complete line to parse.
+        return { entries: [], coveredWholeFile: false }
+      }
+      window = window.subarray(firstNewline + 1)
+    }
+    const entries = parseJsonl<JsonlEntry>(window.toString('utf-8'))
+      .map(normalizeQueuedCommandEntry)
+      .filter(isMessageOrSystemDisplayEntry)
+    return { entries, coveredWholeFile: offset === 0 }
+  } finally {
+    await fileHandle.close()
+  }
+}
+
+/**
+ * Find the newest transcript entry matching `predicate`, over the same entry
+ * set getSessionMessagesWithCompact produces, without parsing the whole file.
+ * Transcripts routinely reach 100MB+, so callers that only need the most
+ * recent entry (e.g. the reply of a just-finished turn) should not pay a full
+ * parse — especially inside retry loops.
+ *
+ * Equivalence with the full parse: every transcript entry is line-local (one
+ * JSONL line maps to at most one entry; normalization and filtering never
+ * merge or reorder lines, and compact boundaries are ordinary standalone
+ * lines), so the newest matching entry within a complete-line tail window is
+ * exactly the entry a full parse would select. A window with no match is only
+ * trusted when it covered the whole file; otherwise the window escalates.
+ * Unanchored reads finally fall back to the existing streaming full parse so
+ * they remain exact. Anchored reads deliberately stop at the tail budget:
+ * materializing an arbitrarily large captured prefix would defeat the bounded
+ * reader, and their caller supports omitting request context.
+ *
+ * `endOffset` constrains the search to a byte position captured from this same
+ * transcript. It is the ordering primitive for completion-notification context:
+ * unlike timestamps, file offsets do not compare host and container clocks.
+ */
+export async function findLastSessionEntry(
+  agentSlug: string,
+  sessionId: string,
+  predicate: (entry: JsonlMessageEntry | JsonlSystemEntry) => boolean,
+  options: { endOffset?: number | null } = {},
+): Promise<JsonlMessageEntry | JsonlSystemEntry | null> {
+  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+  const endOffset = options.endOffset == null || !Number.isFinite(options.endOffset)
+    ? undefined
+    : Math.max(0, Math.floor(options.endOffset))
+
+  for (
+    let windowBytes = TAIL_WINDOW_INITIAL_BYTES;
+    windowBytes <= TAIL_WINDOW_MAX_BYTES;
+    windowBytes *= TAIL_WINDOW_GROWTH_FACTOR
+  ) {
+    const tail = await readSessionEntriesFromTail(jsonlPath, windowBytes, endOffset)
+    if (tail === null) return null // no transcript file
+    for (let i = tail.entries.length - 1; i >= 0; i--) {
+      if (predicate(tail.entries[i])) return tail.entries[i]
+    }
+    if (tail.coveredWholeFile) return null
+  }
+
+  // An anchored lookup must never turn its captured byte offset into an
+  // unbounded Buffer + UTF-16 string. Missing context is an explicit supported
+  // outcome for completion summaries, so stop after the 4 MB tail budget.
+  if (endOffset !== undefined) {
+    return null
+  }
+
+  // Unanchored callers keep exact pre-existing behavior via the line-streaming
+  // whole-file parser (never one readFile-sized string).
+  const entries = await getSessionMessagesWithCompact(agentSlug, sessionId)
+  for (let i = entries.length - 1; i >= 0; i--) {
+    if (predicate(entries[i])) return entries[i]
+  }
+  return null
 }
 
 /**
@@ -1058,7 +1992,15 @@ export async function setSessionMarkedUnread(
  * any session list, so a dot raised by one could never be cleared.
  */
 export async function getSessionIdsMarkedUnread(agentSlug: string): Promise<Set<string>> {
-  const metadata = await readSessionMetadata(agentSlug)
+  return collectSessionIdsMarkedUnread(await readSessionMetadata(agentSlug))
+}
+
+/**
+ * Same selection against a metadata map the caller already holds — for the
+ * agent-summary paths, which read the map once and would otherwise pay for a
+ * second read just to answer this.
+ */
+export function collectSessionIdsMarkedUnread(metadata: SessionMetadataMap): Set<string> {
   const ids = new Set<string>()
   for (const [sessionId, sessionMeta] of Object.entries(metadata)) {
     if (sessionMeta?.markedUnread && !isHiddenAutomatedSession(sessionMeta)) {
@@ -1066,6 +2008,26 @@ export async function getSessionIdsMarkedUnread(agentSlug: string): Promise<Set<
     }
   }
   return ids
+}
+
+/**
+ * Union of the notification-derived unread ids and the explicitly marked ones.
+ * `markedUnread` is a second source of truth for the unread dot, so EVERY
+ * consumer of the unread projection has to OR it in. In the agents route that
+ * is: the agent rollup, the full session list, the `?notable=true` fast path,
+ * and the latest-visible-session expansion's two halves (its tail and the
+ * attention-outside-latest booleans). Adding a sixth means wiring it here too.
+ *
+ * Returns the input set unchanged when nothing is marked, so the common case
+ * allocates nothing.
+ */
+export function withSessionIdsMarkedUnread(
+  unreadSessionIds: Set<string>,
+  metadata: SessionMetadataMap,
+): Set<string> {
+  const marked = collectSessionIdsMarkedUnread(metadata)
+  if (marked.size === 0) return unreadSessionIds
+  return new Set([...unreadSessionIds, ...marked])
 }
 
 /**
@@ -1174,8 +2136,6 @@ export async function removeMessage(
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
   if (!(await fileExists(jsonlPath))) return false
 
-  const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
-
   // Find the target entry by id. Regular messages match by top-level uuid;
   // queued (mid-turn) messages surface in the UI with id = the queued_command
   // attachment's source_uuid (see normalizeQueuedCommandEntry), so match the
@@ -1184,7 +2144,23 @@ export async function removeMessage(
     ('uuid' in e && e.uuid === messageUuid) ||
     (e.type === 'attachment' && (e as JsonlAttachmentEntry).attachment?.source_uuid === messageUuid)
 
-  const target = entries.find(matchesTargetId)
+  // Transcripts run to tens (sometimes hundreds) of MB, so never materialize
+  // the whole file: stream once to find the target, once more to collect the
+  // associated tool_use ids if needed, then stream-rewrite.
+  let target: JsonlEntry | undefined
+  try {
+    for await (const entry of streamJsonlFile<JsonlEntry>(jsonlPath)) {
+      if (matchesTargetId(entry)) {
+        target = entry
+        break
+      }
+    }
+  } catch (error) {
+    // Transcript deleted between the existence check and the read: the old
+    // full-read implementation treated this as "not found".
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
   if (!target) return false
 
   // Collect message IDs and tool_use IDs to remove
@@ -1196,7 +2172,7 @@ export async function removeMessage(
     messageIdsToRemove.add(target.message.id)
 
     // Collect tool_use IDs from all entries with this message.id
-    for (const entry of entries) {
+    for await (const entry of streamJsonlFile<JsonlEntry>(jsonlPath)) {
       if (!('message' in entry)) continue
       const e = entry as JsonlMessageEntry
       if (e.type === 'assistant' && e.message.id === target.message.id) {
@@ -1212,13 +2188,12 @@ export async function removeMessage(
     }
   }
 
-  // Filter entries
-  const filtered = entries.filter((entry) => {
+  await rewriteTranscript(jsonlPath, (entry) => {
     // Remove the target entry (user message or queued_command attachment)
-    if (matchesTargetId(entry)) return false
-    if (!('uuid' in entry)) return true // keep non-message entries
+    if (matchesTargetId(entry)) return 'drop'
+    if (!('uuid' in entry)) return 'keep' // keep non-message entries
     const e = entry as JsonlMessageEntry
-    if (e.type === 'assistant' && e.message.id && messageIdsToRemove.has(e.message.id)) return false
+    if (e.type === 'assistant' && e.message.id && messageIdsToRemove.has(e.message.id)) return 'drop'
 
     // Remove tool_result user entries referencing removed tool calls
     if (e.type === 'user' && toolUseIdsToRemove.size > 0) {
@@ -1226,19 +2201,55 @@ export async function removeMessage(
       if (Array.isArray(content)) {
         const blocks = content as ContentBlock[]
         if (blocks.every((b) => b.type === 'tool_result' && toolUseIdsToRemove.has(b.tool_use_id))) {
-          return false
+          return 'drop'
         }
       }
     }
 
-    return true
+    return 'keep'
   })
-
-  // Write back
-  const jsonl = filtered.map((e) => JSON.stringify(e)).join('\n') + (filtered.length > 0 ? '\n' : '')
-  await writeFile(jsonlPath, jsonl)
   recordSessionActivity(agentSlug, sessionId)
   return true
+}
+
+/**
+ * Stream-rewrite a transcript, deciding per entry whether to keep, drop, or
+ * replace its line. Kept lines are copied through byte-for-byte from the
+ * original file (never parse-and-restringified, which could alter number
+ * formatting or unicode escapes); blank/malformed lines are copied through
+ * untouched. Output goes to a sibling temp file that atomically replaces the
+ * original (see writeFileAtomicStream), so a failure mid-rewrite leaves the
+ * transcript exactly as it was.
+ *
+ * Like the read-modify-write it replaces, this takes no lock against
+ * concurrent transcript appends — callers rely on the same exclusivity
+ * assumption as before.
+ */
+async function rewriteTranscript(
+  jsonlPath: string,
+  mapEntry: (entry: JsonlEntry) => JsonlEntry | 'keep' | 'drop'
+): Promise<void> {
+  const newline = Buffer.from('\n')
+  async function* lines(): AsyncGenerator<Buffer | string> {
+    for await (const raw of streamFileLines(jsonlPath)) {
+      const entry = parseJsonlLine<JsonlEntry>(raw)
+      if (entry === undefined) {
+        // Blank or malformed line (mid-write artifact): copy through untouched
+        yield raw
+        yield newline
+        continue
+      }
+      const result = mapEntry(entry)
+      if (result === 'drop') continue
+      if (result === 'keep') {
+        yield raw
+        yield newline
+        continue
+      }
+      yield JSON.stringify(result) + '\n'
+    }
+  }
+  await writeFileAtomicStream(jsonlPath, lines())
 }
 
 /**
@@ -1256,17 +2267,11 @@ export async function removeToolCall(
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
   if (!(await fileExists(jsonlPath))) return false
 
-  const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
-  let found = false
-
-  // Process entries: remove the tool_use block and tool_result entries
-  const filtered: JsonlEntry[] = []
-
-  for (const entry of entries) {
-    if (!('message' in entry)) {
-      filtered.push(entry)
-      continue
-    }
+  // Decide what to do with one entry: remove the tool_use block from assistant
+  // entries and the tool_result block from user entries, dropping an entry
+  // whose content would become empty. Untouched entries are kept verbatim.
+  const mapEntry = (entry: JsonlEntry): JsonlEntry | 'keep' | 'drop' => {
+    if (!('message' in entry)) return 'keep'
     const e = entry as JsonlMessageEntry
 
     // Remove tool_result user entries for this tool call
@@ -1276,10 +2281,8 @@ export async function removeToolCall(
         (b) => !(b.type === 'tool_result' && b.tool_use_id === toolCallId)
       )
       if (remaining.length < blocks.length) {
-        found = true
-        if (remaining.length === 0) continue // drop entire entry
-        filtered.push({ ...e, message: { ...e.message, content: remaining } })
-        continue
+        if (remaining.length === 0) return 'drop' // drop entire entry
+        return { ...e, message: { ...e.message, content: remaining } }
       }
     }
 
@@ -1290,20 +2293,34 @@ export async function removeToolCall(
         (b) => !(b.type === 'tool_use' && b.id === toolCallId)
       )
       if (remaining.length < blocks.length) {
-        found = true
-        if (remaining.length === 0) continue // drop entire entry
-        filtered.push({ ...e, message: { ...e.message, content: remaining } })
-        continue
+        if (remaining.length === 0) return 'drop' // drop entire entry
+        return { ...e, message: { ...e.message, content: remaining } }
       }
     }
 
-    filtered.push(entry)
+    return 'keep'
   }
 
+  // First streaming pass: bail out (and leave the file untouched) unless some
+  // entry actually references this tool call — matches the old behavior of
+  // only writing when `found`.
+  let found = false
+  try {
+    for await (const entry of streamJsonlFile<JsonlEntry>(jsonlPath)) {
+      if (mapEntry(entry) !== 'keep') {
+        found = true
+        break
+      }
+    }
+  } catch (error) {
+    // Transcript deleted between the existence check and the read: the old
+    // full-read implementation treated this as "not found".
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
   if (!found) return false
 
-  const jsonl = filtered.map((e) => JSON.stringify(e)).join('\n') + (filtered.length > 0 ? '\n' : '')
-  await writeFile(jsonlPath, jsonl)
+  await rewriteTranscript(jsonlPath, mapEntry)
   recordSessionActivity(agentSlug, sessionId)
   return true
 }

@@ -1,7 +1,7 @@
 import { SessionChatColumn } from './session-chat-column'
 import { FilePreviewProvider } from '@renderer/context/file-preview-context'
 import { WorkflowProvider } from '@renderer/context/workflow-context'
-import { ChevronLeft, CalendarClock, Zap } from 'lucide-react'
+import { ChevronLeft, CalendarClock, GitFork, Zap } from 'lucide-react'
 import { useEffect } from 'react'
 import { useSession, useSetSessionMarkedUnread } from '@renderer/hooks/use-sessions'
 import { HttpError } from '@renderer/lib/api'
@@ -130,6 +130,32 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
             <Zap className="h-3 w-3 shrink-0" />
             <span>
               Session created by webhook trigger{session.webhookTriggerName ? ` "${session.webhookTriggerName}"` : ''}
+            </span>
+          </div>
+        </div>
+      )}
+      {session?.invokedByAgentSlug && (
+        <div className="shrink-0 border-b bg-background px-4 py-2" data-testid="x-agent-session-banner">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <button
+              onClick={() => {
+                void navigate({
+                  to: '/agents/$slug/called-from-agents',
+                  params: { slug: agentSlug },
+                })
+              }}
+              className="inline-flex items-center gap-1 text-primary hover:underline shrink-0"
+              data-testid="x-agent-session-back-button"
+            >
+              <ChevronLeft className="h-3 w-3" />
+              Back
+            </button>
+            <span className="mx-1 text-border">|</span>
+            <GitFork className="h-3 w-3 shrink-0" />
+            <span>
+              Session created by x-agent call from &quot;
+              {session.invokedByAgentName ?? session.invokedByAgentSlug}
+              &quot;
             </span>
           </div>
         </div>

@@ -1,4 +1,10 @@
 import type { RuntimeOptions } from './runtime-options'
+import type { ObserveUnexpectedDeathInput, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
+
+export interface SendMessageOptions extends RuntimeOptions {
+  /** Keep an automated session in its automated runtime class for agent-originated follow-ups. */
+  isAutomated?: boolean
+}
 
 export const CONTAINER_RUNNER_IDS = [
   'docker',
@@ -51,6 +57,7 @@ export interface ContainerSession {
   lastActivity: string
   workingDirectory: string
   slashCommands?: SlashCommandInfo[]
+  isRunning?: boolean
 }
 
 export interface StreamMessage {
@@ -214,11 +221,16 @@ export interface ContainerClient {
   deleteSession(sessionId: string): Promise<boolean>
 
   // Message operations
-  sendMessage(sessionId: string, content: string, uuid?: string, options?: RuntimeOptions): Promise<void>
+  sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<void>
   // Cancel a queued (not yet picked up) message by the uuid it was sent with.
   // false = too late (already picked up) or session not live — never throws for that.
   cancelQueuedMessage(sessionId: string, uuid: string): Promise<boolean>
   interruptSession(sessionId: string): Promise<boolean>
+
+  // Default settles (today's session_error). Overrides must be safe on a live runtime (queued re-run).
+  onFatalResult(kind: RuntimeFatalKind): 'settle' | 'defer_for_recovery'
+  observeUnexpectedDeath(input?: ObserveUnexpectedDeathInput): Promise<UnexpectedDeathPlan>
+  getRuntimeGenerationId(): string | null
 
   // Streaming - returns unsubscribe function and a ready promise
   subscribeToStream(

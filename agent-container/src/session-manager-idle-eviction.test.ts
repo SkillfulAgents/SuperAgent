@@ -538,6 +538,33 @@ describe('SessionManager idle eviction', () => {
     }
   })
 
+  it('an automated follow-up preserves the automated session class', async () => {
+    const promoManager = new SessionManager(workDir, {
+      prewarmEnabled: false,
+      idleEvictionMs: 60 * 60_000,
+      automatedIdleEvictionMs: 0,
+    })
+    try {
+      const session = await promoManager.createSession({
+        initialMessage: 'hi',
+        metadata: { isAutomated: true },
+      })
+      const proc = spawnedProcesses[spawnedProcesses.length - 1]
+      emitSettled(proc)
+
+      await promoManager.sendMessage(session.id, 'agent follow-up', undefined, { isAutomated: true })
+      emitSettled(proc)
+      await promoManager.evictIdleSessions()
+
+      expect(proc.stopCalls).toBe(1)
+      expect(
+        (persistedSessions.get(session.id)?.metadata as { isAutomated?: boolean })?.isAutomated
+      ).toBe(true)
+    } finally {
+      await promoManager.stopAll()
+    }
+  })
+
   it('eviction stops the process GRACEFULLY (transcript-flush protection)', async () => {
     // A hard abort races the CLI's transcript flush — the durability E2E
     // proved probabilistic loss of the latest turns. This pins the graceful

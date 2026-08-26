@@ -48,10 +48,9 @@ export default defineConfig({
         clientsClaim: true,
         // Everything the UI is made of; hdr-*.mp4 stay network-only (decorative).
         globPatterns: ['**/*.{js,css,html,svg,png,ico,webmanifest,woff2}'],
-        // Offline/PWA document loads (deep links included) get the app shell.
-        // API routes must never fall back to HTML.
+        // Offline deep links get the app shell; /api and /auth (SSO launcher) must hit the network.
         navigateFallback: 'index.html',
-        navigateFallbackDenylist: [/^\/api\//],
+        navigateFallbackDenylist: [/^\/api\//, /^\/auth\//],
         // Vendor chunk exceeds workbox's 2MB default before compression.
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
         inlineWorkboxRuntime: true, // single sw.js file, nothing extra at the dist root

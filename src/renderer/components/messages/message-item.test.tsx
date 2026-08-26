@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, act } from '@testing-library/react'
 import { MessageItem } from './message-item'
 import { createUserMessage, createAssistantMessage, createToolCall } from '@renderer/test/factories'
 
@@ -91,6 +91,24 @@ describe('MessageItem', () => {
       expect(link).toHaveAttribute('href', 'https://example.com')
     })
 
+    it('renders a container screenshot through its verified tool-result alias', () => {
+      const fileUrl = 'file:///home/claude/.agent-browser/tmp/screenshots/shot.png'
+      const mediaUrl = '/api/agents/a/sessions/s/media/ref_123'
+      const msg = createAssistantMessage({
+        content: { text: `![Captured page](${fileUrl})` },
+      })
+
+      const { container } = render(
+        <MessageItem
+          message={msg}
+          embeddedImageAliases={new Map([[fileUrl, mediaUrl]])}
+        />
+      )
+
+      expect(container.querySelector('img')).toHaveAttribute('src', mediaUrl)
+      expect(container.querySelector('img')).toHaveAttribute('alt', 'Captured page')
+    })
+
     it('renders code blocks', () => {
       const msg = createAssistantMessage({ content: { text: '```js\nconsole.log("hi")\n```' } })
       render(<MessageItem message={msg} />)
@@ -143,6 +161,70 @@ describe('MessageItem', () => {
     })
   })
 
+  describe('streaming word reveal', () => {
+    it('adds a reveal hook to prose words in the active Markdown tail', () => {
+      const msg = createAssistantMessage({ content: { text: 'Hello **bright** world' } })
+      const { container } = render(<MessageItem message={msg} isStreaming />)
+      const words = Array.from(container.querySelectorAll<HTMLElement>('.streaming-word-reveal'))
+
+      expect(words.map((word) => word.textContent)).toEqual(['Hello', 'bright', 'world'])
+      expect(words.map((word) => word.style.animationDelay)).toEqual(['0ms', '36ms', '72ms'])
+    })
+
+    it('keeps settled paragraphs and inline code crisp', () => {
+      const msg = createAssistantMessage({
+        content: { text: 'Already settled.\n\nRun `npm test` next' },
+      })
+      const { container } = render(<MessageItem message={msg} isStreaming />)
+      const paragraphs = container.querySelectorAll('p')
+
+      expect(paragraphs[0].querySelector('.streaming-word-reveal')).toBeNull()
+      expect(paragraphs[1].querySelectorAll('.streaming-word-reveal')).toHaveLength(2)
+      expect(paragraphs[1].querySelector('code .streaming-word-reveal')).toBeNull()
+    })
+
+    it('does not replay the reveal on words that were already mounted', () => {
+      const first = createAssistantMessage({ content: { text: 'Hello' } })
+      const { container, rerender } = render(<MessageItem message={first} isStreaming />)
+      const hello = container.querySelector('.streaming-word-reveal')
+
+      const next = createAssistantMessage({ ...first, content: { text: 'Hello world' } })
+      rerender(<MessageItem message={next} isStreaming />)
+
+      const words = container.querySelectorAll('.streaming-word-reveal')
+      expect(words).toHaveLength(2)
+      expect(words[0]).toBe(hello)
+      expect(words[1]).toHaveTextContent('world')
+    })
+
+    it('starts each appended paragraph chunk as a fresh compact word wave', () => {
+      const first = createAssistantMessage({ content: { text: 'Already visible' } })
+      const { container, rerender } = render(<MessageItem message={first} isStreaming />)
+      const existing = Array.from(
+        container.querySelectorAll<HTMLElement>('.streaming-word-reveal')
+      ).map((word) => word.style.animationDelay)
+
+      const next = createAssistantMessage({
+        ...first,
+        content: { text: 'Already visible and now four more words' },
+      })
+      rerender(<MessageItem message={next} isStreaming />)
+
+      const delays = Array.from(
+        container.querySelectorAll<HTMLElement>('.streaming-word-reveal')
+      ).map((word) => word.style.animationDelay)
+      expect(delays.slice(0, 2)).toEqual(existing)
+      expect(delays.slice(2)).toEqual(['0ms', '36ms', '72ms', '108ms', '144ms'])
+    })
+
+    it('renders persisted responses without reveal wrappers', () => {
+      const msg = createAssistantMessage({ content: { text: 'All done' } })
+      const { container } = render(<MessageItem message={msg} />)
+
+      expect(container.querySelector('.streaming-word-reveal')).toBeNull()
+    })
+  })
+
   describe('streaming markdown splitting', () => {
     it('renders every block of a multi-block streaming message', () => {
       const text = '# Heading\n\nSome text\n\n```js\nconsole.log("hi")\n```\n\nMore text'
@@ -151,7 +233,7 @@ describe('MessageItem', () => {
       expect(screen.getByText('Heading')).toBeInTheDocument()
       expect(screen.getByText('Some text')).toBeInTheDocument()
       expect(screen.getByText('console.log("hi")')).toBeInTheDocument()
-      expect(screen.getByText('More text')).toBeInTheDocument()
+      expect(screen.getByTestId('message-assistant')).toHaveTextContent('More text')
     })
 
     it('keeps an in-progress code fence (with an internal blank line) intact while streaming', () => {
@@ -337,8 +419,8 @@ describe('MessageItem', () => {
         apiError: 'authentication_failed',
       })
       render(<MessageItem message={msg} />)
-      expect(screen.getByText('LLM Provider Error')).toBeInTheDocument()
-      expect(screen.getByText('Invalid API key')).toBeInTheDocument()
+      expect(screen.getByTestId('provider-error-card')).toHaveTextContent('LLM Provider Error: Invalid API key')
+      act(() => { screen.getByTestId('provider-error-card').click() })
       expect(screen.getByText(/external LLM provider API/)).toBeInTheDocument()
     })
 

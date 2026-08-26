@@ -1,5 +1,10 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import {
+  DASHBOARD_DISPATCH_ACK_TYPE,
+  DASHBOARD_DISPATCH_REQUEST_TYPE,
+  DASHBOARD_DISPATCH_RESULT_TYPE,
+} from '@shared/lib/dashboard-dispatch-schema'
 import {
   dashboardMountPath,
   dashboardResponseHeaders,
@@ -9,22 +14,48 @@ import {
   rewriteDashboardLocation,
 } from './dashboard-runtime'
 
-function runtimeFor(documentHref: string, fallback: string, slug = 'slides') {
+interface RuntimeApi {
+  basePath: string
+  routerBasePath: string
+  slug: string
+  url(path?: string): string
+  dispatchSession(request: { prompt?: unknown; agent?: unknown; title?: unknown }): Promise<unknown>
+}
+
+function runtimeHarness(
+  documentHref: string,
+  fallback: string,
+  slug = 'slides',
+  options?: { parentPostMessage?: (message: unknown, targetOrigin: string) => void },
+) {
   const url = new URL(documentHref)
   const source = getDashboardRuntimeJs(fallback, slug)
+  const messageListeners: Array<(event: unknown) => void> = []
   const windowObject: Record<string, unknown> = {
     location: { pathname: url.pathname },
+    addEventListener: (type: string, listener: (event: unknown) => void) => {
+      if (type === 'message') messageListeners.push(listener)
+    },
   }
+  // Default harness models a top-level window (parent === window); a dispatch
+  // host is modeled by handing in a distinct parent with postMessage.
+  windowObject.parent = options?.parentPostMessage
+    ? { postMessage: options.parentPostMessage }
+    : windowObject
   const documentObject = {
     querySelector: () => null,
   }
   new Function('window', 'document', source)(windowObject, documentObject)
-  return windowObject.__GAMUT_DASHBOARD__ as {
-    basePath: string
-    routerBasePath: string
-    slug: string
-    url(path?: string): string
+  const deliverMessage = (data: unknown, source?: unknown) => {
+    // Default to the parent frame — the shim ignores any other source.
+    const from = source === undefined ? windowObject.parent : source
+    for (const listener of messageListeners) listener({ source: from, data })
   }
+  return { runtime: windowObject.__GAMUT_DASHBOARD__ as RuntimeApi, deliverMessage }
+}
+
+function runtimeFor(documentHref: string, fallback: string, slug = 'slides') {
+  return runtimeHarness(documentHref, fallback, slug).runtime
 }
 
 describe('dashboard runtime injection', () => {
@@ -99,6 +130,131 @@ describe('dashboard runtime injection', () => {
     expect(runtime.url('api/data?limit=2#items')).toBe(
       '/api/agents/a/artifacts/slides/api/data?limit=2#items',
     )
+  })
+})
+
+describe('dashboard session dispatch shim', () => {
+  const href = 'http://127.0.0.1/api/agents/a/artifacts/slides/'
+  const fallback = '/api/agents/a/artifacts/slides/'
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('uses the message types the host-side schema defines', () => {
+    const source = getDashboardRuntimeJs(fallback, 'slides')
+    expect(source).toContain(`"${DASHBOARD_DISPATCH_REQUEST_TYPE}"`)
+    expect(source).toContain(`"${DASHBOARD_DISPATCH_ACK_TYPE}"`)
+    expect(source).toContain(`"${DASHBOARD_DISPATCH_RESULT_TYPE}"`)
+  })
+
+  it('rejects an empty prompt without posting anything', async () => {
+    const posted: unknown[] = []
+    const { runtime } = runtimeHarness(href, fallback, 'slides', {
+      parentPostMessage: (message) => posted.push(message),
+    })
+    await expect(runtime.dispatchSession({ prompt: '   ' })).rejects.toThrow(/non-empty prompt/)
+    expect(posted).toHaveLength(0)
+  })
+
+  it('rejects when there is no parent frame to host the dialog', async () => {
+    const { runtime } = runtimeHarness(href, fallback)
+    await expect(runtime.dispatchSession({ prompt: 'do it' })).rejects.toThrow(
+      /not available in this window/,
+    )
+  })
+
+  it('posts a request and resolves with the host result after an ack', async () => {
+    const posted: Array<{ message: any; targetOrigin: string }> = []
+    const { runtime, deliverMessage } = runtimeHarness(href, fallback, 'slides', {
+      parentPostMessage: (message, targetOrigin) => posted.push({ message: message as any, targetOrigin }),
+    })
+
+    const pending = runtime.dispatchSession({ prompt: '/research-user jane', title: 'Research Jane' })
+    expect(posted).toHaveLength(1)
+    const request = posted[0].message
+    expect(posted[0].targetOrigin).toBe('*')
+    expect(request.type).toBe(DASHBOARD_DISPATCH_REQUEST_TYPE)
+    expect(request.payload).toEqual({
+      prompt: '/research-user jane',
+      title: 'Research Jane',
+    })
+
+    deliverMessage({ type: DASHBOARD_DISPATCH_ACK_TYPE, id: request.id })
+    deliverMessage({
+      type: DASHBOARD_DISPATCH_RESULT_TYPE,
+      id: request.id,
+      result: { sessionId: 's-1', agentSlug: 'a' },
+    })
+    await expect(pending).resolves.toEqual({ sessionId: 's-1', agentSlug: 'a' })
+  })
+
+  it('rejects when the host reports an error result', async () => {
+    const posted: any[] = []
+    const { runtime, deliverMessage } = runtimeHarness(href, fallback, 'slides', {
+      parentPostMessage: (message) => posted.push(message),
+    })
+
+    const pending = runtime.dispatchSession({ prompt: 'do it' })
+    deliverMessage({ type: DASHBOARD_DISPATCH_ACK_TYPE, id: posted[0].id })
+    deliverMessage({
+      type: DASHBOARD_DISPATCH_RESULT_TYPE,
+      id: posted[0].id,
+      result: { error: 'A dispatch request is already awaiting the user', code: 'busy' },
+    })
+    await expect(pending).rejects.toThrow(/already awaiting/)
+  })
+
+  it('rejects when no host acks within the availability timeout', async () => {
+    vi.useFakeTimers()
+    const { runtime } = runtimeHarness(href, fallback, 'slides', {
+      parentPostMessage: () => {},
+    })
+
+    const pending = runtime.dispatchSession({ prompt: 'do it' })
+    const assertion = expect(pending).rejects.toThrow(/not available in this window/)
+    vi.advanceTimersByTime(2001)
+    await assertion
+  })
+
+  it('ignores results that do not come from the parent frame', async () => {
+    const posted: any[] = []
+    const { runtime, deliverMessage } = runtimeHarness(href, fallback, 'slides', {
+      parentPostMessage: (message) => posted.push(message),
+    })
+
+    const pending = runtime.dispatchSession({ prompt: 'do it' })
+    deliverMessage({ type: DASHBOARD_DISPATCH_ACK_TYPE, id: posted[0].id })
+    // A spoofed result from a non-parent window must not settle the promise…
+    deliverMessage(
+      { type: DASHBOARD_DISPATCH_RESULT_TYPE, id: posted[0].id, result: { sessionId: 'fake', agentSlug: 'x' } },
+      { some: 'other-window' },
+    )
+    // …so the genuine result from the parent still wins.
+    deliverMessage({
+      type: DASHBOARD_DISPATCH_RESULT_TYPE,
+      id: posted[0].id,
+      result: { cancelled: true },
+    })
+    await expect(pending).resolves.toEqual({ cancelled: true })
+  })
+
+  it('waits on the user decision indefinitely once acked', async () => {
+    vi.useFakeTimers()
+    const posted: any[] = []
+    const { runtime, deliverMessage } = runtimeHarness(href, fallback, 'slides', {
+      parentPostMessage: (message) => posted.push(message),
+    })
+
+    const pending = runtime.dispatchSession({ prompt: 'do it' })
+    deliverMessage({ type: DASHBOARD_DISPATCH_ACK_TYPE, id: posted[0].id })
+    vi.advanceTimersByTime(60_000)
+    deliverMessage({
+      type: DASHBOARD_DISPATCH_RESULT_TYPE,
+      id: posted[0].id,
+      result: { cancelled: true },
+    })
+    await expect(pending).resolves.toEqual({ cancelled: true })
   })
 })
 

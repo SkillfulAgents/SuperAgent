@@ -75,6 +75,56 @@ describe('resolveDashboardViewState', () => {
     })
   })
 
+  it('explains the one-time dependency install on first run', () => {
+    expect(resolveDashboardViewState(input({
+      dashboard: {
+        status: 'starting',
+        startupPhase: 'installing-dependencies',
+        firstRun: true,
+      },
+    }))).toEqual({
+      kind: 'installing',
+      message: 'Preparing dashboard for first use…',
+      detail: 'Installing dependencies. This only happens once.',
+      showSpinner: true,
+      slow: false,
+      pollFast: true,
+    })
+  })
+
+  it('uses a dependency update label outside first run', () => {
+    expect(resolveDashboardViewState(input({
+      dashboard: {
+        status: 'starting',
+        startupPhase: 'installing-dependencies',
+        firstRun: false,
+      },
+    }))).toEqual({
+      kind: 'installing',
+      message: 'Installing dashboard dependencies…',
+      showSpinner: true,
+      slow: false,
+      pollFast: true,
+    })
+  })
+
+  it('offers recovery when dependency installation exceeds the wait bound', () => {
+    expect(resolveDashboardViewState(input({
+      dashboard: {
+        status: 'starting',
+        startupPhase: 'installing-dependencies',
+        firstRun: true,
+      },
+      waitElapsedMs: DASHBOARD_WAIT_BOUND_MS,
+    }))).toEqual({
+      kind: 'installing',
+      message: 'Dependency installation is taking longer than expected.',
+      showSpinner: false,
+      slow: true,
+      pollFast: false,
+    })
+  })
+
   it('surfaces crashed as terminal with no spinner', () => {
     expect(resolveDashboardViewState(input({ dashboard: { status: 'crashed' } }))).toEqual({
       kind: 'crashed',
@@ -119,6 +169,20 @@ describe('resolveDashboardViewState', () => {
   })
 
   describe('agent not running', () => {
+    it('shows first-run preparation while the agent itself starts', () => {
+      expect(resolveDashboardViewState(input({
+        agentRunning: false,
+        dashboard: { status: 'stopped', firstRun: true },
+      }))).toEqual({
+        kind: 'installing',
+        message: 'Preparing dashboard for first use…',
+        detail: 'Installing dependencies. This only happens once.',
+        showSpinner: true,
+        slow: false,
+        pollFast: true,
+      })
+    })
+
     it('shows starting with a spinner when auto-start can proceed', () => {
       expect(
         resolveDashboardViewState(input({ agentRunning: false, dashboard: undefined })),

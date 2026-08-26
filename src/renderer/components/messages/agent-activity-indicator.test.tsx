@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, act } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { AgentActivityIndicator } from './agent-activity-indicator'
 
 // Mock useMessageStream
@@ -100,22 +101,35 @@ describe('AgentActivityIndicator', () => {
     mockStreamState.error = 'API rate limit exceeded'
     mockStreamState.apiErrorCode = 'rate_limit'
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.getByText('LLM Provider Error')).toBeInTheDocument()
-    expect(screen.getByText('API rate limit exceeded')).toBeInTheDocument()
+    // The shared RequestError banner, labelled so the provider is named.
+    expect(screen.getByTestId('provider-error-card')).toHaveTextContent('LLM Provider Error: API rate limit exceeded')
+    // The hint is folded away until asked for — clicking the banner opens it.
+    expect(screen.queryByText(/external LLM provider API/)).not.toBeInTheDocument()
+    act(() => { screen.getByTestId('provider-error-card').click() })
     expect(screen.getByText(/external LLM provider API/)).toBeInTheDocument()
-    expect(screen.getByTestId('provider-error-card')).toHaveClass('bg-amber-50', 'dark:bg-amber-950')
-    expect(screen.getByTestId('provider-error-card')).not.toHaveClass('bg-amber-500/10')
+    expect(screen.getByTestId('provider-error-card')).toHaveClass('bg-red-50', 'dark:bg-red-950')
+    // Opaque in dark: the transcript scrolls behind this in the overlay footer.
+    expect(screen.getByTestId('provider-error-card')).not.toHaveClass('dark:bg-red-950/30')
+    // Selectable despite the app-wide user-select: none — errors get copied.
+    expect(screen.getByTestId('provider-error-card')).toHaveClass('select-text', '[&_*]:select-text')
   })
 
   it('shows generic error alert when no apiErrorCode', () => {
     mockStreamState.error = 'The agent process was terminated unexpectedly.'
     mockStreamState.apiErrorCode = null
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.getByText('Error')).toBeInTheDocument()
-    expect(screen.getByText('The agent process was terminated unexpectedly.')).toBeInTheDocument()
+    expect(screen.getByTestId('error-card')).toHaveTextContent('Error: The agent process was terminated unexpectedly.')
+    expect(screen.queryByText('Send another message to retry.')).not.toBeInTheDocument()
+    act(() => { screen.getByTestId('error-card').click() })
     expect(screen.getByText('Send another message to retry.')).toBeInTheDocument()
+    // ...and folds back up.
+    act(() => { screen.getByTestId('error-card').click() })
+    expect(screen.queryByText('Send another message to retry.')).not.toBeInTheDocument()
     expect(screen.getByTestId('error-card')).toHaveClass('bg-red-50', 'dark:bg-red-950')
-    expect(screen.getByTestId('error-card')).not.toHaveClass('bg-destructive/10')
+    // Opaque in dark: the transcript scrolls behind this in the overlay footer.
+    expect(screen.getByTestId('error-card')).not.toHaveClass('dark:bg-red-950/30')
+    // Selectable despite the app-wide user-select: none — errors get copied.
+    expect(screen.getByTestId('error-card')).toHaveClass('select-text', '[&_*]:select-text')
   })
 
   it('shows "Working..." status when active with no todo', () => {
@@ -187,9 +201,9 @@ describe('AgentActivityIndicator', () => {
     expect(screen.getByText('Add tests')).toBeInTheDocument()
 
     // Shows status indicators
-    expect(screen.getByText('✓')).toBeInTheDocument()
-    expect(screen.getByText('→')).toBeInTheDocument()
-    expect(screen.getByText('○')).toBeInTheDocument()
+    expect(screen.getByTestId('todo-status-completed')).toBeInTheDocument()
+    expect(screen.getByTestId('todo-status-in-progress')).toBeInTheDocument()
+    expect(screen.getByTestId('todo-status-pending')).toBeInTheDocument()
   })
 
   it('does not show todo list when all items are completed', () => {
@@ -460,7 +474,7 @@ describe('AgentActivityIndicator', () => {
     expect(screen.getByText('Set up database')).toBeInTheDocument()
     expect(screen.getByText('Write API routes')).toBeInTheDocument()
     expect(screen.getByText('Add tests')).toBeInTheDocument()
-    expect(screen.getAllByText('○')).toHaveLength(3)
+    expect(screen.getAllByTestId('todo-status-pending')).toHaveLength(3)
   })
 
   it('applies TaskUpdate status changes to task list', () => {
@@ -512,8 +526,8 @@ describe('AgentActivityIndicator', () => {
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
 
     // Task 1 completed, task 2 in progress
-    expect(screen.getByText('✓')).toBeInTheDocument()
-    expect(screen.getByText('→')).toBeInTheDocument()
+    expect(screen.getByTestId('todo-status-completed')).toBeInTheDocument()
+    expect(screen.getByTestId('todo-status-in-progress')).toBeInTheDocument()
     // Shows activeForm of in_progress task as status text
     expect(screen.getByText('Writing API routes')).toBeInTheDocument()
   })
@@ -585,8 +599,8 @@ describe('AgentActivityIndicator', () => {
     // The other 2 completed tasks are hidden
     expect(screen.queryByText('Task 1')).not.toBeInTheDocument()
     expect(screen.queryByText('Task 2')).not.toBeInTheDocument()
-    // Shows the overflow indicator
-    expect(screen.getByText(/2 more.*2 done/)).toBeInTheDocument()
+    // Shows the overflow toggle
+    expect(screen.getByText('Show more')).toBeInTheDocument()
   })
 
   it('shows all tasks when toggle is clicked', async () => {
@@ -611,16 +625,21 @@ describe('AgentActivityIndicator', () => {
 
     // 1 task hidden
     expect(screen.queryByText('Task 6')).not.toBeInTheDocument()
-    expect(screen.getByText(/1 more.*1 pending/)).toBeInTheDocument()
+    expect(screen.getByText('Show more')).toBeInTheDocument()
 
     // Click toggle
-    act(() => { screen.getByText(/1 more/).click() })
+    act(() => { screen.getByText('Show more').click() })
 
     // All tasks now visible
     expect(screen.getByText('Task 6')).toBeInTheDocument()
-    expect(screen.queryByText(/1 more/)).not.toBeInTheDocument()
-    // "Show fewer" button appears
-    expect(screen.getByText('Show fewer')).toBeInTheDocument()
+    expect(screen.queryByText('Show more')).not.toBeInTheDocument()
+    // The toggle flips to its collapse label
+    expect(screen.getByText('Show less')).toBeInTheDocument()
+
+    // ...and back: the toggle survives being expanded rather than vanishing
+    act(() => { screen.getByText('Show less').click() })
+    expect(screen.queryByText('Task 6')).not.toBeInTheDocument()
+    expect(screen.getByText('Show more')).toBeInTheDocument()
   })
 
   it('prefers TaskCreate/TaskUpdate over TodoWrite when both exist', () => {
@@ -793,7 +812,10 @@ describe('AgentActivityIndicator', () => {
 
     const collapseButton = screen.getByRole('button', { name: 'Collapse activity details' })
     expect(collapseButton).toHaveAttribute('aria-expanded', 'true')
-    expect(collapseButton).toHaveClass('absolute', 'right-2.5', 'top-2.5')
+    // Sits in the header row, last, so it centers against the orb and the
+    // summary can never run under it — rather than floating over the row.
+    expect(collapseButton.parentElement).toHaveAttribute('data-testid', 'activity-indicator-header')
+    expect(collapseButton.parentElement?.lastElementChild).toBe(collapseButton)
     expect(collapseButton.querySelector('svg')).toHaveClass('rotate-180')
     expect(screen.getByText('Running subagent')).toBeInTheDocument()
     expect(screen.getByText('Finished subagent')).toBeInTheDocument()
@@ -908,6 +930,82 @@ describe('AgentActivityIndicator', () => {
       renderWithSubagent({ result: 'done', completed: false })
       expect(screen.getByText('Explore')).toBeInTheDocument()
       expect(screen.getByText('✓')).toBeInTheDocument()
+    })
+
+    it('keeps activity on one line and provides a static keyboard and touch disclosure', async () => {
+      // A wrapped second line breaks the tree's row rhythm — the elbows are
+      // pinned to a single line box — so the progress summary joins the row
+      // behind a dot instead of stacking under it. The popover is the complete,
+      // non-moving fallback when that line is clipped.
+      const user = userEvent.setup()
+      const fullActivityText = 'web-browser Gather UniFi WiFi events · Scrolling Lobby AP detail panel'
+      const matchMedia = vi.spyOn(window, 'matchMedia').mockImplementation((query) => ({
+        matches: query === '(prefers-reduced-motion: reduce)',
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      }))
+      const clientWidth = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) {
+        return this.classList.contains('hover-scroll-text') ? 100 : 0
+      })
+      const scrollWidth = vi.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockImplementation(function (this: HTMLElement) {
+        return this.classList.contains('hover-scroll-text-content') ? 320 : 0
+      })
+
+      mockStreamState.isActive = true
+      mockStreamState.activeStartTime = Date.now()
+      mockStreamState.activeSubagents = [{
+        parentToolId: 'tc-sub',
+        agentId: 'a1',
+        subagentType: 'web-browser',
+        description: 'Gather UniFi WiFi events',
+        progressSummary: 'Scrolling Lobby AP detail panel',
+      }]
+      mockStreamState.completedSubagents = new Set()
+      mockMessages.push({
+        id: 'msg-1',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [{
+          id: 'tc-sub',
+          name: 'Agent',
+          input: { subagent_type: 'web-browser', description: 'Gather UniFi WiFi events' },
+          subagent: { agentId: 'a1', status: 'async_launched' },
+        }],
+        createdAt: new Date(),
+      })
+
+      render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+      const line = screen.getByText('web-browser').closest('.hover-scroll-text') as HTMLElement | null
+      expect(line).not.toBeNull()
+      expect(line).toHaveTextContent(fullActivityText)
+      expect(line).toHaveAttribute('data-overflowing', 'true')
+      expect(line).toHaveAttribute('data-scrolling', 'false')
+
+      const disclosure = screen.getByRole('button', { name: `Show full activity: ${fullActivityText}` })
+      expect(disclosure).toContainElement(line)
+      expect(disclosure).toHaveAttribute('title', fullActivityText)
+
+      disclosure.focus()
+      await user.keyboard('{Enter}')
+      expect(screen.getByTestId('subagent-activity-full-text')).toHaveTextContent(fullActivityText)
+      expect(screen.getByTestId('subagent-activity-full-text')).toHaveClass('motion-reduce:!animate-none')
+
+      await user.keyboard('{Escape}')
+      expect(screen.queryByTestId('subagent-activity-full-text')).not.toBeInTheDocument()
+
+      // A click is the same activation path used by a touch tap.
+      await user.click(disclosure)
+      expect(screen.getByTestId('subagent-activity-full-text')).toHaveTextContent(fullActivityText)
+
+      matchMedia.mockRestore()
+      clientWidth.mockRestore()
+      scrollWidth.mockRestore()
     })
 
     it('reopens the original subagent row while a SendMessage resume is running', () => {

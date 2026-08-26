@@ -40,6 +40,12 @@ export const sessionMetadataSchema = z
     markedUnread: z.boolean().optional(),
     createdAt: z.string().optional(),
     createdByUserId: z.string().optional(),
+    createdByDeviceId: z.string().optional(),
+    // Which device's user gets VISIBLE pushes for this session: re-stamped on
+    // every device-authenticated message send ("last speaker claims the
+    // alert"), explicitly null when a deviceless surface (web) spoke last.
+    // Absent = never re-claimed → fall back to createdByDeviceId.
+    alertDeviceId: z.string().nullable().optional(),
     isScheduledExecution: z.boolean().optional(),
     scheduledTaskId: z.string().optional(),
     scheduledTaskName: z.string().optional(),
@@ -66,6 +72,8 @@ export const sessionMetadataSchema = z
     speed: z.string().optional(),
     model: z.string().optional(),
     invokedByAgentSlug: z.string().optional(),
+    dispatchedByDashboardSlug: z.string().optional(),
+    dispatchedByDashboardAgentSlug: z.string().optional(),
   })
   .loose()
 

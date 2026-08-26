@@ -14,6 +14,7 @@ vi.mock('./index', () => ({
 // so failure-path tests don't sit through backoff delays.
 vi.mock('../utils/retry', () => ({
   withRetry: (fn: () => Promise<unknown>) => fn(),
+  NonRetryableError: class NonRetryableError extends Error {},
 }))
 
 import { getConfiguredLlmClient, extractTextFromLlmResponse, createSummarizerText, SUMMARIZER_MAX_TOKENS } from './helpers'
@@ -152,5 +153,32 @@ describe('createSummarizerText', () => {
       .mockResolvedValueOnce(thinkingOnlyResponse)
       .mockRejectedValueOnce(new Error('thinking is not supported with this model'))
     expect(await createSummarizerText(clientWith(create), REQUEST)).toBeNull()
+  })
+
+  it('forwards cancellation to the provider and does not start another attempt', async () => {
+    const controller = new AbortController()
+    create.mockImplementation(
+      (_params: unknown, options?: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener('abort', () => {
+            reject(options.signal?.reason)
+          }, { once: true })
+        }),
+    )
+
+    const pending = createSummarizerText(
+      clientWith(create),
+      REQUEST,
+      controller.signal,
+    )
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1))
+    controller.abort(new Error('deadline'))
+
+    await expect(pending).rejects.toThrow('Summarizer request aborted')
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'some-model' }),
+      { signal: controller.signal },
+    )
   })
 })

@@ -1,11 +1,14 @@
-import type { ReactNode } from 'react'
+import type { ReactNode, Ref } from 'react'
 import { ArrowLeft } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { cn } from '@shared/lib/utils/cn'
+import { ScrollAwarePageTitle } from './scroll-aware-title'
 
 interface SettingsPageContainerProps {
   children: ReactNode
   className?: string
+  scrollContainerRef?: Ref<HTMLDivElement>
+  scrollRestorationId?: string
   /** Use a wider, less padded frame for content like tables. */
   fullScreen?: boolean
   /** Drop the 720px cap and fill the full inset width (sub-views lay out their own width). */
@@ -17,9 +20,20 @@ interface SettingsPageContainerProps {
  * sibling pages). Centers content at 720px, adds vertical rhythm, and scrolls
  * independently of the app shell.
  */
-export function SettingsPageContainer({ children, className, fullScreen, fullWidth }: SettingsPageContainerProps) {
+export function SettingsPageContainer({
+  children,
+  className,
+  scrollContainerRef,
+  scrollRestorationId,
+  fullScreen,
+  fullWidth,
+}: SettingsPageContainerProps) {
   return (
-    <div className="flex-1 overflow-auto">
+    <div
+      ref={scrollContainerRef}
+      data-scroll-restoration-id={scrollRestorationId}
+      className="flex-1 overflow-auto"
+    >
       <div
         className={cn(
           'mx-auto w-full px-6 pt-10 pb-6 space-y-10',
@@ -38,14 +52,16 @@ interface PageTitleProps {
   title: ReactNode
   back?: { onClick: () => void; label?: string; testId?: string }
   actions?: ReactNode
+  /** Hide the matching nav title until this in-page heading scrolls away. */
+  scrollAware?: boolean
 }
 
 /**
  * Page heading with optional back button and right-aligned actions.
  */
-export function PageTitle({ title, back, actions }: PageTitleProps) {
-  return (
-    <div>
+export function PageTitle({ title, back, actions, scrollAware = false }: PageTitleProps) {
+  const content = (
+    <>
       {back && (
         <Button
           type="button"
@@ -67,6 +83,8 @@ export function PageTitle({ title, back, actions }: PageTitleProps) {
         )}
         {actions && <div className="shrink-0">{actions}</div>}
       </div>
-    </div>
+    </>
   )
+
+  return scrollAware ? <ScrollAwarePageTitle>{content}</ScrollAwarePageTitle> : <div>{content}</div>
 }

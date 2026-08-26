@@ -173,6 +173,10 @@ describe('activity stats data pathways', () => {
         automationStatus: 'running',
         createdAt: '2026-07-09T11:30:00.000Z',
       },
+      'x-agent-session': {
+        invokedByAgentSlug: 'caller-agent',
+        createdAt: '2026-07-08T18:00:00.000Z',
+      },
     })
 
     const result = await getAgentActivityStats('agent-a', { days: 2, now: NOW, cronSlots: 2 })
@@ -185,6 +189,14 @@ describe('activity stats data pathways', () => {
       { date: '2026-07-08', succeeded: 3, failed: 0 },
       { date: '2026-07-09', succeeded: 0, failed: 3 },
     ])
+    expect(result.inboundXAgent).toEqual({
+      total: 1,
+      lastInvokedAt: '2026-07-08T18:00:00.000Z',
+      activity: [
+        { date: '2026-07-08', succeeded: 1, failed: 0 },
+        { date: '2026-07-09', succeeded: 0, failed: 0 },
+      ],
+    })
     expect(result.connectionById['account-account-a']).toEqual([
       { date: '2026-07-08', succeeded: 1, failed: 0 },
       { date: '2026-07-09', succeeded: 0, failed: 1 },

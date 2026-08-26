@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 import { runInNewContext } from 'node:vm'
+import { Readable, Writable } from 'node:stream'
+import { createHash } from 'node:crypto'
 
 // ============================================================================
 // Mocks — must be declared before import
@@ -15,7 +17,19 @@ const mockFsMkdir = vi.fn()
 const mockFsReaddir = vi.fn()
 const mockFsCp = vi.fn()
 const mockFsExistsSync = vi.fn()
+const mockFsOpen = vi.fn()
 const mockCreateReadStream = vi.fn()
+
+// In-memory sink for the streaming upload write path; tests can inspect the
+// bytes written via mockCreateWriteStream.mock.results[n].value.chunks.
+class MemoryWriteStream extends Writable {
+  chunks: Buffer[] = []
+  override _write(chunk: Buffer, _enc: BufferEncoding, cb: (err?: Error | null) => void) {
+    this.chunks.push(Buffer.from(chunk))
+    cb()
+  }
+}
+const mockCreateWriteStream = vi.fn((..._args: unknown[]) => new MemoryWriteStream())
 const mockFsRealpath = vi.fn(async (value: unknown) => value)
 const mockFsRename = vi.fn()
 const mockFsUnlink = vi.fn()
@@ -35,9 +49,11 @@ vi.mock('fs', () => ({
       rename: (...args: unknown[]) => mockFsRename(...args),
       unlink: (...args: unknown[]) => mockFsUnlink(...args),
       rm: (...args: unknown[]) => mockFsRm(...args),
+      open: (...args: unknown[]) => mockFsOpen(...args),
     },
     existsSync: (...args: unknown[]) => mockFsExistsSync(...args),
     createReadStream: (...args: unknown[]) => mockCreateReadStream(...args),
+    createWriteStream: (...args: unknown[]) => mockCreateWriteStream(...args),
   },
   promises: {
     stat: (...args: unknown[]) => mockFsStat(...args),
@@ -51,15 +67,11 @@ vi.mock('fs', () => ({
     rename: (...args: unknown[]) => mockFsRename(...args),
     unlink: (...args: unknown[]) => mockFsUnlink(...args),
     rm: (...args: unknown[]) => mockFsRm(...args),
+    open: (...args: unknown[]) => mockFsOpen(...args),
   },
   existsSync: (...args: unknown[]) => mockFsExistsSync(...args),
   createReadStream: (...args: unknown[]) => mockCreateReadStream(...args),
-}))
-
-vi.mock('stream', () => ({
-  Readable: {
-    toWeb: () => new ReadableStream(),
-  },
+  createWriteStream: (...args: unknown[]) => mockCreateWriteStream(...args),
 }))
 
 // child_process — the run-script route executes approved scripts via
@@ -88,6 +100,9 @@ vi.mock('../credentials/credential-broker', () => ({
 
 // Auth middleware — passthrough (sets mock user on context for auth mode tests)
 const mockAuthUser = { id: 'test-user-id', name: 'Test User', email: 'test@example.com' }
+// Device identity of the calling session; tests set .value to simulate a
+// paired mobile device (null = browser/desktop/web).
+const mockRequestDevice = { value: null as string | null }
 const mockGlobalAdmin = vi.hoisted(() => ({ allowed: true }))
 let mockAuthorizedAgentRole: 'owner' | 'user' | 'viewer' = 'owner'
 // Display-slug -> canonical-id resolution applied by the ResolveAgent mock. Defaults
@@ -95,6 +110,7 @@ let mockAuthorizedAgentRole: 'owner' | 'user' | 'viewer' = 'owner'
 // routes where the URL display slug differs from the resolved id.
 let mockResolveSlug: (slug: string) => string = (slug) => slug
 vi.mock('../middleware/auth', () => ({
+  getRequestDeviceId: () => mockRequestDevice.value,
   Authenticated: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
   AgentRead: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); c.set('authorizedAgentRole', mockAuthorizedAgentRole); return next() },
   AgentUser: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); c.set('authorizedAgentRole', mockAuthorizedAgentRole); return next() },
@@ -155,6 +171,9 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     isSubscribed: vi.fn(() => true),
     subscribeToSession: vi.fn(),
     unsubscribeFromSession: vi.fn(),
+    promoteAutomatedSession: vi.fn(),
+    coalesceIfRecovering: vi.fn(() => false),
+    dropCoalescedUserMessage: vi.fn(() => false),
     markSessionActive: vi.fn(),
     markSessionInterrupted: vi.fn(),
     cancelAwaitingInput: vi.fn(),
@@ -281,12 +300,25 @@ vi.mock('@shared/lib/services/agent-service', () => ({
   agentExists: (...args: unknown[]) => mockAgentExists(...args),
 }))
 
-vi.mock('@shared/lib/services/session-service', () => ({
+vi.mock('@shared/lib/services/session-media', () => ({
+  decodeMediaRef: vi.fn(),
+  openMediaBlob: vi.fn(),
+}))
+
+vi.mock('@shared/lib/services/session-service', async (importOriginal) => {
+  // The route's ordering and cap contracts must exercise the real sort helper
+  // and constant — a reimplementation here can drift from what ships.
+  const actual = await importOriginal<typeof import('@shared/lib/services/session-service')>()
+  return {
   listSessions: vi.fn(),
   listSessionsByIds: vi.fn(),
+  sortSessionsNewestFirst: actual.sortSessionsNewestFirst,
+  SESSIONS_LIST_MAX_LIMIT: actual.SESSIONS_LIST_MAX_LIMIT,
   updateSessionName: vi.fn(),
   registerSession: vi.fn(),
   getSessionMessagesWithCompact: vi.fn(),
+  getSessionMessagesPage: vi.fn(),
+  getSessionMessagesDelta: vi.fn(),
   getSession: vi.fn(),
   getSessionMetadata: vi.fn(),
   sessionExists: vi.fn().mockResolvedValue(true),
@@ -297,12 +329,16 @@ vi.mock('@shared/lib/services/session-service', () => ({
   updateSessionMetadata: vi.fn().mockResolvedValue(undefined),
   setSessionMarkedUnread: vi.fn().mockResolvedValue(true),
   getSessionIdsMarkedUnread: vi.fn(() => Promise.resolve(new Set<string>())),
+  // Pure projection helper — same reason as sortSessionsNewestFirst above: a
+  // reimplementation here could drift from the OR that actually ships.
+  withSessionIdsMarkedUnread: actual.withSessionIdsMarkedUnread,
   deleteSession: vi.fn(),
   removeMessage: vi.fn(),
   removeToolCall: vi.fn(),
   getSessionSummary: vi.fn().mockResolvedValue({ sessionIds: [], sessionCount: 0, lastActivityAt: null }),
   readSessionMetadata: vi.fn(() => Promise.resolve({})),
-}))
+  }
+})
 
 const mockLoadSessionUsageTotals = vi.fn()
 vi.mock('@shared/lib/services/usage-service', () => ({
@@ -332,6 +368,7 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   listScheduledTasks: vi.fn(),
   listPendingScheduledTasks: vi.fn(),
   listCancelledScheduledTasks: vi.fn(),
+  listCompletedOneTimeTasks: vi.fn(),
   listPendingWakesByAgent: vi.fn(() => Promise.resolve([])),
   getPendingWakeForSession: vi.fn(() => Promise.resolve(null)),
   cancelPendingWakeForSession: vi.fn(() => Promise.resolve(false)),
@@ -397,6 +434,7 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
 vi.mock('@shared/lib/services/agent-template-service', () => ({
   exportAgentTemplate: vi.fn(),
   exportAgentFull: vi.fn(),
+  isHostExportBusy: vi.fn(() => false),
   importAgentFromTemplate: vi.fn(),
   MAX_COMPRESSED_SIZE: 500 * 1024 * 1024,
   installAgentFromSkillset: vi.fn(),
@@ -410,6 +448,7 @@ vi.mock('@shared/lib/services/agent-template-service', () => ({
   publishAgentToSkillset: vi.fn(),
   refreshAgentTemplates: vi.fn(),
   hasOnboardingSkill: vi.fn(),
+  getAgentTemplatePrompt: vi.fn(),
 }))
 
 vi.mock('@shared/lib/utils/retry', () => ({
@@ -471,7 +510,8 @@ const mockGetAgentWorkspaceDir = vi.fn((_slug?: string) => '/mock/workspace')
 const mockGetSessionJsonlPath = vi.fn(
   (agentSlug: string, sessionId: string) => `/mock/sessions/${agentSlug}/${sessionId}.jsonl`,
 )
-vi.mock('@shared/lib/utils/file-storage', () => ({
+vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/utils/file-storage')>()),
   // ResolveAgent() resolves the :id param via resolveAgentId. Delegate to the
   // existing agentExists mock so the legacy 404-on-missing behavior is preserved:
   // returns the slug verbatim when it "exists", else null.
@@ -483,6 +523,9 @@ vi.mock('@shared/lib/utils/file-storage', () => ({
   getAgentSessionsDir: vi.fn(() => '/mock/sessions'),
   readJsonlFile: vi.fn(),
   getAgentWorkspaceDir: (slug: string) => mockGetAgentWorkspaceDir(slug),
+  // The skills-files route checks the skill dir via directoryExists; delegate
+  // to the same mock the tests already use for fs.existsSync.
+  directoryExists: async (p: string) => mockFsExistsSync(p),
   getAgentPreferencesPath: vi.fn((slug: string) => `/mock/workspace/${slug}/agent-preferences.json`),
   getTempUploadsDir: vi.fn(() => '/mock/tmp/uploads'),
   ensureDirectory: vi.fn(),
@@ -532,10 +575,15 @@ vi.mock('hono/streaming', () => ({ streamSSE: (...args: unknown[]) => mockStream
 
 // Import the agents router after all mocks are set up
 import agents from './agents'
+import { decodeMediaRef, openMediaBlob } from '@shared/lib/services/session-media'
 import { UploadTooLargeError } from '@shared/lib/utils/chunked-upload'
 import {
+  exportAgentFull,
+  exportAgentTemplate,
+  isHostExportBusy,
   importAgentFromTemplate,
   hasOnboardingSkill,
+  getAgentTemplatePrompt,
 } from '@shared/lib/services/agent-template-service'
 import {
   deleteSkill,
@@ -543,8 +591,8 @@ import {
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
 import { getAgent, getAgentWithStatus, listAgentsWithStatus } from '@shared/lib/services/agent-service'
-import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, updateSessionName, readSessionMetadata, setSessionMarkedUnread, getSessionIdsMarkedUnread } from '@shared/lib/services/session-service'
-import { listPendingScheduledTasks } from '@shared/lib/services/scheduled-task-service'
+import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionBelongsToAgent, reserveSessionOwnership, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata, setSessionMarkedUnread, getSessionIdsMarkedUnread } from '@shared/lib/services/session-service'
+import { listCompletedOneTimeTasks, listPendingScheduledTasks } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
@@ -553,8 +601,8 @@ import { computerUsePermissionManager } from '@shared/lib/computer-use/permissio
 import { containerManager } from '@shared/lib/container/container-manager'
 import { listUserSecrets, setSecret, updateSecret, getSecret, getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { keyToEnvVar } from '@shared/lib/utils/secrets'
-import { logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
-import { readJsonFileStrict, writeJsonFileAtomic } from '@shared/lib/utils/file-storage'
+import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
+import { readJsonFileStrict, readJsonlFile, writeJsonFileAtomic, readFileOrNull } from '@shared/lib/utils/file-storage'
 import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
 import { listWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 
@@ -615,18 +663,26 @@ describe('GET /:id/artifacts/:artifactSlug/view', () => {
     mockAgentExists.mockResolvedValue(true)
   })
 
-  it('reuses the initial running status instead of entering the poll loop', async () => {
-    const res = await getReq(createApp(), '/api/agents/test-agent/artifacts/sales/view')
-    const html = await res.text()
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify([
-        { slug: 'sales', name: 'Sales', status: 'running' },
-      ]), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'running' }), { status: 200 }))
-    const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1]
+  /** Iframe stand-in with a src-assignment counter (reload = second set). */
+  function makeIframe() {
+    const iframe: Record<string, unknown> & { style: Record<string, string> } = { style: {} }
+    let srcSets = 0
+    Object.defineProperty(iframe, 'src', {
+      set(value: string) {
+        srcSets++
+        ;(this as Record<string, unknown>)._src = value
+      },
+      get() {
+        return (this as Record<string, unknown>)._src
+      },
+    })
+    return { iframe, srcSetCount: () => srcSets }
+  }
+
+  function makeDom() {
     const loadingRemove = vi.fn()
     const appendChild = vi.fn()
-    const iframe: Record<string, string> = {}
+    const { iframe, srcSetCount } = makeIframe()
     const statusElement = { textContent: '', classList: { add: vi.fn() } }
     const loadingElement = { remove: loadingRemove }
     const document = {
@@ -635,24 +691,129 @@ describe('GET /:id/artifacts/:artifactSlug/view', () => {
       createElement: () => iframe,
       body: { appendChild },
     }
+    return { document, iframe, srcSetCount, loadingRemove, appendChild, statusElement }
+  }
+
+  it('paints the warm path from one artifacts fetch, without awaiting the start call', async () => {
+    const res = await getReq(createApp(), '/api/agents/test-agent/artifacts/sales/view')
+    const html = await res.text()
+    const fetchMock = vi.fn()
+      // The start is fired first (idempotent), artifacts resolves the state
+      .mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([
+        { slug: 'sales', name: 'Sales', status: 'running' },
+      ]), { status: 200 }))
+    const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1]
+    const dom = makeDom()
 
     expect(script).toBeDefined()
     runInNewContext(script!, {
-      document,
+      document: dom.document,
       fetch: fetchMock,
       setTimeout,
     })
 
     await vi.waitFor(() => {
-      expect(appendChild).toHaveBeenCalledWith(iframe)
+      expect(dom.appendChild).toHaveBeenCalledWith(dom.iframe)
     })
 
     expect(fetchMock).toHaveBeenCalledTimes(2)
-    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/agents/test-agent/artifacts')
-    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/agents/test-agent')
-    expect(loadingRemove).toHaveBeenCalledOnce()
-    expect(iframe.src).toBe('/api/agents/test-agent/artifacts/sales/')
-    expect(iframe.sandbox).toContain('allow-downloads')
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/agents/test-agent/start', { method: 'POST' })
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/agents/test-agent/artifacts')
+    expect(dom.iframe.src).toBe('/api/agents/test-agent/artifacts/sales/')
+    expect(dom.iframe.sandbox).toContain('allow-downloads')
+
+    // The spinner stays until the document actually loads
+    expect(dom.loadingRemove).not.toHaveBeenCalled()
+    ;(dom.iframe.onload as () => void)()
+    expect(dom.loadingRemove).toHaveBeenCalledOnce()
+    expect(dom.iframe.style.visibility).toBe('visible')
+  })
+
+  it('reloads a document that finished loading before the dashboard was running', async () => {
+    const res = await getReq(createApp(), '/api/agents/test-agent/artifacts/sales/view')
+    const html = await res.text()
+    let releaseRunning: (value: Response) => void = () => {}
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([
+        { slug: 'sales', name: 'Sales', status: 'starting', startupPhase: 'starting-server' },
+      ]), { status: 200 }))
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => {
+        releaseRunning = resolve
+      }))
+    const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1]
+    const dom = makeDom()
+
+    expect(script).toBeDefined()
+    runInNewContext(script!, {
+      document: dom.document,
+      fetch: fetchMock,
+      setTimeout,
+    })
+
+    // Optimistically mounted while still starting
+    await vi.waitFor(() => {
+      expect(dom.appendChild).toHaveBeenCalledWith(dom.iframe)
+    })
+    expect(dom.srcSetCount()).toBe(1)
+
+    // The held document resolves before the poll observes 'running'
+    ;(dom.iframe.onload as () => void)()
+    expect(dom.loadingRemove).not.toHaveBeenCalled()
+
+    releaseRunning(new Response(JSON.stringify([
+      { slug: 'sales', name: 'Sales', status: 'running' },
+    ]), { status: 200 }))
+
+    // 'running' arrives → the early document is refetched exactly once
+    await vi.waitFor(() => {
+      expect(dom.srcSetCount()).toBe(2)
+    })
+    expect(dom.loadingRemove).not.toHaveBeenCalled()
+    ;(dom.iframe.onload as () => void)()
+    expect(dom.loadingRemove).toHaveBeenCalledOnce()
+    expect(dom.iframe.style.visibility).toBe('visible')
+  })
+
+  it('shows the first-run dependency phase while the standalone view waits', async () => {
+    const res = await getReq(createApp(), '/api/agents/test-agent/artifacts/sales/view')
+    const html = await res.text()
+    const installing = {
+      slug: 'sales',
+      name: 'Sales',
+      status: 'starting',
+      startupPhase: 'installing-dependencies',
+      firstRun: true,
+    }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([installing]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([installing]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([
+        { slug: 'sales', name: 'Sales', status: 'running' },
+      ]), { status: 200 }))
+    const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1]
+    const dom = makeDom()
+
+    expect(script).toBeDefined()
+    runInNewContext(script!, {
+      document: dom.document,
+      fetch: fetchMock,
+      setTimeout: (callback: () => void) => {
+        callback()
+        return 0
+      },
+    })
+
+    await vi.waitFor(() => {
+      expect(dom.appendChild).toHaveBeenCalledWith(dom.iframe)
+    })
+
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(4)
+    })
+    expect(dom.statusElement.textContent).toBe('Preparing dashboard for first use…')
   })
 })
 
@@ -972,6 +1133,110 @@ describe('session usage — GET /:id/sessions/:sessionId/usage', () => {
   })
 })
 
+describe('session raw log — GET /:id/sessions/:sessionId/raw-log', () => {
+  let app: ReturnType<typeof createApp>
+  let realFs: typeof import('fs')
+  let realPath: typeof import('path')
+  let tmpDir: string
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    app = createApp()
+    realFs = await vi.importActual<typeof import('fs')>('fs')
+    realPath = await vi.importActual<typeof import('path')>('path')
+    const realOs = await vi.importActual<typeof import('os')>('os')
+    tmpDir = await realFs.promises.mkdtemp(realPath.join(realOs.tmpdir(), 'raw-log-route-'))
+
+    // Back the route with the real filesystem so the body assertions compare
+    // genuine bytes: point the transcript path at a temp file and delegate the
+    // fs helpers (both the readFileOrNull and open/createReadStream paths) to
+    // the real implementations.
+    mockGetSessionJsonlPath.mockImplementation(
+      (_agentSlug: string, sessionId: string) => realPath.join(tmpDir, `${sessionId}.jsonl`),
+    )
+    mockFsOpen.mockImplementation((...args: unknown[]) =>
+      (realFs.promises.open as (...a: unknown[]) => Promise<unknown>)(...args),
+    )
+    mockFsReadFile.mockImplementation((...args: unknown[]) =>
+      (realFs.promises.readFile as (...a: unknown[]) => Promise<unknown>)(...args),
+    )
+    vi.mocked(readFileOrNull).mockImplementation(async (filePath: string) => {
+      try {
+        return await realFs.promises.readFile(filePath, 'utf-8')
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+        throw error
+      }
+    })
+  })
+
+  afterEach(async () => {
+    await realFs.promises.rm(tmpDir, { recursive: true, force: true })
+    // These implementations must not leak into other suites (vi.clearAllMocks
+    // clears calls, not implementations).
+    mockGetSessionJsonlPath.mockImplementation(
+      (agentSlug: string, sessionId: string) => `/mock/sessions/${agentSlug}/${sessionId}.jsonl`,
+    )
+    mockFsOpen.mockReset()
+    mockFsReadFile.mockReset()
+    vi.mocked(readFileOrNull).mockReset()
+  })
+
+  async function writeTranscript(sessionId: string, content: string | Buffer) {
+    await realFs.promises.writeFile(realPath.join(tmpDir, `${sessionId}.jsonl`), content)
+  }
+
+  it('returns the transcript byte-identical to the file with the plain-text content type', async () => {
+    const content =
+      '{"type":"user","message":{"content":"héllo — ünïcode"}}\n' +
+      '{"type":"assistant","message":{"content":"line two"}}\n'
+    await writeTranscript('session-1', content)
+
+    const res = await getReq(app, '/api/agents/test-agent/sessions/session-1/raw-log')
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('text/plain; charset=UTF-8')
+    const body = Buffer.from(await res.arrayBuffer())
+    const fileBytes = await realFs.promises.readFile(realPath.join(tmpDir, 'session-1.jsonl'))
+    expect(body.equals(fileBytes)).toBe(true)
+    expect(res.headers.get('content-length')).toBe(String(fileBytes.length))
+  })
+
+  it('returns 404 when the transcript file does not exist', async () => {
+    const res = await getReq(app, '/api/agents/test-agent/sessions/missing/raw-log')
+
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Session log not found' })
+  })
+
+  it('returns an empty 200 body for an empty transcript file', async () => {
+    await writeTranscript('empty-session', '')
+
+    const res = await getReq(app, '/api/agents/test-agent/sessions/empty-session/raw-log')
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('text/plain; charset=UTF-8')
+    expect(Buffer.from(await res.arrayBuffer()).length).toBe(0)
+    expect(res.headers.get('content-length')).toBe('0')
+  })
+
+  it('returns a multi-megabyte transcript byte-identical to the file', async () => {
+    const line = `{"type":"assistant","message":{"content":"${'x'.repeat(1024)}"}}\n`
+    const content = line.repeat(5 * 1024) // ~5.3 MB
+    await writeTranscript('big-session', content)
+
+    const res = await getReq(app, '/api/agents/test-agent/sessions/big-session/raw-log')
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('text/plain; charset=UTF-8')
+    const body = Buffer.from(await res.arrayBuffer())
+    const fileBytes = await realFs.promises.readFile(realPath.join(tmpDir, 'big-session.jsonl'))
+    expect(body.length).toBe(fileBytes.length)
+    expect(body.equals(fileBytes)).toBe(true)
+    expect(res.headers.get('content-length')).toBe(String(fileBytes.length))
+  })
+})
+
 describe('session stream access - GET /:id/sessions/:sessionId/stream', () => {
   let app: ReturnType<typeof createApp>
 
@@ -1110,6 +1375,7 @@ describe('POST /api/agents/import-template', () => {
       name: 'Imported Agent',
     } as any)
     vi.mocked(hasOnboardingSkill).mockResolvedValue(false)
+    vi.mocked(getAgentTemplatePrompt).mockResolvedValue(undefined)
   })
 
   function buildImportForm(mode?: 'template' | 'full') {
@@ -1132,6 +1398,19 @@ describe('POST /api/agents/import-template', () => {
     expect(res.status).toBe(201)
     expect(importAgentFromTemplate).toHaveBeenCalledWith(expect.any(Buffer), undefined, 'template')
   })
+
+  it('returns the optional template prompt for the post-install composer handoff', async () => {
+    vi.mocked(getAgentTemplatePrompt).mockResolvedValue('Summarize the latest customer interviews')
+
+    const res = await postFormData(app, '/api/agents/import-template', buildImportForm('template'))
+
+    expect(res.status).toBe(201)
+    await expect(res.json()).resolves.toEqual(expect.objectContaining({
+      slug: 'imported-agent',
+      templatePrompt: 'Summarize the latest customer interviews',
+    }))
+    expect(getAgentTemplatePrompt).toHaveBeenCalledWith('imported-agent')
+  })
 })
 
 // ============================================================================
@@ -1149,6 +1428,7 @@ describe('POST /api/agents/import-template (chunked)', () => {
       name: 'Imported Agent',
     } as any)
     vi.mocked(hasOnboardingSkill).mockResolvedValue(false)
+    vi.mocked(getAgentTemplatePrompt).mockResolvedValue(undefined)
   })
 
   function buildChunkForm(opts: {
@@ -3036,8 +3316,84 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
       expect.stringContaining('myfolder/sub'),
       { recursive: true }
     )
-    // Verify writeFile was called
-    expect(mockFsWriteFile).toHaveBeenCalled()
+    // Verify the file was streamed to the destination path
+    expect(mockCreateWriteStream).toHaveBeenCalledWith(
+      expect.stringContaining('myfolder/sub/test.txt'),
+    )
+  })
+
+  it('writes the uploaded bytes to disk unchanged (hash-identical)', async () => {
+    const content = Buffer.from(
+      Array.from({ length: 256 * 1024 }, (_, i) => i % 251),
+    )
+    const formData = new FormData()
+    formData.append('file', new File([content], 'data.bin', { type: 'application/octet-stream' }))
+
+    const res = await postFormData(app, '/api/agents/test-agent/upload-file', formData)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.size).toBe(content.byteLength)
+
+    const sink = mockCreateWriteStream.mock.results[0]!.value as InstanceType<typeof MemoryWriteStream>
+    const written = Buffer.concat(sink.chunks)
+    expect(written.byteLength).toBe(content.byteLength)
+    expect(createHash('sha256').update(written).digest('hex')).toBe(
+      createHash('sha256').update(content).digest('hex'),
+    )
+  })
+
+  it('uploads an empty file', async () => {
+    const formData = new FormData()
+    formData.append('file', new File([], 'empty.txt', { type: 'text/plain' }))
+
+    const res = await postFormData(app, '/api/agents/test-agent/upload-file', formData)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.success).toBe(true)
+    expect(body.size).toBe(0)
+    const sink = mockCreateWriteStream.mock.results[0]!.value as InstanceType<typeof MemoryWriteStream>
+    expect(Buffer.concat(sink.chunks).byteLength).toBe(0)
+  })
+
+  it('rejects a request whose Content-Length exceeds the per-request cap without reading the body', async () => {
+    const res = await app.request('http://localhost/api/agents/test-agent/upload-file', {
+      method: 'POST',
+      body: 'tiny',
+      headers: { 'content-length': String(65 * 1024 * 1024) },
+    })
+    expect(res.status).toBe(413)
+    const body = await res.json()
+    expect(body.error).toContain('use chunked upload')
+    expect(mockCreateWriteStream).not.toHaveBeenCalled()
+    expect(mockFsWriteFile).not.toHaveBeenCalled()
+  })
+
+  it('rejects an over-cap body without Content-Length (counted mid-stream) and leaves no partial file', async () => {
+    const formData = new FormData()
+    formData.append('file', new File([Buffer.alloc(65 * 1024 * 1024)], 'big.bin'))
+
+    const res = await postFormData(app, '/api/agents/test-agent/upload-file', formData)
+    expect(res.status).toBe(413)
+    const body = await res.json()
+    expect(body.error).toContain('use chunked upload')
+    expect(mockCreateWriteStream).not.toHaveBeenCalled()
+    expect(mockFsUnlink).not.toHaveBeenCalled()
+  })
+
+  it('removes the partial file when the disk write fails mid-stream', async () => {
+    mockCreateWriteStream.mockImplementationOnce(() => {
+      const failing = new MemoryWriteStream()
+      failing._write = (_chunk, _enc, cb) => cb(new Error('disk full'))
+      return failing
+    })
+    mockFsUnlink.mockResolvedValue(undefined)
+
+    const formData = new FormData()
+    formData.append('file', new File(['payload'], 'doomed.txt', { type: 'text/plain' }))
+
+    const res = await postFormData(app, '/api/agents/test-agent/upload-file', formData)
+    expect(res.status).toBe(500)
+    expect(mockFsUnlink).toHaveBeenCalledWith(expect.stringContaining('uploads'))
   })
 
   it('uploads file without relativePath uses timestamped name', async () => {
@@ -3095,6 +3451,7 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
     try {
       const res = await postFormData(app, '/api/agents/test-agent/upload-file', formData)
       expect(res.status).toBe(413)
+      expect(mockCreateWriteStream).not.toHaveBeenCalled()
       expect(mockFsWriteFile).not.toHaveBeenCalled()
     } finally {
       sizeSpy.mockRestore()
@@ -3233,6 +3590,22 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(mockDbInsertValues).not.toHaveBeenCalled()
   })
 
+  it('stamps the alert claim with the sender device, and clears it on deviceless sends', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+
+    // A paired mobile device speaks: it claims the session's visible alerts.
+    mockRequestDevice.value = 'device-family-9'
+    expect((await postJson(app, URL, { content: 'from phone' })).status).toBe(201)
+    expect(updateSessionMetadata).toHaveBeenCalledWith(
+      'test-agent', 'sess-1', { alertDeviceId: 'device-family-9' })
+
+    // A deviceless surface (web) speaks: the claim is explicitly cleared.
+    mockRequestDevice.value = null
+    expect((await postJson(app, URL, { content: 'from web' })).status).toBe(201)
+    expect(updateSessionMetadata).toHaveBeenLastCalledWith(
+      'test-agent', 'sess-1', { alertDeviceId: null })
+  })
+
   it('generates UUID, inserts messageAuthor, passes it to sendMessage, and returns it in auth mode', async () => {
     mockIsAuthMode.mockReturnValue(true)
 
@@ -3287,6 +3660,52 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     const res = await postJson(app, URL, { content: 'hello', model: 'claude-haiku-4-5' })
     expect(res.status).toBe(201)
     expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), { model: 'claude-haiku-4-5' })
+    expect(updateSessionMetadata).toHaveBeenCalledWith('test-agent', 'sess-1', {
+      model: 'claude-haiku-4-5',
+    })
+    expect(messagePersister.broadcastSessionUpdate).toHaveBeenCalledWith('sess-1')
+    expect(messagePersister.broadcastGlobal).toHaveBeenCalledWith({
+      type: 'session_updated',
+      sessionId: 'sess-1',
+      agentSlug: 'test-agent',
+    })
+  })
+
+  it('does not broadcast when the accepted selection matches the stored metadata', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+    // Seeded composers re-send their whole selection on every fresh turn; a
+    // value the metadata already records must not fan out list/detail
+    // refetches to every open window.
+    vi.mocked(updateSessionMetadata).mockResolvedValueOnce({ model: 'claude-haiku-4-5' } as never)
+
+    const res = await postJson(app, URL, { content: 'hello again', model: 'claude-haiku-4-5' })
+    expect(res.status).toBe(201)
+    expect(updateSessionMetadata).toHaveBeenCalledWith('test-agent', 'sess-1', {
+      model: 'claude-haiku-4-5',
+    })
+    expect(messagePersister.broadcastSessionUpdate).not.toHaveBeenCalled()
+    expect(messagePersister.broadcastGlobal).not.toHaveBeenCalled()
+  })
+
+  it('broadcasts when any one option differs from the stored metadata', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+    vi.mocked(updateSessionMetadata).mockResolvedValueOnce({
+      model: 'claude-haiku-4-5',
+      effort: 'medium',
+    } as never)
+
+    const res = await postJson(app, URL, {
+      content: 'hello',
+      model: 'claude-haiku-4-5',
+      effort: 'high',
+    })
+    expect(res.status).toBe(201)
+    expect(messagePersister.broadcastSessionUpdate).toHaveBeenCalledWith('sess-1')
+    expect(messagePersister.broadcastGlobal).toHaveBeenCalledWith({
+      type: 'session_updated',
+      sessionId: 'sess-1',
+      agentSlug: 'test-agent',
+    })
   })
 
   it('forwards both effort and model when both are present', async () => {
@@ -3332,6 +3751,31 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(cancelOrder).toBeLessThan(sendOrder)
   })
 
+  it('awaits automated-session promotion before forwarding the human message', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+    let finishPromotion!: () => void
+    vi.mocked(messagePersister.promoteAutomatedSession).mockImplementationOnce(
+      () => new Promise<void>((resolve) => { finishPromotion = resolve }),
+    )
+
+    const response = postJson(app, URL, { content: 'take it from here' })
+    await vi.waitFor(() => {
+      expect(messagePersister.promoteAutomatedSession).toHaveBeenCalledWith('sess-1', 'test-agent')
+    })
+    expect(mockSendMessage).not.toHaveBeenCalled()
+
+    finishPromotion()
+    const res = await response
+    expect(res.status).toBe(201)
+
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      'sess-1',
+      'take it from here',
+      expect.any(String),
+      {},
+    )
+  })
+
   it('strips model/effort when the session is already active (mid-turn send)', async () => {
     mockIsAuthMode.mockReturnValue(false)
     // The container interprets a changed effort/model as interrupt/restart of
@@ -3348,6 +3792,8 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     const body = await res.json()
     expect(body.queued).toBe(true)
     expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), {})
+    expect(updateSessionMetadata).not.toHaveBeenCalled()
+    expect(messagePersister.broadcastSessionUpdate).not.toHaveBeenCalled()
   })
 })
 
@@ -3449,6 +3895,555 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
 
     // No DB query since there are no user messages to look up
     expect(mockDbSelectFrom).not.toHaveBeenCalled()
+  })
+})
+
+describe('GET /:id/sessions/:sessionId/messages pagination', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions/sess-1/messages'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(sessionExists).mockResolvedValue(true)
+    vi.mocked(sessionBelongsToAgent).mockResolvedValue(true)
+  })
+
+  afterEach(() => {
+    delete process.env.MESSAGES_PAGE_LIMIT
+    delete process.env.MESSAGES_PAGE_OLDER_LIMIT
+  })
+
+  it('returns a JSON array when no pagination query is set', async () => {
+    vi.mocked(getSessionMessagesWithCompact).mockResolvedValue([])
+    mockTransformMessages.mockReturnValue([
+      { id: 'm1', type: 'user', content: { text: 'hi' }, toolCalls: [], createdAt: new Date() },
+    ])
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(Array.isArray(body)).toBe(true)
+    expect(body).toHaveLength(1)
+    expect(body[0].id).toBe('m1')
+    expect(body).not.toHaveProperty('nextCursor')
+    expect(getSessionMessagesWithCompact).toHaveBeenCalledWith('test-agent', 'sess-1')
+    expect(getSessionMessagesPage).not.toHaveBeenCalled()
+  })
+
+  it('does not page when MESSAGES_PAGE_LIMIT is set but the client sent no limit', async () => {
+    process.env.MESSAGES_PAGE_LIMIT = '100'
+    vi.mocked(getSessionMessagesWithCompact).mockResolvedValue([])
+    mockTransformMessages.mockReturnValue([
+      { id: 'm1', type: 'user', content: { text: 'hi' }, toolCalls: [], createdAt: new Date() },
+    ])
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(Array.isArray(body)).toBe(true)
+    expect(getSessionMessagesPage).not.toHaveBeenCalled()
+  })
+
+  it('returns a cursor envelope when limit is set', async () => {
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({
+      messages: [
+        { id: 'm1', type: 'user', content: { text: 'hi' }, toolCalls: [], createdAt: new Date() },
+      ],
+      nextCursor: 'm1',
+    })
+
+    const res = await getReq(app, `${URL}?limit=2`)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.messages).toHaveLength(1)
+    expect(body.messages[0].id).toBe('m1')
+    expect(body.nextCursor).toBe('m1')
+    expect(getSessionMessagesPage).toHaveBeenCalledWith('test-agent', 'sess-1', { limit: 2, cursor: undefined, signal: expect.any(AbortSignal) })
+    expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
+  })
+
+  it('forwards cursor to the page reader', async () => {
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({
+      messages: [],
+      nextCursor: null,
+    })
+
+    const res = await getReq(app, `${URL}?limit=2&cursor=m1`)
+    expect(res.status).toBe(200)
+    expect(getSessionMessagesPage).toHaveBeenCalledWith('test-agent', 'sess-1', {
+      limit: 2,
+      cursor: 'm1',
+      signal: expect.any(AbortSignal),
+    })
+  })
+
+  it('rejects an invalid limit', async () => {
+    const res = await getReq(app, `${URL}?limit=0`)
+    expect(res.status).toBe(400)
+    expect(getSessionMessagesPage).not.toHaveBeenCalled()
+  })
+
+  it('forwards the media mode to the page reader', async () => {
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({ messages: [], nextCursor: null })
+
+    const res = await getReq(app, `${URL}?limit=2&media=ref`)
+    expect(res.status).toBe(200)
+    expect(getSessionMessagesPage).toHaveBeenCalledWith(
+      'test-agent',
+      'sess-1',
+      expect.objectContaining({ media: 'ref' })
+    )
+  })
+
+  it('forwards the media mode to the delta reader', async () => {
+    vi.mocked(getSessionMessagesDelta).mockResolvedValue({ messages: [], anchor: null })
+
+    const res = await getReq(app, `${URL}?after=m1&media=ref`)
+    expect(res.status).toBe(200)
+    expect(getSessionMessagesDelta).toHaveBeenCalledWith(
+      'test-agent',
+      'sess-1',
+      expect.objectContaining({ media: 'ref' })
+    )
+  })
+
+  it('rejects an unknown media mode rather than silently serving inline', async () => {
+    const res = await getReq(app, `${URL}?limit=2&media=inline`)
+    expect(res.status).toBe(400)
+    expect(getSessionMessagesPage).not.toHaveBeenCalled()
+  })
+
+  it('honors media on its own, without any pagination parameter', async () => {
+    // Otherwise asking for refs quietly returns the full inline transcript.
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({ messages: [], nextCursor: null })
+
+    const res = await getReq(app, `${URL}?media=ref`)
+    expect(res.status).toBe(200)
+    expect(getSessionMessagesPage).toHaveBeenCalledWith(
+      'test-agent',
+      'sess-1',
+      expect.objectContaining({ media: 'ref' })
+    )
+    expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
+  })
+
+  it('validates a media value even when it arrives alone', async () => {
+    const res = await getReq(app, `${URL}?media=bogus`)
+    expect(res.status).toBe(400)
+    expect(getSessionMessagesPage).not.toHaveBeenCalled()
+    expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
+  })
+
+  it('caps first-page limit to MESSAGES_PAGE_LIMIT', async () => {
+    process.env.MESSAGES_PAGE_LIMIT = '100'
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({
+      messages: [],
+      nextCursor: null,
+    })
+
+    const res = await getReq(app, `${URL}?limit=300`)
+    expect(res.status).toBe(200)
+    expect(getSessionMessagesPage).toHaveBeenCalledWith('test-agent', 'sess-1', {
+      limit: 100,
+      cursor: undefined,
+      signal: expect.any(AbortSignal),
+    })
+  })
+
+  it('caps older-page limit to MESSAGES_PAGE_OLDER_LIMIT', async () => {
+    process.env.MESSAGES_PAGE_OLDER_LIMIT = '80'
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({
+      messages: [],
+      nextCursor: null,
+    })
+
+    const res = await getReq(app, `${URL}?limit=200&cursor=m1`)
+    expect(res.status).toBe(200)
+    expect(getSessionMessagesPage).toHaveBeenCalledWith('test-agent', 'sess-1', {
+      limit: 80,
+      cursor: 'm1',
+      signal: expect.any(AbortSignal),
+    })
+  })
+
+  // The renderer aborts superseded refetches (SSE burst throttling); the route
+  // must honor that server-side. Without it every abandoned request still runs
+  // the full read/parse/serialize pipeline — orphaned jobs accumulate at the
+  // event rate and OOM memory-limited deployments over slow volumes.
+  it('propagates the request abort into the page reader and answers 499', async () => {
+    vi.mocked(getSessionMessagesPage).mockImplementation(async (_agent, _session, opts) => {
+      // Behave like the real reader: the tail loop throws when the signal fires.
+      opts.signal?.throwIfAborted()
+      return { messages: [], nextCursor: null }
+    })
+
+    const controller = new AbortController()
+    controller.abort()
+    const res = await app.request(`http://localhost${URL}?limit=2`, {
+      method: 'GET',
+      signal: controller.signal,
+    })
+    expect(res.status).toBe(499)
+  })
+
+  it('skips annotation and serialization when the client aborts after the read', async () => {
+    const controller = new AbortController()
+    vi.mocked(getSessionMessagesPage).mockImplementation(async () => {
+      // Abort lands while the read is completing — too late for the reader's
+      // own checks, so the route's post-read check must catch it.
+      controller.abort()
+      return {
+        messages: [
+          { id: 'm1', type: 'user', content: { text: 'hi' }, toolCalls: [], createdAt: new Date() },
+        ],
+        nextCursor: null,
+      }
+    })
+
+    const res = await app.request(`http://localhost${URL}?limit=2`, {
+      method: 'GET',
+      signal: controller.signal,
+    })
+    expect(res.status).toBe(499)
+    expect(res.body).toBeNull()
+  })
+
+  // The paginated branch does not build its response with c.json — it streams
+  // the envelope item by item so a multi-MB page never exists as one string.
+  // That hand-rolled serializer has to produce byte-for-byte what c.json would
+  // have, and these are the cases where a hand-rolled one drifts.
+  describe('streamed envelope parity', () => {
+    it('round-trips a 2000-item page identically to the object it was given', async () => {
+      const messages = Array.from({ length: 2000 }, (_, i) => ({
+        id: `msg-${i}`,
+        type: 'assistant' as const,
+        content: { text: 'z'.repeat(400) },
+        toolCalls: [],
+        createdAt: '2026-01-01T00:00:00.000Z',
+      }))
+      // createdAt stays a string so the round-trip compares like for like: a
+      // Date would serialize to a string and never equal the input object.
+      vi.mocked(getSessionMessagesPage).mockResolvedValue({
+        messages,
+        nextCursor: 'msg-0',
+      } as unknown as Awaited<ReturnType<typeof getSessionMessagesPage>>)
+
+      const res = await getReq(app, `${URL}?limit=500`)
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-type')).toContain('application/json')
+      expect(await res.json()).toEqual({ messages, nextCursor: 'msg-0' })
+    })
+
+    it('serializes a null cursor as null, not as a missing key', async () => {
+      // The client reads `nextCursor === null` as "no older history". A key
+      // that vanished instead would read as undefined and keep paging.
+      vi.mocked(getSessionMessagesPage).mockResolvedValue({
+        messages: [
+          { id: 'm1', type: 'user', content: { text: 'hi' }, toolCalls: [], createdAt: new Date() },
+        ],
+        nextCursor: null,
+      })
+
+      const res = await getReq(app, `${URL}?limit=10`)
+      const text = await res.text()
+      expect(text.endsWith('"nextCursor":null}')).toBe(true)
+      const body = JSON.parse(text)
+      expect(body).toHaveProperty('nextCursor')
+      expect(body.nextCursor).toBeNull()
+    })
+
+    it('serializes an empty page as an empty array', async () => {
+      vi.mocked(getSessionMessagesPage).mockResolvedValue({ messages: [], nextCursor: null })
+
+      const res = await getReq(app, `${URL}?limit=10`)
+      expect(await res.text()).toBe('{"messages":[],"nextCursor":null}')
+    })
+
+    it('fails the request on a malformed item instead of streaming a corrupt body', async () => {
+      // The envelope is serialized item by item with JSON.stringify, which
+      // returns the VALUE undefined for an undefined item — concatenated into
+      // the body that is the bare word `undefined`, and the whole response
+      // stops being parseable. The subagent route guards this in its
+      // serializer; this branch instead never reaches serialization, because
+      // annotation walks the items first and throws. Either way the client
+      // must not receive a 200 it cannot parse — that is what this pins.
+      mockIsAuthMode.mockReturnValue(false)
+      vi.mocked(messagePersister.getSettledInputRequests).mockReturnValue(new Map())
+      vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
+      vi.mocked(getSessionMessagesPage).mockResolvedValue({
+        messages: [
+          undefined,
+          { id: 'm1', type: 'user', content: { text: 'hi' }, toolCalls: [], createdAt: undefined },
+        ],
+        nextCursor: null,
+      } as unknown as Awaited<ReturnType<typeof getSessionMessagesPage>>)
+
+      const res = await getReq(app, `${URL}?limit=10`)
+      expect(res.status).toBe(500)
+      const text = await res.text()
+      // A clean error envelope, not a half-written page: nothing was streamed
+      // before the throw, so there is no partial `{"messages":[` on the wire.
+      expect(text).not.toContain('undefined')
+      expect(JSON.parse(text)).toEqual({ error: 'Failed to fetch messages' })
+    })
+
+    it('escapes item content that would otherwise break the envelope', async () => {
+      vi.mocked(getSessionMessagesPage).mockResolvedValue({
+        messages: [
+          {
+            id: 'm1',
+            type: 'assistant',
+            content: { text: 'a "quoted" }],"nextCursor":"forged" \\ line\nbreak' },
+            toolCalls: [],
+            createdAt: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+        nextCursor: 'm1',
+      } as unknown as Awaited<ReturnType<typeof getSessionMessagesPage>>)
+
+      const res = await getReq(app, `${URL}?limit=10`)
+      const body = await res.json()
+      // Item text cannot terminate the array or forge the cursor.
+      expect(body.nextCursor).toBe('m1')
+      expect(body.messages[0].content.text).toBe(
+        'a "quoted" }],"nextCursor":"forged" \\ line\nbreak'
+      )
+    })
+  })
+})
+
+describe('GET /:id/sessions/:sessionId/messages forward delta (?after=)', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions/sess-1/messages'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(sessionExists).mockResolvedValue(true)
+    vi.mocked(sessionBelongsToAgent).mockResolvedValue(true)
+  })
+
+  it('answers a delta envelope and forwards after + abort signal to the reader', async () => {
+    vi.mocked(getSessionMessagesDelta).mockResolvedValue({
+      messages: [
+        { id: 'm5', type: 'user', content: { text: 'anchor' }, toolCalls: [], createdAt: new Date() },
+        { id: 'm6', type: 'assistant', content: { text: 'new' }, toolCalls: [], createdAt: new Date() },
+      ],
+      anchor: 'm5',
+    })
+
+    const res = await getReq(app, `${URL}?after=m5&limit=300`)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.messages.map((m: { id: string }) => m.id)).toEqual(['m5', 'm6'])
+    expect(body.anchor).toBe('m5')
+    expect(body).not.toHaveProperty('resync')
+    expect(body).not.toHaveProperty('nextCursor')
+    expect(getSessionMessagesDelta).toHaveBeenCalledWith('test-agent', 'sess-1', {
+      after: 'm5',
+      signal: expect.any(AbortSignal),
+    })
+    expect(getSessionMessagesPage).not.toHaveBeenCalled()
+    expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
+  })
+
+  it('passes resync through so the client falls back to a full fetch', async () => {
+    vi.mocked(getSessionMessagesDelta).mockResolvedValue({
+      messages: [],
+      anchor: null,
+      resync: true,
+    })
+
+    const res = await getReq(app, `${URL}?after=vanished`)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body).toEqual({ messages: [], anchor: null, resync: true })
+  })
+
+  it('rejects a request mixing after with cursor', async () => {
+    const res = await getReq(app, `${URL}?after=m5&cursor=m1`)
+    expect(res.status).toBe(400)
+    expect(getSessionMessagesDelta).not.toHaveBeenCalled()
+    expect(getSessionMessagesPage).not.toHaveBeenCalled()
+  })
+
+  it('propagates the request abort into the delta reader and answers 499', async () => {
+    vi.mocked(getSessionMessagesDelta).mockImplementation(async (_agent, _session, opts) => {
+      opts.signal?.throwIfAborted()
+      return { messages: [], anchor: null }
+    })
+
+    const controller = new AbortController()
+    controller.abort()
+    const res = await app.request(`http://localhost${URL}?after=m5`, {
+      method: 'GET',
+      signal: controller.signal,
+    })
+    expect(res.status).toBe(499)
+  })
+
+  it('stamps settled input-request outcomes onto open tool calls in the delta window', async () => {
+    vi.mocked(getSessionMessagesDelta).mockResolvedValue({
+      messages: [
+        {
+          id: 'm5',
+          type: 'assistant',
+          content: { text: '' },
+          toolCalls: [{ id: 'tool-1', name: 'AskUserQuestion', input: {}, result: undefined }],
+          createdAt: new Date(),
+        },
+      ],
+      anchor: 'm4',
+    })
+    vi.mocked(messagePersister.getSettledInputRequests).mockReturnValue(
+      new Map([['tool-1', 'answered']])
+    )
+
+    const res = await getReq(app, `${URL}?after=m4`)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.messages[0].toolCalls[0].result).toBe('User provided input')
+  })
+})
+
+// The read itself (offsets, validity, decoding) is covered against real files
+// in session-media.test.ts; `fs` is mocked wholesale here, so these cover what
+// the route owns: status codes, headers, and passing the stream through.
+describe('GET /:id/sessions/:sessionId/media/:ref', () => {
+  let app: ReturnType<typeof createApp>
+  const image = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.alloc(4096, 0x7f),
+  ])
+  const REF = 'encoded-ref'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(sessionExists).mockResolvedValue(true)
+    vi.mocked(sessionBelongsToAgent).mockResolvedValue(true)
+    vi.mocked(decodeMediaRef).mockReturnValue({ v: 1, u: 'u-1', o: 10, s: 100, l: 200, h: 'fp' })
+    vi.mocked(openMediaBlob).mockResolvedValue({
+      stream: Readable.from([image]),
+      mimeType: 'image/png',
+      bytes: image.length,
+    })
+  })
+
+  it('streams the addressed image with its sniffed type', async () => {
+    const res = await getReq(app, `/api/agents/test-agent/sessions/sess-1/media/${REF}`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Content-Type')).toBe('image/png')
+    expect(res.headers.get('Content-Length')).toBe(String(image.length))
+    expect(res.headers.get('Cache-Control')).toContain('immutable')
+    expect(res.headers.get('X-Content-Type-Options')).toBe('nosniff')
+    expect(Buffer.from(await res.arrayBuffer()).equals(image)).toBe(true)
+  })
+
+  it('answers 410 once the transcript no longer holds the referenced bytes', async () => {
+    vi.mocked(openMediaBlob).mockResolvedValue(undefined)
+    const res = await getReq(app, `/api/agents/test-agent/sessions/sess-1/media/${REF}`)
+    expect(res.status).toBe(410)
+  })
+
+  it('answers 500, not 410, when the read fails for operational reasons', async () => {
+    // A disk error says nothing about whether the media still exists; 410
+    // would strand the client on a placeholder it never retries.
+    vi.mocked(openMediaBlob).mockRejectedValue(
+      Object.assign(new Error('I/O error'), { code: 'EIO' })
+    )
+    const res = await getReq(app, `/api/agents/test-agent/sessions/sess-1/media/${REF}`)
+    expect(res.status).toBe(500)
+  })
+
+  it('rejects a ref it could not have minted', async () => {
+    vi.mocked(decodeMediaRef).mockReturnValue(undefined)
+    const res = await getReq(app, '/api/agents/test-agent/sessions/sess-1/media/not-a-ref')
+    expect(res.status).toBe(400)
+    expect(openMediaBlob).not.toHaveBeenCalled()
+  })
+
+  it('does not preflight existence, so storage failures are not read as gone', async () => {
+    // fileExists() answers false for any stat failure, so a preflight here
+    // would 404 on EIO/EACCES before the read could report anything.
+    vi.mocked(sessionExists).mockResolvedValue(false)
+    const res = await getReq(app, `/api/agents/test-agent/sessions/sess-1/media/${REF}`)
+    expect(res.status).toBe(200)
+    expect(sessionExists).not.toHaveBeenCalled()
+  })
+
+  it('404s for a session the agent does not own', async () => {
+    vi.mocked(sessionBelongsToAgent).mockResolvedValue(false)
+    const res = await getReq(app, `/api/agents/test-agent/sessions/sess-1/media/${REF}`)
+    expect(res.status).toBe(404)
+    expect(openMediaBlob).not.toHaveBeenCalled()
+  })
+})
+
+describe('GET /:id/sessions/:sessionId/subagent/:agentId/messages', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions/sess-1/subagent/sub-1/messages'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(readJsonlFile).mockResolvedValue([])
+  })
+
+  it('returns the transformed transcript as a parseable JSON array', async () => {
+    vi.mocked(readJsonlFile).mockResolvedValue([
+      { type: 'user', message: { role: 'user', content: 'hi' } },
+      { type: 'assistant', message: { role: 'assistant', content: [] } },
+    ])
+    const transformed = [
+      { id: 'msg-1', type: 'user', content: { text: 'hi' }, toolCalls: [], createdAt: '2026-01-01T00:00:00.000Z' },
+      { id: 'msg-2', type: 'assistant', content: { text: 'hello "quoted"\n' }, toolCalls: [], createdAt: '2026-01-01T00:00:01.000Z' },
+    ]
+    mockTransformMessages.mockReturnValue(transformed)
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toContain('application/json')
+    expect(await res.json()).toEqual(transformed)
+  })
+
+  it('returns [] when the subagent transcript is empty or missing', async () => {
+    mockTransformMessages.mockReturnValue([])
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('[]')
+  })
+
+  it('serializes undefined transformed elements as null, matching JSON.stringify', async () => {
+    mockTransformMessages.mockReturnValue([undefined, { id: 'msg-1', type: 'user' }])
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('[null,{"id":"msg-1","type":"user"}]')
+  })
+
+  it('returns a large transcript parse-identically', async () => {
+    const transformed = Array.from({ length: 2000 }, (_, i) => ({
+      id: `msg-${i}`,
+      type: 'assistant',
+      content: { text: 'z'.repeat(400) },
+      toolCalls: [],
+    }))
+    mockTransformMessages.mockReturnValue(transformed)
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual(transformed)
+  })
+
+  it('returns 500 when reading the transcript fails', async () => {
+    vi.mocked(readJsonlFile).mockRejectedValue(new Error('disk error'))
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'Failed to fetch subagent messages' })
   })
 })
 
@@ -4500,6 +5495,177 @@ describe('awaiting-input recovery — GET /:id/sessions/:sessionId/messages', ()
     await getReq(app, URL)
     expect(messagePersister.recoverSessionAwaitingInput).not.toHaveBeenCalled()
   })
+
+  // Everything above drives the unpaginated branch, which is no longer the one
+  // the app uses: the renderer always sends a limit, and refetches arrive as
+  // forward deltas. Both of those branches run the same annotate-and-recover
+  // step, so the same guarantees have to hold there — and on the paginated
+  // branch the response is STREAMED, which means annotation has to finish
+  // before the first byte or the stamp never reaches the client.
+  describe('on the paginated and delta branches', () => {
+    const pageOf = (messages: unknown[]) =>
+      vi.mocked(getSessionMessagesPage).mockResolvedValue({
+        messages,
+        nextCursor: null,
+      } as unknown as Awaited<ReturnType<typeof getSessionMessagesPage>>)
+
+    beforeEach(() => {
+      vi.mocked(sessionBelongsToAgent).mockResolvedValue(true)
+    })
+
+    afterEach(() => {
+      // vi.clearAllMocks clears calls but keeps return values, so whatever
+      // these are left as carries into the describes below. Put the session
+      // back to idle with nothing settled rather than leaking this block's
+      // "active session with a declined request" into unrelated tests.
+      vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
+      vi.mocked(messagePersister.getSettledInputRequests).mockReturnValue(new Map())
+    })
+
+    it('re-establishes the missed blocking requests of the trailing turn', async () => {
+      vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+      pageOf([
+        { id: 'm1', type: 'user', content: { text: 'go' }, toolCalls: [], createdAt: new Date() },
+        {
+          id: 'm2',
+          type: 'assistant',
+          content: { text: '' },
+          createdAt: new Date(),
+          toolCalls: [
+            { id: 'tool-done', name: 'Bash', input: {}, result: 'ok' },
+            { id: 'tool-q', name: 'AskUserQuestion', input: {} },
+            { id: 'tool-sr', name: 'mcp__user-input__request_script_run', input: {} },
+          ],
+        },
+      ])
+
+      const res = await getReq(app, `${URL}?limit=50`)
+      expect(res.status).toBe(200)
+      expect(messagePersister.recoverSessionAwaitingInput).toHaveBeenCalledWith(
+        'sess-1',
+        'test-agent',
+        [{ toolUseId: 'tool-q', toolName: 'AskUserQuestion' }],
+      )
+    })
+
+    it('a trailing QUEUED user message does not end the turn scan', async () => {
+      vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+      pageOf([
+        {
+          id: 'm1',
+          type: 'assistant',
+          content: { text: '' },
+          createdAt: new Date(),
+          toolCalls: [{ id: 'tool-q', name: 'mcp__user-input__request_secret', input: {} }],
+        },
+        { id: 'm2', type: 'user', queued: true, content: { text: 'also…' }, toolCalls: [], createdAt: new Date() },
+      ])
+
+      await getReq(app, `${URL}?limit=50`)
+      expect(messagePersister.recoverSessionAwaitingInput).toHaveBeenCalledWith(
+        'sess-1',
+        'test-agent',
+        [{ toolUseId: 'tool-q', toolName: 'mcp__user-input__request_secret' }],
+      )
+    })
+
+    it('does not recover when a later user message started a fresh turn', async () => {
+      vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+      pageOf([
+        {
+          id: 'm1',
+          type: 'assistant',
+          content: { text: '' },
+          createdAt: new Date(),
+          toolCalls: [{ id: 'tool-q', name: 'AskUserQuestion', input: {} }],
+        },
+        { id: 'm2', type: 'user', content: { text: 'never mind' }, toolCalls: [], createdAt: new Date() },
+      ])
+
+      await getReq(app, `${URL}?limit=50`)
+      expect(messagePersister.recoverSessionAwaitingInput).not.toHaveBeenCalled()
+    })
+
+    it('does not recover for an inactive session', async () => {
+      vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
+      pageOf([
+        {
+          id: 'm1',
+          type: 'assistant',
+          content: { text: '' },
+          createdAt: new Date(),
+          toolCalls: [{ id: 'tool-q', name: 'AskUserQuestion', input: {} }],
+        },
+      ])
+
+      await getReq(app, `${URL}?limit=50`)
+      expect(messagePersister.recoverSessionAwaitingInput).not.toHaveBeenCalled()
+    })
+
+    it('stamps a settled request into the streamed body before the first byte', async () => {
+      vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+      vi.mocked(messagePersister.getSettledInputRequests).mockReturnValue(
+        new Map([['tool-declined', 'declined']]),
+      )
+      pageOf([
+        {
+          id: 'm1',
+          type: 'assistant',
+          content: { text: '' },
+          createdAt: new Date(),
+          toolCalls: [
+            { id: 'tool-declined', name: 'mcp__user-input__request_secret', input: {} },
+            { id: 'tool-open', name: 'AskUserQuestion', input: {} },
+          ],
+        },
+      ])
+
+      const res = await getReq(app, `${URL}?limit=50`)
+      expect(res.status).toBe(200)
+      // Read out of the streamed envelope, not a c.json object: this is the
+      // assertion that would fail if serialization ever started before
+      // annotation finished mutating the items.
+      const body = (await res.json()) as {
+        messages: Array<{ toolCalls?: Array<{ id: string; result?: string }> }>
+      }
+      const toolCalls = body.messages[0].toolCalls ?? []
+      expect(toolCalls.find((t) => t.id === 'tool-declined')?.result).toBe(
+        'User declined the request',
+      )
+      expect(toolCalls.find((t) => t.id === 'tool-open')?.result).toBeUndefined()
+      expect(messagePersister.recoverSessionAwaitingInput).toHaveBeenCalledWith(
+        'sess-1',
+        'test-agent',
+        [{ toolUseId: 'tool-open', toolName: 'AskUserQuestion' }],
+      )
+    })
+
+    it('recovers from a forward-delta window too', async () => {
+      // A live session refetches as deltas, so this is the path a missed ask
+      // actually arrives on once the page has loaded.
+      vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+      vi.mocked(getSessionMessagesDelta).mockResolvedValue({
+        messages: [
+          {
+            id: 'm2',
+            type: 'assistant',
+            content: { text: '' },
+            createdAt: new Date(),
+            toolCalls: [{ id: 'tool-q', name: 'AskUserQuestion', input: {} }],
+          },
+        ],
+        anchor: 'm1',
+      } as unknown as Awaited<ReturnType<typeof getSessionMessagesDelta>>)
+
+      const res = await getReq(app, `${URL}?after=m1`)
+      expect(res.status).toBe(200)
+      expect(messagePersister.recoverSessionAwaitingInput).toHaveBeenCalledWith(
+        'sess-1',
+        'test-agent',
+        [{ toolUseId: 'tool-q', toolName: 'AskUserQuestion' }],
+      )
+    })
+  })
 })
 
 // ============================================================================
@@ -4545,6 +5711,21 @@ describe('user message SSE broadcast — POST /:id/sessions/:sessionId/messages'
     }))
   })
 
+  it('coalesces a user message during recovery and does not send to the container', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    vi.mocked(messagePersister.coalesceIfRecovering).mockReturnValueOnce(true)
+
+    const res = await postJson(app, URL, { content: 'keep going' })
+    expect(res.status).toBe(201)
+    const body = await res.json()
+    expect(body.queued).toBe(true)
+    expect(messagePersister.coalesceIfRecovering).toHaveBeenCalledWith('sess-1', {
+      uuid: expect.any(String),
+      text: 'keep going',
+    })
+    expect(mockSendMessage).not.toHaveBeenCalled()
+  })
+
   it('does not broadcast user_message in non-auth mode', async () => {
     mockIsAuthMode.mockReturnValue(false)
 
@@ -4587,6 +5768,16 @@ describe('cancel queued message — DELETE /:id/sessions/:sessionId/queued-messa
     expect(res.status).toBe(400)
     expect(mockCancelQueuedMessage).not.toHaveBeenCalled()
   })
+
+  it('cancels a coalesced recovery message without calling the container', async () => {
+    vi.mocked(messagePersister.dropCoalescedUserMessage).mockReturnValueOnce(true)
+
+    const res = await deleteReq(app, URL)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ cancelled: true })
+    expect(messagePersister.dropCoalescedUserMessage).toHaveBeenCalledWith('sess-1', UUID)
+    expect(mockCancelQueuedMessage).not.toHaveBeenCalled()
+  })
 })
 
 describe('typing indicator — POST /:id/sessions/:sessionId/typing', () => {
@@ -4624,6 +5815,111 @@ describe('typing indicator — POST /:id/sessions/:sessionId/typing', () => {
 // GET /api/agents - List with enriched summary
 // ============================================================================
 
+describe('GET /api/agents/:id/inbound-x-agent', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockIsAuthMode.mockReturnValue(false)
+    mockAgentExists.mockResolvedValue(true)
+  })
+
+  it('returns x-agent session history for the resolved target agent', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([{
+      slug: 'target',
+      displaySlug: 'target',
+      name: 'Target',
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      status: 'stopped',
+      containerPort: null,
+    }])
+    vi.mocked(readSessionMetadata).mockResolvedValue({
+      'session-a': {
+        invokedByAgentSlug: 'deleted-caller',
+        createdAt: '2026-08-20T12:00:00.000Z',
+      },
+    })
+
+    const res = await getReq(createApp(), '/api/agents/target/inbound-x-agent')
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      sessions: [{
+        id: 'session-a',
+        createdAt: '2026-08-20T12:00:00.000Z',
+        triggeredBy: { slug: 'deleted-caller', name: 'deleted-caller' },
+      }],
+      callers: [],
+    })
+  })
+})
+
+describe('GET /api/agents/:id/scheduled-tasks/completed-sessions', () => {
+  const URL = '/api/agents/test-agent/scheduled-tasks/completed-sessions'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockIsAuthMode.mockReturnValue(false)
+    mockAgentExists.mockResolvedValue(true)
+  })
+
+  it('returns settled and legacy one-time sessions while excluding running runs', async () => {
+    vi.mocked(listCompletedOneTimeTasks).mockResolvedValue([
+      { lastSessionId: 'settled-session' },
+      { lastSessionId: 'running-session' },
+      { lastSessionId: 'legacy-session' },
+    ] as Awaited<ReturnType<typeof listCompletedOneTimeTasks>>)
+    vi.mocked(readSessionMetadata).mockResolvedValue({
+      'settled-session': { isScheduledExecution: true, automationStatus: 'succeeded' },
+      'running-session': { isScheduledExecution: true, automationStatus: 'running' },
+      'legacy-session': { isScheduledExecution: true },
+    })
+    vi.mocked(listSessionsByIds).mockResolvedValue([
+      {
+        id: 'legacy-session',
+        agentSlug: 'test-agent',
+        name: 'Legacy run',
+        createdAt: new Date('2026-08-20T10:00:00.000Z'),
+        lastActivityAt: new Date('2026-08-20T10:05:00.000Z'),
+        messageCount: 2,
+      },
+      {
+        id: 'settled-session',
+        agentSlug: 'test-agent',
+        name: 'Settled run',
+        createdAt: new Date('2026-08-21T10:00:00.000Z'),
+        lastActivityAt: new Date('2026-08-21T10:05:00.000Z'),
+        messageCount: 3,
+      },
+    ])
+    vi.mocked(messagePersister.isSessionActive).mockImplementation(
+      (sessionId: string) => sessionId === 'running-session',
+    )
+    vi.mocked(messagePersister.isSessionAwaitingInput).mockImplementation(
+      (sessionId: string) => sessionId === 'legacy-session',
+    )
+
+    const res = await getReq(createApp(), URL)
+
+    expect(res.status).toBe(200)
+    expect(vi.mocked(listCompletedOneTimeTasks)).toHaveBeenCalledWith('test-agent')
+    expect(vi.mocked(listSessionsByIds)).toHaveBeenCalledWith(
+      'test-agent',
+      ['settled-session', 'legacy-session'],
+    )
+    expect(await res.json()).toEqual([
+      expect.objectContaining({
+        id: 'settled-session',
+        isActive: false,
+        isAwaitingInput: false,
+      }),
+      expect.objectContaining({
+        id: 'legacy-session',
+        isActive: false,
+        isAwaitingInput: true,
+      }),
+    ])
+  })
+})
+
 describe('GET /api/agents (enriched summary)', () => {
   let app: ReturnType<typeof createApp>
 
@@ -4637,15 +5933,649 @@ describe('GET /api/agents (enriched summary)', () => {
     containerPort: 8080,
   }
 
+  const sessionInfo = (id: string, agentSlug = 'agent-1') => ({
+    id,
+    agentSlug,
+    name: 'Settled conversation',
+    createdAt: new Date('2026-01-01T11:00:00.000Z'),
+    lastActivityAt: new Date('2026-01-01T12:00:00.000Z'),
+    messageCount: 2,
+  })
+
   beforeEach(() => {
     vi.clearAllMocks()
     app = createApp()
     mockIsAuthMode.mockReturnValue(false)
-    // Default: no sessions or artifacts
-    vi.mocked(getSessionSummary).mockResolvedValue({ sessionIds: [], sessionCount: 0, lastActivityAt: null })
+    userInputRequestManager.reset()
+    // Default: no sessions, attention, or artifacts.
+    vi.mocked(getSessionSummary).mockResolvedValue({
+      sessionIds: [],
+      sessionCount: 0,
+      lastActivityAt: null,
+    })
     vi.mocked(listSessions).mockResolvedValue([])
+    vi.mocked(readSessionMetadata).mockResolvedValue({})
+    vi.mocked(sessionExists).mockResolvedValue(true)
+    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
+    vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
+    vi.mocked(messagePersister.isSessionAwaitingInput).mockReturnValue(false)
+    vi.mocked(messagePersister.getActiveSessionIdsForAgent).mockReturnValue([])
+    vi.mocked(messagePersister.hasActiveSessionsForAgent).mockReturnValue(false)
+    vi.mocked(messagePersister.hasSessionsAwaitingInputForAgent).mockReturnValue(false)
+    mockGetPendingReviewsForAgent.mockReturnValue([])
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({
+      messages: [],
+      nextCursor: null,
+    })
     vi.mocked(listPendingScheduledTasks).mockResolvedValue([])
     vi.mocked(listArtifactsFromFilesystem).mockResolvedValue([])
+  })
+
+  it.each([
+    ['/api/agents'],
+    ['/api/agents?include_latest_visible_session_tail=false'],
+  ])('keeps the default response and cost unchanged for %s', async (url) => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+
+    const res = await getReq(app, url)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+
+    expect(body[0]).not.toHaveProperty('latestVisibleSession')
+    expect(body[0]).not.toHaveProperty('attentionOutsideLatest')
+    expect(listSessions).not.toHaveBeenCalled()
+    expect(getSessionMessagesPage).not.toHaveBeenCalled()
+  })
+
+  it('returns the latest tail and excludes attention on that session', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('settled-visible')])
+    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([
+      ['agent-1', new Set(['settled-visible'])],
+    ]))
+    vi.mocked(messagePersister.isSessionActive).mockImplementation(
+      (id: string) => id === 'settled-visible',
+    )
+    vi.mocked(messagePersister.isSessionAwaitingInput).mockImplementation(
+      (id: string) => id === 'settled-visible',
+    )
+    vi.mocked(messagePersister.getActiveSessionIdsForAgent)
+      .mockReturnValue(['settled-visible'])
+    vi.mocked(messagePersister.hasSessionsAwaitingInputForAgent).mockReturnValue(true)
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({
+      messages: [{
+        id: 'message-2',
+        type: 'assistant',
+        content: { text: 'Latest settled reply' },
+        toolCalls: [],
+        createdAt: new Date('2026-01-01T12:00:00.000Z'),
+      }],
+      nextCursor: 'message-1',
+    })
+
+    const res = await getReq(
+      app,
+      '/api/agents?include_latest_visible_session_tail=true',
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+
+    expect(body[0].latestVisibleSession).toMatchObject({
+      session: {
+        id: 'settled-visible',
+        isActive: true,
+        isAwaitingInput: true,
+        hasUnreadNotifications: true,
+      },
+      messageTail: {
+        messages: [{
+          id: 'message-2',
+          content: { text: 'Latest settled reply' },
+        }],
+        nextCursor: 'message-1',
+      },
+    })
+    expect(body[0].attentionOutsideLatest).toEqual({
+      hasUnreadNotification: false,
+      hasPendingInput: false,
+    })
+    expect(listSessions).toHaveBeenCalledWith('agent-1', {
+      excludeAutomated: true,
+      sortBy: 'last_activity_at',
+    })
+    expect(getSessionMessagesPage).toHaveBeenCalledWith(
+      'agent-1',
+      'settled-visible',
+      {
+        limit: 20,
+        byteBudget: 256 * 1024,
+        media: 'ref',
+        signal: expect.any(AbortSignal),
+      },
+    )
+    expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
+  })
+
+  it('annotates the tail like a transcript page read', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('latest-visible')])
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({
+      messages: [
+        {
+          id: 'message-1',
+          type: 'assistant',
+          content: { text: '' },
+          toolCalls: [{ id: 'tool-1', name: 'AskUserQuestion', input: {}, result: undefined }],
+          createdAt: new Date('2026-01-01T12:00:00.000Z'),
+        },
+      ],
+      nextCursor: null,
+    })
+    vi.mocked(messagePersister.getSettledInputRequests).mockReturnValueOnce(
+      new Map([['tool-1', 'answered']])
+    )
+
+    const res = await getReq(
+      app,
+      '/api/agents?include_latest_visible_session_tail=true',
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+
+    expect(body[0].latestVisibleSession.messageTail.messages[0].toolCalls[0].result)
+      .toBe('User provided input')
+    expect(messagePersister.getSettledInputRequests).toHaveBeenCalledWith('latest-visible')
+  })
+
+  it('reports unread and pending attention on an older visible session', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(listSessions).mockResolvedValue([
+      sessionInfo('latest-visible'),
+      sessionInfo('older-visible'),
+    ])
+    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([
+      ['agent-1', new Set(['older-visible'])],
+    ]))
+    vi.mocked(messagePersister.isSessionAwaitingInput).mockImplementation(
+      (id: string) => id === 'older-visible',
+    )
+    vi.mocked(messagePersister.getActiveSessionIdsForAgent)
+      .mockReturnValue(['older-visible'])
+
+    const res = await getReq(
+      app,
+      '/api/agents?include_latest_visible_session_tail=true',
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+
+    expect(body[0].latestVisibleSession.session.id).toBe('latest-visible')
+    expect(body[0].attentionOutsideLatest).toEqual({
+      hasUnreadNotification: true,
+      hasPendingInput: true,
+    })
+    expect(getSessionMessagesPage).toHaveBeenCalledTimes(1)
+    expect(getSessionMessagesPage).toHaveBeenCalledWith(
+      'agent-1',
+      'latest-visible',
+      expect.any(Object),
+    )
+  })
+
+  it('ignores unread and pending attention from hidden automation', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('latest-visible')])
+    vi.mocked(readSessionMetadata).mockResolvedValue({
+      'hidden-scheduled': {
+        isScheduledExecution: true,
+      },
+    })
+    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([
+      ['agent-1', new Set(['hidden-scheduled'])],
+    ]))
+    vi.mocked(messagePersister.isSessionAwaitingInput).mockImplementation(
+      (id: string) => id === 'hidden-scheduled',
+    )
+    vi.mocked(messagePersister.getActiveSessionIdsForAgent)
+      .mockReturnValue(['hidden-scheduled'])
+    expect(userInputRequestManager.register({
+      id: 'hidden-request',
+      kind: 'question',
+      scope: { agentSlug: 'agent-1', sessionId: 'hidden-scheduled' },
+      blocking: true,
+      autoApproved: false,
+      payload: {},
+    })).not.toBeNull()
+
+    const res = await getReq(
+      app,
+      '/api/agents?include_latest_visible_session_tail=true',
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+
+    expect(body[0].attentionOutsideLatest).toEqual({
+      hasUnreadNotification: false,
+      hasPendingInput: false,
+    })
+  })
+
+  it('counts promoted automation as visible outside attention', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(listSessions).mockResolvedValue([
+      sessionInfo('latest-visible'),
+      sessionInfo('promoted-scheduled'),
+    ])
+    vi.mocked(readSessionMetadata).mockResolvedValue({
+      'promoted-scheduled': {
+        isScheduledExecution: true,
+        promotedToInteractive: true,
+      },
+    })
+    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([
+      ['agent-1', new Set(['promoted-scheduled'])],
+    ]))
+    expect(userInputRequestManager.register({
+      id: 'promoted-request',
+      kind: 'question',
+      scope: { agentSlug: 'agent-1', sessionId: 'promoted-scheduled' },
+      blocking: true,
+      autoApproved: false,
+      payload: {},
+    })).not.toBeNull()
+
+    const res = await getReq(
+      app,
+      '/api/agents?include_latest_visible_session_tail=true',
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+
+    expect(body[0].attentionOutsideLatest).toEqual({
+      hasUnreadNotification: true,
+      hasPendingInput: true,
+    })
+    expect(getSessionMessagesPage).toHaveBeenCalledTimes(1)
+    expect(getSessionMessagesPage).toHaveBeenCalledWith(
+      'agent-1',
+      'latest-visible',
+      expect.any(Object),
+    )
+  })
+
+  it('counts unattributed unread and agent-scoped pending attention as outside', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('latest-visible')])
+    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([
+      ['agent-1', new Set(['unknown-session'])],
+    ]))
+    expect(userInputRequestManager.register({
+      id: 'agent-scoped-review',
+      kind: 'proxy_review',
+      scope: { agentSlug: 'agent-1' },
+      blocking: true,
+      autoApproved: false,
+      payload: {},
+    })).not.toBeNull()
+
+    const res = await getReq(
+      app,
+      '/api/agents?include_latest_visible_session_tail=true',
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+
+    expect(body[0].attentionOutsideLatest).toEqual({
+      hasUnreadNotification: true,
+      hasPendingInput: true,
+    })
+  })
+
+  // `markedUnread` carries the dot with no notification row behind it, so this
+  // expansion has to OR it in the same way the three session-list projections
+  // do — otherwise a session marked unread reads as "nothing to see here".
+  it('counts a marked-unread session outside latest with no notification row', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(listSessions).mockResolvedValue([
+      sessionInfo('latest-visible'),
+      sessionInfo('older-marked'),
+    ])
+    vi.mocked(readSessionMetadata).mockResolvedValue({
+      'older-marked': { markedUnread: true },
+    })
+    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
+
+    const res = await getReq(
+      app,
+      '/api/agents?include_latest_visible_session_tail=true',
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+
+    expect(body[0].attentionOutsideLatest).toEqual({
+      hasUnreadNotification: true,
+      hasPendingInput: false,
+    })
+  })
+
+  it('carries a marked-unread flag on the latest visible session tail', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('latest-visible')])
+    vi.mocked(readSessionMetadata).mockResolvedValue({
+      'latest-visible': { markedUnread: true },
+    })
+    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
+
+    const res = await getReq(
+      app,
+      '/api/agents?include_latest_visible_session_tail=true',
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+
+    expect(body[0].latestVisibleSession.session.hasUnreadNotifications).toBe(true)
+    // It IS the latest session, so nothing is outstanding outside it.
+    expect(body[0].attentionOutsideLatest).toEqual({
+      hasUnreadNotification: false,
+      hasPendingInput: false,
+    })
+  })
+
+  it('ignores a marked-unread flag on hidden automation', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('latest-visible')])
+    vi.mocked(readSessionMetadata).mockResolvedValue({
+      'hidden-scheduled': { isScheduledExecution: true, markedUnread: true },
+    })
+    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
+
+    const res = await getReq(
+      app,
+      '/api/agents?include_latest_visible_session_tail=true',
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+
+    expect(body[0].attentionOutsideLatest).toEqual({
+      hasUnreadNotification: false,
+      hasPendingInput: false,
+    })
+  })
+
+  it('treats an unattributable positive pending-input aggregate as outside', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('latest-visible')])
+    vi.mocked(messagePersister.hasSessionsAwaitingInputForAgent).mockReturnValue(true)
+
+    const res = await getReq(
+      app,
+      '/api/agents?include_latest_visible_session_tail=true',
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+
+    expect(body[0].attentionOutsideLatest).toEqual({
+      hasUnreadNotification: false,
+      hasPendingInput: true,
+    })
+  })
+
+  it('returns null when an agent has no visible session and skips transcript work', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(listSessions).mockResolvedValue([])
+
+    const res = await getReq(
+      app,
+      '/api/agents?include_latest_visible_session_tail=true',
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+
+    expect(body[0].latestVisibleSession).toBeNull()
+    expect(body[0].attentionOutsideLatest).toEqual({
+      hasUnreadNotification: false,
+      hasPendingInput: false,
+    })
+    expect(getSessionMessagesPage).not.toHaveBeenCalled()
+  })
+
+  it('returns null and reports a latest visible session with neither transcript nor registration', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('missing-transcript')])
+    vi.mocked(sessionExists).mockResolvedValue(false)
+    vi.mocked(sessionIsKnown).mockResolvedValue(false)
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    try {
+      const res = await getReq(
+        app,
+        '/api/agents?include_latest_visible_session_tail=true',
+      )
+      expect(res.status).toBe(200)
+      const body = await res.json()
+
+      expect(body[0].latestVisibleSession).toBeNull()
+      expect(body[0].attentionOutsideLatest).toEqual({
+        hasUnreadNotification: false,
+        hasPendingInput: false,
+      })
+      expect(getSessionMessagesPage).not.toHaveBeenCalled()
+      expect(consoleError).toHaveBeenCalledWith(
+        'Failed to fetch latest visible session tail for agent agent-1:',
+        expect.objectContaining({
+          message: 'Latest visible session transcript not found for agent-1/missing-transcript',
+        }),
+      )
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+
+  it('serves a registered session with an empty tail before its first transcript write', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('registered-pending')])
+    vi.mocked(sessionExists).mockResolvedValue(false)
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    try {
+      const res = await getReq(
+        app,
+        '/api/agents?include_latest_visible_session_tail=true',
+      )
+      expect(res.status).toBe(200)
+      const body = await res.json()
+
+      expect(body[0].latestVisibleSession).toMatchObject({
+        session: { id: 'registered-pending' },
+        messageTail: { messages: [], nextCursor: null },
+      })
+      expect(body[0].attentionOutsideLatest).toEqual({
+        hasUnreadNotification: false,
+        hasPendingInput: false,
+      })
+      expect(sessionIsKnown).toHaveBeenCalledWith('agent-1', 'registered-pending')
+      expect(getSessionMessagesPage).not.toHaveBeenCalled()
+      expect(consoleError).not.toHaveBeenCalled()
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+
+  it('returns null attention instead of false when visible-session selection fails', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(listSessions).mockRejectedValue(new Error('visibility unavailable'))
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    try {
+      const res = await getReq(
+        app,
+        '/api/agents?include_latest_visible_session_tail=true',
+      )
+      expect(res.status).toBe(200)
+      const body = await res.json()
+
+      expect(body[0].latestVisibleSession).toBeNull()
+      expect(body[0].attentionOutsideLatest).toBeNull()
+      expect(getSessionMessagesPage).not.toHaveBeenCalled()
+      expect(consoleError).toHaveBeenCalledWith(
+        'Failed to select latest visible session for agent agent-1:',
+        expect.objectContaining({ message: 'visibility unavailable' }),
+      )
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+
+  it('keeps the latest tail but returns null when attention computation fails', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('latest-visible')])
+    const attentionRead = vi
+      .spyOn(userInputRequestManager, 'getOpenRequestsForAgent')
+      .mockImplementationOnce(() => {
+        throw new Error('attention unavailable')
+      })
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    try {
+      const res = await getReq(
+        app,
+        '/api/agents?include_latest_visible_session_tail=true',
+      )
+      expect(res.status).toBe(200)
+      const body = await res.json()
+
+      expect(body[0].latestVisibleSession.session.id).toBe('latest-visible')
+      expect(body[0].attentionOutsideLatest).toBeNull()
+      expect(consoleError).toHaveBeenCalledWith(
+        'Failed to compute attention outside latest for agent agent-1:',
+        expect.objectContaining({ message: 'attention unavailable' }),
+      )
+    } finally {
+      attentionRead.mockRestore()
+      consoleError.mockRestore()
+    }
+  })
+
+  it('hydrates every agent in one collection response without legacy full-transcript reads', async () => {
+    const agent2 = { ...baseAgent, slug: 'agent-2', name: 'Agent Two' }
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent, agent2])
+    vi.mocked(listSessions).mockImplementation(async (slug) => [
+      sessionInfo('session-' + slug, slug),
+    ])
+    vi.mocked(getSessionMessagesPage).mockImplementation(async (_slug, sessionId) => ({
+      messages: [{
+        id: 'message-' + sessionId,
+        type: 'assistant',
+        content: { text: sessionId },
+        toolCalls: [],
+        createdAt: new Date('2026-01-01T12:00:00.000Z'),
+      }],
+      nextCursor: null,
+    }))
+
+    const res = await getReq(
+      app,
+      '/api/agents?include_latest_visible_session_tail=true',
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+
+    expect(body.map((agent: { latestVisibleSession: { session: { id: string } } }) =>
+      agent.latestVisibleSession.session.id,
+    )).toEqual(['session-agent-1', 'session-agent-2'])
+    expect(listSessions).toHaveBeenCalledTimes(2)
+    expect(getSessionMessagesPage).toHaveBeenCalledTimes(2)
+    expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
+  })
+
+  it('isolates a missing or corrupt transcript to its agent', async () => {
+    const agent2 = { ...baseAgent, slug: 'agent-2', name: 'Agent Two' }
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent, agent2])
+    vi.mocked(listSessions).mockImplementation(async (slug) => [
+      sessionInfo('session-' + slug, slug),
+    ])
+    vi.mocked(getSessionMessagesPage).mockImplementation(async (slug) => {
+      if (slug === 'agent-1') throw new Error('corrupt transcript')
+      return { messages: [], nextCursor: null }
+    })
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    try {
+      const res = await getReq(
+        app,
+        '/api/agents?include_latest_visible_session_tail=true',
+      )
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      const bySlug = new Map(body.map((agent: { slug: string }) => [agent.slug, agent]))
+
+      expect(bySlug.get('agent-1')).toMatchObject({
+        latestVisibleSession: null,
+        attentionOutsideLatest: {
+          hasUnreadNotification: false,
+          hasPendingInput: false,
+        },
+      })
+      expect(bySlug.get('agent-2')).toMatchObject({
+        latestVisibleSession: {
+          session: { id: 'session-agent-2' },
+          messageTail: { messages: [], nextCursor: null },
+        },
+        attentionOutsideLatest: {
+          hasUnreadNotification: false,
+          hasPendingInput: false,
+        },
+      })
+      expect(consoleError).toHaveBeenCalledWith(
+        'Failed to fetch latest visible session tail for agent agent-1:',
+        expect.any(Error),
+      )
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+
+  it('reads expansion data only for agents admitted by the ACL list', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    mockDbSelectFrom.mockReturnValue({
+      where: vi.fn().mockResolvedValue([{ agentSlug: 'agent-1' }]),
+    })
+    vi.mocked(getAgentWithStatus).mockResolvedValue(baseAgent)
+    vi.mocked(listSessions).mockResolvedValue([sessionInfo('visible-session')])
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({
+      messages: [],
+      nextCursor: null,
+    })
+
+    const res = await getReq(
+      app,
+      '/api/agents?include_latest_visible_session_tail=true',
+    )
+    expect(res.status).toBe(200)
+    const body = await res.json()
+
+    expect(body).toHaveLength(1)
+    expect(body[0].slug).toBe('agent-1')
+    expect(listSessions).toHaveBeenCalledTimes(1)
+    expect(listSessions).toHaveBeenCalledWith('agent-1', expect.any(Object))
+    expect(getSessionMessagesPage).toHaveBeenCalledWith(
+      'agent-1',
+      'visible-session',
+      expect.any(Object),
+    )
+  })
+
+  it('rejects a malformed expansion flag before listing or reading agents', async () => {
+    const res = await getReq(
+      app,
+      '/api/agents?include_latest_visible_session_tail=yes',
+    )
+
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'Invalid agent list query' })
+    expect(listAgentsWithStatus).not.toHaveBeenCalled()
+    expect(getSessionSummary).not.toHaveBeenCalled()
+    expect(listSessions).not.toHaveBeenCalled()
   })
 
   it('returns enriched agents with summary fields', async () => {
@@ -4720,16 +6650,17 @@ describe('GET /api/agents (enriched summary)', () => {
   it('ignores unread notifications on hidden automated sessions — no session list shows them', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
     vi.mocked(getSessionSummary).mockResolvedValue({
-      sessionIds: ['sess-chat', 'sess-cron'],
-      sessionCount: 2,
+      sessionIds: ['sess-chat', 'sess-cron', 'sess-x-agent'],
+      sessionCount: 3,
       lastActivityAt: new Date(),
     })
     vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(
-      new Map([['agent-1', new Set(['sess-chat', 'sess-cron'])]]),
+      new Map([['agent-1', new Set(['sess-chat', 'sess-cron', 'sess-x-agent'])]]),
     )
     vi.mocked(readSessionMetadata).mockResolvedValue({
       'sess-chat': { isChatIntegrationSession: true },
       'sess-cron': { isScheduledExecution: true },
+      'sess-x-agent': { invokedByAgentSlug: 'caller-agent' },
     })
 
     const res = await getReq(app, '/api/agents')
@@ -5413,6 +7344,194 @@ describe('POST /api/agents/:id/keep-alive', () => {
 // Skill ZIP Export / Import Tests
 // ============================================================================
 
+describe('POST /api/agents/:id/export-full', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockAgentExists.mockResolvedValue(true)
+    app = createApp()
+  })
+
+  it('streams the zip without Content-Length', async () => {
+    const fakeZip = Buffer.from('PK\x03\x04full-export')
+    vi.mocked(exportAgentFull).mockResolvedValue(Readable.from(fakeZip))
+    vi.mocked(getAgent).mockResolvedValue({ frontmatter: { name: 'Nutrition Agent' } } as any)
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-full', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Content-Type')).toBe('application/octet-stream')
+    expect(res.headers.get('Content-Disposition')).toContain('Nutrition%20Agent-full.agent')
+    expect(res.headers.get('Content-Length')).toBeNull()
+    expect(Buffer.from(await res.arrayBuffer())).toEqual(fakeZip)
+    expect(exportAgentFull).toHaveBeenCalledWith('pvb86kldy6', expect.any(AbortSignal))
+  })
+
+  it('returns 500 when export throws before the stream starts', async () => {
+    vi.mocked(exportAgentFull).mockRejectedValue(new Error('Agent workspace not found'))
+
+    const res = await app.request('http://localhost/api/agents/missing/export-full', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'Agent workspace not found' })
+  })
+
+  it('returns 409 when another export is already in progress', async () => {
+    const err = new Error('An export is already in progress')
+    err.name = 'ExportInProgressError'
+    vi.mocked(exportAgentFull).mockRejectedValue(err)
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-full', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({ error: 'An export is already in progress' })
+  })
+
+  it('never starts the export (and its lock) when getAgent fails', async () => {
+    vi.mocked(getAgent).mockRejectedValue(new Error('agent metadata unreadable'))
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-full', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(500)
+    expect(exportAgentFull).not.toHaveBeenCalled()
+  })
+
+  it('destroys the zip stream when packaging the download throws', async () => {
+    const zipStream = Readable.from(Buffer.from('PK\x03\x04full-export'))
+    const destroy = vi.spyOn(zipStream, 'destroy')
+    vi.mocked(exportAgentFull).mockResolvedValue(zipStream)
+    vi.mocked(getAgent).mockResolvedValue({ frontmatter: { name: 'Nutrition Agent' } } as any)
+    vi.mocked(logAuditEvent).mockImplementationOnce(() => {
+      throw new Error('audit failed')
+    })
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-full', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(500)
+    expect(destroy).toHaveBeenCalled()
+
+    const nextZip = Readable.from(Buffer.from('PK\x03\x04next'))
+    vi.mocked(exportAgentFull).mockResolvedValue(nextZip)
+    const next = await app.request('http://localhost/api/agents/pvb86kldy6/export-full', {
+      method: 'POST',
+    })
+    expect(next.status).toBe(200)
+    expect(Buffer.from(await next.arrayBuffer())).toEqual(Buffer.from('PK\x03\x04next'))
+  })
+})
+
+describe('POST /api/agents/:id/export-template', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockAgentExists.mockResolvedValue(true)
+    app = createApp()
+  })
+
+  it('streams the template zip', async () => {
+    const fakeZip = Buffer.from('PK\x03\x04template')
+    vi.mocked(exportAgentTemplate).mockResolvedValue(Readable.from(fakeZip))
+    vi.mocked(getAgent).mockResolvedValue({ frontmatter: { name: 'Nutrition Agent' } } as any)
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-template', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Content-Disposition')).toContain('Nutrition%20Agent-template.agent')
+    expect(res.headers.get('Content-Length')).toBeNull()
+    expect(Buffer.from(await res.arrayBuffer())).toEqual(fakeZip)
+    expect(exportAgentTemplate).toHaveBeenCalledWith('pvb86kldy6', expect.any(AbortSignal))
+  })
+
+  it('returns 409 when another export is already in progress', async () => {
+    const err = new Error('An export is already in progress')
+    err.name = 'ExportInProgressError'
+    vi.mocked(exportAgentTemplate).mockRejectedValue(err)
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-template', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({ error: 'An export is already in progress' })
+  })
+
+  it('never starts the export (and its lock) when getAgent fails', async () => {
+    vi.mocked(getAgent).mockRejectedValue(new Error('agent metadata unreadable'))
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-template', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(500)
+    expect(exportAgentTemplate).not.toHaveBeenCalled()
+  })
+
+  it('destroys the zip stream when packaging the download throws', async () => {
+    const zipStream = Readable.from(Buffer.from('PK\x03\x04template'))
+    const destroy = vi.spyOn(zipStream, 'destroy')
+    vi.mocked(exportAgentTemplate).mockResolvedValue(zipStream)
+    vi.mocked(getAgent).mockResolvedValue({ frontmatter: { name: 'Nutrition Agent' } } as any)
+    vi.mocked(logAuditEvent).mockImplementationOnce(() => {
+      throw new Error('audit failed')
+    })
+
+    const res = await app.request('http://localhost/api/agents/pvb86kldy6/export-template', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(500)
+    expect(destroy).toHaveBeenCalled()
+
+    const nextZip = Readable.from(Buffer.from('PK\x03\x04next'))
+    vi.mocked(exportAgentTemplate).mockResolvedValue(nextZip)
+    const next = await app.request('http://localhost/api/agents/pvb86kldy6/export-template', {
+      method: 'POST',
+    })
+    expect(next.status).toBe(200)
+  })
+})
+
+describe('GET /api/agents/export-status', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(isHostExportBusy).mockReturnValue(false)
+    app = createApp()
+  })
+
+  it('returns inProgress false when the host is idle', async () => {
+    const res = await app.request('http://localhost/api/agents/export-status')
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ inProgress: false })
+    expect(getAgent).not.toHaveBeenCalled()
+  })
+
+  it('returns inProgress true while an export is running', async () => {
+    vi.mocked(isHostExportBusy).mockReturnValue(true)
+
+    const res = await app.request('http://localhost/api/agents/export-status')
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ inProgress: true })
+  })
+})
+
 describe('POST /api/agents/:id/skills/:dir/export', () => {
   let app: ReturnType<typeof createApp>
 
@@ -5950,6 +8069,7 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
       agentModel: 'global-agent-model',
       browserModel: 'browser-model',
       dashboardBuilderModel: 'dashboard-model',
+      agentEffort: 'medium',
     })
   })
 
@@ -5957,6 +8077,7 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     vi.mocked(readJsonFileStrict).mockResolvedValue({
       defaultModel: 'haiku',
       defaultEffort: 'high',
+      defaultSpeed: 'fast',
     } as never)
 
     const res = await postJson(app, SESSIONS_URL, { message: 'hello' })
@@ -5966,6 +8087,15 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     const args = mockCreateSession.mock.calls[0][0]
     expect(args.model).toBe('haiku')
     expect(args.effort).toBe('high')
+    expect(args.speed).toBe('fast')
+    expect(args.prewarmDefaults.model).toBe('haiku')
+    expect(args.prewarmDefaults.effort).toBe('high')
+    expect(registerSession).toHaveBeenCalledWith('test-agent', 'session-123', 'New Session', {
+      model: 'haiku',
+      effort: 'high',
+      speed: 'fast',
+    })
+    expect(await res.json()).toMatchObject({ model: 'haiku', effort: 'high', speed: 'fast' })
   })
 
   it('reserves ownership before publishing global lifecycle state', async () => {
@@ -5995,16 +8125,134 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     const args = mockCreateSession.mock.calls[0][0]
     expect(args.model).toBe('claude-opus-4')
     expect(args.effort).toBe('low')
+    expect(args.prewarmDefaults.model).toBe('haiku')
+    expect(args.prewarmDefaults.effort).toBe('high')
+    expect(registerSession).toHaveBeenCalledWith(
+      'test-agent',
+      'session-123',
+      'New Session',
+      expect.objectContaining({ model: 'claude-opus-4', effort: 'low' }),
+    )
   })
 
-  it('uses the global default model when the agent has no preferences', async () => {
+  it('uses the global default model and effort when the agent has no preferences', async () => {
     const res = await postJson(app, SESSIONS_URL, { message: 'hello' })
 
     expect(res.status).toBe(201)
     expect(mockCreateSession).toHaveBeenCalledTimes(1)
     const args = mockCreateSession.mock.calls[0][0]
     expect(args.model).toBe('global-agent-model')
-    expect(args.effort).toBeUndefined()
+    expect(args.effort).toBe('medium')
+    expect(args.prewarmDefaults.model).toBe('global-agent-model')
+    expect(args.prewarmDefaults.effort).toBe('medium')
+    expect(registerSession).toHaveBeenCalledWith(
+      'test-agent',
+      'session-123',
+      'New Session',
+      expect.objectContaining({ model: 'global-agent-model', effort: 'medium' }),
+    )
+  })
+})
+
+// ============================================================================
+// Sessions list query contract — GET /:id/sessions
+// ============================================================================
+
+describe('sessions list query contract — GET /:id/sessions', () => {
+  const URL = '/api/agents/test-agent/sessions'
+  let app: ReturnType<typeof createApp>
+
+  const sessionInfo = (id: string, lastActivityAt: string) => ({
+    id,
+    agentSlug: 'test-agent',
+    name: id,
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+    lastActivityAt: new Date(lastActivityAt),
+    messageCount: 0,
+  })
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(listSessions).mockResolvedValue([])
+  })
+
+  it('preserves the full visible-list behavior when no query is supplied', async () => {
+    vi.mocked(listSessions).mockResolvedValue([
+      sessionInfo('newer-visible', '2026-01-02T00:00:00Z'),
+      sessionInfo('older-visible', '2026-01-01T00:00:00Z'),
+    ])
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+
+    expect(body.map((session: { id: string }) => session.id)).toEqual([
+      'newer-visible',
+      'older-visible',
+    ])
+    expect(listSessions).toHaveBeenCalledWith('test-agent', {
+      excludeAutomated: true,
+    })
+  })
+
+  it('forwards deterministic activity ordering and limit to the visibility-safe service', async () => {
+    vi.mocked(listSessions).mockResolvedValue([
+      sessionInfo('newest-visible', '2026-01-03T00:00:00Z'),
+    ])
+
+    const res = await getReq(
+      app,
+      URL + '?sort_by=last_activity_at&limit=1',
+    )
+
+    expect(res.status).toBe(200)
+    expect((await res.json()).map((session: { id: string }) => session.id))
+      .toEqual(['newest-visible'])
+    expect(listSessions).toHaveBeenCalledWith('test-agent', {
+      excludeAutomated: true,
+      sortBy: 'last_activity_at',
+      limit: 1,
+    })
+  })
+
+  it('caps a valid oversized limit at the public maximum', async () => {
+    const res = await getReq(app, URL + '?limit=1000')
+
+    expect(res.status).toBe(200)
+    expect(listSessions).toHaveBeenCalledWith('test-agent', {
+      excludeAutomated: true,
+      limit: 100,
+    })
+  })
+
+  it('accepts notable=false as the ordinary visible-list path', async () => {
+    const res = await getReq(app, URL + '?notable=false&limit=2')
+
+    expect(res.status).toBe(200)
+    expect(listSessions).toHaveBeenCalledWith('test-agent', {
+      excludeAutomated: true,
+      limit: 2,
+    })
+    expect(listSessionsByIds).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['unsupported sort', 'sort_by=created_at'],
+    ['malformed boolean', 'notable=yes'],
+    ['numeric boolean', 'notable=1'],
+    ['zero limit', 'limit=0'],
+    ['negative limit', 'limit=-1'],
+    ['fractional limit', 'limit=1.5'],
+    ['non-numeric limit', 'limit=many'],
+    ['unsafe integer limit', 'limit=9007199254740992'],
+  ])('rejects %s', async (_label, query) => {
+    const res = await getReq(app, URL + '?' + query)
+
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'Invalid sessions query' })
+    expect(listSessions).not.toHaveBeenCalled()
+    expect(listSessionsByIds).not.toHaveBeenCalled()
   })
 })
 
@@ -6031,17 +8279,33 @@ describe('notable sessions fast path — GET /:id/sessions?notable=true', () => 
     vi.mocked(listSessionsByIds).mockResolvedValue([])
   })
 
-  it('requests exactly the union of live and unread ids, deduped, automated excluded', async () => {
-    vi.mocked(messagePersister.getActiveSessionIdsForAgent).mockReturnValue(['s-live', 's-both'])
+  it('includes active, awaiting, and unread sessions but no ordinary settled/read session', async () => {
+    vi.mocked(messagePersister.getActiveSessionIdsForAgent).mockReturnValue([
+      's-live',
+      's-awaiting',
+      's-both',
+    ])
     vi.mocked(getSessionIdsWithUnreadNotifications).mockResolvedValue(new Set(['s-both', 's-unread']))
+    vi.mocked(messagePersister.isSessionActive).mockImplementation(
+      (id: string) => id === 's-live' || id === 's-awaiting' || id === 's-both',
+    )
+    vi.mocked(messagePersister.isSessionAwaitingInput).mockImplementation(
+      (id: string) => id === 's-awaiting',
+    )
+    vi.mocked(listSessionsByIds).mockImplementation(async (_slug, ids) =>
+      ids.map((id) => sessionInfo(id, '2026-01-02T10:00:00Z')),
+    )
 
     const res = await getReq(app, NOTABLE_URL)
     expect(res.status).toBe(200)
     expect(vi.mocked(listSessionsByIds)).toHaveBeenCalledWith(
       'test-agent',
-      ['s-live', 's-both', 's-unread'],
+      ['s-live', 's-awaiting', 's-both', 's-unread'],
       { excludeAutomated: true },
     )
+    const ids = (await res.json()).map((session: { id: string }) => session.id)
+    expect(ids.sort()).toEqual(['s-awaiting', 's-both', 's-live', 's-unread'])
+    expect(ids).not.toContain('s-ordinary')
   })
 
   it('live sessions survive the cap even when idle ones have newer activity', async () => {
@@ -6055,6 +8319,45 @@ describe('notable sessions fast path — GET /:id/sessions?notable=true', () => 
     const body = await res.json()
     expect(body.map((s: { id: string }) => s.id)).toEqual(['s-live-older'])
     expect(body[0].isActive).toBe(true)
+  })
+
+  it('composes notable filtering, requested activity ordering, and limit in that order', async () => {
+    vi.mocked(messagePersister.getActiveSessionIdsForAgent).mockReturnValue(['s-live-older'])
+    vi.mocked(getSessionIdsWithUnreadNotifications).mockResolvedValue(new Set(['s-unread-newer']))
+    vi.mocked(listSessionsByIds).mockResolvedValue([
+      sessionInfo('s-live-older', '2026-01-02T09:00:00Z'),
+      sessionInfo('s-unread-newer', '2026-01-02T12:00:00Z'),
+    ])
+    vi.mocked(messagePersister.isSessionActive).mockImplementation(
+      (id: string) => id === 's-live-older',
+    )
+
+    const res = await getReq(
+      app,
+      NOTABLE_URL + '&sort_by=last_activity_at&limit=1',
+    )
+    const body = await res.json()
+
+    // Explicit activity ordering applies after the notable filter, so the
+    // newer unread session wins even though the older session is live.
+    expect(body.map((session: { id: string }) => session.id))
+      .toEqual(['s-unread-newer'])
+  })
+
+  it('uses session id as the deterministic tie-breaker for requested ordering', async () => {
+    vi.mocked(getSessionIdsWithUnreadNotifications).mockResolvedValue(
+      new Set(['z-tied', 'a-tied']),
+    )
+    vi.mocked(listSessionsByIds).mockResolvedValue([
+      sessionInfo('z-tied', '2026-01-02T10:00:00Z'),
+      sessionInfo('a-tied', '2026-01-02T10:00:00Z'),
+    ])
+
+    const res = await getReq(app, NOTABLE_URL + '&sort_by=last_activity_at')
+    const body = await res.json()
+
+    expect(body.map((session: { id: string }) => session.id))
+      .toEqual(['a-tied', 'z-tied'])
   })
 
   it('sorts newest-first within a band and carries the unread flag', async () => {
@@ -6091,13 +8394,13 @@ describe('notable sessions fast path — GET /:id/sessions?notable=true', () => 
     expect(bySessionId.get('s-idle')?.isAwaitingInput).toBe(false)
   })
 
-  it('falls back to the default cap when the limit is garbage', async () => {
+  it('uses the default cap when notable has no explicit limit', async () => {
     vi.mocked(listSessionsByIds).mockResolvedValue(
       Array.from({ length: 30 }, (_, i) =>
         sessionInfo(`s-${String(i).padStart(2, '0')}`, `2026-01-01T00:${String(i).padStart(2, '0')}:00Z`),
       ),
     )
-    const res = await getReq(app, `${NOTABLE_URL}&limit=zero`)
+    const res = await getReq(app, NOTABLE_URL)
     const body = await res.json()
     expect(body).toHaveLength(25)
   })
@@ -6229,6 +8532,24 @@ describe('session existence guards read metadata, not the transcript', () => {
     app = createApp()
     vi.mocked(sessionIsKnown).mockResolvedValue(true)
     vi.mocked(getSession).mockResolvedValue(SESSION_INFO)
+  })
+
+  it('returns x-agent provenance for the session breadcrumb and back bar', async () => {
+    vi.mocked(getSessionMetadata).mockResolvedValue({
+      invokedByAgentSlug: 'caller-agent',
+    })
+    vi.mocked(getAgent).mockResolvedValue({
+      frontmatter: { name: 'Caller Agent' },
+    } as any)
+
+    const res = await getReq(app, '/api/agents/test-agent/sessions/sess-1')
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({
+      id: 'sess-1',
+      invokedByAgentSlug: 'caller-agent',
+      invokedByAgentName: 'Caller Agent',
+    })
   })
 
   it('renames a session with a single transcript read', async () => {
@@ -6491,6 +8812,27 @@ describe('cross-agent session scoping', () => {
 
   // GET …/stream is gated too, but by its own inline check with dedicated
   // coverage above ('session stream access') — not repeated here.
+
+  describe('DELETE /sessions/:sessionId/queued-messages/:uuid', () => {
+    const UUID = '123e4567-e89b-12d3-a456-426614174000'
+
+    it('404s on a foreign session and never drops its coalesced buffer', async () => {
+      const res = await deleteReq(app, url(VICTIM_SESSION, `/queued-messages/${UUID}`))
+
+      expect(res.status).toBe(404)
+      expect(messagePersister.dropCoalescedUserMessage).not.toHaveBeenCalled()
+      expect(mockCancelQueuedMessage).not.toHaveBeenCalled()
+    })
+
+    it('still cancels a queued message on the caller’s own session', async () => {
+      mockCancelQueuedMessage.mockResolvedValue(true)
+
+      const res = await deleteReq(app, url(OWN_SESSION, `/queued-messages/${UUID}`))
+
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ cancelled: true })
+    })
+  })
 
   describe('POST /sessions/:sessionId/messages', () => {
     it('404s on a foreign session and never touches its live state', async () => {

@@ -51,11 +51,16 @@ import { authEnforcementMiddleware } from './middleware/auth-enforcement'
 import { getAuthSettings } from '@shared/lib/auth/auth-settings'
 import { getPublicAuthProviders } from '@shared/lib/auth/provider-config'
 import { LocalModeAuth, isContainerFacingPath } from './middleware/local-mode-auth'
+import { armAbortSignal } from './middleware/arm-abort-signal'
 
 const app = new Hono()
 
 // Background services start AFTER HTTP bind (web/server.ts, main/index.ts,
 // vite.config.ts) so cold-wake health is not gated on settings/DB/auth.
+
+// Must run before any middleware that awaits: a client hangup during those
+// awaits is otherwise invisible to every later signal check (see the module).
+app.use('*', armAbortSignal)
 
 // Enable CORS for all routes
 const trustedOrigins = process.env.TRUSTED_ORIGINS?.split(',').map(o => o.trim()).filter(Boolean)

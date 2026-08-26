@@ -280,6 +280,7 @@ export function NotificationsView() {
     <SettingsPageContainer fullScreen>
       <PageTitle
         title="Notifications"
+        scrollAware
         back={{
           onClick: () => {
             void navigate(

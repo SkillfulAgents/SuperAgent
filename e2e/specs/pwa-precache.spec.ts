@@ -173,6 +173,17 @@ test.describe('PWA precaching service worker', () => {
     }
   })
 
+  test('SSO launcher navigations are not answered by navigateFallback', async ({ page }) => {
+    await page.goto('/')
+    await expect(page.locator('[data-testid="settings-button"]')).toBeVisible()
+    await waitForActiveServiceWorker(page)
+
+    const response = await page.goto('/auth/platform/start?return_to=%2F')
+    expect(response, 'launcher must reach the network, not the SW').not.toBeNull()
+    expect(response!.fromServiceWorker()).toBe(false)
+    await expect(page.getByTestId('route-not-found')).toHaveCount(0)
+  })
+
   test('API responses are never served from SW caches', async ({ page }) => {
     await page.goto('/')
     await expect(page.locator('[data-testid="settings-button"]')).toBeVisible()

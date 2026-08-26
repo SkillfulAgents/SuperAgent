@@ -11,6 +11,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 class MockEventSource {
   static instances: MockEventSource[] = []
   onmessage: ((event: { data: string }) => void) | null = null
+  onopen: (() => void) | null = null
   onerror: (() => void) | null = null
   url: string
   constructor(url: string) {
@@ -279,11 +280,21 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       notificationType: 'session_complete',
       sessionId: 'sess-1',
       agentSlug: 'my-agent',
-      title: 'Done',
-      body: 'Session complete',
+      title: 'Demo Agent finished',
+      body: 'The report is ready.',
     })
 
-    expect(showOSNotification).toHaveBeenCalled()
+    expect(showOSNotification).toHaveBeenCalledWith(
+      'Demo Agent finished',
+      'The report is ready.',
+      undefined,
+      expect.objectContaining({
+        context: expect.objectContaining({
+          agentSlug: 'my-agent',
+          sessionId: 'sess-1',
+        }),
+      }),
+    )
   })
 
   it('session_complete suppressed when notifyWhenUnfocused is off and viewing session', async () => {
@@ -549,5 +560,79 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
         { slug: 'support', name: 'Support' },
       ])
     expect(invalidateSpy).not.toHaveBeenCalled()
+  })
+
+  it('applies a pushed dashboard status to cached artifacts and refetches the list', () => {
+    queryClient.setQueryData(['agents'], [{
+      slug: 'agent-a',
+      displaySlug: 'agent-a-display',
+      name: 'Agent A',
+      status: 'running',
+      containerPort: 3456,
+    }])
+    queryClient.setQueryData(['artifacts', 'agent-a'], [
+      { slug: 'sales', name: 'Sales', description: '', status: 'starting', port: 5000 },
+      { slug: 'support', name: 'Support', description: '', status: 'stopped', port: 0 },
+    ])
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'dashboard_status_changed',
+      agentSlug: 'agent-a',
+      dashboardSlug: 'sales',
+      status: 'running',
+    })
+
+    expect(queryClient.getQueryData<Array<{ slug: string; status: string }>>(['artifacts', 'agent-a']))
+      .toEqual([
+        expect.objectContaining({ slug: 'sales', status: 'running' }),
+        expect.objectContaining({ slug: 'support', status: 'stopped' }),
+      ])
+    expect(queryClient.getQueryState(['artifacts', 'agent-a'])?.isInvalidated).toBe(true)
+  })
+
+  it('agent_created invalidates visible agents and personal roles together', () => {
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    // Producer contract: x-agent create broadcasts this exact shape after ACL writes.
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'agent_created',
+      agentSlug: 'new-helper',
+    })
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
+  })
+
+  it('SSE open invalidates agents and roles, including the first connect', () => {
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    const es = getLatestEventSource()
+    es.onopen?.()
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
+
+    invalidateSpy.mockClear()
+    es.onerror?.()
+    es.onopen?.()
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
   })
 })

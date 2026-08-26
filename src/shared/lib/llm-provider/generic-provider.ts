@@ -87,6 +87,8 @@ export class GenericLlmProvider extends BaseLlmProvider {
   readonly defaultModelOptions = []
   readonly catalogDefaultModels = GENERIC_CATALOG_DEFAULT_MODELS
   override readonly supportsModelSearch = true
+  // Left unset (see BaseLlmProvider.toolSearchEnv): the endpoint is whatever
+  // the user pointed us at, so the CLI's own guard decides.
   protected readonly settingsKeyField = 'genericApiKey' as const
   protected readonly envVarName = 'GENERIC_API_KEY'
 

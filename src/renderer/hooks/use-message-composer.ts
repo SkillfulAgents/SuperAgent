@@ -1,13 +1,15 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { captureRendererException } from '@renderer/lib/error-reporting'
 import { useAttachments } from './use-attachments'
+import { useUploadQueue } from './use-upload-queue'
 import { useVoiceInput } from './use-voice-input'
 import { useAddMount } from './use-mounts'
 import { useDraft } from '@renderer/context/drafts-context'
 import { appendAttachedFiles, appendMountedFolders } from '@shared/lib/utils/attached-files'
-import { zipFolderFiles, type FolderGroup } from '@renderer/lib/file-utils'
+import { type FolderGroup } from '@renderer/lib/file-utils'
 import { canUseHostFeatures } from '@renderer/lib/host-features'
-import type { Attachment } from '@renderer/components/messages/attachment-preview'
+import { attachmentStatus, type Attachment, type MountAttachment } from '@renderer/components/messages/attachment-preview'
+import type { UploadProgress } from '@renderer/lib/upload'
 import {
   findPotentialSecrets,
   replaceSecuredSecrets,
@@ -19,7 +21,7 @@ import {
 interface UseMessageComposerOptions {
   agentSlug: string
   /** Upload a single file. Caller provides the right endpoint (session-level or agent-level). */
-  uploadFile: (args: { file: File }) => Promise<{ path: string }>
+  uploadFile: (args: { file: File; onProgress?: (p: UploadProgress) => void; signal?: AbortSignal; stallMs?: number }) => Promise<{ path: string }>
   /** Upload a folder via Electron fs.cp. Caller provides the right endpoint. */
   uploadFolder: (args: { sourcePath: string }) => Promise<{ path: string }>
   /** Called after uploads complete and content is fully assembled. */
@@ -137,23 +139,62 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     setShowMountDialog(true)
   }, [])
 
+  const attachmentsRef = useRef<Attachment[]>([])
+  const queueRef = useRef<ReturnType<typeof useUploadQueue> | null>(null)
+
   const {
     attachments,
     isDragOver,
     addFiles,
     addFolders: addFoldersDirectly,
     addMounts,
+    updateAttachment,
     setAttachmentError,
-    clearAttachmentErrors,
-    removeAttachment,
-    clearAttachments,
+    removeAttachment: removeAttachmentRaw,
+    clearAttachments: clearAttachmentsRaw,
     handleFileSelect,
     handleFolderSelect,
     dragHandlers,
   } = useAttachments({
     onFoldersReceived: canOfferMount ? handleFoldersReceived : undefined,
     initialAttachments: options.initialAttachments,
+    onAttachmentsAdded: (added) => {
+      for (const a of added) if (a.type !== 'mount') queueRef.current?.enqueue(a)
+    },
   })
+  attachmentsRef.current = attachments
+
+  const queue = useUploadQueue({
+    agentSlug,
+    attachmentsRef,
+    updateAttachment,
+    removeAttachment: removeAttachmentRaw,
+    clearAttachments: clearAttachmentsRaw,
+    uploadFile: options.uploadFile,
+    uploadFolder: options.uploadFolder,
+  })
+  queueRef.current = queue
+
+  const removeAttachment = queue.remove
+  const clearAttachments = queue.clear
+  const retryAttachment = queue.retry
+
+  useEffect(() => {
+    // Unmount aborts the queue generation, so StrictMode's second setup must
+    // enqueue again. Skip done/error chips; later adds go through onAttachmentsAdded.
+    for (const a of attachmentsRef.current) {
+      if (a.type === 'mount' || a.error || a.upload?.status === 'done') continue
+      queue.enqueue(a)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount only
+  }, [])
+
+  const previousSlugRef = useRef(agentSlug)
+  useEffect(() => {
+    if (previousSlugRef.current === agentSlug) return
+    previousSlugRef.current = agentSlug
+    queue.requeueAll()
+  }, [agentSlug, queue])
 
   // Pulled off `options` so the dep is the callback itself. Depending on
   // `options` instead would rebuild this every render — callers pass an inline
@@ -204,72 +245,71 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     }
   }, [addFiles])
 
+  const uploadsInFlight = attachments.some((a) => {
+    const s = attachmentStatus(a)
+    return s === 'queued' || s === 'uploading'
+  })
+
   const handleSubmit = async (e: Pick<React.FormEvent, 'preventDefault'>) => {
     e.preventDefault()
+    if (uploadsInFlight || isUploading || submitDisabled) return
 
     // Stop voice recording first and await the final text: stopRecording flushes
     // buffered audio and waits for the server's trailing transcripts, so a quick
     // speak-then-Enter doesn't submit before the dictated words are in.
     let voiceText: string | undefined
-    if (voiceInput.isRecording || voiceInput.isConnecting) {
-      voiceText = await voiceInput.stopRecording()
-    }
+    if (voiceInput.isRecording || voiceInput.isConnecting) voiceText = await voiceInput.stopRecording()
 
     const effectiveMessage = voiceText ?? message
     const hasContent = effectiveMessage.trim() || attachments.length > 0
-    if (!hasContent || isUploading || submitDisabled) return
+    if (!hasContent) return
 
     let content = effectiveMessage.trim()
 
-    // Upload attachments first
-    if (attachments.length > 0) {
+    if (attachmentsRef.current.some((a) => a.type !== 'mount' && a.error)) {
+      setIsUploading(true)
+      const { ok } = await queue.retryAndWait()
+      setIsUploading(false)
+      if (!ok) return
+    }
+
+    const mounts = attachmentsRef.current.filter((a): a is MountAttachment => a.type === 'mount')
+    if (mounts.length > 0) {
       setIsUploading(true)
       setUploadError(null)
-      clearAttachmentErrors()
-      // Tracks the attachment being processed so the catch can flag its chip
-      let inFlightAttachment: Attachment | null = null
+      for (const a of mounts) if (a.error) setAttachmentError(a.id, undefined)
+      const mountResults: { containerPath: string; hostPath: string }[] = []
       try {
-        const uploadResults: { path: string }[] = []
-        const mountResults: { containerPath: string; hostPath: string }[] = []
-
-        for (const a of attachments) {
-          inFlightAttachment = a
-          if (a.type === 'mount') {
+        for (const a of mounts) {
+          try {
             const result = await addMountMutation.mutateAsync({ agentSlug, hostPath: a.hostPath, restart: true })
             mountResults.push({ containerPath: result.containerPath, hostPath: a.hostPath })
-          } else if (a.type === 'folder' && a.folderPath) {
-            // Electron: copy folder directly on the server filesystem
-            const result = await options.uploadFolder({ sourcePath: a.folderPath })
-            uploadResults.push(result)
-          } else if (a.type === 'folder') {
-            // Web fallback: zip files in browser and upload as single archive
-            const zipBlob = await zipFolderFiles(a.files)
-            const zipFile = new File([zipBlob], `${a.folderName}.zip`, { type: 'application/zip' })
-            const result = await options.uploadFile({ file: zipFile })
-            uploadResults.push(result)
-          } else {
-            const result = await options.uploadFile({ file: a.file })
-            uploadResults.push(result)
+          } catch (error) {
+            const message = error instanceof Error ? error.message : 'Mount failed. Please try again.'
+            setAttachmentError(a.id, message)
+            throw new Error(message)
           }
         }
-
-        // Append mounts before files — parseAttachedFiles strips from its marker onward,
-        // so [Attached files:] must come last for both blocks to be parseable.
-        content = appendMountedFolders(content, mountResults)
-        content = appendAttachedFiles(content, uploadResults.map((r) => r.path))
       } catch (error) {
-        console.error('Failed to upload attachments:', error)
+        console.error('Failed to mount attachments:', error)
         captureRendererException(error, { tags: { source: 'attachment-upload' }, extra: { agentSlug } })
-        const message = error instanceof Error ? error.message : 'Upload failed. Please try again.'
-        if (inFlightAttachment) {
-          setAttachmentError(inFlightAttachment.id, message)
-        }
-        setUploadError(message)
+        setUploadError(error instanceof Error ? error.message : 'Mount failed. Please try again.')
         setIsUploading(false)
         return
       }
       setIsUploading(false)
+      content = appendMountedFolders(content, mountResults)
     }
+
+    const paths = attachmentsRef.current.flatMap((a) => {
+      if (a.type === 'mount') return []
+      const done = a.upload?.path
+        ? { path: a.upload.path, agentSlug: a.upload.agentSlug }
+        : queue.pathFor(a.id)
+      if (!done?.path || done.agentSlug !== agentSlug) return []
+      return [done.path]
+    })
+    content = appendAttachedFiles(content, paths)
 
     if (!keepMessageUntilComplete) {
       // Clear input immediately so the message doesn't linger while the network request is in flight
@@ -300,7 +340,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     setSecuredSecrets([])
   }
 
-  const canSubmit = (!!message.trim() || attachments.length > 0 || voiceInput.isRecording) && !isUploading && !submitDisabled
+  const canSubmit = (!!message.trim() || attachments.length > 0 || voiceInput.isRecording) && !uploadsInFlight && !isUploading && !submitDisabled
 
   return {
     // Message state
@@ -318,6 +358,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     addFiles,
     removeAttachment,
     clearAttachments,
+    retryAttachment,
     handleFileSelect,
     handleFolderSelect,
     dragHandlers,

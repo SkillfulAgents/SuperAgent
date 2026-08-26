@@ -830,6 +830,56 @@ describe('oauth', () => {
       const url = new URL(result!.authorizationUrl)
       expect(url.searchParams.get('client_id')).toBe('stored-client-id')
     })
+
+    it('sends the http redirect, not the app scheme, when a client ID is supplied', async () => {
+      setupDiscoveryMocks()
+
+      mockDbFrom.mockReturnValue({ where: mockWhere })
+      mockWhere.mockReturnValue({ limit: mockLimit })
+      mockLimit.mockResolvedValue([{ oauthClientId: null, oauthClientSecret: null }])
+      mockSet.mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
+
+      // Desktop candidate order: custom app scheme first, http loopback second.
+      const result = await initiateOAuthFlow(
+        'mcp-1',
+        'https://mcp.example.com/mcp',
+        ['superagent://mcp-oauth-callback', 'http://localhost:47891/api/remote-mcps/oauth-callback'],
+        true,
+        undefined,
+        'supplied-client-id'
+      )
+
+      expect(result).not.toBeNull()
+      const url = new URL(result!.authorizationUrl)
+      expect(url.searchParams.get('client_id')).toBe('supplied-client-id')
+      // A hand-registered client_id can only have been paired with an http(s)
+      // redirect in the provider's console, so the app scheme must not be sent.
+      expect(url.searchParams.get('redirect_uri')).toBe(
+        'http://localhost:47891/api/remote-mcps/oauth-callback'
+      )
+    })
+
+    it('keeps the app scheme when a client ID is supplied and no http candidate exists', async () => {
+      setupDiscoveryMocks()
+
+      mockDbFrom.mockReturnValue({ where: mockWhere })
+      mockWhere.mockReturnValue({ limit: mockLimit })
+      mockLimit.mockResolvedValue([{ oauthClientId: null, oauthClientSecret: null }])
+      mockSet.mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
+
+      const result = await initiateOAuthFlow(
+        'mcp-1',
+        'https://mcp.example.com/mcp',
+        ['superagent://mcp-oauth-callback'],
+        true,
+        undefined,
+        'supplied-client-id'
+      )
+
+      expect(result).not.toBeNull()
+      const url = new URL(result!.authorizationUrl)
+      expect(url.searchParams.get('redirect_uri')).toBe('superagent://mcp-oauth-callback')
+    })
   })
 
   // =========================================================================

@@ -7,6 +7,10 @@ description: Create interactive web dashboards to visualize data and provide UI 
 
 You can create web dashboards that are served to the user through the Gamut UI. Dashboards are full web applications (HTML/JS/React/Svelte/etc.) that run as servers inside the container.
 
+## When to Build a Dashboard
+
+Build one when the user needs a rich, reusable visual artifact rather than a chat reply or a static downloadable file — interactive charts, filters, or tables; a tracker, calculator, or data explorer; a multi-view report with controls; a visual interface over generated or fetched data. A one-off number or table belongs in the chat response instead.
+
 ## Available Tools
 
 - **`create_dashboard`** — Scaffold a new dashboard project with the correct structure and boilerplate
@@ -92,7 +96,7 @@ The template structure:
     └── App.jsx          # Edit this to build your dashboard
 ```
 
-React dashboards are **built to static files** (`vite build`) and served via `serve.js` by default. The start script runs `bun run build && bun run serve.js`. The included adapter also supports the Vite dev server and keeps HMR beneath the artifact mount.
+React dashboards are **built to static files** (`vite build`) and served via `serve.js` by default. The start script runs `bun run build-if-needed.js && bun run serve.js` — the build is skipped when no source file is newer than `dist/` (container restarts reuse the previous build; set `DASHBOARD_FORCE_BUILD=1` to force one). The included adapter also supports the Vite dev server and keeps HMR beneath the artifact mount.
 
 **CRITICAL:** Keep `gamutDashboard()` in `vite.config.js`. The dashboard manager supplies `DASHBOARD_BASE_PATH`; in development the adapter applies it to Vite's entry modules and HMR client. Production assets, dynamic imports, CSS/worker URLs, fonts, and images remain relative, while `serve.js` and the injected runtime provide a stable document/router base. This keeps one production build relocatable.
 
@@ -190,6 +194,7 @@ The following APIs are automatically available in all dashboards (injected by th
 
 - **Speech Recognition** — The standard `SpeechRecognition` Web API for voice-to-text. See `~/.claude/skills/dashboards/SPEECH_RECOGNITION.md` for full documentation and examples.
 - **LLM (Anthropic SDK)** — An Anthropic SDK-compatible `Anthropic` client for calling Claude. No API keys needed. See `~/.claude/skills/dashboards/LLM_API.md` for full documentation and examples.
+- **Session Dispatch** — `window.__GAMUT_DASHBOARD__.dispatchSession({ prompt, title? })` asks the app to start a new session on this dashboard's own agent. The app always shows the user a confirmation popup first (with the prompt editable), so wire it to explicit user actions like buttons — never call it automatically. See `~/.claude/skills/dashboards/SESSION_DISPATCH.md` for full documentation and examples.
 
 ## Best Practices
 
@@ -201,3 +206,39 @@ The following APIs are automatically available in all dashboards (injected by th
 - **Restart after changes** — use `start_dashboard` after modifying source code
 - **Verify interactively** — use `browser_open(..., location="container")` after every restart and exercise the changed behavior
 - **Static assets** — serve them from the same directory or use inline styles/scripts for simplicity
+
+## Design and Accessibility
+
+- Build mobile-first responsive layouts with grid or flexbox.
+- Establish hierarchy through typography, spacing, and grouping.
+- Use a small, consistent set of CSS custom properties for color, spacing, radius, and typography.
+- Meet WCAG AA contrast and never communicate state through color alone.
+- Use semantic HTML, proper headings, and associated labels; reach for ARIA only when native semantics are insufficient.
+- Provide loading, empty, error, and stale-data states rather than blank areas.
+- Keep dependencies proportional — a simple visualization does not need a large application framework.
+- Make important metrics understandable without requiring hover.
+- For charts, pick a representation that matches the question and keep axes, units, legends, and tooltips unambiguous. Test interaction and keyboard access, not just the initial render.
+
+## Common Failure Causes
+
+- not listening on `DASHBOARD_PORT`;
+- failing to install a newly added dependency;
+- using root-relative browser URLs instead of the injected helper;
+- using the host browser for a private container URL;
+- configuring a router with `/` rather than `routerBasePath`;
+- assuming the screenshot proves controls or client routing work;
+- restarting repeatedly without fixing a crash loop's root cause.
+
+Clear logs before a fresh reproduction when old output makes diagnosis ambiguous.
+
+## Completion Checklist
+
+- The dashboard starts successfully after the final change.
+- The returned screenshot has no obvious layout or content failure.
+- The exact returned URL works in container Chromium.
+- Primary controls and routes were exercised.
+- Loading, empty, and error behavior are present where relevant.
+- Browser diagnostics and server logs contain no unexplained errors.
+- Dashboard-owned URLs use the runtime helper.
+- The validation browser is closed when no longer needed.
+- The final response names the dashboard slug and current status.

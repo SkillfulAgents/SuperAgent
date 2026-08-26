@@ -102,6 +102,7 @@ vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({
   useScheduledTasks: () => ({ data: [] }),
   useRunScheduledTaskNow: () => ({ mutate: vi.fn(), isPending: false }),
   useCancelScheduledTask: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+  useCompletedOneTimeSessions: () => ({ data: [] }),
 }))
 
 // The morph one-shots live in NavTransientContext. Controllable so the
@@ -164,6 +165,7 @@ const mockComposer = {
   handleSubmit: vi.fn(),
   handlePaste: vi.fn(),
   canSubmit: false,
+  retryAttachment: vi.fn(),
 }
 
 let capturedComposerOptions: any
@@ -403,6 +405,20 @@ describe('AgentHome', () => {
     const input = screen.getByTestId('home-message-input')
     await user.click(input)
     await user.keyboard('{Enter}')
+
+    expect(mockComposer.handleSubmit).not.toHaveBeenCalled()
+  })
+
+  it('does not submit on Cmd+Enter when canSubmit is false', async () => {
+    const user = userEvent.setup()
+    mockComposer.canSubmit = false
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+
+    const input = screen.getByTestId('home-message-input')
+    await user.click(input)
+    await user.keyboard('{Meta>}{Enter}{/Meta}')
 
     expect(mockComposer.handleSubmit).not.toHaveBeenCalled()
   })

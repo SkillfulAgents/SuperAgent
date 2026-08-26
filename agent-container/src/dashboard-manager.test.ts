@@ -20,6 +20,7 @@ const screenshotMocks = vi.hoisted(() => ({
   capture: vi.fn(),
   notifyReady: vi.fn(),
 }))
+const statusEventMock = vi.hoisted(() => vi.fn())
 
 vi.mock('./dashboard-screenshot', () => ({
   captureDashboardScreenshot: (...args: unknown[]) => screenshotMocks.capture(...args),
@@ -27,6 +28,7 @@ vi.mock('./dashboard-screenshot', () => ({
 
 vi.mock('./host-events', () => ({
   notifyDashboardScreenshotReady: (...args: unknown[]) => screenshotMocks.notifyReady(...args),
+  notifyDashboardStatusChanged: (...args: unknown[]) => statusEventMock(...args),
 }))
 
 vi.mock('child_process', async (importOriginal) => {
@@ -198,8 +200,17 @@ describe('DashboardManager log stream lifecycle', () => {
     }>
     stopDashboard(slug: string): Promise<boolean>
     stopAll(): Promise<void>
+    getDashboardStatus(slug: string): string | null
+    getDashboardPort(slug: string): number | null
+    waitForStartupOutcome(slug: string, timeoutMs: number): Promise<void>
     getDashboardUpstreamPathMode(slug: string): 'stripped' | 'mounted'
     captureScreenshot(slug: string): Promise<{ ok: true; path: string } | { ok: false; reason: string }>
+    listDashboards(): Array<{
+      slug: string
+      status: string
+      startupPhase?: string
+      firstRun?: boolean
+    }>
   }
   let procs: FakeChildProcess[]
   let slugCounter = 0
@@ -217,6 +228,7 @@ describe('DashboardManager log stream lifecycle', () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('ok'))
     screenshotMocks.capture.mockReset().mockResolvedValue({ ok: false, reason: 'not captured' })
     screenshotMocks.notifyReady.mockReset().mockResolvedValue(true)
+    statusEventMock.mockReset().mockResolvedValue(true)
 
     // Fresh module (and singleton) pointed at the temp artifacts dir
     vi.resetModules()
@@ -374,6 +386,168 @@ describe('DashboardManager log stream lifecycle', () => {
     )
   })
 
+  describe('waitForStartupOutcome', () => {
+    it('resolves immediately for an untracked dashboard', async () => {
+      const start = Date.now()
+      await manager.waitForStartupOutcome('nope', 5_000)
+      expect(Date.now() - start).toBeLessThan(500)
+    })
+
+    it('resolves once a starting dashboard reaches its outcome', async () => {
+      const slug = await scaffoldDashboard()
+      await fs.promises.rm(path.join(testDir, slug, 'node_modules'), { recursive: true })
+      let installProc: FakeChildProcess | undefined
+      spawnHolder.impl = (_command, args) => {
+        const proc = new FakeChildProcess()
+        procs.push(proc)
+        if (args[0] === 'install') installProc = proc
+        return proc
+      }
+
+      const start = manager.startDashboard(slug, { forceInstall: false })
+      await vi.waitFor(() => expect(installProc).toBeDefined())
+      expect(manager.getDashboardStatus(slug)).toBe('starting')
+
+      const outcome = manager.waitForStartupOutcome(slug, 10_000)
+      installProc!.exit(0)
+      await outcome
+      await start
+
+      expect(manager.getDashboardStatus(slug)).toBe('running')
+      expect(manager.getDashboardPort(slug)).not.toBeNull()
+    })
+  })
+
+  describe('status change events', () => {
+    it('publishes running when the dashboard becomes serveable', async () => {
+      const slug = await scaffoldDashboard()
+
+      await manager.startDashboard(slug, { forceInstall: false })
+
+      expect(statusEventMock).toHaveBeenCalledWith(slug, 'running')
+    })
+
+    it('publishes crashed when the restart budget is exhausted', async () => {
+      const slug = await scaffoldDashboard()
+      const info = await manager.startDashboard(slug, { forceInstall: false })
+      statusEventMock.mockClear()
+
+      info.restartTimestamps.push(Date.now(), Date.now(), Date.now())
+      procs[0].exit(1, null)
+
+      expect(statusEventMock).toHaveBeenCalledWith(slug, 'crashed')
+    })
+
+    it('publishes crashed when the process errors without exiting', async () => {
+      const slug = await scaffoldDashboard()
+      await manager.startDashboard(slug, { forceInstall: false })
+      statusEventMock.mockClear()
+
+      procs[0].emit('error', new Error('spawn ENOENT'))
+
+      expect(statusEventMock).toHaveBeenCalledWith(slug, 'crashed')
+    })
+  })
+
+  describe('build skip semantics', () => {
+    const TEMPLATE_START = 'bun run build && bun run serve.js'
+
+    /** Record every spawn; auto-exit `bun install` procs. */
+    function recordSpawns() {
+      const spawns: Array<{ command: string; args: string[] }> = []
+      spawnHolder.impl = (command, args) => {
+        const proc = new FakeChildProcess()
+        procs.push(proc)
+        spawns.push({ command, args })
+        if (args[0] === 'install') setImmediate(() => proc.exit(0))
+        return proc
+      }
+      return spawns
+    }
+
+    /** Template-shaped dashboard: template start script, serve.js, built dist. */
+    async function scaffoldTemplateDashboard(opts?: {
+      start?: string
+      dist?: boolean
+      distFresh?: boolean
+    }): Promise<string> {
+      const slug = await scaffoldDashboard({ scripts: { start: opts?.start ?? TEMPLATE_START } })
+      const dir = path.join(testDir, slug)
+      await fs.promises.writeFile(path.join(dir, 'serve.js'), '// server')
+      await fs.promises.mkdir(path.join(dir, 'src'), { recursive: true })
+      await fs.promises.writeFile(path.join(dir, 'src', 'App.jsx'), '// app')
+      if (opts?.dist !== false) {
+        await fs.promises.mkdir(path.join(dir, 'dist'), { recursive: true })
+        await fs.promises.writeFile(path.join(dir, 'dist', 'index.html'), '<html></html>')
+        const stamp = new Date(Date.now() + (opts?.distFresh === false ? -600_000 : 120_000))
+        await fs.promises.utimes(path.join(dir, 'dist', 'index.html'), stamp, stamp)
+      }
+      return slug
+    }
+
+    it('boot start serves directly when the template dist is fresh', async () => {
+      const slug = await scaffoldTemplateDashboard()
+      const spawns = recordSpawns()
+
+      const info = await manager.startDashboard(slug, { forceInstall: false })
+
+      expect(spawns.map((s) => s.args)).toEqual([['run', 'serve.js']])
+      expect(info.status).toBe('running')
+    })
+
+    it('boot start serves directly for the build-if-needed template variant too', async () => {
+      const slug = await scaffoldTemplateDashboard({
+        start: 'bun run build-if-needed.js && bun run serve.js',
+      })
+      const spawns = recordSpawns()
+
+      await manager.startDashboard(slug, { forceInstall: false })
+
+      expect(spawns.map((s) => s.args)).toEqual([['run', 'serve.js']])
+    })
+
+    it('boot start rebuilds when a source file is newer than dist', async () => {
+      const slug = await scaffoldTemplateDashboard({ distFresh: false })
+      const spawns = recordSpawns()
+
+      await manager.startDashboard(slug, { forceInstall: false })
+
+      expect(spawns.map((s) => s.args)).toEqual([['run', 'start']])
+    })
+
+    it('boot start rebuilds when dist is missing', async () => {
+      const slug = await scaffoldTemplateDashboard({ dist: false })
+      const spawns = recordSpawns()
+
+      await manager.startDashboard(slug, { forceInstall: false })
+
+      expect(spawns.map((s) => s.args)).toEqual([['run', 'start']])
+    })
+
+    it('agent-initiated start never skips the build, even with a fresh dist', async () => {
+      const slug = await scaffoldTemplateDashboard()
+      const spawns = recordSpawns()
+
+      await manager.startDashboard(slug)
+
+      expect(spawns.map((s) => s.args)).toEqual([
+        ['install', '--network-concurrency=8'],
+        ['run', 'start'],
+      ])
+    })
+
+    it('a customized start script always runs as written', async () => {
+      const slug = await scaffoldTemplateDashboard({
+        start: 'bun run build && bun run migrate.js && bun run serve.js',
+      })
+      const spawns = recordSpawns()
+
+      await manager.startDashboard(slug, { forceInstall: false })
+
+      expect(spawns.map((s) => s.args)).toEqual([['run', 'start']])
+    })
+  })
+
   describe('install semantics', () => {
     /** Record every spawn; auto-exit `bun install` procs with queued codes. */
     function recordSpawns(installExitCodes: number[]) {
@@ -397,8 +571,41 @@ describe('DashboardManager log stream lifecycle', () => {
 
       const info = await manager.startDashboard(slug)
 
-      expect(spawns.map((s) => s.args)).toEqual([['install'], ['run', 'start']])
+      expect(spawns.map((s) => s.args)).toEqual([
+        ['install', '--network-concurrency=8'],
+        ['run', 'start'],
+      ])
       expect(info.status).toBe('running')
+    })
+
+    it('publishes a distinct first-run phase while dependencies install', async () => {
+      const slug = await scaffoldDashboard()
+      await fs.promises.rm(path.join(testDir, slug, 'node_modules'), { recursive: true })
+      let installProc: FakeChildProcess | undefined
+      spawnHolder.impl = (_command, args) => {
+        const proc = new FakeChildProcess()
+        procs.push(proc)
+        if (args[0] === 'install') installProc = proc
+        return proc
+      }
+
+      const start = manager.startDashboard(slug, { forceInstall: false })
+
+      await vi.waitFor(() => expect(installProc).toBeDefined())
+      expect(manager.listDashboards()).toContainEqual(expect.objectContaining({
+        slug,
+        status: 'starting',
+        startupPhase: 'installing-dependencies',
+        firstRun: true,
+      }))
+
+      installProc!.exit(0)
+      await start
+
+      const running = manager.listDashboards().find((dashboard) => dashboard.slug === slug)
+      expect(running).toEqual(expect.objectContaining({ status: 'running' }))
+      expect(running).not.toHaveProperty('startupPhase')
+      expect(running).not.toHaveProperty('firstRun')
     })
 
     it('passes dashboard mount metadata to the dashboard process', async () => {
@@ -450,8 +657,8 @@ describe('DashboardManager log stream lifecycle', () => {
       const info = await manager.startDashboard(slug, { forceInstall: false })
 
       expect(spawns.map((s) => s.args)).toEqual([
-        ['install', '--frozen-lockfile'],
-        ['install'],
+        ['install', '--network-concurrency=8', '--frozen-lockfile'],
+        ['install', '--network-concurrency=8'],
         ['run', 'start'],
       ])
       expect(info.status).toBe('running')

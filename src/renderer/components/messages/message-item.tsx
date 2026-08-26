@@ -1,5 +1,5 @@
 import { cn } from '@shared/lib/utils/cn'
-import { useState, useCallback, useRef, useLayoutEffect, memo, type ReactNode } from 'react'
+import { useState, useCallback, useRef, useLayoutEffect, useMemo, memo, type ReactNode } from 'react'
 import { Check, Copy, Link2 } from 'lucide-react'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
 import { InsufficientBalanceCard, usePlatformBillingUrl } from './insufficient-balance-card'
@@ -14,14 +14,16 @@ import { MessageErrorBoundary } from './message-error-boundary'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { parseAttachedFiles, parseMountedFolders } from '@shared/lib/utils/attached-files'
 import { parseSenderPrefix } from '@shared/lib/utils/sender-prefix'
-import ReactMarkdown, { type Components } from 'react-markdown'
+import ReactMarkdown, { type Components, type Options as ReactMarkdownOptions } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { splitStreamingMarkdown } from './split-streaming-markdown'
 import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
 import type { ApiMessage, ApiToolCall } from '@shared/lib/types/api'
 import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
 import { useRenderTracker } from '@renderer/lib/perf'
-import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
+import { createMarkdownUrlTransform } from '@renderer/lib/markdown-url-transform'
+import type { EmbeddedImageAliases } from '@renderer/lib/parse-tool-result'
+import { rehypeStreamingWordReveal } from './streaming-word-reveal'
 
 // Re-export for use by other components
 export type { ApiToolCall }
@@ -191,6 +193,15 @@ const MARKDOWN_COMPONENTS: Components = {
       {children}
     </a>
   ),
+  img: ({ alt, src }) => (
+    <img
+      src={src}
+      alt={alt ?? ''}
+      loading="lazy"
+      decoding="async"
+      className="h-auto max-w-full rounded-md"
+    />
+  ),
 }
 
 // A single markdown block. Memoized so that, while a response streams, each
@@ -198,9 +209,59 @@ const MARKDOWN_COMPONENTS: Components = {
 // re-rendering the parent MessageItem. See split-streaming-markdown.ts.
 // Exported so the agent-markdown link/scheme handling can be tested directly
 // (SUP-238) without standing up a full MessageItem.
-export const MarkdownBlock = memo(function MarkdownBlock({ text }: { text: string }) {
+interface MarkdownBlockProps {
+  text: string
+  embeddedImageAliases?: EmbeddedImageAliases
+  agentSlug?: string
+}
+
+export const MarkdownBlock = memo(function MarkdownBlock({ text, embeddedImageAliases, agentSlug }: MarkdownBlockProps) {
+  const urlTransform = useMemo(
+    () => createMarkdownUrlTransform({ aliases: embeddedImageAliases, agentSlug }),
+    [embeddedImageAliases, agentSlug]
+  )
   return (
-    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={MARKDOWN_COMPONENTS} urlTransform={markdownUrlTransform}>
+    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={MARKDOWN_COMPONENTS} urlTransform={urlTransform}>
+      {text}
+    </ReactMarkdown>
+  )
+})
+
+// Only the still-growing Markdown tail uses the word wrapper. Settled blocks
+// switch back to MarkdownBlock, keeping the filter-animation surface small even
+// during long responses.
+const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({ text, embeddedImageAliases, agentSlug }: MarkdownBlockProps) {
+  const previousTextRef = useRef('')
+  const batchStartsRef = useRef<number[]>([0])
+  const previousText = previousTextRef.current
+
+  if (text !== previousText) {
+    if (previousText && text.startsWith(previousText)) {
+      batchStartsRef.current = [...batchStartsRef.current, previousText.length]
+    } else {
+      batchStartsRef.current = [0]
+    }
+    previousTextRef.current = text
+  }
+
+  // The plugin keeps each batch's delays stable across subsequent renders, so
+  // existing words do not restart while newly appended words get their own
+  // compact stagger sequence.
+  const rehypePlugins: ReactMarkdownOptions['rehypePlugins'] = [[rehypeStreamingWordReveal, {
+    batchStarts: batchStartsRef.current,
+  }]]
+  const urlTransform = useMemo(
+    () => createMarkdownUrlTransform({ aliases: embeddedImageAliases, agentSlug }),
+    [embeddedImageAliases, agentSlug]
+  )
+
+  return (
+    <ReactMarkdown
+      remarkPlugins={REMARK_PLUGINS}
+      rehypePlugins={rehypePlugins}
+      components={MARKDOWN_COMPONENTS}
+      urlTransform={urlTransform}
+    >
       {text}
     </ReactMarkdown>
   )
@@ -223,6 +284,8 @@ interface MessageItemProps {
   workDetailClassName?: string
   /** Tool calls that were hidden while the containing work phase was collapsed. */
   revealedToolCallIds?: ReadonlySet<string>
+  /** Container-local image paths verified against image-bearing tool results. */
+  embeddedImageAliases?: EmbeddedImageAliases
 }
 
 function resolveSubagentRun(
@@ -247,7 +310,7 @@ function resolveSubagentRun(
   }
 }
 
-function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall, readOnly, workDetailClassName, revealedToolCallIds }: MessageItemProps) {
+function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall, readOnly, workDetailClassName, revealedToolCallIds, embeddedImageAliases }: MessageItemProps) {
   useRenderTracker('MessageItem')
   const isUser = message.type === 'user'
   const isAssistant = message.type === 'assistant'
@@ -385,12 +448,28 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                   {streamingSplit ? (
                     <>
                       {streamingSplit.settled.map((block, i) => (
-                        <MarkdownBlock key={i} text={block} />
+                        <MarkdownBlock
+                          key={i}
+                          text={block}
+                          embeddedImageAliases={embeddedImageAliases}
+                          agentSlug={agentSlug}
+                        />
                       ))}
-                      {streamingSplit.tail && <MarkdownBlock text={streamingSplit.tail} />}
+                      {streamingSplit.tail && (
+                        <StreamingMarkdownBlock
+                          key={`tail-${streamingSplit.settled.length}`}
+                          text={streamingSplit.tail}
+                          embeddedImageAliases={embeddedImageAliases}
+                          agentSlug={agentSlug}
+                        />
+                      )}
                     </>
                   ) : (
-                    <MarkdownBlock text={text} />
+                    <MarkdownBlock
+                      text={text}
+                      embeddedImageAliases={embeddedImageAliases}
+                      agentSlug={agentSlug}
+                    />
                   )}
                   {isStreaming && (
                     <span className="inline-block w-2 h-4 bg-current ml-0.5 animate-pulse" />
@@ -472,7 +551,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                           isCompleted={completedSubagents?.has(toolCall.id) ?? false}
                         />
                       ) : (
-                        <ToolCallItem toolCall={toolCall} messageCreatedAt={message.createdAt} agentSlug={agentSlug} isSessionActive={isSessionActive} />
+                        <ToolCallItem toolCall={toolCall} messageCreatedAt={message.createdAt} agentSlug={agentSlug} sessionId={sessionId} isSessionActive={isSessionActive} />
                       )}
                     </MessageErrorBoundary>
                   </div>

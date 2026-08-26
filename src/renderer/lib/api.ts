@@ -15,43 +15,44 @@ export async function apiFetch(
 ): Promise<Response> {
   const baseUrl = getApiBaseUrl()
   const response = await fetch(`${baseUrl}${path}`, init)
-
-  // A 401 means three different things depending on what we're talking to, so
-  // the handling is three-way (skip auth endpoints throughout, to avoid loops):
-  //
-  //   local API   — auth is off; nothing to do.
-  //   web auth    — the session expired: stash the route and sign out, below.
-  //   cloud       — do NOT sign out. There is no password to re-enter, and
-  //                 better-auth's signOut() would try to revoke the *deployment*
-  //                 session that the desktop's grant is bound to. The proxy has
-  //                 already tried to re-mint and retried once (see
-  //                 cloud-proxy.ts), so a 401 arriving here means that failed —
-  //                 the workspace needs reconnecting, which AuthGate surfaces
-  //                 when the session reads null.
-  //
-  // Only on 401 (expired) — never 403 (forbidden), and never while a deliberate
-  // sign-out is in effect: revoking the session 401s every trailing background
-  // request, and without the gate those would re-stash the signed-out user's
-  // URL right after clearRedirectStash() dropped it (shared-tab leak).
-  if (response.status === 401 && !path.startsWith('/api/auth/') && isAuthMode()) {
-    if (hasInteractiveLogin()) {
-      if (!deliberateSignOut) {
-        // Interactive login is web-only, so pathname+search is the route; the
-        // hash is included for completeness.
-        const here = window.location.pathname + window.location.search + window.location.hash
-        if (here !== '/') sessionStorage.setItem(REDIRECT_KEY, here)
-        const { signOut } = await import('./auth-client')
-        await signOut().catch(() => {}) // session may already be gone
-      }
-    } else {
-      // Cloud. Returning the 401 is not enough on its own: the session store
-      // holds its last good value, so the UI would keep claiming to be signed in
-      // while every query failed behind it. Ask for a session re-check instead.
-      reportCloudSessionRejected()
-    }
-  }
-
+  await handleUnauthorizedResponse(response.status, path)
   return response
+}
+
+// A 401 means three different things depending on what we're talking to, so
+// the handling is three-way (skip auth endpoints throughout, to avoid loops):
+//
+//   local API   — auth is off; nothing to do.
+//   web auth    — the session expired: stash the route and sign out, below.
+//   cloud       — do NOT sign out. There is no password to re-enter, and
+//                 better-auth's signOut() would try to revoke the *deployment*
+//                 session that the desktop's grant is bound to. The proxy has
+//                 already tried to re-mint and retried once (see
+//                 cloud-proxy.ts), so a 401 arriving here means that failed —
+//                 the workspace needs reconnecting, which AuthGate surfaces
+//                 when the session reads null.
+//
+// Only on 401 (expired) — never 403 (forbidden), and never while a deliberate
+// sign-out is in effect: revoking the session 401s every trailing background
+// request, and without the gate those would re-stash the signed-out user's
+// URL right after clearRedirectStash() dropped it (shared-tab leak).
+export async function handleUnauthorizedResponse(status: number, path: string): Promise<void> {
+  if (status !== 401 || path.startsWith('/api/auth/') || !isAuthMode()) return
+  if (hasInteractiveLogin()) {
+    if (!deliberateSignOut) {
+      // Interactive login is web-only, so pathname+search is the route; the
+      // hash is included for completeness.
+      const here = window.location.pathname + window.location.search + window.location.hash
+      if (here !== '/') sessionStorage.setItem(REDIRECT_KEY, here)
+      const { signOut } = await import('./auth-client')
+      await signOut().catch(() => {}) // session may already be gone
+    }
+  } else {
+    // Cloud. Returning the 401 is not enough on its own: the session store
+    // holds its last good value, so the UI would keep claiming to be signed in
+    // while every query failed behind it. Ask for a session re-check instead.
+    reportCloudSessionRejected()
+  }
 }
 
 const REDIRECT_KEY = 'superagent.redirect'

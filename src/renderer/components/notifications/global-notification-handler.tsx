@@ -23,6 +23,7 @@ import { usePlatformUnreadCount } from '@renderer/hooks/use-platform-notificatio
 import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { setMountWarning } from '@renderer/hooks/use-mount-warnings'
 import {
+  applyDashboardRuntimeStatus,
   invalidateAgentArtifacts,
   markDashboardScreenshotReady,
   updateAgentRuntimeCache,
@@ -398,9 +399,32 @@ export function GlobalNotificationHandler() {
             break
           }
 
+          case 'dashboard_status_changed': {
+            // Patch the cached artifact status so a waiting DashboardView flips
+            // immediately, then refetch for the authoritative list (port,
+            // startup phase, entries the cache has not seen yet).
+            const agentSlug = data.agentSlug as string | undefined
+            const dashboardSlug = data.dashboardSlug as string | undefined
+            const status = data.status === 'running' || data.status === 'crashed'
+              ? data.status
+              : undefined
+            if (agentSlug && dashboardSlug && status) {
+              applyDashboardRuntimeStatus(queryClient, agentSlug, dashboardSlug, status)
+              invalidateAgentArtifacts(queryClient, agentSlug)
+            }
+            break
+          }
+
           case 'container_health_changed':
             // Container health warnings changed - update agent list
             queryClient.invalidateQueries({ queryKey: ['agents'] })
+            break
+
+          case 'agent_created':
+            // Agent-created child creation lands outside the human create mutation,
+            // so refresh both caches the direct-create path invalidates together.
+            queryClient.invalidateQueries({ queryKey: ['agents'] })
+            queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
             break
 
           case 'scheduled_task_created':
@@ -428,6 +452,10 @@ export function GlobalNotificationHandler() {
             }
             if (sessionId) {
               queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
+            }
+            if (agentSlug) {
+              queryClient.invalidateQueries({ queryKey: ['activity-stats', 'agent', agentSlug] })
+              queryClient.invalidateQueries({ queryKey: ['inbound-x-agent', agentSlug] })
             }
             break
           }
@@ -463,8 +491,15 @@ export function GlobalNotificationHandler() {
       }
     }
 
+    // Catch up anything missed while the stream was down, including the
+    // window before the first successful connect.
+    es.onopen = () => {
+      queryClient.invalidateQueries({ queryKey: ['agents'] })
+      queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
+    }
+
     es.onerror = () => {
-      // EventSource will auto-reconnect
+      // EventSource will auto-reconnect; onopen above catches up.
     }
 
     return () => {

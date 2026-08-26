@@ -4,6 +4,7 @@ import { AgentRead } from '../middleware/auth'
 import { getAgentSessionsDir, readJsonlFile } from '@shared/lib/utils/file-storage'
 import { transformMessages } from '@shared/lib/utils/message-transform'
 import { buildWorkflowTree } from '@shared/lib/workflows/workflow-tree'
+import { streamJsonArrayResponse } from '../stream-json-array'
 
 /**
  * Read-only routes backing the per-agent workflow drawer (SUP-308). A dynamic
@@ -65,7 +66,12 @@ workflowRoutes.get(
       const entries = (await readJsonlFile(jsonlPath)) as any[]
       const messageEntries = entries.filter((e) => e.type === 'user' || e.type === 'assistant')
       const transformed = transformMessages(messageEntries)
-      return c.json(transformed)
+      // Polled while the workflow drawer is open, so stream the serialization
+      // instead of building one JSON string per poll.
+      return streamJsonArrayResponse(c, transformed, {
+        logLabel: 'workflow agent messages',
+        tags: { component: 'workflows', operation: 'stream-workflow-agent-messages' },
+      })
     } catch (error) {
       console.error('Failed to fetch workflow agent messages:', error)
       return c.json({ error: 'Failed to fetch workflow agent messages' }, 500)

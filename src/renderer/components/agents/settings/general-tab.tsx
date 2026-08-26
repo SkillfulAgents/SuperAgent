@@ -27,6 +27,7 @@ import {
   useUpdateAgentTemplate,
   useExportAgentTemplate,
   useExportAgentFull,
+  useHostExportStatus,
 } from '@renderer/hooks/use-agent-templates'
 import { StatusBadge } from '@renderer/components/agents/status-badge'
 import { AgentTemplatePRDialog } from '@renderer/components/agents/agent-template-pr-dialog'
@@ -59,6 +60,9 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
   const updateTemplate = useUpdateAgentTemplate()
   const exportTemplate = useExportAgentTemplate()
   const exportFull = useExportAgentFull()
+  const { data: hostExportStatus } = useHostExportStatus()
+  const exportBusy =
+    !!hostExportStatus?.inProgress || exportTemplate.isPending || exportFull.isPending
   const templateSourceLabel = templateStatus?.sourceLabel || null
   const publishMode = useSkillsetPublishMode(templateStatus?.skillsetId)
   const isPR = isPullRequestPublishMode(publishMode)
@@ -170,9 +174,9 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
             size="sm"
             variant="outline"
             onClick={() => exportTemplate.mutate({ agentSlug, agentName: name })}
-            disabled={exportTemplate.isPending}
+            disabled={exportBusy}
           >
-            {exportTemplate.isPending ? (
+            {exportBusy ? (
               <Loader2 className="h-3 w-3 mr-1 animate-spin" />
             ) : (
               <Download className="h-3 w-3 mr-1" />
@@ -184,9 +188,9 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
               <Button
                 size="sm"
                 variant="outline"
-                disabled={exportFull.isPending}
+                disabled={exportBusy}
               >
-                {exportFull.isPending ? (
+                {exportBusy ? (
                   <Loader2 className="h-3 w-3 mr-1 animate-spin" />
                 ) : (
                   <HardDriveDownload className="h-3 w-3 mr-1" />
@@ -206,6 +210,7 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
               <AlertDialogFooter>
                 <AlertDialogCancel>Cancel</AlertDialogCancel>
                 <AlertDialogAction
+                  disabled={exportBusy}
                   onClick={() => exportFull.mutate({ agentSlug, agentName: name })}
                 >
                   Export

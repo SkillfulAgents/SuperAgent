@@ -3,7 +3,6 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { BaseContainerClient, checkCommandAvailable, execWithPath, writeEnvFile } from './base-container-client'
 import { getSettings } from '@shared/lib/config/settings'
-import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import { DEFAULT_LIMA_VM_MEMORY } from './types'
 import type { ContainerConfig } from './types'
 import os from 'os'
@@ -414,18 +413,12 @@ export class LimaContainerClient extends BaseContainerClient {
    * (macOS temp dir) is not accessible inside the VM.
    */
   protected buildEnvFile(additionalEnvVars?: Record<string, string>): { flag: string; cleanup: () => void } {
-    const envVars: Record<string, string | undefined> = {
-      ...getActiveLlmProvider().getContainerEnvVars(this.agentIdentityForEnv()),
-      CLAUDE_CONFIG_DIR: '/workspace/.claude',
-      ...this.config.envVars,
-      ...additionalEnvVars,
-    }
     const home = process.env.HOME
     if (!home) {
       throw new Error('HOME environment variable is not set — cannot write container env file')
     }
     const tmpDir = path.join(home, '.superagent', 'tmp')
-    return writeEnvFile(envVars, this.config.agentId, tmpDir)
+    return writeEnvFile(this.buildAgentEnv(additionalEnvVars), this.config.agentId, tmpDir)
   }
 
   /**

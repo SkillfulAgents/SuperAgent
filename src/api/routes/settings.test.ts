@@ -182,6 +182,7 @@ vi.mock('@shared/lib/db/schema', () => ({
   tokenExchangeJti: {},
   mobilePairingToken: {},
   mobileDevice: {},
+  apnsDevices: {},
   pushSubscriptions: {},
   pushVapidKeys: {},
 }))
@@ -2052,6 +2053,20 @@ describe('settings route', () => {
       expect(res.status).toBe(400)
       const body = await res.json()
       expect(body.error).toMatch(/warmStartOnType/)
+    })
+
+    it('PUT accepts autoResumeOnUnexpectedDeath boolean under app', async () => {
+      const res = await putSettings({ app: { autoResumeOnUnexpectedDeath: false } })
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.app.autoResumeOnUnexpectedDeath).toBe(false)
+    })
+
+    it('PUT rejects non-boolean autoResumeOnUnexpectedDeath', async () => {
+      const res = await putSettings({ app: { autoResumeOnUnexpectedDeath: 'yes' } })
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toMatch(/autoResumeOnUnexpectedDeath/)
     })
   })
 

@@ -44,6 +44,7 @@ import {
 import { getEditingCommands } from './cdp-editing-commands';
 import { CREDENTIAL_AUTOFILL_FUNCTION } from './credential-autofill-script';
 import { selectActivePageTarget } from './active-page-target';
+import { decodeChromeTargetTitle } from './chrome-target-title';
 
 // Global error handlers to prevent crashes from AbortError during interrupts
 // The SDK throws AbortError when queries are aborted, which can propagate uncaught
@@ -193,6 +194,7 @@ app.post('/sessions/:id/messages', async (c) => {
       speed: speedLevelSchema.parse(body.speed),
       model: body.model,
       shouldQuery: body.shouldQuery,
+      isAutomated: body.isAutomated,
       capabilityPolicies: agentCapabilityPoliciesSchema.parse(body.capabilityPolicies),
     });
 
@@ -571,7 +573,16 @@ app.get('/artifacts/:slug/logs', async (c) => {
 // Shared handler for proxying requests to a dashboard server
 async function proxyToDashboard(c: any) {
   const slug = c.req.param('slug');
-  const port = dashboardManager.getDashboardPort(slug);
+  let port = dashboardManager.getDashboardPort(slug);
+
+  // A request during startup is held until the dashboard reaches an outcome
+  // rather than bounced with a 503 — the renderer mounts its iframe while the
+  // dashboard is still 'starting', so the first paint happens the moment the
+  // server binds. Stopped/crashed/unknown dashboards still fail fast.
+  if (!port && dashboardManager.getDashboardStatus(slug) === 'starting') {
+    await dashboardManager.waitForStartupOutcome(slug, 20_000);
+    port = dashboardManager.getDashboardPort(slug);
+  }
 
   if (!port) {
     return c.json({ error: `Dashboard ${slug} is not running` }, 503);
@@ -2217,7 +2228,7 @@ async function getAllPageTargets(): Promise<PageTarget[]> {
       return pages.map(p => ({
         id: p.id,
         url: p.url,
-        title: p.title || '',
+        title: decodeChromeTargetTitle(p.title || ''),
         wsUrl: p.webSocketDebuggerUrl,
         requiresSession: false,
       }));
