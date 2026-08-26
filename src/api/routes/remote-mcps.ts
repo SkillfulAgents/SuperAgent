@@ -1,4 +1,4 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import crypto from 'crypto'
 import { db } from '@shared/lib/db'
 import { remoteMcpServers, agentRemoteMcps } from '@shared/lib/db/schema'
@@ -114,6 +114,39 @@ function resolveDesktopOAuthProtocol(candidate?: string): string {
   const fromEnv = process.env.SUPERAGENT_PROTOCOL
   if (fromEnv && DESKTOP_OAUTH_PROTOCOLS.has(fromEnv)) return fromEnv
   return 'superagent'
+}
+
+/**
+ * Ordered redirect candidates for an OAuth flow. In Electron we prefer the custom
+ * app scheme (port-independent, no external-browser hand-off needed) but fall back
+ * to an http loopback URL for authorization servers that reject non-http(s)
+ * redirects during dynamic client registration (e.g. cal.com). Web only has the
+ * http URL.
+ *
+ * The loopback base must come from the request URL's origin (http://localhost:<apiPort>),
+ * not getAppBaseUrlFromRequest: the packaged renderer is served from file://, so its
+ * fetches carry `Origin: null`. The AS redirects the external browser here to complete
+ * the flow, so the URL must be one the local API server actually answers on.
+ *
+ * Scheme from the Electron client (allowlisted): a cloud deployment serving a
+ * proxied client has no SUPERAGENT_PROTOCOL of its own (SUP-560).
+ *
+ * Shared with the read-only redirect-uris route so the string we show a user to
+ * paste into a provider console is the same one we later send.
+ */
+function buildRedirectCandidates(
+  c: Context,
+  options: { electron: boolean; protocol?: string },
+): string[] {
+  const protocol = resolveDesktopOAuthProtocol(options.protocol)
+  // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
+  const loopbackRedirect = `${new URL(c.req.url).origin}/api/remote-mcps/oauth-callback`
+  const httpRedirect = options.electron
+    ? loopbackRedirect
+    : `${getAppBaseUrlFromRequest(c)}/api/remote-mcps/oauth-callback`
+  return options.electron
+    ? [`${protocol}://mcp-oauth-callback`, httpRedirect]
+    : [httpRedirect]
 }
 
 function renderMcpOAuthHandoffHtml(payload: McpOAuthCallbackPayload, desktopProtocol?: string): string {
@@ -267,6 +300,24 @@ remoteMcps.post('/', async (c) => {
 })
 
 // Initiate OAuth flow for an MCP server (existing or new)
+/**
+ * The redirect URIs this deployment will send for an OAuth flow, so the connect
+ * UI can show a user exactly what to allowlist in a provider console. Built by
+ * the same helper initiate-oauth uses, so the two cannot drift.
+ */
+remoteMcps.get('/oauth-redirect-uris', async (c) => {
+  const electron = c.req.query('electron') === '1'
+  const candidates = buildRedirectCandidates(c, {
+    electron,
+    protocol: c.req.query('protocol') ?? undefined,
+  })
+  return c.json({
+    candidates,
+    // What a hand-registered client_id will actually be paired with.
+    preferred: candidates.find((candidate) => /^https?:/i.test(candidate)) ?? candidates[0],
+  })
+})
+
 remoteMcps.post('/initiate-oauth', async (c) => {
   const body = await c.req.json<{
     mcpId?: string
@@ -292,29 +343,10 @@ remoteMcps.post('/initiate-oauth', async (c) => {
       ? body.clientSecret.trim()
       : undefined
 
-  // Ordered redirect candidates. In Electron we prefer the custom app scheme
-  // (port-independent, no external-browser hand-off needed) but fall back to an
-  // http loopback URL for authorization servers that reject non-http(s) redirects
-  // during dynamic client registration (e.g. cal.com). Web only has the http URL.
-  //
-  // The loopback base must come from the request URL's origin (http://localhost:<apiPort>),
-  // not getAppBaseUrlFromRequest: the packaged renderer is served from file://, so its
-  // fetches carry `Origin: null`. The AS redirects the external browser here to complete
-  // the flow, so the URL must be one the local API server actually answers on.
-  //
-  // Scheme from the Electron client (allowlisted): a cloud deployment serving a
-  // proxied client has no SUPERAGENT_PROTOCOL of its own (SUP-560).
-  const protocol = resolveDesktopOAuthProtocol(
-    typeof body.protocol === 'string' ? body.protocol : undefined,
-  )
-  // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
-  const loopbackRedirect = `${new URL(c.req.url).origin}/api/remote-mcps/oauth-callback`
-  const httpRedirect = body.electron
-    ? loopbackRedirect
-    : `${getAppBaseUrlFromRequest(c)}/api/remote-mcps/oauth-callback`
-  const redirectCandidates = body.electron
-    ? [`${protocol}://mcp-oauth-callback`, httpRedirect]
-    : [httpRedirect]
+  const redirectCandidates = buildRedirectCandidates(c, {
+    electron: !!body.electron,
+    protocol: typeof body.protocol === 'string' ? body.protocol : undefined,
+  })
 
   if (body.mcpId) {
     // Existing server re-auth

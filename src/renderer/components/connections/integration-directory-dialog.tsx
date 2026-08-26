@@ -36,11 +36,13 @@ import {
   useAddRemoteMcp,
   useInitiateMcpOAuth,
   useInvalidateRemoteMcps,
+  useMcpOAuthRedirectUris,
 } from '@renderer/hooks/use-remote-mcps'
 import { useMcpOAuthListener } from '@renderer/hooks/use-mcp-oauth-listener'
 import { useDelayedOAuthAbort } from '@renderer/hooks/use-delayed-oauth-abort'
 import type { Provider } from '@shared/lib/account-providers/service-catalog'
 import { COMMON_MCP_SERVERS, type CommonMcpServer } from '@shared/lib/mcp/common-servers'
+import { McpSetupGuide } from './mcp-setup-guide'
 import { OAuthFlowCancel } from './oauth-flow-cancel'
 
 export type DirectoryTab = 'apis' | 'mcps'
@@ -338,6 +340,7 @@ function McpsPanel({ filter, onConnected, fallbackClose }: { filter: string; onC
   const addMcp = useAddRemoteMcp()
   const initiateOAuth = useInitiateMcpOAuth()
   const invalidateRemoteMcps = useInvalidateRemoteMcps()
+  const { data: redirectUris } = useMcpOAuthRedirectUris()
 
   const [error, setError] = useState<string | null>(null)
   const [draft, setDraft] = useState<DraftState | null>(null)
@@ -512,8 +515,11 @@ function McpsPanel({ filter, onConnected, fallbackClose }: { filter: string; onC
     if (!draft) return null
     const canSubmit = mcpDraftSchema.safeParse(draft).success
     const busy = submitting || oauthPending
+    // Provider-side setup for the picked catalog row, if it has any.
+    const setup = COMMON_MCP_SERVERS.find((s) => s.slug === draft.sourceSlug)?.setup
     return (
       <div className="space-y-2">
+        {setup && <McpSetupGuide guide={setup} redirectUri={redirectUris?.preferred} />}
         <div>
           <Label className="text-xs font-normal text-muted-foreground/70">Name</Label>
           <Input
@@ -564,7 +570,7 @@ function McpsPanel({ filter, onConnected, fallbackClose }: { filter: string; onC
           </div>
         )}
         {draft.authType === 'oauth' && (
-          <details className="group rounded-md pt-2">
+          <details className="group rounded-md pt-2" open={setup?.requiresClientId}>
             <summary className="cursor-pointer list-none text-xs text-muted-foreground/70 hover:text-muted-foreground select-none">
               <span className="inline-block transition-transform group-open:rotate-90">›</span>
               <span className="ml-1">Advanced</span>
