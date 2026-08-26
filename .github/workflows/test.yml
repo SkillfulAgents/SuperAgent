@@ -3,8 +3,9 @@ name: Tests
 on:
   push:
     branches: [main]
+  # Every PR, whatever its base: a stacked PR must get the full suite too,
+  # not only the one at the bottom of the stack that targets main.
   pull_request:
-    branches: [main]
 
 jobs:
   unit-tests:
