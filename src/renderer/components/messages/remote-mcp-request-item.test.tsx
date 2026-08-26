@@ -25,6 +25,12 @@ vi.mock('@renderer/hooks/use-remote-mcps', () => ({
     mutateAsync: mockInitiateOAuthMutateAsync,
     isPending: false,
   }),
+  useMcpOAuthRedirectUris: () => ({
+    data: {
+      candidates: ['https://app.example.com/api/remote-mcps/oauth-callback'],
+      preferred: 'https://app.example.com/api/remote-mcps/oauth-callback',
+    },
+  }),
 }))
 
 vi.mock('@renderer/hooks/use-mcp-oauth-listener', () => ({
@@ -439,6 +445,105 @@ describe('RemoteMcpRequestItem', () => {
       await waitFor(() => {
         expect(screen.getByRole('button', { name: /Allow Access/i })).toBeEnabled()
       })
+    })
+  })
+
+  describe('provider setup and advanced client options', () => {
+    // The official Meta Ads row is the catalog entry that carries a setup guide.
+    const META_URL = 'https://mcp.facebook.com/ads'
+
+    it('shows the provider setup steps for a server that needs its own OAuth app', async () => {
+      mockServerListResponse([])
+      await act(async () => {
+        renderWithProviders(
+          <RemoteMcpRequestItem {...defaultProps} url={META_URL} name="Meta Ads (Official)" authHint="oauth" />
+        )
+      })
+
+      await waitFor(() => expect(screen.getByTestId('mcp-setup-guide')).toBeTruthy())
+      // The callback comes from the API, so it is the one the flow will send.
+      expect(screen.getByTestId('mcp-setup-guide-redirect').textContent).toBe(
+        'https://app.example.com/api/remote-mcps/oauth-callback'
+      )
+    })
+
+    it('opens Advanced by default when the server cannot self-register a client', async () => {
+      mockServerListResponse([])
+      await act(async () => {
+        renderWithProviders(
+          <RemoteMcpRequestItem {...defaultProps} url={META_URL} name="Meta Ads (Official)" authHint="oauth" />
+        )
+      })
+
+      await waitFor(() => expect(screen.getByTestId('mcp-request-advanced')).toBeTruthy())
+      expect(screen.getByTestId('mcp-request-advanced').hasAttribute('open')).toBe(true)
+    })
+
+    it('prefills the client ID the agent supplied and sends it on connect', async () => {
+      mockServerListResponse([])
+      mockInitiateOAuthMutateAsync.mockResolvedValue({ redirectUrl: 'https://auth.example.com/authorize' })
+      await act(async () => {
+        renderWithProviders(
+          <RemoteMcpRequestItem
+            {...defaultProps}
+            url={META_URL}
+            name="Meta Ads (Official)"
+            authHint="oauth"
+            clientId="2476112079565355"
+          />
+        )
+      })
+
+      const field = (await screen.findByTestId('mcp-request-client-id')) as HTMLInputElement
+      expect(field.value).toBe('2476112079565355')
+
+      await act(async () => {
+        await userEvent.click(screen.getByRole('button', { name: /connect/i }))
+      })
+
+      expect(mockInitiateOAuthMutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ clientId: '2476112079565355' })
+      )
+    })
+
+    it('leaves the user free to correct what the agent supplied', async () => {
+      mockServerListResponse([])
+      mockInitiateOAuthMutateAsync.mockResolvedValue({ redirectUrl: 'https://auth.example.com/authorize' })
+      await act(async () => {
+        renderWithProviders(
+          <RemoteMcpRequestItem
+            {...defaultProps}
+            url={META_URL}
+            name="Meta Ads (Official)"
+            authHint="oauth"
+            clientId="wrong-id"
+          />
+        )
+      })
+
+      const field = (await screen.findByTestId('mcp-request-client-id')) as HTMLInputElement
+      await act(async () => {
+        await userEvent.clear(field)
+        await userEvent.type(field, 'corrected-id')
+      })
+      await act(async () => {
+        await userEvent.click(screen.getByRole('button', { name: /connect/i }))
+      })
+
+      expect(mockInitiateOAuthMutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ clientId: 'corrected-id' })
+      )
+    })
+
+    it('shows no setup guide for a server that self-registers', async () => {
+      mockServerListResponse([])
+      await act(async () => {
+        renderWithProviders(<RemoteMcpRequestItem {...defaultProps} authHint="oauth" />)
+      })
+
+      await waitFor(() => expect(screen.getByTestId('remote-mcp-request')).toBeTruthy())
+      expect(screen.queryByTestId('mcp-setup-guide')).toBeNull()
+      expect(screen.getByTestId('mcp-request-advanced').hasAttribute('open')).toBe(false)
     })
   })
 })

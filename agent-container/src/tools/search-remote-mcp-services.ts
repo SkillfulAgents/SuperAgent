@@ -15,6 +15,17 @@ interface McpServiceInfo {
   url: string
   authType: 'none' | 'oauth' | 'bearer'
   category: string
+  /**
+   * The server rejects dynamic client registration, so the user must register an
+   * OAuth app in the provider's console and allowlist our callback before this
+   * can connect. Surfaced to the model so it can warn the user up front rather
+   * than letting them discover it inside the approval prompt.
+   *
+   * Kept in step with the `setup.requiresClientId` flag on the host catalog
+   * (src/shared/lib/mcp/common-servers.ts); the container cannot import from
+   * @shared, which is why this list is a copy at all.
+   */
+  requiresOwnOAuthApp?: boolean
 }
 
 const SERVICES: McpServiceInfo[] = [
@@ -48,6 +59,8 @@ const SERVICES: McpServiceInfo[] = [
   { slug: 'ramp', displayName: 'Ramp', description: 'Corporate card and expense management', url: 'https://ramp-mcp-remote.ramp.com/mcp', authType: 'oauth', category: 'Payments & Finance' },
   // Analytics & Marketing
   { slug: 'amplitude', displayName: 'Amplitude', description: 'Charts, dashboards, experiments, feature flags', url: 'https://mcp.amplitude.com/mcp', authType: 'oauth', category: 'Analytics & Marketing' },
+  { slug: 'meta-ads-official', displayName: 'Meta Ads (Official)', description: "Facebook and Instagram ad campaign management through Meta's official MCP server", url: 'https://mcp.facebook.com/ads', authType: 'oauth', category: 'Analytics & Marketing', requiresOwnOAuthApp: true },
+  { slug: 'meta-ads', displayName: 'Meta Ads (Pipeboard)', description: 'Facebook/Instagram ad campaign management', url: 'https://mcp.pipeboard.co/meta-ads-mcp', authType: 'oauth', category: 'Analytics & Marketing' },
   { slug: 'tiktok-ads', displayName: 'TikTok Ads (Full)', description: 'Campaign management, reporting, audiences, and creative — full ~400-tool set (recommended for Claude)', url: 'https://business-api.tiktok.com/open_mcp/tt-ads-mcp-flat', authType: 'oauth', category: 'Analytics & Marketing' },
   { slug: 'tiktok-ads-progressive', displayName: 'TikTok Ads (Progressive)', description: 'Campaign management with ~40 core tools loaded upfront and additional tools discovered on demand', url: 'https://business-api.tiktok.com/open_mcp/tt-ads-mcp-layer', authType: 'oauth', category: 'Analytics & Marketing' },
   // Documents & Content
@@ -111,13 +124,20 @@ export const searchRemoteMcpServicesTool = tool(
     for (const [category, services] of Object.entries(grouped)) {
       lines.push(`## ${category}`)
       for (const s of services) {
-        lines.push(`- **${s.displayName}** (${s.url}) [${s.authType}] — ${s.description}`)
+        const setupFlag = s.requiresOwnOAuthApp ? ' [setup required]' : ''
+        lines.push(`- **${s.displayName}** (${s.url}) [${s.authType}]${setupFlag} — ${s.description}`)
       }
       lines.push('')
     }
     lines.push(
       'Use request_remote_mcp with the URL and authHint to connect to a server.'
     )
+    if (results.some((s) => s.requiresOwnOAuthApp)) {
+      lines.push(
+        '',
+        'A server marked [setup required] rejects dynamic client registration: before it can connect, the user has to register an OAuth app in that provider\'s own console, allowlist our callback URL, and supply the resulting client ID. Tell them that up front — the approval prompt walks them through the exact steps and shows the callback URL to copy. If they ask you to fetch the client ID from their console, pass it to request_remote_mcp as clientId; never ask them for a client secret.',
+      )
+    }
     lines.push(PARTIAL_LIST_NOTE)
 
     return {
