@@ -8,11 +8,12 @@ name: Perf
 on:
   push:
     branches: [main]
+  # Every PR, whatever its base: stacked PRs must get the gate too.
   pull_request:
-    branches: [main]
 
 concurrency:
-  group: perf-${{ github.event.pull_request.number || github.ref }}
+  # Per PR; per commit on main so back-to-back merges each keep their status.
+  group: perf-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -37,7 +38,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # `shell: bash` matters: it is what makes the step run with `pipefail`,
+      # so vitest's exit code survives the pipe into tee. The default shell
+      # would report tee's status and the gate could never go red.
       - name: Run perf suite
+        shell: bash
         run: npm run test:perf 2>&1 | tee perf-results.txt
 
       - name: Upload measurements

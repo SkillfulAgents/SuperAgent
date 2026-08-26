@@ -14,6 +14,7 @@ import { expect } from 'vitest'
 import type { Hono } from 'hono'
 import { PROFILES, seedDataDir, type SeedProfile, type SeededData } from './fixtures'
 import {
+  DEFAULT_LATENCY_MS,
   disableNfsShim,
   enableNfsShim,
   nfsShimLatencyMs,
@@ -23,8 +24,13 @@ import {
   type FsOpCounts,
 } from './nfs-shim'
 
-/** Wall-clock budgets are stated at this simulated latency. */
-export const BUDGET_LATENCY_MS = 2
+/**
+ * Wall-clock budgets are stated at this simulated latency. High enough that
+ * the serialisation signal (latency × critical-path depth) dominates the CPU
+ * and scheduler noise of a shared runner: at 2 ms the warm scenarios were
+ * ~10 timer rounds deep and a descheduled tick ate the whole margin.
+ */
+export const BUDGET_LATENCY_MS = DEFAULT_LATENCY_MS
 
 export interface PerfApp {
   app: Hono
@@ -59,14 +65,28 @@ export async function bootPerfApp(profileName: keyof typeof PROFILES): Promise<P
   const app = new HonoCtor()
   app.route('/api/agents', agentsRouter)
 
+  const invalidateSummaryCaches = () => {
+    for (const slug of seeded.agentSlugs) invalidateSessionSummaryCache(slug)
+  }
+
+  // One throwaway request, unmeasured: pays Hono's first-request setup and
+  // the JIT, and loads the process-lifetime caches that are not part of any
+  // route's cost (the session-ownership index) so that op counts do not
+  // depend on which scenario happens to run first. The summary caches it
+  // warms are dropped again so "cold" scenarios stay cold.
+  disableNfsShim()
+  const warmup = await app.request('http://localhost/api/agents')
+  if (warmup.status !== 200) {
+    throw new Error(`perf harness: warm-up request failed with ${warmup.status}`)
+  }
+  invalidateSummaryCaches()
+
   return {
     app,
     seeded,
     profile,
     request: async (url) => app.request(`http://localhost${url}`),
-    invalidateSummaryCaches: () => {
-      for (const slug of seeded.agentSlugs) invalidateSessionSummaryCache(slug)
-    },
+    invalidateSummaryCaches,
     dispose: async () => {
       disableNfsShim()
       for (const [key, value] of Object.entries(previousEnv)) {
