@@ -2445,7 +2445,7 @@ describe('MessageList', () => {
       let naturalScrollHeight = 1300
       let scrollTop = 700
       let clientHeight = 600
-      const anchorDocumentTop = 1200
+      let anchorDocumentTop = 1200
       const spacerHeight = () => Number.parseFloat(
         (el.querySelector('[data-testid="turn-anchor-spacer"]') as HTMLElement | null)?.style.height || '0',
       ) || 0
@@ -2502,6 +2502,7 @@ describe('MessageList', () => {
         setScrollTop(value: number) { scrollTop = value },
         setNaturalScrollHeight(value: number) { naturalScrollHeight = value },
         setClientHeight(value: number) { clientHeight = value },
+        setAnchorDocumentTop(value: number) { anchorDocumentTop = value },
       }
     }
 
@@ -2526,6 +2527,69 @@ describe('MessageList', () => {
       expect(anchor.getBoundingClientRect().top).toBe(101)
       expect(geometry.scrollTop).toBe(1099)
       expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
+    })
+
+    it('holds the reading line when content mounts above the anchored turn', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
+
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+      expect(geometry.scrollTop).toBe(1099)
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
+
+      // The previous turn finalizes: its summary header mounts ABOVE the
+      // anchor, sliding the reading line 120px down the document.
+      geometry.setAnchorDocumentTop(1320)
+      geometry.setNaturalScrollHeight(1420)
+      await act(async () => {
+        fireContentResize(contentWrapper, 1420)
+      })
+
+      // The pin carried the viewport to the moved reading line; the reserve
+      // did not shrink and nothing dragged the anchor back down the screen.
+      await waitFor(() => expect(geometry.scrollTop).toBe(1219))
+      const anchor = screen.getByText('What changed?').closest('[data-turn-anchor-id]') as HTMLElement
+      expect(anchor.getBoundingClientRect().top).toBe(101)
+      expect(screen.getByTestId('turn-anchor-spacer')).toHaveStyle({ height: '400px' })
+      expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
+    })
+
+    it('leaves an escaped reader alone when content mounts above the anchored turn', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
+
+      rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" pendingUserMessages={[pending]} />,
+      )
+      expect(geometry.scrollTop).toBe(1099)
+
+      // The reader escapes upward while the reserve still holds.
+      fireEvent.scroll(el)
+      fireEvent.wheel(el, { deltaY: -40 })
+      geometry.setScrollTop(300)
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5))
+      })
+      expect(screen.getByText('Scroll to bottom')).toBeInTheDocument()
+
+      // Above-anchor growth must not move their viewport.
+      geometry.setAnchorDocumentTop(1320)
+      geometry.setNaturalScrollHeight(1420)
+      await act(async () => {
+        fireContentResize(contentWrapper, 1420)
+      })
+      expect(geometry.scrollTop).toBe(300)
     })
 
     it('re-engages following and returns to the reading line when a send follows an escape', async () => {

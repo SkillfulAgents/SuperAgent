@@ -193,7 +193,14 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
   const contentBodyRef = useRef<HTMLDivElement>(null)
   const bottomSpacerRef = useRef<HTMLDivElement>(null)
   const bottomSpacerHeightRef = useRef(0)
-  const anchoredTurnRef = useRef<{ localId: string; scrollTop: number } | null>(null)
+  const anchoredTurnRef = useRef<{
+    localId: string
+    /** Server id adopted at materialization — the persisted row carries it as the anchor tag after the ghost unmounts. */
+    uuid?: string
+    scrollTop: number
+    /** The anchor element's document top at capture; re-measured every reserve sync to catch above-anchor layout shifts. */
+    anchorTop: number
+  } | null>(null)
 
   // Following state lives in a ref (the single source of truth — handlers and
   // observers read it without stale-closure risk); the state mirror only
@@ -232,7 +239,12 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
   // re-computed each frame) target, used only for explicit trips. Its first
   // write is deferred a frame so a commit landing between the send effect and
   // the glide's start still sees the pre-glide viewport.
-  const glideRef = useRef<{ kind: 'trip' | 'follow'; cancel: () => void } | null>(null)
+  const glideRef = useRef<{
+    kind: 'trip' | 'follow'
+    /** The glide's last written scrollTop — the reference for undoing external clamps mid-flight. */
+    top?: number
+    cancel: () => void
+  } | null>(null)
 
   // How many trailing (visible) messages to render. Grows on scroll-up and while
   // the user is scrolled up during streaming. Starts at BASE_WINDOW; the component
@@ -298,6 +310,7 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
     let startedAt = 0
     const handle = {
       kind,
+      top: undefined as number | undefined,
       cancel: () => {
         cancelAnimationFrame(frameId)
         if (glideRef.current === handle) glideRef.current = null
@@ -324,6 +337,7 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
         return
       }
       el.scrollTop = el.scrollTop + remaining * (1 - Math.exp((-dt / 1000) * GLIDE_RATE_PER_S))
+      handle.top = el.scrollTop
       rememberPosition()
       frameId = requestAnimationFrame(step)
     }
@@ -449,6 +463,50 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
     const el = scrollRef.current
     const anchoredTurn = anchoredTurnRef.current
     if (!el || !anchoredTurn) return
+    // Two layout artifacts around materialization and turn end displace the
+    // reading line in a single frame, and both land while the send trip
+    // glide owns the viewport (so the pin cannot cover them). Correct them
+    // here — this sync runs in the same layout effect as the content commit,
+    // before paint.
+    const interactionOwns =
+      pointerDragRef.current || pointerOnScrollbarRef.current || touchActiveRef.current
+    const mayAdjustViewport =
+      followingRef.current && !interactionOwns && !selectionInProgress()
+    // Content mounting ABOVE the anchor (a finished turn's summary header)
+    // slides the reading line down the document while the stored coordinates
+    // stay put. Move the coordinates with the re-measured element — otherwise
+    // the spacer math below shrinks the reserve by the same amount — and
+    // carry the viewport along so the line keeps its place on screen.
+    // During the ghost→persisted handover both forms can briefly carry the
+    // anchor tag, and the ghost's emptied wrapper lingers at the OLD
+    // position — measuring it reads zero drift while the real row mounted
+    // lower. Prefer the last tagged element that actually has height.
+    const findAnchor = (id: string) => {
+      const matches = contentBodyRef.current?.querySelectorAll<HTMLElement>(
+        `[data-turn-anchor-id="${CSS.escape(id)}"]`,
+      )
+      if (!matches?.length) return null
+      for (let i = matches.length - 1; i >= 0; i--) {
+        if (matches[i].getBoundingClientRect().height > 0) return matches[i]
+      }
+      return matches[0]
+    }
+    const anchorEl =
+      (anchoredTurn.uuid ? findAnchor(anchoredTurn.uuid) : null) ??
+      findAnchor(anchoredTurn.localId)
+    if (anchorEl) {
+      const anchorTop =
+        anchorEl.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop
+      const drift = anchorTop - anchoredTurn.anchorTop
+      if (Math.abs(drift) > 1) {
+        anchoredTurn.anchorTop = anchorTop
+        anchoredTurn.scrollTop = Math.max(0, anchorTop - TURN_ANCHOR_TOP)
+        if (mayAdjustViewport) {
+          el.scrollTop = Math.min(Math.max(0, el.scrollTop + drift), liveEdgeTarget(el))
+          rememberPosition()
+        }
+      }
+    }
     const naturalScrollHeight = el.scrollHeight - bottomSpacerHeightRef.current
     const requiredSpacer = Math.max(
       0,
@@ -467,10 +525,32 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
     // spacer write above re-inflates the scroll range — and nothing else moves
     // it back until content grows again, so the held turn would visibly sag.
     // The anchored reading line IS the live-edge target while the reserve
-    // holds; the pin puts the viewport back on it (and carries its own
-    // guards for gestures and the send glide).
-    pinToLiveEdge()
-  }, [setBottomSpacerHeight, pinToLiveEdge])
+    // holds. With no input evidence and no glide in flight the sag can only
+    // be such an artifact: snap it closed here, in the same layout pass, so
+    // it never paints. Otherwise the pin covers it with its own guards.
+    const inputBacked =
+      pointerDownRef.current ||
+      touchActiveRef.current ||
+      performance.now() - lastInputAtRef.current < INPUT_EVIDENCE_WINDOW_MS
+    const glide = glideRef.current
+    if (mayAdjustViewport && glide?.top != null && el.scrollTop < glide.top - 1) {
+      // A transient unmount dip (a streamed block swapped for its persisted
+      // row) clamped the viewport below a mid-flight glide's own last write.
+      // The spacer write above has just re-inflated the scroll range — put
+      // the viewport straight back so the dip never paints; the glide then
+      // resumes from where it actually was.
+      el.scrollTop = Math.min(glide.top, liveEdgeTarget(el))
+      rememberPosition()
+    } else if (mayAdjustViewport && !inputBacked && !glide) {
+      const target = liveEdgeTarget(el)
+      if (el.scrollTop < target) {
+        el.scrollTop = target
+        rememberPosition()
+      }
+    } else {
+      pinToLiveEdge()
+    }
+  }, [setBottomSpacerHeight, pinToLiveEdge, rememberPosition, selectionInProgress])
 
   // Pin the viewport to the live edge before first paint — without this,
   // opening a session flashes the top of the transcript for a frame. Guarded
@@ -661,6 +741,7 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
           anchoredTurnRef.current = {
             localId: newestTurnStart.localId,
             scrollTop: Math.max(0, anchorTop - TURN_ANCHOR_TOP),
+            anchorTop,
           }
         } else {
           anchoredTurnRef.current = null
@@ -685,6 +766,15 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
         syncTurnReserve()
       }
       return
+    }
+
+    // Materialization renames the anchor: the ghost wrapper (tagged with the
+    // localId) unmounts and the persisted row (tagged with the server id)
+    // takes over as the element the reserve sync re-measures against.
+    const anchored = anchoredTurnRef.current
+    if (anchored && !anchored.uuid) {
+      const match = (pendingUserMessages ?? []).find((p) => p.localId === anchored.localId)
+      if (match?.uuid) anchored.uuid = match.uuid
     }
 
     syncTurnReserve()

@@ -374,6 +374,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
         isUser && 'flex-row-reverse !my-6'
       )}
       data-testid={isUser ? 'message-user' : isAssistant ? 'message-assistant' : undefined}
+      data-turn-anchor-id={isUser ? message.id : undefined}
     >
       {/* Message content */}
       <div
