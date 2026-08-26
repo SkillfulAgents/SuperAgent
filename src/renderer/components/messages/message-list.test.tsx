@@ -2853,20 +2853,50 @@ describe('MessageList', () => {
       renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
       const el = screen.getByTestId('message-list')
       const geometry = mockTurnGeometry(el)
-      fireEvent.scroll(el) // baseline at the live edge
+      const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
+      fireEvent.scroll(el) // baseline at the live edge (699 joins the trail)
 
-      // WebKit's async scrolling can roll a programmatic follow write back to
-      // its last composited position: an upward, size-stable scroll event
-      // with zero input anywhere near it. That shape is the engine's, not
-      // the reader's — following must not disengage, and convergence must
-      // put the viewport back on the live edge.
-      geometry.setScrollTop(500)
+      // Content grows and convergence writes the new live edge.
+      geometry.setNaturalScrollHeight(1500)
+      await act(async () => {
+        fireContentResize(contentWrapper, 1500)
+      })
+      await waitFor(() => expect(geometry.scrollTop).toBe(899))
+
+      // WebKit's async scrolling can roll that write back to the last
+      // composited position: an upward, size-stable scroll event with zero
+      // input anywhere near it, landing on a position the scroller recently
+      // held. That shape is the engine's, not the reader's — following must
+      // not disengage, and convergence must put the viewport back on the
+      // live edge.
+      geometry.setScrollTop(699)
       fireEvent.scroll(el)
       await act(async () => {
         await new Promise((resolve) => setTimeout(resolve, 250))
       })
       expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
-      expect(geometry.scrollTop).toBe(699)
+      expect(geometry.scrollTop).toBe(899)
+    })
+
+    it('releases follow when an input-less scroll lands off the recently-held trail', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      fireEvent.scroll(el) // baseline at the live edge
+
+      // A programmatic jump (app code, an extension, a test driving
+      // scrollTo) carries no input evidence either — but it lands where the
+      // scroller has NOT recently been. That is an escape, not a rollback:
+      // follow must release, and nothing may yank the reader back down.
+      geometry.setScrollTop(150)
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 250))
+      })
+      expect(screen.getByText('Scroll to bottom')).toBeInTheDocument()
+      expect(geometry.scrollTop).toBe(150)
     })
 
     it('ignores a bounce-back settling inside the live-edge band after a downward wheel', async () => {

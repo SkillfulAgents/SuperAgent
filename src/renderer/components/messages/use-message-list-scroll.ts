@@ -66,11 +66,20 @@ const ESCAPE_MIN_DISTANCE_PX = 24
 // this recently before it releases following. WebKit's async scrolling can
 // roll a programmatic write back to its last composited position and report
 // that as a genuine upward, size-stable scroll event — with no input
-// anywhere near it, that shape is the engine's, not the reader's, and
-// following converges back instead of disengaging (reproduced by
-// safari-follow.spec.ts: zero-input rollbacks to the same committed position
-// after large thinking-card collapses, WebKit only).
+// anywhere near it (and a landing on the recently-held trail below), that
+// shape is the engine's, not the reader's, and following converges back
+// instead of disengaging (reproduced by safari-follow.spec.ts: zero-input
+// rollbacks to the same committed position after large thinking-card
+// collapses, WebKit only).
 const INPUT_EVIDENCE_WINDOW_MS = 500
+// A rollback, by definition, lands on a position the scroller recently held.
+// An evidence-less upward move is only read as one when it does; landing
+// anywhere else with no input behind it is a programmatic jump (scrollTo
+// from app code, an extension, tests) and releases following like any other
+// escape.
+const ROLLBACK_TRAIL_MS = 2000
+const ROLLBACK_TRAIL_MAX = 40
+const ROLLBACK_TRAIL_TOLERANCE_PX = 2
 // How long the scrolling tree gets to settle before convergence re-pins
 // after an engine-caused upward scroll.
 const ENGINE_SCROLL_SETTLE_MS = 150
@@ -193,6 +202,11 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
   // position change the baseline doesn't already reflect came from the user.
   const baselineRef = useRef<ScrollSample | null>(null)
   const lastUserScrollUpAtRef = useRef(0)
+  // Positions the scroller has recently held — every observed scroll event
+  // and every engine write funnels through rememberPosition. Consulted only
+  // to separate compositor rollbacks (land ON the trail) from programmatic
+  // jumps (land off it) when an upward move has no input evidence.
+  const positionTrailRef = useRef<Array<{ scrollTop: number; at: number }>>([])
 
   // Interaction tracking. A drag (a press that moved), a press on the
   // scrollbar gutter (track clicks page without pointer motion), and an
@@ -227,6 +241,15 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
   const rememberPosition = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
+    const trail = positionTrailRef.current
+    const latest = trail[trail.length - 1]
+    if (latest && Math.abs(latest.scrollTop - el.scrollTop) <= ROLLBACK_TRAIL_TOLERANCE_PX) {
+      latest.scrollTop = el.scrollTop
+      latest.at = performance.now()
+    } else {
+      trail.push({ scrollTop: el.scrollTop, at: performance.now() })
+      if (trail.length > ROLLBACK_TRAIL_MAX) trail.shift()
+    }
     baselineRef.current = {
       scrollTop: el.scrollTop,
       scrollHeight: el.scrollHeight,
@@ -461,15 +484,26 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
     const downwardDelta = baseline ? Math.max(0, el.scrollTop - baseline.scrollTop) : 0
 
     if (upwardDelta > 0) {
-      // Stable geometry narrows the author to the user or the engine itself
+      // Stable geometry narrows the author to the reader or the engine itself
       // (WebKit's compositor rolling back a programmatic write). Fresh input
-      // is what separates them.
+      // separates them — and an evidence-less move only reads as a rollback
+      // when it lands on the trail of recently held positions, which a
+      // rollback by definition returns to. Off the trail it is a programmatic
+      // jump and is treated exactly like the reader's.
+      const now = performance.now()
       const inputBacked =
         pointerDownRef.current ||
         touchActiveRef.current ||
-        performance.now() - lastInputAtRef.current < INPUT_EVIDENCE_WINDOW_MS
-      if (inputBacked) {
-        lastUserScrollUpAtRef.current = performance.now()
+        now - lastInputAtRef.current < INPUT_EVIDENCE_WINDOW_MS
+      const rollback =
+        !inputBacked &&
+        positionTrailRef.current.some(
+          (p) =>
+            now - p.at <= ROLLBACK_TRAIL_MS &&
+            Math.abs(p.scrollTop - el.scrollTop) <= ROLLBACK_TRAIL_TOLERANCE_PX,
+        )
+      if (!rollback) {
+        lastUserScrollUpAtRef.current = now
         // Blank reserve is one-way. When the reader moves upward, consume the
         // same number of pixels from the spacer. The new scroll position
         // becomes the reserve's live edge, so that discarded blank area cannot
@@ -484,21 +518,21 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
           if (remainingSpacer === 0) anchoredTurnRef.current = null
         }
       }
-      // Beyond the live-edge band, an input-backed upward move is an escape.
-      // The band absorbs elastic bounce-back and sub-pixel jitter; wheel and
-      // keyboard escapes don't come through here at all (their input events
-      // release directly). Without input evidence the move is the engine's:
-      // keep following, give the scrolling tree a beat to settle, and
-      // converge back to the live edge.
+      // Beyond the live-edge band, an upward move that isn't a rollback is an
+      // escape. The band absorbs elastic bounce-back and sub-pixel jitter;
+      // wheel and keyboard escapes don't come through here at all (their
+      // input events release directly). A rollback is the engine's own write
+      // coming back: keep following, give the scrolling tree a beat to
+      // settle, and converge back to the live edge.
       if (followingRef.current && distanceFromBottom(el) > ESCAPE_MIN_DISTANCE_PX) {
-        if (inputBacked) {
-          releaseFollow()
-        } else {
+        if (rollback) {
           clearTimeout(pinRetryTimerRef.current)
           pinRetryTimerRef.current = setTimeout(
             () => pinRetryRef.current(),
             ENGINE_SCROLL_SETTLE_MS,
           )
+        } else {
+          releaseFollow()
         }
       }
     }
