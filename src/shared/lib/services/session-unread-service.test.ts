@@ -124,6 +124,20 @@ describe('session-unread-service', () => {
     })
   })
 
+  // Outside auth mode getCurrentUserId() returns the 'local' sentinel rather
+  // than nothing, so single-user installs are an ordinary one-user case here —
+  // not a "no user, skip the feature" case.
+  it('round-trips a mark for the local sentinel user', async () => {
+    expect(await markSessionUnread('agent-a', 'sess-1', 'local')).toBe(true)
+
+    expect(await getSessionIdsMarkedUnread('agent-a', 'local')).toEqual(new Set(['sess-1']))
+    expect(await getSessionIdsMarkedUnreadByAgents(['agent-a'], 'local').then((m) => m.get('agent-a')))
+      .toEqual(new Set(['sess-1']))
+
+    expect(await clearSessionUnread('sess-1', 'local')).toBe(true)
+    expect(await getSessionIdsMarkedUnread('agent-a', 'local')).toEqual(new Set())
+  })
+
   describe('getSessionIdsMarkedUnreadByAgents', () => {
     it('groups by agent in one query', async () => {
       await markSessionUnread('agent-a', 'sess-a1', ALICE)

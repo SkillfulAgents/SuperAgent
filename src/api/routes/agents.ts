@@ -447,11 +447,13 @@ interface AgentSummaryOptions {
   includeLatestVisibleSessionTail?: boolean
   signal?: AbortSignal
   /**
-   * Acting user, for the per-user half of the unread projection. Omitted only
-   * where there is no request context; the marks lookup is then skipped rather
-   * than answered with someone else's rows.
+   * Acting user, for the per-user half of the unread projection. REQUIRED, and
+   * deliberately not defaulted: a caller that forgot it would silently drop
+   * marks from the rollup — a dot that quietly stops appearing, with nothing
+   * failing. `getCurrentUserId(c)` always yields one (the `'local'` sentinel
+   * outside auth mode), so there is no caller that legitimately lacks it.
    */
-  userId?: string
+  userId: string
 }
 
 function attentionSessionCountsOutsideLatest(
@@ -666,18 +668,15 @@ async function getVisibleSessionExpansion(
  */
 async function enrichAgentsWithSummary(
   agents: ApiAgent[],
-  options: AgentSummaryOptions = {},
+  options: AgentSummaryOptions,
 ): Promise<ApiAgent[]> {
   const slugs = agents.map(a => a.slug)
 
   // Both halves of the unread projection, one query each rather than one per
-  // agent — this route hydrates every agent on every poll. Marks are per-user,
-  // so they are only fetched when the caller told us who is asking.
+  // agent — this route hydrates every agent on every poll.
   const [unreadByAgent, markedUnreadByAgent] = await Promise.all([
     getUnreadNotificationsByAgents(slugs),
-    options.userId
-      ? getSessionIdsMarkedUnreadByAgents(slugs, options.userId)
-      : Promise.resolve(new Map<string, Set<string>>()),
+    getSessionIdsMarkedUnreadByAgents(slugs, options.userId),
   ])
 
   const limit = pLimit(5)
