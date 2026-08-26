@@ -23,6 +23,8 @@ const webTestIgnore = [
   '**/provider-api-key.spec.ts',
   // Needs a production build (service worker) — runs under playwright.pwa.config.ts.
   '**/pwa-precache.spec.ts',
+  // WebKit-engine regression (fractional-zoom follow) — runs under the web-webkit project.
+  '**/safari-follow.spec.ts',
 ]
 
 if (process.env.E2E_INCLUDE_A11Y !== 'true') {
@@ -80,6 +82,14 @@ export default defineConfig({
       name: 'web-chromium',
       testIgnore: webTestIgnore,
       use: { ...devices['Desktop Chrome'] },
+    },
+    // Safari's engine computes fractional scroll metrics at zoomed layouts —
+    // the follow regression this covers never reproduces in Chromium. Run
+    // explicitly with --project=web-webkit (needs `npx playwright install webkit`).
+    {
+      name: 'web-webkit',
+      testMatch: '**/safari-follow.spec.ts',
+      use: { ...devices['Desktop Safari'] },
     },
   ],
 

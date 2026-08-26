@@ -2356,11 +2356,12 @@ describe('MessageList', () => {
       mockMessagesData.data = base
       const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
       const el = screen.getByTestId('message-list')
-      // An escape needs a baseline event followed by an upward one with
-      // stable geometry. Target lands mid-thread, not near the top, so no
-      // load-more expand triggers.
+      // An escape is input-driven: the upward wheel releases following.
+      // Target lands mid-thread, not near the top, so no load-more expand
+      // triggers.
       mockScrollGeometry(el, { scrollHeight: 10000, clientHeight: 500, scrollTop: 9500 })
       fireEvent.scroll(el)
+      fireEvent.wheel(el, { deltaY: -40 })
       el.scrollTop = 5000
       fireEvent.scroll(el)
       await act(async () => {
@@ -2533,9 +2534,10 @@ describe('MessageList', () => {
       const el = screen.getByTestId('message-list')
       const geometry = mockTurnGeometry(el)
 
-      // Escape by scrolling up (baseline event, then an upward one with
-      // stable geometry — the shape only a user can produce).
+      // Escape: an upward wheel reaching the scroller releases following at
+      // the input itself; the scroll events land where it took the reader.
       fireEvent.scroll(el)
+      fireEvent.wheel(el, { deltaY: -40 })
       geometry.setScrollTop(300)
       fireEvent.scroll(el)
       await act(async () => {
@@ -2845,6 +2847,28 @@ describe('MessageList', () => {
       expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
     })
 
+    it('converges back instead of escaping when an upward scroll has no input behind it', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      fireEvent.scroll(el) // baseline at the live edge
+
+      // WebKit's async scrolling can roll a programmatic follow write back to
+      // its last composited position: an upward, size-stable scroll event
+      // with zero input anywhere near it. That shape is the engine's, not
+      // the reader's — following must not disengage, and convergence must
+      // put the viewport back on the live edge.
+      geometry.setScrollTop(500)
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 250))
+      })
+      expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
+      expect(geometry.scrollTop).toBe(699)
+    })
+
     it('ignores a bounce-back settling inside the live-edge band after a downward wheel', async () => {
       installFakeResizeObserver()
       mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
@@ -2886,6 +2910,7 @@ describe('MessageList', () => {
       })
 
       // The reader escaped a while ago…
+      fireEvent.wheel(el, { deltaY: -60 })
       geometry.setScrollTop(200)
       fireEvent.scroll(el)
       await act(async () => {
@@ -3107,7 +3132,8 @@ describe('MessageList', () => {
       })
       await waitFor(() => expect(geometry.scrollTop).toBe(799))
 
-      // An upward scroll escapes: subsequent growth no longer moves the reader.
+      // An upward wheel escapes: subsequent growth no longer moves the reader.
+      fireEvent.wheel(el, { deltaY: -40 })
       geometry.setScrollTop(600)
       fireEvent.scroll(el)
       await flushClassification()
@@ -3161,6 +3187,7 @@ describe('MessageList', () => {
       // Escaped readers keep their place instead: browsers anchor the top
       // edge on resize, and the pin must not yank them to the bottom.
       fireEvent.scroll(el)
+      fireEvent.wheel(el, { deltaY: -40 })
       geometry.setScrollTop(500)
       fireEvent.scroll(el)
       await act(async () => {

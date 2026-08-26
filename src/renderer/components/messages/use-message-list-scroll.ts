@@ -36,11 +36,13 @@ const TURN_ANCHOR_TOP = 100
 //     arrives — before any scroll event, so a concurrent follow write can
 //     never swallow it.
 //   - The BACKSTOP for inputs with no distinct event (a dragged scrollbar,
-//     touch momentum, find-in-page) classifies a scroll event as the user's
-//     only when the geometry was stable: our own writes always update the
-//     baseline in the same statement, and a browser clamp only ever fires in
-//     a frame where scrollHeight or clientHeight changed — so an upward move
-//     with both unchanged has no author left but the user.
+//     touch momentum) classifies a scroll event as the user's only when the
+//     geometry was stable AND some input recently touched the scroller: our
+//     own writes always update the baseline in the same statement, a browser
+//     clamp only ever fires in a frame where scrollHeight or clientHeight
+//     changed, and WebKit's async scrolling can roll a write back with no
+//     input at all — upward + stable + fresh input is the reader leaving;
+//     upward + stable + no input is the engine, and following converges back.
 //   - FOLLOWING is convergent: while engaged, every content or viewport
 //     resize re-pins the live edge with a single instant write. A missed or
 //     misread event can cost one frame, never a dead latch.
@@ -60,6 +62,18 @@ const ATTACH_OFFSET_PX = 70
 // leaves this band. Elastic overscroll bounce-back (Safari) and sub-pixel
 // jitter land inside it; a real escape leaves it in one gesture.
 const ESCAPE_MIN_DISTANCE_PX = 24
+// The backstop additionally requires some input to have touched the scroller
+// this recently before it releases following. WebKit's async scrolling can
+// roll a programmatic write back to its last composited position and report
+// that as a genuine upward, size-stable scroll event — with no input
+// anywhere near it, that shape is the engine's, not the reader's, and
+// following converges back instead of disengaging (reproduced by
+// safari-follow.spec.ts: zero-input rollbacks to the same committed position
+// after large thinking-card collapses, WebKit only).
+const INPUT_EVIDENCE_WINDOW_MS = 500
+// How long the scrolling tree gets to settle before convergence re-pins
+// after an engine-caused upward scroll.
+const ENGINE_SCROLL_SETTLE_MS = 150
 // After a user-attributed upward scroll, hold re-pins briefly so an in-flight
 // upward gesture (wheel ticks eating the reserve) isn't fought mid-motion.
 const USER_SCROLL_HOLD_MS = 100
@@ -188,6 +202,10 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
   const pointerDragRef = useRef(false)
   const pointerDownPosRef = useRef<{ x: number; y: number } | null>(null)
   const pointerOnScrollbarRef = useRef(false)
+  // Any input that reached the scroller — wheel (either direction), scroll
+  // key, pointer press, touch. The backstop's release requires this to be
+  // fresh; see INPUT_EVIDENCE_WINDOW_MS.
+  const lastInputAtRef = useRef(0)
   const touchActiveRef = useRef(false)
   const touchSettleTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const scheduleTouchSettleRef = useRef<(() => void) | null>(null)
@@ -443,26 +461,45 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
     const downwardDelta = baseline ? Math.max(0, el.scrollTop - baseline.scrollTop) : 0
 
     if (upwardDelta > 0) {
-      lastUserScrollUpAtRef.current = performance.now()
-      // Blank reserve is one-way. When the reader moves upward, consume the
-      // same number of pixels from the spacer. The new scroll position
-      // becomes the reserve's live edge, so that discarded blank area cannot
-      // be revisited — and the re-based target keeps the reader "at the
-      // bottom", so eating never disengages following by itself.
-      const anchoredTurn = anchoredTurnRef.current
-      if (anchoredTurn && bottomSpacerHeightRef.current > 0) {
-        const discard = Math.min(upwardDelta, bottomSpacerHeightRef.current)
-        const remainingSpacer = bottomSpacerHeightRef.current - discard
-        anchoredTurn.scrollTop = Math.max(0, anchoredTurn.scrollTop - discard)
-        setBottomSpacerHeight(remainingSpacer)
-        if (remainingSpacer === 0) anchoredTurnRef.current = null
+      // Stable geometry narrows the author to the user or the engine itself
+      // (WebKit's compositor rolling back a programmatic write). Fresh input
+      // is what separates them.
+      const inputBacked =
+        pointerDownRef.current ||
+        touchActiveRef.current ||
+        performance.now() - lastInputAtRef.current < INPUT_EVIDENCE_WINDOW_MS
+      if (inputBacked) {
+        lastUserScrollUpAtRef.current = performance.now()
+        // Blank reserve is one-way. When the reader moves upward, consume the
+        // same number of pixels from the spacer. The new scroll position
+        // becomes the reserve's live edge, so that discarded blank area cannot
+        // be revisited — and the re-based target keeps the reader "at the
+        // bottom", so eating never disengages following by itself.
+        const anchoredTurn = anchoredTurnRef.current
+        if (anchoredTurn && bottomSpacerHeightRef.current > 0) {
+          const discard = Math.min(upwardDelta, bottomSpacerHeightRef.current)
+          const remainingSpacer = bottomSpacerHeightRef.current - discard
+          anchoredTurn.scrollTop = Math.max(0, anchoredTurn.scrollTop - discard)
+          setBottomSpacerHeight(remainingSpacer)
+          if (remainingSpacer === 0) anchoredTurnRef.current = null
+        }
       }
-      // Beyond the live-edge band, an upward user move is an escape. The
-      // band absorbs elastic bounce-back and sub-pixel jitter; wheel and
+      // Beyond the live-edge band, an input-backed upward move is an escape.
+      // The band absorbs elastic bounce-back and sub-pixel jitter; wheel and
       // keyboard escapes don't come through here at all (their input events
-      // release directly).
+      // release directly). Without input evidence the move is the engine's:
+      // keep following, give the scrolling tree a beat to settle, and
+      // converge back to the live edge.
       if (followingRef.current && distanceFromBottom(el) > ESCAPE_MIN_DISTANCE_PX) {
-        releaseFollow()
+        if (inputBacked) {
+          releaseFollow()
+        } else {
+          clearTimeout(pinRetryTimerRef.current)
+          pinRetryTimerRef.current = setTimeout(
+            () => pinRetryRef.current(),
+            ENGINE_SCROLL_SETTLE_MS,
+          )
+        }
       }
     }
 
@@ -669,6 +706,7 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
       if (nestedScrollableConsumesWheel(node, event.deltaY)) return
       node = node.parentElement
     }
+    lastInputAtRef.current = performance.now()
     if (event.deltaY < 0) {
       cancelGlide()
       if (outer.scrollHeight <= outer.clientHeight + 1) return
@@ -684,6 +722,7 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
   const handleScrollKey = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
     const el = scrollRef.current
     if (!el || el.scrollHeight <= el.clientHeight + 1) return
+    lastInputAtRef.current = performance.now()
     const upward =
       UPWARD_SCROLL_KEYS.has(event.key) || (event.key === ' ' && event.shiftKey)
     if (upward) {
@@ -720,6 +759,7 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
     pointerDownRef.current = true
     pointerDragRef.current = false
     pointerDownPosRef.current = { x: event.clientX, y: event.clientY }
+    lastInputAtRef.current = performance.now()
     pointerOnScrollbarRef.current =
       !!el &&
       el.clientWidth > 0 &&
@@ -781,12 +821,14 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
   }, [settleInteraction])
   const handleTouchStart = useCallback(() => {
     touchActiveRef.current = true
+    lastInputAtRef.current = performance.now()
     clearTimeout(touchSettleTimerRef.current)
     touchSettleTimerRef.current = undefined
     cancelGlide()
   }, [cancelGlide])
   const handleTouchMove = useCallback(() => {
     touchActiveRef.current = true
+    lastInputAtRef.current = performance.now()
   }, [])
   const handleTouchEnd = useCallback(() => {
     if (!touchActiveRef.current) return
