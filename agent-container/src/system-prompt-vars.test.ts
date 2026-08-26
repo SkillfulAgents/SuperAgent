@@ -201,6 +201,16 @@ describe('generateSystemPrompt rendering', () => {
     expect(echoed, 'FAQ should point at the prompt/search tool, not restate slugs').toEqual([])
   })
 
+  it('tells the agent to keep regenerable scratch on /tmp', () => {
+    const out = generateSystemPrompt()
+    expect(out).toContain('## Workspace vs Scratch')
+    expect(out).toContain('A path is **regenerable** when it is fine if it is gone next session')
+    expect(out).toContain('Put that scratch in `/tmp`')
+    expect(out).toContain('A path is **durable** when the user would lose work')
+    expect(out).toContain('Anything you deliver, bookmark, or that the user will open again also goes on `/workspace`')
+    expect(out).toContain('When unsure, prefer `/workspace`')
+  })
+
   it('routes product questions through the complete image-owned FAQ directory', () => {
     const out = generateSystemPrompt()
     const faqDir = join(__dirname, '..', 'docs', 'faqs')
