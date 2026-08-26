@@ -4484,6 +4484,17 @@ describe('DELETE /:id/sessions/:sessionId', () => {
     expect(deleteNotificationsBySessionIds).toHaveBeenCalledWith(['sess-1'])
   })
 
+  it('cleans up every user unread mark for the deleted session', async () => {
+    // A mark outliving its session is unreachable: no list shows the session,
+    // so its owner could never clear the row.
+    vi.mocked(deleteSession).mockResolvedValue(true)
+
+    const res = await deleteReq(app, URL)
+
+    expect(res.status).toBe(204)
+    expect(deleteSessionUnreadMarks).toHaveBeenCalledWith(['sess-1'])
+  })
+
   it('deletes a dangling session whose transcript JSONL is gone (no getSession gate)', async () => {
     // getSession returns null when the JSONL is missing — the route must NOT
     // gate on it, or dangling sessions become impossible to remove.
@@ -6722,6 +6733,9 @@ describe('GET /api/agents (enriched summary)', () => {
     const body = await res.json()
 
     expect(body[0].hasUnreadNotifications).toBe(true)
+    // Batched per-user, so one person's marks never reach another's rollup.
+    expect(vi.mocked(getSessionIdsMarkedUnreadByAgents))
+      .toHaveBeenCalledWith(['agent-1'], 'test-user-id')
   })
 
   it('ignores a marked-unread flag on a hidden automated session', async () => {
@@ -8490,7 +8504,9 @@ describe('mark as unread — /:id/sessions/:sessionId/unread', () => {
     })
 
     expect(res.status).toBe(200)
-    expect(vi.mocked(markSessionUnread)).toHaveBeenCalledWith('test-agent', 'sess-1')
+    // The acting user is threaded through: marks are per-user, so the route must
+    // never write one keyed to anybody else.
+    expect(vi.mocked(markSessionUnread)).toHaveBeenCalledWith('test-agent', 'sess-1', 'test-user-id')
     expect(vi.mocked(clearSessionUnread)).not.toHaveBeenCalled()
   })
 
@@ -8500,7 +8516,7 @@ describe('mark as unread — /:id/sessions/:sessionId/unread', () => {
     })
 
     expect(res.status).toBe(200)
-    expect(vi.mocked(clearSessionUnread)).toHaveBeenCalledWith('sess-1')
+    expect(vi.mocked(clearSessionUnread)).toHaveBeenCalledWith('sess-1', 'test-user-id')
     expect(vi.mocked(markSessionUnread)).not.toHaveBeenCalled()
   })
 
@@ -8562,6 +8578,24 @@ describe('mark as unread — /:id/sessions/:sessionId/unread', () => {
     const body = await res.json()
 
     expect(body[0].hasUnreadNotifications).toBe(true)
+  })
+
+  // Marks are per-user, so the projections must ask for the acting user's —
+  // otherwise one person's reminder would raise a dot on everyone's sidebar.
+  it('scopes the session-list projection to the acting user', async () => {
+    vi.mocked(listSessionsFromSummary).mockResolvedValue([])
+
+    await getReq(app, '/api/agents/test-agent/sessions')
+
+    expect(vi.mocked(getSessionIdsMarkedUnread)).toHaveBeenCalledWith('test-agent', 'test-user-id')
+  })
+
+  it('scopes the notable fast path to the acting user', async () => {
+    vi.mocked(listSessionsByIds).mockResolvedValue([])
+
+    await getReq(app, '/api/agents/test-agent/sessions?notable=true')
+
+    expect(vi.mocked(getSessionIdsMarkedUnread)).toHaveBeenCalledWith('test-agent', 'test-user-id')
   })
 
   it('pulls a marked-unread session into the notable fast path', async () => {

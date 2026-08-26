@@ -446,6 +446,12 @@ const LATEST_VISIBLE_SESSION_TAIL_BYTE_BUDGET = 256 * 1024
 interface AgentSummaryOptions {
   includeLatestVisibleSessionTail?: boolean
   signal?: AbortSignal
+  /**
+   * Acting user, for the per-user half of the unread projection. Omitted only
+   * where there is no request context; the marks lookup is then skipped rather
+   * than answered with someone else's rows.
+   */
+  userId?: string
 }
 
 function attentionSessionCountsOutsideLatest(
@@ -665,10 +671,13 @@ async function enrichAgentsWithSummary(
   const slugs = agents.map(a => a.slug)
 
   // Both halves of the unread projection, one query each rather than one per
-  // agent — this route hydrates every agent on every poll.
+  // agent — this route hydrates every agent on every poll. Marks are per-user,
+  // so they are only fetched when the caller told us who is asking.
   const [unreadByAgent, markedUnreadByAgent] = await Promise.all([
     getUnreadNotificationsByAgents(slugs),
-    getSessionIdsMarkedUnreadByAgents(slugs),
+    options.userId
+      ? getSessionIdsMarkedUnreadByAgents(slugs, options.userId)
+      : Promise.resolve(new Map<string, Set<string>>()),
   ])
 
   const limit = pLimit(5)
@@ -1299,6 +1308,7 @@ agents.get('/', async (c) => {
       includeLatestVisibleSessionTail:
         parsedQuery.data.includeLatestVisibleSessionTail === true,
       signal: c.req.raw.signal,
+      userId: getCurrentUserId(c),
     }))
   } catch (error) {
     console.error('Failed to fetch agents:', error)
@@ -1341,7 +1351,7 @@ agents.get('/:id', ResolveAgent(), AgentRead(), async (c) => {
       return c.json({ error: 'Agent not found' }, 404)
     }
 
-    const [enriched] = await enrichAgentsWithSummary([agent])
+    const [enriched] = await enrichAgentsWithSummary([agent], { userId: getCurrentUserId(c) })
     return c.json(enriched)
   } catch (error) {
     console.error('Failed to fetch agent:', error)
@@ -1881,7 +1891,7 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
       // it stats anything, and the whole request stays off disk.
       const [unreadIds, markedUnreadIds] = await Promise.all([
         getSessionIdsWithUnreadNotifications(slug),
-        getSessionIdsMarkedUnread(slug),
+        getSessionIdsMarkedUnread(slug, getCurrentUserId(c)),
       ])
       const activeIds = messagePersister.getActiveSessionIdsForAgent(slug)
       const infos = await listSessionsByIds(
@@ -1924,7 +1934,7 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
         ...(resultLimit === undefined ? {} : { limit: resultLimit }),
       }),
       getSessionIdsWithUnreadNotifications(slug),
-      getSessionIdsMarkedUnread(slug),
+      getSessionIdsMarkedUnread(slug, getCurrentUserId(c)),
       listPendingWakesByAgent(slug),
     ])
     const wakesBySession = new Map(pendingWakes.map((w) => [w.resumeSessionId!, w]))
@@ -2917,16 +2927,16 @@ agents.patch('/:id/sessions/:sessionId', AgentUser(), async (c) => {
 // POST /api/agents/:id/sessions/:sessionId/unread - Re-raise the unread dot
 // DELETE the same path clears it (fired when the session is next opened).
 //
-// The two verbs are deliberately gated differently. Raising is AgentUser, like
-// every other write under this path: the flag lives on shared session metadata,
-// so it plants a marker every user of the agent sees. Clearing is AgentRead —
-// a read-only viewer must always be able to dismiss a dot someone else raised,
-// or they'd be stuck looking at one forever. That mirrors notification read
-// state, which any viewer already flips just by opening a session.
+// Both verbs are AgentRead, unusually for writes under this path. A mark is
+// scoped to the acting user: it raises a dot on their sidebar only, and only
+// they can clear it. So there is no shared state to protect — a read-only
+// viewer marking their own session unread is no more consequential than the
+// notification read state they already flip just by opening a session, and
+// gating it higher would leave them unable to dismiss their own dot.
 //
 // `changed` lets the client skip its cache invalidation on a no-op: the clear
-// fires on every session open, and the overwhelmingly common case is a flag
-// that was never set.
+// fires on every session open, and the overwhelmingly common case is a mark
+// that was never raised.
 async function setUnreadFlag(c: Context, sessionId: string, markedUnread: boolean) {
   try {
     const agentSlug = getAgentId(c)
@@ -2937,9 +2947,10 @@ async function setUnreadFlag(c: Context, sessionId: string, markedUnread: boolea
       return c.json({ error: 'Session not found' }, 404)
     }
 
+    const userId = getCurrentUserId(c)
     const changed = markedUnread
-      ? await markSessionUnread(agentSlug, sessionId)
-      : await clearSessionUnread(sessionId)
+      ? await markSessionUnread(agentSlug, sessionId, userId)
+      : await clearSessionUnread(sessionId, userId)
     return c.json({ success: true, markedUnread, changed })
   } catch (error) {
     console.error('Failed to update session unread flag:', error)
@@ -2947,7 +2958,7 @@ async function setUnreadFlag(c: Context, sessionId: string, markedUnread: boolea
   }
 }
 
-agents.post('/:id/sessions/:sessionId/unread', AgentUser(), async (c) => {
+agents.post('/:id/sessions/:sessionId/unread', AgentRead(), async (c) => {
   return setUnreadFlag(c, c.req.param('sessionId'), true)
 })
 

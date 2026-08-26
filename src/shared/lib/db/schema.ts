@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { sqliteTable, text, integer, uniqueIndex, index, check } from 'drizzle-orm/sqlite-core'
+import { sqliteTable, text, integer, uniqueIndex, index, check, primaryKey } from 'drizzle-orm/sqlite-core'
 import { CHAT_PROVIDERS } from '@shared/lib/chat-integrations/config-schema'
 
 // =============================================================================
@@ -280,7 +280,7 @@ export const notifications = sqliteTable('notifications', {
 
 /**
  * Sessions a user asked to see the unread dot on again ("Mark as Unread") —
- * one row per marked session, deleted when the session is next opened.
+ * one row per (session, user), deleted when that user next opens the session.
  *
  * Separate from `notifications` rather than un-reading a row there: read state
  * on those rows drives the inbox, so flipping one would resurface an old
@@ -293,15 +293,28 @@ export const notifications = sqliteTable('notifications', {
  * session's entry — see the perf suite's op-count budgets, which pin the
  * notable path at zero file reads.
  *
- * Shared, not per-user, matching the deliberate choice on `notifications`
- * above: whoever next opens the session clears it for everyone.
+ * UNLIKE `notifications` above, these rows ARE per-user. Notification read
+ * state is shared because it records a team-visible fact ("someone
+ * acknowledged this"); a mark records one person's intent to come back to a
+ * session, so a teammate opening it must not clear your reminder, and your
+ * reminder must not put a dot on their sidebar. Scoping is what makes that
+ * possible cheaply — the shared-metadata design this replaced could not.
+ *
+ * `user_id` is plain text with no FK, for the same reason as
+ * `push_subscriptions` below: local mode has no user rows at all, and
+ * getCurrentUserId() returns the `'local'` sentinel there. A row can therefore
+ * outlive a deleted user; it is collected when the session or agent goes, and
+ * is invisible to everyone else meanwhile.
  */
 export const sessionUnreadMarks = sqliteTable('session_unread_marks', {
-  sessionId: text('session_id').primaryKey(),
+  sessionId: text('session_id').notNull(),
+  userId: text('user_id').notNull(),
   agentSlug: text('agent_slug').notNull(),
   markedAt: integer('marked_at', { mode: 'timestamp_ms' }).notNull(),
 }, (table) => ({
-  agentSlugIdx: index('session_unread_marks_agent_slug_idx').on(table.agentSlug),
+  pk: primaryKey({ columns: [table.sessionId, table.userId] }),
+  // The projections read "marks for this agent, for me".
+  agentSlugUserIdx: index('session_unread_marks_agent_slug_user_idx').on(table.agentSlug, table.userId),
 }))
 
 /**

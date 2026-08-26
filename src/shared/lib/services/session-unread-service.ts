@@ -12,50 +12,59 @@
  * metadata-backed flag would have put an O(sessions) read back on a hot poll.
  * A query here costs no filesystem work at all.
  *
- * Marks are shared, not per-user, matching notification read state (see the
- * comment on the `notifications` table). Whoever next opens the session clears
- * it for everyone.
+ * Every function is scoped to one user. Unlike notification read state — which
+ * is deliberately shared, because it records a team-visible acknowledgement — a
+ * mark records one person's intent to come back to a session. A teammate
+ * opening the session must not clear your reminder, and your reminder must not
+ * raise a dot on their sidebar. `userId` is the `getCurrentUserId()` value,
+ * which is the `'local'` sentinel outside auth mode.
  */
 
 import { db } from '@shared/lib/db'
 import { sessionUnreadMarks } from '@shared/lib/db/schema'
-import { eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 
 /**
- * Raise the mark. Idempotent: re-marking an already-marked session keeps the
- * original timestamp and reports no change.
+ * Raise this user's mark. Idempotent: re-marking keeps the original timestamp
+ * and reports no change.
  *
  * Returns whether a row was actually written, so callers can skip the cache
  * invalidation a no-op would otherwise trigger.
  */
-export async function markSessionUnread(agentSlug: string, sessionId: string): Promise<boolean> {
+export async function markSessionUnread(
+  agentSlug: string,
+  sessionId: string,
+  userId: string,
+): Promise<boolean> {
   const result = await db
     .insert(sessionUnreadMarks)
-    .values({ sessionId, agentSlug, markedAt: new Date() })
+    .values({ sessionId, userId, agentSlug, markedAt: new Date() })
     .onConflictDoNothing()
 
   return (result.changes ?? 0) > 0
 }
 
 /**
- * Clear the mark. Fires on every session open, so the overwhelmingly common
- * case is a session that was never marked — that deletes no rows and reports
- * false.
+ * Clear this user's mark, leaving anyone else's alone. Fires on every session
+ * open, so the overwhelmingly common case deletes no row and reports false.
  */
-export async function clearSessionUnread(sessionId: string): Promise<boolean> {
+export async function clearSessionUnread(sessionId: string, userId: string): Promise<boolean> {
   const result = await db
     .delete(sessionUnreadMarks)
-    .where(eq(sessionUnreadMarks.sessionId, sessionId))
+    .where(and(eq(sessionUnreadMarks.sessionId, sessionId), eq(sessionUnreadMarks.userId, userId)))
 
   return (result.changes ?? 0) > 0
 }
 
-/** Session ids marked unread for one agent. */
-export async function getSessionIdsMarkedUnread(agentSlug: string): Promise<Set<string>> {
+/** Session ids this user marked unread on one agent. */
+export async function getSessionIdsMarkedUnread(
+  agentSlug: string,
+  userId: string,
+): Promise<Set<string>> {
   const rows = await db
     .select({ sessionId: sessionUnreadMarks.sessionId })
     .from(sessionUnreadMarks)
-    .where(eq(sessionUnreadMarks.agentSlug, agentSlug))
+    .where(and(eq(sessionUnreadMarks.agentSlug, agentSlug), eq(sessionUnreadMarks.userId, userId)))
 
   return new Set(rows.map((r) => r.sessionId))
 }
@@ -67,6 +76,7 @@ export async function getSessionIdsMarkedUnread(agentSlug: string): Promise<Set<
  */
 export async function getSessionIdsMarkedUnreadByAgents(
   agentSlugs: string[],
+  userId: string,
 ): Promise<Map<string, Set<string>>> {
   const result = new Map<string, Set<string>>()
   if (agentSlugs.length === 0) return result
@@ -74,7 +84,10 @@ export async function getSessionIdsMarkedUnreadByAgents(
   const rows = await db
     .select({ agentSlug: sessionUnreadMarks.agentSlug, sessionId: sessionUnreadMarks.sessionId })
     .from(sessionUnreadMarks)
-    .where(inArray(sessionUnreadMarks.agentSlug, agentSlugs))
+    .where(and(
+      inArray(sessionUnreadMarks.agentSlug, agentSlugs),
+      eq(sessionUnreadMarks.userId, userId),
+    ))
 
   for (const row of rows) {
     let set = result.get(row.agentSlug)
@@ -85,8 +98,9 @@ export async function getSessionIdsMarkedUnreadByAgents(
 }
 
 /**
- * Drop marks for deleted sessions, alongside deleteNotificationsBySessionIds —
- * otherwise a mark would outlive its session as an unreachable row.
+ * Drop every user's marks for deleted sessions, alongside
+ * deleteNotificationsBySessionIds — otherwise a mark would outlive its session
+ * as an unreachable row.
  */
 export async function deleteSessionUnreadMarks(sessionIds: string[]): Promise<number> {
   if (sessionIds.length === 0) return 0

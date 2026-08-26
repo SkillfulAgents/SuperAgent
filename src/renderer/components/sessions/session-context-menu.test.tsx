@@ -213,8 +213,7 @@ describe('SessionContextMenu mark as unread', () => {
     })
   })
 
-  // Unlike rename/delete, marking unread is not owner-gated — a plain member
-  // can do it. It is AgentUser-gated, though; see the read-only case below.
+  // Unlike rename/delete, marking unread is not permission-gated at all.
   it('stays available to members who cannot admin the agent', () => {
     mockCanAdminAgent.mockReturnValue(false)
 
@@ -228,10 +227,10 @@ describe('SessionContextMenu mark as unread', () => {
     expect(screen.getByTestId('mark-unread-session-item')).toBeInTheDocument()
   })
 
-  // The flag is shared metadata, so raising it plants a marker every user of
-  // the agent sees — the route gates POST on AgentUser and the menu matches it.
-  // (Clearing stays open to viewers, but that fires on session open, not here.)
-  it('hides the item from a read-only viewer, matching the AgentUser route gate', () => {
+  // A mark is scoped to the acting user, so it raises a dot on their sidebar
+  // only — there is no shared state for a permission gate to protect, and
+  // gating it would leave a viewer unable to dismiss their own dot.
+  it('stays available to a read-only viewer, whose mark only they can see', () => {
     mockCanUseAgent.mockReturnValue(false)
 
     render(
@@ -240,9 +239,7 @@ describe('SessionContextMenu mark as unread', () => {
       </SessionContextMenu>,
     )
 
-    expect(screen.queryByTestId('mark-unread-session-item')).not.toBeInTheDocument()
-    // Still an ordinary menu, just without this item.
-    expect(screen.getByText('Copy Raw Log')).toBeInTheDocument()
+    expect(screen.getByTestId('mark-unread-session-item')).toBeInTheDocument()
   })
 
   // Every list suppresses the unread dot while a session is working or awaiting
