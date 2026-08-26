@@ -81,7 +81,6 @@ export function NewIntegrationButton() {
       <IntegrationDirectoryDialog
         open={open}
         onOpenChange={setOpen}
-        initialTab="apis"
         onApiConnected={setNewApi}
         onMcpConnected={setNewMcp}
       />
