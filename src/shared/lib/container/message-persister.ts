@@ -1251,6 +1251,19 @@ class MessagePersister {
     }
   }
 
+  // Refresh one session's summary entry from its transcript's real mtime.
+  // Fire-and-forget: a failed stat leaves the TTL reconciliation to repair it.
+  private refreshSessionActivityFromDisk(agentSlug: string, sessionId: string): void {
+    void (async () => {
+      try {
+        const stat = await fs.promises.stat(getSessionJsonlPath(agentSlug, sessionId))
+        if (stat) recordSessionActivity(agentSlug, sessionId, stat.mtimeMs)
+      } catch {
+        // Missing or unreadable: the TTL reconciliation repairs it.
+      }
+    })()
+  }
+
   // Mark session as active (when user sends a message)
   markSessionActive(sessionId: string, agentSlug?: string): void {
     let state = this.streamingStates.get(sessionId)
@@ -1736,6 +1749,15 @@ class MessagePersister {
     // copies, and replaying them would re-fire terminal broadcasts.
     if (content.replayed && !state.isActive) {
       return
+    }
+
+    // This session missed its turn end (still active, now told by replay that
+    // it finished), so nothing recorded that activity. The replay's arrival
+    // time is not when it happened; the transcript's mtime is. One stat of
+    // that file puts the session in its right place now instead of at the
+    // next TTL rebuild.
+    if (content.replayed && content.type === 'result' && state.agentSlug) {
+      this.refreshSessionActivityFromDisk(state.agentSlug, sessionId)
     }
 
     switch (content.type) {

@@ -389,6 +389,23 @@ describe('MessagePersister', () => {
       expect(mockRecordSessionActivity).not.toHaveBeenCalled()
     })
 
+    it('refreshes a session that finished while detached from its transcript mtime, not the replay time', async () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockRecordSessionActivity.mockClear()
+      mockStat.mockResolvedValueOnce({ mtimeMs: 1_754_600_000_000, size: 4096 })
+
+      mockClient._messageCallback!({
+        type: 'message',
+        content: { type: 'result', subtype: 'success', replayed: true },
+        timestamp: new Date('2026-08-07T20:00:00.000Z'),
+        sessionId: SESSION_ID,
+      })
+      await vi.waitFor(() => expect(mockRecordSessionActivity).toHaveBeenCalled())
+
+      expect(mockStat).toHaveBeenCalledWith(expect.stringContaining(`${SESSION_ID}.jsonl`))
+      expect(mockRecordSessionActivity).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID, 1_754_600_000_000)
+    })
+
     it('does not attribute a sidechain transcript frame to the parent session', () => {
       mockClient._messageCallback!({
         type: 'message',
