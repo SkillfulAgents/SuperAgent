@@ -157,3 +157,39 @@ export function useUpdateSessionName() {
     },
   })
 }
+
+/**
+ * Raise ("Mark as unread") or clear the user-driven unread dot on a session.
+ * Clearing is fired when the session is opened; see SessionView.
+ */
+export function useSetSessionMarkedUnread() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    meta: { skipGlobalErrorToast: true },
+    mutationFn: async ({
+      sessionId,
+      agentSlug,
+      markedUnread,
+    }: { sessionId: string; agentSlug: string; markedUnread: boolean }) => {
+      const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/unread`, {
+        method: markedUnread ? 'POST' : 'DELETE',
+      })
+      if (!res.ok) throw new Error('Failed to update session unread flag')
+      return res.json() as Promise<{ success: boolean; markedUnread: boolean; changed: boolean }>
+    },
+    onSuccess: (data, variables) => {
+      // The clear fires on every session open, and almost always clears a flag
+      // that was never set. Refetching on that no-op would re-stat every
+      // session in the agent's directory (the sessions list) and re-enrich
+      // every agent (the agents list) for nothing, so the server reports
+      // whether it actually wrote and we invalidate only then.
+      if (!data.changed) return
+      queryClient.invalidateQueries({
+        queryKey: ['sessions', resolveAgentSlugFromCache(queryClient, variables.agentSlug)],
+      })
+      // The agent row rolls session dots up into its own indicator.
+      queryClient.invalidateQueries({ queryKey: ['agents'] })
+    },
+  })
+}

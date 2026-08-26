@@ -139,6 +139,7 @@ import {
 } from '@shared/lib/services/skillset-service'
 import { type ArtifactInfo, listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
 import { getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents, deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
+import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { getInboundXAgentDetails } from '@shared/lib/services/inbound-x-agent-service'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
@@ -445,6 +446,14 @@ const LATEST_VISIBLE_SESSION_TAIL_BYTE_BUDGET = 256 * 1024
 interface AgentSummaryOptions {
   includeLatestVisibleSessionTail?: boolean
   signal?: AbortSignal
+  /**
+   * Acting user, for the per-user half of the unread projection. REQUIRED, and
+   * deliberately not defaulted: a caller that forgot it would silently drop
+   * marks from the rollup — a dot that quietly stops appearing, with nothing
+   * failing. `getCurrentUserId(c)` always yields one (the `'local'` sentinel
+   * outside auth mode), so there is no caller that legitimately lacks it.
+   */
+  userId: string
 }
 
 function attentionSessionCountsOutsideLatest(
@@ -612,6 +621,7 @@ async function getVisibleSessionExpansion(
   }
 
   const latestSession = visibleSessions[0]
+
   let attentionOutsideLatest: ApiAgent['attentionOutsideLatest']
   try {
     attentionOutsideLatest = getAttentionOutsideLatest(
@@ -658,16 +668,26 @@ async function getVisibleSessionExpansion(
  */
 async function enrichAgentsWithSummary(
   agents: ApiAgent[],
-  options: AgentSummaryOptions = {},
+  options: AgentSummaryOptions,
 ): Promise<ApiAgent[]> {
   const slugs = agents.map(a => a.slug)
 
-  const unreadByAgent = await getUnreadNotificationsByAgents(slugs)
+  // Both halves of the unread projection, one query each rather than one per
+  // agent — this route hydrates every agent on every poll.
+  const [unreadByAgent, markedUnreadByAgent] = await Promise.all([
+    getUnreadNotificationsByAgents(slugs),
+    getSessionIdsMarkedUnreadByAgents(slugs, options.userId),
+  ])
 
   const limit = pLimit(5)
   return Promise.all(
     agents.map((agent) => limit(async () => {
-      const unreadSessionIds = unreadByAgent.get(agent.slug) ?? new Set<string>()
+      // Union of the two sources, so every projection below sees one set.
+      const notifiedIds = unreadByAgent.get(agent.slug) ?? new Set<string>()
+      const markedIds = markedUnreadByAgent.get(agent.slug) ?? new Set<string>()
+      const unreadSessionIds = markedIds.size === 0
+        ? notifiedIds
+        : new Set<string>([...notifiedIds, ...markedIds])
       const sessionMetadataPromise = readSessionMetadata(agent.slug)
       const visibleSessionExpansionPromise = options.includeLatestVisibleSessionTail
         ? getVisibleSessionExpansion(
@@ -1287,6 +1307,7 @@ agents.get('/', async (c) => {
       includeLatestVisibleSessionTail:
         parsedQuery.data.includeLatestVisibleSessionTail === true,
       signal: c.req.raw.signal,
+      userId: getCurrentUserId(c),
     }))
   } catch (error) {
     console.error('Failed to fetch agents:', error)
@@ -1329,7 +1350,7 @@ agents.get('/:id', ResolveAgent(), AgentRead(), async (c) => {
       return c.json({ error: 'Agent not found' }, 404)
     }
 
-    const [enriched] = await enrichAgentsWithSummary([agent])
+    const [enriched] = await enrichAgentsWithSummary([agent], { userId: getCurrentUserId(c) })
     return c.json(enriched)
   } catch (error) {
     console.error('Failed to fetch agent:', error)
@@ -1863,11 +1884,20 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
     const resultLimit = requestedLimit ?? (isNotable ? 25 : undefined)
 
     if (isNotable) {
-      const unreadIds = await getSessionIdsWithUnreadNotifications(slug)
+      // Both halves of the unread projection are table lookups — overlap them,
+      // and note that neither touches the filesystem. That matters here: with
+      // nothing notable the id set is empty, listSessionsByIds returns before
+      // it stats anything, and the whole request stays off disk.
+      const [unreadIds, markedUnreadIds] = await Promise.all([
+        getSessionIdsWithUnreadNotifications(slug),
+        getSessionIdsMarkedUnread(slug, getCurrentUserId(c)),
+      ])
       const activeIds = messagePersister.getActiveSessionIdsForAgent(slug)
-      const infos = await listSessionsByIds(slug, [...new Set([...activeIds, ...unreadIds])], {
-        excludeAutomated: true,
-      })
+      const infos = await listSessionsByIds(
+        slug,
+        [...new Set([...activeIds, ...unreadIds, ...markedUnreadIds])],
+        { excludeAutomated: true },
+      )
       const enriched = infos.map((session) => {
         const isActive = messagePersister.isSessionActive(session.id)
         return {
@@ -1876,7 +1906,7 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
           // The awaiting projection already counts agent-scoped reviews
           // against every active session of the agent — no review special-case.
           isAwaitingInput: messagePersister.isSessionAwaitingInput(session.id),
-          hasUnreadNotifications: unreadIds.has(session.id),
+          hasUnreadNotifications: unreadIds.has(session.id) || markedUnreadIds.has(session.id),
         }
       })
       const ordered = sortSessionsNewestFirst(enriched, sortBy)
@@ -1893,15 +1923,17 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
       return c.json(ordered.slice(0, resultLimit))
     }
 
-    // Independent lookups (filesystem summary, notifications table, scheduled
-    // tasks table) — overlap them rather than paying their latencies in series.
-    const [sessionList, unreadSessionIds, pendingWakes] = await Promise.all([
+    // Independent lookups (filesystem summary, notifications table, unread
+    // marks, scheduled tasks table) — overlap them rather than paying their
+    // latencies in series.
+    const [sessionList, unreadSessionIds, markedUnreadSessionIds, pendingWakes] = await Promise.all([
       listSessionsFromSummary(slug, {
         excludeAutomated: true,
         ...(sortByRaw === undefined ? {} : { sortBy }),
         ...(resultLimit === undefined ? {} : { limit: resultLimit }),
       }),
       getSessionIdsWithUnreadNotifications(slug),
+      getSessionIdsMarkedUnread(slug, getCurrentUserId(c)),
       listPendingWakesByAgent(slug),
     ])
     const wakesBySession = new Map(pendingWakes.map((w) => [w.resumeSessionId!, w]))
@@ -1914,7 +1946,8 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
         // The awaiting projection already counts agent-scoped reviews against
         // every active session of the agent — no review special-case.
         isAwaitingInput: messagePersister.isSessionAwaitingInput(session.id),
-        hasUnreadNotifications: unreadSessionIds.has(session.id),
+        hasUnreadNotifications:
+          unreadSessionIds.has(session.id) || markedUnreadSessionIds.has(session.id),
         ...(wake
           ? {
               pendingWakeAt: wake.nextExecutionAt.toISOString(),
@@ -2817,6 +2850,11 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       lastActivityAt: session.lastActivityAt,
       messageCount: session.messageCount,
       isActive,
+      // Carried so single-session consumers can gate on the same live/idle
+      // condition the session lists use (the breadcrumb context menu hides
+      // "Mark as Unread" while a session is working or awaiting input, since
+      // no list renders an unread dot in that state).
+      isAwaitingInput: messagePersister.isSessionAwaitingInput(sessionId),
       lastUsage: metadata?.lastUsage,
       scheduledTaskId: metadata?.scheduledTaskId,
       scheduledTaskName: metadata?.scheduledTaskName,
@@ -2885,6 +2923,48 @@ agents.patch('/:id/sessions/:sessionId', AgentUser(), async (c) => {
   }
 })
 
+// POST /api/agents/:id/sessions/:sessionId/unread - Re-raise the unread dot
+// DELETE the same path clears it (fired when the session is next opened).
+//
+// Both verbs are AgentRead, unusually for writes under this path. A mark is
+// scoped to the acting user: it raises a dot on their sidebar only, and only
+// they can clear it. So there is no shared state to protect — a read-only
+// viewer marking their own session unread is no more consequential than the
+// notification read state they already flip just by opening a session, and
+// gating it higher would leave them unable to dismiss their own dot.
+//
+// `changed` lets the client skip its cache invalidation on a no-op: the clear
+// fires on every session open, and the overwhelmingly common case is a mark
+// that was never raised.
+async function setUnreadFlag(c: Context, sessionId: string, markedUnread: boolean) {
+  try {
+    const agentSlug = getAgentId(c)
+
+    // Guard first: writing the flag registers metadata under this id, so an
+    // unknown session would otherwise be conjured into the map.
+    if (!(await sessionIsKnown(agentSlug, sessionId))) {
+      return c.json({ error: 'Session not found' }, 404)
+    }
+
+    const userId = getCurrentUserId(c)
+    const changed = markedUnread
+      ? await markSessionUnread(agentSlug, sessionId, userId)
+      : await clearSessionUnread(sessionId, userId)
+    return c.json({ success: true, markedUnread, changed })
+  } catch (error) {
+    console.error('Failed to update session unread flag:', error)
+    return c.json({ error: 'Failed to update session unread flag' }, 500)
+  }
+}
+
+agents.post('/:id/sessions/:sessionId/unread', AgentRead(), async (c) => {
+  return setUnreadFlag(c, c.req.param('sessionId'), true)
+})
+
+agents.delete('/:id/sessions/:sessionId/unread', AgentRead(), async (c) => {
+  return setUnreadFlag(c, c.req.param('sessionId'), false)
+})
+
 // DELETE /api/agents/:id/sessions/:sessionId - Delete a session
 agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
   try {
@@ -2934,6 +3014,9 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
     // are stored regardless of auth mode; userId is nullable), so deleting a
     // session never leaves stale notification history pointing at it.
     await deleteNotificationsBySessionIds([sessionId])
+    // A mark left behind would be an unreachable row: nothing lists the
+    // session any more, so nothing could ever clear it.
+    await deleteSessionUnreadMarks([sessionId])
 
     return c.body(null, 204)
   } catch (error) {

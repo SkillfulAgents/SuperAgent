@@ -59,6 +59,7 @@ import {
   agentConnectedAccounts,
   scheduledTasks,
   notifications,
+  sessionUnreadMarks,
   connectedAccounts,
   userSettings,
   auditLog,
@@ -180,6 +181,7 @@ const FACTORY_RESET_TABLES: SQLiteTable[] = [
   xAgentPolicies,
   webhookTriggers,
   notifications,
+  sessionUnreadMarks,
   scheduledTasks,
   // chat integrations (access + sessions cascade from integrations)
   chatIntegrationAccess,

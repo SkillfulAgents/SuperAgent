@@ -185,6 +185,9 @@ function SessionSubItem({
         sessionId={session.id}
         sessionName={session.name}
         agentSlug={agentSlug}
+        // Same condition `hasUnread` above gates the dot on — no point
+        // offering "Mark as Unread" where the dot would be suppressed.
+        sessionIsLive={!!session.isActive || !!session.isAwaitingInput}
       >
         <SidebarMenuSubButton
           asChild

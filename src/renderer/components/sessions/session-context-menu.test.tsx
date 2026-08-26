@@ -30,7 +30,9 @@ vi.mock('@renderer/components/ui/context-menu', () => ({
   ),
   ContextMenuTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   ContextMenuContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  ContextMenuItem: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  ContextMenuItem: ({ children, ...props }: { children: React.ReactNode }) => (
+    <div {...props}>{children}</div>
+  ),
   ContextMenuSeparator: () => <hr />,
 }))
 
@@ -56,13 +58,19 @@ vi.mock('@renderer/components/ui/dialog', () => ({
   DialogTitle: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }))
 
+const mockSetMarkedUnread = vi.fn().mockResolvedValue({ success: true })
+
 vi.mock('@renderer/hooks/use-sessions', () => ({
   useDeleteSession: () => ({ mutateAsync: vi.fn() }),
   useUpdateSessionName: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useSetSessionMarkedUnread: () => ({ mutateAsync: mockSetMarkedUnread, isPending: false }),
 }))
 
+const mockCanAdminAgent = vi.fn(() => true)
+const mockCanUseAgent = vi.fn(() => true)
+
 vi.mock('@renderer/context/user-context', () => ({
-  useUser: () => ({ canAdminAgent: () => true }),
+  useUser: () => ({ canAdminAgent: mockCanAdminAgent, canUseAgent: mockCanUseAgent }),
 }))
 
 vi.mock('@tanstack/react-router', async (importOriginal) => {
@@ -176,5 +184,78 @@ describe('SessionContextMenu usage totals', () => {
 
     expect(await screen.findByText('<$0.0001')).toBeInTheDocument()
     expect(screen.queryByText('$0.0000')).not.toBeInTheDocument()
+  })
+})
+
+describe('SessionContextMenu mark as unread', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockSetMarkedUnread.mockResolvedValue({ success: true })
+    mockCanAdminAgent.mockReturnValue(true)
+    mockCanUseAgent.mockReturnValue(true)
+  })
+
+  it('raises the unread flag for the session it was opened on', async () => {
+    render(
+      <SessionContextMenu sessionId="session-9" sessionName="Session Nine" agentSlug="agent-2">
+        <button type="button">Session Nine</button>
+      </SessionContextMenu>,
+    )
+
+    fireEvent.click(screen.getByTestId('mark-unread-session-item'))
+
+    await waitFor(() => {
+      expect(mockSetMarkedUnread).toHaveBeenCalledWith({
+        sessionId: 'session-9',
+        agentSlug: 'agent-2',
+        markedUnread: true,
+      })
+    })
+  })
+
+  // Unlike rename/delete, marking unread is not permission-gated at all.
+  it('stays available to members who cannot admin the agent', () => {
+    mockCanAdminAgent.mockReturnValue(false)
+
+    render(
+      <SessionContextMenu sessionId="session-9" sessionName="Session Nine" agentSlug="agent-2">
+        <button type="button">Session Nine</button>
+      </SessionContextMenu>,
+    )
+
+    expect(screen.queryByTestId('rename-session-item')).not.toBeInTheDocument()
+    expect(screen.getByTestId('mark-unread-session-item')).toBeInTheDocument()
+  })
+
+  // A mark is scoped to the acting user, so it raises a dot on their sidebar
+  // only — there is no shared state for a permission gate to protect, and
+  // gating it would leave a viewer unable to dismiss their own dot.
+  it('stays available to a read-only viewer, whose mark only they can see', () => {
+    mockCanUseAgent.mockReturnValue(false)
+
+    render(
+      <SessionContextMenu sessionId="session-9" sessionName="Session Nine" agentSlug="agent-2">
+        <button type="button">Session Nine</button>
+      </SessionContextMenu>,
+    )
+
+    expect(screen.getByTestId('mark-unread-session-item')).toBeInTheDocument()
+  })
+
+  // Every list suppresses the unread dot while a session is working or awaiting
+  // input, so offering the item there would be a silent no-op.
+  it('hides the item for a live session, where no list would render the dot', () => {
+    render(
+      <SessionContextMenu
+        sessionId="session-9"
+        sessionName="Session Nine"
+        agentSlug="agent-2"
+        sessionIsLive
+      >
+        <button type="button">Session Nine</button>
+      </SessionContextMenu>,
+    )
+
+    expect(screen.queryByTestId('mark-unread-session-item')).not.toBeInTheDocument()
   })
 })

@@ -3,7 +3,7 @@ import { FilePreviewProvider } from '@renderer/context/file-preview-context'
 import { WorkflowProvider } from '@renderer/context/workflow-context'
 import { ChevronLeft, CalendarClock, GitFork, Zap } from 'lucide-react'
 import { useEffect } from 'react'
-import { useSession } from '@renderer/hooks/use-sessions'
+import { useSession, useSetSessionMarkedUnread } from '@renderer/hooks/use-sessions'
 import { HttpError } from '@renderer/lib/api'
 import { SessionNotFound } from '@renderer/router/route-fallbacks'
 import { useNavigate } from '@tanstack/react-router'
@@ -36,6 +36,7 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
   const navigate = useNavigate()
   const { data: session, error: sessionError } = useSession(sessionId, agentSlug)
   const markSessionNotificationsRead = useMarkSessionNotificationsRead()
+  const setSessionMarkedUnread = useSetSessionMarkedUnread()
   const {
     getPendingMessages,
     onMessageSent,
@@ -56,6 +57,11 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
     // Small delay to avoid marking as read on quick navigation
     const timeout = setTimeout(() => {
       markSessionNotificationsRead.mutate(sessionId)
+      // "Mark as unread" survives until the session is *reopened*, so it clears
+      // here and deliberately not in the visibilitychange handler below —
+      // otherwise marking the session you're looking at would be undone by the
+      // next window refocus.
+      setSessionMarkedUnread.mutate({ sessionId, agentSlug, markedUnread: false })
     }, 1000)
     return () => clearTimeout(timeout)
   }, [sessionId]) // eslint-disable-line react-hooks/exhaustive-deps

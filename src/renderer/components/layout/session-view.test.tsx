@@ -8,6 +8,7 @@ import { SessionView } from './session-view'
 const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
   markRead: vi.fn(),
+  setMarkedUnread: vi.fn(),
 }))
 
 vi.mock('@tanstack/react-router', () => ({
@@ -25,6 +26,9 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
     },
     error: null,
   }),
+  // Opening a session clears any "mark as unread" flag alongside the
+  // notification read-marking below.
+  useSetSessionMarkedUnread: () => ({ mutate: mocks.setMarkedUnread }),
 }))
 
 vi.mock('@renderer/hooks/use-notifications', () => ({
