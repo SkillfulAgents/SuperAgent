@@ -15,16 +15,47 @@ const PARTIAL_LIST_NOTE = `\nNote: This is a partial list of well-known MCP serv
 
 export const searchRemoteMcpServicesTool = tool(
   'search_remote_mcp_services',
-  `Search for well-known remote MCP servers that can be connected via the request_remote_mcp tool. Call with no search term to list all known servers, or provide a search term to filter by name, category, or description. This is a partial directory — if you don't find the service you need, search the web.`,
+  `Search for well-known remote MCP servers that can be connected via the request_remote_mcp tool. Provide a search term to match on name, category, or description; call with no search term to get a category index to search within. This is a partial directory — if you don't find the service you need, search the web.`,
   {
     search: z
       .string()
       .optional()
       .describe(
-        'Optional search term to filter MCP servers (matches name, slug, category, or description). Omit to list all.'
+        'Search term to filter MCP servers (matches name, slug, category, or description). Omit to get a category index instead.'
       ),
   },
   async (args) => {
+    // A no-term call means "what is there?". Answering it with all 184 rows costs
+    // ~5.5k tokens for a question a category index answers in a few hundred, and
+    // every category name is itself a searchable term.
+    if (!args.search) {
+      const counts = new Map<string, number>()
+      for (const s of MCP_SERVICES) counts.set(s.category, (counts.get(s.category) ?? 0) + 1)
+      const index = [...counts.entries()].map(([category, n]) => `- ${category} (${n})`)
+      const needingSetup = MCP_SERVICES.filter((s) => s.requiresOwnOAuthApp)
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: [
+              `${MCP_SERVICES.length} known MCP servers, by category:`,
+              '',
+              ...index,
+              '',
+              'Search by category name, service name, or what you need it to do to see the servers and their URLs.',
+              ...(needingSetup.length > 0
+                ? [
+                    '',
+                    `Needing the user to register their own OAuth app first: ${needingSetup.map((s) => s.displayName).join(', ')}.`,
+                  ]
+                : []),
+              PARTIAL_LIST_NOTE,
+            ].join('\n'),
+          },
+        ],
+      }
+    }
+
     let results = MCP_SERVICES
     if (args.search) {
       const term = args.search.toLowerCase()

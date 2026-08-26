@@ -4,21 +4,35 @@ import { COMMON_MCP_SERVERS } from './common-servers'
 import { MCP_SERVICES } from '../../../../agent-container/src/tools/mcp-service-catalog'
 
 /**
- * The agent's catalog is a hand-maintained copy of the host's, because the
- * container builds with plain `tsc` and cannot import from @shared. These are the
- * invariants that keep the copy honest.
+ * The agent's catalog is a copy of the host's, because the container builds with
+ * plain `tsc` and cannot import from @shared. These are the invariants that keep
+ * the copy honest — the two lists must be identical, entry for entry.
  *
- * Note it is deliberately a SUBSET, not a mirror: the full host catalog is far
- * too long to sit in the model's context, which is why the tool advertises itself
- * as a partial directory. So "every host entry appears in the agent list" is NOT
- * an invariant — but everything below is.
+ * The list is not trimmed for context: search_remote_mcp_services filters before
+ * anything reaches the model, and a no-term call returns a category index rather
+ * than every row. So there is no reason for the agent to know about fewer servers
+ * than the app offers — which is exactly how both Meta rows went missing.
  */
 describe('agent MCP catalog parity', () => {
   const bySlug = new Map(COMMON_MCP_SERVERS.map((server) => [server.slug, server]))
 
+  it('offers the agent exactly the servers the app offers', () => {
+    const agentSlugs = MCP_SERVICES.map((service) => service.slug).sort()
+    const appSlugs = COMMON_MCP_SERVERS.map((server) => server.slug).sort()
+    expect(agentSlugs).toEqual(appSlugs)
+  })
+
   it('has no entry the app catalog does not know about', () => {
     const orphans = MCP_SERVICES.filter((service) => !bySlug.has(service.slug)).map((s) => s.slug)
     expect(orphans, `agent-only slugs: ${orphans.join(', ')}`).toEqual([])
+  })
+
+  it('hides no app entry from the agent', () => {
+    const agentSlugs = new Set(MCP_SERVICES.map((service) => service.slug))
+    const missing = COMMON_MCP_SERVERS.filter((server) => !agentSlugs.has(server.slug)).map(
+      (server) => server.slug,
+    )
+    expect(missing, `app-only slugs: ${missing.join(', ')}`).toEqual([])
   })
 
   it('agrees with the app catalog on every field it copies', () => {
@@ -40,6 +54,9 @@ describe('agent MCP catalog parity', () => {
       if (server.category !== service.category) {
         drifted.push(`${service.slug}: category "${service.category}" !== "${server.category}"`)
       }
+      if (server.description !== service.description) {
+        drifted.push(`${service.slug}: description drifted`)
+      }
     }
     expect(drifted, drifted.join('\n')).toEqual([])
   })
@@ -59,20 +76,6 @@ describe('agent MCP catalog parity', () => {
       }
     }
     expect(mismatched, mismatched.join('\n')).toEqual([])
-  })
-
-  it('carries every server that needs provider-side setup', () => {
-    // The one direction where the subset must be complete. A server with a setup
-    // guide cannot be connected by approving a request alone, so an agent that
-    // cannot see it will suggest it via some other route and strand the user —
-    // which is exactly how the Meta rows went missing here.
-    const agentSlugs = new Set(MCP_SERVICES.map((service) => service.slug))
-    const missing = COMMON_MCP_SERVERS.filter(
-      (server) => server.setup && !agentSlugs.has(server.slug),
-    ).map((server) => server.slug)
-    expect(missing, `needs provider setup but hidden from the agent: ${missing.join(', ')}`).toEqual(
-      [],
-    )
   })
 
   it('keeps slugs unique on both sides', () => {

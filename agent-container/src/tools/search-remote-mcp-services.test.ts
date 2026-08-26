@@ -1,13 +1,35 @@
 import { describe, it, expect } from 'vitest'
 import { searchRemoteMcpServicesTool } from './search-remote-mcp-services'
 
-async function search(term: string): Promise<string> {
+async function search(term?: string): Promise<string> {
   const handler = (searchRemoteMcpServicesTool as any).handler
-  const result = await handler({ search: term })
+  const result = await handler(term === undefined ? {} : { search: term })
   return result.content[0].text as string
 }
 
 describe('searchRemoteMcpServices', () => {
+  describe('with no search term', () => {
+    it('returns a category index instead of every server', async () => {
+      const text = await search()
+      expect(text).toMatch(/known MCP servers, by category/)
+      expect(text).toContain('Analytics & Marketing')
+      // Listing all 184 rows would cost ~5.5k tokens to answer "what is there?".
+      expect(text.length).toBeLessThan(2000)
+      expect(text).not.toContain('https://mcp.facebook.com/ads')
+    })
+
+    it('names the servers that need the user to register their own OAuth app', async () => {
+      const text = await search()
+      expect(text).toContain('Meta Ads (Official)')
+      expect(text).toMatch(/register their own OAuth app/)
+    })
+
+    it('points the model at searching to get URLs', async () => {
+      const text = await search()
+      expect(text).toMatch(/Search by category name/)
+    })
+  })
+
   it('marks a server that cannot connect without a user-registered OAuth app', async () => {
     const text = await search('meta ads')
     expect(text).toContain('Meta Ads (Official)')
