@@ -121,7 +121,7 @@ interface MessageListScrollOptions<T> {
   visibleMessages: readonly T[]
   /** A new non-queued ghost anchors its turn's reading line (`data-turn-anchor-id`). */
   pendingUserMessages: PendingMessage[] | undefined
-  /** Height of an overlaid footer that the live edge must remain above. */
+  /** Overlaid-footer height. Only re-syncs the reserve on change — the inset element itself is rendered by the caller. */
   bottomInset: number
   /** Older-history paging, driven by scrolling near the top. */
   hasOlder: boolean

@@ -116,7 +116,7 @@ test.describe('Live thinking-card collapse', () => {
     // turn the collapse clamps into "the user scrolled up" and kill
     // following. (A physically held button is deliberately not used: content
     // streaming under a real pressed cursor grows a text selection, and the
-    // follow library rightly pauses during selection.)
+    // follow engine rightly pauses during selection.)
     await page.evaluate(() => {
       const el = document.querySelector<HTMLElement>('[data-testid="message-list"]')!
       el.dispatchEvent(

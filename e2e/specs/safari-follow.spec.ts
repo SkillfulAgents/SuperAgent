@@ -6,14 +6,17 @@ import { SessionPage } from '../pages/session.page'
 
 // Runs under the web-webkit project only (see playwright.config.ts).
 //
-// Safari computes fractional scroll metrics whenever page zoom is not 100%.
-// The follow library's smooth modes reconcile their own per-frame writes by
-// exact position equality, so at fractional zoom the spring never reads as
-// settled and its own frames can classify as user scrolling — following
-// disengages or oscillates with zero user input (upstream:
-// stackblitz-labs/use-stick-to-bottom#32, "only with smooth animation").
-// Chromium keeps these metrics integral, which is why this never reproduced
-// in development. CSS zoom on the root reproduces Safari's zoomed layout.
+// WebKit scrolls asynchronously: the compositor can roll a programmatic
+// scrollTop write back to its last committed position, surfacing as a
+// genuine upward scroll event with no input behind it and unchanged
+// scrollHeight/clientHeight — exactly the shape of a reader escaping the
+// live edge. Position heuristics cannot tell the two apart; the follow
+// engine survives by demanding recent input evidence before releasing
+// follow, and otherwise converging back. Chromium commits programmatic
+// scrollTop synchronously, which is why this never reproduced in
+// development.
+//
+// Zoom approximates the zoomed Safari layouts where users actually hit this.
 const PAGE_ZOOM = '1.63'
 
 // Three thinking blocks long enough to overfill the card (internal scrolling
@@ -73,7 +76,7 @@ function scrollMetrics(page: Page) {
   })
 }
 
-test.describe('WebKit fractional-zoom live follow', () => {
+test.describe('WebKit async-scroll live follow', () => {
   let appPage: AppPage
   let agentPage: AgentPage
   let sessionPage: SessionPage
@@ -87,8 +90,8 @@ test.describe('WebKit fractional-zoom live follow', () => {
     await appPage.waitForAgentsLoaded()
     await agentPage.createAgent(`Safari Follow ${testInfo.workerIndex}-${Date.now()}`)
 
-    // Zoom AFTER the app is up so every subsequent layout — and every scroll
-    // metric the follow code reads — is fractional, as in a zoomed Safari.
+    // Zoom AFTER the app is up so layout matches a zoomed Safari — the
+    // configuration the follow loss was reported and reproduced under.
     await page.evaluate((zoom) => {
       document.documentElement.style.setProperty('zoom', zoom)
     }, PAGE_ZOOM)
