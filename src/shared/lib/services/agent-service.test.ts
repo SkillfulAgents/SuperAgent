@@ -111,6 +111,28 @@ describe('agent-service', () => {
       expect(agent).toBeNull()
     })
 
+    // Slugs reach getAgent from request bodies and stored policy rows, not
+    // only from ResolveAgent, so "not an agent directory" must be null for
+    // every way a path can fail — not a thrown read.
+    it('returns null when the slug names a regular file in the agents dir', async () => {
+      await fs.promises.mkdir(path.join(testDir, 'agents'), { recursive: true })
+      await fs.promises.writeFile(path.join(testDir, 'agents', 'stray-file'), 'not an agent')
+
+      await expect(getAgent('stray-file')).resolves.toBeNull()
+    })
+
+    it('returns null for a slug that is not a valid path component', async () => {
+      await expect(getAgent('bad\0slug')).resolves.toBeNull()
+      await expect(getAgent('x'.repeat(300))).resolves.toBeNull()
+    })
+
+    it('still surfaces a real read error on an existing agent directory', async () => {
+      // CLAUDE.md is a directory: the agent exists, its config is unreadable.
+      await fs.promises.mkdir(path.join(testDir, 'agents', 'broken', 'workspace', 'CLAUDE.md'), { recursive: true })
+
+      await expect(getAgent('broken')).rejects.toMatchObject({ code: 'EISDIR' })
+    })
+
     it('returns agent config for existing agent', async () => {
       await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
 

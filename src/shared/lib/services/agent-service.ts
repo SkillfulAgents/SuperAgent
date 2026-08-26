@@ -118,10 +118,21 @@ export async function listAgentSlugs(): Promise<string[]> {
  * Get a single agent by slug
  */
 export async function getAgent(slug: string): Promise<AgentConfig | null> {
-  // No directory pre-check: a missing agent surfaces as a missing CLAUDE.md
-  // (readFileOrNull → null), and every stat is a round trip on network
-  // filesystems. This runs once per agent on the auth-mode agents list.
-  return parseAgentClaudeMd(slug)
+  // No directory pre-check on the happy path: a missing agent surfaces as a
+  // missing CLAUDE.md (readFileOrNull → null), and every stat is a round trip
+  // on network filesystems. This runs once per agent on the auth-mode list.
+  //
+  // The contract is still "null unless this is an agent directory": slugs
+  // reach here from request bodies and stored policy rows, not only from
+  // ResolveAgent, so a path that is a regular file (ENOTDIR), too long
+  // (ENAMETOOLONG) or malformed (a NUL byte) must be null, not a throw. Only
+  // that failure path pays the stat.
+  try {
+    return await parseAgentClaudeMd(slug)
+  } catch (error) {
+    if (await directoryExists(getAgentDir(slug)).catch(() => false)) throw error
+    return null
+  }
 }
 
 /**

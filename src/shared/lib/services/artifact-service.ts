@@ -35,20 +35,23 @@ export async function listArtifactsFromFilesystem(
   }
 
   // Three independent lookups per artifact, artifacts independent of each
-  // other: issue them concurrently (bounded) instead of one round trip at a
-  // time — this runs for every agent on every agents-list poll. Result order
-  // follows the directory listing, as before.
+  // other: issue them concurrently instead of one round trip at a time —
+  // this runs for every agent on every agents-list poll. The limiter bounds
+  // individual filesystem probes, not artifacts: wrapping the artifact would
+  // let each slot fan out to three probes, and a missing package.json would
+  // reject the group and free the slot while its two siblings still ran.
+  // Result order follows the directory listing, as before.
   const limit = pLimit(10)
   const dashboards = await Promise.all(
     entries
       .filter((entry) => entry.isDirectory())
-      .map((entry) => limit(async (): Promise<ArtifactInfo | null> => {
+      .map(async (entry): Promise<ArtifactInfo | null> => {
         const artifactDir = path.join(artifactsDir, entry.name)
         try {
           const [pkgContent, hasScreenshot, hasNodeModules] = await Promise.all([
-            fs.promises.readFile(path.join(artifactDir, 'package.json'), 'utf-8'),
-            fileExists(path.join(artifactDir, ARTIFACT_SCREENSHOT_FILENAME)),
-            directoryExists(path.join(artifactDir, 'node_modules')),
+            limit(() => fs.promises.readFile(path.join(artifactDir, 'package.json'), 'utf-8')),
+            limit(() => fileExists(path.join(artifactDir, ARTIFACT_SCREENSHOT_FILENAME))),
+            limit(() => directoryExists(path.join(artifactDir, 'node_modules'))),
           ])
           const pkg = JSON.parse(pkgContent)
           const info: ArtifactInfo = {
@@ -70,7 +73,7 @@ export async function listArtifactsFromFilesystem(
           // No valid package.json, skip
           return null
         }
-      })),
+      }),
   )
 
   return dashboards.filter((info): info is ArtifactInfo => info !== null)

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
@@ -44,6 +44,52 @@ describe('artifact-service', () => {
   }
 
   describe('listArtifactsFromFilesystem', () => {
+    it('never has more than ten filesystem probes in flight, even with rejected groups', async () => {
+      // 30 artifacts × 3 probes each, a third of them without package.json —
+      // the rejection that frees a per-artifact slot early would let sibling
+      // probes exceed the bound if the limiter wrapped artifacts.
+      for (let i = 0; i < 30; i++) {
+        const slug = `art-${String(i).padStart(2, '0')}`
+        if (i % 3 === 0) {
+          fs.mkdirSync(path.join(testDir, 'agents', 'test-agent', 'workspace', 'artifacts', slug), { recursive: true })
+        } else {
+          createArtifactDir('test-agent', slug, { name: slug })
+        }
+      }
+
+      let inFlight = 0
+      let maxInFlight = 0
+      const track = async <T>(run: () => Promise<T>): Promise<T> => {
+        inFlight += 1
+        maxInFlight = Math.max(maxInFlight, inFlight)
+        try {
+          // Yield so concurrent probes overlap instead of completing in turn.
+          await new Promise((resolve) => setTimeout(resolve, 1))
+          return await run()
+        } finally {
+          inFlight -= 1
+        }
+      }
+      const realReadFile = fs.promises.readFile
+      const realAccess = fs.promises.access
+      const realStat = fs.promises.stat
+      vi.spyOn(fs.promises, 'readFile').mockImplementation(((...args: Parameters<typeof realReadFile>) =>
+        track(() => realReadFile(...args))) as typeof fs.promises.readFile)
+      vi.spyOn(fs.promises, 'access').mockImplementation(((...args: Parameters<typeof realAccess>) =>
+        track(() => realAccess(...args))) as typeof fs.promises.access)
+      vi.spyOn(fs.promises, 'stat').mockImplementation(((...args: Parameters<typeof realStat>) =>
+        track(() => realStat(...args))) as typeof fs.promises.stat)
+
+      try {
+        const result = await listArtifactsFromFilesystem('test-agent')
+        expect(result.map((a) => a.slug)).toHaveLength(20)
+        expect(maxInFlight).toBeLessThanOrEqual(10)
+        expect(maxInFlight).toBeGreaterThan(1)
+      } finally {
+        vi.restoreAllMocks()
+      }
+    })
+
     it('returns empty array when artifacts dir does not exist', async () => {
       // Agent dir exists but no artifacts subdirectory
       const agentDir = path.join(testDir, 'agents', 'test-agent', 'workspace')
