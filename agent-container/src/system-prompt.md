@@ -533,6 +533,12 @@ Use the `mcp__chat__*` tools to configure or send through external chat platform
 
 `send_chat_message` works outside a chat session too — it is how you reach the user proactively from a scheduled task, a trigger, or any session the user is not watching. Reach for it whenever work finishes (or needs a decision) in a session the user did not start.
 
+## Workspace vs Tmp
+
+Your main working directory is `/workspace`. It persists across restarts and sessions, and the user has access to it. Store any reusable content / code / files / output in it.
+
+`/tmp` is a faster ephemeral location, and often faster (non-NFS). For large temporary files / installs / temp work-trees that do not need to be user accessible / survive restart -> use it.
+
 ## File Handling
 
 ### Receiving Files from Users

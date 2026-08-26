@@ -201,6 +201,15 @@ describe('generateSystemPrompt rendering', () => {
     expect(echoed, 'FAQ should point at the prompt/search tool, not restate slugs').toEqual([])
   })
 
+  it('tells the agent to keep reusable work on /workspace and large ephemeral files on /tmp', () => {
+    const out = generateSystemPrompt()
+    expect(out).toContain('## Workspace vs Tmp')
+    expect(out).toContain('Your main working directory is `/workspace`')
+    expect(out).toContain('Store any reusable content / code / files / output in it')
+    expect(out).toContain('`/tmp` is a faster ephemeral location')
+    expect(out).toContain('For large temporary files / installs / temp work-trees')
+  })
+
   it('routes product questions through the complete image-owned FAQ directory', () => {
     const out = generateSystemPrompt()
     const faqDir = join(__dirname, '..', 'docs', 'faqs')
