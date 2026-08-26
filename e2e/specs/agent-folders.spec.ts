@@ -1,4 +1,4 @@
-import { test, expect, type Locator, type Page } from '@playwright/test'
+import { test, expect, type APIRequestContext, type Locator, type Page } from '@playwright/test'
 import { createAgent, uniqueName } from '../helpers/agents'
 
 // Every test here mutates ONE user's settings row (folders are a per-user
@@ -199,8 +199,53 @@ async function dragRowOnto(
   throw lastError instanceof Error ? lastError : new Error(String(lastError))
 }
 
+/**
+ * Folders this file created and has not yet removed. Folders are per-user
+ * settings, so anything left behind outlives the test and — because a new
+ * folder mounts above "Your Agents" — sits ahead of every unfiled agent for
+ * every later spec in the run (the ⌘-hint numbering, for one, only has nine
+ * slots). `removeCreatedFolders` clears them after each test.
+ */
+const createdFolderNames = new Set<string>()
+
+interface FolderSettings {
+  agentFolders?: Array<{ id: string; name: string }>
+  agentFolderAssignments?: Record<string, string>
+  agentListOrder?: string[]
+  collapsedAgentFolders?: string[]
+}
+
+async function removeCreatedFolders(request: APIRequestContext) {
+  if (createdFolderNames.size === 0) return
+  const response = await request.get('/api/user-settings')
+  expect(response.ok()).toBeTruthy()
+  const settings = await response.json() as FolderSettings
+  const doomed = new Set(
+    (settings.agentFolders ?? [])
+      .filter((folder) => createdFolderNames.has(folder.name))
+      .map((folder) => folder.id)
+  )
+  createdFolderNames.clear()
+  if (doomed.size === 0) return
+
+  const update = await request.put('/api/user-settings', {
+    data: {
+      agentFolders: (settings.agentFolders ?? []).filter((folder) => !doomed.has(folder.id)),
+      agentFolderAssignments: Object.fromEntries(
+        Object.entries(settings.agentFolderAssignments ?? {}).filter(([, id]) => !doomed.has(id))
+      ),
+      agentListOrder: (settings.agentListOrder ?? []).filter(
+        (id) => !doomed.has(id.replace(/^agent-folder::/, ''))
+      ),
+      collapsedAgentFolders: (settings.collapsedAgentFolders ?? []).filter((id) => !doomed.has(id)),
+    },
+  })
+  expect(update.ok()).toBeTruthy()
+}
+
 /** Create a folder from the + on the "Your Agents" folder header. */
 async function createFolder(page: Page, name: string): Promise<Locator> {
+  createdFolderNames.add(name)
   await page.getByTestId('new-folder-button').click()
   // The freshly created row mounts straight into rename mode.
   const input = page.getByTestId('folder-name-input')
@@ -249,6 +294,10 @@ test.describe('agent folders in the left nav', () => {
   // rows being dragged between on screen at the same time, which a pointer
   // gesture needs and dnd-kit's auto-scroll cannot be driven into reliably.
   test.use({ viewport: { width: 1280, height: 1800 } })
+
+  test.afterEach(async ({ request }) => {
+    await removeCreatedFolders(request)
+  })
 
   test('files an agent by drag, keeps it across a reload, and releases it on delete', async ({
     page,
@@ -538,12 +587,14 @@ test.describe('agent folders in the left nav', () => {
     const overlay = page.getByTestId('agent-drag-overlay')
     await expect(page.getByTestId('agent-folder-root')).toBeVisible()
 
+    // Edges needs a folder above it to be dropped above, and one to be dropped
+    // below; the anchor is that neighbour. Every step still works on the
+    // CURRENT top-level order rather than assuming who the neighbours are.
+    await createFolder(page, uniqueName(testInfo, 'Anchor'))
     const folderName = uniqueName(testInfo, 'Edges')
     const folderRow = await createFolder(page, folderName)
     const edgesId = `agent-folder-${await folderIdOf(folderRow)}`
 
-    // Repeat runs accumulate earlier folders, so every step works on the
-    // CURRENT top-level order rather than assuming who the neighbours are.
     const folders = async () =>
       (await listOrder(page)).filter((id) => id.startsWith('agent-folder-'))
     const indicatorFor = (testId: string) =>
