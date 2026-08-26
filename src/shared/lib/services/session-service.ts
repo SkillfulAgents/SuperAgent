@@ -610,6 +610,30 @@ async function getSessionsDirectoryMtime(sessionsDir: string): Promise<number | 
   }
 }
 
+/**
+ * Stat one transcript for the summary build. A file deleted between readdir
+ * and stat (deleteSession racing a scan) is not an error — it drops out of
+ * the build. Anything else is: the build's result is cached for minutes, so
+ * treating a transient network-filesystem failure (ESTALE, EIO, a timeout)
+ * as "no such session" would hide or misorder that session until the next
+ * reconciliation. Retry once, then let the build fail; nothing is cached and
+ * the next read rebuilds.
+ */
+async function statTranscriptForSummary(filePath: string): Promise<fs.Stats | null> {
+  const isMissing = (error: unknown) => (error as NodeJS.ErrnoException)?.code === 'ENOENT'
+  try {
+    return await fs.promises.stat(filePath)
+  } catch (error) {
+    if (isMissing(error)) return null
+    try {
+      return await fs.promises.stat(filePath)
+    } catch (retryError) {
+      if (isMissing(retryError)) return null
+      throw retryError
+    }
+  }
+}
+
 async function buildSessionActivityMap(
   agentSlug: string,
   sessionsDir: string,
@@ -622,9 +646,7 @@ async function buildSessionActivityMap(
   const limit = pLimit(10)
   const stats = await Promise.all(
     jsonlFiles.map((file) => limit(async () => {
-      // A transcript deleted between readdir and stat (deleteSession racing a
-      // scan) just drops out of this build instead of failing the whole scan.
-      const stat = await fs.promises.stat(path.join(sessionsDir, file)).catch(() => null)
+      const stat = await statTranscriptForSummary(path.join(sessionsDir, file))
       if (!stat) return null
       const sessionId = path.basename(file, '.jsonl')
       if (!(await sessionBelongsToAgent(agentSlug, sessionId))) return null

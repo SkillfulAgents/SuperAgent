@@ -9,7 +9,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as path from 'path'
 import * as os from 'os'
 
-const statProbe = vi.hoisted(() => ({ paths: [] as string[] }))
+const statProbe = vi.hoisted(() => ({
+  paths: [] as string[],
+  /** Inject `times` consecutive failures with `code` for stats of `path`. */
+  failures: new Map<string, { code: string; times: number }>(),
+}))
 
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs')>()
@@ -18,7 +22,13 @@ vi.mock('fs', async (importOriginal) => {
     promises: {
       ...actual.promises,
       stat: (async (...args: Parameters<typeof actual.promises.stat>) => {
-        statProbe.paths.push(String(args[0]))
+        const target = String(args[0])
+        statProbe.paths.push(target)
+        const failure = statProbe.failures.get(target)
+        if (failure && failure.times > 0) {
+          failure.times -= 1
+          throw Object.assign(new Error(`${failure.code}: injected`), { code: failure.code })
+        }
         return actual.promises.stat(...args)
       }) as typeof actual.promises.stat,
     },
@@ -33,7 +43,12 @@ import {
   readSessionMetadata,
   registerSession,
 } from './session-service'
-import { recordSessionActivity } from './session-summary-cache'
+import {
+  SESSION_SUMMARY_CACHE_TTL_MS,
+  recordProvisionalSessionActivity,
+  recordSessionActivity,
+  revertSessionActivity,
+} from './session-summary-cache'
 
 describe('listSessionsFromSummary', () => {
   let testRoot: string
@@ -50,9 +65,11 @@ describe('listSessionsFromSummary', () => {
     process.env.SUPERAGENT_DATA_DIR = testRoot
     await fs.promises.mkdir(sessionsDir(), { recursive: true })
     statProbe.paths.length = 0
+    statProbe.failures.clear()
   })
 
   afterEach(async () => {
+    vi.useRealTimers()
     vi.restoreAllMocks()
     if (priorDataDir === undefined) delete process.env.SUPERAGENT_DATA_DIR
     else process.env.SUPERAGENT_DATA_DIR = priorDataDir
@@ -114,6 +131,122 @@ describe('listSessionsFromSummary', () => {
     expect(ids(sessions)).toEqual(['session-a', 'session-b'])
     expect(sessions[0]!.lastActivityAt).toEqual(new Date('2026-01-03T00:00:00.000Z'))
     expect(transcriptStats()).toEqual([])
+  })
+
+  it('keeps activity recorded while the cache is cold: the first build folds it in', async () => {
+    await createSession('session-a', '2026-01-01T00:00:00.000Z')
+    await createSession('session-b', '2026-01-02T00:00:00.000Z')
+    // Nothing has read the summary yet (fresh process, or invalidated). The
+    // send is recorded before the CLI touches the transcript.
+    recordSessionActivity(agentSlug, 'session-a', new Date('2026-01-03T00:00:00.000Z'))
+
+    const sessions = await listSessionsFromSummary(agentSlug, { sortBy: 'last_activity_at' })
+
+    expect(ids(sessions)).toEqual(['session-a', 'session-b'])
+    expect(sessions[0]!.lastActivityAt).toEqual(new Date('2026-01-03T00:00:00.000Z'))
+  })
+
+  it('keeps activity recorded against an expired cache across the TTL rebuild', async () => {
+    await createSession('session-a', '2026-01-01T00:00:00.000Z')
+    await createSession('session-b', '2026-01-02T00:00:00.000Z')
+    await getSessionSummary(agentSlug)
+    statProbe.paths.length = 0
+
+    // Real time moves past the TTL; the next read will rebuild from stats,
+    // which do not carry the send yet.
+    vi.useFakeTimers({ now: Date.now() + SESSION_SUMMARY_CACHE_TTL_MS + 1, toFake: ['Date'] })
+    recordSessionActivity(agentSlug, 'session-a', Date.now())
+    const recordedAt = Date.now()
+
+    const sessions = await listSessionsFromSummary(agentSlug, { sortBy: 'last_activity_at' })
+
+    expect(ids(sessions)).toEqual(['session-a', 'session-b'])
+    expect(sessions[0]!.lastActivityAt.getTime()).toBe(recordedAt)
+    // ...and the rebuild happened (every transcript stat'd), so this was not
+    // just the stale value surviving.
+    expect(transcriptStats().length).toBe(2)
+  })
+
+  it('a rolled-back provisional send restores the previous order', async () => {
+    await createSession('session-a', '2026-01-01T00:00:00.000Z')
+    await createSession('session-b', '2026-01-02T00:00:00.000Z')
+    await getSessionSummary(agentSlug)
+
+    const mark = recordProvisionalSessionActivity(agentSlug, 'session-a', new Date('2026-01-03T00:00:00.000Z'))
+    expect(ids(await listSessionsFromSummary(agentSlug, { sortBy: 'last_activity_at' })))
+      .toEqual(['session-a', 'session-b'])
+
+    revertSessionActivity(agentSlug, 'session-a', mark)
+
+    const sessions = await listSessionsFromSummary(agentSlug, { sortBy: 'last_activity_at' })
+    expect(ids(sessions)).toEqual(['session-b', 'session-a'])
+    expect(sessions[1]!.lastActivityAt).toEqual(new Date('2026-01-01T00:00:00.000Z'))
+  })
+
+  it('a rollback never erases activity recorded after the mark', async () => {
+    await createSession('session-a', '2026-01-01T00:00:00.000Z')
+    await createSession('session-b', '2026-01-02T00:00:00.000Z')
+    await getSessionSummary(agentSlug)
+
+    const mark = recordProvisionalSessionActivity(agentSlug, 'session-a', new Date('2026-01-03T00:00:00.000Z'))
+    recordSessionActivity(agentSlug, 'session-a', new Date('2026-01-04T00:00:00.000Z'))
+    revertSessionActivity(agentSlug, 'session-a', mark)
+
+    const sessions = await listSessionsFromSummary(agentSlug, { sortBy: 'last_activity_at' })
+    expect(ids(sessions)).toEqual(['session-a', 'session-b'])
+    expect(sessions[0]!.lastActivityAt).toEqual(new Date('2026-01-04T00:00:00.000Z'))
+  })
+
+  it('a rollback of a send recorded against a cold cache forces a re-stat', async () => {
+    await createSession('session-a', '2026-01-01T00:00:00.000Z')
+    await createSession('session-b', '2026-01-02T00:00:00.000Z')
+
+    const mark = recordProvisionalSessionActivity(agentSlug, 'session-a', new Date('2026-01-03T00:00:00.000Z'))
+    expect(ids(await listSessionsFromSummary(agentSlug, { sortBy: 'last_activity_at' })))
+      .toEqual(['session-a', 'session-b'])
+
+    revertSessionActivity(agentSlug, 'session-a', mark)
+
+    expect(ids(await listSessionsFromSummary(agentSlug, { sortBy: 'last_activity_at' })))
+      .toEqual(['session-b', 'session-a'])
+  })
+
+  it('does not cache a transient stat failure as absence', async () => {
+    await createSession('session-a', '2026-01-01T00:00:00.000Z')
+    await createSession('session-b', '2026-01-02T00:00:00.000Z')
+
+    // ESTALE on both the stat and its retry: the build fails and nothing is
+    // cached — the alternative is a session hidden until the next TTL.
+    statProbe.failures.set(transcriptPath('session-b'), { code: 'ESTALE', times: 2 })
+    await expect(listSessionsFromSummary(agentSlug)).rejects.toMatchObject({ code: 'ESTALE' })
+
+    // The filesystem recovers; the next read is complete.
+    expect(ids(await listSessionsFromSummary(agentSlug, { sortBy: 'last_activity_at' })))
+      .toEqual(['session-b', 'session-a'])
+  })
+
+  it('absorbs a single transient stat failure with one retry', async () => {
+    await createSession('session-a', '2026-01-01T00:00:00.000Z')
+    await createSession('session-b', '2026-01-02T00:00:00.000Z')
+    statProbe.failures.set(transcriptPath('session-b'), { code: 'EIO', times: 1 })
+
+    expect(ids(await listSessionsFromSummary(agentSlug, { sortBy: 'last_activity_at' })))
+      .toEqual(['session-b', 'session-a'])
+  })
+
+  it('still drops a transcript deleted between readdir and stat', async () => {
+    await createSession('session-a', '2026-01-01T00:00:00.000Z')
+    await createSession('session-b', '2026-01-02T00:00:00.000Z')
+    statProbe.failures.set(transcriptPath('session-b'), { code: 'ENOENT', times: 5 })
+
+    // No throw, no retry storm; session-b is no longer backed by its
+    // transcript and falls through to the metadata-only branch, ranked by
+    // its registration time rather than the file's mtime.
+    const sessions = await listSessionsFromSummary(agentSlug)
+    expect(ids(sessions).sort()).toEqual(['session-a', 'session-b'])
+    expect(sessions.find((s) => s.id === 'session-b')!.lastActivityAt)
+      .not.toEqual(new Date('2026-01-02T00:00:00.000Z'))
+    expect(statProbe.paths.filter((p) => p === transcriptPath('session-b'))).toHaveLength(1)
   })
 
   it('treats an unregistered empty transcript as a session once activity is recorded for it', async () => {

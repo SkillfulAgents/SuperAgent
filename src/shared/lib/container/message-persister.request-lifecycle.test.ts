@@ -40,6 +40,8 @@ vi.mock('@shared/lib/services/session-service', () => ({
 }))
 vi.mock('@shared/lib/services/session-summary-cache', () => ({
   recordSessionActivity: vi.fn(),
+  recordProvisionalSessionActivity: vi.fn(() => ({ recordedAtMs: 0, previous: null })),
+  revertSessionActivity: vi.fn(),
 }))
 vi.mock('@shared/lib/services/session-transcript-append', () => ({
   appendInformationalEntry: vi.fn(() => Promise.resolve()),

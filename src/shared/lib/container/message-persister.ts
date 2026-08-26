@@ -67,7 +67,12 @@ import { eq } from 'drizzle-orm'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { getFrequencyWarning, getScheduleCountWarning, validateScheduleExpression } from '@shared/lib/services/schedule-parser'
 import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
-import { recordSessionActivity } from '@shared/lib/services/session-summary-cache'
+import {
+  recordProvisionalSessionActivity,
+  recordSessionActivity,
+  revertSessionActivity,
+  type SessionActivityMark,
+} from '@shared/lib/services/session-summary-cache'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
@@ -136,6 +141,11 @@ interface StreamingState {
   // the session running and a later turn can still fail — so the automation
   // outcome is persisted as succeeded only when the session truly settles.
   lastResultCleanSuccess: boolean
+  // The summary-cache write made optimistically by markSessionActive, kept
+  // until the container confirms the turn (first frame) or the send is
+  // rolled back (markSessionIdle), so a failed send cannot leave the session
+  // ranked as if it had just been used.
+  provisionalActivity: SessionActivityMark | null
   lastContextWindow: number // Last known context window size (default 200k)
   lastAssistantUsage: SessionUsage | null // Per-call usage from most recent assistant message
   completedSubagentIds: Set<string> // completed agentIds; a new task_started with the same ID is a resumed run
@@ -521,6 +531,7 @@ class MessagePersister {
       stateEventsAuthority: prior?.stateEventsAuthority ?? false,
       lastResultSubtype: null,
       lastResultCleanSuccess: false,
+      provisionalActivity: null,
       isRetrying: false,
       // Carried over so a transport reattach mid-run doesn't lose the verdict
       // before the refresh below lands.
@@ -645,6 +656,12 @@ class MessagePersister {
   markSessionIdle(sessionId: string): void {
     const state = this.streamingStates.get(sessionId)
     if (!state?.isActive) return
+    // The send never happened, so the recency it was credited with is undone
+    // too (a no-op if a frame has arrived since — then the turn was real).
+    if (state.provisionalActivity && state.agentSlug) {
+      revertSessionActivity(state.agentSlug, sessionId, state.provisionalActivity)
+    }
+    state.provisionalActivity = null
     this.finalizeIdle(sessionId, state)
   }
 
@@ -1270,6 +1287,7 @@ class MessagePersister {
         stateEventsAuthority: false,
         lastResultSubtype: null,
       lastResultCleanSuccess: false,
+      provisionalActivity: null,
         isRetrying: false,
       }
       this.streamingStates.set(sessionId, state)
@@ -1318,8 +1336,10 @@ class MessagePersister {
     // message, which can be tens of seconds out. Session lists and the
     // latest-visible-session pick read the summary cache, so bump it here —
     // the session must move to the top the moment it is sent to.
+    // Provisional until the container answers: markSessionIdle reverts it if
+    // the send never got there.
     if (state.agentSlug) {
-      recordSessionActivity(state.agentSlug, sessionId, new Date())
+      state.provisionalActivity = recordProvisionalSessionActivity(state.agentSlug, sessionId, Date.now())
     }
 
     // Broadcast to session-specific clients
@@ -1703,6 +1723,8 @@ class MessagePersister {
       (content.type === 'assistant' || content.type === 'user' || content.type === 'result')
     ) {
       recordSessionActivity(state.agentSlug, sessionId, message.timestamp)
+      // The turn is real; the optimistic send record no longer needs undoing.
+      state.provisionalActivity = null
     }
 
     // Container late-join catch-up: the runtime replays the last turn's

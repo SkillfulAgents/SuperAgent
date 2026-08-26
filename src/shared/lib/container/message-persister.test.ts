@@ -29,8 +29,16 @@ vi.mock('@shared/lib/services/session-service', () => ({
   finalizeAutomationStatus: vi.fn(() => Promise.resolve('updated')),
 }))
 const mockRecordSessionActivity = vi.fn()
+const mockRecordProvisionalSessionActivity = vi.fn((_slug: string, _id: string, at: number) => ({
+  recordedAtMs: at,
+  previous: { mtimeMs: at - 60_000, size: 10 },
+}))
+const mockRevertSessionActivity = vi.fn()
 vi.mock('@shared/lib/services/session-summary-cache', () => ({
   recordSessionActivity: (...args: unknown[]) => mockRecordSessionActivity(...args),
+  recordProvisionalSessionActivity: (...args: unknown[]) =>
+    mockRecordProvisionalSessionActivity(...(args as [string, string, number])),
+  revertSessionActivity: (...args: unknown[]) => mockRevertSessionActivity(...args),
 }))
 const mockAppendInformationalEntry = vi.fn((..._args: unknown[]) => Promise.resolve())
 vi.mock('@shared/lib/services/session-transcript-append', () => ({
@@ -327,11 +335,11 @@ describe('MessagePersister', () => {
         vi.useRealTimers()
       }
 
-      expect(mockRecordSessionActivity).toHaveBeenCalledTimes(1)
-      expect(mockRecordSessionActivity).toHaveBeenCalledWith(
+      expect(mockRecordProvisionalSessionActivity).toHaveBeenCalledTimes(1)
+      expect(mockRecordProvisionalSessionActivity).toHaveBeenCalledWith(
         AGENT_SLUG,
         SESSION_ID,
-        new Date('2026-08-07T18:30:00.000Z'),
+        Date.parse('2026-08-07T18:30:00.000Z'),
       )
     })
 
@@ -339,7 +347,32 @@ describe('MessagePersister', () => {
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
 
-      expect(mockRecordSessionActivity).toHaveBeenCalledTimes(2)
+      expect(mockRecordProvisionalSessionActivity).toHaveBeenCalledTimes(2)
+    })
+
+    it('reverts the send record when the send is rolled back before reaching the container', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      const mark = mockRecordProvisionalSessionActivity.mock.results[0]!.value
+
+      messagePersister.markSessionIdle(SESSION_ID)
+
+      expect(mockRevertSessionActivity).toHaveBeenCalledTimes(1)
+      expect(mockRevertSessionActivity).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID, mark)
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+    })
+
+    it('does not revert once the container has answered the send', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._messageCallback!({
+        type: 'message',
+        content: { type: 'assistant', message: { role: 'assistant', content: 'working' } },
+        timestamp: new Date('2026-08-07T18:31:00.000Z'),
+        sessionId: SESSION_ID,
+      })
+
+      messagePersister.markSessionIdle(SESSION_ID)
+
+      expect(mockRevertSessionActivity).not.toHaveBeenCalled()
     })
 
     it('ignores replayed catch-up frames whose host timestamp is arrival time', () => {
