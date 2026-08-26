@@ -715,6 +715,14 @@ export interface ListSessionsOptions {
   excludeAutomated?: boolean
   sortBy?: SessionSortBy
   limit?: number
+  /**
+   * Pre-read metadata map, for callers that need it for their own projection
+   * in the same request (the sessions routes derive the marked-unread set from
+   * it). Reading it here as well would re-parse and re-validate a file already
+   * in memory — 57ms for a 20k-session agent. Must be freshly read: it decides
+   * names, creation times and automation visibility for this listing.
+   */
+  metadata?: SessionMetadataMap
 }
 
 type SessionOrderFields = {
@@ -768,8 +776,8 @@ export async function listSessions(
 ): Promise<SessionInfo[]> {
   const sessionsDir = getAgentSessionsDir(agentSlug)
 
-  // Read session metadata (includes newly created sessions without JSONL yet)
-  const metadata = await readSessionMetadata(agentSlug)
+  // Session metadata (includes newly created sessions without JSONL yet).
+  const metadata = options?.metadata ?? (await readSessionMetadata(agentSlug))
 
   const isAutomated = (sessionId: string) => isHiddenAutomatedSession(metadata[sessionId])
 
@@ -860,10 +868,11 @@ export async function listSessions(
 export async function listSessionsByIds(
   agentSlug: string,
   sessionIds: string[],
-  options?: { excludeAutomated?: boolean },
+  options?: { excludeAutomated?: boolean; metadata?: SessionMetadataMap },
 ): Promise<SessionInfo[]> {
   if (sessionIds.length === 0) return []
-  const metadata = await readSessionMetadata(agentSlug)
+  // See ListSessionsOptions.metadata — the caller may already hold the map.
+  const metadata = options?.metadata ?? (await readSessionMetadata(agentSlug))
   const isAutomated = (sessionId: string) => isHiddenAutomatedSession(metadata[sessionId])
   const limit = pLimit(10)
   const sessions = await Promise.all(
@@ -1987,18 +1996,15 @@ export async function setSessionMarkedUnread(
 }
 
 /**
- * Session ids explicitly marked unread. Hidden automated sessions are
- * excluded for the same reason unread notifications are: they never appear in
- * any session list, so a dot raised by one could never be cleared.
- */
-export async function getSessionIdsMarkedUnread(agentSlug: string): Promise<Set<string>> {
-  return collectSessionIdsMarkedUnread(await readSessionMetadata(agentSlug))
-}
-
-/**
- * Same selection against a metadata map the caller already holds — for the
- * agent-summary paths, which read the map once and would otherwise pay for a
- * second read just to answer this.
+ * Session ids explicitly marked unread, selected from a metadata map the
+ * caller already holds. Every caller does hold one — the listing paths read it
+ * for names and visibility, the agent summary for its rollup — so this takes
+ * the map rather than the slug: re-reading would re-parse and re-validate a
+ * file already in memory.
+ *
+ * Hidden automated sessions are excluded for the same reason unread
+ * notifications are: they never appear in any session list, so a dot raised by
+ * one could never be cleared.
  */
 export function collectSessionIdsMarkedUnread(metadata: SessionMetadataMap): Set<string> {
   const ids = new Set<string>()

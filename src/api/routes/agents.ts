@@ -77,7 +77,7 @@ import {
   isSessionRegistered,
   updateSessionMetadata,
   setSessionMarkedUnread,
-  getSessionIdsMarkedUnread,
+  collectSessionIdsMarkedUnread,
   withSessionIdsMarkedUnread,
   deleteSession,
   removeMessage,
@@ -589,9 +589,14 @@ async function getVisibleSessionExpansion(
     // Keep the complete visibility-filtered snapshot: its first item selects
     // latest, while the remaining metadata-only items answer the two attention
     // booleans without loading older transcripts.
+    // The caller already has this read in flight (it started before this
+    // function was called, and is strictly cheaper than the directory scan
+    // below), so handing it down costs nothing and saves listSessions a second
+    // parse of the same file.
     visibleSessions = await listSessions(agentSlug, {
       excludeAutomated: true,
       sortBy: 'last_activity_at',
+      metadata: await sessionMetadataPromise,
     })
   } catch (error) {
     if (signal?.aborted) throw error
@@ -1872,13 +1877,19 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
     const resultLimit = requestedLimit ?? (isNotable ? 25 : undefined)
 
     if (isNotable) {
-      const unreadIds = await getSessionIdsWithUnreadNotifications(slug)
-      const markedUnreadIds = await getSessionIdsMarkedUnread(slug)
+      // One metadata read for the request: listSessionsByIds needs the map for
+      // names and visibility, and the marked-unread set is derived from that
+      // same map rather than re-reading and re-validating the file.
+      const [unreadIds, sessionMetadata] = await Promise.all([
+        getSessionIdsWithUnreadNotifications(slug),
+        readSessionMetadata(slug),
+      ])
+      const markedUnreadIds = collectSessionIdsMarkedUnread(sessionMetadata)
       const activeIds = messagePersister.getActiveSessionIdsForAgent(slug)
       const infos = await listSessionsByIds(
         slug,
         [...new Set([...activeIds, ...unreadIds, ...markedUnreadIds])],
-        { excludeAutomated: true },
+        { excludeAutomated: true, metadata: sessionMetadata },
       )
       const enriched = infos.map((session) => {
         const isActive = messagePersister.isSessionActive(session.id)
@@ -1905,13 +1916,17 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
       return c.json(ordered.slice(0, resultLimit))
     }
 
+    // Single metadata read, shared by the listing and the marked-unread set —
+    // see the notable path above.
+    const sessionMetadata = await readSessionMetadata(slug)
     const sessionList = await listSessions(slug, {
       excludeAutomated: true,
+      metadata: sessionMetadata,
       ...(sortByRaw === undefined ? {} : { sortBy }),
       ...(resultLimit === undefined ? {} : { limit: resultLimit }),
     })
     const unreadSessionIds = await getSessionIdsWithUnreadNotifications(slug)
-    const markedUnreadSessionIds = await getSessionIdsMarkedUnread(slug)
+    const markedUnreadSessionIds = collectSessionIdsMarkedUnread(sessionMetadata)
     const pendingWakes = await listPendingWakesByAgent(slug)
     const wakesBySession = new Map(pendingWakes.map((w) => [w.resumeSessionId!, w]))
     const sessionsWithStatus = sessionList.map((session) => {

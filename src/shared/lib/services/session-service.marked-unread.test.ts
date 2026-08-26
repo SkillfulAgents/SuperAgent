@@ -35,18 +35,23 @@ async function importService() {
   return import('./session-service')
 }
 
+/** The routes derive this from a map they already hold; mirror that here. */
+async function markedUnreadIds(slug: string): Promise<Set<string>> {
+  const { readSessionMetadata, collectSessionIdsMarkedUnread } = await importService()
+  return collectSessionIdsMarkedUnread(await readSessionMetadata(slug))
+}
+
 describe('setSessionMarkedUnread', () => {
   it('raises the flag and lists the session as marked unread', async () => {
-    const { registerSession, setSessionMarkedUnread, getSessionIdsMarkedUnread } =
-      await importService()
+    const { registerSession, setSessionMarkedUnread } = await importService()
     makeAgent('agent')
     await registerSession('agent', 'session-1', 'One')
 
-    expect(await getSessionIdsMarkedUnread('agent')).toEqual(new Set())
+    expect(await markedUnreadIds('agent')).toEqual(new Set())
 
     await setSessionMarkedUnread('agent', 'session-1', true)
 
-    expect(await getSessionIdsMarkedUnread('agent')).toEqual(new Set(['session-1']))
+    expect(await markedUnreadIds('agent')).toEqual(new Set(['session-1']))
   })
 
   it('clears the flag by removing the key, not by storing false', async () => {
@@ -124,20 +129,20 @@ describe('setSessionMarkedUnread', () => {
   })
 })
 
-describe('getSessionIdsMarkedUnread', () => {
+describe('collectSessionIdsMarkedUnread', () => {
   it('skips hidden automated sessions, which no session list would ever show', async () => {
-    const { registerSession, updateSessionMetadata, setSessionMarkedUnread, getSessionIdsMarkedUnread } =
+    const { registerSession, updateSessionMetadata, setSessionMarkedUnread } =
       await importService()
     makeAgent('agent')
     await registerSession('agent', 'cron-session', 'Cron')
     await updateSessionMetadata('agent', 'cron-session', { isScheduledExecution: true })
     await setSessionMarkedUnread('agent', 'cron-session', true)
 
-    expect(await getSessionIdsMarkedUnread('agent')).toEqual(new Set())
+    expect(await markedUnreadIds('agent')).toEqual(new Set())
   })
 
   it('includes an automated session once it has been promoted to interactive', async () => {
-    const { registerSession, updateSessionMetadata, setSessionMarkedUnread, getSessionIdsMarkedUnread } =
+    const { registerSession, updateSessionMetadata, setSessionMarkedUnread } =
       await importService()
     makeAgent('agent')
     await registerSession('agent', 'cron-session', 'Cron')
@@ -147,6 +152,6 @@ describe('getSessionIdsMarkedUnread', () => {
     })
     await setSessionMarkedUnread('agent', 'cron-session', true)
 
-    expect(await getSessionIdsMarkedUnread('agent')).toEqual(new Set(['cron-session']))
+    expect(await markedUnreadIds('agent')).toEqual(new Set(['cron-session']))
   })
 })
