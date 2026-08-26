@@ -1,5 +1,6 @@
 import * as fs from 'fs'
 import * as path from 'path'
+import pLimit from 'p-limit'
 import { getAgentWorkspaceDir, writeFileAtomic } from '@shared/lib/utils/file-storage'
 import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 
@@ -33,43 +34,46 @@ export async function listArtifactsFromFilesystem(
     return []
   }
 
-  const dashboards: ArtifactInfo[] = []
+  // Three independent lookups per artifact, artifacts independent of each
+  // other: issue them concurrently (bounded) instead of one round trip at a
+  // time — this runs for every agent on every agents-list poll. Result order
+  // follows the directory listing, as before.
+  const limit = pLimit(10)
+  const dashboards = await Promise.all(
+    entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => limit(async (): Promise<ArtifactInfo | null> => {
+        const artifactDir = path.join(artifactsDir, entry.name)
+        try {
+          const [pkgContent, hasScreenshot, hasNodeModules] = await Promise.all([
+            fs.promises.readFile(path.join(artifactDir, 'package.json'), 'utf-8'),
+            fileExists(path.join(artifactDir, ARTIFACT_SCREENSHOT_FILENAME)),
+            directoryExists(path.join(artifactDir, 'node_modules')),
+          ])
+          const pkg = JSON.parse(pkgContent)
+          const info: ArtifactInfo = {
+            slug: entry.name,
+            name: pkg.name || entry.name,
+            description: pkg.description || '',
+            status: 'stopped',
+            port: 0,
+          }
+          // Only include hasScreenshot when true — keeps the API shape minimal
+          // and avoids spurious `hasScreenshot: false` fields in common responses.
+          if (hasScreenshot) info.hasScreenshot = true
+          // The host can report this before the agent container is running. That
+          // lets the dashboard view explain first-run preparation during container
+          // startup instead of flashing the state only during a fast install.
+          if (!hasNodeModules) info.firstRun = true
+          return info
+        } catch {
+          // No valid package.json, skip
+          return null
+        }
+      })),
+  )
 
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue
-
-    const pkgPath = path.join(artifactsDir, entry.name, 'package.json')
-    try {
-      const pkgContent = await fs.promises.readFile(pkgPath, 'utf-8')
-      const pkg = JSON.parse(pkgContent)
-      const screenshotPath = path.join(
-        artifactsDir,
-        entry.name,
-        ARTIFACT_SCREENSHOT_FILENAME
-      )
-      const hasScreenshot = await fileExists(screenshotPath)
-      const firstRun = !(await directoryExists(path.join(artifactsDir, entry.name, 'node_modules')))
-      const info: ArtifactInfo = {
-        slug: entry.name,
-        name: pkg.name || entry.name,
-        description: pkg.description || '',
-        status: 'stopped',
-        port: 0,
-      }
-      // Only include hasScreenshot when true — keeps the API shape minimal
-      // and avoids spurious `hasScreenshot: false` fields in common responses.
-      if (hasScreenshot) info.hasScreenshot = true
-      // The host can report this before the agent container is running. That
-      // lets the dashboard view explain first-run preparation during container
-      // startup instead of flashing the state only during a fast install.
-      if (firstRun) info.firstRun = true
-      dashboards.push(info)
-    } catch {
-      // No valid package.json, skip
-    }
-  }
-
-  return dashboards
+  return dashboards.filter((info): info is ArtifactInfo => info !== null)
 }
 
 async function fileExists(p: string): Promise<boolean> {

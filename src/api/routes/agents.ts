@@ -1893,13 +1893,17 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
       return c.json(ordered.slice(0, resultLimit))
     }
 
-    const sessionList = await listSessionsFromSummary(slug, {
-      excludeAutomated: true,
-      ...(sortByRaw === undefined ? {} : { sortBy }),
-      ...(resultLimit === undefined ? {} : { limit: resultLimit }),
-    })
-    const unreadSessionIds = await getSessionIdsWithUnreadNotifications(slug)
-    const pendingWakes = await listPendingWakesByAgent(slug)
+    // Independent lookups (filesystem summary, notifications table, scheduled
+    // tasks table) — overlap them rather than paying their latencies in series.
+    const [sessionList, unreadSessionIds, pendingWakes] = await Promise.all([
+      listSessionsFromSummary(slug, {
+        excludeAutomated: true,
+        ...(sortByRaw === undefined ? {} : { sortBy }),
+        ...(resultLimit === undefined ? {} : { limit: resultLimit }),
+      }),
+      getSessionIdsWithUnreadNotifications(slug),
+      listPendingWakesByAgent(slug),
+    ])
     const wakesBySession = new Map(pendingWakes.map((w) => [w.resumeSessionId!, w]))
     const sessionsWithStatus = sessionList.map((session) => {
       const isActive = messagePersister.isSessionActive(session.id)
