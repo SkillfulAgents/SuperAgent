@@ -17,11 +17,19 @@ import * as os from 'os'
 import { SAMPLE_JSONL_ENTRIES, toJsonl } from './__fixtures__/test-data'
 import {
   listSessions,
+  listSessionsFromSummary,
   getSessionMessagesPage,
   reserveSessionOwnership,
 } from './session-service'
 
-describe('listSessions visible-list contract', () => {
+// Both implementations must satisfy the same contract: listSessions stats
+// every transcript; listSessionsFromSummary reads the summary cache. Each
+// test seeds its own temp dir, so the cache starts cold and is built from the
+// same directory state the stat-based listing sees.
+describe.each([
+  ['listSessions', listSessions],
+  ['listSessionsFromSummary', listSessionsFromSummary],
+] as const)('%s visible-list contract', (_name, list) => {
   let testDir: string
   let originalEnv: string | undefined
 
@@ -78,7 +86,7 @@ describe('listSessions visible-list contract', () => {
       'registered-empty': { name: 'Just created', createdAt: '2026-01-02T00:00:00.000Z' },
     })
 
-    const sessions = await listSessions('agent-a', {
+    const sessions = await list('agent-a', {
       excludeAutomated: true,
       sortBy: 'last_activity_at',
     })
@@ -101,7 +109,7 @@ describe('listSessions visible-list contract', () => {
       'x-agent-new': { invokedByAgentSlug: 'caller' },
     })
 
-    const latest = await listSessions('agent-a', {
+    const latest = await list('agent-a', {
       excludeAutomated: true,
       sortBy: 'last_activity_at',
       limit: 1,
@@ -121,7 +129,7 @@ describe('listSessions visible-list contract', () => {
       },
     })
 
-    const latest = await listSessions('agent-a', {
+    const latest = await list('agent-a', {
       excludeAutomated: true,
       sortBy: 'last_activity_at',
       limit: 1,
@@ -136,7 +144,7 @@ describe('listSessions visible-list contract', () => {
       'pending-new': { name: 'Pending', createdAt: '2026-01-03T00:00:00.000Z' },
     })
 
-    const sessions = await listSessions('agent-a', {
+    const sessions = await list('agent-a', {
       excludeAutomated: true,
       sortBy: 'last_activity_at',
     })
@@ -153,7 +161,7 @@ describe('listSessions visible-list contract', () => {
     await writeTranscript('agent-a', 'c-newest', { activityAt: '2026-01-03T00:00:00.000Z' })
     await writeTranscript('agent-a', 'b-middle', { activityAt: '2026-01-02T00:00:00.000Z' })
 
-    const sessions = await listSessions('agent-a', { sortBy: 'last_activity_at' })
+    const sessions = await list('agent-a', { sortBy: 'last_activity_at' })
 
     expect(ids(sessions)).toEqual(['c-newest', 'b-middle', 'a-oldest'])
     expect(sessions.map((s) => s.lastActivityAt.toISOString())).toEqual([
@@ -170,7 +178,7 @@ describe('listSessions visible-list contract', () => {
       'with-meta': { createdAt: '2025-12-25T00:00:00.000Z' },
     })
 
-    const sessions = await listSessions('agent-a')
+    const sessions = await list('agent-a')
     const withMeta = sessions.find((s) => s.id === 'with-meta')!
     const noMeta = sessions.find((s) => s.id === 'no-meta')!
 
@@ -187,6 +195,9 @@ describe('listSessions visible-list contract', () => {
     await fs.promises.mkdir(sessionsDir('agent-b'), { recursive: true })
     // Reserve first: the ownership index is built from disk on first use, so a
     // later foreign file in agent-a's directory is unowned by agent-a.
+    // (The reservation also invalidates agent-b's summary, not agent-a's; the
+    // summary-backed listing must still build agent-a's map after the foreign
+    // file lands, which it does because the first read is cold.)
     await reserveSessionOwnership('agent-b', 'foreign-transcript')
     await reserveSessionOwnership('agent-b', 'foreign-pending')
     await writeTranscript('agent-a', 'foreign-transcript', { activityAt: '2026-01-09T00:00:00.000Z' })
@@ -194,7 +205,7 @@ describe('listSessions visible-list contract', () => {
       'foreign-pending': { name: 'Forged', createdAt: '2026-01-10T00:00:00.000Z' },
     })
 
-    const sessions = await listSessions('agent-a', {
+    const sessions = await list('agent-a', {
       excludeAutomated: true,
       sortBy: 'last_activity_at',
     })
@@ -214,7 +225,7 @@ describe('listSessions visible-list contract', () => {
       'hidden-3': { isScheduledExecution: true, scheduledTaskId: 't' },
     })
 
-    const sessions = await listSessions('agent-a', {
+    const sessions = await list('agent-a', {
       excludeAutomated: true,
       sortBy: 'last_activity_at',
       limit: 2,
@@ -253,7 +264,7 @@ describe('listSessions visible-list contract', () => {
     const jan2 = new Date('2026-01-02T00:00:00.000Z')
     await fs.promises.utimes(transcriptPath('agent-a', 'registered-empty-jan2'), jan2, jan2)
 
-    const visible = await listSessions('agent-a', {
+    const visible = await list('agent-a', {
       excludeAutomated: true,
       sortBy: 'last_activity_at',
     })
@@ -266,7 +277,7 @@ describe('listSessions visible-list contract', () => {
       'visible-jan1',
     ])
 
-    const everything = await listSessions('agent-a', { sortBy: 'last_activity_at' })
+    const everything = await list('agent-a', { sortBy: 'last_activity_at' })
     expect(ids(everything)).toEqual([
       'pending-hidden-jan8',
       'hidden-jan6',

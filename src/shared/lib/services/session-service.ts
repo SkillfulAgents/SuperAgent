@@ -54,9 +54,11 @@ import {
 import { captureException } from '@shared/lib/error-reporting'
 import {
   getSessionSummaryCacheSlot,
+  applyActivity,
   invalidateSessionSummaryCache,
   recordSessionActivity,
   removeSessionFromSummaryCache,
+  type SessionActivityEntry,
   SESSION_SUMMARY_CACHE_TTL_MS,
   type SessionSummaryCacheValue,
 } from './session-summary-cache'
@@ -569,10 +571,11 @@ function emptySessionFromMetadata(
 // network filesystems like S3 Files / EFS used by the k8s / microVM runtime.
 function resolveSessionCreatedAt(
   meta: SessionMetadata | undefined,
-  stat: { birthtimeMs: number; birthtime: Date; mtimeMs: number },
+  stat: { birthtimeMs: number; mtimeMs: number },
 ): Date {
   if (meta?.createdAt) return new Date(meta.createdAt)
-  if (stat.birthtimeMs > 0) return stat.birthtime
+  // Same rounding Node applies when it derives stat.birthtime from the ns value.
+  if (stat.birthtimeMs > 0) return new Date(Math.round(stat.birthtimeMs))
   return new Date(stat.mtimeMs)
 }
 
@@ -580,15 +583,15 @@ function resolveSessionCreatedAt(
 // Session Operations
 // ============================================================================
 
-function summaryFromActivityMap(activityBySession: Map<string, number>): {
+function summaryFromActivityMap(activityBySession: ReadonlyMap<string, SessionActivityEntry>): {
   sessionIds: string[]
   sessionCount: number
   lastActivityAt: Date | null
 } {
   const sessionIds = [...activityBySession.keys()]
   let latestMs: number | null = null
-  for (const activityAtMs of activityBySession.values()) {
-    if (latestMs === null || activityAtMs > latestMs) latestMs = activityAtMs
+  for (const { mtimeMs } of activityBySession.values()) {
+    if (latestMs === null || mtimeMs > latestMs) latestMs = mtimeMs
   }
   return {
     sessionIds,
@@ -607,11 +610,35 @@ async function getSessionsDirectoryMtime(sessionsDir: string): Promise<number | 
   }
 }
 
+/**
+ * Stat one transcript for the summary build. A file deleted between readdir
+ * and stat (deleteSession racing a scan) is not an error — it drops out of
+ * the build. Anything else is: the build's result is cached for minutes, so
+ * treating a transient network-filesystem failure (ESTALE, EIO, a timeout)
+ * as "no such session" would hide or misorder that session until the next
+ * reconciliation. Retry once, then let the build fail; nothing is cached and
+ * the next read rebuilds.
+ */
+async function statTranscriptForSummary(filePath: string): Promise<fs.Stats | null> {
+  const isMissing = (error: unknown) => (error as NodeJS.ErrnoException)?.code === 'ENOENT'
+  try {
+    return await fs.promises.stat(filePath)
+  } catch (error) {
+    if (isMissing(error)) return null
+    try {
+      return await fs.promises.stat(filePath)
+    } catch (retryError) {
+      if (isMissing(retryError)) return null
+      throw retryError
+    }
+  }
+}
+
 async function buildSessionActivityMap(
   agentSlug: string,
   sessionsDir: string,
   directoryMtimeMs: number | null,
-): Promise<Map<string, number>> {
+): Promise<Map<string, SessionActivityEntry>> {
   if (directoryMtimeMs === null) return new Map()
 
   const files = await fs.promises.readdir(sessionsDir)
@@ -619,34 +646,34 @@ async function buildSessionActivityMap(
   const limit = pLimit(10)
   const stats = await Promise.all(
     jsonlFiles.map((file) => limit(async () => {
-      // A transcript deleted between readdir and stat (deleteSession racing a
-      // scan) just drops out of this build instead of failing the whole scan.
-      const stat = await fs.promises.stat(path.join(sessionsDir, file)).catch(() => null)
+      const stat = await statTranscriptForSummary(path.join(sessionsDir, file))
       if (!stat) return null
       const sessionId = path.basename(file, '.jsonl')
       if (!(await sessionBelongsToAgent(agentSlug, sessionId))) return null
-      return { sessionId, mtimeMs: stat.mtimeMs }
+      return {
+        sessionId,
+        entry: { mtimeMs: stat.mtimeMs, birthtimeMs: stat.birthtimeMs, size: stat.size },
+      }
     })),
   )
 
-  const activityBySession = new Map<string, number>()
-  for (const entry of stats) {
-    if (entry) activityBySession.set(entry.sessionId, entry.mtimeMs)
+  const activityBySession = new Map<string, SessionActivityEntry>()
+  for (const result of stats) {
+    if (result) activityBySession.set(result.sessionId, result.entry)
   }
   return activityBySession
 }
 
 /**
- * Lightweight session summary from filesystem stats only (no JSONL parsing).
- * Returns session IDs, count, and latest activity time. The first read (and
- * structural/TTL reconciliation) stats every transcript; warm reads validate
- * the directory with one stat and use stream-maintained per-session mtimes.
+ * The per-agent activity map behind {@link getSessionSummary} and
+ * {@link listSessionsFromSummary}: one entry per owned transcript on disk.
+ * The first read (and structural/TTL reconciliation) stats every transcript;
+ * warm reads validate the directory with one stat and use stream-maintained
+ * per-session entries. Callers must treat the returned map as read-only.
  */
-export async function getSessionSummary(agentSlug: string): Promise<{
-  sessionIds: string[]
-  sessionCount: number
-  lastActivityAt: Date | null
-}> {
+async function loadSessionActivityMap(
+  agentSlug: string,
+): Promise<ReadonlyMap<string, SessionActivityEntry>> {
   const sessionsDir = getAgentSessionsDir(agentSlug)
   const slot = getSessionSummaryCacheSlot(sessionsDir)
   const directoryMtimeMs = await getSessionsDirectoryMtime(sessionsDir)
@@ -656,7 +683,7 @@ export async function getSessionSummary(agentSlug: string): Promise<{
     slot.value.directoryMtimeMs === directoryMtimeMs &&
     now - slot.value.builtAtMs < SESSION_SUMMARY_CACHE_TTL_MS
   ) {
-    return summaryFromActivityMap(slot.value.activityBySession)
+    return slot.value.activityBySession
   }
 
   if (slot.loading) {
@@ -666,9 +693,9 @@ export async function getSessionSummary(agentSlug: string): Promise<{
       loaded.directoryMtimeMs === directoryMtimeMs &&
       Date.now() - loaded.builtAtMs < SESSION_SUMMARY_CACHE_TTL_MS
     ) {
-      return summaryFromActivityMap(loaded.activityBySession)
+      return loaded.activityBySession
     }
-    return getSessionSummary(agentSlug)
+    return loadSessionActivityMap(agentSlug)
   }
 
   const revision = slot.revision
@@ -681,11 +708,9 @@ export async function getSessionSummary(agentSlug: string): Promise<{
       for (const [sessionId, mutation] of slot.pending) {
         if (mutation.deleted) {
           activityBySession.delete(sessionId)
-        } else if (mutation.activityAtMs !== undefined && activityBySession.has(sessionId)) {
-          activityBySession.set(
-            sessionId,
-            Math.max(activityBySession.get(sessionId)!, mutation.activityAtMs),
-          )
+        } else if (mutation.activityAtMs !== undefined) {
+          const entry = activityBySession.get(sessionId)
+          if (entry) applyActivity(entry, mutation.activityAtMs)
         }
       }
       slot.pending.clear()
@@ -700,11 +725,24 @@ export async function getSessionSummary(agentSlug: string): Promise<{
   slot.loading = loading
   try {
     const loaded = await loading
-    if (slot.value !== loaded) return getSessionSummary(agentSlug)
-    return summaryFromActivityMap(loaded.activityBySession)
+    if (slot.value !== loaded) return loadSessionActivityMap(agentSlug)
+    return loaded.activityBySession
   } finally {
     if (slot.loading === loading) slot.loading = undefined
   }
+}
+
+/**
+ * Lightweight session summary from filesystem stats only (no JSONL parsing).
+ * Returns session IDs, count, and latest activity time. Warm reads cost one
+ * directory stat; see {@link loadSessionActivityMap}.
+ */
+export async function getSessionSummary(agentSlug: string): Promise<{
+  sessionIds: string[]
+  sessionCount: number
+  lastActivityAt: Date | null
+}> {
+  return summaryFromActivityMap(await loadSessionActivityMap(agentSlug))
 }
 
 export type SessionSortBy = 'last_activity_at'
@@ -847,6 +885,63 @@ export async function listSessions(
   return options?.limit === undefined
     ? ordered
     : ordered.slice(0, options.limit)
+}
+
+/**
+ * The same visible list as {@link listSessions}, built from the session summary
+ * cache instead of a stat of every transcript.
+ *
+ * Warm cost is one directory stat (the cache validation) plus the metadata
+ * read — or nothing beyond the directory stat when the caller passes the map
+ * it already holds. This is what request-path consumers should use: the
+ * agents list hydrates every agent per poll, and on network filesystems each
+ * transcript stat is a round trip. Freshness is that of the summary cache —
+ * structural changes (new/deleted transcripts, ownership claims) reconcile via
+ * directory mtime and invalidation, appends via recordSessionActivity — i.e.
+ * exactly the fidelity of the agent card's lastActivityAt.
+ *
+ * Applies the same rules as listSessions: ownership (the cache is built
+ * through sessionBelongsToAgent; metadata-only sessions are checked here),
+ * unregistered empty transcripts skipped, visibility filtered BEFORE ordering
+ * and limit.
+ */
+export async function listSessionsFromSummary(
+  agentSlug: string,
+  options?: ListSessionsOptions & { metadata?: SessionMetadataMap },
+): Promise<SessionInfo[]> {
+  const metadata = options?.metadata ?? (await readSessionMetadata(agentSlug))
+  const activity = await loadSessionActivityMap(agentSlug)
+  const metaFor = (sessionId: string): SessionMetadata | undefined =>
+    Object.hasOwn(metadata, sessionId) ? metadata[sessionId] : undefined
+  const isAutomated = (sessionId: string) => isHiddenAutomatedSession(metaFor(sessionId))
+
+  const sessions: SessionInfo[] = []
+  for (const [sessionId, entry] of activity) {
+    const meta = metaFor(sessionId)
+    // Same rule as listSessions: an unregistered empty JSONL is an SDK
+    // subagent artifact, not a session.
+    if (entry.size === 0 && !meta) continue
+    if (options?.excludeAutomated && isAutomated(sessionId)) continue
+    sessions.push({
+      id: sessionId,
+      agentSlug,
+      name: meta?.name || 'New Session',
+      createdAt: resolveSessionCreatedAt(meta, entry),
+      lastActivityAt: new Date(entry.mtimeMs),
+      messageCount: 0,
+    })
+  }
+
+  // Registered sessions whose agent has not streamed yet (no transcript).
+  for (const [sessionId, sessionMeta] of Object.entries(metadata)) {
+    if (activity.has(sessionId) || !sessionMeta.createdAt) continue
+    if (!(await sessionBelongsToAgent(agentSlug, sessionId))) continue
+    if (options?.excludeAutomated && isAutomated(sessionId)) continue
+    sessions.push(emptySessionFromMetadata(sessionId, agentSlug, sessionMeta))
+  }
+
+  const ordered = sortSessionsNewestFirst(sessions, options?.sortBy)
+  return options?.limit === undefined ? ordered : ordered.slice(0, options.limit)
 }
 
 /**
@@ -1511,35 +1606,44 @@ export async function getSessionMessagesPage(
   }
 ): Promise<SessionMessagesPage> {
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
-  if (!(await fileExists(jsonlPath))) {
-    return { messages: [], nextCursor: null }
-  }
-
   const { limit, cursor, signal } = opts
   const byteBudget = opts.byteBudget ?? MESSAGES_PAGE_BYTE_BUDGET
 
-  const scan = await scanMessagesPageWindow(jsonlPath, { limit, cursor, byteBudget, signal })
-  signal?.throwIfAborted()
-  if (!scan.found) {
-    // Vanished id (or cursor deeper than MAX_TAIL_LINES): terminate paging.
-    // Never point the client at a newer message — it would loop on
-    // already-loaded pages.
-    if (!scan.reachedStart) {
-      console.warn(
-        `getSessionMessagesPage: cursor ${cursor} not found within ` +
-        `${MAX_TAIL_LINES} tail lines of session ${sessionId}; ending pagination`
-      )
+  // No existence pre-check: a registered session that has not streamed yet
+  // has no transcript and pages as empty, and a stat before every read is a
+  // wasted round trip on network filesystems. The backward scan yields
+  // nothing for a missing file; the forward read then fails to open it and
+  // the ENOENT is answered with the same empty terminal page.
+  let scan: PageWindowScan
+  let entries: (JsonlMessageEntry | JsonlSystemEntry)[]
+  try {
+    scan = await scanMessagesPageWindow(jsonlPath, { limit, cursor, byteBudget, signal })
+    signal?.throwIfAborted()
+    if (!scan.found) {
+      // Vanished id (or cursor deeper than MAX_TAIL_LINES): terminate paging.
+      // Never point the client at a newer message — it would loop on
+      // already-loaded pages.
+      if (!scan.reachedStart) {
+        console.warn(
+          `getSessionMessagesPage: cursor ${cursor} not found within ` +
+          `${MAX_TAIL_LINES} tail lines of session ${sessionId}; ending pagination`
+        )
+      }
+      return { messages: [], nextCursor: null }
     }
-    return { messages: [], nextCursor: null }
+    entries = await readEntriesRange(
+      jsonlPath,
+      scan.startOffset,
+      scan.endOffset,
+      signal,
+      opts.media === 'ref'
+    )
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { messages: [], nextCursor: null }
+    }
+    throw error
   }
-
-  const entries = await readEntriesRange(
-    jsonlPath,
-    scan.startOffset,
-    scan.endOffset,
-    signal,
-    opts.media === 'ref'
-  )
   signal?.throwIfAborted()
   const transformed = transformMessages(entries)
   const reachedStart = scan.reachedStart
