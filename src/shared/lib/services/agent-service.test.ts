@@ -103,6 +103,14 @@ describe('agent-service', () => {
       expect(agent).toBeNull()
     })
 
+    it('returns null when the agent directory exists but CLAUDE.md is missing', async () => {
+      await fs.promises.mkdir(path.join(testDir, 'agents', 'hollow', 'workspace'), { recursive: true })
+
+      const agent = await getAgent('hollow')
+
+      expect(agent).toBeNull()
+    })
+
     it('returns agent config for existing agent', async () => {
       await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
 
@@ -258,6 +266,39 @@ Instructions`
 
       expect(agents.length).toBe(1)
       expect(agents[0].slug).toBe('valid-agent')
+    })
+
+    it('orders many agents newest-first regardless of directory or creation order', async () => {
+      // Slug order, directory-creation order and createdAt order all disagree,
+      // so a listing that reads CLAUDE.md files concurrently (in any completion
+      // order) must still sort purely by createdAt.
+      const agents = [
+        ['agent-c', '2026-03-01T00:00:00.000Z'],
+        ['agent-a', '2026-05-01T00:00:00.000Z'],
+        ['agent-e', '2026-01-01T00:00:00.000Z'],
+        ['agent-b', '2026-04-01T00:00:00.000Z'],
+        ['agent-d', '2026-02-01T00:00:00.000Z'],
+        ['agent-f', '2026-06-01T00:00:00.000Z'],
+      ] as const
+      for (const [slug, createdAt] of agents) {
+        await createTestAgent(slug, `---\nname: ${slug}\ncreatedAt: "${createdAt}"\n---\nInstructions`)
+      }
+
+      const listed = await listAgents()
+
+      expect(listed.map((a) => a.slug)).toEqual([
+        'agent-f', 'agent-a', 'agent-b', 'agent-c', 'agent-d', 'agent-e',
+      ])
+    })
+
+    it('skips an agent whose CLAUDE.md is missing while keeping its siblings', async () => {
+      await createTestAgent('first', SAMPLE_CLAUDE_MD)
+      await fs.promises.mkdir(path.join(testDir, 'agents', 'hollow', 'workspace'), { recursive: true })
+      await createTestAgent('last', SAMPLE_CLAUDE_MD)
+
+      const listed = await listAgents()
+
+      expect(listed.map((a) => a.slug).sort()).toEqual(['first', 'last'])
     })
   })
 
