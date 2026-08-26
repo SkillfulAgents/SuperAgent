@@ -34,6 +34,7 @@ itself important.
 - `chat-integrations.md`
 - `browser-use.md`
 - `computer-use.md`
+- `x.md`
 
 Dashboard guidance is not here — it lives in the `dashboards` skill
 (`agent-container/skills/dashboards/`), which the agent already discovers
