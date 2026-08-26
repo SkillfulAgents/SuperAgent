@@ -6,12 +6,13 @@
  */
 import { defineHomeScenarios } from './home-scenarios'
 
-// Baseline recorded on the pre-optimisation code (SUP-658 as shipped).
+// Cold reads still stat every transcript once to build the summary; warm
+// reads (the iOS poll) and the sessions page come from the cache.
 defineHomeScenarios('small', {
   agentsCold: { totalOps: 317, ops: { stat: 275 }, wallMs: 320 },
   agentsWarm: { totalOps: 52, ops: { stat: 15 }, wallMs: 290 },
-  homeCold: { totalOps: 632, ops: { stat: 550 }, wallMs: 520 },
-  homeWarm: { totalOps: 367, ops: { stat: 290 }, wallMs: 500 },
-  sessionsPage: { totalOps: 56, ops: { stat: 54 }, wallMs: 220 },
+  homeCold: { totalOps: 352, ops: { stat: 280 }, wallMs: 450 },
+  homeWarm: { totalOps: 87, ops: { stat: 20 }, wallMs: 320 },
+  sessionsPage: { totalOps: 3, ops: { stat: 2 }, wallMs: 70 },
   sessionsNotable: { totalOps: 1, ops: { stat: 1 }, wallMs: 40 },
 })

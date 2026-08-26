@@ -56,7 +56,7 @@ import type {
   UserInputRequestScope,
 } from '@shared/lib/user-input/request-schema'
 import {
-  listSessions,
+  listSessionsFromSummary,
   listSessionsByIds,
   sortSessionsNewestFirst,
   SESSIONS_LIST_MAX_LIMIT,
@@ -531,28 +531,34 @@ async function getLatestVisibleSessionTail(
   agentSlug: string,
   session: SessionInfo,
   unreadSessionIds: Set<string>,
+  sessionMetadata: SessionMetadataMap,
   signal?: AbortSignal,
 ): Promise<NonNullable<ApiAgent['latestVisibleSession']>> {
+  signal?.throwIfAborted()
+  // Read first, check existence only if the read came back empty: the page
+  // reader answers a missing transcript with an empty page, so the common
+  // case (a transcript with messages) costs no stat at all.
+  const messageTail = await getSessionMessagesPage(agentSlug, session.id, {
+    limit: LATEST_VISIBLE_SESSION_TAIL_LIMIT,
+    byteBudget: LATEST_VISIBLE_SESSION_TAIL_BYTE_BUDGET,
+    media: 'ref',
+    signal,
+  })
   signal?.throwIfAborted()
   // A registered session with no transcript yet (created, nothing streamed) is
   // a normal state and serves an empty tail. Only an id with neither a
   // transcript nor a registration — a session that vanished after listing —
-  // is an error.
-  const transcriptExists = await sessionExists(agentSlug, session.id)
-  if (!transcriptExists && !(await sessionIsKnown(agentSlug, session.id))) {
+  // is an error. Registration is answered from the metadata map already in
+  // hand; the stat runs only for an unregistered empty tail.
+  if (
+    messageTail.messages.length === 0 &&
+    !(Object.hasOwn(sessionMetadata, session.id) && sessionMetadata[session.id]?.createdAt) &&
+    !(await sessionExists(agentSlug, session.id))
+  ) {
     throw new Error(
       'Latest visible session transcript not found for ' + agentSlug + '/' + session.id,
     )
   }
-  const messageTail = transcriptExists
-    ? await getSessionMessagesPage(agentSlug, session.id, {
-        limit: LATEST_VISIBLE_SESSION_TAIL_LIMIT,
-        byteBudget: LATEST_VISIBLE_SESSION_TAIL_BYTE_BUDGET,
-        media: 'ref',
-        signal,
-      })
-    : { messages: [], nextCursor: null }
-  signal?.throwIfAborted()
   // Same treatment as the transcript page endpoint, so the tail matches what
   // opening the session shows. Must run before the session flags below so
   // recovered awaiting-input state is reflected in them.
@@ -582,11 +588,16 @@ async function getVisibleSessionExpansion(
   signal?: AbortSignal,
 ): Promise<AgentVisibleSessionExpansion> {
   let visibleSessions: SessionInfo[]
+  let sessionMetadata: SessionMetadataMap
   try {
     // Keep the complete visibility-filtered snapshot: its first item selects
     // latest, while the remaining metadata-only items answer the two attention
-    // booleans without loading older transcripts.
-    visibleSessions = await listSessions(agentSlug, {
+    // booleans without loading older transcripts. Built from the summary
+    // cache with the metadata map the caller already read, so a warm poll
+    // costs one directory stat per agent instead of one stat per transcript.
+    sessionMetadata = await sessionMetadataPromise
+    visibleSessions = await listSessionsFromSummary(agentSlug, {
+      metadata: sessionMetadata,
       excludeAutomated: true,
       sortBy: 'last_activity_at',
     })
@@ -601,25 +612,26 @@ async function getVisibleSessionExpansion(
   }
 
   const latestSession = visibleSessions[0]
-  const attentionOutsideLatestPromise = sessionMetadataPromise
-    .then((sessionMetadata) => getAttentionOutsideLatest(
+  let attentionOutsideLatest: ApiAgent['attentionOutsideLatest']
+  try {
+    attentionOutsideLatest = getAttentionOutsideLatest(
       agentSlug,
       visibleSessions,
       unreadSessionIds,
       sessionMetadata,
-    ))
-    .catch((error): null => {
-      if (signal?.aborted) throw error
-      console.error('Failed to compute attention outside latest for agent ' + agentSlug + ':', error)
-      captureException(error, {
-        tags: { component: 'agents', operation: 'attention-outside-latest' },
-        extra: { agentSlug },
-      })
-      return null
+    )
+  } catch (error) {
+    if (signal?.aborted) throw error
+    console.error('Failed to compute attention outside latest for agent ' + agentSlug + ':', error)
+    captureException(error, {
+      tags: { component: 'agents', operation: 'attention-outside-latest' },
+      extra: { agentSlug },
     })
+    attentionOutsideLatest = null
+  }
 
-  const latestVisibleSessionPromise = latestSession
-    ? getLatestVisibleSessionTail(agentSlug, latestSession, unreadSessionIds, signal)
+  const latestVisibleSession = latestSession
+    ? await getLatestVisibleSessionTail(agentSlug, latestSession, unreadSessionIds, sessionMetadata, signal)
         .catch((error): null => {
           if (signal?.aborted) throw error
           // Attention still excludes this session as latest, so on this path
@@ -634,12 +646,8 @@ async function getVisibleSessionExpansion(
           })
           return null
         })
-    : Promise.resolve(null)
+    : null
 
-  const [latestVisibleSession, attentionOutsideLatest] = await Promise.all([
-    latestVisibleSessionPromise,
-    attentionOutsideLatestPromise,
-  ])
   return { latestVisibleSession, attentionOutsideLatest }
 }
 
@@ -1885,7 +1893,7 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
       return c.json(ordered.slice(0, resultLimit))
     }
 
-    const sessionList = await listSessions(slug, {
+    const sessionList = await listSessionsFromSummary(slug, {
       excludeAutomated: true,
       ...(sortByRaw === undefined ? {} : { sortBy }),
       ...(resultLimit === undefined ? {} : { limit: resultLimit }),

@@ -2,11 +2,23 @@ import { getAgentSessionsDir } from '@shared/lib/utils/file-storage'
 
 export const SESSION_SUMMARY_CACHE_TTL_MS = 5 * 60 * 1000
 
+/**
+ * What one transcript stat contributed to the summary. Kept per session so
+ * consumers that list sessions (not just count them) can apply the same rules
+ * a fresh stat would — empty unregistered files are SDK artifacts, createdAt
+ * falls back to birthtime — without touching the transcript again.
+ */
+export interface SessionActivityEntry {
+  mtimeMs: number
+  birthtimeMs: number
+  size: number
+}
+
 export interface SessionSummaryCacheValue {
   directoryMtimeMs: number | null
   builtAtMs: number
   revision: number
-  activityBySession: Map<string, number>
+  activityBySession: Map<string, SessionActivityEntry>
 }
 
 export interface SessionSummaryCacheSlot {
@@ -53,9 +65,9 @@ export function recordSessionActivity(
   const slot = sessionSummaryCache.get(getAgentSessionsDir(agentSlug))
   if (!slot) return
 
-  const cachedActivity = slot.value?.activityBySession.get(sessionId)
-  if (cachedActivity !== undefined) {
-    slot.value!.activityBySession.set(sessionId, Math.max(cachedActivity, activityAtMs))
+  const cached = slot.value?.activityBySession.get(sessionId)
+  if (cached !== undefined) {
+    applyActivity(cached, activityAtMs)
   }
   if (slot.loading) {
     const pending = slot.pending.get(sessionId)
@@ -65,6 +77,16 @@ export function recordSessionActivity(
       })
     }
   }
+}
+
+/**
+ * Fold a recorded write into a cached entry. A write also proves the
+ * transcript is no longer empty, so a file that was a zero-byte placeholder
+ * at build time stops being classified as an SDK artifact once it streams.
+ */
+export function applyActivity(entry: SessionActivityEntry, activityAtMs: number): void {
+  entry.mtimeMs = Math.max(entry.mtimeMs, activityAtMs)
+  entry.size = Math.max(entry.size, 1)
 }
 
 export function removeSessionFromSummaryCache(agentSlug: string, sessionId: string): void {
