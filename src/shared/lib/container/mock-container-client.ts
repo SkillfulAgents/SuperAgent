@@ -1070,10 +1070,16 @@ function connectedAccountRequestInput(userMessage: string): Record<string, unkno
 }
 
 function remoteMcpRequestInput(userMessage: string): Record<string, unknown> {
+  const authHint = getMessageParam(userMessage, 'mcp_auth_hint')
+  const clientId = getMessageParam(userMessage, 'mcp_client_id')
   return {
     url: getMessageParam(userMessage, 'mcp_url') ?? 'http://localhost:9876/mcp',
     name: getMessageParam(userMessage, 'mcp_name') ?? 'Test MCP',
     reason: getMessageParam(userMessage, 'mcp_reason') ?? 'Need access to test tools',
+    // Only set when a test asks for them, so the default scenario keeps emitting
+    // exactly the input shape it did before.
+    ...(authHint ? { authHint } : {}),
+    ...(clientId ? { clientId } : {}),
   }
 }
 
