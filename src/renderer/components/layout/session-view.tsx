@@ -3,7 +3,7 @@ import { FilePreviewProvider } from '@renderer/context/file-preview-context'
 import { WorkflowProvider } from '@renderer/context/workflow-context'
 import { ChevronLeft, CalendarClock, GitFork, Zap } from 'lucide-react'
 import { useEffect } from 'react'
-import { useSession, useSetSessionMarkedUnread } from '@renderer/hooks/use-sessions'
+import { useSession, useSetSessionMarkedUnread, useClearSessionUnread } from '@renderer/hooks/use-sessions'
 import { HttpError } from '@renderer/lib/api'
 import { SessionNotFound } from '@renderer/router/route-fallbacks'
 import { useNavigate } from '@tanstack/react-router'
@@ -37,6 +37,7 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
   const { data: session, error: sessionError } = useSession(sessionId, agentSlug)
   const markSessionNotificationsRead = useMarkSessionNotificationsRead()
   const setSessionMarkedUnread = useSetSessionMarkedUnread()
+  const clearSessionUnread = useClearSessionUnread()
   const {
     getPendingMessages,
     onMessageSent,
@@ -54,15 +55,26 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
 
   // Auto-mark notifications as read when viewing a session
   useEffect(() => {
-    // Small delay to avoid marking as read on quick navigation
-    const timeout = setTimeout(() => {
+    const clearWrites = () => {
       markSessionNotificationsRead.mutate(sessionId)
       // "Mark as unread" survives until the session is *reopened*, so it clears
       // here and deliberately not in the visibilitychange handler below —
       // otherwise marking the session you're looking at would be undone by the
       // next window refocus.
       setSessionMarkedUnread.mutate({ sessionId, agentSlug, markedUnread: false })
-    }, 1000)
+    }
+    // Take the dot down in the caches right away — waiting for the write plus
+    // the session-list refetch is what made clicking a dotted session feel like
+    // it lagged. A session that was actually dotted also writes immediately
+    // rather than on the debounce below: the optimistic state has to match what
+    // the server will report, or the next refetch puts the dot back.
+    if (clearSessionUnread(agentSlug, sessionId)) {
+      clearWrites()
+      return
+    }
+    // Nothing was showing, so the writes are a no-op for the dot — keep them on
+    // a small delay to avoid marking as read on quick navigation.
+    const timeout = setTimeout(clearWrites, 1000)
     return () => clearTimeout(timeout)
   }, [sessionId]) // eslint-disable-line react-hooks/exhaustive-deps
 

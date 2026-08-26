@@ -10,7 +10,8 @@ import { createElement, type ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { renderHook, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { useSetSessionMarkedUnread } from './use-sessions'
+import { clearSessionUnreadInCache, useSetSessionMarkedUnread } from './use-sessions'
+import type { ApiSession } from '@shared/lib/types/api'
 
 const mockApiFetch = vi.fn()
 vi.mock('@renderer/lib/api', () => ({
@@ -87,5 +88,81 @@ describe('useSetSessionMarkedUnread invalidation', () => {
     expect(mockApiFetch).toHaveBeenLastCalledWith('/api/agents/agent-1/sessions/sess-1/unread', {
       method: 'DELETE',
     })
+  })
+})
+
+/**
+ * The dot is rendered straight out of the caches, so opening a session takes it
+ * down there first and lets the write and its refetch land afterwards.
+ */
+describe('clearSessionUnreadInCache', () => {
+  function session(id: string, hasUnreadNotifications: boolean): ApiSession {
+    return {
+      id,
+      agentSlug: 'agent-1',
+      name: id,
+      createdAt: new Date(0),
+      lastActivityAt: new Date(0),
+      messageCount: 1,
+      hasUnreadNotifications,
+    }
+  }
+
+  function seed() {
+    const queryClient = new QueryClient()
+    queryClient.setQueryData(['sessions', 'agent-1'], [session('sess-1', true), session('sess-2', false)])
+    queryClient.setQueryData(['sessions', 'agent-1', 'notable', 25], [session('sess-1', true)])
+    queryClient.setQueryData(['session', 'sess-1', 'agent-1'], session('sess-1', true))
+    queryClient.setQueryData(['agents'], [{ slug: 'agent-1', hasUnreadNotifications: true }])
+    queryClient.setQueryData(['agents', 'agent-1'], { slug: 'agent-1', hasUnreadNotifications: true })
+    return queryClient
+  }
+
+  function unreadIds(queryClient: QueryClient, key: unknown[]) {
+    return (queryClient.getQueryData(key) as ApiSession[]).filter((s) => s.hasUnreadNotifications).map((s) => s.id)
+  }
+
+  it('clears the dot in the full list, the notable slice and the session entry', () => {
+    const queryClient = seed()
+
+    expect(clearSessionUnreadInCache(queryClient, 'agent-1', 'sess-1')).toBe(true)
+    expect(unreadIds(queryClient, ['sessions', 'agent-1'])).toEqual([])
+    expect(unreadIds(queryClient, ['sessions', 'agent-1', 'notable', 25])).toEqual([])
+    expect((queryClient.getQueryData(['session', 'sess-1', 'agent-1']) as ApiSession).hasUnreadNotifications).toBe(false)
+  })
+
+  it('rolls the agent indicator down only once no other session is unread', () => {
+    const queryClient = seed()
+    queryClient.setQueryData(['sessions', 'agent-1'], [session('sess-1', true), session('sess-2', true)])
+
+    clearSessionUnreadInCache(queryClient, 'agent-1', 'sess-1')
+    expect(queryClient.getQueryData(['agents'])).toEqual([{ slug: 'agent-1', hasUnreadNotifications: true }])
+
+    clearSessionUnreadInCache(queryClient, 'agent-1', 'sess-2')
+    expect(queryClient.getQueryData(['agents'])).toEqual([{ slug: 'agent-1', hasUnreadNotifications: false }])
+    expect(queryClient.getQueryData(['agents', 'agent-1'])).toEqual({
+      slug: 'agent-1',
+      hasUnreadNotifications: false,
+    })
+  })
+
+  it('reports the no-op open and leaves the caches untouched', () => {
+    const queryClient = seed()
+    const before = queryClient.getQueryData(['sessions', 'agent-1'])
+
+    expect(clearSessionUnreadInCache(queryClient, 'agent-1', 'sess-2')).toBe(false)
+    expect(queryClient.getQueryData(['sessions', 'agent-1'])).toBe(before)
+    expect(queryClient.getQueryData(['agents'])).toEqual([{ slug: 'agent-1', hasUnreadNotifications: true }])
+  })
+
+  it('leaves list entries that carry no unread flag alone', () => {
+    const queryClient = seed()
+    // Automation slices live under the same prefix with a different shape.
+    queryClient.setQueryData(['sessions', 'agent-1', 'completed-one-time'], [{ id: 'sess-1', taskId: 'task-1' }])
+
+    clearSessionUnreadInCache(queryClient, 'agent-1', 'sess-1')
+    expect(queryClient.getQueryData(['sessions', 'agent-1', 'completed-one-time'])).toEqual([
+      { id: 'sess-1', taskId: 'task-1' },
+    ])
   })
 })
