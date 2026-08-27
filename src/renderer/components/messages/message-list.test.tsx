@@ -643,6 +643,39 @@ describe('MessageList', () => {
     expect(screen.queryByText('Hidden intermediate work.')).not.toBeInTheDocument()
   })
 
+  it('folds a mid-turn compact boundary into collapsed work', () => {
+    mockMessagesData.data = [
+      createUserMessage({
+        content: { text: 'Do the long-running work' },
+        createdAt: new Date('2025-01-01T00:00:00Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'Working before compaction.' },
+        createdAt: new Date('2025-01-01T00:00:10Z'),
+        toolCalls: [createToolCall({ name: 'Bash' })],
+      }),
+      createCompactBoundary({
+        summary: 'Summary of the early work.',
+        createdAt: new Date('2025-01-01T00:00:20Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'Final answer after compaction.' },
+        createdAt: new Date('2025-01-01T00:00:30Z'),
+      }),
+    ]
+
+    renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+    expect(screen.getByText('Final answer after compaction.')).toBeInTheDocument()
+    expect(screen.queryByText('Working before compaction.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Compacted')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('turn-summary'))
+
+    expect(screen.getByText('Working before compaction.')).toBeInTheDocument()
+    expect(screen.getByText('Compacted')).toBeInTheDocument()
+  })
+
   it('keeps a cancelled terminal tool call visible without an empty disclosure row', () => {
     mockMessagesData.data = [
       createUserMessage({

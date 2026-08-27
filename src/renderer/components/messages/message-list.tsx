@@ -1124,14 +1124,11 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
           const isAssistantItem = item.type === 'assistant'
           const isAnswerMessage =
             !!turn && isAssistantItem && turn.answerMessageIds.has(item.id)
-          const hideItem =
-            collapsed &&
-            isAssistantItem &&
-            !isAnswerMessage
-          const isRevealedWorkItem =
-            expanded &&
-            isAssistantItem &&
-            !isAnswerMessage
+          const isFoldedWorkItem =
+            (isAssistantItem && !isAnswerMessage) ||
+            item.type === 'compact_boundary'
+          const hideItem = collapsed && isFoldedWorkItem
+          const isRevealedWorkItem = expanded && isFoldedWorkItem
 
           let renderedItem: ReactNode = null
           if (!hideItem) {
@@ -1179,15 +1176,19 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                   )}
                 </>
               )
-              renderedItem = isRevealedWorkItem ? (
-                <div
-                  className={TURN_WORK_REVEAL_CLASS}
-                  data-testid="turn-work-detail"
-                >
-                  {messageItem}
-                </div>
-              ) : messageItem
+              renderedItem = messageItem
             }
+          }
+
+          if (renderedItem && isRevealedWorkItem) {
+            renderedItem = (
+              <div
+                className={TURN_WORK_REVEAL_CLASS}
+                data-testid="turn-work-detail"
+              >
+                {renderedItem}
+              </div>
+            )
           }
 
           return (
