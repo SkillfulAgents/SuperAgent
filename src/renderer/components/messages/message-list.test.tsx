@@ -2969,6 +2969,34 @@ describe('MessageList', () => {
       expect(geometry.scrollTop).toBe(899)
     })
 
+    it('converges back when a rollback lands between recorded positions', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
+      fireEvent.scroll(el) // baseline at the live edge (699 joins the trail)
+
+      // Convergence writes 899; the trail now holds 699 and 899.
+      geometry.setNaturalScrollHeight(1500)
+      await act(async () => {
+        fireContentResize(contentWrapper, 1500)
+      })
+      await waitFor(() => expect(geometry.scrollTop).toBe(899))
+
+      // WebKit reverts to the bottom of a stale layout snapshot — a value we
+      // never wrote, falling BETWEEN the recorded positions. It is still the
+      // engine's own motion coming back: following must survive and converge.
+      geometry.setScrollTop(780)
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 250))
+      })
+      expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
+      expect(geometry.scrollTop).toBe(899)
+    })
+
     it('releases follow when an input-less scroll lands off the recently-held trail', async () => {
       installFakeResizeObserver()
       mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
@@ -2978,9 +3006,15 @@ describe('MessageList', () => {
       fireEvent.scroll(el) // baseline at the live edge
 
       // A programmatic jump (app code, an extension, a test driving
-      // scrollTo) carries no input evidence either — but it lands where the
-      // scroller has NOT recently been. That is an escape, not a rollback:
-      // follow must release, and nothing may yank the reader back down.
+      // scrollTo) carries no input evidence either — but it arrives while the
+      // engine is QUIET (no writes for a while) and lands where the scroller
+      // has not recently been. That is an escape, not a rollback: follow must
+      // release, and nothing may yank the reader back down. First age out the
+      // mount pin so the engine-activity window is genuinely closed, as it is
+      // whenever such jumps happen in reality.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 450))
+      })
       geometry.setScrollTop(150)
       fireEvent.scroll(el)
       await act(async () => {

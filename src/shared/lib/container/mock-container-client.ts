@@ -1595,6 +1595,17 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       15,
       10
     )],
+    // A deep turn: eight overfilled passes back-to-back, so the turn runs long
+    // past the send-time reserve — the state where follow-loss is reported in
+    // the field on real long-thinking turns.
+    ['think a marathon', new MultiPassThinkingScenario(
+      Array.from({ length: 8 }, (_, i) =>
+        `Pass ${i + 1}. ${'Working through the problem space step by step, revisiting each constraint and checking the running plan against it before moving on. '.repeat(12)}End of pass ${i + 1}.`,
+      ),
+      'Done with the marathon of thinking passes — here is the answer.',
+      15,
+      10
+    )],
     // Several thinking passes persisted one-by-one — an interruptible thinking turn
     ['think in passes', new MultiPassThinkingScenario(
       [
