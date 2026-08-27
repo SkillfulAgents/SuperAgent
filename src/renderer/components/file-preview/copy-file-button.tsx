@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Check, ClipboardCopy } from 'lucide-react'
+import { Check, Copy } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { copyLazyTextToClipboard, copyTextToClipboard } from '@renderer/lib/clipboard'
@@ -61,7 +61,7 @@ export function CopyFileButton({ fileUrl, displayName }: CopyFileButtonProps) {
     >
       {copied
         ? <Check data-testid="file-preview-copied-icon" className="h-4 w-4 text-green-600 dark:text-green-400" />
-        : <ClipboardCopy data-testid="file-preview-copy-icon" className="h-4 w-4" />}
+        : <Copy data-testid="file-preview-copy-icon" className="h-4 w-4" />}
     </button>
   )
 }
