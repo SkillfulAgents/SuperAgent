@@ -9,6 +9,7 @@ import crypto from 'crypto'
 import path from 'path'
 import fs from 'fs'
 import { Readable } from 'stream'
+import pLimit from 'p-limit'
 import archiver from 'archiver'
 import {
   openZipFromBuffer,
@@ -890,17 +891,22 @@ export async function computeAgentTemplateHash(workspaceDir: string): Promise<st
   const files = await walkTemplateFiles(workspaceDir)
   files.sort() // Ensure deterministic order
 
-  const hash = crypto.createHash('sha256')
-
-  for (const relativePath of files) {
-    const fullPath = path.join(workspaceDir, relativePath)
+  const limit = pLimit(8)
+  const contents = new Map<string, string>()
+  await Promise.all(files.map((relativePath) => limit(async () => {
     try {
-      const content = await fs.promises.readFile(fullPath, 'utf-8')
-      hash.update(relativePath)
-      hash.update(content)
+      contents.set(relativePath, await fs.promises.readFile(path.join(workspaceDir, relativePath), 'utf-8'))
     } catch {
       // Skip unreadable files
     }
+  })))
+
+  const hash = crypto.createHash('sha256')
+  for (const relativePath of files) {
+    const content = contents.get(relativePath)
+    if (content === undefined) continue
+    hash.update(relativePath)
+    hash.update(content)
   }
 
   return hash.digest('hex')

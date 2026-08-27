@@ -27,6 +27,16 @@ type ApiAgentTemplateStatus = ApiItemStatus
 // Module-level flag ensures the background refresh fires only once across all
 // component instances that call useDiscoverableAgents().
 let refreshPromise: Promise<void> | null = null
+const DISCOVERABLE_REFRESH_KEY = ['discoverable-agents-refresh'] as const
+type DiscoverableRefreshState = 'idle' | 'pending' | 'done'
+
+/** Empty first catalog + refresh still in flight. Consumers treat this as loading. */
+export function isWaitingOnDiscoverableRefresh(
+  agents: ApiDiscoverableAgent[] | undefined,
+  refreshState: DiscoverableRefreshState | undefined,
+): boolean {
+  return Array.isArray(agents) && agents.length === 0 && refreshState !== 'done'
+}
 
 /**
  * Fetch discoverable agents from skillsets.
@@ -39,7 +49,7 @@ export function useDiscoverableAgents() {
   const { data: skillsets } = useSkillsets()
   const hasSkillsets = !!(skillsets && skillsets.length > 0)
 
-  return useQuery<ApiDiscoverableAgent[]>({
+  const query = useQuery<ApiDiscoverableAgent[]>({
     queryKey: ['discoverable-agents'],
     enabled: hasSkillsets,
     queryFn: async () => {
@@ -50,6 +60,7 @@ export function useDiscoverableAgents() {
 
       // Kick off a single background refresh the first time any component fetches
       if (!refreshPromise) {
+        queryClient.setQueryData(DISCOVERABLE_REFRESH_KEY, 'pending')
         refreshPromise = apiFetch('/api/agents/discoverable-agents?refresh=true')
           .then(async (refreshRes) => {
             if (refreshRes.ok) {
@@ -61,11 +72,31 @@ export function useDiscoverableAgents() {
             }
           })
           .catch(() => { /* ignore background refresh failures */ })
+          .finally(() => {
+            queryClient.setQueryData(DISCOVERABLE_REFRESH_KEY, 'done')
+          })
+      } else {
+        void refreshPromise.finally(() => {
+          queryClient.setQueryData(DISCOVERABLE_REFRESH_KEY, 'done')
+        })
       }
 
       return agents
     },
   })
+
+  const { data: refreshState } = useQuery<DiscoverableRefreshState>({
+    queryKey: DISCOVERABLE_REFRESH_KEY,
+    queryFn: () => 'idle',
+    enabled: false,
+    staleTime: Infinity,
+  })
+  const waitingOnRefresh = isWaitingOnDiscoverableRefresh(query.data, refreshState)
+
+  return {
+    ...query,
+    isLoading: query.isLoading || waitingOnRefresh,
+  }
 }
 
 export function useHostExportStatus() {

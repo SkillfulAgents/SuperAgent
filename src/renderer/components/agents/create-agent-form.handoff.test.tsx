@@ -143,6 +143,11 @@ vi.mock('@renderer/hooks/use-voice-input', () => ({
   },
 }))
 
+const toastError = vi.fn()
+vi.mock('sonner', () => ({
+  toast: { error: (...args: unknown[]) => toastError(...args), success: vi.fn() },
+}))
+
 vi.mock('@renderer/components/agents/template-install-dialog', () => ({
   TemplateInstallDialog: (props: { template: unknown }) => {
     lastDialogProps = props
@@ -445,6 +450,7 @@ describe('CreateAgentForm signup handoff', () => {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(6000)
       })
+      expect(toastError).toHaveBeenCalledWith('Could not load templates')
       expect(screen.getByTestId('create-agent-prompt')).toHaveFocus()
 
       // Settled for good — a list that shows up afterwards must not pop the offer.

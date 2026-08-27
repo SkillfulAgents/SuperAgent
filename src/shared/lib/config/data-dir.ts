@@ -33,6 +33,19 @@ export function getDatabasePath(): string {
 }
 
 /**
+ * Regenerable cache directory (skillset zip unpack, etc.).
+ * SUPERAGENT_CACHE_DIR overrides the default ($SUPERAGENT_DATA_DIR/skillset-cache).
+ * Desktop is unchanged when the env is unset.
+ */
+export function getCacheDir(): string {
+  const envCacheDir = process.env.SUPERAGENT_CACHE_DIR
+  if (envCacheDir) {
+    return path.resolve(envCacheDir)
+  }
+  return path.join(getDataDir(), 'skillset-cache')
+}
+
+/**
  * Get the path to the agents data directory.
  * This is where agent workspaces are stored.
  */
