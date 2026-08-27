@@ -38,6 +38,10 @@ import {
   type TransformedItem,
 } from '@shared/lib/utils/message-transform'
 import { findDeltaWindowStart } from '@shared/lib/messages-delta'
+import {
+  sortSessionsByActivity,
+  type SessionActivityFields,
+} from '@shared/lib/session-ordering'
 import { replaceInlineMediaWithRefs } from './session-media'
 import { sessionMetadataMapSchema } from './session-metadata-schema'
 import { isHiddenAutomatedSession } from './session-visibility'
@@ -755,19 +759,6 @@ export interface ListSessionsOptions {
   limit?: number
 }
 
-type SessionOrderFields = {
-  id: string
-  createdAt: Date
-  lastActivityAt?: Date | null
-}
-
-function sessionActivityTimestamp(session: SessionOrderFields): number {
-  const lastActivity = session.lastActivityAt?.getTime()
-  if (Number.isFinite(lastActivity)) return lastActivity!
-  const created = session.createdAt.getTime()
-  return Number.isFinite(created) ? created : Number.NEGATIVE_INFINITY
-}
-
 /**
  * Return a deterministically ordered copy of a session list.
  *
@@ -775,25 +766,14 @@ function sessionActivityTimestamp(session: SessionOrderFields): number {
  * and aggregate agent responses. In particular, callers must visibility-filter
  * before invoking this helper and applying a limit.
  */
-export function sortSessionsNewestFirst<T extends SessionOrderFields>(
+export function sortSessionsNewestFirst<T extends SessionActivityFields>(
   sessions: readonly T[],
   sortBy: SessionSortBy = 'last_activity_at',
 ): T[] {
-  return [...sessions].sort((a, b) => {
-    let aTimestamp: number
-    let bTimestamp: number
-    switch (sortBy) {
-      case 'last_activity_at':
-        aTimestamp = sessionActivityTimestamp(a)
-        bTimestamp = sessionActivityTimestamp(b)
-        break
-    }
-    if (aTimestamp < bTimestamp) return 1
-    if (aTimestamp > bTimestamp) return -1
-    if (a.id < b.id) return -1
-    if (a.id > b.id) return 1
-    return 0
-  })
+  switch (sortBy) {
+    case 'last_activity_at':
+      return sortSessionsByActivity(sessions, 'newest')
+  }
 }
 
 /**

@@ -144,6 +144,9 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
       id: s.id,
       name: s.name,
       createdAt: typeof s.createdAt === 'string' ? s.createdAt : new Date(s.createdAt).toISOString(),
+      lastActivityAt: typeof s.lastActivityAt === 'string'
+        ? s.lastActivityAt
+        : new Date(s.lastActivityAt).toISOString(),
       isActive: s.isActive,
       isAwaitingInput: s.isAwaitingInput,
       hasUnreadNotifications: s.hasUnreadNotifications,
