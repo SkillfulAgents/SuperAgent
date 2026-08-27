@@ -41,6 +41,7 @@ interface SessionItem {
   id: string
   name: string
   createdAt: string
+  lastActivityAt?: string
   isActive?: boolean
   isAwaitingInput?: boolean
   hasUnreadNotifications?: boolean
@@ -80,7 +81,8 @@ export function RelatedSessions({ sessions, formatDate, className, showIcon = tr
   const sorted = useMemo(() => {
     const copy = [...filtered]
     copy.sort((a, b) => {
-      const diff = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      const diff = new Date(b.lastActivityAt ?? b.createdAt).getTime()
+        - new Date(a.lastActivityAt ?? a.createdAt).getTime()
       return sortOrder === 'newest' ? diff : -diff
     })
     return copy

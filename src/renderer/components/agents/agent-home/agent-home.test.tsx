@@ -260,6 +260,40 @@ describe('AgentHome', () => {
     expect(screen.getByText('Test Agent')).toBeInTheDocument()
   })
 
+  it('orders sessions by last activity rather than creation time', () => {
+    mockSessionsData = [
+      {
+        id: 'newer-created',
+        agentSlug: testAgent.slug,
+        name: 'Newer created session',
+        createdAt: new Date('2026-08-25T12:00:00.000Z'),
+        lastActivityAt: new Date('2026-08-25T12:00:00.000Z'),
+        messageCount: 1,
+      },
+      {
+        id: 'recently-active',
+        agentSlug: testAgent.slug,
+        name: 'Recently active session',
+        createdAt: new Date('2026-08-24T12:00:00.000Z'),
+        lastActivityAt: new Date('2026-08-26T12:00:00.000Z'),
+        messageCount: 2,
+      },
+    ]
+
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+
+    const sessionRows = screen.getAllByRole('button')
+      .filter((row) => row.textContent?.includes('session'))
+      .map((row) => row.textContent)
+
+    expect(sessionRows).toEqual([
+      expect.stringContaining('Recently active session'),
+      expect.stringContaining('Newer created session'),
+    ])
+  })
+
   it('keeps the non-owner layout full-width below the desktop breakpoint', () => {
     renderWithProviders(
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
