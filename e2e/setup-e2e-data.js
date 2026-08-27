@@ -93,7 +93,9 @@ execFileSync('git', [...GIT_AUTHOR, 'commit', '-q', '-m', 'seed'], { cwd: SKILLS
 execFileSync('git', ['remote', 'add', 'origin', SKILLSET_FAKE_URL], { cwd: SKILLSET_REPO_DIR, stdio: 'pipe' })
 
 // Seed a public-provider skillset (no .git, uses .skillset-cache-meta.json marker).
-const PUBLIC_SKILLSET_ID = 'e2e-public-skillset'
+// Must equal DEFAULT_PUBLIC_SKILLSET.id (src/shared/lib/skillset-provider/default-public-skillset.ts):
+// the signup template handoff only matches entries from the default public skillset.
+const PUBLIC_SKILLSET_ID = 'github-com-skillfulagents-public-skillset'
 const PUBLIC_SKILLSET_DIR = path.join(resolvedDir, 'skillset-cache', PUBLIC_SKILLSET_ID)
 fs.rmSync(PUBLIC_SKILLSET_DIR, { recursive: true, force: true })
 fs.mkdirSync(PUBLIC_SKILLSET_DIR, { recursive: true })
