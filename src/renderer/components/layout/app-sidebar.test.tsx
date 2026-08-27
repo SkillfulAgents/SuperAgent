@@ -79,8 +79,11 @@ vi.mock('@renderer/hooks/use-user-settings', () => ({
   useUpdateUserSettings: () => ({ mutate: mockUpdateSettings }),
 }))
 
+const mockRuntimeStatus: { runtimeReadiness: { status: string }; appVersion?: string } = {
+  runtimeReadiness: { status: 'READY' },
+}
 vi.mock('@renderer/hooks/use-runtime-status', () => ({
-  useRuntimeStatus: () => ({ data: { runtimeReadiness: { status: 'READY' } } }),
+  useRuntimeStatus: () => ({ data: mockRuntimeStatus }),
 }))
 
 vi.mock('@renderer/hooks/use-artifacts', () => ({
@@ -152,6 +155,11 @@ vi.mock('@renderer/context/user-context', () => ({
 vi.mock('@renderer/context/connectivity-context', () => ({
   useIsOnline: () => true,
   ConnectivityProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}))
+
+const mockUpdateStatus: { state: string; version?: string } = { state: 'idle' }
+vi.mock('@renderer/context/update-status-context', () => ({
+  useUpdateStatus: () => mockUpdateStatus,
 }))
 
 const mockDialogContext = {
@@ -355,6 +363,8 @@ beforeEach(() => {
   mockRoutePathname = '/'
   mockHistorySubscribers = []
   setMockHistoryIndex(0)
+  _resetApiTargetForTest()
+  setActiveTarget('local', null)
   mockUseAgents.mockReturnValue({
     data: [makeAgent(), makeAgent({ slug: 'other-agent', name: 'Other Agent', status: 'stopped', sessionCount: 0 })],
     isLoading: false,
@@ -366,6 +376,10 @@ beforeEach(() => {
   }))
   mockUnreadCount.mockReturnValue({ data: { count: 0 } })
   mockUserSettings.mockReturnValue({ setupCompleted: true, agentOrder: [] })
+  delete mockRuntimeStatus.appVersion
+  mockRuntimeStatus.runtimeReadiness = { status: 'READY' }
+  mockUpdateStatus.state = 'idle'
+  delete mockUpdateStatus.version
 })
 
 describe('AppSidebar — layout & top nav', () => {
@@ -421,6 +435,18 @@ describe('AppSidebar — layout & top nav', () => {
     renderWithProviders(<AppSidebar />)
     expect(screen.getByTestId('settings-button')).toBeInTheDocument()
     expect(screen.getByText('v0.1.0-test')).toBeInTheDocument()
+  })
+
+  it('keeps the local update tooltip and aria-label', () => {
+    mockUpdateStatus.state = 'available'
+    mockUpdateStatus.version = '1.2.3'
+
+    renderWithProviders(<AppSidebar />)
+
+    const label = screen.getByTestId('sidebar-version')
+    expect(label).toHaveTextContent('v0.1.0-test')
+    expect(label.getAttribute('title')).toBe('Update available: v1.2.3')
+    expect(screen.getByLabelText('Update available')).toBeInTheDocument()
   })
 
   it('Home links to the global home route', () => {
@@ -738,6 +764,45 @@ describe('UserMenu action for the current target', () => {
     await userEvent.click(screen.getByTestId('switch-to-local-button'))
 
     expect(mockUserContext.signOut).not.toHaveBeenCalled()
+  })
+})
+
+describe('footer version in cloud mode', () => {
+  beforeEach(() => {
+    _resetApiTargetForTest()
+  })
+
+  afterEach(() => {
+    delete mockRuntimeStatus.appVersion
+    mockUpdateStatus.state = 'idle'
+    delete mockUpdateStatus.version
+  })
+
+  it('shows the deployment version, not the desktop bundle', () => {
+    setActiveTarget('cloud', null)
+    mockRuntimeStatus.appVersion = '9.9.9'
+    mockUpdateStatus.state = 'available'
+    mockUpdateStatus.version = '1.2.3'
+
+    renderWithProviders(<AppSidebar />)
+
+    const label = screen.getByTestId('sidebar-version')
+    expect(screen.getByTestId('sidebar-version-cloud')).toBeInTheDocument()
+    expect(label).toHaveTextContent('v9.9.9')
+    expect(screen.queryByText('v0.1.0-test')).not.toBeInTheDocument()
+    expect(label.getAttribute('title')).toMatch(/^Desktop update/)
+    expect(screen.getByLabelText('Desktop update available')).toBeInTheDocument()
+  })
+
+  it('shows the cloud mark with no number when the deployment omits appVersion', () => {
+    setActiveTarget('cloud', null)
+
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByTestId('sidebar-version-cloud')).toBeInTheDocument()
+    expect(screen.getByLabelText('Cloud')).toBeInTheDocument()
+    expect(screen.getByTestId('sidebar-version')).not.toHaveTextContent(/v/)
+    expect(screen.queryByText('v0.1.0-test')).not.toBeInTheDocument()
   })
 })
 

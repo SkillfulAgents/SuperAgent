@@ -1,5 +1,5 @@
 
-import { Bell, ChevronDown, ChevronLeft, ChevronRight, Plus, Search, Settings, AlertTriangle, LayoutGrid, SquareMousePointer, LogOut, User, Users, Compass, MoonStar } from 'lucide-react'
+import { Bell, ChevronDown, ChevronLeft, ChevronRight, Plus, Search, Settings, AlertTriangle, LayoutGrid, SquareMousePointer, LogOut, User, Users, Compass, Cloud, MoonStar } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { toast } from 'sonner'
 import { cn } from '@shared/lib/utils/cn'
@@ -8,6 +8,7 @@ import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { AppLink } from '@renderer/components/ui/app-link'
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
+import { targetIsRemote } from '@renderer/lib/api-target'
 import { TargetSwitcher } from '@renderer/components/layout/target-switcher'
 import { useTargetSwitch } from '@renderer/hooks/use-target-switch'
 import { hasInteractiveLogin } from '@renderer/lib/auth-mode'
@@ -823,6 +824,7 @@ export function AppSidebar() {
   const { data: userSettings } = useUserSettings()
   const updateSettings = useUpdateUserSettings()
   const { data: runtimeStatus } = useRuntimeStatus()
+  const isCloud = targetIsRemote()
   const isFullScreen = useFullScreen()
 
   // macOS fires `enter-full-screen` only after its ~700ms zoom animation completes;
@@ -1618,13 +1620,23 @@ export function AppSidebar() {
             type="button"
             onClick={() => openSettings('general')}
             className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground shrink-0 hover:text-foreground"
-            title={updateAvailable ? `Update available: v${updateStatus.version}` : undefined}
+            title={updateAvailable ? `${isCloud ? 'Desktop update available' : 'Update available'}: v${updateStatus.version}` : undefined}
             data-testid="sidebar-version"
           >
             {updateAvailable && (
-              <span className="h-2 w-2 rounded-full bg-blue-500" aria-label="Update available" />
+              <span className="h-2 w-2 rounded-full bg-blue-500" aria-label={isCloud ? 'Desktop update available' : 'Update available'} />
             )}
-            <span>v{__APP_VERSION__}</span>
+            {isCloud && (
+              <Cloud
+                className="h-3 w-3"
+                data-testid="sidebar-version-cloud"
+                aria-hidden={runtimeStatus?.appVersion ? true : undefined}
+                aria-label={runtimeStatus?.appVersion ? undefined : 'Cloud'}
+              />
+            )}
+            {isCloud
+              ? runtimeStatus?.appVersion && <span>v{runtimeStatus.appVersion}</span>
+              : <span>v{__APP_VERSION__}</span>}
           </button>
         </div>
       </SidebarFooter>
