@@ -503,8 +503,39 @@ test.describe('File Preview', () => {
     await expect(markdown(page).getByRole('heading', { name: 'Report Content' })).toBeVisible({ timeout: 5000 })
     await expect(page.locator('img[alt="chart.png"]')).not.toBeVisible()
 
+    await expect(page.getByTestId('file-preview-copy')).toBeVisible()
+
     // Switch forward to the image tab again → image renderer returns.
     await fileTab(page, 'chart.png').click()
     await expect(page.locator('img[alt="chart.png"]')).toBeVisible({ timeout: 5000 })
+
+    // A PNG has nothing copyable, so the header drops the action.
+    await expect(page.getByTestId('file-preview-copy')).toHaveCount(0)
+  })
+
+  test('copies the open text file from the preview header', async ({ page }) => {
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
+    await agentPage.createAgent(`CopyFile ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'output/report.md', '# Test Report\n\nThis is a test with **bold** text.')
+
+    await sessionPage.sendMessage('deliver file')
+    await sessionPage.waitForResponse(15000)
+    const filePill = getFilePill(page, 'report.md').first()
+    await expect(filePill).toBeVisible({ timeout: 10000 })
+    await filePill.click()
+    await expect(markdown(page).getByRole('heading', { name: 'Test Report' })).toBeVisible({ timeout: 10000 })
+
+    const header = page.getByTestId('file-preview-header')
+    await header.getByTestId('file-preview-copy').click()
+
+    // The real gate: a browser only honours the write while the click's user
+    // gesture is live, so this fails if the handler awaits a fetch first.
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText()))
+      .toBe('# Test Report\n\nThis is a test with **bold** text.')
+
+    await expect(page.getByText('Copied contents of “report.md”')).toBeVisible()
+    await expect(header.getByTestId('file-preview-copied-icon')).toBeVisible()
+    await expect(header.getByTestId('file-preview-copy-icon')).toBeVisible({ timeout: 5000 })
   })
 })
