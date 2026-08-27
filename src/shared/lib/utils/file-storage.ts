@@ -13,6 +13,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { Transform } from 'stream'
 import type { ZodType } from 'zod'
+import pLimit from 'p-limit'
 import { getDataDir } from '@shared/lib/config/data-dir'
 import { assertPathWithinDir } from '@shared/lib/utils/path-safety'
 
@@ -843,6 +844,16 @@ export async function copyDirectoryFiltered(
   dest: string,
   extraExclusions?: string[],
 ): Promise<void> {
+  const limit = pLimit(8)
+  await copyDirectoryFilteredLimited(src, dest, extraExclusions, limit)
+}
+
+async function copyDirectoryFilteredLimited(
+  src: string,
+  dest: string,
+  extraExclusions: string[] | undefined,
+  limit: ReturnType<typeof pLimit>,
+): Promise<void> {
   await ensureDirectory(dest)
   const entries = await fs.promises.readdir(src, { withFileTypes: true })
 
@@ -850,6 +861,7 @@ export async function copyDirectoryFiltered(
     ? new Set([...DEFAULT_COPY_EXCLUDED, ...extraExclusions])
     : DEFAULT_COPY_EXCLUDED
 
+  const tasks: Promise<void>[] = []
   for (const entry of entries) {
     if (excluded.has(entry.name)) continue
 
@@ -857,11 +869,12 @@ export async function copyDirectoryFiltered(
     const destPath = path.join(dest, entry.name)
 
     if (entry.isDirectory()) {
-      await copyDirectoryFiltered(srcPath, destPath, extraExclusions)
+      tasks.push(copyDirectoryFilteredLimited(srcPath, destPath, extraExclusions, limit))
     } else {
-      await fs.promises.copyFile(srcPath, destPath)
+      tasks.push(limit(() => fs.promises.copyFile(srcPath, destPath)))
     }
   }
+  await Promise.all(tasks)
 }
 
 /**

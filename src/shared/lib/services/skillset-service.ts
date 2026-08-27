@@ -12,7 +12,7 @@ import crypto from 'crypto'
 import path from 'path'
 import fs from 'fs'
 import yaml from 'js-yaml'
-import { getDataDir } from '@shared/lib/config/data-dir'
+import { getCacheDir } from '@shared/lib/config/data-dir'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-provider/helpers'
 import { resolveActiveProviderModel } from '@shared/lib/llm-provider'
@@ -75,7 +75,7 @@ const activeSkillsetRefreshes = new Map<string, Promise<SkillsetIndex>>()
 // ============================================================================
 
 function getSkillsetCacheDir(): string {
-  return path.join(getDataDir(), 'skillset-cache')
+  return getCacheDir()
 }
 
 export function getSkillsetRepoDir(skillsetId: string): string {

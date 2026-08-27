@@ -338,6 +338,7 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, classN
       // also caps how late an offer may appear on a slow list — a dialog opening
       // minutes after landing reads as a glitch, not an offer.
       const timer = setTimeout(() => {
+        toast.error('Could not load templates')
         setHandoffTemplateSlug(null)
         focusComposer()
       }, HANDOFF_TEMPLATE_WAIT_MS)

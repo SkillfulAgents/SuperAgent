@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import crypto from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
@@ -1262,6 +1263,35 @@ describe('computeAgentTemplateHash', () => {
     const hash2 = await computeAgentTemplateHash(dir)
     expect(hash1).toBe(hash2)
     expect(hash1).toMatch(/^[a-f0-9]{64}$/)
+  })
+
+  it('digest is byte-identical to the serial implementation on a fixture tree', async () => {
+    const files: Record<string, string> = {
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'a.txt': 'a-content',
+      'b.txt': 'b-content',
+      'c.txt': 'c-content',
+      'd.txt': 'd-content',
+      'e.txt': 'e-content',
+      'f.txt': 'f-content',
+      'g.txt': 'g-content',
+      'h.txt': 'h-content',
+      'i.txt': 'i-content',
+      'sub/m.txt': 'm-content',
+      'sub/z.txt': 'z-content',
+    }
+    const dir = createDir({
+      ...files,
+      '.env': 'SECRET=nope',
+      'uploads/skip.pdf': 'pdf',
+    })
+
+    const serial = crypto.createHash('sha256')
+    for (const relativePath of Object.keys(files).sort()) {
+      serial.update(relativePath)
+      serial.update(files[relativePath])
+    }
+    expect(await computeAgentTemplateHash(dir)).toBe(serial.digest('hex'))
   })
 })
 
