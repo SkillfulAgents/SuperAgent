@@ -5,6 +5,31 @@
  */
 import { render, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+vi.mock('@renderer/context/user-context', () => ({
+  useUser: () => ({ isAuthMode: true }),
+}))
+vi.mock('@renderer/hooks/use-settings', () => ({
+  useSettings: () => ({ data: { setupCompleted: true } }),
+}))
+
+vi.mock('@renderer/hooks/use-user-settings', () => ({
+  useUserSettings: () => ({ data: { setupCompleted: true } }),
+  useUpdateUserSettings: () => ({ mutateAsync: vi.fn() }),
+}))
+vi.mock('@renderer/hooks/use-agent-templates', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@renderer/hooks/use-agent-templates')>()
+  return {
+    ...actual,
+    useDiscoverableAgents: () => ({ data: [], isError: false }),
+  }
+})
+vi.mock('@renderer/hooks/use-complete-template-install', () => ({
+  useCompleteTemplateInstall: () => vi.fn(),
+}))
+vi.mock('@renderer/components/agents/template-install-dialog', () => ({
+  TemplateInstallDialog: () => null,
+}))
 import {
   createMemoryHistory,
   createRootRoute,
