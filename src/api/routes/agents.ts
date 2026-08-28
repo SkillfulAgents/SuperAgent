@@ -2160,7 +2160,8 @@ const messagesListQuerySchema = z
 // changes and provider switches apply to history retroactively.
 function attachProviderErrorPresentations(transformed: TransformedItem[]): void {
   for (const item of transformed) {
-    if (item.type !== 'assistant' || !item.apiError || !PROVIDER_ERROR_CODES.has(item.apiError)) continue
+    // Holes serialize as null (JSON.stringify / streamJsonArrayResponse); skip so this walk does not 500.
+    if (!item || item.type !== 'assistant' || !item.apiError || !PROVIDER_ERROR_CODES.has(item.apiError)) continue
     item.errorPresentation = getActiveLlmProvider().parseErrorResponse(undefined, item.content.text)
   }
 }
