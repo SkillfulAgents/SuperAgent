@@ -68,4 +68,23 @@ describe('pruneExpiredApiLogsForAgent', () => {
     expect(tables.proxy).toEqual([])
     expect(tables.mcp).toEqual([])
   })
+
+  it('stops at maxBatches even if the db keeps reporting deletions', async () => {
+    let runs = 0
+    const neverEmptyDb: ApiLogAutoDeleteDb = {
+      prepare() {
+        return {
+          run() {
+            runs++
+            return { changes: 2 }
+          },
+        }
+      },
+    }
+
+    const result = await pruneExpiredApiLogsForAgent(neverEmptyDb, 'agent-a', 1_000, 2, 3)
+
+    expect(runs).toBe(6)
+    expect(result).toEqual({ proxyDeleted: 6, mcpDeleted: 6 })
+  })
 })
