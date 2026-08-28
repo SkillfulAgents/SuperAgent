@@ -127,6 +127,7 @@ import {
   getSkillPRInfo,
   getInstalledSkillMetadata,
   getSkillsetRepoDir,
+  ensureSkillsetCached,
   isCacheReady,
   isGitAvailable,
   deleteSkill,
@@ -850,6 +851,47 @@ Instructions here`
 
       await expect(refreshSkillset(ref)).resolves.toEqual(index)
       expect(setUrlCalls).toBe(2)
+    })
+
+    it('coalesces concurrent first-time cache builds for the same cache directory', async () => {
+      const config = buildSkillsetConfig()
+      const ref = {
+        skillsetId: config.id,
+        skillsetUrl: config.url,
+        provider: config.provider,
+        providerData: config.providerData,
+      }
+
+      let cloneCalls = 0
+      let releaseClone!: () => void
+      let notifyCloneStarted!: () => void
+      const cloneStarted = new Promise<void>((resolve) => {
+        notifyCloneStarted = resolve
+      })
+      const cloneCanFinish = new Promise<void>((resolve) => {
+        releaseClone = resolve
+      })
+
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === 'git' && args[0] === '--version') {
+          return { stdout: 'git version 2.44.0\n', stderr: '' }
+        }
+        if (cmd === 'git' && args[0] === 'clone') {
+          cloneCalls += 1
+          notifyCloneStarted()
+          return cloneCanFinish.then(() => ({ stdout: '', stderr: '' }))
+        }
+        return { stdout: '', stderr: '' }
+      })
+
+      const first = ensureSkillsetCached(ref)
+      await cloneStarted
+      const second = ensureSkillsetCached(ref)
+      releaseClone()
+
+      const repoDir = getSkillsetRepoDir(config.id)
+      await expect(Promise.all([first, second])).resolves.toEqual([repoDir, repoDir])
+      expect(cloneCalls).toBe(1)
     })
 
     it('gitPull swallows expected drift errors from fetch+reset without throwing', async () => {

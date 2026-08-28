@@ -69,6 +69,7 @@ function getRepoGitEnv(repoDir: string) {
 }
 
 const activeSkillsetRefreshes = new Map<string, Promise<SkillsetIndex>>()
+const activeSkillsetPopulates = new Map<string, Promise<string>>()
 
 // ============================================================================
 // Path Helpers
@@ -704,8 +705,31 @@ export async function ensureSkillsetCached(ref: SkillsetRef): Promise<string> {
   const hostingProvider = getSkillsetProvider(ref.provider)
   const repoDir = getSkillsetRepoDir(hostingProvider.getEffectiveRepoId(ref))
 
+  // The first populate is rm + write in place, so a second caller during it
+  // (reload, second tab, install) would delete files the first is writing.
+  // Coalesce on the directory, like refreshSkillset. Checked before the
+  // readiness probe so the join is synchronous.
+  const inFlight = activeSkillsetPopulates.get(repoDir)
+  if (inFlight) return inFlight
+
   if (await isCacheReady(repoDir, ref.provider)) return repoDir
 
+  const populate = populateSkillsetCache(ref, hostingProvider, repoDir)
+  activeSkillsetPopulates.set(repoDir, populate)
+  try {
+    return await populate
+  } finally {
+    if (activeSkillsetPopulates.get(repoDir) === populate) {
+      activeSkillsetPopulates.delete(repoDir)
+    }
+  }
+}
+
+async function populateSkillsetCache(
+  ref: SkillsetRef,
+  hostingProvider: ReturnType<typeof getSkillsetProvider>,
+  repoDir: string,
+): Promise<string> {
   await ensureDirectory(getSkillsetCacheDir())
 
   const parentDir = path.dirname(repoDir)
