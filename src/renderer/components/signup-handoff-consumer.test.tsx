@@ -10,6 +10,7 @@ const mutateAsync = vi.fn()
 const toastError = vi.fn()
 let mockDiscoverableAgents: ApiDiscoverableAgent[] | undefined
 let mockDiscoverableAgentsFailed = false
+let mockDiscoverableAgentsLoading = false
 let mockSetupCompleted = true
 let mockGlobalSetupCompleted = true
 let mockIsAuthMode = true
@@ -29,7 +30,11 @@ vi.mock('@renderer/hooks/use-agent-templates', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@renderer/hooks/use-agent-templates')>()
   return {
     ...actual,
-    useDiscoverableAgents: () => ({ data: mockDiscoverableAgents, isError: mockDiscoverableAgentsFailed }),
+    useDiscoverableAgents: () => ({
+      data: mockDiscoverableAgents,
+      isError: mockDiscoverableAgentsFailed,
+      isLoading: mockDiscoverableAgentsLoading,
+    }),
   }
 })
 vi.mock('@renderer/hooks/use-complete-template-install', () => ({
@@ -110,6 +115,7 @@ describe('SignupHandoffConsumer', () => {
     vi.clearAllMocks()
     mockDiscoverableAgents = []
     mockDiscoverableAgentsFailed = false
+    mockDiscoverableAgentsLoading = false
     mockSetupCompleted = true
     mockGlobalSetupCompleted = true
     mockIsAuthMode = true
@@ -253,6 +259,28 @@ describe('SignupHandoffConsumer template-only first run', () => {
     await waitFor(() => expect(toastError).toHaveBeenCalledWith("Couldn't load that template", expect.anything()))
     expect(queryByTestId('template-install-dialog')).toBeNull()
     expect(completeInstall).not.toHaveBeenCalled()
+  })
+
+  it('catalog still loading → keeps waiting past any fixed deadline, no toast', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      mockDiscoverableAgents = undefined
+      mockDiscoverableAgentsLoading = true
+      const { queryByTestId } = renderSlugFirstRun()
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(toastError).not.toHaveBeenCalled()
+      expect(queryByTestId('template-install-dialog')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('catalog settled with nothing to show → toast, no dialog', async () => {
+    mockDiscoverableAgents = undefined
+    mockDiscoverableAgentsLoading = false
+    const { queryByTestId } = renderSlugFirstRun()
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith("Couldn't load that template", expect.anything()))
+    expect(queryByTestId('template-install-dialog')).toBeNull()
   })
 
   it('catalog error → toast, no dialog', async () => {

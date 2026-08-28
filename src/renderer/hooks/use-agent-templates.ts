@@ -46,7 +46,7 @@ export function isWaitingOnDiscoverableRefresh(
  */
 export function useDiscoverableAgents() {
   const queryClient = useQueryClient()
-  const { data: skillsets } = useSkillsets()
+  const { data: skillsets, isLoading: skillsetsLoading } = useSkillsets()
   const hasSkillsets = !!(skillsets && skillsets.length > 0)
 
   const query = useQuery<ApiDiscoverableAgent[]>({
@@ -95,7 +95,8 @@ export function useDiscoverableAgents() {
 
   return {
     ...query,
-    isLoading: query.isLoading || waitingOnRefresh,
+    // Skillsets gate this query, so their fetch is part of the catalog's load.
+    isLoading: skillsetsLoading || query.isLoading || waitingOnRefresh,
   }
 }
 
