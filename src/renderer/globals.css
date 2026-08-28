@@ -633,6 +633,51 @@ html[data-keyboard-open] [data-composer-footer] {
   }
 }
 
+/* Home empty state colour bloom — static styles only; the drift is a rAF
+   clock in home-empty-clouds.tsx (copied from the cloud-switcher-simple
+   animation handoff), because the blob paths are true sin/cos lissajous
+   curves that CSS keyframes can't express. Blurring the stage (the UNION of
+   the solid blobs) is what fuses them into one cloud and makes overlapping
+   colours optically mix; blurring blobs individually would just soften seven
+   separate dots. */
+/* Ghost board behind the Home empty state: fade the skeleton rows out well
+   before the section's bottom edge, so the grid reads as receding into the
+   page instead of ending on a clipped card. */
+.home-empty-skeleton {
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 55%, transparent 92%);
+  mask-image: linear-gradient(to bottom, #000 0%, #000 55%, transparent 92%);
+}
+
+/* Boundary feather for the bloom's wrapper. The blob union owns the visible
+   silhouette; this only guarantees the energy reaches zero BEFORE the
+   overflow clip does — the blur bleeds past the stage, and wherever it still
+   has alpha at the wrapper's edge, overflow:hidden slices it into a hard
+   line. Explicit radii sized so the fade completes just inside each edge
+   (reach = stop x radius: 0.85 x 60% ≈ 51% wide, 0.85 x 56% ≈ 48% tall);
+   radii past ~60% would run out of the box and clip into a rectangle. */
+.home-empty-glow-mask {
+  -webkit-mask-image: radial-gradient(ellipse 60% 56% at center, #000 40%, transparent 85%);
+  mask-image: radial-gradient(ellipse 60% 56% at center, #000 40%, transparent 85%);
+}
+
+.home-empty-glow {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%) scaleY(0.58);
+  filter: blur(70px) saturate(1.1);
+  opacity: 0;
+  will-change: transform, opacity;
+}
+
+.home-empty-glow > div {
+  position: absolute;
+  width: 240px;
+  height: 240px;
+  border-radius: 50%;
+  will-change: transform;
+}
+
 /* Voice agent orb — glowing sphere with radial depth and amp-driven reactivity.
    --orb-amp (0..1) is set on the element via JS, driven by the active analyser
    when speaking or a slow sinusoidal breath when idle. */

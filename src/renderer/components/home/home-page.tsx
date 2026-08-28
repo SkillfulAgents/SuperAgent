@@ -33,9 +33,10 @@ import { useSidebar } from '@renderer/components/ui/sidebar'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { DashboardCard } from './dashboard-card'
+import { HomeEmptyClouds } from './home-empty-clouds'
 import { PwaInstallBanner } from './pwa-install-banner'
 import { isElectron, getPlatform } from '@renderer/lib/env'
-import { Plus, Bot, Loader2, Search, Power, Square, Check, ArrowRight, LayoutGrid, Waypoints, MoreVertical, Move } from 'lucide-react'
+import { Plus, Loader2, Search, Power, Square, Check, ArrowRight, LayoutGrid, Waypoints, MoreVertical, Move, Sparkle } from 'lucide-react'
 import { useSearch } from '@renderer/context/search-context'
 import { cn } from '@shared/lib/utils/cn'
 import type { ApiAgent } from '@shared/lib/types/api'
@@ -754,6 +755,74 @@ function HomeArrangeMenu({
   )
 }
 
+/**
+ * The empty state's ghost board: the card grid this page becomes, at whisper
+ * opacity. Mirrors WidgetBoard's geometry — square cells around its 232px
+ * target, 16px gaps, Small = 1x1 and Wide = 2x1 (dense-packed so the wide
+ * ghosts don't strand holes) — with each ghost sketching the real card's
+ * landmarks: title pill bottom-left, status chip top-right. The top-left wide
+ * cell is the one live element: the real create button sits where its title
+ * pill would. Rows fade out toward the bottom (see .home-empty-skeleton) so a
+ * clipped last row never shows a cut card edge.
+ */
+const SKELETON_PATTERN: WidgetSizeKey[] = ['W', 'S', 'S', 'S', 'S', 'W', 'S', 'W', 'S', 'S', 'W', 'S']
+
+function HomeEmptySkeletonBoard({
+  onCreate,
+  isCreating,
+  ctaRef,
+}: {
+  onCreate: () => void
+  isCreating: boolean
+  /** The live cell, exposed so the bloom can centre itself on it. */
+  ctaRef?: React.Ref<HTMLDivElement>
+}) {
+  return (
+    <div
+      data-testid="home-empty-skeleton"
+      className="home-empty-skeleton relative grid gap-4 [grid-auto-flow:dense]"
+      style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gridAutoRows: '216px' }}
+    >
+      {/* The live cell — a wide card with the same ghost shell as the rest,
+          its title-pill position holding the actual call to action. Second
+          row, second slot on md+; below md it auto-places at the row start,
+          because pinning columns 2-3 on a 2-column board would conjure an
+          implicit third column and squeeze every row. */}
+      <div
+        ref={ctaRef}
+        className="relative rounded-lg border border-border/40 bg-card/25 [grid-row:2] [grid-column:span_2] md:[grid-column:2/span_2]"
+      >
+        <div aria-hidden="true" className="absolute top-2 right-4 h-6 w-20 rounded-md bg-muted/30" />
+        {/* Backgrounded like the ghost title pills it stands in for; hover
+            firms it up so it still declares itself interactive. */}
+        <Button
+          variant="secondary"
+          className="absolute bottom-3 left-4 bg-muted/40 hover:bg-muted/40 text-foreground"
+          onClick={onCreate}
+          disabled={isCreating}
+          data-testid="home-empty-create-button"
+        >
+          <Sparkle className="h-4 w-4 mr-1" />
+          Create your first agent
+        </Button>
+      </div>
+      {SKELETON_PATTERN.map((size, i) => (
+        <div
+          key={i}
+          aria-hidden="true"
+          className={cn(
+            'pointer-events-none relative rounded-lg border border-border/40 bg-card/25',
+            size === 'W' && 'col-span-2',
+          )}
+        >
+          <div className="absolute bottom-2 left-4 h-9 w-32 rounded-md bg-muted/40" />
+          <div className="absolute top-2 right-4 h-6 w-20 rounded-md bg-muted/30" />
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export function HomePage() {
   useRenderTracker('HomePage')
   const { data: agents, isLoading: agentsLoading } = useAgents()
@@ -774,6 +843,8 @@ export function HomePage() {
     () => applyAgentOrder(agents ?? [], userSettings?.agentOrder),
     [agents, userSettings?.agentOrder]
   )
+
+  const hasAgents = orderedAgents.length > 0
 
   // Desktop and phone layouts are intentionally independent. A phone without a
   // customized layout starts from the desktop map and is responsively re-packed
@@ -826,7 +897,7 @@ export function HomePage() {
 
   // Card view owns a compact automation+activity projection. The full graph
   // topology is fetched only by the lazily mounted AgentGraph.
-  const { data: cardHealth } = useHomeCardHealth(view === 'cards' && orderedAgents.length > 0)
+  const { data: cardHealth } = useHomeCardHealth(view === 'cards' && hasAgents)
   const { cronsByAgent, webhooksByAgent } = useMemo(() => {
     const cronsMap = new Map<string, HomeCardCron[]>()
     const webhooksMap = new Map<string, HomeCardWebhook[]>()
@@ -905,11 +976,12 @@ export function HomePage() {
   }
 
   const { createUntitledAgent, isPending: isCreatingAgent } = useCreateUntitledAgent()
+  // The empty state's live card — the bloom anchors to it.
+  const emptyCtaRef = useRef<HTMLDivElement>(null)
   const { state: sidebarState } = useSidebar()
   const isFullScreen = useFullScreen()
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && sidebarState === 'collapsed' && !isFullScreen
 
-  const hasAgents = orderedAgents.length > 0
   const { openSearch } = useSearch()
   const isMac = getPlatform() === 'darwin'
   const setView = (next: 'cards' | 'graph') => {
@@ -1058,8 +1130,15 @@ export function HomePage() {
           {/* Mobile web/PWA only — "Install Gamut" prompt; renders nothing on desktop/Electron. */}
           <PwaInstallBanner />
 
-          {/* Agents Section */}
-          <section>
+          {/* Agents Section — relative so the empty state's ghost board can
+              anchor to the section's full footprint. */}
+          <section className="relative">
+            {/* No header on the empty state: with nothing to title, arrange, or
+                add to, the row is chrome around a void — and its New Agent
+                button only competes with the empty state's own call to action.
+                Kept while loading so resolving to a populated board doesn't
+                shift the layout. */}
+            {(hasAgents || agentsLoading) && (
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-1">
                 <h2 className="text-lg font-medium">Your Agents</h2>
@@ -1086,6 +1165,7 @@ export function HomePage() {
                 </Button>
               )}
             </div>
+            )}
 
             {agentsLoading ? (
               <div className="flex items-center justify-center py-12 text-muted-foreground">
@@ -1148,13 +1228,17 @@ export function HomePage() {
                 }}
               />
             ) : (
-              <div className="text-center py-12 border rounded-lg bg-muted/30">
-                <Bot className="h-10 w-10 mx-auto text-muted-foreground mb-3" />
-                <p className="text-muted-foreground mb-4">No agents yet</p>
-                <Button onClick={() => { void createUntitledAgent() }} disabled={isCreatingAgent}>
-                  <Plus className="h-4 w-4 mr-1" />
-                  Create your first agent
-                </Button>
+              /* The empty state IS the ghost board: faint card outlines in
+                 both widget sizes, with the top-right cell alive — it carries
+                 the real call to action where a card's title pill would sit,
+                 and the colour bloom glows behind that corner of the board. */
+              <div className="relative" data-testid="home-empty-state">
+                <HomeEmptyClouds anchorTo={emptyCtaRef} fill={0.625} masked={false} />
+                <HomeEmptySkeletonBoard
+                  ctaRef={emptyCtaRef}
+                  onCreate={() => { void createUntitledAgent() }}
+                  isCreating={isCreatingAgent}
+                />
               </div>
             )}
           </section>
