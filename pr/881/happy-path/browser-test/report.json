@@ -1,23 +1,25 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser-use feature test: Agent successfully navigated to example.com and retrieved the page title",
+  "reason": "Verified browser-use feature: agent successfully opened a browser, navigated to https://example.com, captured the page title \"Example Domain\", and returned the correct response.",
   "steps": [
-    "Step 1 - Navigated to http://localhost:47891 — Page loaded successfully with title \"Gamut\"",
-    "Step 2 - Found and clicked the \"QA-20260828-231334-qs7c\" agent in the sidebar — Agent page loaded successfully",
-    "Step 3 - Sent message: \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was typed into the contenteditable input field and sent using Cmd+Enter",
-    "Step 4 - Waited for agent response — Agent completed work in 8 seconds using 4 tool calls and 188,890 tokens",
-    "Step 5 - Verified response mentions \"Example Domain\" — Response clearly states: \"The page title is \"Example Domain\" — the standard IANA placeholder page. Browser is closed.\""
+    "Navigated to http://localhost:47891 — Page loaded successfully with Gamut app showing two agents in the sidebar (QA-20260828-233544-q0lc and QA-20260828-233543-xbir).",
+    "Found \"QA-20260828-233544-q0lc\" agent in sidebar and clicked it — Agent page opened successfully with chat input field ready. Page URL changed to /agents/qa-20260828-233544-q0lc-r4xfkwb3ez.",
+    "Clicked on message input field — Input field became active and ready for typing.",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully entered in the input field. Send button became enabled.",
+    "Clicked send button — Message was sent successfully. Agent transitioned to \"working\" state and a new session was created. URL changed to session URL with chat message visible.",
+    "Waited for agent response (within 3 minutes) — Agent completed work in 8 seconds with 4 tool calls (188,898 tokens used). Browser preview showed the Example Domain page during execution.",
+    "Verified response mentions \"Example Domain\" — Response correctly states: \"The page title is \"Example Domain\" — a placeholder page stating the domain is for use in documentation examples. Browser closed.\" The response explicitly mentions \"Example Domain\" as required."
   ],
   "bugs": [],
-  "durationMs": 103074,
-  "sessionId": "1f4f28e2-ed93-43ad-b670-fe58e17de3ab",
+  "durationMs": 81906,
+  "sessionId": "a1948515-25fd-44e4-911b-0c219e9c0c12",
   "cost": {
-    "inputTokens": 482,
-    "outputTokens": 13642,
-    "cacheCreationTokens": 61380,
-    "cacheReadTokens": 1335880,
+    "inputTokens": 478,
+    "outputTokens": 13437,
+    "cacheCreationTokens": 86580,
+    "cacheReadTokens": 1492323,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.279005
+    "totalCostUsd": 0.32512
   }
 }
