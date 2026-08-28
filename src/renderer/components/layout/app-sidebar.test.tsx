@@ -7,11 +7,10 @@ import { pointerWithin } from '@dnd-kit/core'
 import { AppSidebar } from './app-sidebar'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
-
+import { APP_VERSION } from '@shared/lib/config/version'
 // AppLink (the sidebar item links) is stubbed globally in test/setup.ts — no
 // file-level mock needed. DialogContext is mocked below to control settings.
 
-vi.stubGlobal('__APP_VERSION__', '0.1.0-test')
 vi.stubGlobal('__RENDER_TRACKING__', false)
 
 const mockIsElectron = vi.hoisted(() => vi.fn(() => false))
@@ -160,6 +159,16 @@ vi.mock('@renderer/context/connectivity-context', () => ({
 const mockUpdateStatus: { state: string; version?: string } = { state: 'idle' }
 vi.mock('@renderer/context/update-status-context', () => ({
   useUpdateStatus: () => mockUpdateStatus,
+}))
+
+const mockPlatformAuth: { platformBaseUrl?: string; orgId?: string } = {}
+vi.mock('@renderer/hooks/use-platform-auth', () => ({
+  usePlatformAuthStatus: () => ({ data: mockPlatformAuth }),
+}))
+
+const mockOpenExternalUrl = vi.fn()
+vi.mock('@renderer/lib/open-external', () => ({
+  openExternalUrl: (...args: unknown[]) => mockOpenExternalUrl(...args),
 }))
 
 const mockDialogContext = {
@@ -354,8 +363,22 @@ function notifyHistory(actionType: string) {
   mockHistorySubscribers.forEach((subscriber) => subscriber({ action: { type: actionType } }))
 }
 
+const localStorageStore = new Map<string, string>()
+const localStorageStub = {
+  getItem: (key: string) => localStorageStore.get(key) ?? null,
+  setItem: (key: string, value: string) => {
+    localStorageStore.set(key, String(value))
+  },
+  removeItem: (key: string) => {
+    localStorageStore.delete(key)
+  },
+  clear: () => localStorageStore.clear(),
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
+  localStorageStore.clear()
+  vi.stubGlobal('localStorage', localStorageStub)
   vi.stubGlobal('__WEB__', true)
   mockIsElectron.mockReturnValue(false)
   mockGetPlatform.mockReturnValue('web')
@@ -380,6 +403,9 @@ beforeEach(() => {
   mockRuntimeStatus.runtimeReadiness = { status: 'READY' }
   mockUpdateStatus.state = 'idle'
   delete mockUpdateStatus.version
+  delete mockPlatformAuth.platformBaseUrl
+  delete mockPlatformAuth.orgId
+  mockOpenExternalUrl.mockReset()
 })
 
 describe('AppSidebar — layout & top nav', () => {
@@ -434,7 +460,7 @@ describe('AppSidebar — layout & top nav', () => {
   it('renders Settings + version in the footer', () => {
     renderWithProviders(<AppSidebar />)
     expect(screen.getByTestId('settings-button')).toBeInTheDocument()
-    expect(screen.getByText('v0.1.0-test')).toBeInTheDocument()
+    expect(screen.getByText(`v${APP_VERSION}`)).toBeInTheDocument()
   })
 
   it('keeps the local update tooltip and aria-label', () => {
@@ -444,7 +470,7 @@ describe('AppSidebar — layout & top nav', () => {
     renderWithProviders(<AppSidebar />)
 
     const label = screen.getByTestId('sidebar-version')
-    expect(label).toHaveTextContent('v0.1.0-test')
+    expect(label).toHaveTextContent(`v${APP_VERSION}`)
     expect(label.getAttribute('title')).toBe('Update available: v1.2.3')
     expect(screen.getByLabelText('Update available')).toBeInTheDocument()
   })
@@ -768,8 +794,11 @@ describe('UserMenu action for the current target', () => {
 })
 
 describe('footer version in cloud mode', () => {
+  const desktopVersion = APP_VERSION
+
   beforeEach(() => {
     _resetApiTargetForTest()
+    setActiveTarget('cloud', null)
   })
 
   afterEach(() => {
@@ -778,31 +807,121 @@ describe('footer version in cloud mode', () => {
     delete mockUpdateStatus.version
   })
 
-  it('shows the deployment version, not the desktop bundle', () => {
-    setActiveTarget('cloud', null)
-    mockRuntimeStatus.appVersion = '9.9.9'
-    mockUpdateStatus.state = 'available'
-    mockUpdateStatus.version = '1.2.3'
+  it('shows one number when desktop and cloud match and no update is waiting', async () => {
+    mockRuntimeStatus.appVersion = desktopVersion
 
     renderWithProviders(<AppSidebar />)
 
-    const label = screen.getByTestId('sidebar-version')
-    expect(screen.getByTestId('sidebar-version-cloud')).toBeInTheDocument()
-    expect(label).toHaveTextContent('v9.9.9')
-    expect(screen.queryByText('v0.1.0-test')).not.toBeInTheDocument()
-    expect(label.getAttribute('title')).toMatch(/^Desktop update/)
-    expect(screen.getByLabelText('Desktop update available')).toBeInTheDocument()
+    expect(screen.getByTestId('sidebar-version')).toHaveTextContent(`v${desktopVersion}`)
+    expect(screen.queryByTestId('sidebar-version-desktop')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('sidebar-version-cloud')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Update available')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Desktop update available')).not.toBeInTheDocument()
+
+    await userEvent.click(screen.getByTestId('sidebar-version'))
+    expect(mockDialogContext.openSettings).toHaveBeenCalledWith('general')
   })
 
-  it('shows the cloud mark with no number when the deployment omits appVersion', () => {
-    setActiveTarget('cloud', null)
+  it('shows a quiet pair when they differ and nobody is behind', async () => {
+    mockRuntimeStatus.appVersion = '0.5.15'
+    mockPlatformAuth.platformBaseUrl = 'https://platform.example'
+    mockPlatformAuth.orgId = 'org_1'
 
     renderWithProviders(<AppSidebar />)
 
-    expect(screen.getByTestId('sidebar-version-cloud')).toBeInTheDocument()
-    expect(screen.getByLabelText('Cloud')).toBeInTheDocument()
-    expect(screen.getByTestId('sidebar-version')).not.toHaveTextContent(/v/)
-    expect(screen.queryByText('v0.1.0-test')).not.toBeInTheDocument()
+    expect(screen.getByTestId('sidebar-version-desktop')).toHaveTextContent(`v${desktopVersion}`)
+    expect(screen.getByTestId('sidebar-version-cloud')).toHaveTextContent('v0.5.15')
+    expect(screen.queryByLabelText('Desktop update available')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Cloud update available')).not.toBeInTheDocument()
+
+    await userEvent.click(screen.getByTestId('sidebar-version-desktop'))
+    expect(mockDialogContext.openSettings).toHaveBeenCalledWith('general')
+
+    await userEvent.click(screen.getByTestId('sidebar-version-cloud'))
+    expect(mockOpenExternalUrl).toHaveBeenCalledWith(
+      'https://platform.example/dashboard/organizations/org_1?tab=cloud',
+    )
+  })
+
+  it('puts a blue dot on cloud when it is a patch behind', () => {
+    mockRuntimeStatus.appVersion = '0.5.13'
+
+    renderWithProviders(<AppSidebar />)
+
+    const cloudDot = screen.getByLabelText('Cloud update available')
+    expect(cloudDot).toHaveClass('bg-blue-500')
+    expect(screen.queryByLabelText('Desktop update available')).not.toBeInTheDocument()
+  })
+
+  it('puts an orange dot on cloud when it is a major or minor behind', () => {
+    mockRuntimeStatus.appVersion = '0.4.0'
+
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByLabelText('Cloud update available')).toHaveClass('bg-orange-500')
+    expect(screen.queryByLabelText('Desktop update available')).not.toBeInTheDocument()
+  })
+
+  it('puts an orange dot on desktop when the feed matches a newer cloud', () => {
+    mockRuntimeStatus.appVersion = '0.6.0'
+    mockUpdateStatus.state = 'available'
+    mockUpdateStatus.version = '0.6.0'
+
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByLabelText('Desktop update available')).toHaveClass('bg-orange-500')
+    expect(screen.queryByLabelText('Cloud update available')).not.toBeInTheDocument()
+  })
+
+  it('puts orange dots on both when they match and the feed is a major ahead', () => {
+    mockRuntimeStatus.appVersion = desktopVersion
+    mockUpdateStatus.state = 'available'
+    mockUpdateStatus.version = '99.0.0'
+
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByTestId('sidebar-version-desktop')).toHaveTextContent(`v${desktopVersion}`)
+    expect(screen.getByTestId('sidebar-version-cloud')).toHaveTextContent(`v${desktopVersion}`)
+    expect(screen.getByLabelText('Desktop update available')).toHaveClass('bg-orange-500')
+    expect(screen.getByLabelText('Cloud update available')).toHaveClass('bg-orange-500')
+  })
+
+  it('keeps one number and a desktop update dot when they match the feed', () => {
+    mockRuntimeStatus.appVersion = desktopVersion
+    mockUpdateStatus.state = 'available'
+    mockUpdateStatus.version = desktopVersion
+
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByTestId('sidebar-version')).toHaveTextContent(`v${desktopVersion}`)
+    expect(screen.queryByTestId('sidebar-version-cloud')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Desktop update available')).toHaveClass('bg-blue-500')
+  })
+
+  it('falls back to the desktop number when the deployment omits appVersion', () => {
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByTestId('sidebar-version')).toHaveTextContent(`v${desktopVersion}`)
+    expect(screen.queryByTestId('sidebar-version-cloud')).not.toBeInTheDocument()
+  })
+
+  it('falls back to the desktop number when appVersion is not a version', () => {
+    mockRuntimeStatus.appVersion = 'not-a-version'
+
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByTestId('sidebar-version')).toHaveTextContent(`v${desktopVersion}`)
+    expect(screen.queryByTestId('sidebar-version-cloud')).not.toBeInTheDocument()
+  })
+
+  it('does not open the cloud tab when org is missing', async () => {
+    mockRuntimeStatus.appVersion = '0.5.15'
+    mockPlatformAuth.platformBaseUrl = 'https://platform.example'
+
+    renderWithProviders(<AppSidebar />)
+
+    await userEvent.click(screen.getByTestId('sidebar-version-cloud'))
+    expect(mockOpenExternalUrl).not.toHaveBeenCalled()
   })
 })
 
