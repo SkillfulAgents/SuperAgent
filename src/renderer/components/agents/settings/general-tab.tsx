@@ -254,7 +254,7 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
         <div className="space-y-0.5">
           <Label>API Log Auto-Delete</Label>
           <p className="text-xs text-muted-foreground">
-            Override the app-wide default for this agent's API and MCP request logs.
+            Override the app-wide default for this agent. Applies to API and MCP request logs.
           </p>
         </div>
         <AgentApiLogAutoDeleteSelect
