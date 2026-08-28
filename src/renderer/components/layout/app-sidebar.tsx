@@ -1656,8 +1656,8 @@ export function AppSidebar() {
                 title={`Desktop v${versionState.desktopVersion}`}
                 data-testid="sidebar-version-desktop"
               >
-                <Laptop className="size-3" aria-hidden="true" />
-                v{versionState.desktopVersion}
+                <Laptop className="mr-0.5 size-3" aria-hidden="true" />
+                {versionState.desktopVersion}
                 {versionState.desktopBehind && (
                   <VersionBehindDot
                     wayBehind={versionState.desktopWayBehind}
@@ -1665,7 +1665,7 @@ export function AppSidebar() {
                   />
                 )}
               </button>
-              <span className="h-3 w-px bg-border" aria-hidden="true" />
+              <span className="h-2.5 w-px bg-current opacity-60" aria-hidden="true" />
               <button
                 type="button"
                 onClick={() => {
@@ -1680,8 +1680,8 @@ export function AppSidebar() {
                 title={`Cloud v${versionState.cloudVersion}`}
                 data-testid="sidebar-version-cloud"
               >
-                <Cloud className="size-3" aria-hidden="true" />
-                v{versionState.cloudVersion}
+                <Cloud className="mr-0.5 size-3" aria-hidden="true" />
+                {versionState.cloudVersion}
                 {versionState.cloudBehind && (
                   <VersionBehindDot
                     wayBehind={versionState.cloudWayBehind}
@@ -1698,7 +1698,7 @@ export function AppSidebar() {
               title={updateAvailable ? `${isCloud ? 'Desktop update available' : 'Update available'}: v${updateStatus.version}` : undefined}
               data-testid="sidebar-version"
             >
-              <span>v{versionState.cloudVersion ?? desktopVersion}</span>
+              <span>{versionState.cloudVersion ?? desktopVersion}</span>
               {updateAvailable && (
                 <span
                   className="h-1.5 w-1.5 rounded-full bg-blue-500"

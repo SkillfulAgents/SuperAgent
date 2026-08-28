@@ -460,7 +460,7 @@ describe('AppSidebar — layout & top nav', () => {
   it('renders Settings + version in the footer', () => {
     renderWithProviders(<AppSidebar />)
     expect(screen.getByTestId('settings-button')).toBeInTheDocument()
-    expect(screen.getByText(`v${APP_VERSION}`)).toBeInTheDocument()
+    expect(screen.getByText(`${APP_VERSION}`)).toBeInTheDocument()
   })
 
   it('keeps the local update tooltip and aria-label', () => {
@@ -470,7 +470,7 @@ describe('AppSidebar — layout & top nav', () => {
     renderWithProviders(<AppSidebar />)
 
     const label = screen.getByTestId('sidebar-version')
-    expect(label).toHaveTextContent(`v${APP_VERSION}`)
+    expect(label).toHaveTextContent(`${APP_VERSION}`)
     expect(label.getAttribute('title')).toBe('Update available: v1.2.3')
     expect(screen.getByLabelText('Update available')).toBeInTheDocument()
   })
@@ -812,7 +812,7 @@ describe('footer version in cloud mode', () => {
 
     renderWithProviders(<AppSidebar />)
 
-    expect(screen.getByTestId('sidebar-version')).toHaveTextContent(`v${desktopVersion}`)
+    expect(screen.getByTestId('sidebar-version')).toHaveTextContent(`${desktopVersion}`)
     expect(screen.queryByTestId('sidebar-version-desktop')).not.toBeInTheDocument()
     expect(screen.queryByTestId('sidebar-version-cloud')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Update available')).not.toBeInTheDocument()
@@ -829,8 +829,8 @@ describe('footer version in cloud mode', () => {
 
     renderWithProviders(<AppSidebar />)
 
-    expect(screen.getByTestId('sidebar-version-desktop')).toHaveTextContent(`v${desktopVersion}`)
-    expect(screen.getByTestId('sidebar-version-cloud')).toHaveTextContent('v0.5.15')
+    expect(screen.getByTestId('sidebar-version-desktop')).toHaveTextContent(`${desktopVersion}`)
+    expect(screen.getByTestId('sidebar-version-cloud')).toHaveTextContent('0.5.15')
     expect(screen.queryByLabelText('Desktop update available')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Cloud update available')).not.toBeInTheDocument()
 
@@ -880,8 +880,8 @@ describe('footer version in cloud mode', () => {
 
     renderWithProviders(<AppSidebar />)
 
-    expect(screen.getByTestId('sidebar-version-desktop')).toHaveTextContent(`v${desktopVersion}`)
-    expect(screen.getByTestId('sidebar-version-cloud')).toHaveTextContent(`v${desktopVersion}`)
+    expect(screen.getByTestId('sidebar-version-desktop')).toHaveTextContent(`${desktopVersion}`)
+    expect(screen.getByTestId('sidebar-version-cloud')).toHaveTextContent(`${desktopVersion}`)
     expect(screen.getByLabelText('Desktop update available')).toHaveClass('bg-orange-500')
     expect(screen.getByLabelText('Cloud update available')).toHaveClass('bg-orange-500')
   })
@@ -893,7 +893,7 @@ describe('footer version in cloud mode', () => {
 
     renderWithProviders(<AppSidebar />)
 
-    expect(screen.getByTestId('sidebar-version')).toHaveTextContent(`v${desktopVersion}`)
+    expect(screen.getByTestId('sidebar-version')).toHaveTextContent(`${desktopVersion}`)
     expect(screen.queryByTestId('sidebar-version-cloud')).not.toBeInTheDocument()
     expect(screen.getByLabelText('Desktop update available')).toHaveClass('bg-blue-500')
   })
@@ -901,7 +901,7 @@ describe('footer version in cloud mode', () => {
   it('falls back to the desktop number when the deployment omits appVersion', () => {
     renderWithProviders(<AppSidebar />)
 
-    expect(screen.getByTestId('sidebar-version')).toHaveTextContent(`v${desktopVersion}`)
+    expect(screen.getByTestId('sidebar-version')).toHaveTextContent(`${desktopVersion}`)
     expect(screen.queryByTestId('sidebar-version-cloud')).not.toBeInTheDocument()
   })
 
@@ -910,7 +910,7 @@ describe('footer version in cloud mode', () => {
 
     renderWithProviders(<AppSidebar />)
 
-    expect(screen.getByTestId('sidebar-version')).toHaveTextContent(`v${desktopVersion}`)
+    expect(screen.getByTestId('sidebar-version')).toHaveTextContent(`${desktopVersion}`)
     expect(screen.queryByTestId('sidebar-version-cloud')).not.toBeInTheDocument()
   })
 
