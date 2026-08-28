@@ -23,6 +23,7 @@ vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveModels: () => ({
     agentModel: 'claude-sonnet-4-20250514',
     browserModel: 'claude-sonnet-4-20250514',
+    agentEffort: 'low',
   }),
 }))
 
@@ -384,7 +385,7 @@ describe('TriggerManager', () => {
     it('uses the global default when neither trigger nor agent set one', async () => {
       const args = await fireTrigger()
       expect(args.model).toBe('claude-sonnet-4-20250514')
-      expect(args.effort).toBeUndefined()
+      expect(args.effort).toBe('low')
       expect(args.speed).toBeUndefined()
     })
 

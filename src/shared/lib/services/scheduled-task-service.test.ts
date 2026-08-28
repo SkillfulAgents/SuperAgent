@@ -31,6 +31,7 @@ import {
   listScheduledTasks,
   listPendingScheduledTasks,
   listCancelledScheduledTasks,
+  listCompletedOneTimeTasks,
   getDueTasks,
   cancelScheduledTask,
   markTaskExecuted,
@@ -287,6 +288,62 @@ describe('scheduled-task-service', () => {
     it('returns empty array when no cancelled tasks exist', async () => {
       const cancelled = await listCancelledScheduledTasks('nonexistent-agent')
       expect(cancelled).toEqual([])
+    })
+  })
+
+  // ============================================================================
+  // listCompletedOneTimeTasks Tests
+  // ============================================================================
+
+  describe('listCompletedOneTimeTasks', () => {
+    it('returns only executed standalone one-time tasks with sessions for the agent', async () => {
+      const completedAtId = await createScheduledTask({
+        agentSlug: 'agent-a',
+        scheduleType: 'at',
+        scheduleExpression: 'at now + 1 hour',
+        prompt: 'Completed standalone task',
+      })
+      await createScheduledTask({
+        agentSlug: 'agent-a',
+        scheduleType: 'at',
+        scheduleExpression: 'at now + 2 hours',
+        prompt: 'Still pending',
+      })
+      const wakeId = await createScheduledTask({
+        agentSlug: 'agent-a',
+        scheduleType: 'at',
+        scheduleExpression: 'at now + 3 hours',
+        prompt: 'Resume later',
+        resumeSessionId: 'existing-session',
+      })
+      const cronId = await createScheduledTask({
+        agentSlug: 'agent-a',
+        scheduleType: 'cron',
+        scheduleExpression: '0 * * * *',
+        prompt: 'Recurring task',
+      })
+      const otherAgentId = await createScheduledTask({
+        agentSlug: 'agent-b',
+        scheduleType: 'at',
+        scheduleExpression: 'at now + 1 hour',
+        prompt: 'Other agent task',
+      })
+
+      await markTaskExecuted(completedAtId, 'completed-session')
+      await markTaskExecuted(wakeId, 'existing-session')
+      await markTaskExecuted(cronId, 'cron-session')
+      await markTaskExecuted(otherAgentId, 'other-session')
+
+      const completed = await listCompletedOneTimeTasks('agent-a')
+
+      expect(completed).toHaveLength(1)
+      expect(completed[0]).toMatchObject({
+        id: completedAtId,
+        scheduleType: 'at',
+        status: 'executed',
+        lastSessionId: 'completed-session',
+        resumeSessionId: null,
+      })
     })
   })
 

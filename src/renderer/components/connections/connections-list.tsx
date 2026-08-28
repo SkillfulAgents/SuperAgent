@@ -2,7 +2,17 @@ import { useEffect, useMemo, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { Switch } from '@renderer/components/ui/switch'
 import { Button } from '@renderer/components/ui/button'
-import { ChevronRight, Loader2, Plus } from 'lucide-react'
+import { ChevronRight, Loader2, Plus, X } from 'lucide-react'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@renderer/components/ui/alert-dialog'
 import { IntegrationDirectoryDialog, type NewApiConnection, type NewMcpConnection } from '@renderer/components/connections/integration-directory-dialog'
 import { IntegrationList } from '@renderer/components/connections/integration-row'
 import { ConnectionDetailPage } from '@renderer/components/connections/connection-detail-page'
@@ -16,6 +26,7 @@ import {
   useConnectedAccounts,
   useAgentConnectedAccounts,
   useAssignAccountsToAgent,
+  useRemoveAgentAccountMapping,
   useRemoveAgentConnectedAccount,
 } from '@renderer/hooks/use-connected-accounts'
 import { useOAuthReconnect } from '@renderer/hooks/use-oauth-reconnect'
@@ -23,10 +34,12 @@ import {
   useRemoteMcps,
   useAgentRemoteMcps,
   useAssignMcpToAgent,
+  useRemoveAgentMcpMapping,
   useRemoveMcpFromAgent,
 } from '@renderer/hooks/use-remote-mcps'
 import { buildUnifiedRows, type UnifiedRow } from '@renderer/components/connections/unified-rows'
 import { startViewTransition } from '@renderer/lib/view-transition'
+import { useUser } from '@renderer/context/user-context'
 import {
   isForeignAgentConnectedAccount,
   isForeignAgentRemoteMcp,
@@ -81,7 +94,6 @@ export function NewIntegrationButton() {
       <IntegrationDirectoryDialog
         open={open}
         onOpenChange={setOpen}
-        initialTab="apis"
         onApiConnected={setNewApi}
         onMcpConnected={setNewMcp}
       />
@@ -132,6 +144,14 @@ function AllConnectionsList({ agentSlug, detailRowKey, detailView, detailBackLab
   const removeAccount = useRemoveAgentConnectedAccount()
   const assignMcp = useAssignMcpToAgent()
   const removeMcp = useRemoveMcpFromAgent()
+  const removeSharedAccount = useRemoveAgentAccountMapping()
+  const removeSharedMcp = useRemoveAgentMcpMapping()
+  const { canAdminAgent } = useUser()
+  const canRemoveShared = canAdminAgent(agentSlug)
+  // The shared row awaiting confirmation. Unlinking a connection someone else
+  // owns is one-way for the person doing it — only the owner can re-share it —
+  // so it asks first, unlike the reversible grant switch.
+  const [sharedPendingRemoval, setSharedPendingRemoval] = useState<UnifiedRow | null>(null)
   const {
     reconnect: oauthReconnect,
     pendingAccountId,
@@ -253,8 +273,21 @@ function AllConnectionsList({ agentSlug, detailRowKey, detailView, detailBackLab
     }
   }
 
+  const confirmSharedRemoval = async () => {
+    const row = sharedPendingRemoval
+    if (!row?.mappingId) return
+    setSharedPendingRemoval(null)
+    const removal = row.type === 'oauth' ? removeSharedAccount : removeSharedMcp
+    // Caught only to keep the rejection handled — neither hook opts out of the
+    // global error toast, so a failure is reported there and the row stays put.
+    await removal.mutateAsync({ agentSlug, mappingId: row.mappingId }).catch(() => {})
+  }
+
   const isRowPending = (row: UnifiedRow): boolean => {
-    if (row.foreign) return false
+    if (row.foreign) {
+      const removal = row.type === 'oauth' ? removeSharedAccount : removeSharedMcp
+      return removal.isPending && removal.variables?.mappingId === row.mappingId
+    }
 
     if (row.type === 'oauth') {
       if (assignAccounts.isPending && assignAccounts.variables?.accountIds.includes(row.id)) return true
@@ -315,7 +348,32 @@ function AllConnectionsList({ agentSlug, detailRowKey, detailView, detailBackLab
         reconnecting={pendingAccountId === row.id}
         right={
           row.foreign ? (
-            <span className="text-xs text-muted-foreground">Shared</span>
+            <>
+              <span className="text-xs text-muted-foreground">Shared</span>
+              {canRemoveShared && row.mappingId && (
+                pending ? (
+                  <Loader2
+                    className="h-4 w-4 animate-spin text-muted-foreground"
+                    aria-label="Removing shared connection"
+                    data-testid={`connection-shared-remove-${row.mappingId}-pending`}
+                  />
+                ) : (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6 text-muted-foreground hover:text-foreground"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setSharedPendingRemoval(row)
+                    }}
+                    aria-label={`Remove ${row.name} from this agent`}
+                    data-testid={`connection-shared-remove-${row.mappingId}`}
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                )
+              )}
+            </>
           ) : <>
             {/* Slides in on row hover/focus; -ml-2 swallows the flex gap while hidden. */}
             <span
@@ -347,8 +405,38 @@ function AllConnectionsList({ agentSlug, detailRowKey, detailView, detailBackLab
 
   const hasAny = grantedRows.length > 0 || notGrantedRows.length > 0
 
+  const removalDialog = (
+    <AlertDialog
+      open={sharedPendingRemoval !== null}
+      onOpenChange={(open) => { if (!open) setSharedPendingRemoval(null) }}
+    >
+      <AlertDialogContent data-testid="connection-shared-remove-dialog">
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            Remove {sharedPendingRemoval?.name} from this agent?
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            This agent will lose access to the connection immediately. The
+            connection itself stays with the member who shared it — only they
+            can share it back.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={() => { void confirmSharedRemoval() }}
+            data-testid="connection-shared-remove-confirm"
+          >
+            Remove
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+
   return (
     <div className="space-y-6">
+      {removalDialog}
       {isLoading ? (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" />

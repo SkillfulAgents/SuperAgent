@@ -9,6 +9,7 @@ import { isElectron, getPlatform } from '@renderer/lib/env'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { PendingMessagesProvider, type PendingMessagesContextValue } from '@renderer/context/pending-messages-context'
 import { clearPendingSessionSeed, peekPendingSessionSeed } from '@renderer/context/pending-session-seed'
+import { DashboardHeaderProvider } from '@renderer/context/dashboard-header-context'
 import type { PendingMessage } from '@renderer/components/messages/pending-message'
 import { ContentShell } from './content-shell'
 import { AgentHeader } from './agent-header'
@@ -184,19 +185,21 @@ export function AgentShell() {
 
   return (
     <PendingMessagesProvider value={value}>
-      <ContentShell
-        needsTrafficLightPadding={needsTrafficLightPadding}
-        headerContent={
-          slug ? (
-            <AgentHeader slug={slug} isViewOnly={isViewOnly} startAgent={startAgent} stopAgent={stopAgent} />
-          ) : null
-        }
-      >
-        {slug && <AgentBanners slug={slug} startAgent={startAgent} />}
-        <ErrorBoundary>
-          <Outlet />
-        </ErrorBoundary>
-      </ContentShell>
+      <DashboardHeaderProvider>
+        <ContentShell
+          needsTrafficLightPadding={needsTrafficLightPadding}
+          headerContent={
+            slug ? (
+              <AgentHeader slug={slug} isViewOnly={isViewOnly} startAgent={startAgent} stopAgent={stopAgent} />
+            ) : null
+          }
+        >
+          {slug && <AgentBanners slug={slug} startAgent={startAgent} />}
+          <ErrorBoundary>
+            <Outlet />
+          </ErrorBoundary>
+        </ContentShell>
+      </DashboardHeaderProvider>
     </PendingMessagesProvider>
   )
 }

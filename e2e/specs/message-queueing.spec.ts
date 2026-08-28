@@ -114,10 +114,12 @@ test.describe('Message queueing while agent is working', () => {
 
     // Hold transcript GETs so the picked-up ghost cannot materialize while we
     // stage the lost race. Send (POST) and cancel (DELETE …/queued-messages/:uuid)
-    // use other method/URL shapes and pass through.
+    // use other method/URL shapes and pass through. The trailing * covers the
+    // ?limit= query string (Playwright globs match the full URL) without
+    // matching …/queued-messages/* (the literal /messages can't match /queued-).
     let holdTranscript = true
     let pickupRefetchSeen = false
-    await page.route('**/sessions/*/messages', async (route) => {
+    await page.route('**/sessions/*/messages*', async (route) => {
       if (route.request().method() !== 'GET') return route.continue()
       pickupRefetchSeen = true
       while (holdTranscript) await new Promise((r) => setTimeout(r, 100))

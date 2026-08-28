@@ -40,7 +40,13 @@ function createApp() {
 describe('activity API', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockGetAgentActivityStats.mockResolvedValue({ days: 14, cronByTaskId: {}, webhookByTriggerId: {}, connectionById: {} })
+    mockGetAgentActivityStats.mockResolvedValue({
+      days: 14,
+      cronByTaskId: {},
+      webhookByTriggerId: {},
+      inboundXAgent: { total: 0, lastInvokedAt: null, activity: [] },
+      connectionById: {},
+    })
     mockGetConnectionActivityStats.mockResolvedValue({ days: 14, connectionById: {} })
   })
 

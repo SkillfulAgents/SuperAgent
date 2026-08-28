@@ -2,6 +2,7 @@ import { EventEmitter } from 'events'
 import { randomUUID } from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
+import { z } from 'zod'
 import type {
   ContainerClient,
   ContainerConfig,
@@ -9,11 +10,12 @@ import type {
   ContainerSession,
   ContainerStats,
   CreateSessionOptions,
+  SendMessageOptions,
   StartOptions,
   StopOptions,
   StreamMessage,
 } from './types'
-import type { RuntimeOptions } from './runtime-options'
+import type { ObserveUnexpectedDeathInput, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
 import { resolveContainerModel } from './resolve-model'
 import { getAgentWorkspaceDir, getSessionJsonlPath } from '../utils/file-storage'
 import { reviewManager } from '../proxy/review-manager'
@@ -21,6 +23,16 @@ import { db } from '../db'
 import { connectedAccounts } from '../db/schema'
 
 export const MOCK_ACCOUNT_ID = 'mock-account-id'
+
+// Validate seeded dashboard package.json at the file boundary (project
+// convention). Minimal mirror of agent-container's DashboardPackageSchema —
+// that package can't be imported from here.
+const seededDashboardPackageSchema = z
+  .object({
+    name: z.string().optional(),
+    description: z.string().optional(),
+  })
+  .loose()
 
 // E2E mock scenarios reference a fake connected account by id. The
 // /proxy-review/.../always endpoint persists an apiScopePolicies row whose
@@ -328,7 +340,10 @@ export class MultiPassThinkingScenario implements MockScenario {
     private passes: string[],
     private responseText: string,
     /** Delay between thinking chunks — sets how long each pass streams. */
-    private chunkDelayMs = 200
+    private chunkDelayMs = 200,
+    /** Gap between a pass ending and the next one starting. The real CLI can
+     * emit thinking_stop and the next thinking_start nearly back-to-back. */
+    private interPassGapMs = 100
   ) {}
 
   execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
@@ -377,7 +392,7 @@ export class MultiPassThinkingScenario implements MockScenario {
           timestamp: new Date().toISOString(),
         })
       }, passEnd)
-      offset = passEnd + 100
+      offset = passEnd + this.interPassGapMs
     }
 
     setTimeout(() => {
@@ -963,6 +978,8 @@ export class DeadSubagentInputScenario implements MockScenario {
   execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
     const parentToolId = `agent_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
     const subToolId = `subtool_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
+    const subagentDeathDelayMs = 5_000
+    const mainTurnCompletionDelayMs = subagentDeathDelayMs + 2_500
 
     client.writeJsonlEntry(sessionId, {
       type: 'user',
@@ -1001,9 +1018,8 @@ export class DeadSubagentInputScenario implements MockScenario {
       })
     }, 60)
 
-    // The subagent dies ~2.5s later: its terminal sidechain 'result' frame
-    // arrives while the browser_input has no tool_result. Long enough for a
-    // spec to assert the card + awaiting window first.
+    // Keep the parked phase observable under a loaded, multi-worker browser
+    // run before the terminal sidechain 'result' invalidates the request.
     setTimeout(() => {
       client.emitStreamMessage(sessionId, {
         type: 'result',
@@ -1013,7 +1029,7 @@ export class DeadSubagentInputScenario implements MockScenario {
           subtype: 'success',
         },
       })
-    }, 2500)
+    }, subagentDeathDelayMs)
 
     // The main turn continues briefly, then settles on its own — the parked
     // ask must NOT be what ends it.
@@ -1029,7 +1045,7 @@ export class DeadSubagentInputScenario implements MockScenario {
         type: 'result',
         content: { type: 'result', subtype: 'success' },
       })
-    }, 5000)
+    }, mainTurnCompletionDelayMs)
   }
 }
 
@@ -1057,10 +1073,16 @@ function connectedAccountRequestInput(userMessage: string): Record<string, unkno
 }
 
 function remoteMcpRequestInput(userMessage: string): Record<string, unknown> {
+  const authHint = getMessageParam(userMessage, 'mcp_auth_hint')
+  const clientId = getMessageParam(userMessage, 'mcp_client_id')
   return {
     url: getMessageParam(userMessage, 'mcp_url') ?? 'http://localhost:9876/mcp',
     name: getMessageParam(userMessage, 'mcp_name') ?? 'Test MCP',
     reason: getMessageParam(userMessage, 'mcp_reason') ?? 'Need access to test tools',
+    // Only set when a test asks for them, so the default scenario keeps emitting
+    // exactly the input shape it did before.
+    ...(authHint ? { authHint } : {}),
+    ...(clientId ? { clientId } : {}),
   }
 }
 
@@ -1559,6 +1581,31 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   static scenarios = new Map<string, MockScenario>([
     // Slow response window for message-queueing tests (send mid-turn → queued)
     ['work slowly', new SlowWorkScenario()],
+    // Long thinking passes: each pass overfills the card's max-height so the
+    // card scrolls internally while live, then collapses by its full body
+    // height when the pass ends — the shrink-at-the-live-edge shape behind
+    // follow-loss reports on real long-thinking turns.
+    ['think long passes', new MultiPassThinkingScenario(
+      [
+        `First pass. ${'Surveying the problem space in detail, listing every moving part and its constraints before committing to an approach. '.repeat(12)}End of first pass.`,
+        `Second pass. ${'Weighing the tradeoffs between the candidate approaches carefully, checking each against the constraints found earlier. '.repeat(12)}End of second pass.`,
+        `Third pass. ${'Sanity-checking the chosen approach against the edge cases one at a time before writing the final answer. '.repeat(12)}End of third pass.`,
+      ],
+      'Done with all long thinking passes — here is the answer.',
+      15,
+      10
+    )],
+    // A deep turn: eight overfilled passes back-to-back, so the turn runs long
+    // past the send-time reserve — the state where follow-loss is reported in
+    // the field on real long-thinking turns.
+    ['think a marathon', new MultiPassThinkingScenario(
+      Array.from({ length: 8 }, (_, i) =>
+        `Pass ${i + 1}. ${'Working through the problem space step by step, revisiting each constraint and checking the running plan against it before moving on. '.repeat(12)}End of pass ${i + 1}.`,
+      ),
+      'Done with the marathon of thinking passes — here is the answer.',
+      15,
+      10
+    )],
     // Several thinking passes persisted one-by-one — an interruptible thinking turn
     ['think in passes', new MultiPassThinkingScenario(
       [
@@ -1592,6 +1639,12 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     ['slow response', new DelayedTextResponseScenario(
       'This is a delayed mock response.',
       3000
+    )],
+    // A viewport-overflowing streamed reply (~1200 words over ~6s) so
+    // transcript follow/scroll behavior can be observed while it grows
+    ['stream a long story', new SimpleTextResponseScenario(
+      'Here begins a long story that overflows the viewport so live-edge following can be observed while it streams. ' +
+      'The quick brown fox jumps over the lazy dog while the transcript keeps growing line after line without pause. '.repeat(70),
     )],
     // Register user input request scenarios for E2E testing
     ['ask secret', new UserInputRequestScenario([
@@ -2377,16 +2430,64 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       })
     }
 
-    // Endpoints that return arrays need to return [] not {}
+    // Mirror the real container: report the dashboards that exist under the
+    // agent's workspace artifacts dir (seeded by specs), as running. Specs
+    // that seed nothing keep getting [] exactly as before.
     if (fetchPath === '/artifacts') {
-      return new Response(JSON.stringify([]), {
+      const artifacts: Array<Record<string, unknown>> = []
+      try {
+        const artifactsDir = path.join(getAgentWorkspaceDir(this.getAgentId()), 'artifacts')
+        for (const entry of fs.readdirSync(artifactsDir, { withFileTypes: true })) {
+          if (!entry.isDirectory()) continue
+          try {
+            const pkg = seededDashboardPackageSchema.parse(
+              JSON.parse(fs.readFileSync(path.join(artifactsDir, entry.name, 'package.json'), 'utf-8'))
+            )
+            artifacts.push({
+              slug: entry.name,
+              name: pkg.name || entry.name,
+              description: pkg.description || '',
+              status: 'running',
+              port: 3000,
+            })
+          } catch {
+            // Not a dashboard directory — skip, like the real listing does.
+          }
+        }
+      } catch {
+        // No artifacts dir seeded for this agent.
+      }
+      return new Response(JSON.stringify(artifacts), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       })
     }
 
-    // Dashboard artifact HTML — serves a minimal page for E2E testing of polyfill injection
-    if (fetchPath.match(/^\/artifacts\/[^/]+\/?$/) || fetchPath.match(/^\/artifacts\/[^/]+\/index\.html$/)) {
+    // Dashboard artifact HTML — serves the seeded dashboard's own index.html
+    // when one exists in the agent's workspace (so specs and demo data dirs
+    // can exercise real dashboard content), else a minimal fixed page for
+    // polyfill-injection testing.
+    const artifactHtmlMatch = fetchPath.match(/^\/artifacts\/([^/]+)\/?(?:index\.html)?$/)
+    if (artifactHtmlMatch) {
+      try {
+        const artifactSlug = decodeURIComponent(artifactHtmlMatch[1])
+        if (!artifactSlug.includes('..')) {
+          const seededPath = path.join(
+            getAgentWorkspaceDir(this.getAgentId()),
+            'artifacts',
+            artifactSlug,
+            'index.html'
+          )
+          if (fs.existsSync(seededPath)) {
+            return new Response(fs.readFileSync(seededPath, 'utf-8'), {
+              status: 200,
+              headers: { 'Content-Type': 'text/html; charset=utf-8' },
+            })
+          }
+        }
+      } catch {
+        // Malformed escape or unreadable seed — fall through to the fixed page.
+      }
       const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Mock Dashboard</title></head><body><h1>Mock Dashboard</h1><script>window.__DASHBOARD_LOADED__ = true;</script></body></html>`
       return new Response(html, {
         status: 200,
@@ -2530,6 +2631,18 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     return this.running
   }
 
+  onFatalResult(_kind: RuntimeFatalKind): 'settle' | 'defer_for_recovery' {
+    return 'settle'
+  }
+
+  async observeUnexpectedDeath(_input?: ObserveUnexpectedDeathInput): Promise<UnexpectedDeathPlan> {
+    return { action: 'settle' }
+  }
+
+  getRuntimeGenerationId(): string | null {
+    return null
+  }
+
   // Session management
 
   async createSession(options: CreateSessionOptions): Promise<ContainerSession> {
@@ -2647,7 +2760,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   // Message operations
 
-  async sendMessage(sessionId: string, content: string, uuid?: string, options?: RuntimeOptions): Promise<void> {
+  async sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<void> {
     // Resolve like the real container client so E2E sees the concrete wire id.
     const model = resolveContainerModel(options?.model, 'agent')
     // Record for E2E test assertions

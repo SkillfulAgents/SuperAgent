@@ -159,7 +159,7 @@ test.describe('Getting Started Wizard', () => {
     // Step 6: Create Agent (skippable)
     await wizardPage.clickNext()
     await wizardPage.expectStep(6)
-    await expect(page.getByRole('heading', { name: /create your first agent/i })).toBeVisible()
+    await expect(page.getByRole('heading', { name: /describe your first ai teammate/i })).toBeVisible()
 
     // Skip on last step finishes
     await wizardPage.clickSkip()
@@ -224,21 +224,24 @@ test.describe('Getting Started Wizard', () => {
     await wizardPage.clickNext() // Privacy -> Agent
     await wizardPage.expectStep(6)
 
-    await page.getByRole('button', { name: /Browse Templates/ }).click()
-    const marketplace = page.locator('[data-testid="agent-template-browse-dialog"]')
-    await expect(marketplace).toBeVisible()
-    await marketplace.getByRole('button', { name: /E2E Onboarding Template/ }).click()
+    // The template roster renders inline under the composer; clicking a card
+    // installs it in place (no marketplace detour, no naming step — the agent
+    // takes the template's own name) and finishing the install completes the
+    // wizard.
+    await page
+      .locator('[data-testid="explore-template-card"]', { hasText: 'E2E Onboarding Template' })
+      .click()
 
-    const installDialog = page.getByRole('dialog', { name: 'Install E2E Onboarding Template' })
-    const agentName = `Onboarding Template Agent ${Date.now()}`
-    await installDialog.getByPlaceholder('Agent name').fill(agentName)
-    await installDialog.getByRole('button', { name: 'Install' }).click()
-
-    // Installing a template is a successful completion of the final onboarding
-    // step, just like creating from a prompt or importing a local template.
+    // Both assertions have to be things the wizard itself cannot satisfy: the
+    // install navigates to the new agent's page and the name appears in the
+    // sidebar, neither of which exists while the wizard overlay is up.
+    await expect(page).toHaveURL(/\/agents\//)
     await wizardPage.expectNotVisible()
-    await expect(page.locator('[data-testid="app-sidebar"]')).toBeVisible()
-    await expect(page.getByText(agentName, { exact: true }).first()).toBeVisible()
+    await expect(
+      page
+        .locator('[data-testid="app-sidebar"]')
+        .getByText('E2E Onboarding Template', { exact: true }),
+    ).toBeVisible()
 
     const response = await request.get('/api/user-settings')
     const settings = await response.json()

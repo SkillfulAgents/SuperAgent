@@ -1,3 +1,9 @@
+import {
+  DASHBOARD_DISPATCH_ACK_TYPE,
+  DASHBOARD_DISPATCH_REQUEST_TYPE,
+  DASHBOARD_DISPATCH_RESULT_TYPE,
+} from '@shared/lib/dashboard-dispatch-schema'
+
 export interface DashboardRuntimeInjectionOptions {
   basePath: string
   slug: string
@@ -33,10 +39,18 @@ export function dashboardMountPath(routeSlug: string, artifactSlug: string): str
  * proxy adds a prefix (for example `/cloud/<key>` in the desktop app), because
  * that outer prefix is intentionally not disclosed to the remote deployment.
  */
+// The runtime string is rebuilt only once per (basePath, slug) — it is
+// injected into every proxied dashboard HTML response. Keyed cache stays
+// small: one entry per dashboard actually served this process lifetime.
+const runtimeJsCache = new Map<string, string>()
+
 export function getDashboardRuntimeJs(basePath: string, slug: string): string {
   const fallbackBasePath = withTrailingSlash(basePath)
+  const cacheKey = `${fallbackBasePath}\u0000${slug}`
+  const cachedJs = runtimeJsCache.get(cacheKey)
+  if (cachedJs) return cachedJs
 
-  return /* js */ `
+  const source = /* js */ `
 (function () {
   var fallbackBasePath = ${scriptString(fallbackBasePath)};
   var marker = "/api/agents/";
@@ -68,15 +82,79 @@ export function getDashboardRuntimeJs(basePath: string, slug: string): string {
     return resolved.pathname + resolved.search + resolved.hash;
   }
 
+  var dispatchSeq = 0;
+  var pendingDispatches = {};
+
+  window.addEventListener("message", function (event) {
+    // Only the hosting parent frame may settle dispatches — a nested child
+    // frame or popup with a handle to this window must not spoof results.
+    if (!event || event.source !== window.parent) return;
+    var data = event.data;
+    if (!data || typeof data !== "object" || typeof data.id !== "string") return;
+    var pending = pendingDispatches[data.id];
+    if (!pending) return;
+    if (data.type === ${scriptString(DASHBOARD_DISPATCH_ACK_TYPE)}) {
+      if (pending.ackTimer !== null) {
+        clearTimeout(pending.ackTimer);
+        pending.ackTimer = null;
+      }
+      return;
+    }
+    if (data.type !== ${scriptString(DASHBOARD_DISPATCH_RESULT_TYPE)}) return;
+    delete pendingDispatches[data.id];
+    if (pending.ackTimer !== null) clearTimeout(pending.ackTimer);
+    var result = data.result;
+    if (result && typeof result.error === "string") {
+      pending.reject(new Error(result.error));
+    } else {
+      pending.resolve(result || {});
+    }
+  });
+
+  function dispatchSession(request) {
+    return new Promise(function (resolve, reject) {
+      var prompt = request && typeof request.prompt === "string" ? request.prompt : "";
+      if (!prompt.trim()) {
+        reject(new TypeError("dispatchSession requires a non-empty prompt"));
+        return;
+      }
+      if (window.parent === window) {
+        reject(new Error("Session dispatch is not available in this window"));
+        return;
+      }
+      var id = "gamut-dispatch-" + (++dispatchSeq) + "-" + Math.random().toString(36).slice(2);
+      var pending = { resolve: resolve, reject: reject, ackTimer: null };
+      // The parent may not speak the protocol (popped-out window, older app);
+      // reject unless the host acks quickly. The user decision itself has no
+      // deadline — the ack only proves someone is listening.
+      pending.ackTimer = setTimeout(function () {
+        delete pendingDispatches[id];
+        reject(new Error("Session dispatch is not available in this window"));
+      }, 2000);
+      pendingDispatches[id] = pending;
+      window.parent.postMessage({
+        type: ${scriptString(DASHBOARD_DISPATCH_REQUEST_TYPE)},
+        id: id,
+        payload: {
+          prompt: prompt,
+          title: request.title == null ? undefined : String(request.title)
+        }
+      }, "*");
+    });
+  }
+
   var runtime = {
     basePath: basePath,
     routerBasePath: basePath === "/" ? "/" : basePath.slice(0, -1),
     slug: ${scriptString(slug)},
-    url: dashboardUrl
+    url: dashboardUrl,
+    dispatchSession: dispatchSession
   };
   window.__GAMUT_DASHBOARD__ = Object.freeze(runtime);
 })();
 `
+  runtimeJsCache.set(cacheKey, source)
+  return source
 }
 
 /** Inject the dashboard runtime and a stable document base before app assets. */

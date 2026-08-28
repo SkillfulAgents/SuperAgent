@@ -12,7 +12,7 @@ import crypto from 'crypto'
 import path from 'path'
 import fs from 'fs'
 import yaml from 'js-yaml'
-import { getDataDir } from '@shared/lib/config/data-dir'
+import { getCacheDir } from '@shared/lib/config/data-dir'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-provider/helpers'
 import { resolveActiveProviderModel } from '@shared/lib/llm-provider'
@@ -22,6 +22,7 @@ import {
   readFileOrNull,
   ensureDirectory,
   directoryExists,
+  fileExists,
   removeDirectory,
 } from '@shared/lib/utils/file-storage'
 import type {
@@ -35,7 +36,7 @@ import type {
   SkillProvider,
   SkillsetCredentialInput,
 } from '@shared/lib/types/skillset'
-import { InstalledSkillMetadataSchema } from '@shared/lib/types/skillset-schema'
+import { InstalledSkillMetadataSchema, parseSkillsetIndex } from '@shared/lib/types/skillset-schema'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import {
   copyDirectoryFiltered,
@@ -68,13 +69,14 @@ function getRepoGitEnv(repoDir: string) {
 }
 
 const activeSkillsetRefreshes = new Map<string, Promise<SkillsetIndex>>()
+const activeSkillsetPopulates = new Map<string, Promise<string>>()
 
 // ============================================================================
 // Path Helpers
 // ============================================================================
 
 function getSkillsetCacheDir(): string {
-  return path.join(getDataDir(), 'skillset-cache')
+  return getCacheDir()
 }
 
 export function getSkillsetRepoDir(skillsetId: string): string {
@@ -703,8 +705,33 @@ export async function ensureSkillsetCached(ref: SkillsetRef): Promise<string> {
   const hostingProvider = getSkillsetProvider(ref.provider)
   const repoDir = getSkillsetRepoDir(hostingProvider.getEffectiveRepoId(ref))
 
-  if (await isCacheReady(repoDir, ref.provider)) return repoDir
+  // The first populate is rm + write in place, so a second caller during it
+  // (reload, second tab, install) would delete files the first is writing.
+  // Coalesce on the directory, like refreshSkillset. The readiness probe runs
+  // inside the stored promise: the map must be set before the first await, or
+  // two cold callers probing at once would both reach the populate.
+  const inFlight = activeSkillsetPopulates.get(repoDir)
+  if (inFlight) return inFlight
 
+  const populate = (async () => {
+    if (await isCacheReady(repoDir, ref.provider)) return repoDir
+    return populateSkillsetCache(ref, hostingProvider, repoDir)
+  })()
+  activeSkillsetPopulates.set(repoDir, populate)
+  try {
+    return await populate
+  } finally {
+    if (activeSkillsetPopulates.get(repoDir) === populate) {
+      activeSkillsetPopulates.delete(repoDir)
+    }
+  }
+}
+
+async function populateSkillsetCache(
+  ref: SkillsetRef,
+  hostingProvider: ReturnType<typeof getSkillsetProvider>,
+  repoDir: string,
+): Promise<string> {
   await ensureDirectory(getSkillsetCacheDir())
 
   const parentDir = path.dirname(repoDir)
@@ -745,12 +772,22 @@ export async function readIndexJson(repoDir: string): Promise<SkillsetIndex> {
     throw new Error('index.json contains invalid JSON')
   }
 
-  const parsed = raw as Record<string, unknown>
-  if (!parsed.skillset_name || !Array.isArray(parsed.skills)) {
-    throw new Error('Invalid index.json: missing skillset_name or skills array')
+  const parsed = parseSkillsetIndex(raw)
+  if (!parsed.ok) {
+    throw new Error(`Invalid index.json: ${parsed.error}`)
   }
 
-  return raw as SkillsetIndex
+  // Individual bad entries are dropped, not fatal (see parseSkillsetIndex).
+  // Say so — the alternative is a skillset that quietly ships fewer templates
+  // than its repo lists, with nothing anywhere explaining why.
+  if (parsed.dropped.length > 0) {
+    console.warn(
+      `[readIndexJson] ${indexPath}: skipped ${parsed.dropped.length} malformed ` +
+      `entr${parsed.dropped.length === 1 ? 'y' : 'ies'}: ${parsed.dropped.join('; ')}`,
+    )
+  }
+
+  return parsed.index
 }
 
 // ============================================================================
@@ -823,7 +860,7 @@ async function recloneSkillsetCache(ref: SkillsetRef, repoDir: string, cause: st
   console.warn(`[refreshSkillset] Re-cloning corrupt skillset cache at ${repoDir}: ${cause}`)
   await fs.promises.rm(repoDir, { recursive: true, force: true })
   await ensureSkillsetCached(ref)
-  if (!fs.existsSync(path.join(repoDir, 'index.json'))) {
+  if (!(await fileExists(path.join(repoDir, 'index.json')))) {
     throw new Error(
       `Skillset repository has no index.json at its root (re-cloned ${repoDir} after: ${cause})`,
     )
@@ -865,7 +902,7 @@ async function refreshSkillsetCache(
       return readIndexJson(repoDir)
     }
 
-    if (!fs.existsSync(path.join(repoDir, 'index.json'))) {
+    if (!(await fileExists(path.join(repoDir, 'index.json')))) {
       if (pullResult === 'skipped-offline') {
         // The cache is incomplete but we can't re-clone right now. Don't nuke
         // it while offline — retry on the next refresh instead.
@@ -877,7 +914,7 @@ async function refreshSkillsetCache(
     }
   } else {
     await ensureSkillsetCached(ref)
-    if (!fs.existsSync(path.join(repoDir, 'index.json'))) {
+    if (!(await fileExists(path.join(repoDir, 'index.json')))) {
       throw new Error(
         `Skillset repository has no index.json at its root (fresh clone at ${repoDir})`,
       )
@@ -1079,7 +1116,7 @@ export async function getAgentSkillsWithStatus(
 ): Promise<SkillWithStatus[]> {
   const skillsDir = getAgentSkillsDir(agentSlug)
 
-  if (!fs.existsSync(skillsDir)) {
+  if (!(await directoryExists(skillsDir))) {
     return []
   }
 
@@ -1246,7 +1283,7 @@ export async function refreshAgentSkills(
   }
 
   const skillsDir = getAgentSkillsDir(agentSlug)
-  if (!fs.existsSync(skillsDir)) return
+  if (!(await directoryExists(skillsDir))) return
 
   const entries = await fs.promises.readdir(skillsDir, { withFileTypes: true })
 
@@ -1382,7 +1419,7 @@ export async function getDiscoverableSkills(
   const skillsDir = getAgentSkillsDir(agentSlug)
   const installedDirs = new Set<string>()
 
-  if (fs.existsSync(skillsDir)) {
+  if (await directoryExists(skillsDir)) {
     const entries = await fs.promises.readdir(skillsDir, { withFileTypes: true })
     for (const entry of entries) {
       if (entry.isDirectory()) installedDirs.add(entry.name)

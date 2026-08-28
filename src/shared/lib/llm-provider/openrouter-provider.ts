@@ -136,6 +136,11 @@ export class OpenRouterLlmProvider extends BaseLlmProvider {
   readonly defaultModelOptions = CLAUDE_DEFAULT_MODEL_OPTIONS
   readonly catalogDefaultModels = OPENROUTER_CATALOG_DEFAULT_MODELS
   override readonly supportsModelSearch = true
+  // Left unset (see BaseLlmProvider.toolSearchEnv): OpenRouter rejects
+  // deferred custom tools for every non-Anthropic model, so the CLI's own
+  // non-first-party guard is exactly the behaviour we want. This also gives
+  // up tool search for `anthropic/*` models routed here, where it does work —
+  // the endpoint, not the model, is what this provider can vouch for.
   protected readonly settingsKeyField = 'openrouterApiKey' as const
   protected readonly envVarName = 'OPENROUTER_API_KEY'
 

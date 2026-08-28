@@ -88,6 +88,9 @@ const PINNED_CALL_SITES: Record<string, string> = {
     'prebuilt `url` prop; composed by file-preview-tray-content.tsx from getApiBaseUrl()',
   'components/file-preview/renderers/audio-renderer.tsx::AudioRenderer.decodeWaveform::fetch(url)':
     'prebuilt `url` prop; same origin as use-file-content.ts above',
+  'components/file-preview/copy-file-button.tsx::fetchText::fetch(url)':
+    'the same prebuilt `fileUrl` the renderer loads, refetched only when the ' +
+    'file-content cache is cold; same origin as use-file-content.ts above',
   // Not third-party — this one IS our API, reached over ws:// instead of http://.
   'hooks/use-browser-stream.ts::useBrowserStream::WebSocket(wsUrl)':
     'the only site that does scheme surgery: it splits getApiBaseUrl() into a ' +
@@ -129,6 +132,12 @@ const DIRECT_BASE_URL_CONSUMERS: Record<string, string> = {
   'lib/auth-client.ts':
     "better-auth composes its own request URLs from a baseURL it is constructed with — it never sees apiFetch. Read lazily so cloud mode's prefix is known by then.",
   'lib/env.ts': 'defines it; openDashboardExternal() builds a window.open() URL',
+  'lib/markdown-url-transform.ts':
+    '<img src> — file:///workspace Markdown images resolved to the authenticated workspace file route',
+  'lib/parse-tool-result.ts':
+    '<img src> — media-ref images in tool results, resolved to a URL here so every result renderer gets one without threading the session identity down to it',
+  'lib/upload.ts':
+    'XHR upload transport — fetch cannot report request-body progress, so sendUploadRequest prefixes getApiBaseUrl() the way apiFetch does',
   'components/ui/model-icon.tsx': '<img src> — model icon asset',
   'components/home/dashboard-card.tsx': '<img src> — dashboard screenshot',
   'components/dashboards/dashboard-view.tsx': '<iframe src> — embedded dashboard',

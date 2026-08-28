@@ -59,6 +59,7 @@ import {
   agentConnectedAccounts,
   scheduledTasks,
   notifications,
+  sessionUnreadMarks,
   connectedAccounts,
   userSettings,
   auditLog,
@@ -77,6 +78,7 @@ import {
   tokenExchangeJti,
   mobilePairingToken,
   mobileDevice,
+  apnsDevices,
   pushSubscriptions,
   pushVapidKeys,
 } from '@shared/lib/db/schema'
@@ -179,6 +181,7 @@ const FACTORY_RESET_TABLES: SQLiteTable[] = [
   xAgentPolicies,
   webhookTriggers,
   notifications,
+  sessionUnreadMarks,
   scheduledTasks,
   // chat integrations (access + sessions cascade from integrations)
   chatIntegrationAccess,
@@ -200,6 +203,9 @@ const FACTORY_RESET_TABLES: SQLiteTable[] = [
   tokenExchangeJti,
   // transient single-use mobile pairing tokens
   mobilePairingToken,
+  // APNs registrations before mobile devices: the cascade covers paired rows,
+  // but nullable mobile_device_id rows would survive it
+  apnsDevices,
   // stable mobile devices; deleting them cascades their access sessions
   mobileDevice,
   // web push device subscriptions + the VAPID keypair they were minted against

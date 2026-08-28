@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { markdownUrlTransform } from './markdown-url-transform'
+import { createMarkdownUrlTransform, markdownUrlTransform } from './markdown-url-transform'
 
 // react-markdown's UrlTransform is (url, key, node); node is unused here.
 const node = {} as never
@@ -47,5 +47,33 @@ describe('markdownUrlTransform (SUP-238)', () => {
     expect(onSrc('sms:+15551234567')).toBe('')
     // …while genuinely safe src schemes still pass through the default.
     expect(onSrc('https://example.com/a.png')).toBe('https://example.com/a.png')
+  })
+
+  it('resolves only exact tool-verified file image aliases', () => {
+    const transform = createMarkdownUrlTransform({
+      aliases: new Map([
+        ['file:///home/claude/screenshot.png', '/api/agents/a/sessions/s/media/ref'],
+      ]),
+    })
+
+    expect(transform('file:///home/claude/screenshot.png', 'src', node)).toBe(
+      '/api/agents/a/sessions/s/media/ref'
+    )
+    expect(transform('file:///home/claude/secret.png', 'src', node)).toBe('')
+    expect(transform('file:///home/claude/screenshot.png', 'href', node)).toBe('')
+  })
+
+  it('routes workspace images through the authenticated file endpoint', () => {
+    const transform = createMarkdownUrlTransform({ agentSlug: 'my agent' })
+    expect(transform('file:///workspace/reports/chart 1.png', 'src', node)).toBe(
+      '/api/agents/my%20agent/files/reports/chart%201.png?inline=true'
+    )
+  })
+
+  it('does not widen traversals, non-images, or file URLs outside the workspace', () => {
+    const transform = createMarkdownUrlTransform({ agentSlug: 'a' })
+    expect(transform('file:///workspace/../secrets.png', 'src', node)).toBe('')
+    expect(transform('file:///workspace/report.txt', 'src', node)).toBe('')
+    expect(transform('file:///etc/passwd.png', 'src', node)).toBe('')
   })
 })

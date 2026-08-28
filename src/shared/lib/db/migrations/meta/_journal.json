@@ -253,6 +253,20 @@
       "when": 1786055590568,
       "tag": "0035_push_subscriptions",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "6",
+      "when": 1786728485469,
+      "tag": "0036_special_victor_mancha",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "6",
+      "when": 1787774911000,
+      "tag": "0037_session_unread_marks",
+      "breakpoints": true
     }
   ]
 }

@@ -8,6 +8,8 @@
 import crypto from 'crypto'
 import path from 'path'
 import fs from 'fs'
+import { Readable } from 'stream'
+import pLimit from 'p-limit'
 import archiver from 'archiver'
 import {
   openZipFromBuffer,
@@ -63,6 +65,13 @@ import { pruneInstalledTemplateIfInvalid } from './skillset-reconcile'
 const MAX_UNCOMPRESSED_SIZE = 500 * 1024 * 1024 // 500MB
 export const MAX_COMPRESSED_SIZE = 500 * 1024 * 1024 // 500MB
 const MAX_FILE_COUNT = 2000
+export const MAX_TEMPLATE_PROMPT_SIZE = 16 * 1024 // 16KB
+
+/** Bytes of SKILL.md to read for frontmatter. The skill body may be larger. */
+const ONBOARDING_SKILL_READ_LIMIT = MAX_TEMPLATE_PROMPT_SIZE + 16 * 1024
+
+/** Canonical prompt handoff file, plus a lowercase compatibility spelling. */
+const TEMPLATE_PROMPT_FILE_NAMES = ['PROMPT.md', 'prompt.md'] as const
 
 /** Files/dirs excluded from templates (matched by name at any level) */
 const TEMPLATE_EXCLUDE = new Set([
@@ -224,15 +233,15 @@ async function walkTemplateFiles(workspaceDir: string): Promise<string[]> {
   return files
 }
 
-/**
- * Walk the agent workspace for a full export, returning all file paths.
- * Uses explicit walking instead of archive.glob() to avoid hangs on Windows
- * caused by broken symlinks and permission issues with readdir-glob.
- */
-async function walkFullExportFiles(workspaceDir: string): Promise<string[]> {
-  const files: string[] = []
-
+// Visitor walk (not glob — glob hangs on Windows broken symlinks). No path list in RAM.
+async function walkFullExportFiles(
+  workspaceDir: string,
+  onFile: (relativePath: string) => void,
+  signal?: AbortSignal,
+): Promise<void> {
   async function walk(dir: string, relativeBase: string): Promise<void> {
+    if (signal?.aborted) return
+
     let entries: fs.Dirent[]
     try {
       entries = await fs.promises.readdir(dir, { withFileTypes: true })
@@ -241,6 +250,7 @@ async function walkFullExportFiles(workspaceDir: string): Promise<string[]> {
     }
 
     for (const entry of entries) {
+      if (signal?.aborted) return
       if (FULL_EXPORT_EXCLUDE.has(entry.name)) continue
 
       const relativePath = relativeBase ? path.join(relativeBase, entry.name) : entry.name
@@ -251,124 +261,167 @@ async function walkFullExportFiles(workspaceDir: string): Promise<string[]> {
       if (entry.isDirectory()) {
         await walk(path.join(dir, entry.name), relativePath)
       } else if (entry.isFile()) {
-        files.push(relativePath)
+        onFile(relativePath)
       }
     }
   }
 
   await walk(workspaceDir, '')
-  return files
 }
 
 // ============================================================================
 // ZIP Export
 // ============================================================================
 
-export type ExportArchiveStream = archiver.Archiver
+export class ExportInProgressError extends Error {
+  constructor() {
+    super('An export is already in progress')
+    this.name = 'ExportInProgressError'
+  }
+}
 
-/**
- * Build a streaming ZIP archive of the given files. The archive is finalized
- * immediately; the caller consumes it as a Readable. Failures (e.g. a file
- * deleted mid-export) surface on the archive's 'error' event — the finalize
- * promise rejection is swallowed here so it never becomes an unhandled
- * rejection when a consumer only listens to stream events.
- */
-function createArchiveStream(workspaceDir: string, files: string[]): ExportArchiveStream {
-  const archive = archiver('zip', { zlib: { level: 9 } })
+// One zip at a time on the host. Two large exports OOM a 1 GB box.
+let hostExportBusy = false
+
+function beginHostExport(): void {
+  if (hostExportBusy) throw new ExportInProgressError()
+  hostExportBusy = true
+}
+
+function endHostExport(): void {
+  hostExportBusy = false
+}
+
+export function resetHostExportLockForTests(): void {
+  hostExportBusy = false
+}
+
+export function isHostExportBusy(): boolean {
+  return hostExportBusy
+}
+
+async function withHostExportLock<T>(fn: () => Promise<T>): Promise<T> {
+  beginHostExport()
+  try {
+    return await fn()
+  } catch (err) {
+    endHostExport()
+    throw err
+  }
+}
+
+// Queue files into an archiver and return it immediately so the HTTP response
+// can start flushing. zlibLevel is per-call: full export uses 1, templates stay at 9.
+function createWorkspaceZipStream(
+  addFiles: (archive: ReturnType<typeof archiver>) => Promise<void>,
+  signal: AbortSignal | undefined,
+  zlibLevel: number,
+): Readable {
+  let released = false
+  const release = () => {
+    if (released) return
+    released = true
+    endHostExport()
+  }
+
+  const archive = archiver('zip', { zlib: { level: zlibLevel } })
+  archive.once('close', release)
+  // on(), not once(): a workspace that changes under the walk (agent deleted
+  // mid-export) makes archiver emit an ENOENT per queued file, and the first
+  // listener would be the only one. Zero listeners on the second error is an
+  // uncaughtException, which quits the app. release() is idempotent.
+  archive.on('error', release)
+
+  const stopArchive = (err?: Error) => {
+    if (archive.destroyed) return
+    archive.abort()
+    archive.destroy(err)
+  }
 
   // Archiver reports a source file that disappears between enumeration and
   // read (its lstat fails) as a non-fatal 'warning' and would finalize a
-  // valid-looking but INCOMPLETE zip. An export must contain every
-  // enumerated file, so every warning escalates to a stream error.
+  // valid-looking but INCOMPLETE zip. Every append here is an explicit
+  // archive.file() of an enumerated path, so a warning always means a file
+  // was silently dropped — escalate it to a stream error.
   archive.on('warning', (warning) => {
-    archive.destroy(warning)
+    stopArchive(warning)
+    release()
   })
 
-  // destroy() — which is how Readable.toWeb cancels the stream when the
-  // client disconnects mid-download — only tears down the Transform;
-  // archiver keeps its queued entries and in-flight worker alive. Bridge
-  // the post-destroy 'close' event to archiver's own abort(), which drains
-  // the work queues and stops reading source files. abort() is a no-op
-  // when the archive already finalized normally or was already aborted.
+  // destroy() alone — a caller tearing the stream down without the request
+  // abort signal firing — only destroys the Transform; archiver keeps its
+  // queued entries and in-flight worker reading source files. Bridge the
+  // post-destroy 'close' event to archiver's own abort(), which drains the
+  // work queues. abort() is a no-op once the archive finalized normally or
+  // was already aborted.
   archive.on('close', () => {
     archive.abort()
   })
 
-  for (const relativePath of files) {
-    const fullPath = path.join(workspaceDir, relativePath)
-    archive.file(fullPath, { name: relativePath })
+  const onAbort = () => {
+    release()
+    stopArchive()
   }
+  signal?.addEventListener('abort', onAbort, { once: true })
 
-  void archive.finalize().catch(() => {
-    // Reported via the 'error' event.
-  })
+  void (async () => {
+    try {
+      if (signal?.aborted) {
+        onAbort()
+        return
+      }
+      await addFiles(archive)
+      if (signal?.aborted || archive.destroyed) return
+      await archive.finalize()
+    } catch (err) {
+      stopArchive(err instanceof Error ? err : new Error(String(err)))
+      release()
+    } finally {
+      signal?.removeEventListener('abort', onAbort)
+    }
+  })()
+
   return archive
 }
 
-/** Collect a streamed archive into a single Buffer (small exports/tests only). */
-function collectArchive(archive: ExportArchiveStream): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = []
-    archive.on('data', (chunk: Buffer) => chunks.push(chunk))
-    archive.on('end', () => resolve(Buffer.concat(chunks)))
-    archive.on('error', reject)
+export async function exportAgentTemplate(agentSlug: string, signal?: AbortSignal): Promise<Readable> {
+  return withHostExportLock(async () => {
+    const workspaceDir = getAgentWorkspaceDir(agentSlug)
+
+    if (!(await directoryExists(workspaceDir))) {
+      throw new Error('Agent workspace not found')
+    }
+
+    const claudeMdPath = getAgentClaudeMdPath(agentSlug)
+    const claudeMdContent = await readFileOrNull(claudeMdPath)
+    if (!claudeMdContent) {
+      throw new Error('CLAUDE.md not found in agent workspace')
+    }
+
+    const templateFiles = await walkTemplateFiles(workspaceDir)
+    return createWorkspaceZipStream(async (archive) => {
+      for (const relativePath of templateFiles) {
+        if (signal?.aborted) return
+        archive.file(path.join(workspaceDir, relativePath), { name: relativePath })
+      }
+    }, signal, 9) // shareable .agent — size over host CPU
   })
 }
 
-/**
- * Export an agent's workspace as a streaming ZIP template.
- * Validation errors (missing workspace/CLAUDE.md) throw before the stream is
- * created; later failures surface on the returned stream's 'error' event.
- */
-export async function exportAgentTemplateStream(agentSlug: string): Promise<ExportArchiveStream> {
-  const workspaceDir = getAgentWorkspaceDir(agentSlug)
+export async function exportAgentFull(agentSlug: string, signal?: AbortSignal): Promise<Readable> {
+  return withHostExportLock(async () => {
+    const workspaceDir = getAgentWorkspaceDir(agentSlug)
 
-  if (!(await directoryExists(workspaceDir))) {
-    throw new Error('Agent workspace not found')
-  }
+    if (!(await directoryExists(workspaceDir))) {
+      throw new Error('Agent workspace not found')
+    }
 
-  const claudeMdPath = getAgentClaudeMdPath(agentSlug)
-  const claudeMdContent = await readFileOrNull(claudeMdPath)
-  if (!claudeMdContent) {
-    throw new Error('CLAUDE.md not found in agent workspace')
-  }
-
-  const templateFiles = await walkTemplateFiles(workspaceDir)
-  return createArchiveStream(workspaceDir, templateFiles)
-}
-
-/**
- * Export an agent's workspace as a ZIP template buffer.
- * Prefer exportAgentTemplateStream for HTTP responses — this materializes the
- * whole ZIP in memory.
- */
-export async function exportAgentTemplate(agentSlug: string): Promise<Buffer> {
-  return collectArchive(await exportAgentTemplateStream(agentSlug))
-}
-
-/**
- * Export a full agent workspace as a streaming ZIP (includes .env, sessions,
- * etc). Used for migrating agents between machines. Full exports carry the
- * agent's entire sessions directory, so streaming (not buffering) matters.
- */
-export async function exportAgentFullStream(agentSlug: string): Promise<ExportArchiveStream> {
-  const workspaceDir = getAgentWorkspaceDir(agentSlug)
-
-  if (!(await directoryExists(workspaceDir))) {
-    throw new Error('Agent workspace not found')
-  }
-
-  const fullFiles = await walkFullExportFiles(workspaceDir)
-  return createArchiveStream(workspaceDir, fullFiles)
-}
-
-/**
- * Export a full agent workspace as a ZIP buffer.
- * Prefer exportAgentFullStream for HTTP responses — this materializes the
- * whole ZIP in memory.
- */
-export async function exportAgentFull(agentSlug: string): Promise<Buffer> {
-  return collectArchive(await exportAgentFullStream(agentSlug))
+    return createWorkspaceZipStream(async (archive) => {
+      await walkFullExportFiles(workspaceDir, (relativePath) => {
+        archive.file(path.join(workspaceDir, relativePath), { name: relativePath })
+      }, signal)
+    }, signal, 1) // large workspaces — level 9 pegs 0.5 vCPU hosts
+  })
 }
 
 // ============================================================================
@@ -747,17 +800,92 @@ export async function getInstalledAgentMetadata(
 }
 
 /**
- * Check if an agent has an onboarding skill (`.claude/skills/agent-onboarding/SKILL.md`).
+ * Probe the onboarding skill (`.claude/skills/agent-onboarding/SKILL.md`).
+ * `firstPrompt` is the optional `first_prompt` frontmatter field.
  */
-export async function hasOnboardingSkill(agentSlug: string): Promise<boolean> {
-  const workspaceDir = getAgentWorkspaceDir(agentSlug)
-  const onboardingPath = path.join(workspaceDir, '.claude', 'skills', 'agent-onboarding', 'SKILL.md')
+export async function hasOnboardingSkill(agentSlug: string): Promise<{
+  hasOnboarding: boolean
+  firstPrompt?: string
+}> {
+  const onboardingPath = path.join(
+    getAgentWorkspaceDir(agentSlug),
+    '.claude',
+    'skills',
+    'agent-onboarding',
+    'SKILL.md',
+  )
+  let handle: Awaited<ReturnType<typeof fs.promises.open>> | undefined
   try {
-    await fs.promises.access(onboardingPath)
-    return true
+    handle = await fs.promises.open(onboardingPath, 'r')
+    const stats = await handle.stat()
+    if (!stats.isFile()) return { hasOnboarding: false }
+    if (stats.size === 0) return { hasOnboarding: true }
+
+    // Frontmatter is at the top. Do not load a 500MB skill body into the heap.
+    const readLen = Math.min(stats.size, ONBOARDING_SKILL_READ_LIMIT)
+    const buffer = Buffer.alloc(readLen)
+    let bytesRead = 0
+    while (bytesRead < buffer.length) {
+      const result = await handle.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead)
+      if (result.bytesRead === 0) break
+      bytesRead += result.bytesRead
+    }
+    const content = buffer.subarray(0, bytesRead).toString('utf8')
+    const firstPrompt = onboardingFirstPromptFromValue(
+      parseMarkdownWithFrontmatter(content).frontmatter.first_prompt,
+    )
+    return firstPrompt ? { hasOnboarding: true, firstPrompt } : { hasOnboarding: true }
   } catch {
-    return false
+    return { hasOnboarding: false }
+  } finally {
+    await handle?.close().catch(() => undefined)
   }
+}
+
+/** Flat YAML turns `first_prompt: |` into the string `|`. That is not a kickoff. */
+const YAML_BLOCK_SCALAR_MARKER = /^[|>][-+]?$/
+
+function onboardingFirstPromptFromValue(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  if (!trimmed || trimmed.length > MAX_TEMPLATE_PROMPT_SIZE) return undefined
+  if (YAML_BLOCK_SCALAR_MARKER.test(trimmed)) return undefined
+  return trimmed
+}
+
+/**
+ * Read the optional prompt handoff supplied by an installed template.
+ * Empty, oversized, non-file, and unreadable candidates are treated as absent
+ * so this best-effort probe can never fail an otherwise successful install.
+ */
+export async function getAgentTemplatePrompt(agentSlug: string): Promise<string | undefined> {
+  const workspaceDir = getAgentWorkspaceDir(agentSlug)
+  for (const fileName of TEMPLATE_PROMPT_FILE_NAMES) {
+    let handle: Awaited<ReturnType<typeof fs.promises.open>> | undefined
+    try {
+      handle = await fs.promises.open(path.join(workspaceDir, fileName), 'r')
+      const stats = await handle.stat()
+      if (!stats.isFile() || stats.size === 0 || stats.size > MAX_TEMPLATE_PROMPT_SIZE) continue
+
+      // Allocate only after the size check and keep the read bounded even if
+      // the file grows between stat() and read().
+      const buffer = Buffer.alloc(stats.size)
+      let bytesRead = 0
+      while (bytesRead < buffer.length) {
+        const result = await handle.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead)
+        if (result.bytesRead === 0) break
+        bytesRead += result.bytesRead
+      }
+      const prompt = buffer.subarray(0, bytesRead).toString('utf8').trim()
+      if (prompt) return prompt
+    } catch {
+      // PROMPT.md is an optional handoff. Filesystem errors must not strand an
+      // agent after its workspace and owner ACL have already been created.
+    } finally {
+      await handle?.close().catch(() => undefined)
+    }
+  }
+  return undefined
 }
 
 /**
@@ -839,17 +967,22 @@ export async function computeAgentTemplateHash(workspaceDir: string): Promise<st
   const files = await walkTemplateFiles(workspaceDir)
   files.sort() // Ensure deterministic order
 
-  const hash = crypto.createHash('sha256')
-
-  for (const relativePath of files) {
-    const fullPath = path.join(workspaceDir, relativePath)
+  const limit = pLimit(8)
+  const contents = new Map<string, string>()
+  await Promise.all(files.map((relativePath) => limit(async () => {
     try {
-      const content = await fs.promises.readFile(fullPath, 'utf-8')
-      hash.update(relativePath)
-      hash.update(content)
+      contents.set(relativePath, await fs.promises.readFile(path.join(workspaceDir, relativePath), 'utf-8'))
     } catch {
       // Skip unreadable files
     }
+  })))
+
+  const hash = crypto.createHash('sha256')
+  for (const relativePath of files) {
+    const content = contents.get(relativePath)
+    if (content === undefined) continue
+    hash.update(relativePath)
+    hash.update(content)
   }
 
   return hash.digest('hex')
@@ -908,6 +1041,13 @@ export async function getDiscoverableAgents(
         description: agent.description,
         version: agent.version,
         path: agent.path,
+        // `works_with` is snake_case in index.json; the rest pass through as-is.
+        details: agent.details,
+        category: agent.category,
+        icon: agent.icon,
+        tags: agent.tags,
+        worksWith: agent.works_with,
+        developer: agent.developer,
       })
     }
   }

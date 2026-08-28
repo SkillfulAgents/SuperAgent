@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, act } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { AgentActivityIndicator } from './agent-activity-indicator'
 
 // Mock useMessageStream
@@ -929,6 +930,82 @@ describe('AgentActivityIndicator', () => {
       renderWithSubagent({ result: 'done', completed: false })
       expect(screen.getByText('Explore')).toBeInTheDocument()
       expect(screen.getByText('✓')).toBeInTheDocument()
+    })
+
+    it('keeps activity on one line and provides a static keyboard and touch disclosure', async () => {
+      // A wrapped second line breaks the tree's row rhythm — the elbows are
+      // pinned to a single line box — so the progress summary joins the row
+      // behind a dot instead of stacking under it. The popover is the complete,
+      // non-moving fallback when that line is clipped.
+      const user = userEvent.setup()
+      const fullActivityText = 'web-browser Gather UniFi WiFi events · Scrolling Lobby AP detail panel'
+      const matchMedia = vi.spyOn(window, 'matchMedia').mockImplementation((query) => ({
+        matches: query === '(prefers-reduced-motion: reduce)',
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      }))
+      const clientWidth = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) {
+        return this.classList.contains('hover-scroll-text') ? 100 : 0
+      })
+      const scrollWidth = vi.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockImplementation(function (this: HTMLElement) {
+        return this.classList.contains('hover-scroll-text-content') ? 320 : 0
+      })
+
+      mockStreamState.isActive = true
+      mockStreamState.activeStartTime = Date.now()
+      mockStreamState.activeSubagents = [{
+        parentToolId: 'tc-sub',
+        agentId: 'a1',
+        subagentType: 'web-browser',
+        description: 'Gather UniFi WiFi events',
+        progressSummary: 'Scrolling Lobby AP detail panel',
+      }]
+      mockStreamState.completedSubagents = new Set()
+      mockMessages.push({
+        id: 'msg-1',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [{
+          id: 'tc-sub',
+          name: 'Agent',
+          input: { subagent_type: 'web-browser', description: 'Gather UniFi WiFi events' },
+          subagent: { agentId: 'a1', status: 'async_launched' },
+        }],
+        createdAt: new Date(),
+      })
+
+      render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+      const line = screen.getByText('web-browser').closest('.hover-scroll-text') as HTMLElement | null
+      expect(line).not.toBeNull()
+      expect(line).toHaveTextContent(fullActivityText)
+      expect(line).toHaveAttribute('data-overflowing', 'true')
+      expect(line).toHaveAttribute('data-scrolling', 'false')
+
+      const disclosure = screen.getByRole('button', { name: `Show full activity: ${fullActivityText}` })
+      expect(disclosure).toContainElement(line)
+      expect(disclosure).toHaveAttribute('title', fullActivityText)
+
+      disclosure.focus()
+      await user.keyboard('{Enter}')
+      expect(screen.getByTestId('subagent-activity-full-text')).toHaveTextContent(fullActivityText)
+      expect(screen.getByTestId('subagent-activity-full-text')).toHaveClass('motion-reduce:!animate-none')
+
+      await user.keyboard('{Escape}')
+      expect(screen.queryByTestId('subagent-activity-full-text')).not.toBeInTheDocument()
+
+      // A click is the same activation path used by a touch tap.
+      await user.click(disclosure)
+      expect(screen.getByTestId('subagent-activity-full-text')).toHaveTextContent(fullActivityText)
+
+      matchMedia.mockRestore()
+      clientWidth.mockRestore()
+      scrollWidth.mockRestore()
     })
 
     it('reopens the original subagent row while a SendMessage resume is running', () => {

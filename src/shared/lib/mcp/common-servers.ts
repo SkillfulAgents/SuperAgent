@@ -3,6 +3,29 @@
  * This is the master list of well-known MCP servers that users can connect.
  */
 
+/**
+ * Provider-side setup a user must complete before a server will connect —
+ * registering an OAuth app, allowlisting our callback, copying an app ID.
+ *
+ * `steps` are rendered in order in the connect form. A step may use `code` spans
+ * for strings the user copies into a provider console and [label](https://url)
+ * links, and may contain these tokens, substituted with the redirect this
+ * deployment will actually send
+ * (fetched from the API rather than rebuilt in the renderer, so the string the
+ * user copies into a provider console cannot drift from the one we use):
+ *
+ *   {{redirectUri}}     https://host/api/remote-mcps/oauth-callback
+ *   {{redirectOrigin}}  https://host
+ *   {{redirectHost}}    host
+ */
+export interface McpSetupGuide {
+  steps: string[]
+  /** The server has no usable dynamic registration; open Advanced by default. */
+  requiresClientId?: boolean
+  /** Shown only when the redirect is a desktop loopback URL. */
+  desktopNote?: string
+}
+
 export interface CommonMcpServer {
   slug: string
   displayName: string
@@ -10,6 +33,7 @@ export interface CommonMcpServer {
   url: string
   authType: 'none' | 'oauth' | 'bearer'
   category: string
+  setup?: McpSetupGuide
 }
 
 export const COMMON_MCP_SERVERS: CommonMcpServer[] = [
@@ -367,6 +391,46 @@ export const COMMON_MCP_SERVERS: CommonMcpServer[] = [
     url: 'https://agent.thoughtspot.app/mcp',
     authType: 'oauth',
     category: 'Analytics & Marketing',
+  },
+  {
+    slug: 'tiktok-ads',
+    displayName: 'TikTok Ads (Full)',
+    description: 'Campaign management, reporting, audiences, and creative — full ~400-tool set (recommended for Claude)',
+    url: 'https://business-api.tiktok.com/open_mcp/tt-ads-mcp-flat',
+    authType: 'oauth',
+    category: 'Analytics & Marketing',
+  },
+  {
+    slug: 'tiktok-ads-progressive',
+    displayName: 'TikTok Ads (Progressive)',
+    description: 'Campaign management with ~40 core tools loaded upfront and additional tools discovered on demand',
+    url: 'https://business-api.tiktok.com/open_mcp/tt-ads-mcp-layer',
+    authType: 'oauth',
+    category: 'Analytics & Marketing',
+  },
+  {
+    slug: 'meta-ads-official',
+    displayName: 'Meta Ads (Official)',
+    description: "Facebook and Instagram ad campaign management through Meta's official MCP server (requires a Meta OAuth client ID)",
+    url: 'https://mcp.facebook.com/ads',
+    authType: 'oauth',
+    category: 'Analytics & Marketing',
+    setup: {
+      // Meta advertises a registration_endpoint and then refuses it with
+      // "Dynamic registration is not available for this client", so every
+      // connection needs an app the user registered themselves.
+      requiresClientId: true,
+      steps: [
+        'Create an app in the [Meta developer console](https://developers.facebook.com/apps/creation/), attached to the Business portfolio that owns the ad account you want to manage.',
+        'Settings → Basic → App Domains: add `{{redirectHost}}` — the bare host, with no scheme. A scheme-prefixed entry fails validation and silently discards the whole field.',
+        'Settings → Basic → Add Platform → Website → Site URL: `{{redirectOrigin}}/` — App Domains is ignored until a platform anchors the app.',
+        'Facebook Login for Business → Settings → Valid OAuth Redirect URIs: add `{{redirectUri}}` exactly.',
+        'Copy the App ID into the Client ID field below. Leave Client Secret empty — Meta declares this a public client, so it authenticates with PKCE alone.',
+        'Leave the app in Development mode. Standard Access already reaches ad accounts you have a role on; App Review is only for managing other businesses\u2019 accounts.',
+      ],
+      desktopNote:
+        'This callback port can change if another instance is already running. If the connection stops working after a restart, re-check the port in the redirect URI above against the one registered with Meta.',
+    },
   },
   {
     slug: 'meta-ads',

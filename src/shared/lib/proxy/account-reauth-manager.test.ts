@@ -13,6 +13,7 @@ import {
   AccountReauthManager,
 } from './account-reauth-manager'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { isReauthDismissed } from './reauth-dismissal'
 
 const DETAILS = {
   agentSlug: 'agent-1',
@@ -113,5 +114,43 @@ describe('AccountReauthManager', () => {
 
     await rejection
     expect(userInputRequestManager.getOpenRequestsForStore('review')).toHaveLength(0)
+  })
+
+  it('clears the card and every parked request when a user dismisses it', async () => {
+    const first = manager.requestReauth(DETAILS)
+    const second = manager.requestReauth(DETAILS)
+    const [request] = userInputRequestManager.getAgentScopedRequests('agent-1')
+    const rejections = Promise.all([
+      first.catch((error: unknown) => error),
+      second.catch((error: unknown) => error),
+    ])
+
+    expect(manager.dismiss(request.id, 'agent-1', 'nobody here owns it')).toBe(true)
+
+    // The reason reaches the agent through the parked call's failure, and the
+    // failure is flagged so the proxy can call it a dismissal, not a timeout.
+    for (const error of await rejections) {
+      expect(isReauthDismissed(error)).toBe(true)
+      expect((error as Error).message).toContain('nobody here owns it')
+    }
+    expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(0)
+    expect(userInputRequestManager.stats.recentResolutions.at(-1)?.outcome).toBe('cancelled')
+  })
+
+  it('refuses a dismissal aimed at another agent', async () => {
+    const promise = manager.requestReauth(DETAILS)
+    const [request] = userInputRequestManager.getAgentScopedRequests('agent-1')
+
+    // The id is an unauthenticated pointer into a process-wide map; holding a
+    // role on some other agent must not settle this one's wait.
+    expect(manager.dismiss(request.id, 'agent-2')).toBe(false)
+    expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(1)
+
+    manager.completeAccount('account-1')
+    await expect(promise).resolves.toBeUndefined()
+  })
+
+  it('reports an unknown request id as not dismissed', () => {
+    expect(manager.dismiss('no-such-request', 'agent-1')).toBe(false)
   })
 })

@@ -19,6 +19,7 @@ import { WorkflowBlock } from './workflow-block'
 import { CompactBoundaryItem } from './compact-boundary-item'
 import { MemoryRecallItem } from './memory-recall-item'
 import { InformationalItem } from './informational-item'
+import { isSessionTimeGap, SessionTimeFlag } from './session-time-flag'
 import { MessageErrorBoundary } from './message-error-boundary'
 import { ArrowDown, ChevronRight, FileX2, Loader2, MessageSquarePlus, WifiOff } from 'lucide-react'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
@@ -29,62 +30,30 @@ import { useWorkflow } from '@renderer/context/workflow-context'
 import { useRenderTracker } from '@renderer/lib/perf'
 import {
   useEffect,
-  useLayoutEffect,
   useRef,
   useState,
   useCallback,
   useMemo,
   Fragment,
-  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
-  type UIEvent as ReactUIEvent,
 } from 'react'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
 import type { ApiMessage, ApiCompactBoundary, ApiMemoryRecall, ApiInformational } from '@shared/lib/types/api'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
+import { useMessageListScroll } from './use-message-list-scroll'
+import {
+  collectEmbeddedImageAliases,
+  reuseEqualEmbeddedImageAliases,
+  type EmbeddedImageAliases,
+} from '@renderer/lib/parse-tool-result'
 
 // Prefix for system-injected user messages that should be hidden in the UI.
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in agent-container/src/claude-code.ts
 const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] '
 
-// On very long threads we render only a trailing window of messages to keep the
-// DOM small. Sessions with <= BASE_WINDOW visible items render in full, so small
-// and medium threads are completely unaffected. Scrolling near the top reveals
-// LOAD_STEP more at a time. The window is a fixed-size tail slice, so while new
-// messages stream in at the bottom the oldest rendered ones drop off the top and
-// the DOM node count stays flat. The window only grows on an explicit scroll-up
-// and is reset when the session changes.
-const BASE_WINDOW = 300
-const LOAD_STEP = 200
-const TURN_ANCHOR_TOP = 100
-const TURN_ANCHOR_ANIMATION_MS = 220
-// Following the live edge by assigning scrollTop teleports the viewport by the
-// full height of whatever just arrived — a paragraph, a tool card — so the
-// thread reads as a series of jumps. Instead the viewport chases the edge on a
-// critically damped spring: it carries velocity across retargets, so a chunk
-// landing mid-motion bends the existing curve instead of kicking the speed to a
-// new value. Critically damped means it converges without overshoot, which
-// matters here because overshoot past the live edge would bounce the text.
-//
-// Stiffness is in rad/s (higher = tighter tracking, closer to the old snap);
-// ~7 closes most of a burst inside the first half second and fully settles in
-// about a second, letting the viewport trail the text and drift up to it. The
-// velocity ceiling stops a tall tool card from whipping past, and past the
-// snap distance any easing reads as sluggish drift rather than float, so we
-// jump instead.
-const FOLLOW_STIFFNESS = 7
-const FOLLOW_MAX_VELOCITY_PX_S = 2400
-const FOLLOW_SNAP_PX = 900
-const FOLLOW_SETTLE_PX = 0.5
-// A dropped frame or a backgrounded window must not integrate one huge step.
-const FOLLOW_MAX_FRAME_S = 1 / 15
-// Beyond this the viewport moved without us. The scroll handler releases the
-// glide when an event deviates from the spring's position; this covers the
-// same-frame window before that event dispatches, resyncing to reality rather
-// than fighting toward a stale position for a frame.
-const FOLLOW_RESYNC_PX = 2
 const TURN_WORK_REVEAL_CLASS = 'animate-in fade-in-0 slide-in-from-top-2 duration-200 ease-out motion-reduce:animate-none'
-const SCROLL_KEYS = new Set(['ArrowDown', 'ArrowUp', 'End', 'Home', 'PageDown', 'PageUp', ' '])
+
+const isManualCompactCommand = (text: string) => /^\/compact(?:\s|$)/.test(text.trim())
 
 interface CompletedTurn {
   id: string
@@ -178,7 +147,7 @@ interface MessageListProps {
 
 export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared, readOnly, suppressScrollToBottom = false, bottomInset = 0 }: MessageListProps) {
   useRenderTracker('MessageList')
-  const { data: messages, isLoading, error } = useMessages(sessionId, agentSlug)
+  const { data: messages, isLoading, error, fetchOlder, hasOlder, isFetchingOlder } = useMessages(sessionId, agentSlug)
   const deleteMessage = useDeleteMessage()
   const deleteToolCall = useDeleteToolCall()
   const cancelQueuedMessage = useCancelQueuedMessage()
@@ -244,6 +213,25 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       (m): m is ApiMessage => (m.type === 'user' || m.type === 'assistant')
     )
   }, [messages])
+
+  // Final answers commonly embed the container path reported by a screenshot
+  // tool. Resolve only paths that were reported alongside a real image block;
+  // the resulting src is either inline image data or this session's media API.
+  const previousEmbeddedImageAliasesRef = useRef<EmbeddedImageAliases | null>(null)
+  const embeddedImageAliases = useMemo(() => {
+    const next = collectEmbeddedImageAliases(
+      (messages ?? []).flatMap((item) =>
+        item.type === 'assistant'
+          ? (item as ApiMessage).toolCalls.map((toolCall) => toolCall.result)
+          : []
+      ),
+      { agentSlug, sessionId }
+    )
+    const previous = previousEmbeddedImageAliasesRef.current
+    const stable = reuseEqualEmbeddedImageAliases(previous, next)
+    previousEmbeddedImageAliasesRef.current = stable
+    return stable
+  }, [messages, agentSlug, sessionId])
 
   const {
     isActive,
@@ -319,7 +307,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         match = findTextMatch(pending.text, pending.sentAt - 5000)
         if (match) claimed.add(match.id)
       }
-      if (!match && /^\/compact(?:\s|$)/.test(pending.text.trim())) {
+      if (!match && isManualCompactCommand(pending.text)) {
         match = messages.find(
           (m) =>
             m.type === 'compact_boundary' &&
@@ -397,45 +385,29 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // materializes above), so restoring it here would yank back a message that
   // is actually mid-delivery — it then lands in the transcript AND sits in
   // the composer, baiting a duplicate resend. Leave those pending.
+  //
+  // Manual /compact is also not restorable user text. It persists as a compact
+  // boundary rather than a user message, and compact_complete can beat the
+  // boundary refetch by more than this grace period. Consume its ghost at idle
+  // without prepending the command over a draft typed during compaction.
   useEffect(() => {
     if (isActive || ((pendingUserMessages?.length ?? 0) === 0 && peerUserMessages.length === 0)) return
     const undelivered = (pendingUserMessages ?? []).filter((p) => p.queued || p.uuid)
     const timerId = setTimeout(() => {
       if (undelivered.length > 0) {
-        const restored = undelivered.map((p) => p.text.trim()).filter(Boolean)
-        appendToSessionDraft(draftsStore, sessionId, restored.join('\n\n'), { prepend: true })
+        const restored = undelivered
+          .filter((p) => !isManualCompactCommand(p.text))
+          .map((p) => p.text.trim())
+          .filter(Boolean)
+        if (restored.length > 0) {
+          appendToSessionDraft(draftsStore, sessionId, restored.join('\n\n'), { prepend: true })
+        }
         for (const pending of undelivered) onPendingMessageAppeared?.(pending.localId)
       }
       clearPeerUserMessages(sessionId)
     }, 1500)
     return () => clearTimeout(timerId)
   }, [pendingUserMessages, peerUserMessages, isActive, onPendingMessageAppeared, sessionId, draftsStore])
-
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const contentBodyRef = useRef<HTMLDivElement>(null)
-  const bottomSpacerRef = useRef<HTMLDivElement>(null)
-  const bottomSpacerHeightRef = useRef(0)
-  const anchoredTurnRef = useRef<{ localId: string; scrollTop: number } | null>(null)
-  const programmaticScrollTopRef = useRef<number | null>(null)
-  const userScrollIntentRef = useRef(false)
-  const lastScrollTopRef = useRef(0)
-  const scrollAnimationFrameRef = useRef<number | null>(null)
-  const followFrameRef = useRef<number | null>(null)
-  const followTargetRef = useRef(0)
-  const followPositionRef = useRef(0)
-  const followVelocityRef = useRef(0)
-  const followLastFrameRef = useRef(0)
-  const animateNextTurnRef = useRef(false)
-  const isScrolledToBottomRef = useRef(true)
-  const [showScrollToBottom, setShowScrollToBottom] = useState(false)
-
-  // How many trailing (visible) messages to render. Grows on scroll-up and while
-  // the user is scrolled up during streaming. Starts at BASE_WINDOW; the component
-  // is keyed by sessionId at its mount site, so a switched session remounts fresh.
-  const [windowSize, setWindowSize] = useState(BASE_WINDOW)
-  // Scroll height captured just before a scroll-up expansion, used to re-anchor the
-  // viewport after the larger slice renders so the content under the user doesn't jump.
-  const prevScrollHeightRef = useRef<number | null>(null)
 
   // Visible messages with system-injected entries filtered out (these must not
   // consume window slots, and the windowing operates on what the user can see).
@@ -450,322 +422,48 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     })
   }, [messages])
 
-  // The trailing slice we actually render. The other derived values below still
-  // compute over the FULL message list, so turn boundaries / elapsed times / etc.
-  // stay correct even when their anchor message is outside the rendered window.
-  const windowedMessages = useMemo(
-    () => visibleMessages.slice(-windowSize),
-    [visibleMessages, windowSize]
-  )
-  const hiddenCount = visibleMessages.length - windowedMessages.length
+  // Time flags are derived from all loaded history rather than the trailing DOM
+  // window, so scrolling/windowing cannot change which turns qualify. When an
+  // older page still exists, the first loaded user is not assumed to be the
+  // first user in the session.
+  const timeFlagState = useMemo(() => {
+    const messageIds = new Set<string>()
+    let hasSeenUser = hasOlder
+    let hasUserSinceLastAssistant = hasOlder
+    let lastAssistantAt: Date | null = null
 
-  // Keep the rendered range anchored at the top while the user is scrolled up.
-  // The window is a trailing slice, so when new messages are persisted it would
-  // normally drop the same number off the top — shifting the content the user is
-  // reading (overflow-anchor is disabled, so nothing compensates). Growing the
-  // window by exactly that delta keeps the same first rendered item; the new
-  // messages just append below, off-screen. When pinned to the bottom we leave the
-  // window alone so the slice slides and the DOM stays bounded.
-  const prevVisibleLenRef = useRef(visibleMessages.length)
-  useLayoutEffect(() => {
-    const grown = visibleMessages.length - prevVisibleLenRef.current
-    prevVisibleLenRef.current = visibleMessages.length
-    if (grown > 0 && (!isScrolledToBottomRef.current || anchoredTurnRef.current)) {
-      setWindowSize((n) => n + grown)
-    }
-  }, [visibleMessages])
-
-  const setBottomSpacerHeight = useCallback((height: number) => {
-    const spacer = bottomSpacerRef.current
-    if (!spacer) return
-    const nextHeight = Math.max(0, Math.ceil(height))
-    bottomSpacerHeightRef.current = nextHeight
-    spacer.style.height = `${nextHeight}px`
-    spacer.hidden = nextHeight === 0
-  }, [])
-
-  const setScrollTop = useCallback((el: HTMLDivElement, scrollTop: number) => {
-    const nextScrollTop = Math.min(
-      Math.max(0, scrollTop),
-      Math.max(0, el.scrollHeight - el.clientHeight),
-    )
-    userScrollIntentRef.current = false
-    programmaticScrollTopRef.current = nextScrollTop
-    lastScrollTopRef.current = nextScrollTop
-    el.scrollTop = nextScrollTop
-  }, [])
-
-  const cancelScrollAnimation = useCallback(() => {
-    if (scrollAnimationFrameRef.current == null) return
-    cancelAnimationFrame(scrollAnimationFrameRef.current)
-    scrollAnimationFrameRef.current = null
-  }, [])
-
-  const cancelFollowAnimation = useCallback(() => {
-    followVelocityRef.current = 0
-    if (followFrameRef.current == null) return
-    cancelAnimationFrame(followFrameRef.current)
-    followFrameRef.current = null
-  }, [])
-
-  // Chase the live edge instead of snapping to it. Re-entrant by design:
-  // streaming calls this on every content change, and an in-flight chase simply
-  // retargets. Because the spring carries its velocity, retargeting bends the
-  // curve rather than restarting it — restart-per-chunk is exactly what makes
-  // fixed-duration animations stutter under a stream.
-  const followLiveEdge = useCallback((el: HTMLDivElement) => {
-    const target = Math.max(0, el.scrollHeight - el.clientHeight)
-    followTargetRef.current = target
-    const distance = target - el.scrollTop
-    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-
-    // Settled, moving backwards, or so far out that easing would read as drift.
-    if (reduceMotion || distance <= FOLLOW_SETTLE_PX || distance > FOLLOW_SNAP_PX) {
-      cancelFollowAnimation()
-      setScrollTop(el, target)
-      return
-    }
-
-    if (followFrameRef.current != null) return
-
-    // Integrate against our own float position. Reading scrollTop back each
-    // frame would re-quantize to the compositor's rounding, and at the low
-    // speeds this settles into that lost fraction is visible as judder.
-    followPositionRef.current = el.scrollTop
-    followLastFrameRef.current = performance.now()
-
-    const tick = (now: number) => {
-      const viewport = scrollRef.current
-      if (!viewport) {
-        followFrameRef.current = null
-        return
+    for (const item of visibleMessages) {
+      if (item.type === 'assistant') {
+        const createdAt = new Date(item.createdAt)
+        lastAssistantAt = Number.isNaN(createdAt.getTime()) ? null : createdAt
+        hasUserSinceLastAssistant = false
+        continue
       }
 
-      const elapsed = Math.min((now - followLastFrameRef.current) / 1000, FOLLOW_MAX_FRAME_S)
-      followLastFrameRef.current = now
+      if (
+        item.type !== 'user' ||
+        item.queued ||
+        isInterruptMarkerMessage(item)
+      ) continue
 
-      if (Math.abs(viewport.scrollTop - followPositionRef.current) > FOLLOW_RESYNC_PX) {
-        followPositionRef.current = viewport.scrollTop
-        followVelocityRef.current = 0
+      const createdAt = new Date(item.createdAt)
+      if (
+        !hasSeenUser ||
+        (!hasUserSinceLastAssistant && isSessionTimeGap(createdAt, lastAssistantAt))
+      ) {
+        messageIds.add(item.id)
       }
-
-      const goal = followTargetRef.current
-      const remaining = goal - followPositionRef.current
-      if (remaining <= FOLLOW_SETTLE_PX || remaining > FOLLOW_SNAP_PX) {
-        followFrameRef.current = null
-        followVelocityRef.current = 0
-        setScrollTop(viewport, goal)
-        return
-      }
-
-      // Analytic step of a critically damped spring, so the motion is identical
-      // at 60Hz and 120Hz and a long frame cannot overshoot.
-      const offset = followPositionRef.current - goal
-      const detached = followVelocityRef.current + FOLLOW_STIFFNESS * offset
-      const decay = Math.exp(-FOLLOW_STIFFNESS * elapsed)
-      followPositionRef.current = goal + (offset + detached * elapsed) * decay
-      followVelocityRef.current = Math.max(
-        -FOLLOW_MAX_VELOCITY_PX_S,
-        Math.min(
-          FOLLOW_MAX_VELOCITY_PX_S,
-          (followVelocityRef.current - FOLLOW_STIFFNESS * detached * elapsed) * decay,
-        ),
-      )
-
-      setScrollTop(viewport, followPositionRef.current)
-      followFrameRef.current = requestAnimationFrame(tick)
-    }
-    followFrameRef.current = requestAnimationFrame(tick)
-  }, [cancelFollowAnimation, setScrollTop])
-
-  const animateScrollTop = useCallback((el: HTMLDivElement, targetScrollTop: number) => {
-    cancelScrollAnimation()
-    // A follow glide still in flight would keep writing scrollTop toward a
-    // stale live edge underneath this animation — two drivers, one viewport.
-    cancelFollowAnimation()
-    userScrollIntentRef.current = false
-    const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight)
-    const target = Math.min(Math.max(0, targetScrollTop), maxScrollTop)
-    const start = el.scrollTop
-    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    if (reduceMotion || Math.abs(target - start) <= 1) {
-      setScrollTop(el, target)
-      return
+      hasSeenUser = true
+      hasUserSinceLastAssistant = true
     }
 
-    const startedAt = performance.now()
-    const tick = (now: number) => {
-      const progress = Math.min(1, (now - startedAt) / TURN_ANCHOR_ANIMATION_MS)
-      const eased = 1 - Math.pow(1 - progress, 3)
-      setScrollTop(el, start + (target - start) * eased)
-
-      if (progress < 1) {
-        scrollAnimationFrameRef.current = requestAnimationFrame(tick)
-        return
-      }
-
-      scrollAnimationFrameRef.current = null
-      const anchoredTurn = anchoredTurnRef.current
-      setScrollTop(el, anchoredTurn ? anchoredTurn.scrollTop : el.scrollHeight)
+    return {
+      messageIds,
+      hasSeenUser,
+      hasUserSinceLastAssistant,
+      lastAssistantAt,
     }
-    scrollAnimationFrameRef.current = requestAnimationFrame(tick)
-  }, [cancelFollowAnimation, cancelScrollAnimation, setScrollTop])
-
-  useEffect(() => cancelScrollAnimation, [cancelScrollAnimation])
-  useEffect(() => cancelFollowAnimation, [cancelFollowAnimation])
-
-  // Keep the newly-sent turn fixed at its reading line while the response uses
-  // up the reserved room below it. Once that room reaches zero, following the
-  // live edge naturally takes over.
-  const syncFollowPosition = useCallback(() => {
-    const el = scrollRef.current
-    if (!el) return
-
-    const anchoredTurn = anchoredTurnRef.current
-    if (anchoredTurn) {
-      const naturalScrollHeight = el.scrollHeight - bottomSpacerHeightRef.current
-      const requiredSpacer = Math.max(
-        0,
-        anchoredTurn.scrollTop + el.clientHeight - naturalScrollHeight,
-      )
-      setBottomSpacerHeight(requiredSpacer)
-
-      const targetScrollTop = requiredSpacer > 0 ? anchoredTurn.scrollTop : el.scrollHeight
-      if (requiredSpacer === 0) {
-        // The response now fills the viewport. Retire the special turn state so
-        // long-thread windowing can return to its bounded trailing slice.
-        anchoredTurnRef.current = null
-      }
-
-      if (animateNextTurnRef.current) {
-        animateNextTurnRef.current = false
-        animateScrollTop(el, targetScrollTop)
-        return
-      }
-
-      if (!isScrolledToBottomRef.current || scrollAnimationFrameRef.current != null) return
-      // While the reserve holds the turn at its reading line the position is
-      // static, so there is nothing to smooth — only the live-edge case glides.
-      if (requiredSpacer > 0) setScrollTop(el, targetScrollTop)
-      else followLiveEdge(el)
-      return
-    }
-
-    animateNextTurnRef.current = false
-    if (!isScrolledToBottomRef.current || scrollAnimationFrameRef.current != null) return
-    followLiveEdge(el)
-  }, [animateScrollTop, followLiveEdge, setBottomSpacerHeight, setScrollTop])
-
-  const handleScroll = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
-    const el = event.currentTarget
-    const previousScrollTop = lastScrollTopRef.current
-    lastScrollTopRef.current = el.scrollTop
-
-    // A glide writes scrollTop every frame, so its scroll events echo the
-    // spring's own position (give or take compositor quantization). An event
-    // that deviates means the viewport moved without us — a scrollbar drag,
-    // which unlike wheel/touch/keys fires no intent event, or a layout clamp.
-    // Hand the viewport back and read the event as the user's; if it was
-    // really a layout shift near the edge, the distance check below keeps
-    // following engaged and the next content change resumes the chase.
-    const followDriven =
-      followFrameRef.current != null &&
-      Math.abs(el.scrollTop - followPositionRef.current) <= 1
-    if (followFrameRef.current != null && !followDriven) {
-      cancelFollowAnimation()
-      programmaticScrollTopRef.current = null
-    }
-
-    const programmaticTarget = programmaticScrollTopRef.current
-    const isProgrammatic =
-      scrollAnimationFrameRef.current != null ||
-      followDriven ||
-      (programmaticTarget != null && Math.abs(el.scrollTop - programmaticTarget) <= 1)
-    if (isProgrammatic) {
-      programmaticScrollTopRef.current = null
-    }
-
-    // Blank reserve is one-way. When the reader moves upward, consume the same
-    // number of pixels from the spacer. The new scroll position becomes the
-    // reserve's live edge, so that discarded blank area cannot be revisited.
-    const anchoredTurn = anchoredTurnRef.current
-    const upwardDelta = Math.max(0, previousScrollTop - el.scrollTop)
-    const downwardDelta = Math.max(0, el.scrollTop - previousScrollTop)
-    if (!isProgrammatic && anchoredTurn && upwardDelta > 0 && bottomSpacerHeightRef.current > 0) {
-      const discard = Math.min(upwardDelta, bottomSpacerHeightRef.current)
-      const remainingSpacer = bottomSpacerHeightRef.current - discard
-      anchoredTurn.scrollTop = Math.max(0, anchoredTurn.scrollTop - discard)
-      setBottomSpacerHeight(remainingSpacer)
-      if (remainingSpacer === 0) anchoredTurnRef.current = null
-    }
-
-    // Reaching the actual live edge through a user scroll transfers ownership
-    // back to bottom-following. Keeping the turn anchor alive here lets the next
-    // subagent/layout update restore its old reading-line scrollTop, which is
-    // the visible snap-up even after the reader manually scrolled all the way
-    // down. Drop the reserve first; the browser clamps scrollTop to the new
-    // natural maximum synchronously.
-    const distanceFromBottomBeforeRelease = el.scrollHeight - el.scrollTop - el.clientHeight
-    if (
-      !isProgrammatic &&
-      userScrollIntentRef.current &&
-      downwardDelta > 0 &&
-      anchoredTurnRef.current &&
-      distanceFromBottomBeforeRelease <= 1
-    ) {
-      anchoredTurnRef.current = null
-      animateNextTurnRef.current = false
-      setBottomSpacerHeight(0)
-      lastScrollTopRef.current = el.scrollTop
-    }
-
-    // Proximity to the live edge is the auto-follow contract: moving beyond
-    // this threshold pauses following, and returning within it resumes.
-    const threshold = 80
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-    // A glide trails the live edge on purpose, and that lag can exceed the
-    // threshold. Reading it as "the user scrolled away" would disengage
-    // auto-follow mid-response, so while we are driving, following stands.
-    if (!followDriven) {
-      isScrolledToBottomRef.current = distanceFromBottom < threshold
-      // Show "scroll to bottom" button when scrolled up more than 300px
-      setShowScrollToBottom(distanceFromBottom > 300)
-    }
-
-    // Near the top with older messages still hidden: reveal the next chunk.
-    // prevScrollHeightRef doubles as a re-entrancy guard so we expand at most once
-    // per scroll gesture; the layout effect clears it after re-anchoring.
-    if (el.scrollTop < 200 && prevScrollHeightRef.current == null && hiddenCount > 0) {
-      prevScrollHeightRef.current = el.scrollHeight
-      // The user is reading older content — make sure nothing auto-pins to the
-      // bottom during the expand (the distance heuristic can misfire when the
-      // rendered slice barely overflows the viewport).
-      isScrolledToBottomRef.current = false
-      setWindowSize((n) => n + LOAD_STEP)
-    }
-  }, [cancelFollowAnimation, hiddenCount, setBottomSpacerHeight])
-
-  // After a scroll-up expansion adds older messages above the viewport, restore the
-  // scroll position so the content the user was reading stays put (no jump).
-  useLayoutEffect(() => {
-    const el = scrollRef.current
-    if (el && prevScrollHeightRef.current != null) {
-      el.scrollTop += el.scrollHeight - prevScrollHeightRef.current
-      prevScrollHeightRef.current = null
-    }
-  }, [windowSize])
-
-  const scrollToBottom = useCallback(() => {
-    const el = scrollRef.current
-    if (!el) return
-    cancelScrollAnimation()
-    cancelFollowAnimation()
-    userScrollIntentRef.current = false
-    anchoredTurnRef.current = null
-    animateNextTurnRef.current = false
-    setBottomSpacerHeight(0)
-    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
-  }, [cancelFollowAnimation, cancelScrollAnimation, setBottomSpacerHeight])
+  }, [visibleMessages, hasOlder])
 
   // Safety net: if isCompacting is true but a NEW compact boundary appears in fetched
   // messages, compaction is done and the SSE compact_complete event was missed.
@@ -1121,6 +819,44 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     hasTurnStartingPendingMessage,
   ])
 
+  // All scrolling behavior — live-edge following (the owned engine), the
+  // new-turn reading-line reserve, windowed rendering of long histories. The
+  // domain values passed through exist so the hook re-syncs its reserve on
+  // the commits that change transcript layout.
+  const {
+    scrollRef,
+    contentRef,
+    contentBodyRef,
+    bottomSpacerRef,
+    isAtBottom,
+    scrollToBottom: handleScrollToBottom,
+    windowedMessages,
+    hiddenCount,
+    handleScroll,
+    handleWheelGesture,
+    handlePointerDown,
+    handleScrollKey,
+    handleTouchStart,
+    handleTouchMove,
+    handleTouchEnd,
+  } = useMessageListScroll({
+    visibleMessages,
+    pendingUserMessages,
+    bottomInset,
+    hasOlder,
+    isFetchingOlder,
+    fetchOlder,
+    isLoading,
+    error,
+    messages,
+    streamingMessage,
+    streamingToolUses,
+    thinkingBlocks,
+    isCompacting,
+    pendingRequestCount,
+    activeSubagents,
+  })
+
   // Drop expansion state for turns that no longer exist after edits/refetches.
   useEffect(() => {
     const validIds = new Set(completedTurns.map((turn) => turn.id))
@@ -1148,106 +884,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     return result
   }, [messages, isActive, hasTurnStartingPendingMessage])
 
-  // Detect actual sends by id (rather than list length, since materialization
-  // can remove one ghost as another arrives). A turn-starting send gets a
-  // stable reading line 100px from the viewport top; queued mid-turn sends
-  // retain the regular live-edge behavior.
-  const seenPendingIdsRef = useRef(new Set<string>())
-  useLayoutEffect(() => {
-    const seen = seenPendingIdsRef.current
-    let hasNewSend = false
-    let newestTurnStart: PendingMessage | undefined
-    for (const pending of pendingUserMessages ?? []) {
-      if (!seen.has(pending.localId)) {
-        seen.add(pending.localId)
-        hasNewSend = true
-        if (!pending.queued) newestTurnStart = pending
-      }
-    }
-
-    if (hasNewSend) {
-      cancelScrollAnimation()
-      userScrollIntentRef.current = false
-      isScrolledToBottomRef.current = true
-      setShowScrollToBottom(false)
-
-      if (newestTurnStart) {
-        const viewport = scrollRef.current
-        const anchor = Array.from(
-          contentBodyRef.current?.querySelectorAll<HTMLElement>('[data-turn-anchor-id]') ?? [],
-        ).find((element) => element.dataset.turnAnchorId === newestTurnStart.localId)
-
-        if (viewport && anchor) {
-          lastScrollTopRef.current = viewport.scrollTop
-          const anchorTop =
-            anchor.getBoundingClientRect().top -
-            viewport.getBoundingClientRect().top +
-            viewport.scrollTop
-          anchoredTurnRef.current = {
-            localId: newestTurnStart.localId,
-            scrollTop: Math.max(0, anchorTop - TURN_ANCHOR_TOP),
-          }
-          animateNextTurnRef.current = true
-        } else {
-          anchoredTurnRef.current = null
-          animateNextTurnRef.current = false
-        }
-      } else {
-        anchoredTurnRef.current = null
-        animateNextTurnRef.current = false
-        setBottomSpacerHeight(0)
-      }
-    }
-
-    syncFollowPosition()
-  }, [
-    messages,
-    pendingUserMessages,
-    streamingMessage,
-    streamingToolUses,
-    thinkingBlocks,
-    isCompacting,
-    pendingRequestCount,
-    activeSubagents,
-    syncFollowPosition,
-    setBottomSpacerHeight,
-    cancelScrollAnimation,
-    bottomInset,
-  ])
-
-  // Markdown, images, and expanded tool cards can change height without a
-  // message-state update. Feed those layout changes through the same reserve
-  // calculation so they cannot make the anchored turn jump.
-  useEffect(() => {
-    const content = contentBodyRef.current
-    const viewport = scrollRef.current
-    if (!content || !viewport || typeof ResizeObserver === 'undefined') return
-    let frameId = 0
-    const observer = new ResizeObserver(() => {
-      cancelAnimationFrame(frameId)
-      frameId = requestAnimationFrame(syncFollowPosition)
-    })
-    observer.observe(content)
-    observer.observe(viewport)
-    return () => {
-      cancelAnimationFrame(frameId)
-      observer.disconnect()
-    }
-  }, [syncFollowPosition])
-
-  const handleUserScrollIntent = useCallback(() => {
-    userScrollIntentRef.current = true
-    programmaticScrollTopRef.current = null
-    cancelScrollAnimation()
-    // Hand the viewport back immediately — a glide that keeps running under a
-    // wheel gesture feels like the thread is fighting the reader.
-    cancelFollowAnimation()
-  }, [cancelFollowAnimation, cancelScrollAnimation])
-
-  const handleScrollKey = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (SCROLL_KEYS.has(event.key)) handleUserScrollIntent()
-  }, [handleUserScrollIntent])
-
   // Peer messages still worth showing optimistically: not our own, and the
   // persisted copy (by uuid, or — for queued/steering messages whose uuid the
   // CLI replaces — recent identical text) hasn't been fetched yet.
@@ -1267,6 +903,40 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       ),
     [peerUserMessages, messages, user?.id]
   )
+
+  // New-turn ghosts should receive the same flag immediately, before their
+  // persisted transcript entry arrives. Process them in their render order and
+  // show at most one flag before the next assistant response.
+  const optimisticTimeFlagIds = useMemo(() => {
+    const ids = new Set<string>()
+    let {
+      hasSeenUser,
+      hasUserSinceLastAssistant,
+      lastAssistantAt,
+    } = timeFlagState
+    const ghosts = [
+      ...visiblePeerMessages
+        .filter((peer) => !peer.queued)
+        .map((peer) => ({ id: peer.uuid, sentAt: peer.receivedAt })),
+      ...(pendingUserMessages ?? [])
+        .filter((pending) => !pending.queued)
+        .map((pending) => ({ id: pending.localId, sentAt: pending.sentAt })),
+    ]
+
+    for (const ghost of ghosts) {
+      const sentAt = new Date(ghost.sentAt)
+      if (
+        !hasSeenUser ||
+        (!hasUserSinceLastAssistant && isSessionTimeGap(sentAt, lastAssistantAt))
+      ) {
+        ids.add(ghost.id)
+      }
+      hasSeenUser = true
+      hasUserSinceLastAssistant = true
+    }
+
+    return ids
+  }, [timeFlagState, visiblePeerMessages, pendingUserMessages])
 
   // Cancel a queued message before the agent picks it up. cancelled: false
   // means we lost the race — the agent already has the message, so flip the
@@ -1411,11 +1081,12 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         style={{ overflowAnchor: 'none' }}
         ref={scrollRef}
         onScroll={handleScroll}
-        onWheel={handleUserScrollIntent}
-        onTouchMove={handleUserScrollIntent}
-        // Scrollbar drags emit no wheel/touch/key events, only pointerdown +
-        // scroll — without this they would never register as user intent.
-        onPointerDown={handleUserScrollIntent}
+        onWheel={handleWheelGesture}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onTouchCancel={handleTouchEnd}
+        onPointerDown={handlePointerDown}
         onKeyDown={handleScrollKey}
         role="region"
         aria-label="Messages"
@@ -1423,10 +1094,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         data-testid="message-list"
         data-message-content-area
       >
-        <div
-          className="mx-auto w-full max-w-[720px] px-4 pb-4"
-          style={bottomInset > 0 ? { paddingBottom: bottomInset + 16 } : undefined}
-        >
+        <div ref={contentRef} className="mx-auto w-full max-w-[720px] px-4">
         <div
           ref={contentBodyRef}
           className={`space-y-4 ${readOnly ? 'pt-3' : 'pt-[100px]'}`}
@@ -1456,14 +1124,11 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
           const isAssistantItem = item.type === 'assistant'
           const isAnswerMessage =
             !!turn && isAssistantItem && turn.answerMessageIds.has(item.id)
-          const hideItem =
-            collapsed &&
-            isAssistantItem &&
-            !isAnswerMessage
-          const isRevealedWorkItem =
-            expanded &&
-            isAssistantItem &&
-            !isAnswerMessage
+          const isFoldedWorkItem =
+            (isAssistantItem && !isAnswerMessage) ||
+            item.type === 'compact_boundary'
+          const hideItem = collapsed && isFoldedWorkItem
+          const isRevealedWorkItem = expanded && isFoldedWorkItem
 
           let renderedItem: ReactNode = null
           if (!hideItem) {
@@ -1503,6 +1168,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                           ? turn.revealedToolCallIds
                           : undefined
                       }
+                      embeddedImageAliases={embeddedImageAliases}
                     />
                   </MessageErrorBoundary>
                   {turnDeliveredFiles.has(item.id) && item.id !== deferredElapsedMessageId && (
@@ -1510,15 +1176,19 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                   )}
                 </>
               )
-              renderedItem = isRevealedWorkItem ? (
-                <div
-                  className={TURN_WORK_REVEAL_CLASS}
-                  data-testid="turn-work-detail"
-                >
-                  {messageItem}
-                </div>
-              ) : messageItem
+              renderedItem = messageItem
             }
+          }
+
+          if (renderedItem && isRevealedWorkItem) {
+            renderedItem = (
+              <div
+                className={TURN_WORK_REVEAL_CLASS}
+                data-testid="turn-work-detail"
+              >
+                {renderedItem}
+              </div>
+            )
           }
 
           return (
@@ -1535,6 +1205,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                   }
                 />
               )}
+              {timeFlagState.messageIds.has(item.id) && (
+                <SessionTimeFlag date={new Date(item.createdAt)} />
+              )}
               {renderedItem}
             </Fragment>
           )
@@ -1544,11 +1217,23 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
             them, so they render before any streaming content. Queued ghosts
             (sent mid-turn) render at the bottom instead, below the current
             turn's streaming output and running tools. */}
-        {visiblePeerMessages.filter((p) => !p.queued).map(renderPeerGhost)}
+        {visiblePeerMessages.filter((p) => !p.queued).map((peer) => (
+          <Fragment key={peer.uuid}>
+            {optimisticTimeFlagIds.has(peer.uuid) && (
+              <SessionTimeFlag date={new Date(peer.receivedAt)} />
+            )}
+            {renderPeerGhost(peer)}
+          </Fragment>
+        ))}
         {pendingUserMessages?.filter((p) => !p.queued).map((pending) => (
-          <div key={pending.localId} data-turn-anchor-id={pending.localId}>
-            {renderPendingGhost(pending)}
-          </div>
+          <Fragment key={pending.localId}>
+            {optimisticTimeFlagIds.has(pending.localId) && (
+              <SessionTimeFlag date={new Date(pending.sentAt)} />
+            )}
+            <div data-turn-anchor-id={pending.localId}>
+              {renderPendingGhost(pending)}
+            </div>
+          </Fragment>
         ))}
 
         {/* Typing indicator - shown when ANOTHER user is typing. The server echoes
@@ -1598,6 +1283,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                 ...(apiErrorCode && { apiError: apiErrorCode }),
               }}
               isStreaming={isStreaming}
+              agentSlug={agentSlug}
+              sessionId={sessionId}
+              embeddedImageAliases={embeddedImageAliases}
             />
           </MessageErrorBoundary>
         )}
@@ -1632,7 +1320,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
             } else {
               inner = (
                 <div className="max-w-[80%]">
-                  <ToolCallItem toolCall={syntheticToolCall} agentSlug={agentSlug} isSessionActive={isActive} />
+                  <ToolCallItem toolCall={syntheticToolCall} agentSlug={agentSlug} sessionId={sessionId} isSessionActive={isActive} />
                 </div>
               )
             }
@@ -1692,12 +1380,20 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
           aria-hidden="true"
           hidden
         />
+        {/* Live-edge clearance above the overlaid footer. A real element
+            rather than container padding: the follow library's ResizeObserver
+            measures the content box, so footer growth must change it. */}
+        <div
+          data-testid="live-edge-clearance"
+          aria-hidden="true"
+          style={{ height: bottomInset > 0 ? bottomInset + 16 : 16 }}
+        />
         </div>
       </div>
       {/* eslint-enable jsx-a11y/no-noninteractive-tabindex */}
-      {showScrollToBottom && !suppressScrollToBottom && (
+      {!isAtBottom && !suppressScrollToBottom && (
         <button
-          onClick={scrollToBottom}
+          onClick={handleScrollToBottom}
           className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 rounded-full bg-primary text-primary-foreground px-3 py-1.5 text-xs font-medium shadow-lg hover:bg-primary/90 transition-opacity cursor-pointer"
           style={bottomInset > 0 ? { bottom: bottomInset + 16 } : undefined}
         >

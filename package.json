@@ -1,6 +1,6 @@
 {
   "name": "superagent",
-  "version": "0.5.6",
+  "version": "0.5.13",
   "description": "AI agent management platform",
   "author": "Datawizz Inc.",
   "license": "MIT",
@@ -25,7 +25,7 @@
     "dist:mac": "PLATFORM_PROXY_URL=${PLATFORM_PROXY_URL:-https://platformproxy.gamutagents.com} npm run download:lima && npm run build:electron && electron-builder --mac --publish never",
     "dist:win": "npm run download:wsl-rootfs && npm run build:electron && electron-builder --win --publish never",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src e2e --ext .ts,.tsx",
+    "lint": "eslint src e2e perf --ext .ts,.tsx",
     "lint:e2e": "eslint e2e --ext .ts",
     "test": "vitest",
     "test:run": "vitest run",
@@ -50,11 +50,12 @@
     "db:studio": "drizzle-kit studio",
     "build:container": "docker build -t superagent-container ./agent-container",
     "icons:download": "tsx scripts/download-service-icons.ts",
-    "icons:optimize": "tsx scripts/optimize-service-icons.ts"
+    "icons:optimize": "tsx scripts/optimize-service-icons.ts",
+    "test:perf": "vitest run --config vitest.perf.config.ts"
   },
   "dependencies": {
     "@anthropic-ai/bedrock-sdk": "^0.32.0",
-    "@anthropic-ai/sdk": "^0.115.0",
+    "@anthropic-ai/sdk": "^0.120.0",
     "@aws-sdk/client-lambda-microvms": "^3.1075.0",
     "@hono/node-server": "^1.13.7",
     "@hono/zod-validator": "^0.8.0",

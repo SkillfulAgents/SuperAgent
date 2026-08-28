@@ -35,12 +35,40 @@ export interface ApiAgent {
   sessionCount?: number
   lastActivityAt?: Date | null
   dashboards?: ApiAgentDashboard[]
+  /** Opt-in expansion from GET /api/agents?include_latest_visible_session_tail=true. */
+  latestVisibleSession?: ApiLatestVisibleSession | null
+  /** Attention on visible sessions other than latestVisibleSession. Null means unavailable. */
+  attentionOutsideLatest?: ApiAttentionOutsideLatest | null
+}
+
+/** Response returned when an agent template has been installed or imported. */
+export interface ApiAgentTemplateInstallResult extends ApiAgent {
+  hasOnboarding?: boolean
+  /** Optional root PROMPT.md contents to prefill on the new agent's home page. */
+  templatePrompt?: string
+  /** Optional `first_prompt` from the onboarding skill frontmatter. */
+  onboardingFirstPrompt?: string
 }
 
 export interface ApiAgentDashboard {
   slug: string
   name: string
   hasScreenshot?: boolean
+}
+
+export interface ApiLatestVisibleSession {
+  session: ApiSession
+  messageTail: ApiTranscriptPage
+}
+
+export interface ApiAttentionOutsideLatest {
+  hasUnreadNotification: boolean
+  hasPendingInput: boolean
+}
+
+export interface ApiTranscriptPage {
+  messages: ApiMessageOrBoundary[]
+  nextCursor: string | null
 }
 
 /**
@@ -69,6 +97,16 @@ export interface ApiDiscoverableAgent {
   description: string
   version: string
   path: string
+  /** Long-form markdown for the details page. */
+  details?: string
+  /** Marketplace category, e.g. "Marketing", "Customer Success". */
+  category?: string
+  /** kebab-case lucide icon name, e.g. "badge-dollar-sign". */
+  icon?: string
+  tags?: string[]
+  /** Services the template connects to; `slug` matches the service-icon set. */
+  worksWith?: { type: string; slug: string }[]
+  developer?: { name: string; url?: string }
 }
 
 // ============================================================================
@@ -94,6 +132,9 @@ export interface ApiSession {
   scheduledTaskName?: string
   webhookTriggerId?: string
   webhookTriggerName?: string
+  // Present when another agent created this session through x-agent.
+  invokedByAgentSlug?: string
+  invokedByAgentName?: string
   // Last effort level used on this session (seeds the composer selector)
   effort?: EffortLevel
   // Last processing speed used on this session (seeds the composer selector)

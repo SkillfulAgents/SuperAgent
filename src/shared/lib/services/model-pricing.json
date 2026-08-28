@@ -27,7 +27,15 @@
     "input": 3,
     "output": 15,
     "cacheCreation": 3.75,
-    "cacheRead": 0.3
+    "cacheRead": 0.3,
+    "marginalLongContext": {
+      "thresholdTokens": 200000,
+      "input": 6,
+      "output": 22.5,
+      "cacheCreation": 7.5,
+      "cacheCreation1h": 12,
+      "cacheRead": 0.6
+    }
   },
   "claude-fable-5": {
     "input": 10,
@@ -81,19 +89,28 @@
     "input": 5,
     "output": 25,
     "cacheCreation": 6.25,
-    "cacheRead": 0.5
+    "cacheRead": 0.5,
+    "speedMultipliers": {
+      "fast": 6
+    }
   },
   "claude-opus-4-6-20260205": {
     "input": 5,
     "output": 25,
     "cacheCreation": 6.25,
-    "cacheRead": 0.5
+    "cacheRead": 0.5,
+    "speedMultipliers": {
+      "fast": 6
+    }
   },
   "claude-opus-4-7": {
     "input": 5,
     "output": 25,
     "cacheCreation": 6.25,
-    "cacheRead": 0.5
+    "cacheRead": 0.5,
+    "speedMultipliers": {
+      "fast": 6
+    }
   },
   "claude-opus-4-8": {
     "input": 5,
@@ -105,10 +122,11 @@
     }
   },
   "claude-opus-5": {
-    "input": 10,
-    "output": 50,
-    "cacheCreation": 12.5,
-    "cacheRead": 1,
+    "input": 5,
+    "output": 25,
+    "cacheCreation": 6.25,
+    "cacheCreation1h": 10,
+    "cacheRead": 0.5,
     "speedMultipliers": {
       "fast": 2
     }
@@ -117,7 +135,15 @@
     "input": 3,
     "output": 15,
     "cacheCreation": 3.75,
-    "cacheRead": 0.3
+    "cacheRead": 0.3,
+    "marginalLongContext": {
+      "thresholdTokens": 200000,
+      "input": 6,
+      "output": 22.5,
+      "cacheCreation": 7.5,
+      "cacheCreation1h": 12,
+      "cacheRead": 0.6
+    }
   },
   "claude-sonnet-4-5": {
     "input": 3,
@@ -144,10 +170,11 @@
     "cacheRead": 0.3
   },
   "claude-sonnet-5": {
-    "input": 3,
-    "output": 15,
-    "cacheCreation": 3.75,
-    "cacheRead": 0.3
+    "input": 2,
+    "output": 10,
+    "cacheCreation": 2.5,
+    "cacheCreation1h": 4,
+    "cacheRead": 0.2
   },
   "gpt-5.4": {
     "input": 2.5,

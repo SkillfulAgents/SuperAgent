@@ -11,6 +11,8 @@ export type AgentView =
   | { kind: 'session'; id: string }
   | { kind: 'task'; id: string }
   | { kind: 'webhook'; id: string }
+  | { kind: 'inboundXAgent' }
+  | { kind: 'completedTasks' }
   | { kind: 'chat'; integrationId: string; sessionId?: string }
   | { kind: 'dashboard'; slug: string }
   | { kind: 'apiLogs' }
@@ -76,6 +78,10 @@ export function encodeLocation(loc: AppLocation): NavigateOptions {
       return { to: '/agents/$slug/tasks/$taskId', params: { slug, taskId: view.id } }
     case 'webhook':
       return { to: '/agents/$slug/webhooks/$webhookId', params: { slug, webhookId: view.id } }
+    case 'inboundXAgent':
+      return { to: '/agents/$slug/called-from-agents', params: { slug } }
+    case 'completedTasks':
+      return { to: '/agents/$slug/completed-tasks', params: { slug } }
     case 'chat':
       return {
         to: '/agents/$slug/chat/$integrationId',
@@ -129,6 +135,10 @@ export function decodeLocation(snap: RouteSnapshot): AppLocation {
       return { selectedAgentSlug: p.slug ?? null, view: { kind: 'task', id: p.taskId ?? '' } }
     case '/agents/$slug/webhooks/$webhookId':
       return { selectedAgentSlug: p.slug ?? null, view: { kind: 'webhook', id: p.webhookId ?? '' } }
+    case '/agents/$slug/called-from-agents':
+      return { selectedAgentSlug: p.slug ?? null, view: { kind: 'inboundXAgent' } }
+    case '/agents/$slug/completed-tasks':
+      return { selectedAgentSlug: p.slug ?? null, view: { kind: 'completedTasks' } }
     case '/agents/$slug/chat/$integrationId': {
       const session = typeof search.session === 'string' ? search.session : undefined
       return {

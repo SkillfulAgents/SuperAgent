@@ -1,6 +1,8 @@
 import { Download, FileText, Folder, PanelRightClose, X } from 'lucide-react'
 import { useFilePreview } from '@renderer/context/file-preview-context'
+import { CopyFileButton } from './copy-file-button'
 import { FileTabBar } from './file-tab-bar'
+import { isCopyableTextFile } from './file-types'
 import { FileRenderer } from './renderers/file-renderer'
 import { FolderBrowser } from './folder-browser'
 import { CommentBar } from './comments/comment-bar'
@@ -46,6 +48,9 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
           <FileText className="h-4 w-4 shrink-0" />
         )}
         <span className="flex-1 text-xs truncate font-medium">Files</span>
+        {fileUrl && activeTab.kind === 'file' && isCopyableTextFile(activeTab.filePath) && (
+          <CopyFileButton fileUrl={fileUrl} displayName={activeTab.displayName} />
+        )}
         {downloadUrl && (
           <a
             href={downloadUrl}

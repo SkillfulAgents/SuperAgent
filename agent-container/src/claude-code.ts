@@ -822,6 +822,13 @@ export class ClaudeCodeProcess extends EventEmitter {
         // self-updated. Pinned like the other vars here: customEnvVars is
         // spread above, so an agent cannot turn this back on.
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+        // CLI 2.1.233+ stops registering TaskCreate/TaskGet/TaskList/TaskUpdate
+        // on newer models (opus >=4.8, sonnet/fable/mythos >=5). Our task-list
+        // UI (derive-task-list.ts) and existing agent workflows depend on those
+        // tools, so opt back in on every model. This is the CLI's only lever
+        // that works for us: its other re-enable path is a server-side feature
+        // flag, which NONESSENTIAL_TRAFFIC above blocks from ever reaching us.
+        CLAUDE_CODE_ENABLE_TODO_TOOLS: 'true',
         // Explicit maxOutputTokens setting takes precedence over custom env var
         ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
       }), this.speed),
@@ -881,6 +888,9 @@ export class ClaudeCodeProcess extends EventEmitter {
             'Write',
             'Edit',
             'Bash',
+            // create_dashboard's result points at the `dashboards` skill, so the
+            // builder needs Skill to act on its own tool output.
+            'Skill',
           ],
           prompt: DASHBOARD_BUILDER_AGENT_PROMPT,
           maxTurns: 200,

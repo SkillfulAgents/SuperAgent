@@ -82,6 +82,7 @@ const SECTION_RULES: Array<[prefix: string, label: string]> = [
   ['app.browserbase', 'Browser Use'],
   ['app.autoSleepTimeoutMinutes', 'Container Runtime'],
   ['app.warmStartOnType', 'Container Runtime'],
+  ['app.autoResumeOnUnexpectedDeath', 'Container Runtime'],
   ['app.', 'General'],
 ]
 

@@ -1,5 +1,6 @@
 import { BrowserWindow, session, type WebContents } from 'electron'
 import { buildDashboardViewUrl } from '@shared/lib/dashboard-url'
+import { DASHBOARD_CHROME_HEIGHT, dashboardChromeScript } from './dashboard-window-chrome'
 import { safeOpenExternal } from './safe-open-external'
 
 // Open dashboard popouts, keyed by API base URL + `${agentSlug}/${dashboardSlug}`.
@@ -8,6 +9,17 @@ import { safeOpenExternal } from './safe-open-external'
 // wrong one's dashboard under the right one's name. The raw join is fine as a
 // dedup key — only the loaded URL needs per-segment encoding.
 const dashboardWindows: Map<string, BrowserWindow> = new Map()
+
+function installDashboardChrome(win: BrowserWindow, titlePrefix = ''): void {
+  const script = dashboardChromeScript(process.platform, titlePrefix)
+  win.webContents.on('dom-ready', () => {
+    void win.webContents.executeJavaScript(script).catch((error) => {
+      // A close or navigation can destroy the document between dom-ready and
+      // execution. That is harmless; the next document gets its own attempt.
+      if (!win.isDestroyed()) console.error('Failed to install dashboard window chrome:', error)
+    })
+  })
+}
 
 /**
  * Deny-and-route popup policy for a window's webContents.
@@ -112,19 +124,36 @@ export function openDashboardWindow(agentSlug: string, dashboardSlug: string, ap
     width: 1000,
     height: 700,
     title: 'Gamut Dashboard',
+    backgroundColor: '#111111',
+    autoHideMenuBar: true,
+    ...(process.platform === 'darwin' && {
+      titleBarStyle: 'hiddenInset' as const,
+      trafficLightPosition: { x: 14, y: 8 },
+    }),
+    ...(process.platform === 'win32' && {
+      titleBarStyle: 'hidden' as const,
+      titleBarOverlay: {
+        color: '#111111',
+        symbolColor: '#d4d4d4',
+        height: DASHBOARD_CHROME_HEIGHT,
+      },
+    }),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       ...(partition ? { partition } : {}),
     },
   })
+  // Unlike autoHideMenuBar, removeMenu prevents the inherited File/Edit menu
+  // from reappearing when Alt is pressed on Windows.
+  if (process.platform === 'win32') win.removeMenu()
+  installDashboardChrome(win, route ? 'Cloud workspace — ' : '')
   // Dashboard content is agent-generated/untrusted — apply the same deny-and-route
   // popup policy as the main window so window.open() can't spawn child windows.
   installPopupHandler(win.webContents)
-  // A cloud popout is otherwise indistinguishable from a local one: same chrome,
-  // and the wrapper replaces the generic title with the dashboard's own name.
-  // The title is the only surface main owns here — injecting a frame would mean
-  // writing into an agent-generated document — so it carries the marker.
+  // A cloud popout is otherwise indistinguishable from a local one. Keep the
+  // workspace marker in both the native/taskbar title and the app-owned title
+  // bar above the dashboard iframe.
   if (route) {
     win.on('page-title-updated', (event, title) => {
       event.preventDefault()

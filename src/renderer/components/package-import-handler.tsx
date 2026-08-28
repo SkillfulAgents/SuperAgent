@@ -19,6 +19,7 @@ import type { ClassifiedImportPackage } from '@shared/lib/utils/package-extensio
 import { useImportAgentTemplate, type ImportProgress } from '@renderer/hooks/use-agent-templates'
 import { useImportSkillZip } from '@renderer/hooks/use-agent-skills'
 import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-session'
+import { seedAgentTemplatePrompt, useDraftsStore } from '@renderer/context/drafts-context'
 
 /**
  * A .agent/.skill package the user opened with the app, already classified by
@@ -44,6 +45,7 @@ export function PackageImportHandler() {
   const importTemplate = useImportAgentTemplate()
   const importSkill = useImportSkillZip()
   const startOnboardingSession = useStartOnboardingSession()
+  const draftsStore = useDraftsStore()
 
   const [queue, setQueue] = useState<OpenedPackage[]>([])
   const [importFull, setImportFull] = useState(false)
@@ -125,9 +127,10 @@ export function PackageImportHandler() {
         })
         closeDialog()
         toast.success(`Imported agent "${result.name}"`)
+        const hasTemplatePrompt = seedAgentTemplatePrompt(draftsStore, result.slug, result.templatePrompt)
         void navigate({ to: '/agents/$slug', params: { slug: result.displaySlug } })
-        if (result.hasOnboarding) {
-          await startOnboardingSession(result.slug)
+        if (!hasTemplatePrompt && result.hasOnboarding) {
+          await startOnboardingSession(result.slug, result.onboardingFirstPrompt)
         }
       } catch {
         // Error surfaces in the dialog via importTemplate.error
@@ -137,7 +140,7 @@ export function PackageImportHandler() {
       importingRef.current = false
       setImporting(false)
     }
-  }, [current, readPackageFile, importFull, importTemplate, closeDialog, navigate, startOnboardingSession])
+  }, [current, readPackageFile, importFull, importTemplate, closeDialog, draftsStore, navigate, startOnboardingSession])
 
   const handleImportSkill = useCallback(async (agentSlug: string) => {
     if (!current || importingRef.current) return

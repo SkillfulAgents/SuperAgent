@@ -24,6 +24,7 @@ import {
   buildConnectedAccountsProjection,
   buildRemoteMcpProjection,
 } from './connection-runtime-projections'
+import { recoverFromUnexpectedDeath } from './runtime-recovery'
 
 /** Interval for syncing container status with reality (in ms). Default: 300 seconds */
 const STATUS_SYNC_INTERVAL_MS = parseInt(
@@ -92,21 +93,10 @@ class ContainerManager {
         onConnectionError: () => {
           if (this.stoppingAgents.has(agentId)) return
           if (this.startingAgents.has(agentId)) return
-
-          // When a connection error is detected, sync status with Docker
-          // This handles cases where the container crashed or was stopped externally
-          console.log(`[ContainerManager] Connection error for ${agentId}, syncing status...`)
-          this.syncAgentStatus(agentId).catch((err) => {
-            console.error(`[ContainerManager] Failed to sync status after connection error:`, err)
-            // If sync fails, mark as stopped as a fallback and broadcast
-            this.markAsStopped(agentId)
-            messagePersister.markAllSessionsInactiveForAgent(agentId)
-            messagePersister.broadcastGlobal({
-              type: 'agent_status_changed',
-              agentSlug: agentId,
-              status: 'stopped',
-            })
-          })
+          // No pre-snapshot here: the orchestrator snapshots synchronously, and
+          // a join during an in-flight recovery queues a re-run that catches
+          // sessions that became active in between.
+          this.handleUnexpectedDeath(agentId)
         },
         // MicroVM dead-generation replace (and similar) must restart through the
         // manager so starts share startingAgents and rebuild env from the DB.
@@ -118,6 +108,46 @@ class ContainerManager {
     }
 
     return client
+  }
+
+  private handleUnexpectedDeath(agentId: string, restrictToSessionIds?: string[]): void {
+    void recoverFromUnexpectedDeath({
+      agentId,
+      isStopping: () => this.stoppingAgents.has(agentId),
+      getClient: () => this.getClient(agentId),
+      restartAgent: () => this.restartAgent(agentId),
+      ensureRunning: () => this.ensureRunning(agentId),
+      snapshotMidTurnSessions: (slug, restrict) => messagePersister.snapshotMidTurnSessions(slug, restrict),
+      consumeLastFatal: (slug) => messagePersister.consumeLastFatal(slug),
+      settleRecoveringSessions: (ids) => messagePersister.settleRecoveringSessions(ids),
+      markRecovered: (ids) => messagePersister.markRecovered(ids),
+      takeCoalescedUserMessages: (id) => messagePersister.takeCoalescedUserMessages(id),
+      isSessionRecovering: (id) => messagePersister.isSessionRecovering(id),
+      isSubscribed: (id) => messagePersister.isSubscribed(id),
+      subscribeToSession: (sessionId, client, containerSessionId, agentSlug) =>
+        messagePersister.subscribeToSession(sessionId, client, containerSessionId, agentSlug),
+      restrictToSessionIds,
+      syncAgentStatus: async () => {
+        try {
+          await this.syncAgentStatus(agentId)
+        } catch (err) {
+          console.error(`[ContainerManager] Failed to sync status after connection error:`, err)
+          this.markAsStopped(agentId)
+          messagePersister.markAllSessionsInactiveForAgent(agentId)
+          messagePersister.broadcastGlobal({
+            type: 'agent_status_changed',
+            agentSlug: agentId,
+            status: 'stopped',
+          })
+        }
+      },
+    }).catch((err) => {
+      console.error(`[ContainerManager] Unexpected-death recovery failed for ${agentId}:`, err)
+      captureException(err, {
+        tags: { area: 'container', op: 'runtime.recover.unhandled' },
+        extra: { agentId },
+      })
+    })
   }
 
   // Single-flight restart used by runtime clients that tear down a dead generation.
@@ -233,7 +263,7 @@ class ContainerManager {
         this.markAsStopped(agentId)
 
         // Mark all sessions for this agent as inactive
-        messagePersister.markAllSessionsInactiveForAgent(agentId)
+        messagePersister.markAllSessionsInactiveForAgent(agentId, { settleRecovering: true })
 
         // If this agent had grabbed a window, ungrab it so the halo disappears
         if (computerUsePermissionManager.getGrabbedApp(agentId)) {
@@ -257,7 +287,7 @@ class ContainerManager {
         for (const otherId of this.getRunningAgentIds()) {
           if (otherId === agentId) continue
           this.markAsStopped(otherId)
-          messagePersister.markAllSessionsInactiveForAgent(otherId)
+          messagePersister.markAllSessionsInactiveForAgent(otherId, { settleRecovering: true })
           messagePersister.broadcastGlobal({
             type: 'agent_status_changed',
             agentSlug: otherId,
@@ -378,6 +408,9 @@ class ContainerManager {
       this.stopContainer(agentSlug).catch((err) => {
         console.error(`[ContainerManager] Failed to stop container for ${agentSlug}:`, err)
       })
+    })
+    messagePersister.setUnexpectedDeathCallback((agentSlug, sessionId) => {
+      this.handleUnexpectedDeath(agentSlug, sessionId ? [sessionId] : undefined)
     })
 
     // Create clients for all agents (this registers them for sync)
@@ -651,7 +684,7 @@ class ContainerManager {
       envVars['CLAUDE_CODE_ATTRIBUTION_HEADER'] = '0'
 
       // Load mounts and build volume flags for healthy ones
-      const mountsWithHealth = getMountsWithHealth(agentId)
+      const mountsWithHealth = await getMountsWithHealth(agentId)
       const healthyMounts = mountsWithHealth.filter((m) => m.health === 'ok')
       const missingMounts = mountsWithHealth.filter((m) => m.health === 'missing')
 

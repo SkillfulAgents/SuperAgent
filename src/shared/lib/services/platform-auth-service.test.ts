@@ -139,6 +139,13 @@ describe('platform-auth-service', () => {
     expect(getPlatformAccessToken('local')).toBeNull()
   })
 
+  it('leaves the disconnected status contract unchanged', () => {
+    const status = getPlatformAuthStatus('local')
+
+    expect(status.connected).toBe(false)
+    expect(status).not.toHaveProperty('orgIconUrl')
+  })
+
   it('returns env-managed status with verified orgId after init', async () => {
     process.env.AUTH_MODE = 'true'
     process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
@@ -516,7 +523,7 @@ describe('platform-auth-service', () => {
   // Env-managed (org-JWT) account enrichment via /v1/account introspection
   // ---------------------------------------------------------------------------
 
-  it('enriches env-managed status with email/orgName/role from /v1/account', async () => {
+  it('enriches env-managed status with the safe workspace icon from /v1/account', async () => {
     process.env.AUTH_MODE = 'true'
     process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
     process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
@@ -528,6 +535,7 @@ describe('platform-auth-service', () => {
           memberId: 'sub_member_1',
           orgId: 'org_env',
           orgName: 'Acme Inc',
+          orgIconUrl: 'https://cdn.example.com/workspaces/acme.png?token=do-not-forward#avatar',
           role: 'owner',
           userId: 'user_1',
           email: 'owner@example.com',
@@ -543,10 +551,74 @@ describe('platform-auth-service', () => {
       source: 'env',
       email: 'owner@example.com',
       orgName: 'Acme Inc',
+      orgIconUrl: 'https://cdn.example.com/workspaces/acme.png',
       role: 'owner',
     })
     // env-managed connections have no "last changed" anchor; updatedAt stays null.
     expect(status.updatedAt).toBeNull()
+  })
+
+  it('returns a null workspace icon when /v1/account has no icon field', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
+    await initEnvManagedPlatformStatus()
+
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          memberId: 'sub_member_1',
+          orgId: 'org_env',
+          orgName: 'Acme Inc',
+          role: 'owner',
+          userId: 'user_1',
+          email: 'owner@example.com',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+
+    const status = await getEnrichedPlatformAuthStatus('ba-user')
+
+    expect(status).toMatchObject({
+      connected: true,
+      source: 'env',
+      orgName: 'Acme Inc',
+      orgIconUrl: null,
+    })
+  })
+
+  it.each([
+    '/private/workspace/icon.png',
+    'file:///private/workspace/icon.png',
+    'data:image/png;base64,c2VjcmV0',
+    'https://user:secret@cdn.example.com/icon.png',
+    'https://localhost/icon.png',
+    'https://127.0.0.1/icon.png',
+  ])('does not forward an unsafe workspace icon value: %s', async (orgIconUrl) => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
+    await initEnvManagedPlatformStatus()
+
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          memberId: 'sub_member_1',
+          orgId: 'org_env',
+          orgName: 'Acme Inc',
+          orgIconUrl,
+          role: 'owner',
+          userId: 'user_1',
+          email: 'owner@example.com',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+
+    const status = await getEnrichedPlatformAuthStatus('ba-user')
+
+    expect(status.orgIconUrl).toBeNull()
   })
 
   it('falls back to the base env-managed status when introspection fails', async () => {
@@ -628,6 +700,7 @@ describe('platform-auth-service', () => {
 
     expect(fetchSpy).not.toHaveBeenCalled()
     expect(status).toMatchObject({ source: 'settings', orgName: 'Stored Org', email: 'stored@example.com' })
+    expect(status).not.toHaveProperty('orgIconUrl')
   })
 
   // Helpers for the org-switch / lifecycle tests below.

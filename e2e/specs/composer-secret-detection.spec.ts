@@ -1,11 +1,7 @@
 import { expect, test } from '@playwright/test'
-import * as fs from 'fs'
-import * as path from 'path'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
-
-const E2E_DATA_DIR = path.resolve(process.cwd(), process.env.SUPERAGENT_DATA_DIR ?? '.e2e-data')
-const RECORDER_FILE = path.join(E2E_DATA_DIR, '.e2e-mock-recorder.jsonl')
+import { mockRecorder } from '../helpers/mock-recorder'
 
 interface MockRecord {
   type: 'sendMessage' | 'createSession'
@@ -14,28 +10,7 @@ interface MockRecord {
   availableEnvVars?: string[]
 }
 
-function readRecords(): MockRecord[] {
-  if (!fs.existsSync(RECORDER_FILE)) return []
-  const records: MockRecord[] = []
-  for (const line of fs.readFileSync(RECORDER_FILE, 'utf-8').trim().split('\n').filter(Boolean)) {
-    try {
-      records.push(JSON.parse(line) as MockRecord)
-    } catch {
-      // A concurrently-appended final line can be incomplete for a moment.
-    }
-  }
-  return records
-}
-
-async function waitForRecord(predicate: (record: MockRecord) => boolean, timeoutMs = 12_000) {
-  const startedAt = Date.now()
-  while (Date.now() - startedAt < timeoutMs) {
-    const record = readRecords().find(predicate)
-    if (record) return record
-    await new Promise((resolve) => setTimeout(resolve, 100))
-  }
-  throw new Error(`Timed out waiting for mock record. Seen: ${JSON.stringify(readRecords().slice(-10), null, 2)}`)
-}
+const recorder = mockRecorder<MockRecord>()
 
 test.describe('composer secret detection', () => {
   let agentPage: AgentPage
@@ -79,8 +54,7 @@ test.describe('composer secret detection', () => {
     await expect(page.locator('[data-testid="message-list"]')).toBeVisible({ timeout: 15_000 })
 
     const expectedMessage = `Use this credential:\n[Key saved to .env - ${envVar}]`
-    const record = await waitForRecord(
-      (candidate) => candidate.type === 'createSession' && candidate.initialMessage === expectedMessage
+    const record = await recorder.waitFor((candidate) => candidate.type === 'createSession' && candidate.initialMessage === expectedMessage
     )
     expect(record.initialMessage).not.toContain(rawKey)
     expect(record.availableEnvVars ?? []).toContain(envVar)

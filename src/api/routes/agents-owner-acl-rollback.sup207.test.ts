@@ -90,6 +90,7 @@ vi.mock('@shared/lib/services/agent-service', () => ({
 
 const mockImportAgentFromTemplate = vi.fn()
 const mockInstallAgentFromSkillset = vi.fn()
+const mockGetAgentTemplatePrompt = vi.fn().mockResolvedValue(undefined)
 vi.mock('@shared/lib/services/agent-template-service', () => ({
   exportAgentTemplate: vi.fn(), exportAgentFull: vi.fn(),
   importAgentFromTemplate: (...a: unknown[]) => mockImportAgentFromTemplate(...a),
@@ -98,7 +99,8 @@ vi.mock('@shared/lib/services/agent-template-service', () => ({
   updateAgentFromSkillset: vi.fn(), getAgentTemplateStatus: vi.fn(), getDiscoverableAgents: vi.fn(),
   refreshSkillsetCaches: vi.fn(), getAgentPRInfo: vi.fn(), createAgentPR: vi.fn(),
   getAgentPublishInfo: vi.fn(), publishAgentToSkillset: vi.fn(), refreshAgentTemplates: vi.fn(),
-  hasOnboardingSkill: vi.fn().mockResolvedValue(false),
+  hasOnboardingSkill: vi.fn().mockResolvedValue({ hasOnboarding: false }),
+  getAgentTemplatePrompt: (...a: unknown[]) => mockGetAgentTemplatePrompt(...a),
 }))
 
 // install-from-skillset resolves the skillset config from settings, then builds a
@@ -174,7 +176,7 @@ vi.mock('@shared/lib/container/message-persister', () => ({
 }))
 
 vi.mock('@shared/lib/services/session-service', () => ({
-  listSessions: vi.fn(), updateSessionName: vi.fn(), registerSession: vi.fn(),
+  listSessions: vi.fn(), listSessionsFromSummary: vi.fn(), updateSessionName: vi.fn(), registerSession: vi.fn(),
   getSessionMessagesWithCompact: vi.fn(), getSession: vi.fn(), getSessionMetadata: vi.fn(),
   sessionExists: vi.fn().mockResolvedValue(true), sessionBelongsToAgent: vi.fn().mockResolvedValue(true), reserveSessionOwnership: vi.fn().mockResolvedValue(undefined), updateSessionMetadata: vi.fn().mockResolvedValue(undefined),
   deleteSession: vi.fn(), removeMessage: vi.fn(), removeToolCall: vi.fn(),
@@ -265,6 +267,8 @@ beforeEach(() => {
   mockDbInsertValues.mockResolvedValue(undefined)
   mockDeleteAgent.mockReset()
   mockDeleteAgent.mockResolvedValue(true)
+  mockGetAgentTemplatePrompt.mockReset()
+  mockGetAgentTemplatePrompt.mockResolvedValue(undefined)
 })
 
 describe('SUP-207: owner ACL insert failure rolls back the created workspace (AUTH_MODE)', () => {
@@ -382,6 +386,33 @@ describe('SUP-207: regression — successful creation does not roll back', () =>
 
     expect(res.status).toBe(201)
     expect(mockDbInsertValues).not.toHaveBeenCalled()
+    expect(mockDeleteAgent).not.toHaveBeenCalled()
+  })
+
+  it('POST /api/agents/install-from-skillset — returns the template prompt after a successful install', async () => {
+    mockInstallAgentFromSkillset.mockResolvedValue({
+      slug: 'installed-agent',
+      displaySlug: 'installed-agent',
+      name: 'Installed',
+      createdAt: new Date('2026-08-17T00:00:00.000Z'),
+      status: 'stopped',
+      containerPort: null,
+    })
+    mockGetAgentTemplatePrompt.mockResolvedValue('Summarize the latest research')
+
+    const res = await appWithAgents().request('http://localhost/api/agents/install-from-skillset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ skillsetId: 'test-skillset', agentPath: 'agents/demo' }),
+    })
+
+    expect(res.status).toBe(201)
+    await expect(res.json()).resolves.toEqual(expect.objectContaining({
+      slug: 'installed-agent',
+      hasOnboarding: false,
+      templatePrompt: 'Summarize the latest research',
+    }))
+    expect(mockGetAgentTemplatePrompt).toHaveBeenCalledWith('installed-agent')
     expect(mockDeleteAgent).not.toHaveBeenCalled()
   })
 })

@@ -36,6 +36,7 @@ class FakeWebSocket {
   readyState = FakeWebSocket.CONNECTING
   onopen: (() => void) | null = null
   onclose: (() => void) | null = null
+  onmessage: ((event: { data: unknown }) => void) | null = null
 
   constructor(public url: string) {
     FakeWebSocket.instances.push(this)
@@ -45,6 +46,10 @@ class FakeWebSocket {
     if (this.readyState !== FakeWebSocket.CONNECTING) return
     this.readyState = FakeWebSocket.OPEN
     this.onopen?.()
+  }
+
+  emit(payload: unknown) {
+    this.onmessage?.({ data: JSON.stringify(payload) })
   }
 
   close() {
@@ -178,5 +183,84 @@ describe('useBrowserStream reconnect', () => {
     await advanceOneSecondAndOpenNewSockets()
 
     expect(FakeWebSocket.instances).toHaveLength(3)
+  })
+
+  it('closes the tray on browser_closed instead of asking the server again', async () => {
+    const canvasRef = createRef<HTMLCanvasElement | null>()
+    renderHook(() => useBrowserStream(baseOpts(canvasRef)))
+
+    await settle()
+    act(() => {
+      FakeWebSocket.instances[0].completeHandshake()
+    })
+    await settle()
+
+    // The user closed the browser window: the server says so, then drops us.
+    act(() => {
+      FakeWebSocket.instances[0].emit({ type: 'browser_closed' })
+      FakeWebSocket.instances[0].close()
+    })
+    await settle()
+
+    expect(clearBrowserActive).toHaveBeenCalledWith('s')
+    // The browser is gone — no status probe, and nothing to reconnect to.
+    expect(mockApiFetch).not.toHaveBeenCalled()
+    for (let i = 0; i < 3; i++) {
+      await advanceOneSecondAndOpenNewSockets()
+    }
+    expect(FakeWebSocket.instances).toHaveLength(1)
+  })
+
+  it('gives up once a socket has died before opening too many times over', async () => {
+    const canvasRef = createRef<HTMLCanvasElement | null>()
+    renderHook(() => useBrowserStream(baseOpts(canvasRef)))
+
+    await settle()
+    expect(FakeWebSocket.instances).toHaveLength(1)
+
+    // Every socket dies mid-handshake while /browser/status keeps insisting the
+    // browser is alive — the reconnect loop this bug produced.
+    for (let i = 0; i < 12; i++) {
+      const latest = FakeWebSocket.instances[FakeWebSocket.instances.length - 1]
+      act(() => {
+        latest.close()
+      })
+      await settle()
+      await act(async () => {
+        vi.advanceTimersByTime(30_000)
+        await Promise.resolve()
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+    }
+
+    // 1 initial + 5 bounded retries, then the tray is dropped.
+    expect(FakeWebSocket.instances).toHaveLength(6)
+    expect(clearBrowserActive).toHaveBeenCalledWith('s')
+  })
+
+  it('forgives an isolated death — the attempt budget resets once a socket opens', async () => {
+    const canvasRef = createRef<HTMLCanvasElement | null>()
+    renderHook(() => useBrowserStream(baseOpts(canvasRef)))
+
+    await settle()
+
+    // Six separate deaths, each followed by a socket that opens fine. Without
+    // the reset this would exhaust the budget and close a working preview.
+    for (let i = 0; i < 6; i++) {
+      const latest = FakeWebSocket.instances[FakeWebSocket.instances.length - 1]
+      act(() => {
+        latest.completeHandshake()
+      })
+      await settle()
+      act(() => {
+        latest.close()
+      })
+      await settle()
+      await advanceOneSecondAndOpenNewSockets()
+    }
+
+    expect(FakeWebSocket.instances).toHaveLength(7)
+    expect(clearBrowserActive).not.toHaveBeenCalled()
   })
 })

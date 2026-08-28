@@ -7,7 +7,7 @@
 
 import { db } from '@shared/lib/db'
 import { scheduledTasks, type ScheduledTask, type NewScheduledTask } from '@shared/lib/db/schema'
-import { eq, and, lte, inArray, isNotNull } from 'drizzle-orm'
+import { eq, and, lte, inArray, isNotNull, isNull, desc } from 'drizzle-orm'
 import { getNextCronTime, parseAtSyntax } from './schedule-parser'
 import { trackServerEvent } from '../analytics/server-analytics'
 
@@ -312,6 +312,27 @@ export async function listCancelledScheduledTasks(agentSlug: string): Promise<Sc
         eq(scheduledTasks.scheduleType, 'cron')
       )
     )
+}
+
+/**
+ * List one-time scheduled tasks that have fired and created a standalone
+ * session. Session wakes are excluded: they resume an existing interactive
+ * session and are surfaced on that session instead of in automation history.
+ */
+export async function listCompletedOneTimeTasks(agentSlug: string): Promise<ScheduledTask[]> {
+  return db
+    .select()
+    .from(scheduledTasks)
+    .where(
+      and(
+        eq(scheduledTasks.agentSlug, agentSlug),
+        eq(scheduledTasks.scheduleType, 'at'),
+        eq(scheduledTasks.status, 'executed'),
+        isNull(scheduledTasks.resumeSessionId),
+        isNotNull(scheduledTasks.lastSessionId)
+      )
+    )
+    .orderBy(desc(scheduledTasks.lastExecutedAt))
 }
 
 /**

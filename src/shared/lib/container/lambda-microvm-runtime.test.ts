@@ -9,12 +9,7 @@ const responses: Record<string, unknown> = {}
 
 // Upstream transports are mocked so the proxy's real loopback server can be
 // driven by real http/net clients while we capture what it forwards upstream.
-const httpsRequestMock = vi.fn()
 const tlsConnectMock = vi.fn()
-vi.mock('https', () => ({
-  default: { request: (...a: unknown[]) => httpsRequestMock(...a) },
-  request: (...a: unknown[]) => httpsRequestMock(...a),
-}))
 vi.mock('tls', () => ({
   default: { connect: (...a: unknown[]) => tlsConnectMock(...a) },
   connect: (...a: unknown[]) => tlsConnectMock(...a),
@@ -43,10 +38,20 @@ vi.mock('@shared/lib/llm-provider', () => ({
 }))
 
 const autoSleepTimeoutMinutes = vi.fn((): number | undefined => 30)
+const autoResumeOnUnexpectedDeath = vi.fn((): boolean => true)
 vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: () => ({ app: { autoSleepTimeoutMinutes: autoSleepTimeoutMinutes() }, enableToolSearch: true }),
+  getSettings: () => ({
+    app: {
+      autoSleepTimeoutMinutes: autoSleepTimeoutMinutes(),
+      autoResumeOnUnexpectedDeath: autoResumeOnUnexpectedDeath(),
+    },
+    enableToolSearch: true,
+  }),
+  isAutoResumeOnUnexpectedDeathEnabled: (settings?: { app?: { autoResumeOnUnexpectedDeath?: boolean } }) =>
+    settings?.app?.autoResumeOnUnexpectedDeath !== false,
 }))
 
+import { addErrorBreadcrumb, captureException } from '@shared/lib/error-reporting'
 import {
   LambdaMicroVmRuntimeClient,
   LocalAuthForwardProxy,
@@ -81,11 +86,12 @@ beforeEach(() => {
   for (const k in responses) delete responses[k]
   autoSleepTimeoutMinutes.mockReturnValue(30)
   sendMock.mockReset()
-  httpsRequestMock.mockReset()
   tlsConnectMock.mockReset()
   sendMock.mockImplementation(async (cmd: { type: string }) => {
     if (cmd.type === 'Run') return { microvmId: 'mvm-1', endpoint: 'ep.lambda-microvm.aws' }
-    if (cmd.type === 'Get') return { state: responses.getState ?? 'RUNNING' }
+    if (cmd.type === 'Get') {
+      return { state: responses.getState ?? 'RUNNING', stateReason: responses.getStateReason }
+    }
     if (cmd.type === 'Token') return { authToken: { 'X-aws-proxy-auth': 'tok' } }
     return {}
   })
@@ -499,6 +505,56 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
   })
 
+  // ---- base port cache sync (start/stop are fully overridden here, so the
+  // cache must be kept in sync by hand — a stale entry after auto-sleep
+  // terminate sent the first post-idle request to a dead loopback port) ----
+
+  it('start() primes the port cache: requests hit the proxy port with no runtime inspect', async () => {
+    const client = newClient()
+    const info = await client.start()
+    sendMock.mockClear()
+    vi.mocked(fetch).mockClear()
+
+    await client.fetch('/health')
+
+    expect(String(vi.mocked(fetch).mock.calls[0][0])).toBe(`http://127.0.0.1:${info.port}/health`)
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Get')).toBe(false)
+  })
+
+  it('stop() clears the cached port so the next request re-resolves instead of hitting the dead proxy', async () => {
+    const client = newClient()
+    await client.start()
+    await client.fetch('/health')
+    await client.stop()
+
+    // With a stale cache this would "succeed" against the terminated
+    // generation's loopback port; it must re-resolve and see the agent gone.
+    await expect(client.fetch('/health')).rejects.toThrow('Container is not running')
+  })
+
+  it('stopSync() clears the cached port like stop()', async () => {
+    const client = newClient()
+    await client.start()
+    await client.fetch('/health')
+    client.stopSync()
+
+    await expect(client.fetch('/health')).rejects.toThrow('Container is not running')
+  })
+
+  it('a restart re-primes the cache with the new generation proxy port', async () => {
+    const client = newClient()
+    await client.start()
+    await client.stop()
+    const second = await client.start()
+
+    sendMock.mockClear()
+    vi.mocked(fetch).mockClear()
+    await client.fetch('/health')
+
+    expect(String(vi.mocked(fetch).mock.calls[0][0])).toBe(`http://127.0.0.1:${second.port}/health`)
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Get')).toBe(false)
+  })
+
   it('start is a no-op when the agent is already running', async () => {
     const client = newClient()
     await client.start()
@@ -608,6 +664,58 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     await expect(client.createSession({ initialMessage: 'hi' })).resolves.toEqual({ id: 'sess-2' })
     expect(runCount).toBe(1)
     expect(superCreate).toHaveBeenCalledTimes(2)
+    expect(addErrorBreadcrumb).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          reason: 'post_create_unreachable',
+          classification: 'runtime_lost',
+          state: 'TERMINATED',
+        }),
+      }),
+    )
+    superCreate.mockRestore()
+  })
+
+  it('replaceGeneration breadcrumb classifies max-lifetime stateReason', async () => {
+    const { BaseContainerClient } = await import('./base-container-client')
+    const client = newClient()
+    await client.start()
+    sendMock.mockClear()
+    vi.mocked(addErrorBreadcrumb).mockClear()
+
+    sendMock.mockImplementation(async (cmd: { type: string }) => {
+      if (cmd.type === 'Run') {
+        responses.getState = 'RUNNING'
+        delete responses.getStateReason
+        return { microvmId: 'mvm-retry-8h', endpoint: 'ep.lambda-microvm.aws' }
+      }
+      if (cmd.type === 'Get') {
+        return { state: responses.getState ?? 'RUNNING', stateReason: responses.getStateReason }
+      }
+      if (cmd.type === 'Terminate') return {}
+      if (cmd.type === 'Token') return { authToken: { 'X-aws-proxy-auth': 'tok' } }
+      return {}
+    })
+
+    const superCreate = vi.spyOn(BaseContainerClient.prototype, 'createSession')
+    superCreate
+      .mockImplementationOnce(async () => {
+        responses.getState = 'TERMINATED'
+        responses.getStateReason = 'MicroVM exceeded maximum lifetime.'
+        throw refusedConnectError()
+      })
+      .mockResolvedValueOnce({ id: 'sess-8h' } as never)
+
+    await expect(client.createSession({ initialMessage: 'hi' })).resolves.toEqual({ id: 'sess-8h' })
+    expect(addErrorBreadcrumb).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          classification: 'max_lifetime',
+          state: 'TERMINATED',
+          stateReason: 'MicroVM exceeded maximum lifetime.',
+        }),
+      }),
+    )
     superCreate.mockRestore()
   })
 
@@ -1009,19 +1117,68 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
 })
 
 describe('LocalAuthForwardProxy', () => {
-  let capturedRequest: { host?: string; path?: string; headers?: Record<string, string> }
+  let capturedRequest: { host?: string; path?: string; headers?: Record<string, string>; timeout?: number }
   const proxies: LocalAuthForwardProxy[] = []
+
+  type H2Stream = PassThrough & { setTimeout: (ms: number, cb?: () => void) => void }
+  type H2Handler = (headers: Record<string, string>, stream: H2Stream) => void
+
+  function h2Respond(stream: H2Stream, status: number, body: string) {
+    if (body) stream.push(Buffer.from(body))
+    process.nextTick(() => {
+      stream.emit('response', { ':status': status })
+      stream.push(null)
+    })
+  }
+
+  function mockH2Session(handler: H2Handler) {
+    return {
+      closed: false,
+      destroyed: false,
+      request(headers: Record<string, string>) {
+        const stream = new PassThrough() as H2Stream
+        stream.setTimeout = (ms: number) => {
+          capturedRequest = { ...capturedRequest, timeout: ms }
+        }
+        handler(headers, stream)
+        return stream
+      },
+      destroy() {
+        this.destroyed = true
+        this.closed = true
+      },
+      close() {
+        this.closed = true
+      },
+      on() { return this },
+      off() { return this },
+      once(ev: string, cb: () => void) {
+        if (ev === 'connect') cb()
+        return this
+      },
+    }
+  }
+
+  let http2ConnectImpl: ((...args: unknown[]) => ReturnType<typeof mockH2Session>) | undefined
+  let http2ConnectCalls = 0
+
+  function installH2(handler: H2Handler) {
+    http2ConnectCalls = 0
+    http2ConnectImpl = () => {
+      http2ConnectCalls++
+      return mockH2Session(handler)
+    }
+  }
 
   beforeEach(() => {
     capturedRequest = {}
-    httpsRequestMock.mockImplementation((options: typeof capturedRequest, cb: (res: PassThrough) => void) => {
-      capturedRequest = options
-      const upstreamRes = new PassThrough() as PassThrough & { statusCode: number; headers: Record<string, string> }
-      upstreamRes.statusCode = 200
-      upstreamRes.headers = {}
-      cb(upstreamRes)
-      upstreamRes.end('UPSTREAM_OK')
-      return new PassThrough() // stands in for the upstream client request (req.pipe target)
+    installH2((headers, stream) => {
+      capturedRequest = {
+        host: String(headers[':authority'] ?? ''),
+        path: String(headers[':path'] ?? ''),
+        headers: { ...headers, host: String(headers[':authority'] ?? '') },
+      }
+      h2Respond(stream, 200, 'UPSTREAM_OK')
     })
   })
 
@@ -1030,7 +1187,12 @@ describe('LocalAuthForwardProxy', () => {
   })
 
   function makeProxy(mintToken: () => Promise<Record<string, string>>) {
-    const proxy = new LocalAuthForwardProxy({ endpoint: 'mvm.lambda-microvm.aws', agentPort: 3000, mintToken })
+    const proxy = new LocalAuthForwardProxy({
+      endpoint: 'mvm.lambda-microvm.aws',
+      agentPort: 3000,
+      mintToken,
+      http2Connect: http2ConnectImpl as ConstructorParameters<typeof LocalAuthForwardProxy>[0]['http2Connect'],
+    })
     proxies.push(proxy)
     return proxy
   }
@@ -1050,7 +1212,7 @@ describe('LocalAuthForwardProxy', () => {
   it('injects auth + proxy-port headers, sets upstream host, and drops hop-by-hop headers', async () => {
     const proxy = makeProxy(async () => ({ 'X-aws-proxy-auth': 'tok1' }))
     const port = await proxy.start()
-    const res = await httpGet(port, '/sessions', { connection: 'keep-alive', 'x-custom': 'v' })
+    const res = await httpGet(port, '/sessions', { connection: 'keep-alive', te: 'trailers', 'x-custom': 'v' })
     expect(res.body).toBe('UPSTREAM_OK')
     expect(capturedRequest.host).toBe('mvm.lambda-microvm.aws')
     expect(capturedRequest.path).toBe('/sessions')
@@ -1059,6 +1221,9 @@ describe('LocalAuthForwardProxy', () => {
     expect(capturedRequest.headers!.host).toBe('mvm.lambda-microvm.aws')
     expect(capturedRequest.headers!['x-custom']).toBe('v')
     expect(capturedRequest.headers!.connection).toBeUndefined()
+    expect(capturedRequest.headers!.te).toBeUndefined()
+    expect(capturedRequest.headers!['x-aws-proxy-force-h2']).toBeUndefined()
+    expect(capturedRequest.timeout).toBe(30_000)
   })
 
   it('caches the auth token across requests (mints once)', async () => {
@@ -1125,14 +1290,9 @@ describe('LocalAuthForwardProxy', () => {
 
   it('wakes a suspended VM (retries /health past a 502) before piping a WS upgrade', async () => {
     let healthCalls = 0
-    httpsRequestMock.mockImplementation((_opts: unknown, cb: (res: PassThrough) => void) => {
+    installH2((_headers, stream) => {
       healthCalls++
-      const res = new PassThrough() as PassThrough & { statusCode: number; headers: Record<string, string> }
-      res.statusCode = healthCalls === 1 ? 502 : 200 // first probe: still resuming
-      res.headers = {}
-      cb(res)
-      res.end('')
-      return new PassThrough()
+      h2Respond(stream, healthCalls === 1 ? 502 : 200, '')
     })
     let tlsCalled = false
     const tlsReady = new Promise<void>((resolve) => {
@@ -1152,6 +1312,140 @@ describe('LocalAuthForwardProxy', () => {
     client.destroy()
     expect(healthCalls).toBeGreaterThanOrEqual(2) // retried past the 502
     expect(tlsCalled).toBe(true) // only piped once the VM was awake
+  })
+
+  it('retries after an HTTP/2 connect error then returns the body', async () => {
+    let connects = 0
+    http2ConnectImpl = () => {
+      connects++
+      if (connects === 1) {
+        return {
+          closed: false,
+          destroyed: false,
+          request() { throw new Error('should not request') },
+          destroy() { this.destroyed = true; this.closed = true },
+          close() { this.closed = true },
+          on() { return this },
+          off() { return this },
+          once(ev: string, cb: (err?: Error) => void) {
+            if (ev === 'error') process.nextTick(() => cb(new Error('alpn rejected')))
+            return this
+          },
+        }
+      }
+      return mockH2Session((_headers, stream) => h2Respond(stream, 200, 'UPSTREAM_OK'))
+    }
+    const port = await makeProxy(async () => ({ 'X-aws-proxy-auth': 'tok' })).start()
+    const res = await httpGet(port, '/health')
+    expect(res.status).toBe(200)
+    expect(res.body).toBe('UPSTREAM_OK')
+    expect(connects).toBe(2)
+  })
+
+  it('retries an ingress 429 then returns the successful body', async () => {
+    let calls = 0
+    installH2((_headers, stream) => {
+      calls++
+      h2Respond(stream, calls === 1 ? 429 : 200, calls === 1 ? 'Rate limit exceeded' : 'UPSTREAM_OK')
+    })
+    const port = await makeProxy(async () => ({ 'X-aws-proxy-auth': 'tok' })).start()
+    const res = await httpGet(port, '/artifacts/open-slide-studio/')
+    expect(res.status).toBe(200)
+    expect(res.body).toBe('UPSTREAM_OK')
+    expect(calls).toBe(2)
+  })
+
+  it('multiplexes HTTP requests on one HTTP/2 session', async () => {
+    const port = await makeProxy(async () => ({ 'X-aws-proxy-auth': 'tok' })).start()
+    const [first, second] = await Promise.all([httpGet(port, '/a'), httpGet(port, '/b')])
+    expect(first.body).toBe('UPSTREAM_OK')
+    expect(second.body).toBe('UPSTREAM_OK')
+    expect(http2ConnectCalls).toBe(1)
+  })
+
+  it('keeps HTTP/2 streams flowing while a WebSocket is open', async () => {
+    const tlsReady = new Promise<void>((resolve) => {
+      tlsConnectMock.mockImplementation((_opts: unknown, cb: () => void) => {
+        const sock = new PassThrough()
+        process.nextTick(() => {
+          cb()
+          resolve()
+        })
+        return sock
+      })
+    })
+    const port = await makeProxy(async () => ({ 'X-aws-proxy-auth': 'tok' })).start()
+    const wsClient = net.connect(port, '127.0.0.1', () => {
+      wsClient.write('GET /sessions/s1/stream HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: k\r\nSec-WebSocket-Version: 13\r\n\r\n')
+    })
+    await tlsReady
+    const [first, second] = await Promise.all([httpGet(port, '/a'), httpGet(port, '/b')])
+    expect(first.body).toBe('UPSTREAM_OK')
+    expect(second.body).toBe('UPSTREAM_OK')
+    wsClient.destroy()
+  })
+
+  it('does not report a client abort to Sentry', async () => {
+    vi.mocked(captureException).mockClear()
+    http2ConnectImpl = () => mockH2Session((_headers, stream) => {
+      stream.end = ((() => stream) as unknown as typeof stream.end)
+      stream.push(Buffer.from('partial'))
+      process.nextTick(() => stream.emit('response', { ':status': 200 }))
+    })
+    const port = await makeProxy(async () => ({ 'X-aws-proxy-auth': 'tok' })).start()
+    await new Promise<void>((resolve, reject) => {
+      const req = http.request({ host: '127.0.0.1', port, path: '/asset.js' }, (res) => {
+        res.resume()
+        req.destroy()
+        resolve()
+      })
+      req.on('error', () => {})
+      req.setTimeout(2000, () => reject(new Error('client got no response')))
+      req.end()
+    })
+    await new Promise((r) => setImmediate(r))
+    await new Promise((r) => setImmediate(r))
+    expect(captureException).not.toHaveBeenCalled()
+  })
+
+  it('reports a non-abort pipeline error to Sentry', async () => {
+    vi.mocked(captureException).mockClear()
+    installH2((_headers, stream) => {
+      process.nextTick(() => {
+        stream.emit('response', { ':status': 200 })
+        stream.destroy(new Error('upstream exploded'))
+      })
+    })
+    const port = await makeProxy(async () => ({ 'X-aws-proxy-auth': 'tok' })).start()
+    await httpGet(port, '/asset.js').catch(() => {})
+    await vi.waitFor(() => expect(captureException).toHaveBeenCalled())
+    expect(vi.mocked(captureException).mock.calls[0][0]).toMatchObject({ message: 'upstream exploded' })
+  })
+
+  it('closes a session that connects after stop()', async () => {
+    let connectCb: (() => void) | undefined
+    const session = {
+      closed: false,
+      destroyed: false,
+      request() { throw new Error('should not request') },
+      destroy() { this.destroyed = true; this.closed = true },
+      close() { this.closed = true },
+      on() { return this },
+      off() { return this },
+      once(ev: string, cb: () => void) {
+        if (ev === 'connect') connectCb = cb
+        return this
+      },
+    }
+    http2ConnectImpl = () => session
+    const proxy = makeProxy(async () => ({ 'X-aws-proxy-auth': 'tok' }))
+    const port = await proxy.start()
+    const pending = httpGet(port, '/health').catch(() => {})
+    await vi.waitFor(() => { if (!connectCb) throw new Error('connect not armed') })
+    proxy.stop()
+    connectCb!()
+    expect(session.closed).toBe(true)
+    await pending
   })
 
   it('destroys the client socket if the WS upstream connect never completes', async () => {
@@ -1252,5 +1546,192 @@ describe('attachMicrovmUpstreamKeepalive', () => {
     vi.advanceTimersByTime(MICROVM_STREAM_KEEPALIVE_MS)
     expect(write).not.toHaveBeenCalled()
     dispose()
+  })
+})
+
+describe('LambdaMicroVmRuntimeClient.observeUnexpectedDeath', () => {
+  beforeEach(() => {
+    Object.assign(process.env, FULL_ENV)
+    resetMicrovmRuntimeForTests()
+    autoResumeOnUnexpectedDeath.mockReturnValue(true)
+  })
+
+  function newClient() {
+    return new LambdaMicroVmRuntimeClient({
+      agentId: 'agent-xyz',
+      envVars: { FOO: 'bar' },
+      restartAgent: async () => {},
+    })
+  }
+
+  function sessionFetchBy(running: Record<string, boolean>) {
+    vi.mocked(fetch).mockImplementation(async (input: Parameters<typeof fetch>[0]) => {
+      const url = String(input)
+      const match = url.match(/\/sessions\/([^/?]+)/)
+      if (match) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ id: match[1], isRunning: running[match[1]] ?? false }),
+        } as unknown as Response
+      }
+      return { ok: true } as Response
+    })
+  }
+
+  function sessionFetch(isRunning: boolean) {
+    sessionFetchBy({ 'sess-1': isRunning })
+  }
+
+  function healthDown() {
+    vi.mocked(fetch).mockImplementation(async (input: Parameters<typeof fetch>[0]) => {
+      const url = String(input)
+      if (url.includes('/health')) return { ok: false, status: 502 } as Response
+      return { ok: true } as Response
+    })
+  }
+
+  it('recovers max_lifetime with replace when GetMicrovm reports the 8h reason', async () => {
+    const client = newClient()
+    await client.start()
+    responses.getState = 'TERMINATED'
+    responses.getStateReason = 'MicroVM exceeded maximum lifetime.'
+    sessionFetch(false)
+
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['sess-1'] })).resolves.toEqual({
+      action: 'recover',
+      reason: 'max_lifetime',
+      resumePrompt: expect.stringContaining('8-hour lifetime'),
+      replaceGeneration: true,
+    })
+  })
+
+  it('settles a recover plan when the MicroVM auto-resume toggle is off', async () => {
+    autoResumeOnUnexpectedDeath.mockReturnValue(false)
+    const client = newClient()
+    await client.start()
+    responses.getState = 'TERMINATED'
+    responses.getStateReason = 'MicroVM exceeded maximum lifetime.'
+    sessionFetch(false)
+
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['sess-1'] })).resolves.toEqual({
+      action: 'settle',
+    })
+  })
+
+  it('recovers guest_oom without replace when SIGKILL + RUNNING + sessions idle over live HTTP', async () => {
+    const client = newClient()
+    await client.start()
+    responses.getState = 'RUNNING'
+    delete responses.getStateReason
+    sessionFetch(false)
+
+    await expect(
+      client.observeUnexpectedDeath({
+        lastFatalResult: 'oom_sigkill',
+        sessionIds: ['sess-1'],
+      }),
+    ).resolves.toEqual({
+      action: 'recover',
+      reason: 'guest_oom',
+      resumePrompt: expect.stringContaining('ran out of memory'),
+      replaceGeneration: false,
+    })
+  })
+
+  it('recovers guest_oom with replace when the container HTTP surface is unreachable', async () => {
+    const client = newClient()
+    await client.start()
+    responses.getState = 'RUNNING'
+    delete responses.getStateReason
+    healthDown()
+
+    await expect(
+      client.observeUnexpectedDeath({
+        lastFatalResult: 'oom_sigkill',
+        sessionIds: ['sess-1'],
+      }),
+    ).resolves.toEqual({
+      action: 'recover',
+      reason: 'guest_oom',
+      resumePrompt: expect.stringContaining('ran out of memory'),
+      replaceGeneration: true,
+    })
+  })
+
+  it('still ignores a WS blip when the MicroVM auto-resume toggle is off', async () => {
+    autoResumeOnUnexpectedDeath.mockReturnValue(false)
+    const client = newClient()
+    await client.start()
+    responses.getState = 'RUNNING'
+    sessionFetch(true)
+
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['sess-1'] })).resolves.toEqual({
+      action: 'ignore',
+      liveSessionIds: ['sess-1'],
+    })
+  })
+
+  it('ignores a WS blip when the VM is RUNNING and the session probe succeeds', async () => {
+    const client = newClient()
+    await client.start()
+    responses.getState = 'RUNNING'
+    sessionFetch(true)
+
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['sess-1'] })).resolves.toEqual({
+      action: 'ignore',
+      liveSessionIds: ['sess-1'],
+    })
+  })
+
+  it('reports only the still-running sessions so dead siblings settle', async () => {
+    const client = newClient()
+    await client.start()
+    responses.getState = 'RUNNING'
+    sessionFetchBy({ 'sess-1': true, 'sess-2': false })
+
+    await expect(
+      client.observeUnexpectedDeath({ sessionIds: ['sess-1', 'sess-2'] }),
+    ).resolves.toEqual({
+      action: 'ignore',
+      liveSessionIds: ['sess-1'],
+    })
+  })
+
+  function failGetMicrovm() {
+    sendMock.mockImplementation(async (cmd: { type: string }) => {
+      if (cmd.type === 'Get') throw new Error('ThrottlingException')
+      if (cmd.type === 'Token') return { authToken: { 'X-aws-proxy-auth': 'tok' } }
+      return {}
+    })
+  }
+
+  it('ignores when GetMicrovm fails but the live probe still sees the session running', async () => {
+    const client = newClient()
+    await client.start()
+    sessionFetch(true)
+    failGetMicrovm()
+
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['sess-1'] })).resolves.toEqual({
+      action: 'ignore',
+      liveSessionIds: ['sess-1'],
+    })
+  })
+
+  it('fails closed to settle when GetMicrovm fails and the probe cannot confirm the session', async () => {
+    const client = newClient()
+    await client.start()
+    sessionFetch(false)
+    failGetMicrovm()
+
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['sess-1'] })).resolves.toEqual({
+      action: 'settle',
+    })
+  })
+
+  it('defers SIGKILL fatals and settles other fatals', () => {
+    const client = newClient()
+    expect(client.onFatalResult('oom_sigkill')).toBe('defer_for_recovery')
+    expect(client.onFatalResult(null)).toBe('settle')
   })
 })

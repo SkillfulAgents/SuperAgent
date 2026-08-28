@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { AgentPreferences } from '@shared/lib/types/agent-preferences'
 import { EFFORT_LEVELS, SPEED_LEVELS, type EffortLevel, type SpeedLevel } from './types'
 
 /**
@@ -59,4 +60,84 @@ export function parseRuntimeOptions(raw: unknown): RuntimeOptions {
   }
 
   return result
+}
+
+const inheritModelsSchema = z.object({
+  agentModel: z.string().min(1),
+})
+
+function presentString(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.length > 0) return value
+  return undefined
+}
+
+function optionalEffort(value: unknown): EffortLevel | undefined {
+  const parsed = z.enum(EFFORT_LEVELS).safeParse(value)
+  return parsed.success ? parsed.data : undefined
+}
+
+function optionalSpeed(value: unknown): SpeedLevel | undefined {
+  const parsed = z.enum(SPEED_LEVELS).safeParse(value)
+  return parsed.success ? parsed.data : undefined
+}
+
+function asRecord(raw: unknown): Record<string, unknown> | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  return raw as Record<string, unknown>
+}
+
+export type RuntimeInherit = {
+  model: string
+  effort?: EffortLevel
+  speed?: SpeedLevel
+}
+
+/**
+ * Surface override → agent default → app default.
+ * Junk surface values are treated as unset (do not throw).
+ * Effort is omitted when no rung has one. Speed stays two-rung.
+ */
+export function resolveRuntimeInherit(
+  surface: unknown,
+  agent: Partial<AgentPreferences> | null | undefined,
+  models: unknown,
+): RuntimeInherit {
+  const s = asRecord(surface) ?? {}
+  const raw = asRecord(models) ?? {}
+  const m = inheritModelsSchema.parse({ agentModel: raw.agentModel })
+
+  const model = presentString(s.model) ?? presentString(agent?.defaultModel) ?? m.agentModel
+  const effort = optionalEffort(s.effort) ?? optionalEffort(agent?.defaultEffort) ?? optionalEffort(raw.agentEffort)
+  const speed = optionalSpeed(s.speed) ?? optionalSpeed(agent?.defaultSpeed)
+
+  return {
+    model,
+    ...(effort ? { effort } : {}),
+    ...(speed ? { speed } : {}),
+  }
+}
+
+/** Snap a resolved effort to what the catalog model allows, for display only. */
+export function clampEffortForDisplay(
+  effort: EffortLevel | undefined,
+  supported: EffortLevel[] | undefined,
+): EffortLevel | undefined {
+  if (!effort) return undefined
+  if (!supported || supported.length === 0 || supported.includes(effort)) return effort
+  return supported.includes('medium') ? 'medium' : supported[0]
+}
+
+/**
+ * Snap a resolved speed for display only — mirrors useSpeedClamp. A found
+ * catalog model with no supportedSpeeds allows only 'normal'; an unknown
+ * model leaves the speed alone (useSpeedClamp is inert without a model).
+ */
+export function clampSpeedForDisplay(
+  speed: SpeedLevel | undefined,
+  catalogModel: { supportedSpeeds?: readonly SpeedLevel[] } | undefined,
+): SpeedLevel | undefined {
+  if (!speed) return undefined
+  if (!catalogModel) return speed
+  const available = catalogModel.supportedSpeeds ?? ['normal']
+  return available.includes(speed) ? speed : 'normal'
 }

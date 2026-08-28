@@ -36,11 +36,13 @@ import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { useDeleteSession, useUpdateSessionName } from '@renderer/hooks/use-sessions'
 import { apiFetch } from '@renderer/lib/api'
+import { sortSessionsByActivity, type SessionSortOrder } from '@shared/lib/session-ordering'
 
 interface SessionItem {
   id: string
   name: string
   createdAt: string
+  lastActivityAt?: string
   isActive?: boolean
   isAwaitingInput?: boolean
   hasUnreadNotifications?: boolean
@@ -62,7 +64,7 @@ interface RelatedSessionsProps {
   pageSize?: number
 }
 
-export type SortOrder = 'newest' | 'oldest'
+export type SortOrder = SessionSortOrder
 
 const DEFAULT_PAGE_SIZE = 10
 
@@ -77,14 +79,7 @@ export function RelatedSessions({ sessions, formatDate, className, showIcon = tr
     return sessions.filter((s) => s.name.toLowerCase().includes(q))
   }, [sessions, searchQuery])
 
-  const sorted = useMemo(() => {
-    const copy = [...filtered]
-    copy.sort((a, b) => {
-      const diff = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-      return sortOrder === 'newest' ? diff : -diff
-    })
-    return copy
-  }, [filtered, sortOrder])
+  const sorted = useMemo(() => sortSessionsByActivity(filtered, sortOrder), [filtered, sortOrder])
 
   // Reset page when search query changes
   const prevQuery = useRef(searchQuery)

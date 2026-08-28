@@ -22,11 +22,25 @@ const NotificationDetailRoute = lazyRouteComponent(
   () => import('@renderer/components/layout/notification-detail-route'),
   'NotificationDetailRoute',
 )
+const ExploreRoute = lazyRouteComponent(
+  () => import('@renderer/components/layout/explore-route'),
+  'ExploreRoute',
+)
+const ExploreTemplateRoute = lazyRouteComponent(
+  () => import('@renderer/components/layout/explore-route'),
+  'ExploreTemplateRoute',
+)
+const ExploreCategoryRoute = lazyRouteComponent(
+  () => import('@renderer/components/layout/explore-route'),
+  'ExploreCategoryRoute',
+)
 const AgentShell = lazyRouteComponent(
   () => import('@renderer/components/layout/agent-shell'),
   'AgentShell',
 )
 const AgentHomeRoute = lazyRouteComponent(() => import('./lazy-routes/agent-home-route'), 'AgentHomeRoute')
+const InboundXAgentRoute = lazyRouteComponent(() => import('./lazy-routes/inbound-x-agent-route'), 'InboundXAgentRoute')
+const CompletedTasksRoute = lazyRouteComponent(() => import('./lazy-routes/completed-tasks-route'), 'CompletedTasksRoute')
 const XAgentPermissionsRoute = lazyRouteComponent(() => import('./lazy-routes/x-agent-permissions-route'), 'XAgentPermissionsRoute')
 const ApiLogsRoute = lazyRouteComponent(() => import('./lazy-routes/api-logs-route'), 'ApiLogsRoute')
 const ChatRoute = lazyRouteComponent(() => import('./lazy-routes/chat-route'), 'ChatRoute')
@@ -87,6 +101,33 @@ export const notificationDetailRoute = createRoute({
   component: NotificationDetailRoute,
 })
 
+export const exploreRoute = createRoute({
+  getParentRoute: () => appShellRoute,
+  path: 'explore',
+  component: ExploreRoute,
+})
+
+// Static `category` outranks the `$skillsetId/$templateSlug` pattern below, so
+// this matches first despite both being two segments under /explore.
+export const exploreCategoryRoute = createRoute({
+  getParentRoute: () => appShellRoute,
+  path: 'explore/category/$category',
+  params: { parse: (raw) => ({ category: z.string().min(1).parse(raw.category) }) },
+  component: ExploreCategoryRoute,
+})
+
+export const exploreTemplateRoute = createRoute({
+  getParentRoute: () => appShellRoute,
+  path: 'explore/$skillsetId/$templateSlug',
+  params: {
+    parse: (raw) => ({
+      skillsetId: z.string().min(1).parse(raw.skillsetId),
+      templateSlug: z.string().min(1).parse(raw.templateSlug),
+    }),
+  },
+  component: ExploreTemplateRoute,
+})
+
 // ── AGENT LAYOUT: /agents/$slug — mount-survival anchor #2 (chat/SSE shell) ────
 export const agentLayoutRoute = createRoute({
   getParentRoute: () => appShellRoute,
@@ -138,6 +179,18 @@ export const webhookRoute = createRoute({
   path: 'webhooks/$webhookId',
   params: { parse: (raw) => ({ webhookId: z.string().min(1).parse(raw.webhookId) }) },
   component: WebhookRoute,
+})
+
+export const inboundXAgentRoute = createRoute({
+  getParentRoute: () => agentLayoutRoute,
+  path: 'called-from-agents',
+  component: InboundXAgentRoute,
+})
+
+export const completedTasksRoute = createRoute({
+  getParentRoute: () => agentLayoutRoute,
+  path: 'completed-tasks',
+  component: CompletedTasksRoute,
 })
 
 export const chatRoute = createRoute({
@@ -217,11 +270,16 @@ export const routeTree = rootRoute.addChildren([
     homeRoute,
     notificationsRoute,
     notificationDetailRoute,
+    exploreRoute,
+    exploreCategoryRoute,
+    exploreTemplateRoute,
     agentLayoutRoute.addChildren([
       agentHomeRoute,
       sessionRoute,
       taskRoute,
       webhookRoute,
+      inboundXAgentRoute,
+      completedTasksRoute,
       chatRoute,
       dashboardRoute,
       apiLogsRoute,

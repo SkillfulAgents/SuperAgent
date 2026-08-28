@@ -43,6 +43,13 @@ vi.mock('./base-container-client', () => ({
     config: any
     constructor(config: any) { this.config = config }
     protected agentIdentityForEnv() { return { id: this.config.agentId } }
+    // Stands in for the real merge, which these tests don't exercise: they
+    // cover where the env file lands and how its path is translated. What the
+    // merge itself produces (provider env, ENABLE_TOOL_SEARCH, precedence) is
+    // covered in base-container-client.test.ts.
+    protected buildAgentEnv(extra?: Record<string, string>) {
+      return { CLAUDE_CONFIG_DIR: '/workspace/.claude', ...this.config.envVars, ...extra }
+    }
   },
   checkCommandAvailable: vi.fn(),
   execWithPath: vi.fn(),
@@ -638,7 +645,6 @@ describe('WSL2ContainerClient.buildEnvFile', () => {
     const [envVars, agentId] = mockedWriteEnvFile.mock.calls[0]
     expect(agentId).toBe('my-agent')
     expect(envVars).toMatchObject({
-      ANTHROPIC_API_KEY: 'test-key',
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
       FOO: 'bar',
       EXTRA: 'val',
