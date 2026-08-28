@@ -132,7 +132,6 @@ function SettingsModelSelectImpl({
         onOpenAutoFocus={(e) => e.preventDefault()}
       >
         <ModelFamilyList
-          header="Model"
           catalog={catalog}
           value={model}
           onPick={onModelChange}

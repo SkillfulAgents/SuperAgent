@@ -91,11 +91,9 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true, foo
         {selectedModel && (
           <>
             {/* Flat list, no "latest" — per-message picks a concrete version.
-                The "Models" label renders inside, below the vendor tabs.
                 Picks never dismiss: model and effort get tuned together, and the
                 popover closes only on outside click / Escape / trigger toggle. */}
             <ModelFamilyList
-              header="Models"
               catalog={catalog}
               value={model}
               onPick={setModel}

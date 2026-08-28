@@ -83,8 +83,7 @@ describe('ComposerOptionsPopover', () => {
     const user = userEvent.setup()
     render(<Harness initialModel="claude-sonnet-4-6" />)
     await user.click(screen.getByTestId('composer-options-trigger'))
-    expect(await screen.findByText('Models')).toBeInTheDocument()
-    expect(screen.getByText('Effort')).toBeInTheDocument()
+    expect(await screen.findByText('Effort')).toBeInTheDocument()
     // Flat list: concrete versions are top-level rows, no family headers.
     expect(screen.getByTestId('model-pinned-claude-haiku-4-5')).toBeInTheDocument()
     expect(screen.getByTestId('model-pinned-claude-sonnet-4-6')).toBeInTheDocument()
@@ -122,7 +121,7 @@ describe('ComposerOptionsPopover', () => {
     await user.click(await screen.findByTestId('model-pinned-claude-opus-4-8'))
     expect(setModel).toHaveBeenCalledWith('claude-opus-4-8')
     // Stays open so model + effort can be tuned together.
-    expect(screen.getByText('Models')).toBeInTheDocument()
+    expect(screen.getByTestId('model-pinned-claude-opus-4-8')).toBeInTheDocument()
   })
 
   it('selecting an effort calls setEffort and keeps the popover open', async () => {
@@ -182,7 +181,7 @@ describe('ComposerOptionsPopover', () => {
     render(<Harness catalog={[]} initialModel={undefined} />)
     expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('High')
     await user.click(screen.getByTestId('composer-options-trigger'))
-    expect(screen.queryByText('Models')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('model-pinned-claude-opus-4-8')).not.toBeInTheDocument()
     expect(await screen.findByText('Effort')).toBeInTheDocument()
   })
 
@@ -195,10 +194,10 @@ describe('ComposerOptionsPopover', () => {
     const user = userEvent.setup()
     render(<Harness initialModel="claude-opus-4-8" />)
     await user.click(screen.getByTestId('composer-options-trigger'))
-    const models = await screen.findByText('Models')
+    const models = await screen.findByTestId('model-pinned-claude-opus-4-8')
     const effort = screen.getByText('Effort')
     const speed = screen.getByText('Speed')
-    // DOM order == visual order (no col-reverse): Models, then Effort, then Speed.
+    // DOM order == visual order (no col-reverse): model rows, then Effort, then Speed.
     expect(models.compareDocumentPosition(effort) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(effort.compareDocumentPosition(speed) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
