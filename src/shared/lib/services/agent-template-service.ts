@@ -66,6 +66,9 @@ export const MAX_COMPRESSED_SIZE = 500 * 1024 * 1024 // 500MB
 const MAX_FILE_COUNT = 2000
 export const MAX_TEMPLATE_PROMPT_SIZE = 16 * 1024 // 16KB
 
+/** Bytes of SKILL.md to read for frontmatter. The skill body may be larger. */
+const ONBOARDING_SKILL_READ_LIMIT = MAX_TEMPLATE_PROMPT_SIZE + 16 * 1024
+
 /** Canonical prompt handoff file, plus a lowercase compatibility spelling. */
 const TEMPLATE_PROMPT_FILE_NAMES = ['PROMPT.md', 'prompt.md'] as const
 
@@ -764,17 +767,57 @@ export async function getInstalledAgentMetadata(
 }
 
 /**
- * Check if an agent has an onboarding skill (`.claude/skills/agent-onboarding/SKILL.md`).
+ * Probe the onboarding skill (`.claude/skills/agent-onboarding/SKILL.md`).
+ * `firstPrompt` is the optional `first_prompt` frontmatter field.
  */
-export async function hasOnboardingSkill(agentSlug: string): Promise<boolean> {
-  const workspaceDir = getAgentWorkspaceDir(agentSlug)
-  const onboardingPath = path.join(workspaceDir, '.claude', 'skills', 'agent-onboarding', 'SKILL.md')
+export async function hasOnboardingSkill(agentSlug: string): Promise<{
+  hasOnboarding: boolean
+  firstPrompt?: string
+}> {
+  const onboardingPath = path.join(
+    getAgentWorkspaceDir(agentSlug),
+    '.claude',
+    'skills',
+    'agent-onboarding',
+    'SKILL.md',
+  )
+  let handle: Awaited<ReturnType<typeof fs.promises.open>> | undefined
   try {
-    await fs.promises.access(onboardingPath)
-    return true
+    handle = await fs.promises.open(onboardingPath, 'r')
+    const stats = await handle.stat()
+    if (!stats.isFile()) return { hasOnboarding: false }
+    if (stats.size === 0) return { hasOnboarding: true }
+
+    // Frontmatter is at the top. Do not load a 500MB skill body into the heap.
+    const readLen = Math.min(stats.size, ONBOARDING_SKILL_READ_LIMIT)
+    const buffer = Buffer.alloc(readLen)
+    let bytesRead = 0
+    while (bytesRead < buffer.length) {
+      const result = await handle.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead)
+      if (result.bytesRead === 0) break
+      bytesRead += result.bytesRead
+    }
+    const content = buffer.subarray(0, bytesRead).toString('utf8')
+    const firstPrompt = onboardingFirstPromptFromValue(
+      parseMarkdownWithFrontmatter(content).frontmatter.first_prompt,
+    )
+    return firstPrompt ? { hasOnboarding: true, firstPrompt } : { hasOnboarding: true }
   } catch {
-    return false
+    return { hasOnboarding: false }
+  } finally {
+    await handle?.close().catch(() => undefined)
   }
+}
+
+/** Flat YAML turns `first_prompt: |` into the string `|`. That is not a kickoff. */
+const YAML_BLOCK_SCALAR_MARKER = /^[|>][-+]?$/
+
+function onboardingFirstPromptFromValue(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  if (!trimmed || trimmed.length > MAX_TEMPLATE_PROMPT_SIZE) return undefined
+  if (YAML_BLOCK_SCALAR_MARKER.test(trimmed)) return undefined
+  return trimmed
 }
 
 /**

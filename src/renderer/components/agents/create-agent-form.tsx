@@ -220,6 +220,7 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, classN
         agentSlug: agent.slug,
         hasOnboarding: agent.hasOnboarding,
         templatePrompt: agent.templatePrompt,
+        onboardingFirstPrompt: agent.onboardingFirstPrompt,
         openAgent: () => { void navigate({ to: '/agents/$slug', params: { slug: agent.displaySlug } }) },
         startOnboardingSession,
       })

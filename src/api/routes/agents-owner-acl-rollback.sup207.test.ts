@@ -99,7 +99,7 @@ vi.mock('@shared/lib/services/agent-template-service', () => ({
   updateAgentFromSkillset: vi.fn(), getAgentTemplateStatus: vi.fn(), getDiscoverableAgents: vi.fn(),
   refreshSkillsetCaches: vi.fn(), getAgentPRInfo: vi.fn(), createAgentPR: vi.fn(),
   getAgentPublishInfo: vi.fn(), publishAgentToSkillset: vi.fn(), refreshAgentTemplates: vi.fn(),
-  hasOnboardingSkill: vi.fn().mockResolvedValue(false),
+  hasOnboardingSkill: vi.fn().mockResolvedValue({ hasOnboarding: false }),
   getAgentTemplatePrompt: (...a: unknown[]) => mockGetAgentTemplatePrompt(...a),
 }))
 

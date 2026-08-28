@@ -263,6 +263,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
         agentSlug: imported.slug,
         hasOnboarding: imported.hasOnboarding,
         templatePrompt: imported.templatePrompt,
+        onboardingFirstPrompt: imported.onboardingFirstPrompt,
         noteProgrammaticChange,
         openAgent: () => {
           void navigate({ to: '/agents/$slug', params: { slug: imported.slug } })

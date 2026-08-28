@@ -46,6 +46,8 @@ export interface ApiAgentTemplateInstallResult extends ApiAgent {
   hasOnboarding?: boolean
   /** Optional root PROMPT.md contents to prefill on the new agent's home page. */
   templatePrompt?: string
+  /** Optional `first_prompt` from the onboarding skill frontmatter. */
+  onboardingFirstPrompt?: string
 }
 
 export interface ApiAgentDashboard {
