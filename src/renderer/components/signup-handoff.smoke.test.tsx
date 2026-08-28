@@ -6,6 +6,13 @@
 import { render, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+vi.mock('@renderer/context/user-context', () => ({
+  useUser: () => ({ isAuthMode: true }),
+}))
+vi.mock('@renderer/hooks/use-settings', () => ({
+  useSettings: () => ({ data: { setupCompleted: true } }),
+}))
+
 vi.mock('@renderer/hooks/use-user-settings', () => ({
   useUserSettings: () => ({ data: { setupCompleted: true } }),
   useUpdateUserSettings: () => ({ mutateAsync: vi.fn() }),

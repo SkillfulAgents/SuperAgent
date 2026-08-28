@@ -11,8 +11,16 @@ const toastError = vi.fn()
 let mockDiscoverableAgents: ApiDiscoverableAgent[] | undefined
 let mockDiscoverableAgentsFailed = false
 let mockSetupCompleted = true
+let mockGlobalSetupCompleted = true
+let mockIsAuthMode = true
 
 vi.mock('sonner', () => ({ toast: { error: (...args: unknown[]) => toastError(...args) } }))
+vi.mock('@renderer/context/user-context', () => ({
+  useUser: () => ({ isAuthMode: mockIsAuthMode }),
+}))
+vi.mock('@renderer/hooks/use-settings', () => ({
+  useSettings: () => ({ data: { setupCompleted: mockGlobalSetupCompleted } }),
+}))
 vi.mock('@renderer/hooks/use-user-settings', () => ({
   useUserSettings: () => ({ data: { setupCompleted: mockSetupCompleted } }),
   useUpdateUserSettings: () => ({ mutateAsync }),
@@ -103,6 +111,8 @@ describe('SignupHandoffConsumer', () => {
     mockDiscoverableAgents = []
     mockDiscoverableAgentsFailed = false
     mockSetupCompleted = true
+    mockGlobalSetupCompleted = true
+    mockIsAuthMode = true
     completeInstall.mockResolvedValue(undefined)
     mutateAsync.mockResolvedValue({})
   })
@@ -156,7 +166,7 @@ describe('SignupHandoffConsumer', () => {
     })
   })
 
-  it('slug-only URL is stripped and not left in the one-shot', async () => {
+  it('completed first-run keeps a slug-only handoff after stripping the URL', async () => {
     const router = makeRouter('/?template_slug=research-agent')
     const { getByTestId } = render(
       <NavTransientProvider>
@@ -167,7 +177,9 @@ describe('SignupHandoffConsumer', () => {
     await waitFor(() => {
       expect((router.state.location.search as { template_slug?: string }).template_slug).toBeUndefined()
     })
-    expect(JSON.parse(getByTestId('handoff').textContent ?? 'null')).toBeNull()
+    expect(JSON.parse(getByTestId('handoff').textContent ?? 'null')).toEqual({
+      template_slug: 'research-agent',
+    })
   })
 
   it('is a no-op when neither handoff param is present', async () => {
@@ -219,6 +231,8 @@ describe('SignupHandoffConsumer template-only first run', () => {
     mockDiscoverableAgents = undefined
     mockDiscoverableAgentsFailed = false
     mockSetupCompleted = false
+    mockGlobalSetupCompleted = true
+    mockIsAuthMode = true
     completeInstall.mockResolvedValue(undefined)
     mutateAsync.mockResolvedValue({})
   })
@@ -285,6 +299,32 @@ describe('SignupHandoffConsumer template-only first run', () => {
       </NavTransientProvider>,
     )
     await waitFor(() => expect(queryByTestId('home')).toBeTruthy())
+    expect(queryByTestId('template-install-dialog')).toBeNull()
+    expect(completeInstall).not.toHaveBeenCalled()
+  })
+
+  it('global setup incomplete → leaves the handoff for the full wizard', async () => {
+    mockGlobalSetupCompleted = false
+    mockDiscoverableAgents = [match]
+    const { getByTestId, queryByTestId } = renderSlugFirstRun()
+    await waitFor(() => {
+      expect(JSON.parse(getByTestId('handoff').textContent ?? 'null')).toEqual({
+        template_slug: 'seo-agent',
+      })
+    })
+    expect(queryByTestId('template-install-dialog')).toBeNull()
+    expect(completeInstall).not.toHaveBeenCalled()
+  })
+
+  it('local first run → leaves the handoff for the full wizard', async () => {
+    mockIsAuthMode = false
+    mockDiscoverableAgents = [match]
+    const { getByTestId, queryByTestId } = renderSlugFirstRun()
+    await waitFor(() => {
+      expect(JSON.parse(getByTestId('handoff').textContent ?? 'null')).toEqual({
+        template_slug: 'seo-agent',
+      })
+    })
     expect(queryByTestId('template-install-dialog')).toBeNull()
     expect(completeInstall).not.toHaveBeenCalled()
   })

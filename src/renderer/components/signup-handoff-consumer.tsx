@@ -7,8 +7,10 @@ import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { toast } from 'sonner'
 import { TemplateInstallDialog } from '@renderer/components/agents/template-install-dialog'
 import { useNavTransient } from '@renderer/context/nav-transient-context'
+import { useUser } from '@renderer/context/user-context'
 import { useDiscoverableAgents, slugFromAgentPath } from '@renderer/hooks/use-agent-templates'
 import { useCompleteTemplateInstall } from '@renderer/hooks/use-complete-template-install'
+import { useSettings } from '@renderer/hooks/use-settings'
 import { useUpdateUserSettings, useUserSettings } from '@renderer/hooks/use-user-settings'
 import { homeSearchSchema } from '@renderer/router/search-schemas'
 import { lenient } from '@renderer/router/zod-search'
@@ -31,7 +33,9 @@ export function SignupHandoffConsumer() {
   })
   const navigate = useNavigate()
   const { setSignupHandoff } = useNavTransient()
+  const { isAuthMode } = useUser()
   const { data: userSettings } = useUserSettings()
+  const { data: globalSettings } = useSettings()
   const setupCompleted = userSettings?.setupCompleted
   const settingsReady = userSettings !== undefined
   const updateUserSettings = useUpdateUserSettings()
@@ -46,6 +50,11 @@ export function SignupHandoffConsumer() {
     slugRef.current = template_slug
   }
   const slug = slugRef.current
+  // RootLayout skips the create wizard only for an auth user's agent-only
+  // first run. Full/local setup still needs the wizard, whose create step owns
+  // the existing handoff flow.
+  const canAutoInstallTemplate =
+    isAuthMode && globalSettings?.setupCompleted === true && settingsReady && !setupCompleted
 
   useEffect(() => {
     if (!prompt && !model && !template_slug) return
@@ -66,12 +75,12 @@ export function SignupHandoffConsumer() {
   }, [prompt, model, template_slug, setSignupHandoff, navigate])
 
   useEffect(() => {
-    if (slug) setSignupHandoff(null)
-  }, [slug, setSignupHandoff])
+    if (slug && canAutoInstallTemplate) setSignupHandoff(null)
+  }, [slug, canAutoInstallTemplate, setSignupHandoff])
 
   useEffect(() => {
     if (!slug || resolvedRef.current) return
-    if (!settingsReady || setupCompleted) return
+    if (!canAutoInstallTemplate) return
     if (discoverableAgentsFailed) {
       resolvedRef.current = true
       toastTemplateNotFound()
@@ -94,7 +103,7 @@ export function SignupHandoffConsumer() {
       return
     }
     setTemplate(target)
-  }, [discoverableAgents, discoverableAgentsFailed, slug, settingsReady, setupCompleted])
+  }, [canAutoInstallTemplate, discoverableAgents, discoverableAgentsFailed, slug])
 
   return (
     <TemplateInstallDialog
