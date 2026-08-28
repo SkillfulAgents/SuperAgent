@@ -77,6 +77,7 @@ export const appSettingsPatchSchema = z.object({
   warmStartOnType: z.boolean(),
   autoResumeOnUnexpectedDeath: z.boolean(),
   autoDeleteInactiveDays: z.number(),
+  apiLogAutoDeleteDays: z.number().int().nonnegative(),
   setupCompleted: z.boolean(),
   accountProvider: z.enum(['composio', 'nango']),
   hostBrowserProvider: z.enum(['chrome', 'browserbase', 'platform']).nullable(),
