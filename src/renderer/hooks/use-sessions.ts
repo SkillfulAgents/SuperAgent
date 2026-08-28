@@ -269,3 +269,20 @@ export function useClearSessionUnread() {
     [queryClient],
   )
 }
+
+export function useForkSession() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ sessionId, agentSlug }: { sessionId: string; agentSlug: string }) => {
+      const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/fork`, { method: 'POST' })
+      if (!res.ok) throw new Error('Failed to fork session')
+      return res.json() as Promise<ApiSession>
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({
+        queryKey: ['sessions', resolveAgentSlugFromCache(queryClient, variables.agentSlug)],
+      })
+    },
+  })
+}

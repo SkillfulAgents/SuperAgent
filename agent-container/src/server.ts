@@ -3,7 +3,7 @@ import { serve } from '@hono/node-server';
 // Captures SUPERAGENT_HOST_TOKEN and strips it from process.env — import early
 // so no later module can snapshot an environment that still contains it.
 import { HOST_TOKEN_HEADER, hostAuthEnabled, isValidHostToken } from './host-auth';
-import { SessionManager } from './session-manager';
+import { SessionManager, SessionBusyError } from './session-manager';
 import { CreateSessionRequest, SendMessageRequest } from './types';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
 import type { UUID } from 'crypto';
@@ -173,6 +173,24 @@ app.post('/sessions/:id/interrupt', async (c) => {
   } catch (error: any) {
     console.error('Error interrupting session:', error);
     return c.json({ error: error.message || 'Failed to interrupt session' }, 500);
+  }
+});
+
+app.post('/sessions/:id/fork', async (c) => {
+  const sessionId = c.req.param('id');
+
+  try {
+    const id = await sessionManager.forkSession(sessionId);
+    if (!id) {
+      return c.json({ error: 'Session not found' }, 404);
+    }
+    return c.json({ id }, 201);
+  } catch (error: any) {
+    if (error instanceof SessionBusyError) {
+      return c.json({ error: error.message, code: 'session_busy' }, 409);
+    }
+    console.error('Error forking session:', error);
+    return c.json({ error: error.message || 'Failed to fork session' }, 500);
   }
 });
 

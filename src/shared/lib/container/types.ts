@@ -1,6 +1,15 @@
 import type { RuntimeOptions } from './runtime-options'
 import type { ObserveUnexpectedDeathInput, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
 
+/** The container refused an operation because the session is mid-turn (HTTP 409). */
+export class ContainerConflictError extends Error {
+  readonly code = 'session_busy'
+  constructor(message: string) {
+    super(message)
+    this.name = 'ContainerConflictError'
+  }
+}
+
 export interface SendMessageOptions extends RuntimeOptions {
   /** Keep an automated session in its automated runtime class for agent-originated follow-ups. */
   isAutomated?: boolean
@@ -219,6 +228,10 @@ export interface ContainerClient {
   createSession(options: CreateSessionOptions): Promise<ContainerSession>
   getSession(sessionId: string): Promise<ContainerSession | null>
   deleteSession(sessionId: string): Promise<boolean>
+  // Copy a session's transcript into a new session (Fork Session).
+  // null = the container predates the fork endpoint (404). Throws
+  // ContainerConflictError when the source is mid-turn.
+  forkSession(sessionId: string): Promise<{ id: string } | null>
 
   // Message operations
   sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<void>

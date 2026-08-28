@@ -137,6 +137,8 @@ const mockSendMessage = vi.fn()
 const mockCancelQueuedMessage = vi.fn()
 const mockKeepAlive = vi.fn()
 const mockInterruptSession = vi.fn()
+const mockForkSession = vi.fn()
+const mockClientDeleteSession = vi.fn()
 const mockGetCachedInfo = vi.fn(() => ({ status: 'running', port: 8080 }))
 vi.mock('@shared/lib/container/container-manager', () => ({
   containerManager: {
@@ -145,6 +147,8 @@ vi.mock('@shared/lib/container/container-manager', () => ({
       sendMessage: (...args: unknown[]) => mockSendMessage(...args),
       cancelQueuedMessage: (...args: unknown[]) => mockCancelQueuedMessage(...args),
       interruptSession: (...args: unknown[]) => mockInterruptSession(...args),
+      forkSession: (...args: unknown[]) => mockForkSession(...args),
+      deleteSession: (...args: unknown[]) => mockClientDeleteSession(...args),
       start: vi.fn(),
       stop: vi.fn(),
     }),
@@ -280,6 +284,10 @@ vi.mock('drizzle-orm', () => ({
 
 // Auth
 const mockIsAuthMode = vi.fn().mockReturnValue(false)
+const mockInsertAuthor = vi.fn().mockResolvedValue(true)
+vi.mock('./message-author', () => ({
+  insertMessageAuthorBestEffort: (...a: unknown[]) => mockInsertAuthor(...a),
+}))
 vi.mock('@shared/lib/auth/mode', () => ({
   isAuthMode: () => mockIsAuthMode(),
 }))
@@ -579,6 +587,7 @@ vi.mock('hono/streaming', () => ({ streamSSE: (...args: unknown[]) => mockStream
 
 // Import the agents router after all mocks are set up
 import agents from './agents'
+import { ContainerConflictError } from '@shared/lib/container/types'
 import { decodeMediaRef, openMediaBlob } from '@shared/lib/services/session-media'
 import { UploadTooLargeError } from '@shared/lib/utils/chunked-upload'
 import {
@@ -8624,6 +8633,113 @@ describe('mark as unread — /:id/sessions/:sessionId/unread', () => {
   })
 })
 
+describe('POST /api/agents/:id/sessions/:sessionId/fork', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(sessionIsKnown).mockResolvedValue(true)
+    vi.mocked(getSession).mockResolvedValue({
+      id: 'src-1', agentSlug: 'test-agent', name: 'Pricing', createdAt: new Date(), lastActivityAt: new Date(), messageCount: 2,
+    } as any)
+    vi.mocked(getSessionMetadata).mockResolvedValue({
+      name: 'Pricing', model: 'claude-sonnet-5', effort: 'high', speed: 'fast',
+      slashCommands: [{ name: 'review', description: 'Review', argumentHint: '' }],
+    } as any)
+    vi.mocked(registerSession).mockResolvedValue(undefined)
+    vi.mocked(deleteSession).mockResolvedValue(true)
+    vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
+    mockForkSession.mockResolvedValue({ id: 'fork-1' })
+    mockClientDeleteSession.mockResolvedValue(true)
+    mockFsExistsSync.mockReturnValue(false)
+    mockFsLstat.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }))
+    mockInsertAuthor.mockResolvedValue(true)
+  })
+
+  const fork = () => app.request('http://localhost/api/agents/test-agent/sessions/src-1/fork', { method: 'POST' })
+
+  it('404s an unknown session before touching the container', async () => {
+    vi.mocked(sessionIsKnown).mockResolvedValue(false)
+    const res = await fork()
+    expect(res.status).toBe(404)
+    expect(mockForkSession).not.toHaveBeenCalled()
+  })
+
+  it('409s while the source is active', async () => {
+    vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+    const res = await fork()
+    expect(res.status).toBe(409)
+    expect(mockForkSession).not.toHaveBeenCalled()
+  })
+
+  it('maps a container conflict to 409', async () => {
+    mockForkSession.mockRejectedValue(new ContainerConflictError('busy'))
+    const res = await fork()
+    expect(res.status).toBe(409)
+    expect(registerSession).not.toHaveBeenCalled()
+  })
+
+  it('500s with a restart hint when the container predates the endpoint', async () => {
+    mockForkSession.mockResolvedValue(null)
+    const res = await fork()
+    expect(res.status).toBe(500)
+    expect((await res.json()).error).toMatch(/restart the agent/i)
+    expect(registerSession).not.toHaveBeenCalled()
+  })
+
+  it('registers the fork with the source runtime choices, slash commands and lineage, and answers the create projection', async () => {
+    const res = await fork()
+    expect(res.status).toBe(201)
+    expect(registerSession).toHaveBeenCalledWith('test-agent', 'fork-1', 'Pricing (fork)', expect.objectContaining({
+      model: 'claude-sonnet-5', effort: 'high', speed: 'fast', forkedFromSessionId: 'src-1',
+      slashCommands: [{ name: 'review', description: 'Review', argumentHint: '' }],
+    }))
+    const body = await res.json()
+    expect(body).toMatchObject({ id: 'fork-1', name: 'Pricing (fork)', isActive: false, model: 'claude-sonnet-5', forkedFromSessionId: 'src-1', forkedFromSessionName: 'Pricing' })
+    expect(body.initialMessageUuid).toBeUndefined()
+  })
+
+  it('rolls back the copy when registration fails, and still asks the container to delete when the host unlink throws', async () => {
+    vi.mocked(registerSession).mockRejectedValue(new Error('metadata write failed'))
+    vi.mocked(deleteSession).mockRejectedValue(new Error('unlink failed'))
+    const res = await fork()
+    expect(res.status).toBe(500)
+    expect(deleteSession).toHaveBeenCalledWith('test-agent', 'fork-1')
+    expect(mockClientDeleteSession).toHaveBeenCalledWith('fork-1')
+  })
+
+  it('copies the session directory and survives a copy failure', async () => {
+    mockFsLstat.mockResolvedValue({ isDirectory: () => true })
+    mockFsReaddir.mockRejectedValue(new Error('EIO'))
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const res = await fork()
+    expect(res.status).toBe(201)
+    expect(err).toHaveBeenCalledWith(expect.stringContaining('subagent/workflow copy'), expect.any(Error))
+    err.mockRestore()
+  })
+
+  it('skips the sidecar copy when the session folder is a symlink', async () => {
+    mockFsLstat.mockResolvedValue({ isDirectory: () => false, isSymbolicLink: () => true })
+    const res = await fork()
+    expect(res.status).toBe(201)
+    expect(mockFsReaddir).not.toHaveBeenCalled()
+  })
+
+  it('rebuilds attribution for copied user messages in auth mode', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    vi.mocked(readJsonlFile).mockResolvedValue([
+      { type: 'user', uuid: 'new-u1', forkedFrom: { sessionId: 'src-1', messageUuid: 'old-u1' } },
+      { type: 'assistant', uuid: 'new-a1', forkedFrom: { sessionId: 'src-1', messageUuid: 'old-a1' } },
+    ] as any)
+    mockDbSelectFrom.mockReturnValue({ where: () => Promise.resolve([{ id: 'old-u1', userId: 'user-9' }]) })
+    const res = await fork()
+    expect(res.status).toBe(201)
+    expect(mockInsertAuthor).toHaveBeenCalledWith({ id: 'new-u1', sessionId: 'fork-1', agentSlug: 'test-agent', userId: 'user-9' })
+    expect(mockInsertAuthor).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('session existence guards read metadata, not the transcript', () => {
   let app: ReturnType<typeof createApp>
 
@@ -8659,6 +8775,37 @@ describe('session existence guards read metadata, not the transcript', () => {
       invokedByAgentSlug: 'caller-agent',
       invokedByAgentName: 'Caller Agent',
     })
+  })
+
+  it('returns fork lineage when the parent session still exists', async () => {
+    vi.mocked(getSessionMetadata).mockImplementation(async (_slug, id) => {
+      if (id === 'sess-1') return { forkedFromSessionId: 'src-1' }
+      if (id === 'src-1') return { name: 'Pricing' }
+      return null
+    })
+
+    const res = await getReq(app, '/api/agents/test-agent/sessions/sess-1')
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({
+      id: 'sess-1',
+      forkedFromSessionId: 'src-1',
+      forkedFromSessionName: 'Pricing',
+    })
+  })
+
+  it('omits forkedFromSessionName when the parent session is gone', async () => {
+    vi.mocked(getSessionMetadata).mockImplementation(async (_slug, id) => {
+      if (id === 'sess-1') return { forkedFromSessionId: 'src-1' }
+      return null
+    })
+
+    const res = await getReq(app, '/api/agents/test-agent/sessions/sess-1')
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.forkedFromSessionId).toBe('src-1')
+    expect(body).not.toHaveProperty('forkedFromSessionName')
   })
 
   it('renames a session with a single transcript read', async () => {

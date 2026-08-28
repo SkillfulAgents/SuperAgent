@@ -73,6 +73,9 @@ export const sessionMetadataSchema = z
     invokedByAgentSlug: z.string().optional(),
     dispatchedByDashboardSlug: z.string().optional(),
     dispatchedByDashboardAgentSlug: z.string().optional(),
+    // Fork lineage: the session this one was copied from. Provenance only —
+    // a fork is a normal user session, never hidden as automated.
+    forkedFromSessionId: z.string().optional(),
   })
   .loose()
 

@@ -5,6 +5,26 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SessionContextMenu } from './session-context-menu'
 
 const mockApiFetch = vi.fn()
+const {
+  mockFork,
+  mockSnapshot,
+  mockSeed,
+  mockSetQueryData,
+  mockNavigate,
+  mockStore,
+  mockCanUse,
+} = vi.hoisted(() => {
+  const mockCanUse = { value: true }
+  return {
+    mockFork: vi.fn(),
+    mockSnapshot: vi.fn(() => ({ text: 'draft', securedSecrets: undefined })),
+    mockSeed: vi.fn(),
+    mockSetQueryData: vi.fn(),
+    mockNavigate: vi.fn(),
+    mockStore: { get: vi.fn(), set: vi.fn() },
+    mockCanUse,
+  }
+})
 
 vi.mock('@renderer/lib/api', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
@@ -30,8 +50,28 @@ vi.mock('@renderer/components/ui/context-menu', () => ({
   ),
   ContextMenuTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   ContextMenuContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  ContextMenuItem: ({ children, ...props }: { children: React.ReactNode }) => (
-    <div {...props}>{children}</div>
+  ContextMenuItem: ({
+    children,
+    onClick,
+    disabled,
+    'data-testid': testId,
+    ...props
+  }: {
+    children: React.ReactNode
+    onClick?: () => void
+    disabled?: boolean
+    'data-testid'?: string
+  }) => (
+    <button
+      type="button"
+      data-testid={testId}
+      data-disabled={disabled ? '' : undefined}
+      disabled={disabled}
+      onClick={disabled ? undefined : onClick}
+      {...props}
+    >
+      {children}
+    </button>
   ),
   ContextMenuSeparator: () => <hr />,
 }))
@@ -64,20 +104,34 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
   useDeleteSession: () => ({ mutateAsync: vi.fn() }),
   useUpdateSessionName: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useSetSessionMarkedUnread: () => ({ mutateAsync: mockSetMarkedUnread, isPending: false }),
+  useForkSession: () => ({ mutateAsync: mockFork, isPending: false }),
 }))
 
 const mockCanAdminAgent = vi.fn(() => true)
 const mockCanUseAgent = vi.fn(() => true)
 
 vi.mock('@renderer/context/user-context', () => ({
-  useUser: () => ({ canAdminAgent: mockCanAdminAgent, canUseAgent: mockCanUseAgent }),
+  useUser: () => ({
+    canAdminAgent: mockCanAdminAgent,
+    canUseAgent: () => mockCanUse.value && mockCanUseAgent(),
+  }),
+}))
+
+vi.mock('@renderer/context/drafts-context', () => ({
+  useDraftsStore: () => mockStore,
+  snapshotSessionDraft: mockSnapshot,
+  seedSessionDraft: mockSeed,
+}))
+
+vi.mock('@tanstack/react-query', () => ({
+  useQueryClient: () => ({ setQueryData: mockSetQueryData }),
 }))
 
 vi.mock('@tanstack/react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-router')>()
   return {
     ...actual,
-    useNavigate: () => vi.fn(),
+    useNavigate: () => mockNavigate,
     useParams: () => ({}),
   }
 })
@@ -85,6 +139,7 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
 describe('SessionContextMenu usage totals', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockCanUse.value = true
   })
 
   it('does not calculate usage until the context menu opens', async () => {
@@ -190,6 +245,7 @@ describe('SessionContextMenu usage totals', () => {
 describe('SessionContextMenu mark as unread', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockCanUse.value = true
     mockSetMarkedUnread.mockResolvedValue({ success: true })
     mockCanAdminAgent.mockReturnValue(true)
     mockCanUseAgent.mockReturnValue(true)
@@ -257,5 +313,72 @@ describe('SessionContextMenu mark as unread', () => {
     )
 
     expect(screen.queryByTestId('mark-unread-session-item')).not.toBeInTheDocument()
+  })
+})
+
+describe('Fork Session item', () => {
+  beforeEach(() => {
+    mockFork.mockReset()
+    mockSnapshot.mockClear()
+    mockSeed.mockReset()
+    mockSetQueryData.mockReset()
+    mockNavigate.mockReset()
+    mockCanUse.value = true
+    mockCanAdminAgent.mockReturnValue(true)
+    mockCanUseAgent.mockReturnValue(true)
+  })
+
+  function renderMenu(props: Partial<{ isActive: boolean }> = {}) {
+    return render(
+      <SessionContextMenu sessionId="src-1" sessionName="Pricing" agentSlug="agent-a" {...props}>
+        <div>row</div>
+      </SessionContextMenu>,
+    )
+  }
+
+  it('shows the item for anyone who can use the agent', () => {
+    renderMenu()
+    expect(screen.getByTestId('fork-session-item')).toHaveTextContent('Fork Session')
+  })
+
+  it('hides the item without canUseAgent', () => {
+    mockCanUse.value = false
+    renderMenu()
+    expect(screen.queryByTestId('fork-session-item')).toBeNull()
+  })
+
+  it('disables the item while the source is active', () => {
+    renderMenu({ isActive: true })
+    expect(screen.getByTestId('fork-session-item')).toHaveAttribute('data-disabled')
+  })
+
+  it('snapshots the draft at click time, forks, seeds cache and drafts, and navigates', async () => {
+    let resolveFork!: (v: unknown) => void
+    mockFork.mockReturnValue(new Promise((r) => { resolveFork = r }))
+    renderMenu()
+    fireEvent.click(screen.getByTestId('fork-session-item'))
+    // Snapshot happened before the network settled.
+    expect(mockSnapshot).toHaveBeenCalledWith(mockStore, 'src-1')
+    expect(mockSeed).not.toHaveBeenCalled()
+
+    resolveFork({ id: 'fork-1', agentSlug: 'agent-a', name: 'Pricing (fork)' })
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith({
+      to: '/agents/$slug/sessions/$sessionId',
+      params: { slug: 'agent-a', sessionId: 'fork-1' },
+    }))
+    expect(mockFork).toHaveBeenCalledWith({ sessionId: 'src-1', agentSlug: 'agent-a' })
+    expect(mockSetQueryData).toHaveBeenCalledWith(['session', 'fork-1', 'agent-a'], expect.objectContaining({ id: 'fork-1' }))
+    expect(mockSeed).toHaveBeenCalledWith(mockStore, 'fork-1', { text: 'draft', securedSecrets: undefined })
+  })
+
+  it('stays put and logs when the fork fails', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    mockFork.mockRejectedValue(new Error('nope'))
+    renderMenu()
+    fireEvent.click(screen.getByTestId('fork-session-item'))
+    await waitFor(() => expect(err).toHaveBeenCalled())
+    expect(mockNavigate).not.toHaveBeenCalled()
+    expect(mockSeed).not.toHaveBeenCalled()
+    err.mockRestore()
   })
 })

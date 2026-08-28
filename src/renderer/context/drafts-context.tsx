@@ -21,6 +21,33 @@ export function appendToSessionDraft(
   store.set(draftKey, parts.filter(Boolean).join('\n\n') || undefined)
 }
 
+export interface SessionDraftSnapshot {
+  text: string | undefined
+  securedSecrets: unknown
+}
+
+/**
+ * Fork Session: capture the source's unsent text and secured secrets at click
+ * time (the fork's id does not exist yet), then seed the fork's slots once it
+ * does. A copy, not a move — the source keeps its own draft. Attachments live in
+ * component state, not here, so they do not carry.
+ */
+export function snapshotSessionDraft(store: Pick<DraftsStore, 'get'>, sessionId: string): SessionDraftSnapshot {
+  return {
+    text: store.get<string>(`session:${sessionId}`),
+    securedSecrets: store.get<unknown>(`session:${sessionId}:secured-secrets`),
+  }
+}
+
+export function seedSessionDraft(
+  store: Pick<DraftsStore, 'set'>,
+  sessionId: string,
+  snapshot: SessionDraftSnapshot,
+): void {
+  if (snapshot.text !== undefined) store.set(`session:${sessionId}`, snapshot.text)
+  if (snapshot.securedSecrets !== undefined) store.set(`session:${sessionId}:secured-secrets`, snapshot.securedSecrets)
+}
+
 /** Seed a newly installed agent's home composer from its template prompt. */
 export function seedAgentTemplatePrompt(
   store: Pick<DraftsStore, 'set'>,

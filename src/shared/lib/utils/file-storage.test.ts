@@ -35,6 +35,7 @@ import {
   readAgentDisplayNameSync,
   getAgentSessionsDir,
   getSessionJsonlPath,
+  copyDirectoryFiltered,
 } from './file-storage'
 
 // ============================================================================
@@ -1268,5 +1269,42 @@ describe('streamFileLines with a byte range', () => {
     ).rejects.toMatchObject({ name: 'AbortError' })
     expect(received.length).toBeGreaterThan(0)
     expect(received.length).toBeLessThanOrEqual(65)
+  })
+})
+
+describe('copyDirectoryFiltered', () => {
+  it('copyDirectoryFiltered with regularFilesOnly skips symlinks', async () => {
+    const src = path.join(testDir, 'src')
+    const dest = path.join(testDir, 'dest')
+    await fs.promises.mkdir(path.join(src, 'subagents'), { recursive: true })
+    await fs.promises.writeFile(path.join(src, 'subagents', 'agent-1.jsonl'), '{}\n')
+    await fs.promises.symlink(path.join(src, 'subagents', 'agent-1.jsonl'), path.join(src, 'link.jsonl'))
+
+    await copyDirectoryFiltered(src, dest, undefined, { regularFilesOnly: true })
+
+    await expect(fs.promises.readFile(path.join(dest, 'subagents', 'agent-1.jsonl'), 'utf8')).resolves.toBe('{}\n')
+    await expect(fs.promises.lstat(path.join(dest, 'link.jsonl'))).rejects.toThrow()
+  })
+
+  it('does not follow a source-root symlink', async () => {
+    const outside = path.join(testDir, 'outside')
+    const src = path.join(testDir, 'src-link')
+    const dest = path.join(testDir, 'dest-root')
+    await fs.promises.mkdir(outside)
+    await fs.promises.writeFile(path.join(outside, 'secret.txt'), 'host-secret')
+    await fs.promises.symlink(outside, src)
+    await copyDirectoryFiltered(src, dest, undefined, { regularFilesOnly: true })
+    await expect(fs.promises.readFile(path.join(dest, 'secret.txt'), 'utf8')).rejects.toThrow()
+  })
+
+  it('follows a source-root symlink when regularFilesOnly is off', async () => {
+    const outside = path.join(testDir, 'outside-follow')
+    const src = path.join(testDir, 'src-link-follow')
+    const dest = path.join(testDir, 'dest-follow')
+    await fs.promises.mkdir(outside)
+    await fs.promises.writeFile(path.join(outside, 'template.md'), 'from-target')
+    await fs.promises.symlink(outside, src)
+    await copyDirectoryFiltered(src, dest)
+    await expect(fs.promises.readFile(path.join(dest, 'template.md'), 'utf8')).resolves.toBe('from-target')
   })
 })

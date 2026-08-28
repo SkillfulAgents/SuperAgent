@@ -19,6 +19,8 @@ const mocks = vi.hoisted(() => ({
   },
   agentStatus: 'running' as 'running' | 'stopped',
   invokedByAgentSlug: undefined as string | undefined,
+  sessionIsActive: true,
+  isStreaming: false,
 }))
 
 const agent: ApiAgent = {
@@ -47,8 +49,13 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
       name: 'Test Session',
       agentSlug: 'test-agent',
       invokedByAgentSlug: mocks.invokedByAgentSlug,
+      isActive: mocks.sessionIsActive,
     },
   }),
+}))
+
+vi.mock('@renderer/hooks/use-message-stream', () => ({
+  useMessageStream: () => ({ isStreaming: mocks.isStreaming }),
 }))
 
 vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({
@@ -92,11 +99,13 @@ vi.mock('@renderer/components/sessions/session-context-menu', () => ({
     sessionId,
     sessionName,
     agentSlug,
+    isActive,
     children,
   }: {
     sessionId: string
     sessionName: string
     agentSlug: string
+    isActive?: boolean
     children: ReactNode
   }) => (
     <span
@@ -104,6 +113,7 @@ vi.mock('@renderer/components/sessions/session-context-menu', () => ({
       data-session-id={sessionId}
       data-session-name={sessionName}
       data-agent-slug={agentSlug}
+      data-is-active={String(isActive)}
     >
       {children}
     </span>
@@ -135,6 +145,8 @@ describe('AgentHeader breadcrumbs', () => {
     mocks.routeView = { kind: 'session', id: 'session-1' }
     mocks.agentStatus = 'running'
     mocks.invokedByAgentSlug = undefined
+    mocks.sessionIsActive = true
+    mocks.isStreaming = false
     vi.clearAllMocks()
   })
 
@@ -161,7 +173,23 @@ describe('AgentHeader breadcrumbs', () => {
     expect(sessionMenu).toHaveAttribute('data-session-id', 'session-1')
     expect(sessionMenu).toHaveAttribute('data-session-name', 'Test Session')
     expect(sessionMenu).toHaveAttribute('data-agent-slug', 'test-agent')
+    expect(sessionMenu).toHaveAttribute('data-is-active', 'true')
     expect(sessionMenu).toContainElement(screen.getByTestId('session-breadcrumb'))
+  })
+
+  it('disables Fork when the session is streaming even if isActive is false', () => {
+    mocks.sessionIsActive = false
+    mocks.isStreaming = true
+    const mutation = { mutate: vi.fn(), isPending: false }
+    render(
+      <AgentHeader
+        slug="test-agent"
+        isViewOnly={false}
+        startAgent={mutation as never}
+        stopAgent={mutation as never}
+      />,
+    )
+    expect(screen.getByTestId('session-breadcrumb-context-menu')).toHaveAttribute('data-is-active', 'true')
   })
 
   it('inserts Called from Other Agents as the parent crumb for x-agent sessions', () => {

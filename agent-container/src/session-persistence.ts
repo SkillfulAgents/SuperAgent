@@ -65,23 +65,47 @@ export class SessionPersistence {
 
   private save(): void {
     try {
-      const data = Object.fromEntries(this.sessions.entries());
-      // Atomic temp-file + rename: this map is rewritten on every
-      // message (updateLastActivity), and a container force-stop mid-write would
-      // otherwise tear the file — making the next load() swallow the parse error
-      // and silently wipe ALL session metadata. The atomic write guarantees the
-      // previous good file survives an interrupted write. /workspace is fully
-      // bind-mounted, so the rename is same-filesystem and reaches the host.
-      writeFileAtomicSync(SESSIONS_FILE, JSON.stringify(data, null, 2));
+      this.saveChecked();
     } catch (error) {
       console.error('Error saving persisted sessions:', error);
     }
+  }
+
+  // Raw atomic write. Throws. `save()` is the swallowing wrapper every
+  // per-message update goes through; fork creation needs the error.
+  private saveChecked(): void {
+    const data = Object.fromEntries(this.sessions.entries());
+    // Atomic temp-file + rename: this map is rewritten on every
+    // message (updateLastActivity), and a container force-stop mid-write would
+    // otherwise tear the file — making the next load() swallow the parse error
+    // and silently wipe ALL session metadata. The atomic write guarantees the
+    // previous good file survives an interrupted write. /workspace is fully
+    // bind-mounted, so the rename is same-filesystem and reaches the host.
+    writeFileAtomicSync(SESSIONS_FILE, JSON.stringify(data, null, 2));
   }
 
   saveSession(metadata: SessionMetadata): void {
     const parsed = sessionMetadataSchema.parse(metadata);
     this.sessions.set(parsed.sessionId, parsed);
     this.save();
+  }
+
+  /**
+   * Like saveSession but a disk failure throws and the in-memory map is
+   * restored, so a caller that reports success only does so when the record
+   * survives a container restart.
+   */
+  saveSessionChecked(metadata: SessionMetadata): void {
+    const parsed = sessionMetadataSchema.parse(metadata);
+    const previous = this.sessions.get(parsed.sessionId);
+    this.sessions.set(parsed.sessionId, parsed);
+    try {
+      this.saveChecked();
+    } catch (error) {
+      if (previous) this.sessions.set(parsed.sessionId, previous);
+      else this.sessions.delete(parsed.sessionId);
+      throw error;
+    }
   }
 
   getSession(sessionId: string): SessionMetadata | null {

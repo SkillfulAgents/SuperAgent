@@ -3,6 +3,7 @@ import { AppLink } from '@renderer/components/ui/app-link'
 import { useRouteLocation } from '@renderer/router/use-route-location'
 import { useAgent, type useStartAgent, type useStopAgent } from '@renderer/hooks/use-agents'
 import { useSessions, useSession } from '@renderer/hooks/use-sessions'
+import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
 import { useWebhookTrigger } from '@renderer/hooks/use-webhook-triggers'
 import { useConnectedAccounts } from '@renderer/hooks/use-connected-accounts'
@@ -61,6 +62,7 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
   const { data: agent } = useAgent(slug)
   const { data: sessions } = useSessions(slug)
   const { data: session } = useSession(sessionId, slug)
+  const { isStreaming } = useMessageStream(sessionId, slug)
   const { data: scheduledTask } = useScheduledTask(scheduledTaskId)
   const { data: webhookTrigger } = useWebhookTrigger(webhookTriggerId)
   const hasActiveSessions = sessions?.some((s) => s.isActive) || (agent?.hasActiveSessions ?? false)
@@ -192,6 +194,7 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
               sessionName={session?.name || 'Session'}
               agentSlug={slug}
               sessionIsLive={!!session?.isActive || !!session?.isAwaitingInput}
+              isActive={session?.isActive || isStreaming}
             >
               <span
                 className="text-sm font-light text-foreground cursor-context-menu app-no-drag"

@@ -1,5 +1,16 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
+
+if (typeof localStorage === 'undefined' || !localStorage) {
+  const memory = new Map<string, string>()
+  const stub = {
+    getItem: (key: string) => memory.get(key) ?? null,
+    setItem: (key: string, value: string) => { memory.set(key, String(value)) },
+    removeItem: (key: string) => { memory.delete(key) },
+    clear: () => memory.clear(),
+  }
+  Object.defineProperty(globalThis, 'localStorage', { value: stub, configurable: true })
+}
 import { cloneElement, isValidElement, type ReactElement } from 'react'
 import { act, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -209,7 +220,17 @@ vi.mock('@renderer/components/agents/agent-context-menu', () => ({
 }))
 
 vi.mock('@renderer/components/sessions/session-context-menu', () => ({
-  SessionContextMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  SessionContextMenu: ({
+    children,
+    isActive,
+  }: {
+    children: React.ReactNode
+    isActive?: boolean
+  }) => (
+    isValidElement(children)
+      ? cloneElement(children as ReactElement, { 'data-is-active': String(isActive) } as any)
+      : <>{children}</>
+  ),
 }))
 
 vi.mock('@renderer/components/dashboards/dashboard-context-menu', () => ({
@@ -701,6 +722,7 @@ describe('AppSidebar — agent row indicator', () => {
     renderWithProviders(<AppSidebar />)
     // The agent is expanded — its session sub-row is visible and working…
     expect(screen.getByTestId('session-item-session-1')).toBeInTheDocument()
+    expect(screen.getByTestId('session-item-session-1')).toHaveAttribute('data-is-active', 'true')
     // …and the agent row itself still reports working, like the top nav.
     const status = screen.getByTestId('agent-status-running')
     expect(status).toHaveAttribute('data-active', 'true')

@@ -135,6 +135,10 @@ export interface ApiSession {
   // Present when another agent created this session through x-agent.
   invokedByAgentSlug?: string
   invokedByAgentName?: string
+  // Present when this session was forked from another. Name resolves from the
+  // parent's metadata on the single-session GET; undefined when the parent is gone.
+  forkedFromSessionId?: string
+  forkedFromSessionName?: string
   // Last effort level used on this session (seeds the composer selector)
   effort?: EffortLevel
   // Last processing speed used on this session (seeds the composer selector)

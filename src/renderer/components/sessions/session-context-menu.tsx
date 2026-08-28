@@ -27,10 +27,12 @@ import {
 } from '@renderer/components/ui/dialog'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { useDeleteSession, useUpdateSessionName, useSetSessionMarkedUnread } from '@renderer/hooks/use-sessions'
+import { useDeleteSession, useUpdateSessionName, useSetSessionMarkedUnread, useForkSession } from '@renderer/hooks/use-sessions'
 import { useNavigate, useParams } from '@tanstack/react-router'
+import { useQueryClient } from '@tanstack/react-query'
 import { useUser } from '@renderer/context/user-context'
-import { Trash2, ClipboardCopy, Pencil, MessageSquareDot } from 'lucide-react'
+import { useDraftsStore, snapshotSessionDraft, seedSessionDraft } from '@renderer/context/drafts-context'
+import { Trash2, ClipboardCopy, Pencil, MessageSquareDot, Split } from 'lucide-react'
 import { apiFetch } from '@renderer/lib/api'
 import type { SessionUsageTotals } from '@shared/lib/types/usage'
 
@@ -56,6 +58,8 @@ interface SessionContextMenuProps {
    * silent no-op.
    */
   sessionIsLive?: boolean
+  /** Mid-turn: Fork Session is disabled (the host refuses with 409 as the backstop). */
+  isActive?: boolean
   children: React.ReactNode
 }
 
@@ -64,6 +68,7 @@ export function SessionContextMenu({
   sessionName,
   agentSlug,
   sessionIsLive = false,
+  isActive,
   children,
 }: SessionContextMenuProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
@@ -81,8 +86,12 @@ export function SessionContextMenu({
   // (e.g. from the sidebar list), so the up-nav only fires when we're actually
   // viewing the session being deleted.
   const params = useParams({ strict: false }) as { sessionId?: string }
-  const { canAdminAgent } = useUser()
+  const { canAdminAgent, canUseAgent } = useUser()
   const isOwner = canAdminAgent(agentSlug)
+  const canUse = canUseAgent(agentSlug)
+  const forkSession = useForkSession()
+  const queryClient = useQueryClient()
+  const draftsStore = useDraftsStore()
 
   const handleDelete = async () => {
     setIsDeleting(true)
@@ -96,6 +105,22 @@ export function SessionContextMenu({
       console.error('Failed to delete session:', error)
     } finally {
       setIsDeleting(false)
+    }
+  }
+
+  const handleFork = async () => {
+    // Capture the unsent draft at click time; the fork's id does not exist yet.
+    const draft = snapshotSessionDraft(draftsStore, sessionId)
+    try {
+      const fork = await forkSession.mutateAsync({ sessionId, agentSlug })
+      // Seed the detail cache under the canonical slug the server returns so the
+      // composer mounts with the source's model/effort/speed, not defaults.
+      queryClient.setQueryData(['session', fork.id, fork.agentSlug], fork)
+      // Copy (never move) the click-time draft into the fork's slots.
+      seedSessionDraft(draftsStore, fork.id, draft)
+      void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agentSlug, sessionId: fork.id } })
+    } catch (error) {
+      console.error('Failed to fork session:', error)
     }
   }
 
@@ -181,6 +206,16 @@ export function SessionContextMenu({
             <ContextMenuItem data-testid="mark-unread-session-item" onClick={handleMarkUnread}>
               <MessageSquareDot className="h-4 w-4 mr-2" />
               Mark as Unread
+            </ContextMenuItem>
+          )}
+          {canUse && (
+            <ContextMenuItem
+              data-testid="fork-session-item"
+              disabled={isActive || forkSession.isPending}
+              onClick={handleFork}
+            >
+              <Split className="h-4 w-4 mr-2" />
+              Fork Session
             </ContextMenuItem>
           )}
           <ContextMenuItem onClick={handleCopyRawLog}>

@@ -17,6 +17,7 @@ import { randomUUID } from 'crypto'
 import { and, desc, eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { agentAcl, messageAuthor } from '@shared/lib/db/schema'
+import { insertMessageAuthorBestEffort } from './message-author'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { hasMinRole, type AgentRole } from '@shared/lib/types/agent'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
@@ -125,28 +126,6 @@ async function getLatestMessageAuthorUserId(
       error: error instanceof Error ? error.message : String(error),
     })
     return undefined
-  }
-}
-
-async function insertMessageAuthorBestEffort(params: {
-  id: string
-  sessionId: string
-  agentSlug: string
-  userId: string
-}): Promise<boolean> {
-  try {
-    await db.insert(messageAuthor).values(params)
-    return true
-  } catch (error) {
-    // Includes stale createdByUserId values whose user row has been deleted.
-    // The invocation remains usable; only the optional sender badge is lost.
-    console.warn('[x-agent] failed to record invoked message author; continuing unattributed', {
-      agentSlug: params.agentSlug,
-      sessionId: params.sessionId,
-      userId: params.userId,
-      error: error instanceof Error ? error.message : String(error),
-    })
-    return false
   }
 }
 

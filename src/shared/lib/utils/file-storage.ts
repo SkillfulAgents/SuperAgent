@@ -843,9 +843,16 @@ export async function copyDirectoryFiltered(
   src: string,
   dest: string,
   extraExclusions?: string[],
+  options: { regularFilesOnly?: boolean } = {},
 ): Promise<void> {
+  const srcStat = await fs.promises.lstat(src)
+  // Fork sidecar copy (regularFilesOnly) must not follow a source-root
+  // symlink. Template/skillset callers still pass symlink-to-dir roots that
+  // directoryExists (stat) already accepted.
+  if (options.regularFilesOnly && !srcStat.isDirectory()) return
+
   const limit = pLimit(8)
-  await copyDirectoryFilteredLimited(src, dest, extraExclusions, limit)
+  await copyDirectoryFilteredLimited(src, dest, extraExclusions, limit, options)
 }
 
 async function copyDirectoryFilteredLimited(
@@ -853,6 +860,7 @@ async function copyDirectoryFilteredLimited(
   dest: string,
   extraExclusions: string[] | undefined,
   limit: ReturnType<typeof pLimit>,
+  options: { regularFilesOnly?: boolean } = {},
 ): Promise<void> {
   await ensureDirectory(dest)
   const entries = await fs.promises.readdir(src, { withFileTypes: true })
@@ -869,8 +877,8 @@ async function copyDirectoryFilteredLimited(
     const destPath = path.join(dest, entry.name)
 
     if (entry.isDirectory()) {
-      tasks.push(copyDirectoryFilteredLimited(srcPath, destPath, extraExclusions, limit))
-    } else {
+      tasks.push(copyDirectoryFilteredLimited(srcPath, destPath, extraExclusions, limit, options))
+    } else if (!options.regularFilesOnly || entry.isFile()) {
       tasks.push(limit(() => fs.promises.copyFile(srcPath, destPath)))
     }
   }
