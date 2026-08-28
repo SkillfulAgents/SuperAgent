@@ -13,6 +13,7 @@ import pLimit from 'p-limit'
 import archiver from 'archiver'
 import {
   openZipFromBuffer,
+  openZipFromFile,
   detectZipPrefix,
   type ZipEntryMeta,
   type ZipReader,
@@ -337,6 +338,26 @@ function createWorkspaceZipStream(
     archive.destroy(err)
   }
 
+  // Archiver reports a source file that disappears between enumeration and
+  // read (its lstat fails) as a non-fatal 'warning' and would finalize a
+  // valid-looking but INCOMPLETE zip. Every append here is an explicit
+  // archive.file() of an enumerated path, so a warning always means a file
+  // was silently dropped — escalate it to a stream error.
+  archive.on('warning', (warning) => {
+    stopArchive(warning)
+    release()
+  })
+
+  // destroy() alone — a caller tearing the stream down without the request
+  // abort signal firing — only destroys the Transform; archiver keeps its
+  // queued entries and in-flight worker reading source files. Bridge the
+  // post-destroy 'close' event to archiver's own abort(), which drains the
+  // work queues. abort() is a no-op once the archive finalized normally or
+  // was already aborted.
+  archive.on('close', () => {
+    archive.abort()
+  })
+
   const onAbort = () => {
     release()
     stopArchive()
@@ -407,6 +428,18 @@ export async function exportAgentFull(agentSlug: string, signal?: AbortSignal): 
 // ZIP Validation
 // ============================================================================
 
+/**
+ * ZIP input for validation/import: either raw bytes, or a path to a ZIP
+ * already on disk. Prefer the file form when available — it reads entries on
+ * demand instead of pinning the whole (up to 500MB) buffer in memory for the
+ * entire extraction.
+ */
+export type TemplateZipSource = Buffer | { filePath: string }
+
+function openZipSource(zip: TemplateZipSource): Promise<ZipReader> {
+  return Buffer.isBuffer(zip) ? openZipFromBuffer(zip) : openZipFromFile(zip.filePath)
+}
+
 export interface TemplateValidationResult {
   valid: boolean
   error?: string
@@ -472,10 +505,10 @@ export function validateTemplateEntries(
  * In 'full' mode, only __MACOSX entries are filtered — all other entries count
  * toward size/count limits and are checked for path traversal.
  */
-export async function validateAgentTemplate(zipBuffer: Buffer, mode: 'template' | 'full' = 'template'): Promise<TemplateValidationResult> {
+export async function validateAgentTemplate(zip: TemplateZipSource, mode: 'template' | 'full' = 'template'): Promise<TemplateValidationResult> {
   let reader: ZipReader | undefined
   try {
-    reader = await openZipFromBuffer(zipBuffer)
+    reader = await openZipSource(zip)
 
     const result = validateTemplateEntries(reader.entries, mode)
     if (!result.valid) return { ...result, agentName: undefined }
@@ -511,11 +544,11 @@ export async function validateAgentTemplate(zipBuffer: Buffer, mode: 'template' 
  * Creates a new agent with the template contents.
  */
 export async function importAgentFromTemplate(
-  zipBuffer: Buffer,
+  zip: TemplateZipSource,
   nameOverride?: string,
   mode: 'template' | 'full' = 'template',
 ): Promise<ApiAgent> {
-  const reader = await openZipFromBuffer(zipBuffer)
+  const reader = await openZipSource(zip)
   try {
     const validation = validateTemplateEntries(reader.entries, mode)
     if (!validation.valid) {

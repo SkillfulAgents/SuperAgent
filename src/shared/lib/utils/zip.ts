@@ -39,8 +39,27 @@ export class ZipExtractionSizeError extends Error {
 // Reading (yauzl)
 // ============================================================================
 
+const ZIP_OPEN_OPTIONS = { lazyEntries: true, decodeStrings: true, validateEntrySizes: true } as const
+
+type ZipOpenCallback = (err: Error | null, zipFile?: yauzl.ZipFile) => void
+
 export async function openZipFromBuffer(buffer: Buffer): Promise<ZipReader> {
-  const { zipFile, entries: entryMetas, rawEntries } = await openAndCollectEntries(buffer)
+  return openZipReader((callback) => yauzl.fromBuffer(buffer, ZIP_OPEN_OPTIONS, callback))
+}
+
+/**
+ * Open a ZIP directly from disk. Unlike openZipFromBuffer, the file's bytes
+ * are read on demand instead of being pinned in memory for the lifetime of
+ * the reader — prefer this whenever the ZIP already exists as a file.
+ * autoClose is disabled so the fd lives until close() is called, matching
+ * the reader's explicit-close contract.
+ */
+export async function openZipFromFile(filePath: string): Promise<ZipReader> {
+  return openZipReader((callback) => yauzl.open(filePath, { ...ZIP_OPEN_OPTIONS, autoClose: false }, callback))
+}
+
+async function openZipReader(open: (callback: ZipOpenCallback) => void): Promise<ZipReader> {
+  const { zipFile, entries: entryMetas, rawEntries } = await openAndCollectEntries(open)
   let closed = false
 
   return {
@@ -127,13 +146,13 @@ export async function openZipFromBuffer(buffer: Buffer): Promise<ZipReader> {
   }
 }
 
-function openAndCollectEntries(buffer: Buffer): Promise<{
+function openAndCollectEntries(open: (callback: ZipOpenCallback) => void): Promise<{
   zipFile: yauzl.ZipFile
   entries: ZipEntryMeta[]
   rawEntries: Map<string, yauzl.Entry>
 }> {
   return new Promise((resolve, reject) => {
-    yauzl.fromBuffer(buffer, { lazyEntries: true, decodeStrings: true, validateEntrySizes: true }, (err, zipFile) => {
+    open((err, zipFile) => {
       if (err || !zipFile) {
         reject(err || new Error('Failed to open ZIP'))
         return
@@ -157,7 +176,18 @@ function openAndCollectEntries(buffer: Buffer): Promise<{
       })
 
       zipFile.on('end', () => resolve({ zipFile, entries, rawEntries }))
-      zipFile.on('error', reject)
+      zipFile.on('error', (walkErr: Error) => {
+        // The zip opened but the entry walk failed (e.g. a damaged central
+        // directory). No ZipReader is ever constructed on this path, so no
+        // caller can close the file — release it here before rejecting.
+        // Harmless for buffer-backed zips, which hold no file descriptor.
+        try {
+          zipFile.close()
+        } catch {
+          // already closed
+        }
+        reject(walkErr)
+      })
 
       zipFile.readEntry()
     })

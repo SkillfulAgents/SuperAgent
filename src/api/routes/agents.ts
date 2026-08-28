@@ -177,6 +177,7 @@ import {
   refreshAgentTemplates,
   hasOnboardingSkill,
   getAgentTemplatePrompt,
+  type TemplateZipSource,
 } from '@shared/lib/services/agent-template-service'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import type { SkillsetConfig } from '@shared/lib/types/skillset'
@@ -954,8 +955,9 @@ async function handleChunkedImport(c: Context, formData: FormData, chunk: File) 
     if (size > MAX_COMPRESSED_SIZE) {
       return c.json({ error: formatUploadTooLargeMessage(size, MAX_COMPRESSED_SIZE) }, 413)
     }
-    const zipBuffer = await fs.promises.readFile(result.filePath)
-    return await processImport(c, zipBuffer, formData)
+    // The assembled upload is already on disk — import straight from the file
+    // instead of pinning the whole (up to 500MB) ZIP in memory.
+    return await processImport(c, { filePath: result.filePath }, formData)
   } finally {
     try {
       await fs.promises.unlink(result.filePath)
@@ -971,16 +973,17 @@ async function handleChunkedImport(c: Context, formData: FormData, chunk: File) 
   }
 }
 
-async function processImport(c: Context, zipBuffer: Buffer, formData: FormData) {
-  if (zipBuffer.length > MAX_COMPRESSED_SIZE) {
-    return c.json({ error: formatUploadTooLargeMessage(zipBuffer.length, MAX_COMPRESSED_SIZE) }, 413)
+async function processImport(c: Context, zip: TemplateZipSource, formData: FormData) {
+  // File sources are size-checked by the caller via stat before reaching here.
+  if (Buffer.isBuffer(zip) && zip.length > MAX_COMPRESSED_SIZE) {
+    return c.json({ error: formatUploadTooLargeMessage(zip.length, MAX_COMPRESSED_SIZE) }, 413)
   }
 
   const nameOverride = formData.get('name') as string | null
   const mode = formData.get('mode') as string | null
   const importMode = mode === 'full' ? 'full' : 'template'
 
-  const agent = await importAgentFromTemplate(zipBuffer, nameOverride || undefined, importMode)
+  const agent = await importAgentFromTemplate(zip, nameOverride || undefined, importMode)
   await createOwnerAclOrRollback(c, agent.slug)
   const [onboarding, templatePrompt] = await Promise.all([
     hasOnboardingSkill(agent.slug),
