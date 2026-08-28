@@ -72,14 +72,40 @@ const ESCAPE_MIN_DISTANCE_PX = 24
 // rollbacks to the same committed position after large thinking-card
 // collapses, WebKit only).
 const INPUT_EVIDENCE_WINDOW_MS = 500
-// A rollback, by definition, lands on a position the scroller recently held.
-// An evidence-less upward move is only read as one when it does; landing
-// anywhere else with no input behind it is a programmatic jump (scrollTo
-// from app code, an extension, tests) and releases following like any other
-// escape.
+// A rollback, by definition, lands somewhere the scroller recently traveled.
+// NOT necessarily on a position we ever wrote: WebKit reverts to the bottom
+// of a stale layout snapshot, which falls BETWEEN our recorded positions
+// (reproduced by thinking-collapse-reading-line.spec.ts 'hands off marathon'
+// — deterministic zero-input snaps to the same never-written value). So an
+// evidence-less upward move reads as a rollback when it lands on a recorded
+// position OR inside a small segment between two consecutive ones — the
+// creep path the viewport actually traversed. Landing outside that path with
+// no input behind it is a programmatic jump (scrollTo from app code, an
+// extension, tests) and releases following like any other escape. Segments
+// wider than the cap are real discontinuities (the initial pin, an escape
+// jump) — the viewport never held their interior, so they don't absorb.
 const ROLLBACK_TRAIL_MS = 2000
-const ROLLBACK_TRAIL_MAX = 40
+// Count cap is only a runaway backstop; retention is time-based (entries age
+// out of classification at ROLLBACK_TRAIL_MS and are evicted as they record).
+const ROLLBACK_TRAIL_MAX = 256
 const ROLLBACK_TRAIL_TOLERANCE_PX = 2
+const ROLLBACK_TRAIL_SEGMENT_MAX_PX = 500
+// The trail alone cannot decide: WebKit's compositor may revert to a snapshot
+// OLDER than any bounded history when the main thread is busy (reproduced —
+// zero-input snaps landing past the trail's oldest entry). While the engine
+// is the one moving the viewport (a live glide, or any programmatic write
+// this recently), an evidence-less upward stable landing is its own motion
+// coming back, wherever it lands. Programmatic jumps from outside the engine
+// (find-in-page, extensions, tests) are only distinguishable when the engine
+// is quiet — which is when they actually happen. Two guards keep an outside
+// jump from being eaten by coincidence (a mount-settle pin racing a test's
+// scrollTo(0) by ~90ms was real): the window is a couple of frames, and the
+// write-window path only accepts reverts of plausible size — a rollback
+// undoes recently composited creep (tens to hundreds of px), while outside
+// jumps travel the transcript. A live glide is exempt from the cap: WebKit
+// has been seen reverting a multi-thousand-px chase mid-flight.
+const ENGINE_WRITE_ROLLBACK_WINDOW_MS = 150
+const ROLLBACK_REVERT_CAP_PX = 1200
 // How long the scrolling tree gets to settle before convergence re-pins
 // after an engine-caused upward scroll.
 const ENGINE_SCROLL_SETTLE_MS = 150
@@ -215,8 +241,9 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
   const lastUserScrollUpAtRef = useRef(0)
   // Positions the scroller has recently held — every observed scroll event
   // and every engine write funnels through rememberPosition. Consulted only
-  // to separate compositor rollbacks (land ON the trail) from programmatic
-  // jumps (land off it) when an upward move has no input evidence.
+  // to separate compositor rollbacks (land on the recently traveled path)
+  // from programmatic jumps (land off it) when an upward move has no input
+  // evidence.
   const positionTrailRef = useRef<Array<{ scrollTop: number; at: number }>>([])
 
   // Interaction tracking. A drag (a press that moved), a press on the
@@ -254,17 +281,29 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
   // viewport after the larger slice renders so the content under the user doesn't jump.
   const prevScrollHeightRef = useRef<number | null>(null)
 
+  // Stamped by every engine-authored scrollTop write; consulted by the
+  // rollback classifier — see ENGINE_WRITE_ROLLBACK_WINDOW_MS.
+  const engineWroteAtRef = useRef(0)
+  const writeScrollTop = useCallback((el: HTMLElement, top: number) => {
+    engineWroteAtRef.current = performance.now()
+    el.scrollTop = top
+  }, [])
+
   const rememberPosition = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
     const trail = positionTrailRef.current
+    const now = performance.now()
     const latest = trail[trail.length - 1]
     if (latest && Math.abs(latest.scrollTop - el.scrollTop) <= ROLLBACK_TRAIL_TOLERANCE_PX) {
-      latest.scrollTop = el.scrollTop
-      latest.at = performance.now()
+      // Deduplicate write echoes without sliding the entry along a slow creep
+      // — the anchored position is what keeps the traversal history.
+      latest.at = now
     } else {
-      trail.push({ scrollTop: el.scrollTop, at: performance.now() })
-      if (trail.length > ROLLBACK_TRAIL_MAX) trail.shift()
+      trail.push({ scrollTop: el.scrollTop, at: now })
+      while (trail.length > ROLLBACK_TRAIL_MAX || (trail.length && now - trail[0].at > ROLLBACK_TRAIL_MS)) {
+        trail.shift()
+      }
     }
     baselineRef.current = {
       scrollTop: el.scrollTop,
@@ -301,7 +340,7 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
     if (!el) return
     glideRef.current?.cancel()
     if (prefersReducedMotion()) {
-      el.scrollTop = liveEdgeTarget(el)
+      writeScrollTop(el, liveEdgeTarget(el))
       rememberPosition()
       return
     }
@@ -331,18 +370,18 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
       last = now
       const remaining = target - el.scrollTop
       if (Math.abs(remaining) <= 1 || now - startedAt >= GLIDE_MAX_MS) {
-        el.scrollTop = target
+        writeScrollTop(el, target)
         rememberPosition()
         glideRef.current = null
         return
       }
-      el.scrollTop = el.scrollTop + remaining * (1 - Math.exp((-dt / 1000) * GLIDE_RATE_PER_S))
+      writeScrollTop(el, el.scrollTop + remaining * (1 - Math.exp((-dt / 1000) * GLIDE_RATE_PER_S)))
       handle.top = el.scrollTop
       rememberPosition()
       frameId = requestAnimationFrame(step)
     }
     frameId = requestAnimationFrame(step)
-  }, [rememberPosition])
+  }, [rememberPosition, writeScrollTop])
 
   // Re-assert the live edge. Convergence, not classification: called after
   // every content/viewport resize and every reserve sync while following, so
@@ -382,7 +421,7 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
       glideRef.current.cancel()
     }
     if (prefersReducedMotion() || gap > FOLLOW_GLIDE_MAX_GAP_PX) {
-      el.scrollTop = target
+      writeScrollTop(el, target)
       rememberPosition()
     } else {
       // Convergence itself is animated: the chase re-targets every frame,
@@ -391,7 +430,7 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
       // chase alive across ticks.
       glideToLiveEdge('follow')
     }
-  }, [glideToLiveEdge, rememberPosition, selectionInProgress])
+  }, [glideToLiveEdge, rememberPosition, selectionInProgress, writeScrollTop])
   useLayoutEffect(() => {
     pinRetryRef.current = pinToLiveEdge
   }, [pinToLiveEdge])
@@ -406,10 +445,10 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
     glideRef.current?.cancel()
     const el = scrollRef.current
     if (el) {
-      el.scrollTop = liveEdgeTarget(el)
+      writeScrollTop(el, liveEdgeTarget(el))
       rememberPosition()
     }
-  }, [glideToLiveEdge, rememberPosition])
+  }, [glideToLiveEdge, rememberPosition, writeScrollTop])
 
   // Visible messages the trailing window slices. Derived values in the
   // component still compute over the FULL message list, so turn boundaries /
@@ -502,7 +541,7 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
         anchoredTurn.anchorTop = anchorTop
         anchoredTurn.scrollTop = Math.max(0, anchorTop - TURN_ANCHOR_TOP)
         if (mayAdjustViewport) {
-          el.scrollTop = Math.min(Math.max(0, el.scrollTop + drift), liveEdgeTarget(el))
+          writeScrollTop(el, Math.min(Math.max(0, el.scrollTop + drift), liveEdgeTarget(el)))
           rememberPosition()
         }
       }
@@ -539,18 +578,18 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
       // The spacer write above has just re-inflated the scroll range — put
       // the viewport straight back so the dip never paints; the glide then
       // resumes from where it actually was.
-      el.scrollTop = Math.min(glide.top, liveEdgeTarget(el))
+      writeScrollTop(el, Math.min(glide.top, liveEdgeTarget(el)))
       rememberPosition()
     } else if (mayAdjustViewport && !inputBacked && !glide) {
       const target = liveEdgeTarget(el)
       if (el.scrollTop < target) {
-        el.scrollTop = target
+        writeScrollTop(el, target)
         rememberPosition()
       }
     } else {
       pinToLiveEdge()
     }
-  }, [setBottomSpacerHeight, pinToLiveEdge, rememberPosition, selectionInProgress])
+  }, [setBottomSpacerHeight, pinToLiveEdge, rememberPosition, selectionInProgress, writeScrollTop])
 
   // Pin the viewport to the live edge before first paint — without this,
   // opening a session flashes the top of the transcript for a frame. Guarded
@@ -561,7 +600,7 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
     const el = scrollRef.current
     if (pinnedInitialRef.current || !el) return
     pinnedInitialRef.current = true
-    el.scrollTop = liveEdgeTarget(el)
+    writeScrollTop(el, liveEdgeTarget(el))
     rememberPosition()
   })
 
@@ -588,21 +627,40 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
       // Stable geometry narrows the author to the reader or the engine itself
       // (WebKit's compositor rolling back a programmatic write). Fresh input
       // separates them — and an evidence-less move only reads as a rollback
-      // when it lands on the trail of recently held positions, which a
-      // rollback by definition returns to. Off the trail it is a programmatic
-      // jump and is treated exactly like the reader's.
+      // when it lands where the viewport recently traveled: on a recorded
+      // position, or inside a small segment between two consecutive ones
+      // (rollbacks revert to stale-layout bottoms that fall between our
+      // writes). Off that path it is a programmatic jump and is treated
+      // exactly like the reader's.
       const now = performance.now()
       const inputBacked =
         pointerDownRef.current ||
         touchActiveRef.current ||
         now - lastInputAtRef.current < INPUT_EVIDENCE_WINDOW_MS
-      const rollback =
-        !inputBacked &&
-        positionTrailRef.current.some(
-          (p) =>
-            now - p.at <= ROLLBACK_TRAIL_MS &&
-            Math.abs(p.scrollTop - el.scrollTop) <= ROLLBACK_TRAIL_TOLERANCE_PX,
-        )
+      const trail = positionTrailRef.current
+      let onTrail = false
+      for (let i = 0; i < trail.length && !onTrail; i++) {
+        const p = trail[i]
+        if (now - p.at > ROLLBACK_TRAIL_MS) continue
+        if (Math.abs(p.scrollTop - el.scrollTop) <= ROLLBACK_TRAIL_TOLERANCE_PX) {
+          onTrail = true
+          break
+        }
+        const q = trail[i + 1]
+        if (!q) continue
+        const lo = Math.min(p.scrollTop, q.scrollTop)
+        const hi = Math.max(p.scrollTop, q.scrollTop)
+        onTrail =
+          hi - lo <= ROLLBACK_TRAIL_SEGMENT_MAX_PX && el.scrollTop > lo && el.scrollTop < hi
+      }
+      // While the engine is the one moving the viewport, an evidence-less
+      // upward landing is its own motion coming back wherever it lands — the
+      // compositor can revert to a snapshot older than any bounded trail.
+      const engineActive =
+        glideRef.current != null ||
+        (now - engineWroteAtRef.current < ENGINE_WRITE_ROLLBACK_WINDOW_MS &&
+          upwardDelta <= ROLLBACK_REVERT_CAP_PX)
+      const rollback = !inputBacked && (engineActive || onTrail)
       if (!rollback) {
         lastUserScrollUpAtRef.current = now
         // Blank reserve is one-way. When the reader moves upward, consume the
