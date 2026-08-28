@@ -171,7 +171,7 @@ export function AgentShell() {
 
   // Holder #1 of the two-holder EventSource pattern: keeps the stream ref-counted
   // open across leaf changes (SessionChatColumn is holder #2).
-  const { contextUsage: streamContextUsage } = useMessageStream(activeSessionId, slug)
+  const { contextUsage: streamContextUsage, isStreaming } = useMessageStream(activeSessionId, slug)
 
   const value: PendingMessagesContextValue = {
     getPendingMessages,
@@ -190,7 +190,7 @@ export function AgentShell() {
           needsTrafficLightPadding={needsTrafficLightPadding}
           headerContent={
             slug ? (
-              <AgentHeader slug={slug} isViewOnly={isViewOnly} startAgent={startAgent} stopAgent={stopAgent} />
+              <AgentHeader slug={slug} isViewOnly={isViewOnly} isStreaming={isStreaming} startAgent={startAgent} stopAgent={stopAgent} />
             ) : null
           }
         >

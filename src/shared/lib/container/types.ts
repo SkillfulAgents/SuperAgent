@@ -10,6 +10,14 @@ export class ContainerConflictError extends Error {
   }
 }
 
+/** The container has the route but the session is gone (HTTP 404 + JSON). */
+export class ContainerNotFoundError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ContainerNotFoundError'
+  }
+}
+
 export interface SendMessageOptions extends RuntimeOptions {
   /** Keep an automated session in its automated runtime class for agent-originated follow-ups. */
   isAutomated?: boolean
@@ -229,7 +237,8 @@ export interface ContainerClient {
   getSession(sessionId: string): Promise<ContainerSession | null>
   deleteSession(sessionId: string): Promise<boolean>
   // Copy a session's transcript into a new session (Fork Session).
-  // null = the container predates the fork endpoint (404). Throws
+  // null = the container predates the fork endpoint (plain 404). Throws
+  // ContainerNotFoundError when the session is gone (JSON 404),
   // ContainerConflictError when the source is mid-turn.
   forkSession(sessionId: string): Promise<{ id: string } | null>
 

@@ -352,23 +352,18 @@ describe('Fork Session item', () => {
     expect(screen.getByTestId('fork-session-item')).toHaveAttribute('data-disabled')
   })
 
-  it('snapshots the draft at click time, forks, seeds cache and drafts, and navigates', async () => {
-    let resolveFork!: (v: unknown) => void
-    mockFork.mockReturnValue(new Promise((r) => { resolveFork = r }))
+  it('forks and navigates; draft and cache seed live in the hook', async () => {
+    mockFork.mockResolvedValue({ id: 'fork-1', agentSlug: 'agent-a', name: 'Pricing (fork)' })
     renderMenu()
     fireEvent.click(screen.getByTestId('fork-session-item'))
-    // Snapshot happened before the network settled.
-    expect(mockSnapshot).toHaveBeenCalledWith(mockStore, 'src-1')
-    expect(mockSeed).not.toHaveBeenCalled()
-
-    resolveFork({ id: 'fork-1', agentSlug: 'agent-a', name: 'Pricing (fork)' })
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith({
       to: '/agents/$slug/sessions/$sessionId',
       params: { slug: 'agent-a', sessionId: 'fork-1' },
     }))
     expect(mockFork).toHaveBeenCalledWith({ sessionId: 'src-1', agentSlug: 'agent-a' })
-    expect(mockSetQueryData).toHaveBeenCalledWith(['session', 'fork-1', 'agent-a'], expect.objectContaining({ id: 'fork-1' }))
-    expect(mockSeed).toHaveBeenCalledWith(mockStore, 'fork-1', { text: 'draft', securedSecrets: undefined })
+    expect(mockSnapshot).not.toHaveBeenCalled()
+    expect(mockSeed).not.toHaveBeenCalled()
+    expect(mockSetQueryData).not.toHaveBeenCalled()
   })
 
   it('stays put and logs when the fork fails', async () => {

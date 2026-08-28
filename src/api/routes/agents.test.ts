@@ -287,6 +287,7 @@ const mockIsAuthMode = vi.fn().mockReturnValue(false)
 const mockInsertAuthor = vi.fn().mockResolvedValue(true)
 vi.mock('./message-author', () => ({
   insertMessageAuthorBestEffort: (...a: unknown[]) => mockInsertAuthor(...a),
+  insertMessageAuthorsBestEffort: (...a: unknown[]) => mockInsertAuthor(...a),
 }))
 vi.mock('@shared/lib/auth/mode', () => ({
   isAuthMode: () => mockIsAuthMode(),
@@ -534,6 +535,7 @@ vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => ({
   writeFile: vi.fn(),
   getAgentSessionsDir: vi.fn(() => '/mock/sessions'),
   readJsonlFile: vi.fn(),
+  streamJsonlFile: vi.fn(async function* () {}),
   getAgentWorkspaceDir: (slug: string) => mockGetAgentWorkspaceDir(slug),
   // The skills-files route checks the skill dir via directoryExists; delegate
   // to the same mock the tests already use for fs.existsSync.
@@ -587,7 +589,7 @@ vi.mock('hono/streaming', () => ({ streamSSE: (...args: unknown[]) => mockStream
 
 // Import the agents router after all mocks are set up
 import agents from './agents'
-import { ContainerConflictError } from '@shared/lib/container/types'
+import { ContainerConflictError, ContainerNotFoundError } from '@shared/lib/container/types'
 import { decodeMediaRef, openMediaBlob } from '@shared/lib/services/session-media'
 import { UploadTooLargeError } from '@shared/lib/utils/chunked-upload'
 import {
@@ -616,7 +618,7 @@ import { containerManager } from '@shared/lib/container/container-manager'
 import { listUserSecrets, setSecret, updateSecret, getSecret, getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { keyToEnvVar } from '@shared/lib/utils/secrets'
 import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
-import { readJsonFileStrict, readJsonlFile, writeJsonFileAtomic, readFileOrNull } from '@shared/lib/utils/file-storage'
+import { readJsonFileStrict, readJsonlFile, streamJsonlFile, writeJsonFileAtomic, readFileOrNull } from '@shared/lib/utils/file-storage'
 import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
 import { listWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 
@@ -8680,6 +8682,14 @@ describe('POST /api/agents/:id/sessions/:sessionId/fork', () => {
     expect(registerSession).not.toHaveBeenCalled()
   })
 
+  it('maps a gone session to 404', async () => {
+    mockForkSession.mockRejectedValue(new ContainerNotFoundError('Session not found'))
+    const res = await fork()
+    expect(res.status).toBe(404)
+    expect((await res.json()).error).toBe('Session not found')
+    expect(registerSession).not.toHaveBeenCalled()
+  })
+
   it('500s with a restart hint when the container predates the endpoint', async () => {
     mockForkSession.mockResolvedValue(null)
     const res = await fork()
@@ -8728,14 +8738,14 @@ describe('POST /api/agents/:id/sessions/:sessionId/fork', () => {
 
   it('rebuilds attribution for copied user messages in auth mode', async () => {
     mockIsAuthMode.mockReturnValue(true)
-    vi.mocked(readJsonlFile).mockResolvedValue([
-      { type: 'user', uuid: 'new-u1', forkedFrom: { sessionId: 'src-1', messageUuid: 'old-u1' } },
-      { type: 'assistant', uuid: 'new-a1', forkedFrom: { sessionId: 'src-1', messageUuid: 'old-a1' } },
-    ] as any)
+    vi.mocked(streamJsonlFile).mockImplementation(async function* () {
+      yield { type: 'user', uuid: 'new-u1', forkedFrom: { sessionId: 'src-1', messageUuid: 'old-u1' } }
+      yield { type: 'assistant', uuid: 'new-a1', forkedFrom: { sessionId: 'src-1', messageUuid: 'old-a1' } }
+    })
     mockDbSelectFrom.mockReturnValue({ where: () => Promise.resolve([{ id: 'old-u1', userId: 'user-9' }]) })
     const res = await fork()
     expect(res.status).toBe(201)
-    expect(mockInsertAuthor).toHaveBeenCalledWith({ id: 'new-u1', sessionId: 'fork-1', agentSlug: 'test-agent', userId: 'user-9' })
+    expect(mockInsertAuthor).toHaveBeenCalledWith([{ id: 'new-u1', sessionId: 'fork-1', agentSlug: 'test-agent', userId: 'user-9' }])
     expect(mockInsertAuthor).toHaveBeenCalledTimes(1)
   })
 })
@@ -8778,9 +8788,10 @@ describe('session existence guards read metadata, not the transcript', () => {
   })
 
   it('returns fork lineage when the parent session still exists', async () => {
-    vi.mocked(getSessionMetadata).mockImplementation(async (_slug, id) => {
-      if (id === 'sess-1') return { forkedFromSessionId: 'src-1' }
-      if (id === 'src-1') return { name: 'Pricing' }
+    vi.mocked(getSessionMetadata).mockResolvedValue({ forkedFromSessionId: 'src-1' })
+    vi.mocked(getSession).mockImplementation(async (_slug, id) => {
+      if (id === 'sess-1') return SESSION_INFO
+      if (id === 'src-1') return { ...SESSION_INFO, id: 'src-1', name: 'Pricing' }
       return null
     })
 
@@ -8794,9 +8805,24 @@ describe('session existence guards read metadata, not the transcript', () => {
     })
   })
 
+  it('uses the live parent name when the listing has no title', async () => {
+    vi.mocked(getSessionMetadata).mockResolvedValue({ forkedFromSessionId: 'src-1' })
+    vi.mocked(getSession).mockImplementation(async (_slug, id) => {
+      if (id === 'sess-1') return SESSION_INFO
+      if (id === 'src-1') return { ...SESSION_INFO, id: 'src-1', name: 'First user message' }
+      return null
+    })
+
+    const res = await getReq(app, '/api/agents/test-agent/sessions/sess-1')
+
+    expect(res.status).toBe(200)
+    expect((await res.json()).forkedFromSessionName).toBe('First user message')
+  })
+
   it('omits forkedFromSessionName when the parent session is gone', async () => {
-    vi.mocked(getSessionMetadata).mockImplementation(async (_slug, id) => {
-      if (id === 'sess-1') return { forkedFromSessionId: 'src-1' }
+    vi.mocked(getSessionMetadata).mockResolvedValue({ forkedFromSessionId: 'src-1' })
+    vi.mocked(getSession).mockImplementation(async (_slug, id) => {
+      if (id === 'sess-1') return SESSION_INFO
       return null
     })
 

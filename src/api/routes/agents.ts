@@ -81,9 +81,9 @@ import {
   removeToolCall,
 } from '@shared/lib/services/session-service'
 import { decodeMediaRef, openMediaBlob } from '@shared/lib/services/session-media'
-import { getSessionJsonlPath, getAgentSessionsDir, readJsonlFile, writeJsonFileAtomic, displaySlug, createJsonArrayStringifyTransform, directoryExists, copyDirectoryFiltered } from '@shared/lib/utils/file-storage'
-import { ContainerConflictError } from '@shared/lib/container/types'
-import { insertMessageAuthorBestEffort } from './message-author'
+import { getSessionJsonlPath, getAgentSessionsDir, readJsonlFile, streamJsonlFile, writeJsonFileAtomic, displaySlug, createJsonArrayStringifyTransform, directoryExists, copyDirectoryFiltered } from '@shared/lib/utils/file-storage'
+import { ContainerConflictError, ContainerNotFoundError } from '@shared/lib/container/types'
+import { insertMessageAuthorsBestEffort } from './message-author'
 import { forkedUserLineSchema } from './fork-attribution-schema'
 import {
   MAX_UPLOAD_TOTAL_SIZE,
@@ -2884,7 +2884,7 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
         : undefined,
       forkedFromSessionId: metadata?.forkedFromSessionId,
       forkedFromSessionName: metadata?.forkedFromSessionId
-        ? (await getSessionMetadata(agentSlug, metadata.forkedFromSessionId))?.name
+        ? (await getSession(agentSlug, metadata.forkedFromSessionId))?.name
         : undefined,
       effort: metadata?.effort,
       speed: metadata?.speed,
@@ -3017,6 +3017,9 @@ agents.post('/:id/sessions/:sessionId/fork', AgentUser(), async (c) => {
       if (error instanceof ContainerConflictError) {
         return c.json({ error: error.message }, 409)
       }
+      if (error instanceof ContainerNotFoundError) {
+        return c.json({ error: error.message }, 404)
+      }
       throw error
     }
     if (!forked) {
@@ -3048,6 +3051,8 @@ agents.post('/:id/sessions/:sessionId/fork', AgentUser(), async (c) => {
       // unlink failure cannot skip it.
       try {
         await deleteSession(slug, newId)
+      } catch (cleanupError) {
+        console.error(`fork: host delete of ${newId} failed`, cleanupError)
       } finally {
         await client.deleteSession(newId).catch(console.error)
       }
@@ -3067,7 +3072,7 @@ agents.post('/:id/sessions/:sessionId/fork', AgentUser(), async (c) => {
       sourceIsRealDir = false
     }
     if (sourceIsRealDir) {
-      await copyDirectoryFiltered(sourceDir, path.join(sessionsDir, newId), undefined, { regularFilesOnly: true })
+      await copyDirectoryFiltered(sourceDir, path.join(sessionsDir, newId))
         .catch((error) => console.error(`fork: subagent/workflow copy for ${newId} failed (non-fatal)`, error))
     }
     if (isAuthMode()) {
@@ -3104,11 +3109,11 @@ agents.post('/:id/sessions/:sessionId/fork', AgentUser(), async (c) => {
  * keyed by uuid, so re-key the source's rows onto the fork's user messages.
  */
 async function copyForkAttribution(slug: string, sourceId: string, newId: string): Promise<void> {
-  const entries = await readJsonlFile(getSessionJsonlPath(slug, newId))
-  const pairs = entries.flatMap((raw) => {
+  const pairs: { newUuid: string; oldUuid: string }[] = []
+  for await (const raw of streamJsonlFile(getSessionJsonlPath(slug, newId))) {
     const parsed = forkedUserLineSchema.safeParse(raw)
-    return parsed.success ? [{ newUuid: parsed.data.uuid, oldUuid: parsed.data.forkedFrom.messageUuid }] : []
-  })
+    if (parsed.success) pairs.push({ newUuid: parsed.data.uuid, oldUuid: parsed.data.forkedFrom.messageUuid })
+  }
   if (pairs.length === 0) return
 
   const rows = await db
@@ -3116,11 +3121,12 @@ async function copyForkAttribution(slug: string, sourceId: string, newId: string
     .from(messageAuthor)
     .where(and(eq(messageAuthor.sessionId, sourceId), inArray(messageAuthor.id, pairs.map((p) => p.oldUuid))))
   const userByOld = new Map(rows.map((r) => [r.id, r.userId]))
-  for (const { newUuid, oldUuid } of pairs) {
-    const userId = userByOld.get(oldUuid)
-    if (!userId) continue
-    await insertMessageAuthorBestEffort({ id: newUuid, sessionId: newId, agentSlug: slug, userId })
-  }
+  await insertMessageAuthorsBestEffort(
+    pairs.flatMap(({ newUuid, oldUuid }) => {
+      const userId = userByOld.get(oldUuid)
+      return userId ? [{ id: newUuid, sessionId: newId, agentSlug: slug, userId }] : []
+    }),
+  )
 }
 
 // DELETE /api/agents/:id/sessions/:sessionId - Delete a session

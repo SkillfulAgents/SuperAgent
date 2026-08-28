@@ -100,6 +100,12 @@ describe('SessionManager.forkSession', () => {
     expect(persisted.has('fork-2')).toBe(false)
   })
 
+  it('forgets a never-opened persisted session', async () => {
+    persisted.set('fork-1', { sessionId: 'fork-1', claudeSessionId: 'fork-1', workingDirectory: '/workspace' })
+    expect(await manager.deleteSession('fork-1')).toBe(true)
+    expect(persisted.has('fork-1')).toBe(false)
+  })
+
   it('refuses while the source has a live process mid-turn', async () => {
     // Reach into the live map the way the eviction test does.
     ;(manager as any).sessions.set('src-1', {

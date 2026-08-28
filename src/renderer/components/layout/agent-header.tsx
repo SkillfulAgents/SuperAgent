@@ -3,7 +3,6 @@ import { AppLink } from '@renderer/components/ui/app-link'
 import { useRouteLocation } from '@renderer/router/use-route-location'
 import { useAgent, type useStartAgent, type useStopAgent } from '@renderer/hooks/use-agents'
 import { useSessions, useSession } from '@renderer/hooks/use-sessions'
-import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
 import { useWebhookTrigger } from '@renderer/hooks/use-webhook-triggers'
 import { useConnectedAccounts } from '@renderer/hooks/use-connected-accounts'
@@ -25,6 +24,7 @@ import { ScrollAwareNavTitle } from './scroll-aware-title'
 interface AgentHeaderProps {
   slug: string
   isViewOnly: boolean
+  isStreaming?: boolean
   startAgent: ReturnType<typeof useStartAgent>
   stopAgent: ReturnType<typeof useStopAgent>
 }
@@ -45,7 +45,7 @@ function BreadcrumbSeparator() {
  * active styling is route-derived (`data-status`) and survives a cold reload
  * with no hand-computed leaf flag.
  */
-export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHeaderProps) {
+export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent, stopAgent }: AgentHeaderProps) {
   const { view } = useRouteLocation()
   const sessionId = view.kind === 'session' ? view.id : null
   const scheduledTaskId = view.kind === 'task' ? view.id : null
@@ -62,7 +62,6 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
   const { data: agent } = useAgent(slug)
   const { data: sessions } = useSessions(slug)
   const { data: session } = useSession(sessionId, slug)
-  const { isStreaming } = useMessageStream(sessionId, slug)
   const { data: scheduledTask } = useScheduledTask(scheduledTaskId)
   const { data: webhookTrigger } = useWebhookTrigger(webhookTriggerId)
   const hasActiveSessions = sessions?.some((s) => s.isActive) || (agent?.hasActiveSessions ?? false)

@@ -20,7 +20,6 @@ const mocks = vi.hoisted(() => ({
   agentStatus: 'running' as 'running' | 'stopped',
   invokedByAgentSlug: undefined as string | undefined,
   sessionIsActive: true,
-  isStreaming: false,
 }))
 
 const agent: ApiAgent = {
@@ -52,10 +51,6 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
       isActive: mocks.sessionIsActive,
     },
   }),
-}))
-
-vi.mock('@renderer/hooks/use-message-stream', () => ({
-  useMessageStream: () => ({ isStreaming: mocks.isStreaming }),
 }))
 
 vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({
@@ -146,7 +141,6 @@ describe('AgentHeader breadcrumbs', () => {
     mocks.agentStatus = 'running'
     mocks.invokedByAgentSlug = undefined
     mocks.sessionIsActive = true
-    mocks.isStreaming = false
     vi.clearAllMocks()
   })
 
@@ -177,14 +171,28 @@ describe('AgentHeader breadcrumbs', () => {
     expect(sessionMenu).toContainElement(screen.getByTestId('session-breadcrumb'))
   })
 
-  it('disables Fork when the session is streaming even if isActive is false', () => {
+  it('leaves Fork enabled when the session is idle', () => {
     mocks.sessionIsActive = false
-    mocks.isStreaming = true
     const mutation = { mutate: vi.fn(), isPending: false }
     render(
       <AgentHeader
         slug="test-agent"
         isViewOnly={false}
+        startAgent={mutation as never}
+        stopAgent={mutation as never}
+      />,
+    )
+    expect(screen.getByTestId('session-breadcrumb-context-menu')).toHaveAttribute('data-is-active', 'false')
+  })
+
+  it('disables Fork when the session is streaming even if isActive is false', () => {
+    mocks.sessionIsActive = false
+    const mutation = { mutate: vi.fn(), isPending: false }
+    render(
+      <AgentHeader
+        slug="test-agent"
+        isViewOnly={false}
+        isStreaming
         startAgent={mutation as never}
         stopAgent={mutation as never}
       />,

@@ -978,7 +978,7 @@ export async function installSkillFromSkillset(
   await ensureDirectory(destDir)
 
   // Copy all files from the skill directory
-  await copyDirectoryFiltered(skillDirInRepo, destDir)
+  await copyDirectoryFiltered(skillDirInRepo, destDir, undefined, { followSymlinks: true })
 
   // Read the installed SKILL.md to compute hash and parse metadata
   const skillMdPath = path.join(destDir, 'SKILL.md')
@@ -1341,7 +1341,7 @@ export async function refreshAgentSkills(
           }
           const mergedFiles = await getRepoSkillPackageFiles(skillRepoDir, meta.skillPath)
           if (mergedFiles) {
-            await copyDirectoryFiltered(path.join(skillRepoDir, path.dirname(meta.skillPath)), skillDir)
+            await copyDirectoryFiltered(path.join(skillRepoDir, path.dirname(meta.skillPath)), skillDir, undefined, { followSymlinks: true })
             meta.originalContentHash = hashSkillPackageFiles(mergedFiles)
             const mergedContent = getSkillMdFromPackageFiles(mergedFiles)
             await fs.promises.writeFile(path.join(skillDir, '.skillset-original.md'), mergedContent, 'utf-8')
@@ -1392,7 +1392,7 @@ export async function refreshAgentSkills(
         && cacheHash !== currentHash
         && cacheHash !== meta.originalContentHash) {
       const skillDirInRepo = path.join(skillRepoDir, path.dirname(meta.skillPath))
-      await copyDirectoryFiltered(skillDirInRepo, skillDir)
+      await copyDirectoryFiltered(skillDirInRepo, skillDir, undefined, { followSymlinks: true })
       const freshContent = await readFileOrNull(path.join(skillDir, 'SKILL.md'))
       meta.originalContentHash = cacheHash
       meta.openPrUrl = undefined

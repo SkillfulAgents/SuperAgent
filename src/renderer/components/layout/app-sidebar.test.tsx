@@ -606,6 +606,7 @@ describe('AppSidebar — agent rows', () => {
     mockRouteParams = { slug: 'test-agent' }
     renderWithProviders(<AppSidebar />)
     expect(screen.getByText('Session 1')).toBeInTheDocument()
+    expect(screen.getByTestId('session-item-session-1')).toHaveAttribute('data-is-active', 'false')
   })
 
   it('session sub-item links to the session route', () => {

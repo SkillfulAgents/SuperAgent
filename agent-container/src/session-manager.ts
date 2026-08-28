@@ -714,7 +714,14 @@ export class SessionManager extends EventEmitter {
 
   async deleteSession(sessionId: string): Promise<boolean> {
     const sessionData = this.sessions.get(sessionId);
-    if (!sessionData) return false;
+    if (!sessionData) {
+      // A never-opened (cold) session lives only in the listing. Forget it
+      // there too — otherwise a rollback leaves a record pointing at a
+      // deleted transcript, with no GC path.
+      if (!this.persistence.getSession(sessionId)) return false;
+      this.persistence.deleteSession(sessionId);
+      return true;
+    }
 
     // Release browser lock if this session owns it
     const released = releaseBrowserLock(sessionId);

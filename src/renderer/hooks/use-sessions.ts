@@ -2,6 +2,7 @@ import { apiFetch, apiJson } from '@renderer/lib/api'
 import { useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
+import { useDraftsStore, snapshotSessionDraft, seedSessionDraft } from '@renderer/context/drafts-context'
 import { useAgents, resolveRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
 import type { ApiSession } from '@shared/lib/types/api'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
@@ -272,14 +273,28 @@ export function useClearSessionUnread() {
 
 export function useForkSession() {
   const queryClient = useQueryClient()
+  const draftsStore = useDraftsStore()
 
   return useMutation({
     mutationFn: async ({ sessionId, agentSlug }: { sessionId: string; agentSlug: string }) => {
       const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/fork`, { method: 'POST' })
-      if (!res.ok) throw new Error('Failed to fork session')
+      if (!res.ok) {
+        const text = await res.text().catch(() => '')
+        let message = 'Failed to fork session'
+        try {
+          const body = JSON.parse(text) as { error?: string }
+          if (body.error) message = body.error
+        } catch {
+          if (text.trim()) message = text
+        }
+        throw new Error(message)
+      }
       return res.json() as Promise<ApiSession>
     },
-    onSuccess: (_, variables) => {
+    onMutate: ({ sessionId }) => ({ draft: snapshotSessionDraft(draftsStore, sessionId) }),
+    onSuccess: (fork, variables, context) => {
+      queryClient.setQueryData(['session', fork.id, fork.agentSlug], fork)
+      seedSessionDraft(draftsStore, fork.id, context.draft)
       queryClient.invalidateQueries({
         queryKey: ['sessions', resolveAgentSlugFromCache(queryClient, variables.agentSlug)],
       })

@@ -20,7 +20,7 @@ import type {
   StopResult,
   StreamMessage,
 } from './types'
-import { ContainerConflictError } from './types'
+import { ContainerConflictError, ContainerNotFoundError } from './types'
 import type {
   ObserveUnexpectedDeathInput,
   RuntimeDeathProbe,
@@ -1430,9 +1430,18 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   async forkSession(sessionId: string): Promise<{ id: string } | null> {
     const response = await this.fetch(`/sessions/${sessionId}/fork`, { method: 'POST' })
     if (response.status === 404) {
-      // Route missing = the container predates the fork endpoint (an unknown
-      // session is caught host-side before we get here). Restart the agent so
-      // a fresh container is created from the current image.
+      const text = await response.text().catch(() => '')
+      const trimmed = text.trim()
+      if (trimmed.startsWith('{')) {
+        try {
+          const body = JSON.parse(trimmed) as { error?: string }
+          throw new ContainerNotFoundError(body.error ?? 'Session not found')
+        } catch (error) {
+          if (error instanceof ContainerNotFoundError) throw error
+        }
+      }
+      // Route missing = the container predates the fork endpoint. Restart the
+      // agent so a fresh container is created from the current image.
       console.warn(
         '[ContainerClient] forkSession: container returned 404 — the agent container predates the fork endpoint; restart the agent to pick up the current image'
       )

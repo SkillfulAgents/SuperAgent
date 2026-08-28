@@ -17,7 +17,7 @@ import type {
 } from './types'
 import type { ObserveUnexpectedDeathInput, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
 import { resolveContainerModel } from './resolve-model'
-import { getAgentWorkspaceDir, getSessionJsonlPath } from '../utils/file-storage'
+import { getAgentWorkspaceDir, getSessionJsonlPath, readJsonlFile } from '../utils/file-storage'
 import { reviewManager } from '../proxy/review-manager'
 import { db } from '../db'
 import { connectedAccounts } from '../db/schema'
@@ -2778,14 +2778,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     const agentSlug = this.config.agentId
     const sourcePath = getSessionJsonlPath(agentSlug, sessionId)
     const newId = `session_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
-    const lines = fs.existsSync(sourcePath)
-      ? fs.readFileSync(sourcePath, 'utf8').split('\n').filter((l) => l.trim().length > 0)
-      : []
-
-    const entries = lines.flatMap((line) => {
-      // Like the SDK: a malformed (partial) line is dropped, not fatal.
-      let raw: unknown
-      try { raw = JSON.parse(line) } catch { return [] }
+    const entries = (await readJsonlFile(sourcePath)).flatMap((raw) => {
       const parsed = mockJsonlLineSchema.safeParse(raw)
       return parsed.success ? [parsed.data] : []
     })
