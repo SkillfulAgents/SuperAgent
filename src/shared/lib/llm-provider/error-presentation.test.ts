@@ -70,14 +70,14 @@ describe('parsePlatformErrorResponse', () => {
       severity: 'warning',
       icon: 'circle-dollar-sign',
       message:
-        '**Spend Limit Reached:** A spend cap for this workspace was reached. It resets within 30 days. [Raise spend limit](/dashboard/organizations/{orgId}?tab=billing)',
+        '**Spend Limit Reached:** A spend cap for this workspace was reached. It resets within 30 days. [Raise spend limit in the admin dashboard](/dashboard/organizations/{orgId}?tab=billing)',
     })
   })
 
   it('finds a spend cap after streamed assistant text', () => {
     const parsed = parsePlatformErrorResponse(undefined, STREAM_PREFIXED_SPEND_CAP)
-    expect(parsed.severity).toBe('warning')
-    expect(parsed.message).toContain('**Spend Limit Reached:**')
+    expect(parsed?.severity).toBe('warning')
+    expect(parsed?.message).toContain('**Spend Limit Reached:**')
   })
 
   it('reads a spend cap from a parsed JSON body', () => {
@@ -88,14 +88,12 @@ describe('parsePlatformErrorResponse', () => {
         message: 'A spend cap for this workspace was reached. It resets within 30 days.',
       },
     })
-    expect(parsed.severity).toBe('warning')
-    expect(parsed.icon).toBe('circle-dollar-sign')
+    expect(parsed?.severity).toBe('warning')
+    expect(parsed?.icon).toBe('circle-dollar-sign')
   })
 
-  it('leaves a generic rate-limit 429 as an error', () => {
-    const parsed = parsePlatformErrorResponse(429, RATE_LIMIT)
-    expect(parsed.severity).toBe('error')
-    expect(parsed.message).toContain('**LLM Provider Error:**')
+  it('returns null for a generic rate-limit 429 — the base provider applies the default', () => {
+    expect(parsePlatformErrorResponse(429, RATE_LIMIT)).toBeNull()
   })
 
   it('returns markdown with a billing link for a 402', () => {

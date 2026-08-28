@@ -1,5 +1,4 @@
 import {
-  defaultParseErrorResponse,
   extractErrorMessage,
   inferErrorStatus,
   type ProviderErrorPresentation,
@@ -28,17 +27,19 @@ function spendCapSentence(raw: string): string {
     || 'A spend cap for this workspace was reached.'
 }
 
+// Null = not a platform-specific error class; the base provider applies the
+// generic banner.
 export function parsePlatformErrorResponse(
   status: number | undefined,
   body: unknown,
-): ProviderErrorPresentation {
+): ProviderErrorPresentation | null {
   const raw = extractErrorMessage(body)
   const inferred = status ?? inferErrorStatus(raw)
 
   if (isSpendCap(inferred, raw)) {
     return {
       severity: 'warning',
-      message: `**Spend Limit Reached:** ${spendCapSentence(raw)} [Raise spend limit](${ORG_BILLING_LINK})`,
+      message: `**Spend Limit Reached:** ${spendCapSentence(raw)} [Raise spend limit in the admin dashboard](${ORG_BILLING_LINK})`,
       icon: 'circle-dollar-sign',
     }
   }
@@ -51,5 +52,5 @@ export function parsePlatformErrorResponse(
     }
   }
 
-  return defaultParseErrorResponse(inferred, body)
+  return null
 }

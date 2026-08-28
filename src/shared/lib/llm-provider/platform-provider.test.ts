@@ -69,7 +69,7 @@ describe('parseErrorResponse', () => {
       severity: 'warning',
       icon: 'circle-dollar-sign',
       message:
-        '**Spend Limit Reached:** A spend cap for this workspace was reached. It resets within 30 days. [Raise spend limit](/dashboard/organizations/{orgId}?tab=billing)',
+        '**Spend Limit Reached:** A spend cap for this workspace was reached. It resets within 30 days. [Raise spend limit in the admin dashboard](/dashboard/organizations/{orgId}?tab=billing)',
     })
   })
 

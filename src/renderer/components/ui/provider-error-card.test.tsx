@@ -32,7 +32,7 @@ describe('ProviderErrorView', () => {
       openExternal,
     }
 
-    const parsed = parsePlatformErrorResponse(429, SPEND_CAP)
+    const parsed = parsePlatformErrorResponse(429, SPEND_CAP)!
     render(
       <ProviderErrorView
         presentation={{
@@ -64,7 +64,7 @@ describe('ProviderErrorView', () => {
     const parsed = parsePlatformErrorResponse(
       402,
       'API Error: 402 Workspace has insufficient balance. Top up to continue.',
-    )
+    )!
     render(
       <ProviderErrorView
         presentation={{
@@ -89,7 +89,7 @@ describe('ProviderErrorView', () => {
 describe('ProviderErrorCard', () => {
   it('renders a server-attached platform spend-cap presentation with a resolved link', () => {
     render(
-      <ProviderErrorCard message={SPEND_CAP} presentation={parsePlatformErrorResponse(429, SPEND_CAP)} />,
+      <ProviderErrorCard message={SPEND_CAP} presentation={parsePlatformErrorResponse(429, SPEND_CAP)!} />,
     )
     const card = screen.getByTestId('provider-error-card')
     expect(card).toHaveTextContent('Spend Limit Reached')
@@ -99,7 +99,7 @@ describe('ProviderErrorCard', () => {
   it('omits the link when org context is missing', () => {
     platformAuth.connected = false
     render(
-      <ProviderErrorCard message={SPEND_CAP} presentation={parsePlatformErrorResponse(429, SPEND_CAP)} />,
+      <ProviderErrorCard message={SPEND_CAP} presentation={parsePlatformErrorResponse(429, SPEND_CAP)!} />,
     )
     expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Spend Limit Reached')
     expect(screen.queryByRole('link', { name: /raise spend limit/i })).not.toBeInTheDocument()

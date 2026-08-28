@@ -157,8 +157,23 @@ export abstract class BaseLlmProvider {
     throw new Error(`${this.name} does not support model search`)
   }
 
-  // Provider-specific banner for an upstream HTTP error. Override for custom copy.
+  /**
+   * Banner presentation for an upstream HTTP error. Providers customize copy by
+   * overriding parseErrorResponseOverride, not this method.
+   */
   parseErrorResponse(status: number | undefined, body: unknown): ProviderErrorPresentation {
-    return defaultParseErrorResponse(status, body)
+    return this.parseErrorResponseOverride(status, body) ?? defaultParseErrorResponse(status, body)
+  }
+
+  /**
+   * Provider-specific presentation for the error classes this provider
+   * recognizes. Return null for everything else — the generic banner is
+   * applied here in the base class, so overrides never build it themselves.
+   */
+  protected parseErrorResponseOverride(
+    _status: number | undefined,
+    _body: unknown,
+  ): ProviderErrorPresentation | null {
+    return null
   }
 }

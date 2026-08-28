@@ -458,7 +458,7 @@ describe('MessageItem', () => {
       const msg = createAssistantMessage({
         content: { text: spendCap },
         apiError: 'rate_limit',
-        errorPresentation: parsePlatformErrorResponse(429, spendCap),
+        errorPresentation: parsePlatformErrorResponse(429, spendCap)!,
       })
       render(<MessageItem message={msg} />)
       const card = screen.getByTestId('provider-error-card')

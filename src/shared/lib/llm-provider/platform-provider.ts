@@ -89,7 +89,10 @@ export class PlatformLlmProvider extends BaseLlmProvider {
     }
   }
 
-  override parseErrorResponse(status: number | undefined, body: unknown): ProviderErrorPresentation {
+  protected override parseErrorResponseOverride(
+    status: number | undefined,
+    body: unknown,
+  ): ProviderErrorPresentation | null {
     return parsePlatformErrorResponse(status, body)
   }
 
