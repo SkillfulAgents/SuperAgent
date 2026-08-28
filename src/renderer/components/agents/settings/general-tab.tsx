@@ -5,6 +5,7 @@ import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
 import { Button } from '@renderer/components/ui/button'
 import { AgentAutoDeleteSelect } from '@renderer/components/settings/auto-delete-select'
+import { AgentApiLogAutoDeleteSelect } from '@renderer/components/settings/api-log-auto-delete-select'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -245,6 +246,22 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
           appDefault={settings?.app?.autoDeleteInactiveDays}
           onChange={(days) => {
             updatePrefs.mutate({ autoDeleteInactiveDays: days })
+          }}
+        />
+      </div>
+
+      <div className="space-y-2">
+        <div className="space-y-0.5">
+          <Label>API Log Auto-Delete</Label>
+          <p className="text-xs text-muted-foreground">
+            Override the app-wide default for this agent's API and MCP request logs.
+          </p>
+        </div>
+        <AgentApiLogAutoDeleteSelect
+          value={agentPrefs?.apiLogAutoDeleteDays}
+          appDefault={settings?.app?.apiLogAutoDeleteDays}
+          onChange={(days) => {
+            updatePrefs.mutate({ apiLogAutoDeleteDays: days })
           }}
         />
       </div>

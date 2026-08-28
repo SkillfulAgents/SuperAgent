@@ -12,6 +12,7 @@ import { captureException } from '@shared/lib/error-reporting'
 import { persistedSettingsSchema } from './settings-schema'
 import { coerceApiTarget, type ApiTarget } from '@shared/lib/api-target'
 import { DEFAULT_GLOBAL_DISPATCH_SHORTCUT } from './shortcuts'
+import { DEFAULT_API_LOG_AUTO_DELETE_DAYS } from './api-log-auto-delete'
 import type { SkillsetConfig, SkillsetCredential } from '@shared/lib/types/skillset'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import type { ComputerUseSettings } from '@shared/lib/computer-use/types'
@@ -111,6 +112,8 @@ export interface AppPreferences {
   /** MicroVM-only. Resume mid-turn sessions after unexpected VM death. Default on. */
   autoResumeOnUnexpectedDeath?: boolean
   autoDeleteInactiveDays?: number
+  /** Days after which API / MCP audit log rows are deleted. 0 = Never. Default 30. */
+  apiLogAutoDeleteDays?: number
   setupCompleted?: boolean
   accountProvider?: AccountProviderType
   hostBrowserProvider?: HostBrowserProviderId
@@ -440,6 +443,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     autoSleepTimeoutMinutes: 30,
     warmStartOnType: true,
     autoResumeOnUnexpectedDeath: true,
+    apiLogAutoDeleteDays: DEFAULT_API_LOG_AUTO_DELETE_DAYS,
     globalDispatchShortcut: DEFAULT_GLOBAL_DISPATCH_SHORTCUT,
     notifications: {
       enabled: true,
