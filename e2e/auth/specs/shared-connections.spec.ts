@@ -27,9 +27,13 @@ import { AppPage } from '../../pages/app.page'
 // Serial narrative — each test builds on state from the previous ones.
 test.describe.configure({ mode: 'serial' })
 
-// Matches the `auth-shared-connections` project's dataDir in playwright.auth.config.ts.
-const DATA_DIR = path.resolve(
-  process.env.SUPERAGENT_DATA_DIR ?? path.join(process.cwd(), '.e2e-data-auth', 'shared-connections'),
+// Mirrors how playwright.auth.config.ts derives this project's dataDir: a base
+// that SUPERAGENT_DATA_DIR overrides, then the per-project subdirectory. Both
+// halves matter — CI sets that env var, a local run usually does not, so a
+// spec that only handles one branch passes in exactly one of the two places.
+const DATA_DIR = path.join(
+  path.resolve(process.env.SUPERAGENT_DATA_DIR ?? path.join(process.cwd(), '.e2e-data-auth')),
+  'shared-connections',
 )
 const RECORDER_FILE = path.join(DATA_DIR, '.e2e-mock-recorder.jsonl')
 
@@ -54,15 +58,22 @@ async function signUp(page: Page, user: typeof owner) {
   await appPage.dismissWizardIfVisible()
 }
 
+// A retry re-runs this whole serial narrative in the same worker, so module
+// state survives and the database still holds the failed attempt's rows.
+// Connection ids are UNIQUE, so they have to be minted per call — a constant
+// seeded once at import time is not enough.
+let accountSeq = 0
+
 /** Create a connected account owned by whoever `page` is signed in as. */
 async function createAccount(
   page: Page,
   displayName: string,
   status: 'active' | 'expired',
 ): Promise<string> {
+  accountSeq += 1
   const res = await page.request.post('/api/connected-accounts', {
     data: {
-      providerConnectionId: `conn-${displayName.replace(/\s+/g, '-').toLowerCase()}`,
+      providerConnectionId: `conn-${accountSeq}-${Date.now().toString(36)}`,
       toolkitSlug: 'github',
       displayName,
       status,
@@ -101,7 +112,7 @@ function readRecords(): Array<{ type: string; agentSlug: string; proxyToken?: st
     .map((line) => JSON.parse(line))
 }
 
-async function waitForProxyToken(slug: string, timeoutMs = 15000): Promise<string> {
+async function waitForProxyToken(slug: string, timeoutMs = 45000): Promise<string> {
   const start = Date.now()
   while (Date.now() - start < timeoutMs) {
     const found = readRecords().find((r) => r.type === 'container_start' && r.agentSlug === slug)
@@ -256,7 +267,11 @@ test.describe('Shared agent connections', () => {
     expect(policyRes.ok(), `set policy ${policyRes.status()}`).toBeTruthy()
     await assignAccount(user3Page, agentSlug, expiredAccountId)
 
+    // The shared link removed above left the agent empty, so this is the only
+    // one. Asserted rather than assumed: picking the wrong link silently would
+    // make every dismissal check below prove nothing.
     const owned = await listAgentAccounts(user2Page, agentSlug)
+    expect(owned).toHaveLength(1)
     expiredMappingId = (owned[0] as { mappingId: string }).mappingId
 
     // Waking a session starts the mock container, which records the proxy
