@@ -52,9 +52,8 @@ describe('TargetSwitcher', () => {
     expect(screen.getByTestId('target-option-local')).toHaveAttribute('aria-pressed', 'false')
   })
 
-  // The options are named by tooltip, not by button text: text inside the
-  // button would have to appear on hover, moving the option next to it out from
-  // under a cursor already travelling toward it.
+  // Keep labels out of the buttons so hover never changes either option's
+  // width; aria-label provides the name without adding visible text.
   it('names the options without rendering text inside the buttons', () => {
     state()
     render(<TargetSwitcher />)
@@ -65,17 +64,30 @@ describe('TargetSwitcher', () => {
     expect(screen.getByTestId('target-option-cloud')).toHaveTextContent('')
   })
 
-  // The name does not change with state — `aria-pressed` carries that, and a
-  // name that moved with it would be announced twice over.
-  it('names each option the same whichever one is current', async () => {
+  it('keeps each option name stable when the current target changes', () => {
     state({ current: 'cloud' })
-    render(<TargetSwitcher />)
+    const { rerender } = render(<TargetSwitcher />)
 
-    await userEvent.hover(screen.getByTestId('target-option-cloud'))
-    expect(await screen.findByRole('tooltip')).toHaveTextContent('Cloud Agents')
+    expect(screen.getByRole('button', { name: 'Local Agents (This computer)' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    )
+    expect(screen.getByRole('button', { name: 'Cloud Agents' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
 
-    await userEvent.hover(screen.getByTestId('target-option-local'))
-    expect(await screen.findByRole('tooltip')).toHaveTextContent('Local Agents (This computer)')
+    state({ current: 'local' })
+    rerender(<TargetSwitcher />)
+
+    expect(screen.getByRole('button', { name: 'Local Agents (This computer)' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    expect(screen.getByRole('button', { name: 'Cloud Agents' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    )
   })
 
   it('switches on click', async () => {
@@ -98,15 +110,23 @@ describe('TargetSwitcher', () => {
 
     await userEvent.hover(cloud)
     expect(await screen.findByRole('tooltip')).toHaveTextContent('Switching…')
+    expect(cloud).toHaveAccessibleDescription('Switching…')
+
+    await userEvent.click(cloud)
+    expect(switchTo).not.toHaveBeenCalled()
   })
 
   it('offers a reason to pick each option', async () => {
     state({ current: 'local' })
     render(<TargetSwitcher />)
 
-    await userEvent.hover(screen.getByTestId('target-option-cloud'))
+    const cloud = screen.getByTestId('target-option-cloud')
+    await userEvent.hover(cloud)
     expect(await screen.findByRole('tooltip')).toHaveTextContent(
-      'Run 24/7. Access anywhere. Share and collaborate with your team',
+      'Run 24/7. Access anywhere. Share and collaborate with your team.',
+    )
+    expect(cloud).toHaveAccessibleDescription(
+      'Run 24/7. Access anywhere. Share and collaborate with your team.',
     )
   })
 })

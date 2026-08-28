@@ -44,7 +44,7 @@ const options: {
     value: 'cloud',
     icon: Cloud,
     label: 'Cloud Agents',
-    hint: 'Run 24/7. Access anywhere. Share and collaborate with your team',
+    hint: 'Run 24/7. Access anywhere. Share and collaborate with your team.',
   },
 ]
 
@@ -96,11 +96,13 @@ export function TargetSwitcher() {
                   // `aria-disabled`, not `disabled`: a disabled button emits no
                   // pointer events, so it cannot open a tooltip — and mid-switch
                   // is exactly when the user wants to be told what is happening.
-                  // Clicks stay safe because `switchTo` ignores them while a
-                  // switch is in flight.
+                  // Keep activation inert here as well as in `switchTo`, so the
+                  // button owns the disabled contract it exposes.
                   aria-disabled={switching}
                   data-testid={`target-option-${value}`}
-                  onClick={() => void switchTo(value)}
+                  onClick={() => {
+                    if (!switching) void switchTo(value)
+                  }}
                   className={cn(
                     // Fixed at every state, so neither option shifts under a
                     // pointer travelling toward the other. Slightly wider than
@@ -126,7 +128,14 @@ export function TargetSwitcher() {
                   widen only because hoverable content is off — with it on, a
                   bigger gap is a bigger polygon to get stuck in. */}
               {!isMobile && (
-                <TooltipContent side="bottom" sideOffset={8} className="max-w-52">
+                <TooltipContent
+                  side="bottom"
+                  sideOffset={8}
+                  className="max-w-52"
+                  // Radix exposes this as the trigger's description. Leave the
+                  // repeated visual heading out of what a screen reader hears.
+                  aria-label={switching ? 'Switching…' : hint}
+                >
                   <span className="block">{switching ? 'Switching…' : label}</span>
                   {/* Why you would pick this one. Dropped mid-switch, where the
                       only useful thing to say is that the switch is under way. */}

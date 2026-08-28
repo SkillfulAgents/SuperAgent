@@ -833,13 +833,10 @@ export function AppSidebar() {
         animates shut.
       */}
       <SidebarHeader
-        className="app-drag-region h-12 shrink-0 p-0 overflow-hidden transition-[padding-left] duration-200 ease-out"
+        className="app-drag-region h-12 shrink-0 p-0 transition-[padding-left] duration-200 ease-out"
         style={{ paddingLeft: needsTrafficLightPadding ? '80px' : undefined }}
       >
-        {/* `overflow-hidden`: nothing in this fixed-height row may spill into the
-            content below it — anything too wide for the row is clipped at its
-            edge rather than squeezing its neighbours. */}
-        <div className="flex items-center h-12 px-2 gap-1 overflow-hidden">
+        <div className="flex items-center h-12 px-2 gap-1">
           {__WEB__ && (
             <span className="shrink-0 select-none text-base font-medium">Gamut</span>
           )}
