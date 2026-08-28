@@ -34,6 +34,11 @@ export function TemplateInstallDialog({ template, onClose, onInstalled }: Templa
   // One install per opening. A re-render must not fire a second one, and the
   // ref (not state) is what makes that true even under StrictMode double-invoke.
   const startedFor = useRef<string | null>(null)
+  // The parent clears `template` on close, but the content stays mounted
+  // through the close animation. Keep showing the last one for that frame.
+  const shownRef = useRef<ApiDiscoverableAgent | null>(null)
+  if (template) shownRef.current = template
+  const shown = shownRef.current
 
   const run = useCallback(
     async (target: ApiDiscoverableAgent) => {
@@ -83,10 +88,10 @@ export function TemplateInstallDialog({ template, onClose, onInstalled }: Templa
       <DialogContent className="max-w-sm" hideClose={phase === 'installing'}>
         <DialogHeader>
           <DialogTitle>
-            {phase === 'error' ? `Couldn't install ${template?.name}` : `Installing ${template?.name}`}
+            {phase === 'error' ? `Couldn't install ${shown?.name}` : `Installing ${shown?.name}`}
           </DialogTitle>
           <DialogDescription>
-            {phase === 'error' ? errorMessage : `From ${template?.skillsetName}`}
+            {phase === 'error' ? errorMessage : `From ${shown?.skillsetName}`}
           </DialogDescription>
         </DialogHeader>
 

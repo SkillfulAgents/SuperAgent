@@ -17,8 +17,6 @@ import { lenient } from '@renderer/router/zod-search'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import type { ApiDiscoverableAgent } from '@shared/lib/types/api'
 
-export const HANDOFF_TEMPLATE_WAIT_MS = 10000
-
 function toastTemplateNotFound() {
   toast.error("Couldn't load that template", {
     description: 'Pick one from Discover or create your own agent.',
@@ -39,7 +37,11 @@ export function SignupHandoffConsumer() {
   const setupCompleted = userSettings?.setupCompleted
   const settingsReady = userSettings !== undefined
   const updateUserSettings = useUpdateUserSettings()
-  const { data: discoverableAgents, isError: discoverableAgentsFailed } = useDiscoverableAgents()
+  const {
+    data: discoverableAgents,
+    isError: discoverableAgentsFailed,
+    isLoading: discoverableAgentsLoading,
+  } = useDiscoverableAgents()
   const completeInstall = useCompleteTemplateInstall()
   const [template, setTemplate] = useState<ApiDiscoverableAgent | null>(null)
   const resolvedRef = useRef(false)
@@ -86,15 +88,11 @@ export function SignupHandoffConsumer() {
       toastTemplateNotFound()
       return
     }
-    if (!discoverableAgents || discoverableAgents.length === 0) {
-      const timer = setTimeout(() => {
-        if (resolvedRef.current) return
-        resolvedRef.current = true
-        toastTemplateNotFound()
-      }, HANDOFF_TEMPLATE_WAIT_MS)
-      return () => clearTimeout(timer)
-    }
-    const target = discoverableAgents.find(
+    // No deadline: a cold cloud workspace builds the catalog cache on the first
+    // /api/skillsets call, and that can outlast any fixed timer. The hook's
+    // isLoading covers skillsets, the first catalog fetch, and the refresh.
+    if (discoverableAgentsLoading) return
+    const target = discoverableAgents?.find(
       (a) => a.skillsetId === DEFAULT_PUBLIC_SKILLSET.id && slugFromAgentPath(a.path) === slug,
     )
     resolvedRef.current = true
@@ -103,7 +101,7 @@ export function SignupHandoffConsumer() {
       return
     }
     setTemplate(target)
-  }, [canAutoInstallTemplate, discoverableAgents, discoverableAgentsFailed, slug])
+  }, [canAutoInstallTemplate, discoverableAgents, discoverableAgentsFailed, discoverableAgentsLoading, slug])
 
   return (
     <TemplateInstallDialog
