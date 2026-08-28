@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Successfully tested browser use feature - agent opened browser, navigated to example.com, and returned the correct page title \"Example Domain\"",
+  "reason": "Browser-use feature test: Agent successfully navigated to example.com and retrieved the page title",
   "steps": [
-    "Step 1: Navigated to http://localhost:47891 — Successfully loaded the Gamut home page with agents visible in sidebar",
-    "Step 2: Found and clicked \"QA-20260828-214855-7jn8\" agent in sidebar — Agent page opened successfully with chat interface",
-    "Step 3: Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully submitted and agent began processing",
-    "Step 4: Waited for agent response (up to 3 minutes) — Agent completed processing in 9 seconds with 4 tool calls",
-    "Step 5: Verified response mentions \"Example Domain\" — Response clearly states: \"The page title is \\\"Example Domain\\\" — a placeholder page reserved for use in documentation examples. Browser closed.\""
+    "Step 1 - Navigated to http://localhost:47891 — Page loaded successfully with title \"Gamut\"",
+    "Step 2 - Found and clicked the \"QA-20260828-231334-qs7c\" agent in the sidebar — Agent page loaded successfully",
+    "Step 3 - Sent message: \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was typed into the contenteditable input field and sent using Cmd+Enter",
+    "Step 4 - Waited for agent response — Agent completed work in 8 seconds using 4 tool calls and 188,890 tokens",
+    "Step 5 - Verified response mentions \"Example Domain\" — Response clearly states: \"The page title is \"Example Domain\" — the standard IANA placeholder page. Browser is closed.\""
   ],
   "bugs": [],
-  "durationMs": 97466,
-  "sessionId": "aab10009-73fc-43ee-952f-074b521df5d7",
+  "durationMs": 103074,
+  "sessionId": "1f4f28e2-ed93-43ad-b670-fe58e17de3ab",
   "cost": {
-    "inputTokens": 574,
-    "outputTokens": 14169,
-    "cacheCreationTokens": 96887,
-    "cacheReadTokens": 1881905,
+    "inputTokens": 482,
+    "outputTokens": 13642,
+    "cacheCreationTokens": 61380,
+    "cacheReadTokens": 1335880,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.380718
+    "totalCostUsd": 0.279005
   }
 }
