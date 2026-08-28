@@ -8,6 +8,11 @@ import { useUser } from '@renderer/context/user-context'
 
 const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta'])
 
+// Reconnect backoff for a socket that keeps dying before it opens.
+const RECONNECT_BASE_MS = 1000
+const MAX_RECONNECT_DELAY_MS = 8000
+const MAX_FAILED_RECONNECTS = 5
+
 interface UseBrowserStreamOptions {
   agentSlug: string
   sessionId: string
@@ -46,6 +51,10 @@ export function useBrowserStream({
 
   // Lifecycle refs for cleanup
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Sockets that died before ever opening, back to back. The stream endpoint
+  // answering "still active" is not proof it can serve us — give up rather than
+  // reconnect at 1Hz forever behind a preview that will never paint.
+  const failedReconnectsRef = useRef(0)
 
   const { requests: pendingBrowserInputRequests, dismiss: dismissBrowserInputRequest } =
     usePendingBrowserInputRequests(sessionId, agentSlug, isActive)
@@ -145,8 +154,12 @@ export function useBrowserStream({
 
     const ws = new WebSocket(wsUrl)
     wsRef.current = ws
+    // Set by a browser_closed frame: the server has already dropped its browser
+    // state, so the close that follows needs no status check and no retry.
+    let browserGone = false
 
     ws.onopen = () => {
+      failedReconnectsRef.current = 0
       setConnected(true)
     }
 
@@ -204,6 +217,11 @@ export function useBrowserStream({
           setViewingTargetId(prev => prev === data.targetId ? prev : data.targetId)
         } else if (data.type === 'selection_result' && data.text) {
           navigator.clipboard.writeText(data.text).catch(() => {})
+        } else if (data.type === 'browser_closed') {
+          // The user closed the browser window. Drop the tray now rather than
+          // waiting on the status round-trip the socket close would trigger.
+          browserGone = true
+          clearBrowserActive(sessionId)
         }
       } catch {
         // Ignore parse errors for binary frames
@@ -214,14 +232,24 @@ export function useBrowserStream({
       if (wsRef.current !== ws) return
       setConnected(false)
       setPageLoading(false)
+      if (browserGone) {
+        clearBrowserActive(sessionId)
+        return
+      }
       apiFetch(`/api/agents/${agentSlug}/browser/status`)
         .then((res) => res.json())
         .then((status: { active?: boolean; sessionId?: string }) => {
           if (wsRef.current !== ws) return
           if (!status.active || status.sessionId !== sessionId) {
             clearBrowserActive(sessionId)
+          } else if (failedReconnectsRef.current >= MAX_FAILED_RECONNECTS) {
+            clearBrowserActive(sessionId)
           } else {
-            reconnectTimerRef.current = setTimeout(() => setReconnectKey(k => k + 1), 1000)
+            const attempt = failedReconnectsRef.current++
+            reconnectTimerRef.current = setTimeout(
+              () => setReconnectKey(k => k + 1),
+              Math.min(RECONNECT_BASE_MS * 2 ** attempt, MAX_RECONNECT_DELAY_MS),
+            )
           }
         })
         .catch(() => {
