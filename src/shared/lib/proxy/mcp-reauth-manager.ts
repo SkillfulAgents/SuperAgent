@@ -2,6 +2,7 @@ import crypto from 'crypto'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
+import { ReauthDismissedError, reauthDismissedMessage } from './reauth-dismissal'
 
 export const MCP_REAUTH_TIMEOUT_MS = 5 * 60 * 1000
 
@@ -193,6 +194,23 @@ export class McpReauthManager {
 
       messagePersister.syncAgentSessionsAwaiting(details.agentSlug)
     })
+  }
+
+  /**
+   * Give up on one parked card because a person dismissed it. The
+   * account-reauth twin carries the full rationale.
+   */
+  dismiss(entryId: string, agentSlug: string, reason?: string): boolean {
+    const group = this.groups.get(entryId)
+    if (!group || group.agentSlug !== agentSlug) return false
+    this.settleGroup(group, 'cancelled', {
+      type: 'reject',
+      error: new ReauthDismissedError(
+        reauthDismissedMessage('MCP re-authentication', reason),
+        reason,
+      ),
+    })
+    return true
   }
 
   /** Resume every parked proxy request that uses the reconnected MCP. */

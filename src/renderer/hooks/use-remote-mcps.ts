@@ -235,6 +235,30 @@ export function useRemoveMcpFromAgent() {
 }
 
 /**
+ * Remove a remote MCP from an agent by LINK id — the agent-owner twin of
+ * useRemoveMcpFromAgent, for a server another member shared onto the agent
+ * whose id the owner never sees. Server-gated on owning the agent.
+ */
+export function useRemoveAgentMcpMapping() {
+  const queryClient = useQueryClient()
+
+  return useMutation<void, Error, { agentSlug: string; mappingId: string }>({
+    mutationFn: async ({ agentSlug, mappingId }) => {
+      const res = await apiFetch(
+        `/api/agents/${agentSlug}/remote-mcps/mapping/${mappingId}`,
+        { method: 'DELETE' },
+      )
+      if (!res.ok) throw new Error('Failed to remove the shared connection from this agent')
+      warnIfLiveRefreshFailed(await res.json().catch(() => ({})))
+    },
+    onSuccess: () => {
+      // Bare prefix — see useAssignMcpToAgent: reaches the id-keyed home card too.
+      queryClient.invalidateQueries({ queryKey: ['agent-remote-mcps'] })
+    },
+  })
+}
+
+/**
  * Hook to fetch agent slugs that have an MCP server mapped
  */
 export function useMcpAgents(mcpId: string) {

@@ -22,10 +22,19 @@ export interface PublicAgentConnectedAccount {
   provider?: Provider
 }
 
-/** Minimal capability marker for a connected account owned by another user. */
+/**
+ * Minimal capability marker for a connected account owned by another user.
+ *
+ * `mappingId` names the agent↔account LINK, never the account: it carries no
+ * owner, provider, or account identity, and the only route that accepts it —
+ * the agent-owner unlink below — re-checks that the link belongs to the agent
+ * in the URL. That is what lets a co-owner drop a shared connection from their
+ * agent without ever learning whose it is.
+ */
 export interface ForeignAgentConnectedAccount {
   kind: 'connected-account'
   toolkitSlug: string
+  mappingId: string
 }
 
 export type AgentConnectedAccountDto = PublicAgentConnectedAccount | ForeignAgentConnectedAccount
@@ -42,9 +51,13 @@ export interface PublicAgentRemoteMcp {
   mappedAt: string
 }
 
-/** Minimal capability marker for a remote MCP owned by another user. */
+/**
+ * Minimal capability marker for a remote MCP owned by another user. See
+ * {@link ForeignAgentConnectedAccount} for why `mappingId` is safe to expose.
+ */
 export interface ForeignAgentRemoteMcp {
   kind: 'remote-mcp'
+  mappingId: string
 }
 
 export type AgentRemoteMcpDto = PublicAgentRemoteMcp | ForeignAgentRemoteMcp
@@ -78,7 +91,11 @@ export function toAgentConnectedAccountDto(
   provider?: Provider,
 ): AgentConnectedAccountDto {
   if (viewerUserId !== null && account.userId !== viewerUserId) {
-    return { kind: 'connected-account', toolkitSlug: account.toolkitSlug }
+    return {
+      kind: 'connected-account',
+      toolkitSlug: account.toolkitSlug,
+      mappingId: mapping.id,
+    }
   }
 
   return {
@@ -103,7 +120,7 @@ export function toAgentRemoteMcpDto(
   viewerUserId: string | null,
 ): AgentRemoteMcpDto {
   if (viewerUserId !== null && mcp.userId !== viewerUserId) {
-    return { kind: 'remote-mcp' }
+    return { kind: 'remote-mcp', mappingId: mapping.id }
   }
 
   return {
