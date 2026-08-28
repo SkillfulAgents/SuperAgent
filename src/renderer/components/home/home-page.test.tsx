@@ -320,8 +320,10 @@ describe('HomePage AgentCard', () => {
     })
     renderWithProviders(<HomePage />)
     const empty = screen.getByTestId('home-empty-state')
-    expect(screen.getByText('You haven’t created any agents yet')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Create your first agent/ })).toBeInTheDocument()
+    // The heading was dropped — the ghost board and the live cell's button
+    // are the whole message.
+    expect(screen.queryByText(/haven’t created any agents/)).not.toBeInTheDocument()
     // The colour bloom is a decorative sibling layer behind the glass card
     // (home-empty-clouds.tsx), never a wrapper around the text.
     expect(empty.querySelector('[data-testid="home-empty-clouds"]')).not.toBeNull()
@@ -727,46 +729,5 @@ describe('HomePage view toggle', () => {
 
     expect(screen.getByTestId('graph-empty-state')).toBeInTheDocument()
     expect(screen.getByTestId('home-view-graph')).toHaveAttribute('aria-pressed', 'true')
-  })
-})
-
-// Runs with import.meta.env.DEV true (vitest), where the toggle is rendered.
-describe('HomePage dev empty-state toggle', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-    mockRouteSearch.mockReturnValue({})
-    window.localStorage.removeItem('superagent-dev-flag.home-empty-state')
-  })
-
-  it('forces the empty state on despite existing agents, and back off', () => {
-    mockAgentsData.mockReturnValue({ data: [makeAgent()], isLoading: false })
-    renderWithProviders(<HomePage />)
-    expect(screen.getByText('Test Agent')).toBeInTheDocument()
-
-    fireEvent.click(screen.getByTestId('dev-empty-state-toggle'))
-    expect(screen.getByText('You haven’t created any agents yet')).toBeInTheDocument()
-    expect(screen.queryByText('Test Agent')).not.toBeInTheDocument()
-
-    fireEvent.click(screen.getByTestId('dev-empty-state-toggle'))
-    expect(screen.getByText('Test Agent')).toBeInTheDocument()
-    expect(screen.queryByText('You haven’t created any agents yet')).not.toBeInTheDocument()
-  })
-
-  it('applies to the graph view as well', async () => {
-    mockRouteSearch.mockReturnValue({ view: 'graph' })
-    mockAgentsData.mockReturnValue({ data: [makeAgent()], isLoading: false })
-    renderWithProviders(<HomePage />)
-    expect(await screen.findByTestId('agent-graph-stub')).toBeInTheDocument()
-
-    fireEvent.click(screen.getByTestId('dev-empty-state-toggle'))
-    expect(screen.getByTestId('graph-empty-state')).toBeInTheDocument()
-    expect(screen.queryByTestId('agent-graph-stub')).not.toBeInTheDocument()
-  })
-
-  it('persists across mounts via localStorage', () => {
-    window.localStorage.setItem('superagent-dev-flag.home-empty-state', '1')
-    mockAgentsData.mockReturnValue({ data: [makeAgent()], isLoading: false })
-    renderWithProviders(<HomePage />)
-    expect(screen.getByText('You haven’t created any agents yet')).toBeInTheDocument()
   })
 })

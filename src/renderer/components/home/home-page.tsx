@@ -36,8 +36,7 @@ import { DashboardCard } from './dashboard-card'
 import { HomeEmptyClouds } from './home-empty-clouds'
 import { PwaInstallBanner } from './pwa-install-banner'
 import { isElectron, getPlatform } from '@renderer/lib/env'
-import { useDevFlag } from '@renderer/lib/dev-flags'
-import { Plus, Loader2, Search, Power, Square, Check, ArrowRight, LayoutGrid, Waypoints, MoreVertical, Move, FlaskConical } from 'lucide-react'
+import { Plus, Loader2, Search, Power, Square, Check, ArrowRight, LayoutGrid, Waypoints, MoreVertical, Move, Sparkle } from 'lucide-react'
 import { useSearch } from '@renderer/context/search-context'
 import { cn } from '@shared/lib/utils/cn'
 import type { ApiAgent } from '@shared/lib/types/api'
@@ -757,37 +756,69 @@ function HomeArrangeMenu({
 }
 
 /**
- * Ghost board behind the empty state: the card grid this page becomes, at
- * whisper opacity. Mirrors WidgetBoard's geometry — square cells around its
- * 232px target, 16px gaps, Small = 1x1 and Wide = 2x1 (dense-packed so the
- * wide ghosts don't strand holes) — with each ghost sketching the real card's
- * landmarks: title pill bottom-left, status chip top-right. Fades out toward
- * the bottom (see .home-empty-skeleton) so a clipped last row never shows a
- * cut card edge.
+ * The empty state's ghost board: the card grid this page becomes, at whisper
+ * opacity. Mirrors WidgetBoard's geometry — square cells around its 232px
+ * target, 16px gaps, Small = 1x1 and Wide = 2x1 (dense-packed so the wide
+ * ghosts don't strand holes) — with each ghost sketching the real card's
+ * landmarks: title pill bottom-left, status chip top-right. The top-left wide
+ * cell is the one live element: the real create button sits where its title
+ * pill would. Rows fade out toward the bottom (see .home-empty-skeleton) so a
+ * clipped last row never shows a cut card edge.
  */
 const SKELETON_PATTERN: WidgetSizeKey[] = ['W', 'S', 'S', 'S', 'S', 'W', 'S', 'W', 'S', 'S', 'W', 'S']
 
-function HomeEmptySkeletonBoard() {
+function HomeEmptySkeletonBoard({
+  onCreate,
+  isCreating,
+  ctaRef,
+}: {
+  onCreate: () => void
+  isCreating: boolean
+  /** The live cell, exposed so the bloom can centre itself on it. */
+  ctaRef?: React.Ref<HTMLDivElement>
+}) {
   return (
     <div
-      aria-hidden="true"
       data-testid="home-empty-skeleton"
-      className="home-empty-skeleton pointer-events-none absolute inset-0 overflow-hidden opacity-60 dark:opacity-50"
+      className="home-empty-skeleton relative grid gap-4 [grid-auto-flow:dense]"
+      style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gridAutoRows: '216px' }}
     >
+      {/* The live cell — a wide card with the same ghost shell as the rest,
+          its title-pill position holding the actual call to action. Second
+          row, second slot on md+; below md it auto-places at the row start,
+          because pinning columns 2-3 on a 2-column board would conjure an
+          implicit third column and squeeze every row. */}
       <div
-        className="grid gap-4 [grid-auto-flow:dense]"
-        style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gridAutoRows: '216px' }}
+        ref={ctaRef}
+        className="relative rounded-lg border border-border/40 bg-card/25 [grid-row:2] [grid-column:span_2] md:[grid-column:2/span_2]"
       >
-        {SKELETON_PATTERN.map((size, i) => (
-          <div
-            key={i}
-            className={cn('relative rounded-lg border border-border/70 bg-card/40', size === 'W' && 'col-span-2')}
-          >
-            <div className="absolute bottom-2 left-4 h-9 w-32 rounded-md bg-muted/70" />
-            <div className="absolute top-2 right-4 h-6 w-20 rounded-md bg-muted/50" />
-          </div>
-        ))}
+        <div aria-hidden="true" className="absolute top-2 right-4 h-6 w-20 rounded-md bg-muted/30" />
+        {/* Backgrounded like the ghost title pills it stands in for; hover
+            firms it up so it still declares itself interactive. */}
+        <Button
+          variant="secondary"
+          className="absolute bottom-3 left-4 bg-muted/40 hover:bg-muted/40 text-foreground"
+          onClick={onCreate}
+          disabled={isCreating}
+          data-testid="home-empty-create-button"
+        >
+          <Sparkle className="h-4 w-4 mr-1" />
+          Create your first agent
+        </Button>
       </div>
+      {SKELETON_PATTERN.map((size, i) => (
+        <div
+          key={i}
+          aria-hidden="true"
+          className={cn(
+            'pointer-events-none relative rounded-lg border border-border/40 bg-card/25',
+            size === 'W' && 'col-span-2',
+          )}
+        >
+          <div className="absolute bottom-2 left-4 h-9 w-32 rounded-md bg-muted/40" />
+          <div className="absolute top-2 right-4 h-6 w-20 rounded-md bg-muted/30" />
+        </div>
+      ))}
     </div>
   )
 }
@@ -813,11 +844,7 @@ export function HomePage() {
     [agents, userSettings?.agentOrder]
   )
 
-  // Dev-only preview: render the page as if no agents exist, so the empty
-  // state can be designed against a populated dev database. Flipped from the
-  // flask button in the header (dev builds only).
-  const [devForceEmpty, toggleDevForceEmpty] = useDevFlag('home-empty-state')
-  const hasAgents = orderedAgents.length > 0 && !devForceEmpty
+  const hasAgents = orderedAgents.length > 0
 
   // Desktop and phone layouts are intentionally independent. A phone without a
   // customized layout starts from the desktop map and is responsively re-packed
@@ -949,6 +976,8 @@ export function HomePage() {
   }
 
   const { createUntitledAgent, isPending: isCreatingAgent } = useCreateUntitledAgent()
+  // The empty state's live card — the bloom anchors to it.
+  const emptyCtaRef = useRef<HTMLDivElement>(null)
   const { state: sidebarState } = useSidebar()
   const isFullScreen = useFullScreen()
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && sidebarState === 'collapsed' && !isFullScreen
@@ -1063,23 +1092,6 @@ export function HomePage() {
             <Waypoints className="h-3.5 w-3.5" />
           </button>
         </div>
-        {/* Dev builds only: preview the empty state without emptying the dev
-            database. Amber when active so a forced-empty Home is never
-            mistaken for lost agents. */}
-        {import.meta.env.DEV && (
-          <div className="app-no-drag flex items-center rounded-md border p-0.5">
-            <button
-              type="button"
-              onClick={toggleDevForceEmpty}
-              title="Dev: preview the Home empty state"
-              aria-pressed={devForceEmpty}
-              data-testid="dev-empty-state-toggle"
-              className={`rounded p-1 transition-colors ${devForceEmpty ? 'bg-amber-500/15 text-amber-500' : 'text-muted-foreground hover:text-foreground'}`}
-            >
-              <FlaskConical className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        )}
       </header>
 
       {view === 'graph' ? (
@@ -1216,39 +1228,18 @@ export function HomePage() {
                 }}
               />
             ) : (
-              <>
-              {/* Ghost of the board this page becomes — faint card outlines in
-                  both widget sizes, behind the bloom and the dialog. Anchored
-                  to the section so it starts where a real board would. */}
-              <HomeEmptySkeletonBoard />
-              {/* Offset rather than padding on the block below: the wash is
-                 inset-0 of that element, so its padding is the cloud box —
-                 growing it here would stretch the clouds instead of moving
-                 them. Viewport-relative so the drop scales with the window. */}
-              <div className="pt-[14vh]">
-              <div
-                className="relative flex flex-col items-center justify-center gap-5 py-40"
-                data-testid="home-empty-state"
-              >
-                <HomeEmptyClouds />
-                {/* Glass dialog over the clouds — same frosted recipe as the
-                    composer box (ChatComposerBox's glass variant), whose
-                    backdrop-blur works here because no ancestor carries a
-                    filter/opacity group that would blind it to the wash
-                    behind. A sibling of the wash layer, positioned so it
-                    paints above it. */}
-                <div className="relative flex flex-col items-center gap-5 rounded-2xl border border-border/70 bg-background/85 px-12 py-10 backdrop-blur-md supports-[backdrop-filter]:bg-background/65 shadow-[0_0_24px_rgba(15,23,42,0.07),0_2px_10px_-4px_rgba(15,23,42,0.08)] dark:shadow-[0_0_26px_rgba(0,0,0,0.22),0_2px_12px_-4px_rgba(0,0,0,0.16)]">
-                  <p className="text-lg text-foreground">You haven’t created any agents yet</p>
-                  <Button
-                    onClick={() => { void createUntitledAgent() }}
-                    disabled={isCreatingAgent}
-                  >
-                    Create your first agent
-                  </Button>
-                </div>
+              /* The empty state IS the ghost board: faint card outlines in
+                 both widget sizes, with the top-right cell alive — it carries
+                 the real call to action where a card's title pill would sit,
+                 and the colour bloom glows behind that corner of the board. */
+              <div className="relative" data-testid="home-empty-state">
+                <HomeEmptyClouds anchorTo={emptyCtaRef} fill={0.625} masked={false} />
+                <HomeEmptySkeletonBoard
+                  ctaRef={emptyCtaRef}
+                  onCreate={() => { void createUntitledAgent() }}
+                  isCreating={isCreatingAgent}
+                />
               </div>
-              </div>
-              </>
             )}
           </section>
         </div>

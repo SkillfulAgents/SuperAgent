@@ -1,4 +1,5 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, type RefObject } from 'react'
+import { cn } from '@shared/lib/utils/cn'
 
 /**
  * Drifting colour bloom behind the Home empty state.
@@ -26,11 +27,11 @@ const GLOW_COLORS = ['#FF5C5C', '#FFB74D', '#FFE24D', '#6EDB8F', '#4EB3FF', '#8A
 const STAGE_W = 600
 const STAGE_H = 460
 /**
- * Fraction of the host's width the band spans. The handoff's held composition
- * effectively fills its scene (600 stage x ~1.2 swell x 1.32 camera ≈ its
- * full 960 width, i.e. ~0.95); ours sits tighter around the card by request.
+ * Default fraction of the host's width the band spans. The handoff's held
+ * composition effectively fills its scene (600 stage x ~1.2 swell x 1.32
+ * camera ≈ its full 960 width, i.e. ~0.95); ours sits tighter by request.
  */
-const FILL = 0.68
+const DEFAULT_FILL = 0.68
 /**
  * Ambient time scale on the handoff's drift (its 6s clip runs the paths at
  * full speed; held on a page they read calmer slowed a touch). Applied to
@@ -44,7 +45,31 @@ const FADE_IN_S = 0.65
 
 const easeOut = (u: number) => 1 - Math.pow(1 - u, 3)
 
-export function HomeEmptyClouds() {
+interface HomeEmptyCloudsProps {
+  /** Stage anchor within the wrapper, as CSS left/top values. */
+  center?: { x: string; y: string }
+  /**
+   * Pin the anchor to this element's centre, measured against the wrapper
+   * (re-measured on resize, so it holds across responsive column counts).
+   * Overrides `center`.
+   */
+  anchorTo?: RefObject<HTMLElement | null>
+  /** Fraction of the wrapper's width the band spans. */
+  fill?: number
+  /**
+   * Boundary feather for when the band nearly fills the wrapper. Skip it for
+   * a small band anchored well inside — off-centre, the centred elliptical
+   * mask would dim the glow instead of protecting an edge it never reaches.
+   */
+  masked?: boolean
+}
+
+export function HomeEmptyClouds({
+  center = { x: '50%', y: '50%' },
+  anchorTo,
+  fill = DEFAULT_FILL,
+  masked = true,
+}: HomeEmptyCloudsProps) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const stageRef = useRef<HTMLDivElement>(null)
 
@@ -53,8 +78,19 @@ export function HomeEmptyClouds() {
     const stage = stageRef.current
     if (!wrap || !stage) return
 
-    const toScale = (w: number) => Math.min(Math.max((w * FILL) / STAGE_W, 0.7), 2.2)
+    const toScale = (w: number) => Math.min(Math.max((w * fill) / STAGE_W, 0.5), 2.2)
     let scale = toScale(wrap.clientWidth || STAGE_W)
+
+    // Centre the stage on the anchor element, in wrapper coordinates.
+    const applyAnchor = () => {
+      const el = anchorTo?.current
+      if (!el) return
+      const r = el.getBoundingClientRect()
+      const w = wrap.getBoundingClientRect()
+      stage.style.left = `${r.left - w.left + r.width / 2}px`
+      stage.style.top = `${r.top - w.top + r.height / 2}px`
+    }
+    applyAnchor()
 
     // The filter runs in the stage's LOCAL space, before the transform, so an
     // uncompensated blur is magnified by `scale` — at ~2x it dissolves the
@@ -116,6 +152,7 @@ export function HomeEmptyClouds() {
     const ro = new ResizeObserver((entries) => {
       scale = toScale(entries[0].contentRect.width)
       applyFilter()
+      applyAnchor()
       if (!raf) paint(reduced?.matches ? POSTER_T / DRIFT : t, reduced?.matches ? 1 : easeOut(Math.min(t / FADE_IN_S, 1)))
     })
     ro.observe(wrap)
@@ -130,6 +167,7 @@ export function HomeEmptyClouds() {
     document.addEventListener('visibilitychange', sync)
     reduced?.addEventListener('change', sync)
 
+
     sync()
     return () => {
       ro.disconnect()
@@ -138,7 +176,7 @@ export function HomeEmptyClouds() {
       reduced?.removeEventListener('change', sync)
       if (raf) cancelAnimationFrame(raf)
     }
-  }, [])
+  }, [fill, anchorTo])
 
   return (
     <div
@@ -149,9 +187,16 @@ export function HomeEmptyClouds() {
       // run higher than the handoff's 0.5 peak because our glass card hides
       // the bloom's dense centre — the visible halo is its outer falloff —
       // and dark needs more still: these hues sink toward grey haze there.
-      className="home-empty-glow-mask pointer-events-none absolute inset-0 overflow-hidden opacity-65 dark:opacity-75"
+      className={cn(
+        'pointer-events-none absolute inset-0 overflow-hidden opacity-65 dark:opacity-75',
+        masked && 'home-empty-glow-mask',
+      )}
     >
-      <div ref={stageRef} className="home-empty-glow" style={{ width: STAGE_W, height: STAGE_H }}>
+      <div
+        ref={stageRef}
+        className="home-empty-glow"
+        style={{ width: STAGE_W, height: STAGE_H, left: center.x, top: center.y }}
+      >
         {GLOW_COLORS.map((c) => (
           <div key={c} style={{ background: c }} />
         ))}
