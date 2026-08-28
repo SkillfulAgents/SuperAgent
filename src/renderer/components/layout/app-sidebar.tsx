@@ -1,5 +1,5 @@
 
-import { Bell, ChevronDown, ChevronLeft, ChevronRight, Plus, Search, Settings, AlertTriangle, LayoutGrid, SquareMousePointer, LogOut, User, Users, Compass, MoonStar } from 'lucide-react'
+import { Bell, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, Plus, Search, Settings, AlertTriangle, LayoutGrid, SquareMousePointer, LogOut, User, Users, Compass, MoonStar } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { toast } from 'sonner'
 import { cn } from '@shared/lib/utils/cn'
@@ -8,6 +8,9 @@ import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { AppLink } from '@renderer/components/ui/app-link'
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
+import { openExternalUrl } from '@renderer/lib/open-external'
+import { targetIsRemote } from '@renderer/lib/api-target'
+import { resolveSidebarVersionState } from '@renderer/components/layout/sidebar-version-state'
 import { TargetSwitcher } from '@renderer/components/layout/target-switcher'
 import { useTargetSwitch } from '@renderer/hooks/use-target-switch'
 import { hasInteractiveLogin } from '@renderer/lib/auth-mode'
@@ -52,6 +55,7 @@ import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
+import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
@@ -128,6 +132,24 @@ import { useRememberedFlag } from '@renderer/hooks/use-remembered-flag'
 
 /** Set once Explore has been opened, which retires its "New" badge. */
 const EXPLORE_SEEN_KEY = 'explore.seen'
+
+function VersionBehindDot({
+  wayBehind,
+  label,
+}: {
+  wayBehind: boolean
+  label: string
+}) {
+  return (
+    <span
+      className={cn(
+        'ml-0.5 h-1.5 w-1.5 rounded-full',
+        wayBehind ? 'bg-orange-500' : 'bg-blue-500',
+      )}
+      aria-label={label}
+    />
+  )
+}
 
 // 4px-wide thin scrollbar with a muted-foreground/20 thumb. Reused on the
 // agents-list group; pull out as a constant so the call site stays readable.
@@ -823,6 +845,14 @@ export function AppSidebar() {
   const { data: userSettings } = useUserSettings()
   const updateSettings = useUpdateUserSettings()
   const { data: runtimeStatus } = useRuntimeStatus()
+  const { data: platformAuth } = usePlatformAuthStatus()
+  const isCloud = targetIsRemote()
+  const desktopVersion = __APP_VERSION__
+  const versionState = resolveSidebarVersionState({
+    desktopVersion,
+    cloudVersion: isCloud ? runtimeStatus?.appVersion : undefined,
+    feedVersion: updateAvailable ? updateStatus.version : undefined,
+  })
   const isFullScreen = useFullScreen()
 
   // macOS fires `enter-full-screen` only after its ~700ms zoom animation completes;
@@ -1611,18 +1641,69 @@ export function AppSidebar() {
             <Settings className="h-4 w-4" />
             <span>Settings</span>
           </SidebarMenuButton>
-          <button
-            type="button"
-            onClick={() => openSettings('general')}
-            className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground shrink-0 hover:text-foreground"
-            title={updateAvailable ? `Update available: v${updateStatus.version}` : undefined}
-            data-testid="sidebar-version"
-          >
-            {updateAvailable && (
-              <span className="h-2 w-2 rounded-full bg-blue-500" aria-label="Update available" />
-            )}
-            <span>v{__APP_VERSION__}</span>
-          </button>
+          {isCloud && versionState.showPair && versionState.cloudVersion ? (
+            <div
+              className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground shrink-0"
+              data-testid="sidebar-version"
+            >
+              <button
+                type="button"
+                onClick={() => openSettings('general')}
+                className="inline-flex items-center gap-0.5 hover:text-foreground"
+                title={`Desktop v${versionState.desktopVersion}`}
+                data-testid="sidebar-version-desktop"
+              >
+                <Laptop className="mr-0.5 size-3" aria-hidden="true" />
+                {versionState.desktopVersion}
+                {versionState.desktopBehind && (
+                  <VersionBehindDot
+                    wayBehind={versionState.desktopWayBehind}
+                    label="Desktop update available"
+                  />
+                )}
+              </button>
+              <span className="h-2.5 w-px bg-current opacity-60" aria-hidden="true" />
+              <button
+                type="button"
+                onClick={() => {
+                  const base = platformAuth?.platformBaseUrl
+                  const orgId = platformAuth?.orgId
+                  if (!base || !orgId) return
+                  void openExternalUrl(
+                    `${base}/dashboard/organizations/${orgId}?tab=cloud`,
+                  )
+                }}
+                className="inline-flex items-center gap-0.5 hover:text-foreground"
+                title={`Cloud v${versionState.cloudVersion}`}
+                data-testid="sidebar-version-cloud"
+              >
+                <Cloud className="mr-0.5 size-3" aria-hidden="true" />
+                {versionState.cloudVersion}
+                {versionState.cloudBehind && (
+                  <VersionBehindDot
+                    wayBehind={versionState.cloudWayBehind}
+                    label="Cloud update available"
+                  />
+                )}
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => openSettings('general')}
+              className="inline-flex items-center gap-1.5 px-2 text-xs text-muted-foreground shrink-0 hover:text-foreground"
+              title={updateAvailable ? `${isCloud ? 'Desktop update available' : 'Update available'}: v${updateStatus.version}` : undefined}
+              data-testid="sidebar-version"
+            >
+              <span>{versionState.cloudVersion ?? desktopVersion}</span>
+              {updateAvailable && (
+                <span
+                  className="h-1.5 w-1.5 rounded-full bg-blue-500"
+                  aria-label={isCloud ? 'Desktop update available' : 'Update available'}
+                />
+              )}
+            </button>
+          )}
         </div>
       </SidebarFooter>
 
