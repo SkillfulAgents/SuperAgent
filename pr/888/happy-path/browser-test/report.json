@@ -1,23 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser-based agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it back in the chat response.",
+  "reason": "Browser use feature successfully executed - agent opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and returned the correct result.",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully showing the Gamut home page with agent list in sidebar.",
-    "Found and clicked on \"QA-20260828-183730-janj\" agent in the sidebar — Agent page opened successfully with chat interface ready.",
-    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was typed into the input field and sent successfully, creating a new session \"Browser Navigation and Page Title Retrieval\".",
-    "Waited up to 3 minutes for response — Agent completed the task in 12 seconds, executing 4 tool calls with 189,090 tokens used. Browser preview panel showed the Example Domain page loading in real-time.",
-    "Verified response mentions \"Example Domain\" — Final response displayed: \"The page title is \\\"Example Domain\\\" — the page just says it's a reserved domain for documentation examples, with a \"Learn more\" link. Browser closed.\" This clearly confirms the agent successfully opened a browser, navigated to the URL, and correctly identified the page title as \"Example Domain\"."
+    "Navigated to http://localhost:47891 - Successfully loaded the Gamut interface with the agent list visible in the sidebar",
+    "Clicked on \"QA-20260828-202111-8wq7\" agent in the sidebar - Successfully navigated to the agent page with session URL showing \"Browser Page Title Lookup\"",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the message input box - Message was correctly typed and the Send button became enabled",
+    "Clicked Send message button - Message was sent successfully, agent status changed to \"working\", and session was created",
+    "Waited for agent response (up to 3 minutes) - Agent completed execution in 9 seconds with 4 tool calls using 188,890 tokens",
+    "Verified response mentions \"Example Domain\" and took screenshot - Response clearly states: \"The page title is \\\"Example Domain\\\" — a placeholder page reserved for use in documentation examples. Browser closed.\""
   ],
   "bugs": [],
-  "durationMs": 91886,
-  "sessionId": "b29da475-8e2f-4cc5-abb0-6898c12c3979",
+  "durationMs": 68323,
+  "sessionId": "2e91472a-c7f0-4364-a594-521f6bb89c10",
   "cost": {
-    "inputTokens": 484,
-    "outputTokens": 14385,
-    "cacheCreationTokens": 84974,
-    "cacheReadTokens": 1513968,
+    "inputTokens": 320,
+    "outputTokens": 11376,
+    "cacheCreationTokens": 68676,
+    "cacheReadTokens": 873634,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.330023
+    "totalCostUsd": 0.230408
   }
 }
