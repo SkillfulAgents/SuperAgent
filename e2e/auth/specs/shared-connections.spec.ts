@@ -102,14 +102,26 @@ async function listAgentAccounts(page: Page, slug: string): Promise<AgentAccount
   return accounts
 }
 
-function readRecords(): Array<{ type: string; agentSlug: string; proxyToken?: string }> {
+type MockRecord = { type: string; agentSlug: string; proxyToken?: string }
+
+function readRecords(): MockRecord[] {
   if (!fs.existsSync(RECORDER_FILE)) return []
   return fs
     .readFileSync(RECORDER_FILE, 'utf-8')
     .trim()
     .split('\n')
     .filter(Boolean)
-    .map((line) => JSON.parse(line))
+    .flatMap((line) => {
+      // The server appends to this file while the poll loop below reads it, so
+      // the final line can be half-written. Skip it and let the next tick see
+      // it whole — throwing here would surface a torn write as a SyntaxError
+      // instead of the wait simply continuing.
+      try {
+        return [JSON.parse(line) as MockRecord]
+      } catch {
+        return []
+      }
+    })
 }
 
 async function waitForProxyToken(slug: string, timeoutMs = 45000): Promise<string> {
