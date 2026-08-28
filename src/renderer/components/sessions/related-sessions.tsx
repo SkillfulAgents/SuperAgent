@@ -4,7 +4,7 @@ import { formatDistanceToNow } from 'date-fns'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
 import { HighlightMatch } from '@renderer/components/ui/highlight-match'
 import { Button } from '@renderer/components/ui/button'
-import { Input } from '@renderer/components/ui/input'
+import { InlineRenameInput } from '@renderer/components/ui/inline-rename-input'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import {
   Select,
@@ -23,14 +23,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@renderer/components/ui/dialog'
 import { useRouteLocation } from '@renderer/router/use-route-location'
 import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
@@ -173,9 +165,8 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
   const deleteSession = useDeleteSession()
   const updateSessionName = useUpdateSessionName()
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
-  const [showRenameDialog, setShowRenameDialog] = useState(false)
+  const [isRenaming, setIsRenaming] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
-  const [newName, setNewName] = useState(session.name)
 
   const handleDelete = async () => {
     if (!agentSlug) return
@@ -194,21 +185,6 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
     }
   }
 
-  const handleRename = async () => {
-    if (!agentSlug) return
-    const trimmed = newName.trim()
-    if (!trimmed || trimmed === session.name) {
-      setShowRenameDialog(false)
-      return
-    }
-    try {
-      await updateSessionName.mutateAsync({ sessionId: session.id, agentSlug, name: trimmed })
-      setShowRenameDialog(false)
-    } catch (error) {
-      console.error('Failed to rename session:', error)
-    }
-  }
-
   const handleCopyRawLog = async () => {
     if (!agentSlug) return
     try {
@@ -219,6 +195,20 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
     } catch (error) {
       console.error('Failed to copy raw log:', error)
     }
+  }
+
+  if (isRenaming && agentSlug) {
+    return (
+      <div className="w-full py-3 px-1">
+        <InlineRenameInput
+          currentName={session.name}
+          noun="session"
+          ariaLabel="Session name"
+          onSave={(name) => updateSessionName.mutateAsync({ sessionId: session.id, agentSlug, name })}
+          onDone={() => setIsRenaming(false)}
+        />
+      </div>
+    )
   }
 
   return (
@@ -293,8 +283,7 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
                   className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
                   onClick={(e) => {
                     e.stopPropagation()
-                    setNewName(session.name)
-                    setShowRenameDialog(true)
+                    setIsRenaming(true)
                   }}
                 >
                   <Pencil className="h-3.5 w-3.5" />
@@ -349,33 +338,6 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-
-      <Dialog open={showRenameDialog} onOpenChange={setShowRenameDialog}>
-        <DialogContent className="overflow-hidden">
-          <DialogHeader>
-            <DialogTitle>Rename Session</DialogTitle>
-            <DialogDescription>
-              Enter a new name for this session.
-            </DialogDescription>
-          </DialogHeader>
-          <form onSubmit={(e) => { e.preventDefault(); handleRename() }}>
-            <Input
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              placeholder="Session name"
-              autoFocus
-            />
-            <DialogFooter className="mt-4">
-              <Button type="button" variant="outline" onClick={() => setShowRenameDialog(false)}>
-                Cancel
-              </Button>
-              <Button type="submit" disabled={updateSessionName.isPending || !newName.trim()}>
-                {updateSessionName.isPending ? 'Renaming...' : 'Rename'}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
     </>
   )
 }

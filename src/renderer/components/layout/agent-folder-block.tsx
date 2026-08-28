@@ -16,68 +16,12 @@ import {
   ContextMenuTrigger,
 } from '@renderer/components/ui/context-menu'
 import { SidebarMenuButton } from '@renderer/components/ui/sidebar'
+import { InlineRenameInput } from '@renderer/components/ui/inline-rename-input'
 import {
   containerIdForFolder,
   sortableIdForFolder,
   type AgentFolder,
 } from '@renderer/lib/agent-folders'
-
-/**
- * Inline rename for a folder. Mirrors the dashboard rename in `app-sidebar.tsx`
- * — commit on Enter or blur, abandon on Escape — but writes to user settings
- * through the caller rather than hitting an API of its own.
- */
-function FolderNameInput({
-  currentName,
-  onCommit,
-  onDone,
-}: {
-  currentName: string
-  onCommit: (name: string) => void
-  onDone: () => void
-}) {
-  const [value, setValue] = useState(currentName)
-  const inputRef = React.useRef<HTMLInputElement>(null)
-  const settledRef = React.useRef(false)
-
-  React.useEffect(() => {
-    inputRef.current?.select()
-  }, [])
-
-  const submit = () => {
-    if (settledRef.current) return
-    settledRef.current = true
-    const trimmed = value.trim()
-    if (trimmed && trimmed !== currentName) onCommit(trimmed)
-    onDone()
-  }
-
-  const cancel = () => {
-    if (settledRef.current) return
-    settledRef.current = true
-    onDone()
-  }
-
-  return (
-    <input
-      ref={inputRef}
-      value={value}
-      onChange={(e) => setValue(e.target.value)}
-      onKeyDown={(e) => {
-        e.stopPropagation()
-        if (e.key === 'Enter') submit()
-        if (e.key === 'Escape') cancel()
-      }}
-      onBlur={submit}
-      onClick={(e) => e.stopPropagation()}
-      onPointerDown={(e) => e.stopPropagation()}
-      autoFocus
-      aria-label="Folder name"
-      data-testid="folder-name-input"
-      className="w-full bg-background border border-input rounded px-1 py-0 text-[13px] outline-none focus:ring-1 focus:ring-ring"
-    />
-  )
-}
 
 /**
  * The folder header's interactive row. Memoized because the block around it
@@ -200,7 +144,7 @@ export function AgentFolderBlock({
   /** Mount straight into rename mode — used by the just-created folder. */
   initialRenaming?: boolean
   onToggle: () => void
-  onRename: (name: string) => void
+  onRename: (name: string) => void | Promise<unknown>
   onRenameEnd?: () => void
   onDelete: () => void
   /** Rendered as a hover + on the default folder's header row. */
@@ -275,9 +219,13 @@ export function AgentFolderBlock({
         // control nested in a <button> is invalid markup, and clicking it would
         // land on the button and toggle the folder shut mid-edit.
         <div className="flex h-8 items-center rounded-md px-2">
-          <FolderNameInput
+          <InlineRenameInput
             currentName={folder.name}
-            onCommit={onRename}
+            noun="folder"
+            ariaLabel={initialRenaming ? 'Create folder' : 'Folder name'}
+            testId="folder-name-input"
+            className="text-[13px]"
+            onSave={onRename}
             onDone={() => {
               setIsRenaming(false)
               onRenameEnd?.()

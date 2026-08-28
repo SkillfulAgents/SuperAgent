@@ -48,21 +48,10 @@ vi.mock('@renderer/components/ui/alert-dialog', () => ({
   AlertDialogTitle: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }))
 
-vi.mock('@renderer/components/ui/dialog', () => ({
-  Dialog: ({ open, children }: { open: boolean; children: React.ReactNode }) =>
-    open ? <>{children}</> : null,
-  DialogContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  DialogDescription: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  DialogFooter: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  DialogHeader: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  DialogTitle: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-}))
-
 const mockSetMarkedUnread = vi.fn().mockResolvedValue({ success: true })
 
 vi.mock('@renderer/hooks/use-sessions', () => ({
   useDeleteSession: () => ({ mutateAsync: vi.fn() }),
-  useUpdateSessionName: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useSetSessionMarkedUnread: () => ({ mutateAsync: mockSetMarkedUnread, isPending: false }),
 }))
 
@@ -225,6 +214,23 @@ describe('SessionContextMenu mark as unread', () => {
 
     expect(screen.queryByTestId('rename-session-item')).not.toBeInTheDocument()
     expect(screen.getByTestId('mark-unread-session-item')).toBeInTheDocument()
+  })
+
+  it('calls onRenameRequest from the owner rename item', () => {
+    const onRenameRequest = vi.fn()
+    render(
+      <SessionContextMenu
+        sessionId="session-9"
+        sessionName="Session Nine"
+        agentSlug="agent-2"
+        onRenameRequest={onRenameRequest}
+      >
+        <button type="button">Session Nine</button>
+      </SessionContextMenu>,
+    )
+
+    fireEvent.click(screen.getByTestId('rename-session-item'))
+    expect(onRenameRequest).toHaveBeenCalledTimes(1)
   })
 
   // A mark is scoped to the acting user, so it raises a dot on their sidebar

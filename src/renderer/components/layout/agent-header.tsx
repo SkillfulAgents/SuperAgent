@@ -1,8 +1,10 @@
+import { useState } from 'react'
 import { Power, Square, Clock, Loader2, Zap, MoreVertical } from 'lucide-react'
 import { AppLink } from '@renderer/components/ui/app-link'
 import { useRouteLocation } from '@renderer/router/use-route-location'
 import { useAgent, type useStartAgent, type useStopAgent } from '@renderer/hooks/use-agents'
-import { useSessions, useSession } from '@renderer/hooks/use-sessions'
+import { useSessions, useSession, useUpdateSessionName } from '@renderer/hooks/use-sessions'
+import { InlineRenameInput } from '@renderer/components/ui/inline-rename-input'
 import { useScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
 import { useWebhookTrigger } from '@renderer/hooks/use-webhook-triggers'
 import { useConnectedAccounts } from '@renderer/hooks/use-connected-accounts'
@@ -46,6 +48,8 @@ function BreadcrumbSeparator() {
  */
 export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHeaderProps) {
   const { view } = useRouteLocation()
+  const [isRenamingSession, setIsRenamingSession] = useState(false)
+  const updateSessionName = useUpdateSessionName()
   const sessionId = view.kind === 'session' ? view.id : null
   const scheduledTaskId = view.kind === 'task' ? view.id : null
   const webhookTriggerId = view.kind === 'webhook' ? view.id : null
@@ -187,19 +191,33 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
         {sessionId && session?.agentSlug === agent?.slug && (
           <>
             <BreadcrumbSeparator />
-            <SessionContextMenu
-              sessionId={sessionId}
-              sessionName={session?.name || 'Session'}
-              agentSlug={slug}
-              sessionIsLive={!!session?.isActive || !!session?.isAwaitingInput}
-            >
-              <span
-                className="text-sm font-light text-foreground cursor-context-menu app-no-drag"
-                data-testid="session-breadcrumb"
+            {isRenamingSession ? (
+              <div className="min-w-[8rem] max-w-xs">
+                <InlineRenameInput
+                  currentName={session?.name || 'Session'}
+                  noun="session"
+                  ariaLabel="Session name"
+                  testId="session-breadcrumb"
+                  onSave={(name) => updateSessionName.mutateAsync({ sessionId, agentSlug: slug, name })}
+                  onDone={() => setIsRenamingSession(false)}
+                />
+              </div>
+            ) : (
+              <SessionContextMenu
+                sessionId={sessionId}
+                sessionName={session?.name || 'Session'}
+                agentSlug={slug}
+                sessionIsLive={!!session?.isActive || !!session?.isAwaitingInput}
+                onRenameRequest={() => setIsRenamingSession(true)}
               >
-                {session?.name || 'Loading...'}
-              </span>
-            </SessionContextMenu>
+                <span
+                  className="text-sm font-light text-foreground cursor-context-menu app-no-drag"
+                  data-testid="session-breadcrumb"
+                >
+                  {session?.name || 'Loading...'}
+                </span>
+              </SessionContextMenu>
+            )}
           </>
         )}
         {dashboardSlug && (

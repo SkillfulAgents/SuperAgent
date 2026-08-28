@@ -55,6 +55,7 @@ const mockUseSessions = vi.fn()
 vi.mock('@renderer/hooks/use-sessions', () => ({
   useSessions: (slug: string | null) => mockUseSessions(slug),
   useCreateSession: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useUpdateSessionName: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }))
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({

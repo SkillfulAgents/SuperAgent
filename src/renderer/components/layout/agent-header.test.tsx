@@ -49,6 +49,7 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
       invokedByAgentSlug: mocks.invokedByAgentSlug,
     },
   }),
+  useUpdateSessionName: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }))
 
 vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({

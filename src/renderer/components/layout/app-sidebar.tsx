@@ -50,7 +50,7 @@ import {
 } from '@renderer/components/runtime/runtime-status-banners'
 import { useFirewallStatus, useFixFirewall } from '@renderer/hooks/use-firewall-status'
 import { useAgents, useRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
-import { useSessions, type ApiSession } from '@renderer/hooks/use-sessions'
+import { useSessions, useUpdateSessionName, type ApiSession } from '@renderer/hooks/use-sessions'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
@@ -63,6 +63,7 @@ import { SIDEBAR_TREE_CONNECTORS } from '@renderer/components/ui/tree-connectors
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { DashboardContextMenu } from '@renderer/components/dashboards/dashboard-context-menu'
+import { InlineRenameInput } from '@renderer/components/ui/inline-rename-input'
 import { useQueryClient } from '@tanstack/react-query'
 import { useParams, useRouterState } from '@tanstack/react-router'
 import { apiFetch } from '@renderer/lib/api'
@@ -200,62 +201,81 @@ function SessionSubItem({
   // redundant — the session clearly isn't asleep).
   const showPendingWake = !!session.pendingWakeAt && !isWorking && !isAwaitingInput
   const { ref: hintRef, hint } = useCmdHintTarget()
+  const [isRenaming, setIsRenaming] = useState(false)
+  const updateSessionName = useUpdateSessionName()
 
   return (
     <SidebarMenuSubItem>
-      <SessionContextMenu
-        sessionId={session.id}
-        sessionName={session.name}
-        agentSlug={agentSlug}
-        // Same condition `hasUnread` above gates the dot on — no point
-        // offering "Mark as Unread" where the dot would be suppressed.
-        sessionIsLive={!!session.isActive || !!session.isAwaitingInput}
-      >
-        <SidebarMenuSubButton
-          asChild
-          isActive={isSelected}
+      {isRenaming ? (
+        <div
+          className="flex h-8 items-center rounded-md px-2"
+          data-testid={`session-item-${session.id}`}
         >
-          <AppLink
-            ref={hintRef}
-            to="/agents/$slug/sessions/$sessionId"
-            params={{ slug: agentSlug, sessionId: session.id }}
-            className="flex items-center gap-2 w-full"
-            data-testid={`session-item-${session.id}`}
+          <InlineRenameInput
+            currentName={session.name}
+            noun="session"
+            ariaLabel="Session name"
+            testId={`session-name-${session.id}`}
+            onSave={(name) => updateSessionName.mutateAsync({ sessionId: session.id, agentSlug, name })}
+            onDone={() => setIsRenaming(false)}
+          />
+        </div>
+      ) : (
+        <SessionContextMenu
+          sessionId={session.id}
+          sessionName={session.name}
+          agentSlug={agentSlug}
+          // Same condition `hasUnread` above gates the dot on — no point
+          // offering "Mark as Unread" where the dot would be suppressed.
+          sessionIsLive={!!session.isActive || !!session.isAwaitingInput}
+          onRenameRequest={() => setIsRenaming(true)}
+        >
+          <SidebarMenuSubButton
+            asChild
+            isActive={isSelected}
           >
-            <HoverScrollText
-              className="flex-1 text-left"
-              data-testid={`session-name-${session.id}`}
-              hoverTarget="parent"
+            <AppLink
+              ref={hintRef}
+              to="/agents/$slug/sessions/$sessionId"
+              params={{ slug: agentSlug, sessionId: session.id }}
+              className="flex items-center gap-2 w-full"
+              data-testid={`session-item-${session.id}`}
             >
-              {session.name}
-            </HoverScrollText>
-            {hint !== null ? (
-              <CmdHintBadge hint={hint} />
-            ) : (
-              <span className="flex items-center justify-center gap-1 min-w-4 shrink-0">
-                {showPendingWake && (
-                  <span
-                    className="flex items-center"
-                    role="img"
-                    aria-label="scheduled to resume"
-                    title={`Resumes ${formatDistanceToNow(new Date(session.pendingWakeAt!), { addSuffix: true })}`}
-                    data-testid={`session-pending-wake-${session.id}`}
-                  >
-                    <MoonStar className="h-3 w-3 text-muted-foreground" />
-                  </span>
-                )}
-                {isAwaitingInput ? (
-                  <AwaitingDot />
-                ) : isWorking ? (
-                  <WorkingDots />
-                ) : hasUnread ? (
-                  <span className="h-1.5 w-1.5 rounded-full bg-blue-500" role="img" aria-label="unread notifications" />
-                ) : null}
-              </span>
-            )}
-          </AppLink>
-        </SidebarMenuSubButton>
-      </SessionContextMenu>
+              <HoverScrollText
+                className="flex-1 text-left"
+                data-testid={`session-name-${session.id}`}
+                hoverTarget="parent"
+              >
+                {session.name}
+              </HoverScrollText>
+              {hint !== null ? (
+                <CmdHintBadge hint={hint} />
+              ) : (
+                <span className="flex items-center justify-center gap-1 min-w-4 shrink-0">
+                  {showPendingWake && (
+                    <span
+                      className="flex items-center"
+                      role="img"
+                      aria-label="scheduled to resume"
+                      title={`Resumes ${formatDistanceToNow(new Date(session.pendingWakeAt!), { addSuffix: true })}`}
+                      data-testid={`session-pending-wake-${session.id}`}
+                    >
+                      <MoonStar className="h-3 w-3 text-muted-foreground" />
+                    </span>
+                  )}
+                  {isAwaitingInput ? (
+                    <AwaitingDot />
+                  ) : isWorking ? (
+                    <WorkingDots />
+                  ) : hasUnread ? (
+                    <span className="h-1.5 w-1.5 rounded-full bg-blue-500" role="img" aria-label="unread notifications" />
+                  ) : null}
+                </span>
+              )}
+            </AppLink>
+          </SidebarMenuSubButton>
+        </SessionContextMenu>
+      )}
     </SidebarMenuSubItem>
   )
 }
@@ -273,112 +293,63 @@ function DashboardSubItem({
   const isSelected = routeAgentId === agentSlug && routeDashSlug === artifact.slug
   const [isRenaming, setIsRenaming] = useState(false)
   const { ref: hintRef, hint } = useCmdHintTarget()
+  const queryClient = useQueryClient()
 
   const handleDoubleClick = () => {
     openDashboardExternal(agentSlug, artifact.slug, artifact.name)
   }
 
+  const saveName = async (name: string) => {
+    const res = await apiFetch(`/api/agents/${agentSlug}/artifacts/${artifact.slug}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    })
+    if (!res.ok) throw new Error('Failed to rename dashboard')
+    queryClient.invalidateQueries({ queryKey: ['artifacts', agentSlug] })
+    queryClient.invalidateQueries({ queryKey: ['agents'] })
+  }
+
   return (
     <SidebarMenuSubItem>
-      <DashboardContextMenu
-        artifactSlug={artifact.slug}
-        artifactName={artifact.name}
-        agentSlug={agentSlug}
-        onRenameRequest={() => setIsRenaming(true)}
-      >
-        <SidebarMenuSubButton
-          asChild
-          isActive={isSelected}
-          title={`${artifact.description || artifact.name} (double-click to open in new window)`}
+      {isRenaming ? (
+        <div className="flex h-8 items-center gap-2 rounded-md px-2">
+          <SquareMousePointer className="!h-3.5 !w-3.5 shrink-0" />
+          <InlineRenameInput
+            currentName={artifact.name}
+            noun="dashboard"
+            ariaLabel="Dashboard name"
+            onSave={saveName}
+            onDone={() => setIsRenaming(false)}
+          />
+        </div>
+      ) : (
+        <DashboardContextMenu
+          artifactSlug={artifact.slug}
+          artifactName={artifact.name}
+          agentSlug={agentSlug}
+          onRenameRequest={() => setIsRenaming(true)}
         >
-          <AppLink
-            ref={hintRef}
-            to="/agents/$slug/dashboards/$dashSlug"
-            params={{ slug: agentSlug, dashSlug: artifact.slug }}
-            onDoubleClick={handleDoubleClick}
-            className="flex items-center gap-2 w-full"
+          <SidebarMenuSubButton
+            asChild
+            isActive={isSelected}
+            title={`${artifact.description || artifact.name} (double-click to open in new window)`}
           >
-            <SquareMousePointer className="!h-3.5 !w-3.5 shrink-0" />
-            {isRenaming ? (
-              <InlineRenameInput
-                agentSlug={agentSlug}
-                artifactSlug={artifact.slug}
-                currentName={artifact.name}
-                onDone={() => setIsRenaming(false)}
-              />
-            ) : (
+            <AppLink
+              ref={hintRef}
+              to="/agents/$slug/dashboards/$dashSlug"
+              params={{ slug: agentSlug, dashSlug: artifact.slug }}
+              onDoubleClick={handleDoubleClick}
+              className="flex items-center gap-2 w-full"
+            >
+              <SquareMousePointer className="!h-3.5 !w-3.5 shrink-0" />
               <span className="truncate">{artifact.name}</span>
-            )}
-            {hint !== null && <CmdHintBadge hint={hint} className="ml-auto" />}
-          </AppLink>
-        </SidebarMenuSubButton>
-      </DashboardContextMenu>
+              {hint !== null && <CmdHintBadge hint={hint} className="ml-auto" />}
+            </AppLink>
+          </SidebarMenuSubButton>
+        </DashboardContextMenu>
+      )}
     </SidebarMenuSubItem>
-  )
-}
-
-function InlineRenameInput({
-  agentSlug,
-  artifactSlug,
-  currentName,
-  onDone,
-}: {
-  agentSlug: string
-  artifactSlug: string
-  currentName: string
-  onDone: () => void
-}) {
-  const [value, setValue] = useState(currentName)
-  const queryClient = useQueryClient()
-  const inputRef = React.useRef<HTMLInputElement>(null)
-  const cancelledRef = React.useRef(false)
-  const submittedRef = React.useRef(false)
-
-  React.useEffect(() => {
-    inputRef.current?.select()
-  }, [])
-
-  const submit = async () => {
-    if (submittedRef.current || cancelledRef.current) return
-    submittedRef.current = true
-    const trimmed = value.trim()
-    if (trimmed && trimmed !== currentName) {
-      try {
-        const res = await apiFetch(`/api/agents/${agentSlug}/artifacts/${artifactSlug}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: trimmed }),
-        })
-        if (res.ok) {
-          queryClient.invalidateQueries({ queryKey: ['artifacts', agentSlug] })
-        }
-      } catch (error) {
-        console.error('Failed to rename dashboard:', error)
-      }
-    }
-    onDone()
-  }
-
-  const cancel = () => {
-    cancelledRef.current = true
-    onDone()
-  }
-
-  return (
-    <input
-      ref={inputRef}
-      value={value}
-      onChange={(e) => setValue(e.target.value)}
-      onKeyDown={(e) => {
-        e.stopPropagation()
-        if (e.key === 'Enter') submit()
-        if (e.key === 'Escape') cancel()
-      }}
-      onBlur={submit}
-      onClick={(e) => e.stopPropagation()}
-      autoFocus
-      className="w-full bg-background border border-input rounded px-1 py-0 text-sm outline-none focus:ring-1 focus:ring-ring"
-    />
   )
 }
 
@@ -1306,7 +1277,7 @@ export function AppSidebar() {
   }, [updateSettings])
 
   const handleRenameFolder = useCallback((folderId: string, name: string) => {
-    updateSettings.mutate((current) => ({
+    return updateSettings.mutateAsync((current) => ({
       agentFolders: sanitizeFolders(current?.agentFolders).map((f) =>
         f.id === folderId ? { ...f, name } : f
       ),
