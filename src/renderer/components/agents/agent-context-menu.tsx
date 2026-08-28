@@ -29,7 +29,7 @@ import { useUser } from '@renderer/context/user-context'
 import { AgentSettingsDialog } from './agent-settings-dialog'
 import { apiFetch } from '@renderer/lib/api'
 import { canUseHostFeatures } from '@renderer/lib/host-features'
-import { Settings, FolderOpen, Copy, Trash2, LogOut, Move, FolderInput } from 'lucide-react'
+import { Settings, FolderOpen, Copy, Trash2, LogOut, Move, FolderInput, Pencil } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Input } from '@renderer/components/ui/input'
 import { useUserSettings, useUpdateUserSettings, type UserSettingsData } from '@renderer/hooks/use-user-settings'
@@ -55,6 +55,7 @@ interface AgentContextMenuProps {
   onArrange?: () => void
   /** Let an explicit mobile arrange gesture own touch holds. */
   disableTouchLongPress?: boolean
+  onRenameRequest?: () => void
 }
 
 export function AgentContextMenu({
@@ -63,6 +64,7 @@ export function AgentContextMenu({
   additionalOptions,
   onArrange,
   disableTouchLongPress,
+  onRenameRequest,
 }: AgentContextMenuProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [showLeaveDialog, setShowLeaveDialog] = useState(false)
@@ -241,6 +243,15 @@ export function AgentContextMenu({
           )}
           {additionalOptions}
           {(onArrange || additionalOptions) && <ContextMenuSeparator />}
+          {isOwner && onRenameRequest && (
+            <ContextMenuItem
+              data-testid="rename-agent-item"
+              onClick={onRenameRequest}
+            >
+              <Pencil className="h-4 w-4 mr-2" />
+              Rename Agent
+            </ContextMenuItem>
+          )}
           <ContextMenuSub>
             <ContextMenuSubTrigger data-testid="move-agent-to-folder-trigger">
               <FolderInput className="h-4 w-4 mr-2" />

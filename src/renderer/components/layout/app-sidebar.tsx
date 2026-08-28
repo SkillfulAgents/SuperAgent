@@ -49,7 +49,7 @@ import {
   type FirewallFixUiState,
 } from '@renderer/components/runtime/runtime-status-banners'
 import { useFirewallStatus, useFixFirewall } from '@renderer/hooks/use-firewall-status'
-import { useAgents, useRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
+import { useAgents, useRouteAgentId, useUpdateAgent, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useSessions, useUpdateSessionName, type ApiSession } from '@renderer/hooks/use-sessions'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useSettings } from '@renderer/hooks/use-settings'
@@ -500,6 +500,8 @@ const AgentMenuItemInner = React.forwardRef<
   }
 
   const { ref: hintRef, hint } = useCmdHintTarget()
+  const [isRenaming, setIsRenaming] = useState(false)
+  const updateAgent = useUpdateAgent()
 
   return (
     <Collapsible asChild open={isOpen && !isDragActive} onOpenChange={setIsOpen}>
@@ -510,26 +512,41 @@ const AgentMenuItemInner = React.forwardRef<
           item that also contains CollapsibleContent below.
         */}
         <div className="relative">
-          <AgentContextMenu agent={agent}>
-            <SidebarMenuButton
-              asChild
-              isActive={isSelected}
-              className="justify-between pl-7"
+          {isRenaming ? (
+            <div
+              className="flex h-8 items-center rounded-md px-2 pl-7"
               data-testid={`agent-item-${agent.slug}`}
             >
-              <AppLink ref={hintRef} to="/agents/$slug" params={{ slug: agent.displaySlug }}>
-                <span className="flex items-center gap-1.5 min-w-0">
-                  <span className="truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
-                  {isShared && <Users className="h-3 w-3 shrink-0 text-muted-foreground" />}
-                </span>
-                {hint !== null ? (
-                  <CmdHintBadge hint={hint} />
-                ) : (
-                  <AgentRowIndicator agent={agent} sessions={sessions} isOpen={isOpen} />
-                )}
-              </AppLink>
-            </SidebarMenuButton>
-          </AgentContextMenu>
+              <InlineRenameInput
+                currentName={agent.name}
+                noun="agent"
+                ariaLabel="Agent name"
+                onSave={(name) => updateAgent.mutateAsync({ slug: agent.slug, name })}
+                onDone={() => setIsRenaming(false)}
+              />
+            </div>
+          ) : (
+            <AgentContextMenu agent={agent} onRenameRequest={() => setIsRenaming(true)}>
+              <SidebarMenuButton
+                asChild
+                isActive={isSelected}
+                className="justify-between pl-7"
+                data-testid={`agent-item-${agent.slug}`}
+              >
+                <AppLink ref={hintRef} to="/agents/$slug" params={{ slug: agent.displaySlug }}>
+                  <span className="flex items-center gap-1.5 min-w-0">
+                    <span className="truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
+                    {isShared && <Users className="h-3 w-3 shrink-0 text-muted-foreground" />}
+                  </span>
+                  {hint !== null ? (
+                    <CmdHintBadge hint={hint} />
+                  ) : (
+                    <AgentRowIndicator agent={agent} sessions={sessions} isOpen={isOpen} />
+                  )}
+                </AppLink>
+              </SidebarMenuButton>
+            </AgentContextMenu>
+          )}
           {/*
             Sibling chevron button overlays its slot in the row so the row stays a
             single <button> (no nested interactive controls). Only rendered when

@@ -325,3 +325,22 @@ describe('moving an agent into a left-nav folder', () => {
     expect(screen.getByTestId('move-agent-to-new-folder-item')).toBeInTheDocument()
   })
 })
+
+describe('rename', () => {
+  it('stays off the menu until a row asks to start the field', () => {
+    render(<AgentContextMenu agent={AGENT}><span>row</span></AgentContextMenu>)
+    expect(screen.queryByTestId('rename-agent-item')).not.toBeInTheDocument()
+  })
+
+  it('calls onRenameRequest from the owner rename item', async () => {
+    const onRenameRequest = vi.fn()
+    render(
+      <AgentContextMenu agent={AGENT} onRenameRequest={onRenameRequest}>
+        <span>row</span>
+      </AgentContextMenu>,
+    )
+
+    await userEvent.click(screen.getByTestId('rename-agent-item'))
+    expect(onRenameRequest).toHaveBeenCalledTimes(1)
+  })
+})

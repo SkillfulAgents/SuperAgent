@@ -17,7 +17,7 @@ export function InlineRenameInput({
   onDone,
 }: {
   currentName: string
-  noun: 'session' | 'dashboard' | 'folder'
+  noun: 'session' | 'dashboard' | 'folder' | 'agent'
   ariaLabel: string
   testId?: string
   className?: string
