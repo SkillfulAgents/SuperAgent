@@ -1,11 +1,7 @@
 import { test, expect } from '@playwright/test'
-import * as fs from 'fs'
-import * as path from 'path'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
-
-const E2E_DATA_DIR = path.resolve(process.cwd(), process.env.SUPERAGENT_DATA_DIR ?? '.e2e-data')
-const RECORDER_FILE = path.join(E2E_DATA_DIR, '.e2e-mock-recorder.jsonl')
+import { mockRecorder } from '../helpers/mock-recorder'
 
 interface MockRecord {
   type: 'sendMessage' | 'createSession'
@@ -18,27 +14,11 @@ interface MockRecord {
   timestamp: string
 }
 
-function readRecords(): MockRecord[] {
-  if (!fs.existsSync(RECORDER_FILE)) return []
-  const lines = fs.readFileSync(RECORDER_FILE, 'utf-8').trim().split('\n').filter(Boolean)
-  return lines.map((l) => JSON.parse(l) as MockRecord)
-}
+// Predicates below filter on a test-unique attribute (agentSlug or unique
+// content) — see the helper's note on the recorder file being shared across
+// workers and tests.
+const recorder = mockRecorder<MockRecord>()
 
-// The recorder file is shared across Playwright workers, so callers must
-// filter by a test-unique attribute (unique message content) — never truncate
-// the file or assume it's empty at start.
-async function waitForRecord(
-  predicate: (r: MockRecord) => boolean,
-  timeoutMs = 10000
-): Promise<MockRecord> {
-  const start = Date.now()
-  while (Date.now() - start < timeoutMs) {
-    const found = readRecords().find(predicate)
-    if (found) return found
-    await new Promise((r) => setTimeout(r, 100))
-  }
-  throw new Error(`Timed out waiting for matching record. Records seen: ${JSON.stringify(readRecords(), null, 2)}`)
-}
 
 // Distinct from the global default (Opus) so adoption is observable.
 const HAIKU_PINNED = 'claude-haiku-4-5'
@@ -95,8 +75,7 @@ test.describe('Per-agent default model', () => {
     await page.locator('[data-testid="home-send-button"]').click()
     await expect(page.locator('[data-testid="message-list"]')).toBeVisible({ timeout: 15000 })
 
-    const record = await waitForRecord(
-      (r) => r.type === 'createSession' && r.initialMessage === initialMessage
+    const record = await recorder.waitFor((r) => r.type === 'createSession' && r.initialMessage === initialMessage
     )
     expect(record.model).toBe(HAIKU_PINNED)
     expect(record.effort).toBe('high')
@@ -120,8 +99,7 @@ test.describe('Per-agent default model', () => {
     await page.locator('[data-testid="home-message-input"]').fill(resetMessage)
     await page.locator('[data-testid="home-send-button"]').click()
 
-    const resetRecord = await waitForRecord(
-      (r) => r.type === 'createSession' && r.initialMessage === resetMessage
+    const resetRecord = await recorder.waitFor((r) => r.type === 'createSession' && r.initialMessage === resetMessage
     )
     expect(resetRecord.model).toBe('claude-opus-5')
   })
