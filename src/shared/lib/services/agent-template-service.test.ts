@@ -1738,21 +1738,59 @@ describe('hasOnboardingSkill', () => {
     fs.mkdirSync(path.dirname(skillPath), { recursive: true })
     fs.writeFileSync(skillPath, '# Onboarding Skill')
 
-    const result = await hasOnboardingSkill('test-agent')
-    expect(result).toBe(true)
+    await expect(hasOnboardingSkill('test-agent')).resolves.toEqual({ hasOnboarding: true })
   })
 
   it('returns false when agent-onboarding directory does not exist', async () => {
     const workspaceDir = path.join(testDir, 'agents', 'test-agent', 'workspace')
     fs.mkdirSync(workspaceDir, { recursive: true })
 
-    const result = await hasOnboardingSkill('test-agent')
-    expect(result).toBe(false)
+    await expect(hasOnboardingSkill('test-agent')).resolves.toEqual({ hasOnboarding: false })
   })
 
   it('returns false when workspace does not exist', async () => {
-    const result = await hasOnboardingSkill('nonexistent-agent')
-    expect(result).toBe(false)
+    await expect(hasOnboardingSkill('nonexistent-agent')).resolves.toEqual({ hasOnboarding: false })
+  })
+
+  it('reads first_prompt from the onboarding skill frontmatter', async () => {
+    const skillPath = path.join(testDir, 'agents', 'test-agent', 'workspace', '.claude', 'skills', 'agent-onboarding', 'SKILL.md')
+    fs.mkdirSync(path.dirname(skillPath), { recursive: true })
+    fs.writeFileSync(skillPath, '---\nname: agent-onboarding\nfirst_prompt: Walk me through HubSpot\n---\n\nOnboard.\n')
+
+    await expect(hasOnboardingSkill('test-agent')).resolves.toEqual({
+      hasOnboarding: true,
+      firstPrompt: 'Walk me through HubSpot',
+    })
+  })
+
+  it('treats a blank first_prompt as absent', async () => {
+    const skillPath = path.join(testDir, 'agents', 'test-agent', 'workspace', '.claude', 'skills', 'agent-onboarding', 'SKILL.md')
+    fs.mkdirSync(path.dirname(skillPath), { recursive: true })
+    fs.writeFileSync(skillPath, '---\nname: agent-onboarding\nfirst_prompt:   \n---\n\nOnboard.\n')
+
+    await expect(hasOnboardingSkill('test-agent')).resolves.toEqual({ hasOnboarding: true })
+  })
+
+  it('treats a YAML block-scalar first_prompt as absent', async () => {
+    const skillPath = path.join(testDir, 'agents', 'test-agent', 'workspace', '.claude', 'skills', 'agent-onboarding', 'SKILL.md')
+    fs.mkdirSync(path.dirname(skillPath), { recursive: true })
+    fs.writeFileSync(skillPath, '---\nname: agent-onboarding\nfirst_prompt: |\n---\n\nOnboard.\n')
+
+    await expect(hasOnboardingSkill('test-agent')).resolves.toEqual({ hasOnboarding: true })
+  })
+
+  it('still reads first_prompt when the skill body is larger than the prompt limit', async () => {
+    const skillPath = path.join(testDir, 'agents', 'test-agent', 'workspace', '.claude', 'skills', 'agent-onboarding', 'SKILL.md')
+    fs.mkdirSync(path.dirname(skillPath), { recursive: true })
+    fs.writeFileSync(
+      skillPath,
+      `---\nname: agent-onboarding\nfirst_prompt: Walk me through HubSpot\n---\n\n${'x'.repeat(MAX_TEMPLATE_PROMPT_SIZE + 1)}\n`,
+    )
+
+    await expect(hasOnboardingSkill('test-agent')).resolves.toEqual({
+      hasOnboarding: true,
+      firstPrompt: 'Walk me through HubSpot',
+    })
   })
 })
 

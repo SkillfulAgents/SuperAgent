@@ -1379,7 +1379,7 @@ describe('POST /api/agents/import-template', () => {
       slug: 'imported-agent',
       name: 'Imported Agent',
     } as any)
-    vi.mocked(hasOnboardingSkill).mockResolvedValue(false)
+    vi.mocked(hasOnboardingSkill).mockResolvedValue({ hasOnboarding: false })
     vi.mocked(getAgentTemplatePrompt).mockResolvedValue(undefined)
   })
 
@@ -1432,7 +1432,7 @@ describe('POST /api/agents/import-template (chunked)', () => {
       slug: 'imported-agent',
       name: 'Imported Agent',
     } as any)
-    vi.mocked(hasOnboardingSkill).mockResolvedValue(false)
+    vi.mocked(hasOnboardingSkill).mockResolvedValue({ hasOnboarding: false })
     vi.mocked(getAgentTemplatePrompt).mockResolvedValue(undefined)
   })
 
