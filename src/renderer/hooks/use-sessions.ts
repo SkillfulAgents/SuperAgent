@@ -152,9 +152,10 @@ export function useUpdateSessionName() {
       return res.json() as Promise<ApiSession>
     },
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({
-        queryKey: ['sessions', resolveAgentSlugFromCache(queryClient, variables.agentSlug)],
-      })
+      const slug = resolveAgentSlugFromCache(queryClient, variables.agentSlug)
+      queryClient.invalidateQueries({ queryKey: ['sessions', slug] })
+      // The header crumb and document title read the singular leaf, not the list.
+      queryClient.invalidateQueries({ queryKey: ['session', variables.sessionId, slug] })
     },
   })
 }
