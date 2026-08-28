@@ -501,15 +501,18 @@ async function summarizeSessionTranscript(jsonlPath: string): Promise<Transcript
   return summary
 }
 
-/**
- * Project a transcript summary into the session's SessionInfo.
- */
+// A stored createdAt is a bare string (sessionMetadataSchema is lenient by
+// design), so junk must fall through to the caller's next date source rather
+// than become an Invalid Date.
 function parseStoredDate(value: string | undefined): Date | null {
   if (!value) return null
   const d = new Date(value)
   return Number.isNaN(d.getTime()) ? null : d
 }
 
+/**
+ * Project a transcript summary into the session's SessionInfo.
+ */
 function parseSessionInfo(
   sessionId: string,
   agentSlug: string,
