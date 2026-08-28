@@ -929,7 +929,11 @@ describe('shared-agent connection projections', () => {
       mappingId: 'own-account-mapping',
     })
     expect(body.accounts[0]).not.toHaveProperty('userId')
-    expect(body.accounts[1]).toEqual({ kind: 'connected-account', toolkitSlug: 'slack' })
+    expect(body.accounts[1]).toEqual({
+      kind: 'connected-account',
+      toolkitSlug: 'slack',
+      mappingId: 'victim-account-mapping',
+    })
     expect(JSON.stringify(body)).not.toContain('victim-account-id')
     expect(JSON.stringify(body)).not.toContain('victim-provider-connection')
     expect(JSON.stringify(body)).not.toContain('Victim Workspace')
@@ -954,7 +958,11 @@ describe('shared-agent connection projections', () => {
     const body = await res.json() as { accounts: Array<Record<string, unknown>> }
 
     expect(res.status).toBe(200)
-    expect(body.accounts[1]).toEqual({ kind: 'connected-account', toolkitSlug: 'slack' })
+    expect(body.accounts[1]).toEqual({
+      kind: 'connected-account',
+      toolkitSlug: 'slack',
+      mappingId: 'victim-account-mapping',
+    })
     expect(JSON.stringify(body)).not.toContain('victim-account-id')
     expect(JSON.stringify(body)).not.toContain('victim-provider-connection')
     expect(JSON.stringify(body)).not.toContain('victim-user-id')
@@ -983,7 +991,7 @@ describe('shared-agent connection projections', () => {
     })
     expect(body.mcps[0]).not.toHaveProperty('userId')
     expect(body.mcps[0]).not.toHaveProperty('accessToken')
-    expect(body.mcps[1]).toEqual({ kind: 'remote-mcp' })
+    expect(body.mcps[1]).toEqual({ kind: 'remote-mcp', mappingId: 'victim-mcp-mapping' })
     expect(JSON.stringify(body)).not.toContain('victim-mcp-id')
     expect(JSON.stringify(body)).not.toContain('Victim private MCP')
     expect(JSON.stringify(body)).not.toContain('victim.example.test')
