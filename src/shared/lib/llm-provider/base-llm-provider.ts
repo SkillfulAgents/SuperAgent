@@ -3,6 +3,7 @@ import { getSettings, type ApiKeySettings, type ApiKeyStatus } from '../config/s
 import type { ModelDefinition, ModelSearchResult } from './model-catalog-schema'
 import type { CatalogDefaultModels } from './model-catalog-defaults'
 import type { LlmProviderId } from './provider-types'
+import { defaultParseErrorResponse, type ProviderErrorPresentation } from './error-presentation'
 
 export { LLM_PROVIDER_IDS } from './provider-types'
 export type { LlmProviderId } from './provider-types'
@@ -154,5 +155,10 @@ export abstract class BaseLlmProvider {
    */
   async searchModels(_query: string): Promise<ModelSearchResult[]> {
     throw new Error(`${this.name} does not support model search`)
+  }
+
+  // Provider-specific banner for an upstream HTTP error. Override for custom copy.
+  parseErrorResponse(status: number | undefined, body: unknown): ProviderErrorPresentation {
+    return defaultParseErrorResponse(status, body)
   }
 }

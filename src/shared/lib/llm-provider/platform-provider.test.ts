@@ -59,6 +59,27 @@ describe('getContainerEnvVars agent identity', () => {
   })
 })
 
+describe('parseErrorResponse', () => {
+  it('returns warning markdown for a workspace spend cap', () => {
+    const parsed = provider.parseErrorResponse(
+      429,
+      'A spend cap for this workspace was reached. It resets within 30 days. Ask a workspace admin to raise it.',
+    )
+    expect(parsed).toEqual({
+      severity: 'warning',
+      icon: 'circle-dollar-sign',
+      message:
+        '**Spend Limit Reached:** A spend cap for this workspace was reached. It resets within 30 days. [Raise spend limit](/dashboard/organizations/{orgId}?tab=billing)',
+    })
+  })
+
+  it('falls back to the generic banner for a non-spend 429', () => {
+    const parsed = provider.parseErrorResponse(429, 'Rate limit exceeded. Slow down and retry shortly.')
+    expect(parsed.severity).toBe('error')
+    expect(parsed.message).toContain('**LLM Provider Error:**')
+  })
+})
+
 describe('sanitizeAgentName', () => {
   it('collapses runs of control chars and spaces to a single space', () => {
     expect(sanitizeAgentName('a\r\n\r\nb   c')).toBe('a b c')

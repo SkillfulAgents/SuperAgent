@@ -80,6 +80,7 @@ import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { VALID_SCRIPT_TYPES, getAgentCapabilitySettings } from '@shared/lib/config/settings'
 import { sessionCapabilityGrantsResponseSchema } from '@shared/lib/config/capability-policy-schema'
 import { getActiveLlmProvider, getModelContextWindow } from '@shared/lib/llm-provider'
+import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { resolveAppFromWindowRef } from '@shared/lib/computer-use/executor'
 import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp, type ComputerUsePermissionLevel } from '@shared/lib/computer-use/types'
@@ -2395,6 +2396,13 @@ class MessagePersister {
           // Use SDK error code from the preceding assistant message (e.g., 'authentication_failed', 'rate_limit')
           const apiErrorCode = state.lastApiErrorCode || null
           const { terminalReason, apiErrorStatus } = classification
+          // The active provider owns the copy for its own upstream errors
+          // (severity, icon, markdown message + CTA link). Sent alongside the
+          // raw error so the UI never re-derives provider-specific copy.
+          const errorPresentation =
+            apiErrorCode && PROVIDER_ERROR_CODES.has(apiErrorCode)
+              ? getActiveLlmProvider().parseErrorResponse(apiErrorStatus ?? undefined, errorMessage)
+              : null
           console.error(
             `[MessagePersister] Session ${sessionId} error:`,
             errorMessage,
@@ -2405,6 +2413,7 @@ class MessagePersister {
             type: 'session_error',
             error: errorMessage,
             apiErrorCode,
+            errorPresentation,
             terminalReason,
             apiErrorStatus,
             isActive: false
@@ -2416,6 +2425,7 @@ class MessagePersister {
             agentSlug: state.agentSlug,
             error: errorMessage,
             apiErrorCode,
+            errorPresentation,
             terminalReason,
             apiErrorStatus,
             isActive: false,

@@ -185,7 +185,7 @@ import { computerUsePermissionManager } from '@shared/lib/computer-use/permissio
 import { executeComputerUseCommand, checkACPermissions, ungrabAC } from '@shared/lib/computer-use/executor'
 import { resolveTargetApp } from '@shared/lib/computer-use/types'
 import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-provider/helpers'
-import { resolveActiveProviderModel } from '@shared/lib/llm-provider'
+import { getActiveLlmProvider, resolveActiveProviderModel } from '@shared/lib/llm-provider'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import { isPathWithinDir, sanitizeUploadFilename } from '@shared/lib/utils/path-safety'
@@ -203,7 +203,7 @@ import { Readable, pipeline } from 'stream'
 import { pipeline as streamPipeline } from 'stream/promises'
 import pLimit from 'p-limit'
 import * as path from 'path'
-import type { ApiAgent } from '@shared/lib/types/api'
+import { PROVIDER_ERROR_CODES, type ApiAgent } from '@shared/lib/types/api'
 import type { SessionInfo, SessionMetadataMap } from '@shared/lib/types/agent'
 import { toPublicChatIntegration } from '@shared/lib/chat-integrations/public'
 import { toPublicWebhookTrigger } from '@shared/lib/webhook-triggers/public'
@@ -2156,11 +2156,21 @@ const messagesListQuerySchema = z
   // mixing them has no coherent meaning.
   .refine((q) => !(q.cursor && q.after), { message: 'cursor and after are mutually exclusive' })
 
+// Presentation is derived fresh per response (not persisted), so provider copy
+// changes and provider switches apply to history retroactively.
+function attachProviderErrorPresentations(transformed: TransformedItem[]): void {
+  for (const item of transformed) {
+    if (item.type !== 'assistant' || !item.apiError || !PROVIDER_ERROR_CODES.has(item.apiError)) continue
+    item.errorPresentation = getActiveLlmProvider().parseErrorResponse(undefined, item.content.text)
+  }
+}
+
 async function annotateAndRecoverMessages(
   transformed: TransformedItem[],
   agentSlug: string,
   sessionId: string,
 ): Promise<void> {
+  attachProviderErrorPresentations(transformed)
   await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
 
   const settledRequests = messagePersister.getSettledInputRequests(sessionId)
@@ -2320,6 +2330,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     c.req.raw.signal.throwIfAborted()
     const filtered = messages.filter((m) => !('isMeta' in m && m.isMeta))
     const transformed = transformMessages(filtered)
+    attachProviderErrorPresentations(transformed)
 
     // Discover subagent IDs for interrupted Task tool calls that have no result
     await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
@@ -2515,6 +2526,7 @@ agents.get('/:id/sessions/:sessionId/subagent/:agentId/messages', AgentRead(), a
       (e) => e.type === 'user' || e.type === 'assistant'
     )
     const transformed = transformMessages(messageEntries)
+    attachProviderErrorPresentations(transformed)
     // Fanned out in parallel across all subagent ids by the activity log, so
     // stream the serialization instead of building one JSON string per request.
     return streamJsonArrayResponse(c, transformed, {

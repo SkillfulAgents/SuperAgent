@@ -1,5 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { BaseLlmProvider, type AgentIdentity } from './base-llm-provider'
+import { parsePlatformErrorResponse } from './platform-error-presentation'
+import type { ProviderErrorPresentation } from './error-presentation'
 import { rewriteLoopbackForContainer } from './container-url'
 import type { ModelDefinition } from './model-catalog-schema'
 import { PLATFORM_CATALOG, PLATFORM_DEFAULT_MODEL_OPTIONS } from './builtin-catalogs'
@@ -85,6 +87,10 @@ export class PlatformLlmProvider extends BaseLlmProvider {
         ...(agentName && { SUPERAGENT_AGENT_NAME: agentName }),
       }),
     }
+  }
+
+  override parseErrorResponse(status: number | undefined, body: unknown): ProviderErrorPresentation {
+    return parsePlatformErrorResponse(status, body)
   }
 
   async validateKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {

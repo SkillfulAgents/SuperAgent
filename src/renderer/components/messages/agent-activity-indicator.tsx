@@ -5,7 +5,6 @@ import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
 import { usePendingUserRequests } from '@renderer/hooks/use-pending-user-requests'
 import { apiFetch } from '@renderer/lib/api'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
-import { InsufficientBalanceCard, usePlatformBillingUrl } from './insufficient-balance-card'
 import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
 import { isTurnStartingUserMessage } from './pending-message'
 import { useCallback, useMemo, useState } from 'react'
@@ -49,7 +48,7 @@ function extractResumedAgentId(result: unknown): string | null {
 
 export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIndicatorProps) {
   const {
-    isActive, error, apiErrorCode, activeStartTime, isCompacting, activeSubagents, completedSubagents,
+    isActive, error, apiErrorCode, errorPresentation, activeStartTime, isCompacting, activeSubagents, completedSubagents,
     apiRetry, computerUseApp, computerUseAppIcon, backgroundTasks,
     isThinking,
   } = useMessageStream(sessionId, agentSlug)
@@ -57,9 +56,6 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
 
   const [revoking, setRevoking] = useState(false)
   const [revokeError, setRevokeError] = useState(false)
-
-  // Non-null only for a platform billing 402 the workspace can act on (see hook).
-  const billingUrl = usePlatformBillingUrl(error ?? '')
 
   const handleRevokeComputerUse = useCallback(async () => {
     setRevoking(true)
@@ -253,10 +249,8 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     const isProviderError = apiErrorCode != null && PROVIDER_ERROR_CODES.has(apiErrorCode)
     return (
       <div className="mx-auto mb-2 w-full max-w-[740px] px-4">
-        {billingUrl ? (
-          <InsufficientBalanceCard billingUrl={billingUrl} data-testid="insufficient-balance-card" />
-        ) : isProviderError ? (
-          <ProviderErrorCard message={error} data-testid="provider-error-card" />
+        {isProviderError ? (
+          <ProviderErrorCard message={error} presentation={errorPresentation ?? undefined} />
         ) : (
           <ActivityErrorCard message={error} />
         )}

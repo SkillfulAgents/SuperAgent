@@ -6,6 +6,7 @@
  */
 
 import type { EffortLevel, HealthCheckResult , SpeedLevel } from '@shared/lib/container/types'
+import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 import type { SessionUsage } from '@shared/lib/types/agent'
 
 // ============================================================================
@@ -193,6 +194,8 @@ export interface ApiMessage {
   sender?: ApiMessageSender
   /** SDK error code when assistant message failed due to LLM provider error */
   apiError?: string
+  /** Provider-authored copy for the apiError (severity, icon, markdown + CTA link). */
+  errorPresentation?: ProviderErrorPresentation
   /**
    * User message delivered mid-turn (queued/steering input). It does NOT end
    * the turn it appears in — turn-boundary logic (elapsed times, running tool

@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, act } from '@testing-library/react'
 import { MessageItem } from './message-item'
+import { parsePlatformErrorResponse } from '@shared/lib/llm-provider/platform-error-presentation'
 import { createUserMessage, createAssistantMessage, createToolCall } from '@renderer/test/factories'
 
 // Mock SubAgentBlock and ToolCallItem to isolate MessageItem
@@ -47,14 +48,21 @@ vi.mock('@renderer/components/ui/tooltip', () => ({
   TooltipContent: ({ children }: { children: React.ReactNode }) => <span data-testid="tooltip-content">{children}</span>,
 }))
 
-// Mock the platform billing card — its usePlatformBillingUrl hook uses React Query,
-// which these tests don't provide. Default to no billing error (returns null).
-vi.mock('./insufficient-balance-card', () => ({
-  usePlatformBillingUrl: () => null,
-  InsufficientBalanceCard: () => <div data-testid="insufficient-balance-card" />,
+const platformAuth = {
+  connected: false as boolean,
+  platformBaseUrl: 'https://platform.example.com' as string | null,
+  orgId: 'org_123' as string | null,
+}
+
+vi.mock('@renderer/hooks/use-platform-auth', () => ({
+  usePlatformAuthStatus: () => ({ data: platformAuth }),
 }))
 
 describe('MessageItem', () => {
+  beforeEach(() => {
+    platformAuth.connected = false
+  })
+
   describe('user messages', () => {
     it('renders with user data-testid', () => {
       const msg = createUserMessage({ content: { text: 'Hello world' } })
@@ -441,6 +449,37 @@ describe('MessageItem', () => {
       render(<MessageItem message={msg} />)
       expect(screen.queryByText('LLM Provider Error')).not.toBeInTheDocument()
       expect(screen.getByText('Output too long')).toBeInTheDocument()
+    })
+
+    it('renders an orange spend-limit card from a server-attached presentation', () => {
+      platformAuth.connected = true
+      const spendCap =
+        'API Error: Request rejected (429) · A spend cap for this workspace was reached. It resets within 30 days. Ask a workspace admin to raise it.'
+      const msg = createAssistantMessage({
+        content: { text: spendCap },
+        apiError: 'rate_limit',
+        errorPresentation: parsePlatformErrorResponse(429, spendCap),
+      })
+      render(<MessageItem message={msg} />)
+      const card = screen.getByTestId('provider-error-card')
+      expect(card).toHaveTextContent('Spend Limit Reached')
+      expect(card).toHaveTextContent('A spend cap for this workspace was reached. It resets within 30 days.')
+      expect(card).not.toHaveTextContent('LLM Provider Error')
+      expect(card).toHaveAttribute('data-severity', 'warning')
+      expect(card).toHaveClass('bg-orange-50', 'dark:bg-orange-950')
+      expect(screen.getByRole('link', { name: /raise spend limit/i })).toBeInTheDocument()
+    })
+
+    it('falls back to the generic provider banner when no presentation is attached', () => {
+      const msg = createAssistantMessage({
+        content: {
+          text: 'API Error: Request rejected (429) · A spend cap for this workspace was reached. It resets within 30 days.',
+        },
+        apiError: 'rate_limit',
+      })
+      render(<MessageItem message={msg} />)
+      expect(screen.getByTestId('provider-error-card')).toHaveTextContent('LLM Provider Error')
+      expect(screen.queryByRole('link', { name: /raise spend limit/i })).not.toBeInTheDocument()
     })
   })
 })
