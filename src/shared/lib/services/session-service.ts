@@ -507,6 +507,15 @@ async function summarizeSessionTranscript(jsonlPath: string): Promise<Transcript
   return summary
 }
 
+// A stored createdAt is a bare string (sessionMetadataSchema is lenient by
+// design), so junk must fall through to the caller's next date source rather
+// than become an Invalid Date.
+function parseStoredDate(value: string | undefined): Date | null {
+  if (!value) return null
+  const d = new Date(value)
+  return Number.isNaN(d.getTime()) ? null : d
+}
+
 /**
  * Project a transcript summary into the session's SessionInfo.
  */
@@ -523,6 +532,15 @@ function parseSessionInfo(
   if (summary.messageCount > 0) {
     createdAt = new Date(summary.firstTimestamp as string)
     lastActivityAt = new Date(summary.lastTimestamp as string)
+  }
+  // Registration time is the session's creation time (the list already uses it
+  // via resolveSessionCreatedAt); the first transcript message can trail it by
+  // the init handshake, or precede it for forks. Metadata without createdAt
+  // (a rename/star on a transcript that predates registration) keeps the
+  // transcript-derived value — never `new Date()`.
+  const recorded = parseStoredDate(metadata?.createdAt)
+  if (recorded) {
+    createdAt = recorded
   }
 
   // Generate name from first user message if no custom name
@@ -560,7 +578,7 @@ function emptySessionFromMetadata(
   agentSlug: string,
   meta: SessionMetadata
 ): SessionInfo {
-  const createdAt = meta.createdAt ? new Date(meta.createdAt) : new Date()
+  const createdAt = parseStoredDate(meta.createdAt) ?? new Date()
   return {
     id: sessionId,
     agentSlug,
@@ -577,7 +595,8 @@ function resolveSessionCreatedAt(
   meta: SessionMetadata | undefined,
   stat: { birthtimeMs: number; mtimeMs: number },
 ): Date {
-  if (meta?.createdAt) return new Date(meta.createdAt)
+  const recorded = parseStoredDate(meta?.createdAt)
+  if (recorded) return recorded
   // Same rounding Node applies when it derives stat.birthtime from the ns value.
   if (stat.birthtimeMs > 0) return new Date(Math.round(stat.birthtimeMs))
   return new Date(stat.mtimeMs)
