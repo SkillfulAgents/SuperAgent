@@ -1,0 +1,122 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e8]:
+        - generic [ref=e9]: Gamut
+        - button "Search" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+      - generic [ref=e15]:
+        - list [ref=e18]:
+          - listitem [ref=e19]:
+            - link "Home" [ref=e20] [cursor=pointer]:
+              - /url: /
+              - img [ref=e21]
+              - generic [ref=e26]: Home
+          - listitem [ref=e27]:
+            - link "Notifications" [ref=e28] [cursor=pointer]:
+              - /url: /notifications
+              - img [ref=e29]
+              - generic [ref=e32]: Notifications
+          - listitem [ref=e157]:
+            - link "Discover New Agents New" [ref=e158] [cursor=pointer]:
+              - /url: /explore
+              - img [ref=e159]
+              - generic [ref=e162]: Discover New Agents
+              - generic [ref=e163]: New
+          - listitem [ref=e33]:
+            - button "New Agent" [ref=e34] [cursor=pointer]:
+              - img [ref=e35]
+              - generic [ref=e36]: New Agent
+        - list [ref=e39]:
+          - listitem [ref=e40]:
+            - button "Your Agents 2" [ref=e41] [cursor=pointer]:
+              - button "Your Agents 2" [expanded] [ref=e42]:
+                - generic [ref=e43]: Your Agents
+                - generic [ref=e45]: "2"
+            - button "New folder" [ref=e46] [cursor=pointer]:
+              - img [ref=e47]
+            - list [ref=e50]:
+              - button "QA-20260828-202032-zl4t working Expand" [ref=e336] [cursor=pointer]:
+                - generic [ref=e52]:
+                  - link "QA-20260828-202032-zl4t working" [ref=e337]:
+                    - /url: /agents/qa-20260828-202032-zl4t-15oqq00fs0
+                    - generic [ref=e55]: QA-20260828-202032-zl4t
+                    - img "working" [ref=e338]:
+                      - img "working" [ref=e339]
+                  - button "Expand" [ref=e343]:
+                    - img [ref=e344]
+              - button "QA-20260828-202031-zyhs idle Collapse Math Basics with QA Agent" [ref=e423] [cursor=pointer]:
+                - generic [ref=e67]:
+                  - link "QA-20260828-202031-zyhs idle" [ref=e424]:
+                    - /url: /agents/qa-20260828-202031-zyhs-nkl7gwtio3
+                    - generic [ref=e70]: QA-20260828-202031-zyhs
+                    - img "idle" [ref=e425]:
+                      - img [ref=e426]
+                  - button "Collapse" [expanded] [ref=e353]:
+                    - img [ref=e354]
+                - list [ref=e357]:
+                  - listitem [ref=e358]:
+                    - link "Math Basics with QA Agent" [ref=e435]:
+                      - /url: /agents/nkl7gwtio3/sessions/813460d2-2f7a-4188-96b5-27f8c561c670
+                      - generic [ref=e361]: Math Basics with QA Agent
+          - status [ref=e164]
+      - generic [ref=e82]:
+        - button "Settings" [ref=e83] [cursor=pointer]:
+          - img [ref=e84]
+          - generic [ref=e87]: Settings
+        - button "v0.5.13" [ref=e88] [cursor=pointer]:
+          - generic [ref=e89]: v0.5.13
+      - button "Toggle Sidebar" [ref=e90]
+    - main [ref=e91]:
+      - generic [ref=e165]:
+        - generic [ref=e166]:
+          - button "Toggle Sidebar" [ref=e167] [cursor=pointer]:
+            - img
+            - generic [ref=e168]: Toggle Sidebar
+          - generic [ref=e171]:
+            - link "QA-20260828-202031-zyhs" [ref=e368]:
+              - /url: /agents/qa-20260828-202031-zyhs-nkl7gwtio3
+            - text: /Math Basics with QA Agent
+          - generic [ref=e172]:
+            - generic [ref=e173]:
+              - img [ref=e436]
+              - generic [ref=e183]: idle
+            - button "Stop Agent" [ref=e185] [cursor=pointer]:
+              - img
+        - generic [ref=e375]:
+          - region "Messages" [ref=e377]:
+            - log [ref=e379]:
+              - time [ref=e381]: Today at 8:21 PM
+              - paragraph [ref=e386]: Hello! What is 2+2?
+              - paragraph [ref=e449]: "4"
+          - generic [ref=e395]:
+            - generic [ref=e403]:
+              - textbox "Type a message..." [ref=e450]:
+                - text: Type a message...
+                - paragraph [ref=e407]
+              - generic [ref=e408]:
+                - generic [ref=e409]:
+                  - button "Add files" [ref=e410] [cursor=pointer]:
+                    - img
+                  - 'button "Model and effort: Opus 5 · Medium. Click to change." [ref=e451] [cursor=pointer]':
+                    - img [ref=e452]
+                    - generic [ref=e453]:
+                      - text: Opus 5
+                      - generic [ref=e454]: · Medium
+                    - img
+                - generic [ref=e411]:
+                  - button "Set up voice input" [ref=e412] [cursor=pointer]:
+                    - img
+                  - button "Send message" [disabled]:
+                    - img
+            - generic [ref=e416]:
+              - generic [ref=e455]:
+                - generic [ref=e456]: Context Usage
+                - img [ref=e458]
+              - generic [ref=e417]:
+                - generic [ref=e418]: ↵
+                - generic [ref=e419]: Send
+                - generic [ref=e420]: ·
+                - generic [ref=e421]: ⇧↵
+                - generic [ref=e422]: New line
+  - region "Notifications alt+T"
