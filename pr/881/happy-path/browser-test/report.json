@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "QA test for browser-use feature - agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported the result correctly.",
+  "reason": "Successfully tested browser use feature - agent opened browser, navigated to example.com, and returned the correct page title \"Example Domain\"",
   "steps": [
-    "Step 1 - Navigate to http://localhost:47891 — Successfully loaded the Gamut application home page with the agents list visible.",
-    "Step 2 - Found and clicked the \"QA-20260827-013948-0j5q\" agent in the sidebar — Agent page loaded successfully, showing the chat interface and agent configuration panel.",
-    "Step 3 - Typed and sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully entered in the input field and sent via the Send button.",
-    "Step 4 - Waited for agent response (up to 3 minutes) — Agent completed the task in approximately 11 seconds, as shown in the session metadata (\"Worked for 11s · 4 tool calls · 188,890 tokens\").",
-    "Step 5 - Verified the response mentions \"Example Domain\" — Agent response correctly states: \"The page title is 'Example Domain' — the standard IANA placeholder page. Browser is closed.\" The required text \"Example Domain\" is present in the response, confirming successful page title retrieval."
+    "Step 1: Navigated to http://localhost:47891 — Successfully loaded the Gamut home page with agents visible in sidebar",
+    "Step 2: Found and clicked \"QA-20260828-214855-7jn8\" agent in sidebar — Agent page opened successfully with chat interface",
+    "Step 3: Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully submitted and agent began processing",
+    "Step 4: Waited for agent response (up to 3 minutes) — Agent completed processing in 9 seconds with 4 tool calls",
+    "Step 5: Verified response mentions \"Example Domain\" — Response clearly states: \"The page title is \\\"Example Domain\\\" — a placeholder page reserved for use in documentation examples. Browser closed.\""
   ],
   "bugs": [],
-  "durationMs": 148350,
-  "sessionId": "0026df8d-8747-45b1-9b4b-98412d9ef020",
+  "durationMs": 97466,
+  "sessionId": "aab10009-73fc-43ee-952f-074b521df5d7",
   "cost": {
-    "inputTokens": 542,
-    "outputTokens": 13135,
-    "cacheCreationTokens": 80643,
-    "cacheReadTokens": 1627050,
+    "inputTokens": 574,
+    "outputTokens": 14169,
+    "cacheCreationTokens": 96887,
+    "cacheReadTokens": 1881905,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.329726
+    "totalCostUsd": 0.380718
   }
 }
