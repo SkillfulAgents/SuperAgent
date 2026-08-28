@@ -289,6 +289,18 @@ describe('PATCH /api/agents/:id/x-agent-policies', () => {
     expect(getPolicy(CALLER, 'invoke', TARGET_B)).toBeNull()
   })
 
+  it('returns 404 for a target that is not an agent', async () => {
+    // The target slug is raw request input; getAgent answers null for
+    // anything that is not an agent directory (see agent-service tests for
+    // the malformed-path cases), and the route turns that into a 404.
+    mockGetAgent.mockImplementation(async (slug: string) => (slug === 'not-an-agent' ? null : { slug, frontmatter: { name: slug }, instructions: '' }))
+
+    const res = await patchPolicy({ operation: 'invoke', targetSlug: 'not-an-agent', decision: 'allow' })
+
+    expect(res.status).toBe(404)
+    expect(getPolicy(CALLER, 'invoke', 'not-an-agent')).toBeNull()
+  })
+
   it('rejects self-targeted and targeted list policies', async () => {
     const self = await patchPolicy({ operation: 'invoke', targetSlug: CALLER, decision: 'allow' })
     const targetedList = await patchPolicy({ operation: 'list', targetSlug: TARGET_A, decision: 'allow' })
@@ -443,6 +455,19 @@ describe('atomic single invoke policy endpoints', () => {
     })
     expect(await res.json()).toMatchObject({ created: false, previousDecision: 'block' })
     expect(getPolicy(CALLER, 'invoke', TARGET_A)?.decision).toBe('allow')
+  })
+
+  it('PUT returns 404 for a target that is not an agent', async () => {
+    mockGetAgent.mockImplementation(async (slug: string) => (slug === 'not-an-agent' ? null : { slug, frontmatter: { name: slug }, instructions: '' }))
+
+    const res = await app.request(invokeUrl(CALLER, 'not-an-agent'), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'allow' }),
+    })
+
+    expect(res.status).toBe(404)
+    expect(getPolicy(CALLER, 'invoke', 'not-an-agent')).toBeNull()
   })
 
   it('PUT rejects targeting the caller itself', async () => {

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { FilePreviewTrayContent } from './file-preview-tray-content'
 import type { PreviewTab } from '@renderer/context/file-preview-context'
@@ -32,6 +33,14 @@ vi.mock('./renderers/file-renderer', () => ({ FileRenderer: () => <div data-test
 vi.mock('./folder-browser', () => ({ FolderBrowser: () => <div data-testid="folder-browser" /> }))
 vi.mock('./comments/comment-bar', () => ({ CommentBar: () => <div data-testid="comment-bar" /> }))
 
+function renderTray(onClose = vi.fn()) {
+  return render(
+    <QueryClientProvider client={new QueryClient()}>
+      <FilePreviewTrayContent sessionId="test-session" onClose={onClose} />
+    </QueryClientProvider>,
+  )
+}
+
 describe('FilePreviewTrayContent', () => {
   beforeEach(() => {
     mocks.openTabs = [{
@@ -46,12 +55,7 @@ describe('FilePreviewTrayContent', () => {
 
   it('exposes container-responsive close controls on opposite sides', () => {
     const onClose = vi.fn()
-    render(
-      <FilePreviewTrayContent
-        sessionId="test-session"
-        onClose={onClose}
-      />,
-    )
+    renderTray(onClose)
 
     const mobileClose = screen.getByRole('button', { name: 'Close file preview' })
     const desktopClose = screen.getByRole('button', { name: 'Hide files panel' })
@@ -72,15 +76,32 @@ describe('FilePreviewTrayContent', () => {
       expandedPaths: ['/workspace/reports'],
       query: '',
     }]
-    render(
-      <FilePreviewTrayContent
-        sessionId="test-session"
-        onClose={vi.fn()}
-      />,
-    )
+    renderTray()
 
     expect(screen.getByTestId('folder-browser')).toBeVisible()
     expect(screen.queryByTitle('Download file')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('file-preview-copy')).not.toBeInTheDocument()
     expect(screen.queryByTestId('comment-bar')).not.toBeInTheDocument()
+  })
+
+  it('offers copy alongside download when a text file is open', () => {
+    renderTray()
+
+    expect(screen.getByTestId('file-preview-copy')).toBeInTheDocument()
+  })
+
+  it('hides copy for a file whose bytes could not be text', () => {
+    mocks.openTabs = [{
+      kind: 'file',
+      filePath: '/workspace/diagram.png',
+      agentSlug: 'test-agent',
+      displayName: 'diagram.png',
+      version: 0,
+      pdfPage: 1,
+    }]
+    renderTray()
+
+    expect(screen.queryByTestId('file-preview-copy')).not.toBeInTheDocument()
+    expect(screen.getByTitle('Download file')).toBeInTheDocument()
   })
 })

@@ -56,7 +56,7 @@ import type {
   UserInputRequestScope,
 } from '@shared/lib/user-input/request-schema'
 import {
-  listSessions,
+  listSessionsFromSummary,
   listSessionsByIds,
   sortSessionsNewestFirst,
   SESSIONS_LIST_MAX_LIMIT,
@@ -139,9 +139,12 @@ import {
 } from '@shared/lib/services/skillset-service'
 import { type ArtifactInfo, listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
 import { getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents, deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
+import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { getInboundXAgentDetails } from '@shared/lib/services/inbound-x-agent-service'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
+import { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
+import { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
 import { isValidApiScope } from '@shared/lib/proxy/scope-matcher'
 import { isLabelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
 import type { ScopeLabel } from '@shared/lib/proxy/scope-metadata'
@@ -174,6 +177,7 @@ import {
   refreshAgentTemplates,
   hasOnboardingSkill,
   getAgentTemplatePrompt,
+  type TemplateZipSource,
 } from '@shared/lib/services/agent-template-service'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import type { SkillsetConfig } from '@shared/lib/types/skillset'
@@ -445,6 +449,14 @@ const LATEST_VISIBLE_SESSION_TAIL_BYTE_BUDGET = 256 * 1024
 interface AgentSummaryOptions {
   includeLatestVisibleSessionTail?: boolean
   signal?: AbortSignal
+  /**
+   * Acting user, for the per-user half of the unread projection. REQUIRED, and
+   * deliberately not defaulted: a caller that forgot it would silently drop
+   * marks from the rollup — a dot that quietly stops appearing, with nothing
+   * failing. `getCurrentUserId(c)` always yields one (the `'local'` sentinel
+   * outside auth mode), so there is no caller that legitimately lacks it.
+   */
+  userId: string
 }
 
 function attentionSessionCountsOutsideLatest(
@@ -531,28 +543,34 @@ async function getLatestVisibleSessionTail(
   agentSlug: string,
   session: SessionInfo,
   unreadSessionIds: Set<string>,
+  sessionMetadata: SessionMetadataMap,
   signal?: AbortSignal,
 ): Promise<NonNullable<ApiAgent['latestVisibleSession']>> {
+  signal?.throwIfAborted()
+  // Read first, check existence only if the read came back empty: the page
+  // reader answers a missing transcript with an empty page, so the common
+  // case (a transcript with messages) costs no stat at all.
+  const messageTail = await getSessionMessagesPage(agentSlug, session.id, {
+    limit: LATEST_VISIBLE_SESSION_TAIL_LIMIT,
+    byteBudget: LATEST_VISIBLE_SESSION_TAIL_BYTE_BUDGET,
+    media: 'ref',
+    signal,
+  })
   signal?.throwIfAborted()
   // A registered session with no transcript yet (created, nothing streamed) is
   // a normal state and serves an empty tail. Only an id with neither a
   // transcript nor a registration — a session that vanished after listing —
-  // is an error.
-  const transcriptExists = await sessionExists(agentSlug, session.id)
-  if (!transcriptExists && !(await sessionIsKnown(agentSlug, session.id))) {
+  // is an error. Registration is answered from the metadata map already in
+  // hand; the stat runs only for an unregistered empty tail.
+  if (
+    messageTail.messages.length === 0 &&
+    !(Object.hasOwn(sessionMetadata, session.id) && sessionMetadata[session.id]?.createdAt) &&
+    !(await sessionExists(agentSlug, session.id))
+  ) {
     throw new Error(
       'Latest visible session transcript not found for ' + agentSlug + '/' + session.id,
     )
   }
-  const messageTail = transcriptExists
-    ? await getSessionMessagesPage(agentSlug, session.id, {
-        limit: LATEST_VISIBLE_SESSION_TAIL_LIMIT,
-        byteBudget: LATEST_VISIBLE_SESSION_TAIL_BYTE_BUDGET,
-        media: 'ref',
-        signal,
-      })
-    : { messages: [], nextCursor: null }
-  signal?.throwIfAborted()
   // Same treatment as the transcript page endpoint, so the tail matches what
   // opening the session shows. Must run before the session flags below so
   // recovered awaiting-input state is reflected in them.
@@ -582,11 +600,16 @@ async function getVisibleSessionExpansion(
   signal?: AbortSignal,
 ): Promise<AgentVisibleSessionExpansion> {
   let visibleSessions: SessionInfo[]
+  let sessionMetadata: SessionMetadataMap
   try {
     // Keep the complete visibility-filtered snapshot: its first item selects
     // latest, while the remaining metadata-only items answer the two attention
-    // booleans without loading older transcripts.
-    visibleSessions = await listSessions(agentSlug, {
+    // booleans without loading older transcripts. Built from the summary
+    // cache with the metadata map the caller already read, so a warm poll
+    // costs one directory stat per agent instead of one stat per transcript.
+    sessionMetadata = await sessionMetadataPromise
+    visibleSessions = await listSessionsFromSummary(agentSlug, {
+      metadata: sessionMetadata,
       excludeAutomated: true,
       sortBy: 'last_activity_at',
     })
@@ -601,25 +624,27 @@ async function getVisibleSessionExpansion(
   }
 
   const latestSession = visibleSessions[0]
-  const attentionOutsideLatestPromise = sessionMetadataPromise
-    .then((sessionMetadata) => getAttentionOutsideLatest(
+
+  let attentionOutsideLatest: ApiAgent['attentionOutsideLatest']
+  try {
+    attentionOutsideLatest = getAttentionOutsideLatest(
       agentSlug,
       visibleSessions,
       unreadSessionIds,
       sessionMetadata,
-    ))
-    .catch((error): null => {
-      if (signal?.aborted) throw error
-      console.error('Failed to compute attention outside latest for agent ' + agentSlug + ':', error)
-      captureException(error, {
-        tags: { component: 'agents', operation: 'attention-outside-latest' },
-        extra: { agentSlug },
-      })
-      return null
+    )
+  } catch (error) {
+    if (signal?.aborted) throw error
+    console.error('Failed to compute attention outside latest for agent ' + agentSlug + ':', error)
+    captureException(error, {
+      tags: { component: 'agents', operation: 'attention-outside-latest' },
+      extra: { agentSlug },
     })
+    attentionOutsideLatest = null
+  }
 
-  const latestVisibleSessionPromise = latestSession
-    ? getLatestVisibleSessionTail(agentSlug, latestSession, unreadSessionIds, signal)
+  const latestVisibleSession = latestSession
+    ? await getLatestVisibleSessionTail(agentSlug, latestSession, unreadSessionIds, sessionMetadata, signal)
         .catch((error): null => {
           if (signal?.aborted) throw error
           // Attention still excludes this session as latest, so on this path
@@ -634,12 +659,8 @@ async function getVisibleSessionExpansion(
           })
           return null
         })
-    : Promise.resolve(null)
+    : null
 
-  const [latestVisibleSession, attentionOutsideLatest] = await Promise.all([
-    latestVisibleSessionPromise,
-    attentionOutsideLatestPromise,
-  ])
   return { latestVisibleSession, attentionOutsideLatest }
 }
 
@@ -650,16 +671,26 @@ async function getVisibleSessionExpansion(
  */
 async function enrichAgentsWithSummary(
   agents: ApiAgent[],
-  options: AgentSummaryOptions = {},
+  options: AgentSummaryOptions,
 ): Promise<ApiAgent[]> {
   const slugs = agents.map(a => a.slug)
 
-  const unreadByAgent = await getUnreadNotificationsByAgents(slugs)
+  // Both halves of the unread projection, one query each rather than one per
+  // agent — this route hydrates every agent on every poll.
+  const [unreadByAgent, markedUnreadByAgent] = await Promise.all([
+    getUnreadNotificationsByAgents(slugs),
+    getSessionIdsMarkedUnreadByAgents(slugs, options.userId),
+  ])
 
   const limit = pLimit(5)
   return Promise.all(
     agents.map((agent) => limit(async () => {
-      const unreadSessionIds = unreadByAgent.get(agent.slug) ?? new Set<string>()
+      // Union of the two sources, so every projection below sees one set.
+      const notifiedIds = unreadByAgent.get(agent.slug) ?? new Set<string>()
+      const markedIds = markedUnreadByAgent.get(agent.slug) ?? new Set<string>()
+      const unreadSessionIds = markedIds.size === 0
+        ? notifiedIds
+        : new Set<string>([...notifiedIds, ...markedIds])
       const sessionMetadataPromise = readSessionMetadata(agent.slug)
       const visibleSessionExpansionPromise = options.includeLatestVisibleSessionTail
         ? getVisibleSessionExpansion(
@@ -924,8 +955,9 @@ async function handleChunkedImport(c: Context, formData: FormData, chunk: File) 
     if (size > MAX_COMPRESSED_SIZE) {
       return c.json({ error: formatUploadTooLargeMessage(size, MAX_COMPRESSED_SIZE) }, 413)
     }
-    const zipBuffer = await fs.promises.readFile(result.filePath)
-    return await processImport(c, zipBuffer, formData)
+    // The assembled upload is already on disk — import straight from the file
+    // instead of pinning the whole (up to 500MB) ZIP in memory.
+    return await processImport(c, { filePath: result.filePath }, formData)
   } finally {
     try {
       await fs.promises.unlink(result.filePath)
@@ -941,23 +973,29 @@ async function handleChunkedImport(c: Context, formData: FormData, chunk: File) 
   }
 }
 
-async function processImport(c: Context, zipBuffer: Buffer, formData: FormData) {
-  if (zipBuffer.length > MAX_COMPRESSED_SIZE) {
-    return c.json({ error: formatUploadTooLargeMessage(zipBuffer.length, MAX_COMPRESSED_SIZE) }, 413)
+async function processImport(c: Context, zip: TemplateZipSource, formData: FormData) {
+  // File sources are size-checked by the caller via stat before reaching here.
+  if (Buffer.isBuffer(zip) && zip.length > MAX_COMPRESSED_SIZE) {
+    return c.json({ error: formatUploadTooLargeMessage(zip.length, MAX_COMPRESSED_SIZE) }, 413)
   }
 
   const nameOverride = formData.get('name') as string | null
   const mode = formData.get('mode') as string | null
   const importMode = mode === 'full' ? 'full' : 'template'
 
-  const agent = await importAgentFromTemplate(zipBuffer, nameOverride || undefined, importMode)
+  const agent = await importAgentFromTemplate(zip, nameOverride || undefined, importMode)
   await createOwnerAclOrRollback(c, agent.slug)
-  const [hasOnboarding, templatePrompt] = await Promise.all([
+  const [onboarding, templatePrompt] = await Promise.all([
     hasOnboardingSkill(agent.slug),
     getAgentTemplatePrompt(agent.slug),
   ])
   logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: agent.slug, action: 'imported', details: { name: agent.name } })
-  return c.json({ ...agent, hasOnboarding, templatePrompt }, 201)
+  return c.json({
+    ...agent,
+    hasOnboarding: onboarding.hasOnboarding,
+    templatePrompt,
+    onboardingFirstPrompt: onboarding.firstPrompt,
+  }, 201)
 }
 
 // GET /api/agents/discoverable-agents - List agents available from skillsets
@@ -1006,12 +1044,17 @@ agents.post('/install-from-skillset', async (c) => {
     )
 
     await createOwnerAclOrRollback(c, agent.slug)
-    const [hasOnboarding, templatePrompt] = await Promise.all([
+    const [onboarding, templatePrompt] = await Promise.all([
       hasOnboardingSkill(agent.slug),
       getAgentTemplatePrompt(agent.slug),
     ])
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: agent.slug, action: 'imported', details: { name: agent.name, skillsetId } })
-    return c.json({ ...agent, hasOnboarding, templatePrompt }, 201)
+    return c.json({
+      ...agent,
+      hasOnboarding: onboarding.hasOnboarding,
+      templatePrompt,
+      onboardingFirstPrompt: onboarding.firstPrompt,
+    }, 201)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to install agent from skillset'
     console.error('Failed to install agent from skillset:', error)
@@ -1279,6 +1322,7 @@ agents.get('/', async (c) => {
       includeLatestVisibleSessionTail:
         parsedQuery.data.includeLatestVisibleSessionTail === true,
       signal: c.req.raw.signal,
+      userId: getCurrentUserId(c),
     }))
   } catch (error) {
     console.error('Failed to fetch agents:', error)
@@ -1321,7 +1365,7 @@ agents.get('/:id', ResolveAgent(), AgentRead(), async (c) => {
       return c.json({ error: 'Agent not found' }, 404)
     }
 
-    const [enriched] = await enrichAgentsWithSummary([agent])
+    const [enriched] = await enrichAgentsWithSummary([agent], { userId: getCurrentUserId(c) })
     return c.json(enriched)
   } catch (error) {
     console.error('Failed to fetch agent:', error)
@@ -1855,11 +1899,20 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
     const resultLimit = requestedLimit ?? (isNotable ? 25 : undefined)
 
     if (isNotable) {
-      const unreadIds = await getSessionIdsWithUnreadNotifications(slug)
+      // Both halves of the unread projection are table lookups — overlap them,
+      // and note that neither touches the filesystem. That matters here: with
+      // nothing notable the id set is empty, listSessionsByIds returns before
+      // it stats anything, and the whole request stays off disk.
+      const [unreadIds, markedUnreadIds] = await Promise.all([
+        getSessionIdsWithUnreadNotifications(slug),
+        getSessionIdsMarkedUnread(slug, getCurrentUserId(c)),
+      ])
       const activeIds = messagePersister.getActiveSessionIdsForAgent(slug)
-      const infos = await listSessionsByIds(slug, [...new Set([...activeIds, ...unreadIds])], {
-        excludeAutomated: true,
-      })
+      const infos = await listSessionsByIds(
+        slug,
+        [...new Set([...activeIds, ...unreadIds, ...markedUnreadIds])],
+        { excludeAutomated: true },
+      )
       const enriched = infos.map((session) => {
         const isActive = messagePersister.isSessionActive(session.id)
         return {
@@ -1868,7 +1921,7 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
           // The awaiting projection already counts agent-scoped reviews
           // against every active session of the agent — no review special-case.
           isAwaitingInput: messagePersister.isSessionAwaitingInput(session.id),
-          hasUnreadNotifications: unreadIds.has(session.id),
+          hasUnreadNotifications: unreadIds.has(session.id) || markedUnreadIds.has(session.id),
         }
       })
       const ordered = sortSessionsNewestFirst(enriched, sortBy)
@@ -1885,13 +1938,19 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
       return c.json(ordered.slice(0, resultLimit))
     }
 
-    const sessionList = await listSessions(slug, {
-      excludeAutomated: true,
-      ...(sortByRaw === undefined ? {} : { sortBy }),
-      ...(resultLimit === undefined ? {} : { limit: resultLimit }),
-    })
-    const unreadSessionIds = await getSessionIdsWithUnreadNotifications(slug)
-    const pendingWakes = await listPendingWakesByAgent(slug)
+    // Independent lookups (filesystem summary, notifications table, unread
+    // marks, scheduled tasks table) — overlap them rather than paying their
+    // latencies in series.
+    const [sessionList, unreadSessionIds, markedUnreadSessionIds, pendingWakes] = await Promise.all([
+      listSessionsFromSummary(slug, {
+        excludeAutomated: true,
+        ...(sortByRaw === undefined ? {} : { sortBy }),
+        ...(resultLimit === undefined ? {} : { limit: resultLimit }),
+      }),
+      getSessionIdsWithUnreadNotifications(slug),
+      getSessionIdsMarkedUnread(slug, getCurrentUserId(c)),
+      listPendingWakesByAgent(slug),
+    ])
     const wakesBySession = new Map(pendingWakes.map((w) => [w.resumeSessionId!, w]))
     const sessionsWithStatus = sessionList.map((session) => {
       const isActive = messagePersister.isSessionActive(session.id)
@@ -1902,7 +1961,8 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
         // The awaiting projection already counts agent-scoped reviews against
         // every active session of the agent — no review special-case.
         isAwaitingInput: messagePersister.isSessionAwaitingInput(session.id),
-        hasUnreadNotifications: unreadSessionIds.has(session.id),
+        hasUnreadNotifications:
+          unreadSessionIds.has(session.id) || markedUnreadSessionIds.has(session.id),
         ...(wake
           ? {
               pendingWakeAt: wake.nextExecutionAt.toISOString(),
@@ -2805,6 +2865,11 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       lastActivityAt: session.lastActivityAt,
       messageCount: session.messageCount,
       isActive,
+      // Carried so single-session consumers can gate on the same live/idle
+      // condition the session lists use (the breadcrumb context menu hides
+      // "Mark as Unread" while a session is working or awaiting input, since
+      // no list renders an unread dot in that state).
+      isAwaitingInput: messagePersister.isSessionAwaitingInput(sessionId),
       lastUsage: metadata?.lastUsage,
       scheduledTaskId: metadata?.scheduledTaskId,
       scheduledTaskName: metadata?.scheduledTaskName,
@@ -2873,6 +2938,48 @@ agents.patch('/:id/sessions/:sessionId', AgentUser(), async (c) => {
   }
 })
 
+// POST /api/agents/:id/sessions/:sessionId/unread - Re-raise the unread dot
+// DELETE the same path clears it (fired when the session is next opened).
+//
+// Both verbs are AgentRead, unusually for writes under this path. A mark is
+// scoped to the acting user: it raises a dot on their sidebar only, and only
+// they can clear it. So there is no shared state to protect — a read-only
+// viewer marking their own session unread is no more consequential than the
+// notification read state they already flip just by opening a session, and
+// gating it higher would leave them unable to dismiss their own dot.
+//
+// `changed` lets the client skip its cache invalidation on a no-op: the clear
+// fires on every session open, and the overwhelmingly common case is a mark
+// that was never raised.
+async function setUnreadFlag(c: Context, sessionId: string, markedUnread: boolean) {
+  try {
+    const agentSlug = getAgentId(c)
+
+    // Guard first: writing the flag registers metadata under this id, so an
+    // unknown session would otherwise be conjured into the map.
+    if (!(await sessionIsKnown(agentSlug, sessionId))) {
+      return c.json({ error: 'Session not found' }, 404)
+    }
+
+    const userId = getCurrentUserId(c)
+    const changed = markedUnread
+      ? await markSessionUnread(agentSlug, sessionId, userId)
+      : await clearSessionUnread(sessionId, userId)
+    return c.json({ success: true, markedUnread, changed })
+  } catch (error) {
+    console.error('Failed to update session unread flag:', error)
+    return c.json({ error: 'Failed to update session unread flag' }, 500)
+  }
+}
+
+agents.post('/:id/sessions/:sessionId/unread', AgentRead(), async (c) => {
+  return setUnreadFlag(c, c.req.param('sessionId'), true)
+})
+
+agents.delete('/:id/sessions/:sessionId/unread', AgentRead(), async (c) => {
+  return setUnreadFlag(c, c.req.param('sessionId'), false)
+})
+
 // DELETE /api/agents/:id/sessions/:sessionId - Delete a session
 agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
   try {
@@ -2922,6 +3029,9 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
     // are stored regardless of auth mode; userId is nullable), so deleting a
     // session never leaves stale notification history pointing at it.
     await deleteNotificationsBySessionIds([sessionId])
+    // A mark left behind would be an unreachable row: nothing lists the
+    // session any more, so nothing could ever clear it.
+    await deleteSessionUnreadMarks([sessionId])
 
     return c.body(null, 204)
   } catch (error) {
@@ -4757,6 +4867,53 @@ agents.delete('/:id/connected-accounts/:accountId', AgentUser(), async (c) => {
   }
 })
 
+// DELETE /api/agents/:id/connected-accounts/mapping/:mappingId - Unlink by link id
+//
+// The sibling route above is keyed on the ACCOUNT id and owner-scoped, so it
+// can only ever sever a link to the caller's own account. An agent owner also
+// has to be able to drop a connection another member shared onto the agent —
+// without being handed that account's id, which the foreign DTO deliberately
+// withholds. So this route is keyed on the LINK id instead, and gated on
+// AgentAdmin(): owning the agent is what authorizes it, not owning the account.
+// A `user` on the agent still cannot reach it. Only the mapping row dies; the
+// account itself stays with its owner.
+agents.delete('/:id/connected-accounts/mapping/:mappingId', AgentAdmin(), async (c) => {
+  try {
+    const slug = getAgentId(c)
+    const mappingId = c.req.param('mappingId')
+
+    // Matched on BOTH columns: a link id is an unauthenticated pointer into a
+    // global table, so owning agent A must not unlink agent B's connection by
+    // sending B's mapping id to A's URL.
+    const [found] = await db
+      .select({
+        id: agentConnectedAccounts.id,
+        connectedAccountId: agentConnectedAccounts.connectedAccountId,
+      })
+      .from(agentConnectedAccounts)
+      .where(and(
+        eq(agentConnectedAccounts.id, mappingId),
+        eq(agentConnectedAccounts.agentSlug, slug),
+      ))
+      .limit(1)
+
+    if (!found) {
+      return c.json({ error: 'Account mapping not found' }, 404)
+    }
+
+    await db
+      .delete(agentConnectedAccounts)
+      .where(eq(agentConnectedAccounts.id, found.id))
+
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: found.connectedAccountId, action: 'unassigned', details: { agentSlug: slug } })
+    const liveRefresh = await syncAgentConnectionEnvironment(slug, 'connected-accounts')
+    return c.json({ success: true, liveRefresh })
+  } catch (error) {
+    console.error('Failed to remove account mapping:', error)
+    return c.json({ error: 'Failed to remove account mapping' }, 500)
+  }
+})
+
 // GET /api/agents/:id/remote-mcps - List remote MCP servers assigned to this agent
 agents.get('/:id/remote-mcps', AgentRead(), async (c) => {
   try {
@@ -4866,6 +5023,36 @@ agents.delete('/:id/remote-mcps/:mcpId', AgentUser(), async (c) => {
 
     await db.delete(agentRemoteMcps).where(eq(agentRemoteMcps.id, mapping.id))
     logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: mcpId, action: 'unassigned', details: { agentSlug: slug } })
+    const liveRefresh = await syncAgentConnectionEnvironment(slug, 'remote-mcps')
+    return c.json({ success: true, liveRefresh })
+  } catch (error) {
+    console.error('Failed to remove remote MCP from agent:', error)
+    return c.json({ error: 'Failed to remove remote MCP from agent' }, 500)
+  }
+})
+
+// DELETE /api/agents/:id/remote-mcps/mapping/:mappingId - Unlink by link id
+// The connected-accounts twin above carries the full rationale.
+agents.delete('/:id/remote-mcps/mapping/:mappingId', AgentAdmin(), async (c) => {
+  try {
+    const slug = getAgentId(c)
+    const mappingId = c.req.param('mappingId')
+
+    const [mapping] = await db
+      .select({ id: agentRemoteMcps.id, remoteMcpId: agentRemoteMcps.remoteMcpId })
+      .from(agentRemoteMcps)
+      .where(and(
+        eq(agentRemoteMcps.id, mappingId),
+        eq(agentRemoteMcps.agentSlug, slug),
+      ))
+      .limit(1)
+
+    if (!mapping) {
+      return c.json({ error: 'MCP mapping not found' }, 404)
+    }
+
+    await db.delete(agentRemoteMcps).where(eq(agentRemoteMcps.id, mapping.id))
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: mapping.remoteMcpId, action: 'unassigned', details: { agentSlug: slug } })
     const liveRefresh = await syncAgentConnectionEnvironment(slug, 'remote-mcps')
     return c.json({ success: true, liveRefresh })
   } catch (error) {
@@ -6863,6 +7050,85 @@ agents.get('/:id/pending-requests', AgentRead(), (c) => {
   const agentSlug = getAgentId(c)
   const sessionId = c.req.query('sessionId') || undefined
   return c.json({ requests: userInputRequestManager.getSnapshotForScope(agentSlug, sessionId) })
+})
+
+// =============================================================================
+// Re-authentication endpoints
+// =============================================================================
+
+const MAX_DISMISS_REASON_LENGTH = 500
+
+// POST /api/agents/:id/reauth-request/:requestId/dismiss - Give up on a parked
+// re-authentication card.
+//
+// A reauth card is agent-scoped and blocking: while it is open, every session
+// of the agent sits in awaiting-input. Reconnecting is the owner's privilege,
+// so when the shared credential belongs to someone else, nobody in the room
+// can clear the card and the agent stays stuck until the five-minute timer
+// fires. This is the escape hatch — it fails the parked call with a distinct
+// "dismissed" status (not a timeout) so the agent knows a person decided it.
+//
+// AgentUser(), not AgentAdmin(): anyone who can put work into this agent can
+// abandon a call it is stuck on. Viewers, who cannot, are excluded.
+agents.post('/:id/reauth-request/:requestId/dismiss', AgentUser(), async (c) => {
+  const slug = getAgentId(c)
+  const requestId = c.req.param('requestId')
+  const body = await c.req.json<{ reason?: string }>().catch(() => ({} as { reason?: string }))
+  // Bounded: this text is forwarded into the proxy's error body and written to
+  // the audit log, so it must not be an unbounded write from the composer.
+  const reason = typeof body.reason === 'string' && body.reason.trim()
+    ? body.reason.trim().slice(0, MAX_DISMISS_REASON_LENGTH)
+    : undefined
+
+  const open = userInputRequestManager.getOpenRequest(requestId)
+  if (open) {
+    // A caller-supplied id points into a global, cross-agent registry, so both
+    // the kind and the agent are re-checked against the URL before we settle
+    // anything — the same guard the review routes apply.
+    if (
+      open.scope.agentSlug !== slug ||
+      (open.kind !== 'account_reauth_required' && open.kind !== 'mcp_reauth_required')
+    ) {
+      return c.json({ error: 'Request not found' }, 404)
+    }
+
+    const dismissed = open.kind === 'account_reauth_required'
+      ? accountReauthManager.dismiss(requestId, slug, reason)
+      : mcpReauthManager.dismiss(requestId, slug, reason)
+
+    // An open envelope whose parked group is already gone (every waiter
+    // aborted, but the entry outlived them) would otherwise leave the card —
+    // and the awaiting-input state behind it — on screen forever. Clearing it
+    // is the whole point of this route, so do it rather than report success
+    // and change nothing.
+    if (!dismissed) {
+      userInputRequestManager.resolve(requestId, 'cancelled')
+      messagePersister.syncAgentSessionsAwaiting(slug)
+    }
+
+    // Short form, matching the `type` its sibling decline routes emit
+    // ('secret', 'connected_account') rather than the raw registry kind.
+    const declinedType = open.kind === 'account_reauth_required' ? 'account_reauth' : 'mcp_reauth'
+    trackServerEvent('request_declined', { type: declinedType, withReason: !!reason })
+    return c.json({ success: true })
+  }
+
+  // Settled or unknown. Report on it only through the route that could have
+  // decided it, so settling a request never widens who may read its outcome.
+  const settled = userInputRequestManager.getRecentResolution(requestId)
+  if (settled && (
+    settled.scope.agentSlug !== slug ||
+    (settled.kind !== 'account_reauth_required' && settled.kind !== 'mcp_reauth_required')
+  )) {
+    return c.json({ error: 'Request not found' }, 404)
+  }
+  // 200, not an error: the caller's intent is already satisfied and a stale
+  // card should dismiss itself exactly like a successful one.
+  return c.json({
+    success: true,
+    alreadySettled: true,
+    ...(settled ? { outcome: settled.outcome } : {}),
+  })
 })
 
 // =============================================================================

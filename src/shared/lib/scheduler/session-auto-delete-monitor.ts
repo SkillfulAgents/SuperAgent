@@ -6,6 +6,7 @@ import {
 } from '@shared/lib/services/session-service'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
+import { deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { listSessionIdsWithPendingWakes } from '@shared/lib/services/scheduled-task-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { getSettings } from '@shared/lib/config/settings'
@@ -139,6 +140,8 @@ class SessionAutoDeleteMonitor {
     // deletions never wipe DB state for a session that still exists on disk.
     try {
       await deleteNotificationsBySessionIds(deletedIds)
+      // Same rule for "mark as unread" marks — see deleteSessionUnreadMarks.
+      await deleteSessionUnreadMarks(deletedIds)
     } catch (error) {
       console.error(
         `[SessionAutoDeleteMonitor] Failed to clean notification records for ${agentSlug}:`,

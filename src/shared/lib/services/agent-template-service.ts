@@ -9,9 +9,11 @@ import crypto from 'crypto'
 import path from 'path'
 import fs from 'fs'
 import { Readable } from 'stream'
+import pLimit from 'p-limit'
 import archiver from 'archiver'
 import {
   openZipFromBuffer,
+  openZipFromFile,
   detectZipPrefix,
   type ZipEntryMeta,
   type ZipReader,
@@ -64,6 +66,9 @@ const MAX_UNCOMPRESSED_SIZE = 500 * 1024 * 1024 // 500MB
 export const MAX_COMPRESSED_SIZE = 500 * 1024 * 1024 // 500MB
 const MAX_FILE_COUNT = 2000
 export const MAX_TEMPLATE_PROMPT_SIZE = 16 * 1024 // 16KB
+
+/** Bytes of SKILL.md to read for frontmatter. The skill body may be larger. */
+const ONBOARDING_SKILL_READ_LIMIT = MAX_TEMPLATE_PROMPT_SIZE + 16 * 1024
 
 /** Canonical prompt handoff file, plus a lowercase compatibility spelling. */
 const TEMPLATE_PROMPT_FILE_NAMES = ['PROMPT.md', 'prompt.md'] as const
@@ -333,6 +338,26 @@ function createWorkspaceZipStream(
     archive.destroy(err)
   }
 
+  // Archiver reports a source file that disappears between enumeration and
+  // read (its lstat fails) as a non-fatal 'warning' and would finalize a
+  // valid-looking but INCOMPLETE zip. Every append here is an explicit
+  // archive.file() of an enumerated path, so a warning always means a file
+  // was silently dropped — escalate it to a stream error.
+  archive.on('warning', (warning) => {
+    stopArchive(warning)
+    release()
+  })
+
+  // destroy() alone — a caller tearing the stream down without the request
+  // abort signal firing — only destroys the Transform; archiver keeps its
+  // queued entries and in-flight worker reading source files. Bridge the
+  // post-destroy 'close' event to archiver's own abort(), which drains the
+  // work queues. abort() is a no-op once the archive finalized normally or
+  // was already aborted.
+  archive.on('close', () => {
+    archive.abort()
+  })
+
   const onAbort = () => {
     release()
     stopArchive()
@@ -403,6 +428,18 @@ export async function exportAgentFull(agentSlug: string, signal?: AbortSignal): 
 // ZIP Validation
 // ============================================================================
 
+/**
+ * ZIP input for validation/import: either raw bytes, or a path to a ZIP
+ * already on disk. Prefer the file form when available — it reads entries on
+ * demand instead of pinning the whole (up to 500MB) buffer in memory for the
+ * entire extraction.
+ */
+export type TemplateZipSource = Buffer | { filePath: string }
+
+function openZipSource(zip: TemplateZipSource): Promise<ZipReader> {
+  return Buffer.isBuffer(zip) ? openZipFromBuffer(zip) : openZipFromFile(zip.filePath)
+}
+
 export interface TemplateValidationResult {
   valid: boolean
   error?: string
@@ -468,10 +505,10 @@ export function validateTemplateEntries(
  * In 'full' mode, only __MACOSX entries are filtered — all other entries count
  * toward size/count limits and are checked for path traversal.
  */
-export async function validateAgentTemplate(zipBuffer: Buffer, mode: 'template' | 'full' = 'template'): Promise<TemplateValidationResult> {
+export async function validateAgentTemplate(zip: TemplateZipSource, mode: 'template' | 'full' = 'template'): Promise<TemplateValidationResult> {
   let reader: ZipReader | undefined
   try {
-    reader = await openZipFromBuffer(zipBuffer)
+    reader = await openZipSource(zip)
 
     const result = validateTemplateEntries(reader.entries, mode)
     if (!result.valid) return { ...result, agentName: undefined }
@@ -507,11 +544,11 @@ export async function validateAgentTemplate(zipBuffer: Buffer, mode: 'template' 
  * Creates a new agent with the template contents.
  */
 export async function importAgentFromTemplate(
-  zipBuffer: Buffer,
+  zip: TemplateZipSource,
   nameOverride?: string,
   mode: 'template' | 'full' = 'template',
 ): Promise<ApiAgent> {
-  const reader = await openZipFromBuffer(zipBuffer)
+  const reader = await openZipSource(zip)
   try {
     const validation = validateTemplateEntries(reader.entries, mode)
     if (!validation.valid) {
@@ -763,17 +800,57 @@ export async function getInstalledAgentMetadata(
 }
 
 /**
- * Check if an agent has an onboarding skill (`.claude/skills/agent-onboarding/SKILL.md`).
+ * Probe the onboarding skill (`.claude/skills/agent-onboarding/SKILL.md`).
+ * `firstPrompt` is the optional `first_prompt` frontmatter field.
  */
-export async function hasOnboardingSkill(agentSlug: string): Promise<boolean> {
-  const workspaceDir = getAgentWorkspaceDir(agentSlug)
-  const onboardingPath = path.join(workspaceDir, '.claude', 'skills', 'agent-onboarding', 'SKILL.md')
+export async function hasOnboardingSkill(agentSlug: string): Promise<{
+  hasOnboarding: boolean
+  firstPrompt?: string
+}> {
+  const onboardingPath = path.join(
+    getAgentWorkspaceDir(agentSlug),
+    '.claude',
+    'skills',
+    'agent-onboarding',
+    'SKILL.md',
+  )
+  let handle: Awaited<ReturnType<typeof fs.promises.open>> | undefined
   try {
-    await fs.promises.access(onboardingPath)
-    return true
+    handle = await fs.promises.open(onboardingPath, 'r')
+    const stats = await handle.stat()
+    if (!stats.isFile()) return { hasOnboarding: false }
+    if (stats.size === 0) return { hasOnboarding: true }
+
+    // Frontmatter is at the top. Do not load a 500MB skill body into the heap.
+    const readLen = Math.min(stats.size, ONBOARDING_SKILL_READ_LIMIT)
+    const buffer = Buffer.alloc(readLen)
+    let bytesRead = 0
+    while (bytesRead < buffer.length) {
+      const result = await handle.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead)
+      if (result.bytesRead === 0) break
+      bytesRead += result.bytesRead
+    }
+    const content = buffer.subarray(0, bytesRead).toString('utf8')
+    const firstPrompt = onboardingFirstPromptFromValue(
+      parseMarkdownWithFrontmatter(content).frontmatter.first_prompt,
+    )
+    return firstPrompt ? { hasOnboarding: true, firstPrompt } : { hasOnboarding: true }
   } catch {
-    return false
+    return { hasOnboarding: false }
+  } finally {
+    await handle?.close().catch(() => undefined)
   }
+}
+
+/** Flat YAML turns `first_prompt: |` into the string `|`. That is not a kickoff. */
+const YAML_BLOCK_SCALAR_MARKER = /^[|>][-+]?$/
+
+function onboardingFirstPromptFromValue(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  if (!trimmed || trimmed.length > MAX_TEMPLATE_PROMPT_SIZE) return undefined
+  if (YAML_BLOCK_SCALAR_MARKER.test(trimmed)) return undefined
+  return trimmed
 }
 
 /**
@@ -890,17 +967,22 @@ export async function computeAgentTemplateHash(workspaceDir: string): Promise<st
   const files = await walkTemplateFiles(workspaceDir)
   files.sort() // Ensure deterministic order
 
-  const hash = crypto.createHash('sha256')
-
-  for (const relativePath of files) {
-    const fullPath = path.join(workspaceDir, relativePath)
+  const limit = pLimit(8)
+  const contents = new Map<string, string>()
+  await Promise.all(files.map((relativePath) => limit(async () => {
     try {
-      const content = await fs.promises.readFile(fullPath, 'utf-8')
-      hash.update(relativePath)
-      hash.update(content)
+      contents.set(relativePath, await fs.promises.readFile(path.join(workspaceDir, relativePath), 'utf-8'))
     } catch {
       // Skip unreadable files
     }
+  })))
+
+  const hash = crypto.createHash('sha256')
+  for (const relativePath of files) {
+    const content = contents.get(relativePath)
+    if (content === undefined) continue
+    hash.update(relativePath)
+    hash.update(content)
   }
 
   return hash.digest('hex')

@@ -67,7 +67,12 @@ import { eq } from 'drizzle-orm'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { getFrequencyWarning, getScheduleCountWarning, validateScheduleExpression } from '@shared/lib/services/schedule-parser'
 import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
-import { recordSessionActivity } from '@shared/lib/services/session-summary-cache'
+import {
+  recordProvisionalSessionActivity,
+  recordSessionActivity,
+  revertSessionActivity,
+  type SessionActivityMark,
+} from '@shared/lib/services/session-summary-cache'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
@@ -136,6 +141,11 @@ interface StreamingState {
   // the session running and a later turn can still fail — so the automation
   // outcome is persisted as succeeded only when the session truly settles.
   lastResultCleanSuccess: boolean
+  // The summary-cache write made optimistically by markSessionActive, kept
+  // until the container confirms the turn (first frame) or the send is
+  // rolled back (markSessionIdle), so a failed send cannot leave the session
+  // ranked as if it had just been used.
+  provisionalActivity: SessionActivityMark | null
   lastContextWindow: number // Last known context window size (default 200k)
   lastAssistantUsage: SessionUsage | null // Per-call usage from most recent assistant message
   completedSubagentIds: Set<string> // completed agentIds; a new task_started with the same ID is a resumed run
@@ -521,6 +531,7 @@ class MessagePersister {
       stateEventsAuthority: prior?.stateEventsAuthority ?? false,
       lastResultSubtype: null,
       lastResultCleanSuccess: false,
+      provisionalActivity: null,
       isRetrying: false,
       // Carried over so a transport reattach mid-run doesn't lose the verdict
       // before the refresh below lands.
@@ -645,6 +656,12 @@ class MessagePersister {
   markSessionIdle(sessionId: string): void {
     const state = this.streamingStates.get(sessionId)
     if (!state?.isActive) return
+    // The send never happened, so the recency it was credited with is undone
+    // too (a no-op if a frame has arrived since — then the turn was real).
+    if (state.provisionalActivity && state.agentSlug) {
+      revertSessionActivity(state.agentSlug, sessionId, state.provisionalActivity)
+    }
+    state.provisionalActivity = null
     this.finalizeIdle(sessionId, state)
   }
 
@@ -1234,6 +1251,19 @@ class MessagePersister {
     }
   }
 
+  // Refresh one session's summary entry from its transcript's real mtime.
+  // Fire-and-forget: a failed stat leaves the TTL reconciliation to repair it.
+  private refreshSessionActivityFromDisk(agentSlug: string, sessionId: string): void {
+    void (async () => {
+      try {
+        const stat = await fs.promises.stat(getSessionJsonlPath(agentSlug, sessionId))
+        if (stat) recordSessionActivity(agentSlug, sessionId, stat.mtimeMs)
+      } catch {
+        // Missing or unreadable: the TTL reconciliation repairs it.
+      }
+    })()
+  }
+
   // Mark session as active (when user sends a message)
   markSessionActive(sessionId: string, agentSlug?: string): void {
     let state = this.streamingStates.get(sessionId)
@@ -1270,6 +1300,7 @@ class MessagePersister {
         stateEventsAuthority: false,
         lastResultSubtype: null,
       lastResultCleanSuccess: false,
+      provisionalActivity: null,
         isRetrying: false,
       }
       this.streamingStates.set(sessionId, state)
@@ -1310,6 +1341,18 @@ class MessagePersister {
     }
     if (agentSlug) {
       state.agentSlug = agentSlug
+    }
+
+    // The user's message is appended to the transcript by the CLI as the turn
+    // starts, but the SDK does not echo it back, so nothing else records it:
+    // the first frame the persister sees is the first complete assistant
+    // message, which can be tens of seconds out. Session lists and the
+    // latest-visible-session pick read the summary cache, so bump it here —
+    // the session must move to the top the moment it is sent to.
+    // Provisional until the container answers: markSessionIdle reverts it if
+    // the send never got there.
+    if (state.agentSlug) {
+      state.provisionalActivity = recordProvisionalSessionActivity(state.agentSlug, sessionId, Date.now())
     }
 
     // Broadcast to session-specific clients
@@ -1693,6 +1736,8 @@ class MessagePersister {
       (content.type === 'assistant' || content.type === 'user' || content.type === 'result')
     ) {
       recordSessionActivity(state.agentSlug, sessionId, message.timestamp)
+      // The turn is real; the optimistic send record no longer needs undoing.
+      state.provisionalActivity = null
     }
 
     // Container late-join catch-up: the runtime replays the last turn's
@@ -1704,6 +1749,15 @@ class MessagePersister {
     // copies, and replaying them would re-fire terminal broadcasts.
     if (content.replayed && !state.isActive) {
       return
+    }
+
+    // This session missed its turn end (still active, now told by replay that
+    // it finished), so nothing recorded that activity. The replay's arrival
+    // time is not when it happened; the transcript's mtime is. One stat of
+    // that file puts the session in its right place now instead of at the
+    // next TTL rebuild.
+    if (content.replayed && content.type === 'result' && state.agentSlug) {
+      this.refreshSessionActivityFromDisk(state.agentSlug, sessionId)
     }
 
     switch (content.type) {
@@ -4834,7 +4888,14 @@ ${continuation}`
         sessionId,
         'remote_mcp',
         toolUseId,
-        { url: input.url, name: input.name, reason: input.reason, authHint: input.authHint },
+        {
+          url: input.url,
+          name: input.name,
+          reason: input.reason,
+          authHint: input.authHint,
+          clientId: input.clientId,
+          clientName: input.clientName,
+        },
         { agentSlug, parentToolUseId },
       )
     } catch (error) {

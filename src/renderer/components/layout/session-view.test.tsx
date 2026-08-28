@@ -8,6 +8,9 @@ import { SessionView } from './session-view'
 const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
   markRead: vi.fn(),
+  setMarkedUnread: vi.fn(),
+  // Reports whether a dot was actually showing; defaults to the common no-op open.
+  clearUnread: vi.fn(() => false),
 }))
 
 vi.mock('@tanstack/react-router', () => ({
@@ -25,6 +28,10 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
     },
     error: null,
   }),
+  // Opening a session clears any "mark as unread" flag alongside the
+  // notification read-marking below.
+  useSetSessionMarkedUnread: () => ({ mutate: mocks.setMarkedUnread }),
+  useClearSessionUnread: () => mocks.clearUnread,
 }))
 
 vi.mock('@renderer/hooks/use-notifications', () => ({
@@ -58,9 +65,47 @@ vi.mock('@renderer/context/workflow-context', () => ({
   WorkflowProvider: ({ children }: { children: ReactNode }) => children,
 }))
 
+describe('SessionView unread clearing', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.clearUnread.mockReturnValue(false)
+  })
+
+  it('takes the dot down in the caches on mount and writes through immediately', () => {
+    mocks.clearUnread.mockReturnValue(true)
+    render(<SessionView agentSlug="target-agent" sessionId="x-session" />)
+
+    expect(mocks.clearUnread).toHaveBeenCalledWith('target-agent', 'x-session')
+    // A dot that was actually showing must not be able to come back on the next
+    // refetch, so its write does not wait out the quick-navigation debounce.
+    expect(mocks.markRead).toHaveBeenCalledWith('x-session')
+    expect(mocks.setMarkedUnread).toHaveBeenCalledWith({
+      sessionId: 'x-session',
+      agentSlug: 'target-agent',
+      markedUnread: false,
+    })
+  })
+
+  it('keeps the debounce for an open with no dot showing', () => {
+    vi.useFakeTimers()
+    try {
+      render(<SessionView agentSlug="target-agent" sessionId="x-session" />)
+
+      expect(mocks.markRead).not.toHaveBeenCalled()
+      expect(mocks.setMarkedUnread).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(1000)
+      expect(mocks.markRead).toHaveBeenCalledWith('x-session')
+      expect(mocks.setMarkedUnread).toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
 describe('SessionView x-agent provenance', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.clearUnread.mockReturnValue(false)
   })
 
   it('shows the Back bar and returns to Called from Other Agents', () => {

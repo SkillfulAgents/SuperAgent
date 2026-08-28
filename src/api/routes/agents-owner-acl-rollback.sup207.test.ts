@@ -99,7 +99,7 @@ vi.mock('@shared/lib/services/agent-template-service', () => ({
   updateAgentFromSkillset: vi.fn(), getAgentTemplateStatus: vi.fn(), getDiscoverableAgents: vi.fn(),
   refreshSkillsetCaches: vi.fn(), getAgentPRInfo: vi.fn(), createAgentPR: vi.fn(),
   getAgentPublishInfo: vi.fn(), publishAgentToSkillset: vi.fn(), refreshAgentTemplates: vi.fn(),
-  hasOnboardingSkill: vi.fn().mockResolvedValue(false),
+  hasOnboardingSkill: vi.fn().mockResolvedValue({ hasOnboarding: false }),
   getAgentTemplatePrompt: (...a: unknown[]) => mockGetAgentTemplatePrompt(...a),
 }))
 
@@ -176,7 +176,7 @@ vi.mock('@shared/lib/container/message-persister', () => ({
 }))
 
 vi.mock('@shared/lib/services/session-service', () => ({
-  listSessions: vi.fn(), updateSessionName: vi.fn(), registerSession: vi.fn(),
+  listSessions: vi.fn(), listSessionsFromSummary: vi.fn(), updateSessionName: vi.fn(), registerSession: vi.fn(),
   getSessionMessagesWithCompact: vi.fn(), getSession: vi.fn(), getSessionMetadata: vi.fn(),
   sessionExists: vi.fn().mockResolvedValue(true), sessionBelongsToAgent: vi.fn().mockResolvedValue(true), reserveSessionOwnership: vi.fn().mockResolvedValue(undefined), updateSessionMetadata: vi.fn().mockResolvedValue(undefined),
   deleteSession: vi.fn(), removeMessage: vi.fn(), removeToolCall: vi.fn(),

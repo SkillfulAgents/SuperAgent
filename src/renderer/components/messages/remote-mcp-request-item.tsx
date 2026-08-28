@@ -17,7 +17,9 @@ import { RequestItemShell } from './request-item-shell'
 import { RequestItemActions } from './request-item-actions'
 import { cn } from '@shared/lib/utils/cn'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useInitiateMcpOAuth } from '@renderer/hooks/use-remote-mcps'
+import { useInitiateMcpOAuth, useMcpOAuthRedirectUris } from '@renderer/hooks/use-remote-mcps'
+import { McpSetupGuide } from '@renderer/components/connections/mcp-setup-guide'
+import { McpAdvancedClientFields } from '@renderer/components/connections/mcp-advanced-client-fields'
 import { useMcpOAuthListener } from '@renderer/hooks/use-mcp-oauth-listener'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { type RemoteMcpServer, getMcpServiceKey, McpSourceIcon, McpServerCard } from './mcp-server-card'
@@ -29,6 +31,9 @@ interface RemoteMcpRequestItemProps {
   name?: string
   reason?: string
   authHint?: 'oauth' | 'bearer'
+  /** Prefill for the Advanced section, supplied by the agent. */
+  clientId?: string
+  clientName?: string
   sessionId: string
   agentSlug: string
   readOnly?: boolean
@@ -43,6 +48,8 @@ export function RemoteMcpRequestItem({
   name,
   reason,
   authHint,
+  clientId,
+  clientName,
   sessionId,
   agentSlug,
   readOnly,
@@ -52,12 +59,19 @@ export function RemoteMcpRequestItem({
   const initiateOAuth = useInitiateMcpOAuth()
   const { track } = useAnalyticsTracking()
   const mcpSlug = COMMON_MCP_SERVERS.find((cs) => cs.url === url)?.slug || ''
+  const { data: redirectUris } = useMcpOAuthRedirectUris()
   const [status, setStatus] = useState<RequestStatus>('pending')
   const [error, setError] = useState<string | null>(null)
   const [selectedMcpIds, setSelectedMcpIds] = useState<Set<string>>(new Set())
   const [newName, setNewName] = useState(name || '')
   const [newUrl, setNewUrl] = useState(url)
   const [showTokenInput, setShowTokenInput] = useState(authHint === 'bearer')
+  // Advanced OAuth client overrides. Seeded from what the agent passed, then
+  // owned by the user — an agent that fetched an app ID from a provider console
+  // should not have to be right for the user to correct it.
+  const [advClientId, setAdvClientId] = useState(clientId || '')
+  const [advClientName, setAdvClientName] = useState(clientName || '')
+  const [advClientSecret, setAdvClientSecret] = useState('')
   const [bearerToken, setBearerToken] = useState('')
   // Bearer-server re-auth: which stale server is getting a replacement token
   const [reauthMcpId, setReauthMcpId] = useState<string | null>(null)
@@ -108,6 +122,8 @@ export function RemoteMcpRequestItem({
     [selectedServiceKey, servers]
   )
   const connectCardSlug = COMMON_MCP_SERVERS.find((server) => server.url === targetUrl)?.slug || mcpSlug
+  // Provider-side setup the user has to do before this server can connect at all.
+  const setupGuide = COMMON_MCP_SERVERS.find((server) => server.url === targetUrl)?.setup
   // Only active servers can be provided — a non-active server (e.g. expired
   // OAuth) would be dropped from the container env and the grant becomes a
   // silent no-op. Those servers get a Reconnect affordance instead.
@@ -214,7 +230,14 @@ export function RemoteMcpRequestItem({
       const result = await initiateOAuth.mutateAsync(
         params
           ? { mcpId: params.mcpId, electron: isElectron }
-          : { name: newName.trim() || url, url: targetUrl, electron: isElectron }
+          : {
+              name: newName.trim() || url,
+              url: targetUrl,
+              electron: isElectron,
+              clientId: advClientId.trim() || undefined,
+              clientSecret: advClientSecret.trim() || undefined,
+              clientName: advClientName.trim() || undefined,
+            }
       )
 
       if (result.redirectUrl) {
@@ -690,6 +713,9 @@ export function RemoteMcpRequestItem({
           </div>
         ) : (
           <div className="space-y-2">
+            {setupGuide && (
+              <McpSetupGuide guide={setupGuide} redirectUri={redirectUris?.preferred} />
+            )}
             <div className="flex items-center gap-3 rounded-[12px] border border-border bg-white px-4 py-3 dark:bg-background">
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-zinc-200">
                 <McpSourceIcon slug={connectCardSlug} />
@@ -721,6 +747,24 @@ export function RemoteMcpRequestItem({
                 placeholder="Bearer token"
                 className="h-8 text-sm"
                 disabled={status !== 'pending'}
+              />
+            )}
+            {authHint !== 'bearer' && (
+              <McpAdvancedClientFields
+                values={{
+                  clientName: advClientName,
+                  clientId: advClientId,
+                  clientSecret: advClientSecret,
+                }}
+                onChange={(next) => {
+                  setAdvClientName(next.clientName)
+                  setAdvClientId(next.clientId)
+                  setAdvClientSecret(next.clientSecret)
+                }}
+                defaultOpen={setupGuide?.requiresClientId || !!clientId}
+                disabled={status !== 'pending'}
+                variant="compact"
+                testIdPrefix="mcp-request"
               />
             )}
           </div>

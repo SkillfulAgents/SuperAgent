@@ -8,7 +8,9 @@ import { useCanManageRemoteMcp, useInitiateMcpOAuth } from '@renderer/hooks/use-
 import { useMcpOAuthListener } from '@renderer/hooks/use-mcp-oauth-listener'
 import { apiFetch } from '@renderer/lib/api'
 import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
+import { dismissReauthRequest } from '@renderer/lib/reauth-dismiss'
 import { COMMON_MCP_SERVERS } from '@shared/lib/mcp/common-servers'
+import { DeclineButton } from './decline-button'
 import { RequestItemActions } from './request-item-actions'
 import { RequestItemShell } from './request-item-shell'
 
@@ -37,6 +39,7 @@ export function McpReauthRequestItem({
   const initiateOAuth = useInitiateMcpOAuth()
   const { data: canManage } = useCanManageRemoteMcp(mcpId)
   const [pending, setPending] = useState(false)
+  const [dismissing, setDismissing] = useState(false)
   const [bearerToken, setBearerToken] = useState('')
   const [error, setError] = useState<string | null>(null)
   const popupRef = useRef<ReturnType<typeof prepareOAuthPopup> | null>(null)
@@ -45,6 +48,9 @@ export function McpReauthRequestItem({
     [mcpName],
   )
   const canReconnect = !readOnly && canManage === true
+  // See the account twin: the card blocks every session of the agent, so a
+  // viewer who cannot reconnect still needs a way to let the agent move on.
+  const canDismiss = !readOnly
 
   const finish = () => {
     queryClient.invalidateQueries({ queryKey: ['remote-mcps'] })
@@ -68,6 +74,19 @@ export function McpReauthRequestItem({
     popupRef.current?.close()
     popupRef.current = null
   }, [])
+
+  const dismiss = async (reason?: string) => {
+    setError(null)
+    setDismissing(true)
+    try {
+      await dismissReauthRequest({ agentSlug, requestId: proxyRequestId, reason })
+      onComplete()
+    } catch (dismissError) {
+      setError(dismissError instanceof Error ? dismissError.message : 'Failed to dismiss the request')
+    } finally {
+      setDismissing(false)
+    }
+  }
 
   const parseError = async (response: Response, fallback: string) => {
     const body = await response.json().catch(() => ({})) as { error?: unknown }
@@ -126,13 +145,13 @@ export function McpReauthRequestItem({
     <RequestItemShell
       title={`This request needs ${mcpName}, which requires re-authentication.`}
       subtitle={canManage === false
-        ? 'Only the connection owner or an administrator can reconnect it. The request will resume when they do.'
+        ? 'Only the connection owner or an administrator can reconnect it. Dismiss to let the agent move on without it.'
         : 'Reconnect to continue. The original MCP request will resume automatically.'}
       icon={<ServiceIcon slug={serviceSlug} fallback="mcp" className="h-4 w-4" />}
       theme="orange"
       sessionId={sessionId}
       agentSlug={agentSlug}
-      readOnly={canReconnect ? false : {}}
+      readOnly={canDismiss ? false : {}}
       waitingText="Waiting for reconnection"
       error={error}
       data-testid="mcp-reauth-request"
@@ -148,22 +167,30 @@ export function McpReauthRequestItem({
           data-testid="mcp-reauth-token-input"
         />
       )}
-      {canReconnect && (
+      {canDismiss && (
         <RequestItemActions>
-          <Button
-            type="button"
-            size="xs"
-            onClick={() => void reconnect()}
-            disabled={pending || (authType === 'bearer' && !bearerToken.trim())}
-            data-testid="mcp-reauth-reconnect-btn"
-          >
-            {pending ? (
-              <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
-            )}
-            {pending ? 'Reconnecting…' : authType === 'none' ? 'Retry' : 'Reconnect'}
-          </Button>
+          <DeclineButton
+            onDecline={(reason) => { void dismiss(reason) }}
+            disabled={pending || dismissing}
+            label="Dismiss"
+            data-testid="mcp-reauth-dismiss-btn"
+          />
+          {canReconnect && (
+            <Button
+              type="button"
+              size="xs"
+              onClick={() => void reconnect()}
+              disabled={pending || dismissing || (authType === 'bearer' && !bearerToken.trim())}
+              data-testid="mcp-reauth-reconnect-btn"
+            >
+              {pending ? (
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+              )}
+              {pending ? 'Reconnecting…' : authType === 'none' ? 'Retry' : 'Reconnect'}
+            </Button>
+          )}
         </RequestItemActions>
       )}
       <span className="sr-only">MCP proxy request {proxyRequestId}</span>

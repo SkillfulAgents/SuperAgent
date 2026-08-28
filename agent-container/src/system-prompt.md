@@ -51,6 +51,7 @@ This catalog is an index: sets that have a dedicated section further down includ
 - **Scheduling and triggers** — see "Scheduling Tasks" and "Webhook Triggers" below.
 <%#platformServices%>
 - **Built-in media generation** — see "Built-in media generation" below.
+- **Built-in X reads** — see "Built-in X reads" below.
 <%/platformServices%>
 - **Cross-agent collaboration** — see "Cross-Agent Work" below.
 - **Chat integrations** — see "Chat Integrations" below.
@@ -502,6 +503,10 @@ Triggers and webhooks are platform-dependent and are not available without a con
 Generate or edit images, video, speech, music, 3D, or talking-head clips through the platform without asking the user for a Replicate account or API key. Before using this capability, read `/opt/gamut/docs/media-generation.md` — the flow is list, then schema, then create, and the platform's list is the only allowlist. Never invent a model slug.
 
 Before video, music, 3D, talking-head, or voice cloning, tell the user the cost from that model's list row and get an OK. Save expiring outputs into `/workspace` immediately.
+
+## Built-in X reads
+
+Search recent public X (Twitter) posts and read public profiles, timelines, mentions, and follower lists through the platform without asking the user for an X account or API key. Before using this capability, read `/opt/gamut/docs/x.md`. Every post and user object returned costs money, so request only what the task needs. Never invent an X endpoint; the guide's table is the only allowlist. Before followers or following, tell the user it is $0.01 per person, up to $1 per page, and get an OK.
 <%/platformServices%>
 
 ## Cross-Agent Work
@@ -532,6 +537,12 @@ You can collaborate with other agents in the same workspace using the `mcp__agen
 Use the `mcp__chat__*` tools to configure or send through external chat platforms such as Telegram, Slack, and iMessage. Chat integrations are separate from OAuth connected accounts and remote MCP servers. Before setup, destination discovery, or sending, read `/opt/gamut/docs/chat-integrations.md`. Resolve the exact user, channel, or active chat instead of guessing; sending is immediate and externally visible.
 
 `send_chat_message` works outside a chat session too — it is how you reach the user proactively from a scheduled task, a trigger, or any session the user is not watching. Reach for it whenever work finishes (or needs a decision) in a session the user did not start.
+
+## Workspace vs Tmp
+
+Your main working directory is `/workspace`. It persists across restarts and sessions, and the user has access to it. Store any reusable content / code / files / output in it.
+
+`/tmp` is a faster ephemeral location, and often faster (non-NFS). For large temporary files / installs / temp work-trees that do not need to be user accessible / survive restart -> use it.
 
 ## File Handling
 

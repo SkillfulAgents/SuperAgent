@@ -398,6 +398,20 @@ export function validateAndConsumeOAuthErrorResponse(
  * Initiate an OAuth flow for a remote MCP server.
  * Returns the authorization URL to redirect the user to.
  */
+/**
+ * Pick the redirect to send when the caller supplied its own client_id.
+ *
+ * Dynamic registration learns which redirect an authorization server accepts by
+ * trying each candidate, but a supplied client_id skips registration entirely,
+ * so there is nothing to learn it from. A supplied client_id also means the
+ * redirect was registered by hand in the provider's console, and those consoles
+ * take http(s) only — a custom app scheme could never have been registered
+ * there. Prefer the http(s) candidate, which on desktop is the loopback URL.
+ */
+function redirectForSuppliedClient(redirectCandidates: string[], fallback: string): string {
+  return redirectCandidates.find((candidate) => /^https?:/i.test(candidate)) ?? fallback
+}
+
 export async function initiateOAuthFlow(
   mcpId: string,
   mcpUrl: string,
@@ -431,7 +445,8 @@ export async function initiateOAuthFlow(
   let registeredScope: string | undefined
   // Redirect actually used on the authorization + token requests. Defaults to the
   // preferred candidate; dynamic registration may switch it to a fallback the AS
-  // accepts (e.g. an http loopback URL when the custom app scheme is rejected).
+  // accepts (e.g. an http loopback URL when the custom app scheme is rejected),
+  // and a supplied client_id pins it to the http(s) candidate.
   let redirectUri = redirectCandidates[0]
 
   // Check if we already have client credentials stored
@@ -444,6 +459,7 @@ export async function initiateOAuthFlow(
   if (clientIdOverride) {
     clientId = clientIdOverride
     clientSecret = clientSecretOverride || undefined
+    redirectUri = redirectForSuppliedClient(redirectCandidates, redirectUri)
   } else if (metadata.registration_endpoint) {
     // Prefer a fresh dynamic registration over a stored client_id on re-auth: it
     // self-heals which redirect the AS accepts (custom scheme vs http loopback)
@@ -584,12 +600,14 @@ export async function initiateNewServerOAuth(
   let registeredScope: string | undefined
   // Redirect actually used on the authorization + token requests. Defaults to the
   // preferred candidate; dynamic registration may switch it to a fallback the AS
-  // accepts (e.g. an http loopback URL when the custom app scheme is rejected).
+  // accepts (e.g. an http loopback URL when the custom app scheme is rejected),
+  // and a supplied client_id pins it to the http(s) candidate.
   let redirectUri = redirectCandidates[0]
 
   if (clientIdOverride) {
     clientId = clientIdOverride
     clientSecret = clientSecretOverride || undefined
+    redirectUri = redirectForSuppliedClient(redirectCandidates, redirectUri)
   } else if (metadata.registration_endpoint) {
     const registration = await registerDynamicClientWithFallback(
       metadata.registration_endpoint,

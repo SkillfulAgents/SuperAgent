@@ -12,7 +12,7 @@ import crypto from 'crypto'
 import path from 'path'
 import fs from 'fs'
 import yaml from 'js-yaml'
-import { getDataDir } from '@shared/lib/config/data-dir'
+import { getCacheDir } from '@shared/lib/config/data-dir'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-provider/helpers'
 import { resolveActiveProviderModel } from '@shared/lib/llm-provider'
@@ -69,13 +69,14 @@ function getRepoGitEnv(repoDir: string) {
 }
 
 const activeSkillsetRefreshes = new Map<string, Promise<SkillsetIndex>>()
+const activeSkillsetPopulates = new Map<string, Promise<string>>()
 
 // ============================================================================
 // Path Helpers
 // ============================================================================
 
 function getSkillsetCacheDir(): string {
-  return path.join(getDataDir(), 'skillset-cache')
+  return getCacheDir()
 }
 
 export function getSkillsetRepoDir(skillsetId: string): string {
@@ -704,8 +705,33 @@ export async function ensureSkillsetCached(ref: SkillsetRef): Promise<string> {
   const hostingProvider = getSkillsetProvider(ref.provider)
   const repoDir = getSkillsetRepoDir(hostingProvider.getEffectiveRepoId(ref))
 
-  if (await isCacheReady(repoDir, ref.provider)) return repoDir
+  // The first populate is rm + write in place, so a second caller during it
+  // (reload, second tab, install) would delete files the first is writing.
+  // Coalesce on the directory, like refreshSkillset. The readiness probe runs
+  // inside the stored promise: the map must be set before the first await, or
+  // two cold callers probing at once would both reach the populate.
+  const inFlight = activeSkillsetPopulates.get(repoDir)
+  if (inFlight) return inFlight
 
+  const populate = (async () => {
+    if (await isCacheReady(repoDir, ref.provider)) return repoDir
+    return populateSkillsetCache(ref, hostingProvider, repoDir)
+  })()
+  activeSkillsetPopulates.set(repoDir, populate)
+  try {
+    return await populate
+  } finally {
+    if (activeSkillsetPopulates.get(repoDir) === populate) {
+      activeSkillsetPopulates.delete(repoDir)
+    }
+  }
+}
+
+async function populateSkillsetCache(
+  ref: SkillsetRef,
+  hostingProvider: ReturnType<typeof getSkillsetProvider>,
+  repoDir: string,
+): Promise<string> {
   await ensureDirectory(getSkillsetCacheDir())
 
   const parentDir = path.dirname(repoDir)

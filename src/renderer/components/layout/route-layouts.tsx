@@ -1,4 +1,4 @@
-import { lazyRouteComponent, Outlet } from '@tanstack/react-router'
+import { lazyRouteComponent, Outlet, useRouterState } from '@tanstack/react-router'
 import { Suspense, useCallback, useState, useEffect, useRef } from 'react'
 import { DialogProvider } from '@renderer/context/dialog-context'
 import { UpdateStatusProvider } from '@renderer/context/update-status-context'
@@ -24,6 +24,8 @@ import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { useDocumentTitle } from '@renderer/hooks/use-document-title'
 import { setRendererErrorReportingEnabled, setRendererErrorReportingUser } from '@renderer/lib/error-reporting'
+import { homeSearchSchema } from '@renderer/router/search-schemas'
+import { lenient } from '@renderer/router/zod-search'
 
 const SearchDialog = lazyRouteComponent(
   () => import('@renderer/components/search/search-dialog'),
@@ -55,7 +57,15 @@ export function RootLayout() {
   const { isAuthMode, isAdmin, user } = useUser()
   const { open: searchOpen } = useSearch()
   const { identify } = useAnalyticsTracking()
+  const search = useRouterState({
+    select: (s) => s.location.search as Record<string, unknown>,
+  })
+  const { prompt, template_slug } = lenient(homeSearchSchema)(search)
   const hasAutoOpened = useRef(false)
+  // Latched from the URL on first sighting so stripping the params cannot
+  // reopen the create screen mid-install.
+  const templateHandoffArmed = useRef(false)
+  if (template_slug && !prompt) templateHandoffArmed.current = true
 
   useEffect(() => {
     identify()
@@ -121,6 +131,7 @@ export function RootLayout() {
       openWizard()
     } else if (globalSettings.setupCompleted) {
       hasAutoOpened.current = true
+      if (templateHandoffArmed.current) return
       setWizardAgentOnly(true)
       openWizard()
     }

@@ -340,7 +340,10 @@ export class MultiPassThinkingScenario implements MockScenario {
     private passes: string[],
     private responseText: string,
     /** Delay between thinking chunks — sets how long each pass streams. */
-    private chunkDelayMs = 200
+    private chunkDelayMs = 200,
+    /** Gap between a pass ending and the next one starting. The real CLI can
+     * emit thinking_stop and the next thinking_start nearly back-to-back. */
+    private interPassGapMs = 100
   ) {}
 
   execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
@@ -389,7 +392,7 @@ export class MultiPassThinkingScenario implements MockScenario {
           timestamp: new Date().toISOString(),
         })
       }, passEnd)
-      offset = passEnd + 100
+      offset = passEnd + this.interPassGapMs
     }
 
     setTimeout(() => {
@@ -1070,10 +1073,16 @@ function connectedAccountRequestInput(userMessage: string): Record<string, unkno
 }
 
 function remoteMcpRequestInput(userMessage: string): Record<string, unknown> {
+  const authHint = getMessageParam(userMessage, 'mcp_auth_hint')
+  const clientId = getMessageParam(userMessage, 'mcp_client_id')
   return {
     url: getMessageParam(userMessage, 'mcp_url') ?? 'http://localhost:9876/mcp',
     name: getMessageParam(userMessage, 'mcp_name') ?? 'Test MCP',
     reason: getMessageParam(userMessage, 'mcp_reason') ?? 'Need access to test tools',
+    // Only set when a test asks for them, so the default scenario keeps emitting
+    // exactly the input shape it did before.
+    ...(authHint ? { authHint } : {}),
+    ...(clientId ? { clientId } : {}),
   }
 }
 
@@ -1572,6 +1581,31 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   static scenarios = new Map<string, MockScenario>([
     // Slow response window for message-queueing tests (send mid-turn → queued)
     ['work slowly', new SlowWorkScenario()],
+    // Long thinking passes: each pass overfills the card's max-height so the
+    // card scrolls internally while live, then collapses by its full body
+    // height when the pass ends — the shrink-at-the-live-edge shape behind
+    // follow-loss reports on real long-thinking turns.
+    ['think long passes', new MultiPassThinkingScenario(
+      [
+        `First pass. ${'Surveying the problem space in detail, listing every moving part and its constraints before committing to an approach. '.repeat(12)}End of first pass.`,
+        `Second pass. ${'Weighing the tradeoffs between the candidate approaches carefully, checking each against the constraints found earlier. '.repeat(12)}End of second pass.`,
+        `Third pass. ${'Sanity-checking the chosen approach against the edge cases one at a time before writing the final answer. '.repeat(12)}End of third pass.`,
+      ],
+      'Done with all long thinking passes — here is the answer.',
+      15,
+      10
+    )],
+    // A deep turn: eight overfilled passes back-to-back, so the turn runs long
+    // past the send-time reserve — the state where follow-loss is reported in
+    // the field on real long-thinking turns.
+    ['think a marathon', new MultiPassThinkingScenario(
+      Array.from({ length: 8 }, (_, i) =>
+        `Pass ${i + 1}. ${'Working through the problem space step by step, revisiting each constraint and checking the running plan against it before moving on. '.repeat(12)}End of pass ${i + 1}.`,
+      ),
+      'Done with the marathon of thinking passes — here is the answer.',
+      15,
+      10
+    )],
     // Several thinking passes persisted one-by-one — an interruptible thinking turn
     ['think in passes', new MultiPassThinkingScenario(
       [

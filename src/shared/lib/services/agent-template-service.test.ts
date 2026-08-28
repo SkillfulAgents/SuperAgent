@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import crypto from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
@@ -1263,6 +1264,35 @@ describe('computeAgentTemplateHash', () => {
     expect(hash1).toBe(hash2)
     expect(hash1).toMatch(/^[a-f0-9]{64}$/)
   })
+
+  it('digest is byte-identical to the serial implementation on a fixture tree', async () => {
+    const files: Record<string, string> = {
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'a.txt': 'a-content',
+      'b.txt': 'b-content',
+      'c.txt': 'c-content',
+      'd.txt': 'd-content',
+      'e.txt': 'e-content',
+      'f.txt': 'f-content',
+      'g.txt': 'g-content',
+      'h.txt': 'h-content',
+      'i.txt': 'i-content',
+      'sub/m.txt': 'm-content',
+      'sub/z.txt': 'z-content',
+    }
+    const dir = createDir({
+      ...files,
+      '.env': 'SECRET=nope',
+      'uploads/skip.pdf': 'pdf',
+    })
+
+    const serial = crypto.createHash('sha256')
+    for (const relativePath of Object.keys(files).sort()) {
+      serial.update(relativePath)
+      serial.update(files[relativePath])
+    }
+    expect(await computeAgentTemplateHash(dir)).toBe(serial.digest('hex'))
+  })
 })
 
 // ============================================================================
@@ -1708,21 +1738,59 @@ describe('hasOnboardingSkill', () => {
     fs.mkdirSync(path.dirname(skillPath), { recursive: true })
     fs.writeFileSync(skillPath, '# Onboarding Skill')
 
-    const result = await hasOnboardingSkill('test-agent')
-    expect(result).toBe(true)
+    await expect(hasOnboardingSkill('test-agent')).resolves.toEqual({ hasOnboarding: true })
   })
 
   it('returns false when agent-onboarding directory does not exist', async () => {
     const workspaceDir = path.join(testDir, 'agents', 'test-agent', 'workspace')
     fs.mkdirSync(workspaceDir, { recursive: true })
 
-    const result = await hasOnboardingSkill('test-agent')
-    expect(result).toBe(false)
+    await expect(hasOnboardingSkill('test-agent')).resolves.toEqual({ hasOnboarding: false })
   })
 
   it('returns false when workspace does not exist', async () => {
-    const result = await hasOnboardingSkill('nonexistent-agent')
-    expect(result).toBe(false)
+    await expect(hasOnboardingSkill('nonexistent-agent')).resolves.toEqual({ hasOnboarding: false })
+  })
+
+  it('reads first_prompt from the onboarding skill frontmatter', async () => {
+    const skillPath = path.join(testDir, 'agents', 'test-agent', 'workspace', '.claude', 'skills', 'agent-onboarding', 'SKILL.md')
+    fs.mkdirSync(path.dirname(skillPath), { recursive: true })
+    fs.writeFileSync(skillPath, '---\nname: agent-onboarding\nfirst_prompt: Walk me through HubSpot\n---\n\nOnboard.\n')
+
+    await expect(hasOnboardingSkill('test-agent')).resolves.toEqual({
+      hasOnboarding: true,
+      firstPrompt: 'Walk me through HubSpot',
+    })
+  })
+
+  it('treats a blank first_prompt as absent', async () => {
+    const skillPath = path.join(testDir, 'agents', 'test-agent', 'workspace', '.claude', 'skills', 'agent-onboarding', 'SKILL.md')
+    fs.mkdirSync(path.dirname(skillPath), { recursive: true })
+    fs.writeFileSync(skillPath, '---\nname: agent-onboarding\nfirst_prompt:   \n---\n\nOnboard.\n')
+
+    await expect(hasOnboardingSkill('test-agent')).resolves.toEqual({ hasOnboarding: true })
+  })
+
+  it('treats a YAML block-scalar first_prompt as absent', async () => {
+    const skillPath = path.join(testDir, 'agents', 'test-agent', 'workspace', '.claude', 'skills', 'agent-onboarding', 'SKILL.md')
+    fs.mkdirSync(path.dirname(skillPath), { recursive: true })
+    fs.writeFileSync(skillPath, '---\nname: agent-onboarding\nfirst_prompt: |\n---\n\nOnboard.\n')
+
+    await expect(hasOnboardingSkill('test-agent')).resolves.toEqual({ hasOnboarding: true })
+  })
+
+  it('still reads first_prompt when the skill body is larger than the prompt limit', async () => {
+    const skillPath = path.join(testDir, 'agents', 'test-agent', 'workspace', '.claude', 'skills', 'agent-onboarding', 'SKILL.md')
+    fs.mkdirSync(path.dirname(skillPath), { recursive: true })
+    fs.writeFileSync(
+      skillPath,
+      `---\nname: agent-onboarding\nfirst_prompt: Walk me through HubSpot\n---\n\n${'x'.repeat(MAX_TEMPLATE_PROMPT_SIZE + 1)}\n`,
+    )
+
+    await expect(hasOnboardingSkill('test-agent')).resolves.toEqual({
+      hasOnboarding: true,
+      firstPrompt: 'Walk me through HubSpot',
+    })
   })
 })
 
@@ -2199,6 +2267,65 @@ describe('exportAgentFull', () => {
       })
     }
   })
+
+  it('errors instead of finalizing an incomplete zip when a source file disappears mid-export', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    for (let i = 0; i < 40; i++) {
+      fs.writeFileSync(path.join(workspaceDir, `data-${i}.txt`), `entry ${i}`)
+    }
+
+    // Template export enumerates the workspace before the stream is created,
+    // so the file removed here is guaranteed to be enumerated but not yet
+    // lstat'd by archiver's async queue — the shape of a file deleted
+    // between enumeration and read. Without warning escalation this
+    // finalizes a valid-looking zip missing the deleted file, zero errors.
+    const archive = await exportAgentTemplateStream('full-agent')
+    fs.rmSync(path.join(workspaceDir, 'data-39.txt'))
+
+    await expect(readableToBuffer(archive)).rejects.toThrow(/ENOENT/)
+    await waitUntil(() => !isHostExportBusy())
+  })
+
+  it('aborts queued archiver work when the consumer cancels mid-stream', async () => {
+    const workspaceDir = path.join(testDir, 'agents', 'full-agent', 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    fs.writeFileSync(path.join(workspaceDir, 'CLAUDE.md'), MINIMAL_CLAUDE_MD)
+    // Incompressible entries so a few reads leave most of the queue pending.
+    for (let i = 0; i < 30; i++) {
+      fs.writeFileSync(
+        path.join(workspaceDir, `chunk-${String(i).padStart(2, '0')}.bin`),
+        crypto.randomBytes(1024 * 1024),
+      )
+    }
+
+    const archive = await exportAgentFullStream('full-agent')
+    const reader = (Readable.toWeb(archive as Readable) as ReadableStream<Uint8Array>).getReader()
+    let received = 0
+    while (received < 4 * 1024 * 1024) {
+      const { value, done } = await reader.read()
+      if (done) break
+      received += value!.byteLength
+    }
+    // The client walks away mid-download without the request abort signal
+    // firing (e.g. a caller that destroys the stream directly). Destroying
+    // the Transform alone leaves archiver's queued entries and worker alive
+    // indefinitely — the close-to-abort bridge must drain them.
+    await reader.cancel()
+    await new Promise((resolve) => setTimeout(resolve, 250))
+
+    const internals = archive as unknown as {
+      _state: { aborted: boolean }
+      _queue: { length(): number }
+      _statQueue: { length(): number }
+    }
+    expect((archive as Readable).destroyed).toBe(true)
+    expect(internals._state.aborted).toBe(true)
+    expect(internals._queue.length()).toBe(0)
+    expect(internals._statQueue.length()).toBe(0)
+    await waitUntil(() => !isHostExportBusy())
+  })
 })
 
 // ============================================================================
@@ -2317,6 +2444,58 @@ describe('importAgentFromTemplate (full mode)', () => {
 
     const envPath = path.join(workspaceDir, '.env')
     expect(fs.existsSync(envPath)).toBe(false)
+  })
+
+  it('imports from a ZIP file on disk identically to a buffer', async () => {
+    const zipBuffer = await makeZip({
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      '.env': 'SECRET=abc',
+      'sessions/s1/messages.jsonl': '{"type":"user"}\n',
+      'sub/dir/deep.txt': 'deep',
+    })
+    const zipPath = path.join(testDir, 'upload.zip')
+    fs.writeFileSync(zipPath, zipBuffer)
+
+    const bufferDest = setupAgentMock('import-from-buffer')
+    await importAgentFromTemplate(zipBuffer, undefined, 'full')
+
+    const fileDest = setupAgentMock('import-from-file')
+    await importAgentFromTemplate({ filePath: zipPath }, undefined, 'full')
+
+    function listTree(dir: string): Array<[string, string]> {
+      const out: Array<[string, string]> = []
+      const walk = (d: string, rel: string) => {
+        for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+          const r = rel ? `${rel}/${entry.name}` : entry.name
+          if (entry.isDirectory()) walk(path.join(d, entry.name), r)
+          else out.push([r, fs.readFileSync(path.join(d, entry.name), 'utf-8')])
+        }
+      }
+      walk(dir, '')
+      return out.sort()
+    }
+
+    expect(listTree(fileDest)).toEqual(listTree(bufferDest))
+    expect(listTree(fileDest).map(([p]) => p)).toContain('.env')
+  })
+
+  it('validates from a ZIP file on disk', async () => {
+    const zipBuffer = await makeZip({ 'CLAUDE.md': MINIMAL_CLAUDE_MD })
+    const zipPath = path.join(testDir, 'validate.zip')
+    fs.writeFileSync(zipPath, zipBuffer)
+
+    const result = await validateAgentTemplate({ filePath: zipPath })
+    expect(result.valid).toBe(true)
+    expect(result.agentName).toBe('Test Agent')
+  })
+
+  it('reports invalid for a corrupt ZIP file on disk', async () => {
+    const zipPath = path.join(testDir, 'corrupt.zip')
+    fs.writeFileSync(zipPath, 'definitely not a zip')
+
+    const result = await validateAgentTemplate({ filePath: zipPath })
+    expect(result.valid).toBe(false)
+    expect(result.error).toBeTruthy()
   })
 })
 

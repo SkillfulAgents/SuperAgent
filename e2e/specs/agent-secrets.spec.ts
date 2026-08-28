@@ -1,8 +1,7 @@
 import { test, expect, type Locator } from '@playwright/test'
-import * as fs from 'fs'
-import * as path from 'path'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
+import { mockRecorder } from '../helpers/mock-recorder'
 
 /**
  * Agent secrets (the hardened `.env` store) end-to-end.
@@ -15,9 +14,6 @@ import { AgentPage } from '../pages/agent.page'
  * across a reload (the read side of the hardened store).
  */
 
-const E2E_DATA_DIR = path.resolve(process.cwd(), process.env.SUPERAGENT_DATA_DIR ?? '.e2e-data')
-const RECORDER_FILE = path.join(E2E_DATA_DIR, '.e2e-mock-recorder.jsonl')
-
 interface MockRecord {
   type: 'sendMessage' | 'createSession'
   agentSlug: string
@@ -26,38 +22,9 @@ interface MockRecord {
   timestamp: string
 }
 
-function readRecords(): MockRecord[] {
-  if (!fs.existsSync(RECORDER_FILE)) return []
-  return fs
-    .readFileSync(RECORDER_FILE, 'utf-8')
-    .trim()
-    .split('\n')
-    .filter(Boolean)
-    .flatMap((line) => {
-      try {
-        return [JSON.parse(line) as MockRecord]
-      } catch {
-        // The app appends to this file while the test polls it. Ignore a
-        // partially-written final line and retry on the next pass.
-        return []
-      }
-    })
-}
-
-/**
- * Wait for a matching record. The recorder file is shared across workers/tests,
- * so the predicate MUST filter by a test-unique attribute (here: the unique
- * initialMessage) — never assume the file starts empty.
- */
-async function waitForRecord(predicate: (r: MockRecord) => boolean, timeoutMs = 12000): Promise<MockRecord> {
-  const start = Date.now()
-  while (Date.now() - start < timeoutMs) {
-    const found = readRecords().find(predicate)
-    if (found) return found
-    await new Promise((r) => setTimeout(r, 100))
-  }
-  throw new Error(`Timed out waiting for record. Seen: ${JSON.stringify(readRecords().slice(-10), null, 2)}`)
-}
+// Predicates below filter on the unique initialMessage — see the helper's note
+// on the recorder file being shared across workers.
+const recorder = mockRecorder<MockRecord>()
 
 test.describe('Agent Secrets (reach the container & persist)', () => {
   let appPage: AppPage
@@ -125,8 +92,7 @@ test.describe('Agent Secrets (reach the container & persist)', () => {
 
     // 5. The mock container recorded the env var name it received — assert the
     //    UI-added secret made it all the way through.
-    const record = await waitForRecord(
-      (r) => r.type === 'createSession' && r.initialMessage === sessionMessage
+    const record = await recorder.waitFor((r) => r.type === 'createSession' && r.initialMessage === sessionMessage
     )
     expect(record.availableEnvVars ?? []).toContain(expectedEnvVar)
   })
@@ -161,8 +127,7 @@ test.describe('Agent Secrets (reach the container & persist)', () => {
     await page.locator('[data-testid="home-send-button"]').click()
     await expect(page.locator('[data-testid="message-list"]')).toBeVisible({ timeout: 15000 })
 
-    const record = await waitForRecord(
-      (r) => r.type === 'createSession' && r.initialMessage === sessionMessage
+    const record = await recorder.waitFor((r) => r.type === 'createSession' && r.initialMessage === sessionMessage
     )
     expect(record.availableEnvVars ?? []).not.toContain(expectedEnvVar)
   })

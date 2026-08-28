@@ -13,6 +13,7 @@ import { captureException } from './error-reporting'
 import { registerAllAccountProviders } from './account-providers/register'
 import { autoSleepMonitor } from './scheduler/auto-sleep-monitor'
 import { sessionAutoDeleteMonitor } from './scheduler/session-auto-delete-monitor'
+import { apiLogAutoDeleteMonitor } from './scheduler/api-log-auto-delete-monitor'
 import { accountSyncService } from './scheduler/account-sync-service'
 import { platformService } from './services/platform-service'
 import { getActiveProvider, stopAllProviders } from '../../main/host-browser'
@@ -249,6 +250,10 @@ async function initializeServicesInner() {
     console.error('Failed to start session auto-delete monitor:', error)
   })
 
+  apiLogAutoDeleteMonitor.start().catch((error) => {
+    console.error('Failed to start API log auto-delete monitor:', error)
+  })
+
   // Start account sync service (deferred — syncs OAuth account status with remote providers)
   accountSyncService.start().catch((error) => {
     console.error('Failed to start account sync service:', error)
@@ -288,6 +293,7 @@ export async function shutdownServices() {
   platformNotificationsManager.stop()
   autoSleepMonitor.stop()
   sessionAutoDeleteMonitor.stop()
+  apiLogAutoDeleteMonitor.stop()
   accountSyncService.stop()
   platformService.stop()
   containerManager.stopStatusSync()

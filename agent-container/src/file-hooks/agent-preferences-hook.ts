@@ -4,6 +4,7 @@ import { FileHook, type FileHookReadResult, type FileHookWriteResult } from './f
 // Keep in sync with src/shared/lib/types/agent-preferences.ts
 const agentPreferencesSchema = z.object({
   autoDeleteInactiveDays: z.number().int().positive().optional(),
+  apiLogAutoDeleteDays: z.number().int().nonnegative().optional(),
   defaultModel: z.string().trim().min(1).optional(),
   defaultEffort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
   defaultSpeed: z.enum(['slow', 'normal', 'fast']).optional(),
@@ -15,6 +16,7 @@ const READ_HINT = `This is the agent preferences file. It stores per-agent setti
 
 Format: a JSON object with optional fields:
 - "autoDeleteInactiveDays" (positive integer, optional): Automatically delete sessions inactive for this many days. Starred sessions are preserved.
+- "apiLogAutoDeleteDays" (non-negative integer, optional): Automatically delete API / MCP audit log rows older than this many days. 0 means Never.
 - "defaultModel" (string, optional): Default model for this agent's new sessions — a concrete model id or a bare family alias. Per-session and per-trigger picks still win.
 - "defaultEffort" (one of "low" | "medium" | "high" | "xhigh" | "max", optional): Default reasoning effort for this agent's new sessions.
 - "defaultSpeed" (one of "slow" | "normal" | "fast", optional): Default processing speed for this agent's new sessions. Only speeds the model's serving path supports take effect.
