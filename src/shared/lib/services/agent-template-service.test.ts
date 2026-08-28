@@ -408,31 +408,31 @@ describe('validateAgentTemplate', () => {
   // --------------------------------------------------------------------------
 
   describe('file count limits', () => {
-    it('rejects template with too many files (> 2000)', async () => {
+    it('rejects template with too many files (> 10,000)', async () => {
       const files: Record<string, string> = {
         'CLAUDE.md': MINIMAL_CLAUDE_MD,
       }
-      // Create 2001 actual files (beyond the limit)
-      for (let i = 0; i < 2001; i++) {
+      // 10,000 additional files + CLAUDE.md = 10,001 (beyond the limit)
+      for (let i = 0; i < 10_000; i++) {
         files[`files/file-${i}.txt`] = `content ${i}`
       }
       const result = await validateAgentTemplate(await makeZip(files))
       expect(result.valid).toBe(false)
       expect(result.error).toContain('Too many files')
-      expect(result.error).toContain('max 2000')
+      expect(result.error).toContain('max 10000')
     })
 
     it('accepts template at exactly the file count limit', async () => {
       const files: Record<string, string> = {
         'CLAUDE.md': MINIMAL_CLAUDE_MD,
       }
-      // 1999 additional files + CLAUDE.md = 2000 exactly
-      for (let i = 0; i < 1999; i++) {
+      // 9,999 additional files + CLAUDE.md = 10,000 exactly
+      for (let i = 0; i < 9_999; i++) {
         files[`files/file-${i}.txt`] = `content ${i}`
       }
       const result = await validateAgentTemplate(await makeZip(files))
       expect(result.valid).toBe(true)
-      expect(result.fileCount).toBe(2000)
+      expect(result.fileCount).toBe(10_000)
     })
   })
 
@@ -670,7 +670,7 @@ describe('validateAgentTemplate (full mode)', () => {
     const files: Record<string, string> = {
       'CLAUDE.md': MINIMAL_CLAUDE_MD,
     }
-    for (let i = 0; i < 2001; i++) {
+    for (let i = 0; i < 10_000; i++) {
       files[`.env.${i}`] = `SECRET_${i}=value`
     }
     const result = await validateAgentTemplate(await makeZip(files), 'full')

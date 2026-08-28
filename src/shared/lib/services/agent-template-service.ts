@@ -62,7 +62,7 @@ import { pruneInstalledTemplateIfInvalid } from './skillset-reconcile'
 
 const MAX_UNCOMPRESSED_SIZE = 500 * 1024 * 1024 // 500MB
 export const MAX_COMPRESSED_SIZE = 500 * 1024 * 1024 // 500MB
-const MAX_FILE_COUNT = 2000
+const MAX_FILE_COUNT = 10_000
 export const MAX_TEMPLATE_PROMPT_SIZE = 16 * 1024 // 16KB
 
 /** Canonical prompt handoff file, plus a lowercase compatibility spelling. */
