@@ -36,8 +36,7 @@ import { DashboardCard } from './dashboard-card'
 import { HomeEmptyClouds } from './home-empty-clouds'
 import { PwaInstallBanner } from './pwa-install-banner'
 import { isElectron, getPlatform } from '@renderer/lib/env'
-import { useDevFlag } from '@renderer/lib/dev-flags'
-import { Plus, Loader2, Search, Power, Square, Check, ArrowRight, LayoutGrid, Waypoints, MoreVertical, Move, FlaskConical, Sparkle } from 'lucide-react'
+import { Plus, Loader2, Search, Power, Square, Check, ArrowRight, LayoutGrid, Waypoints, MoreVertical, Move, Sparkle } from 'lucide-react'
 import { useSearch } from '@renderer/context/search-context'
 import { cn } from '@shared/lib/utils/cn'
 import type { ApiAgent } from '@shared/lib/types/api'
@@ -845,11 +844,7 @@ export function HomePage() {
     [agents, userSettings?.agentOrder]
   )
 
-  // Dev-only preview: render the page as if no agents exist, so the empty
-  // state can be designed against a populated dev database. Flipped from the
-  // flask button in the header (dev builds only).
-  const [devForceEmpty, toggleDevForceEmpty] = useDevFlag('home-empty-state')
-  const hasAgents = orderedAgents.length > 0 && !devForceEmpty
+  const hasAgents = orderedAgents.length > 0
 
   // Desktop and phone layouts are intentionally independent. A phone without a
   // customized layout starts from the desktop map and is responsively re-packed
@@ -1097,23 +1092,6 @@ export function HomePage() {
             <Waypoints className="h-3.5 w-3.5" />
           </button>
         </div>
-        {/* Dev builds only: preview the empty state without emptying the dev
-            database. Amber when active so a forced-empty Home is never
-            mistaken for lost agents. */}
-        {import.meta.env.DEV && (
-          <div className="app-no-drag flex items-center rounded-md border p-0.5">
-            <button
-              type="button"
-              onClick={toggleDevForceEmpty}
-              title="Dev: preview the Home empty state"
-              aria-pressed={devForceEmpty}
-              data-testid="dev-empty-state-toggle"
-              className={`rounded p-1 transition-colors ${devForceEmpty ? 'bg-amber-500/15 text-amber-500' : 'text-muted-foreground hover:text-foreground'}`}
-            >
-              <FlaskConical className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        )}
       </header>
 
       {view === 'graph' ? (
