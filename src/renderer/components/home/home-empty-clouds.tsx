@@ -187,9 +187,15 @@ export function HomeEmptyClouds({
       // run higher than the handoff's 0.5 peak because our glass card hides
       // the bloom's dense centre — the visible halo is its outer falloff —
       // and dark needs more still: these hues sink toward grey haze there.
+      // Clipping pairs with the mask: masked mode dissolves the band inside
+      // the wrapper, so the clip is a guard it never visibly hits. Unmasked
+      // (anchored) the bloom is meant to SPILL past the wrapper — and that
+      // spill is filter ink (the blur), which never creates scrollable
+      // overflow; the stage's layout box itself stays inside, so letting it
+      // paint through costs no scrollbars.
       className={cn(
-        'pointer-events-none absolute inset-0 overflow-hidden opacity-65 dark:opacity-75',
-        masked && 'home-empty-glow-mask',
+        'pointer-events-none absolute inset-0 opacity-65 dark:opacity-75',
+        masked && 'home-empty-glow-mask overflow-hidden',
       )}
     >
       <div
