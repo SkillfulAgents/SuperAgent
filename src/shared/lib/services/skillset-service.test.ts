@@ -894,6 +894,36 @@ Instructions here`
       expect(cloneCalls).toBe(1)
     })
 
+    it('coalesces cold builds that start before the first readiness probe completes', async () => {
+      const config = buildSkillsetConfig()
+      const ref = {
+        skillsetId: config.id,
+        skillsetUrl: config.url,
+        provider: config.provider,
+        providerData: config.providerData,
+      }
+
+      let cloneCalls = 0
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === 'git' && args[0] === '--version') {
+          return { stdout: 'git version 2.44.0\n', stderr: '' }
+        }
+        if (cmd === 'git' && args[0] === 'clone') {
+          cloneCalls += 1
+        }
+        return { stdout: '', stderr: '' }
+      })
+
+      // Same tick, no await between them: the second caller arrives while the
+      // first is still inside its readiness probe, before any build is running.
+      const first = ensureSkillsetCached(ref)
+      const second = ensureSkillsetCached(ref)
+
+      const repoDir = getSkillsetRepoDir(config.id)
+      await expect(Promise.all([first, second])).resolves.toEqual([repoDir, repoDir])
+      expect(cloneCalls).toBe(1)
+    })
+
     it('gitPull swallows expected drift errors from fetch+reset without throwing', async () => {
       const skillContent = '# Test Skill\nOriginal content'
       const meta = buildMetadata({ originalContentHash: contentHash(skillContent) })

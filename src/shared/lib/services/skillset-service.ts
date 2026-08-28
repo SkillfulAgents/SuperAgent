@@ -707,14 +707,16 @@ export async function ensureSkillsetCached(ref: SkillsetRef): Promise<string> {
 
   // The first populate is rm + write in place, so a second caller during it
   // (reload, second tab, install) would delete files the first is writing.
-  // Coalesce on the directory, like refreshSkillset. Checked before the
-  // readiness probe so the join is synchronous.
+  // Coalesce on the directory, like refreshSkillset. The readiness probe runs
+  // inside the stored promise: the map must be set before the first await, or
+  // two cold callers probing at once would both reach the populate.
   const inFlight = activeSkillsetPopulates.get(repoDir)
   if (inFlight) return inFlight
 
-  if (await isCacheReady(repoDir, ref.provider)) return repoDir
-
-  const populate = populateSkillsetCache(ref, hostingProvider, repoDir)
+  const populate = (async () => {
+    if (await isCacheReady(repoDir, ref.provider)) return repoDir
+    return populateSkillsetCache(ref, hostingProvider, repoDir)
+  })()
   activeSkillsetPopulates.set(repoDir, populate)
   try {
     return await populate
