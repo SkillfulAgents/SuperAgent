@@ -17,8 +17,9 @@ vi.mock('@renderer/hooks/use-agents', () => ({
 vi.mock('./agent-settings-dialog', () => ({ AgentSettingsDialog: () => null }))
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => vi.fn() }))
 vi.mock('@tanstack/react-query', () => ({ useQueryClient: () => ({ invalidateQueries: vi.fn() }) }))
+const { mockCanAdminAgent } = vi.hoisted(() => ({ mockCanAdminAgent: vi.fn(() => true) }))
 vi.mock('@renderer/context/user-context', () => ({
-  useUser: () => ({ canAdminAgent: () => true, isAuthMode: false }),
+  useUser: () => ({ canAdminAgent: mockCanAdminAgent, isAuthMode: false }),
 }))
 
 const { mockUserSettings, mockUpdateSettings } = vi.hoisted(() => ({
@@ -96,6 +97,7 @@ function drive(target: 'local' | 'cloud') {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mockCanAdminAgent.mockReturnValue(true)
   mockApiFetch.mockResolvedValue({ ok: true, json: async () => ({ path: '/srv/agents/sales' }) })
   mockUserSettings.mockReturnValue({ agentFolders: [], agentFolderAssignments: {} })
   mockUseAgents.mockReturnValue({ data: ALL_AGENTS, isLoading: false, error: null })
@@ -342,5 +344,15 @@ describe('rename', () => {
 
     await userEvent.click(screen.getByTestId('rename-agent-item'))
     expect(onRenameRequest).toHaveBeenCalledTimes(1)
+  })
+
+  it('hides rename from a member who cannot admin the agent', () => {
+    mockCanAdminAgent.mockReturnValue(false)
+    render(
+      <AgentContextMenu agent={AGENT} onRenameRequest={vi.fn()}>
+        <span>row</span>
+      </AgentContextMenu>,
+    )
+    expect(screen.queryByTestId('rename-agent-item')).not.toBeInTheDocument()
   })
 })
