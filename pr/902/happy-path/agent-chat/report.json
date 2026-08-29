@@ -1,0 +1,28 @@
+{
+  "storyId": "agent-chat",
+  "passed": true,
+  "reason": "Successfully navigated to the app, clicked on agent QA-20260829-232817-vl2n, verified status is \"idle\", sent message \"Hello! What is 2+2?\", received response containing \"4\", and captured screenshot.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully with sidebar showing agents",
+    "Found agent \"QA-20260829-232817-vl2n\" in sidebar with status \"idle\" — Agent visible and clickable",
+    "Clicked on agent \"QA-20260829-232817-vl2n\" — Page navigated to agent detail view",
+    "Verified agent status is \"idle\" — Status indicator clearly shows \"idle\" status",
+    "Clicked on message input field — Input field became active and ready for text",
+    "Typed message \"Hello! What is 2+2?\" — Message successfully entered into input field",
+    "Clicked Send button — Message was sent and created new session \"Quick Math Question Session\"",
+    "Waited for agent response — Agent responded immediately with the answer",
+    "Verified response contains \"4\" — Response clearly displays \"4\" in the message list",
+    "Took screenshot capturing the response — Screenshot saved showing agent response with \"4\""
+  ],
+  "bugs": [],
+  "durationMs": 56791,
+  "sessionId": "82364d73-914d-4025-8dca-adee03a5e869",
+  "cost": {
+    "inputTokens": 260,
+    "outputTokens": 7300,
+    "cacheCreationTokens": 103883,
+    "cacheReadTokens": 633560,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.22997
+  }
+}
