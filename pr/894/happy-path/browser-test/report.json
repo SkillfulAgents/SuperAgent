@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser-use feature test: Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it back in the chat.",
+  "steps": [
+    "Step 1 - Navigated to http://localhost:47891 — Page loaded successfully showing Gamut application with agents sidebar.",
+    "Step 2 - Found and clicked the \"QA-20260828-235935-98xm\" agent in the sidebar — Agent chat view opened successfully with message input field ready.",
+    "Step 3 - Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message input accepted and send button became enabled; message was submitted successfully.",
+    "Step 4 - Waited up to 3 minutes for response — Agent completed processing in 8 seconds with 4 tool calls using 188,891 tokens; response received successfully.",
+    "Step 5 - Verified response mentions \"Example Domain\" and took screenshot — Response clearly displays: \"The page title is \"Example Domain\" — it's the standard IANA placeholder page. Browser closed.\" Screenshot captured showing the complete chat with the agent's response."
+  ],
+  "bugs": [],
+  "durationMs": 71014,
+  "sessionId": "f18996b6-568a-4092-8565-803841514312",
+  "cost": {
+    "inputTokens": 320,
+    "outputTokens": 10019,
+    "cacheCreationTokens": 67893,
+    "cacheReadTokens": 868883,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.22217
+  }
+}
