@@ -1310,34 +1310,44 @@ class MessagePersister {
         this.capture.recordNote(sessionId, 'state_created', { agentSlug }).catch(() => {})
       }
     }
+    // Re-marking an ALREADY-active session is how a queued/steering message is
+    // accepted mid-turn — it is not a turn boundary. Split the resets the same way
+    // the app's session_active handler does (see use-message-stream.ts): what any
+    // accepted message invalidates, versus what only a real new turn ends. State
+    // that belongs to the running turn must survive the mid-turn path, or the
+    // session's whole reported status collapses to "Working…" the moment a
+    // follow-up is queued (SUP-736).
     const wasActive = state.isActive
     state.isActive = true
+    // Message-scoped: true for a queued message just as much as a new turn.
     state.isInterrupted = false // Reset interrupted flag on new message
     state.isAwaitingInput = false // Reset awaiting input on new message
-    state.isRetrying = false // Reset retry flag on new message
-    // Reset compaction/thinking too, mirroring the app's session_active reset: a
-    // turn that ended mid-compaction/-thinking (error/interrupt before the clearing
-    // event) must not wedge the next turn's label. State is reused across turns.
-    state.isCompacting = false
-    state.currentThinking = false
-    state.currentAssistantMessageId = null
-    state.currentThinkingBlockIndex = null
     state.lastApiErrorCode = null // Clear previous API error on new message
     // Clear the previous turn's result subtype so a late idle from an
     // already-finished (or interrupted) run can't fire a stale "success"
     // completion notification against the turn this message is starting.
     state.lastResultSubtype = null
     state.lastResultCleanSuccess = false
-    // Re-marking an already-active session is how queued/steering messages are
-    // accepted mid-turn. Preserve the current candidate in that case; the next
-    // assistant message group will replace it. A genuinely new turn must never
-    // inherit the prior turn's answer.
-    if (!wasActive) {
+    if (wasActive) {
+      state.queuedTurnCount += 1
+    } else {
+      // Turn-scoped. Compaction/thinking mirror the app's reset: a turn that ended
+      // mid-compaction/-thinking (error/interrupt before the clearing event) must
+      // not wedge the next turn's label — state is reused across turns. Mid-turn
+      // they are still running, and the nulled message id/block index would also
+      // re-key an open thinking block's remaining delta and stop events onto an id
+      // the app never opened. isRetrying likewise: an in-flight API retry outlives
+      // a queued message (message_start clears it when the response flows).
+      state.isCompacting = false
+      state.currentThinking = false
+      state.currentAssistantMessageId = null
+      state.currentThinkingBlockIndex = null
+      state.isRetrying = false
+      // The turn's answer candidate: the next assistant message group replaces it
+      // mid-turn, but a genuinely new turn must never inherit the prior one's.
       this.resetSessionCompleteResponse(state)
       state.queuedTurnCount = 0
       state.resetAssistantBeforeNextTurnOutput = false
-    } else {
-      state.queuedTurnCount += 1
     }
     if (agentSlug) {
       state.agentSlug = agentSlug
@@ -1355,8 +1365,11 @@ class MessagePersister {
       state.provisionalActivity = recordProvisionalSessionActivity(state.agentSlug, sessionId, Date.now())
     }
 
-    // Broadcast to session-specific clients
-    this.broadcastToSSE(sessionId, { type: 'session_active', isActive: true })
+    // Broadcast to session-specific clients. queuedMidTurn tells the app this is a
+    // message accepted into a running turn rather than a new one, so it can keep the
+    // turn-scoped state (compaction, thinking, running subagents) that a real turn
+    // boundary would clear.
+    this.broadcastToSSE(sessionId, { type: 'session_active', isActive: true, queuedMidTurn: wasActive })
 
     // Also broadcast globally so sidebar updates regardless of which session is being viewed
     this.broadcastGlobal({

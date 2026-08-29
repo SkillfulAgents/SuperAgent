@@ -481,6 +481,80 @@ export class SlowWorkScenario implements MockScenario {
 }
 
 /**
+ * Manual /compact with a long compaction window — the send-a-message-while-
+ * compacting case (SUP-736). Holds `status: compacting` open long enough for a
+ * test to queue a follow-up (the busy path in sendMessage takes it as steering),
+ * then writes the boundary + summary pair the transcript renders and settles.
+ *
+ * The compacted command itself is never echoed as a user message: the runtime
+ * persists its effect as the compact boundary instead.
+ */
+export class SlowCompactionScenario implements MockScenario {
+  constructor(private durationMs = 12000) {}
+
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    // Echo the turn-starting message first, so its optimistic ghost materializes
+    // before compaction opens. Order matters: the persister ends compaction at
+    // the first user message that follows the compacting status.
+    setTimeout(() => {
+      client.writeJsonlEntry(sessionId, {
+        type: 'user',
+        message: { content: userMessage },
+        timestamp: new Date().toISOString(),
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'user',
+        content: { type: 'user', message: { content: [{ type: 'text', text: userMessage }] } },
+      })
+    }, 10)
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'system',
+        content: { type: 'system', subtype: 'status', status: 'compacting' },
+      })
+    }, 150)
+
+    setTimeout(() => {
+      const summary = 'Summary of the conversation so far.'
+      client.writeJsonlEntry(sessionId, {
+        type: 'system',
+        subtype: 'compact_boundary',
+        content: 'Conversation compacted',
+        compactMetadata: { trigger: 'manual', preTokens: 120000 },
+        timestamp: new Date().toISOString(),
+      })
+      client.writeJsonlEntry(sessionId, {
+        type: 'user',
+        isCompactSummary: true,
+        message: { content: summary },
+        timestamp: new Date().toISOString(),
+      })
+      // The summary on the stream is what ends compaction host-side (the
+      // persister clears isCompacting on the first user message after the
+      // compacting status and broadcasts compact_complete).
+      client.emitStreamMessage(sessionId, {
+        type: 'user',
+        content: {
+          type: 'user',
+          isCompactSummary: true,
+          message: { content: [{ type: 'text', text: summary }] },
+        },
+      })
+      client.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'Compacted the conversation.' }] },
+        timestamp: new Date().toISOString(),
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'result',
+        content: { type: 'result', subtype: 'success' },
+      })
+    }, this.durationMs)
+  }
+}
+
+/**
  * API error scenario - simulates an LLM provider error (e.g., auth failure, rate limit).
  * Emits an assistant message with the SDK error code, then a result with error subtype.
  */
@@ -1581,6 +1655,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   static scenarios = new Map<string, MockScenario>([
     // Slow response window for message-queueing tests (send mid-turn → queued)
     ['work slowly', new SlowWorkScenario()],
+    // Long compaction window: queue a message while the session is compacting
+    ['compact slowly', new SlowCompactionScenario(10000)],
     // Long thinking passes: each pass overfills the card's max-height so the
     // card scrolls internally while live, then collapses by its full body
     // height when the pass ends — the shrink-at-the-live-edge shape behind

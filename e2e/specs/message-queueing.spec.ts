@@ -69,6 +69,44 @@ test.describe('Message queueing while agent is working', () => {
     ).toBeVisible({ timeout: 15000 })
   })
 
+  test('a message queued during compaction keeps the compacting status and sits below the boundary', async ({ page }) => {
+    // The mock holds compaction open for 10s and delays pickup to 8s, so this
+    // one runs longer than the default per-test budget.
+    test.setTimeout(60000)
+    // SUP-736: queueing a follow-up is not a turn boundary. The compaction it
+    // lands during is still running, so both the live compact line and the
+    // "Compacting..." status must survive it, with the ghost below the line —
+    // the queued message is picked up on the far side of the boundary.
+    await sessionPage.sendMessage('please compact slowly for this test')
+
+    const compactingLine = page.getByText('Compacting conversation...')
+    await expect(compactingLine).toBeVisible({ timeout: 15000 })
+    await expect(sessionPage.getActivityIndicator()).toContainText('Compacting', { timeout: 15000 })
+
+    // 'pickup after turn' selects the mock's long pickup window, so the ghost is
+    // still a ghost while the assertions below run.
+    await sessionPage.typeMessage('queued while compacting, pickup after turn')
+    await sessionPage.getSendButton().click()
+
+    const ghost = page.locator('[data-testid="queued-user-message"]')
+    await expect(ghost).toBeVisible({ timeout: 5000 })
+
+    await expect(compactingLine).toBeVisible()
+    await expect(sessionPage.getActivityIndicator()).toContainText('Compacting')
+
+    const lineBox = await compactingLine.boundingBox()
+    const ghostBox = await ghost.boundingBox()
+    expect(lineBox!.y).toBeLessThan(ghostBox!.y)
+
+    // Compaction finishes on its own, and only then does the live line go away.
+    // (The persisted boundary it becomes is inside the completed turn, which
+    // collapses behind its summary once the session is idle.)
+    await expect(compactingLine).not.toBeAttached({ timeout: 25000 })
+    await expect(
+      sessionPage.getAssistantMessages().filter({ hasText: 'Compacted the conversation.' })
+    ).toBeVisible({ timeout: 15000 })
+  })
+
   test('a queued message can be cancelled before pickup', async ({ page }) => {
     await sessionPage.sendMessage('please work slowly for the cancel test')
     await expect(sessionPage.getStopButton()).toBeVisible({ timeout: 10000 })

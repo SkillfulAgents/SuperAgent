@@ -476,29 +476,42 @@ function getOrCreateEventSource(
       else if (data.type === 'session_active') {
         // Session became active - user sent a message
         if (data.sessionId && data.sessionId !== sessionId) return
-        // Reset thinking stream for the new turn
-        sessionThinking.delete(sessionId)
+        // This frame carries TWO meanings: a genuinely new turn, and a
+        // queued/steering message accepted into a turn that is already running
+        // (`queuedMidTurn`). Deciding reset-vs-preserve field by field produced a
+        // long tail of bugs — queueing a follow-up blanked the running turn's
+        // whole status surface (SUP-736) — so the rule is encoded once, as two
+        // named groups, instead:
+        //
+        //   message-scoped — invalidated by ANY accepted message.
+        //   turn-scoped    — only a real turn boundary ends these. Mid-turn the
+        //                    compaction, thinking blocks, subagents, retry and
+        //                    elapsed clock all belong to the turn still running.
+        //
+        // Everything else carries over from the state we already hold, so state
+        // added to StreamState later survives a mid-turn pickup by default —
+        // opting it out is an explicit line in the turn-scoped group.
+        const queuedMidTurn = data.queuedMidTurn === true
+        // The thinking stream lives outside StreamState but is turn-scoped too.
+        if (!queuedMidTurn) sessionThinking.delete(sessionId)
         streamStates.set(sessionId, {
+          ...(current ?? EMPTY_STREAM_STATE),
           isActive: true,
-          isStreaming: current?.isStreaming ?? false,
-          streamingMessage: current?.streamingMessage ?? null,
-          streamingToolUses: current?.streamingToolUses ?? [],
-          error: null, // Clear any previous error when starting new request
+          // Message-scoped: a new message clears the last error, ends whatever
+          // typing indicator it belongs to, and resumes work that was parked on
+          // background tasks.
+          error: null,
           apiErrorCode: null,
-          browserActive: current?.browserActive ?? false,
-          computerUseApp: current?.computerUseApp ?? null,
-          computerUseAppIcon: current?.computerUseAppIcon ?? null,
-          activeStartTime: Date.now(),
-          isCompacting: false,
-          contextUsage: current?.contextUsage ?? null,
-          activeSubagents: [],
-          completedSubagents: null,
           typingUser: null,
-          peerUserMessages: current?.peerUserMessages ?? [],
-          apiRetry: null,
-          backgroundTasks: current?.backgroundTasks ?? [],
           isWaitingBackground: false,
-          discardedCommandUuids: current?.discardedCommandUuids ?? [],
+          // Turn-scoped: a new turn only.
+          ...(queuedMidTurn ? {} : {
+            activeStartTime: Date.now(),
+            isCompacting: false,
+            activeSubagents: [],
+            completedSubagents: null,
+            apiRetry: null,
+          }),
         })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
       }

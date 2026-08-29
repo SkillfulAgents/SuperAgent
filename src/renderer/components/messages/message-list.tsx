@@ -1346,6 +1346,13 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
           <DeliveredFiles files={turnDeliveredFiles.get(deferredElapsedMessageId)!} agentSlug={agentSlug} />
         )}
 
+        {/* Real-time compacting indicator. Above the queued ghosts: a message
+            queued during compaction is picked up on the far side of the
+            boundary, so it belongs below the compact line, not above it. */}
+        {isCompacting && (
+          <CompactBoundaryItem isCompacting />
+        )}
+
         {/* Queued ghosts — waiting for the agent loop to pick them up, so they
             always sit below the current turn's streaming output and tools. */}
         {visiblePeerMessages.filter((p) => p.queued).map(renderPeerGhost)}
@@ -1365,11 +1372,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
               </span>
             </div>
           </div>
-        )}
-
-        {/* Real-time compacting indicator */}
-        {isCompacting && (
-          <CompactBoundaryItem isCompacting />
         )}
 
         {/* Pending interactive requests render in the composer slot — see SessionChatColumn. */}
