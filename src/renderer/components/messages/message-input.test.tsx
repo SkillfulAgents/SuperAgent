@@ -7,6 +7,8 @@ import { renderWithProviders } from '@renderer/test/test-utils'
 import { useDraft } from '@renderer/context/drafts-context'
 import { useEffect } from 'react'
 import { setMarkdownComposerSelection } from './markdown-composer-editor'
+import { pendingAttachmentDropKey } from '@renderer/lib/pending-attachment-drop'
+import type { DataTransferResult } from '@renderer/lib/file-utils'
 
 // Mock hooks
 const mockSendMessage = {
@@ -1000,6 +1002,31 @@ describe('MessageInput', () => {
       useEffect(() => { setDraft(value) }, [setDraft, value])
       return null
     }
+
+    function AttachmentDropSeeder({ sessionId, value }: { sessionId: string; value: DataTransferResult }) {
+      const [, setPending] = useDraft<DataTransferResult>(pendingAttachmentDropKey(`session:${sessionId}`))
+      useEffect(() => { setPending(value) }, [setPending, value])
+      return null
+    }
+
+    it('drains sidebar-dropped files into the current session composer', async () => {
+      const file = new File(['dropped'], 'dropped.txt', { type: 'text/plain' })
+      const value = { files: [{ file }], folders: [] }
+      renderWithProviders(
+        <>
+          <MessageInput sessionId="s-1" agentSlug="agent-1" />
+          <AttachmentDropSeeder sessionId="s-1" value={value} />
+        </>
+      )
+
+      await waitFor(() => {
+        expect(mockUploadFile.mutateAsync).toHaveBeenCalledWith(expect.objectContaining({
+          sessionId: 's-1',
+          agentSlug: 'agent-1',
+          file,
+        }))
+      })
+    })
 
     it('restores the draft when re-mounted in the same provider', async () => {
       const { rerender } = renderWithProviders(

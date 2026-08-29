@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { cloneElement, isValidElement, type ReactElement } from 'react'
-import { act, screen } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { pointerWithin } from '@dnd-kit/core'
 import { AppSidebar } from './app-sidebar'
@@ -17,6 +17,8 @@ vi.stubGlobal('__RENDER_TRACKING__', false)
 const mockIsElectron = vi.hoisted(() => vi.fn(() => false))
 const mockGetPlatform = vi.hoisted(() => vi.fn(() => 'web'))
 const mockOpenDashboardExternal = vi.hoisted(() => vi.fn())
+const mockNavigate = vi.hoisted(() => vi.fn())
+const mockGetItemsFromDataTransfer = vi.hoisted(() => vi.fn())
 
 vi.mock('@renderer/lib/env', () => ({
   isElectron: mockIsElectron,
@@ -27,6 +29,11 @@ vi.mock('@renderer/lib/env', () => ({
 
 vi.mock('@renderer/lib/api', () => ({
   apiFetch: vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve([]) })),
+}))
+
+vi.mock('@renderer/lib/file-utils', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@renderer/lib/file-utils')>(),
+  getItemsFromDataTransfer: mockGetItemsFromDataTransfer,
 }))
 
 const mockUseAgents = vi.fn()
@@ -128,7 +135,7 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
   return {
     ...actual,
     useRouter: () => ({ history: mockHistory }),
-    useNavigate: () => () => {},
+    useNavigate: () => mockNavigate,
     useParams: () => mockRouteParams,
     useRouterState: (opts?: { select?: (s: { location: { pathname: string } }) => unknown }) =>
       opts?.select ? opts.select({ location: { pathname: mockRoutePathname } }) : undefined,
@@ -254,14 +261,14 @@ vi.mock('@renderer/components/ui/sidebar', () => ({
     asChild && isValidElement(children)
       ? cloneElement(children as ReactElement, { 'data-active': isActive ? 'true' : 'false', ...props })
       : <button onClick={onClick} data-active={isActive ? 'true' : 'false'} {...props}>{children}</button>,
-  SidebarMenuItem: ({ children, onMouseEnter }: any) => <li onMouseEnter={onMouseEnter}>{children}</li>,
+  SidebarMenuItem: ({ children, ...props }: any) => <li {...props}>{children}</li>,
   SidebarMenuSkeleton: () => <div data-testid="skeleton" />,
   SidebarMenuSub: ({ children }: any) => <ul>{children}</ul>,
   SidebarMenuSubButton: ({ children, isActive, asChild, ...props }: any) =>
     asChild && isValidElement(children)
       ? cloneElement(children as ReactElement, { 'data-active': isActive ? 'true' : 'false', ...props })
       : <div data-active={isActive ? 'true' : 'false'} {...props}>{children}</div>,
-  SidebarMenuSubItem: ({ children }: any) => <li>{children}</li>,
+  SidebarMenuSubItem: ({ children, ...props }: any) => <li {...props}>{children}</li>,
   SidebarRail: () => null,
   useSidebar: () => ({ setOpenMobile: vi.fn() }),
 }))
@@ -407,6 +414,9 @@ beforeEach(() => {
   delete mockPlatformAuth.platformBaseUrl
   delete mockPlatformAuth.orgId
   mockOpenExternalUrl.mockReset()
+  mockNavigate.mockReset()
+  mockGetItemsFromDataTransfer.mockReset()
+  mockGetItemsFromDataTransfer.mockResolvedValue({ files: [], folders: [] })
 })
 
 describe('AppSidebar — layout & top nav', () => {
@@ -617,6 +627,66 @@ describe('AppSidebar — agent rows', () => {
     renderWithProviders(<AppSidebar />)
     const agentRow = screen.getByTestId('agent-item-test-agent').closest('li')!
     expect(agentRow.querySelector('[aria-label="Expand"]')).toBeNull()
+  })
+
+  it('accepts file drops on an agent row and navigates to its home composer', async () => {
+    const file = new File(['agent'], 'agent.txt', { type: 'text/plain' })
+    mockGetItemsFromDataTransfer.mockResolvedValue({ files: [{ file }], folders: [] })
+    renderWithProviders(<AppSidebar />)
+
+    const row = screen.getByTestId('agent-item-test-agent')
+    const target = row.parentElement!
+    const dataTransfer = { types: ['Files'], items: [{ kind: 'file' }] } as unknown as DataTransfer
+
+    fireEvent.dragEnter(target, { dataTransfer })
+    expect(target).toHaveAttribute('data-file-drop-active', '')
+
+    fireEvent.drop(target, { dataTransfer })
+
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith({
+        to: '/agents/$slug',
+        params: { slug: 'test-agent' },
+      })
+    })
+    expect(target).not.toHaveAttribute('data-file-drop-active')
+  })
+
+  it('accepts file drops on a session row and navigates to its composer', async () => {
+    const file = new File(['session'], 'session.txt', { type: 'text/plain' })
+    mockGetItemsFromDataTransfer.mockResolvedValue({ files: [{ file }], folders: [] })
+    mockRouteParams = { slug: 'test-agent' }
+    renderWithProviders(<AppSidebar />)
+
+    const row = screen.getByTestId('session-item-session-1')
+    const dataTransfer = { types: ['Files'], items: [{ kind: 'file' }] } as unknown as DataTransfer
+
+    const target = row.closest('li')!
+    fireEvent.dragEnter(target, { dataTransfer })
+    expect(target).toHaveAttribute('data-file-drop-active', '')
+
+    fireEvent.drop(target, { dataTransfer })
+
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith({
+        to: '/agents/$slug/sessions/$sessionId',
+        params: { slug: 'test-agent', sessionId: 'session-1' },
+      })
+    })
+  })
+
+  it('ignores non-file drags used by ordinary links and sidebar sorting', () => {
+    renderWithProviders(<AppSidebar />)
+    const row = screen.getByTestId('agent-item-test-agent')
+    const target = row.parentElement!
+    const preventDefault = vi.fn()
+    const dataTransfer = { types: ['text/plain'], items: [] } as unknown as DataTransfer
+
+    fireEvent.dragOver(target, { dataTransfer, preventDefault })
+
+    expect(target).not.toHaveAttribute('data-file-drop-active')
+    expect(mockGetItemsFromDataTransfer).not.toHaveBeenCalled()
+    expect(mockNavigate).not.toHaveBeenCalled()
   })
 })
 

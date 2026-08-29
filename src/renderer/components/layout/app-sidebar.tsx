@@ -129,6 +129,7 @@ import { useRenderTracker } from '@renderer/lib/perf'
 import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
 import { useSkillsets } from '@renderer/hooks/use-skillsets'
 import { useRememberedFlag } from '@renderer/hooks/use-remembered-flag'
+import { useSidebarFileDrop } from './use-sidebar-file-drop'
 
 /** Set once Explore has been opened, which retires its "New" badge. */
 const EXPLORE_SEEN_KEY = 'explore.seen'
@@ -167,6 +168,8 @@ const THIN_SCROLLBAR =
 // toggle with inline options, ~0 with these hoisted.
 const POINTER_SENSOR_OPTIONS = { activationConstraint: { distance: 5 } }
 const KEYBOARD_SENSOR_OPTIONS = { coordinateGetter: sortableKeyboardCoordinates }
+const SIDEBAR_FILE_DROP_CUE =
+  'data-[file-drop-active]:bg-sidebar-accent data-[file-drop-active]:ring-1 data-[file-drop-active]:ring-sidebar-ring'
 
 /** The user-settings fields that together describe the left-nav tree. */
 type AgentTreeSettings = ReturnType<typeof sectionsToSettings>
@@ -200,9 +203,17 @@ function SessionSubItem({
   // redundant — the session clearly isn't asleep).
   const showPendingWake = !!session.pendingWakeAt && !isWorking && !isAwaitingInput
   const { ref: hintRef, hint } = useCmdHintTarget()
+  const dragHandlers = useSidebarFileDrop({
+    kind: 'session',
+    agentSlug,
+    sessionId: session.id,
+  })
 
   return (
-    <SidebarMenuSubItem>
+    <SidebarMenuSubItem
+      {...dragHandlers}
+      className={cn('rounded-md', SIDEBAR_FILE_DROP_CUE)}
+    >
       <SessionContextMenu
         sessionId={session.id}
         sessionName={session.name}
@@ -529,6 +540,11 @@ const AgentMenuItemInner = React.forwardRef<
   }
 
   const { ref: hintRef, hint } = useCmdHintTarget()
+  const dragHandlers = useSidebarFileDrop({
+    kind: 'agent',
+    agentSlug: agent.slug,
+    displaySlug: agent.displaySlug,
+  })
 
   return (
     <Collapsible asChild open={isOpen && !isDragActive} onOpenChange={setIsOpen}>
@@ -538,7 +554,10 @@ const AgentMenuItemInner = React.forwardRef<
           chevron tracks the row height, not the (potentially expanded) menu
           item that also contains CollapsibleContent below.
         */}
-        <div className="relative">
+        <div
+          className={cn('relative rounded-md', SIDEBAR_FILE_DROP_CUE)}
+          {...dragHandlers}
+        >
           <AgentContextMenu agent={agent}>
             <SidebarMenuButton
               asChild
