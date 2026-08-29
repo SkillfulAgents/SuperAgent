@@ -49,6 +49,7 @@ import {
   getAgentClaudeMdContent,
   setAgentClaudeMdContent,
 } from './agent-service'
+import { registerSession, sessionBelongsToAgent } from './session-service'
 
 describe('agent-service', () => {
   let testDir: string
@@ -474,6 +475,27 @@ Instructions`
       await deleteAgent('test-agent')
 
       expect(mockStopContainer).toHaveBeenCalledWith('test-agent')
+    })
+
+    it('releases the deleted agent session ownership', async () => {
+      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+      await registerSession('test-agent', 'owned-session', 'Owned')
+
+      await deleteAgent('test-agent')
+
+      expect(await sessionBelongsToAgent('test-agent', 'owned-session')).toBe(false)
+    })
+
+    it('releases stale ownership when the agent directory is already missing', async () => {
+      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+      await registerSession('test-agent', 'stale-session', 'Stale')
+      await fs.promises.rm(path.join(testDir, 'agents', 'test-agent'), {
+        recursive: true,
+        force: true,
+      })
+
+      await expect(deleteAgent('test-agent')).resolves.toBe(false)
+      expect(await sessionBelongsToAgent('test-agent', 'stale-session')).toBe(false)
     })
   })
 

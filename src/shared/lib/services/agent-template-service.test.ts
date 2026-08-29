@@ -36,6 +36,7 @@ vi.mock('@shared/lib/services/skillset-service', async (importOriginal) => {
 
 vi.mock('@shared/lib/services/agent-service', () => ({
   createAgentFromExistingWorkspace: vi.fn(),
+  deleteAgent: vi.fn(),
   getAgentWithStatus: vi.fn(),
 }))
 
@@ -78,9 +79,9 @@ import {
   MAX_TEMPLATE_PROMPT_SIZE,
   getDiscoverableAgents,
 } from './agent-template-service'
-import { createAgentFromExistingWorkspace, getAgentWithStatus } from '@shared/lib/services/agent-service'
+import { createAgentFromExistingWorkspace, deleteAgent, getAgentWithStatus } from '@shared/lib/services/agent-service'
 import { getSkillsetIndex } from '@shared/lib/services/skillset-service'
-import { listSessions, sessionBelongsToAgent } from '@shared/lib/services/session-service'
+import { listSessions, registerSession, sessionBelongsToAgent } from '@shared/lib/services/session-service'
 
 // ============================================================================
 // Shared Constants & Helpers
@@ -2337,6 +2338,7 @@ describe('importAgentFromTemplate (full mode)', () => {
   let testDir: string
   let originalEnv: string | undefined
   const mockCreateAgent = vi.mocked(createAgentFromExistingWorkspace)
+  const mockDeleteAgent = vi.mocked(deleteAgent)
   const mockGetAgentWithStatus = vi.mocked(getAgentWithStatus)
 
   beforeEach(async () => {
@@ -2346,6 +2348,7 @@ describe('importAgentFromTemplate (full mode)', () => {
     originalEnv = process.env.SUPERAGENT_DATA_DIR
     process.env.SUPERAGENT_DATA_DIR = testDir
     vi.clearAllMocks()
+    mockDeleteAgent.mockResolvedValue(true)
   })
 
   afterEach(async () => {
@@ -2433,6 +2436,24 @@ describe('importAgentFromTemplate (full mode)', () => {
         name: 'Imported session',
       }),
     ])
+  })
+
+  it('removes the imported agent when session ownership collides', async () => {
+    setupAgentMock('import-session-collision')
+    const sessionId = crypto.randomUUID()
+    const existingWorkspace = path.join(testDir, 'agents', 'existing-agent', 'workspace')
+    fs.mkdirSync(existingWorkspace, { recursive: true })
+    await registerSession('existing-agent', sessionId, 'Existing session')
+    const zipBuffer = await makeZip({
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      [`.claude/projects/-workspace/${sessionId}.jsonl`]: '{}\n',
+    })
+
+    await expect(
+      importAgentFromTemplate(zipBuffer, undefined, 'full'),
+    ).rejects.toThrow(`Session ${sessionId} is already owned by another agent`)
+
+    expect(mockDeleteAgent).toHaveBeenCalledWith('import-session-collision')
   })
 
   it('still blocks path traversal in full mode', async () => {

@@ -40,7 +40,7 @@ import {
   refreshSkillset,
 } from '@shared/lib/services/skillset-service'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
-import { createAgentFromExistingWorkspace, getAgentWithStatus, listAgents } from '@shared/lib/services/agent-service'
+import { createAgentFromExistingWorkspace, deleteAgent, getAgentWithStatus, listAgents } from '@shared/lib/services/agent-service'
 import { registerImportedSessionOwnership } from '@shared/lib/services/session-service'
 import type {
   SkillsetConfig,
@@ -550,6 +550,7 @@ export async function importAgentFromTemplate(
   mode: 'template' | 'full' = 'template',
 ): Promise<ApiAgent> {
   const reader = await openZipSource(zip)
+  let createdAgentSlug: string | undefined
   try {
     const validation = validateTemplateEntries(reader.entries, mode)
     if (!validation.valid) {
@@ -568,6 +569,7 @@ export async function importAgentFromTemplate(
     const effectiveName = nameOverride?.trim() || agentName
 
     const agent = await createAgentFromExistingWorkspace(effectiveName || 'Imported Agent')
+    createdAgentSlug = agent.slug
     const workspaceDir = getAgentWorkspaceDir(agent.slug)
 
     const stripPrefix = validation.stripPrefix
@@ -623,7 +625,24 @@ export async function importAgentFromTemplate(
     }
 
     const result = await getAgentWithStatus(agent.slug)
+    createdAgentSlug = undefined
     return result || agent
+  } catch (error) {
+    if (createdAgentSlug) {
+      try {
+        await deleteAgent(createdAgentSlug)
+      } catch (cleanupError) {
+        console.error(`Failed to roll back imported agent "${createdAgentSlug}":`, cleanupError)
+        captureException(cleanupError, {
+          tags: { area: 'agent-template-import', op: 'rollback' },
+          extra: {
+            agentSlug: createdAgentSlug,
+            originalError: error instanceof Error ? error.message : String(error),
+          },
+        })
+      }
+    }
+    throw error
   } finally {
     reader.close()
   }
