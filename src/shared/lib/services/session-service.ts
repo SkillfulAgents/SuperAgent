@@ -197,21 +197,6 @@ async function releaseSessionOwnership(agentSlug: string, sessionIds: string[]):
   for (const sessionId of released) removeSessionFromSummaryCache(agentSlug, sessionId)
 }
 
-export async function releaseAgentSessionOwnership(agentSlug: string): Promise<void> {
-  const released: string[] = []
-  await mutateSessionOwnership((owners) => {
-    let changed = false
-    for (const [sessionId, owner] of Object.entries(owners)) {
-      if (owner !== agentSlug) continue
-      delete owners[sessionId]
-      released.push(sessionId)
-      changed = true
-    }
-    return changed
-  })
-  for (const sessionId of released) removeSessionFromSummaryCache(agentSlug, sessionId)
-}
-
 async function resolveSessionOwner(sessionId: string): Promise<string | null | undefined> {
   const owners = await loadSessionOwnershipMap()
   return Object.hasOwn(owners, sessionId) ? owners[sessionId] : undefined

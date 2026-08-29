@@ -34,7 +34,7 @@ import type { ApiAgent } from '@shared/lib/types/api'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
-import { getSessionSummary, releaseAgentSessionOwnership } from './session-service'
+import { getSessionSummary } from './session-service'
 
 // ============================================================================
 // Internal to API Type Conversion
@@ -349,7 +349,6 @@ export async function deleteAgent(slug: string): Promise<boolean> {
   const agentDir = getAgentDir(slug)
 
   if (!(await directoryExists(agentDir))) {
-    await releaseAgentSessionOwnership(slug)
     return false
   }
 
@@ -372,7 +371,6 @@ export async function deleteAgent(slug: string): Promise<boolean> {
 
   // Remove directory only after the container has been confirmed stopped.
   await removeDirectory(agentDir)
-  await releaseAgentSessionOwnership(slug)
 
   return true
 }
