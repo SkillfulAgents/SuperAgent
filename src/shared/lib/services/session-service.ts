@@ -214,6 +214,29 @@ export async function reserveSessionOwnership(
   await claimSessionOwnership(agentSlug, sessionId)
 }
 
+export async function registerImportedSessionOwnership(agentSlug: string): Promise<void> {
+  const sessionIds = await candidateSessionIdsForAgent(agentSlug)
+  if (sessionIds.size === 0) return
+
+  let claimedAny = false
+  await mutateSessionOwnership((owners) => {
+    for (const sessionId of sessionIds) {
+      if (Object.hasOwn(owners, sessionId) && owners[sessionId] !== agentSlug) {
+        throw new Error(`Session ${sessionId} is already owned by another agent`)
+      }
+    }
+
+    for (const sessionId of sessionIds) {
+      if (!Object.hasOwn(owners, sessionId)) {
+        owners[sessionId] = agentSlug
+        claimedAny = true
+      }
+    }
+    return claimedAny
+  })
+  if (claimedAny) invalidateSessionSummaryCache(agentSlug)
+}
+
 /**
  * Authoritative ownership check for registries keyed by session id alone.
  * Unlike transcript/metadata existence, this cannot be forged from inside an

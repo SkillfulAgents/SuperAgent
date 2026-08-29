@@ -201,6 +201,27 @@ describe('sessionIsKnown', () => {
     expect(await sessionIsKnown('agent-b', 'future-session')).toBe(true)
   })
 
+  it('rejects an imported ownership collision without claiming other sessions', async () => {
+    const {
+      registerImportedSessionOwnership,
+      registerSession,
+      sessionBelongsToAgent,
+    } = await importService()
+    makeAgent('agent-a')
+    makeAgent('agent-b')
+    await registerSession('agent-a', 'shared-session', 'Existing')
+    writeTranscript('agent-b', 'shared-session')
+    writeTranscript('agent-b', 'new-session')
+
+    await expect(registerImportedSessionOwnership('agent-b')).rejects.toThrow(
+      'Session shared-session is already owned by another agent',
+    )
+
+    expect(await sessionBelongsToAgent('agent-a', 'shared-session')).toBe(true)
+    expect(await sessionBelongsToAgent('agent-b', 'shared-session')).toBe(false)
+    expect(await sessionBelongsToAgent('agent-b', 'new-session')).toBe(false)
+  })
+
   it('rejects an unknown session id', async () => {
     const { sessionIsKnown } = await importService()
     makeAgent('agent-a')

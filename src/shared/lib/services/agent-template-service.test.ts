@@ -80,6 +80,7 @@ import {
 } from './agent-template-service'
 import { createAgentFromExistingWorkspace, getAgentWithStatus } from '@shared/lib/services/agent-service'
 import { getSkillsetIndex } from '@shared/lib/services/skillset-service'
+import { listSessions, sessionBelongsToAgent } from '@shared/lib/services/session-service'
 
 // ============================================================================
 // Shared Constants & Helpers
@@ -2400,6 +2401,38 @@ describe('importAgentFromTemplate (full mode)', () => {
 
     const sessionPath = path.join(workspaceDir, 'session-metadata.json')
     expect(fs.existsSync(sessionPath)).toBe(true)
+  })
+
+  it('registers imported full-mode sessions to the new agent', async () => {
+    setupAgentMock('import-session-owner')
+    const sessionId = crypto.randomUUID()
+    expect(await sessionBelongsToAgent('import-session-owner', sessionId)).toBe(false)
+    const zipBuffer = await makeZip({
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'session-metadata.json': JSON.stringify({
+        [sessionId]: {
+          name: 'Imported session',
+          createdAt: '2026-08-28T12:00:00.000Z',
+        },
+      }),
+      [`.claude/projects/-workspace/${sessionId}.jsonl`]: `${JSON.stringify({
+        type: 'user',
+        uuid: crypto.randomUUID(),
+        sessionId,
+        message: { role: 'user', content: 'Hello' },
+      })}\n`,
+    })
+
+    await importAgentFromTemplate(zipBuffer, undefined, 'full')
+
+    expect(await sessionBelongsToAgent('import-session-owner', sessionId)).toBe(true)
+    await expect(listSessions('import-session-owner')).resolves.toEqual([
+      expect.objectContaining({
+        id: sessionId,
+        agentSlug: 'import-session-owner',
+        name: 'Imported session',
+      }),
+    ])
   })
 
   it('still blocks path traversal in full mode', async () => {

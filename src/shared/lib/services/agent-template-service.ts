@@ -41,6 +41,7 @@ import {
 } from '@shared/lib/services/skillset-service'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import { createAgentFromExistingWorkspace, getAgentWithStatus, listAgents } from '@shared/lib/services/agent-service'
+import { registerImportedSessionOwnership } from '@shared/lib/services/session-service'
 import type {
   SkillsetConfig,
   InstalledAgentMetadata,
@@ -603,6 +604,10 @@ export async function importAgentFromTemplate(
         MAX_UNCOMPRESSED_SIZE - totalExtracted,
       )
       totalExtracted += bytesWritten
+    }
+
+    if (mode === 'full') {
+      await registerImportedSessionOwnership(agent.slug)
     }
 
     if (nameOverride?.trim()) {
