@@ -1104,3 +1104,53 @@ html[data-keyboard-open] [data-composer-footer] {
     animation: none;
   }
 }
+
+/*
+  Title shimmer for the blocking status dialogs (template install / onboarding
+  setup). Same mask-subtraction technique as .tree-tracer above: the text keeps
+  its own color, and the mask sweeps a full-alpha band across a dimmed rest
+  state. Tile width equals the travel distance, so the loop is seamless.
+*/
+@keyframes status-title-shimmer {
+  from { -webkit-mask-position: -160px 0; mask-position: -160px 0; }
+  to { -webkit-mask-position: 320px 0; mask-position: 320px 0; }
+}
+
+.status-title-shimmer {
+  /* Inverted sweep: the text rests at full strength and the traveling band
+     LIGHTENS it (lower alpha over the page background reads as a lighter
+     ink). This is the one prominence dial — lower = brighter streak. */
+  --status-shimmer-band: 0.35;
+  /* A mask clips to the border box, and the dialog title's leading-none leaves
+     descender ink below it. Grow the box over the ink with padding and cancel
+     the layout delta with matching negative margins. */
+  padding: 0.25em 0;
+  margin: -0.25em 0;
+  -webkit-mask-image: linear-gradient(
+    to right,
+    rgba(0, 0, 0, 1) 0px,
+    rgba(0, 0, 0, var(--status-shimmer-band)) 80px,
+    rgba(0, 0, 0, 1) 160px,
+    rgba(0, 0, 0, 1) 480px
+  );
+  mask-image: linear-gradient(
+    to right,
+    rgba(0, 0, 0, 1) 0px,
+    rgba(0, 0, 0, var(--status-shimmer-band)) 80px,
+    rgba(0, 0, 0, 1) 160px,
+    rgba(0, 0, 0, 1) 480px
+  );
+  -webkit-mask-size: 480px 100%;
+  mask-size: 480px 100%;
+  -webkit-mask-repeat: repeat;
+  mask-repeat: repeat;
+  animation: status-title-shimmer 2s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-title-shimmer {
+    -webkit-mask-image: none;
+    mask-image: none;
+    animation: none;
+  }
+}
