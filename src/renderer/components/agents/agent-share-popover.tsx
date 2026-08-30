@@ -379,7 +379,7 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
                   <TabsTrigger
                     key={t.id}
                     value={t.id}
-                    className="px-2.5 text-sm"
+                    className="px-2.5 text-xs"
                     data-testid={`agent-share-tab-${t.id}`}
                   >
                     {t.label}
