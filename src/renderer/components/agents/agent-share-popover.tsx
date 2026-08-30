@@ -403,8 +403,8 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
                 <div className="space-y-4">
                   {/* Hero (Notion "Publish to web"-style) */}
                   <div className="space-y-1 pt-2 text-center">
-                    <p className="text-lg font-medium leading-none tracking-tight">Publish to a Library</p>
-                    <p className="text-sm text-muted-foreground">
+                    <p className="text-sm font-medium">Publish to a Library</p>
+                    <p className="text-xs text-muted-foreground">
                       Libraries are shared collections of agent templates and
                       skills. Publish this agent so teammates can install their
                       own copy.
