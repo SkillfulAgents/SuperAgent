@@ -250,6 +250,61 @@ describeWithPython('session-history helper scripts', () => {
       expect(run(LIST, ['--grep', 'pricing'])).toContain('best match first');
     });
 
+    // Caught live: the top "pricing" hit (20 matches) was the agent's own
+    // earlier grep for the term — all tool traffic — and the real discussion
+    // ranked second. The doc says "trust the ranking", so the ranking must
+    // count only what was actually said.
+    it('counts --grep hits in spoken turns only, not tool traffic', () => {
+      writeSession(
+        'aaaa9999-0000',
+        [
+          sessionAt('2026-08-25T10:00:00.000Z', 'one pricing mention while searching'),
+          assistantToolUse('t1', 'Bash', {
+            command: 'grep -c pricing pricing pricing pricing *.jsonl',
+          }),
+          toolResult('t2', 'pricing pricing pricing pricing pricing pricing'),
+        ].join('')
+      );
+      writeSession(
+        'bbbb8888-0000',
+        [
+          sessionAt('2026-08-20T10:00:00.000Z', 'lets settle pricing: pricing tiers'),
+          assistantText('a1', 'the pricing plan is three tiers'),
+        ].join('')
+      );
+      // Only tool traffic matches → the session does not match at all.
+      writeSession('cccc7777-0000', toolResult('t3', 'pricing pricing pricing'));
+
+      const rows = run(LIST, ['--grep', 'pricing']).trim().split('\n');
+      expect(rows[0]).toContain('bbbb8888-0000');
+      expect(rows[1]).toContain('aaaa9999-0000');
+      expect(run(LIST, ['--grep', 'pricing'])).not.toContain('cccc7777-0000');
+    });
+
+    it('does not double --grep counts across a resume replay', () => {
+      const original = sessionAt('2026-08-20T10:00:00.000Z', 'the invoicing question');
+      // A resume re-appends the prior history verbatim, original uuids and all.
+      writeSession('dddd6666-0000', original + original);
+
+      const rows = JSON.parse(run(LIST, ['--grep', 'invoicing', '--json']));
+      expect(rows).toHaveLength(1);
+      expect(rows[0].matches).toBe(1);
+    });
+
+    it('rejects an invalid --grep regex with a clean error, not a traceback', () => {
+      writeSession('eeee5555-0000', userText('u1', 'hello'));
+
+      for (const argv of [
+        [LIST, '--grep', 'pricing (', '--dir', sessionsDir],
+        [READ, 'eeee5555-0000', '--grep', 'pricing (', '--dir', sessionsDir],
+      ]) {
+        const result = spawnSync(PYTHON, argv, { encoding: 'utf-8' });
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain('invalid regex');
+        expect(result.stderr).not.toContain('Traceback');
+      }
+    });
+
     it('emits machine-readable rows under --json', () => {
       writeSession('88888888-8888', userText('u1', 'hello there'));
 

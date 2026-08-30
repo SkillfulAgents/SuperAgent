@@ -61,11 +61,14 @@ python3 /opt/gamut/bin/list-sessions.py --json --limit 100
 
 One row per session, newest activity first: timestamp (UTC, like the timestamps
 inside a transcript), session id, size, and a headline — the name the app stored, or the first user message when it has none.
-`--grep` scans whole transcripts, keeps only the sessions that match, and ranks
-them by hit count with the count shown — the fastest way from "we discussed X"
-to a session id. Trust that ranking rather than counting matches yourself: a
-common word turns up in nearly every session, and the hit count is what
-separates the conversation about X from the ones that merely mention it.
+`--grep` searches what was said — user and agent turns, not tool calls, tool
+results, or thinking — keeps only the sessions that match, and ranks them by
+hit count with the count shown — the fastest way from "we discussed X" to a
+session id. Trust that ranking rather than counting matches yourself: a common
+word turns up in nearly every session, and the hit count is what separates the
+conversation about X from the ones that merely mention it. If a term only ever
+appeared inside tool traffic (a file you read, a command you ran), it will not
+match here — fall back to raw `grep` across the transcripts (see below).
 `--sort started --oldest-first` walks the history forwards instead, for "what
 have we worked on so far".
 

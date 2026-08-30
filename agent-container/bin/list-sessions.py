@@ -191,8 +191,52 @@ def iso_to_utc(value):
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=dt.timezone.utc)
 
 
+def compile_pattern(spec):
+    """Compile a --grep regex, exiting cleanly on a bad one."""
+    try:
+        return re.compile(spec, re.IGNORECASE)
+    except re.error as exc:
+        raise SystemExit(f"--grep: invalid regex {spec!r} ({exc})")
+
+
+def spoken_texts(entry):
+    """Yield the spoken text in one transcript entry — what the user typed and
+    what the agent said back. Tool calls, tool results, and thinking are
+    deliberately not spoken here.
+    """
+    kind = entry.get("type")
+    if kind == "user":
+        content = entry.get("message", {}).get("content")
+        if isinstance(content, str):
+            text = clean_text(content)
+            if text and not text.startswith(NOISE_PREFIXES):
+                yield text
+    elif kind == "assistant":
+        content = entry.get("message", {}).get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    yield block.get("text", "")
+    elif kind == "attachment":
+        attachment = entry.get("attachment") or {}
+        if (
+            attachment.get("type") == "queued_command"
+            and attachment.get("commandMode") == "prompt"
+            and not attachment.get("isMeta")
+        ):
+            prompt = attachment.get("prompt")
+            if isinstance(prompt, str):
+                yield clean_text(prompt)
+
+
 def count_matches(path, pattern):
-    """How many times the pattern occurs in the transcript. Streams — files get large.
+    """How many times the pattern occurs in the session's spoken turns.
+
+    Spoken turns only — tool calls, tool results, thinking, and sidechain
+    lines are excluded, because a session where the agent merely grepped for a
+    term would otherwise outrank the conversation about it (caught live: the
+    top "pricing" hit was the agent's own earlier search). Deduped by uuid so
+    a resume's replayed history does not double the count.
 
     A count rather than a bool because a common term matches nearly every
     session; the count is what separates "the conversation about X" from the
@@ -200,10 +244,23 @@ def count_matches(path, pattern):
     hand-rolling a `grep -c` pass.
     """
     total = 0
+    seen = set()
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as handle:
             for line in handle:
-                total += len(pattern.findall(line))
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                if entry.get("isSidechain"):
+                    continue
+                uuid = entry.get("uuid")
+                if uuid is not None:
+                    if uuid in seen:
+                        continue
+                    seen.add(uuid)
+                for text in spoken_texts(entry):
+                    total += len(pattern.findall(text))
     except OSError:
         return 0
     return total
@@ -226,7 +283,8 @@ def main():
     parser.add_argument("--since", metavar="SPEC",
                         help="only sessions active since 7d / 24h / 30m / YYYY-MM-DD")
     parser.add_argument("--grep", metavar="PATTERN",
-                        help="only sessions whose transcript matches this regex")
+                        help="only sessions whose conversation matches this regex "
+                             "(spoken turns; tool traffic is not searched)")
     parser.add_argument("--sort", choices=("activity", "started"), default="activity",
                         help="order by last activity (default) or by when the session started")
     parser.add_argument("--oldest-first", action="store_true",
@@ -242,7 +300,7 @@ def main():
         raise SystemExit(f"No transcript directory at {directory}")
 
     cutoff = parse_since(args.since) if args.since else None
-    pattern = re.compile(args.grep, re.IGNORECASE) if args.grep else None
+    pattern = compile_pattern(args.grep) if args.grep else None
     metadata = load_metadata(directory)
 
     rows = []

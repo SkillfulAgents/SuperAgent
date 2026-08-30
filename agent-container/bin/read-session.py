@@ -109,6 +109,14 @@ def resolve_session(directory, wanted):
     raise SystemExit(f"{wanted!r} matches {len(prefixed)} sessions; use a longer prefix")
 
 
+def compile_pattern(spec):
+    """Compile a --grep regex, exiting cleanly on a bad one."""
+    try:
+        return re.compile(spec, re.IGNORECASE)
+    except re.error as exc:
+        raise SystemExit(f"--grep: invalid regex {spec!r} ({exc})")
+
+
 def block_text(blocks, max_chars):
     """Render one message's content blocks into (spoken, rendered) text.
 
@@ -237,7 +245,7 @@ def main():
     args = parser.parse_args()
 
     path = resolve_session(sessions_dir(args.dir), args.session)
-    pattern = re.compile(args.grep, re.IGNORECASE) if args.grep else None
+    pattern = compile_pattern(args.grep) if args.grep else None
 
     lines = []
     pending_internal = False
