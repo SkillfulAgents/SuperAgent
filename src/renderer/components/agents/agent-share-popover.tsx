@@ -58,10 +58,10 @@ function RoleSelectItems() {
   return (
     <>
       {ROLE_OPTIONS.map((role) => (
-        <SelectItem key={role.value} value={role.value} className="pr-8 text-sm">
+        <SelectItem key={role.value} value={role.value} className="pr-8 text-[11px]">
           <div className="flex flex-col items-start gap-0.5">
             <span>{role.label}</span>
-            <span className="text-xs text-muted-foreground">{role.description}</span>
+            <span className="text-[10px] text-muted-foreground">{role.description}</span>
           </div>
         </SelectItem>
       ))}
@@ -72,7 +72,7 @@ function RoleSelectItems() {
 function UserAvatar({ name, className }: { name: string; className?: string }) {
   return (
     <div
-      className={`flex shrink-0 items-center justify-center rounded-full bg-muted font-medium uppercase text-muted-foreground ${className ?? 'h-7 w-7 text-xs'}`}
+      className={`flex shrink-0 items-center justify-center rounded-full bg-muted font-medium uppercase text-muted-foreground ${className ?? 'h-7 w-7 text-[11px]'}`}
     >
       {name.charAt(0) || '?'}
     </div>
@@ -244,11 +244,11 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
       >
         <UserAvatar name={entry.userName} />
         <div className="min-w-0 flex-1">
-          <div className="truncate text-sm">
+          <div className="truncate text-[11px]">
             {entry.userName}
             {isSelf && <span className="text-muted-foreground"> (You)</span>}
           </div>
-          <div className="truncate text-xs text-muted-foreground">{entry.userEmail}</div>
+          <div className="truncate text-[11px] text-muted-foreground">{entry.userEmail}</div>
         </div>
         <TooltipProvider>
           <Tooltip>
@@ -268,7 +268,7 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
                   disabled={isLastOwner}
                 >
                   <SelectTrigger
-                    className="h-7 w-auto shrink-0 gap-1 border-none bg-transparent px-1.5 text-sm text-muted-foreground shadow-none hover:text-foreground focus:ring-0 focus-visible:ring-1 focus-visible:ring-ring"
+                    className="h-7 w-auto shrink-0 gap-1 border-none bg-transparent px-1.5 text-[11px] text-muted-foreground shadow-none hover:text-foreground focus:ring-0 focus-visible:ring-1 focus-visible:ring-ring"
                     data-testid={`access-role-${entry.userId}`}
                   >
                     <SelectValue>{ROLE_LABELS[entry.role]}</SelectValue>
@@ -278,7 +278,7 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
                     <SelectSeparator />
                     <SelectItem
                       value={REMOVE_SENTINEL}
-                      className="pr-8 text-sm text-destructive focus:text-destructive"
+                      className="pr-8 text-[11px] text-destructive focus:text-destructive"
                       data-testid={`access-remove-${entry.userId}`}
                     >
                       Remove
@@ -342,7 +342,7 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
                 {selectedUsers.map((u) => (
                   <span
                     key={u.id}
-                    className="flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-sm"
+                    className="flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[11px]"
                     data-testid={`invite-chip-${u.id}`}
                   >
                     <UserAvatar name={u.name} className="h-4 w-4 text-[10px]" />
@@ -370,13 +370,13 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
                       setSelectedUsers((prev) => prev.slice(0, -1))
                     }
                   }}
-                  className="h-6 min-w-20 flex-1 bg-transparent px-1 text-sm outline-none placeholder:text-muted-foreground"
+                  className="h-6 min-w-20 flex-1 bg-transparent px-1 text-[11px] outline-none placeholder:text-muted-foreground"
                   data-testid="invite-search-input"
                 />
               </div>
               <Select value={inviteRole} onValueChange={(v) => setInviteRole(v as AgentRole)}>
                 <SelectTrigger
-                  className="h-6 w-auto shrink-0 gap-1 border-none bg-transparent px-1 text-sm text-muted-foreground shadow-none hover:text-foreground focus:ring-0 focus-visible:ring-1 focus-visible:ring-ring"
+                  className="h-6 w-auto shrink-0 gap-1 border-none bg-transparent px-1 text-[11px] text-muted-foreground shadow-none hover:text-foreground focus:ring-0 focus-visible:ring-1 focus-visible:ring-ring"
                   data-testid="invite-role-select"
                 >
                   <SelectValue>{ROLE_LABELS[inviteRole]}</SelectValue>
@@ -388,7 +388,7 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
             </label>
             <Button
               size="sm"
-              className="h-8 shrink-0"
+              className="h-8 shrink-0 text-[11px]"
               onClick={() => {
                 if (inviteUsers.isPending) return
                 // No disabled state: with nothing selected, just refocus the input
@@ -404,7 +404,7 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
             </Button>
           </div>
 
-          {error && <p className="px-1 text-xs text-destructive">{error}</p>}
+          {error && <p className="px-1 text-[11px] text-destructive">{error}</p>}
         </div>
 
         {/* People list. While typing it becomes two filtered sections,
@@ -419,7 +419,7 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
             <>
               {matchedAccess.length > 0 && (
                 <>
-                  <p className="px-2 pb-1 pt-0.5 text-xs text-muted-foreground">
+                  <p className="px-2 pb-1 pt-0.5 text-[11px] text-muted-foreground">
                     Already shared with
                   </p>
                   {matchedAccess.map(renderAccessEntry)}
@@ -427,7 +427,7 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
               )}
               {suggested.length > 0 && (
                 <>
-                  <p className={cn('px-2 pb-1 pt-0.5 text-xs text-muted-foreground', matchedAccess.length > 0 && 'pt-2')}>
+                  <p className={cn('px-2 pb-1 pt-0.5 text-[11px] text-muted-foreground', matchedAccess.length > 0 && 'pt-2')}>
                     Not shared with
                   </p>
                   {suggested.map((u) => {
@@ -436,7 +436,7 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
                       <button
                         key={u.id}
                         type="button"
-                        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent"
+                        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] hover:bg-accent"
                         onClick={() => toggleUser(u)}
                         role="checkbox"
                         aria-checked={isSelected}
@@ -445,7 +445,7 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
                         <UserAvatar name={u.name} />
                         <div className="min-w-0 flex-1">
                           <div className="truncate">{u.name}</div>
-                          <div className="truncate text-xs text-muted-foreground">{u.email}</div>
+                          <div className="truncate text-[11px] text-muted-foreground">{u.email}</div>
                         </div>
                         {/* Visual-only checkbox (the row is the control) — mirrors ui/checkbox */}
                         <span
@@ -462,18 +462,18 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
                 </>
               )}
               {matchedAccess.length === 0 && suggested.length === 0 && (
-                <div className="px-2 py-4 text-center text-sm text-muted-foreground">
+                <div className="px-2 py-4 text-center text-[11px] text-muted-foreground">
                   No users found
                 </div>
               )}
             </>
           ) : !accessList?.length ? (
-            <div className="px-2 py-4 text-center text-sm text-muted-foreground">
+            <div className="px-2 py-4 text-center text-[11px] text-muted-foreground">
               No users have access to this agent.
             </div>
           ) : (
             <>
-              <p className="px-2 pb-1 pt-0.5 text-xs text-muted-foreground">
+              <p className="px-2 pb-1 pt-0.5 text-[11px] text-muted-foreground">
                 Members with access
               </p>
               {accessList.map(renderAccessEntry)}
