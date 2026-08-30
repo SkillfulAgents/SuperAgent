@@ -333,7 +333,7 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
         data-testid="agent-share-popover"
       >
         {/* Invite row: chip box + batch role + Share */}
-        <div className="space-y-2 px-3 py-4">
+        <div className="space-y-2 px-3 pb-4 pt-5">
           <div className="flex items-start gap-2">
             {/* label: clicking anywhere in the chip box natively focuses the input.
                 The role select sits inside the box, pinned top-right (Notion-style). */}
