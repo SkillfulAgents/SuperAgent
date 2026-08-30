@@ -213,8 +213,8 @@ export function AgentTemplatePublishPanel({ agentSlug, onBack }: AgentTemplatePu
                   data-testid={`publish-skillset-option-${ss.id}`}
                 >
                   <span className="min-w-0 flex-1">
-                    <p className="text-sm">{ss.name}</p>
-                    <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+                    <p className="text-[11px]">{ss.name}</p>
+                    <p className="mt-0.5 line-clamp-2 text-[11px] text-muted-foreground">
                       {ss.description}
                     </p>
                   </span>

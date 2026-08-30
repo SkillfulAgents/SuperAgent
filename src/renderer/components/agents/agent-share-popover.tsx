@@ -557,8 +557,8 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
                     data-testid={`export-option-${option.id}`}
                   >
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm">{option.title}</p>
-                      <p className="text-xs text-muted-foreground">{option.description}</p>
+                      <p className="text-[11px]">{option.title}</p>
+                      <p className="text-[11px] text-muted-foreground">{option.description}</p>
                     </div>
                     {isSelected ? (
                       <Check className="h-4 w-4 shrink-0" />
