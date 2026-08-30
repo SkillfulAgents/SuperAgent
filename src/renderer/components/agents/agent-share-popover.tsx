@@ -472,7 +472,12 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
               No users have access to this agent.
             </div>
           ) : (
-            accessList.map(renderAccessEntry)
+            <>
+              <p className="px-2 pb-1 pt-0.5 text-xs text-muted-foreground">
+                Members with access
+              </p>
+              {accessList.map(renderAccessEntry)}
+            </>
           )}
         </div>
       </PopoverContent>
