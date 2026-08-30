@@ -144,7 +144,10 @@ async function serveUploadedModelIcon(c: Context) {
     const iconsDir = getModelIconsDataDir()
     const filePath = assertPathWithinDir(iconsDir, path.join(iconsDir, fileName), 'Invalid model icon filename')
     const bytes = await fs.promises.readFile(filePath)
-    c.header('Cache-Control', 'public, max-age=31536000, immutable')
+    // Names are minted as randomUUID().ext, so a name really does address one
+    // immutable body — but the route is authenticated, so keep the year-long
+    // entry out of shared caches and in the requesting browser only.
+    c.header('Cache-Control', 'private, max-age=31536000, immutable')
     c.header('Content-Security-Policy', "default-src 'none'; img-src data:; style-src 'unsafe-inline'")
     c.header('Content-Type', mimeType)
     c.header('X-Content-Type-Options', 'nosniff')
