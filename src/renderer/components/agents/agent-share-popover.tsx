@@ -24,6 +24,7 @@ import {
   useAgentTemplateStatus,
   useExportAgentTemplate,
   useExportAgentFull,
+  useHostExportStatus,
 } from '@renderer/hooks/use-agent-templates'
 import { AgentTemplatePublishPanel } from '@renderer/components/agents/agent-template-publish-panel'
 import { ActivityOrb } from '@renderer/components/messages/activity-orb'
@@ -112,7 +113,11 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
   const { data: templateStatus } = useAgentTemplateStatus(open ? agentSlug : null)
   const exportTemplate = useExportAgentTemplate()
   const exportFull = useExportAgentFull()
-  const exportPending = exportTemplate.isPending || exportFull.isPending
+  // Host-wide guard: exports stream large archives, so any in-flight export
+  // (this window or another) disables the button, same as the settings tab did.
+  const { data: hostExportStatus } = useHostExportStatus()
+  const exportPending =
+    !!hostExportStatus?.inProgress || exportTemplate.isPending || exportFull.isPending
   const canPublish = templateStatus?.type === 'local' && templateStatus.publishable !== false
 
   const resetInvite = () => {
