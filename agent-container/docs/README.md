@@ -28,6 +28,7 @@ itself important.
 
 ## Guides
 
+- `session-history.md`
 - `scheduling-and-resuming.md`
 - `webhooks.md`
 - `media-generation.md`
@@ -35,6 +36,11 @@ itself important.
 - `browser-use.md`
 - `computer-use.md`
 - `x.md`
+
+`session-history.md` is the one guide with executable companions: the two
+readers under `agent-container/bin/`, installed at `/opt/gamut/bin/`. Keep the
+guide's flags and the scripts' argument parsers in step —
+`src/session-history-scripts.test.ts` exercises the scripts, not the prose.
 
 Dashboard guidance is not here — it lives in the `dashboards` skill
 (`agent-container/skills/dashboards/`), which the agent already discovers

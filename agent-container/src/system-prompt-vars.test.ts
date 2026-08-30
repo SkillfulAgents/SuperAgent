@@ -96,6 +96,7 @@ describe('generateSystemPrompt rendering', () => {
     process.env.HOST_PLATFORM = 'darwin'
     const out = generateSystemPrompt()
     const guides = [
+      'session-history.md',
       'scheduling-and-resuming.md',
       'webhooks.md',
       'media-generation.md',
@@ -140,6 +141,24 @@ describe('generateSystemPrompt rendering', () => {
     }
     const shipped = readdirSync(join(__dirname, '..', 'docs'))
       .filter(name => name.endsWith('.md') && name !== 'README.md')
+    expect([...referenced].sort()).toEqual(shipped.sort())
+  })
+
+  // Same failure as a missing guide, one step worse: the agent runs the command
+  // and gets "No such file". The prompt, the guide, and bin/ must name the same
+  // scripts, in every gate combination.
+  it('never names an /opt/gamut/bin script the image does not ship', () => {
+    const referenced = new Set<string>()
+    const sources = [readFileSync(join(__dirname, '..', 'docs', 'session-history.md'), 'utf8')]
+    for (const subagents of ['allow', 'block'] as const) {
+      process.env.PLATFORM_AUTH_ACTIVE = 'true'
+      sources.push(generateSystemPrompt(undefined, undefined, undefined, undefined, undefined, { subagents }))
+    }
+    for (const source of sources) {
+      for (const match of source.matchAll(/\/opt\/gamut\/bin\/([\w.-]+)/g)) referenced.add(match[1])
+    }
+
+    const shipped = readdirSync(join(__dirname, '..', 'bin'))
     expect([...referenced].sort()).toEqual(shipped.sort())
   })
 

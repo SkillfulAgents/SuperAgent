@@ -201,6 +201,12 @@ COPY --chown=claude:claude skills/ /home/claude/.claude/skills/
 COPY --chown=root:root docs/ /opt/gamut/docs/
 RUN chmod -R a-w /opt/gamut/docs
 
+# Helper scripts the guides tell the agent to run (session-history readers).
+# Image-owned and read-only for the same reason as the guides above; the agent
+# runs them with `python3 <path>`, so only the read bit is load-bearing.
+COPY --chown=root:root bin/ /opt/gamut/bin/
+RUN chmod -R a-w /opt/gamut/bin && chmod a+rx /opt/gamut/bin/*.py
+
 # Switch to non-root user
 USER claude
 
