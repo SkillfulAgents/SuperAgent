@@ -24,16 +24,41 @@ export const TOOLKIT_ALLOWED_HOSTS: Record<string, string[]> = {
   discord: ['discord.com'],
 
   // Developer Tools
-  github: ['api.github.com'],
+  // api.github.com serves the REST API only. github.com carries the git
+  // smart-HTTP transport and every non-API endpoint, raw.githubusercontent.com
+  // serves file contents, and uploads.github.com is the separate host the
+  // create-release API hands back as `upload_url`. Download hosts (codeload,
+  // release assets) are reached by redirect, which is followed server-side, so
+  // they need no entry — and naming them directly would inject an Authorization
+  // header onto an already-signed URL.
+  github: [
+    'api.github.com',
+    'github.com',
+    'raw.githubusercontent.com',
+    'uploads.github.com',
+  ],
   gitlab: ['gitlab.com'],
-  bitbucket: ['api.bitbucket.org'],
-  sentry: ['sentry.io'],
-  datadog: ['api.datadoghq.com', 'api.us5.datadoghq.com'],
-  pagerduty: ['api.pagerduty.com'],
+  // bitbucket.org carries the git transport; api.bitbucket.org is REST only.
+  bitbucket: ['api.bitbucket.org', 'bitbucket.org'],
+  // Sentry's API host is region-specific (us.sentry.io, de.sentry.io).
+  sentry: ['sentry.io', '*.sentry.io'],
+  // Datadog has one API host per site; a customer is on exactly one of them.
+  datadog: [
+    'api.datadoghq.com',
+    'api.datadoghq.eu',
+    'api.us3.datadoghq.com',
+    'api.us5.datadoghq.com',
+    'api.ap1.datadoghq.com',
+    'api.ap2.datadoghq.com',
+    'api.ddog-gov.com',
+  ],
+  // events.pagerduty.com is the Events API v2 host, separate from the REST API.
+  pagerduty: ['api.pagerduty.com', 'events.pagerduty.com'],
 
   // Project Management
   notion: ['api.notion.com'],
-  linear: ['api.linear.app'],
+  // uploads.linear.app receives the file uploads the API issues URLs for.
+  linear: ['api.linear.app', 'uploads.linear.app'],
   jira: ['*.atlassian.net'],
   confluence: ['*.atlassian.net'],
   asana: ['app.asana.com', 'api.asana.com'],
@@ -49,19 +74,22 @@ export const TOOLKIT_ALLOWED_HOSTS: Record<string, string[]> = {
   intercom: ['api.intercom.io'],
 
   // Cloud Storage & Documents
-  airtable: ['api.airtable.com'],
+  // content.airtable.com hosts uploadAttachment, which api.airtable.com does not.
+  airtable: ['api.airtable.com', 'content.airtable.com'],
   dropbox: ['api.dropboxapi.com', 'content.dropboxapi.com'],
   box: ['api.box.com', 'upload.box.com'],
   docusign: ['*.docusign.net', '*.docusign.com'],
 
   // Social Media
-  twitter: ['api.twitter.com', 'api.x.com'],
+  // upload.twitter.com serves the v1.1 media upload endpoints.
+  twitter: ['api.twitter.com', 'api.x.com', 'upload.twitter.com'],
   linkedin: ['api.linkedin.com'],
   instagram: ['graph.instagram.com', 'graph.facebook.com'],
 
   // E-Commerce & Finance
   shopify: ['*.myshopify.com'],
-  stripe: ['api.stripe.com'],
+  // files.stripe.com is the file create/upload host.
+  stripe: ['api.stripe.com', 'files.stripe.com'],
   quickbooks: [
     'quickbooks.api.intuit.com',
     'sandbox-quickbooks.api.intuit.com',
