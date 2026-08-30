@@ -7,7 +7,7 @@ import { renderWithProviders } from '@renderer/test/test-utils'
 import { useDraft } from '@renderer/context/drafts-context'
 import { useEffect } from 'react'
 import { setMarkdownComposerSelection } from './markdown-composer-editor'
-import { pendingAttachmentDropKey } from '@renderer/lib/pending-attachment-drop'
+import { pendingAttachmentDropKey, type PendingAttachmentDrop } from '@renderer/lib/pending-attachment-drop'
 import type { DataTransferResult } from '@renderer/lib/file-utils'
 
 // Mock hooks
@@ -1004,8 +1004,8 @@ describe('MessageInput', () => {
     }
 
     function AttachmentDropSeeder({ sessionId, value }: { sessionId: string; value: DataTransferResult }) {
-      const [, setPending] = useDraft<DataTransferResult>(pendingAttachmentDropKey(`session:${sessionId}`))
-      useEffect(() => { setPending(value) }, [setPending, value])
+      const [, setPending] = useDraft<PendingAttachmentDrop>(pendingAttachmentDropKey(`session:${sessionId}`))
+      useEffect(() => { setPending({ items: value, droppedAt: Date.now() }) }, [setPending, value])
       return null
     }
 

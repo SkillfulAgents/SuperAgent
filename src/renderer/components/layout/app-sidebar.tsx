@@ -207,6 +207,9 @@ function SessionSubItem({
     kind: 'session',
     agentSlug,
     sessionId: session.id,
+    // No composer is mounted behind a pending request, so a drop would be
+    // swallowed and then resurface once the request is answered.
+    disabled: isAwaitingInput,
   })
 
   return (
