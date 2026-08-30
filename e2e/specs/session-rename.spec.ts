@@ -49,11 +49,11 @@ test.describe('Session Rename (names must persist)', () => {
     await sessionItem.click({ button: 'right' })
     await page.locator('[data-testid="rename-session-item"]').click()
 
-    const dialog = page.getByRole('dialog', { name: 'Rename Session' })
-    await expect(dialog).toBeVisible()
-    await dialog.getByPlaceholder('Session name').fill(newName)
-    await dialog.getByRole('button', { name: /^Rename$/ }).click()
-    await expect(dialog).not.toBeVisible()
+    const input = page.getByLabel('Session name')
+    await expect(input).toBeVisible()
+    await input.fill(newName)
+    await input.press('Enter')
+    await expect(input).toHaveCount(0)
     await expect(sessionItem).toContainText(newName, { timeout: 10000 })
   }
 

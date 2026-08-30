@@ -10,7 +10,7 @@ import { createElement, type ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { renderHook, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { clearSessionUnreadInCache, useSetSessionMarkedUnread } from './use-sessions'
+import { clearSessionUnreadInCache, useSetSessionMarkedUnread, useUpdateSessionName } from './use-sessions'
 import type { ApiSession } from '@shared/lib/types/api'
 
 const mockApiFetch = vi.fn()
@@ -45,6 +45,32 @@ function renderMutation() {
   const { result } = renderHook(() => useSetSessionMarkedUnread(), { wrapper })
   return { result, invalidate }
 }
+
+describe('useUpdateSessionName invalidation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('refetches the session list and the singular leaf the header reads', async () => {
+    mockApiFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ id: 'sess-1', agentSlug: 'agent-1', name: 'Renamed' }),
+    })
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children)
+    const { result } = renderHook(() => useUpdateSessionName(), { wrapper })
+
+    result.current.mutate({ sessionId: 'sess-1', agentSlug: 'agent-1', name: 'Renamed' })
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['sessions', 'agent-1'] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['session', 'sess-1', 'agent-1'] })
+  })
+})
 
 describe('useSetSessionMarkedUnread invalidation', () => {
   beforeEach(() => {

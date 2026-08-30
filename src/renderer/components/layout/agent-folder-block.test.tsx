@@ -296,6 +296,7 @@ describe('AgentFolderBlock', () => {
   it('opens straight into rename mode for a freshly created folder', () => {
     renderBlock({ initialRenaming: true })
     expect(screen.getByTestId('folder-name-input')).toBeInTheDocument()
+    expect(screen.getByLabelText('Create folder')).toBeInTheDocument()
   })
 
   it('deletes on request', async () => {

@@ -17,17 +17,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@renderer/components/ui/dialog'
-import { Button } from '@renderer/components/ui/button'
-import { Input } from '@renderer/components/ui/input'
-import { useDeleteSession, useUpdateSessionName, useSetSessionMarkedUnread } from '@renderer/hooks/use-sessions'
+import { useDeleteSession, useSetSessionMarkedUnread } from '@renderer/hooks/use-sessions'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { Trash2, ClipboardCopy, Pencil, MessageSquareDot } from 'lucide-react'
@@ -56,6 +46,7 @@ interface SessionContextMenuProps {
    * silent no-op.
    */
   sessionIsLive?: boolean
+  onRenameRequest?: () => void
   children: React.ReactNode
 }
 
@@ -64,17 +55,14 @@ export function SessionContextMenu({
   sessionName,
   agentSlug,
   sessionIsLive = false,
+  onRenameRequest,
   children,
 }: SessionContextMenuProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
-  const [showRenameDialog, setShowRenameDialog] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
-  const [newName, setNewName] = useState(sessionName)
   const [usage, setUsage] = useState<UsageState>({ status: 'idle' })
-  const renameInputRef = useRef<HTMLInputElement>(null)
   const usageRequestRef = useRef(0)
   const deleteSession = useDeleteSession()
-  const updateSessionName = useUpdateSessionName()
   const setSessionMarkedUnread = useSetSessionMarkedUnread()
   const navigate = useNavigate()
   // strict:false → undefined when the menu is opened off the session route
@@ -96,20 +84,6 @@ export function SessionContextMenu({
       console.error('Failed to delete session:', error)
     } finally {
       setIsDeleting(false)
-    }
-  }
-
-  const handleRename = async () => {
-    const trimmed = newName.trim()
-    if (!trimmed || trimmed === sessionName) {
-      setShowRenameDialog(false)
-      return
-    }
-    try {
-      await updateSessionName.mutateAsync({ sessionId, agentSlug, name: trimmed })
-      setShowRenameDialog(false)
-    } catch (error) {
-      console.error('Failed to rename session:', error)
     }
   }
 
@@ -163,13 +137,10 @@ export function SessionContextMenu({
           {children}
         </ContextMenuTrigger>
         <ContextMenuContent>
-          {isOwner && (
+          {isOwner && onRenameRequest && (
             <ContextMenuItem
               data-testid="rename-session-item"
-              onClick={() => {
-                setNewName(sessionName)
-                setShowRenameDialog(true)
-              }}
+              onClick={onRenameRequest}
             >
               <Pencil className="h-4 w-4 mr-2" />
               Rename Session
@@ -251,34 +222,6 @@ export function SessionContextMenu({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-
-      <Dialog open={showRenameDialog} onOpenChange={setShowRenameDialog}>
-        <DialogContent className="overflow-hidden">
-          <DialogHeader>
-            <DialogTitle>Rename Session</DialogTitle>
-            <DialogDescription>
-              Enter a new name for this session.
-            </DialogDescription>
-          </DialogHeader>
-          <form onSubmit={(e) => { e.preventDefault(); handleRename() }}>
-            <Input
-              ref={renameInputRef}
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              placeholder="Session name"
-              autoFocus
-            />
-            <DialogFooter className="mt-4">
-              <Button type="button" variant="outline" onClick={() => setShowRenameDialog(false)}>
-                Cancel
-              </Button>
-              <Button type="submit" disabled={updateSessionName.isPending || !newName.trim()}>
-                {updateSessionName.isPending ? 'Renaming...' : 'Rename'}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
     </>
   )
 }

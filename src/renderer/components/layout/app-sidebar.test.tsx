@@ -33,6 +33,7 @@ const mockUseAgents = vi.fn()
 vi.mock('@renderer/hooks/use-agents', () => ({
   useAgents: () => mockUseAgents(),
   useDeleteAgent: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useUpdateAgent: () => ({ mutateAsync: vi.fn(), isPending: false }),
   // Resolve the route param to the canonical id the way the real hook does,
   // using the mocked params + agents so active-state tests behave faithfully.
   useRouteAgentId: () => {
@@ -55,6 +56,7 @@ const mockUseSessions = vi.fn()
 vi.mock('@renderer/hooks/use-sessions', () => ({
   useSessions: (slug: string | null) => mockUseSessions(slug),
   useCreateSession: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useUpdateSessionName: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }))
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
