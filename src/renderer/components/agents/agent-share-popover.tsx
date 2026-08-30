@@ -333,7 +333,7 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
         data-testid="agent-share-popover"
       >
         {/* Invite row: chip box + batch role + Share */}
-        <div className="space-y-2 p-3">
+        <div className="space-y-2 px-3 py-4">
           <div className="flex items-start gap-2">
             {/* label: clicking anywhere in the chip box natively focuses the input.
                 The role select sits inside the box, pinned top-right (Notion-style). */}
@@ -410,7 +410,7 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
         {/* People list. While typing it becomes two filtered sections,
             Notion-style: access holders ("Already shared with") and
             invitable candidates ("Not shared with"). */}
-        <div className="max-h-72 overflow-y-auto px-1 pb-1">
+        <div className="max-h-72 overflow-y-auto px-1 pb-2">
           {isLoading ? (
             <div className="flex items-center justify-center py-6">
               <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
