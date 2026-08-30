@@ -1049,6 +1049,26 @@ describe('MessageList', () => {
     expect(text.indexOf('StreamingBash')).toBeLessThan(text.indexOf('Queued msg'))
   })
 
+  it('renders the live compact line above the queued ghosts', () => {
+    // A message queued during compaction is picked up on the far side of the
+    // boundary, so it reads below the compact line, not above it. (SUP-736)
+    mockMessagesData.data = [createUserMessage({ content: { text: '/compact' } })]
+    mockStreamState.isActive = true
+    mockStreamState.isCompacting = true
+
+    const { container } = renderWithProviders(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessages={[{ localId: 'q1', uuid: 'q1', text: 'Queued msg', sentAt: Date.now(), queued: true }]}
+      />
+    )
+
+    const text = container.textContent || ''
+    expect(text.indexOf('Compacting conversation...')).toBeGreaterThan(-1)
+    expect(text.indexOf('Compacting conversation...')).toBeLessThan(text.indexOf('Queued msg'))
+  })
+
   it('does not close the turn at a persisted queued message (no elapsed divider mid-turn)', () => {
     mockStreamState.isActive = true
     mockMessagesData.data = [

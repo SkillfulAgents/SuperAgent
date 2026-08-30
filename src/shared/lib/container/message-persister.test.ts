@@ -3886,12 +3886,52 @@ describe('MessagePersister', () => {
       // wedges the next turn's label to "Compacting…". The state object is reused across turns.
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
       const st = (messagePersister as any).streamingStates.get(SESSION_ID)
-      st.isActive = false; st.isCompacting = true; st.currentThinking = true
+      st.isActive = false; st.isCompacting = true; st.currentThinking = true; st.isRetrying = true
 
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG) // next user message
       expect(st.isCompacting).toBe(false)
       expect(st.currentThinking).toBe(false)
+      expect(st.isRetrying).toBe(false)
       expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('working')
+    })
+
+    it('keeps a running turn intact when a queued message re-marks an ALREADY-active session', () => {
+      // Queueing a message mid-turn accepts it into the RUNNING turn — it is not a
+      // turn boundary, so everything that turn is still doing survives. Driven with
+      // the real frames, since the bug was that markSessionActive wiped exactly the
+      // state those frames had just established. (SUP-736)
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({ type: 'stream_event', event: { type: 'message_start', message: { id: 'msg_1' } } })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } },
+      })
+      mockClient._sendMessage({
+        type: 'system', subtype: 'api_retry', attempt: 2, max_retries: 5, session_id: SESSION_ID, uuid: 'r1',
+      })
+      mockClient._sendMessage({
+        type: 'system', subtype: 'status', status: 'compacting', session_id: SESSION_ID, uuid: 's1',
+      })
+      expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('compacting')
+      sseEvents.length = 0
+
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG) // queued mid-turn
+
+      // The app is told which of the two meanings this session_active carries.
+      expect(sseEvents.find(e => e.type === 'session_active')).toMatchObject({ queuedMidTurn: true })
+      // Chat's label walks back down the real ladder as each state ends, instead of
+      // dropping straight to "Working…" the moment the message was queued.
+      const st = (messagePersister as any).streamingStates.get(SESSION_ID)
+      expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('compacting')
+      st.isCompacting = false
+      expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('retrying')
+      st.isRetrying = false
+      expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('thinking')
+
+      // And the open thinking block still closes under the id the app opened it
+      // with — a nulled message id/block index would have re-keyed it to undefined.
+      mockClient._sendMessage({ type: 'stream_event', event: { type: 'content_block_stop', index: 0 } })
+      expect(sseEvents.find(e => e.type === 'thinking_stop')).toMatchObject({ thinkingId: 'msg_1:0' })
     })
 
     it('is idle for an unknown session', () => {
