@@ -77,6 +77,19 @@ test.describe('Message queueing while agent is working', () => {
     // lands during is still running, so both the live compact line and the
     // "Compacting..." status must survive it, with the ghost below the line —
     // the queued message is picked up on the far side of the boundary.
+
+    // Settle a first turn before starting the one that compacts. compact_start
+    // is a one-shot broadcast and the connected frame carries no compaction
+    // snapshot, so a client that subscribes late never learns compaction began.
+    // The first message is what creates the session and navigates to it — under
+    // CI load that hand-off outran the mock's compacting status and the whole
+    // compaction came and went before the stream was listening.
+    await sessionPage.sendMessage('hello there')
+    await expect(
+      sessionPage.getAssistantMessages().filter({ hasText: 'This is a mock response from the E2E test container.' })
+    ).toBeVisible({ timeout: 15000 })
+    await expect(sessionPage.getStopButton()).not.toBeVisible({ timeout: 15000 })
+
     await sessionPage.sendMessage('please compact slowly for this test')
 
     const compactingLine = page.getByText('Compacting conversation...')

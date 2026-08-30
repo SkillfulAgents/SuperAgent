@@ -508,12 +508,16 @@ export class SlowCompactionScenario implements MockScenario {
       })
     }, 10)
 
+    // Well clear of the echo above (the persister ends compaction at the first
+    // user message that FOLLOWS the compacting status) and of any subscribe
+    // hand-off: compact_start is one-shot, so a client that is not listening
+    // yet never learns compaction began.
     setTimeout(() => {
       client.emitStreamMessage(sessionId, {
         type: 'system',
         content: { type: 'system', subtype: 'status', status: 'compacting' },
       })
-    }, 150)
+    }, 1000)
 
     setTimeout(() => {
       const summary = 'Summary of the conversation so far.'
