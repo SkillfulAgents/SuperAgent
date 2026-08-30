@@ -7696,3 +7696,165 @@ describe('MessagePersister mid-turn recovery snapshot', () => {
     messagePersister.unsubscribeFromSession(otherId)
   })
 })
+
+// ===========================================================================
+// Cross-agent isolation of the process-global session registries.
+//
+// Every map in this class is keyed by session id, and a session id is drawn
+// from a namespace that spans all agents. These tests pin the property that
+// keying has to deliver: work done on one agent's session is never observable
+// on another agent's.
+//
+// The agent-scoped queries below (`getActiveSessionIdsForAgent`,
+// `hasActiveSessionsForAgent`, `markAllSessionsInactiveForAgent`,
+// `snapshotMidTurnSessions`) are the recovery and container-lifecycle paths —
+// the ones where a re-keying mistake would show up as a session that silently
+// fails to resume rather than as a crash. They already take an agentSlug, so
+// these assertions do not depend on how the maps are keyed underneath.
+// ===========================================================================
+describe('cross-agent isolation', () => {
+  const AGENT_A = 'agent-alpha'
+  const AGENT_B = 'agent-beta'
+  const SESSION_A1 = 'alpha-session-1'
+  const SESSION_A2 = 'alpha-session-2'
+  const SESSION_B1 = 'beta-session-1'
+
+  let clientA1: ReturnType<typeof createMockClient>
+  let clientA2: ReturnType<typeof createMockClient>
+  let clientB1: ReturnType<typeof createMockClient>
+
+  beforeEach(async () => {
+    clientA1 = createMockClient()
+    clientA2 = createMockClient()
+    clientB1 = createMockClient()
+    await messagePersister.subscribeToSession(SESSION_A1, clientA1, SESSION_A1, AGENT_A)
+    await messagePersister.subscribeToSession(SESSION_A2, clientA2, SESSION_A2, AGENT_A)
+    await messagePersister.subscribeToSession(SESSION_B1, clientB1, SESSION_B1, AGENT_B)
+  })
+
+  afterEach(() => {
+    for (const id of [SESSION_A1, SESSION_A2, SESSION_B1]) {
+      messagePersister.unsubscribeFromSession(id)
+    }
+    vi.clearAllMocks()
+  })
+
+  describe('agent-scoped queries', () => {
+    it('reports active sessions only for the agent that owns them', () => {
+      messagePersister.markSessionActive(SESSION_A1, AGENT_A)
+      messagePersister.markSessionActive(SESSION_B1, AGENT_B)
+
+      expect(messagePersister.getActiveSessionIdsForAgent(AGENT_A)).toEqual([SESSION_A1])
+      expect(messagePersister.getActiveSessionIdsForAgent(AGENT_B)).toEqual([SESSION_B1])
+      expect(messagePersister.hasActiveSessionsForAgent(AGENT_A)).toBe(true)
+      expect(messagePersister.hasActiveSessionsForAgent(AGENT_B)).toBe(true)
+      expect(messagePersister.hasActiveSessionsForAgent('agent-with-nothing')).toBe(false)
+    })
+
+    it('reports awaiting-input only for the agent that owns the session', () => {
+      messagePersister.markSessionActive(SESSION_A1, AGENT_A)
+
+      expect(messagePersister.hasSessionsAwaitingInputForAgent(AGENT_B)).toBe(false)
+    })
+
+    it('stopping one agent’s container leaves the other agent’s sessions alone', () => {
+      messagePersister.markSessionActive(SESSION_A1, AGENT_A)
+      messagePersister.markSessionActive(SESSION_A2, AGENT_A)
+      messagePersister.markSessionActive(SESSION_B1, AGENT_B)
+
+      messagePersister.markAllSessionsInactiveForAgent(AGENT_A)
+
+      expect(messagePersister.isSessionActive(SESSION_A1)).toBe(false)
+      expect(messagePersister.isSessionActive(SESSION_A2)).toBe(false)
+      expect(messagePersister.isSessionActive(SESSION_B1)).toBe(true)
+      expect(messagePersister.isSubscribed(SESSION_B1)).toBe(true)
+    })
+
+    it('snapshots mid-turn sessions only for the named agent', () => {
+      messagePersister.markSessionActive(SESSION_A1, AGENT_A)
+      messagePersister.markSessionActive(SESSION_B1, AGENT_B)
+
+      expect(messagePersister.snapshotMidTurnSessions(AGENT_A)).toEqual([SESSION_A1])
+      expect(messagePersister.isSessionRecovering(SESSION_B1)).toBe(false)
+    })
+
+    it('honours the restrict list within an agent', () => {
+      messagePersister.markSessionActive(SESSION_A1, AGENT_A)
+      messagePersister.markSessionActive(SESSION_A2, AGENT_A)
+
+      expect(messagePersister.snapshotMidTurnSessions(AGENT_A, [SESSION_A2])).toEqual([SESSION_A2])
+      expect(messagePersister.isSessionRecovering(SESSION_A1)).toBe(false)
+      expect(messagePersister.isSessionRecovering(SESSION_A2)).toBe(true)
+    })
+
+    it('never snapshots another agent’s session even when it is named in the restrict list', () => {
+      messagePersister.markSessionActive(SESSION_A1, AGENT_A)
+      messagePersister.markSessionActive(SESSION_B1, AGENT_B)
+
+      expect(messagePersister.snapshotMidTurnSessions(AGENT_A, [SESSION_B1])).toEqual([])
+      expect(messagePersister.isSessionRecovering(SESSION_B1)).toBe(false)
+    })
+  })
+
+  describe('per-session state does not bleed', () => {
+    it('delivers SSE events only to the subscribers of that session', () => {
+      const a1 = collectSSEEvents(SESSION_A1)
+      const b1 = collectSSEEvents(SESSION_B1)
+      try {
+        messagePersister.broadcastSessionEvent(SESSION_B1, { type: 'user_typing' })
+
+        expect(b1.events).toContainEqual(expect.objectContaining({ type: 'user_typing' }))
+        expect(a1.events).toEqual([])
+      } finally {
+        a1.cleanup()
+        b1.cleanup()
+      }
+    })
+
+    it('interrupting one session does not settle another agent’s session', async () => {
+      messagePersister.markSessionActive(SESSION_A1, AGENT_A)
+      messagePersister.markSessionActive(SESSION_B1, AGENT_B)
+
+      await messagePersister.markSessionInterrupted(SESSION_A1)
+
+      expect(messagePersister.isSessionActive(SESSION_A1)).toBe(false)
+      expect(messagePersister.isSessionActive(SESSION_B1)).toBe(true)
+    })
+
+    it('unsubscribing one session leaves the other agent’s subscription intact', () => {
+      messagePersister.unsubscribeFromSession(SESSION_A1)
+
+      expect(messagePersister.isSubscribed(SESSION_A1)).toBe(false)
+      expect(messagePersister.isSubscribed(SESSION_B1)).toBe(true)
+    })
+
+    it('keeps slash commands per session', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      messagePersister.setSlashCommands(SESSION_A1, [{ name: 'alpha-only' }] as any)
+
+      expect(messagePersister.getSlashCommands(SESSION_A1)).toEqual([{ name: 'alpha-only' }])
+      expect(messagePersister.getSlashCommands(SESSION_B1)).toEqual([])
+    })
+
+    it('keeps capability grants per session', () => {
+      messagePersister.grantSessionCapability(SESSION_A1, 'subagents')
+
+      expect(messagePersister.hasSessionCapabilityGrant(SESSION_A1, 'subagents')).toBe(true)
+      expect(messagePersister.hasSessionCapabilityGrant(SESSION_B1, 'subagents')).toBe(false)
+    })
+
+    it('attributes a streamed frame to the agent that owns the session', () => {
+      const timestamp = new Date('2026-08-30T10:00:00.000Z')
+
+      clientB1._messageCallback!({
+        type: 'message',
+        content: { type: 'assistant', message: { role: 'assistant', content: 'from beta' } },
+        timestamp,
+        sessionId: SESSION_B1,
+      })
+
+      expect(mockRecordSessionActivity).toHaveBeenCalledWith(AGENT_B, SESSION_B1, timestamp)
+      expect(mockRecordSessionActivity).not.toHaveBeenCalledWith(AGENT_A, SESSION_B1, timestamp)
+    })
+  })
+})
