@@ -480,7 +480,7 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
 
                     {/* The library in the cloud */}
                     <div className="absolute left-1/2 top-[92px] flex h-12 w-12 -translate-x-1/2 items-center justify-center rounded-xl border bg-background shadow-md">
-                      <LibraryBig className="h-5 w-5 text-foreground" />
+                      <LibraryBig className="h-6 w-6 text-foreground" />
                     </div>
 
                     {/* The agent, Manus-pill style */}
