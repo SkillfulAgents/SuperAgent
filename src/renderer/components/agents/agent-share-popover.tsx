@@ -492,7 +492,7 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
                     <div className="absolute bottom-4 left-1/2 flex w-max max-w-[75%] -translate-x-1/2 items-center gap-2.5 rounded-xl border bg-background py-3 pl-4 pr-6 shadow-sm">
                       {/* The activity card's thought orb as the agent's avatar */}
                       <div className="shrink-0">
-                        <ActivityOrb state="working" size={28} />
+                        <ActivityOrb state="spinning" size={28} />
                       </div>
                       <p className="min-w-0 truncate text-sm font-medium">{agentName}</p>
                     </div>

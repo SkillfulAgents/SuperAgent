@@ -275,10 +275,11 @@ function hashD(a: number, b: number): number {
 const SOLVING_SPEED = 1.5 // a notch under the package rubik tuning (1.95) — calmer twist cadence + spin
 const MOVE_SLOT = 0.42 // scaled seconds per quarter-turn (incl. the rest beat)
 
-function drawRubikSphere(ctx: CanvasRenderingContext2D, size: number, t: number, dark: boolean): void {
+function drawSegmentedGlobe(ctx: CanvasRenderingContext2D, size: number, t: number, dark: boolean, solve: boolean): void {
   // One move per slot: random axis / slab / direction, eased over 70% of the
   // slot then resting — since every completed turn is a lattice permutation,
-  // consecutive moves chain seamlessly from a clean globe.
+  // consecutive moves chain seamlessly from a clean globe. With `solve` off,
+  // the slab never engages and only the global spin remains.
   const slot = Math.floor(t / MOVE_SLOT)
   const p = (t - slot * MOVE_SLOT) / MOVE_SLOT
   const cl = Math.min(1, p / 0.7)
@@ -286,9 +287,10 @@ function drawRubikSphere(ctx: CanvasRenderingContext2D, size: number, t: number,
   const axis = Math.min(2, Math.floor(hashD(slot, 2.3) * 3))
   const slabIdx = Math.min(2, Math.floor(hashD(slot, 5.9) * 3))
   const dir = hashD(slot, 7.7) < 0.5 ? 1 : -1
-  const ang = dir * (Math.PI / 2) * ep
-  const lo = slabIdx === 0 ? -1.001 : slabIdx === 1 ? -RUBIK_SLAB_T : RUBIK_SLAB_T
-  const hi = slabIdx === 0 ? -RUBIK_SLAB_T : slabIdx === 1 ? RUBIK_SLAB_T : 1.001
+  const ang = solve ? dir * (Math.PI / 2) * ep : 0
+  // An empty [lo, hi) slab keeps every dot out of the "active band" darkening.
+  const lo = !solve ? 2 : slabIdx === 0 ? -1.001 : slabIdx === 1 ? -RUBIK_SLAB_T : RUBIK_SLAB_T
+  const hi = !solve ? 2 : slabIdx === 0 ? -RUBIK_SLAB_T : slabIdx === 1 ? RUBIK_SLAB_T : 1.001
   const ca = Math.cos(ang)
   const sa = Math.sin(ang)
 
@@ -338,10 +340,19 @@ function drawRubikSphere(ctx: CanvasRenderingContext2D, size: number, t: number,
   paint(ctx, dots, dark, 0.3)
 }
 
+const drawRubikSphere: OrbDraw = (ctx, size, t, dark) => drawSegmentedGlobe(ctx, size, t, dark, true)
+const drawSpinningSphere: OrbDraw = (ctx, size, t, dark) => drawSegmentedGlobe(ctx, size, t, dark, false)
+
 /** Solving orb — segmented quarter-turns that always land on a clean globe.
     Static frame lands post-ease (a finished, coherent turn). */
 function SolvingOrb({ size }: { size: number }) {
   return <OrbCanvas draw={drawRubikSphere} speed={SOLVING_SPEED} staticT={MOVE_SLOT * 0.85} size={size} />
+}
+
+/** The same dotted globe, spin only — for decorative spots (e.g. the publish
+    diagram) where the solving motion is too busy. */
+function SpinningOrb({ size }: { size: number }) {
+  return <OrbCanvas draw={drawSpinningSphere} speed={SOLVING_SPEED} staticT={MOVE_SLOT * 0.85} size={size} />
 }
 
 // ── Compacting orb: sphere → cube → squeeze → release ────────────────────────
@@ -493,7 +504,7 @@ function CompactingOrb({ size = 20 }: { size?: number }) {
  * `compacting`, so reusing its vocabulary would send the next reader to the
  * package's docs for the wrong picture.
  */
-export type ActivityOrbState = 'working' | 'waiting' | 'retrying' | 'compacting'
+export type ActivityOrbState = 'working' | 'spinning' | 'waiting' | 'retrying' | 'compacting'
 
 /** Thought-orb activity dot (thinking-orbs painters, house-tuned density/size).
     The animation itself is the state cue. Each arm below names its painter
@@ -505,6 +516,8 @@ export function ActivityOrb({ state = 'working', size = 20 }: { state?: Activity
     // package's same-named states don't fit.
     case 'working':
       return <SolvingOrb size={size} />
+    case 'spinning':
+      return <SpinningOrb size={size} />
     case 'compacting':
       return <CompactingOrb size={size} />
     // Package painters, re-scaled by tuneOpts().
