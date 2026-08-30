@@ -388,7 +388,7 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
             </label>
             <Button
               size="sm"
-              className="h-8 shrink-0 text-sm"
+              className="h-8 shrink-0"
               onClick={() => {
                 if (inviteUsers.isPending) return
                 // No disabled state: with nothing selected, just refocus the input
