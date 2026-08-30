@@ -139,7 +139,7 @@ describe('SUP-233 reconnect restore ignores archived sessions', () => {
     // Drives connectIntegration -> restore loop.
     await chatIntegrationManager.addIntegration(integrationId)
 
-    const subscribedSessionIds = addSSEClient.mock.calls.map((c) => c[0])
+    const subscribedSessionIds = addSSEClient.mock.calls.map((c) => c[1])
     expect(subscribedSessionIds).toContain('active-agent-session')
     expect(subscribedSessionIds).not.toContain('archived-agent-session')
   })

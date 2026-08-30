@@ -3,7 +3,7 @@
  *
  * The indicator is a self-healing projection of the agent's activity:
  *  - The manager owns a per-session TICK (alive for the SSE subscription, not a
- *    turn). Each tick reads `messagePersister.getSessionActivity(sessionId)` and
+ *    turn). Each tick reads `messagePersister.getSessionActivity(agentSlug, sessionId)` and
  *    reconciles the connector. The tick is the ONLY thing that PAINTS, and the
  *    self-healing backstop — a stuck or wrong indicator self-corrects within one
  *    tick because the tick re-reads reality every interval.

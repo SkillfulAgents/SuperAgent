@@ -28,7 +28,6 @@ import {
   deleteSession,
   getSessionSummary,
   registerSession,
-  reserveSessionOwnership,
 } from './session-service'
 import { recordSessionActivity } from './session-summary-cache'
 import { appendInformationalEntry } from './session-transcript-append'
@@ -97,13 +96,12 @@ describe('getSessionSummary cache', () => {
     expect(statProbe.paths.filter((file) => file.endsWith('.jsonl'))).toHaveLength(2)
   })
 
-  it('reconciles unchanged directory contents when ownership is newly reserved', async () => {
+  it('reconciles a transcript that appears in the directory after a warm read', async () => {
     await createSession('session-a', '2026-01-01T00:00:00.000Z')
-    await fs.promises.mkdir(sessionsDir(), { recursive: true })
-    await fs.promises.writeFile(transcriptPath('session-b'), '{}\n')
     expect((await getSessionSummary(agentSlug)).sessionIds).toEqual(['session-a'])
 
-    await reserveSessionOwnership(agentSlug, 'session-b')
+    await fs.promises.mkdir(sessionsDir(), { recursive: true })
+    await fs.promises.writeFile(transcriptPath('session-b'), '{}\n')
     const summary = await getSessionSummary(agentSlug)
 
     expect(summary.sessionIds.sort()).toEqual(['session-a', 'session-b'])

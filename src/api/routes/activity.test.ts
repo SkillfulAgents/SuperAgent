@@ -66,16 +66,16 @@ describe('activity API', () => {
     await createApp().request('http://localhost/api/activity/agents/agent-a')
 
     const { isSessionLive } = mockGetAgentActivityStats.mock.calls[0][1] as {
-      isSessionLive: (sessionId: string) => boolean
+      isSessionLive: (agentSlug: string, sessionId: string) => boolean
     }
     mockIsSessionActive.mockReturnValue(true)
-    expect(isSessionLive('session-1')).toBe(true)
-    expect(mockIsSessionActive).toHaveBeenCalledWith('session-1')
+    expect(isSessionLive('agent-one', 'session-1')).toBe(true)
+    expect(mockIsSessionActive).toHaveBeenCalledWith('agent-one', 'session-1')
 
     // An idle-but-still-subscribed session is NOT live — a persisted
     // 'running' for it must downgrade instead of pulsing forever.
     mockIsSessionActive.mockReturnValue(false)
-    expect(isSessionLive('session-1')).toBe(false)
+    expect(isSessionLive('agent-one', 'session-1')).toBe(false)
   })
 
   it.each([

@@ -386,13 +386,8 @@ class TriggerManager {
       automationStatus: 'running',
     })
 
-    await messagePersister.subscribeToSession(
-      sessionId,
-      client,
-      sessionId,
-      trigger.agentSlug
-    )
-    messagePersister.markSessionActive(sessionId, trigger.agentSlug)
+    await messagePersister.subscribeToSession(trigger.agentSlug, sessionId, client, sessionId)
+    messagePersister.markSessionActive(trigger.agentSlug, sessionId)
 
     // Update trigger tracking
     await markTriggerFired(trigger.id, sessionId)

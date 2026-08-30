@@ -107,7 +107,7 @@ class SessionAutoDeleteMonitor {
       .filter((s) => {
         if (s.lastActivityAt.getTime() >= cutoff) return false
         if (metadata[s.id]?.starred) return false
-        if (messagePersister.isSessionActive(s.id)) return false
+        if (messagePersister.isSessionActive(agentSlug, s.id)) return false
         if (pendingWakeSessionIds.has(s.id)) return false
         return true
       })
@@ -118,7 +118,7 @@ class SessionAutoDeleteMonitor {
     const deletedIds = await deleteSessionsBatch(agentSlug, toDelete)
 
     for (const sessionId of deletedIds) {
-      messagePersister.unsubscribeFromSession(sessionId)
+      messagePersister.unsubscribeFromSession(agentSlug, sessionId)
     }
 
     if (isAuthMode() && deletedIds.length > 0) {

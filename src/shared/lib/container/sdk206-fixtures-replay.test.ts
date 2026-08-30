@@ -182,16 +182,16 @@ async function replayTracked(fixtureName: string): Promise<{
   const { client, send } = createReplayClient()
 
   const sseEvents: Array<Record<string, unknown>> = []
-  const cleanup = messagePersister.addSSEClient(meta.sessionId, (data) => {
+  const cleanup = messagePersister.addSSEClient(meta.agentSlug, meta.sessionId, (data) => {
     sseEvents.push(data as Record<string, unknown>)
   })
 
   // The turn-starting user message predates the capture window; the idle
   // handler's gates are keyed on isActive.
   if (meta.startActive) {
-    messagePersister.markSessionActive(meta.sessionId, meta.agentSlug)
+    messagePersister.markSessionActive(meta.agentSlug, meta.sessionId)
   }
-  await messagePersister.subscribeToSession(meta.sessionId, client, meta.sessionId, meta.agentSlug)
+  await messagePersister.subscribeToSession(meta.agentSlug, meta.sessionId, client, meta.sessionId)
 
   const timeline: ReplaySnapshot[] = []
   for (let i = 0; i < streamEntries.length; i++) {
@@ -206,7 +206,7 @@ async function replayTracked(fixtureName: string): Promise<{
       type: c['type'] as string | undefined,
       subtype: c['subtype'] as string | undefined,
       state: c['state'] as string | undefined,
-      isActive: messagePersister.isSessionActive(meta.sessionId),
+      isActive: messagePersister.isSessionActive(meta.agentSlug, meta.sessionId),
       bgStartedIds: sseEvents.filter((e) => e['type'] === 'background_task_started').map((e) => e['taskId'] as string),
       bgCompletedIds: sseEvents.filter((e) => e['type'] === 'background_task_completed').map((e) => e['taskId'] as string),
       sessionIdleCount: sseEvents.filter((e) => e['type'] === 'session_idle').length,
@@ -216,7 +216,7 @@ async function replayTracked(fixtureName: string): Promise<{
 
   await new Promise((r) => setTimeout(r, 50))
   cleanup()
-  messagePersister.unsubscribeFromSession(meta.sessionId)
+  messagePersister.unsubscribeFromSession(meta.agentSlug, meta.sessionId)
 
   return { meta, streamEntries, sseEvents, timeline }
 }

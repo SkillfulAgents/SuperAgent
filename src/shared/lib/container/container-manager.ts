@@ -119,13 +119,15 @@ class ContainerManager {
       ensureRunning: () => this.ensureRunning(agentId),
       snapshotMidTurnSessions: (slug, restrict) => messagePersister.snapshotMidTurnSessions(slug, restrict),
       consumeLastFatal: (slug) => messagePersister.consumeLastFatal(slug),
-      settleRecoveringSessions: (ids) => messagePersister.settleRecoveringSessions(ids),
-      markRecovered: (ids) => messagePersister.markRecovered(ids),
-      takeCoalescedUserMessages: (id) => messagePersister.takeCoalescedUserMessages(id),
-      isSessionRecovering: (id) => messagePersister.isSessionRecovering(id),
-      isSubscribed: (id) => messagePersister.isSubscribed(id),
+      settleRecoveringSessions: (ids) => messagePersister.settleRecoveringSessions(agentId, ids),
+      markRecovered: (ids) => messagePersister.markRecovered(agentId, ids),
+      takeCoalescedUserMessages: (id) => messagePersister.takeCoalescedUserMessages(agentId, id),
+      isSessionRecovering: (id) => messagePersister.isSessionRecovering(agentId, id),
+      isSubscribed: (id) => messagePersister.isSubscribed(agentId, id),
       subscribeToSession: (sessionId, client, containerSessionId, agentSlug) =>
-        messagePersister.subscribeToSession(sessionId, client, containerSessionId, agentSlug),
+        // Recovery only ever resubscribes THIS agent's sessions; the deps
+        // interface still carries the slug, and it must agree with agentId.
+        messagePersister.subscribeToSession(agentSlug ?? agentId, sessionId, client, containerSessionId),
       restrictToSessionIds,
       syncAgentStatus: async () => {
         try {

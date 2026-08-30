@@ -69,7 +69,7 @@ scheduledTasksRouter.get('/:taskId/sessions', TaskAgentRole('viewer'), async (c)
     const sessions = await getSessionsByScheduledTask(task!.agentSlug, task!.id)
     const sessionsWithStatus = sessions.map((session) => ({
       ...session,
-      isActive: messagePersister.isSessionActive(session.id),
+      isActive: messagePersister.isSessionActive(task!.agentSlug, session.id),
     }))
     return c.json(sessionsWithStatus)
   } catch (error) {
@@ -97,7 +97,7 @@ scheduledTasksRouter.delete('/:taskId', TaskAgentRole('user'), async (c) => {
         sessionId: task!.resumeSessionId,
         agentSlug: task!.agentSlug,
       })
-      messagePersister.broadcastSessionUpdate(task!.resumeSessionId)
+      messagePersister.broadcastSessionUpdate(task!.agentSlug, task!.resumeSessionId)
     }
 
     return c.body(null, 204)
@@ -335,8 +335,8 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
       scheduledTaskName: task.name || undefined,
     })
 
-    await messagePersister.subscribeToSession(sessionId, client, sessionId, task.agentSlug)
-    messagePersister.markSessionActive(sessionId, task.agentSlug)
+    await messagePersister.subscribeToSession(task.agentSlug, sessionId, client, sessionId)
+    messagePersister.markSessionActive(task.agentSlug, sessionId)
 
     if (task.isRecurring) {
       // Recurring: keep schedule, just record the manual execution

@@ -206,7 +206,7 @@ describe('TaskScheduler session wake (resume) branch', () => {
     expect(typeof uuid).toBe('string')
     expect(options).toEqual({ shouldQuery: true })
 
-    expect(mockMarkSessionActive).toHaveBeenCalledWith('sleeping-session-1', 'agent-one')
+    expect(mockMarkSessionActive).toHaveBeenCalledWith('agent-one', 'sleeping-session-1')
     expect(mockMarkTaskExecuted).toHaveBeenCalledWith('wake-task-1', 'sleeping-session-1')
   })
 
@@ -216,12 +216,7 @@ describe('TaskScheduler session wake (resume) branch', () => {
 
     await taskScheduler.triggerExecution()
 
-    expect(mockSubscribeToSession).toHaveBeenCalledWith(
-      'sleeping-session-1',
-      expect.anything(),
-      'sleeping-session-1',
-      'agent-one'
-    )
+    expect(mockSubscribeToSession).toHaveBeenCalledWith('agent-one', 'sleeping-session-1', expect.anything(), 'sleeping-session-1')
   })
 
   it('does not re-subscribe an already-subscribed session', async () => {
@@ -239,7 +234,7 @@ describe('TaskScheduler session wake (resume) branch', () => {
 
     await taskScheduler.triggerExecution()
 
-    expect(mockCancelAwaitingInput).toHaveBeenCalledWith('sleeping-session-1', 'agent-one')
+    expect(mockCancelAwaitingInput).toHaveBeenCalledWith('agent-one', 'sleeping-session-1')
     expect(mockCancelAwaitingInput.mock.invocationCallOrder[0]).toBeLessThan(
       mockSendMessage.mock.invocationCallOrder[0]
     )
@@ -336,7 +331,7 @@ describe('TaskScheduler session wake (resume) branch', () => {
     expect(mockMarkTaskExecuted).not.toHaveBeenCalled()
     // The optimistic active flag is reverted — a failed delivery must not
     // leave the session looking busy until the retry lands.
-    expect(mockMarkSessionIdle).toHaveBeenCalledWith('sleeping-session-1')
+    expect(mockMarkSessionIdle).toHaveBeenCalledWith('agent-one', 'sleeping-session-1')
   })
 
   it('fails a wake once it has been retrying past the retry window', async () => {

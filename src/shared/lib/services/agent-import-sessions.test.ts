@@ -5,15 +5,11 @@
  * the new agent's workspace. From the user's point of view the imported agent
  * has those sessions, and opening it should list them.
  *
- * The tests marked `it.fails` are RED on main. They describe the behaviour the
- * product is supposed to have; the host-owned session ownership index does not
- * know about ids that arrive by any route other than session creation, so a
- * restored session is present on disk but filtered out of every listing.
- *
- * `it.fails` (rather than a plain failing test) keeps CI honest in both
- * directions: the suite is green while the bug exists, and it goes RED the
- * moment the bug is fixed without someone flipping these to `it`. The follow-up
- * that removes the ownership index flips them.
+ * These were `it.fails` when the suite landed: the host-owned session ownership
+ * index did not know about ids arriving by any route other than session
+ * creation, so a restored session sat on disk and was filtered out of every
+ * listing. Removing that index — a listing is now a read of the agent's own
+ * directory — is what turned them green, so they are plain `it` here.
  *
  * Everything here is real: the template service, the session service, the
  * file-storage paths and the filesystem. Only agent creation is stubbed, so a
@@ -120,7 +116,7 @@ function archiveWithSession(sessionId: string, name = 'Restored session'): Promi
 }
 
 describe('full `.agent` import restores its sessions', () => {
-  it.fails('lists a restored session on the imported agent', async () => {
+  it('lists a restored session on the imported agent', async () => {
     const sessionId = crypto.randomUUID()
     nextAgentIs('imported-agent')
 
@@ -135,7 +131,7 @@ describe('full `.agent` import restores its sessions', () => {
     ])
   })
 
-  it.fails('treats a restored session as a session of the imported agent', async () => {
+  it('treats a restored session as a session of the imported agent', async () => {
     const sessionId = crypto.randomUUID()
     nextAgentIs('known-agent')
 
@@ -144,7 +140,7 @@ describe('full `.agent` import restores its sessions', () => {
     expect(await sessionIsKnown('known-agent', sessionId)).toBe(true)
   })
 
-  it.fails('restores the sessions again after the imported agent is deleted', async () => {
+  it('restores the sessions again after the imported agent is deleted', async () => {
     // Export once, import, throw the agent away, import the same archive again.
     // Nothing about the archive changed, so the second import must behave
     // exactly like the first.
@@ -165,7 +161,7 @@ describe('full `.agent` import restores its sessions', () => {
     ])
   })
 
-  it.fails('gives each agent its own copy when one archive is imported twice', async () => {
+  it('gives each agent its own copy when one archive is imported twice', async () => {
     // Importing the same export twice is how an agent gets cloned. The two
     // copies genuinely share session ids — they are copies of the same
     // transcripts — and each agent has to list its own.

@@ -62,11 +62,11 @@ describe('home card health API', () => {
     })
 
     const { isSessionLive } = mockBuildHomeCardHealth.mock.calls[0][0] as {
-      isSessionLive: (sessionId: string) => boolean
+      isSessionLive: (agentSlug: string, sessionId: string) => boolean
     }
     mockIsSessionActive.mockReturnValue(true)
-    expect(isSessionLive('session-1')).toBe(true)
-    expect(mockIsSessionActive).toHaveBeenCalledWith('session-1')
+    expect(isSessionLive('agent-one', 'session-1')).toBe(true)
+    expect(mockIsSessionActive).toHaveBeenCalledWith('agent-one', 'session-1')
   })
 
   it('returns a sanitized error when the batch build fails', async () => {

@@ -1,10 +1,10 @@
 /**
  * Cross-agent session scoping — REAL services, REAL filesystem.
  *
- * `agents.test.ts` already covers this surface, but it mocks `sessionIsKnown`
- * and `sessionBelongsToAgent`. Those tests prove the routes CALL a gate and
- * honour its answer; they cannot prove the gate is right, and they would stay
- * green if the mechanism behind it were replaced with a broken one.
+ * `agents.test.ts` already covers this surface, but it mocks `sessionIsKnown`.
+ * Those tests prove the routes CALL a gate and honour its answer; they cannot
+ * prove the gate is right, and they would stay green if the mechanism behind
+ * it were replaced with a broken one.
  *
  * This file closes that gap. The session service, the file-storage paths and
  * the message persister are all real, over a real temp data dir. Only the
@@ -281,21 +281,21 @@ beforeEach(async () => {
   writeTranscript(ATTACKER, attackerSession)
 
   // The victim's session is LIVE: subscribed and streaming.
-  await messagePersister.subscribeToSession(victimSession, makeMockClient(), victimSession, VICTIM)
-  await messagePersister.subscribeToSession(attackerSession, makeMockClient(), attackerSession, ATTACKER)
-  messagePersister.markSessionActive(victimSession, VICTIM)
+  await messagePersister.subscribeToSession(VICTIM, victimSession, makeMockClient(), victimSession)
+  await messagePersister.subscribeToSession(ATTACKER, attackerSession, makeMockClient(), attackerSession)
+  messagePersister.markSessionActive(VICTIM, victimSession)
 
   victimEvents = []
   attackerEvents = []
-  cleanupVictimSse = messagePersister.addSSEClient(victimSession, (d) => { victimEvents.push(d) })
-  cleanupAttackerSse = messagePersister.addSSEClient(attackerSession, (d) => { attackerEvents.push(d) })
+  cleanupVictimSse = messagePersister.addSSEClient(VICTIM, victimSession, (d) => { victimEvents.push(d) })
+  cleanupAttackerSse = messagePersister.addSSEClient(ATTACKER, attackerSession, (d) => { attackerEvents.push(d) })
 })
 
 afterEach(() => {
   cleanupVictimSse?.()
   cleanupAttackerSse?.()
-  messagePersister.unsubscribeFromSession(victimSession)
-  messagePersister.unsubscribeFromSession(attackerSession)
+  messagePersister.unsubscribeFromSession(VICTIM, victimSession)
+  messagePersister.unsubscribeFromSession(ATTACKER, attackerSession)
   realFs.rmSync(tmpDir, { recursive: true, force: true })
   if (previousDataDir === undefined) delete process.env.SUPERAGENT_DATA_DIR
   else process.env.SUPERAGENT_DATA_DIR = previousDataDir
@@ -306,8 +306,8 @@ afterEach(() => {
  * Note what it does NOT mention: status codes, ownership indexes, map keys.
  */
 function expectVictimUntouched(): void {
-  expect(messagePersister.isSessionActive(victimSession)).toBe(true)
-  expect(messagePersister.isSubscribed(victimSession)).toBe(true)
+  expect(messagePersister.isSessionActive(VICTIM, victimSession)).toBe(true)
+  expect(messagePersister.isSubscribed(VICTIM, victimSession)).toBe(true)
   expect(victimEvents).toEqual([])
 }
 

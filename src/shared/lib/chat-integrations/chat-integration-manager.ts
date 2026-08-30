@@ -698,18 +698,19 @@ class ChatIntegrationManager {
   private subscribeChatSession(integrationId: string, chatId: string, sessionId: string): void {
     const session = this.getOrCreateChatSession(integrationId, chatId)
     if (!session) return
+    const agentSlug = session.integration.agentSlug
 
     // Clean up any previous subscription + its indicator tick
     session.sseUnsubscribe?.()
     stopIndicatorTick(session)
 
-    const unsubscribe = messagePersister.addSSEClient(sessionId, (event: unknown) => {
+    const unsubscribe = messagePersister.addSSEClient(agentSlug, sessionId, (event: unknown) => {
       // Wake on a BUSY snapshot: an event means something changed, so re-arm the tick if the
       // session is now busy (and it had slept), painting immediately on a cold arm. A non-busy
       // event is ignored — it must NOT arm a tick that nothing would sleep, nor cancel a pending
       // sleep. Synchronous and BEFORE the serialization queue, so a backed-up handler can't
       // delay the wake. The tick — not this — keeps painting.
-      armIndicatorIfBusy(session, sessionId, messagePersister.getSessionActivity(sessionId))
+      armIndicatorIfBusy(session, sessionId, messagePersister.getSessionActivity(agentSlug, sessionId))
       // Serialize SSE event processing per chat session to prevent race conditions
       // (e.g. session_idle arriving while stream_delta's sendStreamingUpdate is still in-flight)
       this.enqueueSSEEvent(integrationId, chatId, event, sessionId)
@@ -722,7 +723,7 @@ class ChatIntegrationManager {
     // this snapshot is what arms the tick; we never depend on a future event to start it. The
     // tick is alive for the subscription, not the turn.
     session.sessionId = sessionId
-    const coldActivity = messagePersister.getSessionActivity(sessionId)
+    const coldActivity = messagePersister.getSessionActivity(agentSlug, sessionId)
     armIndicatorIfBusy(session, sessionId, coldActivity)
     if (!BUSY_ACTIVITIES.has(coldActivity)) clearIndicator(session)
   }
@@ -751,7 +752,7 @@ class ChatIntegrationManager {
     for (const session of this.chatSessions.values()) {
       const sessionId = session.sessionId
       if (!sessionId || session.indicatorTickTimer) continue
-      armIndicatorIfBusy(session, sessionId, messagePersister.getSessionActivity(sessionId))
+      armIndicatorIfBusy(session, sessionId, messagePersister.getSessionActivity(session.integration.agentSlug, sessionId))
     }
 
     await this.reconcileIntegrations({ force: false })
@@ -1051,8 +1052,8 @@ class ChatIntegrationManager {
     // Hoisted so the catch can reuse it for self-heal without re-downloading.
     let messageText = ''
     try {
-      if (!messagePersister.isSubscribed(sessionId)) {
-        await messagePersister.subscribeToSession(sessionId, client, sessionId, integration.agentSlug)
+      if (!messagePersister.isSubscribed(integration.agentSlug, sessionId)) {
+        await messagePersister.subscribeToSession(integration.agentSlug, sessionId, client, sessionId)
       }
 
       // Ensure SSE → chat forwarding is active (may have been torn down by reconnect)
@@ -1099,7 +1100,7 @@ class ChatIntegrationManager {
       if (consumed) return
 
       await client.sendMessage(sessionId, messageText)
-      messagePersister.markSessionActive(sessionId, integration.agentSlug)
+      messagePersister.markSessionActive(integration.agentSlug, sessionId)
       const now = Date.now()
       const lastTouch = this.lastSessionTouch.get(chatSession.id) ?? 0
       if (now - lastTouch > 60_000) {
@@ -1222,8 +1223,8 @@ class ChatIntegrationManager {
       displayName,
     })
 
-    await messagePersister.subscribeToSession(sessionId, client, sessionId, integration.agentSlug)
-    messagePersister.markSessionActive(sessionId, integration.agentSlug)
+    await messagePersister.subscribeToSession(integration.agentSlug, sessionId, client, sessionId)
+    messagePersister.markSessionActive(integration.agentSlug, sessionId)
     this.subscribeChatSession(integration.id, chatId, sessionId)
   }
 
@@ -1761,7 +1762,7 @@ class ChatIntegrationManager {
           // Settle immediately — parallel tool calls hold the transcript
           // tool_result until every sibling resolves. The registry entry's
           // scope supplies the session.
-          messagePersister.completeInputRequest(undefined, toolUseId, 'answered')
+          messagePersister.completeInputRequest(undefined, undefined, toolUseId, 'answered')
         }
         return
       }
@@ -1779,7 +1780,7 @@ class ChatIntegrationManager {
         console.error(`[ChatIntegrationManager] Failed to resolve input ${toolUseId}:`, text)
         reportError(new Error(`Resolve input failed: ${resolveResponse.status}`), 'resolve-input', { integrationId, toolUseId, status: resolveResponse.status })
       } else {
-        messagePersister.completeInputRequest(undefined, toolUseId, 'answered')
+        messagePersister.completeInputRequest(undefined, undefined, toolUseId, 'answered')
       }
     } catch (err) {
       console.error(`[ChatIntegrationManager] Failed to handle interactive response:`, err)
@@ -1930,7 +1931,7 @@ export function startIndicatorTick(managed: ManagedConnector, sessionId: string)
   cancelIndicatorSleep(managed)
   if (managed.indicatorTickTimer) return false
   managed.indicatorTickTimer = setInterval(() => {
-    const activity = messagePersister.getSessionActivity(sessionId)
+    const activity = messagePersister.getSessionActivity(managed.integration.agentSlug, sessionId)
     reconcileIndicator(managed, activity)
     // The tick owns its own sleep: a busy read keeps it awake (cancel any pending stop), the
     // first of a sustained non-busy run starts the debounce. scheduleIndicatorSleep is arm-once,
@@ -1993,7 +1994,7 @@ export function scheduleIndicatorSleep(managed: ManagedConnector): void {
   if (!sessionId) return
   managed.sleepTimer = setTimeout(() => {
     managed.sleepTimer = null
-    if (!BUSY_ACTIVITIES.has(messagePersister.getSessionActivity(sessionId))) {
+    if (!BUSY_ACTIVITIES.has(messagePersister.getSessionActivity(managed.integration.agentSlug, sessionId))) {
       // Clear before stopping: stopIndicatorTick only drops timers, so stopping a tick that
       // is somehow still showing a draft would strand it. Clearing first makes the guard
       // self-defending regardless of how the caller left indicatorShown.

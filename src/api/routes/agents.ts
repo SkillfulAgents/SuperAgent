@@ -71,8 +71,6 @@ import {
   getSession,
   getSessionMetadata,
   sessionExists,
-  sessionBelongsToAgent,
-  reserveSessionOwnership,
   sessionIsKnown,
   isSessionRegistered,
   updateSessionMetadata,
@@ -516,7 +514,7 @@ function getAttentionOutsideLatest(
       ...messagePersister.getActiveSessionIdsForAgent(agentSlug),
     ])
     for (const sessionId of candidateIds) {
-      if (!messagePersister.isSessionAwaitingInput(sessionId)) continue
+      if (!messagePersister.isSessionAwaitingInput(agentSlug, sessionId)) continue
       observedPendingInput = true
       if (countsOutside(sessionId)) {
         hasPendingInput = true
@@ -580,8 +578,8 @@ async function getLatestVisibleSessionTail(
   return {
     session: {
       ...session,
-      isActive: messagePersister.isSessionActive(session.id),
-      isAwaitingInput: messagePersister.isSessionAwaitingInput(session.id),
+      isActive: messagePersister.isSessionActive(agentSlug, session.id),
+      isAwaitingInput: messagePersister.isSessionAwaitingInput(agentSlug, session.id),
       hasUnreadNotifications: unreadSessionIds.has(session.id),
     },
     messageTail,
@@ -724,11 +722,11 @@ async function enrichAgentsWithSummary(
       let hasUnreadNotifications = false
       const hasAgentLevelReviews = reviewManager.getPendingReviewsForAgent(agent.slug).length > 0
       for (const sessionId of sessionSummary.sessionIds) {
-        const isActive = messagePersister.isSessionActive(sessionId)
+        const isActive = messagePersister.isSessionActive(agent.slug, sessionId)
         if (isActive) {
           hasActiveSessions = true
         }
-        if (messagePersister.isSessionAwaitingInput(sessionId)) {
+        if (messagePersister.isSessionAwaitingInput(agent.slug, sessionId)) {
           hasSessionsAwaitingInput = true
         }
         if (unreadSessionIds.has(sessionId) && !isHiddenAutomatedSession(sessionMetadata[sessionId])) {
@@ -1264,7 +1262,7 @@ Respond with ONLY the session name, nothing else. No quotes, no explanation.`,
       : message.trim().split(/\s+/).slice(0, 6).join(' ').substring(0, 60)
     if (finalName) {
       await updateSessionName(agentSlug, sessionId, finalName)
-      messagePersister.broadcastSessionUpdate(sessionId)
+      messagePersister.broadcastSessionUpdate(agentSlug, sessionId)
     }
   } catch (error) {
     console.error('Failed to update session name:', error)
@@ -1914,13 +1912,13 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
         { excludeAutomated: true },
       )
       const enriched = infos.map((session) => {
-        const isActive = messagePersister.isSessionActive(session.id)
+        const isActive = messagePersister.isSessionActive(slug, session.id)
         return {
           ...session,
           isActive,
           // The awaiting projection already counts agent-scoped reviews
           // against every active session of the agent — no review special-case.
-          isAwaitingInput: messagePersister.isSessionAwaitingInput(session.id),
+          isAwaitingInput: messagePersister.isSessionAwaitingInput(slug, session.id),
           hasUnreadNotifications: unreadIds.has(session.id) || markedUnreadIds.has(session.id),
         }
       })
@@ -1953,14 +1951,14 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
     ])
     const wakesBySession = new Map(pendingWakes.map((w) => [w.resumeSessionId!, w]))
     const sessionsWithStatus = sessionList.map((session) => {
-      const isActive = messagePersister.isSessionActive(session.id)
+      const isActive = messagePersister.isSessionActive(slug, session.id)
       const wake = wakesBySession.get(session.id)
       return {
         ...session,
         isActive,
         // The awaiting projection already counts agent-scoped reviews against
         // every active session of the agent — no review special-case.
-        isAwaitingInput: messagePersister.isSessionAwaitingInput(session.id),
+        isAwaitingInput: messagePersister.isSessionAwaitingInput(slug, session.id),
         hasUnreadNotifications:
           unreadSessionIds.has(session.id) || markedUnreadSessionIds.has(session.id),
         ...(wake
@@ -2060,11 +2058,6 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     })
     const sessionId = containerSession.id
 
-    // Claim the globally keyed id before any lifecycle state becomes visible.
-    // Metadata registration below is intentionally later so stream attachment
-    // still wins the race with early container output.
-    await reserveSessionOwnership(slug, sessionId)
-
     // Runtime choices are SESSION state once the first turn starts, including
     // inherited defaults. Persist the effective values, not merely explicit
     // overrides, so changing an agent/app default later cannot silently change
@@ -2099,9 +2092,9 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     let lifecycleStarted = false
     let sessionRegistered = false
     try {
-      messagePersister.markSessionActive(sessionId, slug)
+      messagePersister.markSessionActive(slug, sessionId)
       lifecycleStarted = true
-      await messagePersister.subscribeToSession(sessionId, client, sessionId, slug)
+      await messagePersister.subscribeToSession(slug, sessionId, client, sessionId)
 
       // Record author for initial message after we know the sessionId
       if (isAuthMode()) {
@@ -2118,13 +2111,13 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       sessionRegistered = true
     } catch (error) {
       if (lifecycleStarted && !sessionRegistered) {
-        messagePersister.unsubscribeFromSession(sessionId)
+        messagePersister.unsubscribeFromSession(slug, sessionId)
       }
       throw error
     }
     // Store slash commands from container's init event (captured during session creation)
     if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
-      messagePersister.setSlashCommands(sessionId, containerSession.slashCommands)
+      messagePersister.setSlashCommands(slug, sessionId, containerSession.slashCommands)
       updateSessionMetadata(slug, sessionId, { slashCommands: containerSession.slashCommands }).catch(console.error)
     }
 
@@ -2178,7 +2171,7 @@ async function annotateAndRecoverMessages(
 ): Promise<void> {
   await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
 
-  const settledRequests = messagePersister.getSettledInputRequests(sessionId)
+  const settledRequests = messagePersister.getSettledInputRequests(agentSlug, sessionId)
   if (settledRequests.size > 0) {
     for (const item of transformed) {
       if (item.type !== 'assistant') continue
@@ -2193,10 +2186,10 @@ async function annotateAndRecoverMessages(
     }
   }
 
-  if (messagePersister.isSessionActive(sessionId)) {
+  if (messagePersister.isSessionActive(agentSlug, sessionId)) {
     const unresolvedRequests = getUnresolvedBlockingInputRequests(transformed)
     if (unresolvedRequests.length > 0) {
-      messagePersister.recoverSessionAwaitingInput(sessionId, agentSlug, unresolvedRequests)
+      messagePersister.recoverSessionAwaitingInput(agentSlug, sessionId, unresolvedRequests)
     }
   }
 
@@ -2256,10 +2249,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     // No JSONL transcript on disk — e.g. it was deleted by the CLI's retention
     // cleanup while the metadata entry lingers in the nav. Signal this distinctly
     // from an empty (but present) transcript so the UI can show a clear message.
-    if (
-      !(await sessionBelongsToAgent(agentSlug, sessionId)) ||
-      !(await sessionExists(agentSlug, sessionId))
-    ) {
+    if (!(await sessionExists(agentSlug, sessionId))) {
       return c.json({ error: 'Session transcript not found' }, 404)
     }
 
@@ -2345,7 +2335,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     // history consumer — the client's refresh fallback, the transcript card,
     // and the recovery scan below — sees a completed call instead of
     // resurrecting a decided one.
-    const settledRequests = messagePersister.getSettledInputRequests(sessionId)
+    const settledRequests = messagePersister.getSettledInputRequests(agentSlug, sessionId)
     if (settledRequests.size > 0) {
       for (const item of transformed) {
         if (item.type !== 'assistant') continue
@@ -2360,13 +2350,13 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
       }
     }
 
-    if (messagePersister.isSessionActive(sessionId)) {
+    if (messagePersister.isSessionActive(agentSlug, sessionId)) {
       const unresolvedRequests = getUnresolvedBlockingInputRequests(transformed)
       if (unresolvedRequests.length > 0) {
         // If the request-specific stream event was missed, persisted messages are
         // the fallback source of truth. A stale transcript can briefly re-assert
         // awaiting input, but the next stream result/idle event clears it.
-        messagePersister.recoverSessionAwaitingInput(sessionId, agentSlug, unresolvedRequests)
+        messagePersister.recoverSessionAwaitingInput(agentSlug, sessionId, unresolvedRequests)
       }
     }
 
@@ -2443,7 +2433,7 @@ agents.get('/:id/sessions/:sessionId/media/:ref', AgentRead(), async (c) => {
     // would 404 — telling the client the image is gone when the truth is that
     // this machine could not look. openMediaBlob distinguishes the two, and a
     // genuinely missing transcript surfaces there as 410.
-    if (!(await sessionBelongsToAgent(agentSlug, sessionId))) {
+    if (!(await sessionIsKnown(agentSlug, sessionId))) {
       return c.json({ error: 'Session transcript not found' }, 404)
     }
 
@@ -2632,7 +2622,7 @@ async function persistAndBroadcastUserMessage(
     userId,
   })
   const user = c.get('user' as never) as { id: string; name: string }
-  messagePersister.broadcastSessionEvent(args.sessionId, {
+  messagePersister.broadcastSessionEvent(args.agentSlug, args.sessionId, {
     type: 'user_message',
     content: args.content,
     sender: { id: user.id, name: user.name },
@@ -2673,7 +2663,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     // a person has joined the session. This must precede sendMessage: a fast
     // turn can settle immediately, and completion notification visibility is
     // decided from the host-side promotedToInteractive marker.
-    await messagePersister.promoteAutomatedSession(sessionId, agentSlug)
+    await messagePersister.promoteAutomatedSession(agentSlug, sessionId)
 
     // Server-generated message uuid (never client-supplied — the uuid keys the
     // messageAuthor attribution row, so a client-chosen value could collide
@@ -2683,7 +2673,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     const messageUuid = randomUUID()
     const text = content.trim()
 
-    if (messagePersister.coalesceIfRecovering(sessionId, { uuid: messageUuid, text })) {
+    if (messagePersister.coalesceIfRecovering(agentSlug, sessionId, { uuid: messageUuid, text })) {
       await persistAndBroadcastUserMessage(c, {
         messageUuid,
         sessionId,
@@ -2704,8 +2694,8 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       info = containerManager.getCachedInfo(agentSlug)
     }
 
-    if (!messagePersister.isSubscribed(sessionId)) {
-      await messagePersister.subscribeToSession(sessionId, client, sessionId, agentSlug)
+    if (!messagePersister.isSubscribed(agentSlug, sessionId)) {
+      await messagePersister.subscribeToSession(agentSlug, sessionId, client, sessionId)
     }
 
     // If the session is awaiting user input (an open AskUserQuestion / secret / file
@@ -2713,13 +2703,13 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     // turn instead of deadlocking behind the blocked tool. No-op when not awaiting.
     // Runs before the wasQueued capture so its state changes (interrupt for subagent
     // requests) are reflected in the queue-vs-fresh-turn decision below.
-    await messagePersister.cancelAwaitingInput(sessionId, agentSlug)
+    await messagePersister.cancelAwaitingInput(agentSlug, sessionId)
 
     // Captured before markSessionActive: a message sent while the agent is
     // mid-turn is queued by the agent loop rather than starting a new turn.
-    const wasQueued = messagePersister.isSessionActive(sessionId)
+    const wasQueued = messagePersister.isSessionActive(agentSlug, sessionId)
 
-    messagePersister.markSessionActive(sessionId, agentSlug)
+    messagePersister.markSessionActive(agentSlug, sessionId)
 
     // A mid-turn send must not carry model/effort/speed: the container treats a
     // parameter change as interrupt/restart of the in-flight query. The
@@ -2772,7 +2762,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
           // Other windows/devices may already have seeded their composer from
           // the previous session metadata. Tell both the local session stream
           // and the global event stream to refresh before their next send.
-          messagePersister.broadcastSessionUpdate(sessionId)
+          messagePersister.broadcastSessionUpdate(agentSlug, sessionId)
           messagePersister.broadcastGlobal({ type: 'session_updated', sessionId, agentSlug })
         }
       } catch (error) {
@@ -2803,7 +2793,7 @@ agents.delete('/:id/sessions/:sessionId/queued-messages/:uuid', AgentUser(), asy
       return c.json({ error: 'Session not found' }, 404)
     }
 
-    if (messagePersister.dropCoalescedUserMessage(sessionId, uuidParam.data)) {
+    if (messagePersister.dropCoalescedUserMessage(agentSlug, sessionId, uuidParam.data)) {
       return c.json({ cancelled: true })
     }
 
@@ -2829,7 +2819,7 @@ agents.post('/:id/sessions/:sessionId/typing', AgentUser(), async (c) => {
     return c.json({ error: 'Session not found' }, 404)
   }
 
-  messagePersister.broadcastSessionEvent(sessionId, {
+  messagePersister.broadcastSessionEvent(getAgentId(c), sessionId, {
     type: 'user_typing',
     sender: { id: user.id, name: user.name },
   })
@@ -2850,7 +2840,7 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       return c.json({ error: 'Session not found' }, 404)
     }
 
-    const isActive = messagePersister.isSessionActive(sessionId)
+    const isActive = messagePersister.isSessionActive(agentSlug, sessionId)
     const metadata = await getSessionMetadata(agentSlug, sessionId)
     const pendingWake = await getPendingWakeForSession(agentSlug, sessionId)
     const invokingAgent = metadata?.invokedByAgentSlug
@@ -2869,7 +2859,7 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       // condition the session lists use (the breadcrumb context menu hides
       // "Mark as Unread" while a session is working or awaiting input, since
       // no list renders an unread dot in that state).
-      isAwaitingInput: messagePersister.isSessionAwaitingInput(sessionId),
+      isAwaitingInput: messagePersister.isSessionAwaitingInput(agentSlug, sessionId),
       lastUsage: metadata?.lastUsage,
       scheduledTaskId: metadata?.scheduledTaskId,
       scheduledTaskName: metadata?.scheduledTaskName,
@@ -2992,16 +2982,15 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
     // exactly the "transcript OR metadata entry exists" condition that
     // deleteSession itself reports success for.
     if (
-      !(await sessionBelongsToAgent(agentSlug, sessionId)) ||
-      (!(await sessionExists(agentSlug, sessionId)) &&
-        !(await isSessionRegistered(agentSlug, sessionId)))
+      !(await sessionExists(agentSlug, sessionId)) &&
+      !(await isSessionRegistered(agentSlug, sessionId))
     ) {
       return c.json({ error: 'Session not found' }, 404)
     }
 
     // Before the delete, so an in-flight append can't recreate the transcript
     // just after it is unlinked.
-    messagePersister.unsubscribeFromSession(sessionId)
+    messagePersister.unsubscribeFromSession(agentSlug, sessionId)
 
     // deleteSession is the authority for existence here: it removes the JSONL
     // transcript and/or a lingering metadata entry and returns false only when
@@ -3054,7 +3043,7 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
 
     try {
       // Subscribe FIRST to avoid missing any broadcasts
-      unsubscribe = messagePersister.addSSEClient(sessionId, async (data) => {
+      unsubscribe = messagePersister.addSSEClient(agentSlug, sessionId, async (data) => {
         try {
           await stream.writeSSE({
             data: JSON.stringify(data),
@@ -3066,21 +3055,21 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
       })
 
       // Send initial connection message (include slash commands for late-joining clients)
-      const isActive = messagePersister.isSessionActive(sessionId)
-      let slashCommands = messagePersister.getSlashCommands(sessionId)
+      const isActive = messagePersister.isSessionActive(agentSlug, sessionId)
+      let slashCommands = messagePersister.getSlashCommands(agentSlug, sessionId)
       // Fall back to persisted metadata (e.g. after container restart)
       if (slashCommands.length === 0) {
         const meta = await getSessionMetadata(agentSlug, sessionId)
         if (meta?.slashCommands && meta.slashCommands.length > 0) {
           const repaired = repairLegacySlashCommands(meta.slashCommands)
           slashCommands = repaired.commands
-          messagePersister.setSlashCommands(sessionId, slashCommands)
+          messagePersister.setSlashCommands(agentSlug, sessionId, slashCommands)
           if (repaired.changed) {
             updateSessionMetadata(agentSlug, sessionId, { slashCommands }).catch(console.error)
           }
         }
       }
-      const backgroundTasks = messagePersister.getActiveBackgroundTasks(sessionId)
+      const backgroundTasks = messagePersister.getActiveBackgroundTasks(agentSlug, sessionId)
       await stream.writeSSE({
         data: JSON.stringify({
           type: 'connected',
@@ -3106,7 +3095,7 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
       // Keep-alive ping every 30 seconds
       pingInterval = setInterval(async () => {
         try {
-          const currentIsActive = messagePersister.isSessionActive(sessionId)
+          const currentIsActive = messagePersister.isSessionActive(agentSlug, sessionId)
           await stream.writeSSE({
             data: JSON.stringify({ type: 'ping', isActive: currentIsActive }),
             event: 'message',
@@ -3151,7 +3140,7 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
     // This handles the case where container crashed/restarted but UI still shows active
     if (info.status !== 'running') {
       console.log(`[Agents] Container not running for ${agentSlug}, marking session ${sessionId} as interrupted locally`)
-      await messagePersister.markSessionInterrupted(sessionId)
+      await messagePersister.markSessionInterrupted(agentSlug, sessionId)
       reviewManager.denyAllForAgent(agentSlug)
       return c.json({ success: true, note: 'Container not running, session marked inactive' })
     }
@@ -3165,7 +3154,7 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
       console.log(`[Agents] Container interrupt returned false for session ${sessionId}, marking as interrupted locally`)
     }
 
-    await messagePersister.markSessionInterrupted(sessionId)
+    await messagePersister.markSessionInterrupted(agentSlug, sessionId)
     reviewManager.denyAllForAgent(agentSlug)
 
     return c.json({ success: true })
@@ -3174,7 +3163,7 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
     // Even on error, try to mark session as interrupted to fix UI state.
     // Ownership was established above, so this reaches only the caller's session.
     try {
-      await messagePersister.markSessionInterrupted(sessionId)
+      await messagePersister.markSessionInterrupted(agentSlug, sessionId)
       reviewManager.denyAllForAgent(agentSlug)
       return c.json({ success: true, note: 'Error during interrupt, but session marked inactive' })
     } catch {
@@ -3325,7 +3314,7 @@ agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) =>
         return c.json({ error: 'Failed to reject secret request' }, 500)
       }
 
-      messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'declined')
+      messagePersister.completeInputRequest(agentSlug, c.req.param('sessionId'), toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'secret', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -3390,7 +3379,7 @@ agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) =>
       return c.json({ error: 'Secret saved but failed to notify agent' }, 500)
     }
     console.log(`[provide-secret] Request ${toolUseId} resolved successfully`)
-    messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'answered')
+    messagePersister.completeInputRequest(agentSlug, c.req.param('sessionId'), toolUseId, 'answered')
 
     return c.json({ success: true, saved: true })
   } catch (error) {
@@ -3438,7 +3427,7 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', AgentUser(), a
         return c.json({ error: 'Failed to reject request' }, 500)
       }
 
-      messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'declined')
+      messagePersister.completeInputRequest(agentSlug, c.req.param('sessionId'), toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'connected_account', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -3545,7 +3534,7 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', AgentUser(), a
     console.log(
       `[provide-connected-account] Request ${toolUseId} resolved successfully`
     )
-    messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'answered')
+    messagePersister.completeInputRequest(agentSlug, c.req.param('sessionId'), toolUseId, 'answered')
 
     return c.json({
       success: true,
@@ -3596,7 +3585,7 @@ agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) =
         return c.json({ error: 'Failed to reject question request' }, 500)
       }
 
-      messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'declined')
+      messagePersister.completeInputRequest(agentSlug, c.req.param('sessionId'), toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'question', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -3628,7 +3617,7 @@ agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) =
       return c.json({ error: 'Failed to submit answers' }, 500)
     }
     console.log(`[answer-question] Request ${toolUseId} resolved successfully`)
-    messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'answered')
+    messagePersister.completeInputRequest(agentSlug, c.req.param('sessionId'), toolUseId, 'answered')
 
     return c.json({ success: true })
   } catch (error) {
@@ -3679,7 +3668,7 @@ agents.post('/:id/sessions/:sessionId/capability-review', AgentUser(), async (c)
         return c.json({ error: 'Failed to reject capability launch' }, 500)
       }
 
-      messagePersister.completeCapabilityReview(sessionId, toolUseId, 'declined')
+      messagePersister.completeCapabilityReview(agentSlug, sessionId, toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'capability_review', capability, withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -3708,9 +3697,9 @@ agents.post('/:id/sessions/:sessionId/capability-review', AgentUser(), async (c)
     // Mirror the container's grant so later launches in this session don't
     // produce review cards nothing is waiting on.
     if (scope === 'session') {
-      messagePersister.grantSessionCapability(sessionId, capability)
+      messagePersister.grantSessionCapability(agentSlug, sessionId, capability)
     }
-    messagePersister.completeCapabilityReview(sessionId, toolUseId, 'answered')
+    messagePersister.completeCapabilityReview(agentSlug, sessionId, toolUseId, 'answered')
 
     trackServerEvent('capability_launch_approved', { capability, scope })
     return c.json({ success: true })
@@ -3970,7 +3959,7 @@ agents.post(
     )
     const requestSettled = resolveResponse.ok
     if (requestSettled) {
-      messagePersister.completeInputRequest(sessionId, body.toolUseId, 'answered')
+      messagePersister.completeInputRequest(agentSlug, sessionId, body.toolUseId, 'answered')
     } else {
       console.error('[autofill-browser-credential] Credentials filled but browser input could not be resolved')
     }
@@ -4035,7 +4024,7 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
       }
 
       const sessionId = c.req.param('sessionId')
-      messagePersister.completeInputRequest(sessionId, toolUseId, 'declined')
+      messagePersister.completeInputRequest(agentSlug, sessionId, toolUseId, 'declined')
 
       // Interrupt the session so the user can chat directly with the agent
       try {
@@ -4043,7 +4032,7 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
       } catch (e) {
         console.error(`[complete-browser-input] Failed to interrupt session: ${e}`)
       }
-      await messagePersister.markSessionInterrupted(sessionId)
+      await messagePersister.markSessionInterrupted(agentSlug, sessionId)
 
       trackServerEvent('request_declined', { type: 'browser_input', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
@@ -4071,7 +4060,7 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
       return c.json({ error: 'Failed to complete browser input request' }, 500)
     }
 
-    messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'answered')
+    messagePersister.completeInputRequest(agentSlug, c.req.param('sessionId'), toolUseId, 'answered')
     return c.json({ success: true })
   } catch (error) {
     console.error('Failed to complete browser input:', error)
@@ -4121,7 +4110,7 @@ agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
         return c.json({ error: 'Failed to reject script run request' }, 500)
       }
 
-      messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'declined')
+      messagePersister.completeInputRequest(agentSlug, c.req.param('sessionId'), toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'script_run', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -4213,7 +4202,7 @@ agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
       return c.json({ error: 'Failed to resolve script run request' }, 500)
     }
 
-    messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'answered')
+    messagePersister.completeInputRequest(agentSlug, c.req.param('sessionId'), toolUseId, 'answered')
     trackServerEvent('script_executed', { scriptType, exitCode })
     return c.json({ success: true })
   } catch (error) {
@@ -4270,7 +4259,7 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
         return c.json({ error: 'Failed to reject computer use request' }, 500)
       }
 
-      messagePersister.clearPendingComputerUseRequest(sessionId, toolUseId, 'declined')
+      messagePersister.clearPendingComputerUseRequest(agentSlug, sessionId, toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'computer_use', method, withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -4293,7 +4282,7 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
       if (!resolveResponse.ok) {
         return c.json({ error: 'Failed to resolve computer use request' }, 500)
       }
-      messagePersister.clearPendingComputerUseRequest(sessionId, toolUseId, 'answered')
+      messagePersister.clearPendingComputerUseRequest(agentSlug, sessionId, toolUseId, 'answered')
       return c.json({ success: true })
     }
 
@@ -4328,7 +4317,7 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
       ).catch(() => {})
       // The user approved but execution blew up — the wait was consumed by a
       // system failure, not a user decision.
-      messagePersister.clearPendingComputerUseRequest(sessionId, toolUseId, 'invalidated')
+      messagePersister.clearPendingComputerUseRequest(agentSlug, sessionId, toolUseId, 'invalidated')
       return c.json({ success: true, error: errorMsg })
     }
 
@@ -4341,17 +4330,17 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
       if (targetApp) {
         computerUsePermissionManager.setGrabbedApp(agentSlug, targetApp)
         // Broadcast immediately with app name, then resolve icon async
-        messagePersister.broadcastSessionEvent(sessionId, { type: 'computer_use_grab_changed', app: targetApp })
+        messagePersister.broadcastSessionEvent(agentSlug, sessionId, { type: 'computer_use_grab_changed', app: targetApp })
         const { getAppIconBase64 } = await import('@shared/lib/computer-use/app-icon')
         getAppIconBase64(targetApp).then((icon) => {
           if (icon) {
-            messagePersister.broadcastSessionEvent(sessionId, { type: 'computer_use_grab_changed', app: targetApp, appIcon: icon })
+            messagePersister.broadcastSessionEvent(agentSlug, sessionId, { type: 'computer_use_grab_changed', app: targetApp, appIcon: icon })
           }
         }).catch(() => {})
       }
     } else if (method === 'ungrab' || method === 'quit') {
       computerUsePermissionManager.clearGrabbedApp(agentSlug)
-      messagePersister.broadcastSessionEvent(sessionId, { type: 'computer_use_grab_changed', app: null })
+      messagePersister.broadcastSessionEvent(agentSlug, sessionId, { type: 'computer_use_grab_changed', app: null })
     }
 
     // Consume "once" grant after use
@@ -4381,7 +4370,7 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
       return c.json({ error: 'Failed to resolve computer use request' }, 500)
     }
 
-    messagePersister.clearPendingComputerUseRequest(sessionId, toolUseId, 'answered')
+    messagePersister.clearPendingComputerUseRequest(agentSlug, sessionId, toolUseId, 'answered')
     trackServerEvent('computer_use_executed', { method, permissionLevel, grantType })
     return c.json({ success: true })
   } catch (error) {
@@ -4414,7 +4403,7 @@ agents.post('/:id/sessions/:sessionId/computer-use/revoke', AgentUser(), async (
     }
 
     // Broadcast to UI
-    messagePersister.broadcastSessionEvent(sessionId, { type: 'computer_use_grab_changed', app: null })
+    messagePersister.broadcastSessionEvent(agentSlug, sessionId, { type: 'computer_use_grab_changed', app: null })
 
     return c.json({ success: true, revoked: appName || true })
   } catch (error) {
@@ -4469,14 +4458,14 @@ agents.get('/:id/scheduled-tasks/completed-sessions', AgentRead(), async (c) => 
         // restart, or during the tiny idle-event/metadata-write race, the same
         // inactive run is settled. This mirrors activity-stats semantics.
         return metadata[sessionId]?.automationStatus !== 'running'
-          || !messagePersister.isSessionActive(sessionId)
+          || !messagePersister.isSessionActive(slug, sessionId)
       })
 
     const sessions = await listSessionsByIds(slug, completedSessionIds)
     const sessionsWithStatus = sessions.map((session) => ({
       ...session,
-      isActive: messagePersister.isSessionActive(session.id),
-      isAwaitingInput: messagePersister.isSessionAwaitingInput(session.id),
+      isActive: messagePersister.isSessionActive(slug, session.id),
+      isAwaitingInput: messagePersister.isSessionAwaitingInput(slug, session.id),
     }))
     sessionsWithStatus.sort(
       (a, b) => b.lastActivityAt.getTime() - a.lastActivityAt.getTime()
@@ -5119,7 +5108,7 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
         console.error('Failed to reject remote MCP request:', await rejectResponse.text())
         return c.json({ error: 'Failed to decline the request in container' }, 502)
       }
-      messagePersister.completeInputRequest(c.req.param('sessionId'), body.toolUseId, 'declined')
+      messagePersister.completeInputRequest(getAgentId(c), c.req.param('sessionId'), body.toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'remote_mcp', withReason: !!body.declineReason })
       return c.json({ success: true, status: 'declined' })
     }
@@ -5192,7 +5181,7 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
       return c.json({ error: 'Failed to resolve the request in container' }, 502)
     }
 
-    messagePersister.completeInputRequest(c.req.param('sessionId'), body.toolUseId, 'answered')
+    messagePersister.completeInputRequest(getAgentId(c), c.req.param('sessionId'), body.toolUseId, 'answered')
     return c.json({ success: true, status: 'provided' })
   } catch (error) {
     console.error('Failed to provide remote MCP:', error)
@@ -6476,7 +6465,7 @@ agents.post('/:id/sessions/:sessionId/provide-file', AgentUser(), async (c) => {
         return c.json({ error: 'Failed to reject file request' }, 500)
       }
 
-      messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'declined')
+      messagePersister.completeInputRequest(agentSlug, c.req.param('sessionId'), toolUseId, 'declined')
       trackServerEvent('request_declined', { type: 'file', withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -6508,7 +6497,7 @@ agents.post('/:id/sessions/:sessionId/provide-file', AgentUser(), async (c) => {
       return c.json({ error: 'Failed to notify agent of uploaded file' }, 500)
     }
     console.log(`[provide-file] Request ${toolUseId} resolved successfully`)
-    messagePersister.completeInputRequest(c.req.param('sessionId'), toolUseId, 'answered')
+    messagePersister.completeInputRequest(agentSlug, c.req.param('sessionId'), toolUseId, 'answered')
 
     return c.json({ success: true, filePath })
   } catch (error) {

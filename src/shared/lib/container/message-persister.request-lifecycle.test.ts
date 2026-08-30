@@ -304,15 +304,15 @@ describe('pending user-input request lifecycle (characterization)', () => {
     userInputRequestManager.reset()
 
     mockClient = createMockClient()
-    await messagePersister.subscribeToSession(SESSION_ID, mockClient, SESSION_ID, AGENT_SLUG)
+    await messagePersister.subscribeToSession(AGENT_SLUG, SESSION_ID, mockClient, SESSION_ID)
     // Requests park mid-turn: production always has markSessionActive before
     // any request event arrives, and the derived awaiting projection is gated
     // on an active turn (an inactive session is never awaiting).
-    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const events: any[] = []
-    sseCleanup = messagePersister.addSSEClient(SESSION_ID, (data) => {
+    sseCleanup = messagePersister.addSSEClient(AGENT_SLUG, SESSION_ID, (data) => {
       events.push(data)
     })
     sseEvents = events
@@ -322,7 +322,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
     if (originalE2eMock === undefined) delete process.env.E2E_MOCK
     else process.env.E2E_MOCK = originalE2eMock
     sseCleanup()
-    messagePersister.unsubscribeFromSession(SESSION_ID)
+    messagePersister.unsubscribeFromSession(AGENT_SLUG, SESSION_ID)
     vi.clearAllMocks()
     mockCheckPermission.mockReturnValue('prompt_needed')
   })
@@ -385,7 +385,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         expect(cards).toHaveLength(1)
         expect(cards[0].request.id).toBe('tool-open-1')
 
-        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+        expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
         expect(messagePersister.hasSessionsAwaitingInputForAgent(AGENT_SLUG)).toBe(true)
         expect(
           openStreamRequestIds()
@@ -400,11 +400,11 @@ describe('pending user-input request lifecycle (characterization)', () => {
 
       it('resolves: the tool_result drops the replay entry and clears awaiting', () => {
         simulateToolUse(toolName, 'tool-resolve-1', input)
-        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+        expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
 
         sendToolResult('tool-resolve-1')
 
-        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+        expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
         expect(openStreamRequestIds()).toHaveLength(0)
       })
 
@@ -426,11 +426,11 @@ describe('pending user-input request lifecycle (characterization)', () => {
         // while the second card is parked. (This was the pinned parallel-
         // request split-brain before the flip: the imperative clear dropped
         // the bit on the first tool_result.)
-        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+        expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
         expect(openStreamRequestIds()).toHaveLength(1)
 
         sendToolResult('tool-par-2')
-        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+        expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
         expect(openStreamRequestIds()).toHaveLength(0)
       })
     }
@@ -479,9 +479,9 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(cards[0].request.id).toBe('cu-open-1')
       expect(cards[0].request.autoApproved).toBe(false)
 
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
       expect(
-        messagePersister.getPendingComputerUseRequests(SESSION_ID).map((r) => r.toolUseId)
+        messagePersister.getPendingComputerUseRequests(AGENT_SLUG, SESSION_ID).map((r) => r.toolUseId)
       ).toContain('cu-open-1')
       expect(openStreamRequestIds()).toHaveLength(0)
 
@@ -494,7 +494,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
 
     it('a tool_result alone does NOT drop the parked entry — and awaiting stays on with it', () => {
       simulateToolUse(TOOL, 'cu-clear-1', { x: 1, y: 2 })
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
 
       // The computer-use store is cleared only via the decision route's
       // explicit call, so the entry survives a stray tool_result. Derived
@@ -503,13 +503,13 @@ describe('pending user-input request lifecycle (characterization)', () => {
       // without consulting this store.)
       sendToolResult('cu-clear-1')
       expect(
-        messagePersister.getPendingComputerUseRequests(SESSION_ID).map((r) => r.toolUseId)
+        messagePersister.getPendingComputerUseRequests(AGENT_SLUG, SESSION_ID).map((r) => r.toolUseId)
       ).toContain('cu-clear-1')
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
 
-      messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'cu-clear-1')
-      expect(messagePersister.getPendingComputerUseRequests(SESSION_ID)).toHaveLength(0)
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      messagePersister.clearPendingComputerUseRequest(AGENT_SLUG, SESSION_ID, 'cu-clear-1')
+      expect(messagePersister.getPendingComputerUseRequests(AGENT_SLUG, SESSION_ID)).toHaveLength(0)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
     })
 
     it('the route clear flips awaiting and broadcasts when it was the last blocking wait', () => {
@@ -520,18 +520,18 @@ describe('pending user-input request lifecycle (characterization)', () => {
       })
       try {
         simulateToolUse(TOOL, 'cu-clear-2', { x: 1, y: 2 })
-        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+        expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
 
         // The route clear applies the shared waiting-light rule: with both
         // stores empty and no external blocker, the bit flips AND the wire
         // says input was provided — together, atomically. (Before the unified
         // dispatch change it broadcast without flipping the bit, leaving the
         // wire and the bit disagreeing until the tool_result landed.)
-        messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'cu-clear-2')
+        messagePersister.clearPendingComputerUseRequest(AGENT_SLUG, SESSION_ID, 'cu-clear-2')
         expect(
           globalEvents.filter((e) => e.type === 'session_input_provided')
         ).toHaveLength(1)
-        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+        expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
       } finally {
         cleanup()
       }
@@ -543,13 +543,13 @@ describe('pending user-input request lifecycle (characterization)', () => {
         reason: 'Need it',
       })
       simulateToolUse(TOOL, 'cu-clear-3', { x: 1, y: 2 })
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
 
       // Clearing the computer-use entry must NOT flip awaiting: the secret
       // is still parked on the other store.
-      messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'cu-clear-3')
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
-      expect(messagePersister.getPendingComputerUseRequests(SESSION_ID)).toHaveLength(0)
+      messagePersister.clearPendingComputerUseRequest(AGENT_SLUG, SESSION_ID, 'cu-clear-3')
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
+      expect(messagePersister.getPendingComputerUseRequests(AGENT_SLUG, SESSION_ID)).toHaveLength(0)
     })
   })
 
@@ -573,7 +573,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       await vi.waitFor(() => {
         expect(cardsFor('capability_review')).toHaveLength(1)
       })
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
       expect(
         openStreamRequestIds()
       ).toContain('wf-lifecycle-1')
@@ -591,7 +591,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         expect(openStreamRequestIds()).toHaveLength(1)
       })
 
-      messagePersister.completeCapabilityReview(SESSION_ID, 'wf-lifecycle-2')
+      messagePersister.completeCapabilityReview(AGENT_SLUG, SESSION_ID, 'wf-lifecycle-2')
 
       expect(openStreamRequestIds()).toHaveLength(0)
       expect(
@@ -602,7 +602,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       // Derived awaiting: settling the review settles the wait. (Before the
       // flip this door emptied its store and broadcast but left the bit stuck
       // until later stream traffic cleared it — a pinned split-brain.)
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
     })
   })
 
@@ -637,40 +637,40 @@ describe('pending user-input request lifecycle (characterization)', () => {
         reason: 'Need it',
       })
       simulateToolUse('mcp__computer-use__computer_click', 'mix-cu-1', { x: 1, y: 2 })
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
 
       // The secret resolves, but the cu entry AND the review are still open.
       sendToolResult('mix-secret-1')
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
 
       // The cu entry resolves, but the review is still open.
-      messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'mix-cu-1')
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      messagePersister.clearPendingComputerUseRequest(AGENT_SLUG, SESSION_ID, 'mix-cu-1')
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
 
       // The review settles — nothing is open anymore.
       userInputRequestManager.resolve('mix-review-1', 'answered')
       messagePersister.syncAgentSessionsAwaiting(AGENT_SLUG)
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
     })
 
     it('the agent-wide sync cannot clear awaiting while a review remains open', () => {
       parkAgentReview('mix-review-2')
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
 
       // Before the derived flip, the agent-level clear door trusted its
       // caller to verify no reviews remained — a caller that forgot cleared
       // awaiting under a live review. The projection makes that impossible:
       // sync recomputes from the registry, and the review is still in it.
       messagePersister.syncAgentSessionsAwaiting(AGENT_SLUG)
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
 
       // A stray tool_result on the session doesn't drop it either.
       sendToolResult('unknown-tool-id')
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
 
       userInputRequestManager.resolve('mix-review-2', 'declined')
       messagePersister.syncAgentSessionsAwaiting(AGENT_SLUG)
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
     })
   })
 
@@ -795,7 +795,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
 
         const cards = cardsFor(kind)
         expect(cards).toHaveLength(surfacesToday ? 1 : 0)
-        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(surfacesToday)
+        expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(surfacesToday)
       })
 
       it('complete sidechain assistant message: card broadcast and awaiting match the matrix', () => {
@@ -803,7 +803,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
 
         const cards = cardsFor(kind)
         expect(cards).toHaveLength(surfacesToday ? 1 : 0)
-        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(surfacesToday)
+        expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(surfacesToday)
       })
     }
   )
@@ -871,14 +871,14 @@ describe('pending user-input request lifecycle (characterization)', () => {
         'parent-res',
         'complete'
       )
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
       sseEvents.length = 0
 
       sendSidechainToolResult('side-res-1', 'parent-res')
 
       expect(sseEvents.filter((e) => e.type === 'tool_result')).toHaveLength(1)
       expect(openStreamRequestIds()).toHaveLength(0)
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
     })
 
     it('the sidechain resolve applies the both-stores rule: a parked computer-use keeps awaiting on', () => {
@@ -890,14 +890,14 @@ describe('pending user-input request lifecycle (characterization)', () => {
         'complete'
       )
       simulateToolUse('mcp__computer-use__computer_click', 'side-cu-1', { x: 1, y: 2 })
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
 
       sendSidechainToolResult('side-q-1', 'parent-mix')
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
 
       // Clearing the last computer-use entry now flips the light (shared rule).
-      messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'side-cu-1')
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      messagePersister.clearPendingComputerUseRequest(AGENT_SLUG, SESSION_ID, 'side-cu-1')
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
     })
 
     it('an auto-approved script replay entry does not keep awaiting on after the last real ask resolves', async () => {
@@ -926,12 +926,12 @@ describe('pending user-input request lifecycle (characterization)', () => {
           'parent-auto',
           'complete'
         )
-        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+        expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
 
         // The auto-approved script's replay entry is still tracked, but it is
         // not a real wait — resolving the secret must clear awaiting.
         sendSidechainToolResult('side-real-1', 'parent-auto')
-        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+        expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
       } finally {
         vi.unstubAllGlobals()
       }
@@ -953,17 +953,17 @@ describe('pending user-input request lifecycle (characterization)', () => {
         'parent-blk',
         'complete'
       )
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
 
       // The subagent's ask resolves, but the review is still parked — the
       // waiting light must stay on.
       sendSidechainToolResult('side-blk-1', 'parent-blk')
       expect(openStreamRequestIds()).toHaveLength(0)
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
 
       userInputRequestManager.resolve('side-review-1', 'answered')
       messagePersister.syncAgentSessionsAwaiting(AGENT_SLUG)
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
     })
   })
 
@@ -1019,7 +1019,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         'shadow-cu-1',
       ])
 
-      messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'shadow-cu-1')
+      messagePersister.clearPendingComputerUseRequest(AGENT_SLUG, SESSION_ID, 'shadow-cu-1')
       expect(userInputRequestManager.getStoreIdsForSession(SESSION_ID, 'computer_use')).toEqual([])
       expect(userInputRequestManager.stats.recentResolutions.at(-1)).toMatchObject({
         id: 'shadow-cu-1',
@@ -1037,19 +1037,19 @@ describe('pending user-input request lifecycle (characterization)', () => {
       simulateToolUse('AskUserQuestion', 'shadow-par-2', {
         questions: [{ question: 'Pick DB', header: 'DB', options: [], multiSelect: false }],
       })
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
       expect(userInputRequestManager.isSessionAwaiting(SESSION_ID, AGENT_SLUG)).toBe(true)
 
       // The first tool_result settles one request; the second card is still
       // parked, so bit and projection both stay on — the persister's status
       // IS the projection now.
       sendToolResult('shadow-par-1')
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
       expect(userInputRequestManager.isSessionAwaiting(SESSION_ID, AGENT_SLUG)).toBe(true)
 
       sendToolResult('shadow-par-2')
       expect(userInputRequestManager.isSessionAwaiting(SESSION_ID, AGENT_SLUG)).toBe(false)
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
       expect(userInputRequestManager.stats.mismatches).toBe(0)
     })
 
@@ -1071,10 +1071,10 @@ describe('pending user-input request lifecycle (characterization)', () => {
         userInputRequestManager.getOpenRequestsForSession(SESSION_ID)[0].kind
       ).toBe('capability_review')
 
-      messagePersister.completeCapabilityReview(SESSION_ID, 'shadow-cap-1')
+      messagePersister.completeCapabilityReview(AGENT_SLUG, SESSION_ID, 'shadow-cap-1')
       expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(0)
       expect(userInputRequestManager.isSessionAwaiting(SESSION_ID, AGENT_SLUG)).toBe(false)
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
       expect(userInputRequestManager.stats.mismatches).toBe(0)
     })
 
@@ -1092,7 +1092,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
           userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id)
         ).toContain('shadow-out-1')
       })
-      messagePersister.completeCapabilityReview(SESSION_ID, 'shadow-out-1', 'declined')
+      messagePersister.completeCapabilityReview(AGENT_SLUG, SESSION_ID, 'shadow-out-1', 'declined')
       expect(userInputRequestManager.stats.recentResolutions.at(-1)).toMatchObject({
         id: 'shadow-out-1',
         kind: 'capability_review',
@@ -1101,7 +1101,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
 
       // Computer use denied, then a second one consumed by an execution failure.
       simulateToolUse('mcp__computer-use__computer_click', 'shadow-out-2', { x: 1, y: 2 })
-      messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'shadow-out-2', 'declined')
+      messagePersister.clearPendingComputerUseRequest(AGENT_SLUG, SESSION_ID, 'shadow-out-2', 'declined')
       expect(userInputRequestManager.stats.recentResolutions.at(-1)).toMatchObject({
         id: 'shadow-out-2',
         kind: 'computer_use',
@@ -1109,7 +1109,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       })
 
       simulateToolUse('mcp__computer-use__computer_click', 'shadow-out-3', { x: 3, y: 4 })
-      messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'shadow-out-3', 'invalidated')
+      messagePersister.clearPendingComputerUseRequest(AGENT_SLUG, SESSION_ID, 'shadow-out-3', 'invalidated')
       expect(userInputRequestManager.stats.recentResolutions.at(-1)).toMatchObject({
         id: 'shadow-out-3',
         kind: 'computer_use',
@@ -1126,7 +1126,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       simulateToolUse('mcp__computer-use__computer_click', 'shadow-drop-2', { x: 1, y: 2 })
       expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(2)
 
-      messagePersister.unsubscribeFromSession(SESSION_ID)
+      messagePersister.unsubscribeFromSession(AGENT_SLUG, SESSION_ID)
       expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(0)
       expect(
         userInputRequestManager.stats.recentResolutions.slice(-2).map((r) => r.outcome)
@@ -1155,10 +1155,10 @@ describe('pending user-input request lifecycle (characterization)', () => {
     }
 
     it('cancelAwaitingInput rejects recovered entries on the container despite the wire filter', async () => {
-      messagePersister.recoverSessionAwaitingInput(SESSION_ID, AGENT_SLUG, [
+      messagePersister.recoverSessionAwaitingInput(AGENT_SLUG, SESSION_ID, [
         { toolUseId: 'rec-cancel-1', toolName: 'AskUserQuestion' },
       ])
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
       // A recovered synthetic is a real wait in the registry but carries no
       // renderable payload, so no card event goes out for it — clients render
       // it from the transcript that triggered the recovery.
@@ -1168,13 +1168,13 @@ describe('pending user-input request lifecycle (characterization)', () => {
       // The container-side cleanup still has to happen on cancel: the
       // recovered ask is exactly the one whose container pending may still be
       // live, and a late answer must not land on the abandoned turn.
-      await messagePersister.cancelAwaitingInput(SESSION_ID, AGENT_SLUG)
+      await messagePersister.cancelAwaitingInput(AGENT_SLUG, SESSION_ID)
 
       const rejectedUrls = mockContainerClientFetch.mock.calls
         .map((call) => call[0])
         .filter((url): url is string => typeof url === 'string' && url.endsWith('/reject'))
       expect(rejectedUrls).toContain('/inputs/rec-cancel-1/reject')
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
     })
 
     it('a clean success mid-turn re-derives awaiting instead of blind-clearing it', () => {
@@ -1192,20 +1192,20 @@ describe('pending user-input request lifecycle (characterization)', () => {
           session_state_events: true,
         })
         parkAgentReview('boundary-review-1')
-        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+        expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
 
         mockClient._sendMessage({ type: 'result', subtype: 'success', num_turns: 1 })
 
         // Still active (the runtime owns idle) and the review is still open —
         // the session keeps reading awaiting, and no falling edge fires.
-        expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
-        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+        expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+        expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
         expect(globalEvents.filter((e) => e.type === 'session_input_provided')).toHaveLength(0)
 
         // The review settles → the falling edge fires now, not never.
         userInputRequestManager.resolve('boundary-review-1', 'answered')
         messagePersister.syncAgentSessionsAwaiting(AGENT_SLUG)
-        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+        expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
         expect(globalEvents.filter((e) => e.type === 'session_input_provided')).toHaveLength(1)
       } finally {
         cleanup()
@@ -1221,12 +1221,12 @@ describe('pending user-input request lifecycle (characterization)', () => {
       try {
         // End the current turn (result-driven idle — no authority announced).
         mockClient._sendMessage({ type: 'result', subtype: 'success', num_turns: 1 })
-        expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+        expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
 
         // A review parks while the session is idle: an inactive session never
         // reads awaiting.
         parkAgentReview('boundary-review-2')
-        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+        expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
 
         // The runtime starts the next (queued) turn itself — no POST, no
         // markSessionActive. The self-heal must sync the projection too.
@@ -1235,8 +1235,8 @@ describe('pending user-input request lifecycle (characterization)', () => {
           subtype: 'session_state_changed',
           state: 'running',
         })
-        expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
-        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+        expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+        expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
         expect(globalEvents.filter((e) => e.type === 'session_awaiting_input')).toHaveLength(1)
       } finally {
         cleanup()
@@ -1248,12 +1248,12 @@ describe('pending user-input request lifecycle (characterization)', () => {
         secretName: 'API_KEY',
         reason: 'Need it',
       })
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
 
       // Reattach the stream (reconnect of an in-flight session). Only the
       // transport may turn over — the wait itself is still parked.
       const secondClient = createMockClient()
-      await messagePersister.subscribeToSession(SESSION_ID, secondClient, SESSION_ID, AGENT_SLUG)
+      await messagePersister.subscribeToSession(AGENT_SLUG, SESSION_ID, secondClient, SESSION_ID)
 
       // Replay store, registry entry, and cache all still agree, so a later
       // sync must NOT clear the genuinely parked ask.
@@ -1264,7 +1264,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id)
       ).toContain('resub-secret-1')
       messagePersister.syncAgentSessionsAwaiting(AGENT_SLUG)
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
 
       // The parked ask resolves over the NEW transport and settles normally.
       secondClient._sendMessage({
@@ -1275,21 +1275,21 @@ describe('pending user-input request lifecycle (characterization)', () => {
           ],
         },
       })
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
       expect(openStreamRequestIds()).toHaveLength(0)
     })
 
     it('the markSessionIdle revert clears the awaiting cache an agent review had set', () => {
       parkAgentReview('boundary-review-3')
       // markSessionActive's trailing sync picks up the open review.
-      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
 
       // The optimistic send fails → revert. An inactive session is never
       // awaiting, review or not — the cache resets with isActive.
-      messagePersister.markSessionIdle(SESSION_ID)
-      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      messagePersister.markSessionIdle(AGENT_SLUG, SESSION_ID)
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
     })
   })
 
@@ -1312,9 +1312,9 @@ describe('pending user-input request lifecycle (characterization)', () => {
         questions: [{ question: 'Pick DB', header: 'DB', options: [], multiSelect: false }],
       })
       expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(2)
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
 
-      messagePersister.completeInputRequest(SESSION_ID, 'par-secret-1', 'declined')
+      messagePersister.completeInputRequest(AGENT_SLUG, SESSION_ID, 'par-secret-1', 'declined')
 
       // Registry and replay store both drop the declined ask NOW — a reload
       // must not resurrect it. The surviving question keeps the light on.
@@ -1324,7 +1324,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(openStreamRequestIds()).toEqual(
         ['par-question-1'],
       )
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
       expect(
         userInputRequestManager.stats.recentResolutions.find((r) => r.id === 'par-secret-1')
           ?.outcome,
@@ -1346,7 +1346,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       ).toHaveLength(1)
 
       sendToolResult('par-question-1')
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
     })
 
     it('the settled outcome is stamped for the messages route until the turn boundary clears it', () => {
@@ -1357,15 +1357,15 @@ describe('pending user-input request lifecycle (characterization)', () => {
         secretName: 'API_KEY',
         reason: 'Need it',
       })
-      messagePersister.completeInputRequest(SESSION_ID, 'par-stamp-1', 'declined')
-      expect(messagePersister.getSettledInputRequests(SESSION_ID).get('par-stamp-1')).toBe(
+      messagePersister.completeInputRequest(AGENT_SLUG, SESSION_ID, 'par-stamp-1', 'declined')
+      expect(messagePersister.getSettledInputRequests(AGENT_SLUG, SESSION_ID).get('par-stamp-1')).toBe(
         'declined',
       )
 
       // The turn boundary lands the real results in the transcript — the
       // stamp expires with it.
       mockClient._sendMessage({ type: 'result', subtype: 'success', num_turns: 1 })
-      expect(messagePersister.getSettledInputRequests(SESSION_ID).size).toBe(0)
+      expect(messagePersister.getSettledInputRequests(AGENT_SLUG, SESSION_ID).size).toBe(0)
     })
 
     it('settling the last parked ask clears awaiting, and callers without a sessionId derive it', () => {
@@ -1373,14 +1373,14 @@ describe('pending user-input request lifecycle (characterization)', () => {
         secretName: 'API_KEY',
         reason: 'Need it',
       })
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
 
       // Chat connectors know only the toolUseId — the registry entry's scope
       // supplies the session.
-      messagePersister.completeInputRequest(undefined, 'par-solo-1', 'answered')
+      messagePersister.completeInputRequest(AGENT_SLUG, undefined, 'par-solo-1', 'answered')
 
       expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(0)
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
     })
   })
 
@@ -1411,7 +1411,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
 
     it('a subagent that dies with a parked request invalidates it everywhere', async () => {
       sendSidechainToolUse('parent-dead-1', 'side-orphan-1')
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
       expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(1)
 
       // The subagent finishes WITHOUT a tool_result for the parked ask
@@ -1424,7 +1424,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       })
 
       expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(0)
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
       expect(openStreamRequestIds()).toHaveLength(0)
       expect(
         userInputRequestManager.stats.recentResolutions.find((r) => r.id === 'side-orphan-1')
@@ -1466,7 +1466,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
           ],
         },
       })
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
       expect(
         userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id),
       ).toEqual(['side-script-1'])
@@ -1478,7 +1478,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       })
 
       expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(0)
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
       expect(
         userInputRequestManager.stats.recentResolutions.find((r) => r.id === 'side-script-1')
           ?.outcome,
@@ -1498,7 +1498,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
 
       const open = userInputRequestManager.getOpenRequestsForSession(SESSION_ID)
       expect(open.map((r) => r.id)).toEqual(['side-kept-1'])
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
     })
 
     it("a main-agent request has no parent linkage and survives subagent completions", () => {
@@ -1514,7 +1514,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(
         userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id),
       ).toEqual(['main-secret-1'])
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
     })
   })
 
@@ -1619,12 +1619,17 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(resolved[0].outcome).toBe('declined')
     })
 
-    it('a request without a verified agentSlug never reaches the global stream (fail closed)', () => {
+    it('a request without a verified agentSlug reaches no stream at all (fail closed)', () => {
       // The global-stream ACL filter forwards events without a top-level
       // agentSlug to EVERY authenticated user. The scope schema types the
       // slug as optional, so the broadcast boundary must fail closed rather
-      // than trust that every registration path populated it. The session
-      // stream still gets the event — its subscribers are AgentRead-gated.
+      // than trust that every registration path populated it.
+      //
+      // The session stream used to still receive it, because it was addressed
+      // by session id alone. It is addressed by agent AND session now, so a
+      // request that names no agent cannot be routed to a session stream
+      // either — strictly more closed than before, and the reason a slugless
+      // registration is a bug to find rather than a delivery to preserve.
       userInputRequestManager.register({
         id: 'wire-noslug-1',
         kind: 'secret',
@@ -1646,19 +1651,19 @@ describe('pending user-input request lifecycle (characterization)', () => {
 
       expect(createdFor(globalEvents, 'wire-noslug-1')).toHaveLength(0)
       expect(createdFor(globalEvents, 'wire-noslug-2')).toHaveLength(0)
-      expect(createdFor(sseEvents, 'wire-noslug-1')).toHaveLength(1)
-      expect(createdFor(sseEvents, 'wire-noslug-2')).toHaveLength(1)
+      expect(createdFor(sseEvents, 'wire-noslug-1')).toHaveLength(0)
+      expect(createdFor(sseEvents, 'wire-noslug-2')).toHaveLength(0)
 
       userInputRequestManager.resolve('wire-noslug-1', 'answered')
       expect(resolvedFor(globalEvents, 'wire-noslug-1')).toHaveLength(0)
-      expect(resolvedFor(sseEvents, 'wire-noslug-1')).toHaveLength(1)
+      expect(resolvedFor(sseEvents, 'wire-noslug-1')).toHaveLength(0)
     })
 
     it('recovery synthetics never hit the wire — the transcript renders those cards', () => {
-      messagePersister.recoverSessionAwaitingInput(SESSION_ID, AGENT_SLUG, [
+      messagePersister.recoverSessionAwaitingInput(AGENT_SLUG, SESSION_ID, [
         { toolUseId: 'wire-recovered-1', toolName: 'AskUserQuestion' },
       ])
-      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
       expect(createdFor(globalEvents, 'wire-recovered-1')).toHaveLength(0)
       expect(createdFor(sseEvents, 'wire-recovered-1')).toHaveLength(0)
     })
@@ -1669,7 +1674,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       // the real registration forever: clients never receive a renderable
       // user_request_created and the snapshot serves a stub the card guards
       // drop.
-      messagePersister.recoverSessionAwaitingInput(SESSION_ID, AGENT_SLUG, [
+      messagePersister.recoverSessionAwaitingInput(AGENT_SLUG, SESSION_ID, [
         { toolUseId: 'wire-upgrade-1', toolName: 'mcp__user-input__request_secret' },
       ])
       expect(createdFor(globalEvents, 'wire-upgrade-1')).toHaveLength(0)

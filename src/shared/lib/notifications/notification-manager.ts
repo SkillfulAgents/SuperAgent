@@ -129,7 +129,7 @@ class NotificationManager {
     // and before the settings check: visibility isn't a notification pref.
     if (type === 'session_waiting') {
       try {
-        await messagePersister.promoteAutomatedSession(sessionId, agentSlug)
+        await messagePersister.promoteAutomatedSession(agentSlug, sessionId)
       } catch (error) {
         console.error('[NotificationManager] Failed to promote automated session:', error)
       }

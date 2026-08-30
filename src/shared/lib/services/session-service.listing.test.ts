@@ -19,7 +19,6 @@ import {
   listSessions,
   listSessionsFromSummary,
   getSessionMessagesPage,
-  reserveSessionOwnership,
 } from './session-service'
 
 // Both implementations must satisfy the same contract: listSessions stats
@@ -190,37 +189,31 @@ describe.each([
     expect(noMeta.createdAt).toEqual(expected)
   })
 
-  it('excludes transcripts and registrations owned by another agent', async () => {
+  it('lists only what is in this agent\u2019s own directory', async () => {
+    // A listing is a directory read, not an ownership lookup: agent-b's
+    // sessions are in agent-b's directory and can never appear here, and an id
+    // that also exists under another agent is simply a different session.
     await writeTranscript('agent-a', 'own', { activityAt: '2026-01-01T00:00:00.000Z' })
     await fs.promises.mkdir(sessionsDir('agent-b'), { recursive: true })
-    // Reserve first: the ownership index is built from disk on first use, so a
-    // later foreign file in agent-a's directory is unowned by agent-a.
-    // (The reservation also invalidates agent-b's summary, not agent-a's; the
-    // summary-backed listing must still build agent-a's map after the foreign
-    // file lands, which it does because the first read is cold.)
-    await reserveSessionOwnership('agent-b', 'foreign-transcript')
-    await reserveSessionOwnership('agent-b', 'foreign-pending')
-    await writeTranscript('agent-a', 'foreign-transcript', { activityAt: '2026-01-09T00:00:00.000Z' })
-    await writeMetadata('agent-a', {
-      'foreign-pending': { name: 'Forged', createdAt: '2026-01-10T00:00:00.000Z' },
-    })
+    await writeTranscript('agent-b', 'b-only', { activityAt: '2026-01-09T00:00:00.000Z' })
+    await writeTranscript('agent-b', 'shared-id', { activityAt: '2026-01-09T00:00:00.000Z' })
+    await writeTranscript('agent-a', 'shared-id', { activityAt: '2026-01-10T00:00:00.000Z' })
 
     const sessions = await list('agent-a', {
       excludeAutomated: true,
       sortBy: 'last_activity_at',
     })
 
-    expect(ids(sessions)).toEqual(['own'])
+    expect(ids(sessions).sort()).toEqual(['own', 'shared-id'])
   })
 
-  it('applies limit after ownership and visibility filtering on transcript-backed sessions', async () => {
+  it('applies limit after visibility filtering on transcript-backed sessions', async () => {
     await writeTranscript('agent-a', 'visible-1', { activityAt: '2026-01-01T00:00:00.000Z' })
     await writeTranscript('agent-a', 'visible-2', { activityAt: '2026-01-02T00:00:00.000Z' })
     await writeTranscript('agent-a', 'hidden-3', { activityAt: '2026-01-03T00:00:00.000Z' })
     await writeTranscript('agent-a', 'empty-4', { entries: [] })
     await fs.promises.mkdir(sessionsDir('agent-b'), { recursive: true })
-    await reserveSessionOwnership('agent-b', 'foreign-5')
-    await writeTranscript('agent-a', 'foreign-5', { activityAt: '2026-01-05T00:00:00.000Z' })
+    await writeTranscript('agent-b', 'foreign-5', { activityAt: '2026-01-05T00:00:00.000Z' })
     await writeMetadata('agent-a', {
       'hidden-3': { isScheduledExecution: true, scheduledTaskId: 't' },
     })
@@ -258,8 +251,7 @@ describe.each([
       'pending-hidden-jan8': { createdAt: '2026-01-08T00:00:00.000Z', invokedByAgentSlug: 'x' },
     })
     await fs.promises.mkdir(sessionsDir('agent-b'), { recursive: true })
-    await reserveSessionOwnership('agent-b', 'foreign-jan7')
-    await writeTranscript('agent-a', 'foreign-jan7', { activityAt: '2026-01-07T00:00:00.000Z' })
+    await writeTranscript('agent-b', 'foreign-jan7', { activityAt: '2026-01-07T00:00:00.000Z' })
     // registered-empty-jan2 is an existing (empty) file; pin its activity too.
     const jan2 = new Date('2026-01-02T00:00:00.000Z')
     await fs.promises.utimes(transcriptPath('agent-a', 'registered-empty-jan2'), jan2, jan2)

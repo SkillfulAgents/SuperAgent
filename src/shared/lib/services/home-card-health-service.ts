@@ -107,6 +107,7 @@ export async function buildHomeCardHealth(
     [...agentsWithCharts].map((agentSlug) =>
       limit(async () => {
         const activity = buildAutomationActivityStats(
+          agentSlug,
           cronsByAgent.get(agentSlug) ?? [],
           webhooksByAgent.get(agentSlug) ?? [],
           await readSessionMetadata(agentSlug),

@@ -162,8 +162,8 @@ export async function getAgentWithStatus(
   let hasActiveSessions = false
   let hasSessionsAwaitingInput = false
   for (const sessionId of sessionSummary.sessionIds) {
-    if (messagePersister.isSessionActive(sessionId)) hasActiveSessions = true
-    if (messagePersister.isSessionAwaitingInput(sessionId)) hasSessionsAwaitingInput = true
+    if (messagePersister.isSessionActive(slug, sessionId)) hasActiveSessions = true
+    if (messagePersister.isSessionAwaitingInput(slug, sessionId)) hasSessionsAwaitingInput = true
   }
   if (!hasActiveSessions) {
     hasActiveSessions = messagePersister.hasActiveSessionsForAgent(slug)
