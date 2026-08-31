@@ -23,13 +23,13 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
-import { useAgents, useDeleteAgent, useRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
+import { useAgents, useRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { AgentSettingsDialog } from './agent-settings-dialog'
+import { DeleteAgentConfirmDialog } from './delete-agent-confirm-dialog'
 import { apiFetch } from '@renderer/lib/api'
-import { canUseHostFeatures } from '@renderer/lib/host-features'
-import { Settings, FolderOpen, Copy, Trash2, LogOut, Move, FolderInput } from 'lucide-react'
+import { Settings, Trash2, LogOut, Move, FolderInput } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Input } from '@renderer/components/ui/input'
 import { useUserSettings, useUpdateUserSettings, type UserSettingsData } from '@renderer/hooks/use-user-settings'
@@ -67,13 +67,9 @@ export function AgentContextMenu({
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [showLeaveDialog, setShowLeaveDialog] = useState(false)
   const [showSettingsDialog, setShowSettingsDialog] = useState(false)
-  const [showPathDialog, setShowPathDialog] = useState(false)
   const [showNewFolderDialog, setShowNewFolderDialog] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
-  const [agentPath, setAgentPath] = useState('')
-  const [isDeleting, setIsDeleting] = useState(false)
   const [isLeaving, setIsLeaving] = useState(false)
-  const deleteAgent = useDeleteAgent()
   const navigate = useNavigate()
   // undefined when the menu is opened off the agent route (e.g. from the sidebar
   // list), so the up-nav only fires when we're actually viewing the agent being
@@ -158,46 +154,6 @@ export function AgentContextMenu({
     setShowNewFolderDialog(false)
     setNewFolderName('')
   }, [agent.slug, buildSections, newFolderName, updateSettings])
-
-  // `open: true` makes the API run the file manager on ITS OWN host. That is
-  // what you want when the API is this computer; against a cloud workspace it
-  // asks the deployment to launch `open`/`explorer`/`xdg-open` somewhere nobody
-  // is looking. Remotely this becomes the copy-the-path action the web build
-  // already uses, which is the part that still works.
-  const canShowDirectory = canUseHostFeatures()
-
-  const handleDirectoryAction = useCallback(async () => {
-    const res = await apiFetch(`/api/agents/${agent.slug}/open-directory`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ open: canShowDirectory }),
-    })
-    if (!canShowDirectory && res.ok) {
-      const { path } = await res.json()
-      try {
-        await navigator.clipboard.writeText(path)
-      } catch {
-        setAgentPath(path)
-        setShowPathDialog(true)
-      }
-    }
-  }, [agent.slug, canShowDirectory])
-
-  const handleDelete = async () => {
-    setIsDeleting(true)
-    try {
-      await deleteAgent.mutateAsync(agent.slug)
-      setShowDeleteDialog(false)
-      if (routeAgentId === agent.slug) {
-        void navigate({ to: '/' })
-      }
-    } catch (error) {
-      console.error('Failed to delete agent:', error)
-      toast.error(error instanceof Error ? error.message : 'Failed to delete agent')
-    } finally {
-      setIsDeleting(false)
-    }
-  }
 
   const handleLeave = async () => {
     setIsLeaving(true)
@@ -289,24 +245,6 @@ export function AgentContextMenu({
           </ContextMenuItem>
           {isOwner && (
             <ContextMenuItem
-              onClick={handleDirectoryAction}
-              data-testid="open-agent-directory-item"
-            >
-              {canShowDirectory ? (
-                <>
-                  <FolderOpen className="h-4 w-4 mr-2" />
-                  Show Agent Directory
-                </>
-              ) : (
-                <>
-                  <Copy className="h-4 w-4 mr-2" />
-                  Copy Agent Directory Path
-                </>
-              )}
-            </ContextMenuItem>
-          )}
-          {isOwner && (
-            <ContextMenuItem
               className="text-destructive focus:bg-destructive/10 focus:text-destructive"
               onClick={() => setShowDeleteDialog(true)}
               data-testid="delete-agent-item"
@@ -337,28 +275,12 @@ export function AgentContextMenu({
         onOpenChange={setShowSettingsDialog}
       />
 
-      <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
-        <AlertDialogContent data-testid="confirm-delete-agent-dialog">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Agent</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete &quot;{agent.name}&quot;? This will permanently
-              delete the agent and all its sessions. This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDelete}
-              disabled={isDeleting}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              data-testid="confirm-delete-agent-button"
-            >
-              {isDeleting ? 'Deleting...' : 'Delete'}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <DeleteAgentConfirmDialog
+        agentSlug={agent.slug}
+        agentName={agent.name}
+        open={showDeleteDialog}
+        onOpenChange={setShowDeleteDialog}
+      />
 
       <AlertDialog open={showLeaveDialog} onOpenChange={setShowLeaveDialog}>
         <AlertDialogContent data-testid="confirm-leave-agent-dialog">
@@ -416,20 +338,6 @@ export function AgentContextMenu({
             >
               Create &amp; Move
             </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      <AlertDialog open={showPathDialog} onOpenChange={setShowPathDialog}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Agent Directory Path</AlertDialogTitle>
-            <AlertDialogDescription className="break-all font-mono text-sm select-all">
-              {agentPath}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Close</AlertDialogCancel>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

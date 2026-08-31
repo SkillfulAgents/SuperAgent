@@ -2,6 +2,7 @@ import crypto from 'crypto'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
+import { ReauthDismissedError, reauthDismissedMessage } from './reauth-dismissal'
 
 export const ACCOUNT_REAUTH_TIMEOUT_MS = 5 * 60 * 1000
 
@@ -205,6 +206,28 @@ export class AccountReauthManager {
 
       messagePersister.syncAgentSessionsAwaiting(details.agentSlug)
     })
+  }
+
+  /**
+   * Give up on one parked card because a person dismissed it. Without this the
+   * only exits are the owner reconnecting or the five-minute timer, so a
+   * shared credential nobody present can reconnect holds every session of the
+   * agent in awaiting-input until it expires.
+   *
+   * Returns false when `entryId` names no live group under `agentSlug` — the
+   * caller decides whether that is a stale card or a cross-agent probe.
+   */
+  dismiss(entryId: string, agentSlug: string, reason?: string): boolean {
+    const group = this.groups.get(entryId)
+    if (!group || group.agentSlug !== agentSlug) return false
+    this.settleGroup(group, 'cancelled', {
+      type: 'reject',
+      error: new ReauthDismissedError(
+        reauthDismissedMessage('Account re-authentication', reason),
+        reason,
+      ),
+    })
+    return true
   }
 
   /** Resume every parked proxy request that uses the reconnected account. */

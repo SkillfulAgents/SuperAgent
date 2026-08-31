@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { Authenticated } from '../middleware/auth'
 import { containerManager } from '@shared/lib/container/container-manager'
+import { APP_VERSION } from '@shared/lib/config/version'
 import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import { getServicesInitError } from '@shared/lib/startup'
 
@@ -15,6 +16,7 @@ runtimeStatus.get('/', (c) => {
     hasRunningAgents: containerManager.hasRunningAgents(),
     apiKeyConfigured: getActiveLlmProvider().getApiKeyStatus().isConfigured,
     servicesInitError: getServicesInitError(),
+    appVersion: APP_VERSION,
   })
 })
 

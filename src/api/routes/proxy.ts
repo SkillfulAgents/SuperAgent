@@ -6,6 +6,7 @@ import { matchScopes } from '@shared/lib/proxy/scope-matcher'
 import { resolveApiPolicy } from '@shared/lib/proxy/policy-resolver'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
 import { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
+import { isReauthDismissed, reauthDismissalReason, withDismissalReason } from '@shared/lib/proxy/reauth-dismissal'
 import { getAccountProviderByName } from '@shared/lib/account-providers'
 import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
@@ -150,7 +151,9 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
 
   type ReauthResult =
     | { ok: true }
-    | { ok: false; reason: 'timeout' | 'missing' | 'inactive' }
+    // `dismissReason` is what the dismisser typed, forwarded so the agent
+    // learns WHY a person cut its call off, not merely that they did.
+    | { ok: false; reason: 'timeout' | 'dismissed' | 'missing' | 'inactive'; dismissReason?: string }
 
   const holdForReauth = async (status: 'expired' | 'revoked'): Promise<ReauthResult> => {
     try {
@@ -160,7 +163,12 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
         toolkit: account!.toolkitSlug,
         accountStatus: status,
       }, c.req.raw.signal)
-    } catch {
+    } catch (error) {
+      // A person pressing Dismiss and a five-minute timer both land here; only
+      // the first should read as a decision the agent must respect.
+      if (isReauthDismissed(error)) {
+        return { ok: false, reason: 'dismissed', dismissReason: reauthDismissalReason(error) }
+      }
       return { ok: false, reason: 'timeout' }
     }
 
@@ -183,6 +191,16 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
         message: 'The request timed out while waiting for the account to be reconnected.',
         accountStatus: status,
       }, 408)
+    }
+
+    if (result.reason === 'dismissed') {
+      const message = withDismissalReason(
+        'A user dismissed the reconnection request, so this call was not made. '
+        + 'Do not retry it until the connection is reconnected.',
+        result.dismissReason,
+      )
+      await auditError(`Account re-authentication dismissed by a user (${status})`, 403)
+      return c.json({ error: 'account_reauth_dismissed', message, accountStatus: status }, 403)
     }
 
     const message = result.reason === 'missing'

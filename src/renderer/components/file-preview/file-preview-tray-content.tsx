@@ -1,6 +1,8 @@
 import { Download, FileText, Folder, PanelRightClose, X } from 'lucide-react'
 import { useFilePreview } from '@renderer/context/file-preview-context'
+import { CopyFileButton } from './copy-file-button'
 import { FileTabBar } from './file-tab-bar'
+import { isCopyableTextFile } from './file-types'
 import { FileRenderer } from './renderers/file-renderer'
 import { FolderBrowser } from './folder-browser'
 import { CommentBar } from './comments/comment-bar'
@@ -23,9 +25,12 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
   const fileApiPath = activeTab.kind === 'file'
     ? getAgentFileApiPath(activeTab.agentSlug, activeTab.filePath)
     : null
-  const versionParam = activeTab.kind === 'file' && activeTab.version > 0 ? `&v=${activeTab.version}` : ''
-  const fileUrl = fileApiPath ? `${baseUrl}${fileApiPath}?inline=true${versionParam}` : null
-  const downloadUrl = fileApiPath ? `${baseUrl}${fileApiPath}` : null
+  // `v` is a cache buster, not a server-read param: the route ignores it, but it
+  // keeps a redelivered file from resolving to a URL that a browser or CDN still
+  // holds the previous body for.
+  const versionQuery = activeTab.kind === 'file' && activeTab.version > 0 ? `v=${activeTab.version}` : ''
+  const fileUrl = fileApiPath ? `${baseUrl}${fileApiPath}?inline=true${versionQuery ? `&${versionQuery}` : ''}` : null
+  const downloadUrl = fileApiPath ? `${baseUrl}${fileApiPath}${versionQuery ? `?${versionQuery}` : ''}` : null
   const activeComments = activeTab.kind === 'file' ? comments.get(activeTab.filePath) || [] : []
 
   return (
@@ -46,6 +51,9 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
           <FileText className="h-4 w-4 shrink-0" />
         )}
         <span className="flex-1 text-xs truncate font-medium">Files</span>
+        {fileUrl && activeTab.kind === 'file' && isCopyableTextFile(activeTab.filePath) && (
+          <CopyFileButton fileUrl={fileUrl} displayName={activeTab.displayName} />
+        )}
         {downloadUrl && (
           <a
             href={downloadUrl}

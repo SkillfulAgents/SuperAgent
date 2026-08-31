@@ -145,30 +145,52 @@ describe('buildUnifiedRows', () => {
     const rows = buildUnifiedRows({
       allAccounts: [],
       allMcps: [],
-      foreignAccounts: [{ kind: 'connected-account', toolkitSlug: 'github' }],
-      foreignMcps: [{ kind: 'remote-mcp' }],
+      foreignAccounts: [{ kind: 'connected-account', toolkitSlug: 'github', mappingId: 'map-a1' }],
+      foreignMcps: [{ kind: 'remote-mcp', mappingId: 'map-m1' }],
     })
 
     expect(rows).toEqual([
       expect.objectContaining({
-        key: 'foreign-account-github-0',
+        key: 'foreign-account-map-a1',
         name: 'GitHub',
         subtitle: 'Connected by another member',
         type: 'oauth',
         granted: true,
         foreign: true,
+        mappingId: 'map-a1',
       }),
       expect.objectContaining({
-        key: 'foreign-mcp-0',
+        key: 'foreign-mcp-map-m1',
         name: 'Shared MCP connection',
         subtitle: 'Connected by another member',
         type: 'mcp',
         granted: true,
         foreign: true,
+        mappingId: 'map-m1',
       }),
     ])
     expect(rows.every((row) => row.date === undefined)).toBe(true)
     expect(rows.every((row) => row.mcpTools === undefined)).toBe(true)
     expect(rows.every((row) => row.mcpErrorMessage === undefined)).toBe(true)
+  })
+
+  it('keys foreign rows on the link id so removing a sibling cannot shift them', () => {
+    const build = (accounts: Array<{ toolkitSlug: string; mappingId: string }>) =>
+      buildUnifiedRows({
+        allAccounts: [],
+        allMcps: [],
+        foreignAccounts: accounts.map((a) => ({ kind: 'connected-account' as const, ...a })),
+      })
+
+    const before = build([
+      { toolkitSlug: 'slack', mappingId: 'map-1' },
+      { toolkitSlug: 'slack', mappingId: 'map-2' },
+    ])
+    const after = build([{ toolkitSlug: 'slack', mappingId: 'map-2' }])
+
+    // Two links to the same toolkit are indistinguishable by name; only the
+    // link id keeps the surviving row pointing at itself after the refetch.
+    expect(before.map((r) => r.key)).toEqual(['foreign-account-map-1', 'foreign-account-map-2'])
+    expect(after.map((r) => r.key)).toEqual(['foreign-account-map-2'])
   })
 })

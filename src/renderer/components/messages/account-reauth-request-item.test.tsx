@@ -4,8 +4,13 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { AccountReauthRequestItem } from './account-reauth-request-item'
 
 const mockReconnect = vi.fn()
+const mockDismiss = vi.fn()
 let mockPendingAccountId: string | null = null
 let mockOwnedAccountIds = ['account-1', 'account-2', 'account-3']
+
+vi.mock('@renderer/lib/reauth-dismiss', () => ({
+  dismissReauthRequest: (...args: unknown[]) => mockDismiss(...args),
+}))
 
 vi.mock('@renderer/hooks/use-oauth-reconnect', () => ({
   useOAuthReconnect: () => ({
@@ -23,6 +28,7 @@ vi.mock('@renderer/hooks/use-connected-accounts', () => ({
 describe('AccountReauthRequestItem', () => {
   beforeEach(() => {
     mockReconnect.mockReset()
+    mockDismiss.mockReset().mockResolvedValue(undefined)
     mockPendingAccountId = null
     mockOwnedAccountIds = ['account-1', 'account-2', 'account-3']
   })
@@ -87,7 +93,7 @@ describe('AccountReauthRequestItem', () => {
     expect(screen.getByText('Waiting for reconnection')).toBeInTheDocument()
   })
 
-  it('shows a non-actionable card to a member who does not own the account', () => {
+  it('offers a member who does not own the account a way out instead of reconnect', () => {
     mockOwnedAccountIds = []
     render(
       <AccountReauthRequestItem
@@ -100,7 +106,73 @@ describe('AccountReauthRequestItem', () => {
       />,
     )
 
+    // Reconnecting stays the owner's alone, but the card blocks every session
+    // of the agent — so this member must not be left with nothing to press.
     expect(screen.queryByTestId('account-reauth-reconnect-btn')).not.toBeInTheDocument()
+    expect(screen.getByTestId('account-reauth-dismiss-btn')).toBeInTheDocument()
     expect(screen.getByText(/Only the connection owner can reconnect/)).toBeInTheDocument()
+  })
+
+  it('dismisses the parked request and closes the card', async () => {
+    const onComplete = vi.fn()
+    mockOwnedAccountIds = []
+
+    render(
+      <AccountReauthRequestItem
+        proxyRequestId="proxy-5"
+        accountId="account-5"
+        toolkit="gmail"
+        accountStatus="expired"
+        agentSlug="agent-1"
+        onComplete={onComplete}
+      />,
+    )
+
+    fireEvent.click(screen.getByTestId('account-reauth-dismiss-btn'))
+
+    await waitFor(() => expect(mockDismiss).toHaveBeenCalledWith({
+      agentSlug: 'agent-1',
+      requestId: 'proxy-5',
+      reason: undefined,
+    }))
+    await waitFor(() => expect(onComplete).toHaveBeenCalledOnce())
+  })
+
+  it('keeps the card open when the dismissal fails', async () => {
+    const onComplete = vi.fn()
+    mockOwnedAccountIds = []
+    mockDismiss.mockRejectedValue(new Error('Request not found'))
+
+    render(
+      <AccountReauthRequestItem
+        proxyRequestId="proxy-6"
+        accountId="account-6"
+        toolkit="gmail"
+        accountStatus="expired"
+        agentSlug="agent-1"
+        onComplete={onComplete}
+      />,
+    )
+
+    fireEvent.click(screen.getByTestId('account-reauth-dismiss-btn'))
+
+    expect(await screen.findByText(/Request not found/)).toBeInTheDocument()
+    expect(onComplete).not.toHaveBeenCalled()
+  })
+
+  it('offers no dismissal in read-only mode', () => {
+    render(
+      <AccountReauthRequestItem
+        proxyRequestId="proxy-7"
+        accountId="account-1"
+        toolkit="gmail"
+        accountStatus="expired"
+        agentSlug="agent-1"
+        readOnly
+        onComplete={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByTestId('account-reauth-dismiss-btn')).not.toBeInTheDocument()
   })
 })

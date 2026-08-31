@@ -1,6 +1,4 @@
 import { test, expect, type APIRequestContext, type TestInfo } from '@playwright/test'
-import * as fs from 'fs'
-import * as path from 'path'
 import { AppPage } from '../pages/app.page'
 import { SessionPage } from '../pages/session.page'
 import {
@@ -15,6 +13,7 @@ import {
 } from '../helpers/agents'
 import { createRemoteMcp, assignRemoteMcpToAgent, type TestRemoteMcp } from '../helpers/connections'
 import { startMockMcpServer, type MockMcpServer } from '../helpers/mock-mcp-server'
+import { mockRecorder } from '../helpers/mock-recorder'
 
 /**
  * MCP tool-policy enforcement — the product's main MCP safety mechanism, which
@@ -35,9 +34,6 @@ import { startMockMcpServer, type MockMcpServer } from '../helpers/mock-mcp-serv
  * the whole file parallel-safe.
  */
 
-const E2E_DATA_DIR = path.resolve(process.cwd(), process.env.SUPERAGENT_DATA_DIR ?? '.e2e-data')
-const RECORDER_FILE = path.join(E2E_DATA_DIR, '.e2e-mock-recorder.jsonl')
-
 interface MockRecord {
   type: string
   agentSlug: string
@@ -45,27 +41,7 @@ interface MockRecord {
   timestamp: string
 }
 
-function readRecords(): MockRecord[] {
-  if (!fs.existsSync(RECORDER_FILE)) return []
-  return fs
-    .readFileSync(RECORDER_FILE, 'utf-8')
-    .trim()
-    .split('\n')
-    .filter(Boolean)
-    .map((l) => JSON.parse(l) as MockRecord)
-}
-
-// The recorder file is shared across workers, so the predicate MUST filter by
-// a test-unique attribute (the agent slug) — never assume it starts empty.
-async function waitForRecord(predicate: (r: MockRecord) => boolean, timeoutMs = 12000): Promise<MockRecord> {
-  const start = Date.now()
-  while (Date.now() - start < timeoutMs) {
-    const found = readRecords().find(predicate)
-    if (found) return found
-    await new Promise((r) => setTimeout(r, 100))
-  }
-  throw new Error('Timed out waiting for container_start recorder record')
-}
+const recorder = mockRecorder<MockRecord>()
 
 type PolicyDecision = 'allow' | 'review' | 'block'
 
@@ -96,7 +72,7 @@ test.describe('MCP tool-policy enforcement', () => {
     // Creating a session wakes the (mock) container, which writes its
     // PROXY_TOKEN to the recorder — the credential the proxy expects.
     const session = await createSession(request, agent, `wake ${uniqueName(testInfo, 'mcp')}`)
-    const record = await waitForRecord((r) => r.type === 'container_start' && r.agentSlug === agent.slug)
+    const record = await recorder.waitFor((r) => r.type === 'container_start' && r.agentSlug === agent.slug)
     const proxyToken = record.proxyToken
     expect(proxyToken, 'proxy token exposed to the container').toBeTruthy()
 

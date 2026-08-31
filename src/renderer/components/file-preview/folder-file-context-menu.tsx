@@ -40,12 +40,13 @@ import { Input } from '@renderer/components/ui/input'
 import { useFilePreview, type FolderTab } from '@renderer/context/file-preview-context'
 import { useUser } from '@renderer/context/user-context'
 import { apiFetch } from '@renderer/lib/api'
+import { copyLazyTextToClipboard } from '@renderer/lib/clipboard'
 import { downloadBlob } from '@renderer/lib/download'
 import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { getAgentFileApiPath } from '@renderer/lib/workspace-file-url'
 import type { FolderEntry } from '@renderer/hooks/use-folder-entries'
 import type { Bookmark } from '@renderer/hooks/use-bookmarks'
-import { isCopyableTextFile } from './file-types'
+import { isCopyableTextFile, looksBinary } from './file-types'
 
 interface FolderEntryContextMenuProps {
   folder: FolderTab
@@ -131,9 +132,13 @@ export function FolderEntryContextMenu({
 
   const handleCopy = async () => {
     try {
-      const response = await apiFetch(`${fileApiPath}?inline=true`)
-      if (!response.ok) throw new Error(await getResponseError(response, 'Failed to copy file'))
-      await navigator.clipboard.writeText(await response.text())
+      await copyLazyTextToClipboard(async () => {
+        const response = await apiFetch(`${fileApiPath}?inline=true`)
+        if (!response.ok) throw new Error(await getResponseError(response, 'Failed to copy file'))
+        const text = await response.text()
+        if (looksBinary(text)) throw new Error(`“${entry.name}” is not a text file`)
+        return text
+      })
       toast.success(`Copied contents of “${entry.name}”`)
     } catch (error) {
       toast.error('Could not copy file contents', {

@@ -88,7 +88,7 @@ export default defineConfig({
     // explicitly with --project=web-webkit (needs `npx playwright install webkit`).
     {
       name: 'web-webkit',
-      testMatch: '**/safari-follow.spec.ts',
+      testMatch: ['**/safari-follow.spec.ts', '**/thinking-collapse-reading-line.spec.ts'],
       use: { ...devices['Desktop Safari'] },
     },
   ],

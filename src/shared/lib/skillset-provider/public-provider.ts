@@ -1,7 +1,8 @@
 import path from 'path'
 import fs from 'fs'
+import pLimit from 'p-limit'
 import { ensureDirectory } from '@shared/lib/utils/file-storage'
-import { openZipFromBuffer, detectZipPrefix } from '@shared/lib/utils/zip'
+import { openZipFromBuffer, detectZipPrefix, ZipExtractionSizeError } from '@shared/lib/utils/zip'
 import { validateSafeCloneUrl } from '@shared/lib/utils/url-safety'
 import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 import { withRetry, NonRetryableError } from '@shared/lib/utils/retry'
@@ -41,7 +42,9 @@ export class PublicSkillsetProvider extends BaseSkillsetProvider {
       throw new Error('Public skillset provider requires a URL')
     }
     const zipballUrl = buildZipballUrl(ref.skillsetUrl)
-    await downloadAndExtract(zipballUrl, cacheDir, ref.skillsetUrl)
+    const zipBuffer = await downloadZip(zipballUrl, ref.skillsetUrl)
+    await extractZipToDir(zipBuffer, cacheDir)
+    await writeCacheMeta(cacheDir, ref.skillsetUrl)
   }
 
   override async refreshCache(cacheDir: string, ref: SkillsetProviderRef): Promise<void> {
@@ -80,16 +83,12 @@ function buildZipballUrl(repoUrl: string): string {
   return `https://api.github.com/repos/${owner}/${repo}/zipball`
 }
 
-async function downloadAndExtract(
-  zipballUrl: string,
-  destDir: string,
-  originalUrl: string,
-): Promise<void> {
+async function downloadZip(zipballUrl: string, originalUrl: string): Promise<Buffer> {
   validateSafeCloneUrl(zipballUrl, {
     allowedHostPrefixes: ['https://api.github.com'],
   })
 
-  const zipBuffer = await withRetry(async () => {
+  return withRetry(async () => {
     const response = await fetch(zipballUrl, {
       headers: {
         'Accept': 'application/vnd.github+json',
@@ -119,15 +118,20 @@ async function downloadAndExtract(
     }
     return Buffer.from(await response.arrayBuffer())
   }, 3, 1000)
+}
 
+export async function extractZipToDir(
+  zipBuffer: Buffer,
+  destDir: string,
+  maxBytes = 500 * 1024 * 1024,
+): Promise<void> {
   const reader = await openZipFromBuffer(zipBuffer)
   try {
     const stripPrefix = detectZipPrefix(reader.entries)
 
     await ensureDirectory(destDir)
 
-    const MAX_SKILLSET_SIZE = 500 * 1024 * 1024
-    let totalExtracted = 0
+    const jobs: Array<{ fileName: string; destPath: string; uncompressedSize: number }> = []
     for (const entry of reader.entries) {
       if (entry.isDirectory) continue
 
@@ -141,18 +145,25 @@ async function downloadAndExtract(
       const destPath = path.resolve(destDir, entryName)
       if (!isPathWithinDir(destDir, destPath)) continue
 
-      await ensureDirectory(path.dirname(destPath))
-      const bytesWritten = await reader.extractEntry(
-        entry.fileName,
-        destPath,
-        MAX_SKILLSET_SIZE - totalExtracted,
-      )
-      totalExtracted += bytesWritten
+      jobs.push({ fileName: entry.fileName, destPath, uncompressedSize: entry.uncompressedSize })
     }
+
+    const declared = jobs.reduce((sum, job) => sum + job.uncompressedSize, 0)
+    if (declared > maxBytes) {
+      throw new ZipExtractionSizeError(maxBytes, declared)
+    }
+
+    const limit = pLimit(8)
+    await Promise.all(jobs.map((job) => limit(async () => {
+      await ensureDirectory(path.dirname(job.destPath))
+      await reader.extractEntry(job.fileName, job.destPath, job.uncompressedSize)
+    })))
   } finally {
     reader.close()
   }
+}
 
+async function writeCacheMeta(destDir: string, originalUrl: string): Promise<void> {
   await fs.promises.writeFile(
     path.join(destDir, CACHE_META_FILENAME),
     JSON.stringify({

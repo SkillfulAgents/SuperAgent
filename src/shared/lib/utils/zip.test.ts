@@ -1,9 +1,11 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+import yauzl from 'yauzl'
 import {
   openZipFromBuffer,
+  openZipFromFile,
   createZipBuffer,
   writeZipFile,
   detectZipPrefix,
@@ -109,6 +111,109 @@ describe('openZipFromBuffer — errors', () => {
 
   it('rejects with empty buffer', async () => {
     await expect(openZipFromBuffer(Buffer.alloc(0))).rejects.toThrow()
+  })
+})
+
+// ============================================================================
+// openZipFromFile
+// ============================================================================
+
+describe('openZipFromFile', () => {
+  it('reads entries and contents identically to openZipFromBuffer', async () => {
+    const dir = makeTempDir()
+    const zipPath = path.join(dir, 'archive.zip')
+    await writeZipFile(zipPath, {
+      'hello.txt': 'hello world',
+      'nested/deep/file.md': '# Title',
+    })
+
+    const fileReader = await openZipFromFile(zipPath)
+    const bufferReader = await openZipFromBuffer(fs.readFileSync(zipPath))
+    try {
+      expect(fileReader.entries).toEqual(bufferReader.entries)
+      const fromFile = await fileReader.readEntry('hello.txt')
+      const fromBuffer = await bufferReader.readEntry('hello.txt')
+      expect(fromFile.equals(fromBuffer)).toBe(true)
+    } finally {
+      fileReader.close()
+      bufferReader.close()
+    }
+  })
+
+  it('extracts entries to disk', async () => {
+    const dir = makeTempDir()
+    const zipPath = path.join(dir, 'archive.zip')
+    await writeZipFile(zipPath, { 'data.bin': Buffer.from([1, 2, 3]) })
+
+    const reader = await openZipFromFile(zipPath)
+    try {
+      const dest = path.join(dir, 'out.bin')
+      const bytes = await reader.extractEntry('data.bin', dest)
+      expect(bytes).toBe(3)
+      expect(fs.readFileSync(dest).equals(Buffer.from([1, 2, 3]))).toBe(true)
+    } finally {
+      reader.close()
+    }
+  })
+
+  it('rejects for a missing file', async () => {
+    const dir = makeTempDir()
+    await expect(openZipFromFile(path.join(dir, 'missing.zip'))).rejects.toThrow()
+  })
+
+  it('rejects for a non-zip file', async () => {
+    const dir = makeTempDir()
+    const p = path.join(dir, 'not-a-zip.txt')
+    fs.writeFileSync(p, 'not a zip')
+    await expect(openZipFromFile(p)).rejects.toThrow()
+  })
+
+  it('closes the file when the entry walk fails after a successful open', async () => {
+    const dir = makeTempDir()
+    const zipPath = path.join(dir, 'corrupt-walk.zip')
+    await writeZipFile(zipPath, { 'first.txt': 'one', 'second.txt': 'two' })
+
+    // Corrupt the SECOND central-directory record signature (PK\x01\x02) so
+    // the zip opens fine (EOCD and first record intact) but the entry walk
+    // errors partway through — the shape of a truncated/damaged upload.
+    const bytes = fs.readFileSync(zipPath)
+    const signature = Buffer.from([0x50, 0x4b, 0x01, 0x02])
+    const firstRecord = bytes.indexOf(signature)
+    const secondRecord = bytes.indexOf(signature, firstRecord + 1)
+    expect(secondRecord).toBeGreaterThan(-1)
+    bytes[secondRecord] = 0xff
+    fs.writeFileSync(zipPath, bytes)
+
+    // No ZipReader is constructed on this path, so the shared open path must
+    // close the underlying file itself; the spy proves close() ran, and the
+    // fd count proves the descriptor was actually released.
+    const closeSpy = vi.spyOn(yauzl.ZipFile.prototype, 'close')
+    const countFds = () =>
+      process.platform === 'win32' ? 0 : fs.readdirSync('/dev/fd').length
+    try {
+      const fdsBefore = countFds()
+      await expect(openZipFromFile(zipPath)).rejects.toThrow(/central directory/i)
+      expect(closeSpy).toHaveBeenCalled()
+      expect(countFds()).toBeLessThanOrEqual(fdsBefore)
+    } finally {
+      closeSpy.mockRestore()
+    }
+  })
+
+  it('supports readEntry after entry enumeration completes (fd stays open until close)', async () => {
+    const dir = makeTempDir()
+    const zipPath = path.join(dir, 'archive.zip')
+    await writeZipFile(zipPath, { 'late.txt': 'still readable' })
+
+    const reader = await openZipFromFile(zipPath)
+    try {
+      // Yield a few ticks so any autoClose behavior would have fired.
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      const content = await reader.readEntry('late.txt')
+      expect(content.toString('utf-8')).toBe('still readable')
+    } finally {
+      reader.close()
+    }
   })
 })
 

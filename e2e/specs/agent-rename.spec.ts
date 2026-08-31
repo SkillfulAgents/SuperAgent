@@ -115,23 +115,25 @@ test.describe('Agent Rename', () => {
     await expect(page.locator('[data-testid^="agent-item-"]', { hasText: unsavedName })).toHaveCount(0)
   })
 
-  test('control: can type spaces in agent name input when settings opened via button without saving', async ({ page, request }, testInfo) => {
+  test('control: can type spaces in rename input when opened via settings popover without saving', async ({ page, request }, testInfo) => {
     const agent = await createAndOpenAgent(request, page, testInfo, 'Rename Button')
     const unsavedName = uniqueName(testInfo, 'Button Name With Spaces')
 
+    // Gear popover → "Rename agent" puts the inline title into edit mode
     await agentPage.openSettings()
+    await page.locator('[data-testid="rename-agent-button"]').click()
 
-    const dialog = page.locator('[data-testid="agent-settings-dialog"]')
-    const nameInput = page.locator('#agent-name')
+    const nameInput = page.locator('[data-testid="agent-name-input"]')
     await expect(nameInput).toBeVisible()
+    await expect(nameInput).toBeFocused()
 
     await nameInput.clear()
-    await nameInput.click()
     await nameInput.pressSequentially(unsavedName)
     await expect(nameInput).toHaveValue(unsavedName)
 
-    await dialog.getByRole('button', { name: /^Cancel$/ }).click()
-    await expect(dialog).not.toBeVisible()
+    // Escape cancels without saving
+    await nameInput.press('Escape')
+    await expect(nameInput).not.toBeVisible()
 
     await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(agent.name)
     await expectAgentNamed(request, agent, agent.name)

@@ -1,6 +1,5 @@
-import { test, expect, type APIRequestContext, type TestInfo } from '@playwright/test'
-import * as fs from 'fs'
-import * as path from 'path'
+import { test, expect, type APIRequestContext } from '@playwright/test'
+import { mockRecorder } from '../helpers/mock-recorder'
 import {
   createAgent,
   createSession,
@@ -15,33 +14,20 @@ import {
  * Host route the container tool calls: limit returns the compacted tail.
  */
 
-const E2E_DATA_DIR = path.resolve(process.cwd(), process.env.SUPERAGENT_DATA_DIR ?? '.e2e-data')
-const RECORDER_FILE = path.join(E2E_DATA_DIR, '.e2e-mock-recorder.jsonl')
-
 interface MockRecord {
   type: string
   agentSlug: string
   proxyToken?: string
 }
 
-function readRecords(): MockRecord[] {
-  if (!fs.existsSync(RECORDER_FILE)) return []
-  return fs
-    .readFileSync(RECORDER_FILE, 'utf-8')
-    .trim()
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as MockRecord)
-}
+const recorder = mockRecorder<MockRecord>()
 
 async function waitForProxyToken(agentSlug: string, timeoutMs = 12000): Promise<string> {
-  const start = Date.now()
-  while (Date.now() - start < timeoutMs) {
-    const found = readRecords().find((r) => r.type === 'container_start' && r.agentSlug === agentSlug)
-    if (found?.proxyToken) return found.proxyToken
-    await new Promise((r) => setTimeout(r, 100))
-  }
-  throw new Error(`Timed out waiting for proxy token for ${agentSlug}`)
+  const found = await recorder.waitFor(
+    (r) => r.type === 'container_start' && r.agentSlug === agentSlug && !!r.proxyToken,
+    { timeoutMs, label: `container_start with a proxy token for ${agentSlug}` },
+  )
+  return found.proxyToken!
 }
 
 async function allowRead(

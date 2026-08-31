@@ -152,11 +152,11 @@ describe('HomeConnections — row navigation', () => {
       const method = init?.method ?? 'GET'
       if (path === '/api/agents/test-agent/connected-accounts' && method === 'GET') {
         return Promise.resolve(jsonResponse({
-          accounts: [{ kind: 'connected-account', toolkitSlug: 'slack' }],
+          accounts: [{ kind: 'connected-account', toolkitSlug: 'slack', mappingId: 'map-a1' }],
         }))
       }
       if (path === '/api/agents/test-agent/remote-mcps' && method === 'GET') {
-        return Promise.resolve(jsonResponse({ mcps: [{ kind: 'remote-mcp' }] }))
+        return Promise.resolve(jsonResponse({ mcps: [{ kind: 'remote-mcp', mappingId: 'map-m1' }] }))
       }
       if (path.startsWith('/api/activity/agents/test-agent?days=14&tz=') && method === 'GET') {
         return Promise.resolve(jsonResponse({

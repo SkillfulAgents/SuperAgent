@@ -643,6 +643,39 @@ describe('MessageList', () => {
     expect(screen.queryByText('Hidden intermediate work.')).not.toBeInTheDocument()
   })
 
+  it('folds a mid-turn compact boundary into collapsed work', () => {
+    mockMessagesData.data = [
+      createUserMessage({
+        content: { text: 'Do the long-running work' },
+        createdAt: new Date('2025-01-01T00:00:00Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'Working before compaction.' },
+        createdAt: new Date('2025-01-01T00:00:10Z'),
+        toolCalls: [createToolCall({ name: 'Bash' })],
+      }),
+      createCompactBoundary({
+        summary: 'Summary of the early work.',
+        createdAt: new Date('2025-01-01T00:00:20Z'),
+      }),
+      createAssistantMessage({
+        content: { text: 'Final answer after compaction.' },
+        createdAt: new Date('2025-01-01T00:00:30Z'),
+      }),
+    ]
+
+    renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+    expect(screen.getByText('Final answer after compaction.')).toBeInTheDocument()
+    expect(screen.queryByText('Working before compaction.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Compacted')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('turn-summary'))
+
+    expect(screen.getByText('Working before compaction.')).toBeInTheDocument()
+    expect(screen.getByText('Compacted')).toBeInTheDocument()
+  })
+
   it('keeps a cancelled terminal tool call visible without an empty disclosure row', () => {
     mockMessagesData.data = [
       createUserMessage({
@@ -1014,6 +1047,26 @@ describe('MessageList', () => {
     const text = container.textContent || ''
     expect(text.indexOf('Working on it...')).toBeLessThan(text.indexOf('Queued msg'))
     expect(text.indexOf('StreamingBash')).toBeLessThan(text.indexOf('Queued msg'))
+  })
+
+  it('renders the live compact line above the queued ghosts', () => {
+    // A message queued during compaction is picked up on the far side of the
+    // boundary, so it reads below the compact line, not above it. (SUP-736)
+    mockMessagesData.data = [createUserMessage({ content: { text: '/compact' } })]
+    mockStreamState.isActive = true
+    mockStreamState.isCompacting = true
+
+    const { container } = renderWithProviders(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessages={[{ localId: 'q1', uuid: 'q1', text: 'Queued msg', sentAt: Date.now(), queued: true }]}
+      />
+    )
+
+    const text = container.textContent || ''
+    expect(text.indexOf('Compacting conversation...')).toBeGreaterThan(-1)
+    expect(text.indexOf('Compacting conversation...')).toBeLessThan(text.indexOf('Queued msg'))
   })
 
   it('does not close the turn at a persisted queued message (no elapsed divider mid-turn)', () => {
@@ -2969,6 +3022,68 @@ describe('MessageList', () => {
       expect(geometry.scrollTop).toBe(899)
     })
 
+    it('converges back when a rollback lands between recorded positions', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
+      fireEvent.scroll(el) // baseline at the live edge (699 joins the trail)
+
+      // Convergence writes 899; the trail now holds 699 and 899.
+      geometry.setNaturalScrollHeight(1500)
+      await act(async () => {
+        fireContentResize(contentWrapper, 1500)
+      })
+      await waitFor(() => expect(geometry.scrollTop).toBe(899))
+
+      // WebKit reverts to the bottom of a stale layout snapshot — a value we
+      // never wrote, falling BETWEEN the recorded positions. It is still the
+      // engine's own motion coming back: following must survive and converge.
+      geometry.setScrollTop(780)
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 250))
+      })
+      expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
+      expect(geometry.scrollTop).toBe(899)
+    })
+
+    it('converges back when a rollback lands on seconds-old creep after the engine goes quiet', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
+      fireEvent.scroll(el) // baseline at the live edge (699 joins the trail)
+
+      // Convergence writes 899; the trail now holds 699 and 899.
+      geometry.setNaturalScrollHeight(1500)
+      await act(async () => {
+        fireContentResize(contentWrapper, 1500)
+      })
+      await waitFor(() => expect(geometry.scrollTop).toBe(899))
+
+      // The CI-recorded kill shape: the stream pauses at a pass boundary, the
+      // engine's last write goes quiet, and 2+ seconds later WebKit's
+      // compositor reverts to the bottom of a layout snapshot 2.3s stale —
+      // landing on creep the viewport traversed well before, outside both a
+      // frames-scale write window and a too-short trail. It is still the
+      // engine's own motion coming back: following must survive and converge.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 2400))
+      })
+      geometry.setScrollTop(780)
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 250))
+      })
+      expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
+      expect(geometry.scrollTop).toBe(899)
+    })
+
     it('releases follow when an input-less scroll lands off the recently-held trail', async () => {
       installFakeResizeObserver()
       mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
@@ -2978,9 +3093,15 @@ describe('MessageList', () => {
       fireEvent.scroll(el) // baseline at the live edge
 
       // A programmatic jump (app code, an extension, a test driving
-      // scrollTo) carries no input evidence either — but it lands where the
-      // scroller has NOT recently been. That is an escape, not a rollback:
-      // follow must release, and nothing may yank the reader back down.
+      // scrollTo) carries no input evidence either — but it arrives while the
+      // engine is QUIET (no writes for a while) and lands where the scroller
+      // has not recently been. That is an escape, not a rollback: follow must
+      // release, and nothing may yank the reader back down. First age out the
+      // mount pin so the engine-activity window is genuinely closed, as it is
+      // whenever such jumps happen in reality.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 600))
+      })
       geometry.setScrollTop(150)
       fireEvent.scroll(el)
       await act(async () => {

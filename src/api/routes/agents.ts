@@ -114,7 +114,7 @@ import {
 } from '@shared/lib/services/scheduled-task-service'
 import { db } from '@shared/lib/db'
 import { connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, user as userTable, messageAuthor, apiScopePolicies, mcpToolPolicies } from '@shared/lib/db/schema'
-import { eq, and, inArray, desc, count, like, or } from 'drizzle-orm'
+import { eq, and, inArray, notInArray, desc, count, or, sql, type AnyColumn } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getViewerUserId, ownerScope } from '@shared/lib/auth/ownership'
@@ -143,6 +143,8 @@ import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSe
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { getInboundXAgentDetails } from '@shared/lib/services/inbound-x-agent-service'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
+import { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
+import { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
 import { isValidApiScope } from '@shared/lib/proxy/scope-matcher'
 import { isLabelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
 import type { ScopeLabel } from '@shared/lib/proxy/scope-metadata'
@@ -175,6 +177,7 @@ import {
   refreshAgentTemplates,
   hasOnboardingSkill,
   getAgentTemplatePrompt,
+  type TemplateZipSource,
 } from '@shared/lib/services/agent-template-service'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import type { SkillsetConfig } from '@shared/lib/types/skillset'
@@ -952,8 +955,9 @@ async function handleChunkedImport(c: Context, formData: FormData, chunk: File) 
     if (size > MAX_COMPRESSED_SIZE) {
       return c.json({ error: formatUploadTooLargeMessage(size, MAX_COMPRESSED_SIZE) }, 413)
     }
-    const zipBuffer = await fs.promises.readFile(result.filePath)
-    return await processImport(c, zipBuffer, formData)
+    // The assembled upload is already on disk — import straight from the file
+    // instead of pinning the whole (up to 500MB) ZIP in memory.
+    return await processImport(c, { filePath: result.filePath }, formData)
   } finally {
     try {
       await fs.promises.unlink(result.filePath)
@@ -969,23 +973,29 @@ async function handleChunkedImport(c: Context, formData: FormData, chunk: File) 
   }
 }
 
-async function processImport(c: Context, zipBuffer: Buffer, formData: FormData) {
-  if (zipBuffer.length > MAX_COMPRESSED_SIZE) {
-    return c.json({ error: formatUploadTooLargeMessage(zipBuffer.length, MAX_COMPRESSED_SIZE) }, 413)
+async function processImport(c: Context, zip: TemplateZipSource, formData: FormData) {
+  // File sources are size-checked by the caller via stat before reaching here.
+  if (Buffer.isBuffer(zip) && zip.length > MAX_COMPRESSED_SIZE) {
+    return c.json({ error: formatUploadTooLargeMessage(zip.length, MAX_COMPRESSED_SIZE) }, 413)
   }
 
   const nameOverride = formData.get('name') as string | null
   const mode = formData.get('mode') as string | null
   const importMode = mode === 'full' ? 'full' : 'template'
 
-  const agent = await importAgentFromTemplate(zipBuffer, nameOverride || undefined, importMode)
+  const agent = await importAgentFromTemplate(zip, nameOverride || undefined, importMode)
   await createOwnerAclOrRollback(c, agent.slug)
-  const [hasOnboarding, templatePrompt] = await Promise.all([
+  const [onboarding, templatePrompt] = await Promise.all([
     hasOnboardingSkill(agent.slug),
     getAgentTemplatePrompt(agent.slug),
   ])
   logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: agent.slug, action: 'imported', details: { name: agent.name } })
-  return c.json({ ...agent, hasOnboarding, templatePrompt }, 201)
+  return c.json({
+    ...agent,
+    hasOnboarding: onboarding.hasOnboarding,
+    templatePrompt,
+    onboardingFirstPrompt: onboarding.firstPrompt,
+  }, 201)
 }
 
 // GET /api/agents/discoverable-agents - List agents available from skillsets
@@ -1034,12 +1044,17 @@ agents.post('/install-from-skillset', async (c) => {
     )
 
     await createOwnerAclOrRollback(c, agent.slug)
-    const [hasOnboarding, templatePrompt] = await Promise.all([
+    const [onboarding, templatePrompt] = await Promise.all([
       hasOnboardingSkill(agent.slug),
       getAgentTemplatePrompt(agent.slug),
     ])
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: agent.slug, action: 'imported', details: { name: agent.name, skillsetId } })
-    return c.json({ ...agent, hasOnboarding, templatePrompt }, 201)
+    return c.json({
+      ...agent,
+      hasOnboarding: onboarding.hasOnboarding,
+      templatePrompt,
+      onboardingFirstPrompt: onboarding.firstPrompt,
+    }, 201)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to install agent from skillset'
     console.error('Failed to install agent from skillset:', error)
@@ -1718,14 +1733,12 @@ agents.post('/:id/leave', AgentRead(), async (c) => {
   }
 })
 
-// GET /api/agents/:id/access/search-users - Search users for invite
+// GET /api/agents/:id/access/search-users - List/search users for invite.
+// Without a query, returns all invitable users (teams are small enough to
+// show everyone as suggestions in the share popover).
 agents.get('/:id/access/search-users', AgentAdmin(), async (c) => {
   try {
     const query = c.req.query('q')?.trim()
-    if (!query || query.length < 2) {
-      return c.json([])
-    }
-
     const slug = getAgentId(c)
 
     // Get users who already have access
@@ -1734,18 +1747,28 @@ agents.get('/:id/access/search-users', AgentAdmin(), async (c) => {
       .from(agentAcl)
       .where(eq(agentAcl.agentSlug, slug))
 
-    const excludeIds = new Set(existingUserIds.map((r) => r.userId))
+    const excludeIds = existingUserIds.map((r) => r.userId)
 
     // Search users by name or email (SQLite LIKE is case-insensitive by default)
-    // Escape LIKE wildcards to prevent pattern injection (e.g. searching "%" matching all users)
-    const escaped = query.replace(/%/g, '\\%').replace(/_/g, '\\_')
+    // Escape LIKE wildcards to prevent pattern injection (e.g. searching "%"
+    // matching all users); the ESCAPE clause is required for the backslashes
+    // to act as escapes rather than literals.
+    const escaped = query ? query.replace(/[\\%_]/g, '\\$&') : ''
+    const matchesQuery = (column: AnyColumn) =>
+      sql`${column} LIKE ${`%${escaped}%`} ESCAPE '\\'`
     const users = await db
       .select({ id: userTable.id, name: userTable.name, email: userTable.email })
       .from(userTable)
-      .where(or(like(userTable.name, `%${escaped}%`), like(userTable.email, `%${escaped}%`)))
-      .limit(20)
+      .where(
+        and(
+          // Exclude access holders in the WHERE so they don't eat limit slots
+          excludeIds.length ? notInArray(userTable.id, excludeIds) : undefined,
+          escaped ? or(matchesQuery(userTable.name), matchesQuery(userTable.email)) : undefined
+        )
+      )
+      .limit(50)
 
-    return c.json(users.filter((u) => !excludeIds.has(u.id)))
+    return c.json(users)
   } catch (error) {
     console.error('Failed to search users:', error)
     return c.json({ error: 'Failed to search users' }, 500)
@@ -4865,6 +4888,53 @@ agents.delete('/:id/connected-accounts/:accountId', AgentUser(), async (c) => {
   }
 })
 
+// DELETE /api/agents/:id/connected-accounts/mapping/:mappingId - Unlink by link id
+//
+// The sibling route above is keyed on the ACCOUNT id and owner-scoped, so it
+// can only ever sever a link to the caller's own account. An agent owner also
+// has to be able to drop a connection another member shared onto the agent —
+// without being handed that account's id, which the foreign DTO deliberately
+// withholds. So this route is keyed on the LINK id instead, and gated on
+// AgentAdmin(): owning the agent is what authorizes it, not owning the account.
+// A `user` on the agent still cannot reach it. Only the mapping row dies; the
+// account itself stays with its owner.
+agents.delete('/:id/connected-accounts/mapping/:mappingId', AgentAdmin(), async (c) => {
+  try {
+    const slug = getAgentId(c)
+    const mappingId = c.req.param('mappingId')
+
+    // Matched on BOTH columns: a link id is an unauthenticated pointer into a
+    // global table, so owning agent A must not unlink agent B's connection by
+    // sending B's mapping id to A's URL.
+    const [found] = await db
+      .select({
+        id: agentConnectedAccounts.id,
+        connectedAccountId: agentConnectedAccounts.connectedAccountId,
+      })
+      .from(agentConnectedAccounts)
+      .where(and(
+        eq(agentConnectedAccounts.id, mappingId),
+        eq(agentConnectedAccounts.agentSlug, slug),
+      ))
+      .limit(1)
+
+    if (!found) {
+      return c.json({ error: 'Account mapping not found' }, 404)
+    }
+
+    await db
+      .delete(agentConnectedAccounts)
+      .where(eq(agentConnectedAccounts.id, found.id))
+
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: found.connectedAccountId, action: 'unassigned', details: { agentSlug: slug } })
+    const liveRefresh = await syncAgentConnectionEnvironment(slug, 'connected-accounts')
+    return c.json({ success: true, liveRefresh })
+  } catch (error) {
+    console.error('Failed to remove account mapping:', error)
+    return c.json({ error: 'Failed to remove account mapping' }, 500)
+  }
+})
+
 // GET /api/agents/:id/remote-mcps - List remote MCP servers assigned to this agent
 agents.get('/:id/remote-mcps', AgentRead(), async (c) => {
   try {
@@ -4974,6 +5044,36 @@ agents.delete('/:id/remote-mcps/:mcpId', AgentUser(), async (c) => {
 
     await db.delete(agentRemoteMcps).where(eq(agentRemoteMcps.id, mapping.id))
     logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: mcpId, action: 'unassigned', details: { agentSlug: slug } })
+    const liveRefresh = await syncAgentConnectionEnvironment(slug, 'remote-mcps')
+    return c.json({ success: true, liveRefresh })
+  } catch (error) {
+    console.error('Failed to remove remote MCP from agent:', error)
+    return c.json({ error: 'Failed to remove remote MCP from agent' }, 500)
+  }
+})
+
+// DELETE /api/agents/:id/remote-mcps/mapping/:mappingId - Unlink by link id
+// The connected-accounts twin above carries the full rationale.
+agents.delete('/:id/remote-mcps/mapping/:mappingId', AgentAdmin(), async (c) => {
+  try {
+    const slug = getAgentId(c)
+    const mappingId = c.req.param('mappingId')
+
+    const [mapping] = await db
+      .select({ id: agentRemoteMcps.id, remoteMcpId: agentRemoteMcps.remoteMcpId })
+      .from(agentRemoteMcps)
+      .where(and(
+        eq(agentRemoteMcps.id, mappingId),
+        eq(agentRemoteMcps.agentSlug, slug),
+      ))
+      .limit(1)
+
+    if (!mapping) {
+      return c.json({ error: 'MCP mapping not found' }, 404)
+    }
+
+    await db.delete(agentRemoteMcps).where(eq(agentRemoteMcps.id, mapping.id))
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: mapping.remoteMcpId, action: 'unassigned', details: { agentSlug: slug } })
     const liveRefresh = await syncAgentConnectionEnvironment(slug, 'remote-mcps')
     return c.json({ success: true, liveRefresh })
   } catch (error) {
@@ -6330,6 +6430,21 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
       c.header('Content-Type', 'application/octet-stream')
     }
 
+    // Workspace files are mutable (the agent rewrites and redelivers them) and
+    // per-user authorized. Without an explicit directive an intermediary CDN
+    // applies its own default TTL by file extension — Cloudflare was serving
+    // 4-hour-old .mp4 renders as cf-cache-status: HIT, and a shared cache holding
+    // an authorized response is a leak as well as a staleness bug. `private`
+    // keeps it out of shared caches, `no-store` out of the browser's too.
+    //
+    // `no-store` over `no-cache` is deliberate, and it is the strict choice: it
+    // costs re-fetches (a seek past the media element's buffer below, an inline
+    // markdown image on remount) to buy an unconditional guarantee that no cache
+    // anywhere holds these bytes. Reclaiming those bytes means serving a
+    // validator — an mtime/size ETag plus If-None-Match → 304 — which is worth
+    // doing, but not as an unvalidated rider on a leak fix.
+    c.header('Cache-Control', 'private, no-store, max-age=0')
+
     // Advertise range support so media players (e.g. <video>) can seek. When the
     // client requests a byte range, serve just that slice as 206 Partial
     // Content; otherwise stream the whole file. Only the stream we actually
@@ -6559,8 +6674,11 @@ agents.get('/:id/artifacts/:artifactSlug/screenshot.png', AgentRead(), async (c)
       status: 200,
       headers: {
         'content-type': 'image/png',
-        // Screenshots are overwritten on every restart, so cache briefly.
-        'cache-control': 'public, max-age=60, must-revalidate',
+        // Screenshots are overwritten on every restart, so cache briefly — and
+        // `private`, never `public`: this is an AgentRead-authorized .png, an
+        // extension a CDN caches by default, so a shared-cache copy would be
+        // served to anyone with the URL without our auth ever running.
+        'cache-control': 'private, max-age=60, must-revalidate',
       },
     })
   } catch (error: any) {
@@ -6971,6 +7089,85 @@ agents.get('/:id/pending-requests', AgentRead(), (c) => {
   const agentSlug = getAgentId(c)
   const sessionId = c.req.query('sessionId') || undefined
   return c.json({ requests: userInputRequestManager.getSnapshotForScope(agentSlug, sessionId) })
+})
+
+// =============================================================================
+// Re-authentication endpoints
+// =============================================================================
+
+const MAX_DISMISS_REASON_LENGTH = 500
+
+// POST /api/agents/:id/reauth-request/:requestId/dismiss - Give up on a parked
+// re-authentication card.
+//
+// A reauth card is agent-scoped and blocking: while it is open, every session
+// of the agent sits in awaiting-input. Reconnecting is the owner's privilege,
+// so when the shared credential belongs to someone else, nobody in the room
+// can clear the card and the agent stays stuck until the five-minute timer
+// fires. This is the escape hatch — it fails the parked call with a distinct
+// "dismissed" status (not a timeout) so the agent knows a person decided it.
+//
+// AgentUser(), not AgentAdmin(): anyone who can put work into this agent can
+// abandon a call it is stuck on. Viewers, who cannot, are excluded.
+agents.post('/:id/reauth-request/:requestId/dismiss', AgentUser(), async (c) => {
+  const slug = getAgentId(c)
+  const requestId = c.req.param('requestId')
+  const body = await c.req.json<{ reason?: string }>().catch(() => ({} as { reason?: string }))
+  // Bounded: this text is forwarded into the proxy's error body and written to
+  // the audit log, so it must not be an unbounded write from the composer.
+  const reason = typeof body.reason === 'string' && body.reason.trim()
+    ? body.reason.trim().slice(0, MAX_DISMISS_REASON_LENGTH)
+    : undefined
+
+  const open = userInputRequestManager.getOpenRequest(requestId)
+  if (open) {
+    // A caller-supplied id points into a global, cross-agent registry, so both
+    // the kind and the agent are re-checked against the URL before we settle
+    // anything — the same guard the review routes apply.
+    if (
+      open.scope.agentSlug !== slug ||
+      (open.kind !== 'account_reauth_required' && open.kind !== 'mcp_reauth_required')
+    ) {
+      return c.json({ error: 'Request not found' }, 404)
+    }
+
+    const dismissed = open.kind === 'account_reauth_required'
+      ? accountReauthManager.dismiss(requestId, slug, reason)
+      : mcpReauthManager.dismiss(requestId, slug, reason)
+
+    // An open envelope whose parked group is already gone (every waiter
+    // aborted, but the entry outlived them) would otherwise leave the card —
+    // and the awaiting-input state behind it — on screen forever. Clearing it
+    // is the whole point of this route, so do it rather than report success
+    // and change nothing.
+    if (!dismissed) {
+      userInputRequestManager.resolve(requestId, 'cancelled')
+      messagePersister.syncAgentSessionsAwaiting(slug)
+    }
+
+    // Short form, matching the `type` its sibling decline routes emit
+    // ('secret', 'connected_account') rather than the raw registry kind.
+    const declinedType = open.kind === 'account_reauth_required' ? 'account_reauth' : 'mcp_reauth'
+    trackServerEvent('request_declined', { type: declinedType, withReason: !!reason })
+    return c.json({ success: true })
+  }
+
+  // Settled or unknown. Report on it only through the route that could have
+  // decided it, so settling a request never widens who may read its outcome.
+  const settled = userInputRequestManager.getRecentResolution(requestId)
+  if (settled && (
+    settled.scope.agentSlug !== slug ||
+    (settled.kind !== 'account_reauth_required' && settled.kind !== 'mcp_reauth_required')
+  )) {
+    return c.json({ error: 'Request not found' }, 404)
+  }
+  // 200, not an error: the caller's intent is already satisfied and a stale
+  // card should dismiss itself exactly like a successful one.
+  return c.json({
+    success: true,
+    alreadySettled: true,
+    ...(settled ? { outcome: settled.outcome } : {}),
+  })
 })
 
 // =============================================================================

@@ -1,10 +1,10 @@
 
 import { useState } from 'react'
-import { toast } from 'sonner'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
 import { Button } from '@renderer/components/ui/button'
 import { AgentAutoDeleteSelect } from '@renderer/components/settings/auto-delete-select'
+import { AgentApiLogAutoDeleteSelect } from '@renderer/components/settings/api-log-auto-delete-select'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -14,25 +14,19 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogTrigger,
 } from '@renderer/components/ui/alert-dialog'
-import { useDeleteAgent, useRouteAgentId } from '@renderer/hooks/use-agents'
+import { DeleteAgentConfirmDialog } from '@renderer/components/agents/delete-agent-confirm-dialog'
 import { useAgentPreferences, useUpdateAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { useSettings } from '@renderer/hooks/use-settings'
-import { useNavigate } from '@tanstack/react-router'
 import {
   useForceSyncAgentTemplate,
   useAgentTemplateStatus,
   useRefreshAgentTemplateStatus,
   useUpdateAgentTemplate,
-  useExportAgentTemplate,
-  useExportAgentFull,
-  useHostExportStatus,
 } from '@renderer/hooks/use-agent-templates'
 import { StatusBadge } from '@renderer/components/agents/status-badge'
 import { AgentTemplatePRDialog } from '@renderer/components/agents/agent-template-pr-dialog'
-import { AgentTemplatePublishDialog } from '@renderer/components/agents/agent-template-publish-dialog'
-import { Trash2, Download, HardDriveDownload, RefreshCw, GitPullRequest, Send, Upload, Loader2 } from 'lucide-react'
+import { Trash2, RefreshCw, GitPullRequest, Send, Loader2 } from 'lucide-react'
 import { getReviewActionLabel, isPullRequestPublishMode } from '@renderer/lib/skillset-publish-ui'
 import { useSkillsetPublishMode } from '@renderer/hooks/use-skillsets'
 
@@ -44,43 +38,20 @@ interface GeneralTabProps {
 }
 
 export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: GeneralTabProps) {
-  const [isDeleting, setIsDeleting] = useState(false)
   const [prDialogOpen, setPrDialogOpen] = useState(false)
-  const [publishDialogOpen, setPublishDialogOpen] = useState(false)
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
   const [forceSyncDialogOpen, setForceSyncDialogOpen] = useState(false)
-  const deleteAgent = useDeleteAgent()
   const { data: agentPrefs } = useAgentPreferences(agentSlug)
   const updatePrefs = useUpdateAgentPreferences(agentSlug)
   const { data: settings } = useSettings()
-  const navigate = useNavigate()
-  const routeAgentId = useRouteAgentId()
   const { data: templateStatus } = useAgentTemplateStatus(agentSlug)
   const refreshTemplateStatus = useRefreshAgentTemplateStatus()
   const forceSyncTemplate = useForceSyncAgentTemplate()
   const updateTemplate = useUpdateAgentTemplate()
-  const exportTemplate = useExportAgentTemplate()
-  const exportFull = useExportAgentFull()
-  const { data: hostExportStatus } = useHostExportStatus()
-  const exportBusy =
-    !!hostExportStatus?.inProgress || exportTemplate.isPending || exportFull.isPending
   const templateSourceLabel = templateStatus?.sourceLabel || null
   const publishMode = useSkillsetPublishMode(templateStatus?.skillsetId)
   const isPR = isPullRequestPublishMode(publishMode)
   const SubmitIcon = isPR ? GitPullRequest : Send
-
-  const handleDelete = async () => {
-    setIsDeleting(true)
-    try {
-      await deleteAgent.mutateAsync(agentSlug)
-      onDialogClose()
-      if (routeAgentId === agentSlug) void navigate({ to: '/' })
-    } catch (error) {
-      console.error('Failed to delete agent:', error)
-      toast.error(error instanceof Error ? error.message : 'Failed to delete agent')
-    } finally {
-      setIsDeleting(false)
-    }
-  }
 
   return (
     <div className="space-y-6">
@@ -166,72 +137,6 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
         </div>
       )}
 
-      {/* Export / Publish */}
-      <div className="space-y-2">
-        <h3 className="text-sm font-medium">Template</h3>
-        <div className="flex flex-wrap gap-2">
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => exportTemplate.mutate({ agentSlug, agentName: name })}
-            disabled={exportBusy}
-          >
-            {exportBusy ? (
-              <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-            ) : (
-              <Download className="h-3 w-3 mr-1" />
-            )}
-            Export as Template
-          </Button>
-          <AlertDialog>
-            <AlertDialogTrigger asChild>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={exportBusy}
-              >
-                {exportBusy ? (
-                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                ) : (
-                  <HardDriveDownload className="h-3 w-3 mr-1" />
-                )}
-                Export Full Agent
-              </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Export Full Agent</AlertDialogTitle>
-                <AlertDialogDescription>
-                  This will export the entire agent workspace including environment
-                  variables, API keys, and other potentially sensitive data. Only share
-                  this file with people you trust.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction
-                  disabled={exportBusy}
-                  onClick={() => exportFull.mutate({ agentSlug, agentName: name })}
-                >
-                  Export
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-          {/* Hidden-org platform templates are shown as local, but must not be re-published from this org. */}
-          {templateStatus?.type === 'local' && templateStatus.publishable !== false && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setPublishDialogOpen(true)}
-            >
-              <Upload className="h-3 w-3 mr-1" />
-              Publish to Skillset
-            </Button>
-          )}
-        </div>
-      </div>
-
       {/* Session Auto-Delete */}
       <div className="space-y-2">
         <div className="space-y-0.5">
@@ -249,6 +154,22 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
         />
       </div>
 
+      <div className="space-y-2">
+        <div className="space-y-0.5">
+          <Label>API Log Auto-Delete</Label>
+          <p className="text-xs text-muted-foreground">
+            Override the app-wide default for this agent. Applies to API and MCP request logs.
+          </p>
+        </div>
+        <AgentApiLogAutoDeleteSelect
+          value={agentPrefs?.apiLogAutoDeleteDays}
+          appDefault={settings?.app?.apiLogAutoDeleteDays}
+          onChange={(days) => {
+            updatePrefs.mutate({ apiLogAutoDeleteDays: days })
+          }}
+        />
+      </div>
+
       {/* Danger Zone */}
       <div className="pt-4 border-t">
         <div className="space-y-2">
@@ -256,34 +177,22 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
           <p className="text-sm text-muted-foreground">
             Permanently delete this agent and all its sessions, messages, and data.
           </p>
-          <AlertDialog>
-            <AlertDialogTrigger asChild>
-              <Button variant="destructive" size="sm" data-testid="delete-agent-button">
-                <Trash2 className="h-4 w-4 mr-2" />
-                Delete Agent
-              </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Delete Agent</AlertDialogTitle>
-                <AlertDialogDescription>
-                  Are you sure you want to delete &quot;{name}&quot;? This will permanently delete
-                  the agent and all its sessions, messages, and data. This action cannot be undone.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction
-                  onClick={handleDelete}
-                  disabled={isDeleting}
-                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                  data-testid="confirm-button"
-                >
-                  {isDeleting ? 'Deleting...' : 'Delete'}
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() => setDeleteConfirmOpen(true)}
+            data-testid="delete-agent-button"
+          >
+            <Trash2 className="h-4 w-4 mr-2" />
+            Delete Agent
+          </Button>
+          <DeleteAgentConfirmDialog
+            agentSlug={agentSlug}
+            agentName={name}
+            open={deleteConfirmOpen}
+            onOpenChange={setDeleteConfirmOpen}
+            onDeleted={onDialogClose}
+          />
         </div>
       </div>
 
@@ -293,13 +202,6 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
         onOpenChange={setPrDialogOpen}
         agentSlug={agentSlug}
         publishMode={publishMode}
-      />
-
-      {/* Publish Dialog */}
-      <AgentTemplatePublishDialog
-        open={publishDialogOpen}
-        onOpenChange={setPublishDialogOpen}
-        agentSlug={agentSlug}
       />
 
       <AlertDialog open={forceSyncDialogOpen} onOpenChange={setForceSyncDialogOpen}>

@@ -19,12 +19,12 @@ export function useStartOnboardingSession() {
   const navigate = useNavigate()
 
   return useCallback(
-    async (agentSlug: string) => {
+    async (agentSlug: string, firstPrompt?: string) => {
       setOnboarding(true)
       try {
         const session = await createSession.mutateAsync({
           agentSlug,
-          message: ONBOARDING_MESSAGE,
+          message: firstPrompt?.trim() || ONBOARDING_MESSAGE,
         })
         void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agentSlug, sessionId: session.id } })
       } catch {

@@ -10,6 +10,7 @@ import { type FolderGroup } from '@renderer/lib/file-utils'
 import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { attachmentStatus, type Attachment, type MountAttachment } from '@renderer/components/messages/attachment-preview'
 import type { UploadProgress } from '@renderer/lib/upload'
+import { usePendingAttachmentDrop } from '@renderer/lib/pending-attachment-drop'
 import {
   findPotentialSecrets,
   replaceSecuredSecrets,
@@ -135,7 +136,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   const canOfferMount = canUseHostFeatures()
 
   const handleFoldersReceived = useCallback((folders: FolderGroup[]) => {
-    setPendingFolders(folders)
+    setPendingFolders((current) => [...current, ...folders])
     setShowMountDialog(true)
   }, [])
 
@@ -147,6 +148,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     isDragOver,
     addFiles,
     addFolders: addFoldersDirectly,
+    addItems,
     addMounts,
     updateAttachment,
     setAttachmentError,
@@ -163,6 +165,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     },
   })
   attachmentsRef.current = attachments
+  usePendingAttachmentDrop(draftKey, addItems)
 
   const queue = useUploadQueue({
     agentSlug,

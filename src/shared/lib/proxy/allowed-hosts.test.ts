@@ -42,12 +42,45 @@ describe('isHostAllowed', () => {
     expect(isHostAllowed('gmail', 'api.github.com')).toBe(false)
   })
 
-  it('allows github api host for github toolkit', () => {
+  it('allows every github host the toolkit actually needs', () => {
     expect(isHostAllowed('github', 'api.github.com')).toBe(true)
+    // github.com carries the git smart-HTTP transport, which api.github.com
+    // does not serve — blocking it broke authenticated git access.
+    expect(isHostAllowed('github', 'github.com')).toBe(true)
+    expect(isHostAllowed('github', 'raw.githubusercontent.com')).toBe(true)
+    expect(isHostAllowed('github', 'uploads.github.com')).toBe(true)
   })
 
   it('rejects unknown hosts for github toolkit', () => {
-    expect(isHostAllowed('github', 'github.com')).toBe(false)
+    expect(isHostAllowed('github', 'gist.github.com')).toBe(false)
+    expect(isHostAllowed('github', 'evil-github.com')).toBe(false)
+  })
+
+  it('allows the git transport host for bitbucket', () => {
+    expect(isHostAllowed('bitbucket', 'api.bitbucket.org')).toBe(true)
+    expect(isHostAllowed('bitbucket', 'bitbucket.org')).toBe(true)
+  })
+
+  it('allows regional sentry hosts', () => {
+    expect(isHostAllowed('sentry', 'sentry.io')).toBe(true)
+    expect(isHostAllowed('sentry', 'us.sentry.io')).toBe(true)
+    expect(isHostAllowed('sentry', 'de.sentry.io')).toBe(true)
+    expect(isHostAllowed('sentry', 'evil-sentry.io')).toBe(false)
+  })
+
+  it('allows every datadog site host', () => {
+    expect(isHostAllowed('datadog', 'api.datadoghq.com')).toBe(true)
+    expect(isHostAllowed('datadog', 'api.datadoghq.eu')).toBe(true)
+    expect(isHostAllowed('datadog', 'api.ap1.datadoghq.com')).toBe(true)
+    expect(isHostAllowed('datadog', 'api.ddog-gov.com')).toBe(true)
+  })
+
+  it('allows the secondary upload and event hosts', () => {
+    expect(isHostAllowed('pagerduty', 'events.pagerduty.com')).toBe(true)
+    expect(isHostAllowed('linear', 'uploads.linear.app')).toBe(true)
+    expect(isHostAllowed('airtable', 'content.airtable.com')).toBe(true)
+    expect(isHostAllowed('stripe', 'files.stripe.com')).toBe(true)
+    expect(isHostAllowed('twitter', 'upload.twitter.com')).toBe(true)
   })
 
   it('rejects all hosts for unknown toolkit', () => {

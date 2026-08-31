@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { createZipBuffer } from '@shared/lib/utils/zip'
+import { createZipBuffer, ZipExtractionSizeError } from '@shared/lib/utils/zip'
 
 vi.mock('@shared/lib/utils/retry', async () => {
   const actual = await vi.importActual<typeof import('@shared/lib/utils/retry')>(
@@ -19,7 +19,7 @@ vi.mock('@shared/lib/error-reporting', () => ({
 }))
 
 import { NonRetryableError } from '@shared/lib/utils/retry'
-import { PublicSkillsetProvider } from './public-provider'
+import { extractZipToDir, PublicSkillsetProvider } from './public-provider'
 
 const provider = new PublicSkillsetProvider()
 
@@ -263,6 +263,44 @@ describe('PublicSkillsetProvider.populateCache', () => {
     await provider.populateCache(destDir, makeRef('https://github.com/Org/repo'))
 
     expect(JSON.parse(await fs.promises.readFile(path.join(destDir, 'index.json'), 'utf-8'))).toEqual({ flat: true })
+  })
+})
+
+describe('extractZipToDir size cap', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'public-provider-test-'))
+  })
+
+  afterEach(async () => {
+    await fs.promises.rm(tmpDir, { recursive: true, force: true })
+  })
+
+  it('rejects before writing when declared sizes exceed the cap', async () => {
+    const destDir = path.join(tmpDir, 'cache')
+    const zipBuffer = await buildTestZip({
+      'a.txt': 'aaaa',
+      'b.txt': 'bbbb',
+      'c.txt': 'cccc',
+    })
+
+    await expect(extractZipToDir(zipBuffer, destDir, 10)).rejects.toBeInstanceOf(ZipExtractionSizeError)
+    expect(fs.existsSync(path.join(destDir, 'a.txt'))).toBe(false)
+    expect(fs.existsSync(path.join(destDir, 'b.txt'))).toBe(false)
+    expect(fs.existsSync(path.join(destDir, 'c.txt'))).toBe(false)
+  })
+
+  it('extracts when declared sizes fit under the cap', async () => {
+    const destDir = path.join(tmpDir, 'cache')
+    const zipBuffer = await buildTestZip({
+      'a.txt': 'aaaa',
+      'b.txt': 'bbbb',
+    })
+
+    await extractZipToDir(zipBuffer, destDir, 100)
+    expect(await fs.promises.readFile(path.join(destDir, 'a.txt'), 'utf-8')).toBe('aaaa')
+    expect(await fs.promises.readFile(path.join(destDir, 'b.txt'), 'utf-8')).toBe('bbbb')
   })
 })
 

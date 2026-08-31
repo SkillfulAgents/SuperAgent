@@ -61,6 +61,20 @@ const authProjects = [
     dataDir: path.join(e2eDataDir, 'mobile-pairing'),
     viteCacheDir: path.join(e2eDataDir, '.vite', 'mobile-pairing'),
   },
+  {
+    name: 'auth-template-handoff',
+    testMatch: '**/template-handoff.spec.ts',
+    port: e2ePort + 7,
+    dataDir: path.join(e2eDataDir, 'template-handoff'),
+    viteCacheDir: path.join(e2eDataDir, '.vite', 'template-handoff'),
+  },
+  {
+    name: 'auth-shared-connections',
+    testMatch: '**/shared-connections.spec.ts',
+    port: e2ePort + 8,
+    dataDir: path.join(e2eDataDir, 'shared-connections'),
+    viteCacheDir: path.join(e2eDataDir, '.vite', 'shared-connections'),
+  },
 ].map((project, index) => ({
   ...project,
   baseURL: index === 0 && process.env.E2E_BASE_URL

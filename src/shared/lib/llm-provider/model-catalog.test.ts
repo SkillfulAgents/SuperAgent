@@ -61,6 +61,7 @@ describe('getProviderCatalog', () => {
       ['xai', 'grok-4.6'],
       ['kimi', 'kimi-k3'],
       ['meta', 'muse-spark-1.2'],
+      ['zai', 'glm-5.3-flash'],
     ])
   })
 
@@ -249,6 +250,17 @@ describe('getProviderCatalog', () => {
       supportsWebFetch: false,
       supportedSpeeds: ['normal', 'fast'],
       pricing: { inputPerMtok: 3, outputPerMtok: 15, speedMultipliers: { fast: 1.5 } },
+    })
+    // Cloudflare Workers AI via the platform proxy. Bare id only.
+    expect(catalog.find((m) => m.id === 'glm-5.3-flash')).toMatchObject({
+      family: 'glm',
+      isLatest: true,
+      icon: 'zai',
+      supportsWebSearch: false,
+      supportsWebFetch: false,
+      supportsImageInput: true,
+      contextWindow: 1_048_576,
+      pricing: { inputPerMtok: 0.15, outputPerMtok: 0.5, cacheReadPerMtok: 0.03 },
     })
     // Platform keys off bare ids, never the OpenRouter vendor-prefixed slugs.
     expect(catalog.some((m) => m.id === 'openai/gpt-5.5')).toBe(false)
@@ -586,14 +598,15 @@ describe('resolveModelForProvider', () => {
     )
   })
 
-  it('resolves Platform GPT/Grok models to bare ids and falls back for unsupported glm', () => {
+  it('resolves Platform GPT/Grok/GLM models to bare ids', () => {
     expect(resolveModelForProvider('gpt', 'platform', 'agent')).toBe('gpt-5.6-sol')
     expect(resolveModelForProvider('gpt-5.4', 'platform', 'agent')).toBe('gpt-5.4')
     expect(resolveModelForProvider('gpt-5.6-luna', 'platform', 'agent')).toBe('gpt-5.6-luna')
     expect(resolveModelForProvider('grok', 'platform', 'agent')).toBe('grok-4.6')
     expect(resolveModelForProvider('grok-4.6', 'platform', 'agent')).toBe('grok-4.6')
     expect(resolveModelForProvider('grok-4.5', 'platform', 'agent')).toBe('grok-4.5')
-    expect(resolveModelForProvider('glm', 'platform', 'agent')).toBe('grok-4.6')
+    expect(resolveModelForProvider('glm', 'platform', 'agent')).toBe('glm-5.3-flash')
+    expect(resolveModelForProvider('glm-5.3-flash', 'platform', 'agent')).toBe('glm-5.3-flash')
   })
 
   it('resolves the SAME bare alias to each provider concrete id (cross-provider portability)', () => {

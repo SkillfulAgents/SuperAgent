@@ -1,22 +1,30 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { cloneElement, isValidElement, type ReactElement } from 'react'
-import { act, screen } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { pointerWithin } from '@dnd-kit/core'
 import { AppSidebar } from './app-sidebar'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
-
+import { APP_VERSION } from '@shared/lib/config/version'
+import { major, minor, patch } from 'semver'
 // AppLink (the sidebar item links) is stubbed globally in test/setup.ts — no
 // file-level mock needed. DialogContext is mocked below to control settings.
 
-vi.stubGlobal('__APP_VERSION__', '0.1.0-test')
 vi.stubGlobal('__RENDER_TRACKING__', false)
 
 const mockIsElectron = vi.hoisted(() => vi.fn(() => false))
 const mockGetPlatform = vi.hoisted(() => vi.fn(() => 'web'))
 const mockOpenDashboardExternal = vi.hoisted(() => vi.fn())
+const mockNavigate = vi.hoisted(() => vi.fn())
+const mockGetItemsFromDataTransfer = vi.hoisted(() => vi.fn())
+const mockToastError = vi.hoisted(() => vi.fn())
+
+vi.mock('sonner', async (importOriginal) => ({
+  ...await importOriginal<typeof import('sonner')>(),
+  toast: { error: mockToastError },
+}))
 
 vi.mock('@renderer/lib/env', () => ({
   isElectron: mockIsElectron,
@@ -27,6 +35,11 @@ vi.mock('@renderer/lib/env', () => ({
 
 vi.mock('@renderer/lib/api', () => ({
   apiFetch: vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve([]) })),
+}))
+
+vi.mock('@renderer/lib/file-utils', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@renderer/lib/file-utils')>(),
+  getItemsFromDataTransfer: mockGetItemsFromDataTransfer,
 }))
 
 const mockUseAgents = vi.fn()
@@ -79,8 +92,11 @@ vi.mock('@renderer/hooks/use-user-settings', () => ({
   useUpdateUserSettings: () => ({ mutate: mockUpdateSettings }),
 }))
 
+const mockRuntimeStatus: { runtimeReadiness: { status: string }; appVersion?: string } = {
+  runtimeReadiness: { status: 'READY' },
+}
 vi.mock('@renderer/hooks/use-runtime-status', () => ({
-  useRuntimeStatus: () => ({ data: { runtimeReadiness: { status: 'READY' } } }),
+  useRuntimeStatus: () => ({ data: mockRuntimeStatus }),
 }))
 
 vi.mock('@renderer/hooks/use-artifacts', () => ({
@@ -125,7 +141,7 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
   return {
     ...actual,
     useRouter: () => ({ history: mockHistory }),
-    useNavigate: () => () => {},
+    useNavigate: () => mockNavigate,
     useParams: () => mockRouteParams,
     useRouterState: (opts?: { select?: (s: { location: { pathname: string } }) => unknown }) =>
       opts?.select ? opts.select({ location: { pathname: mockRoutePathname } }) : undefined,
@@ -152,6 +168,21 @@ vi.mock('@renderer/context/user-context', () => ({
 vi.mock('@renderer/context/connectivity-context', () => ({
   useIsOnline: () => true,
   ConnectivityProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}))
+
+const mockUpdateStatus: { state: string; version?: string } = { state: 'idle' }
+vi.mock('@renderer/context/update-status-context', () => ({
+  useUpdateStatus: () => mockUpdateStatus,
+}))
+
+const mockPlatformAuth: { platformBaseUrl?: string; orgId?: string } = {}
+vi.mock('@renderer/hooks/use-platform-auth', () => ({
+  usePlatformAuthStatus: () => ({ data: mockPlatformAuth }),
+}))
+
+const mockOpenExternalUrl = vi.fn()
+vi.mock('@renderer/lib/open-external', () => ({
+  openExternalUrl: (...args: unknown[]) => mockOpenExternalUrl(...args),
 }))
 
 const mockDialogContext = {
@@ -236,14 +267,14 @@ vi.mock('@renderer/components/ui/sidebar', () => ({
     asChild && isValidElement(children)
       ? cloneElement(children as ReactElement, { 'data-active': isActive ? 'true' : 'false', ...props })
       : <button onClick={onClick} data-active={isActive ? 'true' : 'false'} {...props}>{children}</button>,
-  SidebarMenuItem: ({ children, onMouseEnter }: any) => <li onMouseEnter={onMouseEnter}>{children}</li>,
+  SidebarMenuItem: ({ children, ...props }: any) => <li {...props}>{children}</li>,
   SidebarMenuSkeleton: () => <div data-testid="skeleton" />,
   SidebarMenuSub: ({ children }: any) => <ul>{children}</ul>,
   SidebarMenuSubButton: ({ children, isActive, asChild, ...props }: any) =>
     asChild && isValidElement(children)
       ? cloneElement(children as ReactElement, { 'data-active': isActive ? 'true' : 'false', ...props })
       : <div data-active={isActive ? 'true' : 'false'} {...props}>{children}</div>,
-  SidebarMenuSubItem: ({ children }: any) => <li>{children}</li>,
+  SidebarMenuSubItem: ({ children, ...props }: any) => <li {...props}>{children}</li>,
   SidebarRail: () => null,
   useSidebar: () => ({ setOpenMobile: vi.fn() }),
 }))
@@ -346,8 +377,22 @@ function notifyHistory(actionType: string) {
   mockHistorySubscribers.forEach((subscriber) => subscriber({ action: { type: actionType } }))
 }
 
+const localStorageStore = new Map<string, string>()
+const localStorageStub = {
+  getItem: (key: string) => localStorageStore.get(key) ?? null,
+  setItem: (key: string, value: string) => {
+    localStorageStore.set(key, String(value))
+  },
+  removeItem: (key: string) => {
+    localStorageStore.delete(key)
+  },
+  clear: () => localStorageStore.clear(),
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
+  localStorageStore.clear()
+  vi.stubGlobal('localStorage', localStorageStub)
   vi.stubGlobal('__WEB__', true)
   mockIsElectron.mockReturnValue(false)
   mockGetPlatform.mockReturnValue('web')
@@ -355,6 +400,8 @@ beforeEach(() => {
   mockRoutePathname = '/'
   mockHistorySubscribers = []
   setMockHistoryIndex(0)
+  _resetApiTargetForTest()
+  setActiveTarget('local', null)
   mockUseAgents.mockReturnValue({
     data: [makeAgent(), makeAgent({ slug: 'other-agent', name: 'Other Agent', status: 'stopped', sessionCount: 0 })],
     isLoading: false,
@@ -366,6 +413,17 @@ beforeEach(() => {
   }))
   mockUnreadCount.mockReturnValue({ data: { count: 0 } })
   mockUserSettings.mockReturnValue({ setupCompleted: true, agentOrder: [] })
+  delete mockRuntimeStatus.appVersion
+  mockRuntimeStatus.runtimeReadiness = { status: 'READY' }
+  mockUpdateStatus.state = 'idle'
+  delete mockUpdateStatus.version
+  delete mockPlatformAuth.platformBaseUrl
+  delete mockPlatformAuth.orgId
+  mockOpenExternalUrl.mockReset()
+  mockNavigate.mockReset()
+  mockGetItemsFromDataTransfer.mockReset()
+  mockGetItemsFromDataTransfer.mockResolvedValue({ files: [], folders: [] })
+  mockToastError.mockReset()
 })
 
 describe('AppSidebar — layout & top nav', () => {
@@ -420,7 +478,19 @@ describe('AppSidebar — layout & top nav', () => {
   it('renders Settings + version in the footer', () => {
     renderWithProviders(<AppSidebar />)
     expect(screen.getByTestId('settings-button')).toBeInTheDocument()
-    expect(screen.getByText('v0.1.0-test')).toBeInTheDocument()
+    expect(screen.getByText(`${APP_VERSION}`)).toBeInTheDocument()
+  })
+
+  it('keeps the local update tooltip and aria-label', () => {
+    mockUpdateStatus.state = 'available'
+    mockUpdateStatus.version = '1.2.3'
+
+    renderWithProviders(<AppSidebar />)
+
+    const label = screen.getByTestId('sidebar-version')
+    expect(label).toHaveTextContent(`${APP_VERSION}`)
+    expect(label.getAttribute('title')).toBe('Update available: v1.2.3')
+    expect(screen.getByLabelText('Update available')).toBeInTheDocument()
   })
 
   it('Home links to the global home route', () => {
@@ -564,6 +634,104 @@ describe('AppSidebar — agent rows', () => {
     renderWithProviders(<AppSidebar />)
     const agentRow = screen.getByTestId('agent-item-test-agent').closest('li')!
     expect(agentRow.querySelector('[aria-label="Expand"]')).toBeNull()
+  })
+
+  it('accepts file drops on an agent row and navigates to its home composer', async () => {
+    const file = new File(['agent'], 'agent.txt', { type: 'text/plain' })
+    mockGetItemsFromDataTransfer.mockResolvedValue({ files: [{ file }], folders: [] })
+    renderWithProviders(<AppSidebar />)
+
+    const row = screen.getByTestId('agent-item-test-agent')
+    const target = row.parentElement!
+    const dataTransfer = { types: ['Files'], items: [{ kind: 'file' }] } as unknown as DataTransfer
+
+    fireEvent.dragEnter(target, { dataTransfer })
+    expect(target).toHaveAttribute('data-file-drop-active', '')
+
+    fireEvent.drop(target, { dataTransfer })
+
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith({
+        to: '/agents/$slug',
+        params: { slug: 'test-agent' },
+      })
+    })
+    expect(target).not.toHaveAttribute('data-file-drop-active')
+  })
+
+  it('accepts file drops on a session row and navigates to its composer', async () => {
+    const file = new File(['session'], 'session.txt', { type: 'text/plain' })
+    mockGetItemsFromDataTransfer.mockResolvedValue({ files: [{ file }], folders: [] })
+    mockRouteParams = { slug: 'test-agent' }
+    renderWithProviders(<AppSidebar />)
+
+    const row = screen.getByTestId('session-item-session-1')
+    const dataTransfer = { types: ['Files'], items: [{ kind: 'file' }] } as unknown as DataTransfer
+
+    const target = row.closest('li')!
+    fireEvent.dragEnter(target, { dataTransfer })
+    expect(target).toHaveAttribute('data-file-drop-active', '')
+
+    fireEvent.drop(target, { dataTransfer })
+
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith({
+        to: '/agents/$slug/sessions/$sessionId',
+        params: { slug: 'test-agent', sessionId: 'session-1' },
+      })
+    })
+  })
+
+  it('refuses file drops on a session awaiting input, which has no composer mounted', async () => {
+    const file = new File(['session'], 'session.txt', { type: 'text/plain' })
+    mockGetItemsFromDataTransfer.mockResolvedValue({ files: [{ file }], folders: [] })
+    mockUseSessions.mockImplementation((slug: string | null) => ({
+      data: slug === 'test-agent' ? [makeSession({ isAwaitingInput: true })] : [],
+      isLoading: false,
+    }))
+    mockRouteParams = { slug: 'test-agent' }
+    renderWithProviders(<AppSidebar />)
+
+    const target = screen.getByTestId('session-item-session-1').closest('li')!
+    const dataTransfer = { types: ['Files'], items: [{ kind: 'file' }] } as unknown as DataTransfer
+
+    fireEvent.dragEnter(target, { dataTransfer })
+    expect(target).not.toHaveAttribute('data-file-drop-active')
+
+    fireEvent.drop(target, { dataTransfer })
+
+    await waitFor(() => expect(mockToastError).toHaveBeenCalled())
+    expect(mockGetItemsFromDataTransfer).not.toHaveBeenCalled()
+    expect(mockNavigate).not.toHaveBeenCalled()
+  })
+
+  it('reports a failure to read the dropped files instead of failing silently', async () => {
+    mockGetItemsFromDataTransfer.mockRejectedValue(new Error('unreadable directory'))
+    renderWithProviders(<AppSidebar />)
+
+    const target = screen.getByTestId('agent-item-test-agent').parentElement!
+    const dataTransfer = { types: ['Files'], items: [{ kind: 'file' }] } as unknown as DataTransfer
+
+    fireEvent.drop(target, { dataTransfer })
+
+    await waitFor(() => {
+      expect(mockToastError).toHaveBeenCalledWith("Couldn't read the dropped files")
+    })
+    expect(mockNavigate).not.toHaveBeenCalled()
+  })
+
+  it('ignores non-file drags used by ordinary links and sidebar sorting', () => {
+    renderWithProviders(<AppSidebar />)
+    const row = screen.getByTestId('agent-item-test-agent')
+    const target = row.parentElement!
+    const preventDefault = vi.fn()
+    const dataTransfer = { types: ['text/plain'], items: [] } as unknown as DataTransfer
+
+    fireEvent.dragOver(target, { dataTransfer, preventDefault })
+
+    expect(target).not.toHaveAttribute('data-file-drop-active')
+    expect(mockGetItemsFromDataTransfer).not.toHaveBeenCalled()
+    expect(mockNavigate).not.toHaveBeenCalled()
   })
 })
 
@@ -738,6 +906,157 @@ describe('UserMenu action for the current target', () => {
     await userEvent.click(screen.getByTestId('switch-to-local-button'))
 
     expect(mockUserContext.signOut).not.toHaveBeenCalled()
+  })
+})
+
+// The footer compares the deployment against `__APP_VERSION__`, which vitest
+// defines as the real package version. Fixtures are therefore derived from it
+// rather than written as literals: a hardcoded `0.5.13` reads as one patch
+// behind today and a whole minor behind once the app ships 0.6.0, silently
+// flipping the dot these tests assert on from blue to orange.
+const MAJOR = major(APP_VERSION)
+const MINOR = minor(APP_VERSION)
+const PATCH = patch(APP_VERSION)
+
+/** One patch ahead: differs from the desktop build, never behind it. */
+const PATCH_AHEAD = `${MAJOR}.${MINOR}.${PATCH + 1}`
+/** One patch behind — a prerelease of x.y.0 when there is no lower patch. */
+const PATCH_BEHIND = PATCH > 0 ? `${MAJOR}.${MINOR}.${PATCH - 1}` : `${MAJOR}.${MINOR}.0-0`
+/** A whole minor behind (a whole major, on an x.0.z build). */
+const MINOR_BEHIND = MINOR > 0 ? `${MAJOR}.${MINOR - 1}.0` : `${MAJOR - 1}.0.0`
+/** A whole minor ahead, and a whole major ahead. */
+const MINOR_AHEAD = `${MAJOR}.${MINOR + 1}.0`
+const MAJOR_AHEAD = `${MAJOR + 1}.0.0`
+
+describe('footer version in cloud mode', () => {
+  const desktopVersion = APP_VERSION
+
+  beforeEach(() => {
+    _resetApiTargetForTest()
+    setActiveTarget('cloud', null)
+  })
+
+  afterEach(() => {
+    delete mockRuntimeStatus.appVersion
+    mockUpdateStatus.state = 'idle'
+    delete mockUpdateStatus.version
+  })
+
+  it('shows one number when desktop and cloud match and no update is waiting', async () => {
+    mockRuntimeStatus.appVersion = desktopVersion
+
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByTestId('sidebar-version')).toHaveTextContent(`${desktopVersion}`)
+    expect(screen.queryByTestId('sidebar-version-desktop')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('sidebar-version-cloud')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Update available')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Desktop update available')).not.toBeInTheDocument()
+
+    await userEvent.click(screen.getByTestId('sidebar-version'))
+    expect(mockDialogContext.openSettings).toHaveBeenCalledWith('general')
+  })
+
+  it('shows a quiet pair when they differ and nobody is behind', async () => {
+    mockRuntimeStatus.appVersion = PATCH_AHEAD
+    mockPlatformAuth.platformBaseUrl = 'https://platform.example'
+    mockPlatformAuth.orgId = 'org_1'
+
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByTestId('sidebar-version-desktop')).toHaveTextContent(`${desktopVersion}`)
+    expect(screen.getByTestId('sidebar-version-cloud')).toHaveTextContent(PATCH_AHEAD)
+    expect(screen.queryByLabelText('Desktop update available')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Cloud update available')).not.toBeInTheDocument()
+
+    await userEvent.click(screen.getByTestId('sidebar-version-desktop'))
+    expect(mockDialogContext.openSettings).toHaveBeenCalledWith('general')
+
+    await userEvent.click(screen.getByTestId('sidebar-version-cloud'))
+    expect(mockOpenExternalUrl).toHaveBeenCalledWith(
+      'https://platform.example/dashboard/organizations/org_1?tab=cloud',
+    )
+  })
+
+  it('puts a blue dot on cloud when it is a patch behind', () => {
+    mockRuntimeStatus.appVersion = PATCH_BEHIND
+
+    renderWithProviders(<AppSidebar />)
+
+    const cloudDot = screen.getByLabelText('Cloud update available')
+    expect(cloudDot).toHaveClass('bg-blue-500')
+    expect(screen.queryByLabelText('Desktop update available')).not.toBeInTheDocument()
+  })
+
+  it('puts an orange dot on cloud when it is a major or minor behind', () => {
+    mockRuntimeStatus.appVersion = MINOR_BEHIND
+
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByLabelText('Cloud update available')).toHaveClass('bg-orange-500')
+    expect(screen.queryByLabelText('Desktop update available')).not.toBeInTheDocument()
+  })
+
+  it('puts an orange dot on desktop when the feed matches a newer cloud', () => {
+    mockRuntimeStatus.appVersion = MINOR_AHEAD
+    mockUpdateStatus.state = 'available'
+    mockUpdateStatus.version = MINOR_AHEAD
+
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByLabelText('Desktop update available')).toHaveClass('bg-orange-500')
+    expect(screen.queryByLabelText('Cloud update available')).not.toBeInTheDocument()
+  })
+
+  it('puts orange dots on both when they match and the feed is a major ahead', () => {
+    mockRuntimeStatus.appVersion = desktopVersion
+    mockUpdateStatus.state = 'available'
+    mockUpdateStatus.version = MAJOR_AHEAD
+
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByTestId('sidebar-version-desktop')).toHaveTextContent(`${desktopVersion}`)
+    expect(screen.getByTestId('sidebar-version-cloud')).toHaveTextContent(`${desktopVersion}`)
+    expect(screen.getByLabelText('Desktop update available')).toHaveClass('bg-orange-500')
+    expect(screen.getByLabelText('Cloud update available')).toHaveClass('bg-orange-500')
+  })
+
+  it('keeps one number and a desktop update dot when they match the feed', () => {
+    mockRuntimeStatus.appVersion = desktopVersion
+    mockUpdateStatus.state = 'available'
+    mockUpdateStatus.version = desktopVersion
+
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByTestId('sidebar-version')).toHaveTextContent(`${desktopVersion}`)
+    expect(screen.queryByTestId('sidebar-version-cloud')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Desktop update available')).toHaveClass('bg-blue-500')
+  })
+
+  it('falls back to the desktop number when the deployment omits appVersion', () => {
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByTestId('sidebar-version')).toHaveTextContent(`${desktopVersion}`)
+    expect(screen.queryByTestId('sidebar-version-cloud')).not.toBeInTheDocument()
+  })
+
+  it('falls back to the desktop number when appVersion is not a version', () => {
+    mockRuntimeStatus.appVersion = 'not-a-version'
+
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByTestId('sidebar-version')).toHaveTextContent(`${desktopVersion}`)
+    expect(screen.queryByTestId('sidebar-version-cloud')).not.toBeInTheDocument()
+  })
+
+  it('does not open the cloud tab when org is missing', async () => {
+    mockRuntimeStatus.appVersion = PATCH_AHEAD
+    mockPlatformAuth.platformBaseUrl = 'https://platform.example'
+
+    renderWithProviders(<AppSidebar />)
+
+    await userEvent.click(screen.getByTestId('sidebar-version-cloud'))
+    expect(mockOpenExternalUrl).not.toHaveBeenCalled()
   })
 })
 

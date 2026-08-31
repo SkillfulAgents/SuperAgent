@@ -74,11 +74,20 @@ function mcpMapping(overrides: Partial<AgentRemoteMcp> = {}): AgentRemoteMcp {
 }
 
 describe('agent connection DTOs', () => {
-  it('keeps a foreign account marker free of row, owner, and provider identifiers', () => {
+  it('reduces a foreign account to its toolkit and the link id', () => {
     const result = toAgentConnectedAccountDto(accountMapping(), account(), 'viewer-2')
 
-    expect(result).toEqual({ kind: 'connected-account', toolkitSlug: 'github' })
-    expect(JSON.stringify(result)).not.toContain('account-1')
+    // The link id is the handle an agent owner unlinks by. It names the
+    // agent↔account row, so it leaks nothing about the account or its owner —
+    // which is exactly what the assertions below pin.
+    expect(result).toEqual({
+      kind: 'connected-account',
+      toolkitSlug: 'github',
+      mappingId: 'account-mapping-1',
+    })
+    expect(result).not.toHaveProperty('id')
+    expect(result).not.toHaveProperty('displayName')
+    expect(JSON.stringify(result)).not.toContain('"account-1"')
     expect(JSON.stringify(result)).not.toContain('owner-1')
     expect(JSON.stringify(result)).not.toContain('provider-connection-1')
   })
@@ -106,11 +115,13 @@ describe('agent connection DTOs', () => {
     expect(result).toMatchObject({ id: 'account-1', displayName: 'My GitHub' })
   })
 
-  it('uses a fully opaque marker for a foreign MCP', () => {
+  it('reduces a foreign MCP to the link id alone', () => {
     const result = toAgentRemoteMcpDto(mcpMapping(), mcp(), 'viewer-2')
 
-    expect(result).toEqual({ kind: 'remote-mcp' })
-    expect(JSON.stringify(result)).not.toContain('mcp-1')
+    expect(result).toEqual({ kind: 'remote-mcp', mappingId: 'mcp-mapping-1' })
+    expect(result).not.toHaveProperty('id')
+    expect(result).not.toHaveProperty('name')
+    expect(JSON.stringify(result)).not.toContain('"mcp-1"')
     expect(JSON.stringify(result)).not.toContain('private.example.test')
     expect(JSON.stringify(result)).not.toContain('search')
   })

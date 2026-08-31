@@ -656,6 +656,13 @@ import {
   resolveBrowserRuntimeLocation,
   shouldRefuseImplicitHostLoopback,
 } from './browser-location';
+import { confirmNoPagesLeft, readTabSources, recheckPageTarget } from './browser-liveness';
+
+// Bumped each time /browser/open succeeds. External-close detection spans real
+// time (two target lookups 750ms apart, then a confirmation request); a browser
+// opened during that span must not be torn down by a verdict formed against the
+// one before it. Detection snapshots this before looking and re-compares last.
+let browserOpenGeneration = 0;
 
 // Proxy object so existing code can read `browserState.active` etc. without changes.
 // Writes must go through _setBrowserState() to keep the canonical module state in sync.
@@ -1165,6 +1172,7 @@ app.post('/browser/open', async (c) => {
       }
     }
 
+    browserOpenGeneration++;
     _setBrowserState({ active: true, sessionId: body.sessionId, cdpUrl: cdpUrl || null, location });
     tabManager.resetTabCount();
     resetUrlTracking();
@@ -1252,15 +1260,32 @@ app.post('/browser/release', async (c) => {
   }
 });
 
-// POST /browser/notify-closed - Host browser was closed externally, clean up state
-app.post('/browser/notify-closed', (c) => {
-  if (browserState.location) {
+/**
+ * Drop every trace of a browser the user closed on us.
+ *
+ * Reached two ways: the host telling us Chrome's process died, and the
+ * screencast finding no page left to stream (macOS keeps Chrome alive after
+ * its last window closes, so only the second one catches that). Until this
+ * runs, /browser/status keeps answering "active" and the viewer keeps
+ * reconnecting to a browser that no longer exists.
+ *
+ * The state reset is synchronous: callers that also close a viewer socket rely
+ * on the status endpoint already answering "inactive" by the time they do.
+ */
+async function handleExternalBrowserClose(
+  reason: string,
+  options: { stopHostBrowser: boolean },
+): Promise<void> {
+  const ownerSessionId = browserState.sessionId;
+  const location = browserState.location;
+
+  if (location) {
     cleanupAgentBrowserDaemon();
     cleanupCdpScreencast();
-    broadcastBrowserEvent(false);
+    broadcastBrowserEvent(false, ownerSessionId);
     _setBrowserState({ active: false, sessionId: null, cdpUrl: null, location: null });
     tabManager.resetTabCount();
-    console.log('[Browser] Browser closed externally, state cleaned up');
+    console.log(`[Browser] Browser closed externally (${reason}), state cleaned up`);
   }
   // Outside the guard: an external close can race the active flag, and a
   // pending browser_input is unanswerable once the browser is gone either way.
@@ -1268,6 +1293,18 @@ app.post('/browser/notify-closed', (c) => {
     'browser_input',
     'The browser was closed before the user completed this request'
   );
+
+  // Only when we detected this ourselves. A host-driven close has already torn
+  // the process down — the window is gone but, on macOS, the app it belonged
+  // to is still running and still holding the profile.
+  if (location && options.stopHostBrowser) {
+    await stopHostBrowserIfNeeded(location);
+  }
+}
+
+// POST /browser/notify-closed - Host browser was closed externally, clean up state
+app.post('/browser/notify-closed', async (c) => {
+  await handleExternalBrowserClose('host reported the process exited', { stopHostBrowser: false });
   return c.json({ success: true });
 });
 
@@ -2208,6 +2245,20 @@ interface BrowserTabInfo {
   active: boolean;
 }
 
+/**
+ * Strict variant of the /json lookup: throws when Chrome cannot be reached or
+ * answers garbage, so confirmNoPagesLeft can tell "answered: no pages" from
+ * "no answer". Remote CDP providers without a /json endpoint land in the
+ * throw path on purpose — a headless provider has no window for the user to
+ * close, and guessing costs a leaked remote session.
+ */
+async function listPageTargetsStrict(): Promise<Array<{ type: string }>> {
+  const res = await fetch(`${getCdpHttpEndpoint()}/json`);
+  if (!res.ok) throw new Error(`CDP /json answered ${res.status}`);
+  const targets = await res.json() as Array<{ type: string }>;
+  return targets.filter(t => t.type === 'page');
+}
+
 /** Get ALL CDP page targets across all strategies */
 async function getAllPageTargets(): Promise<PageTarget[]> {
   // Try Chrome's HTTP /json endpoint first (works for local Chrome)
@@ -2601,13 +2652,34 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
     if (cdpScreencast?.cdpWs !== cdpWs) return;
 
     // Unexpected close — try to recover by switching to agent's active tab
-    findActivePageTarget().then(target => {
+    const generationAtDetection = browserOpenGeneration;
+    findActivePageTarget().then(async target => {
+      if (!target) {
+        target = await recheckPageTarget(() => findActivePageTarget(), sleep);
+      }
       if (target && cdpScreencast?.clientWs === clientWs && clientWs.readyState === WebSocket.OPEN) {
         console.log('[CDP] Recovering from closed target, switching to', target.id);
         cdpScreencast.autoFollow = true;
         switchScreencastTarget(target, clientWs);
         broadcastTabList();
+      } else if (
+        !target &&
+        (await confirmNoPagesLeft(listPageTargetsStrict)) &&
+        browserOpenGeneration === generationAtDetection
+      ) {
+        // The tab we were streaming was the last one — the user closed the
+        // browser. Same ordering rule as the connect path: state first, so the
+        // viewer's status check on the socket close answers "inactive".
+        const cleanup = handleExternalBrowserClose('streamed page closed with no page left', { stopHostBrowser: true });
+        if (clientWs.readyState === WebSocket.OPEN) {
+          clientWs.send(JSON.stringify({ type: 'browser_closed' }));
+          clientWs.close();
+        }
+        await cleanup;
       } else if (clientWs.readyState === WebSocket.OPEN) {
+        // Recovery target lost its viewer, or the close couldn't be confirmed
+        // (endpoint unreachable / a fresh browser_open won the race). Drop the
+        // socket and let the viewer's bounded retry sort out which it was.
         clientWs.close();
       }
     }).catch(() => {
@@ -2678,10 +2750,10 @@ async function broadcastTabList(prefetched?: { allTargets: PageTarget[]; daemonT
   if (clientWs.readyState !== WebSocket.OPEN) return;
 
   try {
-    const { allTargets, daemonTabs } = prefetched ?? {
-      allTargets: await getAllPageTargets(),
-      daemonTabs: await tabManager.queryTabs(),
-    };
+    const { allTargets, daemonTabs } = prefetched ?? await readTabSources(
+      () => getAllPageTargets(),
+      () => tabManager.queryTabs(),
+    );
 
     const claimedTargetIds = new Set<string>();
     let tabs: BrowserTabInfo[] = [];
@@ -2745,11 +2817,13 @@ function notifyBrowserAction() {
     if (!cdpScreencast || cdpScreencast.clientWs !== currentClient) return;
 
     try {
-      // Fetch once and share across both operations
-      const [allTargets, daemonTabs] = await Promise.all([
-        getAllPageTargets(),
-        tabManager.queryTabs(),
-      ]);
+      // Fetch once and share across both operations. Sequential, not
+      // Promise.all: the daemon must not be asked for tabs when Chrome has no
+      // page — see readTabSources.
+      const { allTargets, daemonTabs } = await readTabSources(
+        () => getAllPageTargets(),
+        () => tabManager.queryTabs(),
+      );
 
       // Resolve where the viewer should move. Do not prefer its current target:
       // a stale daemon URL must retain Chrome's MRU fallback for auto-follow.
@@ -2778,13 +2852,36 @@ function handleBrowserStreamConnection(ws: WebSocket) {
   // If there's an existing screencast, close it (single viewer)
   cleanupCdpScreencast();
 
-  findActivePageTarget().then((target) => {
+  const generationAtDetection = browserOpenGeneration;
+  findActivePageTarget().then(async (target) => {
     if (!target) {
-      console.error('[CDP] No active page target found');
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'error', message: 'No browser tab found — the page may still be loading' }));
+      target = await recheckPageTarget(() => findActivePageTarget(), sleep);
+    }
+    if (!target) {
+      if (
+        (await confirmNoPagesLeft(listPageTargetsStrict)) &&
+        browserOpenGeneration === generationAtDetection
+      ) {
+        // No page anywhere in the browser, twice over, and Chrome itself said
+        // so: the user closed it. Reset our state before closing the socket so
+        // the viewer's post-close status check sees "inactive" and stops
+        // reconnecting to a browser that's gone.
+        console.error('[CDP] No page target left — treating the browser as closed');
+        const cleanup = handleExternalBrowserClose('no page target left', { stopHostBrowser: true });
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'browser_closed' }));
+          ws.close();
+        }
+        await cleanup;
+      } else {
+        // Couldn't prove the browser is gone (endpoint unreachable, or a fresh
+        // browser_open landed mid-detection). Answer like the old code and let
+        // the viewer's bounded retry try again once things settle.
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'error', message: 'No browser tab found — the page may still be loading' }));
+        }
+        ws.close();
       }
-      ws.close();
       return;
     }
     connectCdpToTarget(target.id, target.wsUrl, ws, target.requiresSession);

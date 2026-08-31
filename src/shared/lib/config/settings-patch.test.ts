@@ -85,6 +85,24 @@ describe('settingsPatchSchema', () => {
     ).toBe(false)
   })
 
+  it('accepts API log auto-delete including Never (0)', () => {
+    expect(
+      settingsPatchSchema.safeParse({ app: { apiLogAutoDeleteDays: 0 } }).success,
+    ).toBe(true)
+    expect(
+      settingsPatchSchema.safeParse({ app: { apiLogAutoDeleteDays: 60 } }).success,
+    ).toBe(true)
+  })
+
+  it('rejects negative or fractional API log auto-delete', () => {
+    expect(
+      settingsPatchSchema.safeParse({ app: { apiLogAutoDeleteDays: -5 } }).success,
+    ).toBe(false)
+    expect(
+      settingsPatchSchema.safeParse({ app: { apiLogAutoDeleteDays: 3.7 } }).success,
+    ).toBe(false)
+  })
+
   it('accepts null and empty-string clear semantics', () => {
     expect(
       settingsPatchSchema.safeParse({

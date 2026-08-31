@@ -4,6 +4,7 @@ import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { resolveMcpPolicy } from '@shared/lib/proxy/policy-resolver'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
 import { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
+import { isReauthDismissed, reauthDismissalReason, withDismissalReason } from '@shared/lib/proxy/reauth-dismissal'
 import { db } from '@shared/lib/db'
 import {
   remoteMcpServers,
@@ -264,6 +265,38 @@ async function tryRefreshToken(mcp: {
 const mcpProxy = new Hono()
 
 // Catch-all route: /api/mcp-proxy/:agentSlug/:mcpId and optional trailing path
+/**
+ * How each way of failing a parked re-auth is reported to the agent. Split out
+ * of the response builder because three parallel ternaries over the same four
+ * cases is a place for them to drift apart.
+ *
+ * `dismissed` is deliberately a 403, not the 408 the timeout returns: a person
+ * decided this, and a timeout reads to an agent as an invitation to retry.
+ */
+const MCP_REAUTH_FAILURES = {
+  timeout: {
+    statusCode: 408,
+    error: 'mcp_reauth_timeout',
+    message: 'The request timed out while waiting for the MCP server to be reconnected.',
+  },
+  dismissed: {
+    statusCode: 403,
+    error: 'mcp_reauth_dismissed',
+    message: 'A user dismissed the reconnection request, so this call was not made. '
+      + 'Do not retry it until the MCP server is reconnected.',
+  },
+  missing: {
+    statusCode: 404,
+    error: 'mcp_reauth_failed',
+    message: 'The MCP server disappeared while re-authenticating.',
+  },
+  inactive: {
+    statusCode: 502,
+    error: 'mcp_reauth_failed',
+    message: 'The MCP server did not become active after re-authentication.',
+  },
+} as const
+
 mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
   const agentSlug = c.req.param('agentSlug')
   const mcpId = c.req.param('mcpId')
@@ -352,7 +385,8 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
 
   type ReauthResult =
     | { ok: true }
-    | { ok: false; reason: 'timeout' | 'missing' | 'inactive' }
+    // See the account proxy for `dismissReason`.
+    | { ok: false; reason: 'timeout' | 'dismissed' | 'missing' | 'inactive'; dismissReason?: string }
 
   const holdForReauth = async (): Promise<ReauthResult> => {
     try {
@@ -362,7 +396,11 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
         mcpName: mcp!.name,
         authType: mcp!.authType,
       }, c.req.raw.signal)
-    } catch {
+    } catch (error) {
+      // See the account proxy: a dismissal is a decision, not a stalled wait.
+      if (isReauthDismissed(error)) {
+        return { ok: false, reason: 'dismissed', dismissReason: reauthDismissalReason(error) }
+      }
       return { ok: false, reason: 'timeout' }
     }
 
@@ -376,16 +414,9 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
   const reauthFailureResponse = async (
     result: Exclude<ReauthResult, { ok: true }>,
   ) => {
-    const statusCode = result.reason === 'timeout'
-      ? 408
-      : result.reason === 'missing'
-        ? 404
-        : 502
-    const message = result.reason === 'timeout'
-      ? 'The request timed out while waiting for the MCP server to be reconnected.'
-      : result.reason === 'missing'
-        ? 'The MCP server disappeared while re-authenticating.'
-        : 'The MCP server did not become active after re-authentication.'
+    const failure = MCP_REAUTH_FAILURES[result.reason]
+    const { statusCode, error } = failure
+    const message = withDismissalReason(failure.message, result.dismissReason)
 
     await logMcpAuditEntry({
       agentSlug,
@@ -399,11 +430,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
       matchedTool: toolName ?? undefined,
     })
 
-    return c.json({
-      error: result.reason === 'timeout' ? 'mcp_reauth_timeout' : 'mcp_reauth_failed',
-      message,
-      mcpStatus: 'auth_required',
-    }, statusCode)
+    return c.json({ error, message, mcpStatus: 'auth_required' }, statusCode)
   }
 
   const markAuthRequired = async (errorMessage: string) => {

@@ -222,6 +222,30 @@ export function useRemoveAgentConnectedAccount() {
 }
 
 /**
+ * Remove a connection from an agent by LINK id rather than account id — the
+ * only handle an agent owner has for a connection another member shared onto
+ * the agent. Server-gated on owning the agent.
+ */
+export function useRemoveAgentAccountMapping() {
+  const queryClient = useQueryClient()
+
+  return useMutation<void, Error, { agentSlug: string; mappingId: string }>({
+    mutationFn: async ({ agentSlug, mappingId }) => {
+      const res = await apiFetch(
+        `/api/agents/${agentSlug}/connected-accounts/mapping/${mappingId}`,
+        { method: 'DELETE' },
+      )
+      if (!res.ok) throw new Error('Failed to remove the shared connection from this agent')
+      warnIfLiveRefreshFailed(await res.json().catch(() => ({})))
+    },
+    onSuccess: () => {
+      // Bare prefix — see useAssignAccountsToAgent: reaches the id-keyed home card too.
+      queryClient.invalidateQueries({ queryKey: ['agent-connected-accounts'] })
+    },
+  })
+}
+
+/**
  * Hook to fetch agent slugs that have a connected account mapped
  */
 export function useAccountAgents(accountId: string) {

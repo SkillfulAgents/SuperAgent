@@ -88,6 +88,9 @@ const PINNED_CALL_SITES: Record<string, string> = {
     'prebuilt `url` prop; composed by file-preview-tray-content.tsx from getApiBaseUrl()',
   'components/file-preview/renderers/audio-renderer.tsx::AudioRenderer.decodeWaveform::fetch(url)':
     'prebuilt `url` prop; same origin as use-file-content.ts above',
+  'components/file-preview/copy-file-button.tsx::fetchText::fetch(url)':
+    'the same prebuilt `fileUrl` the renderer loads, refetched only when the ' +
+    'file-content cache is cold; same origin as use-file-content.ts above',
   // Not third-party — this one IS our API, reached over ws:// instead of http://.
   'hooks/use-browser-stream.ts::useBrowserStream::WebSocket(wsUrl)':
     'the only site that does scheme surgery: it splits getApiBaseUrl() into a ' +

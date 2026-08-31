@@ -929,7 +929,11 @@ describe('shared-agent connection projections', () => {
       mappingId: 'own-account-mapping',
     })
     expect(body.accounts[0]).not.toHaveProperty('userId')
-    expect(body.accounts[1]).toEqual({ kind: 'connected-account', toolkitSlug: 'slack' })
+    expect(body.accounts[1]).toEqual({
+      kind: 'connected-account',
+      toolkitSlug: 'slack',
+      mappingId: 'victim-account-mapping',
+    })
     expect(JSON.stringify(body)).not.toContain('victim-account-id')
     expect(JSON.stringify(body)).not.toContain('victim-provider-connection')
     expect(JSON.stringify(body)).not.toContain('Victim Workspace')
@@ -954,7 +958,11 @@ describe('shared-agent connection projections', () => {
     const body = await res.json() as { accounts: Array<Record<string, unknown>> }
 
     expect(res.status).toBe(200)
-    expect(body.accounts[1]).toEqual({ kind: 'connected-account', toolkitSlug: 'slack' })
+    expect(body.accounts[1]).toEqual({
+      kind: 'connected-account',
+      toolkitSlug: 'slack',
+      mappingId: 'victim-account-mapping',
+    })
     expect(JSON.stringify(body)).not.toContain('victim-account-id')
     expect(JSON.stringify(body)).not.toContain('victim-provider-connection')
     expect(JSON.stringify(body)).not.toContain('victim-user-id')
@@ -983,7 +991,7 @@ describe('shared-agent connection projections', () => {
     })
     expect(body.mcps[0]).not.toHaveProperty('userId')
     expect(body.mcps[0]).not.toHaveProperty('accessToken')
-    expect(body.mcps[1]).toEqual({ kind: 'remote-mcp' })
+    expect(body.mcps[1]).toEqual({ kind: 'remote-mcp', mappingId: 'victim-mcp-mapping' })
     expect(JSON.stringify(body)).not.toContain('victim-mcp-id')
     expect(JSON.stringify(body)).not.toContain('Victim private MCP')
     expect(JSON.stringify(body)).not.toContain('victim.example.test')
@@ -1379,7 +1387,7 @@ describe('POST /api/agents/import-template', () => {
       slug: 'imported-agent',
       name: 'Imported Agent',
     } as any)
-    vi.mocked(hasOnboardingSkill).mockResolvedValue(false)
+    vi.mocked(hasOnboardingSkill).mockResolvedValue({ hasOnboarding: false })
     vi.mocked(getAgentTemplatePrompt).mockResolvedValue(undefined)
   })
 
@@ -1432,7 +1440,7 @@ describe('POST /api/agents/import-template (chunked)', () => {
       slug: 'imported-agent',
       name: 'Imported Agent',
     } as any)
-    vi.mocked(hasOnboardingSkill).mockResolvedValue(false)
+    vi.mocked(hasOnboardingSkill).mockResolvedValue({ hasOnboarding: false })
     vi.mocked(getAgentTemplatePrompt).mockResolvedValue(undefined)
   })
 
@@ -1485,7 +1493,6 @@ describe('POST /api/agents/import-template (chunked)', () => {
     const assembledPath = '/mock/tmp/uploads/22222222-2222-2222-2222-222222222222.assembled'
     mockStoreUploadChunk.mockResolvedValue({ status: 'assembled', filePath: assembledPath })
     mockFsStat.mockResolvedValue({ size: 10 })
-    mockFsReadFile.mockResolvedValue(Buffer.from('part0part1'))
     mockFsUnlink.mockResolvedValue(undefined)
 
     const form = buildChunkForm({
@@ -1501,8 +1508,9 @@ describe('POST /api/agents/import-template (chunked)', () => {
 
     const body = await res.json()
     expect(body.slug).toBe('imported-agent')
+    // The assembled upload is imported straight from disk, not read into memory.
     expect(importAgentFromTemplate).toHaveBeenCalledWith(
-      Buffer.from('part0part1'),
+      { filePath: assembledPath },
       undefined,
       'full',
     )
@@ -1513,7 +1521,6 @@ describe('POST /api/agents/import-template (chunked)', () => {
     const assembledPath = '/mock/tmp/uploads/33333333-3333-3333-3333-333333333333.assembled'
     mockStoreUploadChunk.mockResolvedValue({ status: 'assembled', filePath: assembledPath })
     mockFsStat.mockResolvedValue({ size: 7 })
-    mockFsReadFile.mockResolvedValue(Buffer.from('zipdata'))
     mockFsUnlink.mockResolvedValue(undefined)
 
     const form = buildChunkForm({
@@ -1528,7 +1535,7 @@ describe('POST /api/agents/import-template (chunked)', () => {
     const res = await postFormData(app, '/api/agents/import-template', form)
     expect(res.status).toBe(201)
     expect(importAgentFromTemplate).toHaveBeenCalledWith(
-      expect.any(Buffer),
+      { filePath: assembledPath },
       'My Agent',
       'template',
     )
@@ -1612,7 +1619,6 @@ describe('POST /api/agents/import-template (chunked)', () => {
         filePath: `/mock/tmp/uploads/${uploadId}.assembled`,
       })
     mockFsStat.mockResolvedValue({ size: 12 })
-    mockFsReadFile.mockResolvedValue(Buffer.from('new-datapart1'))
     mockFsUnlink.mockResolvedValue(undefined)
 
     const form1 = buildChunkForm({ chunk: 'old-data', uploadId, chunkIndex: 0, totalChunks: 2 })
@@ -1624,7 +1630,7 @@ describe('POST /api/agents/import-template (chunked)', () => {
     const res2 = await postFormData(app, '/api/agents/import-template', form2)
     expect(res2.status).toBe(201)
     expect(importAgentFromTemplate).toHaveBeenCalledWith(
-      Buffer.from('new-datapart1'),
+      { filePath: `/mock/tmp/uploads/${uploadId}.assembled` },
       undefined,
       'template',
     )
@@ -2193,6 +2199,17 @@ describe('path traversal security — GET /:id/files/*', () => {
 
     const res = await getReq(app, '/api/agents/test-agent/files/a/b/c/d/e/file.txt')
     expect(res.status).not.toBe(400)
+  })
+
+  it('marks workspace files uncacheable so a CDN cannot serve a stale or cross-user body', async () => {
+    mockFsStat.mockResolvedValueOnce({ isFile: () => true, size: 100 })
+    mockCreateReadStream.mockReturnValueOnce({ pipe: vi.fn() })
+
+    const res = await getReq(app, '/api/agents/test-agent/files/out/render.mp4?inline=true')
+
+    // Without this, Cloudflare applies its own extension-based default TTL and
+    // serves the previous render of a file the agent has since rewritten.
+    expect(res.headers.get('cache-control')).toBe('private, no-store, max-age=0')
   })
 
   it('rejects a workspace symlink whose real path escapes the workspace', async () => {
@@ -7319,7 +7336,9 @@ describe('GET /:id/artifacts/:slug/screenshot.png', () => {
     const res = await getReq(app, '/api/agents/my-agent/artifacts/my-dash/screenshot.png')
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toBe('image/png')
-    expect(res.headers.get('cache-control')).toContain('max-age=60')
+    // Brief freshness, but private: a shared cache holding this authorized .png
+    // would serve one agent's dashboard thumbnail to anyone with the URL.
+    expect(res.headers.get('cache-control')).toBe('private, max-age=60, must-revalidate')
 
     // Read path should be rooted at the agent workspace/artifacts/<slug>.
     const readPath = mockFsReadFile.mock.calls[0][0] as string

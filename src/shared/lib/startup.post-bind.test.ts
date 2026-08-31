@@ -100,6 +100,9 @@ vi.mock('./scheduler/auto-sleep-monitor', () => ({
 vi.mock('./scheduler/session-auto-delete-monitor', () => ({
   sessionAutoDeleteMonitor: { start: () => Promise.resolve(), stop: vi.fn() },
 }))
+vi.mock('./scheduler/api-log-auto-delete-monitor', () => ({
+  apiLogAutoDeleteMonitor: { start: () => Promise.resolve(), stop: vi.fn() },
+}))
 vi.mock('./scheduler/account-sync-service', () => ({
   accountSyncService: { start: () => Promise.resolve(), stop: vi.fn() },
 }))

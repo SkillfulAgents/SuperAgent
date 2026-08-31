@@ -174,10 +174,8 @@ export function buildAutomationActivityStats(
   return { cronByTaskId, webhookByTriggerId }
 }
 
-// Audit tables grow with every proxied call and have no time-based retention,
-// so the per-day/outcome rollup happens in SQL — the app only ever
-// materializes at most (connections × days × 2) aggregate rows, never the raw
-// request log.
+// Audit tables are pruned by auto-delete, but the per-day/outcome rollup still
+// happens in SQL so the app never materializes the raw request log.
 function auditDayExpr(createdAt: SQLiteColumn, tzOffsetMinutes: number): SQL<string> {
   return sql<string>`date((${createdAt} / 1000) - ${tzOffsetMinutes * 60}, 'unixepoch')`
 }

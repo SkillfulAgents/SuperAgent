@@ -8,6 +8,7 @@ const mockInitiateOAuth = vi.fn()
 const mockApiFetch = vi.fn()
 const mockNavigate = vi.fn()
 const mockClose = vi.fn()
+const mockDismiss = vi.fn()
 let oauthComplete: ((result: { success: boolean; error?: string }) => void) | null = null
 let mockCanManage = true
 
@@ -28,6 +29,10 @@ vi.mock('@renderer/lib/api', () => ({
 
 vi.mock('@renderer/lib/oauth-popup', () => ({
   prepareOAuthPopup: () => ({ navigate: mockNavigate, close: mockClose }),
+}))
+
+vi.mock('@renderer/lib/reauth-dismiss', () => ({
+  dismissReauthRequest: (...args: unknown[]) => mockDismiss(...args),
 }))
 
 function renderItem(overrides: Partial<React.ComponentProps<typeof McpReauthRequestItem>> = {}) {
@@ -52,6 +57,7 @@ function renderItem(overrides: Partial<React.ComponentProps<typeof McpReauthRequ
 describe('McpReauthRequestItem', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockDismiss.mockResolvedValue(undefined)
     oauthComplete = null
     mockCanManage = true
   })
@@ -99,14 +105,41 @@ describe('McpReauthRequestItem', () => {
     renderItem({ readOnly: true })
 
     expect(screen.queryByTestId('mcp-reauth-reconnect-btn')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('mcp-reauth-dismiss-btn')).not.toBeInTheDocument()
     expect(screen.getByText('Waiting for reconnection')).toBeInTheDocument()
   })
 
-  it('shows a non-actionable card to a member who cannot manage the MCP', () => {
+  it('offers a member who cannot manage the MCP a way out instead of reconnect', () => {
     mockCanManage = false
     renderItem()
 
     expect(screen.queryByTestId('mcp-reauth-reconnect-btn')).not.toBeInTheDocument()
+    expect(screen.getByTestId('mcp-reauth-dismiss-btn')).toBeInTheDocument()
     expect(screen.getByText(/Only the connection owner or an administrator/)).toBeInTheDocument()
+  })
+
+  it('dismisses the parked request and closes the card', async () => {
+    mockCanManage = false
+    const props = renderItem()
+
+    fireEvent.click(screen.getByTestId('mcp-reauth-dismiss-btn'))
+
+    await waitFor(() => expect(mockDismiss).toHaveBeenCalledWith({
+      agentSlug: 'agent-1',
+      requestId: 'proxy-1',
+      reason: undefined,
+    }))
+    await waitFor(() => expect(props.onComplete).toHaveBeenCalledOnce())
+  })
+
+  it('keeps the card open when the dismissal fails', async () => {
+    mockCanManage = false
+    mockDismiss.mockRejectedValue(new Error('Request not found'))
+    const props = renderItem()
+
+    fireEvent.click(screen.getByTestId('mcp-reauth-dismiss-btn'))
+
+    expect(await screen.findByText(/Request not found/)).toBeInTheDocument()
+    expect(props.onComplete).not.toHaveBeenCalled()
   })
 })

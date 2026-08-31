@@ -10,6 +10,7 @@ vi.mock('@shared/lib/container/message-persister', () => ({
 
 import { MCP_REAUTH_TIMEOUT_MS, McpReauthManager } from './mcp-reauth-manager'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { isReauthDismissed } from './reauth-dismissal'
 
 const DETAILS = {
   agentSlug: 'agent-1',
@@ -110,5 +111,30 @@ describe('McpReauthManager', () => {
 
     await rejection
     expect(userInputRequestManager.getOpenRequestsForStore('review')).toHaveLength(0)
+  })
+
+  it('clears the card and the parked request when a user dismisses it', async () => {
+    const promise = manager.requestReauth(DETAILS)
+    const [request] = userInputRequestManager.getAgentScopedRequests('agent-1')
+    const rejection = promise.catch((error: unknown) => error)
+
+    expect(manager.dismiss(request.id, 'agent-1', 'not my server')).toBe(true)
+
+    const error = await rejection
+    expect(isReauthDismissed(error)).toBe(true)
+    expect((error as Error).message).toContain('not my server')
+    expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(0)
+    expect(userInputRequestManager.stats.recentResolutions.at(-1)?.outcome).toBe('cancelled')
+  })
+
+  it('refuses a dismissal aimed at another agent', async () => {
+    const promise = manager.requestReauth(DETAILS)
+    const [request] = userInputRequestManager.getAgentScopedRequests('agent-1')
+
+    expect(manager.dismiss(request.id, 'agent-2')).toBe(false)
+    expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(1)
+
+    manager.completeMcp('mcp-1')
+    await expect(promise).resolves.toBeUndefined()
   })
 })

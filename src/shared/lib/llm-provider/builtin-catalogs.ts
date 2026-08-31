@@ -624,9 +624,32 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     supportsImageInput: true,
   },
   ...MUSE_SPARK_MODELS,
+  {
+    // Bare id matches the platform proxy's glm-5.3-flash → cloudflare route.
+    id: 'glm-5.3-flash',
+    label: 'GLM-5.3 Flash',
+    blurb: 'Z.AI GLM, served via Platform',
+    family: 'glm',
+    isLatest: true,
+    isDefault: true,
+    icon: 'zai',
+    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportsWebSearch: false,
+    supportsWebFetch: false,
+    supportsImageInput: true,
+    contextWindow: 1_048_576,
+    // Cloudflare Workers AI list rates (2026-08-26). Cache write is unpublished,
+    // so cacheCreation mirrors input — same convention as Fireworks/Meta.
+    pricing: {
+      inputPerMtok: 0.15,
+      outputPerMtok: 0.5,
+      cacheCreationPerMtok: 0.15,
+      cacheReadPerMtok: 0.03,
+    },
+  },
 ]
 
-/** Platform — bare Claude models plus the GPT/Grok models the proxy serves. */
+/** Platform — bare Claude models plus the GPT/Grok/Kimi/Muse/GLM models the proxy serves. */
 export const PLATFORM_CATALOG: ModelDefinition[] = [
   ...withPlatformClaudeSpeeds(CLAUDE_BARE_CATALOG),
   ...PLATFORM_EXTRA_MODELS,

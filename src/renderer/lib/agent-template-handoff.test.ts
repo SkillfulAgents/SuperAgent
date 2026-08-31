@@ -45,6 +45,21 @@ describe('completeAgentTemplateHandoff', () => {
     })
 
     expect(order).toEqual(['open', 'onboarding'])
-    expect(startOnboardingSession).toHaveBeenCalledWith('new-agent')
+    expect(startOnboardingSession).toHaveBeenCalledWith('new-agent', undefined)
+  })
+
+  it('passes the onboarding first_prompt through when starting the session', async () => {
+    const startOnboardingSession = vi.fn()
+
+    await completeAgentTemplateHandoff({
+      draftsStore: { set: vi.fn() as Pick<DraftsStore, 'set'>['set'] },
+      agentSlug: 'new-agent',
+      hasOnboarding: true,
+      onboardingFirstPrompt: 'Walk me through HubSpot',
+      openAgent: vi.fn(),
+      startOnboardingSession,
+    })
+
+    expect(startOnboardingSession).toHaveBeenCalledWith('new-agent', 'Walk me through HubSpot')
   })
 })

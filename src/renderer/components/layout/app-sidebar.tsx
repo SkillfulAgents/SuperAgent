@@ -1,5 +1,5 @@
 
-import { Bell, ChevronDown, ChevronLeft, ChevronRight, Plus, Search, Settings, AlertTriangle, LayoutGrid, SquareMousePointer, LogOut, User, Users, Compass, MoonStar } from 'lucide-react'
+import { Bell, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, Plus, Search, Settings, AlertTriangle, LayoutGrid, SquareMousePointer, LogOut, User, Users, Compass, MoonStar } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { toast } from 'sonner'
 import { cn } from '@shared/lib/utils/cn'
@@ -8,6 +8,9 @@ import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { AppLink } from '@renderer/components/ui/app-link'
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
+import { openExternalUrl } from '@renderer/lib/open-external'
+import { targetIsRemote } from '@renderer/lib/api-target'
+import { resolveSidebarVersionState } from '@renderer/components/layout/sidebar-version-state'
 import { TargetSwitcher } from '@renderer/components/layout/target-switcher'
 import { useTargetSwitch } from '@renderer/hooks/use-target-switch'
 import { hasInteractiveLogin } from '@renderer/lib/auth-mode'
@@ -52,6 +55,7 @@ import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
+import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
@@ -125,9 +129,28 @@ import { useRenderTracker } from '@renderer/lib/perf'
 import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
 import { useSkillsets } from '@renderer/hooks/use-skillsets'
 import { useRememberedFlag } from '@renderer/hooks/use-remembered-flag'
+import { useSidebarFileDrop } from './use-sidebar-file-drop'
 
 /** Set once Explore has been opened, which retires its "New" badge. */
 const EXPLORE_SEEN_KEY = 'explore.seen'
+
+function VersionBehindDot({
+  wayBehind,
+  label,
+}: {
+  wayBehind: boolean
+  label: string
+}) {
+  return (
+    <span
+      className={cn(
+        'ml-0.5 h-1.5 w-1.5 rounded-full',
+        wayBehind ? 'bg-orange-500' : 'bg-blue-500',
+      )}
+      aria-label={label}
+    />
+  )
+}
 
 // 4px-wide thin scrollbar with a muted-foreground/20 thumb. Reused on the
 // agents-list group; pull out as a constant so the call site stays readable.
@@ -145,6 +168,8 @@ const THIN_SCROLLBAR =
 // toggle with inline options, ~0 with these hoisted.
 const POINTER_SENSOR_OPTIONS = { activationConstraint: { distance: 5 } }
 const KEYBOARD_SENSOR_OPTIONS = { coordinateGetter: sortableKeyboardCoordinates }
+const SIDEBAR_FILE_DROP_CUE =
+  'data-[file-drop-active]:bg-sidebar-accent data-[file-drop-active]:ring-1 data-[file-drop-active]:ring-sidebar-ring'
 
 /** The user-settings fields that together describe the left-nav tree. */
 type AgentTreeSettings = ReturnType<typeof sectionsToSettings>
@@ -178,9 +203,20 @@ function SessionSubItem({
   // redundant — the session clearly isn't asleep).
   const showPendingWake = !!session.pendingWakeAt && !isWorking && !isAwaitingInput
   const { ref: hintRef, hint } = useCmdHintTarget()
+  const dragHandlers = useSidebarFileDrop({
+    kind: 'session',
+    agentSlug,
+    sessionId: session.id,
+    // No composer is mounted behind a pending request, so a drop would be
+    // swallowed and then resurface once the request is answered.
+    disabled: isAwaitingInput,
+  })
 
   return (
-    <SidebarMenuSubItem>
+    <SidebarMenuSubItem
+      {...dragHandlers}
+      className={cn('rounded-md', SIDEBAR_FILE_DROP_CUE)}
+    >
       <SessionContextMenu
         sessionId={session.id}
         sessionName={session.name}
@@ -507,6 +543,11 @@ const AgentMenuItemInner = React.forwardRef<
   }
 
   const { ref: hintRef, hint } = useCmdHintTarget()
+  const dragHandlers = useSidebarFileDrop({
+    kind: 'agent',
+    agentSlug: agent.slug,
+    displaySlug: agent.displaySlug,
+  })
 
   return (
     <Collapsible asChild open={isOpen && !isDragActive} onOpenChange={setIsOpen}>
@@ -516,7 +557,10 @@ const AgentMenuItemInner = React.forwardRef<
           chevron tracks the row height, not the (potentially expanded) menu
           item that also contains CollapsibleContent below.
         */}
-        <div className="relative">
+        <div
+          className={cn('relative rounded-md', SIDEBAR_FILE_DROP_CUE)}
+          {...dragHandlers}
+        >
           <AgentContextMenu agent={agent}>
             <SidebarMenuButton
               asChild
@@ -823,6 +867,14 @@ export function AppSidebar() {
   const { data: userSettings } = useUserSettings()
   const updateSettings = useUpdateUserSettings()
   const { data: runtimeStatus } = useRuntimeStatus()
+  const { data: platformAuth } = usePlatformAuthStatus()
+  const isCloud = targetIsRemote()
+  const desktopVersion = __APP_VERSION__
+  const versionState = resolveSidebarVersionState({
+    desktopVersion,
+    cloudVersion: isCloud ? runtimeStatus?.appVersion : undefined,
+    feedVersion: updateAvailable ? updateStatus.version : undefined,
+  })
   const isFullScreen = useFullScreen()
 
   // macOS fires `enter-full-screen` only after its ~700ms zoom animation completes;
@@ -1362,13 +1414,10 @@ export function AppSidebar() {
         animates shut.
       */}
       <SidebarHeader
-        className="app-drag-region h-12 shrink-0 p-0 overflow-hidden transition-[padding-left] duration-200 ease-out"
+        className="app-drag-region h-12 shrink-0 p-0 transition-[padding-left] duration-200 ease-out"
         style={{ paddingLeft: needsTrafficLightPadding ? '80px' : undefined }}
       >
-        {/* `overflow-hidden` is load-bearing: hovering the target switcher
-            expands it in place, which pushes the buttons after it past the right
-            edge rather than squeezing them. */}
-        <div className="flex items-center h-12 px-2 gap-1 overflow-hidden">
+        <div className="flex items-center h-12 px-2 gap-1">
           {__WEB__ && (
             <span className="shrink-0 select-none text-base font-medium">Gamut</span>
           )}
@@ -1614,18 +1663,69 @@ export function AppSidebar() {
             <Settings className="h-4 w-4" />
             <span>Settings</span>
           </SidebarMenuButton>
-          <button
-            type="button"
-            onClick={() => openSettings('general')}
-            className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground shrink-0 hover:text-foreground"
-            title={updateAvailable ? `Update available: v${updateStatus.version}` : undefined}
-            data-testid="sidebar-version"
-          >
-            {updateAvailable && (
-              <span className="h-2 w-2 rounded-full bg-blue-500" aria-label="Update available" />
-            )}
-            <span>v{__APP_VERSION__}</span>
-          </button>
+          {isCloud && versionState.showPair && versionState.cloudVersion ? (
+            <div
+              className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground shrink-0"
+              data-testid="sidebar-version"
+            >
+              <button
+                type="button"
+                onClick={() => openSettings('general')}
+                className="inline-flex items-center gap-0.5 hover:text-foreground"
+                title={`Desktop v${versionState.desktopVersion}`}
+                data-testid="sidebar-version-desktop"
+              >
+                <Laptop className="mr-0.5 size-3" aria-hidden="true" />
+                {versionState.desktopVersion}
+                {versionState.desktopBehind && (
+                  <VersionBehindDot
+                    wayBehind={versionState.desktopWayBehind}
+                    label="Desktop update available"
+                  />
+                )}
+              </button>
+              <span className="h-2.5 w-px bg-current opacity-60" aria-hidden="true" />
+              <button
+                type="button"
+                onClick={() => {
+                  const base = platformAuth?.platformBaseUrl
+                  const orgId = platformAuth?.orgId
+                  if (!base || !orgId) return
+                  void openExternalUrl(
+                    `${base}/dashboard/organizations/${orgId}?tab=cloud`,
+                  )
+                }}
+                className="inline-flex items-center gap-0.5 hover:text-foreground"
+                title={`Cloud v${versionState.cloudVersion}`}
+                data-testid="sidebar-version-cloud"
+              >
+                <Cloud className="mr-0.5 size-3" aria-hidden="true" />
+                {versionState.cloudVersion}
+                {versionState.cloudBehind && (
+                  <VersionBehindDot
+                    wayBehind={versionState.cloudWayBehind}
+                    label="Cloud update available"
+                  />
+                )}
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => openSettings('general')}
+              className="inline-flex items-center gap-1.5 px-2 text-xs text-muted-foreground shrink-0 hover:text-foreground"
+              title={updateAvailable ? `${isCloud ? 'Desktop update available' : 'Update available'}: v${updateStatus.version}` : undefined}
+              data-testid="sidebar-version"
+            >
+              <span>{versionState.cloudVersion ?? desktopVersion}</span>
+              {updateAvailable && (
+                <span
+                  className="h-1.5 w-1.5 rounded-full bg-blue-500"
+                  aria-label={isCloud ? 'Desktop update available' : 'Update available'}
+                />
+              )}
+            </button>
+          )}
         </div>
       </SidebarFooter>
 
