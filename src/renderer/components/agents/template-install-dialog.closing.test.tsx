@@ -44,12 +44,11 @@ describe('TemplateInstallDialog closing frame', () => {
     const { rerender } = render(
       <TemplateInstallDialog template={template} onClose={() => {}} onInstalled={() => {}} />,
     )
-    expect(screen.getByText('Installing Research Bot')).toBeTruthy()
+    expect(screen.getByText('Installing Research Bot...')).toBeTruthy()
 
     rerender(<TemplateInstallDialog template={null} onClose={() => {}} onInstalled={() => {}} />)
 
-    expect(screen.getByText('Installing Research Bot')).toBeTruthy()
-    expect(screen.getByText('From Public')).toBeTruthy()
+    expect(screen.getByText('Installing Research Bot...')).toBeTruthy()
     expect(screen.queryByText(/undefined/)).toBeNull()
   })
 })

@@ -29,10 +29,14 @@ const DialogContent = React.forwardRef<
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & {
     /** Omit the top-right X close button (e.g. when the dialog has its own Cancel). */
     hideClose?: boolean
+    /** Extra classes for the backdrop overlay (e.g. a backdrop blur). */
+    overlayClassName?: string
+    /** Inline style for the backdrop overlay (e.g. animation pacing). */
+    overlayStyle?: React.CSSProperties
   }
->(({ className, children, onKeyDown, hideClose, ...props }, ref) => (
+>(({ className, children, onKeyDown, hideClose, overlayClassName, overlayStyle, ...props }, ref) => (
   <DialogPortal>
-    <DialogOverlay />
+    <DialogOverlay className={overlayClassName} style={overlayStyle} />
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
