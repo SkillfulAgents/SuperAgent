@@ -296,10 +296,13 @@ test.describe('Auth Flow', () => {
     const removeItem = user2Page.locator(`[data-testid="access-remove-${userId}"]`)
     await expect(removeItem).toBeVisible()
     await expect(removeItem).toHaveAttribute('data-disabled', '')
-    // First Escape closes the dropdown, closeSettings' Escape closes the popover
-    await user2Page.keyboard.press('Escape')
-
-    await accessPage.closeSettings()
+    // Close the dropdown by re-selecting the current role (a no-op), then
+    // dismiss the popover by clicking outside — Escape gets eaten by the
+    // last-owner tooltip, which reopens whenever the trigger holds focus
+    await user2Page.getByRole('option', { name: 'Owner' }).click()
+    await expect(removeItem).not.toBeVisible()
+    await user2Page.mouse.click(10, 10)
+    await expect(user2Page.locator('[data-testid="agent-share-popover"]')).not.toBeVisible()
   })
 
   test('user2 changes user3 to viewer role', async ({ user2Page }) => {
