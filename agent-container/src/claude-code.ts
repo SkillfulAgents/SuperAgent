@@ -56,6 +56,7 @@ import {
 import { createCapabilityGateHook, CAPABILITY_REVIEW_HOOK_TIMEOUT_S } from './capability-gate-hook';
 import {
   buildModelSubagentDefinitions,
+  type ModelContextWindows,
   type SubagentModelDefinition,
 } from './subagent-model-catalog';
 import { mergeCanonicalSlashCommands } from './slash-commands';
@@ -447,6 +448,7 @@ export interface ClaudeCodeProcessOptions {
   browserModel?: string;
   dashboardBuilderModel?: string;
   subagentModels?: SubagentModelDefinition[];
+  modelContextWindows?: ModelContextWindows;
   webSearchProvider?: string;
   webFetchProvider?: string;
   maxOutputTokens?: number;
@@ -472,6 +474,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   private browserModel: string | undefined;
   private dashboardBuilderModel: string | undefined;
   private subagentModels: SubagentModelDefinition[];
+  private modelContextWindows: ModelContextWindows;
   private webSearchProvider: string | undefined;
   private webFetchProvider: string | undefined;
   private maxOutputTokens: number | undefined;
@@ -551,6 +554,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.browserModel = options.browserModel;
     this.dashboardBuilderModel = options.dashboardBuilderModel;
     this.subagentModels = options.subagentModels ?? [];
+    this.modelContextWindows = options.modelContextWindows ?? {};
     this.webSearchProvider = options.webSearchProvider;
     this.webFetchProvider = options.webFetchProvider;
     this.maxOutputTokens = options.maxOutputTokens;
@@ -731,6 +735,10 @@ export class ClaudeCodeProcess extends EventEmitter {
     return this.warmHandle !== null;
   }
 
+  private contextWindowForModel(model: string | undefined): number | undefined {
+    return model ? this.modelContextWindows[model] : undefined;
+  }
+
   private buildQueryOptions(): Options {
     const remoteMcpConfigs = this.buildRemoteMcpServers();
     const remoteMcpToolPatterns = Object.keys(remoteMcpConfigs).map(name => `mcp__${name}__*`);
@@ -831,6 +839,15 @@ export class ClaudeCodeProcess extends EventEmitter {
         CLAUDE_CODE_ENABLE_TODO_TOOLS: 'true',
         // Explicit maxOutputTokens setting takes precedence over custom env var
         ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
+        // Tell the SDK the real context window for non-Claude models (it
+        // assumes 200k for unknown ids and auto-compacts against that — 40% of
+        // grok's 500k, 19% of gpt-5.x's 1.05M). The SDK only honors this env
+        // var for non-claude-* models, so it never affects Claude sessions. A
+        // user-set custom env var (spread above) deliberately wins.
+        ...(this.contextWindowForModel(this.model) &&
+          !this.customEnvVars?.CLAUDE_CODE_MAX_CONTEXT_TOKENS && {
+            CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(this.contextWindowForModel(this.model)),
+          }),
       }), this.speed),
       mcpServers: {
         'user-input': createUserInputMcpServer(() => this),
@@ -1331,6 +1348,11 @@ export class ClaudeCodeProcess extends EventEmitter {
     // compare ids directly. Switching between two pinned versions of a family
     // (e.g. opus-4-6 -> opus-4-7) is now a real, intentional switch.
     const modelChanged = model !== undefined && model !== this.model;
+    // CLAUDE_CODE_MAX_CONTEXT_TOKENS is baked into the query env, so a switch
+    // that changes the catalog window (e.g. claude → grok) can't use dynamic
+    // setModel — the new model would run against the old window.
+    const contextWindowChanged =
+      modelChanged && this.contextWindowForModel(model) !== this.contextWindowForModel(this.model);
 
     // Capability policies follow the host's CURRENT settings, refreshed on
     // every message so a long-lived session tracks settings changes. Review
@@ -1377,7 +1399,8 @@ export class ClaudeCodeProcess extends EventEmitter {
       effortChanged ||
       speedChanged ||
       capabilityBlockChanged ||
-      runtimeConnectionConfigChanged
+      runtimeConnectionConfigChanged ||
+      contextWindowChanged
     ) {
       // Effort can only be set at query creation time — the SDK has no setEffort
       // facility — so any effort change forces an interrupt + re-query. Speed
@@ -1390,6 +1413,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       if (speedChanged) reasons.push(`speed ${currentSpeed} -> ${speed}`);
       if (capabilityBlockChanged) reasons.push('capability block boundary changed');
       if (runtimeConnectionConfigChanged) reasons.push('runtime connection configuration changed');
+      if (contextWindowChanged) reasons.push('model context window changed');
       if (modelChanged) reasons.push(`model -> ${this.model}`);
       console.log(`[Session ${this.sessionId}] Restarting query (${reasons.join(', ')})`);
       await this.interrupt();

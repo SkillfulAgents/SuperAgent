@@ -145,6 +145,21 @@ export function getModelContextWindow(
   return getModelDefinition(id, providerId)?.contextWindow
 }
 
+/**
+ * Model id → catalog context window for every entry that declares one.
+ * Sent to the agent container so the Claude Agent SDK can be told the real
+ * window for non-Claude models (it otherwise assumes a 200k default).
+ */
+export function getModelContextWindowMap(
+  providerId: LlmProviderId,
+): Record<string, number> {
+  return Object.fromEntries(
+    getEffectiveCatalog(providerId)
+      .filter(model => model.contextWindow !== undefined)
+      .map(model => [model.id, model.contextWindow as number]),
+  )
+}
+
 /** Static catalog prompt hints for a model, or an empty list if unset. */
 export function getModelPromptHints(
   id: string,

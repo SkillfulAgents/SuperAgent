@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
-import { subagentModelCatalogSchema } from './subagent-model-catalog';
+import { modelContextWindowsSchema, subagentModelCatalogSchema } from './subagent-model-catalog';
 
 export const sessionMetadataSchema = z
   .object({
@@ -16,6 +16,7 @@ export const sessionMetadataSchema = z
     browserModel: z.string().optional(),
     dashboardBuilderModel: z.string().optional(),
     subagentModels: subagentModelCatalogSchema,
+    modelContextWindows: modelContextWindowsSchema,
     webSearchProvider: z.string().optional(),
     webFetchProvider: z.string().optional(),
     maxOutputTokens: z.number().optional(),
