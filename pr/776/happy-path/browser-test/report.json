@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser use feature test: Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it back in the chat.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully showing SuperAgent interface with sidebar containing two agents including \"QA-20260831-200444-o5vk\"",
+    "Clicked on the \"QA-20260831-200444-o5vk\" agent in the sidebar — Agent page opened successfully, showing chat interface with message input field and configuration panels",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the message input field — Message appeared in the input field, Send button became enabled",
+    "Clicked Send button to submit the message — Message sent successfully, agent status changed to \"working\", page URL changed to include session ID, and agent began executing browser tools",
+    "Waited for agent to complete response (up to 3 minutes) — Agent finished working after approximately 14 seconds, executing 4 tool calls (Open Browser, Get State, Close Browser) and consuming 191,263 tokens",
+    "Verified response contains \"Example Domain\" — Response displays: \"The page title is \"Example Domain\" — a placeholder page stating the domain is for use in documentation examples. Browser closed.\" confirming successful navigation, title retrieval, and browser closure"
+  ],
+  "bugs": [],
+  "durationMs": 114934,
+  "sessionId": "ae257bca-ac7f-4dda-9b20-acc0f9e1982b",
+  "cost": {
+    "inputTokens": 524,
+    "outputTokens": 14796,
+    "cacheCreationTokens": 147116,
+    "cacheReadTokens": 1716001,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.429999
+  }
+}
