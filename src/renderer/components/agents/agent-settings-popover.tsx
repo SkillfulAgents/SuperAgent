@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { Copy, FolderOpen, MoreVertical, Pencil, Timer, Trash2 } from 'lucide-react'
+import { Copy, FileClock, FolderOpen, MoreVertical, Pencil, Timer, Trash2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import {
@@ -13,6 +13,7 @@ import {
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
 import { AgentAutoDeleteSelect } from '@renderer/components/settings/auto-delete-select'
+import { AgentApiLogAutoDeleteSelect } from '@renderer/components/settings/api-log-auto-delete-select'
 import { DeleteAgentConfirmDialog } from '@renderer/components/agents/delete-agent-confirm-dialog'
 import { type ApiAgent } from '@renderer/hooks/use-agents'
 import { useAgentPreferences, useUpdateAgentPreferences } from '@renderer/hooks/use-agent-preferences'
@@ -137,6 +138,20 @@ export function AgentSettingsPopover({ agent, onRename }: AgentSettingsPopoverPr
               appDefault={settings?.app?.autoDeleteInactiveDays}
               onChange={(days) => {
                 updatePrefs.mutate({ autoDeleteInactiveDays: days })
+              }}
+              triggerClassName="h-8 w-auto shrink-0 gap-1 border-none bg-transparent px-1.5 text-sm text-muted-foreground shadow-none hover:text-foreground focus:ring-0 focus-visible:ring-1 focus-visible:ring-ring"
+            />
+          </div>
+
+          {/* Per-agent override for API and MCP request log retention */}
+          <div className="flex items-center gap-2 px-2 py-1.5">
+            <FileClock className="h-4 w-4 shrink-0" />
+            <p className="min-w-0 flex-1 text-sm">API Log Auto-Delete</p>
+            <AgentApiLogAutoDeleteSelect
+              value={agentPrefs?.apiLogAutoDeleteDays}
+              appDefault={settings?.app?.apiLogAutoDeleteDays}
+              onChange={(days) => {
+                updatePrefs.mutate({ apiLogAutoDeleteDays: days })
               }}
               triggerClassName="h-8 w-auto shrink-0 gap-1 border-none bg-transparent px-1.5 text-sm text-muted-foreground shadow-none hover:text-foreground focus:ring-0 focus-visible:ring-1 focus-visible:ring-ring"
             />
