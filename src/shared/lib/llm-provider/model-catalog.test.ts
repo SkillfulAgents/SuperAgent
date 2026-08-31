@@ -251,7 +251,7 @@ describe('getProviderCatalog', () => {
       supportedSpeeds: ['normal', 'fast'],
       pricing: { inputPerMtok: 3, outputPerMtok: 15, speedMultipliers: { fast: 1.5 } },
     })
-    // Cloudflare Workers AI via the platform proxy. Bare id only.
+    // Fireworks via the platform proxy. Bare id only.
     expect(catalog.find((m) => m.id === 'glm-5.3-flash')).toMatchObject({
       family: 'glm',
       isLatest: true,
@@ -260,7 +260,7 @@ describe('getProviderCatalog', () => {
       supportsWebFetch: false,
       supportsImageInput: true,
       contextWindow: 1_048_576,
-      pricing: { inputPerMtok: 0.15, outputPerMtok: 0.5, cacheReadPerMtok: 0.03 },
+      pricing: { inputPerMtok: 0.15, outputPerMtok: 0.5, cacheReadPerMtok: 0.029 },
     })
     // Platform keys off bare ids, never the OpenRouter vendor-prefixed slugs.
     expect(catalog.some((m) => m.id === 'openai/gpt-5.5')).toBe(false)

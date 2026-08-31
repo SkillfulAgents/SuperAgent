@@ -1285,7 +1285,7 @@ describe('usage-service', () => {
       expect(await costOf('kimi-k3', { speed: 'slow' }, 'platform')).toBeCloseTo(kimiBase, 9)
     })
 
-    it('bills platform GLM-5.3 Flash at Cloudflare list rates with no speed tier', async () => {
+    it('bills platform GLM-5.3 Flash at Fireworks list rates with no speed tier', async () => {
       const glmBase = (100_000 * 0.15 + 1_000 * 0.5) / 1_000_000
       expect(await costOf('glm-5.3-flash', {}, 'platform')).toBeCloseTo(glmBase, 9)
       expect(await costOf('glm-5.3-flash', { speed: 'fast' }, 'platform')).toBeCloseTo(glmBase, 9)
