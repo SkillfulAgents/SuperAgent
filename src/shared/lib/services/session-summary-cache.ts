@@ -149,15 +149,3 @@ export function applyActivity(entry: SessionActivityEntry, activityAtMs: number)
   entry.mtimeMs = Math.max(entry.mtimeMs, activityAtMs)
   entry.size = Math.max(entry.size, 1)
 }
-
-export function removeSessionFromSummaryCache(agentSlug: string, sessionId: string): void {
-  const slot = sessionSummaryCache.get(getAgentSessionsDir(agentSlug))
-  if (!slot) return
-  slot.value?.activityBySession.delete(sessionId)
-  // A build in flight may have stat'd the file before the unlink; mark it so
-  // the fold-in drops it. Otherwise drop any parked write for it: the next
-  // rebuild will not see the file, and a parked write must not resurrect it
-  // (it never could — pending never creates — but it must not linger either).
-  if (slot.loading) slot.pending.set(sessionId, { deleted: true })
-  else slot.pending.delete(sessionId)
-}

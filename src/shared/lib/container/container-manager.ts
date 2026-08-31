@@ -124,10 +124,10 @@ class ContainerManager {
       takeCoalescedUserMessages: (id) => messagePersister.takeCoalescedUserMessages(agentId, id),
       isSessionRecovering: (id) => messagePersister.isSessionRecovering(agentId, id),
       isSubscribed: (id) => messagePersister.isSubscribed(agentId, id),
-      subscribeToSession: (sessionId, client, containerSessionId, agentSlug) =>
-        // Recovery only ever resubscribes THIS agent's sessions; the deps
-        // interface still carries the slug, and it must agree with agentId.
-        messagePersister.subscribeToSession(agentSlug ?? agentId, sessionId, client, containerSessionId),
+      subscribeToSession: (sessionId, client, containerSessionId) =>
+        // Recovery only ever resubscribes THIS agent's sessions, so the slug is
+        // agentId — never a value the caller could disagree with.
+        messagePersister.subscribeToSession(agentId, sessionId, client, containerSessionId),
       restrictToSessionIds,
       syncAgentStatus: async () => {
         try {

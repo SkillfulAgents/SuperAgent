@@ -470,15 +470,18 @@ class MessagePersister {
             outcome: transition.outcome,
             scope: request.scope,
           }
-    // Fail closed: the schema types scope.agentSlug as optional (and '' is
-    // possible), and the ACL filter forwards slug-less events to EVERY
-    // authenticated user — so a request without a verified slug must never
-    // reach the global stream. Its session stream still gets it: those
-    // subscribers are AgentRead-gated per session.
-    if (request.scope.agentSlug) {
-      this.broadcastGlobal(event)
-    }
-    if (request.scope.agentSlug && request.scope.sessionId) {
+    // Fail closed on a missing slug. The schema types scope.agentSlug as
+    // optional (and '' is possible), and the global-stream ACL filter forwards
+    // slug-less events to EVERY authenticated user, so such a request must not
+    // reach the global stream. It must not reach the per-session stream either:
+    // the session key is (agent, session), so without a slug there is no key to
+    // deliver to — and the awaiting projection likewise ignores a slug-less
+    // request (isSessionAwaiting matches on the agent), so it cannot strand a
+    // session either. Every real registration path sets a slug; a slug-less one
+    // is inert by construction.
+    if (!request.scope.agentSlug) return
+    this.broadcastGlobal(event)
+    if (request.scope.sessionId) {
       this.broadcastToSSE(request.scope.agentSlug, request.scope.sessionId, event)
     }
   }
@@ -3651,11 +3654,6 @@ class MessagePersister {
     agentSlug: string
   ): void {
     ;(async () => {
-      if (!agentSlug) {
-        // Without an agentSlug we can't reach the container to resolve/reject.
-        console.error('[MessagePersister] Schedule task missing agentSlug')
-        return
-      }
 
       // Parse the tool input
       let input: {
@@ -3775,11 +3773,6 @@ class MessagePersister {
     agentSlug: string
   ): void {
     ;(async () => {
-      if (!agentSlug) {
-        console.error('[MessagePersister] Schedule resume missing agentSlug')
-        return
-      }
-
       let input: { wakeTime?: string; note?: string; timezone?: string }
       try {
         input = JSON.parse(toolInput)
@@ -3980,11 +3973,6 @@ ${continuation}`
   ): void {
     ;(async () => {
       try {
-        if (!agentSlug) {
-          console.error('[MessagePersister] cancel_scheduled_task missing agentSlug')
-          return
-        }
-
         let input: { task_id: string }
         try {
           input = JSON.parse(toolInput)
@@ -4050,11 +4038,6 @@ ${continuation}`
   ): void {
     ;(async () => {
       try {
-        if (!agentSlug) {
-          console.error(`[MessagePersister] ${action}_scheduled_task missing agentSlug`)
-          return
-        }
-
         let input: { task_id: string }
         try {
           input = JSON.parse(toolInput)
@@ -4169,11 +4152,6 @@ ${continuation}`
   ): void {
     ;(async () => {
       try {
-        if (!agentSlug) {
-          console.error('[MessagePersister] get_available_triggers missing agentSlug')
-          return
-        }
-
         if (!isPlatformComposioActive()) {
           await this.rejectContainerInput(agentSlug, toolUseId, 'Webhook triggers are only available with platform Composio')
           return
@@ -4231,11 +4209,6 @@ ${continuation}`
   ): void {
     ;(async () => {
       try {
-        if (!agentSlug) {
-          console.error('[MessagePersister] setup_trigger missing agentSlug')
-          return
-        }
-
         if (!isPlatformComposioActive()) {
           await this.rejectContainerInput(agentSlug, toolUseId, 'Webhook triggers are only available with platform Composio')
           return
@@ -4374,11 +4347,6 @@ ${continuation}`
   ): void {
     ;(async () => {
       try {
-        if (!agentSlug) {
-          console.error('[MessagePersister] create_webhook_endpoint missing agentSlug')
-          return
-        }
-
         // Gate on platform auth, not Composio mode: custom endpoints live on
         // the platform proxy and must keep working when the user brings their
         // own Composio key (mirrors the teardown gate in
@@ -4514,11 +4482,6 @@ ${continuation}`
   ): void {
     ;(async () => {
       try {
-        if (!agentSlug) {
-          console.error('[MessagePersister] update_webhook_endpoint missing agentSlug')
-          return
-        }
-
         // Gate on platform auth, not Composio mode: custom endpoints live on
         // the platform proxy and must keep working when the user brings their
         // own Composio key (mirrors the teardown gate in
@@ -4620,11 +4583,6 @@ ${continuation}`
   ): void {
     ;(async () => {
       try {
-        if (!agentSlug) {
-          console.error('[MessagePersister] inspect_webhook_events missing agentSlug')
-          return
-        }
-
         if (!getPlatformAccessToken()) {
           await this.rejectContainerInput(agentSlug, toolUseId, 'Custom webhook endpoints are only available when connected to the platform')
           return
@@ -4707,11 +4665,6 @@ ${continuation}`
   ): void {
     ;(async () => {
       try {
-        if (!agentSlug) {
-          console.error('[MessagePersister] list_triggers missing agentSlug')
-          return
-        }
-
         const triggers = await listActiveWebhookTriggers(agentSlug)
         const formatted = triggers.length === 0
           ? 'No active webhook triggers for this agent.'
@@ -4741,11 +4694,6 @@ ${continuation}`
   ): void {
     ;(async () => {
       try {
-        if (!agentSlug) {
-          console.error('[MessagePersister] cancel_trigger missing agentSlug')
-          return
-        }
-
         let input: { trigger_id: string }
         try {
           input = JSON.parse(toolInput)
