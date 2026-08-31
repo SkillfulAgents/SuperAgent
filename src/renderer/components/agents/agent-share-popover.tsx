@@ -4,6 +4,16 @@ import { apiFetch } from '@renderer/lib/api'
 import { useUser } from '@renderer/context/user-context'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@renderer/components/ui/alert-dialog'
 import { Tabs, TabsList, TabsTrigger } from '@renderer/components/ui/tabs'
 import {
   Select,
@@ -107,15 +117,22 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
   const [inviteRole, setInviteRole] = useState<AgentRole>('user')
   const [publishFlowOpen, setPublishFlowOpen] = useState(false)
   const [exportChoice, setExportChoice] = useState<'template' | 'full'>('template')
+  const [confirmFullExportOpen, setConfirmFullExportOpen] = useState(false)
   const searchInputRef = useRef<HTMLInputElement>(null)
 
   // Publish pane data/mutations. Status only fetches once the popover opens.
-  const { data: templateStatus } = useAgentTemplateStatus(open ? agentSlug : null)
+  const {
+    data: templateStatus,
+    isPending: templateStatusPending,
+    isError: templateStatusError,
+  } = useAgentTemplateStatus(open ? agentSlug : null)
   const exportTemplate = useExportAgentTemplate()
   const exportFull = useExportAgentFull()
   // Host-wide guard: exports stream large archives, so any in-flight export
   // (this window or another) disables the button, same as the settings tab did.
-  const { data: hostExportStatus } = useHostExportStatus()
+  // Only fetched (and polled) while the popover is open — the popover itself
+  // is mounted with the header on every agent-home visit.
+  const { data: hostExportStatus } = useHostExportStatus(open)
   const exportPending =
     !!hostExportStatus?.inProgress || exportTemplate.isPending || exportFull.isPending
   const canPublish = templateStatus?.type === 'local' && templateStatus.publishable !== false
@@ -344,6 +361,7 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
   }
 
   return (
+    <>
     <Popover
       open={open}
       onOpenChange={(next) => {
@@ -414,7 +432,18 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
             />
           ) : (
             <div className="p-3" data-testid="agent-publish-pane">
-              {canPublish ? (
+              {templateStatusPending ? (
+                // Don't show the "isn't available" message while the status is
+                // still loading — that's the common case on first open.
+                <div className="flex items-center justify-center py-10">
+                  <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                </div>
+              ) : templateStatusError ? (
+                <p className="px-2 py-4 text-center text-sm text-muted-foreground">
+                  Couldn&apos;t check whether this agent can be published. Close and
+                  reopen to retry.
+                </p>
+              ) : canPublish ? (
                 <div className="space-y-4">
                   {/* Hero (Notion "Publish to web"-style) */}
                   <div className="space-y-1 pt-2 text-center">
@@ -591,7 +620,12 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
                 if (exportChoice === 'template') {
                   exportTemplate.mutate({ agentSlug, agentName })
                 } else {
-                  exportFull.mutate({ agentSlug, agentName })
+                  // Full exports contain secrets — confirm before downloading.
+                  // The dialog is modal (outside the popover), so opening it
+                  // dismisses the popover, same as the settings popover's
+                  // delete confirm.
+                  setOpen(false)
+                  setConfirmFullExportOpen(true)
                 }
               }}
               data-testid="export-submit-button"
@@ -762,5 +796,31 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
         )}
       </PopoverContent>
     </Popover>
+
+    {/* Full-agent exports bundle env vars, API keys, and session data —
+        keep an explicit confirmation in front of the download. */}
+    <AlertDialog open={confirmFullExportOpen} onOpenChange={setConfirmFullExportOpen}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Export Full Agent</AlertDialogTitle>
+          <AlertDialogDescription>
+            This will export the entire agent workspace including environment
+            variables, API keys, and other potentially sensitive data. Only share
+            this file with people you trust.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            disabled={exportPending}
+            onClick={() => exportFull.mutate({ agentSlug, agentName })}
+            data-testid="confirm-full-export-button"
+          >
+            Export
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   )
 }
