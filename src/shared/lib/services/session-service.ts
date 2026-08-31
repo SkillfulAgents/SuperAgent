@@ -83,20 +83,39 @@ import {
 // cannot name a file under this agent's session directory (`..`, an absolute
 // path, a separator) is not one of its sessions, and must not reach a registry
 // or the filesystem.
+// Lexical containment only: `sessionId` names a file under this agent's session
+// directory (no `..`, absolute path, or separator). Deliberately touches no
+// filesystem — it runs once per transcript in the listing/summary hot loops,
+// whose op budget is pinned exactly by the perf suite. It is enough to reject a
+// traversal-shaped id; the SYMLINK escape (a link inside the agent's own dir
+// resolving to another agent's transcript) is caught on the content/action
+// gates instead — see {@link sessionFileResolvesWithinAgent} — because those
+// are the paths that actually read or mutate the file, and they are off the
+// listing hot path.
 function sessionIdIsWithinAgent(agentSlug: string, sessionId: string): boolean {
+  try {
+    getSessionJsonlPath(agentSlug, sessionId)
+    return true
+  } catch {
+    return false
+  }
+}
+
+// Lexical containment PLUS symlink resolution: the id names a file whose REAL
+// location is inside the agent's real session directory. The agent's dir is
+// bind-mounted read/write into its container, so it can plant a symlink named
+// after another agent's session that resolves to that agent's transcript — a
+// name that looks local but escapes on read. Use this on every gate that goes
+// on to serve or act on the transcript (never in a listing loop): it costs a
+// realpath, but a session that fails it must not be readable. This is what the
+// deleted ownership index also enforced, without a second source of truth.
+function sessionFileResolvesWithinAgent(agentSlug: string, sessionId: string): boolean {
   let jsonlPath: string
   try {
     jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
   } catch {
     return false
   }
-  // Lexical containment (the getSessionJsonlPath above) is not enough. The
-  // agent's session directory is bind-mounted read/write into its container,
-  // so the agent can plant a symlink named after ANOTHER agent's session that
-  // resolves to that agent's transcript — a name that looks local but escapes
-  // on read. The id is this agent's only if its real path stays inside the
-  // agent's real session directory. This is what the deleted ownership index
-  // also enforced, without a second source of truth to keep in step.
   return isRealPathWithinDir(getAgentSessionsDir(agentSlug), jsonlPath)
 }
 
@@ -884,7 +903,10 @@ export async function getSession(
   agentSlug: string,
   sessionId: string
 ): Promise<SessionInfo | null> {
-  if (!sessionIdIsWithinAgent(agentSlug, sessionId)) return null
+  // Content-serving path (the single-session route reads this): symlink-aware,
+  // so a planted link to another agent's transcript resolves to null, not that
+  // agent's session summary.
+  if (!sessionFileResolvesWithinAgent(agentSlug, sessionId)) return null
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
   const metadata = await getSessionMetadata(agentSlug, sessionId)
 
@@ -1945,7 +1967,7 @@ export async function sessionExists(
   agentSlug: string,
   sessionId: string
 ): Promise<boolean> {
-  if (!sessionIdIsWithinAgent(agentSlug, sessionId)) return false
+  if (!sessionFileResolvesWithinAgent(agentSlug, sessionId)) return false
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
   return fileExists(jsonlPath)
 }
