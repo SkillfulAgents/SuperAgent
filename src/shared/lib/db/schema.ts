@@ -312,7 +312,10 @@ export const sessionUnreadMarks = sqliteTable('session_unread_marks', {
   agentSlug: text('agent_slug').notNull(),
   markedAt: integer('marked_at', { mode: 'timestamp_ms' }).notNull(),
 }, (table) => ({
-  pk: primaryKey({ columns: [table.sessionId, table.userId] }),
+  // A session id is unique only within an agent, so the mark's identity
+  // includes the agent — otherwise two agents sharing an id (import/clone)
+  // collide on insert and cross each other on clear/delete.
+  pk: primaryKey({ columns: [table.agentSlug, table.sessionId, table.userId] }),
   // The projections read "marks for this agent, for me".
   agentSlugUserIdx: index('session_unread_marks_agent_slug_user_idx').on(table.agentSlug, table.userId),
 }))

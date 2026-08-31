@@ -4492,7 +4492,7 @@ describe('DELETE /:id/sessions/:sessionId', () => {
     const res = await deleteReq(app, URL)
 
     expect(res.status).toBe(204)
-    expect(deleteSessionUnreadMarks).toHaveBeenCalledWith(['sess-1'])
+    expect(deleteSessionUnreadMarks).toHaveBeenCalledWith('test-agent', ['sess-1'])
   })
 
   it('deletes a dangling session whose transcript JSONL is gone (no getSession gate)', async () => {
@@ -8469,7 +8469,7 @@ describe('mark as unread — /:id/sessions/:sessionId/unread', () => {
     })
 
     expect(res.status).toBe(200)
-    expect(vi.mocked(clearSessionUnread)).toHaveBeenCalledWith('sess-1', 'test-user-id')
+    expect(vi.mocked(clearSessionUnread)).toHaveBeenCalledWith('test-agent', 'sess-1', 'test-user-id')
     expect(vi.mocked(markSessionUnread)).not.toHaveBeenCalled()
   })
 

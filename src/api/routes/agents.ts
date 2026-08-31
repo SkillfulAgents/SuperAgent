@@ -2961,7 +2961,7 @@ async function setUnreadFlag(c: Context, sessionId: string, markedUnread: boolea
     const userId = getCurrentUserId(c)
     const changed = markedUnread
       ? await markSessionUnread(agentSlug, sessionId, userId)
-      : await clearSessionUnread(sessionId, userId)
+      : await clearSessionUnread(agentSlug, sessionId, userId)
     return c.json({ success: true, markedUnread, changed })
   } catch (error) {
     console.error('Failed to update session unread flag:', error)
@@ -3027,7 +3027,7 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
     await deleteNotificationsBySessionIds([sessionId])
     // A mark left behind would be an unreachable row: nothing lists the
     // session any more, so nothing could ever clear it.
-    await deleteSessionUnreadMarks([sessionId])
+    await deleteSessionUnreadMarks(agentSlug, [sessionId])
 
     return c.body(null, 204)
   } catch (error) {

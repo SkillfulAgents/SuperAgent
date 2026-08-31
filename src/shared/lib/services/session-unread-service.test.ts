@@ -57,7 +57,7 @@ describe('session-unread-service', () => {
 
   it('clears the mark', async () => {
     await markSessionUnread('agent-a', 'sess-1', ALICE)
-    await clearSessionUnread('sess-1', ALICE)
+    await clearSessionUnread('agent-a', 'sess-1', ALICE)
 
     expect(await getSessionIdsMarkedUnread('agent-a', ALICE)).toEqual(new Set())
   })
@@ -70,14 +70,40 @@ describe('session-unread-service', () => {
     expect(await getSessionIdsMarkedUnread('agent-b', ALICE)).toEqual(new Set(['sess-b']))
   })
 
+  // A session id is unique only within an agent — import/clone gives two agents
+  // the same id. Both must be able to hold a mark (the PK includes the agent),
+  // and clearing one must not touch the other.
+  it('two agents hold a mark for the same session id independently', async () => {
+    expect(await markSessionUnread('agent-a', 'shared-id', ALICE)).toBe(true)
+    expect(await markSessionUnread('agent-b', 'shared-id', ALICE)).toBe(true)
+
+    expect(await getSessionIdsMarkedUnread('agent-a', ALICE)).toEqual(new Set(['shared-id']))
+    expect(await getSessionIdsMarkedUnread('agent-b', ALICE)).toEqual(new Set(['shared-id']))
+
+    expect(await clearSessionUnread('agent-b', 'shared-id', ALICE)).toBe(true)
+
+    expect(await getSessionIdsMarkedUnread('agent-a', ALICE)).toEqual(new Set(['shared-id']))
+    expect(await getSessionIdsMarkedUnread('agent-b', ALICE)).toEqual(new Set())
+  })
+
+  it('deleting one agent’s session marks leaves another agent’s identically-named mark', async () => {
+    await markSessionUnread('agent-a', 'shared-id', ALICE)
+    await markSessionUnread('agent-b', 'shared-id', ALICE)
+
+    await deleteSessionUnreadMarks('agent-b', ['shared-id'])
+
+    expect(await getSessionIdsMarkedUnread('agent-a', ALICE)).toEqual(new Set(['shared-id']))
+    expect(await getSessionIdsMarkedUnread('agent-b', ALICE)).toEqual(new Set())
+  })
+
   // The clear fires on every session open and the client skips its cache
   // invalidation when nothing was written — refetching the session list and
   // re-enriching every agent for a no-op is what this return value avoids.
   it('reports whether the write actually changed anything', async () => {
-    expect(await clearSessionUnread('never-marked', ALICE)).toBe(false)
+    expect(await clearSessionUnread('agent-a', 'never-marked', ALICE)).toBe(false)
     expect(await markSessionUnread('agent-a', 'sess-1', ALICE)).toBe(true)
     expect(await markSessionUnread('agent-a', 'sess-1', ALICE)).toBe(false)
-    expect(await clearSessionUnread('sess-1', ALICE)).toBe(true)
+    expect(await clearSessionUnread('agent-a', 'sess-1', ALICE)).toBe(true)
   })
 
   it('keeps the original timestamp when a marked session is re-marked', async () => {
@@ -107,7 +133,7 @@ describe('session-unread-service', () => {
       await markSessionUnread('agent-a', 'sess-1', ALICE)
       await markSessionUnread('agent-a', 'sess-1', BOB)
 
-      expect(await clearSessionUnread('sess-1', BOB)).toBe(true)
+      expect(await clearSessionUnread('agent-a', 'sess-1', BOB)).toBe(true)
 
       expect(await getSessionIdsMarkedUnread('agent-a', ALICE)).toEqual(new Set(['sess-1']))
       expect(await getSessionIdsMarkedUnread('agent-a', BOB)).toEqual(new Set())
@@ -134,7 +160,7 @@ describe('session-unread-service', () => {
     expect(await getSessionIdsMarkedUnreadByAgents(['agent-a'], 'local').then((m) => m.get('agent-a')))
       .toEqual(new Set(['sess-1']))
 
-    expect(await clearSessionUnread('sess-1', 'local')).toBe(true)
+    expect(await clearSessionUnread('agent-a', 'sess-1', 'local')).toBe(true)
     expect(await getSessionIdsMarkedUnread('agent-a', 'local')).toEqual(new Set())
   })
 
@@ -179,7 +205,7 @@ describe('session-unread-service', () => {
     await markSessionUnread('agent-a', 'sess-gone', BOB)
     await markSessionUnread('agent-a', 'sess-kept', ALICE)
 
-    expect(await deleteSessionUnreadMarks(['sess-gone'])).toBe(2)
+    expect(await deleteSessionUnreadMarks('agent-a', ['sess-gone'])).toBe(2)
 
     expect(await getSessionIdsMarkedUnread('agent-a', ALICE)).toEqual(new Set(['sess-kept']))
     expect(await getSessionIdsMarkedUnread('agent-a', BOB)).toEqual(new Set())

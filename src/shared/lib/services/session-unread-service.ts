@@ -45,13 +45,28 @@ export async function markSessionUnread(
 }
 
 /**
- * Clear this user's mark, leaving anyone else's alone. Fires on every session
- * open, so the overwhelmingly common case deletes no row and reports false.
+ * Clear this user's mark on ONE agent's session, leaving anyone else's alone.
+ * Fires on every session open, so the overwhelmingly common case deletes no
+ * row and reports false.
+ *
+ * Scoped by agentSlug as well as sessionId: a session id is unique only within
+ * an agent (import/clone gives two agents the same id), so a bare-id delete
+ * would clear the mark on a DIFFERENT agent's identically-named session. The
+ * mark was written with an agentSlug and every reader filters by it, so the
+ * clear must too.
  */
-export async function clearSessionUnread(sessionId: string, userId: string): Promise<boolean> {
+export async function clearSessionUnread(
+  agentSlug: string,
+  sessionId: string,
+  userId: string,
+): Promise<boolean> {
   const result = await db
     .delete(sessionUnreadMarks)
-    .where(and(eq(sessionUnreadMarks.sessionId, sessionId), eq(sessionUnreadMarks.userId, userId)))
+    .where(and(
+      eq(sessionUnreadMarks.agentSlug, agentSlug),
+      eq(sessionUnreadMarks.sessionId, sessionId),
+      eq(sessionUnreadMarks.userId, userId),
+    ))
 
   return (result.changes ?? 0) > 0
 }
@@ -98,16 +113,27 @@ export async function getSessionIdsMarkedUnreadByAgents(
 }
 
 /**
- * Drop every user's marks for deleted sessions, alongside
+ * Drop every user's marks for one agent's deleted sessions, alongside
  * deleteNotificationsBySessionIds — otherwise a mark would outlive its session
  * as an unreachable row.
+ *
+ * Scoped to agentSlug: session ids are unique only within an agent, so a
+ * bare-id delete would also drop a different agent's identically-named
+ * session's marks. Every caller deletes one agent's sessions and holds its
+ * slug.
  */
-export async function deleteSessionUnreadMarks(sessionIds: string[]): Promise<number> {
+export async function deleteSessionUnreadMarks(
+  agentSlug: string,
+  sessionIds: string[],
+): Promise<number> {
   if (sessionIds.length === 0) return 0
 
   const result = await db
     .delete(sessionUnreadMarks)
-    .where(inArray(sessionUnreadMarks.sessionId, sessionIds))
+    .where(and(
+      eq(sessionUnreadMarks.agentSlug, agentSlug),
+      inArray(sessionUnreadMarks.sessionId, sessionIds),
+    ))
 
   return result.changes ?? 0
 }

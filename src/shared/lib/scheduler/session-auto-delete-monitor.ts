@@ -141,7 +141,7 @@ class SessionAutoDeleteMonitor {
     try {
       await deleteNotificationsBySessionIds(deletedIds)
       // Same rule for "mark as unread" marks — see deleteSessionUnreadMarks.
-      await deleteSessionUnreadMarks(deletedIds)
+      await deleteSessionUnreadMarks(agentSlug, deletedIds)
     } catch (error) {
       console.error(
         `[SessionAutoDeleteMonitor] Failed to clean notification records for ${agentSlug}:`,
