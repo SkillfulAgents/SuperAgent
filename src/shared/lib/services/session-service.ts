@@ -100,6 +100,27 @@ function sessionIdIsWithinAgent(agentSlug: string, sessionId: string): boolean {
   return isRealPathWithinDir(getAgentSessionsDir(agentSlug), jsonlPath)
 }
 
+/**
+ * Delete the legacy session-ownership.json index that earlier builds kept one
+ * directory above all workspaces. This build derives ownership structurally
+ * (agent-keyed registries + containment) and never writes it, so a leftover
+ * file is dead — but a ROLLBACK to a build that reads it would find the stale
+ * copy, skip its first-read discovery migration, and treat every session
+ * created under this build as unowned (filtered from listings, 404 on open).
+ * Removing it on startup makes a rollback self-heal by re-running discovery.
+ *
+ * Best-effort and idempotent: a missing file (the common case after the first
+ * boot) is success, and any error is swallowed so it can never block startup.
+ */
+export async function removeLegacySessionOwnershipIndex(): Promise<void> {
+  const legacyPath = path.join(path.dirname(getAgentsDir()), 'session-ownership.json')
+  try {
+    await fs.promises.rm(legacyPath, { force: true })
+  } catch (error) {
+    console.warn('[session-service] Failed to remove legacy session-ownership index:', error)
+  }
+}
+
 // ============================================================================
 // Session Metadata (custom names, starred status)
 // ============================================================================

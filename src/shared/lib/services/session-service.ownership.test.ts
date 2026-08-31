@@ -216,4 +216,35 @@ describe('sessionIsKnown', () => {
 
     await expect(sessionIsKnown('agent-a', '../../../etc/passwd')).resolves.toBe(false)
   })
+
+  it('rejects a symlink whose real target is another agent’s transcript', async () => {
+    const { sessionIsKnown } = await importService()
+    makeAgent('agent-a')
+    makeAgent('agent-b')
+    writeTranscript('agent-b', 'b-session')
+
+    // The agent plants a link in its OWN directory, named after a session it
+    // does not own, pointing at the victim's real transcript. Lexical
+    // containment passes (the link's path is local); real-path containment must
+    // not.
+    fs.symlinkSync(
+      path.join(sessionsDir('agent-b'), 'b-session.jsonl'),
+      path.join(sessionsDir('agent-a'), 'stolen.jsonl'),
+    )
+
+    await expect(sessionIsKnown('agent-a', 'stolen')).resolves.toBe(false)
+  })
+
+  it('removeLegacySessionOwnershipIndex deletes a stale index and is a no-op when absent', async () => {
+    const { removeLegacySessionOwnershipIndex } = await importService()
+    // The index lived one directory above the agents dir — i.e. the data dir.
+    const legacyPath = path.join(tmpDir, 'session-ownership.json')
+    fs.writeFileSync(legacyPath, JSON.stringify({ 'some-session': 'agent-a' }))
+
+    await removeLegacySessionOwnershipIndex()
+    expect(fs.existsSync(legacyPath)).toBe(false)
+
+    // Idempotent: a second call with the file already gone must not throw.
+    await expect(removeLegacySessionOwnershipIndex()).resolves.toBeUndefined()
+  })
 })
