@@ -31,6 +31,15 @@ export const subagentModelCatalogSchema = z
 
 export type SubagentModelDefinition = z.infer<typeof subagentModelDefinitionSchema>;
 
+// Model id → catalog context window, host-supplied for every catalog model
+// (subagentModels above only carries isLatest entries). Read at query build to
+// set CLAUDE_CODE_MAX_CONTEXT_TOKENS; the SDK ignores it for claude-* models.
+export const modelContextWindowsSchema = z
+  .record(z.string().min(1), z.number().int().positive())
+  .default({});
+
+export type ModelContextWindows = z.infer<typeof modelContextWindowsSchema>;
+
 function stableHash(value: string): string {
   let hash = 0x811c9dc5;
   for (let index = 0; index < value.length; index++) {

@@ -13,6 +13,7 @@ import {
   getProviderCatalog,
   getModelDefinition,
   getModelContextWindow,
+  getModelContextWindowMap,
   getModelPromptHints,
   hasVersionSegment,
   resolveModelForProvider,
@@ -504,6 +505,21 @@ describe('getModelContextWindow', () => {
 
   it('returns undefined for an unknown id', () => {
     expect(getModelContextWindow('nope', 'platform')).toBeUndefined()
+  })
+})
+
+describe('getModelContextWindowMap', () => {
+  it('maps every Platform model that declares a window, non-latest included', () => {
+    const map = getModelContextWindowMap('platform')
+    expect(map['grok-4.6']).toBe(500_000)
+    expect(map['grok-4.5']).toBe(500_000)
+    expect(map['gpt-5.5']).toBe(1_050_000)
+    expect(map['gpt-5.4']).toBe(1_050_000)
+  })
+
+  it('omits Claude models (no catalog window; the SDK supplies theirs)', () => {
+    const map = getModelContextWindowMap('platform')
+    expect(Object.keys(map).some(id => id.startsWith('claude-'))).toBe(false)
   })
 })
 

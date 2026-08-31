@@ -69,6 +69,17 @@ describe('warmProfileKey', () => {
     expect(gpt).not.toBe(grok)
   })
 
+  it('separates profiles whose model context windows differ', () => {
+    const a = warmProfileKey(
+      warmProfileSchema.parse({ ...base, modelContextWindows: { 'grok-4.6': 500_000 } })
+    )
+    const b = warmProfileKey(
+      warmProfileSchema.parse({ ...base, modelContextWindows: { 'grok-4.6': 200_000 } })
+    )
+
+    expect(a).not.toBe(b)
+  })
+
   it('treats an absent field and an explicitly undefined one as the same profile', () => {
     const absent = warmProfileKey(warmProfileSchema.parse({ model: 'm' }))
     const undef = warmProfileKey(warmProfileSchema.parse({ model: 'm', effort: undefined, speed: undefined }))

@@ -27,6 +27,7 @@ export {
   getProviderCatalog,
   getModelDefinition,
   getModelContextWindow,
+  getModelContextWindowMap,
   getModelPromptHints,
   hasVersionSegment,
   resolveModelForProvider,
