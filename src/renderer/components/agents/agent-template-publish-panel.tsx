@@ -30,23 +30,30 @@ export function AgentTemplatePublishPanel({ agentSlug, onBack }: AgentTemplatePu
   const [selectedSkillsetId, setSelectedSkillsetId] = useState<string | null>(null)
   const [publishResult, setPublishResult] = useState<{ prUrl?: string; successMessage: string } | null>(null)
 
-  // Suggested title/body/version derive from the agent's CLAUDE.md, not the
-  // target library (see getAgentPublishInfo), so prefill via the first
-  // configured library even though the user picks the real target last.
+  // Selection defaults to the first library, mirroring the Export tab's
+  // preselected radio pattern.
   const firstSkillsetId = skillsets?.[0]?.id ?? null
-  const { data: publishInfo, isLoading: isLoadingInfo } = useAgentTemplatePublishInfo(
-    agentSlug,
-    firstSkillsetId,
-  )
+  const selectedId = selectedSkillsetId ?? firstSkillsetId
+
+  // Suggested title/body/version derive from the agent's CLAUDE.md (see
+  // getAgentPublishInfo); the fetch targets the currently selected library so
+  // its publish preconditions are checked before the final Publish click.
+  const {
+    data: publishInfo,
+    isLoading: isLoadingInfo,
+    error: infoError,
+  } = useAgentTemplatePublishInfo(agentSlug, selectedId)
   const publishAgent = usePublishAgentTemplate()
 
+  // The suggestions arrive async (an LLM call server-side) — only prefill
+  // fields the user hasn't filled themselves, and only while the form is
+  // still on screen, so typed values are never silently replaced.
   useEffect(() => {
-    if (publishInfo) {
-      setTitle(publishInfo.suggestedTitle)
-      setBody(publishInfo.suggestedBody)
-      setNewVersion(publishInfo.suggestedVersion)
-    }
-  }, [publishInfo])
+    if (!publishInfo || step !== 'form') return
+    setTitle((prev) => prev || publishInfo.suggestedTitle)
+    setBody((prev) => prev || publishInfo.suggestedBody)
+    setNewVersion((prev) => prev || publishInfo.suggestedVersion)
+  }, [publishInfo, step])
 
   const handleBack = () => {
     if (step === 'pick' && !publishResult) {
@@ -56,10 +63,6 @@ export function AgentTemplatePublishPanel({ agentSlug, onBack }: AgentTemplatePu
       onBack()
     }
   }
-
-  // Selection defaults to the first library, mirroring the Export tab's
-  // preselected radio pattern.
-  const selectedId = selectedSkillsetId ?? firstSkillsetId
 
   const handlePublish = async () => {
     if (publishAgent.isPending || !selectedId) return
@@ -128,6 +131,15 @@ export function AgentTemplatePublishPanel({ agentSlug, onBack }: AgentTemplatePu
             if (title.trim() && body.trim()) setStep('pick')
           }}
         >
+          {/* Suggestion fetch failure (e.g. the library's publish
+              preconditions fail) — the form stays usable; the library picker
+              and final Publish surface their own errors. */}
+          {infoError && (
+            <Alert variant="destructive">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertDescription>{infoError.message}</AlertDescription>
+            </Alert>
+          )}
           <div className="space-y-1.5">
             <Label htmlFor="agent-publish-title">Title</Label>
             <div className="relative">
@@ -241,10 +253,12 @@ export function AgentTemplatePublishPanel({ agentSlug, onBack }: AgentTemplatePu
               </>
             )}
           </Button>
-          {publishAgent.error && (
+          {(publishAgent.error || infoError) && (
             <Alert variant="destructive">
               <AlertTriangle className="h-4 w-4" />
-              <AlertDescription>{publishAgent.error.message}</AlertDescription>
+              <AlertDescription>
+                {(publishAgent.error ?? infoError)?.message}
+              </AlertDescription>
             </Alert>
           )}
         </div>

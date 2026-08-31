@@ -114,7 +114,7 @@ import {
 } from '@shared/lib/services/scheduled-task-service'
 import { db } from '@shared/lib/db'
 import { connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, user as userTable, messageAuthor, apiScopePolicies, mcpToolPolicies } from '@shared/lib/db/schema'
-import { eq, and, inArray, desc, count, like, or } from 'drizzle-orm'
+import { eq, and, inArray, notInArray, desc, count, or, sql, type AnyColumn } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getViewerUserId, ownerScope } from '@shared/lib/auth/ownership'
@@ -1747,22 +1747,28 @@ agents.get('/:id/access/search-users', AgentAdmin(), async (c) => {
       .from(agentAcl)
       .where(eq(agentAcl.agentSlug, slug))
 
-    const excludeIds = new Set(existingUserIds.map((r) => r.userId))
+    const excludeIds = existingUserIds.map((r) => r.userId)
 
     // Search users by name or email (SQLite LIKE is case-insensitive by default)
-    // Escape LIKE wildcards to prevent pattern injection (e.g. searching "%" matching all users)
-    const escaped = query ? query.replace(/%/g, '\\%').replace(/_/g, '\\_') : ''
+    // Escape LIKE wildcards to prevent pattern injection (e.g. searching "%"
+    // matching all users); the ESCAPE clause is required for the backslashes
+    // to act as escapes rather than literals.
+    const escaped = query ? query.replace(/[\\%_]/g, '\\$&') : ''
+    const matchesQuery = (column: AnyColumn) =>
+      sql`${column} LIKE ${`%${escaped}%`} ESCAPE '\\'`
     const users = await db
       .select({ id: userTable.id, name: userTable.name, email: userTable.email })
       .from(userTable)
       .where(
-        escaped
-          ? or(like(userTable.name, `%${escaped}%`), like(userTable.email, `%${escaped}%`))
-          : undefined
+        and(
+          // Exclude access holders in the WHERE so they don't eat limit slots
+          excludeIds.length ? notInArray(userTable.id, excludeIds) : undefined,
+          escaped ? or(matchesQuery(userTable.name), matchesQuery(userTable.email)) : undefined
+        )
       )
       .limit(50)
 
-    return c.json(users.filter((u) => !excludeIds.has(u.id)))
+    return c.json(users)
   } catch (error) {
     console.error('Failed to search users:', error)
     return c.json({ error: 'Failed to search users' }, 500)

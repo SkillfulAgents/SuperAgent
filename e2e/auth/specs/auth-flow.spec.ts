@@ -290,8 +290,14 @@ test.describe('Auth Flow', () => {
     const testId = await ownerEntry.getAttribute('data-testid')
     const userId = testId!.replace('access-entry-', '')
 
-    // The role dropdown (which contains Remove) is disabled for the last owner
-    await expect(user2Page.locator(`[data-testid="access-role-${userId}"]`)).toBeDisabled()
+    // The role dropdown stays usable for the last owner, but its Remove item
+    // is disabled
+    await user2Page.locator(`[data-testid="access-role-${userId}"]`).click()
+    const removeItem = user2Page.locator(`[data-testid="access-remove-${userId}"]`)
+    await expect(removeItem).toBeVisible()
+    await expect(removeItem).toHaveAttribute('data-disabled', '')
+    // First Escape closes the dropdown, closeSettings' Escape closes the popover
+    await user2Page.keyboard.press('Escape')
 
     await accessPage.closeSettings()
   })
