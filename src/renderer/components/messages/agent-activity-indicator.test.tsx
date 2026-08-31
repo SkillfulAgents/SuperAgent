@@ -3,6 +3,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AgentActivityIndicator } from './agent-activity-indicator'
+import { parsePlatformErrorResponse } from '@shared/lib/llm-provider/platform-error-presentation'
+import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 
 // Mock useMessageStream
 const mockStreamState = {
@@ -18,6 +20,7 @@ const mockStreamState = {
   pendingBrowserInputRequests: [] as any[],
   error: null as string | null,
   apiErrorCode: null as string | null,
+  errorPresentation: null as ProviderErrorPresentation | null,
   browserActive: false,
   activeStartTime: null as number | null,
   isCompacting: false,
@@ -48,11 +51,14 @@ vi.mock('@shared/lib/utils', () => ({
   cn: (...args: unknown[]) => args.filter(Boolean).join(' '),
 }))
 
-// Mock the platform billing card — its usePlatformBillingUrl hook uses React Query,
-// which these tests don't provide. Default to no billing error (returns null).
-vi.mock('./insufficient-balance-card', () => ({
-  usePlatformBillingUrl: () => null,
-  InsufficientBalanceCard: () => <div data-testid="insufficient-balance-card" />,
+const platformAuth = {
+  connected: false as boolean,
+  platformBaseUrl: 'https://platform.example.com' as string | null,
+  orgId: 'org_123' as string | null,
+}
+
+vi.mock('@renderer/hooks/use-platform-auth', () => ({
+  usePlatformAuthStatus: () => ({ data: platformAuth }),
 }))
 
 // Mock the unified pending-request store — the indicator derives awaiting
@@ -74,6 +80,7 @@ describe('AgentActivityIndicator', () => {
       isActive: false,
       error: null,
       apiErrorCode: null,
+      errorPresentation: null,
       activeStartTime: null,
       activeSubagents: [],
       completedSubagents: null,
@@ -88,6 +95,7 @@ describe('AgentActivityIndicator', () => {
     })
     mockMessages.length = 0
     mockPendingUserRequests = []
+    platformAuth.connected = false
   })
 
   it('returns null when not active and no error', () => {
@@ -112,6 +120,22 @@ describe('AgentActivityIndicator', () => {
     expect(screen.getByTestId('provider-error-card')).not.toHaveClass('dark:bg-red-950/30')
     // Selectable despite the app-wide user-select: none — errors get copied.
     expect(screen.getByTestId('provider-error-card')).toHaveClass('select-text', '[&_*]:select-text')
+  })
+
+  it('shows an orange spend-limit card for a platform spend cap', () => {
+    platformAuth.connected = true
+    mockStreamState.error = 'API Error: Request rejected (429) · A spend cap for this workspace was reached. It resets within 30 days. Ask a workspace admin to raise it.'
+    mockStreamState.apiErrorCode = 'rate_limit'
+    // Presentation is authored server-side by PlatformLlmProvider.parseErrorResponse
+    // and arrives on the session_error event.
+    mockStreamState.errorPresentation = parsePlatformErrorResponse(429, mockStreamState.error)
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    const card = screen.getByTestId('provider-error-card')
+    expect(card).toHaveTextContent('Spend Limit Reached')
+    expect(card).not.toHaveTextContent('LLM Provider Error')
+    expect(card).toHaveAttribute('data-severity', 'warning')
+    expect(card).toHaveClass('bg-orange-50', 'dark:bg-orange-950')
+    expect(screen.getByRole('link', { name: /raise spend limit/i })).toBeInTheDocument()
   })
 
   it('shows generic error alert when no apiErrorCode', () => {

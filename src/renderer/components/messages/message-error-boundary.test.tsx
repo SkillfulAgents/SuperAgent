@@ -100,9 +100,8 @@ describe('MessageErrorBoundary', () => {
       createdAt: new Date(),
     } as unknown as ApiMessage
 
-    // A real MessageItem now depends on a QueryClient (the insufficient-balance
-    // billing hook calls usePlatformAuthStatus); render under the app providers
-    // so the crash under test is the tool call itself, not a missing provider.
+    // MessageItem's provider-error card reads platform auth; render under the
+    // app providers so the crash under test is the tool call itself.
     renderWithProviders(<MessageItem message={message} sessionId="s1" agentSlug="agent" isSessionActive={false} />)
 
     expect(screen.getByText('Failed to display this tool call')).toBeInTheDocument()
