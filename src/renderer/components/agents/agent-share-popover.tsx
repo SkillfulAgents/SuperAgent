@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
 import { useUser } from '@renderer/context/user-context'
@@ -120,16 +120,29 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
     enabled: open,
   })
 
-  // All invitable users (workspace members minus current access holders).
-  // Teams are small, so we show everyone as suggestions and filter client-side.
+  // The server caps results at 50 users, so client-side filtering alone can't
+  // find everyone in a larger workspace — re-query with the typed text
+  // (debounced) so the server searches the full user table.
+  const [debouncedQuery, setDebouncedQuery] = useState('')
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(searchQuery.trim()), 200)
+    return () => clearTimeout(timer)
+  }, [searchQuery])
+
+  // Invitable users (workspace members minus current access holders): the
+  // first 50 as suggestions when idle, server-side search results while typing.
   const { data: candidates } = useQuery<SearchUser[]>({
-    queryKey: ['agent-invite-candidates', agentSlug],
+    queryKey: ['agent-invite-candidates', agentSlug, debouncedQuery],
     queryFn: async () => {
-      const res = await apiFetch(`/api/agents/${agentSlug}/access/search-users`)
+      const qs = debouncedQuery ? `?q=${encodeURIComponent(debouncedQuery)}` : ''
+      const res = await apiFetch(`/api/agents/${agentSlug}/access/search-users${qs}`)
       if (!res.ok) return []
       return res.json()
     },
     enabled: open,
+    // Keep the previous list on screen while the next query's fetch lands,
+    // so typing filters instantly instead of flashing empty.
+    placeholderData: (prev) => prev,
   })
 
   // Invite the selected batch. Runs each grant individually so one failure
@@ -265,7 +278,6 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
                       changeRole.mutate({ userId: entry.userId, role: role as AgentRole })
                     }
                   }}
-                  disabled={isLastOwner}
                 >
                   <SelectTrigger
                     className="h-7 w-auto shrink-0 gap-1 border-none bg-transparent px-1.5 text-[11px] text-muted-foreground shadow-none hover:text-foreground focus:ring-0 focus-visible:ring-1 focus-visible:ring-ring"
@@ -276,8 +288,11 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
                   <SelectContent align="end" className="w-64">
                     <RoleSelectItems />
                     <SelectSeparator />
+                    {/* Only Remove is guarded for the last owner — the role
+                        options stay viewable; demotion is server-guarded. */}
                     <SelectItem
                       value={REMOVE_SENTINEL}
+                      disabled={isLastOwner}
                       className="pr-8 text-[11px] text-destructive focus:text-destructive"
                       data-testid={`access-remove-${entry.userId}`}
                     >
