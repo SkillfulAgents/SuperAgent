@@ -282,6 +282,10 @@ describe('listSessionsFromSummary', () => {
     await getSessionSummary(agentSlug)
 
     await deleteSession(agentSlug, 'session-b')
+    // Coarse-mtime filesystems may not advance the dir mtime on the unlink
+    // within the same tick as the warm read; force it so the reconcile fires.
+    const changedAt = new Date('2030-01-01T00:00:00.000Z')
+    await fs.promises.utimes(sessionsDir(), changedAt, changedAt)
 
     expect(ids(await listSessionsFromSummary(agentSlug))).toEqual(['session-a'])
   })
