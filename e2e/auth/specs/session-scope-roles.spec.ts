@@ -169,6 +169,77 @@ test.describe('Cross-agent session scoping', () => {
     await user1Page.request.delete(`/api/agents/${attackerAgent}/sessions/${victimSession}`)
   })
 
+  test('a symlink forged in the attacker’s workspace does not expose the victim’s transcript', async ({ user1Page }) => {
+    // Sharper than the plain forged file above. A containment check that only
+    // compares resolved path STRINGS — never following the link — treats a
+    // symlink named after the victim’s session, planted in the attacker’s own
+    // bind-mounted workspace, as the attacker’s own session and hands back
+    // another tenant’s conversation. There is no benign reading of this id (it
+    // resolves to a file the attacker does not own), so unlike the plain-file
+    // case every ownership-gated route must REFUSE it — asserted directly here.
+    const attackerWorkspace = path.join(
+      SESSION_SCOPE_DATA_DIR, 'agents', attackerAgent,
+      'workspace', '.claude', 'projects', '-workspace',
+    )
+    const victimWorkspace = path.join(
+      SESSION_SCOPE_DATA_DIR, 'agents', victimAgent,
+      'workspace', '.claude', 'projects', '-workspace',
+    )
+    expect(fs.existsSync(attackerWorkspace)).toBeTruthy()
+    fs.mkdirSync(victimWorkspace, { recursive: true })
+
+    // The link needs a real target to resolve to, or the leak can’t manifest
+    // (a dangling symlink reads as absent and every gate 404s for the wrong
+    // reason). Give the victim a transcript with a sentinel only they own.
+    const victimTranscript = path.join(victimWorkspace, `${victimSession}.jsonl`)
+    const sentinel = `VICTIM-ONLY-${victimSession}`
+    // Append, never overwrite: a later test drives this same session, and the
+    // 'a' flag creates the file when the mock container never wrote one.
+    fs.appendFileSync(victimTranscript, `{"sentinel":"${sentinel}"}\n`)
+
+    const link = path.join(attackerWorkspace, `${victimSession}.jsonl`)
+    fs.rmSync(link, { force: true })
+    fs.symlinkSync(victimTranscript, link)
+
+    // Every ownership-gated route must refuse the id — and none may echo the
+    // sentinel back, whatever status they choose.
+    const single = await user1Page.request.get(
+      `/api/agents/${attackerAgent}/sessions/${victimSession}`,
+    )
+    expect(single.status()).toBe(404)
+    expect(await single.text()).not.toContain(sentinel)
+
+    const messages = await user1Page.request.get(
+      `/api/agents/${attackerAgent}/sessions/${victimSession}/messages`,
+    )
+    expect(messages.status()).toBe(404)
+    expect(await messages.text()).not.toContain(sentinel)
+
+    const interrupt = await user1Page.request.post(
+      `/api/agents/${attackerAgent}/sessions/${victimSession}/interrupt`,
+    )
+    expect(interrupt.status()).toBe(404)
+  })
+
+  test('a traversal-shaped session id is refused cleanly, not with a 500', async ({ user1Page }) => {
+    // The id escapes the agent’s own session directory. The gate must treat
+    // "cannot even name a file under this agent" as "not this agent’s session"
+    // (404) — never let the path check throw into the route’s catch and answer
+    // 500, which both leaks that the id was structurally special and, on the
+    // interrupt path, can mark a session interrupted on the error branch.
+    const forgedId = `..%2F..%2F${victimAgent}%2F${victimSession}`
+
+    const messages = await user1Page.request.get(
+      `/api/agents/${attackerAgent}/sessions/${forgedId}/messages`,
+    )
+    expect(messages.status()).toBe(404)
+
+    const del = await user1Page.request.delete(
+      `/api/agents/${attackerAgent}/sessions/${forgedId}`,
+    )
+    expect(del.status()).toBe(404)
+  })
+
   test('the victim’s session survives every attempt', async ({ user2Page }) => {
     const res = await user2Page.request.get(
       `/api/agents/${victimAgent}/sessions/${victimSession}`,
