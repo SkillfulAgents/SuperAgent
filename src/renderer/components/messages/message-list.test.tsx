@@ -3050,6 +3050,40 @@ describe('MessageList', () => {
       expect(geometry.scrollTop).toBe(899)
     })
 
+    it('converges back when a rollback lands on seconds-old creep after the engine goes quiet', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
+      fireEvent.scroll(el) // baseline at the live edge (699 joins the trail)
+
+      // Convergence writes 899; the trail now holds 699 and 899.
+      geometry.setNaturalScrollHeight(1500)
+      await act(async () => {
+        fireContentResize(contentWrapper, 1500)
+      })
+      await waitFor(() => expect(geometry.scrollTop).toBe(899))
+
+      // The CI-recorded kill shape: the stream pauses at a pass boundary, the
+      // engine's last write goes quiet, and 2+ seconds later WebKit's
+      // compositor reverts to the bottom of a layout snapshot 2.3s stale —
+      // landing on creep the viewport traversed well before, outside both a
+      // frames-scale write window and a too-short trail. It is still the
+      // engine's own motion coming back: following must survive and converge.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 2400))
+      })
+      geometry.setScrollTop(780)
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 250))
+      })
+      expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
+      expect(geometry.scrollTop).toBe(899)
+    })
+
     it('releases follow when an input-less scroll lands off the recently-held trail', async () => {
       installFakeResizeObserver()
       mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
@@ -3066,7 +3100,7 @@ describe('MessageList', () => {
       // mount pin so the engine-activity window is genuinely closed, as it is
       // whenever such jumps happen in reality.
       await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 450))
+        await new Promise((resolve) => setTimeout(resolve, 600))
       })
       geometry.setScrollTop(150)
       fireEvent.scroll(el)

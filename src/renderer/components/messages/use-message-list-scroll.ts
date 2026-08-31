@@ -84,10 +84,17 @@ const INPUT_EVIDENCE_WINDOW_MS = 500
 // extension, tests) and releases following like any other escape. Segments
 // wider than the cap are real discontinuities (the initial pin, an escape
 // jump) — the viewport never held their interior, so they don't absorb.
-const ROLLBACK_TRAIL_MS = 2000
+// Retention must outlast the snapshots WebKit actually reverts to: on loaded
+// CI runners the compositor has been recorded rolling back to a layout 2.3s
+// stale (landing on creep traversed 2276ms earlier — past a 2000ms trail by
+// a fraction, releasing follow with zero input). Keep several seconds of
+// margin over that measured age.
+const ROLLBACK_TRAIL_MS = 6000
 // Count cap is only a runaway backstop; retention is time-based (entries age
 // out of classification at ROLLBACK_TRAIL_MS and are evicted as they record).
-const ROLLBACK_TRAIL_MAX = 256
+// Sized so steady glide creep (~30 distinct entries/s) cannot flood the
+// retention window out of the cap.
+const ROLLBACK_TRAIL_MAX = 512
 const ROLLBACK_TRAIL_TOLERANCE_PX = 2
 const ROLLBACK_TRAIL_SEGMENT_MAX_PX = 500
 // The trail alone cannot decide: WebKit's compositor may revert to a snapshot
@@ -99,12 +106,15 @@ const ROLLBACK_TRAIL_SEGMENT_MAX_PX = 500
 // (find-in-page, extensions, tests) are only distinguishable when the engine
 // is quiet — which is when they actually happen. Two guards keep an outside
 // jump from being eaten by coincidence (a mount-settle pin racing a test's
-// scrollTo(0) by ~90ms was real): the window is a couple of frames, and the
-// write-window path only accepts reverts of plausible size — a rollback
-// undoes recently composited creep (tens to hundreds of px), while outside
-// jumps travel the transcript. A live glide is exempt from the cap: WebKit
-// has been seen reverting a multi-thousand-px chase mid-flight.
-const ENGINE_WRITE_ROLLBACK_WINDOW_MS = 150
+// scrollTo(0) by ~90ms was real): the window is short, and the write-window
+// path only accepts reverts of plausible size — a rollback undoes recently
+// composited creep (tens to hundreds of px), while outside jumps travel the
+// transcript. A live glide is exempt from the cap: WebKit has been seen
+// reverting a multi-thousand-px chase mid-flight. The window itself must
+// cover the quiet gap between a chase's last settle write and the rollback:
+// recorded at 167ms on loaded CI runners (past a 150ms window by two frames,
+// releasing follow with zero input), so it carries margin over that.
+const ENGINE_WRITE_ROLLBACK_WINDOW_MS = 400
 const ROLLBACK_REVERT_CAP_PX = 1200
 // How long the scrolling tree gets to settle before convergence re-pins
 // after an engine-caused upward scroll.
