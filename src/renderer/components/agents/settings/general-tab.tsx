@@ -1,6 +1,5 @@
 
 import { useState } from 'react'
-import { toast } from 'sonner'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
 import { Button } from '@renderer/components/ui/button'
@@ -15,12 +14,10 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogTrigger,
 } from '@renderer/components/ui/alert-dialog'
-import { useDeleteAgent, useRouteAgentId } from '@renderer/hooks/use-agents'
+import { DeleteAgentConfirmDialog } from '@renderer/components/agents/delete-agent-confirm-dialog'
 import { useAgentPreferences, useUpdateAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { useSettings } from '@renderer/hooks/use-settings'
-import { useNavigate } from '@tanstack/react-router'
 import {
   useForceSyncAgentTemplate,
   useAgentTemplateStatus,
@@ -41,15 +38,12 @@ interface GeneralTabProps {
 }
 
 export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: GeneralTabProps) {
-  const [isDeleting, setIsDeleting] = useState(false)
   const [prDialogOpen, setPrDialogOpen] = useState(false)
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
   const [forceSyncDialogOpen, setForceSyncDialogOpen] = useState(false)
-  const deleteAgent = useDeleteAgent()
   const { data: agentPrefs } = useAgentPreferences(agentSlug)
   const updatePrefs = useUpdateAgentPreferences(agentSlug)
   const { data: settings } = useSettings()
-  const navigate = useNavigate()
-  const routeAgentId = useRouteAgentId()
   const { data: templateStatus } = useAgentTemplateStatus(agentSlug)
   const refreshTemplateStatus = useRefreshAgentTemplateStatus()
   const forceSyncTemplate = useForceSyncAgentTemplate()
@@ -58,20 +52,6 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
   const publishMode = useSkillsetPublishMode(templateStatus?.skillsetId)
   const isPR = isPullRequestPublishMode(publishMode)
   const SubmitIcon = isPR ? GitPullRequest : Send
-
-  const handleDelete = async () => {
-    setIsDeleting(true)
-    try {
-      await deleteAgent.mutateAsync(agentSlug)
-      onDialogClose()
-      if (routeAgentId === agentSlug) void navigate({ to: '/' })
-    } catch (error) {
-      console.error('Failed to delete agent:', error)
-      toast.error(error instanceof Error ? error.message : 'Failed to delete agent')
-    } finally {
-      setIsDeleting(false)
-    }
-  }
 
   return (
     <div className="space-y-6">
@@ -197,34 +177,22 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
           <p className="text-sm text-muted-foreground">
             Permanently delete this agent and all its sessions, messages, and data.
           </p>
-          <AlertDialog>
-            <AlertDialogTrigger asChild>
-              <Button variant="destructive" size="sm" data-testid="delete-agent-button">
-                <Trash2 className="h-4 w-4 mr-2" />
-                Delete Agent
-              </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Delete Agent</AlertDialogTitle>
-                <AlertDialogDescription>
-                  Are you sure you want to delete &quot;{name}&quot;? This will permanently delete
-                  the agent and all its sessions, messages, and data. This action cannot be undone.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction
-                  onClick={handleDelete}
-                  disabled={isDeleting}
-                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                  data-testid="confirm-button"
-                >
-                  {isDeleting ? 'Deleting...' : 'Delete'}
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() => setDeleteConfirmOpen(true)}
+            data-testid="delete-agent-button"
+          >
+            <Trash2 className="h-4 w-4 mr-2" />
+            Delete Agent
+          </Button>
+          <DeleteAgentConfirmDialog
+            agentSlug={agentSlug}
+            agentName={name}
+            open={deleteConfirmOpen}
+            onOpenChange={setDeleteConfirmOpen}
+            onDeleted={onDialogClose}
+          />
         </div>
       </div>
 

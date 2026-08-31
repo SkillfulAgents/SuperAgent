@@ -1,12 +1,10 @@
 import { useCallback, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { useNavigate } from '@tanstack/react-router'
-import { Copy, FolderOpen, Loader2, MoreVertical, Pencil, Timer, Trash2 } from 'lucide-react'
+import { Copy, FolderOpen, MoreVertical, Pencil, Timer, Trash2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import {
   AlertDialog,
-  AlertDialogAction,
   AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
@@ -15,7 +13,8 @@ import {
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
 import { AgentAutoDeleteSelect } from '@renderer/components/settings/auto-delete-select'
-import { useDeleteAgent, useRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
+import { DeleteAgentConfirmDialog } from '@renderer/components/agents/delete-agent-confirm-dialog'
+import { type ApiAgent } from '@renderer/hooks/use-agents'
 import { useAgentPreferences, useUpdateAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { apiFetch } from '@renderer/lib/api'
@@ -35,16 +34,12 @@ interface AgentSettingsPopoverProps {
 export function AgentSettingsPopover({ agent, onRename }: AgentSettingsPopoverProps) {
   const [open, setOpen] = useState(false)
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
-  const [isDeleting, setIsDeleting] = useState(false)
   // Set when Rename is clicked: the popover must not restore focus to the
   // gear on close, or it would steal it from the title input.
   const skipRestoreFocusRef = useRef(false)
-  const deleteAgent = useDeleteAgent()
   const { data: agentPrefs } = useAgentPreferences(agent.slug)
   const updatePrefs = useUpdateAgentPreferences(agent.slug)
   const { data: settings } = useSettings()
-  const navigate = useNavigate()
-  const routeAgentId = useRouteAgentId()
   const [showPathDialog, setShowPathDialog] = useState(false)
   const [agentPath, setAgentPath] = useState('')
 
@@ -71,20 +66,6 @@ export function AgentSettingsPopover({ agent, onRename }: AgentSettingsPopoverPr
       }
     }
   }, [agent.slug, canShowDirectory])
-
-  const handleDelete = async () => {
-    setIsDeleting(true)
-    try {
-      await deleteAgent.mutateAsync(agent.slug)
-      setDeleteConfirmOpen(false)
-      if (routeAgentId === agent.slug) void navigate({ to: '/' })
-    } catch (error) {
-      console.error('Failed to delete agent:', error)
-      toast.error(error instanceof Error ? error.message : 'Failed to delete agent')
-    } finally {
-      setIsDeleting(false)
-    }
-  }
 
   return (
     <>
@@ -179,35 +160,12 @@ export function AgentSettingsPopover({ agent, onRename }: AgentSettingsPopoverPr
       </Popover>
 
       {/* Outside the popover so it survives the popover closing */}
-      <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Agent</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete &quot;{agent.name}&quot;? This will permanently delete
-              the agent and all its sessions, messages, and data. This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDelete}
-              disabled={isDeleting}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              data-testid="confirm-button"
-            >
-              {isDeleting ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Deleting...
-                </>
-              ) : (
-                'Delete'
-              )}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <DeleteAgentConfirmDialog
+        agentSlug={agent.slug}
+        agentName={agent.name}
+        open={deleteConfirmOpen}
+        onOpenChange={setDeleteConfirmOpen}
+      />
 
       {/* Clipboard-write fallback: surface the path for manual copying */}
       <AlertDialog open={showPathDialog} onOpenChange={setShowPathDialog}>

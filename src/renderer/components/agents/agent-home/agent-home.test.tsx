@@ -38,6 +38,7 @@ const mockDeleteAgentMutate = vi.fn()
 vi.mock('@renderer/hooks/use-agents', () => ({
   useAgent: () => ({ data: { ...testAgent, mounts: [] } }),
   useAgents: () => ({ data: [testAgent] }),
+  useRouteAgentId: () => 'test-agent',
   useUpdateAgent: () => ({
     mutate: mockUpdateAgentMutate,
     mutateAsync: mockUpdateAgentMutateAsync,
@@ -118,11 +119,6 @@ vi.mock('@renderer/context/nav-transient-context', () => ({
   NavTransientProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
-// The agent-scoped settings dialogs render inside AgentHome. Stub them
-// — their internals aren't under test here and would pull in extra hooks.
-vi.mock('@renderer/components/agents/agent-settings-dialog', () => ({
-  AgentSettingsDialog: () => null,
-}))
 vi.mock('@renderer/components/agents/agent-context-menu', () => ({
   AgentContextMenu: ({ agent, children }: { agent: ApiAgent; children: React.ReactNode }) => (
     <div data-testid="agent-title-context-menu" data-agent-slug={agent.slug}>{children}</div>

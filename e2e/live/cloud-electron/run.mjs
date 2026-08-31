@@ -435,8 +435,12 @@ try {
   })
 
   await check('D2 the agent directory action degrades to copy-the-path', async () => {
+    // The directory action lives in the agent header's settings popover
+    // (moved there from the sidebar context menu).
     const row = page.locator('[data-testid^="agent-item-"]', { hasText: CLOUD_AGENT }).first()
-    await row.click({ button: 'right' })
+    await row.click()
+    await page.waitForSelector('[data-testid="agent-settings-button"]', { timeout: 15_000 })
+    await page.click('[data-testid="agent-settings-button"]')
     await page.waitForSelector('[data-testid="open-agent-directory-item"]', { timeout: 15_000 })
     const label = await page.locator('[data-testid="open-agent-directory-item"]').innerText()
     expect(

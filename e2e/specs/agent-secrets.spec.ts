@@ -196,7 +196,7 @@ test.describe('Agent Secrets (reach the container & persist)', () => {
       await page.locator('[data-testid="agent-settings-dialog"] [data-testid="delete-agent-button"]').click()
 
       const alertDialog = page.getByRole('alertdialog')
-      const confirmButton = page.locator('[data-testid="confirm-button"]')
+      const confirmButton = page.locator('[data-testid="confirm-delete-agent-button"]')
       await expectContainedIn(confirmButton, alertDialog)
 
       // Reachable controls are not enough: the name itself must wrap rather than paint

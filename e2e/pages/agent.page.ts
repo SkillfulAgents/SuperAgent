@@ -157,10 +157,10 @@ export class AgentPage {
     await this.page.locator('[data-testid="delete-agent-button"]').click()
 
     // Confirm deletion - use a longer timeout since deletion may take time
-    await this.page.locator('[data-testid="confirm-button"]').click()
+    await this.page.locator('[data-testid="confirm-delete-agent-button"]').click()
 
     // Wait for the confirm dialog to close (with longer timeout for deletion to complete)
-    await expect(this.page.locator('[data-testid="confirm-button"]')).not.toBeVisible({ timeout: 10000 })
+    await expect(this.page.locator('[data-testid="confirm-delete-agent-button"]')).not.toBeVisible({ timeout: 10000 })
   }
 
   /**

@@ -23,10 +23,11 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
-import { useAgents, useDeleteAgent, useRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
+import { useAgents, useRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { AgentSettingsDialog } from './agent-settings-dialog'
+import { DeleteAgentConfirmDialog } from './delete-agent-confirm-dialog'
 import { apiFetch } from '@renderer/lib/api'
 import { Settings, Trash2, LogOut, Move, FolderInput } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
@@ -68,9 +69,7 @@ export function AgentContextMenu({
   const [showSettingsDialog, setShowSettingsDialog] = useState(false)
   const [showNewFolderDialog, setShowNewFolderDialog] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
-  const [isDeleting, setIsDeleting] = useState(false)
   const [isLeaving, setIsLeaving] = useState(false)
-  const deleteAgent = useDeleteAgent()
   const navigate = useNavigate()
   // undefined when the menu is opened off the agent route (e.g. from the sidebar
   // list), so the up-nav only fires when we're actually viewing the agent being
@@ -155,22 +154,6 @@ export function AgentContextMenu({
     setShowNewFolderDialog(false)
     setNewFolderName('')
   }, [agent.slug, buildSections, newFolderName, updateSettings])
-
-  const handleDelete = async () => {
-    setIsDeleting(true)
-    try {
-      await deleteAgent.mutateAsync(agent.slug)
-      setShowDeleteDialog(false)
-      if (routeAgentId === agent.slug) {
-        void navigate({ to: '/' })
-      }
-    } catch (error) {
-      console.error('Failed to delete agent:', error)
-      toast.error(error instanceof Error ? error.message : 'Failed to delete agent')
-    } finally {
-      setIsDeleting(false)
-    }
-  }
 
   const handleLeave = async () => {
     setIsLeaving(true)
@@ -292,28 +275,12 @@ export function AgentContextMenu({
         onOpenChange={setShowSettingsDialog}
       />
 
-      <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
-        <AlertDialogContent data-testid="confirm-delete-agent-dialog">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Agent</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete &quot;{agent.name}&quot;? This will permanently
-              delete the agent and all its sessions. This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDelete}
-              disabled={isDeleting}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              data-testid="confirm-delete-agent-button"
-            >
-              {isDeleting ? 'Deleting...' : 'Delete'}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <DeleteAgentConfirmDialog
+        agentSlug={agent.slug}
+        agentName={agent.name}
+        open={showDeleteDialog}
+        onOpenChange={setShowDeleteDialog}
+      />
 
       <AlertDialog open={showLeaveDialog} onOpenChange={setShowLeaveDialog}>
         <AlertDialogContent data-testid="confirm-leave-agent-dialog">
