@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { toast } from 'sonner'
 import {
   Dialog,
-  DialogContent,
   DialogDescription,
-  DialogHeader,
-  DialogTitle,
 } from '@renderer/components/ui/dialog'
+import { Button } from '@renderer/components/ui/button'
 import { Progress } from '@renderer/components/ui/progress'
-import { statusDialogAnimation, StatusDialogMatrix } from '@renderer/components/agents/status-dialog-style'
+import {
+  StatusDialogContent,
+  StatusDialogHeader,
+  StatusDialogTitle,
+} from '@renderer/components/agents/status-dialog'
 import { useInstallAgentFromSkillset } from '@renderer/hooks/use-agent-templates'
 import type { ApiAgentTemplateInstallResult, ApiDiscoverableAgent } from '@shared/lib/types/api'
 
@@ -20,27 +23,17 @@ interface TemplateInstallDialogProps {
   onInstalled: (agent: ApiAgentTemplateInstallResult) => void | Promise<void>
 }
 
-interface TemplateInstallDialogViewProps {
-  open: boolean
-  phase: Phase
-  name?: string
-  errorMessage?: string | null
-  /** Dismiss handler. Pass null to make the dialog undismissable (install in flight). */
-  onDismiss: (() => void) | null
-}
-
 /**
  * Paced install progress. The install request emits no progress events, so the
- * bar eases toward 90% and holds; the dialog closes the moment the request
- * lands, so it never needs to reach 100.
+ * bar eases toward 90% and holds. When `active` goes false the last value is
+ * kept, not reset — the dialog stays mounted through its close animation, and
+ * a bar snapping back to 0% right at the success moment reads as a failure.
  */
 function useSimulatedProgress(active: boolean) {
   const [percent, setPercent] = useState(0)
   useEffect(() => {
-    if (!active) {
-      setPercent(0)
-      return
-    }
+    if (!active) return
+    setPercent(0)
     const startedAt = performance.now()
     const id = window.setInterval(() => {
       const seconds = (performance.now() - startedAt) / 1000
@@ -49,68 +42,6 @@ function useSimulatedProgress(active: boolean) {
     return () => window.clearInterval(id)
   }, [active])
   return percent
-}
-
-/** Pure presentation for the install dialog. */
-function TemplateInstallDialogView({
-  open,
-  phase,
-  name,
-  errorMessage,
-  onDismiss,
-}: TemplateInstallDialogViewProps) {
-  const percent = useSimulatedProgress(open && phase === 'installing')
-  return (
-    <Dialog
-      open={open}
-      onOpenChange={(nowOpen) => {
-        if (!nowOpen) onDismiss?.()
-      }}
-    >
-      {/* hideClose keys off phase, not onDismiss, so the dev preview of the
-          installing state looks exactly like the real (undismissable) one —
-          there Escape is still available via onDismiss. */}
-      <DialogContent
-        className="max-w-lg min-h-72 content-center"
-        style={statusDialogAnimation.contentStyle}
-        hideClose={phase === 'installing'}
-        overlayClassName={statusDialogAnimation.overlay}
-        overlayStyle={statusDialogAnimation.overlayStyle}
-        aria-describedby={undefined}
-      >
-        <StatusDialogMatrix />
-        {/* sm:text-center beats the base header's sm:text-left so multi-line
-            descriptions (e.g. error messages) stay centered at all widths. */}
-        <DialogHeader className="items-center text-center sm:text-center">
-          <DialogTitle
-            className={
-              phase === 'error'
-                ? 'text-base font-normal'
-                : 'status-title-shimmer text-base font-normal'
-            }
-          >
-            {phase === 'error' ? `Couldn't install ${name}` : `Installing ${name}...`}
-          </DialogTitle>
-          {phase === 'error' && <DialogDescription>{errorMessage}</DialogDescription>}
-        </DialogHeader>
-
-        {phase !== 'error' && (
-          // 21rem = the content width of the original max-w-sm card; the bar
-          // keeps that width inside the larger dialog.
-          <div
-            className="mx-auto flex w-full max-w-[21rem] items-center gap-2.5 pt-2"
-            data-testid="template-install-status"
-          >
-            <span className="sr-only">Installing…</span>
-            <Progress percent={percent} className="h-1 flex-1" />
-            <span className="text-xs tabular-nums text-muted-foreground">
-              {Math.round(percent)}%
-            </span>
-          </div>
-        )}
-      </DialogContent>
-    </Dialog>
-  )
 }
 
 /**
@@ -125,6 +56,18 @@ export function TemplateInstallDialog({ template, onClose, onInstalled }: Templa
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const install = useInstallAgentFromSkillset()
 
+  // Reset during render, not in the install effect: the effect runs after
+  // paint, so a dialog reopened after a failure would flash the previous
+  // error for a frame.
+  const [lastTemplate, setLastTemplate] = useState(template)
+  if (template !== lastTemplate) {
+    setLastTemplate(template)
+    if (template) {
+      setPhase('installing')
+      setErrorMessage(null)
+    }
+  }
+
   // One install per opening. A re-render must not fire a second one, and the
   // ref (not state) is what makes that true even under StrictMode double-invoke.
   const startedFor = useRef<string | null>(null)
@@ -136,23 +79,31 @@ export function TemplateInstallDialog({ template, onClose, onInstalled }: Templa
 
   const run = useCallback(
     async (target: ApiDiscoverableAgent) => {
-      setPhase('installing')
-      setErrorMessage(null)
+      let agent: ApiAgentTemplateInstallResult
       try {
-        const agent = await install.mutateAsync({
+        agent = await install.mutateAsync({
           skillsetId: target.skillsetId,
           agentPath: target.path,
           agentName: target.name,
           agentVersion: target.version,
         })
-        // Close before onInstalled — that path may open the onboarding
-        // "Setting up your agent..." dialog; stacking both looks broken.
-        onClose()
-        await onInstalled(agent)
       } catch (error) {
         console.error('Failed to install agent from skillset:', error)
         setErrorMessage(error instanceof Error ? error.message : 'Something went wrong.')
         setPhase('error')
+        return
+      }
+      // Close before onInstalled — that path may open the onboarding
+      // "Setting up your agent..." dialog; stacking both looks broken.
+      onClose()
+      // The dialog is already closed, so its error phase can't render a
+      // failure here; the agent itself installed fine, so a toast is the
+      // right weight.
+      try {
+        await onInstalled(agent)
+      } catch (error) {
+        console.error('Post-install handoff failed:', error)
+        toast.error(`${target.name} was installed, but opening it failed.`)
       }
     },
     [install, onClose, onInstalled],
@@ -170,15 +121,58 @@ export function TemplateInstallDialog({ template, onClose, onInstalled }: Templa
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the template; `run` changes identity every render
   }, [template])
 
+  const open = !!template
+  const percent = useSimulatedProgress(open && phase === 'installing')
+  // The only way to close mid-install is success — complete the bar for the
+  // close animation instead of holding wherever the simulation got to.
+  const shownPercent = open ? percent : 100
+
   return (
-    <TemplateInstallDialogView
-      open={!!template}
-      phase={phase}
-      name={shown?.name}
-      errorMessage={errorMessage}
-      // No dismissing mid-install: the request is already in flight, and a
-      // half-installed agent behind a closed dialog is worse than waiting.
-      onDismiss={phase === 'installing' ? null : onClose}
-    />
+    <Dialog
+      open={open}
+      onOpenChange={(nowOpen) => {
+        // No dismissing mid-install: the request is already in flight, and a
+        // half-installed agent behind a closed dialog is worse than waiting.
+        if (!nowOpen && phase !== 'installing') onClose()
+      }}
+    >
+      <StatusDialogContent
+        open={open}
+        hideClose={phase === 'installing'}
+        // The error phase renders a real DialogDescription and must keep
+        // Radix's default wiring so screen readers announce the message; the
+        // installing phase has none, so suppress the missing-description
+        // warning there.
+        {...(phase === 'error' ? {} : { 'aria-describedby': undefined })}
+      >
+        <StatusDialogHeader>
+          <StatusDialogTitle shimmer={phase !== 'error'}>
+            {phase === 'error' ? `Couldn't install ${shown?.name}` : `Installing ${shown?.name}...`}
+          </StatusDialogTitle>
+          {phase === 'error' && <DialogDescription>{errorMessage}</DialogDescription>}
+        </StatusDialogHeader>
+
+        {phase === 'error' ? (
+          <div className="flex justify-center pt-2">
+            <Button type="button" variant="outline" onClick={onClose}>
+              Close
+            </Button>
+          </div>
+        ) : (
+          // 21rem = the content width of the original max-w-sm card; the bar
+          // keeps that width inside the larger dialog.
+          <div
+            className="mx-auto flex w-full max-w-[21rem] items-center gap-2.5 pt-2"
+            data-testid="template-install-status"
+          >
+            <span className="sr-only">Installing…</span>
+            <Progress percent={shownPercent} className="h-1 flex-1" />
+            <span className="text-xs tabular-nums text-muted-foreground">
+              {Math.round(shownPercent)}%
+            </span>
+          </div>
+        )}
+      </StatusDialogContent>
+    </Dialog>
   )
 }

@@ -1108,8 +1108,9 @@ html[data-keyboard-open] [data-composer-footer] {
 /*
   Title shimmer for the blocking status dialogs (template install / onboarding
   setup). Same mask-subtraction technique as .tree-tracer above: the text keeps
-  its own color, and the mask sweeps a full-alpha band across a dimmed rest
-  state. Tile width equals the travel distance, so the loop is seamless.
+  its own color, and the mask sweeps a reduced-alpha band across a full-alpha
+  rest state, reading as a lighter streak passing through the text. Tile width
+  equals the travel distance, so the loop is seamless.
 */
 @keyframes status-title-shimmer {
   from { -webkit-mask-position: -160px 0; mask-position: -160px 0; }
