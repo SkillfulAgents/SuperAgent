@@ -558,6 +558,52 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(agents?.[0].hasUnreadNotifications).toBe(true)
   })
 
+  it('mention os_notification raises the unread dot and the mention mark', () => {
+    queryClient.setQueryData(['sessions', 'my-agent'], [
+      {
+        id: 'sess-1',
+        agentSlug: 'my-agent',
+        name: 'S',
+        createdAt: new Date(),
+        lastActivityAt: new Date(),
+        messageCount: 1,
+        isActive: false,
+      },
+    ])
+    queryClient.setQueryData(['agents'], [
+      { slug: 'my-agent', displaySlug: 'my-agent', name: 'My Agent', status: 'running' },
+    ])
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'os_notification',
+      notificationType: 'session_mention',
+      sessionId: 'sess-1',
+      agentSlug: 'my-agent',
+      messageUuid: 'm1',
+      title: 'Mention',
+      body: 'Iddo mentioned you',
+    })
+
+    const sessions = queryClient.getQueryData<{
+      hasUnreadNotifications?: boolean
+      unreadMentionMessageUuid?: string | null
+    }[]>(['sessions', 'my-agent'])
+    expect(sessions?.[0].hasUnreadNotifications).toBe(true)
+    expect(sessions?.[0].unreadMentionMessageUuid).toBe('m1')
+    const agents = queryClient.getQueryData<{
+      hasUnreadNotifications?: boolean
+      hasUnreadMentions?: boolean
+    }[]>(['agents'])
+    expect(agents?.[0].hasUnreadNotifications).toBe(true)
+    expect(agents?.[0].hasUnreadMentions).toBe(true)
+  })
+
   it('does not raise the unread dot when the popup is suppressed by the active session view', async () => {
     // Viewing sess-1 with the tab visible — the handler marks the record read
     // instead of popping, so the dot must not be raised either.

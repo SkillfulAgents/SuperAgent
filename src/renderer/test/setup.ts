@@ -72,6 +72,7 @@ vi.mock('@renderer/lib/auth-client', () => ({
 vi.mock('@shared/lib/analytics/server-analytics', () => ({
   trackServerEvent: vi.fn(),
   setServerAnalyticsVersion: vi.fn(),
+  resolveAnalyticsUserId: vi.fn((id: string) => id),
 }))
 
 // Mock analytics context globally — components use useAnalyticsTracking

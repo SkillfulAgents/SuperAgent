@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   chatSearchSchema,
+  sessionSearchSchema,
   connectionsSearchSchema,
   homeSearchSchema,
   rootSearchSchema,
@@ -54,6 +55,15 @@ describe('chatSearchSchema', () => {
   })
   it('accepts a missing session', () => {
     expect(chatSearchSchema.parse({})).toEqual({})
+  })
+})
+
+describe('sessionSearchSchema', () => {
+  it('round-trips an optional mention id', () => {
+    expect(sessionSearchSchema.parse({ mention: 'm1' })).toEqual({ mention: 'm1' })
+  })
+  it('accepts a missing mention', () => {
+    expect(sessionSearchSchema.parse({})).toEqual({})
   })
 })
 

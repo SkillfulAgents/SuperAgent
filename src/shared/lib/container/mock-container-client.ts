@@ -2218,6 +2218,15 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     return MockContainerClient.activeBrowserSessions.get(this.config.agentId) ?? null
   }
 
+  appendUserEntry(sessionId: string, content: string, uuid: string): void {
+    this.writeJsonlEntry(sessionId, {
+      type: 'user',
+      message: { content },
+      timestamp: new Date().toISOString(),
+      uuid,
+    })
+  }
+
   /**
    * Write a JSONL entry for a session
    */
@@ -2897,8 +2906,12 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     // Update last activity
     session.lastActivity = new Date().toISOString()
 
-    // shouldQuery: false — append to transcript without triggering a response
+    // shouldQuery: false — append to transcript without triggering a response.
+    // Write the user entry directly so the renderer's message read sees it
+    // (the real CLI does this itself on the SDK path).
     if (options?.shouldQuery === false) {
+      this.appendUserEntry(sessionId, content, uuid ?? randomUUID())
+      this.emitStreamMessage(sessionId, { type: 'user_message', content: { content } })
       return
     }
 

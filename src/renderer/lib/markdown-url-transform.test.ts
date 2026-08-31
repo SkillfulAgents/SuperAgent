@@ -40,6 +40,11 @@ describe('markdownUrlTransform (SUP-238)', () => {
     expect(onHref('myapp://do-something')).toBe('')
   })
 
+  it('preserves mention: hrefs and drops them on src', () => {
+    expect(onHref('mention:u1')).toBe('mention:u1')
+    expect(onSrc('mention:u1')).toBe('')
+  })
+
   it('only widens link hrefs, not other URL properties (e.g. img src)', () => {
     // The tel:/sms: allowance is scoped to key === 'href'; for an image src the
     // default behavior (blank) still applies.

@@ -5,9 +5,11 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import {
   MarkdownComposerEditor,
+  insertMentionAtTrigger,
   selectAllMarkdownComposer,
   setMarkdownComposerSelection,
 } from './markdown-composer-editor'
+import { parseMentions } from '@shared/lib/utils/mentions'
 import { findPotentialSecrets, type SecuredSecret } from '@renderer/lib/secret-detection'
 
 function ControlledEditor({ initialValue = '' }: { initialValue?: string }) {
@@ -436,5 +438,62 @@ describe('MarkdownComposerEditor', () => {
 
     await user.type(editor, 'production')
     expect(onChange).toHaveBeenLastCalledWith('/deploy production')
+  })
+
+  it('inserts a mention node and serializes it as a marker', () => {
+    const onChange = vi.fn()
+    render(
+      <MarkdownComposerEditor
+        value="ping @Id"
+        onChange={onChange}
+        placeholder="Write a message"
+        dataTestId="markdown-editor"
+      />
+    )
+    const element = screen.getByTestId('markdown-editor')
+    setMarkdownComposerSelection(element, 9)
+    expect(insertMentionAtTrigger(element, { userId: 'u1', name: 'Iddo Gino' }, 3)).toBe(true)
+    expect(onChange).toHaveBeenLastCalledWith('ping [[mention:u1|Iddo%20Gino]] ')
+  })
+
+  it('parses a marker back into an atomic node that Backspace removes whole', async () => {
+    const user = userEvent.setup()
+    render(<ControlledEditor initialValue="a [[mention:u1|Iddo%20Gino]] b" />)
+    const element = screen.getByTestId('markdown-editor')
+    expect(element.querySelector('[data-testid="mention-chip"]')?.textContent).toBe('@Iddo Gino')
+    await user.click(element)
+    expect(setMarkdownComposerSelection(element, 4)).toBe(true)
+    await user.keyboard('{Backspace}')
+    expect(screen.getByTestId('markdown-value').textContent).toBe('a  b')
+  })
+
+  it('escapes a hand-typed marker so it is not lifted', async () => {
+    const user = userEvent.setup()
+    render(<ControlledEditor initialValue="" />)
+    const editor = screen.getByTestId('markdown-editor')
+    await user.click(editor)
+    // user-event treats `[code]` as a physical-key token. Double each `[` so
+    // the typed source is `[[mention:u1|X]]`.
+    await user.keyboard('[[[[mention:u1|X]]')
+    const serialized = screen.getByTestId('markdown-value').textContent ?? ''
+    expect(serialized).toBe('\\[\\[mention:u1|X\\]\\]')
+    expect(parseMentions(serialized)).toEqual([])
+  })
+
+  it('fires onSelectionText for a caret-only transaction', () => {
+    const onSelectionText = vi.fn()
+    render(
+      <MarkdownComposerEditor
+        value="hello @we"
+        onChange={() => {}}
+        onSelectionText={onSelectionText}
+        placeholder="Write a message"
+        dataTestId="markdown-editor"
+      />
+    )
+    const element = screen.getByTestId('markdown-editor')
+    onSelectionText.mockClear()
+    setMarkdownComposerSelection(element, 6)
+    expect(onSelectionText).toHaveBeenCalled()
   })
 })

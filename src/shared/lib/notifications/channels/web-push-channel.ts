@@ -21,7 +21,7 @@ import type { NotificationEvent } from '../notification-event'
  * Typed against the union so a renamed or mistyped member fails typecheck
  * instead of silently never pushing.
  */
-const PUSHABLE_TYPES = new Set<NotificationType>(['session_complete', 'session_waiting'])
+const PUSHABLE_TYPES = new Set<NotificationType>(['session_complete', 'session_waiting', 'session_mention'])
 
 /**
  * How long the push service may hold an undelivered push for an offline
@@ -118,6 +118,7 @@ export class WebPushChannel implements NotificationChannel {
       if (!subscription.userId) {
         return
       }
+      if (event.recipientUserId && event.recipientUserId !== subscription.userId) return
       let access = accessCache.get(subscription.userId)
       if (!access) {
         access = getAccessibleAgentSlugs(subscription.userId)

@@ -155,6 +155,28 @@ describe('clearSessionUnreadInCache', () => {
     expect(queryClient.getQueryData(['agents'])).toEqual([{ slug: 'agent-1', hasUnreadNotifications: true }])
   })
 
+  it('clears unreadMentionMessageUuid and the agent mention rollup', () => {
+    const queryClient = seed()
+    queryClient.setQueryData(['sessions', 'agent-1'], [
+      { ...session('sess-1', true), unreadMentionMessageUuid: 'm1' },
+      session('sess-2', false),
+    ])
+    queryClient.setQueryData(['session', 'sess-1', 'agent-1'], {
+      ...session('sess-1', true),
+      unreadMentionMessageUuid: 'm1',
+    })
+    queryClient.setQueryData(['agents'], [{ slug: 'agent-1', hasUnreadNotifications: true, hasUnreadMentions: true }])
+    queryClient.setQueryData(['agents', 'agent-1'], { slug: 'agent-1', hasUnreadNotifications: true, hasUnreadMentions: true })
+
+    expect(clearSessionUnreadInCache(queryClient, 'agent-1', 'sess-1')).toBe(true)
+    expect((queryClient.getQueryData(['session', 'sess-1', 'agent-1']) as ApiSession).unreadMentionMessageUuid).toBeNull()
+    expect(queryClient.getQueryData(['agents'])).toEqual([{
+      slug: 'agent-1',
+      hasUnreadNotifications: false,
+      hasUnreadMentions: false,
+    }])
+  })
+
   it('leaves list entries that carry no unread flag alone', () => {
     const queryClient = seed()
     // Automation slices live under the same prefix with a different shape.

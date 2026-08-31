@@ -75,6 +75,13 @@ const authProjects = [
     dataDir: path.join(e2eDataDir, 'shared-connections'),
     viteCacheDir: path.join(e2eDataDir, '.vite', 'shared-connections'),
   },
+  {
+    name: 'auth-mentions',
+    testMatch: '**/composer-mention.spec.ts',
+    port: e2ePort + 9,
+    dataDir: path.join(e2eDataDir, 'mentions'),
+    viteCacheDir: path.join(e2eDataDir, '.vite', 'mentions'),
+  },
 ].map((project, index) => ({
   ...project,
   baseURL: index === 0 && process.env.E2E_BASE_URL

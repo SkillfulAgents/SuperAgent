@@ -33,6 +33,7 @@ export interface ApiAgent {
   hasActiveSessions?: boolean
   hasSessionsAwaitingInput?: boolean
   hasUnreadNotifications?: boolean
+  hasUnreadMentions?: boolean
   sessionCount?: number
   lastActivityAt?: Date | null
   dashboards?: ApiAgentDashboard[]
@@ -117,6 +118,12 @@ export interface ApiDiscoverableAgent {
 /**
  * Session response from API
  */
+export interface ApiAgentMember {
+  userId: string
+  userName: string
+  userEmail: string
+}
+
 export interface ApiSession {
   id: string
   agentSlug: string
@@ -127,6 +134,7 @@ export interface ApiSession {
   isActive?: boolean
   isAwaitingInput?: boolean
   hasUnreadNotifications?: boolean
+  unreadMentionMessageUuid?: string | null
   lastUsage?: SessionUsage
   // Present when session was created by a scheduled task or webhook trigger
   scheduledTaskId?: string
@@ -402,7 +410,7 @@ export interface ApiScheduledTask {
  */
 export interface ApiNotification {
   id: string
-  type: 'session_complete' | 'session_waiting' | 'session_scheduled' | 'session_webhook' | 'session_chat_integration'
+  type: 'session_complete' | 'session_waiting' | 'session_scheduled' | 'session_webhook' | 'session_chat_integration' | 'session_mention'
   sessionId: string
   agentSlug: string
   title: string
@@ -410,4 +418,6 @@ export interface ApiNotification {
   isRead: boolean
   createdAt: Date
   readAt: Date | null
+  recipientUserId?: string | null
+  messageUuid?: string | null
 }

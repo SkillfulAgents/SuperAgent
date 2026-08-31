@@ -91,6 +91,36 @@ vi.mock('@renderer/hooks/use-settings', () => ({
   useModelSettings: () => mockSettings,
 }))
 
+const mockUserState = {
+  isAuthMode: false,
+  user: { id: 'me' },
+  isAuthenticated: true,
+  isAdmin: false,
+  isPending: false,
+  mustChangePassword: false,
+  rolesReady: true,
+  canAccessAgent: () => true,
+  canUseAgent: () => true,
+  canAdminAgent: () => false,
+  agentRole: () => null,
+  agentMemberCount: () => 0,
+  signOut: async () => {},
+}
+
+vi.mock('@renderer/context/user-context', () => ({
+  useUser: () => mockUserState,
+  UserProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}))
+
+let mockMembersData = [
+  { userId: 'u1', userName: 'Iddo Gino', userEmail: 'iddo@x' },
+  { userId: 'u2', userName: 'West Harper', userEmail: 'west@x' },
+]
+
+vi.mock('@renderer/hooks/use-agent-members', () => ({
+  useAgentMembers: () => ({ data: mockMembersData }),
+}))
+
 describe('MessageInput', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -107,6 +137,11 @@ describe('MessageInput', () => {
       envVar: 'GITHUB_TOKEN',
       hasValue: true,
     })
+    mockUserState.isAuthMode = false
+    mockMembersData = [
+      { userId: 'u1', userName: 'Iddo Gino', userEmail: 'iddo@x' },
+      { userId: 'u2', userName: 'West Harper', userEmail: 'west@x' },
+    ]
   })
 
   it('renders textarea with placeholder', () => {
@@ -1120,6 +1155,68 @@ describe('MessageInput', () => {
 
       await waitFor(() => {
         expect(screen.getByTestId('message-input').textContent).toBe('voice-generated draft')
+      })
+    })
+  })
+
+  describe('mentions', () => {
+    beforeEach(() => {
+      mockUserState.isAuthMode = true
+      Element.prototype.scrollIntoView = vi.fn()
+    })
+
+    function DraftSeeder({ sessionId, value }: { sessionId: string; value: string }) {
+      const [, setDraft] = useDraft<string>(`session:${sessionId}`)
+      useEffect(() => { setDraft(value) }, [setDraft, value])
+      return null
+    }
+
+    it('opens the mention picker on @ mid-text and filters by name or email', async () => {
+      const user = userEvent.setup()
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      await user.type(screen.getByTestId('message-input'), 'refunds fail, @we')
+      expect(screen.getByTestId('mention-menu')).toBeInTheDocument()
+      expect(screen.getByRole('option', { name: /West Harper/ })).toBeInTheDocument()
+      expect(screen.queryByRole('option', { name: /Iddo/ })).toBeNull()
+    })
+
+    it('Enter inserts the chip and retitles the send button', async () => {
+      const user = userEvent.setup()
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      const input = screen.getByTestId('message-input')
+      await user.type(input, '@idd')
+      await user.keyboard('{Enter}')
+      await waitFor(() => {
+        expect(input.querySelector('[data-testid="mention-chip"]')).toHaveTextContent('@Iddo Gino')
+      })
+      expect(screen.queryByTestId('mention-helper-strip')).toBeNull()
+      expect(screen.getByTestId('send-button')).toHaveAttribute('title', 'Notify')
+    })
+
+    it('does not open the picker without other members', async () => {
+      mockMembersData = [{ userId: 'me', userName: 'Me', userEmail: 'me@x' }]
+      const user = userEvent.setup()
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      await user.type(screen.getByTestId('message-input'), '@')
+      expect(screen.queryByTestId('mention-menu')).toBeNull()
+    })
+
+    it('sends the marker text unchanged', async () => {
+      const user = userEvent.setup()
+      renderWithProviders(
+        <>
+          <DraftSeeder sessionId="s-1" value="[[mention:u1|Iddo%20Gino]] look" />
+          <MessageInput sessionId="s-1" agentSlug="agent-1" />
+        </>
+      )
+      await waitFor(() => {
+        expect(screen.getByTestId('message-input').querySelector('[data-testid="mention-chip"]')).toBeInTheDocument()
+      })
+      await user.click(screen.getByTestId('send-button'))
+      await waitFor(() => {
+        expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(
+          expect.objectContaining({ content: '[[mention:u1|Iddo%20Gino]] look' })
+        )
       })
     })
   })

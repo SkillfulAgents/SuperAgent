@@ -254,28 +254,26 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
 // Notifications - user notifications for session events
 export const notifications = sqliteTable('notifications', {
   id: text('id').primaryKey(),
-  type: text('type', { enum: ['session_complete', 'session_waiting', 'session_scheduled', 'session_webhook', 'session_chat_integration'] }).notNull(),
+  type: text('type', { enum: ['session_complete', 'session_waiting', 'session_scheduled', 'session_webhook', 'session_chat_integration', 'session_mention'] }).notNull(),
   sessionId: text('session_id').notNull(),
   agentSlug: text('agent_slug').notNull(),
   title: text('title').notNull(),
   body: text('body').notNull(),
   isRead: integer('is_read', { mode: 'boolean' }).notNull().default(false),
-  // NOTE: notifications are intentionally agent/session-scoped, NOT per-user.
-  // Read state is shared across everyone with access to the agent (a teammate
-  // acknowledging a "session waiting"/"session complete" item clears it for the
-  // team). There is deliberately no per-user owner column here: cross-agent
-  // isolation is enforced by getAccessibleAgentSlugs() in the service layer and
-  // by HasNotificationAccess on the by-id routes. A previously-speculative
-  // `user_id` column was dropped (SUP-227, never wired up — always NULL). Do not
-  // re-add a per-user owner unless a *targeted* notification type lands (e.g. an
-  // @-mention or per-approver request), which needs a recipient + split read
-  // state, not a single shared isRead bit.
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   readAt: integer('read_at', { mode: 'timestamp_ms' }),
+  // Targeted notifications (session_mention). NULL = agent-scoped row, shared read
+  // state, as before. A non-null recipient is visible only to that user, so
+  // isRead is per person by construction. This is the case the SUP-227 comment
+  // reserved; do not widen it to other types without a recipient.
+  recipientUserId: text('recipient_user_id'),
+  // Transcript message the row points at (jump target). NULL for every other type.
+  messageUuid: text('message_uuid'),
 }, (table) => ({
   agentSlugIsReadIdx: index('notifications_agent_slug_is_read_idx').on(table.agentSlug, table.isRead),
   sessionIdIdx: index('notifications_session_id_idx').on(table.sessionId),
   createdAtIdx: index('notifications_created_at_idx').on(table.createdAt),
+  recipientMessageUnique: uniqueIndex('notifications_message_recipient_unique').on(table.messageUuid, table.recipientUserId),
 }))
 
 /**

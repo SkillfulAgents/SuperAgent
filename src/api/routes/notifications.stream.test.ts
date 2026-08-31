@@ -56,7 +56,8 @@ vi.mock('@shared/lib/container/message-persister', () => ({
   },
 }))
 
-vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: () => false }))
+const isAuthMode = vi.hoisted(() => vi.fn(() => false))
+vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode }))
 
 // Auth middleware: no-op in tests
 vi.mock('../middleware/auth', () => ({
@@ -104,6 +105,10 @@ beforeAll(async () => {
   }) as typeof clearInterval)
 
   const app = new Hono()
+  app.use('*', async (c, next) => {
+    c.set('user' as never, { id: 'me' } as never)
+    await next()
+  })
   app.route('/api/notifications', notificationsRouter)
   await new Promise<void>((resolve) => {
     server = serve({ fetch: app.fetch, port: 0, hostname: '127.0.0.1' }, (info: AddressInfo) => {
@@ -121,6 +126,7 @@ afterAll(async () => {
 afterEach(() => {
   globalClients.clear()
   abortBeforeHandler.value = false
+  isAuthMode.mockReturnValue(false)
 })
 
 /** Poll until `predicate` holds or `timeoutMs` elapses. */
@@ -222,5 +228,35 @@ describe('GET /api/notifications/stream teardown', () => {
 
     expect(globalClients.size).toBe(0)
     expect(await waitFor(() => clearedKeepAlives.size === createdKeepAlives.size)).toBe(true)
+  })
+})
+
+describe('GET /api/notifications/stream auth-mode recipient filter', () => {
+  it('does not write a frame addressed to another user', async () => {
+    isAuthMode.mockReturnValue(true)
+    const client = await connectSSE()
+    expect(await client.waitForData('"type":"connected"')).toBe(true)
+
+    for (const callback of globalClients) {
+      await callback({ type: 'os_notification', title: 'other-mention', recipientUserId: 'other' })
+    }
+
+    expect(await client.waitForData('other-mention', 200)).toBe(false)
+    client.destroy()
+    expect(await waitFor(() => globalClients.size === 0)).toBe(true)
+  })
+
+  it('writes a frame addressed to the connected user', async () => {
+    isAuthMode.mockReturnValue(true)
+    const client = await connectSSE()
+    expect(await client.waitForData('"type":"connected"')).toBe(true)
+
+    for (const callback of globalClients) {
+      await callback({ type: 'os_notification', title: 'my-mention', recipientUserId: 'me' })
+    }
+
+    expect(await client.waitForData('my-mention')).toBe(true)
+    client.destroy()
+    expect(await waitFor(() => globalClients.size === 0)).toBe(true)
   })
 })

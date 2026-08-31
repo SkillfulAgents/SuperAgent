@@ -24,6 +24,32 @@ const BASE_WINDOW = MESSAGES_PAGE_LIMIT
 const LOAD_STEP = MESSAGES_PAGE_OLDER_LIMIT
 const TURN_ANCHOR_TOP = 100
 
+function findTurnAnchor(container: HTMLElement | null, id: string): HTMLElement | null {
+  if (!container) return null
+  const matches = container.querySelectorAll<HTMLElement>(
+    `[data-turn-anchor-id="${CSS.escape(id)}"]`,
+  )
+  if (!matches.length) return null
+  for (let i = matches.length - 1; i >= 0; i--) {
+    if (matches[i].getBoundingClientRect().height > 0) return matches[i]
+  }
+  return matches[0]
+}
+
+function readingLineTarget(viewport: HTMLElement, anchor: HTMLElement) {
+  const anchorTop =
+    anchor.getBoundingClientRect().top -
+    viewport.getBoundingClientRect().top +
+    viewport.scrollTop
+  return { anchorTop, scrollTop: Math.max(0, anchorTop - TURN_ANCHOR_TOP) }
+}
+
+function rowId(item: unknown): string | undefined {
+  if (item && typeof item === 'object' && 'id' in item && typeof (item as { id: unknown }).id === 'string') {
+    return (item as { id: string }).id
+  }
+}
+
 // ---------------------------------------------------------------------------
 // The follow engine.
 //
@@ -190,6 +216,9 @@ interface MessageListScrollOptions<T> {
   isCompacting: unknown
   pendingRequestCount: unknown
   activeSubagents: unknown
+  /** Pin this user-message id to the send reading line (inbox / unread mention). */
+  jumpToMessageId?: string | null
+  onJumpSettled?: (result: 'scrolled' | 'unmounted') => void
 }
 
 /**
@@ -222,6 +251,8 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
     isCompacting,
     pendingRequestCount,
     activeSubagents,
+    jumpToMessageId,
+    onJumpSettled,
   } = options
 
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -345,12 +376,12 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
     )
   }, [])
 
-  const glideToLiveEdge = useCallback((kind: 'trip' | 'follow' = 'trip') => {
+  const glideTo = useCallback((getTarget: () => number, kind: 'trip' | 'follow' = 'trip') => {
     const el = scrollRef.current
     if (!el) return
     glideRef.current?.cancel()
     if (prefersReducedMotion()) {
-      writeScrollTop(el, liveEdgeTarget(el))
+      writeScrollTop(el, getTarget())
       rememberPosition()
       return
     }
@@ -375,7 +406,7 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
       // The target is re-read every frame: content streaming in during the
       // glide moves the live edge, and the chase follows it rather than
       // landing short at a stale coordinate.
-      const target = liveEdgeTarget(el)
+      const target = getTarget()
       const dt = Math.min(64, now - last)
       last = now
       const remaining = target - el.scrollTop
@@ -392,6 +423,12 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
     }
     frameId = requestAnimationFrame(step)
   }, [rememberPosition, writeScrollTop])
+
+  const glideToLiveEdge = useCallback((kind: 'trip' | 'follow' = 'trip') => {
+    const el = scrollRef.current
+    if (!el) return
+    glideTo(() => liveEdgeTarget(el), kind)
+  }, [glideTo])
 
   // Re-assert the live edge. Convergence, not classification: called after
   // every content/viewport resize and every reserve sync while following, so
@@ -468,6 +505,8 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
     () => visibleMessages.slice(-windowSize),
     [visibleMessages, windowSize]
   )
+  const jumpSettledRef = useRef<string | null>(null)
+
   const hiddenCount = visibleMessages.length - windowedMessages.length
 
   // Keep the rendered range anchored at the top while the user is scrolled up.
@@ -530,26 +569,15 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
     // anchor tag, and the ghost's emptied wrapper lingers at the OLD
     // position — measuring it reads zero drift while the real row mounted
     // lower. Prefer the last tagged element that actually has height.
-    const findAnchor = (id: string) => {
-      const matches = contentBodyRef.current?.querySelectorAll<HTMLElement>(
-        `[data-turn-anchor-id="${CSS.escape(id)}"]`,
-      )
-      if (!matches?.length) return null
-      for (let i = matches.length - 1; i >= 0; i--) {
-        if (matches[i].getBoundingClientRect().height > 0) return matches[i]
-      }
-      return matches[0]
-    }
     const anchorEl =
-      (anchoredTurn.uuid ? findAnchor(anchoredTurn.uuid) : null) ??
-      findAnchor(anchoredTurn.localId)
+      (anchoredTurn.uuid ? findTurnAnchor(contentBodyRef.current, anchoredTurn.uuid) : null) ??
+      findTurnAnchor(contentBodyRef.current, anchoredTurn.localId)
     if (anchorEl) {
-      const anchorTop =
-        anchorEl.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop
+      const { anchorTop, scrollTop } = readingLineTarget(el, anchorEl)
       const drift = anchorTop - anchoredTurn.anchorTop
       if (Math.abs(drift) > 1) {
         anchoredTurn.anchorTop = anchorTop
-        anchoredTurn.scrollTop = Math.max(0, anchorTop - TURN_ANCHOR_TOP)
+        anchoredTurn.scrollTop = scrollTop
         if (mayAdjustViewport) {
           writeScrollTop(el, Math.min(Math.max(0, el.scrollTop + drift), liveEdgeTarget(el)))
           rememberPosition()
@@ -613,6 +641,41 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
     writeScrollTop(el, liveEdgeTarget(el))
     rememberPosition()
   })
+
+  // After the mount pin. Same reading-line write as a send. Must run later
+  // than the effect above or the live-edge pin overwrites the jump.
+  useLayoutEffect(() => {
+    if (!jumpToMessageId) {
+      jumpSettledRef.current = null
+      return
+    }
+    const idx = visibleMessages.findIndex((item) => rowId(item) === jumpToMessageId)
+    if (idx >= 0) {
+      const needed = visibleMessages.length - idx
+      setWindowSize((n) => (n < needed ? needed : n))
+    }
+    if (jumpSettledRef.current === jumpToMessageId) return
+    const viewport = scrollRef.current
+    const anchor = findTurnAnchor(contentBodyRef.current, jumpToMessageId)
+    if (viewport && anchor) {
+      const id = jumpToMessageId
+      releaseFollow()
+      glideTo(() => {
+        const el = scrollRef.current
+        const next = findTurnAnchor(contentBodyRef.current, id)
+        if (!el) return 0
+        if (!next) return el.scrollTop
+        return readingLineTarget(el, next).scrollTop
+      })
+      jumpSettledRef.current = id
+      onJumpSettled?.('scrolled')
+      return
+    }
+    if (messages != null && !visibleMessages.some((item) => rowId(item) === jumpToMessageId)) {
+      jumpSettledRef.current = jumpToMessageId
+      onJumpSettled?.('unmounted')
+    }
+  }, [jumpToMessageId, visibleMessages, windowedMessages, messages, onJumpSettled, releaseFollow, glideTo])
 
   const handleScroll = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
     const el = event.currentTarget
@@ -797,18 +860,13 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
     if (hasNewSend) {
       if (newestTurnStart) {
         const viewport = scrollRef.current
-        const anchor = Array.from(
-          contentBodyRef.current?.querySelectorAll<HTMLElement>('[data-turn-anchor-id]') ?? [],
-        ).find((element) => element.dataset.turnAnchorId === newestTurnStart.localId)
+        const anchor = findTurnAnchor(contentBodyRef.current, newestTurnStart.localId)
 
         if (viewport && anchor) {
-          const anchorTop =
-            anchor.getBoundingClientRect().top -
-            viewport.getBoundingClientRect().top +
-            viewport.scrollTop
+          const { anchorTop, scrollTop } = readingLineTarget(viewport, anchor)
           anchoredTurnRef.current = {
             localId: newestTurnStart.localId,
-            scrollTop: Math.max(0, anchorTop - TURN_ANCHOR_TOP),
+            scrollTop,
             anchorTop,
           }
         } else {

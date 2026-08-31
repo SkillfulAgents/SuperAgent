@@ -3,7 +3,7 @@ import { FilePreviewProvider } from '@renderer/context/file-preview-context'
 import { WorkflowProvider } from '@renderer/context/workflow-context'
 import { CalendarClock, GitFork, Zap } from 'lucide-react'
 import { SessionProvenanceBanner } from './session-provenance-banner'
-import { useEffect } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useSession, useSetSessionMarkedUnread, useClearSessionUnread } from '@renderer/hooks/use-sessions'
 import { HttpError } from '@renderer/lib/api'
 import { SessionNotFound } from '@renderer/router/route-fallbacks'
@@ -19,6 +19,8 @@ import { SessionSearchBar } from '@renderer/components/messages/session-search-b
 interface SessionViewProps {
   agentSlug: string
   sessionId: string
+  /** From the inbox `?mention=` click. Jumps even after the row is already read. */
+  inboxMessageUuid?: string
 }
 
 /**
@@ -32,7 +34,7 @@ interface SessionViewProps {
  * `AgentShell`, so they survive leaving this leaf for a sibling sub-view and
  * coming back.
  */
-export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
+export function SessionView({ agentSlug, sessionId, inboxMessageUuid }: SessionViewProps) {
   useRenderTracker('SessionView')
   const navigate = useNavigate()
   const { data: session, error: sessionError } = useSession(sessionId, agentSlug)
@@ -54,8 +56,29 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
   const contextUsage = streamContextUsage ?? session?.lastUsage ?? null
   const contextPercent = contextUsage ? computeContextPercent(contextUsage) : null
 
+  const mentionTarget = inboxMessageUuid ?? session?.unreadMentionMessageUuid ?? null
+  const [jumpPending, setJumpPending] = useState(false)
+  useEffect(() => {
+    setJumpPending(!!mentionTarget)
+  }, [mentionTarget, sessionId])
+
+  const handleJumpSettled = useCallback(() => {
+    setJumpPending(false)
+    if (inboxMessageUuid) {
+      void navigate({
+        to: '/agents/$slug/sessions/$sessionId',
+        params: { slug: agentSlug, sessionId },
+        search: {},
+        replace: true,
+      })
+    }
+    markSessionNotificationsRead.mutate(sessionId)
+    clearSessionUnread(agentSlug, sessionId)
+  }, [sessionId, agentSlug, inboxMessageUuid]) // eslint-disable-line react-hooks/exhaustive-deps
+
   // Auto-mark notifications as read when viewing a session
   useEffect(() => {
+    if (session === undefined || jumpPending) return
     const clearWrites = () => {
       markSessionNotificationsRead.mutate(sessionId)
       // "Mark as unread" survives until the session is *reopened*, so it clears
@@ -77,18 +100,19 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
     // a small delay to avoid marking as read on quick navigation.
     const timeout = setTimeout(clearWrites, 1000)
     return () => clearTimeout(timeout)
-  }, [sessionId]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [sessionId, jumpPending, session]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Also mark notifications as read when the tab regains focus while viewing it
   useEffect(() => {
     const handleVisibilityChange = () => {
+      if (jumpPending) return
       if (document.visibilityState === 'visible') {
         markSessionNotificationsRead.mutate(sessionId)
       }
     }
     document.addEventListener('visibilitychange', handleVisibilityChange)
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
-  }, [sessionId]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [sessionId, jumpPending]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // A genuine 404 (deep-link to a non-existent / deleted session) → ambiguous
   // not-found. The pending-messages guard means a just-created session
@@ -168,6 +192,8 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
               pendingWakeAt={session?.pendingWakeAt}
               pendingWakeTaskId={session?.pendingWakeTaskId}
               pendingWakeNote={session?.pendingWakeNote}
+              jumpToMessageId={mentionTarget}
+              onJumpSettled={handleJumpSettled}
             />
           </div>
         </WorkflowProvider>

@@ -20,6 +20,11 @@ export const chatSearchSchema = z.object({
   newchat: z.string().optional(),
 })
 
+// Inbox mention click: jump to this user-message id even after the row is read.
+export const sessionSearchSchema = z.object({
+  mention: z.string().min(1).optional(),
+})
+
 // A connection-detail overlay key: `account-${id}` / `mcp-${id}` (see
 // connections/unified-rows.ts). ONE definition shared by the agent connections
 // route and the global settings connections tab, so the two can't drift.

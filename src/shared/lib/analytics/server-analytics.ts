@@ -1,6 +1,18 @@
 import { getTenantId } from './tenant-id'
 import { getSettings, type AnalyticsTarget } from '../config/settings'
 import { DEFAULT_AMPLITUDE_KEY } from './constants'
+import { getPlatformAuthStatus } from '../services/platform-auth-service'
+
+/**
+ * Same identity the renderer sends (analytics-context.tsx): platform user id
+ * when that user is connected, else `${tenantId}:${userId}`. Needed to attribute
+ * an event to a user other than the caller (tagged_in_session).
+ */
+export function resolveAnalyticsUserId(userId: string): string {
+  const status = getPlatformAuthStatus(userId)
+  if (status.connected && status.userId) return status.userId
+  return `${getTenantId()}:${userId}`
+}
 
 interface EventPayload {
   event_type: string

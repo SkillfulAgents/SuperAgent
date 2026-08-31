@@ -94,7 +94,7 @@ beforeEach(() => {
 })
 
 describe('type allowlist', () => {
-  it.each(['session_complete', 'session_waiting'] as const)('pushes %s', async (type) => {
+  it.each(['session_complete', 'session_waiting', 'session_mention'] as const)('pushes %s', async (type) => {
     await channel.deliver(makeEvent({ type }))
     expect(mocks.sendNotification).toHaveBeenCalledTimes(1)
   })
@@ -241,6 +241,18 @@ describe('auth-mode agent access gate', () => {
     await channel.deliver(makeEvent())
 
     expect(mocks.sendNotification).not.toHaveBeenCalled()
+  })
+
+  it('a mention event for recipient u2 reaches only u2\'s subscription', async () => {
+    mocks.getAccessibleAgentSlugs.mockResolvedValue(['agent-x'])
+    mocks.listPushSubscriptions.mockReturnValue([
+      makeSubscription({ id: 'sub-u1', userId: 'u1' }),
+      makeSubscription({ id: 'sub-u2', userId: 'u2', endpoint: 'https://web.push.apple.com/u2' }),
+    ])
+    await channel.deliver(makeEvent({ type: 'session_mention', recipientUserId: 'u2' }))
+    expect(mocks.sendNotification).toHaveBeenCalledTimes(1)
+    const [target] = mocks.sendNotification.mock.calls[0] as unknown as [{ endpoint: string }]
+    expect(target.endpoint).toBe('https://web.push.apple.com/u2')
   })
 })
 

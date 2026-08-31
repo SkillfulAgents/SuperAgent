@@ -15,9 +15,11 @@
 import { messagePersister } from '@shared/lib/container/message-persister'
 import {
   createNotification,
+  createNotificationsBatch,
   getAgentAccessUserIds,
   type NotificationType,
 } from '@shared/lib/services/notification-service'
+import { flattenMentions } from '@shared/lib/utils/mentions'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getAgent } from '@shared/lib/services/agent-service'
@@ -119,8 +121,10 @@ class NotificationManager {
     actions?: Array<{ text: string }>
     actionContext?: Record<string, unknown>
     extra?: Omit<Record<string, unknown>, 'type' | 'notificationType' | 'notificationId' | 'sessionId' | 'agentSlug' | 'title' | 'body' | 'actions' | 'actionContext'>
+    recipientUserId?: string
+    messageUuid?: string
   }): Promise<void> {
-    const { type, sessionId, agentSlug, title, body, actions, actionContext, extra } = params
+    const { type, sessionId, agentSlug, title, body, actions, actionContext, extra, recipientUserId, messageUuid } = params
 
     // A blocked automated session must become visible: session lists exclude
     // non-promoted automated sessions, so a session_waiting notification on one
@@ -156,6 +160,8 @@ class NotificationManager {
       agentSlug,
       title,
       body: resolvedBody,
+      ...(recipientUserId ? { recipientUserId } : {}),
+      ...(messageUuid ? { messageUuid } : {}),
     })
 
     // Stamp the actionContext with notificationId so the renderer dispatcher
@@ -177,6 +183,8 @@ class NotificationManager {
       ...(actions ? { actions } : {}),
       ...(stampedActionContext ? { actionContext: stampedActionContext } : {}),
       ...(extra ? { extra } : {}),
+      ...(recipientUserId ? { recipientUserId } : {}),
+      ...(messageUuid ? { messageUuid } : {}),
     }
 
     // Fire-and-forget per channel: delivery to one backend (a slow push POST,
@@ -466,6 +474,34 @@ class NotificationManager {
       title: 'Webhook Trigger Fired',
       body: `${triggerDisplay} fired for ${displayName}`,
       extra: { triggerId },
+    })
+  }
+
+  /**
+   * All recipient rows land in one transaction (design A7), then each fans out.
+   * Throws if the insert fails; the caller decides what that means for the send.
+   */
+  async triggerSessionMentions(params: {
+    sessionId: string
+    agentSlug: string
+    senderName: string
+    recipients: Array<{ userId: string; name: string }>
+    messageUuid: string
+    content: string
+  }): Promise<void> {
+    const title = `${params.senderName} mentioned you`
+    const body = flattenMentions(params.content)
+    const ids = await createNotificationsBatch(params.recipients.map((r) => ({
+      type: 'session_mention' as const, sessionId: params.sessionId, agentSlug: params.agentSlug,
+      title, body, recipientUserId: r.userId, messageUuid: params.messageUuid,
+    })))
+    params.recipients.forEach((r, i) => {
+      const event: NotificationEvent = {
+        notificationId: ids[i], type: 'session_mention', sessionId: params.sessionId, agentSlug: params.agentSlug,
+        title, body, recipientUserId: r.userId, messageUuid: params.messageUuid,
+        navigatePath: `/agents/${encodeURIComponent(params.agentSlug)}/sessions/${encodeURIComponent(params.sessionId)}`,
+      }
+      for (const channel of getNotificationChannels()) void channel.deliver(event).catch((e) => console.error('[notifications] deliver failed', channel.id, e))
     })
   }
 }

@@ -61,9 +61,10 @@ describe('notification-service', () => {
   })
 
   describe('USER_ACTIONABLE_NOTIFICATION_TYPES', () => {
-    it('contains exactly the two types that drive UI badges', () => {
+    it('contains exactly the types that drive UI badges', () => {
       expect([...USER_ACTIONABLE_NOTIFICATION_TYPES].sort()).toEqual([
         'session_complete',
+        'session_mention',
         'session_waiting',
       ])
     })

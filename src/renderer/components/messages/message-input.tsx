@@ -9,7 +9,10 @@ import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { UploadError } from '@renderer/components/ui/upload-error'
 import { ComposerActionButton } from './composer-action-button'
-import { SlashCommandMenu } from './slash-command-menu'
+import { ComposerMenu, SlashCommandMenu } from './slash-command-menu'
+import { useAgentMembers } from '@renderer/hooks/use-agent-members'
+import { insertMentionAtTrigger } from './markdown-composer-editor'
+import { parseMentions } from '@shared/lib/utils/mentions'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
@@ -44,11 +47,18 @@ interface MessageInputProps {
 
 export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialSpeed, initialModel, registerSnapshot }: MessageInputProps) {
   useRenderTracker('MessageInput')
-  const { canUseAgent, isAuthMode } = useUser()
+  const { user, canUseAgent, isAuthMode } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
   const lastTypingNotification = useRef(0)
   const [slashMenuOpen, setSlashMenuOpen] = useState(false)
   const [slashMenuIndex, setSlashMenuIndex] = useState(0)
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null)
+  const [mentionIndex, setMentionIndex] = useState(0)
+  const { data: members } = useAgentMembers(isAuthMode ? agentSlug : null)
+  const mentionable = useMemo(
+    () => (members ?? []).filter((m) => m.userId !== user?.id),
+    [members, user?.id]
+  )
   const { data: agentPrefs, isFetched: agentPrefsFetched } = useAgentPreferences(agentSlug)
   const composerOptions = useComposerOptions({
     initialEffort,
@@ -175,6 +185,31 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     textareaRef.current?.focus()
   }, [composer])
 
+  const handleSelectionText = useCallback((before: string) => {
+    const m = before.match(/(?:^|\s)@([^\s@]*)$/)
+    if (m && mentionable.length > 0) {
+      setMentionQuery(m[1])
+      setMentionIndex(0)
+    } else {
+      setMentionQuery(null)
+    }
+  }, [mentionable.length])
+
+  const mentionMatches = useMemo(() => {
+    if (mentionQuery === null) return []
+    const q = mentionQuery.toLowerCase()
+    return mentionable.filter((m) => m.userName.toLowerCase().includes(q) || m.userEmail.toLowerCase().includes(q))
+  }, [mentionQuery, mentionable])
+
+  const selectMention = useCallback((userId: string) => {
+    const m = mentionable.find((x) => x.userId === userId)
+    if (!m || mentionQuery === null || !textareaRef.current) return
+    insertMentionAtTrigger(textareaRef.current, { userId: m.userId, name: m.userName }, mentionQuery.length + 1)
+    setMentionQuery(null)
+  }, [mentionable, mentionQuery])
+
+  const hasMention = parseMentions(composer.message).length > 0
+
   const handleChange = useCallback((value: string) => {
     composer.setMessage(value)
 
@@ -211,6 +246,29 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
   }
 
   const handleKeyDown = (e: KeyboardEvent) => {
+    if (mentionQuery !== null && mentionMatches.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setMentionIndex((i) => (i + 1) % mentionMatches.length)
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setMentionIndex((i) => (i - 1 + mentionMatches.length) % mentionMatches.length)
+        return
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault()
+        selectMention(mentionMatches[mentionIndex].userId)
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setMentionQuery(null)
+        return
+      }
+    }
+
     // Slash command menu keyboard navigation
     if (slashMenuOpen && filteredCommands.length > 0) {
       if (e.key === 'ArrowDown') {
@@ -272,6 +330,17 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
         visible={slashMenuOpen}
         filter={slashFilter ?? ''}
       />
+      <ComposerMenu
+        testId="mention-menu"
+        visible={mentionQuery !== null}
+        items={mentionMatches.map((m) => ({
+          key: m.userId,
+          primary: <span className="font-medium">{m.userName}</span>,
+          secondary: m.userEmail,
+        }))}
+        selectedIndex={mentionIndex}
+        onSelect={selectMention}
+      />
       <ChatComposerBox
         className={FLOATING_COMPOSER_CLASS}
         attachments={composer.attachments}
@@ -283,7 +352,8 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
         onKeyDown={handleKeyDown}
         onPaste={composer.handlePaste}
         onFocus={() => { if (slashFilter !== null && slashCommands.length > 0) setSlashMenuOpen(true) }}
-        onBlur={() => setSlashMenuOpen(false)}
+        onBlur={() => { setSlashMenuOpen(false); setMentionQuery(null) }}
+        onSelectionText={handleSelectionText}
         placeholder={
           isOffline
             ? 'No internet connection...'
@@ -334,6 +404,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
               isSending={sendMessage.isPending || composer.isUploading}
               isInterrupting={interruptSession.isPending}
               onInterrupt={handleInterrupt}
+              sendTitle={hasMention ? 'Notify' : undefined}
             />
           </>
         )}

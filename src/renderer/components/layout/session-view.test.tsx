@@ -11,6 +11,18 @@ const mocks = vi.hoisted(() => ({
   setMarkedUnread: vi.fn(),
   // Reports whether a dot was actually showing; defaults to the common no-op open.
   clearUnread: vi.fn(() => false),
+  session: {
+    id: 'x-session',
+    agentSlug: 'target-agent',
+    name: 'Invoked by Caller Agent',
+    invokedByAgentSlug: 'caller-agent',
+    invokedByAgentName: 'Caller Agent',
+    unreadMentionMessageUuid: null as string | null,
+  },
+  jump: null as {
+    jumpToMessageId?: string | null
+    onJumpSettled?: (result: 'scrolled' | 'unmounted') => void
+  } | null,
 }))
 
 vi.mock('@tanstack/react-router', () => ({
@@ -19,13 +31,7 @@ vi.mock('@tanstack/react-router', () => ({
 
 vi.mock('@renderer/hooks/use-sessions', () => ({
   useSession: () => ({
-    data: {
-      id: 'x-session',
-      agentSlug: 'target-agent',
-      name: 'Invoked by Caller Agent',
-      invokedByAgentSlug: 'caller-agent',
-      invokedByAgentName: 'Caller Agent',
-    },
+    data: mocks.session,
     error: null,
   }),
   // Opening a session clears any "mark as unread" flag alongside the
@@ -57,7 +63,15 @@ vi.mock('@renderer/hooks/use-session-search', () => ({ useSessionSearch: () => (
 vi.mock('@renderer/components/messages/session-search-bar', () => ({
   SessionSearchBar: () => null,
 }))
-vi.mock('./session-chat-column', () => ({ SessionChatColumn: () => null }))
+vi.mock('./session-chat-column', () => ({
+  SessionChatColumn: (props: {
+    jumpToMessageId?: string | null
+    onJumpSettled?: (result: 'scrolled' | 'unmounted') => void
+  }) => {
+    mocks.jump = props
+    return null
+  },
+}))
 vi.mock('@renderer/context/file-preview-context', () => ({
   FilePreviewProvider: ({ children }: { children: ReactNode }) => children,
 }))
@@ -69,6 +83,8 @@ describe('SessionView unread clearing', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.clearUnread.mockReturnValue(false)
+    mocks.session.unreadMentionMessageUuid = null
+    mocks.jump = null
   })
 
   it('takes the dot down in the caches on mount and writes through immediately', () => {
@@ -100,12 +116,38 @@ describe('SessionView unread clearing', () => {
       vi.useRealTimers()
     }
   })
+
+  it('with an unread mention, marks read only after the jump settles, and not on visibilitychange before that', () => {
+    mocks.session.unreadMentionMessageUuid = 'm1'
+    render(<SessionView agentSlug="target-agent" sessionId="x-session" />)
+    expect(mocks.markRead).not.toHaveBeenCalled()
+    fireEvent(document, new Event('visibilitychange'))
+    expect(mocks.markRead).not.toHaveBeenCalled()
+    mocks.jump?.onJumpSettled?.('scrolled')
+    expect(mocks.markRead).toHaveBeenCalledWith('x-session')
+  })
+
+  it('jumps from an inbox mention even when the session mention is already read', () => {
+    mocks.session.unreadMentionMessageUuid = null
+    render(<SessionView agentSlug="target-agent" sessionId="x-session" inboxMessageUuid="m-inbox" />)
+    expect(mocks.jump?.jumpToMessageId).toBe('m-inbox')
+    expect(mocks.markRead).not.toHaveBeenCalled()
+    mocks.jump?.onJumpSettled?.('scrolled')
+    expect(mocks.navigate).toHaveBeenCalledWith({
+      to: '/agents/$slug/sessions/$sessionId',
+      params: { slug: 'target-agent', sessionId: 'x-session' },
+      search: {},
+      replace: true,
+    })
+    expect(mocks.markRead).toHaveBeenCalledWith('x-session')
+  })
 })
 
 describe('SessionView x-agent provenance', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.clearUnread.mockReturnValue(false)
+    mocks.session.unreadMentionMessageUuid = null
   })
 
   it('shows the Back bar and returns to Called from Other Agents', () => {

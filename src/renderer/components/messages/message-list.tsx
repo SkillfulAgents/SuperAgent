@@ -143,9 +143,12 @@ interface MessageListProps {
   suppressScrollToBottom?: boolean
   /** Height of an overlaid footer that the live edge must remain above. */
   bottomInset?: number
+  /** Pin this user message to the send reading line. */
+  jumpToMessageId?: string | null
+  onJumpSettled?: (result: 'scrolled' | 'unmounted') => void
 }
 
-export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared, readOnly, suppressScrollToBottom = false, bottomInset = 0 }: MessageListProps) {
+export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared, readOnly, suppressScrollToBottom = false, bottomInset = 0, jumpToMessageId, onJumpSettled }: MessageListProps) {
   useRenderTracker('MessageList')
   const { data: messages, isLoading, error, fetchOlder, hasOlder, isFetchingOlder } = useMessages(sessionId, agentSlug)
   const deleteMessage = useDeleteMessage()
@@ -855,6 +858,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     isCompacting,
     pendingRequestCount,
     activeSubagents,
+    jumpToMessageId,
+    onJumpSettled,
   })
 
   // Drop expansion state for turns that no longer exist after edits/refetches.

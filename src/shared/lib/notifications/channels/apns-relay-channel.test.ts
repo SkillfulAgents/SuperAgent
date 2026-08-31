@@ -122,7 +122,7 @@ beforeEach(() => {
 })
 
 describe('type gating', () => {
-  it.each(['session_complete', 'session_waiting', 'session_scheduled', 'session_webhook'] as const)(
+  it.each(['session_complete', 'session_waiting', 'session_scheduled', 'session_webhook', 'session_mention'] as const)(
     'delivers %s (at least silently)',
     async (type) => {
       await channel.deliver(makeEvent({ type }))
@@ -327,6 +327,18 @@ describe('auth-mode agent access gate', () => {
     await channel.deliver(makeEvent())
 
     expect(mocks.fetch).not.toHaveBeenCalled()
+  })
+
+  it('a mention event for recipient u2 reaches only u2\'s device', async () => {
+    mocks.getAccessibleAgentSlugs.mockResolvedValue(['agent-x'])
+    mocks.listDeliverableApnsDevices.mockReturnValue([
+      makeDevice({ userId: 'u1' }),
+      makeDevice({ id: 'dev-row-2', token: TOKEN_B, userId: 'u2', mobileDeviceId: 'family-2' }),
+    ])
+    await channel.deliver(makeEvent({ type: 'session_mention', recipientUserId: 'u2' }))
+    const pushes = sentPushes()
+    expect(pushes).toHaveLength(1)
+    expect(pushes[0].deviceToken).toBe(TOKEN_B)
   })
 })
 

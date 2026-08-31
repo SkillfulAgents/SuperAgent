@@ -27,12 +27,13 @@ import type { NotificationEvent } from '../notification-event'
  * Typed against the union so a renamed or mistyped member fails typecheck
  * instead of silently never pushing.
  */
-const VISIBLE_TYPES = new Set<NotificationType>(['session_complete', 'session_waiting'])
+const VISIBLE_TYPES = new Set<NotificationType>(['session_complete', 'session_waiting', 'session_mention'])
 const SILENT_TYPES = new Set<NotificationType>([
   'session_complete',
   'session_waiting',
   'session_scheduled',
   'session_webhook',
+  'session_mention',
 ])
 
 /** Relay wire contract: 1..50 pushes per request. */
@@ -158,6 +159,7 @@ export class ApnsRelayChannel implements NotificationChannel {
       if (!device.userId) {
         return []
       }
+      if (event.recipientUserId && event.recipientUserId !== device.userId) return []
       let access = accessCache.get(device.userId)
       if (!access) {
         access = getAccessibleAgentSlugs(device.userId)
