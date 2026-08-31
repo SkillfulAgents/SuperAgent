@@ -21,6 +21,7 @@
  *     path on success; throws on escape — for callers that fail the request.
  */
 
+import fs from 'fs'
 import path from 'path'
 
 /**
@@ -57,6 +58,50 @@ export function assertPathWithinDir(
     throw new Error(message)
   }
   return path.resolve(candidate)
+}
+
+/**
+ * Symlink-aware containment: true iff `candidate`'s REAL location is inside
+ * (or equal to) `baseDir`'s real location.
+ *
+ * `isPathWithinDir` compares path STRINGS and never follows a link, so a
+ * symlink planted inside `baseDir` that points outside it passes. When the
+ * base directory is writable by an untrusted party — an agent's bind-mounted
+ * workspace — that is a real escape: a link named after another agent's
+ * session resolves to that agent's transcript while still looking local.
+ *
+ * Resolves symlinks on the deepest EXISTING prefix of `candidate` (a
+ * not-yet-created leaf can't be a link, and its name was already validated by
+ * `isPathWithinDir`), then re-appends the missing tail and re-checks
+ * containment against the real base. Any fs error is treated as "not
+ * contained" — fail closed. Follows links via `fs.existsSync`, so a dangling
+ * link resolves to its (contained) parent and reads as absent downstream.
+ */
+export function isRealPathWithinDir(baseDir: string, candidate: string): boolean {
+  try {
+    const realBase = safeRealpath(baseDir)
+    let existing = path.resolve(candidate)
+    const tail: string[] = []
+    while (!fs.existsSync(existing)) {
+      tail.unshift(path.basename(existing))
+      const parent = path.dirname(existing)
+      if (parent === existing) return false // walked past the root
+      existing = parent
+    }
+    const realExisting = safeRealpath(existing)
+    const realCandidate = tail.length > 0 ? path.join(realExisting, ...tail) : realExisting
+    return isPathWithinDir(realBase, realCandidate)
+  } catch {
+    return false
+  }
+}
+
+function safeRealpath(p: string): string {
+  try {
+    return fs.realpathSync(p)
+  } catch {
+    return path.resolve(p)
+  }
 }
 
 /**

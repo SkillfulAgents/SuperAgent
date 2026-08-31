@@ -2538,6 +2538,13 @@ agents.get('/:id/sessions/:sessionId/raw-log', AgentRead(), async (c) => {
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
 
+    // Ownership + containment first: this route opens the transcript by path
+    // directly, so without the gate a traversal-shaped id throws into the
+    // catch (500, not 404) and a planted symlink is followed to another
+    // agent's transcript. sessionExists is non-throwing and symlink-aware.
+    if (!(await sessionExists(agentSlug, sessionId))) {
+      return c.json({ error: 'Session log not found' }, 404)
+    }
 
     const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
 

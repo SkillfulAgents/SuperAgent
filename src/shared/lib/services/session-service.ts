@@ -55,6 +55,7 @@ import {
   ContentBlock,
 } from '@shared/lib/types/agent'
 import { captureException } from '@shared/lib/error-reporting'
+import { isRealPathWithinDir } from '@shared/lib/utils/path-safety'
 import {
   getSessionSummaryCacheSlot,
   applyActivity,
@@ -83,12 +84,20 @@ import {
 // path, a separator) is not one of its sessions, and must not reach a registry
 // or the filesystem.
 function sessionIdIsWithinAgent(agentSlug: string, sessionId: string): boolean {
+  let jsonlPath: string
   try {
-    getSessionJsonlPath(agentSlug, sessionId)
-    return true
+    jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
   } catch {
     return false
   }
+  // Lexical containment (the getSessionJsonlPath above) is not enough. The
+  // agent's session directory is bind-mounted read/write into its container,
+  // so the agent can plant a symlink named after ANOTHER agent's session that
+  // resolves to that agent's transcript — a name that looks local but escapes
+  // on read. The id is this agent's only if its real path stays inside the
+  // agent's real session directory. This is what the deleted ownership index
+  // also enforced, without a second source of truth to keep in step.
+  return isRealPathWithinDir(getAgentSessionsDir(agentSlug), jsonlPath)
 }
 
 // ============================================================================
@@ -1903,12 +1912,19 @@ export async function updateSessionName(
 }
 
 /**
- * Check if a session exists
+ * Whether this agent has a transcript on disk for `sessionId`.
+ *
+ * Never throws, and never answers true for an id that is not this agent's:
+ * `sessionIdIsWithinAgent` rejects a traversal-shaped id (which would
+ * otherwise throw out of `getSessionJsonlPath` into the caller's `catch` and,
+ * on the routes that gate delete/interrupt on this, answer 500 instead of a
+ * clean 404) and a symlink whose real target escapes the agent's directory.
  */
 export async function sessionExists(
   agentSlug: string,
   sessionId: string
 ): Promise<boolean> {
+  if (!sessionIdIsWithinAgent(agentSlug, sessionId)) return false
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
   return fileExists(jsonlPath)
 }

@@ -391,6 +391,49 @@ describe('a forged transcript does not buy access to another agent’s live sess
   })
 })
 
+describe('a symlink forged in the attacker’s workspace resolves to the victim’s file', () => {
+  // Sharper than the plain forged file: a symlink named after the victim's
+  // session, planted in the attacker's own bind-mounted directory, RESOLVES to
+  // the victim's real transcript. A containment check that compares only path
+  // strings treats it as the attacker's own session. There is no benign
+  // reading of this id — it points at a file the attacker does not own — so
+  // here every gated route MUST refuse it (404), not merely leave the victim
+  // untouched.
+  beforeEach(() => {
+    const attackerDir = getAgentSessionsDir(ATTACKER)
+    realFs.mkdirSync(attackerDir, { recursive: true })
+    const link = path.join(attackerDir, `${victimSession}.jsonl`)
+    realFs.rmSync(link, { force: true })
+    realFs.symlinkSync(path.join(getAgentSessionsDir(VICTIM), `${victimSession}.jsonl`), link)
+  })
+
+  it('the messages listing refuses the id', async () => {
+    const res = await app().request(url(ATTACKER, victimSession, '/messages'), { method: 'GET' })
+    expect(res.status).toBe(404)
+    expectVictimUntouched()
+  })
+
+  it('the single-session read refuses the id', async () => {
+    const res = await app().request(url(ATTACKER, victimSession), { method: 'GET' })
+    expect(res.status).toBe(404)
+    expectVictimUntouched()
+  })
+
+  it('interrupt refuses the id', async () => {
+    const res = await post(url(ATTACKER, victimSession, '/interrupt'))
+    expect(res.status).toBe(404)
+    expect(mockInterruptSession).not.toHaveBeenCalled()
+    expectVictimUntouched()
+  })
+
+  it('delete refuses the id and leaves the victim’s real transcript', async () => {
+    const res = await app().request(url(ATTACKER, victimSession), { method: 'DELETE' })
+    expect(res.status).toBe(404)
+    expect(await sessionExists(VICTIM, victimSession)).toBe(true)
+    expectVictimUntouched()
+  })
+})
+
 describe('scoping does not over-block the caller’s own session', () => {
   it('interrupts its own session', async () => {
     const res = await post(url(ATTACKER, attackerSession, '/interrupt'))
