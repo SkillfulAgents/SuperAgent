@@ -83,16 +83,21 @@ import {
 // cannot name a file under this agent's session directory (`..`, an absolute
 // path, a separator) is not one of its sessions, and must not reach a registry
 // or the filesystem.
+// Path-shape validation, NOT an existence or ownership check: it answers true
+// for any well-formed id whether or not a session by that name exists — callers
+// that need "does this session exist / is it really this agent's" must use
+// sessionExists / sessionIsKnown, which layer those on top.
+//
 // Lexical containment only: `sessionId` names a file under this agent's session
 // directory (no `..`, absolute path, or separator). Deliberately touches no
 // filesystem — it runs once per transcript in the listing/summary hot loops,
 // whose op budget is pinned exactly by the perf suite. It is enough to reject a
 // traversal-shaped id; the SYMLINK escape (a link inside the agent's own dir
 // resolving to another agent's transcript) is caught on the content/action
-// gates instead — see {@link sessionFileResolvesWithinAgent} — because those
+// gates instead — see {@link sessionFileRealPathWithinAgent} — because those
 // are the paths that actually read or mutate the file, and they are off the
 // listing hot path.
-function sessionIdIsWithinAgent(agentSlug: string, sessionId: string): boolean {
+function sessionIdPathWithinAgent(agentSlug: string, sessionId: string): boolean {
   try {
     getSessionJsonlPath(agentSlug, sessionId)
     return true
@@ -109,7 +114,7 @@ function sessionIdIsWithinAgent(agentSlug: string, sessionId: string): boolean {
 // on to serve or act on the transcript (never in a listing loop): it costs a
 // realpath, but a session that fails it must not be readable. This is what the
 // deleted ownership index also enforced, without a second source of truth.
-function sessionFileResolvesWithinAgent(agentSlug: string, sessionId: string): boolean {
+function sessionFileRealPathWithinAgent(agentSlug: string, sessionId: string): boolean {
   let jsonlPath: string
   try {
     jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
@@ -577,7 +582,7 @@ async function buildSessionActivityMap(
       const stat = await statTranscriptForSummary(path.join(sessionsDir, file))
       if (!stat) return null
       const sessionId = path.basename(file, '.jsonl')
-      if (!sessionIdIsWithinAgent(agentSlug, sessionId)) return null
+      if (!sessionIdPathWithinAgent(agentSlug, sessionId)) return null
       return {
         sessionId,
         entry: { mtimeMs: stat.mtimeMs, birthtimeMs: stat.birthtimeMs, size: stat.size },
@@ -744,7 +749,7 @@ export async function listSessions(
       const { sessionId, stat } = result
       processedSessionIds.add(sessionId)
 
-      if (!sessionIdIsWithinAgent(agentSlug, sessionId)) continue
+      if (!sessionIdPathWithinAgent(agentSlug, sessionId)) continue
 
       // Skip empty JSONL files that aren't registered in metadata
       // These are typically created by Claude SDK for subagent directories
@@ -772,7 +777,7 @@ export async function listSessions(
   // (newly created sessions where the agent hasn't streamed yet)
   for (const [sessionId, sessionMeta] of Object.entries(metadata)) {
     if (!processedSessionIds.has(sessionId) && sessionMeta.createdAt) {
-      if (!sessionIdIsWithinAgent(agentSlug, sessionId)) continue
+      if (!sessionIdPathWithinAgent(agentSlug, sessionId)) continue
       // Skip scheduled/webhook sessions when requested
       if (options?.excludeAutomated && isAutomated(sessionId)) {
         continue
@@ -840,7 +845,7 @@ export async function listSessionsFromSummary(
   // Registered sessions whose agent has not streamed yet (no transcript).
   for (const [sessionId, sessionMeta] of Object.entries(metadata)) {
     if (activity.has(sessionId) || !sessionMeta.createdAt) continue
-    if (!sessionIdIsWithinAgent(agentSlug, sessionId)) continue
+    if (!sessionIdPathWithinAgent(agentSlug, sessionId)) continue
     if (options?.excludeAutomated && isAutomated(sessionId)) continue
     sessions.push(emptySessionFromMetadata(sessionId, agentSlug, sessionMeta))
   }
@@ -869,7 +874,7 @@ export async function listSessionsByIds(
   const sessions = await Promise.all(
     [...new Set(sessionIds)].map((sessionId) =>
       limit(async (): Promise<SessionInfo | null> => {
-        if (!sessionIdIsWithinAgent(agentSlug, sessionId)) return null
+        if (!sessionIdPathWithinAgent(agentSlug, sessionId)) return null
         if (options?.excludeAutomated && isAutomated(sessionId)) return null
         const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
         try {
@@ -906,7 +911,7 @@ export async function getSession(
   // Content-serving path (the single-session route reads this): symlink-aware,
   // so a planted link to another agent's transcript resolves to null, not that
   // agent's session summary.
-  if (!sessionFileResolvesWithinAgent(agentSlug, sessionId)) return null
+  if (!sessionFileRealPathWithinAgent(agentSlug, sessionId)) return null
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
   const metadata = await getSessionMetadata(agentSlug, sessionId)
 
@@ -1958,7 +1963,7 @@ export async function updateSessionName(
  * Whether this agent has a transcript on disk for `sessionId`.
  *
  * Never throws, and never answers true for an id that is not this agent's:
- * `sessionIdIsWithinAgent` rejects a traversal-shaped id (which would
+ * `sessionFileRealPathWithinAgent` rejects a traversal-shaped id (which would
  * otherwise throw out of `getSessionJsonlPath` into the caller's `catch` and,
  * on the routes that gate delete/interrupt on this, answer 500 instead of a
  * clean 404) and a symlink whose real target escapes the agent's directory.
@@ -1967,7 +1972,7 @@ export async function sessionExists(
   agentSlug: string,
   sessionId: string
 ): Promise<boolean> {
-  if (!sessionFileResolvesWithinAgent(agentSlug, sessionId)) return false
+  if (!sessionFileRealPathWithinAgent(agentSlug, sessionId)) return false
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
   return fileExists(jsonlPath)
 }
@@ -1999,7 +2004,7 @@ export async function sessionIsKnown(
   agentSlug: string,
   sessionId: string
 ): Promise<boolean> {
-  if (!sessionIdIsWithinAgent(agentSlug, sessionId)) return false
+  if (!sessionIdPathWithinAgent(agentSlug, sessionId)) return false
   try {
     if (await sessionExists(agentSlug, sessionId)) return true
     const metadata = await getSessionMetadata(agentSlug, sessionId)
