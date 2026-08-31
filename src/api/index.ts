@@ -52,6 +52,7 @@ import { getAuthSettings } from '@shared/lib/auth/auth-settings'
 import { getPublicAuthProviders } from '@shared/lib/auth/provider-config'
 import { LocalModeAuth, isContainerFacingPath } from './middleware/local-mode-auth'
 import { armAbortSignal } from './middleware/arm-abort-signal'
+import { defaultCacheControl } from './middleware/default-cache-control'
 
 const app = new Hono()
 
@@ -65,6 +66,15 @@ app.use('*', armAbortSignal)
 // Enable CORS for all routes
 const trustedOrigins = process.env.TRUSTED_ORIGINS?.split(',').map(o => o.trim()).filter(Boolean)
 app.use('*', cors(trustedOrigins?.length ? { origin: trustedOrigins } : undefined))
+
+// Uncacheable unless a route opts in — see the middleware for why an absent
+// Cache-Control is the wrong default behind a CDN. Scoped to '*' rather than
+// '/api/*' because the authorized mounts that sit outside /api (the Platform SSO
+// launcher on /auth, the cloud proxy on /cloud) need the default just as much,
+// and a default that only covers most of the surface is how this bug got here.
+// Routes that set their own header — including the static web build's — are
+// left untouched.
+app.use('*', defaultCacheControl)
 
 // Local mode: localhost IP restriction for all API endpoints (except container-facing endpoints)
 if (!isAuthMode()) {

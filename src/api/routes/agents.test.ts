@@ -2201,6 +2201,17 @@ describe('path traversal security — GET /:id/files/*', () => {
     expect(res.status).not.toBe(400)
   })
 
+  it('marks workspace files uncacheable so a CDN cannot serve a stale or cross-user body', async () => {
+    mockFsStat.mockResolvedValueOnce({ isFile: () => true, size: 100 })
+    mockCreateReadStream.mockReturnValueOnce({ pipe: vi.fn() })
+
+    const res = await getReq(app, '/api/agents/test-agent/files/out/render.mp4?inline=true')
+
+    // Without this, Cloudflare applies its own extension-based default TTL and
+    // serves the previous render of a file the agent has since rewritten.
+    expect(res.headers.get('cache-control')).toBe('private, no-store, max-age=0')
+  })
+
   it('rejects a workspace symlink whose real path escapes the workspace', async () => {
     mockFsRealpath
       .mockResolvedValueOnce('/mock/workspace')
@@ -7325,7 +7336,9 @@ describe('GET /:id/artifacts/:slug/screenshot.png', () => {
     const res = await getReq(app, '/api/agents/my-agent/artifacts/my-dash/screenshot.png')
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toBe('image/png')
-    expect(res.headers.get('cache-control')).toContain('max-age=60')
+    // Brief freshness, but private: a shared cache holding this authorized .png
+    // would serve one agent's dashboard thumbnail to anyone with the URL.
+    expect(res.headers.get('cache-control')).toBe('private, max-age=60, must-revalidate')
 
     // Read path should be rooted at the agent workspace/artifacts/<slug>.
     const readPath = mockFsReadFile.mock.calls[0][0] as string

@@ -7,6 +7,12 @@ export interface FileTab {
   agentSlug: string
   displayName: string
   description?: string
+  /**
+   * Cache-busting token for this tab's file URL, bumped every time the file is
+   * (re)delivered or renamed. Seeded from the clock rather than 0 so a reload
+   * never reuses a URL an intermediary may still be serving a stale body for —
+   * the agent rewrites these files in place, so path alone is not an identity.
+   */
   version: number
   /** 1-based page currently shown when this tab contains a PDF. */
   pdfPage: number
@@ -80,6 +86,14 @@ interface FilePreviewContextType {
 
 const FilePreviewContext = createContext<FilePreviewContextType | null>(null)
 
+let lastFileVersion = 0
+
+/** Strictly increasing cache-busting token; clock-seeded, monotonic within a session. */
+function nextFileVersion(): number {
+  lastFileVersion = Math.max(Date.now(), lastFileVersion + 1)
+  return lastFileVersion
+}
+
 function getDisplayName(filePath: string): string {
   const normalized = filePath.replace(/\/+$/, '')
   return normalized.split('/').pop() || normalized
@@ -129,6 +143,9 @@ export function FilePreviewProvider({
   }, [sessionId])
 
   const openFile = useCallback((filePath: string, agentSlug: string, description?: string) => {
+    // Minted outside the updater: React may invoke an updater more than once per
+    // commit, and a token that changes between passes is a different file URL.
+    const version = nextFileVersion()
     setOpenTabs(prev => {
       const existingIndex = prev.findIndex(tab => tab.kind === 'file' && tab.filePath === filePath)
       if (existingIndex >= 0) {
@@ -136,7 +153,7 @@ export function FilePreviewProvider({
         setIsOpen(true)
         const next = [...prev]
         const existing = next[existingIndex] as FileTab
-        next[existingIndex] = { ...existing, version: existing.version + 1 }
+        next[existingIndex] = { ...existing, version }
         return next
       }
       const newTab: FileTab = {
@@ -145,7 +162,7 @@ export function FilePreviewProvider({
         agentSlug,
         displayName: getDisplayName(filePath),
         description,
-        version: 0,
+        version,
         pdfPage: 1,
       }
       const next = [...prev, newTab]
@@ -203,13 +220,14 @@ export function FilePreviewProvider({
   }, [])
 
   const renameFilePath = useCallback((oldPath: string, newPath: string) => {
+    const version = nextFileVersion()
     setOpenTabs(prev => prev.map(tab => {
       if (tab.kind === 'file' && tab.filePath === oldPath) {
         return {
           ...tab,
           filePath: newPath,
           displayName: getDisplayName(newPath),
-          version: tab.version + 1,
+          version,
         }
       }
       if (tab.kind === 'folder' && tab.selectedPath === oldPath) {
@@ -264,12 +282,13 @@ export function FilePreviewProvider({
   }, [closeTab])
 
   const renameDirectoryPath = useCallback((oldPath: string, newPath: string) => {
+    const version = nextFileVersion()
     setOpenTabs(prev => prev.map(tab => {
       if (tab.kind === 'file') {
         const filePath = replacePathPrefix(tab.filePath, oldPath, newPath)
         return filePath === tab.filePath
           ? tab
-          : { ...tab, filePath, displayName: getDisplayName(filePath), version: tab.version + 1 }
+          : { ...tab, filePath, displayName: getDisplayName(filePath), version }
       }
 
       const rootPath = replacePathPrefix(tab.rootPath, oldPath, newPath)

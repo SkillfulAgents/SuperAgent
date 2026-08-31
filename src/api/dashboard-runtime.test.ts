@@ -285,6 +285,30 @@ describe('dashboard response scoping', () => {
     )
   })
 
+  it('narrows an upstream public asset directive to the requesting browser', () => {
+    // Artifact assets keep CDN-cacheable extensions under an authorized path, so
+    // a shared cache must never store one — but the upstream's own freshness is
+    // still honoured for the browser.
+    const upstream = new Headers({ 'cache-control': 'public, max-age=31536000, immutable' })
+
+    expect(dashboardResponseHeaders(upstream, basePath).get('cache-control'))
+      .toBe('private, max-age=31536000, immutable')
+  })
+
+  it('revalidates a proxied asset the dashboard server said nothing about', () => {
+    expect(dashboardResponseHeaders(new Headers(), basePath).get('cache-control'))
+      .toBe('private, no-cache')
+  })
+
+  it('revalidates when narrowing leaves no freshness directive behind', () => {
+    // `public` alone is a common dashboard-server default. Reduced to a bare
+    // `private` it states no expiry, so the browser invents one from
+    // Last-Modified and reuses a bundle the agent has since rebuilt.
+    const upstream = new Headers({ 'cache-control': 'public' })
+
+    expect(dashboardResponseHeaders(upstream, basePath).get('cache-control')).toBe('private, no-cache')
+  })
+
   it('invalidates representation headers when HTML was injected', () => {
     const upstream = new Headers({
       'cache-control': 'public, max-age=31536000, immutable',
@@ -296,7 +320,7 @@ describe('dashboard response scoping', () => {
     })
     const result = dashboardResponseHeaders(upstream, basePath, { transformedHtml: true })
 
-    expect(result.get('cache-control')).toBe('no-cache')
+    expect(result.get('cache-control')).toBe('private, no-cache')
     expect(result.has('content-encoding')).toBe(false)
     expect(result.has('content-length')).toBe(false)
     expect(result.has('etag')).toBe(false)

@@ -6409,6 +6409,21 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
       c.header('Content-Type', 'application/octet-stream')
     }
 
+    // Workspace files are mutable (the agent rewrites and redelivers them) and
+    // per-user authorized. Without an explicit directive an intermediary CDN
+    // applies its own default TTL by file extension — Cloudflare was serving
+    // 4-hour-old .mp4 renders as cf-cache-status: HIT, and a shared cache holding
+    // an authorized response is a leak as well as a staleness bug. `private`
+    // keeps it out of shared caches, `no-store` out of the browser's too.
+    //
+    // `no-store` over `no-cache` is deliberate, and it is the strict choice: it
+    // costs re-fetches (a seek past the media element's buffer below, an inline
+    // markdown image on remount) to buy an unconditional guarantee that no cache
+    // anywhere holds these bytes. Reclaiming those bytes means serving a
+    // validator — an mtime/size ETag plus If-None-Match → 304 — which is worth
+    // doing, but not as an unvalidated rider on a leak fix.
+    c.header('Cache-Control', 'private, no-store, max-age=0')
+
     // Advertise range support so media players (e.g. <video>) can seek. When the
     // client requests a byte range, serve just that slice as 206 Partial
     // Content; otherwise stream the whole file. Only the stream we actually
@@ -6638,8 +6653,11 @@ agents.get('/:id/artifacts/:artifactSlug/screenshot.png', AgentRead(), async (c)
       status: 200,
       headers: {
         'content-type': 'image/png',
-        // Screenshots are overwritten on every restart, so cache briefly.
-        'cache-control': 'public, max-age=60, must-revalidate',
+        // Screenshots are overwritten on every restart, so cache briefly — and
+        // `private`, never `public`: this is an AgentRead-authorized .png, an
+        // extension a CDN caches by default, so a shared-cache copy would be
+        // served to anyone with the URL without our auth ever running.
+        'cache-control': 'private, max-age=60, must-revalidate',
       },
     })
   } catch (error: any) {
