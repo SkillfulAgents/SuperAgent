@@ -333,7 +333,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
   const cardsFor = (kind: string) =>
     sseEvents.filter((e) => e.type === 'user_request_created' && e.request?.kind === kind)
   const openStreamRequestIds = () =>
-    userInputRequestManager.getStoreIdsForSession(SESSION_ID, 'stream')
+    userInputRequestManager.getStoreIdsForSession(AGENT_SLUG, SESSION_ID, 'stream')
 
   function simulateToolUse(toolName: string, toolId: string, input: Record<string, unknown>) {
     mockClient._sendMessage({
@@ -914,7 +914,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         )
         expect(
           userInputRequestManager
-            .getOpenRequestsForSession(SESSION_ID)
+            .getOpenRequestsForSession(AGENT_SLUG, SESSION_ID)
             .some((r) => r.id === 'side-sr-auto' && r.autoApproved === true)
         ).toBe(true)
 
@@ -981,11 +981,11 @@ describe('pending user-input request lifecycle (characterization)', () => {
 
         await vi.waitFor(() => {
           expect(
-            userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id)
+            userInputRequestManager.getOpenRequestsForSession(AGENT_SLUG, SESSION_ID).map((r) => r.id)
           ).toContain(toolId)
         })
         const entry = userInputRequestManager
-          .getOpenRequestsForSession(SESSION_ID)
+          .getOpenRequestsForSession(AGENT_SLUG, SESSION_ID)
           .find((r) => r.id === toolId)!
         expect(entry.kind, kindCase.label).toBe(kindCase.kind)
         expect(entry.scope).toEqual({ agentSlug: AGENT_SLUG, sessionId: SESSION_ID })
@@ -994,7 +994,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
 
         sendToolResult(toolId)
         expect(
-          userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id)
+          userInputRequestManager.getOpenRequestsForSession(AGENT_SLUG, SESSION_ID).map((r) => r.id)
         ).not.toContain(toolId)
         expect(userInputRequestManager.stats.recentResolutions.at(-1)).toMatchObject({
           id: toolId,
@@ -1007,7 +1007,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
 
     it('a stray main-path tool_result cannot evict the registry\'s computer-use entry (store-scoped resolve)', () => {
       simulateToolUse('mcp__computer-use__computer_click', 'shadow-cu-1', { x: 1, y: 2 })
-      expect(userInputRequestManager.getStoreIdsForSession(SESSION_ID, 'computer_use')).toEqual([
+      expect(userInputRequestManager.getStoreIdsForSession(AGENT_SLUG, SESSION_ID, 'computer_use')).toEqual([
         'shadow-cu-1',
       ])
 
@@ -1015,12 +1015,12 @@ describe('pending user-input request lifecycle (characterization)', () => {
       // untouched. The registry mirrors the STORE, not the tool_result — if it
       // settled here, the inline parity assert would blow up this test.
       sendToolResult('shadow-cu-1')
-      expect(userInputRequestManager.getStoreIdsForSession(SESSION_ID, 'computer_use')).toEqual([
+      expect(userInputRequestManager.getStoreIdsForSession(AGENT_SLUG, SESSION_ID, 'computer_use')).toEqual([
         'shadow-cu-1',
       ])
 
       messagePersister.clearPendingComputerUseRequest(AGENT_SLUG, SESSION_ID, 'shadow-cu-1')
-      expect(userInputRequestManager.getStoreIdsForSession(SESSION_ID, 'computer_use')).toEqual([])
+      expect(userInputRequestManager.getStoreIdsForSession(AGENT_SLUG, SESSION_ID, 'computer_use')).toEqual([])
       expect(userInputRequestManager.stats.recentResolutions.at(-1)).toMatchObject({
         id: 'shadow-cu-1',
         kind: 'computer_use',
@@ -1038,17 +1038,17 @@ describe('pending user-input request lifecycle (characterization)', () => {
         questions: [{ question: 'Pick DB', header: 'DB', options: [], multiSelect: false }],
       })
       expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
-      expect(userInputRequestManager.isSessionAwaiting(SESSION_ID, AGENT_SLUG)).toBe(true)
+      expect(userInputRequestManager.isSessionAwaiting(AGENT_SLUG, SESSION_ID)).toBe(true)
 
       // The first tool_result settles one request; the second card is still
       // parked, so bit and projection both stay on — the persister's status
       // IS the projection now.
       sendToolResult('shadow-par-1')
       expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
-      expect(userInputRequestManager.isSessionAwaiting(SESSION_ID, AGENT_SLUG)).toBe(true)
+      expect(userInputRequestManager.isSessionAwaiting(AGENT_SLUG, SESSION_ID)).toBe(true)
 
       sendToolResult('shadow-par-2')
-      expect(userInputRequestManager.isSessionAwaiting(SESSION_ID, AGENT_SLUG)).toBe(false)
+      expect(userInputRequestManager.isSessionAwaiting(AGENT_SLUG, SESSION_ID)).toBe(false)
       expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
       expect(userInputRequestManager.stats.mismatches).toBe(0)
     })
@@ -1064,16 +1064,16 @@ describe('pending user-input request lifecycle (characterization)', () => {
       simulateToolUse('Workflow', 'shadow-cap-1', { script: 'export const meta = {}' })
       await vi.waitFor(() => {
         expect(
-          userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id)
+          userInputRequestManager.getOpenRequestsForSession(AGENT_SLUG, SESSION_ID).map((r) => r.id)
         ).toContain('shadow-cap-1')
       })
       expect(
-        userInputRequestManager.getOpenRequestsForSession(SESSION_ID)[0].kind
+        userInputRequestManager.getOpenRequestsForSession(AGENT_SLUG, SESSION_ID)[0].kind
       ).toBe('capability_review')
 
       messagePersister.completeCapabilityReview(AGENT_SLUG, SESSION_ID, 'shadow-cap-1')
-      expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(0)
-      expect(userInputRequestManager.isSessionAwaiting(SESSION_ID, AGENT_SLUG)).toBe(false)
+      expect(userInputRequestManager.getOpenRequestsForSession(AGENT_SLUG, SESSION_ID)).toHaveLength(0)
+      expect(userInputRequestManager.isSessionAwaiting(AGENT_SLUG, SESSION_ID)).toBe(false)
       expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
       expect(userInputRequestManager.stats.mismatches).toBe(0)
     })
@@ -1089,7 +1089,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       simulateToolUse('Workflow', 'shadow-out-1', { script: 'export const meta = {}' })
       await vi.waitFor(() => {
         expect(
-          userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id)
+          userInputRequestManager.getOpenRequestsForSession(AGENT_SLUG, SESSION_ID).map((r) => r.id)
         ).toContain('shadow-out-1')
       })
       messagePersister.completeCapabilityReview(AGENT_SLUG, SESSION_ID, 'shadow-out-1', 'declined')
@@ -1124,10 +1124,10 @@ describe('pending user-input request lifecycle (characterization)', () => {
         reason: 'Need it',
       })
       simulateToolUse('mcp__computer-use__computer_click', 'shadow-drop-2', { x: 1, y: 2 })
-      expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(2)
+      expect(userInputRequestManager.getOpenRequestsForSession(AGENT_SLUG, SESSION_ID)).toHaveLength(2)
 
       messagePersister.unsubscribeFromSession(AGENT_SLUG, SESSION_ID)
-      expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(0)
+      expect(userInputRequestManager.getOpenRequestsForSession(AGENT_SLUG, SESSION_ID)).toHaveLength(0)
       expect(
         userInputRequestManager.stats.recentResolutions.slice(-2).map((r) => r.outcome)
       ).toEqual(['invalidated', 'invalidated'])
@@ -1261,7 +1261,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         openStreamRequestIds()
       ).toEqual(['resub-secret-1'])
       expect(
-        userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id)
+        userInputRequestManager.getOpenRequestsForSession(AGENT_SLUG, SESSION_ID).map((r) => r.id)
       ).toContain('resub-secret-1')
       messagePersister.syncAgentSessionsAwaiting(AGENT_SLUG)
       expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
@@ -1311,7 +1311,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       simulateToolUse('AskUserQuestion', 'par-question-1', {
         questions: [{ question: 'Pick DB', header: 'DB', options: [], multiSelect: false }],
       })
-      expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(2)
+      expect(userInputRequestManager.getOpenRequestsForSession(AGENT_SLUG, SESSION_ID)).toHaveLength(2)
       expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
 
       messagePersister.completeInputRequest(AGENT_SLUG, SESSION_ID, 'par-secret-1', 'declined')
@@ -1319,7 +1319,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       // Registry and replay store both drop the declined ask NOW — a reload
       // must not resurrect it. The surviving question keeps the light on.
       expect(
-        userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id),
+        userInputRequestManager.getOpenRequestsForSession(AGENT_SLUG, SESSION_ID).map((r) => r.id),
       ).toEqual(['par-question-1'])
       expect(openStreamRequestIds()).toEqual(
         ['par-question-1'],
@@ -1379,7 +1379,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       // supplies the session.
       messagePersister.completeInputRequest(AGENT_SLUG, undefined, 'par-solo-1', 'answered')
 
-      expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(0)
+      expect(userInputRequestManager.getOpenRequestsForSession(AGENT_SLUG, SESSION_ID)).toHaveLength(0)
       expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
     })
   })
@@ -1412,7 +1412,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
     it('a subagent that dies with a parked request invalidates it everywhere', async () => {
       sendSidechainToolUse('parent-dead-1', 'side-orphan-1')
       expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
-      expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(1)
+      expect(userInputRequestManager.getOpenRequestsForSession(AGENT_SLUG, SESSION_ID)).toHaveLength(1)
 
       // The subagent finishes WITHOUT a tool_result for the parked ask
       // (killed, errored, or torn down) — sidechain 'result' is its terminal
@@ -1423,7 +1423,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         subtype: 'success',
       })
 
-      expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(0)
+      expect(userInputRequestManager.getOpenRequestsForSession(AGENT_SLUG, SESSION_ID)).toHaveLength(0)
       expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
       expect(openStreamRequestIds()).toHaveLength(0)
       expect(
@@ -1468,7 +1468,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       })
       expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
       expect(
-        userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id),
+        userInputRequestManager.getOpenRequestsForSession(AGENT_SLUG, SESSION_ID).map((r) => r.id),
       ).toEqual(['side-script-1'])
 
       mockClient._sendMessage({
@@ -1477,7 +1477,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         subtype: 'success',
       })
 
-      expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(0)
+      expect(userInputRequestManager.getOpenRequestsForSession(AGENT_SLUG, SESSION_ID)).toHaveLength(0)
       expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(false)
       expect(
         userInputRequestManager.stats.recentResolutions.find((r) => r.id === 'side-script-1')
@@ -1488,7 +1488,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
     it("a sibling subagent's death leaves another subagent's parked request open", () => {
       sendSidechainToolUse('parent-alive-1', 'side-kept-1')
       sendSidechainToolUse('parent-dying-1', 'side-dropped-1')
-      expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(2)
+      expect(userInputRequestManager.getOpenRequestsForSession(AGENT_SLUG, SESSION_ID)).toHaveLength(2)
 
       mockClient._sendMessage({
         type: 'result',
@@ -1496,7 +1496,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         subtype: 'success',
       })
 
-      const open = userInputRequestManager.getOpenRequestsForSession(SESSION_ID)
+      const open = userInputRequestManager.getOpenRequestsForSession(AGENT_SLUG, SESSION_ID)
       expect(open.map((r) => r.id)).toEqual(['side-kept-1'])
       expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
     })
@@ -1512,7 +1512,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         subtype: 'success',
       })
       expect(
-        userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id),
+        userInputRequestManager.getOpenRequestsForSession(AGENT_SLUG, SESSION_ID).map((r) => r.id),
       ).toEqual(['main-secret-1'])
       expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
     })

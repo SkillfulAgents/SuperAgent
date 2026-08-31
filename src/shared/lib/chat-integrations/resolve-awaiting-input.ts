@@ -25,7 +25,7 @@ interface AwaitingInputPersister {
  * already settled.
  */
 interface OpenRequestRegistry {
-  getOpenRequestsForSession(sessionId: string): Array<{
+  getOpenRequestsForSession(agentSlug: string, sessionId: string): Array<{
     id: string
     kind: string
     payload: unknown
@@ -65,7 +65,7 @@ export async function consumeOrCancelAwaitingInput(opts: {
     // wire: they carry no renderable payload, so no card was ever posted and
     // there is nothing in this chat for the text to answer.
     const pendingQuestion = registry
-      .getOpenRequestsForSession(sessionId)
+      .getOpenRequestsForSession(agentSlug, sessionId)
       .find((r) => r.kind === 'question' && (r.payload as { recovered?: unknown }).recovered !== true)
     if (pendingQuestion) {
       const answered = await connector.answerOpenQuestionWithText(chatId, pendingQuestion.id, answerText ?? messageText)

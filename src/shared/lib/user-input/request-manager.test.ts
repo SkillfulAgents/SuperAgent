@@ -30,14 +30,14 @@ describe('UserInputRequestManager', () => {
       expect(stored).not.toBeNull()
       expect(stored!.kind).toBe('secret')
       expect(stored!.autoApproved).toBe(false)
-      expect(manager.getOpenRequestsForSession('session-1')).toHaveLength(1)
+      expect(manager.getOpenRequestsForSession('agent-a', 'session-1')).toHaveLength(1)
     })
 
     it('is first-delivery-wins: re-registering an open id returns the original unchanged', () => {
       const first = manager.register(secretRequest({ payload: { secretName: 'FIRST' } }))
       const second = manager.register(secretRequest({ payload: { secretName: 'SECOND' } }))
       expect(second).toBe(first)
-      const open = manager.getOpenRequestsForSession('session-1')
+      const open = manager.getOpenRequestsForSession('agent-a', 'session-1')
       expect(open).toHaveLength(1)
       expect((open[0].payload as { secretName?: string }).secretName).toBe('FIRST')
     })
@@ -188,16 +188,16 @@ describe('UserInputRequestManager', () => {
     })
 
     it('clearSessionStreamRequests wipes only the session\'s stream store (turn-boundary mirror)', () => {
-      manager.clearSessionStreamRequests('session-1', 'cancelled')
-      expect(manager.getOpenRequestsForSession('session-1').map((r) => r.id)).toEqual(['cu-1'])
-      expect(manager.getOpenRequestsForSession('session-2')).toHaveLength(1)
+      manager.clearSessionStreamRequests('agent-a', 'session-1', 'cancelled')
+      expect(manager.getOpenRequestsForSession('agent-a', 'session-1').map((r) => r.id)).toEqual(['cu-1'])
+      expect(manager.getOpenRequestsForSession('agent-a', 'session-2')).toHaveLength(1)
       expect(manager.getAgentScopedRequests('agent-a')).toHaveLength(1)
     })
 
     it('dropSessionRequests removes every session-scoped entry but leaves agent-scoped reviews', () => {
-      manager.dropSessionRequests('session-1')
-      expect(manager.getOpenRequestsForSession('session-1')).toHaveLength(0)
-      expect(manager.getOpenRequestsForSession('session-2')).toHaveLength(1)
+      manager.dropSessionRequests('agent-a', 'session-1')
+      expect(manager.getOpenRequestsForSession('agent-a', 'session-1')).toHaveLength(0)
+      expect(manager.getOpenRequestsForSession('agent-a', 'session-2')).toHaveLength(1)
       expect(manager.getAgentScopedRequests('agent-a')).toHaveLength(1)
     })
   })
@@ -205,17 +205,17 @@ describe('UserInputRequestManager', () => {
   describe('awaiting projection', () => {
     it('a session-scoped blocking request makes the session awaiting', () => {
       manager.register(secretRequest())
-      expect(manager.isSessionAwaiting('session-1')).toBe(true)
-      expect(manager.isSessionAwaiting('session-2')).toBe(false)
+      expect(manager.isSessionAwaiting('agent-a', 'session-1')).toBe(true)
+      expect(manager.isSessionAwaiting('agent-a', 'session-2')).toBe(false)
       manager.resolve('tool-1', 'answered')
-      expect(manager.isSessionAwaiting('session-1')).toBe(false)
+      expect(manager.isSessionAwaiting('agent-a', 'session-1')).toBe(false)
     })
 
     it('auto-approved requests never count as real waits', () => {
       manager.register(
         secretRequest({ id: 'auto-1', kind: 'script_run', autoApproved: true, payload: {} }),
       )
-      expect(manager.isSessionAwaiting('session-1')).toBe(false)
+      expect(manager.isSessionAwaiting('agent-a', 'session-1')).toBe(false)
       expect(manager.isAgentAwaiting('agent-a')).toBe(false)
     })
 
@@ -227,9 +227,53 @@ describe('UserInputRequestManager', () => {
         blocking: true,
         payload: { toolkit: 'slack' },
       })
-      expect(manager.isSessionAwaiting('any-session-of-a', 'agent-a')).toBe(true)
-      expect(manager.isSessionAwaiting('any-session-of-b', 'agent-b')).toBe(false)
+      expect(manager.isSessionAwaiting('agent-a', 'any-session-of-a')).toBe(true)
+      expect(manager.isSessionAwaiting('agent-b', 'any-session-of-b')).toBe(false)
       expect(manager.isAgentAwaiting('agent-a')).toBe(true)
+    })
+  })
+
+  describe('two agents holding the same session id do not cross-talk', () => {
+    // A session id is unique only WITHIN an agent. Import/clone gives each
+    // agent its own copy of the same id, so every session-scoped read and
+    // sweep must match the agent too — otherwise one agent's turn boundary
+    // settles another agent's parked request (the SUP-479 class, reopened at
+    // the request registry once duplicate ids across agents became legal).
+    beforeEach(() => {
+      // Same session id 'shared', one live request under each agent.
+      manager.register(secretRequest({ id: 'a-req', scope: { agentSlug: 'agent-a', sessionId: 'shared' } }))
+      manager.register(secretRequest({ id: 'b-req', scope: { agentSlug: 'agent-b', sessionId: 'shared' } }))
+    })
+
+    it('getOpenRequestsForSession returns only the asking agent’s request', () => {
+      expect(manager.getOpenRequestsForSession('agent-a', 'shared').map((r) => r.id)).toEqual(['a-req'])
+      expect(manager.getOpenRequestsForSession('agent-b', 'shared').map((r) => r.id)).toEqual(['b-req'])
+    })
+
+    it('clearSessionStreamRequests settles only the asking agent’s stream entry', () => {
+      manager.clearSessionStreamRequests('agent-a', 'shared', 'cancelled')
+      expect(manager.getOpenRequest('a-req')).toBeNull()
+      expect(manager.getOpenRequest('b-req')).not.toBeNull()
+    })
+
+    it('dropSessionRequests drops only the asking agent’s entry', () => {
+      manager.dropSessionRequests('agent-a', 'shared')
+      expect(manager.getOpenRequest('a-req')).toBeNull()
+      expect(manager.getOpenRequest('b-req')).not.toBeNull()
+    })
+
+    it('getStoreIdsForSession lists only the asking agent’s ids', () => {
+      expect(manager.getStoreIdsForSession('agent-a', 'shared', 'stream')).toEqual(['a-req'])
+      expect(manager.getStoreIdsForSession('agent-b', 'shared', 'stream')).toEqual(['b-req'])
+    })
+
+    it('isSessionAwaiting is answered per agent, not by the bare id', () => {
+      expect(manager.isSessionAwaiting('agent-a', 'shared')).toBe(true)
+      expect(manager.isSessionAwaiting('agent-b', 'shared')).toBe(true)
+      manager.resolve('a-req', 'answered')
+      // agent-a's wait is settled; agent-b's identically-named session is not.
+      expect(manager.isSessionAwaiting('agent-a', 'shared')).toBe(false)
+      expect(manager.isSessionAwaiting('agent-b', 'shared')).toBe(true)
     })
   })
 
@@ -266,7 +310,7 @@ describe('UserInputRequestManager', () => {
       })
       manager.register(secretRequest({ id: 'clear-1' }))
       manager.register(secretRequest({ id: 'clear-2' }))
-      manager.clearSessionStreamRequests('session-1', 'superseded')
+      manager.clearSessionStreamRequests('agent-a', 'session-1', 'superseded')
       expect(outcomes).toEqual([
         { id: 'clear-1', outcome: 'superseded' },
         { id: 'clear-2', outcome: 'superseded' },
@@ -391,7 +435,7 @@ describe('UserInputRequestManager', () => {
       manager.claimRequest('tool-1')
 
       expect(manager.getOpenRequest('tool-1')).not.toBeNull()
-      expect(manager.isSessionAwaiting('session-1', 'agent-a')).toBe(true)
+      expect(manager.isSessionAwaiting('agent-a', 'session-1')).toBe(true)
       expect(manager.getSnapshotForScope('agent-a', 'session-1')).toHaveLength(1)
       expect(manager.stats.open).toBe(1)
     })

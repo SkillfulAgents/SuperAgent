@@ -293,7 +293,7 @@ describe('MessagePersister', () => {
   const requestCards = (kind: string) =>
     sseEvents.filter((e) => e.type === 'user_request_created' && e.request?.kind === kind)
   const openStreamRequestIds = () =>
-    userInputRequestManager.getStoreIdsForSession(SESSION_ID, 'stream')
+    userInputRequestManager.getStoreIdsForSession(AGENT_SLUG, SESSION_ID, 'stream')
 
   beforeEach(async () => {
     mockClient = createMockClient()

@@ -645,7 +645,7 @@ class MessagePersister {
     }
     this.streamingStates.delete(key)
     // Shadow registry (Phase 2): every session-scoped entry dies with the state.
-    userInputRequestManager.dropSessionRequests(sessionId, 'invalidated')
+    userInputRequestManager.dropSessionRequests(agentSlug, sessionId, 'invalidated')
     this.containerClients.delete(key)
     // Safe to drop: the container's persisted grants are authoritative, so a
     // resubscribed session repopulates this on the next launch with one GET.
@@ -831,10 +831,7 @@ class MessagePersister {
   // and the lifecycle tests' view of what is still parked.
   getPendingComputerUseRequests(agentSlug: string, sessionId: string): Array<{ toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string; agentSlug?: string }> {
     return userInputRequestManager
-      .getOpenRequestsForSession(sessionId)
-      // The request store is keyed by session id alone, so scope it to the
-      // asking agent here the way every other registry read is scoped.
-      .filter((r) => r.scope.agentSlug === agentSlug)
+      .getOpenRequestsForSession(agentSlug, sessionId)
       // Auto-approved requests are registered only for the decision gate —
       // nothing may treat a command that is already executing as parked.
       .filter((r) => r.kind === 'computer_use' && !r.autoApproved)
@@ -970,7 +967,7 @@ class MessagePersister {
     // INCLUDED — they are exactly the ones whose container-side pending may
     // still be live (the host missed the original delivery), so skipping them
     // would leave an abandoned request for a late click to land on.
-    const inputRequestIds = userInputRequestManager.getStoreIdsForSession(sessionId, 'stream')
+    const inputRequestIds = userInputRequestManager.getStoreIdsForSession(agentSlug, sessionId, 'stream')
     const computerUseIds = this.getPendingComputerUseRequests(agentSlug, sessionId).map((r) => r.toolUseId)
 
     // Interrupt FIRST: abort the parked query so it can never resume into a filler reply.
@@ -1451,7 +1448,7 @@ class MessagePersister {
     const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
     if (!state) return
     const derived =
-      state.isActive && userInputRequestManager.isSessionAwaiting(sessionId, state.agentSlug)
+      state.isActive && userInputRequestManager.isSessionAwaiting(agentSlug, sessionId)
     if (derived === state.isAwaitingInput) return
     state.isAwaitingInput = derived
     if (derived) {
@@ -1707,6 +1704,7 @@ class MessagePersister {
         state.settledInputRequests.clear()
         // A new turn supersedes parked asks; an idle boundary cancels them.
         userInputRequestManager.clearSessionStreamRequests(
+          agentSlug,
           sessionId,
           evt.type === 'session_active' ? 'superseded' : 'cancelled',
         )
@@ -1718,7 +1716,7 @@ class MessagePersister {
           // awaiting was an imperative bit, but the derived projection would
           // read them as a live wait and flag the fresh turn as awaiting.
           // (Idle keeps them so a still-parked approval survives a reconnect.)
-          for (const id of userInputRequestManager.getStoreIdsForSession(sessionId, 'computer_use')) {
+          for (const id of userInputRequestManager.getStoreIdsForSession(agentSlug, sessionId, 'computer_use')) {
             userInputRequestManager.resolveIfInStore(id, 'computer_use', 'superseded')
           }
         }
