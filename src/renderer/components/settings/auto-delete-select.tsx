@@ -5,6 +5,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@renderer/components/ui/select'
+import { cn } from '@shared/lib/utils/cn'
 
 const AUTO_DELETE_OPTIONS = [
   { value: '30', label: '30 days' },
@@ -17,6 +18,12 @@ export function formatAutoDeleteLabel(days: number | undefined): string {
   if (option) return option.label
   if (days && days > 0) return `${days} days`
   return 'never'
+}
+
+/** "Never (app default)" — the inherited value first, its provenance in parens. */
+function formatAppDefaultLabel(days: number | undefined): string {
+  const label = formatAutoDeleteLabel(days)
+  return `${label.charAt(0).toUpperCase()}${label.slice(1)} (app default)`
 }
 
 interface AutoDeleteSelectProps {
@@ -51,12 +58,15 @@ interface AgentAutoDeleteSelectProps {
   value: number | undefined
   appDefault: number | undefined
   onChange: (days: number | null) => void
+  /** Override trigger sizing (e.g. compact width inside a popover row). */
+  triggerClassName?: string
 }
 
 export function AgentAutoDeleteSelect({
   value,
   appDefault,
   onChange,
+  triggerClassName,
 }: AgentAutoDeleteSelectProps) {
   return (
     <Select
@@ -65,12 +75,12 @@ export function AgentAutoDeleteSelect({
         onChange(val === 'default' ? null : parseInt(val, 10))
       }}
     >
-      <SelectTrigger className="w-48" aria-label="Session auto-delete">
+      <SelectTrigger className={cn('w-48', triggerClassName)} aria-label="Session auto-delete">
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
         <SelectItem value="default">
-          App default ({formatAutoDeleteLabel(appDefault)})
+          {formatAppDefaultLabel(appDefault)}
         </SelectItem>
         {AUTO_DELETE_OPTIONS.map((opt) => (
           <SelectItem key={opt.value} value={opt.value}>
