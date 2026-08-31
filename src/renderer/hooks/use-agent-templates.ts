@@ -100,7 +100,7 @@ export function useDiscoverableAgents() {
   }
 }
 
-export function useHostExportStatus() {
+export function useHostExportStatus(enabled = true) {
   return useQuery<HostExportStatus>({
     queryKey: HOST_EXPORT_STATUS_QUERY_KEY,
     queryFn: async () => {
@@ -108,6 +108,7 @@ export function useHostExportStatus() {
       if (!res.ok) throw new Error('Failed to fetch export status')
       return hostExportStatusSchema.parse(await res.json())
     },
+    enabled,
     refetchInterval: (query) => (query.state.data?.inProgress ? HOST_EXPORT_STATUS_POLL_MS : false),
   })
 }

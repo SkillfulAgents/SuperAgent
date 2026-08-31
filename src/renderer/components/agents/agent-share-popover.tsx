@@ -5,6 +5,17 @@ import { useUser } from '@renderer/context/user-context'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@renderer/components/ui/alert-dialog'
+import { Tabs, TabsList, TabsTrigger } from '@renderer/components/ui/tabs'
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -19,7 +30,15 @@ import {
   TooltipTrigger,
 } from '@renderer/components/ui/tooltip'
 import { cn } from '@shared/lib/utils'
-import { Check, Loader2, X } from 'lucide-react'
+import {
+  useAgentTemplateStatus,
+  useExportAgentTemplate,
+  useExportAgentFull,
+  useHostExportStatus,
+} from '@renderer/hooks/use-agent-templates'
+import { AgentTemplatePublishPanel } from '@renderer/components/agents/agent-template-publish-panel'
+import { ActivityOrb } from '@renderer/components/messages/activity-orb'
+import { ArrowDownToLine, ArrowRight, Check, LibraryBig, Loader2, Lock, User, X } from 'lucide-react'
 import type { AgentRole } from '@shared/lib/types/agent'
 
 interface AccessEntry {
@@ -38,6 +57,7 @@ interface SearchUser {
 
 interface AgentSharePopoverProps {
   agentSlug: string
+  agentName: string
 }
 
 const ROLE_OPTIONS: { value: AgentRole; label: string; description: string }[] = [
@@ -80,27 +100,54 @@ function UserAvatar({ name, className }: { name: string; className?: string }) {
 }
 
 /**
- * Share button + popover for managing per-user agent access (ACL).
- *
- * This is the agent Access UI, moved out of the settings dialog into a
- * Notion-style share popover on the agent header. Only rendered in auth mode
- * for agent owners — the /access endpoints are AgentAdmin()-guarded.
+ * Share button + popover for the agent header, with two Notion-style panes:
+ * Share (per-user ACL, auth mode only — the /access endpoints are
+ * AgentAdmin()-guarded) and Publish (template export + skillset publishing,
+ * moved here from the settings General tab). Rendered for agent owners; in
+ * non-auth deployments everyone is an owner and only Publish shows.
  */
-export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
+export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverProps) {
   const queryClient = useQueryClient()
-  const { user } = useUser()
+  const { user, isAuthMode } = useUser()
   const [open, setOpen] = useState(false)
+  const [tab, setTab] = useState<'share' | 'publish' | 'export'>(isAuthMode ? 'share' : 'publish')
   const [searchQuery, setSearchQuery] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [selectedUsers, setSelectedUsers] = useState<SearchUser[]>([])
   const [inviteRole, setInviteRole] = useState<AgentRole>('user')
+  const [publishFlowOpen, setPublishFlowOpen] = useState(false)
+  const [exportChoice, setExportChoice] = useState<'template' | 'full'>('template')
+  const [confirmFullExportOpen, setConfirmFullExportOpen] = useState(false)
   const searchInputRef = useRef<HTMLInputElement>(null)
+
+  // Publish pane data/mutations. Status only fetches once the popover opens.
+  const {
+    data: templateStatus,
+    isPending: templateStatusPending,
+    isError: templateStatusError,
+  } = useAgentTemplateStatus(open ? agentSlug : null)
+  const exportTemplate = useExportAgentTemplate()
+  const exportFull = useExportAgentFull()
+  // Host-wide guard: exports stream large archives, so any in-flight export
+  // (this window or another) disables the button, same as the settings tab did.
+  // Only fetched (and polled) while the popover is open — the popover itself
+  // is mounted with the header on every agent-home visit.
+  const { data: hostExportStatus } = useHostExportStatus(open)
+  const exportPending =
+    !!hostExportStatus?.inProgress || exportTemplate.isPending || exportFull.isPending
+  const canPublish = templateStatus?.type === 'local' && templateStatus.publishable !== false
 
   const resetInvite = () => {
     setSelectedUsers([])
     setSearchQuery('')
     setInviteRole('user')
     setError(null)
+    // Closing the popover also abandons an in-progress publish flow and
+    // returns to the default tab and export choice, so reopening always
+    // lands on Share with the invite input focused.
+    setPublishFlowOpen(false)
+    setExportChoice('template')
+    setTab(isAuthMode ? 'share' : 'publish')
   }
 
   const invalidateAccess = () => {
@@ -117,7 +164,7 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
       if (!res.ok) throw new Error('Failed to fetch access list')
       return res.json()
     },
-    enabled: open,
+    enabled: open && isAuthMode,
   })
 
   // The server caps results at 50 users, so client-side filtering alone can't
@@ -139,7 +186,7 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
       if (!res.ok) return []
       return res.json()
     },
-    enabled: open,
+    enabled: open && isAuthMode,
     // Keep the previous list on screen while the next query's fetch lands,
     // so typing filters instantly instead of flashing empty.
     placeholderData: (prev) => prev,
@@ -314,6 +361,7 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
   }
 
   return (
+    <>
     <Popover
       open={open}
       onOpenChange={(next) => {
@@ -338,15 +386,264 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
         align="end"
         className="w-[28rem] max-w-[calc(100vw-2rem)] p-0"
         // Radix's FocusScope would focus the content wrapper; send focus
-        // straight to the invite input instead.
+        // straight to the invite input instead (Share pane only).
         onOpenAutoFocus={(e) => {
           e.preventDefault()
           // Defer past Radix's FocusScope so it can't reclaim focus after us.
-          setTimeout(() => searchInputRef.current?.focus(), 0)
+          if (isAuthMode && tab === 'share') {
+            setTimeout(() => searchInputRef.current?.focus(), 0)
+          }
         }}
         data-testid="agent-share-popover"
       >
-        {/* Invite row: chip box + batch role + Share */}
+        {/* Tab bar — Share only exists in auth mode (no ACL without auth).
+            The publish flow replaces it with its own back navigation. Same
+            segmented Tabs control as the connection directory's APIs/MCPs. */}
+        {!(tab === 'publish' && publishFlowOpen) && (
+          <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)}>
+            <div className="px-3 pt-3">
+              <TabsList className="h-8">
+                {([
+                  ...(isAuthMode ? [{ id: 'share', label: 'Invite' } as const] : []),
+                  { id: 'publish', label: 'Publish' } as const,
+                  { id: 'export', label: 'Export' } as const,
+                ]).map((t) => (
+                  <TabsTrigger
+                    key={t.id}
+                    value={t.id}
+                    className="px-2.5 text-[11px]"
+                    data-testid={`agent-share-tab-${t.id}`}
+                  >
+                    {t.label}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </div>
+          </Tabs>
+        )}
+
+        {tab === 'publish' && (
+          /* ── Publish pane: skillset publishing, flow inline in the popover ── */
+          publishFlowOpen ? (
+            <AgentTemplatePublishPanel
+              agentSlug={agentSlug}
+              onBack={() => setPublishFlowOpen(false)}
+            />
+          ) : (
+            <div className="p-3" data-testid="agent-publish-pane">
+              {templateStatusPending ? (
+                // Don't show the "isn't available" message while the status is
+                // still loading — that's the common case on first open.
+                <div className="flex items-center justify-center py-10">
+                  <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                </div>
+              ) : templateStatusError ? (
+                <p className="px-2 py-4 text-center text-sm text-muted-foreground">
+                  Couldn&apos;t check whether this agent can be published. Close and
+                  reopen to retry.
+                </p>
+              ) : canPublish ? (
+                <div className="space-y-4">
+                  {/* Hero (Notion "Publish to web"-style) */}
+                  <div className="space-y-1 pt-2 text-center">
+                    <p className="text-sm font-medium">Publish to a Library</p>
+                    <p className="text-xs text-muted-foreground">
+                      <span className="block">
+                        Libraries are shared collections of agent templates and skills.
+                      </span>
+                      <span className="block">
+                        Publish this agent so teammates can install their own copy.
+                      </span>
+                    </p>
+                  </div>
+
+                  {/* Diagram: the agent card rises to the cloud library, which
+                      fans out to clustered teammates ready to run their copy. */}
+                  {/* Fixed 416x224 coordinate system: user centers sit on a
+                      75px radius around the cloud center (208,116) at 0° and
+                      ±50°/±95° from vertical, so all five are equidistant. */}
+                  <div className="relative h-60 overflow-hidden rounded-lg bg-gradient-to-b from-muted/70 to-transparent" aria-hidden="true">
+                    {/* Dashed arrows: pill → cloud, cloud → each teammate.
+                        Painted first so the circles sit on top. */}
+                    <svg className="absolute inset-0 h-full w-full text-foreground" viewBox="0 0 416 240" preserveAspectRatio="none">
+                      <defs>
+                        {/* Open chevron head, lucide-arrow style */}
+                        <marker
+                          id="publish-diagram-arrow"
+                          viewBox="0 0 10 10"
+                          refX="7"
+                          refY="5"
+                          markerWidth="6"
+                          markerHeight="6"
+                          orient="auto-start-reverse"
+                        >
+                          <path
+                            d="M2.5,1.5 L7.5,5 L2.5,8.5"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.8"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </marker>
+                      </defs>
+                      {([
+                        // [x1, y1, x2, y2, arrowhead] — only the card→library
+                        // line keeps its head; the radial spokes are plain.
+                        [208, 168, 208, 147, true], // agent card up to the library
+                        [208, 86, 208, 65, false], // library → top teammate
+                        [185, 97, 169, 83, false], // library → upper-left
+                        [231, 97, 247, 83, false], // library → upper-right
+                        [178, 119, 157, 120, false], // library → lower-left
+                        [238, 119, 259, 120, false], // library → lower-right
+                      ] as const).map(([x1, y1, x2, y2, arrowhead]) => (
+                        <line
+                          key={`${x1}-${y1}`}
+                          x1={x1}
+                          y1={y1}
+                          x2={x2}
+                          y2={y2}
+                          stroke="currentColor"
+                          strokeOpacity="0.55"
+                          strokeWidth="1.5"
+                          strokeDasharray="3 4"
+                          markerEnd={arrowhead ? 'url(#publish-diagram-arrow)' : undefined}
+                        />
+                      ))}
+                    </svg>
+
+                    {/* Teammates, all 75px from the library center (5th on top) */}
+                    <div className="absolute left-1/2 top-[23px] flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full border bg-background shadow-sm">
+                      <User className="h-4 w-4 text-muted-foreground" />
+                    </div>
+                    <div className="absolute left-[calc(50%-76px)] top-[50px] flex h-9 w-9 items-center justify-center rounded-full border bg-background shadow-sm">
+                      <User className="h-4 w-4 text-muted-foreground" />
+                    </div>
+                    <div className="absolute left-[calc(50%+40px)] top-[50px] flex h-9 w-9 items-center justify-center rounded-full border bg-background shadow-sm">
+                      <User className="h-4 w-4 text-muted-foreground" />
+                    </div>
+                    <div className="absolute left-[calc(50%-93px)] top-[105px] flex h-9 w-9 items-center justify-center rounded-full border bg-background shadow-sm">
+                      <User className="h-4 w-4 text-muted-foreground" />
+                    </div>
+                    <div className="absolute left-[calc(50%+57px)] top-[105px] flex h-9 w-9 items-center justify-center rounded-full border bg-background shadow-sm">
+                      <User className="h-4 w-4 text-muted-foreground" />
+                    </div>
+
+                    {/* The library in the cloud */}
+                    <div className="absolute left-1/2 top-[92px] flex h-12 w-12 -translate-x-1/2 items-center justify-center rounded-xl border bg-background shadow-md">
+                      <LibraryBig className="h-5 w-5 text-foreground/70" />
+                    </div>
+
+                    {/* The agent, Manus-pill style */}
+                    <div className="absolute bottom-4 left-1/2 flex w-max max-w-[75%] -translate-x-1/2 items-center gap-2 rounded-xl border bg-background py-2 pl-3 pr-4 shadow-sm">
+                      {/* The activity card's thought orb as the agent's avatar */}
+                      <div className="shrink-0">
+                        <ActivityOrb state="spinning" size={28} />
+                      </div>
+                      <p className="min-w-0 truncate text-sm font-medium">{agentName}</p>
+                    </div>
+                  </div>
+
+                  <Button
+                    className="w-full gap-1.5"
+                    onClick={() => setPublishFlowOpen(true)}
+                    data-testid="publish-skillset-button"
+                  >
+                    Publish
+                    <ArrowRight className="h-4 w-4" />
+                  </Button>
+
+                  {/* What publishing to a library actually means */}
+                  <div className="space-y-2 text-xs text-muted-foreground">
+                    <p className="flex items-start gap-2">
+                      <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                      Agent only published as template. Secrets &amp; session
+                      data are excluded.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <p className="px-2 py-4 text-center text-sm text-muted-foreground">
+                  Publishing isn&apos;t available — this agent is already linked to a
+                  library or can&apos;t be republished from this workspace.
+                </p>
+              )}
+            </div>
+          )
+        )}
+
+        {tab === 'export' && (
+          /* ── Export pane: template + full-agent downloads ── */
+          <div className="space-y-3 p-3" data-testid="agent-export-pane">
+            <div role="radiogroup" aria-label="Export type" className="-mx-2 space-y-1">
+              {([
+                {
+                  id: 'template',
+                  title: 'Agent Template',
+                  description: 'Export a shareable template — no secrets or session data',
+                },
+                {
+                  id: 'full',
+                  title: 'Full Agent',
+                  description: 'Export all data including sessions and keys. Share cautiously.',
+                },
+              ] as const).map((option) => {
+                const isSelected = exportChoice === option.id
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={isSelected}
+                    className="flex w-full items-center gap-3 rounded-md px-2 py-2 text-left hover:bg-accent"
+                    onClick={() => setExportChoice(option.id)}
+                    data-testid={`export-option-${option.id}`}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[11px]">{option.title}</p>
+                      <p className="text-[11px] text-muted-foreground">{option.description}</p>
+                    </div>
+                    {isSelected ? (
+                      <Check className="h-4 w-4 shrink-0" />
+                    ) : (
+                      <span className="h-4 w-4 shrink-0" />
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+            <Button
+              className="w-full gap-1.5"
+              onClick={() => {
+                if (exportPending) return
+                if (exportChoice === 'template') {
+                  exportTemplate.mutate({ agentSlug, agentName })
+                } else {
+                  // Full exports contain secrets — confirm before downloading.
+                  // The dialog is modal (outside the popover), so opening it
+                  // dismisses the popover, same as the settings popover's
+                  // delete confirm.
+                  setOpen(false)
+                  setConfirmFullExportOpen(true)
+                }
+              }}
+              data-testid="export-submit-button"
+            >
+              {exportPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <>
+                  <ArrowDownToLine className="h-4 w-4" />
+                  Export
+                </>
+              )}
+            </Button>
+          </div>
+        )}
+
+        {tab === 'share' && (
+          <>
+        {/* Invite row: chip box + batch role + Add */}
         <div className="space-y-2 px-3 pb-4 pt-5">
           <div className="flex items-start gap-2">
             {/* label: clicking anywhere in the chip box natively focuses the input.
@@ -494,7 +791,35 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
             </>
           )}
         </div>
+          </>
+        )}
       </PopoverContent>
     </Popover>
+
+    {/* Full-agent exports bundle env vars, API keys, and session data —
+        keep an explicit confirmation in front of the download. */}
+    <AlertDialog open={confirmFullExportOpen} onOpenChange={setConfirmFullExportOpen}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Export Full Agent</AlertDialogTitle>
+          <AlertDialogDescription>
+            This will export the entire agent workspace including environment
+            variables, API keys, and other potentially sensitive data. Only share
+            this file with people you trust.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            disabled={exportPending}
+            onClick={() => exportFull.mutate({ agentSlug, agentName })}
+            data-testid="confirm-full-export-button"
+          >
+            Export
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   )
 }
