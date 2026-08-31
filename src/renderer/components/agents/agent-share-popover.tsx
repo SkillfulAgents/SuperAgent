@@ -19,7 +19,7 @@ import {
   TooltipTrigger,
 } from '@renderer/components/ui/tooltip'
 import { cn } from '@shared/lib/utils'
-import { Check, Loader2, Upload, X } from 'lucide-react'
+import { Check, Loader2, X } from 'lucide-react'
 import type { AgentRole } from '@shared/lib/types/agent'
 
 interface AccessEntry {
@@ -326,11 +326,10 @@ export function AgentSharePopover({ agentSlug }: AgentSharePopoverProps) {
           type="button"
           size="sm"
           variant="outline"
-          className="h-8 shrink-0 gap-1"
+          className="h-8 shrink-0"
           aria-label="Share agent"
           data-testid="agent-share-button"
         >
-          <Upload className="h-3 w-3" />
           Share
         </Button>
       </PopoverTrigger>
