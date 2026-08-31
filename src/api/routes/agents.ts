@@ -2526,13 +2526,15 @@ agents.get('/:id/sessions/:sessionId/subagent/:agentId/messages', AgentRead(), a
     const subagentJsonlPath = path.join(sessionsDir, sessionId, 'subagents', `agent-${subagentId}.jsonl`)
 
     // sessionId and subagentId are unvalidated URL segments spliced into a
-    // path, so keep the read inside this agent's own session tree: reject a
+    // path, so keep the read inside this agent's own workspace: reject a
     // traversal id lexically, and a symlinked component that resolves out of
-    // the tree via the real path. Without this the route reads an arbitrary
-    // file (another agent's transcript, or anything a planted link points at).
+    // the tree via the real path. The realpath check is anchored on the
+    // WORKSPACE (the bind-mount point the container can't replace), not the
+    // attacker-writable session dir — a symlinked `-workspace` would otherwise
+    // resolve base and candidate to the same escaped location and pass.
     if (
       !isPathWithinDir(sessionsDir, subagentJsonlPath) ||
-      !isRealPathWithinDir(sessionsDir, subagentJsonlPath)
+      !isRealPathWithinDir(getAgentWorkspaceDir(agentSlug), subagentJsonlPath)
     ) {
       return c.json({ error: 'Subagent transcript not found' }, 404)
     }

@@ -11,6 +11,7 @@ import pLimit from 'p-limit'
 import {
   getAgentsDir,
   getAgentSessionsDir,
+  getAgentWorkspaceDir,
   getAgentSessionMetadataPath,
   getSessionJsonlPath,
   listDirectories,
@@ -107,13 +108,20 @@ function sessionIdPathWithinAgent(agentSlug: string, sessionId: string): boolean
 }
 
 // Lexical containment PLUS symlink resolution: the id names a file whose REAL
-// location is inside the agent's real session directory. The agent's dir is
-// bind-mounted read/write into its container, so it can plant a symlink named
-// after another agent's session that resolves to that agent's transcript — a
-// name that looks local but escapes on read. Use this on every gate that goes
-// on to serve or act on the transcript (never in a listing loop): it costs a
-// realpath, but a session that fails it must not be readable. This is what the
-// deleted ownership index also enforced, without a second source of truth.
+// location is inside this agent's own workspace. The workspace is bind-mounted
+// read/write into the container, so the agent can plant a symlink — named after
+// another agent's session, OR replacing a whole directory like `-workspace` —
+// that resolves to another agent's transcript: a name that looks local but
+// escapes on read. Use this on every gate that goes on to serve or act on the
+// transcript (never in a listing loop): it costs a realpath, but a session that
+// fails it must not be readable. This is what the deleted ownership index also
+// enforced, without a second source of truth.
+//
+// Containment is anchored on the WORKSPACE, not the session directory: the
+// session dir (and every dir under the workspace) is attacker-writable, so a
+// symlinked `-workspace` would make base and candidate realpath to the SAME
+// escaped location and pass. The workspace is the bind-mount point itself,
+// which the container cannot replace, so it is the trustworthy boundary.
 export function sessionFileRealPathWithinAgent(agentSlug: string, sessionId: string): boolean {
   let jsonlPath: string
   try {
@@ -121,7 +129,7 @@ export function sessionFileRealPathWithinAgent(agentSlug: string, sessionId: str
   } catch {
     return false
   }
-  return isRealPathWithinDir(getAgentSessionsDir(agentSlug), jsonlPath)
+  return isRealPathWithinDir(getAgentWorkspaceDir(agentSlug), jsonlPath)
 }
 
 /**

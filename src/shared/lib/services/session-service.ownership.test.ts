@@ -254,6 +254,25 @@ describe('sessionIsKnown', () => {
     expect((await listSessions('agent-a')).map((s) => s.id)).toEqual(['real'])
   })
 
+  it('rejects a session reached through a symlinked -workspace ancestor', async () => {
+    const { sessionIsKnown, sessionExists } = await importService()
+    makeAgent('agent-a')
+    makeAgent('agent-b')
+    writeTranscript('agent-b', 'victim')
+
+    // The attacker replaces its OWN -workspace directory with a symlink to the
+    // victim's. Every id then resolves into the victim's dir. Anchoring the
+    // containment on the attacker's session dir would pass (base and candidate
+    // both resolve through the same link); anchoring on the workspace catches
+    // it, because the workspace is the bind-mount point the container can't
+    // replace.
+    fs.rmSync(sessionsDir('agent-a'), { recursive: true, force: true })
+    fs.symlinkSync(sessionsDir('agent-b'), sessionsDir('agent-a'))
+
+    await expect(sessionExists('agent-a', 'victim')).resolves.toBe(false)
+    await expect(sessionIsKnown('agent-a', 'victim')).resolves.toBe(false)
+  })
+
   it('removeLegacySessionOwnershipIndex deletes a stale index and is a no-op when absent', async () => {
     const { removeLegacySessionOwnershipIndex } = await importService()
     // The index lived one directory above the agents dir — i.e. the data dir.
