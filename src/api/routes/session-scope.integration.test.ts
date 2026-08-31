@@ -432,6 +432,40 @@ describe('a symlink forged in the attacker’s workspace resolves to the victim�
     expect(await sessionExists(VICTIM, victimSession)).toBe(true)
     expectVictimUntouched()
   })
+
+  it('media refuses the id even when the attacker also forges its metadata', async () => {
+    // The metadata makes sessionIsKnown pass (it is satisfied by a metadata
+    // entry alone), so only the media route's realpath guard stands between the
+    // request and openMediaBlob following the link into the victim's transcript.
+    await registerSession(ATTACKER, victimSession, 'Forged')
+    const res = await app().request(url(ATTACKER, victimSession, '/media/anyref'), { method: 'GET' })
+    expect(res.status).toBe(404)
+    expectVictimUntouched()
+  })
+})
+
+describe('the subagent-messages route stays inside the agent’s own tree', () => {
+  it('refuses a traversal-shaped session id', async () => {
+    const res = await app().request(
+      `http://localhost/api/agents/${ATTACKER}/sessions/..%2F..%2F${VICTIM}%2Fworkspace/subagent/x/messages`,
+      { method: 'GET' },
+    )
+    expect(res.status).toBe(404)
+    expectVictimUntouched()
+  })
+
+  it('refuses a traversal-shaped subagent id that escapes the session tree', async () => {
+    // Enough `..` to climb out of the agent's session directory entirely (the
+    // `agent-` filename prefix absorbs the first one). Without the guard this
+    // reads an arbitrary file off disk.
+    const escape = Array(10).fill('..').join('%2F')
+    const res = await app().request(
+      `http://localhost/api/agents/${ATTACKER}/sessions/${attackerSession}/subagent/${escape}%2Fetc%2Fpasswd/messages`,
+      { method: 'GET' },
+    )
+    expect(res.status).toBe(404)
+    expectVictimUntouched()
+  })
 })
 
 describe('scoping does not over-block the caller’s own session', () => {

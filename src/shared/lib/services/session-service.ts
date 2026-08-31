@@ -114,7 +114,7 @@ function sessionIdPathWithinAgent(agentSlug: string, sessionId: string): boolean
 // on to serve or act on the transcript (never in a listing loop): it costs a
 // realpath, but a session that fails it must not be readable. This is what the
 // deleted ownership index also enforced, without a second source of truth.
-function sessionFileRealPathWithinAgent(agentSlug: string, sessionId: string): boolean {
+export function sessionFileRealPathWithinAgent(agentSlug: string, sessionId: string): boolean {
   let jsonlPath: string
   try {
     jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
@@ -567,6 +567,29 @@ async function statTranscriptForSummary(filePath: string): Promise<fs.Stats | nu
   }
 }
 
+/**
+ * Names of the `.jsonl` transcript files directly in `sessionsDir`, EXCLUDING
+ * symlinks.
+ *
+ * A real session transcript is always a regular file the container wrote; a
+ * symlink named like a session is an escape attempt — it resolves to another
+ * agent's transcript (the dir is bind-mounted read/write into the container).
+ * Dropping it here keeps it out of every listing consumer at once, including
+ * the home-card tail that goes on to READ the latest session's content — so a
+ * planted link can never surface a stranger's messages through a listing.
+ *
+ * The symlink test reads the dirent type that `readdir` already returns, so it
+ * adds no syscall over a plain `readdir` — this stays on the perf hot path.
+ * (Direct id access that bypasses the listing is caught separately by the
+ * realpath gate in {@link sessionFileRealPathWithinAgent}.)
+ */
+async function readSessionTranscriptNames(sessionsDir: string): Promise<string[]> {
+  const entries = await fs.promises.readdir(sessionsDir, { withFileTypes: true })
+  return entries
+    .filter((e) => e.name.endsWith('.jsonl') && !e.isSymbolicLink())
+    .map((e) => e.name)
+}
+
 async function buildSessionActivityMap(
   agentSlug: string,
   sessionsDir: string,
@@ -574,8 +597,7 @@ async function buildSessionActivityMap(
 ): Promise<Map<string, SessionActivityEntry>> {
   if (directoryMtimeMs === null) return new Map()
 
-  const files = await fs.promises.readdir(sessionsDir)
-  const jsonlFiles = files.filter((file) => file.endsWith('.jsonl'))
+  const jsonlFiles = await readSessionTranscriptNames(sessionsDir)
   const limit = pLimit(10)
   const stats = await Promise.all(
     jsonlFiles.map((file) => limit(async () => {
@@ -726,8 +748,7 @@ export async function listSessions(
 
   // First, process sessions with JSONL files
   if (await directoryExists(sessionsDir)) {
-    const files = await fs.promises.readdir(sessionsDir)
-    const jsonlFiles = files.filter((f) => f.endsWith('.jsonl'))
+    const jsonlFiles = await readSessionTranscriptNames(sessionsDir)
 
     const limit = pLimit(10)
     const statResults = await Promise.all(

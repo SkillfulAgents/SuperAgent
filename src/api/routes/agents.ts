@@ -72,6 +72,7 @@ import {
   getSessionMetadata,
   sessionExists,
   sessionIsKnown,
+  sessionFileRealPathWithinAgent,
   isSessionRegistered,
   updateSessionMetadata,
   deleteSession,
@@ -189,7 +190,7 @@ import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-pr
 import { resolveActiveProviderModel } from '@shared/lib/llm-provider'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
-import { isPathWithinDir, sanitizeUploadFilename } from '@shared/lib/utils/path-safety'
+import { isPathWithinDir, isRealPathWithinDir, sanitizeUploadFilename } from '@shared/lib/utils/path-safety'
 import { AGENT_PACKAGE_EXTENSION, SKILL_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
 import { readAgentPreferences, updateAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { agentPreferencesUpdateSchema } from '@shared/lib/types/agent-preferences'
@@ -2433,7 +2434,16 @@ agents.get('/:id/sessions/:sessionId/media/:ref', AgentRead(), async (c) => {
     // would 404 — telling the client the image is gone when the truth is that
     // this machine could not look. openMediaBlob distinguishes the two, and a
     // genuinely missing transcript surfaces there as 410.
-    if (!(await sessionIsKnown(agentSlug, sessionId))) {
+    // sessionIsKnown is satisfied by a metadata entry alone, and openMediaBlob
+    // below opens the transcript by path — so a planted symlink whose metadata
+    // the agent also forged would be FOLLOWED to another agent's transcript.
+    // The realpath guard (unlike sessionIsKnown) refuses that link while still
+    // admitting a legitimately deleted transcript, whose bytes are gone and
+    // which openMediaBlob answers with a 410.
+    if (
+      !(await sessionIsKnown(agentSlug, sessionId)) ||
+      !sessionFileRealPathWithinAgent(agentSlug, sessionId)
+    ) {
       return c.json({ error: 'Session transcript not found' }, 404)
     }
 
@@ -2514,6 +2524,18 @@ agents.get('/:id/sessions/:sessionId/subagent/:agentId/messages', AgentRead(), a
 
     const sessionsDir = getAgentSessionsDir(agentSlug)
     const subagentJsonlPath = path.join(sessionsDir, sessionId, 'subagents', `agent-${subagentId}.jsonl`)
+
+    // sessionId and subagentId are unvalidated URL segments spliced into a
+    // path, so keep the read inside this agent's own session tree: reject a
+    // traversal id lexically, and a symlinked component that resolves out of
+    // the tree via the real path. Without this the route reads an arbitrary
+    // file (another agent's transcript, or anything a planted link points at).
+    if (
+      !isPathWithinDir(sessionsDir, subagentJsonlPath) ||
+      !isRealPathWithinDir(sessionsDir, subagentJsonlPath)
+    ) {
+      return c.json({ error: 'Subagent transcript not found' }, 404)
+    }
 
     const entries = await readJsonlFile(subagentJsonlPath) as any[]
     const messageEntries = entries.filter(

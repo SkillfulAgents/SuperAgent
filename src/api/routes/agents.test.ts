@@ -324,6 +324,7 @@ vi.mock('@shared/lib/services/session-service', async (importOriginal) => {
   getSessionMetadata: vi.fn(),
   sessionExists: vi.fn().mockResolvedValue(true),
   sessionIsKnown: vi.fn().mockResolvedValue(true),
+  sessionFileRealPathWithinAgent: vi.fn().mockReturnValue(true),
   isSessionRegistered: vi.fn().mockResolvedValue(false),
   updateSessionMetadata: vi.fn().mockResolvedValue(undefined),
   deleteSession: vi.fn(),
@@ -332,6 +333,14 @@ vi.mock('@shared/lib/services/session-service', async (importOriginal) => {
   getSessionSummary: vi.fn().mockResolvedValue({ sessionIds: [], sessionCount: 0, lastActivityAt: null }),
   readSessionMetadata: vi.fn(() => Promise.resolve({})),
   }
+})
+
+// Keep the pure path helpers real; stub only the symlink-resolving one, which
+// would otherwise hit the mocked fs. Route-level containment is proven in
+// session-scope.integration.test.ts against the real filesystem.
+vi.mock('@shared/lib/utils/path-safety', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@shared/lib/utils/path-safety')>()
+  return { ...actual, isRealPathWithinDir: vi.fn().mockReturnValue(true) }
 })
 
 const mockLoadSessionUsageTotals = vi.fn()

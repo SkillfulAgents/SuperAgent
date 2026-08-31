@@ -235,6 +235,25 @@ describe('sessionIsKnown', () => {
     await expect(sessionIsKnown('agent-a', 'stolen')).resolves.toBe(false)
   })
 
+  it('excludes a symlinked transcript from the listing and the summary', async () => {
+    const { getSessionSummary, listSessions } = await importService()
+    makeAgent('agent-a')
+    makeAgent('agent-b')
+    writeTranscript('agent-a', 'real')
+    writeTranscript('agent-b', 'victim')
+
+    // A link in agent-a's own dir, named like a session, pointing at agent-b's
+    // transcript. It must never enter a listing — the home-card tail reads the
+    // latest listed session's CONTENT, so a listed link would leak it.
+    fs.symlinkSync(
+      path.join(sessionsDir('agent-b'), 'victim.jsonl'),
+      path.join(sessionsDir('agent-a'), 'stolen.jsonl'),
+    )
+
+    expect((await getSessionSummary('agent-a')).sessionIds).toEqual(['real'])
+    expect((await listSessions('agent-a')).map((s) => s.id)).toEqual(['real'])
+  })
+
   it('removeLegacySessionOwnershipIndex deletes a stale index and is a no-op when absent', async () => {
     const { removeLegacySessionOwnershipIndex } = await importService()
     // The index lived one directory above the agents dir — i.e. the data dir.
