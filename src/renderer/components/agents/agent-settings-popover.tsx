@@ -130,7 +130,9 @@ export function AgentSettingsPopover({ agent, onRename }: AgentSettingsPopoverPr
             )}
           </button>
 
-          <div className="flex items-center gap-2 px-2 py-1.5">
+          {/* No vertical padding: the h-8 trigger already makes these rows the
+              same 32px as the py-1.5 text rows, keeping the spacing even. */}
+          <div className="flex items-center gap-2 px-2">
             <Timer className="h-4 w-4 shrink-0" />
             <p className="min-w-0 flex-1 text-sm">Session Auto-Delete</p>
             <AgentAutoDeleteSelect
@@ -144,7 +146,7 @@ export function AgentSettingsPopover({ agent, onRename }: AgentSettingsPopoverPr
           </div>
 
           {/* Per-agent override for API and MCP request log retention */}
-          <div className="flex items-center gap-2 px-2 py-1.5">
+          <div className="flex items-center gap-2 px-2">
             <FileClock className="h-4 w-4 shrink-0" />
             <p className="min-w-0 flex-1 text-sm">API Log Auto-Delete</p>
             <AgentApiLogAutoDeleteSelect
