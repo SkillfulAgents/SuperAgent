@@ -6,7 +6,7 @@
 
 import { eq, and, isNull, desc } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { chatIntegrationSessions } from '@shared/lib/db/schema'
+import { chatIntegrationSessions, chatIntegrations } from '@shared/lib/db/schema'
 import type { ChatIntegrationSession, NewChatIntegrationSession } from '@shared/lib/db/schema'
 
 export type { ChatIntegrationSession, NewChatIntegrationSession }
@@ -37,11 +37,27 @@ export function getChatIntegrationSessionById(id: string): ChatIntegrationSessio
   return results[0] || null
 }
 
-export function getChatIntegrationSessionBySessionId(sessionId: string): ChatIntegrationSession | null {
+/**
+ * The chat session for `sessionId` that belongs to `agentSlug`.
+ *
+ * A session id is unique only within an agent — import/clone gives two agents
+ * the same id — so a bare-id lookup could return another agent's chat session,
+ * routing one agent's approval card into a different agent's channel. Joining
+ * to the owning integration and filtering on its agent keeps the answer inside
+ * the asking agent.
+ */
+export function getChatIntegrationSessionBySessionId(
+  agentSlug: string,
+  sessionId: string,
+): ChatIntegrationSession | null {
   const results = db.select().from(chatIntegrationSessions)
-    .where(eq(chatIntegrationSessions.sessionId, sessionId))
+    .innerJoin(chatIntegrations, eq(chatIntegrationSessions.integrationId, chatIntegrations.id))
+    .where(and(
+      eq(chatIntegrationSessions.sessionId, sessionId),
+      eq(chatIntegrations.agentSlug, agentSlug),
+    ))
     .all()
-  return results[0] || null
+  return results[0]?.chat_integration_sessions ?? null
 }
 
 export function listChatIntegrationSessions(integrationId: string): ChatIntegrationSession[] {

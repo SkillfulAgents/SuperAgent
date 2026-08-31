@@ -251,7 +251,7 @@ xAgentChat.post('/send', async (c) => {
     // session is rotated out, its SSE forwarding is torn down, so an outbound
     // send is the only remaining delivery path.
     if (session_id) {
-      const callerChatSession = getChatIntegrationSessionBySessionId(session_id)
+      const callerChatSession = getChatIntegrationSessionBySessionId(callerSlug, session_id)
       if (
         callerChatSession
         && !callerChatSession.archivedAt

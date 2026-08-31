@@ -1622,7 +1622,7 @@ class ChatIntegrationManager {
     // If we know the sessionId, send only to the chat session that owns it
     if (sessionId) {
       try {
-        const chatSession = getChatIntegrationSessionBySessionId(sessionId)
+        const chatSession = getChatIntegrationSessionBySessionId(agentSlug, sessionId)
         if (chatSession) {
           const key = `${chatSession.integrationId}:${chatSession.externalChatId}`
           const managed = this.chatSessions.get(key)

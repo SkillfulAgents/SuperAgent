@@ -366,7 +366,7 @@ describe('x-agent chat route', () => {
     const { error } = await res.json() as { error: string }
     expect(error).toContain('chat chat-1 (General)')
     expect(error).toContain('delivered to that chat automatically')
-    expect(mockGetChatIntegrationSessionBySessionId).toHaveBeenCalledWith('caller-session')
+    expect(mockGetChatIntegrationSessionBySessionId).toHaveBeenCalledWith('agent-one', 'caller-session')
     expect(connector.sendMessage).not.toHaveBeenCalled()
   })
 
