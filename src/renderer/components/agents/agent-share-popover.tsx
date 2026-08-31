@@ -404,7 +404,7 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
             <div className="px-3 pt-3">
               <TabsList className="h-8">
                 {([
-                  ...(isAuthMode ? [{ id: 'share', label: 'Share' } as const] : []),
+                  ...(isAuthMode ? [{ id: 'share', label: 'Invite' } as const] : []),
                   { id: 'publish', label: 'Publish' } as const,
                   { id: 'export', label: 'Export' } as const,
                 ]).map((t) => (
