@@ -545,6 +545,18 @@ async function getLatestVisibleSessionTail(
   sessionMetadata: SessionMetadataMap,
   signal?: AbortSignal,
 ): Promise<NonNullable<ApiAgent['latestVisibleSession']>> {
+  // KNOWN RESIDUAL (accepted, out of scope): `session` comes from the listing,
+  // which drops symlinked transcripts by dirent type but still readdir's THROUGH
+  // a symlinked ancestor directory (e.g. an agent that replaced its own
+  // `-workspace` with a link to another agent's). This read would then follow
+  // that link and surface a stranger's tail on the agent's own home card. It is
+  // NOT gated with the realpath check the direct content routes use, because
+  // that costs an fs op on the exactly-pinned home/agents perf budgets. The
+  // vector is narrow (self-destructive: it breaks the attacker's own agent, and
+  // exposes only the latest tail via their own home). Direct-id content routes
+  // (messages, media, raw-log, usage, single-session, subagent) ARE covered by
+  // sessionFileRealPathWithinAgent; closing this path means gating the read here
+  // and re-recording those budgets.
   signal?.throwIfAborted()
   // Read first, check existence only if the read came back empty: the page
   // reader answers a missing transcript with an empty page, so the common

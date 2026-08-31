@@ -590,6 +590,12 @@ async function statTranscriptForSummary(filePath: string): Promise<fs.Stats | nu
  * adds no syscall over a plain `readdir` — this stays on the perf hot path.
  * (Direct id access that bypasses the listing is caught separately by the
  * realpath gate in {@link sessionFileRealPathWithinAgent}.)
+ *
+ * KNOWN RESIDUAL (accepted, out of scope): this drops symlinked ENTRIES, but
+ * `readdir` still follows a symlinked ANCESTOR (an agent that replaced its own
+ * `-workspace` with a link), so such a listing reflects another agent's dir.
+ * Fully closing it needs a per-listing realpath on the perf-pinned path — see
+ * the note in getLatestVisibleSessionTail, the one place it reaches content.
  */
 async function readSessionTranscriptNames(sessionsDir: string): Promise<string[]> {
   const entries = await fs.promises.readdir(sessionsDir, { withFileTypes: true })
