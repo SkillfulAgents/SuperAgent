@@ -38,7 +38,7 @@ import {
 } from '@renderer/hooks/use-agent-templates'
 import { AgentTemplatePublishPanel } from '@renderer/components/agents/agent-template-publish-panel'
 import { ActivityOrb } from '@renderer/components/messages/activity-orb'
-import { ArrowDownToLine, ArrowRight, Check, LibraryBig, Loader2, Lock, Upload, User, X } from 'lucide-react'
+import { ArrowDownToLine, ArrowRight, Check, LibraryBig, Loader2, Lock, User, X } from 'lucide-react'
 import type { AgentRole } from '@shared/lib/types/agent'
 
 interface AccessEntry {
@@ -374,11 +374,10 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
           type="button"
           size="sm"
           variant="outline"
-          className="h-8 shrink-0 gap-1"
+          className="h-8 shrink-0"
           aria-label="Share agent"
           data-testid="agent-share-button"
         >
-          <Upload className="h-3 w-3" />
           Share
         </Button>
       </PopoverTrigger>
@@ -405,7 +404,7 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
             <div className="px-3 pt-3">
               <TabsList className="h-8">
                 {([
-                  ...(isAuthMode ? [{ id: 'share', label: 'Share' } as const] : []),
+                  ...(isAuthMode ? [{ id: 'share', label: 'Invite' } as const] : []),
                   { id: 'publish', label: 'Publish' } as const,
                   { id: 'export', label: 'Export' } as const,
                 ]).map((t) => (
