@@ -81,7 +81,7 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
         >
         <ScrollAwareNavTitle>
           {agent ? (
-            <AgentContextMenu agent={agent}>
+            <AgentContextMenu agent={agent} surfaceTone="over-light">
               <AppLink
                 to="/agents/$slug"
                 params={{ slug }}

@@ -49,6 +49,8 @@ import {
 interface AgentContextMenuProps {
   agent: ApiAgent
   children: React.ReactNode
+  /** Stabilizes the glass over nearly-white chrome without flattening it elsewhere. */
+  surfaceTone?: 'glass' | 'over-light'
   /** Homepage-only controls that should share the agent's single menu surface. */
   additionalOptions?: React.ReactNode
   /** Enables the homepage grid's explicit arrange mode from any agent card. */
@@ -60,6 +62,7 @@ interface AgentContextMenuProps {
 export function AgentContextMenu({
   agent,
   children,
+  surfaceTone = 'glass',
   additionalOptions,
   onArrange,
   disableTouchLongPress,
@@ -183,7 +186,7 @@ export function AgentContextMenu({
         <ContextMenuTrigger asChild disableTouchLongPress={disableTouchLongPress}>
           {children}
         </ContextMenuTrigger>
-        <ContextMenuContent>
+        <ContextMenuContent data-context-menu-tone={surfaceTone}>
           {onArrange && (
             <ContextMenuItem
               onClick={() => {
