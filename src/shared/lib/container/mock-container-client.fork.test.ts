@@ -3,6 +3,7 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import { MockContainerClient } from './mock-container-client'
+import { ContainerNotFoundError } from './types'
 import { getSessionJsonlPath } from '@shared/lib/utils/file-storage'
 
 describe('MockContainerClient.forkSession', () => {
@@ -40,8 +41,8 @@ describe('MockContainerClient.forkSession', () => {
     await expect(client.getSession(fork!.id)).resolves.not.toBeNull()
   })
 
-  it('returns null for an unknown source', async () => {
+  it('throws ContainerNotFoundError for an unknown source', async () => {
     const client = new MockContainerClient({ agentId: 'agent-a' })
-    expect(await client.forkSession('nope')).toBeNull()
+    await expect(client.forkSession('nope')).rejects.toBeInstanceOf(ContainerNotFoundError)
   })
 })

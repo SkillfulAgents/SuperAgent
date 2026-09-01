@@ -28,7 +28,7 @@ const { isSessionActive, ensureRunning, forkInContainer, deleteInContainer } = v
 
 const { copyDirectoryFiltered, streamJsonlFile } = vi.hoisted(() => ({
   copyDirectoryFiltered: vi.fn(),
-  streamJsonlFile: vi.fn(async function* () { yield }),
+  streamJsonlFile: vi.fn(async function* (): AsyncGenerator<unknown> { yield }),
 }))
 
 const { insertMessageAuthorsBestEffort, dbSelectFrom } = vi.hoisted(() => ({

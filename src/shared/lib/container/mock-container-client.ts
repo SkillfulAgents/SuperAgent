@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
 import { z } from 'zod'
+import { ContainerNotFoundError } from './types'
 import type {
   ContainerClient,
   ContainerConfig,
@@ -2773,7 +2774,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
    */
   async forkSession(sessionId: string): Promise<{ id: string } | null> {
     const source = this.sessions.get(sessionId)
-    if (!source) return null
+    if (!source) throw new ContainerNotFoundError('Session not found')
 
     const agentSlug = this.config.agentId
     const sourcePath = getSessionJsonlPath(agentSlug, sessionId)
