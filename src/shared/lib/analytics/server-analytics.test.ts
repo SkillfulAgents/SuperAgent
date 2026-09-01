@@ -79,4 +79,14 @@ describe('trackServerEvent', () => {
     const body = JSON.parse(fetchSpy.mock.calls[0][1]!.body as string)
     expect(body.events[0].user_id).toBe('plat-2')
   })
+
+  it('trackServerEvent $sets user properties on the amplitude payload', async () => {
+    vi.stubEnv('E2E_MOCK', '')
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}'))
+    getSettingsMock.mockReturnValue({ shareAnalytics: true, analyticsTargets: [] } as never)
+    trackServerEvent('tagged_in_session', { agentSlug: 'billing' }, 'plat-2', { email: 'i@x' })
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalled())
+    const body = JSON.parse(fetchSpy.mock.calls[0][1]!.body as string)
+    expect(body.events[0].user_properties).toEqual({ $set: { email: 'i@x' } })
+  })
 })

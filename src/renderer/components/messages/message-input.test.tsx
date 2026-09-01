@@ -121,6 +121,12 @@ vi.mock('@renderer/hooks/use-agent-members', () => ({
   useAgentMembers: () => ({ data: mockMembersData }),
 }))
 
+const mockNavigate = vi.fn()
+vi.mock('@tanstack/react-router', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@tanstack/react-router')>()
+  return { ...actual, useNavigate: () => mockNavigate }
+})
+
 describe('MessageInput', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -138,6 +144,7 @@ describe('MessageInput', () => {
       hasValue: true,
     })
     mockUserState.isAuthMode = false
+    mockUserState.canAdminAgent = () => false
     mockMembersData = [
       { userId: 'u1', userName: 'Iddo Gino', userEmail: 'iddo@x' },
       { userId: 'u2', userName: 'West Harper', userEmail: 'west@x' },
@@ -1180,7 +1187,7 @@ describe('MessageInput', () => {
       expect(screen.queryByRole('option', { name: /Iddo/ })).toBeNull()
     })
 
-    it('Enter inserts the chip and retitles the send button', async () => {
+    it('Enter inserts the chip', async () => {
       const user = userEvent.setup()
       renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
       const input = screen.getByTestId('message-input')
@@ -1190,7 +1197,7 @@ describe('MessageInput', () => {
         expect(input.querySelector('[data-testid="mention-chip"]')).toHaveTextContent('@Iddo Gino')
       })
       expect(screen.queryByTestId('mention-helper-strip')).toBeNull()
-      expect(screen.getByTestId('send-button')).toHaveAttribute('title', 'Notify')
+      expect(screen.getByTestId('send-button')).toHaveAttribute('title', 'Send message')
     })
 
     it('does not open the picker without other members', async () => {
@@ -1199,6 +1206,53 @@ describe('MessageInput', () => {
       renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
       await user.type(screen.getByTestId('message-input'), '@')
       expect(screen.queryByTestId('mention-menu')).toBeNull()
+    })
+
+    it('shows Share this agent for an owner with no teammates', async () => {
+      mockUserState.canAdminAgent = () => true
+      mockMembersData = [{ userId: 'me', userName: 'Me', userEmail: 'me@x' }]
+      const user = userEvent.setup()
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      await user.type(screen.getByTestId('message-input'), '@')
+      expect(screen.getByTestId('mention-share-agent')).toHaveTextContent('Share this agent')
+      expect(screen.getByTestId('mention-share-agent')).toHaveTextContent('Add people you can mention')
+    })
+
+    it('Enter on an empty share row opens share settings', async () => {
+      mockUserState.canAdminAgent = () => true
+      mockMembersData = [{ userId: 'me', userName: 'Me', userEmail: 'me@x' }]
+      const user = userEvent.setup()
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      await user.type(screen.getByTestId('message-input'), '@')
+      await user.keyboard('{Enter}')
+      expect(mockNavigate).toHaveBeenCalledWith({
+        to: '/agents/$slug',
+        params: { slug: 'agent-1' },
+        search: { share: true },
+      })
+    })
+
+    it('navigates to agent share settings from the share row', async () => {
+      mockUserState.canAdminAgent = () => true
+      mockMembersData = [{ userId: 'me', userName: 'Me', userEmail: 'me@x' }]
+      const user = userEvent.setup()
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      await user.type(screen.getByTestId('message-input'), '@')
+      await user.click(screen.getByTestId('mention-share-agent'))
+      expect(mockNavigate).toHaveBeenCalledWith({
+        to: '/agents/$slug',
+        params: { slug: 'agent-1' },
+        search: { share: true },
+      })
+    })
+
+    it('does not show Share this agent when people are in the picker', async () => {
+      mockUserState.canAdminAgent = () => true
+      const user = userEvent.setup()
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      await user.type(screen.getByTestId('message-input'), '@')
+      expect(screen.queryByTestId('mention-share-agent')).toBeNull()
+      expect(screen.getByRole('option', { name: /Iddo Gino/ })).toBeInTheDocument()
     })
 
     it('sends the marker text unchanged', async () => {

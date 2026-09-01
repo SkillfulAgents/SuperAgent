@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
+  agentHomeSearchSchema,
+  isShareSearch,
   chatSearchSchema,
   sessionSearchSchema,
   connectionsSearchSchema,
@@ -64,6 +66,31 @@ describe('sessionSearchSchema', () => {
   })
   it('accepts a missing mention', () => {
     expect(sessionSearchSchema.parse({})).toEqual({})
+  })
+})
+
+describe('agentHomeSearchSchema', () => {
+  it('accepts share=true', () => {
+    expect(agentHomeSearchSchema.parse({ share: true })).toEqual({ share: true })
+  })
+  it('accepts the query-string forms TanStack may parse', () => {
+    expect(agentHomeSearchSchema.parse({ share: 'true' })).toEqual({ share: 'true' })
+    expect(agentHomeSearchSchema.parse({ share: 1 })).toEqual({ share: 1 })
+    expect(agentHomeSearchSchema.parse({ share: '1' })).toEqual({ share: '1' })
+  })
+  it('rejects other values', () => {
+    expect(agentHomeSearchSchema.safeParse({ share: 'yes' }).success).toBe(false)
+  })
+})
+
+describe('isShareSearch', () => {
+  it('accepts the same forms as the schema', () => {
+    expect(isShareSearch(true)).toBe(true)
+    expect(isShareSearch('true')).toBe(true)
+    expect(isShareSearch(1)).toBe(true)
+    expect(isShareSearch('1')).toBe(true)
+    expect(isShareSearch(undefined)).toBe(false)
+    expect(isShareSearch('yes')).toBe(false)
   })
 })
 

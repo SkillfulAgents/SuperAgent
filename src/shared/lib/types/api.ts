@@ -118,12 +118,6 @@ export interface ApiDiscoverableAgent {
 /**
  * Session response from API
  */
-export interface ApiAgentMember {
-  userId: string
-  userName: string
-  userEmail: string
-}
-
 export interface ApiSession {
   id: string
   agentSlug: string

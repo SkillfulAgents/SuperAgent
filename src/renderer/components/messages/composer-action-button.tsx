@@ -8,7 +8,6 @@ interface ComposerActionButtonProps {
   isSending: boolean
   isInterrupting: boolean
   onInterrupt: () => void
-  sendTitle?: string
 }
 
 export function ComposerActionButton({
@@ -18,13 +17,12 @@ export function ComposerActionButton({
   isSending,
   isInterrupting,
   onInterrupt,
-  sendTitle,
 }: ComposerActionButtonProps) {
   // While the agent works (or background tasks linger) show Stop alongside
   // Send — messages sent mid-turn are queued and picked up by the agent loop.
   if (isActive || isWaitingBackground) {
     const stopLabel = isWaitingBackground ? 'Stop background processes' : 'Stop the agent'
-    const sendLabel = sendTitle ?? (isWaitingBackground ? 'Send message' : 'Queue message')
+    const sendLabel = isWaitingBackground ? 'Send message' : 'Queue message'
     return (
       <div className="flex items-center gap-2">
         <Button
@@ -69,8 +67,8 @@ export function ComposerActionButton({
       size="icon"
       className="h-[34px] w-[34px]"
       disabled={!canSubmit || isSending}
-      aria-label={sendTitle ?? 'Send message'}
-      title={sendTitle ?? 'Send message'}
+      aria-label="Send message"
+      title="Send message"
       data-testid="send-button"
     >
       {isSending ? (

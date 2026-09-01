@@ -2783,8 +2783,8 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       // An FYI append has no turn to settle the active/awaiting states, so none of
       // promote / coalesce / cancelAwaitingInput / markSessionActive run here.
       const client = await containerManager.ensureRunning(agentSlug)
-      if (!messagePersister.isSubscribed(sessionId)) {
-        await messagePersister.subscribeToSession(sessionId, client, sessionId, agentSlug)
+      if (!messagePersister.isSubscribed(agentSlug, sessionId)) {
+        await messagePersister.subscribeToSession(agentSlug, sessionId, client, sessionId)
       }
       await persistAndBroadcastUserMessage(c, { messageUuid, sessionId, agentSlug, content: text, queued: false })
       await client.sendMessage(sessionId, text, messageUuid, { shouldQuery: false })
@@ -2801,14 +2801,22 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         console.error('[mentions] notification write failed', { sessionId, error })
       }
       for (const recipient of notified ? recipients : []) {
+        const taggeeEmail = emailById.get(recipient.userId) ?? ''
         const props = {
-          taggerId: sender.id, taggerEmail: sender.email,
-          taggeeId: recipient.userId, taggeeEmail: emailById.get(recipient.userId) ?? '',
+          taggerId: sender.id, taggerName: sender.name, taggerEmail: sender.email,
+          taggeeId: recipient.userId, taggeeName: recipient.name, taggeeEmail,
           messageContent: flattenMentions(text),
+          messageUuid,
           agentSlug, agentName: agent.frontmatter.name, sessionId, sessionName,
+          sessionPath: `/agents/${encodeURIComponent(agentSlug)}/sessions/${encodeURIComponent(sessionId)}?mention=${encodeURIComponent(messageUuid)}`,
         }
         trackServerEvent('added_user_tag_in_session', props, resolveAnalyticsUserId(sender.id))
-        trackServerEvent('tagged_in_session', props, resolveAnalyticsUserId(recipient.userId))
+        trackServerEvent(
+          'tagged_in_session',
+          props,
+          resolveAnalyticsUserId(recipient.userId),
+          taggeeEmail ? { email: taggeeEmail } : undefined,
+        )
       }
       return c.json({ success: true, uuid: messageUuid, queued: false, mentioned: resolved.recipients.map((r) => r.userId) }, 201)
     }

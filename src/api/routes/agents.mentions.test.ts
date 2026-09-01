@@ -323,8 +323,16 @@ describe('session mentions', () => {
     expect(mockPromoteAutomatedSession).not.toHaveBeenCalled()
     expect(mockCancelAwaitingInput).not.toHaveBeenCalled()
     expect(mockTriggerSessionMentions).toHaveBeenCalledWith(expect.objectContaining({ recipients: [{ userId: 'u2', name: 'Iddo Gino' }], messageUuid: uuid }))
-    expect(mockTrackServerEvent).toHaveBeenCalledWith('added_user_tag_in_session', expect.objectContaining({ taggeeId: 'u2', taggerId: 'me' }), 'analytics:me')
-    expect(mockTrackServerEvent).toHaveBeenCalledWith('tagged_in_session', expect.objectContaining({ taggeeId: 'u2' }), 'analytics:u2')
+    const mentionProps = {
+      taggerId: 'me', taggerName: 'Graham', taggerEmail: 'g@x',
+      taggeeId: 'u2', taggeeName: 'Iddo Gino', taggeeEmail: 'i@x',
+      messageContent: 'hi @Iddo Gino',
+      messageUuid: uuid,
+      agentSlug: 'billing', agentName: 'Billing', sessionId: 's1', sessionName: 'Refunds',
+      sessionPath: `/agents/billing/sessions/s1?mention=${uuid}`,
+    }
+    expect(mockTrackServerEvent).toHaveBeenCalledWith('added_user_tag_in_session', mentionProps, 'analytics:me')
+    expect(mockTrackServerEvent).toHaveBeenCalledWith('tagged_in_session', mentionProps, 'analytics:u2', { email: 'i@x' })
   })
 
   it('does not track when the notification batch fails', async () => {

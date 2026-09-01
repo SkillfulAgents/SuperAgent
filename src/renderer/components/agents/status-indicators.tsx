@@ -5,7 +5,7 @@ export function MentionGlyph({ className }: { className?: string } = {}) {
   return (
     <span
       data-testid="mention-glyph"
-      className={cn('text-xs font-semibold leading-none text-purple-700 dark:text-purple-400', className)}
+      className={cn('text-xs font-semibold leading-none text-blue-700 dark:text-blue-400', className)}
       role="img"
       aria-label="mentioned you"
     >
@@ -18,7 +18,7 @@ export function MentionMark({ className }: { className?: string } = {}) {
   return (
     <span
       data-testid="mention-mark"
-      className={cn('inline-flex text-purple-700 dark:text-purple-400 shrink-0', className)}
+      className={cn('inline-flex text-blue-700 dark:text-blue-400 shrink-0', className)}
       role="img"
       aria-label="mentioned you"
     >

@@ -184,7 +184,7 @@ const MARKDOWN_COMPONENTS: Components = {
       return (
         <span
           data-testid="mention-chip"
-          className="rounded-[4px] bg-purple-500/10 px-0.5 font-medium text-purple-700 dark:text-purple-400"
+          className="rounded-[4px] bg-blue-500/10 px-0.5 font-medium text-blue-700 dark:text-blue-400"
         >
           {children}
         </span>

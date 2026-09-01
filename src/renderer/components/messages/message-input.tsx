@@ -2,7 +2,9 @@ import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { useSendMessage, useUploadFile, useUploadFolder, useInterruptSession } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
-import { WifiOff } from 'lucide-react'
+import { UserPlus, WifiOff } from 'lucide-react'
+import { requestAgentShareOpen } from '@renderer/router/agent-share-open'
+import { useNavigate } from '@tanstack/react-router'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
@@ -12,7 +14,6 @@ import { ComposerActionButton } from './composer-action-button'
 import { ComposerMenu, SlashCommandMenu } from './slash-command-menu'
 import { useAgentMembers } from '@renderer/hooks/use-agent-members'
 import { insertMentionAtTrigger } from './markdown-composer-editor'
-import { parseMentions } from '@shared/lib/utils/mentions'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
@@ -47,7 +48,9 @@ interface MessageInputProps {
 
 export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialSpeed, initialModel, registerSnapshot }: MessageInputProps) {
   useRenderTracker('MessageInput')
-  const { user, canUseAgent, isAuthMode } = useUser()
+  const { user, canUseAgent, canAdminAgent, isAuthMode } = useUser()
+  const navigate = useNavigate()
+  const canShare = isAuthMode && canAdminAgent(agentSlug)
   const isViewOnly = !canUseAgent(agentSlug)
   const lastTypingNotification = useRef(0)
   const [slashMenuOpen, setSlashMenuOpen] = useState(false)
@@ -187,13 +190,13 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
 
   const handleSelectionText = useCallback((before: string) => {
     const m = before.match(/(?:^|\s)@([^\s@]*)$/)
-    if (m && mentionable.length > 0) {
+    if (m && (mentionable.length > 0 || canShare)) {
       setMentionQuery(m[1])
       setMentionIndex(0)
     } else {
       setMentionQuery(null)
     }
-  }, [mentionable.length])
+  }, [mentionable.length, canShare])
 
   const mentionMatches = useMemo(() => {
     if (mentionQuery === null) return []
@@ -208,7 +211,11 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     setMentionQuery(null)
   }, [mentionable, mentionQuery])
 
-  const hasMention = parseMentions(composer.message).length > 0
+  const openAgentShare = useCallback(() => {
+    setMentionQuery(null)
+    requestAgentShareOpen()
+    void navigate({ to: '/agents/$slug', params: { slug: agentSlug }, search: { share: true } })
+  }, [navigate, agentSlug])
 
   const handleChange = useCallback((value: string) => {
     composer.setMessage(value)
@@ -246,6 +253,11 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
   }
 
   const handleKeyDown = (e: KeyboardEvent) => {
+    if (mentionQuery !== null && e.key === 'Escape') {
+      e.preventDefault()
+      setMentionQuery(null)
+      return
+    }
     if (mentionQuery !== null && mentionMatches.length > 0) {
       if (e.key === 'ArrowDown') {
         e.preventDefault()
@@ -262,11 +274,11 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
         selectMention(mentionMatches[mentionIndex].userId)
         return
       }
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        setMentionQuery(null)
-        return
-      }
+    }
+    if (mentionQuery !== null && canShare && mentionMatches.length === 0 && (e.key === 'Enter' || e.key === 'Tab')) {
+      e.preventDefault()
+      openAgentShare()
+      return
     }
 
     // Slash command menu keyboard navigation
@@ -332,11 +344,33 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
       />
       <ComposerMenu
         testId="mention-menu"
-        visible={mentionQuery !== null}
+        visible={mentionQuery !== null && (mentionMatches.length > 0 || canShare)}
+        header={canShare && mentionMatches.length === 0 ? (
+          <button
+            type="button"
+            data-testid="mention-share-agent"
+            className="flex w-full cursor-pointer items-center gap-2 rounded-md bg-accent px-2 py-[7px] text-left text-sm text-accent-foreground"
+            onMouseDown={(e) => {
+              e.preventDefault()
+              openAgentShare()
+            }}
+          >
+            <UserPlus className="h-4 w-4 shrink-0" />
+            <span className="flex min-w-0 flex-1 flex-col items-start gap-px leading-tight">
+              <span className="w-full truncate font-medium">Share this agent</span>
+              <span className="w-full truncate text-xs text-muted-foreground">Add people you can mention</span>
+            </span>
+          </button>
+        ) : undefined}
         items={mentionMatches.map((m) => ({
           key: m.userId,
-          primary: <span className="font-medium">{m.userName}</span>,
-          secondary: m.userEmail,
+          leading: (
+            <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-blue-500/10 text-2xs font-semibold text-blue-700 dark:text-blue-400">
+              {m.userName.split(' ').map((w) => w[0]).join('').toUpperCase().slice(0, 2) || '?'}
+            </span>
+          ),
+          primary: <span className="text-xs font-medium">{m.userName}</span>,
+          secondary: <span className="font-normal">{m.userEmail}</span>,
         }))}
         selectedIndex={mentionIndex}
         onSelect={selectMention}
@@ -404,7 +438,6 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
               isSending={sendMessage.isPending || composer.isUploading}
               isInterrupting={interruptSession.isPending}
               onInterrupt={handleInterrupt}
-              sendTitle={hasMention ? 'Notify' : undefined}
             />
           </>
         )}

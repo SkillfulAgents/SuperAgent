@@ -16,7 +16,7 @@ async function signUp(page: import('@playwright/test').Page, user: typeof sender
   await appPage.dismissWizardIfVisible()
 }
 
-test('mention: picker → chip → Notify → send with no agent turn, teammate sees @ and inbox', async ({
+test('mention: picker → chip → send with no agent turn, teammate sees @ and inbox', async ({
   user1Page: page,
   user2Page,
 }) => {
@@ -48,7 +48,7 @@ test('mention: picker → chip → Notify → send with no agent turn, teammate 
   await page.keyboard.press('Enter')
   await expect(editor.getByTestId('mention-chip')).toHaveText('@Iddo Gino')
   await expect(page.getByTestId('mention-helper-strip')).toHaveCount(0)
-  await expect(page.getByTestId('send-button')).toHaveAttribute('title', 'Notify')
+  await expect(page.getByTestId('send-button')).toHaveAttribute('title', 'Send message')
   await page.getByTestId('send-button').click()
   await expect(page.getByTestId('message-user').last().getByTestId('mention-chip')).toHaveText('@Iddo Gino')
   await expect(page.getByTestId('mention-meta')).toHaveCount(0)

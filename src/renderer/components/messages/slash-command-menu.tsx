@@ -1,4 +1,3 @@
-
 import { useRef, useEffect, type ReactNode } from 'react'
 import { cn } from '@shared/lib/utils/cn'
 import type { SlashCommandInfo } from '@shared/lib/container/types'
@@ -7,6 +6,7 @@ export interface ComposerMenuItem {
   key: string
   primary: ReactNode
   secondary?: ReactNode
+  leading?: ReactNode
 }
 
 interface ComposerMenuProps {
@@ -15,9 +15,10 @@ interface ComposerMenuProps {
   onSelect: (key: string) => void
   visible: boolean
   testId: string
+  header?: ReactNode
 }
 
-export function ComposerMenu({ items, selectedIndex, onSelect, visible, testId }: ComposerMenuProps) {
+export function ComposerMenu({ items, selectedIndex, onSelect, visible, testId, header }: ComposerMenuProps) {
   const itemRefs = useRef<Map<number, HTMLButtonElement>>(new Map())
 
   useEffect(() => {
@@ -25,14 +26,19 @@ export function ComposerMenu({ items, selectedIndex, onSelect, visible, testId }
     el?.scrollIntoView({ block: 'nearest' })
   }, [selectedIndex])
 
-  if (!visible || items.length === 0) return null
+  if (!visible || (items.length === 0 && !header)) return null
 
   return (
     <div
-      className="absolute bottom-full left-0 right-0 max-h-48 overflow-y-auto border-t bg-popover text-popover-foreground shadow-md z-50"
+      className="absolute bottom-full left-0 z-50 mb-1.5 w-[min(26.25rem,100%)] max-h-60 overflow-y-auto rounded-xl border border-border bg-popover p-1 text-popover-foreground shadow-lg"
       role="listbox"
       data-testid={testId}
     >
+      {header ? (
+        <div className={items.length > 0 ? 'mb-0.5 border-b border-border pb-0.5' : undefined}>
+          {header}
+        </div>
+      ) : null}
       {items.map((item, i) => (
         <button
           key={item.key}
@@ -40,7 +46,7 @@ export function ComposerMenu({ items, selectedIndex, onSelect, visible, testId }
           role="option"
           aria-selected={i === selectedIndex}
           className={cn(
-            'w-full text-left px-3 py-1.5 text-sm cursor-pointer flex items-baseline gap-3',
+            'flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-[7px] text-left text-sm',
             'hover:bg-accent hover:text-accent-foreground',
             i === selectedIndex && 'bg-accent text-accent-foreground'
           )}
@@ -49,10 +55,13 @@ export function ComposerMenu({ items, selectedIndex, onSelect, visible, testId }
             onSelect(item.key)
           }}
         >
-          {item.primary}
-          {item.secondary ? (
-            <span className="text-muted-foreground truncate">{item.secondary}</span>
-          ) : null}
+          {item.leading}
+          <span className="flex min-w-0 flex-1 flex-col items-start gap-px leading-tight">
+            <span className="w-full truncate">{item.primary}</span>
+            {item.secondary ? (
+              <span className="w-full truncate text-xs text-muted-foreground">{item.secondary}</span>
+            ) : null}
+          </span>
         </button>
       ))}
     </div>
@@ -93,9 +102,14 @@ export function SlashCommandMenu({
 }: SlashCommandMenuProps) {
   const items = commands.map((cmd) => ({
     key: cmd.name,
+    leading: (
+      <span className="grid h-6 w-6 shrink-0 place-items-center rounded-md bg-muted font-mono text-2xs font-semibold text-muted-foreground">
+        /
+      </span>
+    ),
     primary: (
-      <span className="font-mono shrink-0">
-        /<HighlightedName name={cmd.name} filter={filter} />
+      <span className="font-mono text-[13px]">
+        <HighlightedName name={cmd.name} filter={filter} />
         {cmd.argumentHint && <span className="text-muted-foreground"> {cmd.argumentHint}</span>}
       </span>
     ),

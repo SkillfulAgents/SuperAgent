@@ -25,7 +25,7 @@ vi.mock('../db', () => ({
 import {
   createNotification, listNotifications, getUnreadCount, getUnreadMentionCount,
   getSessionIdsWithUnreadNotifications, getOldestUnreadMentionBySession, markSessionNotificationsRead,
-  markAsRead,
+  markAsRead, getUnreadNotificationsByAgents, getSessionIdsWithUnreadMentionsByAgents, markAllAsRead,
 } from './notification-service'
 import { agentAcl } from '../db/schema'
 
@@ -93,5 +93,31 @@ describe('session_mention recipient scoping', () => {
     const id = await createNotification({ type: 'session_mention', sessionId: 's1', agentSlug: 'billing', title: 't', body: 'x', recipientUserId: 'b', messageUuid: 'm1' })
     expect(await markAsRead(id, 'a')).toBe(false)
     expect(await getUnreadCount('b')).toBe(1)
+  })
+
+  it('getUnreadNotificationsByAgents keeps a mention row out of the other user\'s set', async () => {
+    await createNotification({ type: 'session_mention', sessionId: 's1', agentSlug: 'billing', title: 't', body: 'x', recipientUserId: 'b', messageUuid: 'm1' })
+    await createNotification({ type: 'session_complete', sessionId: 's2', agentSlug: 'billing', title: 't', body: 'x' })
+    expect(await getUnreadNotificationsByAgents(['billing'], 'a')).toEqual(new Map([['billing', new Set(['s2'])]]))
+    expect(await getUnreadNotificationsByAgents(['billing'], 'b')).toEqual(new Map([['billing', new Set(['s1', 's2'])]]))
+  })
+
+  it('getSessionIdsWithUnreadMentionsByAgents is per recipient', async () => {
+    await createNotification({ type: 'session_mention', sessionId: 's1', agentSlug: 'billing', title: 't', body: 'x', recipientUserId: 'b', messageUuid: 'm1' })
+    expect(await getSessionIdsWithUnreadMentionsByAgents(['billing'], 'b')).toEqual(new Map([['billing', new Set(['s1'])]]))
+    expect(await getSessionIdsWithUnreadMentionsByAgents(['billing'], 'a')).toEqual(new Map())
+  })
+
+  it('markAllAsRead clears only the caller\'s mention rows', async () => {
+    await createNotification({ type: 'session_mention', sessionId: 's1', agentSlug: 'billing', title: 't', body: 'x', recipientUserId: 'b', messageUuid: 'm1' })
+    await createNotification({ type: 'session_mention', sessionId: 's1', agentSlug: 'billing', title: 't', body: 'x', recipientUserId: 'a', messageUuid: 'm2' })
+    expect(await markAllAsRead('b')).toBe(1)
+    expect(await getUnreadCount('a')).toBe(1)
+    expect(await getUnreadCount('b')).toBe(0)
+  })
+
+  it('repeated agent-scoped rows (NULL messageUuid) do not trip the unique index', async () => {
+    await createNotification({ type: 'session_complete', sessionId: 's1', agentSlug: 'billing', title: 't', body: 'x' })
+    await expect(createNotification({ type: 'session_complete', sessionId: 's1', agentSlug: 'billing', title: 't', body: 'x' })).resolves.toBeTruthy()
   })
 })

@@ -64,7 +64,7 @@ const mentionNodeSpec: NodeSpec = {
     'data-mention-id': node.attrs.userId,
     'data-mention-name': node.attrs.name,
     'data-testid': 'mention-chip',
-    class: 'rounded-[4px] bg-purple-500/10 px-0.5 font-medium text-purple-700 dark:text-purple-400',
+    class: 'rounded-[4px] bg-blue-500/10 px-0.5 font-medium text-blue-700 dark:text-blue-400',
     contenteditable: 'false',
   }, `@${node.attrs.name}`],
 }
