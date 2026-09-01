@@ -4232,11 +4232,28 @@ describe('MessagePersister', () => {
       })
     })
 
+    // Args-keyed metadata mock for the two broadcast tests below. A
+    // mockResolvedValueOnce is consumed by ANY caller — a stray
+    // fire-and-forget promote leaked from an earlier test can eat it (seen as
+    // a CI-only flake), starving the test's own promote and polluting the
+    // event capture. Keying on the exact (agentSlug, sessionId) pair keeps
+    // strays on the null path. mockImplementation survives clearAllMocks, so
+    // restore the suite default afterwards.
+    function withHiddenScheduledMetadata(): () => void {
+      vi.mocked(getSessionMetadata).mockImplementation((slug, id) =>
+        Promise.resolve(
+          slug === AGENT_SLUG && id === SESSION_ID
+            ? ({ isScheduledExecution: true, scheduledTaskId: 'task-1' } as never)
+            : null,
+        ),
+      )
+      return () => {
+        vi.mocked(getSessionMetadata).mockImplementation(() => Promise.resolve(null))
+      }
+    }
+
     it('a direct promote of a non-awaiting session broadcasts session_updated, not an awaiting assertion', async () => {
-      vi.mocked(getSessionMetadata).mockResolvedValueOnce({
-        isScheduledExecution: true,
-        scheduledTaskId: 'task-1',
-      })
+      const restoreMetadata = withHiddenScheduledMetadata()
       const { events, cleanup } = collectGlobalEvents()
 
       // The human-message route (agents.ts) promotes before delivery, usually
@@ -4245,18 +4262,17 @@ describe('MessagePersister', () => {
       // must send the assertion-free refetch nudge instead.
       await messagePersister.promoteAutomatedSession(SESSION_ID, AGENT_SLUG)
 
-      expect(events.filter((e) => e.type === 'session_awaiting_input')).toHaveLength(0)
-      const updated = events.filter((e) => e.type === 'session_updated')
+      const forSession = (e: { sessionId?: string }) => e.sessionId === SESSION_ID
+      expect(events.filter((e) => e.type === 'session_awaiting_input' && forSession(e))).toHaveLength(0)
+      const updated = events.filter((e) => e.type === 'session_updated' && forSession(e))
       expect(updated).toHaveLength(1)
       expect(updated[0]).toMatchObject({ sessionId: SESSION_ID, agentSlug: AGENT_SLUG })
       cleanup()
+      restoreMetadata()
     })
 
     it('a promote on the awaiting rising edge still asserts session_awaiting_input', async () => {
-      vi.mocked(getSessionMetadata).mockResolvedValueOnce({
-        isScheduledExecution: true,
-        scheduledTaskId: 'task-1',
-      })
+      const restoreMetadata = withHiddenScheduledMetadata()
       const { events, cleanup } = collectGlobalEvents()
 
       simulateToolUse('mcp__user-input__request_secret', 'tool-1', { secretName: 'KEY' })
@@ -4269,9 +4285,13 @@ describe('MessagePersister', () => {
         )
       })
       // The session genuinely awaits here, so the state assertion is correct.
-      expect(events.filter((e) => e.type === 'session_awaiting_input').length).toBeGreaterThanOrEqual(1)
-      expect(events.filter((e) => e.type === 'session_updated')).toHaveLength(0)
+      const forSession = (e: { sessionId?: string }) => e.sessionId === SESSION_ID
+      expect(
+        events.filter((e) => e.type === 'session_awaiting_input' && forSession(e)).length,
+      ).toBeGreaterThanOrEqual(1)
+      expect(events.filter((e) => e.type === 'session_updated' && forSession(e))).toHaveLength(0)
       cleanup()
+      restoreMetadata()
     })
 
     it('does not promote a regular (non-automated) session', async () => {
