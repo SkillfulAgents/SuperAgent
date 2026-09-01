@@ -54,6 +54,7 @@ import {
 import { registerGlobalDispatchShortcut, unregisterGlobalDispatchShortcut } from './global-dispatch-shortcut'
 import { filesFromCommandLine } from './opened-files'
 import { parseAgentDeepLink } from './agent-deep-link'
+import { isExploreDeepLink } from './explore-deep-link'
 import { planMcpOAuthCallback, parseMcpOAuthCompletionResponse } from './mcp-oauth-callback'
 import { classifyImportPackage } from './import-packages'
 import { isImportPackagePath } from '@shared/lib/utils/package-extensions'
@@ -1100,6 +1101,12 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
   // slug-only links resolve the agent's latest session first. Both bring the
   // window up the same way, so a link that arrives after the window was closed
   // recreates it instead of being dropped.
+  if (isExploreDeepLink(url, PROTOCOL_SCHEME)) {
+    showOrCreateMainWindow()
+    sendToMainWindowWhenReady((win) => win.webContents.send('navigate-to-explore'))
+    return
+  }
+
   const agentLink = parseAgentDeepLink(url, PROTOCOL_SCHEME)
   if (agentLink) {
     if (agentLink.sessionId) {
