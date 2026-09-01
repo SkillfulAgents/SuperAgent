@@ -101,6 +101,7 @@ export const TOOLKIT_ALLOWED_HOSTS: Record<string, string[]> = {
 
   // Design
   figma: ['api.figma.com'],
+  canva: ['api.canva.com'],
 
   // Scheduling & Forms
   calendly: ['api.calendly.com'],

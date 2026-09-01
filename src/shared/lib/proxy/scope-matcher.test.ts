@@ -104,6 +104,20 @@ describe('matchScopes', () => {
     expect(result.scopes).toContain('drive.readonly')
   })
 
+  it('matches Canva Connect paths under /rest/v1', () => {
+    const list = matchScopes('canva', 'GET', '/rest/v1/designs')
+    expect(list.matched).toBe(true)
+    expect(list.scopes).toEqual(['design:meta:read'])
+
+    const create = matchScopes('canva', 'POST', '/rest/v1/designs')
+    expect(create.matched).toBe(true)
+    expect(create.scopes).toEqual(['design:content:write'])
+
+    const exportJob = matchScopes('canva', 'POST', '/rest/v1/exports')
+    expect(exportJob.matched).toBe(true)
+    expect(exportJob.scopes).toEqual(['design:content:read'])
+  })
+
   it('empty path returns matched: false', () => {
     const result = matchScopes('gmail', 'GET', '')
     expect(result.matched).toBe(false)
