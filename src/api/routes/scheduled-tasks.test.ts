@@ -198,7 +198,7 @@ describe('scheduled-tasks route', () => {
       { id: 'session-active', name: 'Active session' },
       { id: 'session-idle', name: 'Idle session' },
     ])
-    mockMessagePersister.isSessionActive.mockImplementation((sessionId: string) => sessionId === 'session-active')
+    mockMessagePersister.isSessionActive.mockImplementation((_agentSlug: string, sessionId: string) => sessionId === 'session-active')
     mockCreateSession.mockResolvedValue({ id: 'container-session-1' })
     mockEnsureRunning.mockResolvedValue({ createSession: mockCreateSession })
     mockGetSecretEnvVars.mockResolvedValue(['GITHUB_TOKEN'])
@@ -257,12 +257,12 @@ describe('scheduled-tasks route', () => {
       scheduledTaskName: 'Daily report',
     })
     expect(mockMessagePersister.subscribeToSession).toHaveBeenCalledWith(
+      'agent-one',
       'container-session-1',
       { createSession: mockCreateSession },
       'container-session-1',
-      'agent-one',
     )
-    expect(mockMessagePersister.markSessionActive).toHaveBeenCalledWith('container-session-1', 'agent-one')
+    expect(mockMessagePersister.markSessionActive).toHaveBeenCalledWith('agent-one', 'container-session-1')
     expect(mockRecordManualExecution).toHaveBeenCalledWith('task-1', 'container-session-1')
     expect(mockMarkTaskExecuted).not.toHaveBeenCalled()
   })

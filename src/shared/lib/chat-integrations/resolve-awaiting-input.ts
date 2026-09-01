@@ -13,8 +13,8 @@
  */
 
 interface AwaitingInputPersister {
-  isSessionAwaitingInput(sessionId: string): boolean
-  cancelAwaitingInput(sessionId: string, agentSlug: string): Promise<void>
+  isSessionAwaitingInput(agentSlug: string, sessionId: string): boolean
+  cancelAwaitingInput(agentSlug: string, sessionId: string): Promise<void>
 }
 
 /**
@@ -25,7 +25,7 @@ interface AwaitingInputPersister {
  * already settled.
  */
 interface OpenRequestRegistry {
-  getOpenRequestsForSession(sessionId: string): Array<{
+  getOpenRequestsForSession(agentSlug: string, sessionId: string): Array<{
     id: string
     kind: string
     payload: unknown
@@ -60,12 +60,12 @@ export async function consumeOrCancelAwaitingInput(opts: {
   // only on a confirmed live resolve; a non-text message, a multi-question card, or any other
   // awaiting type falls through to cancel.
   const isPlainText = !!messageText.trim() && !hasFiles
-  if (isPlainText && persister.isSessionAwaitingInput(sessionId)) {
+  if (isPlainText && persister.isSessionAwaitingInput(agentSlug, sessionId)) {
     // Recovered stubs are excluded the same way they are excluded from the
     // wire: they carry no renderable payload, so no card was ever posted and
     // there is nothing in this chat for the text to answer.
     const pendingQuestion = registry
-      .getOpenRequestsForSession(sessionId)
+      .getOpenRequestsForSession(agentSlug, sessionId)
       .find((r) => r.kind === 'question' && (r.payload as { recovered?: unknown }).recovered !== true)
     if (pendingQuestion) {
       const answered = await connector.answerOpenQuestionWithText(chatId, pendingQuestion.id, answerText ?? messageText)
@@ -76,7 +76,7 @@ export async function consumeOrCancelAwaitingInput(opts: {
   // Not an answer: cancel the pending request so the message starts a fresh turn instead of
   // deadlocking behind the blocked tool (no-op when not awaiting), and strip the now-abandoned
   // card so it does not keep showing live buttons.
-  await persister.cancelAwaitingInput(sessionId, agentSlug)
+  await persister.cancelAwaitingInput(agentSlug, sessionId)
   await connector.dismissOpenCards(chatId)
   return false
 }

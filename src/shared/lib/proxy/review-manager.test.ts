@@ -718,7 +718,7 @@ describe('ReviewManager shadow registry write-through (Phase 2)', () => {
     // The agent-scoped entry drives the derived projection for every session
     // of the agent — the seam that replaces registerAwaitingBlockerSource.
     expect(userInputRequestManager.isAgentAwaiting('shadow-agent')).toBe(true)
-    expect(userInputRequestManager.isSessionAwaiting('any-session', 'shadow-agent')).toBe(true)
+    expect(userInputRequestManager.isSessionAwaiting('shadow-agent', 'any-session')).toBe(true)
   })
 
   it('an x-agent review registers as x_agent_review', () => {
@@ -885,7 +885,7 @@ describe('ReviewManager as registry adapter (Phase 5)', () => {
       payload: { secretName: 'API_KEY' },
     })
     expect(manager.submitDecision('stream-tool-1', 'allow')).toBe(false)
-    expect(userInputRequestManager.getOpenRequestsForSession('session-1')).toHaveLength(1)
+    expect(userInputRequestManager.getOpenRequestsForSession('adapter-agent', 'session-1')).toHaveLength(1)
   })
 
   it('SECURITY: expectedAgentSlug still gates registry-only entries', () => {

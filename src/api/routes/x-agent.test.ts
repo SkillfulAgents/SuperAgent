@@ -80,7 +80,6 @@ const mockRegisterSession = vi.fn(async (..._args: unknown[]) => {})
 const mockUpdateSessionMetadata = vi.fn(async (..._args: unknown[]) => {})
 const mockGetSessionMetadata = vi.fn(async (..._args: unknown[]): Promise<unknown> => null)
 const mockSessionIsKnown = vi.fn(async (..._args: unknown[]) => true)
-const mockReserveSessionOwnership = vi.fn(async (..._args: unknown[]) => {})
 vi.mock('@shared/lib/services/session-service', () => ({
   listSessions: (...args: unknown[]) => mockListSessions(...args),
   getSessionMessagesWithCompact: (...args: unknown[]) => mockGetTranscript(...args),
@@ -97,7 +96,6 @@ vi.mock('@shared/lib/services/session-service', () => ({
     return null
   },
   registerSession: (...args: unknown[]) => mockRegisterSession(...args),
-  reserveSessionOwnership: (...args: unknown[]) => mockReserveSessionOwnership(...args),
   updateSessionMetadata: (...args: unknown[]) => mockUpdateSessionMetadata(...args),
   getSessionMetadata: (...args: unknown[]) => mockGetSessionMetadata(...args),
   sessionIsKnown: (...args: unknown[]) => mockSessionIsKnown(...args),
@@ -134,24 +132,24 @@ function waitForIdleTimeoutError(): Error {
 // callers mark/observe the session active before waiting, so "inactive" means
 // the turn already finished.
 function expectBoundedSyncWait(sessionId: string): void {
-  expect(mockWaitForIdle).toHaveBeenCalledWith(sessionId, {
+  expect(mockWaitForIdle).toHaveBeenCalledWith('target-agent', sessionId, {
     timeoutMs: expect.any(Number),
     requireActiveFirst: false,
   })
-  const opts = mockWaitForIdle.mock.calls.at(-1)?.[1] as { timeoutMs: number }
+  const opts = mockWaitForIdle.mock.calls.at(-1)?.[2] as { timeoutMs: number }
   expect(opts.timeoutMs).toBeGreaterThan(0)
   expect(opts.timeoutMs).toBeLessThanOrEqual(120_000)
 }
-const mockIsSessionActive = vi.fn((_sessionId?: string): boolean => false)
-const mockIsSessionAwaitingInput = vi.fn((_sessionId?: string): boolean => false)
+const mockIsSessionActive = vi.fn((_agentSlug?: string, _sessionId?: string): boolean => false)
+const mockIsSessionAwaitingInput = vi.fn((_agentSlug?: string, _sessionId?: string): boolean => false)
 const mockWaitForIdle = vi.fn(async (..._args: unknown[]) => {})
 const mockSubscribeToSession = vi.fn()
 const mockMarkSessionActive = vi.fn()
 const mockBroadcastGlobal = vi.fn()
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
-    isSessionActive: (sessionId?: string) => mockIsSessionActive(sessionId),
-    isSessionAwaitingInput: (sessionId?: string) => mockIsSessionAwaitingInput(sessionId),
+    isSessionActive: (agentSlug?: string, sessionId?: string) => mockIsSessionActive(agentSlug, sessionId),
+    isSessionAwaitingInput: (agentSlug: string, sessionId?: string,) => mockIsSessionAwaitingInput(agentSlug, sessionId),
     waitForIdle: (...args: unknown[]) => mockWaitForIdle(...args),
     isSubscribed: vi.fn(() => false),
     subscribeToSession: (...args: unknown[]) => mockSubscribeToSession(...args),
@@ -552,10 +550,10 @@ describe('/invoke', () => {
       }),
     )
     expect(mockCreateSession.mock.calls[0][0]).not.toHaveProperty('initialMessageUuid')
-    expect(mockReserveSessionOwnership).toHaveBeenCalledWith(TARGET_SLUG, 'new-sess-id')
-    expect(mockReserveSessionOwnership.mock.invocationCallOrder[0]).toBeLessThan(
-      mockMarkSessionActive.mock.invocationCallOrder[0],
-    )
+    // The id no longer needs claiming: markSessionActive creates the state
+    // under a key that already carries the target agent, so it cannot collide
+    // with another agent's session of the same id.
+    expect(mockMarkSessionActive).toHaveBeenCalledWith(TARGET_SLUG, 'new-sess-id')
     expect(mockRegisterSession).toHaveBeenCalledWith(
       TARGET_SLUG,
       'new-sess-id',
@@ -1468,7 +1466,7 @@ describe('/get-sessions', () => {
       { id: 'sess-1', name: 'S1', createdAt: new Date(), lastActivityAt: new Date(), messageCount: 3 },
       { id: 'sess-2', name: 'S2', createdAt: new Date(), lastActivityAt: new Date(), messageCount: 0 },
     ])
-    mockIsSessionActive.mockImplementation((id?: string) => id === 'sess-1')
+    mockIsSessionActive.mockImplementation((_agentSlug?: string, id?: string) => id === 'sess-1')
     const res = await authedFetch('/x-agent/get-sessions', { slug: TARGET_SLUG })
     const body = await res.json()
     expect(body.sessions).toHaveLength(2)
