@@ -10,7 +10,12 @@ vi.mock('@shared/lib/services/platform-auth-service', () => ({
 let mockProxyBase = 'http://proxy.test'
 let mockToken: string | null = 'plat_sa_token'
 
-import { fetchPlatformBillingInfo } from './platform-billing-service'
+import {
+  confirmPlatformPaymentMethod,
+  fetchPlatformBillingInfo,
+  postPlatformTopup,
+  startPlatformPaymentMethodSetup,
+} from './platform-billing-service'
 import { PlatformRequestError } from '@shared/lib/platform-auth/platform-fetch'
 
 const VALID_SNAPSHOT = {
@@ -41,7 +46,10 @@ describe('fetchPlatformBillingInfo', () => {
 
     expect(fetchSpy).toHaveBeenCalledWith(
       'http://proxy.test/v1/billing',
-      expect.objectContaining({ headers: { Authorization: 'Bearer plat_sa_token' } }),
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({ Authorization: 'Bearer plat_sa_token' }),
+      }),
     )
     expect(result).toEqual(VALID_SNAPSHOT)
   })
@@ -92,6 +100,56 @@ describe('fetchPlatformBillingInfo', () => {
   it('rejects a malformed payload', async () => {
     vi.spyOn(global, 'fetch').mockResolvedValue(jsonResponse({ subscription: 'nope' }))
     await expect(fetchPlatformBillingInfo()).rejects.toMatchObject({ status: 502 })
+  })
+
+  it('posts a top-up amount to the proxy', async () => {
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(
+      jsonResponse({ status: 'complete', amountCents: 2000, alreadyIssued: false }),
+    )
+
+    await expect(postPlatformTopup(2000)).resolves.toEqual({
+      status: 'complete',
+      amountCents: 2000,
+      alreadyIssued: false,
+    })
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'http://proxy.test/v1/billing/topup',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ amountCents: 2000 }),
+      }),
+    )
+  })
+
+  it('starts payment-method setup', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      jsonResponse({ clientSecret: 'seti_secret', publishableKey: 'pk_test_x' }),
+    )
+    await expect(startPlatformPaymentMethodSetup()).resolves.toEqual({
+      clientSecret: 'seti_secret',
+      publishableKey: 'pk_test_x',
+    })
+  })
+
+  it('confirms a payment method id', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      jsonResponse({ status: 'updated', last4: '4242', brand: 'visa' }),
+    )
+    await expect(confirmPlatformPaymentMethod('pm_1')).resolves.toEqual({
+      status: 'updated',
+      last4: '4242',
+      brand: 'visa',
+    })
+  })
+
+  it('surfaces a 402 top-up decline message', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      jsonResponse({ error: { message: 'Your card was declined.' } }, 402),
+    )
+    await expect(postPlatformTopup(2000)).rejects.toMatchObject({
+      status: 402,
+      message: 'Your card was declined.',
+    })
   })
 
   it('maps a network failure to 502', async () => {

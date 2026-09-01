@@ -4,6 +4,9 @@ import { Hono } from 'hono'
 const mocks = vi.hoisted(() => ({
   getEnrichedPlatformAuthStatus: vi.fn(),
   getPlatformAuthStatus: vi.fn(),
+  postPlatformTopup: vi.fn(),
+  startPlatformPaymentMethodSetup: vi.fn(),
+  confirmPlatformPaymentMethod: vi.fn(),
 }))
 
 vi.mock('../middleware/auth', () => ({
@@ -53,6 +56,12 @@ vi.mock('@shared/lib/services/platform-service', () => ({
     getCachedBilling: vi.fn(),
     getLastRefreshedAt: vi.fn(),
   },
+}))
+
+vi.mock('@shared/lib/services/platform-billing-service', () => ({
+  postPlatformTopup: (...args: unknown[]) => mocks.postPlatformTopup(...args),
+  startPlatformPaymentMethodSetup: (...args: unknown[]) => mocks.startPlatformPaymentMethodSetup(...args),
+  confirmPlatformPaymentMethod: (...args: unknown[]) => mocks.confirmPlatformPaymentMethod(...args),
 }))
 
 vi.mock('@shared/lib/services/cloud-workspace-service', () => ({
@@ -161,5 +170,56 @@ describe('GET /api/platform-auth workspace icon contract (SUP-625)', () => {
 
     expect(body).toMatchObject({ connected: true, source: 'settings' })
     expect(body).not.toHaveProperty('orgIconUrl')
+  })
+})
+
+describe('POST /api/platform-auth/billing mutations', () => {
+  it('forwards a valid top-up', async () => {
+    mocks.postPlatformTopup.mockResolvedValue({
+      status: 'complete',
+      amountCents: 2000,
+      alreadyIssued: false,
+    })
+
+    const response = await makeApp().request('/api/platform-auth/billing/topup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amountCents: 2000 }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({
+      status: 'complete',
+      amountCents: 2000,
+      alreadyIssued: false,
+    })
+    expect(mocks.postPlatformTopup).toHaveBeenCalledWith(2000)
+  })
+
+  it('rejects an invalid top-up amount', async () => {
+    const response = await makeApp().request('/api/platform-auth/billing/topup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amountCents: 500 }),
+    })
+    expect(response.status).toBe(400)
+    expect(mocks.postPlatformTopup).not.toHaveBeenCalled()
+  })
+
+  it('starts payment-method setup', async () => {
+    mocks.startPlatformPaymentMethodSetup.mockResolvedValue({
+      clientSecret: 'seti_secret',
+      publishableKey: 'pk_test_x',
+    })
+
+    const response = await makeApp().request('/api/platform-auth/billing/payment-method/setup', {
+      method: 'POST',
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({
+      clientSecret: 'seti_secret',
+      publishableKey: 'pk_test_x',
+    })
   })
 })

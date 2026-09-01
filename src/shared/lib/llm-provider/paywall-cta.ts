@@ -1,5 +1,6 @@
 export const TOPUP_AMOUNTS_CENTS = [5_000, 10_000, 20_000, 40_000] as const
 export const MIN_TOPUP_DOLLARS = 20
+export const MAX_TOPUP_DOLLARS = 50_000
 
 export const ORG_BILLING_PATH = '/dashboard/organizations/{orgId}?tab=billing'
 
@@ -31,7 +32,7 @@ export function parseCustomTopupDollars(input: string): number | null {
   const trimmed = input.trim()
   if (!/^\d+$/.test(trimmed)) return null
   const dollars = Number(trimmed)
-  return dollars >= MIN_TOPUP_DOLLARS ? dollars : null
+  return dollars >= MIN_TOPUP_DOLLARS && dollars <= MAX_TOPUP_DOLLARS ? dollars : null
 }
 
 export function resolvePaywallCta(input: {

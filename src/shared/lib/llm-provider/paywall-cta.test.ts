@@ -60,6 +60,7 @@ describe('parseCustomTopupDollars', () => {
     expect(parseCustomTopupDollars('20.5')).toBeNull()
     expect(parseCustomTopupDollars('abc')).toBeNull()
     expect(parseCustomTopupDollars('')).toBeNull()
+    expect(parseCustomTopupDollars('50001')).toBeNull()
   })
 })
 
