@@ -3,7 +3,7 @@ import * as path from 'path';
 import { z } from 'zod';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
 import type { CreateSessionRequest } from './types';
-import { subagentModelCatalogSchema } from './subagent-model-catalog';
+import { modelContextWindowsSchema, subagentModelCatalogSchema } from './subagent-model-catalog';
 
 /**
  * The subset of a create-session request that a pre-warmed CLI subprocess
@@ -23,6 +23,7 @@ export const warmProfileSchema = z.object({
   browserModel: z.string().optional(),
   dashboardBuilderModel: z.string().optional(),
   subagentModels: subagentModelCatalogSchema,
+  modelContextWindows: modelContextWindowsSchema,
   webSearchProvider: z.string().optional(),
   webFetchProvider: z.string().optional(),
   maxOutputTokens: z.number().optional(),
@@ -70,6 +71,7 @@ function buildProfile(
     browserModel: request.browserModel,
     dashboardBuilderModel: request.dashboardBuilderModel,
     subagentModels: request.subagentModels,
+    modelContextWindows: request.modelContextWindows,
     webSearchProvider: request.webSearchProvider,
     webFetchProvider: request.webFetchProvider,
     maxOutputTokens: request.maxOutputTokens,

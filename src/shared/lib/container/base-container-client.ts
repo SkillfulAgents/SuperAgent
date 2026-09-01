@@ -29,7 +29,7 @@ import type {
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import { getAgentCapabilitySettings, getSettings } from '@shared/lib/config/settings'
-import { getActiveLlmProvider } from '@shared/lib/llm-provider'
+import { getActiveLlmProvider, getModelContextWindowMap } from '@shared/lib/llm-provider'
 import type { AgentIdentity } from '@shared/lib/llm-provider/base-llm-provider'
 import { readAgentDisplayNameSync } from '@shared/lib/utils/file-storage'
 import { resolveContainerModel, getContainerModelPromptHints } from './resolve-model'
@@ -1191,6 +1191,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const resolvedDashboardBuilderModel = resolveContainerModel(options.dashboardBuilderModel, 'dashboard')
     const modelPromptHints = getContainerModelPromptHints(resolvedModel)
     const subagentModels = getSubagentModelCatalog(getActiveLlmProvider().id)
+    // Catalog windows for ALL models (not just isLatest like subagentModels):
+    // the container passes the session model's window to the Claude Agent SDK
+    // via CLAUDE_CODE_MAX_CONTEXT_TOKENS, else non-Claude models compact at
+    // the SDK's 200k default (grok: 500k real, gpt-5.x: 1.05M real).
+    const modelContextWindows = getModelContextWindowMap(getActiveLlmProvider().id)
     // The active web vendor id is a non-secret signal (NOT a model, so no resolveContainerModel).
     // Resolved once here from global settings so every session-creation caller inherits it. One
     // stored vendor backs both tools; the two ids sent to the container are the per-tool enablement
@@ -1223,6 +1228,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           browserModel: resolvedBrowserModel,
           dashboardBuilderModel: resolvedDashboardBuilderModel,
           subagentModels,
+          modelContextWindows,
           webSearchProvider,
           webFetchProvider,
           maxOutputTokens: options.maxOutputTokens,

@@ -33,7 +33,6 @@ import {
   findLastSessionEntry,
   getSessionMetadata,
   registerSession,
-  reserveSessionOwnership,
   sessionIsKnown,
 } from '@shared/lib/services/session-service'
 import { containerManager } from '@shared/lib/container/container-manager'
@@ -379,7 +378,7 @@ xAgent.post('/get-sessions', zValidator('json', getSessionsBodySchema), async (c
       createdAt: s.createdAt,
       lastActivityAt: s.lastActivityAt,
       messageCount: s.messageCount,
-      isRunning: messagePersister.isSessionActive(s.id),
+      isRunning: messagePersister.isSessionActive(targetSlug, s.id),
     })),
     total: allSessions.length,
     offset,
@@ -522,6 +521,7 @@ function isWaitForIdleTimeout(error: unknown): boolean {
  * finished — resolving immediately is correct, not a startup race.
  */
 async function waitForTurnWithinBudget(
+  targetSlug: string,
   sessionId: string,
   deadline: number,
 ): Promise<'completed' | 'timeout'> {
@@ -530,10 +530,10 @@ async function waitForTurnWithinBudget(
     // Pre-wait work can eat the whole budget; if the turn already finished
     // during it, that's a completion — reporting 'timeout' here would label a
     // finished turn 'running' and make the caller poll for a result it has.
-    return messagePersister.isSessionActive(sessionId) ? 'timeout' : 'completed'
+    return messagePersister.isSessionActive(targetSlug, sessionId) ? 'timeout' : 'completed'
   }
   try {
-    await messagePersister.waitForIdle(sessionId, {
+    await messagePersister.waitForIdle(targetSlug, sessionId, {
       timeoutMs: remainingMs,
       requireActiveFirst: false,
     })
@@ -621,7 +621,7 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
     return c.json({ error: 'Session not found' }, 404)
   }
 
-  if (sync && messagePersister.isSessionActive(sessionId)) {
+  if (sync && messagePersister.isSessionActive(targetSlug, sessionId)) {
     // Last reply flushed before we started waiting — used below to detect that
     // the turn we waited out has actually reached the transcript file.
     const boundaryEntry = await findLastSessionEntry(targetSlug, sessionId, isReturnableAssistantEntry)
@@ -631,7 +631,7 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
       // repeat, not an unbounded wait — an unbounded wait would outlive the
       // container's 300s fetch header timeout and surface as a retry-inducing
       // network error. Other failures stay hard errors.
-      const outcome = await waitForTurnWithinBudget(sessionId, syncDeadline)
+      const outcome = await waitForTurnWithinBudget(targetSlug, sessionId, syncDeadline)
       // The turn's 'result' event clears isActive before its final assistant
       // entry hits the JSONL file. When the turn we observed running has ended
       // — the wait said so, or it timed out and the turn ended in the gap
@@ -645,7 +645,7 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
       // poll budget on sessions that are simply idle. A session that went idle
       // just before the isSessionActive check above keeps plain read-what's-
       // flushed semantics.
-      if (outcome === 'completed' || !messagePersister.isSessionActive(sessionId)) {
+      if (outcome === 'completed' || !messagePersister.isSessionActive(targetSlug, sessionId)) {
         await readLastAssistantMessage(targetSlug, sessionId, boundaryEntry?.uuid)
       }
     } catch (error) {
@@ -655,8 +655,8 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
     }
   }
 
-  const isAwaiting = messagePersister.isSessionAwaitingInput(sessionId)
-  const isActive = messagePersister.isSessionActive(sessionId)
+  const isAwaiting = messagePersister.isSessionAwaitingInput(targetSlug, sessionId)
+  const isActive = messagePersister.isSessionActive(targetSlug, sessionId)
   const status: 'running' | 'idle' | 'awaiting_input' = isAwaiting
     ? 'awaiting_input'
     : isActive
@@ -771,7 +771,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         if (!(await sessionIsKnown(targetSlug, existingSessionId))) {
           return c.json({ error: 'Session not found' }, 404)
         }
-        if (messagePersister.isSessionActive(existingSessionId)) {
+        if (messagePersister.isSessionActive(targetSlug, existingSessionId)) {
           return c.json({ error: 'Target session is currently running' }, 409)
         }
         stage = 'ensure_running'
@@ -783,9 +783,9 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           ? await findLastSessionEntry(targetSlug, existingSessionId, isReturnableAssistantEntry)
           : null
         stage = 'subscribe'
-        if (!messagePersister.isSubscribed(existingSessionId)) {
+        if (!messagePersister.isSubscribed(targetSlug, existingSessionId)) {
           await subscribeWithTimeout(
-            messagePersister.subscribeToSession(existingSessionId, client, existingSessionId, targetSlug),
+            messagePersister.subscribeToSession(targetSlug, existingSessionId, client, existingSessionId),
           )
         }
         // Checked AFTER every unbounded pre-send await (container startup and
@@ -800,7 +800,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           })
           return c.json({ error: deliveryCutoffError() }, 504)
         }
-        messagePersister.markSessionActive(existingSessionId, targetSlug)
+        messagePersister.markSessionActive(targetSlug, existingSessionId)
         stage = 'send_message'
         let messageUuid: string | undefined
         if (isAuthMode() && attributedUserId) {
@@ -828,7 +828,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           stage = 'wait_for_idle'
           let outcome: 'completed' | 'timeout'
           try {
-            outcome = await waitForTurnWithinBudget(existingSessionId, syncDeadline)
+            outcome = await waitForTurnWithinBudget(targetSlug, existingSessionId, syncDeadline)
           } catch (error) {
             return c.json({
               sessionId: existingSessionId,
@@ -926,9 +926,8 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
       }
       const containerSession = created
       const newSessionId = containerSession.id
-      await reserveSessionOwnership(targetSlug, newSessionId)
       // Mark active before any await so waitForIdle sees state if result arrives early.
-      messagePersister.markSessionActive(newSessionId, targetSlug)
+      messagePersister.markSessionActive(targetSlug, newSessionId)
 
       const authorRecorded = initialMessageUuid && attributedUserId
         ? await insertMessageAuthorBestEffort({
@@ -976,14 +975,14 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         if (authorRecorded && initialMessageUuid) {
           await deleteMessageAuthorBestEffort(initialMessageUuid)
         }
-        messagePersister.unsubscribeFromSession(newSessionId)
+        messagePersister.unsubscribeFromSession(targetSlug, newSessionId)
         return c.json({ error: `Failed to register invoked session: ${message}` }, 500)
       }
 
       stage = 'subscribe'
       try {
         await subscribeWithTimeout(
-          messagePersister.subscribeToSession(newSessionId, client, newSessionId, targetSlug),
+          messagePersister.subscribeToSession(targetSlug, newSessionId, client, newSessionId),
         )
       } catch (subscribeErr) {
         const message = subscribeErr instanceof Error ? subscribeErr.message : String(subscribeErr)
@@ -1010,18 +1009,18 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         if (authorRecorded && initialMessageUuid) {
           await deleteMessageAuthorBestEffort(initialMessageUuid)
         }
-        messagePersister.unsubscribeFromSession(newSessionId)
+        messagePersister.unsubscribeFromSession(targetSlug, newSessionId)
         return c.json({ error: `Failed to attach to invoked session: ${message}` }, 500)
       }
       if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
-        messagePersister.setSlashCommands(newSessionId, containerSession.slashCommands)
+        messagePersister.setSlashCommands(targetSlug, newSessionId, containerSession.slashCommands)
       }
 
       if (sync) {
         stage = 'wait_for_idle'
         let outcome: 'completed' | 'timeout'
         try {
-          outcome = await waitForTurnWithinBudget(newSessionId, syncDeadline)
+          outcome = await waitForTurnWithinBudget(targetSlug, newSessionId, syncDeadline)
         } catch (error) {
           return c.json({
             sessionId: newSessionId,

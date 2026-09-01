@@ -1,12 +1,5 @@
 import { createContext, useContext, useState, useCallback, type ReactNode } from 'react'
-import { Loader2 } from 'lucide-react'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '@renderer/components/ui/dialog'
+import { OnboardingSetupDialog } from '@renderer/components/agents/onboarding-setup-dialog'
 
 interface OnboardingContextType {
   setOnboarding: (pending: boolean) => void
@@ -24,15 +17,7 @@ export function OnboardingProvider({ children }: { children: ReactNode }) {
   return (
     <OnboardingContext.Provider value={{ setOnboarding }}>
       {children}
-      <Dialog open={isPending}>
-        <DialogContent className="max-w-sm [&>button]:hidden" data-testid="onboarding-setup-dialog" onPointerDownOutside={(e) => e.preventDefault()}>
-          <DialogHeader className="items-center text-center">
-            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground mb-2" />
-            <DialogTitle>Setting up your agent...</DialogTitle>
-            <DialogDescription>Preparing the onboarding session</DialogDescription>
-          </DialogHeader>
-        </DialogContent>
-      </Dialog>
+      <OnboardingSetupDialog open={isPending} />
     </OnboardingContext.Provider>
   )
 }

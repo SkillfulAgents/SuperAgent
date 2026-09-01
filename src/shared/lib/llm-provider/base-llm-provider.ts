@@ -3,6 +3,7 @@ import { getSettings, type ApiKeySettings, type ApiKeyStatus } from '../config/s
 import type { ModelDefinition, ModelSearchResult } from './model-catalog-schema'
 import type { CatalogDefaultModels } from './model-catalog-defaults'
 import type { LlmProviderId } from './provider-types'
+import { defaultParseErrorResponse, type ProviderErrorPresentation } from './error-presentation'
 
 export { LLM_PROVIDER_IDS } from './provider-types'
 export type { LlmProviderId } from './provider-types'
@@ -154,5 +155,25 @@ export abstract class BaseLlmProvider {
    */
   async searchModels(_query: string): Promise<ModelSearchResult[]> {
     throw new Error(`${this.name} does not support model search`)
+  }
+
+  /**
+   * Banner presentation for an upstream HTTP error. Providers customize copy by
+   * overriding parseErrorResponseOverride, not this method.
+   */
+  parseErrorResponse(status: number | undefined, body: unknown): ProviderErrorPresentation {
+    return this.parseErrorResponseOverride(status, body) ?? defaultParseErrorResponse(status, body)
+  }
+
+  /**
+   * Provider-specific presentation for the error classes this provider
+   * recognizes. Return null for everything else — the generic banner is
+   * applied here in the base class, so overrides never build it themselves.
+   */
+  protected parseErrorResponseOverride(
+    _status: number | undefined,
+    _body: unknown,
+  ): ProviderErrorPresentation | null {
+    return null
   }
 }

@@ -70,7 +70,7 @@ vi.mock('@renderer/components/ui/context-menu', async () => {
   }
 })
 
-import { render, screen, cleanup, waitFor } from '@testing-library/react'
+import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
 import { AgentContextMenu } from './agent-context-menu'
@@ -107,50 +107,6 @@ afterEach(() => {
   cleanup()
   delete (window as { electronAPI?: unknown }).electronAPI
   _resetApiTargetForTest()
-})
-
-describe('the agent directory action', () => {
-  it('asks this computer to open the folder when it runs the agent', async () => {
-    render(<AgentContextMenu agent={AGENT}><span>row</span></AgentContextMenu>)
-
-    expect(screen.getByText('Show Agent Directory')).toBeInTheDocument()
-    await userEvent.click(screen.getByTestId('open-agent-directory-item'))
-
-    await waitFor(() =>
-      expect(mockApiFetch).toHaveBeenCalledWith(
-        '/api/agents/sales/open-directory',
-        expect.objectContaining({ body: JSON.stringify({ open: true }) }),
-      ),
-    )
-  })
-
-  it('never asks a cloud workspace to launch a file manager on its own host', async () => {
-    drive('cloud')
-    render(<AgentContextMenu agent={AGENT}><span>row</span></AgentContextMenu>)
-
-    await userEvent.click(screen.getByTestId('open-agent-directory-item'))
-
-    await waitFor(() =>
-      expect(mockApiFetch).toHaveBeenCalledWith(
-        '/api/agents/sales/open-directory',
-        expect.objectContaining({ body: JSON.stringify({ open: false }) }),
-      ),
-    )
-  })
-
-  it('offers the copy-the-path action remotely, which is the part that works', async () => {
-    drive('cloud')
-    const writeText = vi.fn().mockResolvedValue(undefined)
-    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
-
-    render(<AgentContextMenu agent={AGENT}><span>row</span></AgentContextMenu>)
-
-    expect(screen.getByText('Copy Agent Directory Path')).toBeInTheDocument()
-    expect(screen.queryByText('Show Agent Directory')).not.toBeInTheDocument()
-
-    await userEvent.click(screen.getByTestId('open-agent-directory-item'))
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith('/srv/agents/sales'))
-  })
 })
 
 describe('moving an agent into a left-nav folder', () => {

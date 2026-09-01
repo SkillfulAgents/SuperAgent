@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useState } from 'react'
 import { Check, Loader2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
@@ -24,7 +24,13 @@ interface InlineEditableTitleProps {
   saveButtonTestId?: string
 }
 
-export function InlineEditableTitle({
+/** Imperative surface: lets a parent (e.g. a settings popover's "Rename"
+ *  action) enter edit mode without simulating a click on the title. */
+export interface InlineEditableTitleHandle {
+  startEditing: () => void
+}
+
+export const InlineEditableTitle = forwardRef<InlineEditableTitleHandle, InlineEditableTitleProps>(function InlineEditableTitle({
   value,
   canEdit,
   isSaving,
@@ -40,9 +46,15 @@ export function InlineEditableTitle({
   displayTestId,
   inputTestId,
   saveButtonTestId,
-}: InlineEditableTitleProps) {
+}: InlineEditableTitleProps, ref) {
   const [isEditing, setIsEditing] = useState(false)
   const [draft, setDraft] = useState(value)
+
+  useImperativeHandle(ref, () => ({
+    startEditing: () => {
+      if (canEdit) setIsEditing(true)
+    },
+  }), [canEdit])
 
   useEffect(() => {
     if (!isEditing) setDraft(value)
@@ -135,4 +147,4 @@ export function InlineEditableTitle({
       {value}
     </h1>
   )
-}
+})

@@ -21,7 +21,8 @@ activityRouter.use('*', Authenticated())
 // some connection-loss paths, but isSessionActive is true only while a turn is
 // actually processing — a persisted 'running' with an inactive session is a
 // dead or stopped run and must downgrade to failed instead of pulsing forever.
-const isSessionLive = (sessionId: string) => messagePersister.isSessionActive(sessionId)
+const isSessionLive = (agentSlug: string, sessionId: string) =>
+  messagePersister.isSessionActive(agentSlug, sessionId)
 
 activityRouter.get('/agents/:id', ResolveAgent(), AgentRead(), async (c) => {
   try {

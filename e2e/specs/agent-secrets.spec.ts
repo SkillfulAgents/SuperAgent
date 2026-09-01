@@ -184,15 +184,19 @@ test.describe('Agent Secrets (reach the container & persist)', () => {
     })
 
     await test.step('AlertDialogContent: an overlong agent name leaves Confirm reachable and wraps', async () => {
-      await agentPage.openSettings()
-      await page.locator('[data-testid="agent-settings-nav-general"]').click()
+      // The header gear is a popover now; the full settings dialog (whose
+      // delete confirm quotes the LIVE name field, unsaved) opens via the
+      // sidebar context menu.
+      await page.locator('[data-testid^="agent-item-"]', { hasText: agentName }).click({ button: 'right' })
+      await page.locator('[data-testid="agent-settings-item"]').click()
+      await expect(page.locator('[data-testid="agent-settings-dialog"]')).toBeVisible()
       // The confirmation quotes the live value of this field, so the dialog inflates
       // without the rename ever being saved.
       await page.locator('#agent-name').fill(longToken)
-      await page.locator('[data-testid="delete-agent-button"]').click()
+      await page.locator('[data-testid="agent-settings-dialog"] [data-testid="delete-agent-button"]').click()
 
       const alertDialog = page.getByRole('alertdialog')
-      const confirmButton = page.locator('[data-testid="confirm-button"]')
+      const confirmButton = page.locator('[data-testid="confirm-delete-agent-button"]')
       await expectContainedIn(confirmButton, alertDialog)
 
       // Reachable controls are not enough: the name itself must wrap rather than paint

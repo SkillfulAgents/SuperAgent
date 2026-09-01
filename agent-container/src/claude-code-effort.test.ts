@@ -351,6 +351,97 @@ describe('ClaudeCodeProcess model handling', () => {
   })
 })
 
+describe('ClaudeCodeProcess model context windows', () => {
+  beforeEach(() => {
+    calls.length = 0
+    setModelCalls.length = 0
+  })
+
+  const windows = { 'grok-4.6': 500_000, 'gpt-5.5': 1_050_000 }
+  const maxContextOf = (call: MockQueryCall): string | undefined =>
+    (call.options.env as Record<string, string | undefined>).CLAUDE_CODE_MAX_CONTEXT_TOKENS
+
+  it('sets CLAUDE_CODE_MAX_CONTEXT_TOKENS from the catalog map for the session model', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-ctx-1',
+      workingDirectory: '/tmp',
+      model: 'grok-4.6',
+      modelContextWindows: windows,
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+    expect(maxContextOf(calls[0])).toBe('500000')
+  })
+
+  it('leaves the env var unset for a model without a catalog window', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-ctx-2',
+      workingDirectory: '/tmp',
+      model: 'claude-sonnet-4-6',
+      modelContextWindows: windows,
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+    expect(maxContextOf(calls[0])).toBeUndefined()
+  })
+
+  it('lets a user-set custom env var win over the catalog value', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-ctx-3',
+      workingDirectory: '/tmp',
+      model: 'grok-4.6',
+      modelContextWindows: windows,
+      customEnvVars: { CLAUDE_CODE_MAX_CONTEXT_TOKENS: '123456' },
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+    expect(maxContextOf(calls[0])).toBe('123456')
+  })
+
+  it('restarts the query (not setModel) when a model switch changes the window', { timeout: 15000 }, async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-ctx-4',
+      workingDirectory: '/tmp',
+      model: 'claude-sonnet-4-6',
+      modelContextWindows: windows,
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+    expect(maxContextOf(calls[0])).toBeUndefined()
+
+    // claude → grok changes the window (unset → 500k); dynamic setModel would
+    // leave the new model running against the old env, so it must re-query.
+    await process.sendMessage('hello', undefined, { model: 'grok-4.6' })
+
+    expect(setModelCalls).toHaveLength(0)
+    expect(calls).toHaveLength(2)
+    expect(calls[1].options.model).toBe('grok-4.6')
+    expect(maxContextOf(calls[1])).toBe('500000')
+  })
+
+  it('still switches dynamically when both models share a window', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-ctx-5',
+      workingDirectory: '/tmp',
+      model: 'claude-sonnet-4-6',
+      modelContextWindows: windows,
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+
+    // Neither claude id has a catalog window — no env change, setModel is fine.
+    await process.sendMessage('hello', undefined, { model: 'claude-opus-4-7' })
+
+    expect(calls).toHaveLength(1)
+    expect(setModelCalls).toEqual(['claude-opus-4-7'])
+  })
+})
+
 describe('ClaudeCodeProcess model prompt hints', () => {
   beforeEach(() => {
     calls.length = 0

@@ -45,7 +45,7 @@ export interface ActivityStatsOptions {
    * app quit mid-run) — it is reported as failed instead of pulsing forever.
    * Defaults to trusting the persisted status when no probe is supplied.
    */
-  isSessionLive?: (sessionId: string) => boolean
+  isSessionLive?: (agentSlug: string, sessionId: string) => boolean
 }
 
 export type ConnectionStatsOptions = ActivityStatsOptions
@@ -91,6 +91,7 @@ function pushEvent(
 }
 
 function webhookEvents(
+  agentSlug: string,
   metadata: SessionMetadataMap,
   options: ActivityStatsOptions,
 ): Map<string, DailyActivityEvent[]> {
@@ -105,7 +106,7 @@ function webhookEvents(
     // tracking and count as succeeded.
     let status = normalizeAutomationStatus(meta.automationStatus)
     if (status === 'running') {
-      if (!options.isSessionLive || options.isSessionLive(sessionId)) continue
+      if (!options.isSessionLive || options.isSessionLive(agentSlug, sessionId)) continue
       status = 'failed'
     }
     const createdAt = new Date(meta.createdAt)
@@ -128,6 +129,7 @@ function webhookEvents(
  * charts cannot drift while avoiding connection/audit queries entirely.
  */
 export function buildAutomationActivityStats(
+  agentSlug: string,
   tasks: AutomationTaskInput[],
   triggers: AutomationTriggerInput[],
   metadata: SessionMetadataMap,
@@ -145,7 +147,7 @@ export function buildAutomationActivityStats(
   for (const [sessionId, meta] of Object.entries(metadata)) {
     if (!meta.scheduledTaskId) continue
     let status = normalizeAutomationStatus(meta.automationStatus)
-    if (status === 'running' && options.isSessionLive && !options.isSessionLive(sessionId)) {
+    if (status === 'running' && options.isSessionLive && !options.isSessionLive(agentSlug, sessionId)) {
       status = 'failed'
     }
     const sessions = sessionsByTaskId.get(meta.scheduledTaskId) ?? []
@@ -167,7 +169,7 @@ export function buildAutomationActivityStats(
   const webhookIds = triggers.map((trigger) => trigger.id)
   const webhookByTriggerId = dailyEventsById(
     webhookIds,
-    webhookEvents(metadata, { ...options, tzOffsetMinutes }),
+    webhookEvents(agentSlug, metadata, { ...options, tzOffsetMinutes }),
     { ...options, now, tzOffsetMinutes },
   )
 
@@ -297,6 +299,7 @@ export async function getAgentActivityStats(
   ])
 
   const { cronByTaskId, webhookByTriggerId } = buildAutomationActivityStats(
+    agentSlug,
     tasks,
     triggers,
     metadata,
