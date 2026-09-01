@@ -86,6 +86,24 @@ function buildAuthServerCommand(dataDir: string, port: number, viteCacheDir: str
   return `SUPERAGENT_DATA_DIR="${dataDir}" AUTH_MODE=true node e2e/setup-e2e-data.js && SUPERAGENT_DATA_DIR="${dataDir}" VITE_CACHE_DIR="${viteCacheDir}" E2E_MOCK=true AUTH_MODE=true ANTHROPIC_API_KEY=sk-ant-e2e-mock PORT=${port} npm run dev:web`
 }
 
+// Each project gets its own dedicated server, and Playwright starts every
+// webServer entry no matter which projects a run selects — nine dev servers
+// for a one-project run, which a laptop cannot bring up inside the 120s
+// budget. Start only the servers the selected projects will actually hit.
+// (CLI-only filter: `--project` never reaches config evaluation any other
+// way; with no flag, all servers start, exactly as before.)
+const selectedProjects = process.argv.flatMap((arg, i) => {
+  if (arg === '--project') return process.argv[i + 1] ? [process.argv[i + 1]] : []
+  if (arg.startsWith('--project=')) return [arg.slice('--project='.length)]
+  return []
+})
+const matchedProjects = authProjects.filter((project) => selectedProjects.includes(project.name))
+// Fall back to all servers when nothing matched exactly — `--project` also
+// accepts glob patterns, and starting every server beats starting none.
+const activeProjects = selectedProjects.length > 0 && matchedProjects.length > 0
+  ? matchedProjects
+  : authProjects
+
 export default defineConfig({
   testDir: './e2e/auth/specs',
   outputDir: playwrightOutputDir,
@@ -106,7 +124,7 @@ export default defineConfig({
     use: { ...devices['Desktop Chrome'], baseURL: project.baseURL },
   })),
 
-  webServer: authProjects.map((project) => ({
+  webServer: activeProjects.map((project) => ({
     command: buildAuthServerCommand(project.dataDir, project.port, project.viteCacheDir),
     url: `${project.baseURL}/api/settings`,
     reuseExistingServer: false,
