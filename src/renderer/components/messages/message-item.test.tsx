@@ -482,4 +482,33 @@ describe('MessageItem', () => {
       expect(screen.queryByRole('link', { name: /raise spend limit/i })).not.toBeInTheDocument()
     })
   })
+
+  describe('mentions', () => {
+    function renderUserMessage(text: string) {
+      const msg = createUserMessage({ content: { text } })
+      return render(<MessageItem message={msg} />)
+    }
+
+    function renderAssistantMessage(text: string) {
+      const msg = createAssistantMessage({ content: { text } })
+      return render(<MessageItem message={msg} />)
+    }
+
+    it('renders mention markers as chips and strips the context line', () => {
+      renderUserMessage('ping [[mention:u1|Iddo Gino]] now\n\n[[mention-context: G tagged a teammate in this chat to bring it to their attention. This is an FYI, not a request to you. Do not act on it.]]')
+      expect(screen.getByTestId('mention-chip')).toHaveTextContent('@Iddo Gino')
+      expect(screen.queryByText(/mention-context/)).toBeNull()
+      expect(screen.queryByTestId('mention-meta')).toBeNull()
+    })
+
+    it('renders a mention chip when the name contains ]', () => {
+      renderUserMessage('ping [[mention:u1|A%5DB]]')
+      expect(screen.getByTestId('mention-chip')).toHaveTextContent('@A]B')
+    })
+
+    it('does not lift markers from assistant messages', () => {
+      renderAssistantMessage('the user wrote [[mention:u1|A]]')
+      expect(screen.queryByTestId('mention-chip')).toBeNull()
+    })
+  })
 })

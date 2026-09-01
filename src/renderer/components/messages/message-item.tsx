@@ -23,6 +23,7 @@ import { useRenderTracker } from '@renderer/lib/perf'
 import { createMarkdownUrlTransform } from '@renderer/lib/markdown-url-transform'
 import type { EmbeddedImageAliases } from '@renderer/lib/parse-tool-result'
 import { rehypeStreamingWordReveal } from './streaming-word-reveal'
+import { parseMentions, stripMentionContext, mentionsToMarkdownLinks } from '@shared/lib/utils/mentions'
 
 // Re-export for use by other components
 export type { ApiToolCall }
@@ -178,20 +179,31 @@ const MARKDOWN_COMPONENTS: Components = {
       <div className="max-w-[32rem]">{children}</div>
     </td>
   ),
-  // Ensure links open in new tab
-  a: ({ children, href }) => (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className={cn(
-        'hover:underline',
-        'text-blue-500'
-      )}
-    >
-      {children}
-    </a>
-  ),
+  a: ({ children, href }) => {
+    if (href?.startsWith('mention:')) {
+      return (
+        <span
+          data-testid="mention-chip"
+          className="rounded-[4px] bg-blue-500/10 px-0.5 font-medium text-blue-700 dark:text-blue-400"
+        >
+          {children}
+        </span>
+      )
+    }
+    return (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={cn(
+          'hover:underline',
+          'text-blue-500'
+        )}
+      >
+        {children}
+      </a>
+    )
+  },
   img: ({ alt, src }) => (
     <img
       src={src}
@@ -323,11 +335,15 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
     : { sender: null, cleanText: rawText }
   const { cleanText: textAfterFiles, attachedFiles } = isUser && baseText ? parseAttachedFiles(baseText) : { cleanText: baseText, attachedFiles: [] }
   const { cleanText, mountedFolders } = isUser && textAfterFiles ? parseMountedFolders(textAfterFiles) : { cleanText: textAfterFiles, mountedFolders: [] }
+  const mentions = isUser && cleanText ? parseMentions(cleanText) : []
+  const textAfterMentions = isUser && mentions.length > 0
+    ? mentionsToMarkdownLinks(stripMentionContext(cleanText))
+    : cleanText
   // Strip SDK-injected `<task-notification>` blocks that land in assistant text on
   // the busy path; surface any `workflow-complete` result as a structured card.
-  const { cleanText: textAfterNotifs, workflowResults } = isAssistant && cleanText
-    ? parseTaskNotifications(cleanText)
-    : { cleanText, workflowResults: [] }
+  const { cleanText: textAfterNotifs, workflowResults } = isAssistant && textAfterMentions
+    ? parseTaskNotifications(textAfterMentions)
+    : { cleanText: textAfterMentions, workflowResults: [] }
   const text = textAfterNotifs
   const hasText = text && text.length > 0
   const toolCalls = message.toolCalls || []
@@ -368,7 +384,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
     <div
       className={cn(
         'flex gap-3',
-        isUser && 'flex-row-reverse !my-6'
+        isUser && 'flex-row-reverse !my-6',
       )}
       data-testid={isUser ? 'message-user' : isAssistant ? 'message-assistant' : undefined}
       data-turn-anchor-id={isUser ? message.id : undefined}

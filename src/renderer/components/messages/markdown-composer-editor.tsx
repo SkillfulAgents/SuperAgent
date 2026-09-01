@@ -17,7 +17,7 @@ import {
   defaultMarkdownSerializer,
   schema as commonmarkSchema,
 } from 'prosemirror-markdown'
-import { Fragment, Schema, Slice, type MarkType, type Node as ProseMirrorNode } from 'prosemirror-model'
+import { Fragment, Schema, Slice, type MarkType, type Node as ProseMirrorNode, type NodeSpec } from 'prosemirror-model'
 import {
   liftListItem,
   sinkListItem,
@@ -28,6 +28,7 @@ import { Decoration, DecorationSet, EditorView } from 'prosemirror-view'
 import 'prosemirror-view/style/prosemirror.css'
 import { cn } from '@shared/lib/utils'
 import type { PotentialSecret, SecuredSecret } from '@renderer/lib/secret-detection'
+import { MENTION_RE, formatMention, decodeMentionName } from '@shared/lib/utils/mentions'
 
 export interface MarkdownComposerEditorProps {
   value: string
@@ -44,18 +45,40 @@ export interface MarkdownComposerEditorProps {
   securedSecrets?: SecuredSecret[]
   onRemoveSecuredSecrets?: (secrets: SecuredSecret[]) => void
   onEditorElement?: (element: HTMLDivElement | null) => void
+  onSelectionText?: (textBeforeCaret: string) => void
 }
 
 const CARET_SENTINEL = '\u2063'
 
+const mentionNodeSpec: NodeSpec = {
+  inline: true,
+  group: 'inline',
+  atom: true,
+  selectable: false,
+  attrs: { userId: {}, name: {} },
+  parseDOM: [{
+    tag: 'span[data-mention-id]',
+    getAttrs: (dom) => ({ userId: (dom as HTMLElement).dataset.mentionId, name: (dom as HTMLElement).dataset.mentionName }),
+  }],
+  toDOM: (node) => ['span', {
+    'data-mention-id': node.attrs.userId,
+    'data-mention-name': node.attrs.name,
+    'data-testid': 'mention-chip',
+    class: 'rounded-[4px] bg-blue-500/10 px-0.5 font-medium text-blue-700 dark:text-blue-400',
+    contenteditable: 'false',
+  }, `@${node.attrs.name}`],
+}
+
 const markdownSchema = new Schema({
-  nodes: commonmarkSchema.spec.nodes.addBefore('hard_break', 'soft_break', {
-    inline: true,
-    group: 'inline',
-    selectable: false,
-    parseDOM: [{ tag: 'br[data-soft-break]' }],
-    toDOM: () => ['br', { 'data-soft-break': 'true' }] as const,
-  }),
+  nodes: commonmarkSchema.spec.nodes
+    .addBefore('hard_break', 'mention', mentionNodeSpec)
+    .addBefore('hard_break', 'soft_break', {
+      inline: true,
+      group: 'inline',
+      selectable: false,
+      parseDOM: [{ tag: 'br[data-soft-break]' }],
+      toDOM: () => ['br', { 'data-soft-break': 'true' }] as const,
+    }),
   marks: commonmarkSchema.spec.marks.addBefore('link', 'strike', {
     parseDOM: [{ tag: 's' }, { tag: 'del' }, { style: 'text-decoration=line-through' }],
     toDOM: () => ['s', 0] as const,
@@ -67,15 +90,37 @@ const markdownTokenizer = new MarkdownIt('commonmark', {
   linkify: true,
 }).enable('strikethrough')
 
+markdownTokenizer.inline.ruler.before('escape', 'mention', (state, silent) => {
+  if (state.src.charCodeAt(state.pos) !== 0x5b /* [ */) return false
+  const m = new RegExp(MENTION_RE.source, 'y').exec(state.src.slice(state.pos))
+  if (!m) return false
+  if (!silent) {
+    const token = state.push('mention', '', 0)
+    token.attrs = [['userId', m[1]], ['name', m[2]]]
+  }
+  state.pos += m[0].length
+  return true
+})
+
 const markdownParser = new MarkdownParser(markdownSchema, markdownTokenizer, {
   ...defaultMarkdownParser.tokens,
   softbreak: { node: 'soft_break' },
   s: { mark: 'strike' },
+  mention: {
+    node: 'mention',
+    getAttrs: (tok) => ({
+      userId: tok.attrGet('userId'),
+      name: decodeMentionName(tok.attrGet('name') ?? ''),
+    }),
+  },
 })
 
 const markdownSerializer = new MarkdownSerializer(
   {
     ...defaultMarkdownSerializer.nodes,
+    mention: (state, node) => {
+      state.write(formatMention({ userId: node.attrs.userId as string, name: node.attrs.name as string }))
+    },
     soft_break: (state) => state.write('\n'),
   },
   {
@@ -343,6 +388,15 @@ const insertSoftBreak: Command = (state, dispatch) => {
   return true
 }
 
+const deleteAtomBefore: Command = (state, dispatch) => {
+  if (!state.selection.empty) return false
+  const { $from } = state.selection
+  const before = $from.nodeBefore
+  if (!before?.type.spec.atom) return false
+  if (dispatch) dispatch(state.tr.delete($from.pos - before.nodeSize, $from.pos).scrollIntoView())
+  return true
+}
+
 const removeTrailingSoftBreak: Command = (state, dispatch) => {
   if (!state.selection.empty) return false
   const { from, $from } = state.selection
@@ -435,7 +489,7 @@ function buildInputRules() {
 function buildKeymap() {
   const { nodes, marks } = markdownSchema
   return keymap({
-    Backspace: chainCommands(removeTrailingSoftBreak, undoInputRule),
+    Backspace: chainCommands(deleteAtomBefore, removeTrailingSoftBreak, undoInputRule),
     Enter: chainCommands(codeFenceCommand, splitListItem(nodes.list_item)),
     'Shift-Enter': chainCommands(newlineInCode, insertSoftBreak),
     Tab: sinkListItem(nodes.list_item),
@@ -551,6 +605,17 @@ export function setMarkdownComposerSelection(
   return true
 }
 
+export function insertMentionAtTrigger(element: HTMLElement, mention: { userId: string; name: string }, triggerLength: number): boolean {
+  const view = editorViews.get(element)
+  if (!view) return false
+  const { from } = view.state.selection
+  const node = view.state.schema.nodes.mention.create(mention)
+  const tr = view.state.tr.replaceWith(from - triggerLength, from, [node, view.state.schema.text(' ')])
+  view.dispatch(tr)
+  view.focus()
+  return true
+}
+
 export function selectAllMarkdownComposer(element: HTMLElement): boolean {
   const view = editorViews.get(element)
   if (!view) return false
@@ -618,6 +683,7 @@ export function MarkdownComposerEditor({
   securedSecrets = [],
   onRemoveSecuredSecrets,
   onEditorElement,
+  onSelectionText,
 }: MarkdownComposerEditorProps) {
   const managedClassName = cn(
     'markdown-composer-editor relative min-h-[var(--composer-min-height)] w-full overflow-y-auto rounded-md bg-transparent pl-1 pr-4 py-0 text-sm leading-5 focus-visible:outline-none',
@@ -635,6 +701,7 @@ export function MarkdownComposerEditor({
     potentialSecrets,
     securedSecrets,
     onRemoveSecuredSecrets,
+    onSelectionText,
   })
   const lastMarkdownRef = useRef(value)
 
@@ -647,6 +714,7 @@ export function MarkdownComposerEditor({
     potentialSecrets,
     securedSecrets,
     onRemoveSecuredSecrets,
+    onSelectionText,
   }
 
   useLayoutEffect(() => {
@@ -763,6 +831,7 @@ export function MarkdownComposerEditor({
         const nextState = view.state.apply(tr)
         view.updateState(nextState)
         setEditorA11yState(view, latestRef.current.placeholder, latestRef.current.disabled)
+        latestRef.current.onSelectionText?.(nextState.doc.textBetween(0, nextState.selection.from, '\n'))
         if (!tr.docChanged) return
         const markdown = serializeComposerMarkdown(
           nextState.doc,

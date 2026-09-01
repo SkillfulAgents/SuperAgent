@@ -243,6 +243,7 @@ export function GlobalNotificationHandler() {
           case 'os_notification': {
             // Refresh notification list (for badge/dropdown)
             queryClient.invalidateQueries({ queryKey: ['notifications'] })
+            queryClient.invalidateQueries({ queryKey: ['agents'] })
             if (data.notificationType === 'platform_notification') {
               queryClient.invalidateQueries({ queryKey: ['platform-notifications'] })
             }
@@ -318,6 +319,9 @@ export function GlobalNotificationHandler() {
               ) {
                 applySessionActivityStatus(queryClient, agentSlug, notificationSessionId, {
                   hasUnreadNotifications: true,
+                  ...(notificationType === 'session_mention' && typeof data.messageUuid === 'string'
+                    ? { unreadMentionMessageUuid: data.messageUuid }
+                    : {}),
                 })
               }
               const { title, body } = data as { title: string; body: string }
@@ -377,6 +381,7 @@ export function GlobalNotificationHandler() {
                     if (agentSlug && notificationSessionId) {
                       applySessionActivityStatus(queryClient, agentSlug, notificationSessionId, {
                         hasUnreadNotifications: false,
+                        unreadMentionMessageUuid: null,
                       })
                       queryClient.invalidateQueries({ queryKey: ['sessions', agentSlug] })
                     }

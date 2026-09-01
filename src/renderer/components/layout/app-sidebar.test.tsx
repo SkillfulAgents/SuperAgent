@@ -107,7 +107,7 @@ vi.mock('@renderer/hooks/use-webhook-triggers', () => ({
   useWebhookTriggers: () => ({ data: [] }),
 }))
 
-const mockUnreadCount = vi.fn(() => ({ data: { count: 0 } }))
+const mockUnreadCount = vi.fn(() => ({ data: { count: 0, mentions: 0 } }))
 vi.mock('@renderer/hooks/use-notifications', () => ({
   useUnreadNotificationCount: () => mockUnreadCount(),
 }))
@@ -215,6 +215,9 @@ vi.mock('@renderer/components/agents/agent-status', () => ({
 vi.mock('@renderer/components/agents/status-indicators', () => ({
   WorkingDots: () => <span data-testid="working-dots" />,
   AwaitingDot: () => <span data-testid="awaiting-dot" />,
+  MentionMark: ({ className }: { className?: string }) => (
+    <span data-testid="mention-mark" className={className} role="img" aria-label="mentioned you" />
+  ),
 }))
 
 vi.mock('@renderer/components/agents/agent-context-menu', () => ({
@@ -411,7 +414,7 @@ beforeEach(() => {
     data: slug === 'test-agent' ? [makeSession()] : [],
     isLoading: false,
   }))
-  mockUnreadCount.mockReturnValue({ data: { count: 0 } })
+  mockUnreadCount.mockReturnValue({ data: { count: 0, mentions: 0 } })
   mockUserSettings.mockReturnValue({ setupCompleted: true, agentOrder: [] })
   delete mockRuntimeStatus.appVersion
   mockRuntimeStatus.runtimeReadiness = { status: 'READY' }
@@ -612,6 +615,30 @@ describe('AppSidebar — agent rows', () => {
     expect(sessionItem).toHaveAttribute('data-params', JSON.stringify({ slug: 'test-agent', sessionId: 'session-1' }))
   })
 
+  it('shows the mention mark on a session with an unread mention, above other indicators', () => {
+    mockRouteParams = { slug: 'test-agent' }
+    mockUseSessions.mockImplementation((slug: string | null) => ({
+      data: slug === 'test-agent'
+        ? [makeSession({ id: 's1', isActive: true, unreadMentionMessageUuid: 'm1' })]
+        : [],
+      isLoading: false,
+    }))
+    renderWithProviders(<AppSidebar />)
+    expect(screen.getByTestId('mention-mark')).toBeInTheDocument()
+    expect(screen.queryByLabelText('working')).toBeNull()
+  })
+
+  it('rolls the mention mark up to the agent row when collapsed and to the bell', () => {
+    mockUseAgents.mockReturnValue({
+      data: [makeAgent({ hasUnreadMentions: true })],
+      isLoading: false,
+      error: null,
+    })
+    mockUnreadCount.mockReturnValue({ data: { count: 1, mentions: 1 } })
+    renderWithProviders(<AppSidebar />)
+    expect(screen.getAllByTestId('mention-mark')).toHaveLength(2)
+  })
+
   it('shows an unread dot on a session sub-item with hasUnreadNotifications', () => {
     mockRouteParams = { slug: 'test-agent' }
     mockUseSessions.mockImplementation((slug: string | null) => ({
@@ -737,14 +764,14 @@ describe('AppSidebar — agent rows', () => {
 
 describe('AppSidebar — notifications', () => {
   it('does not render the bell dot when there are no unread notifications', () => {
-    mockUnreadCount.mockReturnValue({ data: { count: 0 } })
+    mockUnreadCount.mockReturnValue({ data: { count: 0, mentions: 0 } })
     renderWithProviders(<AppSidebar />)
     const button = screen.getByTestId('notifications-button')
     expect(button.querySelector('[aria-label$="unread"]')).toBeNull()
   })
 
   it('renders the bell dot when there are unread user-actionable notifications', () => {
-    mockUnreadCount.mockReturnValue({ data: { count: 3 } })
+    mockUnreadCount.mockReturnValue({ data: { count: 3, mentions: 0 } })
     renderWithProviders(<AppSidebar />)
     const button = screen.getByTestId('notifications-button')
     expect(button.querySelector('[aria-label="3 unread"]')).not.toBeNull()

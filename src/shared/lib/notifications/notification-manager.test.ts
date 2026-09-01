@@ -4,6 +4,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 // references a `vi.fn()` must define it inside `vi.hoisted` to be available.
 const mocks = vi.hoisted(() => ({
   createNotification: vi.fn(async () => 'notif-id'),
+  createNotificationsBatch: vi.fn(async (rows: unknown[]) => rows.map((_, i) => `notif-batch-${i}`)),
   getAgentAccessUserIds: vi.fn(async (_agentSlug: string) => ['user-a']),
   getSessionMetadata: vi.fn(),
   findLastSessionEntry: vi.fn(async () => null),
@@ -28,6 +29,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@shared/lib/services/notification-service', () => ({
   createNotification: mocks.createNotification,
+  createNotificationsBatch: mocks.createNotificationsBatch,
   getAgentAccessUserIds: mocks.getAgentAccessUserIds,
 }))
 vi.mock('@shared/lib/services/session-service', () => ({
@@ -478,5 +480,59 @@ describe('triggerSessionApiReviewWaiting — broadcast payload contract', () => 
     const payload = mockBroadcastGlobal.mock.calls[0][0]
     expect(payload.title).toContain('Agent Action Review')
     expect(payload.title).not.toContain('API Request Review')
+  })
+})
+
+describe('triggerSessionMentions', () => {
+  const mentionParams = {
+    sessionId: 's1', agentSlug: 'billing', senderName: 'Graham',
+    recipients: [{ userId: 'u2', name: 'Iddo Gino' }], messageUuid: 'm1',
+    content: 'ping [[mention:u2|Iddo Gino]]\n\n[[mention-context: Graham tagged a teammate in this chat to bring it to their attention. This is an FYI, not a request to you. Do not act on it.]]',
+  }
+
+  it('triggerSessionMention writes a recipient row and a recipient-tagged event', async () => {
+    await notificationManager.triggerSessionMentions(mentionParams)
+    expect(mocks.createNotificationsBatch).toHaveBeenCalledWith([expect.objectContaining({
+      type: 'session_mention', recipientUserId: 'u2', messageUuid: 'm1',
+      title: 'Graham mentioned you', body: 'ping @Iddo Gino',
+    })])
+    expect(mockBroadcastGlobal).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'os_notification',
+      notificationType: 'session_mention',
+      recipientUserId: 'u2',
+      messageUuid: 'm1',
+    }))
+  })
+
+  it('triggerSessionMentions does not promote automation', async () => {
+    await notificationManager.triggerSessionMentions(mentionParams)
+    expect(mockPromoteAutomatedSession).not.toHaveBeenCalled()
+  })
+
+  it('still writes when the master notification switch is off', async () => {
+    mocks.getUserSettings.mockReturnValue({
+      notifications: {
+        enabled: false,
+        sessionComplete: true,
+        sessionWaiting: true,
+        sessionScheduled: true,
+      },
+    })
+    await notificationManager.triggerSessionMentions(mentionParams)
+    expect(mocks.createNotificationsBatch).toHaveBeenCalled()
+  })
+})
+
+describe('isNotificationTypeEnabled — session_mention bypasses the master switch', () => {
+  it('returns true for session_mention when notifications.enabled is false', async () => {
+    const { isNotificationTypeEnabled } = await import('./notification-preferences')
+    expect(isNotificationTypeEnabled({
+      enabled: false,
+      sessionComplete: false,
+      sessionWaiting: false,
+      sessionScheduled: false,
+      platformNotification: false,
+      notifyWhenUnfocused: false,
+    }, 'session_mention')).toBe(true)
   })
 })

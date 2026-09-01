@@ -24,6 +24,8 @@ interface SessionThreadProps {
   pendingRequestCount?: number
   onPendingMessageAppeared?: (localId: string) => void
   suppressScrollToBottom?: boolean
+  jumpToMessageId?: string | null
+  onJumpSettled?: (result: 'scrolled' | 'unmounted') => void
 }
 
 /**
@@ -47,6 +49,8 @@ export function SessionThread({
   pendingRequestCount,
   onPendingMessageAppeared,
   suppressScrollToBottom,
+  jumpToMessageId,
+  onJumpSettled,
 }: SessionThreadProps) {
   const footerRef = useRef<HTMLDivElement>(null)
   const [footerHeight, setFooterHeight] = useState(0)
@@ -98,6 +102,8 @@ export function SessionThread({
           onPendingMessageAppeared={onPendingMessageAppeared}
           suppressScrollToBottom={suppressScrollToBottom}
           bottomInset={overlayFooter ? footerHeight : 0}
+          jumpToMessageId={jumpToMessageId}
+          onJumpSettled={onJumpSettled}
         />
         <div
           ref={footerRef}

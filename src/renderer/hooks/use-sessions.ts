@@ -250,6 +250,7 @@ export function clearSessionUnreadInCache(
 ): boolean {
   return applySessionActivityStatus(queryClient, agentSlug, sessionId, {
     hasUnreadNotifications: false,
+    unreadMentionMessageUuid: null,
   })
 }
 

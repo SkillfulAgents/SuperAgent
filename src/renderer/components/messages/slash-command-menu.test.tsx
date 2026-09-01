@@ -134,6 +134,19 @@ describe('SlashCommandMenu', () => {
     expect(boldElements[0].textContent).toBe('de')
   })
 
+  it('renders a slash mark next to the command name', () => {
+    render(
+      <SlashCommandMenu
+        commands={commands}
+        selectedIndex={0}
+        onSelect={vi.fn()}
+        visible={true}
+        filter=""
+      />
+    )
+    expect(screen.getAllByRole('option')[0].textContent).toMatch(/^\/deploy/)
+  })
+
   it('has listbox role', () => {
     render(
       <SlashCommandMenu

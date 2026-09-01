@@ -43,7 +43,10 @@ import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-i
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
 import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
-import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
+import { trackServerEvent, resolveAnalyticsUserId } from '@shared/lib/analytics/server-analytics'
+import { parseMentions, resolveMentions, appendMentionContext, stripMentionContext, flattenMentions, applyCanonicalMentionNames } from '@shared/lib/utils/mentions'
+import { notificationManager } from '@shared/lib/notifications/notification-manager'
+import { recordSessionActivity } from '@shared/lib/services/session-summary-cache'
 import { guessMimeType } from '@shared/lib/utils/mime'
 import { parseByteRange } from '@shared/lib/utils/http-range'
 import { messagePersister } from '@shared/lib/container/message-persister'
@@ -137,7 +140,7 @@ import {
   SKILL_MAX_COMPRESSED_SIZE,
 } from '@shared/lib/services/skillset-service'
 import { type ArtifactInfo, listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
-import { getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents, deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
+import { getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents, deleteNotificationsBySessionIds, getAgentAccessUserIds, getOldestUnreadMentionBySession, getSessionIdsWithUnreadMentionsByAgents } from '@shared/lib/services/notification-service'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { getInboundXAgentDetails } from '@shared/lib/services/inbound-x-agent-service'
@@ -688,9 +691,12 @@ async function enrichAgentsWithSummary(
 
   // Both halves of the unread projection, one query each rather than one per
   // agent — this route hydrates every agent on every poll.
-  const [unreadByAgent, markedUnreadByAgent] = await Promise.all([
-    getUnreadNotificationsByAgents(slugs),
+  const [unreadByAgent, markedUnreadByAgent, mentionByAgent] = await Promise.all([
+    getUnreadNotificationsByAgents(slugs, options.userId),
     getSessionIdsMarkedUnreadByAgents(slugs, options.userId),
+    options.userId
+      ? getSessionIdsWithUnreadMentionsByAgents(slugs, options.userId)
+      : Promise.resolve(new Map<string, Set<string>>()),
   ])
 
   const limit = pLimit(5)
@@ -699,6 +705,7 @@ async function enrichAgentsWithSummary(
       // Union of the two sources, so every projection below sees one set.
       const notifiedIds = unreadByAgent.get(agent.slug) ?? new Set<string>()
       const markedIds = markedUnreadByAgent.get(agent.slug) ?? new Set<string>()
+      const mentionIds = mentionByAgent.get(agent.slug) ?? new Set<string>()
       const unreadSessionIds = markedIds.size === 0
         ? notifiedIds
         : new Set<string>([...notifiedIds, ...markedIds])
@@ -733,6 +740,7 @@ async function enrichAgentsWithSummary(
       let hasActiveSessions = false
       let hasSessionsAwaitingInput = false
       let hasUnreadNotifications = false
+      let hasUnreadMentions = false
       const hasAgentLevelReviews = reviewManager.getPendingReviewsForAgent(agent.slug).length > 0
       for (const sessionId of sessionSummary.sessionIds) {
         const isActive = messagePersister.isSessionActive(agent.slug, sessionId)
@@ -744,6 +752,9 @@ async function enrichAgentsWithSummary(
         }
         if (unreadSessionIds.has(sessionId) && !isHiddenAutomatedSession(sessionMetadata[sessionId])) {
           hasUnreadNotifications = true
+        }
+        if (mentionIds.has(sessionId) && !isHiddenAutomatedSession(sessionMetadata[sessionId])) {
+          hasUnreadMentions = true
         }
       }
 
@@ -766,6 +777,7 @@ async function enrichAgentsWithSummary(
         hasActiveSessions,
         hasSessionsAwaitingInput,
         hasUnreadNotifications,
+        hasUnreadMentions,
         sessionCount: sessionSummary.sessionCount,
         lastActivityAt: sessionSummary.lastActivityAt,
         dashboards: artifacts.map((a) => ({
@@ -1530,7 +1542,7 @@ agents.put('/:id/preferences', AgentAdmin(), async (c) => {
 // ============================================================
 
 // GET /api/agents/:id/access - List users with roles on this agent
-agents.get('/:id/access', AgentAdmin(), async (c) => {
+agents.get('/:id/access', AgentUser(), async (c) => {
   try {
     const slug = getAgentId(c)
     const rows = await db
@@ -1544,6 +1556,10 @@ agents.get('/:id/access', AgentAdmin(), async (c) => {
       .from(agentAcl)
       .innerJoin(userTable, eq(agentAcl.userId, userTable.id))
       .where(eq(agentAcl.agentSlug, slug))
+    // Members need the list to mention each other. Only owners see roles and timestamps.
+    if (getAuthorizedAgentRole(c) !== 'owner') {
+      return c.json(rows.map(({ userId, userName, userEmail }) => ({ userId, userName, userEmail })))
+    }
     return c.json(rows)
   } catch (error) {
     console.error('Failed to fetch agent access:', error)
@@ -1922,9 +1938,11 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
       // and note that neither touches the filesystem. That matters here: with
       // nothing notable the id set is empty, listSessionsByIds returns before
       // it stats anything, and the whole request stays off disk.
-      const [unreadIds, markedUnreadIds] = await Promise.all([
-        getSessionIdsWithUnreadNotifications(slug),
-        getSessionIdsMarkedUnread(slug, getCurrentUserId(c)),
+      const userId = getCurrentUserId(c)
+      const [unreadIds, markedUnreadIds, mentionBySession] = await Promise.all([
+        getSessionIdsWithUnreadNotifications(slug, userId),
+        getSessionIdsMarkedUnread(slug, userId),
+        isAuthMode() && userId ? getOldestUnreadMentionBySession(slug, userId) : Promise.resolve(new Map<string, string>()),
       ])
       const activeIds = messagePersister.getActiveSessionIdsForAgent(slug)
       const infos = await listSessionsByIds(
@@ -1941,6 +1959,7 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
           // against every active session of the agent — no review special-case.
           isAwaitingInput: messagePersister.isSessionAwaitingInput(slug, session.id),
           hasUnreadNotifications: unreadIds.has(session.id) || markedUnreadIds.has(session.id),
+          unreadMentionMessageUuid: mentionBySession.get(session.id) ?? null,
         }
       })
       const ordered = sortSessionsNewestFirst(enriched, sortBy)
@@ -1960,15 +1979,17 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
     // Independent lookups (filesystem summary, notifications table, unread
     // marks, scheduled tasks table) — overlap them rather than paying their
     // latencies in series.
-    const [sessionList, unreadSessionIds, markedUnreadSessionIds, pendingWakes] = await Promise.all([
+    const userId = getCurrentUserId(c)
+    const [sessionList, unreadSessionIds, markedUnreadSessionIds, pendingWakes, mentionBySession] = await Promise.all([
       listSessionsFromSummary(slug, {
         excludeAutomated: true,
         ...(sortByRaw === undefined ? {} : { sortBy }),
         ...(resultLimit === undefined ? {} : { limit: resultLimit }),
       }),
-      getSessionIdsWithUnreadNotifications(slug),
-      getSessionIdsMarkedUnread(slug, getCurrentUserId(c)),
+      getSessionIdsWithUnreadNotifications(slug, userId),
+      getSessionIdsMarkedUnread(slug, userId),
       listPendingWakesByAgent(slug),
+      isAuthMode() && userId ? getOldestUnreadMentionBySession(slug, userId) : Promise.resolve(new Map<string, string>()),
     ])
     const wakesBySession = new Map(pendingWakes.map((w) => [w.resumeSessionId!, w]))
     const sessionsWithStatus = sessionList.map((session) => {
@@ -1982,6 +2003,7 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
         isAwaitingInput: messagePersister.isSessionAwaitingInput(slug, session.id),
         hasUnreadNotifications:
           unreadSessionIds.has(session.id) || markedUnreadSessionIds.has(session.id),
+        unreadMentionMessageUuid: mentionBySession.get(session.id) ?? null,
         ...(wake
           ? {
               pendingWakeAt: wake.nextExecutionAt.toISOString(),
@@ -2737,6 +2759,68 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       return c.json({ error: 'Agent not found' }, 404)
     }
 
+    const mentions = parseMentions(content)
+    if (mentions.length > 0) {
+      if (!isAuthMode()) return c.json({ error: 'Mentions need a shared agent' }, 400)
+      const sender = c.get('user' as never) as { id: string; name: string; email: string }
+      const aclIds = new Set(await getAgentAccessUserIds(agentSlug))
+      const resolved = resolveMentions(mentions, aclIds, sender.id)
+      if (!resolved.ok) return c.json({ error: 'Mentioned user has no access to this agent', unknown: resolved.unknown }, 400)
+
+      const mentionedIds = Array.from(new Set(mentions.map((m) => m.userId)))
+      const userRows = await db.select({ id: userTable.id, email: userTable.email, name: userTable.name }).from(userTable)
+        .where(inArray(userTable.id, mentionedIds))
+      const nameById = new Map(userRows.map((r) => [r.id, r.name]))
+      const emailById = new Map(userRows.map((r) => [r.id, r.email]))
+      const recipients = resolved.recipients.map((r) => ({ userId: r.userId, name: nameById.get(r.userId) || r.name }))
+
+      const messageUuid = randomUUID()
+      const text = appendMentionContext(
+        applyCanonicalMentionNames(stripMentionContext(content.trim()), nameById),
+        sender.name,
+      )
+
+      // An FYI append has no turn to settle the active/awaiting states, so none of
+      // promote / coalesce / cancelAwaitingInput / markSessionActive run here.
+      const client = await containerManager.ensureRunning(agentSlug)
+      if (!messagePersister.isSubscribed(agentSlug, sessionId)) {
+        await messagePersister.subscribeToSession(agentSlug, sessionId, client, sessionId)
+      }
+      await persistAndBroadcastUserMessage(c, { messageUuid, sessionId, agentSlug, content: text, queued: false })
+      await client.sendMessage(sessionId, text, messageUuid, { shouldQuery: false })
+      recordSessionActivity(agentSlug, sessionId)
+
+      const sessionName = (await getSessionMetadata(agentSlug, sessionId))?.name ?? ''
+
+      let notified = true
+      try {
+        await notificationManager.triggerSessionMentions({ sessionId, agentSlug, senderName: sender.name, recipients, messageUuid, content: text })
+      } catch (error) {
+        // The FYI is in the transcript; the rows are best-effort and all-or-nothing.
+        notified = false
+        console.error('[mentions] notification write failed', { sessionId, error })
+      }
+      for (const recipient of notified ? recipients : []) {
+        const taggeeEmail = emailById.get(recipient.userId) ?? ''
+        const props = {
+          taggerId: sender.id, taggerName: sender.name, taggerEmail: sender.email,
+          taggeeId: recipient.userId, taggeeName: recipient.name, taggeeEmail,
+          messageContent: flattenMentions(text),
+          messageUuid,
+          agentSlug, agentName: agent.frontmatter.name, sessionId, sessionName,
+          sessionPath: `/agents/${encodeURIComponent(agentSlug)}/sessions/${encodeURIComponent(sessionId)}?mention=${encodeURIComponent(messageUuid)}`,
+        }
+        trackServerEvent('added_user_tag_in_session', props, resolveAnalyticsUserId(sender.id))
+        trackServerEvent(
+          'tagged_in_session',
+          props,
+          resolveAnalyticsUserId(recipient.userId),
+          taggeeEmail ? { email: taggeeEmail } : undefined,
+        )
+      }
+      return c.json({ success: true, uuid: messageUuid, queued: false, mentioned: resolved.recipients.map((r) => r.userId) }, 201)
+    }
+
     // A message through this AgentUser route is human-originated. Promote any
     // hidden automation before delivery so the host and container agree that
     // a person has joined the session. This must precede sendMessage: a fast
@@ -2925,6 +3009,10 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
     const invokingAgent = metadata?.invokedByAgentSlug
       ? await getAgent(metadata.invokedByAgentSlug)
       : null
+    const userId = getCurrentUserId(c)
+    const mentionBySession = isAuthMode() && userId
+      ? await getOldestUnreadMentionBySession(agentSlug, userId)
+      : new Map<string, string>()
 
     return c.json({
       id: session.id,
@@ -2934,6 +3022,7 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       lastActivityAt: session.lastActivityAt,
       messageCount: session.messageCount,
       isActive,
+      unreadMentionMessageUuid: mentionBySession.get(sessionId) ?? null,
       // Carried so single-session consumers can gate on the same live/idle
       // condition the session lists use (the breadcrumb context menu hides
       // "Mark as Unread" while a session is working or awaiting input, since

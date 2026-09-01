@@ -7,11 +7,10 @@ import { getApiBaseUrl } from './env'
 // though the Electron shell opener explicitly allows them — see
 // src/main/safe-open-external.ts POPUP_PROTOCOLS, added in SUP-214.
 //
-// These are the extra link schemes the renderer should keep so the renderer and
-// the opener stay in lockstep. They are communication composers (dialer / SMS
-// composer): inert until the user confirms the call/text, and never executed in
-// the page like javascript:/data:.
-const EXTRA_ALLOWED_HREF_SCHEME = /^(?:tel|sms):/i
+// Extra href schemes the renderer keeps. tel:/sms: stay in lockstep with the
+// Electron opener (POPUP_PROTOCOLS). mention: is an in-app chip href and is
+// never opened externally. None of these run in the page like javascript:/data:.
+const EXTRA_ALLOWED_HREF_SCHEME = /^(?:tel|sms|mention):/i
 
 /**
  * The renderer's single link-href policy: the URL to use, or '' to refuse it.
@@ -32,7 +31,7 @@ export function safeHref(url: string): string {
  *
  * Composes react-markdown's defaultUrlTransform — so dangerous schemes
  * (javascript:, file:, data:, vbscript:, custom protocols, …) are still blanked
- * exactly as before — and additionally permits tel:/sms: on link hrefs.
+ * exactly as before — and additionally permits tel:/sms: and mention: on link hrefs.
  *
  * Scoped to `key === 'href'` on purpose: it widens what links may point at, not
  * what images/other resources may load.

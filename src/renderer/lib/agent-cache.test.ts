@@ -239,6 +239,66 @@ describe('targeted agent cache updates', () => {
       expect(client.getQueryData<ApiAgent[]>(['agents'])?.[1].hasUnreadNotifications).toBeUndefined()
     })
 
+    it('raises the mention mark on the session entry and the agent rollup', () => {
+      const client = seededSessionClient([session('sess-1', { isActive: false }), session('sess-2')])
+
+      applySessionActivityStatus(client, 'agent-a', 'sess-1', {
+        hasUnreadNotifications: true,
+        unreadMentionMessageUuid: 'm1',
+      })
+
+      expect(client.getQueryData<ApiSession[]>(['sessions', 'agent-a'])?.[0].unreadMentionMessageUuid).toBe('m1')
+      expect(client.getQueryData<ApiSession[]>(['sessions', 'agent-a'])?.[1].unreadMentionMessageUuid).toBeUndefined()
+      expect(client.getQueryData<ApiAgent[]>(['agents'])?.[0].hasUnreadMentions).toBe(true)
+      expect(client.getQueryData<ApiAgent>(['agents', 'agent-a'])?.hasUnreadMentions).toBe(true)
+    })
+
+    it('clears the mention mark and drops the rollup when no sibling still has one', () => {
+      const client = seededSessionClient([
+        session('sess-1', { unreadMentionMessageUuid: 'm1', hasUnreadNotifications: true }),
+        session('sess-2'),
+      ])
+      client.setQueryData(['agents'], [
+        { ...agent, hasUnreadNotifications: true, hasUnreadMentions: true },
+        { ...agent, slug: 'agent-b', displaySlug: 'agent-b' },
+      ])
+
+      applySessionActivityStatus(client, 'agent-a', 'sess-1', {
+        hasUnreadNotifications: false,
+        unreadMentionMessageUuid: null,
+      })
+
+      expect(client.getQueryData<ApiSession[]>(['sessions', 'agent-a'])?.[0]).toMatchObject({
+        hasUnreadNotifications: false,
+        unreadMentionMessageUuid: null,
+      })
+      expect(client.getQueryData<ApiAgent[]>(['agents'])?.[0]).toMatchObject({
+        hasUnreadNotifications: false,
+        hasUnreadMentions: false,
+      })
+    })
+
+    it('keeps the mention rollup raised while a sibling session still has a mark', () => {
+      const client = seededSessionClient([
+        session('sess-1', { unreadMentionMessageUuid: 'm1', hasUnreadNotifications: true }),
+        session('sess-2', { unreadMentionMessageUuid: 'm2', hasUnreadNotifications: true }),
+      ])
+      client.setQueryData(['agents'], [
+        { ...agent, hasUnreadNotifications: true, hasUnreadMentions: true },
+      ])
+
+      applySessionActivityStatus(client, 'agent-a', 'sess-1', {
+        hasUnreadNotifications: false,
+        unreadMentionMessageUuid: null,
+      })
+
+      expect(client.getQueryData<ApiSession[]>(['sessions', 'agent-a'])?.[0].unreadMentionMessageUuid).toBeNull()
+      expect(client.getQueryData<ApiAgent[]>(['agents'])?.[0]).toMatchObject({
+        hasUnreadNotifications: true,
+        hasUnreadMentions: true,
+      })
+    })
+
     it('an active patch raises the session and rollup without touching the awaiting flag', () => {
       const client = seededSessionClient([session('sess-1', { isActive: false })])
 

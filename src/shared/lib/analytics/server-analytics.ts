@@ -1,14 +1,45 @@
 import { getTenantId } from './tenant-id'
 import { getSettings, type AnalyticsTarget } from '../config/settings'
 import { DEFAULT_AMPLITUDE_KEY } from './constants'
+import { getPlatformAuthStatus } from '../services/platform-auth-service'
+
+/**
+ * Same identity the renderer sends (analytics-context.tsx): platform user id
+ * when that user is connected, else `${tenantId}:${userId}`. Needed to attribute
+ * an event to a user other than the caller (tagged_in_session).
+ */
+export function resolveAnalyticsUserId(userId: string): string {
+  const status = getPlatformAuthStatus(userId)
+  if (status.connected && status.userId) return status.userId
+  return `${getTenantId()}:${userId}`
+}
 
 interface EventPayload {
   event_type: string
   user_id: string
   event_properties: Record<string, unknown>
+  user_properties?: Record<string, unknown>
   app_version?: string
   platform?: string
   os_name?: string
+}
+
+function amplitudeEvent(
+  event: string,
+  userId: string,
+  properties: Record<string, unknown>,
+  userProperties?: Record<string, unknown>,
+): EventPayload {
+  return {
+    event_type: event,
+    user_id: userId,
+    event_properties: properties,
+    ...(userProperties && Object.keys(userProperties).length > 0
+      ? { user_properties: { $set: userProperties } }
+      : {}),
+    app_version: appVersion,
+    platform: 'server',
+  }
 }
 
 let appVersion: string | undefined
@@ -86,19 +117,19 @@ async function sendToGA(measurementId: string, event: string, properties: Record
   }
 }
 
-function dispatchToTargets(targets: AnalyticsTarget[], event: string, properties: Record<string, unknown>, userId: string) {
+function dispatchToTargets(
+  targets: AnalyticsTarget[],
+  event: string,
+  properties: Record<string, unknown>,
+  userId: string,
+  userProperties?: Record<string, unknown>,
+) {
   for (const target of targets) {
     if (!target.enabled) continue
     switch (target.type) {
       case 'amplitude':
         if (target.config.apiKey) {
-          sendToAmplitude(target.config.apiKey, [{
-            event_type: event,
-            user_id: userId,
-            event_properties: properties,
-            app_version: appVersion,
-            platform: 'server',
-          }])
+          sendToAmplitude(target.config.apiKey, [amplitudeEvent(event, userId, properties, userProperties)])
         }
         break
       case 'mixpanel':
@@ -124,6 +155,7 @@ export function trackServerEvent(
   event: string,
   properties: Record<string, unknown> = {},
   userId?: string,
+  userProperties?: Record<string, unknown>,
 ) {
   if (process.env.E2E_MOCK === 'true') return
 
@@ -138,17 +170,13 @@ export function trackServerEvent(
 
   // Send to admin-configured analytics targets
   if (targets.length > 0) {
-    dispatchToTargets(targets, event, fullProperties, effectiveUserId)
+    dispatchToTargets(targets, event, fullProperties, effectiveUserId, userProperties)
   }
 
   // Send to hardcoded Amplitude (Datawizz) only if shareAnalytics is enabled
   if (DEFAULT_AMPLITUDE_KEY && settings.shareAnalytics) {
-    sendToAmplitude(DEFAULT_AMPLITUDE_KEY, [{
-      event_type: event,
-      user_id: effectiveUserId,
-      event_properties: fullProperties,
-      app_version: appVersion,
-      platform: 'server',
-    }])
+    sendToAmplitude(DEFAULT_AMPLITUDE_KEY, [
+      amplitudeEvent(event, effectiveUserId, fullProperties, userProperties),
+    ])
   }
 }

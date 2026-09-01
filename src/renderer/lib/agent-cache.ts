@@ -108,15 +108,26 @@ const SESSION_ROLLUP_FLAGS = [
 ] as const
 
 export type SessionStatusPatch = Partial<
-  Pick<ApiSession, 'isActive' | 'isAwaitingInput' | 'hasUnreadNotifications'>
+  Pick<ApiSession, 'isActive' | 'isAwaitingInput' | 'hasUnreadNotifications' | 'unreadMentionMessageUuid'>
 >
+
+function statusFieldChanged(
+  session: ApiSession,
+  patch: SessionStatusPatch,
+  flag: keyof SessionStatusPatch,
+): boolean {
+  if (flag === 'unreadMentionMessageUuid') {
+    return (session.unreadMentionMessageUuid ?? null) !== (patch.unreadMentionMessageUuid ?? null)
+  }
+  return (session[flag] ?? false) !== patch[flag]
+}
 
 // Identity-preserving apply. Change detection iterates the PATCH's own keys —
 // not SESSION_ROLLUP_FLAGS — so widening SessionStatusPatch with a field that
 // lacks a rollup row can never silently drop the field from the write.
 function withStatusPatch(session: ApiSession, patch: SessionStatusPatch): ApiSession {
   const changed = (Object.keys(patch) as (keyof SessionStatusPatch)[])
-    .some((flag) => (session[flag] ?? false) !== patch[flag])
+    .some((flag) => statusFieldChanged(session, patch, flag))
   return changed ? { ...session, ...patch } : session
 }
 
@@ -240,7 +251,7 @@ export function applySessionActivityStatus(
   // restores it. The client genuinely cannot see those from its caches;
   // carrying rollup state on the events themselves is the fix if that rare
   // flicker ever matters more than the every-turn stagger this echo removes.
-  const hasClear = Object.values(patch).some((value) => value === false)
+  const hasClear = Object.values(patch).some((value) => value === false || value === null)
   const fullLists = hasClear
     ? queryClient
         .getQueriesData<unknown>({
@@ -260,16 +271,41 @@ export function applySessionActivityStatus(
     }
     agentPatch[agentFlag] = value
   }
+  // Mention mark is a uuid on the session and a boolean on the agent, so it
+  // cannot sit on SESSION_ROLLUP_FLAGS without widening that table past booleans.
+  if (patch.unreadMentionMessageUuid !== undefined) {
+    if (patch.unreadMentionMessageUuid) {
+      agentPatch.hasUnreadMentions = true
+    } else if (
+      fullLists.length > 0
+      && !fullLists.some((list) => list.some((entry) => !!entry?.unreadMentionMessageUuid))
+    ) {
+      agentPatch.hasUnreadMentions = false
+    }
+  }
   if (Object.keys(agentPatch).length > 0) {
     // Identity-preserving on purpose: a no-op patch (e.g. session_active for
     // an already-working agent — the common case) must return the same agent
     // reference, or every event rebuilds the agents array and pays a full
     // deep-compare in structural sharing.
     updateMatchingAgents(queryClient, agentSlug, (agent) => {
-      const rollupChanged = SESSION_ROLLUP_FLAGS.some(([, agentFlag]) => (
-        agentPatch[agentFlag] !== undefined && (agent[agentFlag] ?? false) !== agentPatch[agentFlag]
-      ))
-      return rollupChanged ? { ...agent, ...agentPatch } : agent
+      // A mention-less unread clear still passes unreadMentionMessageUuid: null.
+      // Do not introduce hasUnreadMentions on an agent that never carried one —
+      // spreading the full patch on a sibling unread-dot change would do that.
+      const nextPatch = { ...agentPatch }
+      if (nextPatch.hasUnreadMentions === false && !agent.hasUnreadMentions) {
+        delete nextPatch.hasUnreadMentions
+      }
+      const rollupChanged = (
+        SESSION_ROLLUP_FLAGS.some(([, agentFlag]) => (
+          nextPatch[agentFlag] !== undefined && (agent[agentFlag] ?? false) !== nextPatch[agentFlag]
+        ))
+        || (
+          nextPatch.hasUnreadMentions !== undefined
+          && (agent.hasUnreadMentions ?? false) !== nextPatch.hasUnreadMentions
+        )
+      )
+      return rollupChanged ? { ...agent, ...nextPatch } : agent
     })
   }
   return changed

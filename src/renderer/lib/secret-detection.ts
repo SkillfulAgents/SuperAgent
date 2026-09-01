@@ -1,3 +1,5 @@
+import { MENTION_RE } from '@shared/lib/utils/mentions'
+
 const MIN_SECRET_LENGTH = 20
 const MASK = '*********'
 
@@ -19,6 +21,7 @@ const KNOWN_SECRET_PREFIX = /^(?:sk[-_]|pk[-_]|gh[pousr]_|github_pat_|xox[baprs]
 const HEX_SECRET = /^[a-f0-9]{32,}$/i
 const TOKEN_PATTERN = /[A-Za-z0-9][A-Za-z0-9_+=./-]{18,}[A-Za-z0-9_+=/-]/g
 const SECURED_DISPLAY_PATTERN = /\[[^\]\n]*\|\s*\*{4,}\]/g
+const PROTECTED_SPAN_PATTERNS = [SECURED_DISPLAY_PATTERN, MENTION_RE]
 
 function shannonEntropy(value: string): number {
   const counts = new Map<string, number>()
@@ -67,9 +70,11 @@ function looksLikeSecret(value: string, precedingText: string): boolean {
  */
 export function findPotentialSecrets(text: string): PotentialSecret[] {
   const protectedRanges: Array<{ start: number; end: number }> = []
-  for (const match of text.matchAll(SECURED_DISPLAY_PATTERN)) {
-    const start = match.index
-    protectedRanges.push({ start, end: start + match[0].length })
+  for (const pattern of PROTECTED_SPAN_PATTERNS) {
+    for (const match of text.matchAll(new RegExp(pattern.source, pattern.flags))) {
+      const start = match.index
+      protectedRanges.push({ start, end: start + match[0].length })
+    }
   }
 
   const candidates: PotentialSecret[] = []

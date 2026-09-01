@@ -23,6 +23,8 @@ export class ClientBroadcastChannel implements NotificationChannel {
       body: event.body,
       ...(event.actions ? { actions: event.actions } : {}),
       ...(event.actionContext ? { actionContext: event.actionContext } : {}),
+      ...(event.recipientUserId ? { recipientUserId: event.recipientUserId } : {}),
+      ...(event.messageUuid ? { messageUuid: event.messageUuid } : {}),
       ...event.extra,
     })
   }

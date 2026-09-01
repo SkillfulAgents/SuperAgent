@@ -6,7 +6,7 @@ import { HttpError } from '@renderer/lib/api'
 import { agentQuery } from '@renderer/hooks/query-options'
 import { AgentNotFound, AgentLoadError } from './route-fallbacks'
 import { lenient } from './zod-search'
-import { chatSearchSchema, connectionsSearchSchema, homeSearchSchema, rootSearchSchema, settingsSearchSchema, settingsTabSchema } from './search-schemas'
+import { agentHomeSearchSchema, chatSearchSchema, connectionsSearchSchema, homeSearchSchema, rootSearchSchema, sessionSearchSchema, settingsSearchSchema, settingsTabSchema } from './search-schemas'
 import { HomePage } from '@renderer/components/home/home-page'
 import { RootLayout, AppShellLayout } from '@renderer/components/layout/route-layouts'
 
@@ -157,6 +157,7 @@ export const agentHomeRoute = createRoute({
   // sibling route, so this leaf is just AgentHome.
   getParentRoute: () => agentLayoutRoute,
   path: '/',
+  validateSearch: lenient(agentHomeSearchSchema),
   component: AgentHomeRoute,
 })
 
@@ -164,6 +165,7 @@ export const sessionRoute = createRoute({
   getParentRoute: () => agentLayoutRoute,
   path: 'sessions/$sessionId',
   params: { parse: (raw) => ({ sessionId: z.string().min(1).parse(raw.sessionId) }) },
+  validateSearch: lenient(sessionSearchSchema),
   component: SessionRoute,
 })
 

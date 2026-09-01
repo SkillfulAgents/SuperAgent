@@ -1,3 +1,32 @@
+import { AtSign } from 'lucide-react'
+import { cn } from '@shared/lib/utils'
+
+export function MentionGlyph({ className }: { className?: string } = {}) {
+  return (
+    <span
+      data-testid="mention-glyph"
+      className={cn('text-xs font-semibold leading-none text-blue-700 dark:text-blue-400', className)}
+      role="img"
+      aria-label="mentioned you"
+    >
+      @
+    </span>
+  )
+}
+
+export function MentionMark({ className }: { className?: string } = {}) {
+  return (
+    <span
+      data-testid="mention-mark"
+      className={cn('inline-flex text-blue-700 dark:text-blue-400 shrink-0', className)}
+      role="img"
+      aria-label="mentioned you"
+    >
+      <AtSign className="h-3 w-3" strokeWidth={2.25} />
+    </span>
+  )
+}
+
 export function WorkingDots({ dotClassName = 'bg-green-500' }: { dotClassName?: string } = {}) {
   return (
     <span className="inline-flex items-center gap-0.5 shrink-0" role="img" aria-label="working">

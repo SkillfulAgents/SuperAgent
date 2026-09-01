@@ -11,6 +11,7 @@ import {
   listNotifications,
   countNotifications,
   getUnreadCount,
+  getUnreadMentionCount,
   markAsRead,
   markAllAsRead,
   markSessionNotificationsRead,
@@ -60,6 +61,8 @@ notificationsRouter.get('/stream', async (c) => {
               const accessible = await getAccessibleAgentSlugs(user.id)
               if (!accessible.includes(agentSlug)) return
             }
+            const recipient = (data as Record<string, unknown>)?.recipientUserId as string | undefined
+            if (recipient && recipient !== user.id) return
           }
 
           await stream.writeSSE({
@@ -130,8 +133,11 @@ notificationsRouter.get('/', async (c) => {
 notificationsRouter.get('/unread-count', async (c) => {
   try {
     const userId = getScopedUserId(c)
-    const count = await getUnreadCount(userId)
-    return c.json({ count })
+    const [count, mentions] = await Promise.all([
+      getUnreadCount(userId),
+      getUnreadMentionCount(userId),
+    ])
+    return c.json({ count, mentions })
   } catch (error) {
     console.error('Failed to fetch unread count:', error)
     return c.json({ error: 'Failed to fetch unread count' }, 500)
@@ -142,7 +148,7 @@ notificationsRouter.get('/unread-count', async (c) => {
 notificationsRouter.post('/:id/read', HasNotificationAccess(), async (c) => {
   try {
     const notificationId = c.req.param('id')
-    const success = await markAsRead(notificationId)
+    const success = await markAsRead(notificationId, getScopedUserId(c))
 
     if (!success) {
       return c.json({ error: 'Notification not found' }, 404)
@@ -184,7 +190,7 @@ notificationsRouter.post('/read-by-session/:sessionId', async (c) => {
 notificationsRouter.delete('/:id', HasNotificationAccess(), async (c) => {
   try {
     const notificationId = c.req.param('id')
-    const success = await deleteNotification(notificationId)
+    const success = await deleteNotification(notificationId, getScopedUserId(c))
 
     if (!success) {
       return c.json({ error: 'Notification not found' }, 404)

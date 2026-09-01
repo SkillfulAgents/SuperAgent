@@ -20,6 +20,22 @@ export const chatSearchSchema = z.object({
   newchat: z.string().optional(),
 })
 
+// Inbox mention click: jump to this user-message id even after the row is read.
+export const sessionSearchSchema = z.object({
+  mention: z.string().min(1).optional(),
+})
+
+// One-shot: @ picker "Share this agent" lands here so the header popover opens.
+// TanStack's default parser JSON.parses query values, so `?share=true` is a
+// boolean and `?share=1` is a number. Accept both plus their string forms.
+export function isShareSearch(share: unknown): boolean {
+  return share === true || share === 'true' || share === 1 || share === '1'
+}
+
+export const agentHomeSearchSchema = z.object({
+  share: z.union([z.literal(true), z.literal('true'), z.literal(1), z.literal('1')]).optional(),
+})
+
 // A connection-detail overlay key: `account-${id}` / `mcp-${id}` (see
 // connections/unified-rows.ts). ONE definition shared by the agent connections
 // route and the global settings connections tab, so the two can't drift.

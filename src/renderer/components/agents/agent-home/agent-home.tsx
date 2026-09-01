@@ -61,9 +61,10 @@ import { ScrollAwarePageTitle } from '@renderer/components/layout/scroll-aware-t
 interface AgentHomeProps {
   agent: ApiAgent
   onSessionCreated: (sessionId: string, initialMessage: string, messageUuid: string) => void
+  openShare?: boolean
 }
 
-export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
+export function AgentHome({ agent, onSessionCreated, openShare }: AgentHomeProps) {
   useRenderTracker('AgentHome')
   // The new-agent morph tag lives in NavTransientContext — above the router, so
   // it survives in-app nav and dies on hard reload. justCreatedSlug producer =
@@ -342,7 +343,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
             {/* Share (ACL + publish) lives on the header, not in settings. Owners
                 only; outside auth mode everyone is an owner and the popover
                 shows just the Publish pane. */}
-            {isOwner && <AgentSharePopover agentSlug={agent.slug} agentName={agent.name} />}
+            {isOwner && <AgentSharePopover agentSlug={agent.slug} agentName={agent.name} defaultOpen={openShare} />}
             {/* Gear = compact settings popover; Rename delegates to the
                 InlineEditableTitle above via its imperative handle. */}
             {isOwner && (

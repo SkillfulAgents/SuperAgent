@@ -56,6 +56,7 @@ interface ChatComposerBoxProps {
   className?: string
   textareaClassName?: string
   secureSecrets?: SecureSecretsProps
+  onSelectionText?: (textBeforeCaret: string) => void
 }
 
 export function ChatComposerBox({
@@ -82,6 +83,7 @@ export function ChatComposerBox({
   className,
   textareaClassName,
   secureSecrets,
+  onSelectionText,
 }: ChatComposerBoxProps) {
   const internalEditorRef = useRef<HTMLDivElement | null>(null)
   const setEditorRef = useCallback((node: HTMLDivElement | null) => {
@@ -126,6 +128,7 @@ export function ChatComposerBox({
           securedSecrets={securedSecrets}
           onRemoveSecuredSecrets={secureSecrets?.onRemove}
           onEditorElement={setEditorRef}
+          onSelectionText={onSelectionText}
         />
       </div>
       {secureSecrets && potentialSecrets[0] && (

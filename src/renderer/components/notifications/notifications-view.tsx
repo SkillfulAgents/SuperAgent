@@ -23,6 +23,7 @@ import { PageTitle, SettingsPageContainer } from '@renderer/components/layout/se
 import { cn } from '@shared/lib/utils'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { stripMarkdownPreview } from '@shared/lib/markdown-preview'
+import { MentionGlyph } from '@renderer/components/agents/status-indicators'
 
 function formatNotificationDate(date: Date): string {
   if (isToday(date)) return format(date, 'h:mm a').toLowerCase()
@@ -33,22 +34,25 @@ function formatNotificationDate(date: Date): string {
 
 const ROW_CLASS_NAME = 'group relative block w-full text-left focus-visible:outline-none'
 
-function RowChrome({ isRead }: { isRead: boolean }) {
+function RowChrome({ isRead, type }: { isRead: boolean; type?: ApiNotification['type'] }) {
   return (
     <>
       <span
         aria-hidden
         className="absolute inset-y-0 -left-6 -right-2 rounded-md group-hover:bg-accent/40 group-focus-visible:ring-2 group-focus-visible:ring-ring transition-colors"
       />
-      {/* Unread dot — sits in the bled gutter, left of the aligned content */}
-      <span
-        role={!isRead ? 'status' : undefined}
-        className={cn(
-          'absolute -left-4 top-1/2 -translate-y-1/2 h-1.5 w-1.5 rounded-full',
-          !isRead ? 'bg-blue-500' : 'bg-transparent',
-        )}
-        aria-label={!isRead ? 'Unread' : undefined}
-      />
+      {type === 'session_mention' && !isRead ? (
+        <MentionGlyph className="absolute -left-4 top-1/2 -translate-y-1/2" />
+      ) : (
+        <span
+          role={!isRead ? 'status' : undefined}
+          className={cn(
+            'absolute -left-4 top-1/2 -translate-y-1/2 h-1.5 w-1.5 rounded-full',
+            !isRead ? 'bg-blue-500' : 'bg-transparent',
+          )}
+          aria-label={!isRead ? 'Unread' : undefined}
+        />
+      )}
     </>
   )
 }
@@ -102,7 +106,7 @@ function NotificationRow({
 
   const content = (
     <>
-      <RowChrome isRead={notification.isRead} />
+      <RowChrome isRead={notification.isRead} type={notification.type} />
       {/* Content — no negative margins, so left/right edges match the page
           title and pagination exactly */}
       <span className="relative flex items-center gap-4 py-3">
@@ -148,6 +152,11 @@ function NotificationRow({
     <AppLink
       to="/agents/$slug/sessions/$sessionId"
       params={{ slug: notification.agentSlug, sessionId }}
+      search={
+        notification.type === 'session_mention' && notification.messageUuid
+          ? { mention: notification.messageUuid }
+          : undefined
+      }
       onClick={handleClick}
       className={ROW_CLASS_NAME}
     >

@@ -1,6 +1,10 @@
 import { useEffect, useState, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
+import {
+  agentShareOpenRequested,
+  clearAgentShareOpen,
+} from '@renderer/router/agent-share-open'
 import { useUser } from '@renderer/context/user-context'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
@@ -58,6 +62,7 @@ interface SearchUser {
 interface AgentSharePopoverProps {
   agentSlug: string
   agentName: string
+  defaultOpen?: boolean
 }
 
 const ROLE_OPTIONS: { value: AgentRole; label: string; description: string }[] = [
@@ -106,10 +111,30 @@ function UserAvatar({ name, className }: { name: string; className?: string }) {
  * moved here from the settings General tab). Rendered for agent owners; in
  * non-auth deployments everyone is an owner and only Publish shows.
  */
-export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverProps) {
+export function AgentSharePopover({ agentSlug, agentName, defaultOpen }: AgentSharePopoverProps) {
   const queryClient = useQueryClient()
   const { user, isAuthMode } = useUser()
   const [open, setOpen] = useState(false)
+  const ignoreDismissUntil = useRef(0)
+  // Open after the originating @-menu click finishes. Opening on the same
+  // pointerdown lets Radix treat the leftover mouseup as an outside dismiss.
+  useEffect(() => {
+    if (!defaultOpen && !agentShareOpenRequested()) return
+    let opened = false
+    const reveal = () => {
+      if (opened) return
+      opened = true
+      ignoreDismissUntil.current = Date.now() + 250
+      setOpen(true)
+      clearAgentShareOpen()
+    }
+    window.addEventListener('pointerup', reveal, { once: true })
+    const id = window.setTimeout(reveal, 100)
+    return () => {
+      window.removeEventListener('pointerup', reveal)
+      window.clearTimeout(id)
+    }
+  }, [defaultOpen])
   const [tab, setTab] = useState<'share' | 'publish' | 'export'>(isAuthMode ? 'share' : 'publish')
   const [searchQuery, setSearchQuery] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -365,6 +390,7 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
     <Popover
       open={open}
       onOpenChange={(next) => {
+        if (!next && Date.now() < ignoreDismissUntil.current) return
         setOpen(next)
         if (!next) resetInvite()
       }}

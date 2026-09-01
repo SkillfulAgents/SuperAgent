@@ -91,6 +91,42 @@ vi.mock('@renderer/hooks/use-settings', () => ({
   useModelSettings: () => mockSettings,
 }))
 
+const mockUserState = {
+  isAuthMode: false,
+  user: { id: 'me' },
+  isAuthenticated: true,
+  isAdmin: false,
+  isPending: false,
+  mustChangePassword: false,
+  rolesReady: true,
+  canAccessAgent: () => true,
+  canUseAgent: () => true,
+  canAdminAgent: () => false,
+  agentRole: () => null,
+  agentMemberCount: () => 0,
+  signOut: async () => {},
+}
+
+vi.mock('@renderer/context/user-context', () => ({
+  useUser: () => mockUserState,
+  UserProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}))
+
+let mockMembersData = [
+  { userId: 'u1', userName: 'Iddo Gino', userEmail: 'iddo@x' },
+  { userId: 'u2', userName: 'West Harper', userEmail: 'west@x' },
+]
+
+vi.mock('@renderer/hooks/use-agent-members', () => ({
+  useAgentMembers: () => ({ data: mockMembersData }),
+}))
+
+const mockNavigate = vi.fn()
+vi.mock('@tanstack/react-router', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@tanstack/react-router')>()
+  return { ...actual, useNavigate: () => mockNavigate }
+})
+
 describe('MessageInput', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -107,6 +143,12 @@ describe('MessageInput', () => {
       envVar: 'GITHUB_TOKEN',
       hasValue: true,
     })
+    mockUserState.isAuthMode = false
+    mockUserState.canAdminAgent = () => false
+    mockMembersData = [
+      { userId: 'u1', userName: 'Iddo Gino', userEmail: 'iddo@x' },
+      { userId: 'u2', userName: 'West Harper', userEmail: 'west@x' },
+    ]
   })
 
   it('renders textarea with placeholder', () => {
@@ -1120,6 +1162,115 @@ describe('MessageInput', () => {
 
       await waitFor(() => {
         expect(screen.getByTestId('message-input').textContent).toBe('voice-generated draft')
+      })
+    })
+  })
+
+  describe('mentions', () => {
+    beforeEach(() => {
+      mockUserState.isAuthMode = true
+      Element.prototype.scrollIntoView = vi.fn()
+    })
+
+    function DraftSeeder({ sessionId, value }: { sessionId: string; value: string }) {
+      const [, setDraft] = useDraft<string>(`session:${sessionId}`)
+      useEffect(() => { setDraft(value) }, [setDraft, value])
+      return null
+    }
+
+    it('opens the mention picker on @ mid-text and filters by name or email', async () => {
+      const user = userEvent.setup()
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      await user.type(screen.getByTestId('message-input'), 'refunds fail, @we')
+      expect(screen.getByTestId('mention-menu')).toBeInTheDocument()
+      expect(screen.getByRole('option', { name: /West Harper/ })).toBeInTheDocument()
+      expect(screen.queryByRole('option', { name: /Iddo/ })).toBeNull()
+    })
+
+    it('Enter inserts the chip', async () => {
+      const user = userEvent.setup()
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      const input = screen.getByTestId('message-input')
+      await user.type(input, '@idd')
+      await user.keyboard('{Enter}')
+      await waitFor(() => {
+        expect(input.querySelector('[data-testid="mention-chip"]')).toHaveTextContent('@Iddo Gino')
+      })
+      expect(screen.queryByTestId('mention-helper-strip')).toBeNull()
+      expect(screen.getByTestId('send-button')).toHaveAttribute('title', 'Send message')
+    })
+
+    it('does not open the picker without other members', async () => {
+      mockMembersData = [{ userId: 'me', userName: 'Me', userEmail: 'me@x' }]
+      const user = userEvent.setup()
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      await user.type(screen.getByTestId('message-input'), '@')
+      expect(screen.queryByTestId('mention-menu')).toBeNull()
+    })
+
+    it('shows Share this agent for an owner with no teammates', async () => {
+      mockUserState.canAdminAgent = () => true
+      mockMembersData = [{ userId: 'me', userName: 'Me', userEmail: 'me@x' }]
+      const user = userEvent.setup()
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      await user.type(screen.getByTestId('message-input'), '@')
+      expect(screen.getByTestId('mention-share-agent')).toHaveTextContent('Share this agent')
+      expect(screen.getByTestId('mention-share-agent')).toHaveTextContent('Add people you can mention')
+    })
+
+    it('Enter on an empty share row opens share settings', async () => {
+      mockUserState.canAdminAgent = () => true
+      mockMembersData = [{ userId: 'me', userName: 'Me', userEmail: 'me@x' }]
+      const user = userEvent.setup()
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      await user.type(screen.getByTestId('message-input'), '@')
+      await user.keyboard('{Enter}')
+      expect(mockNavigate).toHaveBeenCalledWith({
+        to: '/agents/$slug',
+        params: { slug: 'agent-1' },
+        search: { share: true },
+      })
+    })
+
+    it('navigates to agent share settings from the share row', async () => {
+      mockUserState.canAdminAgent = () => true
+      mockMembersData = [{ userId: 'me', userName: 'Me', userEmail: 'me@x' }]
+      const user = userEvent.setup()
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      await user.type(screen.getByTestId('message-input'), '@')
+      await user.click(screen.getByTestId('mention-share-agent'))
+      expect(mockNavigate).toHaveBeenCalledWith({
+        to: '/agents/$slug',
+        params: { slug: 'agent-1' },
+        search: { share: true },
+      })
+    })
+
+    it('does not show Share this agent when people are in the picker', async () => {
+      mockUserState.canAdminAgent = () => true
+      const user = userEvent.setup()
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      await user.type(screen.getByTestId('message-input'), '@')
+      expect(screen.queryByTestId('mention-share-agent')).toBeNull()
+      expect(screen.getByRole('option', { name: /Iddo Gino/ })).toBeInTheDocument()
+    })
+
+    it('sends the marker text unchanged', async () => {
+      const user = userEvent.setup()
+      renderWithProviders(
+        <>
+          <DraftSeeder sessionId="s-1" value="[[mention:u1|Iddo%20Gino]] look" />
+          <MessageInput sessionId="s-1" agentSlug="agent-1" />
+        </>
+      )
+      await waitFor(() => {
+        expect(screen.getByTestId('message-input').querySelector('[data-testid="mention-chip"]')).toBeInTheDocument()
+      })
+      await user.click(screen.getByTestId('send-button'))
+      await waitFor(() => {
+        expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(
+          expect.objectContaining({ content: '[[mention:u1|Iddo%20Gino]] look' })
+        )
       })
     })
   })

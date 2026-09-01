@@ -10,7 +10,7 @@ import type { UserSettingsData } from '@shared/lib/services/user-settings-servic
  * the DB) so the renderer's optimistic unread-dot raise and the server's
  * unread queries share one list and can never drift.
  */
-export const USER_ACTIONABLE_NOTIFICATION_TYPES = ['session_complete', 'session_waiting'] as const
+export const USER_ACTIONABLE_NOTIFICATION_TYPES = ['session_complete', 'session_waiting', 'session_mention'] as const
 
 /**
  * Per-type notification preference check — the single source of truth for
@@ -28,6 +28,8 @@ export function isNotificationTypeEnabled(
   notifications: UserSettingsData['notifications'],
   type: string
 ): boolean {
+  if (type === 'session_mention') return true
+
   if (!notifications.enabled) {
     return false
   }

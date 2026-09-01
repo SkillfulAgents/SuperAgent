@@ -3670,4 +3670,40 @@ describe('MessageList', () => {
       expect(screen.queryByTestId('thinking-block')).not.toBeInTheDocument()
     })
   })
+
+  describe('mention jump', () => {
+    it('jumps to jumpToMessageId after the first page and reports scrolled', async () => {
+      const onJumpSettled = vi.fn()
+      mockMessagesData.data = [createUserMessage({ id: 'm1', content: { text: 'ping' } })]
+      renderWithProviders(
+        <MessageList sessionId="s-1" agentSlug="agent-1" jumpToMessageId="m1" onJumpSettled={onJumpSettled} />
+      )
+      await waitFor(() => expect(onJumpSettled).toHaveBeenCalledWith('scrolled'))
+    })
+
+    it('reports unmounted when the target is not in the first page', async () => {
+      const onJumpSettled = vi.fn()
+      mockMessagesData.data = [createUserMessage({ id: 'm-new', content: { text: 'later' } })]
+      renderWithProviders(
+        <MessageList sessionId="s-1" agentSlug="agent-1" jumpToMessageId="m-old" onJumpSettled={onJumpSettled} />
+      )
+      await waitFor(() => expect(onJumpSettled).toHaveBeenCalledWith('unmounted'), { timeout: 2000 })
+    })
+
+    it('jumps again after the target is cleared and set back', async () => {
+      const onJumpSettled = vi.fn()
+      mockMessagesData.data = [createUserMessage({ id: 'm1', content: { text: 'ping' } })]
+      const view = renderWithProviders(
+        <MessageList sessionId="s-1" agentSlug="agent-1" jumpToMessageId="m1" onJumpSettled={onJumpSettled} />
+      )
+      await waitFor(() => expect(onJumpSettled).toHaveBeenCalledTimes(1))
+      view.rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" jumpToMessageId={null} onJumpSettled={onJumpSettled} />
+      )
+      view.rerender(
+        <MessageList sessionId="s-1" agentSlug="agent-1" jumpToMessageId="m1" onJumpSettled={onJumpSettled} />
+      )
+      await waitFor(() => expect(onJumpSettled).toHaveBeenCalledTimes(2))
+    })
+  })
 })

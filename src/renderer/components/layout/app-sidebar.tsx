@@ -58,7 +58,7 @@ import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
-import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
+import { WorkingDots, AwaitingDot, MentionMark } from '@renderer/components/agents/status-indicators'
 import { SIDEBAR_TREE_CONNECTORS } from '@renderer/components/ui/tree-connectors'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
@@ -258,7 +258,9 @@ function SessionSubItem({
                     <MoonStar className="h-3 w-3 text-muted-foreground" />
                   </span>
                 )}
-                {isAwaitingInput ? (
+                {session.unreadMentionMessageUuid ? (
+                  <MentionMark />
+                ) : isAwaitingInput ? (
                   <AwaitingDot />
                 ) : isWorking ? (
                   <WorkingDots />
@@ -430,9 +432,19 @@ function AgentRowIndicator({
   sessions: ApiSession[] | undefined
   isOpen: boolean
 }) {
+  const hasMention = !isOpen && (
+    sessions?.some((s) => !!s.unreadMentionMessageUuid) || (agent.hasUnreadMentions ?? false)
+  )
   const isAwaiting = sessions?.some((s) => s.isAwaitingInput) || (agent.hasSessionsAwaitingInput ?? false)
   const isWorking = !isAwaiting && (sessions?.some((s) => s.isActive) || (agent.hasActiveSessions ?? false))
   const isUnread = !isOpen && !isAwaiting && !isWorking && (agent.hasUnreadNotifications ?? false)
+  if (hasMention) {
+    return (
+      <span className="flex items-center w-4 justify-center">
+        <MentionMark />
+      </span>
+    )
+  }
   if (isUnread) {
     return (
       <span className="flex items-center w-4 justify-center" role="img" aria-label="unread notifications">
@@ -689,12 +701,14 @@ function NotificationsMenuButton() {
       <AppLink to="/notifications">
         <Bell className="h-4 w-4" />
         <span>Notifications</span>
-        {unreadCount > 0 && (
+        {(countData?.mentions ?? 0) > 0 ? (
+          <MentionMark className="ml-auto" />
+        ) : unreadCount > 0 ? (
           <span
             className="ml-auto h-1.5 w-1.5 rounded-full bg-blue-500"
             aria-label={`${unreadCount} unread`}
           />
-        )}
+        ) : null}
       </AppLink>
     </SidebarMenuButton>
   )

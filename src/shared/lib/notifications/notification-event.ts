@@ -28,4 +28,8 @@ export interface NotificationEvent {
   actionContext?: Record<string, unknown>
   /** Type-specific extras carried on the client broadcast (taskId, triggerId, …). */
   extra?: Record<string, unknown>
+  /** Targeted mention rows only. Absent on agent-scoped events. */
+  recipientUserId?: string
+  /** Transcript message the mention row points at. */
+  messageUuid?: string
 }

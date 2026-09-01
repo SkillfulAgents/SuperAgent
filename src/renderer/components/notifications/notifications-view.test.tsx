@@ -172,6 +172,35 @@ describe('NotificationsView', () => {
   // Rendering items
   // -----------------------------------------------------------------------
 
+  it('shows the @ marker on an unread mention and drops it after read', () => {
+    mockNotificationsData = {
+      items: [makeNotification({
+        id: '1',
+        type: 'session_mention',
+        title: 'Graham mentioned you',
+        body: 'ping @Iddo Gino',
+        isRead: false,
+      })],
+      total: 1,
+    }
+    const { unmount } = renderWithProviders(<NotificationsView />)
+    expect(screen.getByTestId('mention-glyph')).toBeInTheDocument()
+    unmount()
+
+    mockNotificationsData = {
+      items: [makeNotification({
+        id: '1',
+        type: 'session_mention',
+        title: 'Graham mentioned you',
+        body: 'ping @Iddo Gino',
+        isRead: true,
+      })],
+      total: 1,
+    }
+    renderWithProviders(<NotificationsView />)
+    expect(screen.queryByTestId('mention-glyph')).toBeNull()
+  })
+
   it('renders notification rows with title and body', () => {
     mockNotificationsData = {
       items: [makeNotification({ id: '1', title: 'Task done', body: 'Agent finished' })],
@@ -233,6 +262,40 @@ describe('NotificationsView', () => {
     const link = screen.getByText('Notification 1').closest('a')
     expect(link).toHaveAttribute('data-to', '/agents/$slug/sessions/$sessionId')
     expect(link).toHaveAttribute('data-params', JSON.stringify({ slug: 'bot-1', sessionId: 'sess-42' }))
+    expect(link).not.toHaveAttribute('data-search')
+  })
+
+  it('links a mention row to the message even after it is read', () => {
+    mockNotificationsData = {
+      items: [makeNotification({
+        id: '1',
+        type: 'session_mention',
+        agentSlug: 'bot-1',
+        sessionId: 'sess-42',
+        messageUuid: 'm-mention',
+        isRead: true,
+      })],
+      total: 1,
+    }
+    renderWithProviders(<NotificationsView />)
+    const link = screen.getByText('Notification 1').closest('a')
+    expect(link).toHaveAttribute('data-search', JSON.stringify({ mention: 'm-mention' }))
+  })
+
+  it('does not pass mention search when the mention row has no message id', () => {
+    mockNotificationsData = {
+      items: [makeNotification({
+        id: '1',
+        type: 'session_mention',
+        agentSlug: 'bot-1',
+        sessionId: 'sess-42',
+        messageUuid: null,
+      })],
+      total: 1,
+    }
+    renderWithProviders(<NotificationsView />)
+    const link = screen.getByText('Notification 1').closest('a')
+    expect(link).not.toHaveAttribute('data-search')
   })
 
   it('marks unread notification as read on click', async () => {

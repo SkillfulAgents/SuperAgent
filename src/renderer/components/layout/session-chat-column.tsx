@@ -38,6 +38,8 @@ interface SessionChatColumnProps {
   pendingWakeAt?: string
   pendingWakeTaskId?: string
   pendingWakeNote?: string
+  jumpToMessageId?: string | null
+  onJumpSettled?: (result: 'scrolled' | 'unmounted') => void
 }
 
 export function SessionChatColumn({
@@ -59,6 +61,8 @@ export function SessionChatColumn({
   pendingWakeAt,
   pendingWakeTaskId,
   pendingWakeNote,
+  jumpToMessageId,
+  onJumpSettled,
 }: SessionChatColumnProps) {
   const { isActive, browserActive, isWaitingBackground } = useMessageStream(sessionId, agentSlug)
   // Keep the phone awake (PWA only) while this session is actively working.
@@ -92,6 +96,8 @@ export function SessionChatColumn({
       pendingUserMessages={pendingUserMessages}
       pendingRequestCount={pendingRequestCount}
       onPendingMessageAppeared={onPendingMessageAppeared}
+      jumpToMessageId={jumpToMessageId}
+      onJumpSettled={onJumpSettled}
       suppressScrollToBottom={staleSession.learnMoreOpen}
       overlayFooter
       footerClassName="max-w-[740px] mx-auto w-full"
