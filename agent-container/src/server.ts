@@ -106,7 +106,15 @@ app.post('/sessions', async (c) => {
     return c.json(session, 201);
   } catch (error: any) {
     console.error('Error creating session:', error);
-    return c.json({ error: error.message || 'Failed to create session' }, 500);
+    // The Agent SDK attaches the spawn errno (`code`) and a failure class
+    // (`errorClass`, e.g. 'executable_launch_failed') to CLI launch errors.
+    // Forward both: the message alone hides the errno behind the SDK's canned
+    // libc-mismatch guess, and the host keys auto-recovery off errorClass.
+    return c.json({
+      error: error.message || 'Failed to create session',
+      ...(typeof error.code === 'string' && { code: error.code }),
+      ...(typeof error.errorClass === 'string' && { errorClass: error.errorClass }),
+    }, 500);
   }
 });
 
