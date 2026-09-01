@@ -52,8 +52,12 @@ beforeEach(() => {
   billingInfo.data = undefined
   billingInfo.isLoading = false
   paywallBilling.topup.mockReset()
+  paywallBilling.topup.mockResolvedValue(true)
   paywallBilling.setAutoReload.mockReset()
   paywallBilling.setAutoReload.mockResolvedValue(true)
+  paywallBilling.setupCard.mockReset()
+  paywallBilling.setupCard.mockResolvedValue(null)
+  paywallBilling.confirmCard.mockReset()
   paywallBilling.pending = false
   paywallBilling.error = null
 })
@@ -234,6 +238,102 @@ describe('ProviderErrorView', () => {
     expect(purchase).toBeDisabled()
     fireEvent.change(input, { target: { value: '50' } })
     expect(purchase).toBeEnabled()
+  })
+
+  it('purchases a one-time top-up in-app', async () => {
+    const openExternal = vi.fn()
+    ;(window as unknown as { electronAPI?: { openExternal: typeof openExternal } }).electronAPI = {
+      openExternal,
+    }
+
+    render(
+      <ProviderErrorView
+        presentation={{
+          severity: 'error',
+          icon: 'info',
+          message: '**Insufficient Balance:** This workspace is out of credits.',
+          paywall: { subscriptionRequired: false },
+        }}
+        paywallCta={{
+          kind: 'topup',
+          href: 'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
+          amountsCents: [5000, 10000, 20000, 40000],
+        }}
+      />,
+    )
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: /add usage/i }))
+    const dialog = screen.getByRole('dialog', { name: /add more usage credit/i })
+    await user.click(within(dialog).getByRole('button', { name: '$100' }))
+    await user.click(within(dialog).getByRole('button', { name: /^purchase$/i }))
+
+    await waitFor(() => {
+      expect(paywallBilling.topup).toHaveBeenCalledWith(10000)
+    })
+    expect(openExternal).not.toHaveBeenCalled()
+  })
+
+  it('opens the in-app card dialog from Add credit card', async () => {
+    const openExternal = vi.fn()
+    ;(window as unknown as { electronAPI?: { openExternal: typeof openExternal } }).electronAPI = {
+      openExternal,
+    }
+
+    render(
+      <ProviderErrorView
+        presentation={{
+          severity: 'error',
+          icon: 'info',
+          message: '**Insufficient Balance:** This workspace is out of credits.',
+          paywall: { subscriptionRequired: false },
+        }}
+        paywallCta={{
+          kind: 'add_card',
+          href: 'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
+        }}
+      />,
+    )
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: /add credit card/i }))
+
+    expect(screen.getByRole('dialog', { name: /add credit card/i })).toBeInTheDocument()
+    await waitFor(() => {
+      expect(paywallBilling.setupCard).toHaveBeenCalled()
+    })
+    expect(openExternal).not.toHaveBeenCalled()
+  })
+
+  it('opens the in-app card dialog from Change', async () => {
+    const openExternal = vi.fn()
+    ;(window as unknown as { electronAPI?: { openExternal: typeof openExternal } }).electronAPI = {
+      openExternal,
+    }
+
+    render(
+      <ProviderErrorView
+        presentation={{
+          severity: 'error',
+          icon: 'info',
+          message: '**Insufficient Balance:** This workspace is out of credits.',
+          paywall: { subscriptionRequired: false },
+        }}
+        paywallCta={{
+          kind: 'topup',
+          href: 'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
+          amountsCents: [5000],
+        }}
+      />,
+    )
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: /add usage/i }))
+    const dialog = screen.getByRole('dialog', { name: /add more usage credit/i })
+    await user.click(within(dialog).getByRole('button', { name: /^change$/i }))
+
+    expect(screen.getByRole('dialog', { name: /add credit card/i })).toBeInTheDocument()
+    await waitFor(() => {
+      expect(paywallBilling.setupCard).toHaveBeenCalled()
+    })
+    expect(openExternal).not.toHaveBeenCalled()
   })
 
   it('saves auto-refill in-app after consent', async () => {

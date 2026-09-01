@@ -21,6 +21,7 @@ import {
 import { Input } from '@renderer/components/ui/input'
 import { Separator } from '@renderer/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@renderer/components/ui/tabs'
+import { AddCardDialog } from '@renderer/components/ui/add-card-dialog'
 import { usePaywallBilling } from '@renderer/hooks/use-paywall-billing'
 import { openExternalUrl } from '@renderer/lib/open-external'
 
@@ -53,7 +54,6 @@ function ExternalCtaButton({
 
 const CTA_LABELS = {
   subscribe: 'Subscribe',
-  add_card: 'Add credit card',
   go_to_billing: 'Go to billing',
 } as const
 
@@ -87,9 +87,7 @@ function DollarInput({
   )
 }
 
-// The billing snapshot doesn't expose card details yet, so the row names the
-// card generically; Change opens the org billing page.
-function PaymentMethodRow({ href }: { href: string | null }) {
+function PaymentMethodRow({ onChange }: { onChange: () => void }) {
   return (
     <div>
       <p className="text-sm text-muted-foreground">Payment method</p>
@@ -100,10 +98,9 @@ function PaymentMethodRow({ href }: { href: string | null }) {
           variant="ghost"
           size="xs"
           className="gap-0.5 text-muted-foreground"
-          disabled={!href}
           onClick={(event) => {
             stopCardToggle(event)
-            if (href) void openExternalUrl(href)
+            onChange()
           }}
         >
           Change
@@ -111,6 +108,24 @@ function PaymentMethodRow({ href }: { href: string | null }) {
         </Button>
       </div>
     </div>
+  )
+}
+
+function AddCardCta() {
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <Button
+        size="sm"
+        onClick={(event) => {
+          stopCardToggle(event)
+          setOpen(true)
+        }}
+      >
+        Add credit card
+      </Button>
+      <AddCardDialog open={open} onOpenChange={setOpen} />
+    </>
   )
 }
 
@@ -134,8 +149,6 @@ function SummaryRows({ dollars }: { dollars: number | null }) {
   )
 }
 
-// One-time Purchase still opens org billing. Auto-refill saves in-app
-// (no charge today — billing charges when the pool drops below the threshold).
 function TopupDialog({
   href,
   amountsCents,
@@ -144,11 +157,12 @@ function TopupDialog({
   amountsCents: readonly number[]
 }) {
   const [open, setOpen] = useState(false)
+  const [cardOpen, setCardOpen] = useState(false)
   const [dollarsInput, setDollarsInput] = useState('')
   const [thresholdDollars, setThresholdDollars] = useState('50')
   const [refillDollars, setRefillDollars] = useState('200')
   const [agreed, setAgreed] = useState(false)
-  const { setAutoReload, pending, error } = usePaywallBilling()
+  const { setAutoReload, topup, pending, error } = usePaywallBilling()
 
   const onceDollars = parseCustomTopupDollars(dollarsInput)
   const refillAmount = parseCustomTopupDollars(refillDollars)
@@ -158,9 +172,10 @@ function TopupDialog({
     && thresholdAmount !== null
     && refillAmount > thresholdAmount
 
-  const purchase = () => {
-    if (href) void openExternalUrl(href)
-    setOpen(false)
+  const purchase = async () => {
+    if (onceDollars === null) return
+    const charged = await topup(onceDollars * 100)
+    if (charged) setOpen(false)
   }
 
   const saveAutoReload = async () => {
@@ -181,6 +196,7 @@ function TopupDialog({
         if (!next) {
           setDollarsInput('')
           setAgreed(false)
+          setCardOpen(false)
         }
       }}
     >
@@ -219,14 +235,16 @@ function TopupDialog({
               </div>
             </div>
             <Separator />
-            <PaymentMethodRow href={href} />
+            <PaymentMethodRow onChange={() => setCardOpen(true)} />
             <Separator />
             <SummaryRows dollars={onceDollars} />
+            {error ? <p className="text-xs text-destructive">{error}</p> : null}
             <Button
               className="w-full"
-              disabled={onceDollars === null || !href}
-              onClick={purchase}
+              disabled={onceDollars === null || pending}
+              onClick={() => void purchase()}
             >
+              {pending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : null}
               Purchase
             </Button>
           </TabsContent>
@@ -263,7 +281,7 @@ function TopupDialog({
               </button>
             </div>
             <Separator />
-            <PaymentMethodRow href={href} />
+            <PaymentMethodRow onChange={() => setCardOpen(true)} />
             <Separator />
             <SummaryRows dollars={refillAmount} />
             <label className="flex items-center gap-2.5 rounded-lg bg-muted p-3 text-xs text-muted-foreground">
@@ -289,6 +307,7 @@ function TopupDialog({
           </TabsContent>
         </Tabs>
       </DialogContent>
+      <AddCardDialog open={cardOpen} onOpenChange={setCardOpen} />
     </Dialog>
   )
 }
@@ -325,6 +344,14 @@ export function PaywallActions({
     return (
       <div data-testid="paywall-actions">
         <TopupDialog href={cta.href} amountsCents={cta.amountsCents} />
+      </div>
+    )
+  }
+
+  if (cta.kind === 'add_card') {
+    return (
+      <div data-testid="paywall-actions">
+        <AddCardCta />
       </div>
     )
   }
