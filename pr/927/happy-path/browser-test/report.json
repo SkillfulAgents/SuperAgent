@@ -1,24 +1,25 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the agent can execute browser tools to navigate to a URL and retrieve the page title, confirming \"Example Domain\" from example.com",
+  "reason": "Agent successfully opened browser, navigated to example.com, retrieved the page title \"Example Domain\", and reported it back in the chat.",
   "steps": [
-    "Navigated to http://localhost:47891 — Successfully loaded Gamut application with agent \"QA-20260901-214138-rsz8\" visible in sidebar",
-    "Clicked on agent \"QA-20260901-214138-rsz8\" in sidebar — Successfully opened agent chat interface with message input box ready",
-    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully submitted using Cmd+Enter keyboard shortcut",
-    "Waited for agent response (up to 3 minutes) — Agent completed processing in approximately 14 seconds, using 4 tool calls and 163,665 tokens",
-    "Verified response mentions \"Example Domain\" — Response correctly states: \"The page title is \\\"Example Domain\\\" — the page just has that heading, a short line about the domain being for documentation examples, and a \\\"Learn more\\\" link. Browser closed.\"",
-    "Captured screenshot showing complete response — Screenshot shows the agent response clearly displaying \"Example Domain\" as the page title"
+    "Step 1: Navigated to http://localhost:47891 — Page loaded successfully with the Gamut application showing sidebar with agents list.",
+    "Step 2: Found \"QA-20260901-220248-a4ot\" agent in the sidebar and clicked it — Successfully navigated to the agent page at /agents/qa-20260901-220248-a4ot-vihp9xk1e6.",
+    "Step 3: Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the message input field — Message appeared correctly in the input field.",
+    "Step 4: Clicked \"Send message\" button — Message was sent, agent status changed to \"working\", and session page opened with title \"Browser Page Title Lookup\".",
+    "Step 5: Waited for agent response (up to 3 minutes) — Agent completed processing in 13 seconds with 4 tool calls using 163,658 tokens.",
+    "Step 6: Verified response mentions \"Example Domain\" — Response confirms: \"The page title is \"Example Domain\" — a placeholder page reserved for documentation examples. Browser closed.\"",
+    "Step 7: Took screenshot — Screenshot captured showing the complete conversation with the agent's response clearly visible."
   ],
   "bugs": [],
-  "durationMs": 72757,
-  "sessionId": "8920a56b-e52c-4388-9864-f2a15a36baa4",
+  "durationMs": 72028,
+  "sessionId": "35d614ab-312d-4737-9d69-90bee8f25aa9",
   "cost": {
-    "inputTokens": 260,
-    "outputTokens": 9719,
-    "cacheCreationTokens": 60525,
-    "cacheReadTokens": 671882,
+    "inputTokens": 320,
+    "outputTokens": 8370,
+    "cacheCreationTokens": 109755,
+    "cacheReadTokens": 815827,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.191699
+    "totalCostUsd": 0.260946
   }
 }
