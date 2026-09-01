@@ -1057,12 +1057,19 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
         if (current) return { status: 'running', port: current.proxyPort }
         return { status: 'stopped', port: null }
       }
-      // Terminal: drop only the generation we observed (CAS) so a concurrent
-      // replace/start isn't wiped by a stale answer.
-      this.cleanupLocalIf(observedId)
+      // Only real death drops the proxy. PENDING (and other in-progress)
+      // used to fall through as terminal and abort waitForHealthy on first start.
+      if (TERMINAL_MICROVM_STATES.has(mvm.state ?? '')) {
+        this.cleanupLocalIf(observedId)
+        const current = agentStates.get(this.config.agentId)
+        if (current) return { status: 'running', port: current.proxyPort }
+        return { status: 'stopped', port: null }
+      }
       const current = agentStates.get(this.config.agentId)
-      if (current) return { status: 'running', port: current.proxyPort }
-      return { status: 'stopped', port: null }
+      if (current && current.microvmId !== observedId) {
+        return { status: 'running', port: current.proxyPort }
+      }
+      return { status: 'running', port: state.proxyPort }
     } catch (error) {
       if (isNotFound(error)) {
         this.cleanupLocalIf(observedId)

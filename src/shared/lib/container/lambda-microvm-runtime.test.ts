@@ -428,6 +428,41 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     expect(sendMock.mock.calls.some((c) => c[0].type === 'Run')).toBe(true)
   })
 
+  it('getInfoFromRuntime keeps the proxy when the VM is still PENDING', async () => {
+    const client = newClient()
+    await client.start()
+    const port = (await client.getInfoFromRuntime()).port
+    responses.getState = 'PENDING'
+    sendMock.mockClear()
+    expect(await client.getInfoFromRuntime()).toEqual({ status: 'running', port })
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
+  })
+
+  it('start() finishes health wait when getInfo flaps PENDING after RUNNING', async () => {
+    let healthFails = 1
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      if (healthFails > 0) {
+        healthFails -= 1
+        throw new Error('connect ECONNREFUSED 127.0.0.1')
+      }
+      return { ok: true } as Response
+    }))
+    let gets = 0
+    sendMock.mockImplementation(async (cmd: { type: string }) => {
+      if (cmd.type === 'Run') return { microvmId: 'mvm-1', endpoint: 'ep.lambda-microvm.aws' }
+      if (cmd.type === 'Get') {
+        gets += 1
+        // waitForRunning sees RUNNING; the next getInfo (health miss) is PENDING.
+        return { state: gets === 1 ? 'RUNNING' : 'PENDING' }
+      }
+      if (cmd.type === 'Token') return { authToken: { 'X-aws-proxy-auth': 'tok' } }
+      return {}
+    })
+    const info = await newClient().start()
+    expect(info.status).toBe('running')
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
+  })
+
   it('getInfoFromRuntime keeps last known running state on a transient (non-NotFound) error', async () => {
     const client = newClient()
     await client.start()
