@@ -289,16 +289,23 @@ export function applySessionActivityStatus(
     // reference, or every event rebuilds the agents array and pays a full
     // deep-compare in structural sharing.
     updateMatchingAgents(queryClient, agentSlug, (agent) => {
+      // A mention-less unread clear still passes unreadMentionMessageUuid: null.
+      // Do not introduce hasUnreadMentions on an agent that never carried one —
+      // spreading the full patch on a sibling unread-dot change would do that.
+      const nextPatch = { ...agentPatch }
+      if (nextPatch.hasUnreadMentions === false && !agent.hasUnreadMentions) {
+        delete nextPatch.hasUnreadMentions
+      }
       const rollupChanged = (
         SESSION_ROLLUP_FLAGS.some(([, agentFlag]) => (
-          agentPatch[agentFlag] !== undefined && (agent[agentFlag] ?? false) !== agentPatch[agentFlag]
+          nextPatch[agentFlag] !== undefined && (agent[agentFlag] ?? false) !== nextPatch[agentFlag]
         ))
         || (
-          agentPatch.hasUnreadMentions !== undefined
-          && (agent.hasUnreadMentions ?? false) !== agentPatch.hasUnreadMentions
+          nextPatch.hasUnreadMentions !== undefined
+          && (agent.hasUnreadMentions ?? false) !== nextPatch.hasUnreadMentions
         )
       )
-      return rollupChanged ? { ...agent, ...agentPatch } : agent
+      return rollupChanged ? { ...agent, ...nextPatch } : agent
     })
   }
   return changed
