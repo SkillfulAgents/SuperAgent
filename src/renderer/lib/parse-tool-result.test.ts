@@ -9,24 +9,24 @@ describe('parseToolResult', () => {
   describe('null/undefined input', () => {
     it('returns null text and no images for null', () => {
       const result = parseToolResult(null)
-      expect(result).toEqual({ text: null, images: [] })
+      expect(result).toEqual({ text: null, images: [], documents: [] })
     })
 
     it('returns null text and no images for undefined', () => {
       const result = parseToolResult(undefined)
-      expect(result).toEqual({ text: null, images: [] })
+      expect(result).toEqual({ text: null, images: [], documents: [] })
     })
   })
 
   describe('plain string input', () => {
     it('returns the string as text', () => {
       const result = parseToolResult('hello world')
-      expect(result).toEqual({ text: 'hello world', images: [] })
+      expect(result).toEqual({ text: 'hello world', images: [], documents: [] })
     })
 
     it('returns empty string as text', () => {
       const result = parseToolResult('')
-      expect(result).toEqual({ text: '', images: [] })
+      expect(result).toEqual({ text: '', images: [], documents: [] })
     })
 
     it('handles strings with ANSI escape codes', () => {
@@ -48,7 +48,7 @@ describe('parseToolResult', () => {
     it('parses a JSON string containing text blocks', () => {
       const json = JSON.stringify([{ type: 'text', text: 'parsed text' }])
       const result = parseToolResult(json)
-      expect(result).toEqual({ text: 'parsed text', images: [] })
+      expect(result).toEqual({ text: 'parsed text', images: [], documents: [] })
     })
 
     it('parses a JSON string containing image blocks (MCP format)', () => {
@@ -74,7 +74,7 @@ describe('parseToolResult', () => {
   describe('content block arrays (objects)', () => {
     it('extracts text from a single text block', () => {
       const result = parseToolResult([{ type: 'text', text: 'hello' }])
-      expect(result).toEqual({ text: 'hello', images: [] })
+      expect(result).toEqual({ text: 'hello', images: [], documents: [] })
     })
 
     it('concatenates multiple text blocks with newlines', () => {
@@ -82,7 +82,7 @@ describe('parseToolResult', () => {
         { type: 'text', text: 'line 1' },
         { type: 'text', text: 'line 2' },
       ])
-      expect(result).toEqual({ text: 'line 1\nline 2', images: [] })
+      expect(result).toEqual({ text: 'line 1\nline 2', images: [], documents: [] })
     })
 
     it('extracts images in Anthropic API format', () => {
@@ -144,14 +144,14 @@ describe('parseToolResult', () => {
 
     it('returns null text for empty arrays', () => {
       const result = parseToolResult([])
-      expect(result).toEqual({ text: null, images: [] })
+      expect(result).toEqual({ text: null, images: [], documents: [] })
     })
   })
 
   describe('single content block objects', () => {
     it('extracts text from a single text block object', () => {
       const result = parseToolResult({ type: 'text', text: 'single block' })
-      expect(result).toEqual({ text: 'single block', images: [] })
+      expect(result).toEqual({ text: 'single block', images: [], documents: [] })
     })
 
     it('extracts image from a single Anthropic format image block', () => {
@@ -342,5 +342,72 @@ describe('parseToolResult', () => {
 
       expect(reuseEqualEmbeddedImageAliases(previous, changed)).toBe(changed)
     })
+  })
+})
+
+describe('parseToolResult documents', () => {
+  const ctx = { agentSlug: 'a1', sessionId: 's1' }
+  const pdfBlock = {
+    type: 'document',
+    source: { type: 'base64', media_type: 'application/pdf', data: 'JVBERi0=' },
+    title: 'report.pdf',
+  }
+
+  it('extracts an inline PDF document block as a data: URL', () => {
+    const result = parseToolResult([{ type: 'text', text: 'read' }, pdfBlock])
+    expect(result.text).toBe('read')
+    expect(result.images).toEqual([])
+    expect(result.documents).toEqual([
+      {
+        src: 'data:application/pdf;base64,JVBERi0=',
+        mimeType: 'application/pdf',
+        title: 'report.pdf',
+        isRef: false,
+      },
+    ])
+  })
+
+  it('extracts a single PDF document block object', () => {
+    const result = parseToolResult(pdfBlock)
+    expect(result.text).toBeNull()
+    expect(result.documents).toHaveLength(1)
+  })
+
+  it('routes a PDF media ref to documents, not images', () => {
+    const result = parseToolResult(
+      [{ type: 'media_ref', id: 'abc', mimeType: 'application/pdf', bytes: 123456 }],
+      ctx
+    )
+    expect(result.images).toEqual([])
+    expect(result.documents).toEqual([
+      {
+        src: '/api/agents/a1/sessions/s1/media/abc',
+        mimeType: 'application/pdf',
+        bytes: 123456,
+        isRef: true,
+      },
+    ])
+  })
+
+  it('still treats an untyped media ref as an image', () => {
+    const result = parseToolResult([{ type: 'media_ref', id: 'abc', bytes: 10 }], ctx)
+    expect(result.documents).toEqual([])
+    expect(result.images).toHaveLength(1)
+  })
+
+  it('ignores a PDF ref without session context', () => {
+    const result = parseToolResult([
+      { type: 'media_ref', id: 'abc', mimeType: 'application/pdf', bytes: 10 },
+    ])
+    expect(result.documents).toEqual([])
+    expect(result.images).toEqual([])
+  })
+
+  it('does not treat a non-PDF document block as a document', () => {
+    const result = parseToolResult([
+      { type: 'document', source: { type: 'text', media_type: 'text/plain', data: 'hi' } },
+    ])
+    expect(result.documents).toEqual([])
+    expect(result.text).toBeNull()
   })
 })

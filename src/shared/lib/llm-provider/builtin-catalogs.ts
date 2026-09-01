@@ -199,10 +199,18 @@ export const CLAUDE_BARE_CATALOG: ModelDefinition[] = [
     id: 'claude-fable-5',
     label: 'Fable 5',
     family: 'fable',
-    isLatest: true,
     icon: ICON,
     supportedEfforts: ALL_EFFORTS,
     pricing: pricingFor('claude-fable-5'),
+  },
+  {
+    id: 'claude-fable-5-1',
+    label: 'Fable 5.1',
+    family: 'fable',
+    isLatest: true,
+    icon: ICON,
+    supportedEfforts: ALL_EFFORTS,
+    pricing: pricingFor('claude-fable-5-1'),
   },
 ]
 
@@ -267,10 +275,18 @@ export const BEDROCK_CATALOG: ModelDefinition[] = [
     id: 'us.anthropic.claude-fable-5',
     label: 'Fable 5',
     family: 'fable',
-    isLatest: true,
     icon: ICON,
     supportedEfforts: ALL_EFFORTS,
     pricing: pricingFor('claude-fable-5'),
+  },
+  {
+    id: 'us.anthropic.claude-fable-5-1',
+    label: 'Fable 5.1',
+    family: 'fable',
+    isLatest: true,
+    icon: ICON,
+    supportedEfforts: ALL_EFFORTS,
+    pricing: pricingFor('claude-fable-5-1'),
   },
 ]
 
