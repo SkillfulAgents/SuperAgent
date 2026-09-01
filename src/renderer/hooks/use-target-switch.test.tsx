@@ -105,6 +105,37 @@ describe('availability', () => {
     renderHook(() => useTargetSwitch())
     expect(mockUseCloudWorkspace.mock.calls[0][0]).toBe(false)
   })
+
+  it('is pending on local while the workspace check is in flight', () => {
+    setActiveTarget('local', null)
+    mockUseCloudWorkspace.mockReturnValue({ data: undefined, isLoading: true })
+    const { result } = renderHook(() => useTargetSwitch())
+    expect(result.current.availabilityPending).toBe(true)
+    expect(result.current.available).toBe(false)
+  })
+
+  it('is pending on local while platform auth is still loading', () => {
+    setActiveTarget('local', null)
+    mockUsePlatformAuthStatus.mockReturnValue({ data: undefined, isLoading: true })
+    const { result } = renderHook(() => useTargetSwitch())
+    expect(result.current.availabilityPending).toBe(true)
+  })
+
+  it('is not pending once the workspace check says none', () => {
+    setActiveTarget('local', null)
+    mockUseCloudWorkspace.mockReturnValue({ data: { found: false, hasValidToken: false }, isLoading: false })
+    const { result } = renderHook(() => useTargetSwitch())
+    expect(result.current.availabilityPending).toBe(false)
+    expect(result.current.available).toBe(false)
+  })
+
+  it('is not pending in cloud mode', () => {
+    setActiveTarget('cloud', null)
+    mockUseCloudWorkspace.mockReturnValue({ data: undefined, isLoading: true })
+    mockUsePlatformAuthStatus.mockReturnValue({ data: undefined, isLoading: true })
+    const { result } = renderHook(() => useTargetSwitch())
+    expect(result.current.availabilityPending).toBe(false)
+  })
 })
 
 describe('switching', () => {

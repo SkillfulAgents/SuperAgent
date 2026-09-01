@@ -18,20 +18,25 @@ import { refreshAppMenu } from './app-menu'
  */
 
 /**
- * The answer handed to a renderer at boot. `cloudBaseUrl` is null when there is
- * no cloud workspace or no live token for one — which is also the validation
- * step for a stored "cloud" preference, so a disconnected account degrades to a
- * working local app rather than a wall of failures.
+ * The answer handed to a renderer at boot. `cloudBaseUrl` is the reachable
+ * cloud target (null without a workspace or live token) and is also the
+ * validation step for a stored "cloud" preference, so a disconnected account
+ * degrades to a working local app rather than a wall of failures.
+ * `cloudProxyBaseUrl` is the door itself — handed to every window whether or
+ * not a token exists, so a workspace connected mid-session is reachable
+ * without a reload.
  */
 export function resolveApiTargetForRenderer(
   localBaseUrl: string,
   cloudBaseUrl: string | null,
+  cloudProxyBaseUrl: string | null,
 ): ResolvedApiTarget {
   const { target, fallback } = resolveApiTarget(readPreferredApiTarget(), cloudBaseUrl)
   return {
     target,
     baseUrl: target === 'cloud' && cloudBaseUrl ? cloudBaseUrl : localBaseUrl,
     fallback,
+    cloudBaseUrl: cloudProxyBaseUrl,
   }
 }
 
