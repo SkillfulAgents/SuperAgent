@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, cleanup } from '@testing-library/react'
+import { render, cleanup, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 // ---------------------------------------------------------------------------
@@ -601,6 +601,60 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
 
     const sessions = queryClient.getQueryData<{ hasUnreadNotifications?: boolean }[]>(['sessions', 'my-agent'])
     expect(sessions?.[0].hasUnreadNotifications).toBeUndefined()
+  })
+
+  it('suppressed notification clears an already-cached unread dot once the record is marked read', async () => {
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'visible',
+    })
+    const { useRouteLocation } = await import('@renderer/router/use-route-location')
+    vi.mocked(useRouteLocation).mockReturnValue({
+      view: { kind: 'session', id: 'sess-1' },
+      setAgent: vi.fn(),
+    } as unknown as ReturnType<typeof useRouteLocation>)
+
+    // Simulates the top-of-case ['sessions'] refetch having landed with the
+    // server's committed unread row while the user is watching the session.
+    queryClient.setQueryData(['sessions', 'my-agent'], [
+      {
+        id: 'sess-1',
+        agentSlug: 'my-agent',
+        name: 'S',
+        createdAt: new Date(),
+        lastActivityAt: new Date(),
+        messageCount: 1,
+        isActive: false,
+        hasUnreadNotifications: true,
+      },
+    ])
+    queryClient.setQueryData(['agents'], [
+      { slug: 'my-agent', displaySlug: 'my-agent', name: 'My Agent', status: 'running', hasUnreadNotifications: true },
+    ])
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'os_notification',
+      notificationType: 'session_complete',
+      notificationId: 'notif-1',
+      sessionId: 'sess-1',
+      agentSlug: 'my-agent',
+      title: 'Done',
+      body: 'Session complete',
+    })
+
+    // The mark-read POST is async — the dot comes off once it resolves.
+    await waitFor(() => {
+      const sessions = queryClient.getQueryData<{ hasUnreadNotifications?: boolean }[]>(['sessions', 'my-agent'])
+      expect(sessions?.[0].hasUnreadNotifications).toBe(false)
+    })
+    const agents = queryClient.getQueryData<{ hasUnreadNotifications?: boolean }[]>(['agents'])
+    expect(agents?.[0].hasUnreadNotifications).toBe(false)
   })
 
   it('platform_notifications_changed refreshes the proxy-live inbox queries', () => {

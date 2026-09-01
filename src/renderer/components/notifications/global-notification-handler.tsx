@@ -41,8 +41,28 @@ import {
   supportsDeclarativeWebPush,
   revalidatePushSubscription,
 } from '@renderer/lib/push-notifications'
-import { isNotificationTypeEnabled as isTypeEnabledInPreferences } from '@shared/lib/notifications/notification-preferences'
+import {
+  isNotificationTypeEnabled as isTypeEnabledInPreferences,
+  USER_ACTIONABLE_NOTIFICATION_TYPES,
+} from '@shared/lib/notifications/notification-preferences'
 import { useRenderTracker } from '@renderer/lib/perf'
+
+// Optimistic status echo per session lifecycle event. Deliberately exhaustive
+// with NO fallback: an event type added to the lifecycle case group without a
+// row here gets invalidations but no echo, forcing its semantics to be decided
+// explicitly — a wrong optimistic stamp is worse than none. Idle/error also
+// clear the awaiting flag: turn teardown resets it server-side WITHOUT
+// broadcasting session_input_provided, so an idle echo that left it cached
+// would strand the orange dot until the refetch.
+const SESSION_LIFECYCLE_ECHO = {
+  session_active: { isActive: true },
+  // Awaiting implies active server-side (the projection is
+  // `state.isActive && …`), so assert both.
+  session_awaiting_input: { isActive: true, isAwaitingInput: true },
+  session_input_provided: { isAwaitingInput: false },
+  session_idle: { isActive: false, isAwaitingInput: false },
+  session_error: { isActive: false, isAwaitingInput: false },
+} satisfies Record<string, SessionStatusPatch>
 
 function isNotificationTypeEnabled(
   settings: UserSettingsData | undefined,
@@ -292,7 +312,8 @@ export function GlobalNotificationHandler() {
               // rollup is confirmed by the accompanying session lifecycle
               // event's ['agents'] invalidation (or the 60s poll).
               if (
-                (notificationType === 'session_complete' || notificationType === 'session_waiting')
+                notificationType
+                && (USER_ACTIONABLE_NOTIFICATION_TYPES as readonly string[]).includes(notificationType)
                 && agentSlug && notificationSessionId
               ) {
                 applySessionActivityStatus(queryClient, agentSlug, notificationSessionId, {
@@ -347,6 +368,18 @@ export function GlobalNotificationHandler() {
                 .then((res) => {
                   if (res.ok) {
                     queryClient.invalidateQueries({ queryKey: ['notifications'] })
+                    // The unconditional ['sessions'] invalidation at the top of
+                    // this case refetches the row the server committed BEFORE
+                    // broadcasting — with hasUnreadNotifications still true, so
+                    // a dot lands on the very session the user is watching. Now
+                    // that the record is read, take the dot back off and
+                    // refetch the corrected lists.
+                    if (agentSlug && notificationSessionId) {
+                      applySessionActivityStatus(queryClient, agentSlug, notificationSessionId, {
+                        hasUnreadNotifications: false,
+                      })
+                      queryClient.invalidateQueries({ queryKey: ['sessions', agentSlug] })
+                    }
                   }
                 })
                 .catch(() => {
@@ -370,16 +403,10 @@ export function GlobalNotificationHandler() {
             // detail, full agents list), so without this the session row, the
             // header pill, and the agent row flip seconds apart as each
             // refetch lands. Patch every cached projection first; the
-            // refetches stay authoritative. Idle/error also clear awaiting:
-            // turn teardown resets it server-side WITHOUT broadcasting
-            // session_input_provided, so an idle echo that left it cached
-            // would strand the orange dot until the refetch.
-            if (eventAgentSlug && eventSessionId) {
-              const statusPatch: SessionStatusPatch =
-                data.type === 'session_active' ? { isActive: true }
-                : data.type === 'session_awaiting_input' ? { isActive: true, isAwaitingInput: true }
-                : data.type === 'session_input_provided' ? { isAwaitingInput: false }
-                : { isActive: false, isAwaitingInput: false } // session_idle / session_error
+            // refetches stay authoritative.
+            const statusPatch =
+              SESSION_LIFECYCLE_ECHO[data.type as keyof typeof SESSION_LIFECYCLE_ECHO]
+            if (statusPatch && eventAgentSlug && eventSessionId) {
               applySessionActivityStatus(queryClient, eventAgentSlug, eventSessionId, statusPatch)
             }
             if (eventAgentSlug) {

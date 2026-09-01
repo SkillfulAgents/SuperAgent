@@ -4232,6 +4232,48 @@ describe('MessagePersister', () => {
       })
     })
 
+    it('a direct promote of a non-awaiting session broadcasts session_updated, not an awaiting assertion', async () => {
+      vi.mocked(getSessionMetadata).mockResolvedValueOnce({
+        isScheduledExecution: true,
+        scheduledTaskId: 'task-1',
+      })
+      const { events, cleanup } = collectGlobalEvents()
+
+      // The human-message route (agents.ts) promotes before delivery, usually
+      // on a session that is NOT awaiting. Clients echo session_awaiting_input
+      // into their caches as STATE (working + orange dot), so that promote
+      // must send the assertion-free refetch nudge instead.
+      await messagePersister.promoteAutomatedSession(SESSION_ID, AGENT_SLUG)
+
+      expect(events.filter((e) => e.type === 'session_awaiting_input')).toHaveLength(0)
+      const updated = events.filter((e) => e.type === 'session_updated')
+      expect(updated).toHaveLength(1)
+      expect(updated[0]).toMatchObject({ sessionId: SESSION_ID, agentSlug: AGENT_SLUG })
+      cleanup()
+    })
+
+    it('a promote on the awaiting rising edge still asserts session_awaiting_input', async () => {
+      vi.mocked(getSessionMetadata).mockResolvedValueOnce({
+        isScheduledExecution: true,
+        scheduledTaskId: 'task-1',
+      })
+      const { events, cleanup } = collectGlobalEvents()
+
+      simulateToolUse('mcp__user-input__request_secret', 'tool-1', { secretName: 'KEY' })
+
+      await vi.waitFor(() => {
+        expect(updateSessionMetadata).toHaveBeenCalledWith(
+          AGENT_SLUG,
+          SESSION_ID,
+          { promotedToInteractive: true },
+        )
+      })
+      // The session genuinely awaits here, so the state assertion is correct.
+      expect(events.filter((e) => e.type === 'session_awaiting_input').length).toBeGreaterThanOrEqual(1)
+      expect(events.filter((e) => e.type === 'session_updated')).toHaveLength(0)
+      cleanup()
+    })
+
     it('does not promote a regular (non-automated) session', async () => {
       vi.mocked(getSessionMetadata).mockResolvedValueOnce({
         name: 'Regular session',

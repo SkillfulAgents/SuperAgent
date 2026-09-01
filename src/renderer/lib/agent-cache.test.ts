@@ -140,6 +140,29 @@ describe('targeted agent cache updates', () => {
       expect(client.getQueryData<ApiAgent>(['agents', 'agent-a'])?.hasSessionsAwaitingInput).toBe(true)
     })
 
+    it('ignores non-full lists when deciding a clear — a truncated slice cannot vouch for siblings', () => {
+      const client = seededClient()
+      client.setQueryData(['agents'], [
+        { ...agent, hasSessionsAwaitingInput: true },
+        { ...agent, slug: 'agent-b', displaySlug: 'agent-b' },
+      ])
+      // Only the notable slice is cached — no authoritative full list.
+      client.setQueryData(
+        ['sessions', 'agent-a', 'notable', 25],
+        [session('sess-1', { isAwaitingInput: true })],
+      )
+
+      applySessionActivityStatus(client, 'agent-a', 'sess-1', { isAwaitingInput: false })
+
+      // The slice's entry is still patched…
+      expect(
+        client.getQueryData<ApiSession[]>(['sessions', 'agent-a', 'notable', 25])?.[0].isAwaitingInput,
+      ).toBe(false)
+      // …but the rollup is left to the refetch: the slice is truncated
+      // server-side, so it cannot prove no sibling is awaiting.
+      expect(client.getQueryData<ApiAgent[]>(['agents'])?.[0].hasSessionsAwaitingInput).toBe(true)
+    })
+
     it('leaves the rollup to the refetch when no session list is cached', () => {
       const client = seededClient()
       client.setQueryData(['agents'], [
