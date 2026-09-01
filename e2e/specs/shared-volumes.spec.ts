@@ -1,4 +1,4 @@
-import { test, expect, type APIRequestContext } from '@playwright/test'
+import { test, expect, type APIRequestContext, type Page } from '@playwright/test'
 import { createAgent, deleteAgentViaApi, gotoAgentHome, uniqueName } from '../helpers/agents'
 
 test.describe.configure({ mode: 'serial' })
@@ -8,25 +8,6 @@ interface VolumeRow {
   name: string
   mountName: string
   attachedAgents: Array<{ slug: string; name: string }>
-}
-
-interface SettingsSnapshot {
-  container: { containerRunner: string; [key: string]: unknown }
-  [key: string]: unknown
-}
-
-async function readSettings(request: APIRequestContext): Promise<SettingsSnapshot> {
-  const res = await request.get('/api/settings')
-  expect(res.ok()).toBeTruthy()
-  return await res.json() as SettingsSnapshot
-}
-
-async function setRunner(request: APIRequestContext, containerRunner: string) {
-  const current = await readSettings(request)
-  const res = await request.put('/api/settings', {
-    data: { container: { ...current.container, containerRunner } },
-  })
-  expect(res.ok(), await res.text()).toBeTruthy()
 }
 
 async function listVolumes(request: APIRequestContext) {
@@ -53,13 +34,30 @@ async function deleteVolume(request: APIRequestContext, volumeId: string, expect
   return res
 }
 
-test.describe('shared volumes', () => {
-  let originalRunner: string
-
-  test.beforeAll(async ({ request }) => {
-    originalRunner = (await readSettings(request)).container.containerRunner
+/**
+ * The Shared Volumes card is gated on GET /api/volumes.supported, which follows
+ * the process-wide container runner. Settings refuse a runner change while any
+ * agent is running, so a parallel e2e suite cannot flip it. Rewrite this page's
+ * registry reads only; create/attach/detach still hit the real API.
+ */
+async function showSharedVolumesCard(page: Page) {
+  await page.route('**/api/volumes', async (route) => {
+    const path = route.request().url().split('?')[0]
+    if (route.request().method() !== 'GET' || !path.endsWith('/api/volumes')) {
+      await route.continue()
+      return
+    }
+    const response = await route.fetch()
+    const body = await response.json() as { supported: boolean; volumes: VolumeRow[] }
+    await route.fulfill({
+      status: response.status(),
+      contentType: 'application/json',
+      body: JSON.stringify({ ...body, supported: true }),
+    })
   })
+}
 
+test.describe('shared volumes', () => {
   test('default runner reports unsupported', async ({ request }) => {
     const body = await listVolumes(request)
     expect(body.supported).toBe(false)
@@ -120,42 +118,37 @@ test.describe('shared volumes', () => {
     await deleteAgentViaApi(request, agentA)
   })
 
-  test('cloud runner shows the shared-volumes card and create/detach', async ({ page, request }, testInfo) => {
+  test('shared-volumes card create and detach', async ({ page, request }, testInfo) => {
     const agent = await createAgent(request, uniqueName(testInfo, 'Vol Card'))
-    await setRunner(request, 'kubernetes')
-    try {
-      expect((await listVolumes(request)).supported).toBe(true)
+    await showSharedVolumesCard(page)
 
-      await gotoAgentHome(page, agent)
-      await expect(page.getByText('Shared Volumes', { exact: true })).toBeVisible()
-      await expect(page.getByText('No shared volumes yet')).toBeVisible()
-      await expect(page.getByText('Volumes', { exact: true })).toHaveCount(0)
+    await gotoAgentHome(page, agent)
+    await expect(page.getByText('Shared Volumes', { exact: true })).toBeVisible()
+    await expect(page.getByText('No shared volumes yet')).toBeVisible()
+    await expect(page.getByText('Volumes', { exact: true })).toHaveCount(0)
 
-      const name = uniqueName(testInfo, 'Shared notes')
-      await page.getByRole('button', { name: 'Add shared volume' }).click()
-      await page.getByRole('button', { name: 'New shared volume…' }).click()
-      await page.getByRole('textbox', { name: 'Name' }).fill(name)
-      await page.getByRole('button', { name: 'Create' }).click()
-      await expect(page.getByText(name)).toBeVisible()
-      await expect(page.getByText(/\/volumes\/shared-notes/)).toBeVisible()
+    const name = uniqueName(testInfo, 'Shared notes')
+    await page.getByRole('button', { name: 'Add shared volume' }).click()
+    await page.getByRole('button', { name: 'New shared volume…' }).click()
+    await page.getByRole('textbox', { name: 'Name' }).fill(name)
+    await page.getByRole('button', { name: 'Create' }).click()
+    await expect(page.getByText(name)).toBeVisible()
+    await expect(page.getByText(/\/volumes\/shared-notes/)).toBeVisible()
 
-      await page.getByRole('button', { name: 'Shared volume actions' }).click()
-      await page.getByRole('button', { name: 'Detach shared volume' }).click()
-      await page.getByRole('button', { name: 'Detach' }).click()
-      await expect(page.getByText('No shared volumes yet')).toBeVisible()
+    await page.getByRole('button', { name: 'Shared volume actions' }).click()
+    await page.getByRole('button', { name: 'Detach shared volume' }).click()
+    await page.getByRole('button', { name: 'Detach' }).click()
+    await expect(page.getByText('No shared volumes yet')).toBeVisible()
 
-      const leftover = (await listVolumes(request)).volumes.find((volume) => volume.name === name)
-      expect(leftover).toBeTruthy()
-      expect(leftover?.attachedAgents).toEqual([])
+    const leftover = (await listVolumes(request)).volumes.find((volume) => volume.name === name)
+    expect(leftover).toBeTruthy()
+    expect(leftover?.attachedAgents).toEqual([])
 
-      await page.getByRole('button', { name: 'Add shared volume' }).click()
-      await page.getByRole('button', { name: `${name} No agents attached` }).click()
-      await expect(page.getByText(`/volumes/${leftover!.mountName}`)).toBeVisible()
+    await page.getByRole('button', { name: 'Add shared volume' }).click()
+    await page.getByRole('button', { name: `${name} No agents attached` }).click()
+    await expect(page.getByText(`/volumes/${leftover!.mountName}`)).toBeVisible()
 
-      await deleteVolume(request, leftover!.id)
-      await deleteAgentViaApi(request, agent)
-    } finally {
-      await setRunner(request, originalRunner)
-    }
+    await deleteVolume(request, leftover!.id)
+    await deleteAgentViaApi(request, agent)
   })
 })
