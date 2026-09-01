@@ -10,7 +10,10 @@ test.describe.configure({ mode: 'serial' })
 
 const admin = { name: 'Ada Admin', email: 'ada@test.com', password: 'password123' }
 const member = { name: 'Mia Member', email: 'mia@test.com', password: 'password123' }
-const agentName = 'Model Picker Agent'
+// Minted per attempt where the agent is created: a serial-group retry runs
+// against the same live server, so a fixed name would also match the failed
+// attempt's leftover agent in the sidebar.
+let agentName = ''
 
 /**
  * Non-admin users must still get a working model picker. The model catalog
@@ -44,6 +47,7 @@ test.describe('Model picker for non-admin users', () => {
     await appPage.dismissWizardIfVisible()
     await userBar.expectUserName(member.name)
 
+    agentName = test.info().retry === 0 ? 'Model Picker Agent' : `Model Picker Agent R${test.info().retry}`
     await agentPage.createAgent(agentName)
     await expect(agentPage.getAgentItem(agentName)).toBeVisible()
   })
