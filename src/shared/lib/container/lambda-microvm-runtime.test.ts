@@ -463,6 +463,80 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
   })
 
+  it('getInfoFromRuntime does not treat PENDING as running before the generation has been RUNNING', async () => {
+    const client = newClient()
+    responses.getState = 'PENDING'
+    const startP = client.start()
+    await vi.waitFor(() => expect(sendMock.mock.calls.some((c) => c[0].type === 'Get')).toBe(true))
+    expect(await client.getInfoFromRuntime()).toEqual({ status: 'stopped', port: null })
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
+
+    responses.getState = 'RUNNING'
+    expect((await startP).status).toBe('running')
+  })
+
+  it('start() replaces a PENDING generation after it had already been RUNNING', async () => {
+    const client = newClient()
+    await client.start()
+    let gets = 0
+    sendMock.mockImplementation(async (cmd: { type: string }) => {
+      if (cmd.type === 'Run') return { microvmId: 'mvm-2', endpoint: 'ep.lambda-microvm.aws' }
+      if (cmd.type === 'Get') {
+        gets += 1
+        return { state: gets === 1 ? 'PENDING' : 'RUNNING' }
+      }
+      if (cmd.type === 'Token') return { authToken: { 'X-aws-proxy-auth': 'tok' } }
+      return {}
+    })
+    sendMock.mockClear()
+    await client.start()
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(true)
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Run')).toBe(true)
+  })
+
+  it('getInfoFromRuntime reports stopped when local state is dropped during Get', async () => {
+    const client = newClient()
+    await client.start()
+    sendMock.mockImplementation(async (cmd: { type: string }) => {
+      if (cmd.type === 'Get') {
+        await client.stop()
+        return { state: 'PENDING' }
+      }
+      if (cmd.type === 'Token') return { authToken: { 'X-aws-proxy-auth': 'tok' } }
+      return {}
+    })
+    expect(await client.getInfoFromRuntime()).toEqual({ status: 'stopped', port: null })
+  })
+
+  it('getInfoFromRuntime fail-closes on an unrecognized state', async () => {
+    const client = newClient()
+    await client.start()
+    vi.mocked(captureException).mockClear()
+    sendMock.mockClear()
+    responses.getState = 'WEIRD'
+    expect(await client.getInfoFromRuntime()).toEqual({ status: 'stopped', port: null })
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
+    expect(captureException).toHaveBeenCalled()
+
+    responses.getState = 'RUNNING'
+    sendMock.mockClear()
+    await client.start()
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Run')).toBe(true)
+  })
+
+  it('getInfoFromRuntime fail-closes when GetMicrovm omits state', async () => {
+    const client = newClient()
+    await client.start()
+    vi.mocked(captureException).mockClear()
+    sendMock.mockImplementation(async (cmd: { type: string }) => {
+      if (cmd.type === 'Get') return {}
+      if (cmd.type === 'Token') return { authToken: { 'X-aws-proxy-auth': 'tok' } }
+      return {}
+    })
+    expect(await client.getInfoFromRuntime()).toEqual({ status: 'stopped', port: null })
+    expect(captureException).toHaveBeenCalled()
+  })
+
   it('getInfoFromRuntime keeps last known running state on a transient (non-NotFound) error', async () => {
     const client = newClient()
     await client.start()

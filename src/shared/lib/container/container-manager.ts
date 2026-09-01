@@ -152,11 +152,15 @@ class ContainerManager {
     })
   }
 
+  private assertNotStopping(agentId: string, op: 'start' | 'restart'): void {
+    if (this.stoppingAgents.has(agentId)) {
+      throw new Error(`Cannot ${op} agent ${agentId} while it is stopping`)
+    }
+  }
+
   // Single-flight restart used by runtime clients that tear down a dead generation.
   private async restartAgent(agentId: string): Promise<void> {
-    if (this.stoppingAgents.has(agentId)) {
-      throw new Error(`Cannot restart agent ${agentId} while it is stopping`)
-    }
+    this.assertNotStopping(agentId, 'restart')
     const inflight = this.startingAgents.get(agentId)
     if (inflight) {
       await inflight
@@ -539,6 +543,7 @@ class ContainerManager {
   //
   // Parameter is agentId for backwards compatibility, but will be slug after migration
   async ensureRunning(agentId: string): Promise<ContainerClient> {
+    this.assertNotStopping(agentId, 'start')
     const inflight = this.startingAgents.get(agentId)
     if (inflight) return inflight
 
@@ -553,6 +558,7 @@ class ContainerManager {
     let needsStart = !cached || cached.status !== 'running'
     if (!needsStart && cached && Date.now() - cached.lastSyncedAt > RUNNING_STATUS_TTL_MS) {
       const healthy = await client.isHealthy(cached.port ?? undefined)
+      this.assertNotStopping(agentId, 'start')
       if (healthy) {
         // Still alive — refresh the timestamp so we don't re-probe every request.
         this.updateCachedStatus(agentId, 'running', cached.port)
@@ -568,6 +574,7 @@ class ContainerManager {
       // call may have kicked off a start while we were probing. Re-check the
       // in-flight dedupe before starting so a liveness-triggered restart can't
       // double-start the container.
+      this.assertNotStopping(agentId, 'start')
       const racedInflight = this.startingAgents.get(agentId)
       if (racedInflight) return racedInflight
 
@@ -726,6 +733,9 @@ class ContainerManager {
           })
         },
       })
+
+      // Stop won the race: do not cache/broadcast running for a port about to die.
+      this.assertNotStopping(agentId, 'start')
 
       // start() returns the port that just passed the runtime's health gate,
       // so don't immediately spawn another inspect/API request for the same
