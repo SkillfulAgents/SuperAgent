@@ -196,6 +196,7 @@ describe('isHostAllowed', () => {
       'mailchimp',
       // Design
       'figma',
+      'canva',
       // Scheduling & Forms
       'calendly',
       'typeform',

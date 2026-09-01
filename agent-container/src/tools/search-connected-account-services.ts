@@ -66,6 +66,7 @@ export const SERVICES: ServiceInfo[] = [
   { slug: 'mailchimp', displayName: 'Mailchimp', category: 'Marketing', description: 'Email marketing platform' },
   // Design
   { slug: 'figma', displayName: 'Figma', category: 'Design', description: 'Collaborative design tool' },
+  { slug: 'canva', displayName: 'Canva', category: 'Design', description: 'Designs, exports, and brand templates' },
   // Scheduling & Forms
   { slug: 'calendly', displayName: 'Calendly', category: 'Scheduling & Forms', description: 'Scheduling and appointments' },
   { slug: 'typeform', displayName: 'Typeform', category: 'Scheduling & Forms', description: 'Forms and surveys' },
