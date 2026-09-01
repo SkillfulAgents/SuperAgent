@@ -3,7 +3,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // api.ts imports getApiBaseUrl at module load; stub it so the import is inert.
-vi.mock('./env', () => ({ getApiBaseUrl: () => '' }))
+vi.mock('./env', () => ({
+  getApiBaseUrl: () => '',
+  isElectron: () => typeof window !== 'undefined' && !!(window as { electronAPI?: unknown }).electronAPI,
+}))
 
 // apiFetch dynamically import()s ./auth-client on a 401; mock it so signOut is an
 // observable spy and the real better-auth client never loads.
@@ -23,6 +26,10 @@ import {
   markDeliberateSignOut,
   clearDeliberateSignOut,
 } from './api'
+import {
+  _resetWorkspaceUnavailableForTest,
+  _setWorkspaceUnavailableReloadForTest,
+} from './workspace-unavailable'
 
 const KEY = 'superagent.redirect'
 
@@ -287,5 +294,51 @@ describe('apiFetch (init passthrough)', () => {
       '/api/x',
       expect.objectContaining({ signal: controller.signal })
     )
+  })
+})
+
+describe('apiFetch workspace-unavailable reload', () => {
+  const reload = vi.fn()
+
+  beforeEach(() => {
+    _resetWorkspaceUnavailableForTest()
+    _setWorkspaceUnavailableReloadForTest(reload)
+    reload.mockClear()
+    delete (window as { electronAPI?: unknown }).electronAPI
+  })
+
+  afterEach(() => {
+    _resetWorkspaceUnavailableForTest()
+    vi.unstubAllGlobals()
+    delete (window as { electronAPI?: unknown }).electronAPI
+  })
+
+  it('reloads when ingress says the deployment is unavailable', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify({ error: 'deployment_unavailable', state: 'waking' }), {
+          status: 503,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    )
+    const res = await apiFetch('/api/auth-config')
+    expect(res.status).toBe(503)
+    expect(reload).toHaveBeenCalledOnce()
+  })
+
+  it('does not reload a normal 503', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify({ error: 'rate_limited' }), {
+          status: 503,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    )
+    await apiFetch('/api/x')
+    expect(reload).not.toHaveBeenCalled()
   })
 })

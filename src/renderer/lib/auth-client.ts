@@ -2,6 +2,13 @@ import { createAuthClient } from 'better-auth/react'
 import { adminClient, genericOAuthClient } from 'better-auth/client/plugins'
 import { getApiBaseUrl } from './env'
 import { targetIsRemote } from './api-target'
+import { maybeReloadForWorkspaceUnavailable } from './workspace-unavailable'
+
+async function authFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const response = await fetch(input, init)
+  await maybeReloadForWorkspaceUnavailable(response)
+  return response
+}
 
 /**
  * The Better Auth client, pointed at whichever API this renderer drives.
@@ -72,7 +79,7 @@ type AuthClient = ReturnType<typeof buildClient>
 function buildClient() {
   return createAuthClient({
     baseURL: resolveBaseUrl(),
-    fetchOptions: { credentials: credentialsMode() },
+    fetchOptions: { credentials: credentialsMode(), customFetchImpl: authFetch },
     plugins: [adminClient(), genericOAuthClient()],
   })
 }

@@ -44,6 +44,21 @@ describe('AuthPage', () => {
     expect(screen.getByTestId('auth-config-loading')).toHaveTextContent('Loading authentication options...')
   })
 
+  it('keeps the loading state instead of the raw ingress error while the workspace is updating', async () => {
+    apiFetch.mockResolvedValue({
+      ok: false,
+      json: async () => ({ error: 'deployment_unavailable' }),
+    })
+
+    render(<AuthPage />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('auth-config-loading')).toHaveTextContent('Updating your workspace...')
+    })
+    expect(screen.queryByTestId('auth-config-error')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('signin-submit')).not.toBeInTheDocument()
+  })
+
   it('surfaces auth config fetch errors without rendering fallback auth forms', async () => {
     apiFetch.mockResolvedValue({
       ok: false,
