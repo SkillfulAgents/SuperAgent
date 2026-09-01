@@ -559,6 +559,21 @@ export class SlowCompactionScenario implements MockScenario {
 }
 
 /**
+ * A transcript that lands late. The real CLI creates the session's JSONL on
+ * its first persisted line, which for a freshly started agent is seconds after
+ * createSession returns — and by then the client has already navigated into
+ * the session and asked for its messages. Delaying the inner scenario (which
+ * does the writing) reproduces that window instead of racing past it.
+ */
+export class LateTranscriptScenario implements MockScenario {
+  constructor(private inner: MockScenario, private delayMs: number) {}
+
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    setTimeout(() => this.inner.execute(sessionId, client, userMessage), this.delayMs)
+  }
+}
+
+/**
  * API error scenario - simulates an LLM provider error (e.g., auth failure, rate limit).
  * Emits an assistant message with the SDK error code, then a result with error subtype.
  */
@@ -1661,6 +1676,12 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     ['work slowly', new SlowWorkScenario()],
     // Long compaction window: queue a message while the session is compacting
     ['compact slowly', new SlowCompactionScenario(10000)],
+    // Onboarding sessions start on a cold agent, so their transcript lands
+    // well after the client has opened the session (see LateTranscriptScenario).
+    ['agent-onboarding', new LateTranscriptScenario(
+      new SimpleTextResponseScenario('Welcome! Let me help you configure this agent.'),
+      1500,
+    )],
     // Long thinking passes: each pass overfills the card's max-height so the
     // card scrolls internally while live, then collapses by its full body
     // height when the pass ends — the shrink-at-the-live-edge shape behind

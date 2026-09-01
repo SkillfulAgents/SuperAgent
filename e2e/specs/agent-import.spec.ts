@@ -6,9 +6,11 @@ import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
 import { buildAgentTemplateZip } from '../helpers/agent-template-zip'
-
-const ONBOARDING_MESSAGE =
-  'This agent was just set up from a template. Please run the agent-onboarding skill to help me configure it.'
+import {
+  ONBOARDING_MESSAGE,
+  armTranscriptNotFoundWatch,
+  expectOnboardingSessionToOpenCleanly,
+} from '../helpers/onboarding-session'
 
 /**
  * Covers the AgentHome → import → onboarding-session flow refactored to use
@@ -58,14 +60,14 @@ test.describe('Agent Import Onboarding', () => {
     // Upload the fixture zip into the dialog's hidden file input, then submit.
     await dialog.locator('input[type="file"]').setInputFiles(zipPath)
     await expect(dialog.getByText('with-onboarding.zip')).toBeVisible()
+    await armTranscriptNotFoundWatch(page)
     await dialog.locator('button[type="submit"]').click()
 
     // Dialog closes, then `useStartOnboardingSession` creates the onboarding
-    // session and `selectSession` routes to it — the message list renders.
+    // session and `selectSession` routes to it — the message list renders,
+    // and the first user message in it is the onboarding prompt.
     await expect(dialog).not.toBeVisible({ timeout: 15000 })
-    await expect(sessionPage.getMessageList()).toBeVisible({ timeout: 15000 })
-
-    // The first user message in the new session is the onboarding prompt.
+    await expectOnboardingSessionToOpenCleanly(page)
     await sessionPage.expectUserMessage(ONBOARDING_MESSAGE)
 
     // The imported agent is now selected in the sidebar.
@@ -87,6 +89,7 @@ test.describe('Agent Import Onboarding', () => {
     await expect(dialog).toBeVisible()
 
     await dialog.locator('input[type="file"]').setInputFiles(zipPath)
+    await armTranscriptNotFoundWatch(page)
     await dialog.locator('button[type="submit"]').click()
 
     // MockContainerClient delays onboarding session creation by 2 s —
@@ -97,7 +100,7 @@ test.describe('Agent Import Onboarding', () => {
 
     // After the delay resolves, the dialog disappears and the session appears.
     await expect(setupDialog).not.toBeVisible({ timeout: 15000 })
-    await expect(sessionPage.getMessageList()).toBeVisible({ timeout: 15000 })
+    await expectOnboardingSessionToOpenCleanly(page)
     await sessionPage.expectUserMessage(ONBOARDING_MESSAGE)
   })
 
