@@ -17,7 +17,7 @@ import {
   warmProfileKey,
   type WarmProfile,
 } from './warm-profile';
-import { subagentModelCatalogSchema } from './subagent-model-catalog';
+import { modelContextWindowsSchema, subagentModelCatalogSchema } from './subagent-model-catalog';
 
 interface SessionData {
   session: Session;
@@ -230,6 +230,7 @@ export class SessionManager extends EventEmitter {
     const capabilityPolicies = agentCapabilityPoliciesSchema.parse(request.capabilityPolicies);
     const speed = speedLevelSchema.parse(request.speed);
     const subagentModels = subagentModelCatalogSchema.parse(request.subagentModels);
+    const modelContextWindows = modelContextWindowsSchema.parse(request.modelContextWindows);
 
     // Ensure working directory exists
     if (!fs.existsSync(workingDirectory)) {
@@ -246,6 +247,7 @@ export class SessionManager extends EventEmitter {
       speed,
       capabilityPolicies,
       subagentModels,
+      modelContextWindows,
       workingDirectory,
     };
     const sessionProfile = sessionProfileFromRequest(normalized);
@@ -262,6 +264,7 @@ export class SessionManager extends EventEmitter {
         browserModel: request.browserModel,
         dashboardBuilderModel: request.dashboardBuilderModel,
         subagentModels,
+        modelContextWindows,
         webSearchProvider: request.webSearchProvider,
         webFetchProvider: request.webFetchProvider,
         maxOutputTokens: request.maxOutputTokens,
@@ -398,6 +401,7 @@ export class SessionManager extends EventEmitter {
       browserModel: request.browserModel,
       dashboardBuilderModel: request.dashboardBuilderModel,
       subagentModels,
+      modelContextWindows,
       webSearchProvider: request.webSearchProvider,
       webFetchProvider: request.webFetchProvider,
       maxOutputTokens: request.maxOutputTokens,
@@ -494,6 +498,7 @@ export class SessionManager extends EventEmitter {
         browserModel: profile.browserModel,
         dashboardBuilderModel: profile.dashboardBuilderModel,
         subagentModels: profile.subagentModels,
+        modelContextWindows: profile.modelContextWindows,
         webSearchProvider: profile.webSearchProvider,
         webFetchProvider: profile.webFetchProvider,
         maxOutputTokens: profile.maxOutputTokens,
@@ -607,6 +612,7 @@ export class SessionManager extends EventEmitter {
         browserModel: persisted.browserModel,
         dashboardBuilderModel: persisted.dashboardBuilderModel,
         subagentModels: persisted.subagentModels,
+        modelContextWindows: persisted.modelContextWindows,
         webSearchProvider: persisted.webSearchProvider,
         webFetchProvider: persisted.webFetchProvider,
         maxOutputTokens: persisted.maxOutputTokens,

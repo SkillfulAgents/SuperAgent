@@ -54,7 +54,7 @@ webhookTriggersRouter.get('/:triggerId/sessions', TriggerAgentRole('viewer'), as
     const sessions = await getSessionsByWebhookTrigger(trigger!.agentSlug, trigger!.id)
     const sessionsWithStatus = sessions.map((session) => ({
       ...session,
-      isActive: messagePersister.isSessionActive(session.id),
+      isActive: messagePersister.isSessionActive(trigger!.agentSlug, session.id),
     }))
     return c.json(sessionsWithStatus)
   } catch (error) {

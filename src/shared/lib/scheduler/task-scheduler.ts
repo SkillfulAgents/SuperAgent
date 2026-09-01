@@ -251,13 +251,8 @@ class TaskScheduler {
     })
 
     // Subscribe to the session for SSE updates
-    await messagePersister.subscribeToSession(
-      sessionId,
-      client,
-      sessionId,
-      task.agentSlug
-    )
-    messagePersister.markSessionActive(sessionId, task.agentSlug)
+    await messagePersister.subscribeToSession(task.agentSlug, sessionId, client, sessionId)
+    messagePersister.markSessionActive(task.agentSlug, sessionId)
 
     console.log(
       `[TaskScheduler] Task ${task.id} started, session: ${sessionId}`

@@ -823,8 +823,32 @@ export async function validateSkillsetUrl(
     }
   }
 
+  // A failed validation must not poison every retry with the same cached
+  // index. Keep the fast path for a healthy cache (the add flow validates
+  // twice), but discard malformed caches so the next attempt observes the
+  // current remote. If the bad cache predates this validation call, re-clone
+  // once immediately so users upgrading from an affected build recover on
+  // their first retry.
+  const cacheWasReady = await isCacheReady(
+    getSkillsetRepoDirForRef(ref),
+    provider,
+  )
   const repoDir = await ensureSkillsetCached(ref)
-  return readIndexJson(repoDir)
+  try {
+    return await readIndexJson(repoDir)
+  } catch (error) {
+    await removeSkillsetCache(ref)
+    if (!cacheWasReady) throw error
+  }
+
+  const freshRepoDir = await ensureSkillsetCached(ref)
+  try {
+    return await readIndexJson(freshRepoDir)
+  } catch (error) {
+    // Do not leave a freshly confirmed-invalid remote cached either.
+    await removeSkillsetCache(ref)
+    throw error
+  }
 }
 
 /**

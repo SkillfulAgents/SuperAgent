@@ -25,6 +25,11 @@ const webTestIgnore = [
   '**/pwa-precache.spec.ts',
   // WebKit-engine regression (async-scroll follow) — runs under the web-webkit project.
   '**/safari-follow.spec.ts',
+  // Canvas mouse gestures need a still layout: sibling specs' agent churn on
+  // the shared server re-solves the graph under the cursor, which made this
+  // the suite's top flake. Runs under the web-graph project on its own server
+  // and data dir (see test:e2e:graph).
+  '**/home-graph.spec.ts',
 ]
 
 if (process.env.E2E_INCLUDE_A11Y !== 'true') {
@@ -90,6 +95,19 @@ export default defineConfig({
       name: 'web-webkit',
       testMatch: ['**/safari-follow.spec.ts', '**/thinking-collapse-reading-line.spec.ts'],
       use: { ...devices['Desktop Safari'] },
+    },
+    // Home connections graph — canvas mouse gestures (hover-fade, edge draw,
+    // node drag) against react-flow. Run with `npm run test:e2e:graph` and a
+    // dedicated SUPERAGENT_DATA_DIR: the only agents on the board are the
+    // spec's own, so the layout stays still and fitView never bottoms out at
+    // minZoom. Not fullyParallel — the file's own tests would otherwise churn
+    // each other's layout from parallel workers, recreating the flake this
+    // project exists to remove.
+    {
+      name: 'web-graph',
+      testMatch: ['**/home-graph.spec.ts'],
+      fullyParallel: false,
+      use: { ...devices['Desktop Chrome'] },
     },
   ],
 

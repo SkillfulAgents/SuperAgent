@@ -1,6 +1,8 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import * as fs from 'fs'
+import * as os from 'os'
 import path from 'path'
-import { isPathWithinDir, assertPathWithinDir, sanitizeUploadFilename } from './path-safety'
+import { isPathWithinDir, assertPathWithinDir, isRealPathWithinDir, sanitizeUploadFilename } from './path-safety'
 
 // ---------------------------------------------------------------------------
 // Path containment guard (SUP-200 generalization). The motivating bug: a bare
@@ -130,5 +132,60 @@ describe('sanitizeUploadFilename', () => {
   it('preserves a normal filename unchanged', () => {
     expect(sanitizeUploadFilename('report.pdf')).toBe('report.pdf')
     expect(sanitizeUploadFilename('My_File-2.png')).toBe('My_File-2.png')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Symlink-aware containment. isPathWithinDir compares strings; this one follows
+// links, because the base directory here is writable by an untrusted party.
+// ---------------------------------------------------------------------------
+
+describe('isRealPathWithinDir', () => {
+  let tmp: string
+  let base: string
+  let outside: string
+
+  beforeEach(() => {
+    tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'realpath-')))
+    base = path.join(tmp, 'agent', 'sessions')
+    outside = path.join(tmp, 'other-agent', 'sessions')
+    fs.mkdirSync(base, { recursive: true })
+    fs.mkdirSync(outside, { recursive: true })
+  })
+
+  afterEach(() => {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  })
+
+  it('accepts a real file inside the base', () => {
+    const f = path.join(base, 'a.jsonl')
+    fs.writeFileSync(f, '{}')
+    expect(isRealPathWithinDir(base, f)).toBe(true)
+  })
+
+  it('accepts a not-yet-created leaf under the base (its name was already validated)', () => {
+    expect(isRealPathWithinDir(base, path.join(base, 'not-written-yet.jsonl'))).toBe(true)
+  })
+
+  it('rejects a symlink whose target escapes the base', () => {
+    const victim = path.join(outside, 'victim.jsonl')
+    fs.writeFileSync(victim, 'secret')
+    const link = path.join(base, 'victim.jsonl')
+    fs.symlinkSync(victim, link)
+    expect(isRealPathWithinDir(base, link)).toBe(false)
+  })
+
+  it('rejects a leaf reached through a symlinked directory that escapes the base', () => {
+    const link = path.join(base, 'linkdir')
+    fs.symlinkSync(outside, link)
+    expect(isRealPathWithinDir(base, path.join(link, 'anything.jsonl'))).toBe(false)
+  })
+
+  it('accepts a symlink that stays inside the base', () => {
+    const real = path.join(base, 'real.jsonl')
+    fs.writeFileSync(real, '{}')
+    const link = path.join(base, 'alias.jsonl')
+    fs.symlinkSync(real, link)
+    expect(isRealPathWithinDir(base, link)).toBe(true)
   })
 })

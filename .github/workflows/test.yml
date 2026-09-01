@@ -166,6 +166,7 @@ jobs:
         run: npm run test:e2e:wizard
 
       - name: Run Playwright E2E suites
+        id: web_e2e
         if: ${{ success() || steps.wizard_e2e.outcome == 'failure' }}
         env:
           PORT: '3000'
@@ -174,6 +175,19 @@ jobs:
           PLAYWRIGHT_OUTPUT_DIR: test-results/web
           PLAYWRIGHT_HTML_REPORT: playwright-report/web
         run: npm run test:e2e
+
+      # Own server + fresh data dir: the graph canvas gestures need a board
+      # that holds only this spec's agents and a layout no sibling worker is
+      # re-solving mid-gesture (the previous shared-server arrangement was the
+      # suite's top flake source).
+      - name: Run graph E2E suite
+        if: ${{ success() || steps.wizard_e2e.outcome == 'failure' || steps.web_e2e.outcome == 'failure' }}
+        env:
+          PORT: '3000'
+          SUPERAGENT_DATA_DIR: .e2e-data/graph
+          PLAYWRIGHT_OUTPUT_DIR: test-results/graph
+          PLAYWRIGHT_HTML_REPORT: playwright-report/graph
+        run: npm run test:e2e:graph
 
       - name: Upload Playwright artifacts
         if: always()

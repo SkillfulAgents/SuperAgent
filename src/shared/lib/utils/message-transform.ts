@@ -6,6 +6,7 @@
  */
 
 import { ContentBlock, JsonlMessageEntry, JsonlSystemEntry } from '@shared/lib/types/agent'
+import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 import { makeThinkingBlockId } from '@shared/lib/utils/thinking-block-id'
 
 export interface TransformedThinkingBlock {
@@ -41,6 +42,8 @@ export interface TransformedMessage {
   }
   /** SDK error code when assistant message failed due to LLM provider error */
   apiError?: string
+  /** Provider-authored copy for the apiError, attached at serve time (see agents route). */
+  errorPresentation?: ProviderErrorPresentation
   /** User message delivered mid-turn (queued/steering input) — does not end the turn it appears in */
   queued?: boolean
   /**

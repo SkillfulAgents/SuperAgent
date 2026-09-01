@@ -99,16 +99,16 @@ export async function deliverSessionWake(
     // resumes it from the container's session descriptor.
     const client = await containerManager.ensureRunning(task.agentSlug)
 
-    if (!messagePersister.isSubscribed(sessionId)) {
-      await messagePersister.subscribeToSession(sessionId, client, sessionId, task.agentSlug)
+    if (!messagePersister.isSubscribed(task.agentSlug, sessionId)) {
+      await messagePersister.subscribeToSession(task.agentSlug, sessionId, client, sessionId)
     }
 
     // If the session went to sleep with a blocking user-input request still
     // open (agent asked, nobody answered), cancel it so the wake message
     // starts a fresh turn instead of deadlocking behind the blocked tool.
-    await messagePersister.cancelAwaitingInput(sessionId, task.agentSlug)
+    await messagePersister.cancelAwaitingInput(task.agentSlug, sessionId)
 
-    messagePersister.markSessionActive(sessionId, task.agentSlug)
+    messagePersister.markSessionActive(task.agentSlug, sessionId)
     try {
       await client.sendMessage(sessionId, buildWakeMessage(task, trigger), randomUUID(), {
         shouldQuery: true,
@@ -116,7 +116,7 @@ export async function deliverSessionWake(
     } catch (error) {
       // The turn never started — clear the optimistic active flag so the UI
       // doesn't show a phantom "working" session while the wake awaits retry.
-      messagePersister.markSessionIdle(sessionId)
+      messagePersister.markSessionIdle(task.agentSlug, sessionId)
       throw error
     }
 
@@ -142,7 +142,7 @@ export async function deliverSessionWake(
       sessionId,
       agentSlug: task.agentSlug,
     })
-    messagePersister.broadcastSessionUpdate(sessionId)
+    messagePersister.broadcastSessionUpdate(task.agentSlug, sessionId)
 
     return { outcome: 'delivered', sessionId }
   } finally {

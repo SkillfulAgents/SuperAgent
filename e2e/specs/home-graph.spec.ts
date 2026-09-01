@@ -8,7 +8,14 @@
  *
  * Position persistence writes global user settings, so the drag test asserts
  * through the API rather than screen coordinates — screen positions depend on
- * fitView and on how many agents other parallel specs have created.
+ * fitView and on how many agents exist on the board.
+ *
+ * Runs under the dedicated `web-graph` project (test:e2e:graph) on its own
+ * server and data dir, serially: canvas mouse gestures need a still layout,
+ * and on the shared web server sibling specs' agent churn re-solved the graph
+ * under the cursor often enough to make this file the suite's top flake. The
+ * in-test pin/zoom/retry armor below predates that isolation and stays as a
+ * second line of defense against the file's own re-layouts.
  */
 import { test, expect, type Page } from '@playwright/test'
 import { createAgent, uniqueName, type TestAgent } from '../helpers/agents'

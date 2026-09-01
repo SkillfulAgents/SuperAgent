@@ -14,7 +14,10 @@ test.describe.configure({ mode: 'serial' })
 const user1 = { name: 'Alice Admin', email: 'alice@test.com', password: 'password123' }
 const user2 = { name: 'Bob Builder', email: 'bob@test.com', password: 'password123' }
 const user3 = { name: 'Carol Viewer', email: 'carol@test.com', password: 'password123' }
-const agentName = 'Auth Test Agent'
+// Minted per attempt in "user2 creates an agent": a serial-group retry runs
+// against the same live server, so a fixed name would match the failed
+// attempt's leftover agent too and strict-mode every name-based lookup below.
+let agentName = ''
 // Captured once user2 is viewing the agent — used by the cross-tenant deep-link
 // test to prove the loader gates access by URL, not just by sidebar visibility.
 let agentSlug = ''
@@ -122,6 +125,7 @@ test.describe('Auth Flow', () => {
   test('user2 creates an agent', async ({ user2Page }) => {
     const agentPage = new AgentPage(user2Page)
 
+    agentName = test.info().retry === 0 ? 'Auth Test Agent' : `Auth Test Agent R${test.info().retry}`
     await agentPage.createAgent(agentName)
 
     // Verify agent appears in sidebar
@@ -290,10 +294,19 @@ test.describe('Auth Flow', () => {
     const testId = await ownerEntry.getAttribute('data-testid')
     const userId = testId!.replace('access-entry-', '')
 
-    // The remove button should be disabled for the last owner
-    await expect(user2Page.locator(`[data-testid="access-remove-${userId}"]`)).toBeDisabled()
-
-    await accessPage.closeSettings()
+    // The role dropdown stays usable for the last owner, but its Remove item
+    // is disabled
+    await user2Page.locator(`[data-testid="access-role-${userId}"]`).click()
+    const removeItem = user2Page.locator(`[data-testid="access-remove-${userId}"]`)
+    await expect(removeItem).toBeVisible()
+    await expect(removeItem).toHaveAttribute('data-disabled', '')
+    // Close the dropdown by re-selecting the current role (a no-op), then
+    // dismiss the popover by clicking outside — Escape gets eaten by the
+    // last-owner tooltip, which reopens whenever the trigger holds focus
+    await user2Page.getByRole('option', { name: 'Owner' }).click()
+    await expect(removeItem).not.toBeVisible()
+    await user2Page.mouse.click(10, 10)
+    await expect(user2Page.locator('[data-testid="agent-share-popover"]')).not.toBeVisible()
   })
 
   test('user2 changes user3 to viewer role', async ({ user2Page }) => {
@@ -358,13 +371,10 @@ test.describe('Auth Flow', () => {
     const user3Entry = user2Page.locator('[data-testid^="access-entry-"]').filter({ hasText: user3.name })
     await expect(user3Entry).toBeVisible()
 
-    // Extract userId and click remove
+    // Extract userId and remove via the role dropdown's Remove item
     const testId = await user3Entry.getAttribute('data-testid')
     const userId = testId!.replace('access-entry-', '')
-    await user2Page.locator(`[data-testid="access-remove-${userId}"]`).click()
-
-    // Wait for entry to disappear
-    await expect(user3Entry).not.toBeVisible()
+    await accessPage.removeUser(userId)
 
     await accessPage.closeSettings()
   })

@@ -140,14 +140,14 @@ async function setUpReplay(entries: FixtureEntry[], sessionId: string, agentSlug
   const { client, send } = createReplayClient()
 
   const sseEvents: Array<Record<string, unknown>> = []
-  const cleanup = messagePersister.addSSEClient(sessionId, (data) => {
+  const cleanup = messagePersister.addSSEClient(agentSlug, sessionId, (data) => {
     sseEvents.push(data as Record<string, unknown>)
   })
 
-  await messagePersister.subscribeToSession(sessionId, client, sessionId, agentSlug)
+  await messagePersister.subscribeToSession(agentSlug, sessionId, client, sessionId)
   // The POST /messages route marks the session active when the first user
   // message is sent.
-  messagePersister.markSessionActive(sessionId, agentSlug)
+  messagePersister.markSessionActive(agentSlug, sessionId)
 
   const firstResultIdx = entries.findIndex((e) => e.message.content?.type === 'result')
   const sendRange = async (from: number, to: number) => {
@@ -180,7 +180,7 @@ describe('queued-message-during-final-response replay (real capture, session d6c
     // Replay turn 1 up to (but not including) its result. The queued POST
     // landed mid-stream — the route re-marks the session active (no-op).
     await sendRange(0, firstResultIdx)
-    messagePersister.markSessionActive(sessionId, agentSlug)
+    messagePersister.markSessionActive(agentSlug, sessionId)
 
     // Deliver turn 1's result. In the real capture the CLI emits NO state
     // event here — the queued message keeps the runtime going, and the
@@ -189,7 +189,7 @@ describe('queued-message-during-final-response replay (real capture, session d6c
 
     // THE BUG: the legacy result-driven path finalized idle here.
     expect(countIdle(sseEvents)).toBe(0)
-    expect(messagePersister.isSessionActive(sessionId)).toBe(true)
+    expect(messagePersister.isSessionActive(agentSlug, sessionId)).toBe(true)
     // The premature completion notification was part of the same bug.
     expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
     // The turn's output is still announced so the renderer can reconcile the
@@ -201,7 +201,7 @@ describe('queued-message-during-final-response replay (real capture, session d6c
 
     // Exactly one idle, at the authoritative session_state_changed:'idle'.
     expect(countIdle(sseEvents)).toBe(1)
-    expect(messagePersister.isSessionActive(sessionId)).toBe(false)
+    expect(messagePersister.isSessionActive(agentSlug, sessionId)).toBe(false)
     expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
     expect(notificationManager.triggerSessionComplete).toHaveBeenCalledWith(
       sessionId,
@@ -214,7 +214,7 @@ describe('queued-message-during-final-response replay (real capture, session d6c
     )
 
     cleanup()
-    messagePersister.unsubscribeFromSession(sessionId)
+    messagePersister.unsubscribeFromSession(agentSlug, sessionId)
   })
 
   it('legacy containers (no capabilities hello, no state events) keep result-driven idle', async () => {
@@ -234,7 +234,7 @@ describe('queued-message-during-final-response replay (real capture, session d6c
     // pre-state-events behavior — premature for queued messages, but the
     // session is never left stuck).
     expect(countIdle(sseEvents)).toBeGreaterThanOrEqual(1)
-    expect(messagePersister.isSessionActive(sessionId)).toBe(false)
+    expect(messagePersister.isSessionActive(agentSlug, sessionId)).toBe(false)
     expect(notificationManager.triggerSessionComplete).toHaveBeenLastCalledWith(
       sessionId,
       agentSlug,
@@ -246,6 +246,6 @@ describe('queued-message-during-final-response replay (real capture, session d6c
     )
 
     cleanup()
-    messagePersister.unsubscribeFromSession(sessionId)
+    messagePersister.unsubscribeFromSession(agentSlug, sessionId)
   })
 })

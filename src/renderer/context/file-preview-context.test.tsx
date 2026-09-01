@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
-import { FilePreviewProvider, useFilePreview } from './file-preview-context'
+import { FilePreviewProvider, useFilePreview, type FileTab } from './file-preview-context'
 
 // Mock the route-derived location — FilePreviewProvider reads useRouteLocation and
 // watches view.kind/view.id for session changes.
@@ -37,9 +37,9 @@ describe('FilePreviewContext', () => {
         kind: 'file',
         filePath: '/workspace/report.md',
         displayName: 'report.md',
-        version: 0,
         pdfPage: 1,
       })
+      expect((result.current.openTabs[0] as FileTab).version).toBeGreaterThan(0)
       expect(result.current.isOpen).toBe(true)
       expect(result.current.activeTabIndex).toBe(0)
     })
@@ -57,13 +57,24 @@ describe('FilePreviewContext', () => {
     it('bumps version on re-delivery of same file', () => {
       const { result } = renderHook(() => useFilePreview(), { wrapper })
       act(() => result.current.openFile('/workspace/report.md', 'agent-1'))
-      expect(result.current.openTabs[0]).toMatchObject({ version: 0 })
+      const first = (result.current.openTabs[0] as FileTab).version
 
       act(() => result.current.openFile('/workspace/report.md', 'agent-1'))
-      expect(result.current.openTabs[0]).toMatchObject({ version: 1 })
+      const second = (result.current.openTabs[0] as FileTab).version
+      expect(second).toBeGreaterThan(first)
 
       act(() => result.current.openFile('/workspace/report.md', 'agent-1'))
-      expect(result.current.openTabs[0]).toMatchObject({ version: 2 })
+      expect((result.current.openTabs[0] as FileTab).version).toBeGreaterThan(second)
+    })
+
+    it('seeds the version from the clock so a reload never reuses a cached file URL', () => {
+      const start = Date.now()
+      const { result } = renderHook(() => useFilePreview(), { wrapper })
+      act(() => result.current.openFile('/workspace/report.md', 'agent-1'))
+
+      // A session-local counter would restart at 0 after a reload and resolve to
+      // a URL an intermediary may still hold the previous body for.
+      expect((result.current.openTabs[0] as FileTab).version).toBeGreaterThanOrEqual(start)
     })
   })
 
@@ -132,8 +143,8 @@ describe('FilePreviewContext', () => {
       expect(result.current.openTabs[1]).toMatchObject({
         filePath: newPath,
         displayName: 'new.md',
-        version: 1,
       })
+      expect((result.current.openTabs[1] as FileTab).version).toBeGreaterThan(0)
       expect(result.current.comments.get(oldPath)).toBeUndefined()
       expect(result.current.comments.get(newPath)?.[0]).toMatchObject({
         filePath: newPath,
@@ -180,8 +191,8 @@ describe('FilePreviewContext', () => {
       expect(result.current.openTabs[1]).toMatchObject({
         filePath: `${newPath}/notes.md`,
         displayName: 'notes.md',
-        version: 1,
       })
+      expect((result.current.openTabs[1] as FileTab).version).toBeGreaterThan(0)
       expect(result.current.openTabs[2]).toMatchObject({
         rootPath: newPath,
         displayName: 'archive',

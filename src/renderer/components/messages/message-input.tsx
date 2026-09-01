@@ -121,7 +121,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
         onMessageFailed?.(localId)
         throw error
       }
-      track('message_sent')
+      track('message_sent', { origin: 'user' })
     }, [onMessageSent, onMessageUuidAssigned, onMessageFailed, sendMessage, sessionId, agentSlug, track, composerOptions, isActive, isWaitingBackground]),
     submitDisabled: sendMessage.isPending || isOffline || !isRuntimeReady,
     draftKey: `session:${sessionId}`,

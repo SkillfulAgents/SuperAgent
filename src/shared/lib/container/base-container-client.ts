@@ -30,7 +30,7 @@ import type {
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import { getAgentCapabilitySettings, getSettings } from '@shared/lib/config/settings'
-import { getActiveLlmProvider } from '@shared/lib/llm-provider'
+import { getActiveLlmProvider, getModelContextWindowMap } from '@shared/lib/llm-provider'
 import type { AgentIdentity } from '@shared/lib/llm-provider/base-llm-provider'
 import { readAgentDisplayNameSync } from '@shared/lib/utils/file-storage'
 import { resolveContainerModel, getContainerModelPromptHints } from './resolve-model'
@@ -1192,6 +1192,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const resolvedDashboardBuilderModel = resolveContainerModel(options.dashboardBuilderModel, 'dashboard')
     const modelPromptHints = getContainerModelPromptHints(resolvedModel)
     const subagentModels = getSubagentModelCatalog(getActiveLlmProvider().id)
+    // Catalog windows for ALL models (not just isLatest like subagentModels):
+    // the container passes the session model's window to the Claude Agent SDK
+    // via CLAUDE_CODE_MAX_CONTEXT_TOKENS, else non-Claude models compact at
+    // the SDK's 200k default (grok: 500k real, gpt-5.x: 1.05M real).
+    const modelContextWindows = getModelContextWindowMap(getActiveLlmProvider().id)
     // The active web vendor id is a non-secret signal (NOT a model, so no resolveContainerModel).
     // Resolved once here from global settings so every session-creation caller inherits it. One
     // stored vendor backs both tools; the two ids sent to the container are the per-tool enablement
@@ -1224,6 +1229,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           browserModel: resolvedBrowserModel,
           dashboardBuilderModel: resolvedDashboardBuilderModel,
           subagentModels,
+          modelContextWindows,
           webSearchProvider,
           webFetchProvider,
           maxOutputTokens: options.maxOutputTokens,
@@ -1250,6 +1256,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       if (!response.ok) {
         // Try to get more details from response body
         let errorDetail = ''
+        let containerErrorCode: string | undefined
+        let containerErrorClass: string | undefined
         try {
           const errorBody = await response.text()
           if (errorBody) {
@@ -1257,6 +1265,10 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
             try {
               const parsed = JSON.parse(errorBody)
               errorDetail = parsed.error || errorBody
+              // Spawn errno + failure class forwarded by the container for
+              // CLI launch failures (see the POST /sessions handler).
+              if (typeof parsed.code === 'string') containerErrorCode = parsed.code
+              if (typeof parsed.errorClass === 'string') containerErrorClass = parsed.errorClass
             } catch {
               errorDetail = errorBody
             }
@@ -1272,7 +1284,16 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           )
         }
 
-        throw new Error(`Failed to create session: ${errorDetail || response.statusText}`)
+        // Fold the errno into the message so telemetry shows the real spawn
+        // failure (the SDK's message is a canned libc guess), and attach both
+        // fields for programmatic checks (microVM launch-failure auto-replace).
+        const diagnostic = [containerErrorClass, containerErrorCode].filter(Boolean).join(' ')
+        throw Object.assign(
+          new Error(
+            `Failed to create session: ${errorDetail || response.statusText}${diagnostic ? ` [${diagnostic}]` : ''}`,
+          ),
+          { containerErrorCode, containerErrorClass },
+        )
       }
 
       return response.json()

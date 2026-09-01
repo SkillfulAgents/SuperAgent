@@ -1056,11 +1056,18 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   }
 
   // The transcript file is gone (e.g. removed by the CLI's retention cleanup)
-  // while the session still appears in the nav. Don't show this during the brief
-  // new-session window — the creating client has a pendingUserMessage then.
-  if (error instanceof TranscriptNotFoundError && !hasPendingMessages) {
+  // while the session still appears in the nav. Don't show this during the
+  // new-session window: the composer's client has a pendingUserMessage then,
+  // and every client sees the turn running (an onboarding session opens with
+  // no ghost at all) — a live session's transcript is not yet written, not
+  // gone. The server answers that window with an empty page; this also covers
+  // a server that predates it.
+  if (error instanceof TranscriptNotFoundError && !hasPendingMessages && !isActive) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center gap-2 px-4 text-center">
+      <div
+        className="flex-1 flex flex-col items-center justify-center gap-2 px-4 text-center"
+        data-testid="session-transcript-not-found"
+      >
         <FileX2 className="h-8 w-8 text-muted-foreground" />
         <p className="text-sm font-medium text-foreground">Session transcript not found</p>
         <p className="max-w-sm text-xs text-muted-foreground">
@@ -1346,6 +1353,13 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
           <DeliveredFiles files={turnDeliveredFiles.get(deferredElapsedMessageId)!} agentSlug={agentSlug} />
         )}
 
+        {/* Real-time compacting indicator. Above the queued ghosts: a message
+            queued during compaction is picked up on the far side of the
+            boundary, so it belongs below the compact line, not above it. */}
+        {isCompacting && (
+          <CompactBoundaryItem isCompacting />
+        )}
+
         {/* Queued ghosts — waiting for the agent loop to pick them up, so they
             always sit below the current turn's streaming output and tools. */}
         {visiblePeerMessages.filter((p) => p.queued).map(renderPeerGhost)}
@@ -1365,11 +1379,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
               </span>
             </div>
           </div>
-        )}
-
-        {/* Real-time compacting indicator */}
-        {isCompacting && (
-          <CompactBoundaryItem isCompacting />
         )}
 
         {/* Pending interactive requests render in the composer slot — see SessionChatColumn. */}

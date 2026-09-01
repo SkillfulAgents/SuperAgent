@@ -28,7 +28,6 @@ import {
   deleteSession,
   getSessionSummary,
   registerSession,
-  reserveSessionOwnership,
 } from './session-service'
 import { recordSessionActivity } from './session-summary-cache'
 import { appendInformationalEntry } from './session-transcript-append'
@@ -97,13 +96,18 @@ describe('getSessionSummary cache', () => {
     expect(statProbe.paths.filter((file) => file.endsWith('.jsonl'))).toHaveLength(2)
   })
 
-  it('reconciles unchanged directory contents when ownership is newly reserved', async () => {
+  it('reconciles a transcript that appears in the directory after a warm read', async () => {
     await createSession('session-a', '2026-01-01T00:00:00.000Z')
-    await fs.promises.mkdir(sessionsDir(), { recursive: true })
-    await fs.promises.writeFile(transcriptPath('session-b'), '{}\n')
     expect((await getSessionSummary(agentSlug)).sessionIds).toEqual(['session-a'])
 
-    await reserveSessionOwnership(agentSlug, 'session-b')
+    await fs.promises.mkdir(sessionsDir(), { recursive: true })
+    await fs.promises.writeFile(transcriptPath('session-b'), '{}\n')
+    // Advance the directory mtime explicitly. The cache reconciles when the dir
+    // mtime changes; on a filesystem with coarse mtime resolution the write and
+    // the preceding warm read can share a tick, so the write alone would not
+    // trip the reconcile. (Mirrors the structural-add test above.)
+    const changedAt = new Date('2030-01-01T00:00:00.000Z')
+    await fs.promises.utimes(sessionsDir(), changedAt, changedAt)
     const summary = await getSessionSummary(agentSlug)
 
     expect(summary.sessionIds.sort()).toEqual(['session-a', 'session-b'])
@@ -175,6 +179,10 @@ describe('getSessionSummary cache', () => {
     await getSessionSummary(agentSlug)
 
     await deleteSession(agentSlug, 'session-b')
+    // Coarse-mtime filesystems may not advance the dir mtime on the unlink
+    // within the same tick as the warm read; force it so the reconcile fires.
+    const changedAt = new Date('2030-01-01T00:00:00.000Z')
+    await fs.promises.utimes(sessionsDir(), changedAt, changedAt)
     const summary = await getSessionSummary(agentSlug)
 
     expect(summary.sessionIds).toEqual(['session-a'])

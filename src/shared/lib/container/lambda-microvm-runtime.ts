@@ -818,6 +818,16 @@ function isUnreachableCreateSessionError(error: unknown): boolean {
   return false
 }
 
+// The CLI spawn failed inside a live container (Agent SDK errorClass
+// 'executable_launch_failed': spawn ENOENT/EACCES/… while the binary is
+// present on disk). Observed on long-lived microVMs that answer HTTP but can
+// no longer start any session — degraded fs/cwd state that only a VM
+// replacement clears, so every scheduled run fails until then.
+function isExecutableLaunchFailureError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  return (error as { containerErrorClass?: unknown }).containerErrorClass === 'executable_launch_failed'
+}
+
 function honorMicrovmAutoResume(plan: UnexpectedDeathPlan): UnexpectedDeathPlan {
   if (plan.action === 'recover' && !isAutoResumeOnUnexpectedDeathEnabled(getSettings())) {
     return { action: 'settle' }
@@ -1006,6 +1016,17 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     try {
       return await super.createSession(options)
     } catch (error) {
+      // CLI spawn failure inside a live VM: it answers HTTP but no session can
+      // start, and only a restart clears it. Replace the generation once and
+      // retry instead of failing every run until someone restarts by hand.
+      // Deliberately terminates a VM that may still host older live sessions —
+      // in this state they'd lose their next process restart anyway.
+      if (isExecutableLaunchFailureError(error)) {
+        const liveId = agentStates.get(this.config.agentId)?.microvmId ?? installedId
+        if (liveId === null) throw error
+        await this.replaceGeneration('executable_launch_failed', liveId)
+        return await super.createSession(options)
+      }
       if (!isUnreachableCreateSessionError(error)) throw error
       let deadId = await this.observeDeadGeneration()
       if (deadId === null && installedId !== null && !agentStates.has(this.config.agentId)) {

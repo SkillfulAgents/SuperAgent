@@ -184,12 +184,12 @@ describe('subagent routing replay — sequential subagents across state reset', 
     const { client, send } = createReplayClient()
 
     // Collect SSE events
-    const cleanup = messagePersister.addSSEClient(meta.sessionId, (data) => {
+    const cleanup = messagePersister.addSSEClient(meta.agentSlug, meta.sessionId, (data) => {
       sseEvents.push(data as Record<string, unknown>)
     })
 
     // Subscribe (mirrors what happens on app launch / session resume)
-    await messagePersister.subscribeToSession(meta.sessionId, client, meta.sessionId, meta.agentSlug)
+    await messagePersister.subscribeToSession(meta.agentSlug, meta.sessionId, client, meta.sessionId)
 
     // Replay the captured stream
     for (const entry of streamEntries) {
@@ -202,7 +202,7 @@ describe('subagent routing replay — sequential subagents across state reset', 
     await new Promise((r) => setTimeout(r, 100))
 
     cleanup()
-    messagePersister.unsubscribeFromSession(meta.sessionId)
+    messagePersister.unsubscribeFromSession(meta.agentSlug, meta.sessionId)
 
     // ----- Assertions -----
 

@@ -211,8 +211,8 @@ describe('deliverSessionWake', () => {
       'container is restarting'
     )
 
-    expect(mockMarkSessionActive).toHaveBeenCalledWith('sleeping-session-1', 'agent-one')
-    expect(mockMarkSessionIdle).toHaveBeenCalledWith('sleeping-session-1')
+    expect(mockMarkSessionActive).toHaveBeenCalledWith('agent-one', 'sleeping-session-1')
+    expect(mockMarkSessionIdle).toHaveBeenCalledWith('agent-one', 'sleeping-session-1')
     expect(mockMarkTaskExecuted).not.toHaveBeenCalled()
     expect(mockUpdateSessionMetadata).not.toHaveBeenCalled()
   })

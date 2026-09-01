@@ -25,9 +25,12 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
   const fileApiPath = activeTab.kind === 'file'
     ? getAgentFileApiPath(activeTab.agentSlug, activeTab.filePath)
     : null
-  const versionParam = activeTab.kind === 'file' && activeTab.version > 0 ? `&v=${activeTab.version}` : ''
-  const fileUrl = fileApiPath ? `${baseUrl}${fileApiPath}?inline=true${versionParam}` : null
-  const downloadUrl = fileApiPath ? `${baseUrl}${fileApiPath}` : null
+  // `v` is a cache buster, not a server-read param: the route ignores it, but it
+  // keeps a redelivered file from resolving to a URL that a browser or CDN still
+  // holds the previous body for.
+  const versionQuery = activeTab.kind === 'file' && activeTab.version > 0 ? `v=${activeTab.version}` : ''
+  const fileUrl = fileApiPath ? `${baseUrl}${fileApiPath}?inline=true${versionQuery ? `&${versionQuery}` : ''}` : null
+  const downloadUrl = fileApiPath ? `${baseUrl}${fileApiPath}${versionQuery ? `?${versionQuery}` : ''}` : null
   const activeComments = activeTab.kind === 'file' ? comments.get(activeTab.filePath) || [] : []
 
   return (

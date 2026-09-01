@@ -3,6 +3,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { useState } from 'react'
 import { MessageList } from './message-list'
+// Resolves to the mocked module's class below — the one the component's
+// instanceof check sees.
+import { TranscriptNotFoundError } from '@renderer/hooks/use-messages'
 import { useDraft } from '@renderer/context/drafts-context'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { createUserMessage, createAssistantMessage, createToolCall, createCompactBoundary } from '@renderer/test/factories'
@@ -201,6 +204,39 @@ describe('MessageList', () => {
     )
     expect(screen.getByText('Hi')).toBeInTheDocument()
     expect(screen.getByText('Hello!')).toBeInTheDocument()
+  })
+
+  describe('transcript not found', () => {
+    beforeEach(() => {
+      mockMessagesData.error = new TranscriptNotFoundError()
+    })
+
+    it('shows the not-found card for an idle session with no ghost', () => {
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getByTestId('session-transcript-not-found')).toBeInTheDocument()
+    })
+
+    it('hides it behind the creating client’s optimistic ghost', () => {
+      renderWithProviders(
+        <MessageList
+          sessionId="s-1"
+          agentSlug="agent-1"
+          pendingUserMessages={[{ localId: 'pm-1', uuid: 'pm-1', text: 'First message', sentAt: Date.now() }]}
+        />
+      )
+      expect(screen.queryByTestId('session-transcript-not-found')).not.toBeInTheDocument()
+      expect(screen.getByText('First message')).toBeInTheDocument()
+    })
+
+    // An onboarding session opens with no ghost, before the container has
+    // written its first line. The turn is running, so the transcript is not
+    // yet written rather than gone — render the (empty) live transcript.
+    it('hides it while the session is live, even with no ghost', () => {
+      mockStreamState.isActive = true
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.queryByTestId('session-transcript-not-found')).not.toBeInTheDocument()
+      expect(screen.getByTestId('message-list')).toBeInTheDocument()
+    })
   })
 
   describe('session time flags', () => {
@@ -1047,6 +1083,26 @@ describe('MessageList', () => {
     const text = container.textContent || ''
     expect(text.indexOf('Working on it...')).toBeLessThan(text.indexOf('Queued msg'))
     expect(text.indexOf('StreamingBash')).toBeLessThan(text.indexOf('Queued msg'))
+  })
+
+  it('renders the live compact line above the queued ghosts', () => {
+    // A message queued during compaction is picked up on the far side of the
+    // boundary, so it reads below the compact line, not above it. (SUP-736)
+    mockMessagesData.data = [createUserMessage({ content: { text: '/compact' } })]
+    mockStreamState.isActive = true
+    mockStreamState.isCompacting = true
+
+    const { container } = renderWithProviders(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessages={[{ localId: 'q1', uuid: 'q1', text: 'Queued msg', sentAt: Date.now(), queued: true }]}
+      />
+    )
+
+    const text = container.textContent || ''
+    expect(text.indexOf('Compacting conversation...')).toBeGreaterThan(-1)
+    expect(text.indexOf('Compacting conversation...')).toBeLessThan(text.indexOf('Queued msg'))
   })
 
   it('does not close the turn at a persisted queued message (no elapsed divider mid-turn)', () => {
@@ -3030,6 +3086,40 @@ describe('MessageList', () => {
       expect(geometry.scrollTop).toBe(899)
     })
 
+    it('converges back when a rollback lands on seconds-old creep after the engine goes quiet', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
+      fireEvent.scroll(el) // baseline at the live edge (699 joins the trail)
+
+      // Convergence writes 899; the trail now holds 699 and 899.
+      geometry.setNaturalScrollHeight(1500)
+      await act(async () => {
+        fireContentResize(contentWrapper, 1500)
+      })
+      await waitFor(() => expect(geometry.scrollTop).toBe(899))
+
+      // The CI-recorded kill shape: the stream pauses at a pass boundary, the
+      // engine's last write goes quiet, and 2+ seconds later WebKit's
+      // compositor reverts to the bottom of a layout snapshot 2.3s stale —
+      // landing on creep the viewport traversed well before, outside both a
+      // frames-scale write window and a too-short trail. It is still the
+      // engine's own motion coming back: following must survive and converge.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 2400))
+      })
+      geometry.setScrollTop(780)
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 250))
+      })
+      expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
+      expect(geometry.scrollTop).toBe(899)
+    })
+
     it('releases follow when an input-less scroll lands off the recently-held trail', async () => {
       installFakeResizeObserver()
       mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
@@ -3046,7 +3136,7 @@ describe('MessageList', () => {
       // mount pin so the engine-activity window is genuinely closed, as it is
       // whenever such jumps happen in reality.
       await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 450))
+        await new Promise((resolve) => setTimeout(resolve, 600))
       })
       geometry.setScrollTop(150)
       fireEvent.scroll(el)

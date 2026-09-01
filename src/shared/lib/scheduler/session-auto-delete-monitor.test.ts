@@ -13,7 +13,7 @@ const mockDeleteSessionsBatch = vi.fn()
 const mockReadAgentPreferences = vi.fn()
 const mockGetSettings = vi.fn()
 const mockIsAuthMode = vi.fn(() => false)
-const mockIsSessionActive = vi.fn((_id: string) => false)
+const mockIsSessionActive = vi.fn((_agentSlug: string, _id: string) => false)
 const mockUnsubscribeFromSession = vi.fn()
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mockDbDelete = vi.fn((..._args: any[]) => ({ where: vi.fn(() => ({ changes: 0 })) }))
@@ -42,8 +42,8 @@ vi.mock('@shared/lib/auth/mode', () => ({
 
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
-    isSessionActive: (id: string) => mockIsSessionActive(id),
-    unsubscribeFromSession: (id: string) => mockUnsubscribeFromSession(id),
+    isSessionActive: (agentSlug: string, id: string) => mockIsSessionActive(agentSlug, id),
+    unsubscribeFromSession: (agentSlug: string, id: string) => mockUnsubscribeFromSession(agentSlug, id),
   },
 }))
 
@@ -241,7 +241,7 @@ describe('SessionAutoDeleteMonitor', () => {
     mockListSessions.mockResolvedValue([oldActive, oldInactive])
     mockReadSessionMetadata.mockResolvedValue({})
     mockIsSessionActive.mockImplementation(
-      (id: string) => id === 'active'
+      (_agentSlug: string, id: string) => id === 'active'
     )
 
     await startAndTrigger()
@@ -312,8 +312,8 @@ describe('SessionAutoDeleteMonitor', () => {
 
     await startAndTrigger()
 
-    expect(mockUnsubscribeFromSession).toHaveBeenCalledWith('old1')
-    expect(mockUnsubscribeFromSession).toHaveBeenCalledWith('old2')
+    expect(mockUnsubscribeFromSession).toHaveBeenCalledWith('test-agent', 'old1')
+    expect(mockUnsubscribeFromSession).toHaveBeenCalledWith('test-agent', 'old2')
   })
 
   it('only cleans up DB records for actually-deleted sessions', async () => {
@@ -332,8 +332,8 @@ describe('SessionAutoDeleteMonitor', () => {
     await startAndTrigger()
 
     expect(mockDbDelete).toHaveBeenCalled()
-    expect(mockUnsubscribeFromSession).toHaveBeenCalledWith('ok')
-    expect(mockUnsubscribeFromSession).not.toHaveBeenCalledWith('failed')
+    expect(mockUnsubscribeFromSession).toHaveBeenCalledWith('test-agent', 'ok')
+    expect(mockUnsubscribeFromSession).not.toHaveBeenCalledWith('test-agent', 'failed')
   })
 
   it('cleans notifications but not messageAuthor when not in auth mode', async () => {

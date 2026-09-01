@@ -490,6 +490,99 @@ export class SlowWorkScenario implements MockScenario {
 }
 
 /**
+ * Manual /compact with a long compaction window — the send-a-message-while-
+ * compacting case (SUP-736). Holds `status: compacting` open long enough for a
+ * test to queue a follow-up (the busy path in sendMessage takes it as steering),
+ * then writes the boundary + summary pair the transcript renders and settles.
+ *
+ * The compacted command itself is never echoed as a user message: the runtime
+ * persists its effect as the compact boundary instead.
+ */
+export class SlowCompactionScenario implements MockScenario {
+  constructor(private durationMs = 12000) {}
+
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    // Echo the turn-starting message first, so its optimistic ghost materializes
+    // before compaction opens. Order matters: the persister ends compaction at
+    // the first user message that follows the compacting status.
+    setTimeout(() => {
+      client.writeJsonlEntry(sessionId, {
+        type: 'user',
+        message: { content: userMessage },
+        timestamp: new Date().toISOString(),
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'user',
+        content: { type: 'user', message: { content: [{ type: 'text', text: userMessage }] } },
+      })
+    }, 10)
+
+    // Well clear of the echo above (the persister ends compaction at the first
+    // user message that FOLLOWS the compacting status) and of any subscribe
+    // hand-off: compact_start is one-shot, so a client that is not listening
+    // yet never learns compaction began.
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'system',
+        content: { type: 'system', subtype: 'status', status: 'compacting' },
+      })
+    }, 1000)
+
+    setTimeout(() => {
+      const summary = 'Summary of the conversation so far.'
+      client.writeJsonlEntry(sessionId, {
+        type: 'system',
+        subtype: 'compact_boundary',
+        content: 'Conversation compacted',
+        compactMetadata: { trigger: 'manual', preTokens: 120000 },
+        timestamp: new Date().toISOString(),
+      })
+      client.writeJsonlEntry(sessionId, {
+        type: 'user',
+        isCompactSummary: true,
+        message: { content: summary },
+        timestamp: new Date().toISOString(),
+      })
+      // The summary on the stream is what ends compaction host-side (the
+      // persister clears isCompacting on the first user message after the
+      // compacting status and broadcasts compact_complete).
+      client.emitStreamMessage(sessionId, {
+        type: 'user',
+        content: {
+          type: 'user',
+          isCompactSummary: true,
+          message: { content: [{ type: 'text', text: summary }] },
+        },
+      })
+      client.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'Compacted the conversation.' }] },
+        timestamp: new Date().toISOString(),
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'result',
+        content: { type: 'result', subtype: 'success' },
+      })
+    }, this.durationMs)
+  }
+}
+
+/**
+ * A transcript that lands late. The real CLI creates the session's JSONL on
+ * its first persisted line, which for a freshly started agent is seconds after
+ * createSession returns — and by then the client has already navigated into
+ * the session and asked for its messages. Delaying the inner scenario (which
+ * does the writing) reproduces that window instead of racing past it.
+ */
+export class LateTranscriptScenario implements MockScenario {
+  constructor(private inner: MockScenario, private delayMs: number) {}
+
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    setTimeout(() => this.inner.execute(sessionId, client, userMessage), this.delayMs)
+  }
+}
+
+/**
  * API error scenario - simulates an LLM provider error (e.g., auth failure, rate limit).
  * Emits an assistant message with the SDK error code, then a result with error subtype.
  */
@@ -1590,6 +1683,14 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   static scenarios = new Map<string, MockScenario>([
     // Slow response window for message-queueing tests (send mid-turn → queued)
     ['work slowly', new SlowWorkScenario()],
+    // Long compaction window: queue a message while the session is compacting
+    ['compact slowly', new SlowCompactionScenario(10000)],
+    // Onboarding sessions start on a cold agent, so their transcript lands
+    // well after the client has opened the session (see LateTranscriptScenario).
+    ['agent-onboarding', new LateTranscriptScenario(
+      new SimpleTextResponseScenario('Welcome! Let me help you configure this agent.'),
+      1500,
+    )],
     // Long thinking passes: each pass overfills the card's max-height so the
     // card scrolls internally while live, then collapses by its full body
     // height when the pass ends — the shrink-at-the-live-edge shape behind

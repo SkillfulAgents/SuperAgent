@@ -12,6 +12,7 @@ import { db } from '@shared/lib/db'
 import { notifications, agentAcl, type Notification, type NewNotification } from '@shared/lib/db/schema'
 import { eq, desc, and, lt, inArray } from 'drizzle-orm'
 import { count } from 'drizzle-orm'
+import { USER_ACTIONABLE_NOTIFICATION_TYPES } from '@shared/lib/notifications/notification-preferences'
 
 // Re-export types for external use
 export type { Notification, NewNotification }
@@ -128,11 +129,11 @@ export async function countNotifications(userId?: string): Promise<number> {
 
 /**
  * Notification types that drive any unread dot or count in the UI.
- * Lifecycle events (`session_scheduled`, `session_chat_integration`,
- * `session_webhook`) live in the popover history but do not contribute
- * to badges — the user didn't take an action that requires their attention.
+ * Definition lives in the renderer-safe notification-preferences leaf (this
+ * module imports the DB and cannot be pulled into the renderer); re-exported
+ * here for the existing server-side consumers.
  */
-export const USER_ACTIONABLE_NOTIFICATION_TYPES = ['session_complete', 'session_waiting'] as const
+export { USER_ACTIONABLE_NOTIFICATION_TYPES }
 
 /**
  * Get session IDs that have unread notifications for a given agent.

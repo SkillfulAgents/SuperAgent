@@ -186,15 +186,31 @@ describe('openZipFromFile', () => {
 
     // No ZipReader is constructed on this path, so the shared open path must
     // close the underlying file itself; the spy proves close() ran, and the
-    // fd count proves the descriptor was actually released.
+    // fd check proves the descriptor was actually released.
     const closeSpy = vi.spyOn(yauzl.ZipFile.prototype, 'close')
-    const countFds = () =>
-      process.platform === 'win32' ? 0 : fs.readdirSync('/dev/fd').length
+    // Count only descriptors that point at THIS zip, not every fd in the
+    // process. The suite shares one worker, so an unrelated async fs op running
+    // during the await below can open a descriptor and inflate a whole-process
+    // count — a spurious "+1 leak". Matching the file makes the check immune to
+    // that. (SUP-flaky: `expected N to be <= N-1` under load.)
+    const realZipPath = fs.realpathSync(zipPath)
+    const openFdsForZip = () => {
+      if (process.platform === 'win32') return 0
+      let count = 0
+      for (const fd of fs.readdirSync('/dev/fd')) {
+        try {
+          if (fs.readlinkSync(path.join('/dev/fd', fd)) === realZipPath) count++
+        } catch {
+          // fd was closed between readdir and readlink, or isn't a symlink.
+        }
+      }
+      return count
+    }
     try {
-      const fdsBefore = countFds()
       await expect(openZipFromFile(zipPath)).rejects.toThrow(/central directory/i)
       expect(closeSpy).toHaveBeenCalled()
-      expect(countFds()).toBeLessThanOrEqual(fdsBefore)
+      // The descriptor opened for the zip must be released on the error path.
+      expect(openFdsForZip()).toBe(0)
     } finally {
       closeSpy.mockRestore()
     }
