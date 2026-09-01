@@ -1,15 +1,14 @@
-export const TOPUP_AMOUNTS_CENTS = [2_000, 5_000, 10_000, 20_000] as const
+export const TOPUP_AMOUNTS_CENTS = [5_000, 10_000, 20_000, 40_000] as const
 export const MIN_TOPUP_DOLLARS = 20
 
 export const ORG_BILLING_PATH = '/dashboard/organizations/{orgId}?tab=billing'
 
 export type PaywallCta =
   | { kind: 'subscribe'; href: string | null }
-  | { kind: 'ask_admin' }
+  | { kind: 'ask_admin'; href: string | null }
   | { kind: 'add_card'; href: string | null }
   | { kind: 'topup'; href: string | null; amountsCents: readonly number[] }
   | { kind: 'go_to_billing'; href: string | null }
-  | { kind: 'billing_link' }
 
 export function isPlatformOrgAdmin(role: string | null | undefined): boolean {
   return role === 'owner' || role === 'admin'
@@ -41,8 +40,9 @@ export function resolvePaywallCta(input: {
   hasPaymentMethod: boolean | undefined
   billingHref: string | null
 }): PaywallCta {
+  // Proxy omitted the flag (legacy 402): no branching info, so offer billing.
   if (input.subscriptionRequired === undefined) {
-    return { kind: 'billing_link' }
+    return { kind: 'go_to_billing', href: input.billingHref }
   }
   if (input.subscriptionRequired) {
     return { kind: 'subscribe', href: input.billingHref }
@@ -53,7 +53,7 @@ export function resolvePaywallCta(input: {
     return { kind: 'go_to_billing', href: input.billingHref }
   }
   if (!isPlatformOrgAdmin(input.role)) {
-    return { kind: 'ask_admin' }
+    return { kind: 'ask_admin', href: input.billingHref }
   }
   if (input.hasPaymentMethod === true) {
     return { kind: 'topup', href: input.billingHref, amountsCents: TOPUP_AMOUNTS_CENTS }

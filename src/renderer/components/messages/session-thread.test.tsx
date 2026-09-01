@@ -17,6 +17,12 @@ vi.mock('@renderer/components/messages/agent-activity-indicator', () => ({
   AgentActivityIndicator: () => <div data-testid="activity-indicator" />,
 }))
 
+// SessionThread reads the error state to swap the composer for the paywall
+// card; jsdom has no EventSource, so stub the stream with a quiet session.
+vi.mock('@renderer/hooks/use-message-stream', () => ({
+  useMessageStream: () => ({ error: null, apiErrorCode: null, errorPresentation: null }),
+}))
+
 vi.mock('@renderer/components/tray/tray-manager', () => ({
   TrayManager: () => null,
 }))

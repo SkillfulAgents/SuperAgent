@@ -64,13 +64,13 @@ describe('parseCustomTopupDollars', () => {
 })
 
 describe('resolvePaywallCta', () => {
-  it('falls back to the billing link when the proxy omitted the flag', () => {
+  it('falls back to a billing button when the proxy omitted the flag', () => {
     expect(resolvePaywallCta({
       subscriptionRequired: undefined,
       role: 'owner',
       hasPaymentMethod: true,
       billingHref: HREF,
-    })).toEqual({ kind: 'billing_link' })
+    })).toEqual({ kind: 'go_to_billing', href: HREF })
   })
 
   it('returns subscribe when the proxy says subscription is required', () => {
@@ -99,7 +99,7 @@ describe('resolvePaywallCta', () => {
       role: 'member',
       hasPaymentMethod: true,
       billingHref: HREF,
-    })).toEqual({ kind: 'ask_admin' })
+    })).toEqual({ kind: 'ask_admin', href: HREF })
   })
 
   it('asks for a card when the admin has no payment method yet', () => {

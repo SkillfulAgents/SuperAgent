@@ -1,7 +1,9 @@
 import { z } from 'zod'
 
 export const providerErrorPaywallSchema = z.object({
-  subscriptionRequired: z.boolean(),
+  // Absent = the proxy didn't send the flag (legacy 402); the card falls back
+  // to a plain go-to-billing CTA instead of a branched one.
+  subscriptionRequired: z.boolean().optional(),
 })
 
 export const providerErrorPresentationSchema = z.object({

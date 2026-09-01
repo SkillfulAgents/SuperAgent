@@ -6,6 +6,7 @@ import { CircleDollarSign, Info, TriangleAlert, type LucideIcon } from 'lucide-r
 import { defaultParseErrorResponse, type ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 import type { PaywallCta } from '@shared/lib/llm-provider/paywall-cta'
 
+import { HomeEmptyClouds } from '@renderer/components/home/home-empty-clouds'
 import { RequestError } from '@renderer/components/messages/request-error'
 import { PaywallActions } from '@renderer/components/ui/paywall-actions'
 import { usePaywallCta } from '@renderer/hooks/use-paywall-cta'
@@ -56,6 +57,62 @@ function hasMarkdownLink(markdown: string): boolean {
   return /\[[^\]]+\]\([^)]+\)/.test(markdown)
 }
 
+// Paywall messages lead with a **bold** segment; it becomes the card title and
+// the remainder the subtitle. A trailing colon inside the bold is dropped so
+// older "**Insufficient Balance:**"-style messages still read as a title.
+function splitPaywallMessage(markdown: string): { title: string; body: string } {
+  const match = markdown.match(/^\*\*(.+?):?\*\*\s*([\s\S]*)$/)
+  if (match) return { title: match[1], body: match[2] }
+  return { title: markdown, body: '' }
+}
+
+// The paywall is an invitation, not a failure: neutral card, no error reds.
+// Title + muted subtitle on the left, the CTA on the right.
+function PaywallCard({
+  presentation,
+  cta,
+  loading,
+  'data-testid': testId,
+}: {
+  presentation: ProviderErrorPresentation
+  cta: PaywallCta | null
+  loading: boolean
+  'data-testid'?: string
+}) {
+  const { title, body } = splitPaywallMessage(presentation.message)
+  const subtitle = cta?.kind === 'ask_admin'
+    ? 'Ask a workspace admin to add usage credit to this organization.'
+    : body
+
+  return (
+    <div className="relative mt-4">
+      {/* Wandering spectral bloom (the Home empty-state glow) as a soft halo
+          behind the card — unmasked so it spills past the card's edges. */}
+      <HomeEmptyClouds masked={false} fill={0.6} />
+      <div
+        data-testid={testId ?? 'provider-error-card'}
+        data-paywall=""
+        className="relative flex flex-wrap items-center gap-x-6 gap-y-3 rounded-xl border bg-card px-5 py-4 shadow-sm"
+      >
+        <div className="min-w-0 flex-1 basis-60">
+          <p className="text-sm font-medium text-foreground">{title}</p>
+          {subtitle && (
+            <p className="mt-0.5 text-sm text-muted-foreground">
+              <ReactMarkdown
+                urlTransform={markdownUrlTransform}
+                components={MARKDOWN_COMPONENTS}
+              >
+                {subtitle}
+              </ReactMarkdown>
+            </p>
+          )}
+        </div>
+        <PaywallActions cta={cta} loading={loading} />
+      </div>
+    </div>
+  )
+}
+
 export function ProviderErrorView({
   presentation,
   rawMessage,
@@ -69,25 +126,32 @@ export function ProviderErrorView({
   paywallLoading?: boolean
   'data-testid'?: string
 }) {
+  if (presentation.paywall) {
+    return (
+      <PaywallCard
+        presentation={presentation}
+        cta={paywallCta}
+        loading={paywallLoading}
+        data-testid={testId}
+      />
+    )
+  }
+
   const Icon = ICONS[presentation.icon] ?? Info
-  const hasPaywall = Boolean(presentation.paywall)
 
   return (
     <RequestError
       label={null}
       message={
-        <>
-          <ReactMarkdown
-            urlTransform={markdownUrlTransform}
-            components={MARKDOWN_COMPONENTS}
-          >
-            {presentation.message}
-          </ReactMarkdown>
-          <PaywallActions cta={paywallCta} loading={paywallLoading} />
-        </>
+        <ReactMarkdown
+          urlTransform={markdownUrlTransform}
+          components={MARKDOWN_COMPONENTS}
+        >
+          {presentation.message}
+        </ReactMarkdown>
       }
       hint={
-        hasMarkdownLink(presentation.message) || hasPaywall
+        hasMarkdownLink(presentation.message)
           ? undefined
           : defaultHint(rawMessage ?? presentation.message)
       }

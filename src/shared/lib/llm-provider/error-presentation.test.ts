@@ -97,12 +97,12 @@ describe('parsePlatformErrorResponse', () => {
     expect(parsePlatformErrorResponse(429, RATE_LIMIT)).toBeNull()
   })
 
-  it('returns markdown with a billing link for a 402 without the proxy flag', () => {
+  it('authors an unbranched paywall for a 402 without the proxy flag', () => {
     expect(parsePlatformErrorResponse(402, BILLING_402)).toEqual({
       severity: 'error',
       icon: 'info',
-      message:
-        '**Insufficient Balance:** Subscribe or top up to continue running agents. [Go to billing](/dashboard/organizations/{orgId}?tab=billing)',
+      message: '**You need more usage credit to continue** Subscribe or top up to resume this answer.',
+      paywall: {},
     })
   })
 
@@ -117,7 +117,7 @@ describe('parsePlatformErrorResponse', () => {
     })).toEqual({
       severity: 'error',
       icon: 'info',
-      message: '**Subscription Required:** Subscribe to continue running agents.',
+      message: '**Subscribe to keep going** An active subscription lets your agents pick this back up.',
       paywall: { subscriptionRequired: true },
     })
   })
@@ -133,7 +133,7 @@ describe('parsePlatformErrorResponse', () => {
     })).toEqual({
       severity: 'error',
       icon: 'info',
-      message: '**Insufficient Balance:** This workspace is out of credits.',
+      message: '**You need more usage credit to continue** Add usage credit to your account to resume this answer.',
       paywall: { subscriptionRequired: false },
     })
   })

@@ -87,6 +87,9 @@ function spendCapSentence(raw: string): string {
     || 'A spend cap for this workspace was reached.'
 }
 
+// Paywall copy is invitational, not an error: the person didn't do anything
+// wrong, we're asking them to subscribe or top up. The leading **bold** segment
+// becomes the card title; the rest becomes the subtitle.
 function insufficientBalancePresentation(
   subscriptionRequired: boolean | undefined,
 ): ProviderErrorPresentation {
@@ -94,7 +97,7 @@ function insufficientBalancePresentation(
     return {
       severity: 'error',
       icon: 'info',
-      message: '**Subscription Required:** Subscribe to continue running agents.',
+      message: '**Subscribe to keep going** An active subscription lets your agents pick this back up.',
       paywall: { subscriptionRequired: true },
     }
   }
@@ -102,14 +105,15 @@ function insufficientBalancePresentation(
     return {
       severity: 'error',
       icon: 'info',
-      message: '**Insufficient Balance:** This workspace is out of credits.',
+      message: '**You need more usage credit to continue** Add usage credit to your account to resume this answer.',
       paywall: { subscriptionRequired: false },
     }
   }
   return {
     severity: 'error',
     icon: 'info',
-    message: `**Insufficient Balance:** Subscribe or top up to continue running agents. [Go to billing](${ORG_BILLING_PATH})`,
+    message: '**You need more usage credit to continue** Subscribe or top up to resume this answer.',
+    paywall: {},
   }
 }
 

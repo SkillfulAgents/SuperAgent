@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 
 import { parsePlatformErrorResponse } from '@shared/lib/llm-provider/platform-error-presentation'
 import { resolvePresentationMarkdown } from '@shared/lib/llm-provider/error-presentation'
@@ -84,15 +84,20 @@ describe('ProviderErrorView', () => {
           ...parsed,
           message: resolvePresentationMarkdown(parsed.message, platformAuth),
         }}
+        paywallCta={{
+          kind: 'go_to_billing',
+          href: 'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
+        }}
       />,
     )
 
+    // Legacy 402s render the neutral paywall card, not the red error banner.
     const card = screen.getByTestId('provider-error-card')
-    expect(card).toHaveTextContent('Insufficient Balance')
-    expect(card).toHaveAttribute('data-severity', 'error')
-    expect(card).toHaveClass('bg-red-50', 'dark:bg-red-950')
+    expect(card).toHaveTextContent('You need more usage credit to continue')
+    expect(card).not.toHaveAttribute('data-severity')
+    expect(card).not.toHaveClass('bg-red-50')
 
-    fireEvent.click(screen.getByRole('link', { name: /go to billing/i }))
+    fireEvent.click(screen.getByRole('button', { name: /go to billing/i }))
     expect(openExternal).toHaveBeenCalledWith(
       'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
     )
@@ -135,11 +140,17 @@ describe('ProviderErrorView', () => {
           message: '**Insufficient Balance:** This workspace is out of credits.',
           paywall: { subscriptionRequired: false },
         }}
-        paywallCta={{ kind: 'ask_admin' }}
+        paywallCta={{
+          kind: 'ask_admin',
+          href: 'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
+        }}
       />,
     )
-    expect(screen.getByTestId('paywall-actions')).toHaveTextContent('Ask a workspace admin to top up')
-    expect(screen.queryByRole('button', { name: /subscribe/i })).not.toBeInTheDocument()
+    // Ask-admin guidance lives in the card subtitle; the action is a plain
+    // billing button rather than a top-up flow the member can't complete.
+    expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Ask a workspace admin to add usage credit')
+    expect(screen.getByRole('button', { name: /go to billing/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /subscribe|add usage/i })).not.toBeInTheDocument()
   })
 
   it('renders top-up amounts when a card is already on file', () => {
@@ -154,18 +165,30 @@ describe('ProviderErrorView', () => {
         paywallCta={{
           kind: 'topup',
           href: 'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
-          amountsCents: [2000, 5000, 10000, 20000],
+          amountsCents: [5000, 10000, 20000, 40000],
         }}
       />,
     )
-    expect(screen.getByRole('button', { name: '$20' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '$50' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '$100' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '$200' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /top up/i })).toBeInTheDocument()
+    // Amounts live in the dialog behind the single Add usage button.
+    expect(screen.queryByRole('button', { name: '$50' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /add usage/i }))
+    const dialog = screen.getByRole('dialog', { name: /add more usage credit/i })
+    expect(within(dialog).getByRole('tab', { name: /auto-refill/i })).toBeInTheDocument()
+    expect(within(dialog).getByRole('tab', { name: /one-time purchase/i })).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: '$50' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: '$100' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: '$200' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: '$400' })).toBeInTheDocument()
+
+    // A preset fills the amount field and arms Purchase.
+    const purchase = within(dialog).getByRole('button', { name: /^purchase$/i })
+    expect(purchase).toBeDisabled()
+    fireEvent.click(within(dialog).getByRole('button', { name: '$100' }))
+    expect(within(dialog).getByRole('spinbutton', { name: /amount in dollars/i })).toHaveValue(100)
+    expect(purchase).toBeEnabled()
   })
 
-  it('enables the custom Top up button only for a valid amount', () => {
+  it('enables Purchase only for a valid typed amount', () => {
     render(
       <ProviderErrorView
         presentation={{
@@ -181,14 +204,16 @@ describe('ProviderErrorView', () => {
         }}
       />,
     )
-    const input = screen.getByRole('spinbutton', { name: /custom top-up amount/i })
-    const topUp = screen.getByRole('button', { name: /top up/i })
+    fireEvent.click(screen.getByRole('button', { name: /add usage/i }))
+    const dialog = screen.getByRole('dialog', { name: /add more usage credit/i })
+    const input = within(dialog).getByRole('spinbutton', { name: /amount in dollars/i })
+    const purchase = within(dialog).getByRole('button', { name: /^purchase$/i })
 
-    expect(topUp).toBeDisabled()
+    expect(purchase).toBeDisabled()
     fireEvent.change(input, { target: { value: '5' } })
-    expect(topUp).toBeDisabled()
+    expect(purchase).toBeDisabled()
     fireEvent.change(input, { target: { value: '50' } })
-    expect(topUp).toBeEnabled()
+    expect(purchase).toBeEnabled()
   })
 
   it('renders a Go to billing button when the role is unknown', () => {

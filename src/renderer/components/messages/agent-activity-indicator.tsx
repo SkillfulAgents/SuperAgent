@@ -4,7 +4,8 @@ import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
 import { usePendingUserRequests } from '@renderer/hooks/use-pending-user-requests'
 import { apiFetch } from '@renderer/lib/api'
-import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
+import { ProviderErrorCard, ProviderErrorView } from '@renderer/components/ui/provider-error-card'
+import { useDevPaywallOverride } from '@renderer/components/dev/paywall-dev-override'
 import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
 import { isTurnStartingUserMessage } from './pending-message'
 import { useCallback, useMemo, useState } from 'react'
@@ -53,6 +54,9 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     isThinking,
   } = useMessageStream(sessionId, agentSlug)
   const { data: pendingUserRequests } = usePendingUserRequests(agentSlug, sessionId)
+  // Dev-only: the paywall dev panel can force a 402 card into this slot —
+  // always null in prod, where nothing ever sets the override.
+  const devPaywallOverride = useDevPaywallOverride()
 
   const [revoking, setRevoking] = useState(false)
   const [revokeError, setRevokeError] = useState(false)
@@ -244,11 +248,27 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
   )
 
 
+  if (devPaywallOverride) {
+    return (
+      <div className="mx-auto mb-5 w-full max-w-[740px] px-4">
+        <ProviderErrorView
+          presentation={devPaywallOverride.presentation}
+          paywallCta={devPaywallOverride.cta}
+          paywallLoading={devPaywallOverride.loading}
+          data-testid="dev-paywall-override"
+        />
+      </div>
+    )
+  }
+
   // Show error if present
   if (error) {
     const isProviderError = apiErrorCode != null && PROVIDER_ERROR_CODES.has(apiErrorCode)
+    // Paywall cards replace the composer (see SessionThread), so they carry
+    // the composer's bottom clearance themselves.
+    const hasPaywall = isProviderError && Boolean(errorPresentation?.paywall)
     return (
-      <div className="mx-auto mb-2 w-full max-w-[740px] px-4">
+      <div className={hasPaywall ? 'mx-auto mb-5 w-full max-w-[740px] px-4' : 'mx-auto mb-2 w-full max-w-[740px] px-4'}>
         {isProviderError ? (
           <ProviderErrorCard message={error} presentation={errorPresentation ?? undefined} />
         ) : (
