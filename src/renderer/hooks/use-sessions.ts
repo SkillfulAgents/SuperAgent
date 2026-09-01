@@ -3,6 +3,7 @@ import { useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useAgents, resolveRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
+import { applySessionActivityStatus, patchSessionInCaches } from '@renderer/lib/agent-cache'
 import type { ApiSession } from '@shared/lib/types/api'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { SessionDashboardDispatch } from '@shared/lib/dashboard-dispatch-schema'
@@ -114,13 +115,32 @@ export function useCreateSession() {
       // used to materialize the optimistic pending copy by exact id match.
       return res.json() as Promise<ApiSession & { initialMessageUuid: string }>
     },
-    onSuccess: (_, variables) => {
+    onSuccess: (created, variables) => {
       const origin = variables.origin ?? 'user'
       track('session_created', { origin })
       track('message_sent', { origin })
-      queryClient.invalidateQueries({
-        queryKey: ['sessions', resolveAgentSlugFromCache(queryClient, variables.agentSlug)],
-      })
+      const resolvedSlug = resolveAgentSlugFromCache(queryClient, variables.agentSlug)
+      // Seed the caches from the response so the sidebar row and the session
+      // view render immediately instead of waiting a refetch round-trip. The
+      // new session is live, and the server sorts live sessions first, so
+      // prepending approximates its refetched position. (The extra
+      // initialMessageUuid field is a harmless superset of ApiSession.)
+      queryClient.setQueryData<ApiSession>(['session', created.id, resolvedSlug], created)
+      queryClient.setQueryData<ApiSession[]>(['sessions', resolvedSlug], (sessions) => (
+        sessions && !sessions.some((s) => s.id === created.id)
+          ? [created, ...sessions]
+          : sessions
+      ))
+      // The seeds are create-TIME snapshots and setQueryData marks them fresh —
+      // on a fast turn (E2E mock; a quick real reply) the session can change
+      // (schedule a wake, go idle) BEFORE this onSuccess runs, and the
+      // session_updated invalidation that announced it then predates the seed:
+      // without re-marking stale here, the detail entry would pin that stale
+      // snapshot (no poll refreshes it) and the pending-wake banner never
+      // appears. Invalidate both so the seed renders instantly while the
+      // refetch right behind it stays authoritative.
+      queryClient.invalidateQueries({ queryKey: ['session', created.id] })
+      queryClient.invalidateQueries({ queryKey: ['sessions', resolvedSlug] })
     },
   })
 }
@@ -155,7 +175,16 @@ export function useUpdateSessionName() {
       if (!res.ok) throw new Error('Failed to update session name')
       return res.json() as Promise<ApiSession>
     },
-    onSuccess: (_, variables) => {
+    onSuccess: (updated, variables) => {
+      // Write the rename through the caches so the row doesn't flash back to
+      // the old name while the list refetch is in flight. Name only — status
+      // flags keep flowing through their own optimistic echoes.
+      patchSessionInCaches(queryClient, variables.agentSlug, updated.id, (session) => (
+        session.name === updated.name ? session : { ...session, name: updated.name }
+      ))
+      // The write-through bumped the patched entries' freshness — re-mark them
+      // stale so concurrent server-side changes still refetch on mount.
+      queryClient.invalidateQueries({ queryKey: ['session', updated.id] })
       queryClient.invalidateQueries({
         queryKey: ['sessions', resolveAgentSlugFromCache(queryClient, variables.agentSlug)],
       })
@@ -201,11 +230,15 @@ export function useSetSessionMarkedUnread() {
 
 /**
  * Drop a session's unread dot from every cache that renders it: the agent's
- * session lists (full list and notable slice), the single-session entry, and
- * the agent-level rollup — which only comes down once no OTHER cached session
- * of that agent is still unread. The server write follows on its own; clearing
- * the caches up front is what makes opening a session feel instant instead of
- * holding the dot for a roundtrip plus a session-list refetch.
+ * session lists, the single-session entries, and the agent-level rollup —
+ * which only comes down once no OTHER cached session of that agent is still
+ * unread. The server write follows on its own; clearing the caches up front
+ * is what makes opening a session feel instant instead of holding the dot for
+ * a roundtrip plus a session-list refetch.
+ *
+ * A thin delegate: applySessionActivityStatus owns the traversal, aliasing,
+ * and rollup guards, so the raise (SSE notification) and clear (session open)
+ * directions can never drift apart again.
  *
  * Returns whether a dot was actually showing, so a caller can tell a real
  * clear from the no-op that every other session open performs.
@@ -215,54 +248,9 @@ export function clearSessionUnreadInCache(
   agentSlug: string,
   sessionId: string,
 ): boolean {
-  const resolvedSlug = resolveAgentSlugFromCache(queryClient, agentSlug)
-  let cleared = false
-
-  // Everything under the prefix: the full list, the notable slice, and the
-  // automation slices (whose entries carry no unread flag, so they no-op).
-  queryClient.setQueriesData<unknown>({ queryKey: ['sessions', resolvedSlug] }, (data: unknown) => {
-    if (!Array.isArray(data)) return data
-    let changed = false
-    const next = data.map((entry) => {
-      const session = entry as ApiSession | null
-      if (!session || session.id !== sessionId || !session.hasUnreadNotifications) return entry
-      changed = true
-      return { ...session, hasUnreadNotifications: false }
-    })
-    if (!changed) return data
-    cleared = true
-    return next
+  return applySessionActivityStatus(queryClient, agentSlug, sessionId, {
+    hasUnreadNotifications: false,
   })
-
-  queryClient.setQueryData<ApiSession>(['session', sessionId, resolvedSlug], (session) => {
-    if (!session?.hasUnreadNotifications) return session
-    cleared = true
-    return { ...session, hasUnreadNotifications: false }
-  })
-
-  if (!cleared) return false
-
-  const anotherSessionIsUnread = queryClient
-    .getQueriesData<unknown>({ queryKey: ['sessions', resolvedSlug] })
-    .some(([, data]) =>
-      Array.isArray(data) &&
-      data.some((entry) => (entry as ApiSession | null)?.hasUnreadNotifications),
-    )
-  if (!anotherSessionIsUnread) {
-    queryClient.setQueryData<ApiAgent[]>(['agents'], (agents) =>
-      Array.isArray(agents)
-        ? agents.map((agent) =>
-            agent.slug === resolvedSlug && agent.hasUnreadNotifications
-              ? { ...agent, hasUnreadNotifications: false }
-              : agent,
-          )
-        : agents,
-    )
-    queryClient.setQueryData<ApiAgent>(['agents', resolvedSlug], (agent) =>
-      agent?.hasUnreadNotifications ? { ...agent, hasUnreadNotifications: false } : agent,
-    )
-  }
-  return true
 }
 
 /** Hook form of {@link clearSessionUnreadInCache}, bound to the active client. */

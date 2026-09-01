@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, cleanup } from '@testing-library/react'
+import { render, cleanup, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 // ---------------------------------------------------------------------------
@@ -403,6 +403,258 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     )
     expect(sessionCalls.length).toBe(1)
     expect((sessionCalls[0][0] as { queryKey: unknown[] }).queryKey).toEqual(['sessions', 'my-agent'])
+  })
+
+  it('session_input_provided optimistically clears the awaiting flag in every cached projection', () => {
+    const sessionBase = {
+      agentSlug: 'my-agent',
+      name: 'S',
+      createdAt: new Date(),
+      lastActivityAt: new Date(),
+      messageCount: 1,
+      isActive: true,
+    }
+    queryClient.setQueryData(['sessions', 'my-agent'], [
+      { ...sessionBase, id: 'sess-1', isAwaitingInput: true },
+      { ...sessionBase, id: 'sess-2' },
+    ])
+    queryClient.setQueryData(['session', 'sess-1', 'my-agent'], {
+      ...sessionBase, id: 'sess-1', isAwaitingInput: true,
+    })
+    const agentBase = { slug: 'my-agent', displaySlug: 'my-agent', name: 'My Agent', status: 'running' }
+    queryClient.setQueryData(['agents'], [{ ...agentBase, hasSessionsAwaitingInput: true }])
+    queryClient.setQueryData(['agents', 'my-agent'], { ...agentBase, hasSessionsAwaitingInput: true })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'session_input_provided',
+      agentSlug: 'my-agent',
+      sessionId: 'sess-1',
+    })
+
+    // Patched synchronously — no refetch round-trip involved.
+    const sessions = queryClient.getQueryData<{ id: string; isAwaitingInput?: boolean }[]>(['sessions', 'my-agent'])
+    expect(sessions?.[0].isAwaitingInput).toBe(false)
+    const detail = queryClient.getQueryData<{ isAwaitingInput?: boolean }>(['session', 'sess-1', 'my-agent'])
+    expect(detail?.isAwaitingInput).toBe(false)
+    const agents = queryClient.getQueryData<{ hasSessionsAwaitingInput?: boolean }[]>(['agents'])
+    expect(agents?.[0].hasSessionsAwaitingInput).toBe(false)
+    const agentDetail = queryClient.getQueryData<{ hasSessionsAwaitingInput?: boolean }>(['agents', 'my-agent'])
+    expect(agentDetail?.hasSessionsAwaitingInput).toBe(false)
+  })
+
+  it('session_awaiting_input optimistically raises the awaiting flag on session and rollup', () => {
+    const sessionBase = {
+      agentSlug: 'my-agent',
+      name: 'S',
+      createdAt: new Date(),
+      lastActivityAt: new Date(),
+      messageCount: 1,
+      isActive: true,
+    }
+    queryClient.setQueryData(['sessions', 'my-agent'], [{ ...sessionBase, id: 'sess-1' }])
+    queryClient.setQueryData(['agents'], [
+      { slug: 'my-agent', displaySlug: 'my-agent', name: 'My Agent', status: 'running' },
+    ])
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'session_awaiting_input',
+      agentSlug: 'my-agent',
+      sessionId: 'sess-1',
+    })
+
+    const sessions = queryClient.getQueryData<{ isAwaitingInput?: boolean }[]>(['sessions', 'my-agent'])
+    expect(sessions?.[0].isAwaitingInput).toBe(true)
+    const agents = queryClient.getQueryData<{ hasSessionsAwaitingInput?: boolean }[]>(['agents'])
+    expect(agents?.[0].hasSessionsAwaitingInput).toBe(true)
+  })
+
+  it('session_idle optimistically clears working AND awaiting flags (teardown broadcasts no input_provided)', () => {
+    const sessionBase = {
+      agentSlug: 'my-agent',
+      name: 'S',
+      createdAt: new Date(),
+      lastActivityAt: new Date(),
+      messageCount: 1,
+    }
+    queryClient.setQueryData(['sessions', 'my-agent'], [
+      { ...sessionBase, id: 'sess-1', isActive: true, isAwaitingInput: true },
+    ])
+    queryClient.setQueryData(['agents'], [
+      {
+        slug: 'my-agent',
+        displaySlug: 'my-agent',
+        name: 'My Agent',
+        status: 'running',
+        hasActiveSessions: true,
+        hasSessionsAwaitingInput: true,
+      },
+    ])
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'session_idle',
+      agentSlug: 'my-agent',
+      sessionId: 'sess-1',
+      isActive: false,
+    })
+
+    const sessions = queryClient.getQueryData<{ isActive?: boolean; isAwaitingInput?: boolean }[]>(['sessions', 'my-agent'])
+    expect(sessions?.[0]).toMatchObject({ isActive: false, isAwaitingInput: false })
+    const agents = queryClient.getQueryData<{ hasActiveSessions?: boolean; hasSessionsAwaitingInput?: boolean }[]>(['agents'])
+    expect(agents?.[0]).toMatchObject({ hasActiveSessions: false, hasSessionsAwaitingInput: false })
+  })
+
+  it('actionable os_notification optimistically raises the unread dot on session and agent', () => {
+    queryClient.setQueryData(['sessions', 'my-agent'], [
+      {
+        id: 'sess-1',
+        agentSlug: 'my-agent',
+        name: 'S',
+        createdAt: new Date(),
+        lastActivityAt: new Date(),
+        messageCount: 1,
+        isActive: false,
+      },
+    ])
+    queryClient.setQueryData(['agents'], [
+      { slug: 'my-agent', displaySlug: 'my-agent', name: 'My Agent', status: 'running' },
+    ])
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'os_notification',
+      notificationType: 'session_complete',
+      sessionId: 'sess-1',
+      agentSlug: 'my-agent',
+      title: 'Done',
+      body: 'Session complete',
+    })
+
+    const sessions = queryClient.getQueryData<{ hasUnreadNotifications?: boolean }[]>(['sessions', 'my-agent'])
+    expect(sessions?.[0].hasUnreadNotifications).toBe(true)
+    const agents = queryClient.getQueryData<{ hasUnreadNotifications?: boolean }[]>(['agents'])
+    expect(agents?.[0].hasUnreadNotifications).toBe(true)
+  })
+
+  it('does not raise the unread dot when the popup is suppressed by the active session view', async () => {
+    // Viewing sess-1 with the tab visible — the handler marks the record read
+    // instead of popping, so the dot must not be raised either.
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'visible',
+    })
+    const { useRouteLocation } = await import('@renderer/router/use-route-location')
+    vi.mocked(useRouteLocation).mockReturnValue({
+      view: { kind: 'session', id: 'sess-1' },
+      setAgent: vi.fn(),
+    } as unknown as ReturnType<typeof useRouteLocation>)
+
+    queryClient.setQueryData(['sessions', 'my-agent'], [
+      {
+        id: 'sess-1',
+        agentSlug: 'my-agent',
+        name: 'S',
+        createdAt: new Date(),
+        lastActivityAt: new Date(),
+        messageCount: 1,
+        isActive: false,
+      },
+    ])
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'os_notification',
+      notificationType: 'session_complete',
+      notificationId: 'notif-1',
+      sessionId: 'sess-1',
+      agentSlug: 'my-agent',
+      title: 'Done',
+      body: 'Session complete',
+    })
+
+    const sessions = queryClient.getQueryData<{ hasUnreadNotifications?: boolean }[]>(['sessions', 'my-agent'])
+    expect(sessions?.[0].hasUnreadNotifications).toBeUndefined()
+  })
+
+  it('suppressed notification clears an already-cached unread dot once the record is marked read', async () => {
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'visible',
+    })
+    const { useRouteLocation } = await import('@renderer/router/use-route-location')
+    vi.mocked(useRouteLocation).mockReturnValue({
+      view: { kind: 'session', id: 'sess-1' },
+      setAgent: vi.fn(),
+    } as unknown as ReturnType<typeof useRouteLocation>)
+
+    // Simulates the top-of-case ['sessions'] refetch having landed with the
+    // server's committed unread row while the user is watching the session.
+    queryClient.setQueryData(['sessions', 'my-agent'], [
+      {
+        id: 'sess-1',
+        agentSlug: 'my-agent',
+        name: 'S',
+        createdAt: new Date(),
+        lastActivityAt: new Date(),
+        messageCount: 1,
+        isActive: false,
+        hasUnreadNotifications: true,
+      },
+    ])
+    queryClient.setQueryData(['agents'], [
+      { slug: 'my-agent', displaySlug: 'my-agent', name: 'My Agent', status: 'running', hasUnreadNotifications: true },
+    ])
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'os_notification',
+      notificationType: 'session_complete',
+      notificationId: 'notif-1',
+      sessionId: 'sess-1',
+      agentSlug: 'my-agent',
+      title: 'Done',
+      body: 'Session complete',
+    })
+
+    // The mark-read POST is async — the dot comes off once it resolves.
+    await waitFor(() => {
+      const sessions = queryClient.getQueryData<{ hasUnreadNotifications?: boolean }[]>(['sessions', 'my-agent'])
+      expect(sessions?.[0].hasUnreadNotifications).toBe(false)
+    })
+    const agents = queryClient.getQueryData<{ hasUnreadNotifications?: boolean }[]>(['agents'])
+    expect(agents?.[0].hasUnreadNotifications).toBe(false)
   })
 
   it('platform_notifications_changed refreshes the proxy-live inbox queries', () => {

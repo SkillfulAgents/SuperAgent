@@ -1621,12 +1621,28 @@ class MessagePersister {
 
     console.log(`[MessagePersister] Promoted automated session ${sessionId} to interactive (agent: ${agentSlug})`)
 
-    // Re-broadcast so the sidebar refetches sessions now that the metadata is updated
-    this.broadcastGlobal({
-      type: 'session_awaiting_input',
-      sessionId,
-      agentSlug,
-    })
+    // Re-broadcast so the sidebar refetches sessions now that the metadata is
+    // updated. Clients echo session_awaiting_input into their caches as a
+    // STATE assertion (working + awaiting), so only send it when the session
+    // truly is awaiting — this promote also runs when a human messages a
+    // settled automation (agents.ts message route), where asserting awaiting
+    // would paint every indicator wrong until the next refetch.
+    // session_updated is the assertion-free refetch nudge for that case; the
+    // session_active from the message delivery right behind it refreshes the
+    // agent rollups.
+    if (state?.isActive && state.isAwaitingInput) {
+      this.broadcastGlobal({
+        type: 'session_awaiting_input',
+        sessionId,
+        agentSlug,
+      })
+    } else {
+      this.broadcastGlobal({
+        type: 'session_updated',
+        sessionId,
+        agentSlug,
+      })
+    }
   }
 
   private persistAutomationStatus(
