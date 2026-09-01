@@ -24,9 +24,11 @@ import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { setMountWarning } from '@renderer/hooks/use-mount-warnings'
 import {
   applyDashboardRuntimeStatus,
+  applySessionActivityStatus,
   invalidateAgentArtifacts,
   markDashboardScreenshotReady,
   updateAgentRuntimeCache,
+  type SessionStatusPatch,
 } from '@renderer/lib/agent-cache'
 import type { UserSettingsData } from '@shared/lib/services/user-settings-service'
 import {
@@ -281,6 +283,22 @@ export function GlobalNotificationHandler() {
             // 2. User's notification settings allow this type
             // 3. App not active OR not viewing the notification's session
             if (typeEnabled && !suppressedByActiveView) {
+              // Optimistic raise of the unread dot for the user-actionable
+              // types that set it server-side — the mirror of the already-
+              // optimistic clear (clearSessionUnreadInCache). Only here: the
+              // suppressed branch below marks the record read instead, and
+              // for disabled types the server-side gate creates no record.
+              // The sessions refetch invalidated above confirms; the agent
+              // rollup is confirmed by the accompanying session lifecycle
+              // event's ['agents'] invalidation (or the 60s poll).
+              if (
+                (notificationType === 'session_complete' || notificationType === 'session_waiting')
+                && agentSlug && notificationSessionId
+              ) {
+                applySessionActivityStatus(queryClient, agentSlug, notificationSessionId, {
+                  hasUnreadNotifications: true,
+                })
+              }
               const { title, body } = data as { title: string; body: string }
               // Validate actions at the SSE boundary. A malicious / buggy
               // broadcaster can't inject a 1000-button notification with
@@ -346,6 +364,24 @@ export function GlobalNotificationHandler() {
             // Session state changed - update sessions list in sidebar
             // Scope invalidation to the specific agent to avoid flashing "working" on other agents
             const eventAgentSlug = data.agentSlug as string | undefined
+            const eventSessionId = data.sessionId as string | undefined
+            // Optimistic echo for the status flip: the invalidations below
+            // trigger refetches of very different cost (session list, agent
+            // detail, full agents list), so without this the session row, the
+            // header pill, and the agent row flip seconds apart as each
+            // refetch lands. Patch every cached projection first; the
+            // refetches stay authoritative. Idle/error also clear awaiting:
+            // turn teardown resets it server-side WITHOUT broadcasting
+            // session_input_provided, so an idle echo that left it cached
+            // would strand the orange dot until the refetch.
+            if (eventAgentSlug && eventSessionId) {
+              const statusPatch: SessionStatusPatch =
+                data.type === 'session_active' ? { isActive: true }
+                : data.type === 'session_awaiting_input' ? { isActive: true, isAwaitingInput: true }
+                : data.type === 'session_input_provided' ? { isAwaitingInput: false }
+                : { isActive: false, isAwaitingInput: false } // session_idle / session_error
+              applySessionActivityStatus(queryClient, eventAgentSlug, eventSessionId, statusPatch)
+            }
             if (eventAgentSlug) {
               queryClient.invalidateQueries({ queryKey: ['sessions', eventAgentSlug] })
             } else {

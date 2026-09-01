@@ -111,12 +111,22 @@ export function useCreateSession() {
       // used to materialize the optimistic pending copy by exact id match.
       return res.json() as Promise<ApiSession & { initialMessageUuid: string }>
     },
-    onSuccess: (_, variables) => {
+    onSuccess: (created, variables) => {
       track('session_created')
       track('message_sent')
-      queryClient.invalidateQueries({
-        queryKey: ['sessions', resolveAgentSlugFromCache(queryClient, variables.agentSlug)],
-      })
+      const resolvedSlug = resolveAgentSlugFromCache(queryClient, variables.agentSlug)
+      // Seed the caches from the response so the sidebar row and the session
+      // view render immediately instead of waiting a refetch round-trip. The
+      // new session is live, and the server sorts live sessions first, so
+      // prepending approximates its refetched position. (The extra
+      // initialMessageUuid field is a harmless superset of ApiSession.)
+      queryClient.setQueryData<ApiSession>(['session', created.id, resolvedSlug], created)
+      queryClient.setQueryData<ApiSession[]>(['sessions', resolvedSlug], (sessions) => (
+        sessions && !sessions.some((s) => s.id === created.id)
+          ? [created, ...sessions]
+          : sessions
+      ))
+      queryClient.invalidateQueries({ queryKey: ['sessions', resolvedSlug] })
     },
   })
 }
@@ -151,10 +161,25 @@ export function useUpdateSessionName() {
       if (!res.ok) throw new Error('Failed to update session name')
       return res.json() as Promise<ApiSession>
     },
-    onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({
-        queryKey: ['sessions', resolveAgentSlugFromCache(queryClient, variables.agentSlug)],
-      })
+    onSuccess: (updated, variables) => {
+      const resolvedSlug = resolveAgentSlugFromCache(queryClient, variables.agentSlug)
+      // Write the rename through the caches so the row doesn't flash back to
+      // the old name while the list refetch is in flight. Name only — status
+      // flags keep flowing through their own optimistic echoes.
+      queryClient.setQueriesData<unknown>({ queryKey: ['sessions', resolvedSlug] }, (data: unknown) => (
+        Array.isArray(data)
+          ? data.map((entry) => {
+              const session = entry as ApiSession | null
+              return session?.id === updated.id && session.name !== updated.name
+                ? { ...session, name: updated.name }
+                : entry
+            })
+          : data
+      ))
+      queryClient.setQueryData<ApiSession>(['session', updated.id, resolvedSlug], (session) => (
+        session && session.name !== updated.name ? { ...session, name: updated.name } : session
+      ))
+      queryClient.invalidateQueries({ queryKey: ['sessions', resolvedSlug] })
     },
   })
 }
