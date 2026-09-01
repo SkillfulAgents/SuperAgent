@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and provided the correct response within the time limit.",
+  "reason": "Verified browser-use feature: agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it back to the user.",
   "steps": [
-    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application home page with sidebar showing agents list.",
-    "Found and clicked \"QA-20260901-011017-zpaq\" agent in sidebar — Successfully opened the agent's chat page with session titled \"Browser Navigation and Page Title Retrieval\".",
-    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully submitted to the agent, which began processing.",
-    "Waited for agent response — Agent completed within 9 seconds (well under the 3-minute limit). Browser preview panel appeared on the right side showing the Example Domain page in real-time.",
-    "Verified response mentions \"Example Domain\" — Response correctly states: 'The page title is \"Example Domain\" — it's the standard IANA placeholder page, with a short note that the domain is for use in documentation examples and a \"Learn more\" link. Browser is closed.'"
+    "Step 1 - Navigated to http://localhost:47891 — Successfully loaded Gamut application with sidebar showing agents list",
+    "Step 2 - Clicked on \"QA-20260901-012658-jewl\" agent in sidebar — Successfully opened agent page with message input ready",
+    "Step 3 - Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully transmitted and visible in chat session titled \"Browser Page Title Lookup\"",
+    "Step 4 - Waited up to 3 minutes for agent response — Agent completed processing in 9 seconds, using 4 tool calls and 188,887 tokens",
+    "Step 5 - Verified response mentions \"Example Domain\" — Response confirms: \"The page title is 'Example Domain' — the page just has that heading, a short line about the domain being for documentation examples, and a 'Learn more' link. Browser is closed.\""
   ],
   "bugs": [],
-  "durationMs": 79150,
-  "sessionId": "0c13b23b-6db9-4529-8a8b-d6c7fbe8bee5",
+  "durationMs": 272027,
+  "sessionId": "c06c9af7-7b08-43d3-b8e0-236f5a99e02c",
   "cost": {
-    "inputTokens": 444,
-    "outputTokens": 11031,
-    "cacheCreationTokens": 78094,
-    "cacheReadTokens": 1344914,
+    "inputTokens": 450,
+    "outputTokens": 14717,
+    "cacheCreationTokens": 127373,
+    "cacheReadTokens": 1351101,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.287708
+    "totalCostUsd": 0.368361
   }
 }
