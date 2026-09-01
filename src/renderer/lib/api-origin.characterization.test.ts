@@ -95,6 +95,9 @@ const PINNED_CALL_SITES: Record<string, string> = {
     'prebuilt `src` on a parsed tool-result document: a data: URL for an inline ' +
     'PDF, or the session media URL that parse-tool-result.ts composes from ' +
     'getApiBaseUrl() (the same address the <img> refs load from)',
+  'lib/auth-client.ts::authFetch::fetch(input)':
+    'prebuilt better-auth request URL; its client composes this from the ' +
+    'getApiBaseUrl()-derived baseURL passed during lazy construction',
   // Not third-party — this one IS our API, reached over ws:// instead of http://.
   'hooks/use-browser-stream.ts::useBrowserStream::WebSocket(wsUrl)':
     'the only site that does scheme surgery: it splits getApiBaseUrl() into a ' +

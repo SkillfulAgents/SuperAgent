@@ -181,13 +181,20 @@ describe('which recovery AuthGate offers when there is no session', () => {
     expect(getByText('Loading...')).toBeInTheDocument()
   })
 
-  it('overlays the asleep prompt while keeping the app mounted underneath', () => {
+  it('keeps the app mounted when an asleep response clears the auth session', () => {
     vi.stubGlobal('__AUTH_MODE__', true)
     setActiveTarget('local', null)
     setUser({ ...unauthenticated, isAuthenticated: true })
-    _markWorkspaceAsleepForTest()
 
-    const { getByTestId, getByText } = render(
+    const { getByTestId, getByText, queryByTestId, rerender } = render(
+      <AuthGate>
+        <div>app</div>
+      </AuthGate>,
+    )
+
+    act(() => _markWorkspaceAsleepForTest())
+    setUser(unauthenticated)
+    rerender(
       <AuthGate>
         <div>app</div>
       </AuthGate>,
@@ -195,6 +202,7 @@ describe('which recovery AuthGate offers when there is no session', () => {
 
     expect(getByTestId('workspace-asleep-overlay')).toBeInTheDocument()
     expect(getByText('app')).toBeInTheDocument()
+    expect(queryByTestId('auth-page')).not.toBeInTheDocument()
   })
 
   it('offers the login form for a web deployment', () => {
