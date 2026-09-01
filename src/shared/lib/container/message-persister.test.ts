@@ -4268,7 +4268,7 @@ describe('MessagePersister', () => {
         // on a session that is NOT awaiting. Clients echo session_awaiting_input
         // into their caches as STATE (working + orange dot), so that promote
         // must send the assertion-free refetch nudge instead.
-        await messagePersister.promoteAutomatedSession(PROMOTE_SESSION, PROMOTE_AGENT)
+        await messagePersister.promoteAutomatedSession(PROMOTE_AGENT, PROMOTE_SESSION)
 
         const forSession = (e: { sessionId?: string; agentSlug?: string }) =>
           e.sessionId === PROMOTE_SESSION || e.agentSlug === PROMOTE_AGENT
