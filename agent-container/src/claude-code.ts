@@ -761,6 +761,11 @@ export class ClaudeCodeProcess extends EventEmitter {
         'CronCreate', 'CronDelete', 'CronList',
         'ScheduleWakeup', 'RemoteTrigger', 'PushNotification',
         'EnterWorktree', 'ExitWorktree',
+        // CLI 2.1.257+ registers ListAgents: it discovers "other local Claude
+        // sessions on this machine", which inside the container means this
+        // agent's other sessions — cross-session messaging we neither want nor
+        // surface. SendMessage stays: it is how a spawned subagent is continued.
+        'ListAgents',
         // Suppress native WebSearch only when a host vendor is active; it's replaced by mcp__web__web_search.
         ...(this.webSearchProvider ? ['WebSearch'] : []),
         // Same for native WebFetch → mcp__web__web_fetch when a host fetch vendor is active.

@@ -698,4 +698,50 @@ describe('session-media', () => {
       expect((await collectStream(blob!.stream)).equals(BIG_PNG)).toBe(true)
     })
   })
+
+  describe('pdf documents', () => {
+    const PDF_MAGIC = Buffer.from('%PDF-1.7\n')
+    const BIG_PDF = fakeImage(PDF_MAGIC, 48 * 1024, 0x31)
+    function documentBlock(bytes: Buffer) {
+      return {
+        type: 'document',
+        source: { type: 'base64', media_type: 'application/pdf', data: bytes.toString('base64') },
+      }
+    }
+
+    it('replaces a tool-result PDF with a ref that serves application/pdf', async () => {
+      const { entry, file } = await stripRow([toolResultEntry('u1', 't1', [documentBlock(BIG_PDF)])], 0)
+      const [ref] = refsIn(entry)
+      expect(ref).toMatchObject({ type: 'media_ref', mimeType: 'application/pdf', bytes: BIG_PDF.length })
+      expect(ref!.width).toBeUndefined()
+      expect(ref!.height).toBeUndefined()
+      const blob = await openMediaBlob(file, decodeMediaRef(ref!.id)!)
+      expect(blob!.mimeType).toBe('application/pdf')
+      expect(blob!.bytes).toBe(BIG_PDF.length)
+      expect((await collectStream(blob!.stream)).equals(BIG_PDF)).toBe(true)
+    })
+
+    it('keeps a small PDF inline', async () => {
+      const { entry } = await stripRow(
+        [toolResultEntry('u1', 't1', [documentBlock(fakeImage(PDF_MAGIC, 1024, 0x31))])],
+        0
+      )
+      expect(refsIn(entry)).toEqual([])
+    })
+
+    it('leaves a document block that is not a base64 PDF inline', async () => {
+      const block = {
+        type: 'document',
+        source: { type: 'text', media_type: 'text/plain', data: 'x'.repeat(40 * 1024) },
+      }
+      const { entry } = await stripRow([toolResultEntry('u1', 't1', [block])], 0)
+      expect(refsIn(entry)).toEqual([])
+    })
+
+    it('refuses to mint a ref for a document whose bytes are not a PDF', async () => {
+      const notPdf = fakeImage(Buffer.from('HELLO'), 40 * 1024)
+      const { entry } = await stripRow([toolResultEntry('u1', 't1', [documentBlock(notPdf)])], 0)
+      expect(refsIn(entry)).toEqual([])
+    })
+  })
 })

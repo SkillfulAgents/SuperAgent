@@ -1,9 +1,13 @@
 
 import { cn } from '@shared/lib/utils/cn'
-import { Check, X, Ban, ChevronDown, ChevronRight, ImageOff, Loader2, Search } from 'lucide-react'
-import { useState, useRef, useMemo, memo } from 'react'
+import { Check, X, Ban, ChevronDown, ChevronRight, FileText, ImageOff, Loader2, Search } from 'lucide-react'
+import { useState, useRef, useMemo, useEffect, memo } from 'react'
 import { getToolRenderer } from './tool-renderers'
-import { parseToolResult, type ParsedToolResultImage } from '@renderer/lib/parse-tool-result'
+import {
+  parseToolResult,
+  type ParsedToolResultDocument,
+  type ParsedToolResultImage,
+} from '@renderer/lib/parse-tool-result'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
 import type { ApiToolCall } from '@shared/lib/types/api'
@@ -180,6 +184,99 @@ function ToolResultImage({ image }: { image: ParsedToolResultImage }) {
   )
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+type DocumentLoadState = { status: 'loading' } | { status: 'failed' } | { status: 'ready'; url: string }
+
+/** A tool result's PDF (the Read tool on a .pdf), shown in the browser's own
+ * viewer. Like images, this mounts only in the expanded branch, so nothing is
+ * fetched for a collapsed call.
+ *
+ * The bytes are fetched here and handed to the frame as a blob: URL rather
+ * than pointing the frame at the source directly: a fetch fails observably (an
+ * iframe's failure is not — a 410 from the media endpoint would paint its JSON
+ * error inside the card), and the inline and fetched shapes converge on one
+ * URL kind that the viewer renders reliably (a data: frame is not). */
+function ToolResultDocument({ document }: { document: ParsedToolResultDocument }) {
+  const [state, setState] = useState<DocumentLoadState>({ status: 'loading' })
+  const [attempt, setAttempt] = useState(0)
+
+  useEffect(() => {
+    let cancelled = false
+    let objectUrl: string | null = null
+    const controller = new AbortController()
+    setState({ status: 'loading' })
+    ;(async () => {
+      try {
+        // Same request shape as apiFetch (and the <img> above): the API base
+        // is already in `src`, and credentials follow the browser default.
+        const response = await fetch(document.src, { signal: controller.signal })
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const bytes = await response.blob()
+        if (cancelled) return
+        objectUrl = URL.createObjectURL(new Blob([bytes], { type: document.mimeType }))
+        setState({ status: 'ready', url: objectUrl })
+      } catch {
+        if (!cancelled) setState({ status: 'failed' })
+      }
+    })()
+    return () => {
+      cancelled = true
+      controller.abort()
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [document.src, document.mimeType, attempt])
+
+  const label = document.title ?? 'PDF document'
+
+  if (state.status === 'failed') {
+    return (
+      <div
+        role="status"
+        aria-live="polite"
+        className="flex items-center gap-2 rounded border border-dashed border-border/70 px-3 py-2 text-xs text-muted-foreground"
+      >
+        <FileText className="h-3.5 w-3.5 shrink-0" />
+        <span>Couldn&apos;t load {label}</span>
+        <button
+          type="button"
+          onClick={() => setAttempt((n) => n + 1)}
+          className="underline underline-offset-2 hover:text-foreground transition-colors"
+        >
+          Retry
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="overflow-hidden rounded border" data-testid="tool-result-document">
+      <div className="flex items-center gap-2 border-b border-border/70 bg-background px-2 py-1 text-xs text-muted-foreground">
+        <FileText className="h-3.5 w-3.5 shrink-0" />
+        <span className="truncate">{label}</span>
+        {document.bytes !== undefined && (
+          <span className="ml-auto shrink-0 tabular-nums">{formatBytes(document.bytes)}</span>
+        )}
+      </div>
+      <div className="relative h-[28rem] w-full bg-background">
+        {state.status === 'loading' && <Skeleton className="absolute inset-0 h-full w-full rounded-none" />}
+        {state.status === 'ready' && (
+          <iframe
+            key={attempt}
+            src={state.url}
+            title={label}
+            className="h-full w-full border-0"
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
 function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, sessionId, isSessionActive }: ToolCallItemProps) {
   const [expanded, setExpanded] = useState(false)
   const status = getStatus(toolCall, isSessionActive)
@@ -204,6 +301,7 @@ function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, sessionI
   )
   const resultStr = parsed.text
   const resultImages = parsed.images
+  const resultDocuments = parsed.documents
 
   // Get custom expanded view if available
   const CustomExpandedView = renderer?.ExpandedView
@@ -304,6 +402,14 @@ function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, sessionI
             <div className="mt-2 space-y-2">
               {resultImages.map((img, i) => (
                 <ToolResultImage key={`${i}:${img.src}`} image={img} />
+              ))}
+            </div>
+          )}
+          {/* Render PDFs (Read on a .pdf) from tool results */}
+          {resultDocuments.length > 0 && (
+            <div className="mt-2 space-y-2">
+              {resultDocuments.map((doc, i) => (
+                <ToolResultDocument key={`${i}:${doc.src}`} document={doc} />
               ))}
             </div>
           )}

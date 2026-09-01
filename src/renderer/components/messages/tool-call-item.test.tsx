@@ -18,7 +18,8 @@ mockParseToolResult.mockImplementation((result: unknown) => ({
   images: [],
 }))
 vi.mock('@renderer/lib/parse-tool-result', () => ({
-  parseToolResult: (result: unknown) => mockParseToolResult(result),
+  // Older cases in this file describe results without `documents`; fill it the way the real parser always does.
+  parseToolResult: (result: unknown) => ({ documents: [], ...mockParseToolResult(result) }),
 }))
 
 // Mock useElapsedTimer for deterministic values
@@ -298,5 +299,67 @@ describe('ToolCallItem result images', () => {
     )
     await userEvent.click(screen.getByRole('button'))
     expect(container.querySelector('img')).toHaveAttribute('src', 'data:image/png;base64,abc')
+  })
+})
+
+describe('ToolCallItem result documents', () => {
+  const refPdf = {
+    src: '/api/agents/a/sessions/s/media/ref-pdf',
+    mimeType: 'application/pdf' as const,
+    bytes: 200_000,
+    title: 'report.pdf',
+    isRef: true,
+  }
+
+  const originalFetch = globalThis.fetch
+  const originalCreateObjectURL = URL.createObjectURL
+  const originalRevokeObjectURL = URL.revokeObjectURL
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    URL.createObjectURL = originalCreateObjectURL
+    URL.revokeObjectURL = originalRevokeObjectURL
+    mockParseToolResult.mockImplementation((result: unknown) => ({
+      text: result != null ? String(result) : null,
+      images: [],
+    }))
+  })
+
+  function stubFetch(response: { ok: boolean; status: number }) {
+    const fetchMock = vi.fn(async () => ({
+      ...response,
+      blob: async () => new Blob(['%PDF-1.7'], { type: 'application/pdf' }),
+    }))
+    globalThis.fetch = fetchMock as unknown as typeof fetch
+    URL.createObjectURL = vi.fn(() => 'blob:pdf-1')
+    URL.revokeObjectURL = vi.fn()
+    return fetchMock
+  }
+
+  it('fetches a referenced PDF only once expanded and shows it in a frame', async () => {
+    const fetchMock = stubFetch({ ok: true, status: 200 })
+    mockParseToolResult.mockReturnValue({ text: 'done', images: [], documents: [refPdf] })
+    const { container } = render(
+      <ToolCallItem toolCall={createToolCall({ name: 'Read', result: 'done' })} />
+    )
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    await userEvent.click(screen.getByRole('button'))
+    expect(fetchMock).toHaveBeenCalledWith(refPdf.src, expect.anything())
+    const frame = await screen.findByTitle('report.pdf')
+    expect(frame.tagName).toBe('IFRAME')
+    expect(frame).toHaveAttribute('src', 'blob:pdf-1')
+    expect(container.querySelector('[data-testid="tool-result-document"]')).toHaveTextContent('195 KB')
+  })
+
+  it('offers a retry when the PDF cannot be fetched', async () => {
+    const fetchMock = stubFetch({ ok: false, status: 410 })
+    mockParseToolResult.mockReturnValue({ text: 'done', images: [], documents: [refPdf] })
+    render(<ToolCallItem toolCall={createToolCall({ name: 'Read', result: 'done' })} />)
+    await userEvent.click(screen.getByRole('button'))
+
+    expect(await screen.findByText(/couldn't load report\.pdf/i)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /retry/i }))
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 })

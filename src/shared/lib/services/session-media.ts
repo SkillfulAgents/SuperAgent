@@ -168,17 +168,32 @@ function isValidBase64Length(length: number, pad: number): boolean {
   return pad === 0 || length % 4 === 0
 }
 
-interface ImageBlockLike {
+interface MediaBlockLike {
   type: string
   source?: { type?: string; media_type?: string; data?: string }
   data?: string
   mimeType?: string
 }
 
-/** The base64 payload and declared type of an image block, in either shape the
- * transcripts use: Anthropic's `{source: {data, media_type}}` and MCP's
- * `{data, mimeType}`. */
-function imagePayload(block: ImageBlockLike): { data: string; mimeType: string } | undefined {
+const PDF_MIME = 'application/pdf'
+
+/** The base64 payload and declared type of an image or PDF document block, in
+ * either shape the transcripts use: Anthropic's `{source: {data, media_type}}`
+ * and MCP's `{data, mimeType}`. A `document` block is the Read tool's result
+ * for a .pdf (SDK >= 0.3.243 puts it inside the tool_result), and a whole PDF
+ * is the largest payload a transcript row carries. */
+function mediaPayload(block: MediaBlockLike): { data: string; mimeType: string } | undefined {
+  if (block.type === 'document') {
+    if (
+      block.source?.type === 'base64' &&
+      block.source.media_type === PDF_MIME &&
+      typeof block.source.data === 'string' &&
+      block.source.data.length > 0
+    ) {
+      return { data: block.source.data, mimeType: PDF_MIME }
+    }
+    return undefined
+  }
   if (block.type !== 'image') return undefined
   if (typeof block.source?.data === 'string' && block.source.data.length > 0) {
     return { data: block.source.data, mimeType: block.source.media_type || 'image/png' }
@@ -247,8 +262,8 @@ export function replaceInlineMediaWithRefs(entry: JsonlEntry, ctx: MediaRefConte
   // so repeated identical images resolve to distinct spans.
   let cursor = 0
 
-  const refFor = (block: ImageBlockLike): MediaRefBlock | undefined => {
-    const payload = imagePayload(block)
+  const refFor = (block: MediaBlockLike): MediaRefBlock | undefined => {
+    const payload = mediaPayload(block)
     if (!payload) return undefined
     const pad = payload.data.endsWith('==') ? 2 : payload.data.endsWith('=') ? 1 : 0
     // A payload whose length is not a whole base64 quantum decodes to a
@@ -267,9 +282,9 @@ export function replaceInlineMediaWithRefs(entry: JsonlEntry, ctx: MediaRefConte
     // all, and the dimensions ride along on the wire.
     const probeChars = Math.min(payload.data.length, DIMENSION_PROBE_BYTES * 2) & ~3
     const header = Buffer.from(payload.data.slice(0, probeChars), 'base64')
-    const mimeType = sniffImageType(header)
+    const mimeType = sniffMediaType(header)
     if (!mimeType) return undefined
-    const size = imageDimensions(header)
+    const size = mimeType === PDF_MIME ? undefined : imageDimensions(header)
     const at = findPayload(ctx.line, payload.data, cursor)
     if (at === -1) return undefined
     cursor = at + payload.data.length
@@ -295,14 +310,14 @@ export function replaceInlineMediaWithRefs(entry: JsonlEntry, ctx: MediaRefConte
   if (Array.isArray(message?.content)) {
     const content = message.content as unknown[]
     for (let i = 0; i < content.length; i++) {
-      const block = content[i] as ImageBlockLike & { content?: unknown }
+      const block = content[i] as MediaBlockLike & { content?: unknown }
       if (!block || typeof block !== 'object') continue
-      // Images inside a tool_result — the shape that reaches the wire as
-      // `toolCall.result`, and the reason this exists.
+      // Images and PDFs inside a tool_result — the shape that reaches the wire
+      // as `toolCall.result`, and the reason this exists.
       if (block.type === 'tool_result' && Array.isArray(block.content)) {
         const inner = block.content as unknown[]
         for (let j = 0; j < inner.length; j++) {
-          const ref = refFor(inner[j] as ImageBlockLike)
+          const ref = refFor(inner[j] as MediaBlockLike)
           if (ref) inner[j] = ref
         }
         continue
@@ -324,17 +339,21 @@ export function replaceInlineMediaWithRefs(entry: JsonlEntry, ctx: MediaRefConte
   }
 }
 
-/** Magic numbers of the raster types transcripts carry. SVG is deliberately
- * absent: it isn't sniffable and it executes script when served inline. */
-const IMAGE_SIGNATURES: Array<{ mimeType: string; magic: number[] }> = [
+/** Magic numbers of the raster types transcripts carry, plus PDF (the Read
+ * tool's document block). SVG is deliberately absent: it isn't sniffable and
+ * it executes script when served inline. A PDF is served as its own type, so
+ * the browser hands it to its sandboxed viewer rather than rendering it as a
+ * document of the app's origin. */
+const MEDIA_SIGNATURES: Array<{ mimeType: string; magic: number[] }> = [
   { mimeType: 'image/png', magic: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] },
   { mimeType: 'image/jpeg', magic: [0xff, 0xd8, 0xff] },
   { mimeType: 'image/gif', magic: [0x47, 0x49, 0x46, 0x38] },
   { mimeType: 'image/bmp', magic: [0x42, 0x4d] },
+  { mimeType: PDF_MIME, magic: [0x25, 0x50, 0x44, 0x46] }, // "%PDF"
 ]
 
-function sniffImageType(head: Buffer): string | undefined {
-  for (const { mimeType, magic } of IMAGE_SIGNATURES) {
+function sniffMediaType(head: Buffer): string | undefined {
+  for (const { mimeType, magic } of MEDIA_SIGNATURES) {
     if (head.length >= magic.length && magic.every((b, i) => head[i] === b)) return mimeType
   }
   // WebP: "RIFF" .... "WEBP"
@@ -575,7 +594,7 @@ export async function openMediaBlob(
     if (!isValidBase64Length(ref.l, pad)) return undefined
     if (BASE64_INVALID.test(head)) return undefined
     const usable = head.length - (head.length % 4)
-    const mimeType = sniffImageType(Buffer.from(head.slice(0, usable), 'base64'))
+    const mimeType = sniffMediaType(Buffer.from(head.slice(0, usable), 'base64'))
     if (!mimeType) return undefined
 
     signal?.throwIfAborted()
