@@ -61,6 +61,10 @@ vi.mock('@renderer/hooks/use-platform-auth', () => ({
   usePlatformAuthStatus: () => ({ data: platformAuth }),
 }))
 
+vi.mock('@renderer/hooks/use-billing-info', () => ({
+  useBillingInfo: () => ({ data: undefined, isLoading: false }),
+}))
+
 // Mock the unified pending-request store — the indicator derives awaiting
 // from its blocking projection (same predicate as the server status).
 type MockPendingRequest = { id: string; kind: string; blocking: boolean; autoApproved: boolean }

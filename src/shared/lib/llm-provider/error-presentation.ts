@@ -1,11 +1,17 @@
 import { z } from 'zod'
 
+export const providerErrorPaywallSchema = z.object({
+  subscriptionRequired: z.boolean(),
+})
+
 export const providerErrorPresentationSchema = z.object({
   severity: z.enum(['error', 'warning']),
   /** Markdown. Providers that need a CTA put a link in the message. */
   message: z.string(),
   /** Lucide icon name, e.g. `info`, `circle-dollar-sign`. */
   icon: z.string(),
+  /** Platform 402 only. Present when the proxy sent `subscription_required`. */
+  paywall: providerErrorPaywallSchema.optional(),
 })
 
 export type ProviderErrorPresentation = z.infer<typeof providerErrorPresentationSchema>

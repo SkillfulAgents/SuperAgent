@@ -46,6 +46,14 @@ describe('fetchPlatformBillingInfo', () => {
     expect(result).toEqual(VALID_SNAPSHOT)
   })
 
+  it('keeps an optional hasPaymentMethod flag from newer proxies', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      jsonResponse({ ...VALID_SNAPSHOT, hasPaymentMethod: true }),
+    )
+    const result = await fetchPlatformBillingInfo()
+    expect(result.hasPaymentMethod).toBe(true)
+  })
+
   it('accepts a configured:false snapshot with null seat', async () => {
     vi.spyOn(global, 'fetch').mockResolvedValue(
       jsonResponse({

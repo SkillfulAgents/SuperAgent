@@ -20,11 +20,74 @@ function isInsufficientBalance(status: number | undefined, raw: string): boolean
   )
 }
 
+function readBooleanField(record: Record<string, unknown>, key: string): boolean | undefined {
+  const value = record[key]
+  return typeof value === 'boolean' ? value : undefined
+}
+
+export function extractSubscriptionRequired(body: unknown): boolean | undefined {
+  const fromRecord = (record: Record<string, unknown>): boolean | undefined => {
+    const nested = record.error
+    const nestedRecord = nested && typeof nested === 'object'
+      ? nested as Record<string, unknown>
+      : undefined
+    return (
+      readBooleanField(record, 'subscription_required')
+      ?? readBooleanField(record, 'subscriptionRequired')
+      ?? (nestedRecord && (
+        readBooleanField(nestedRecord, 'subscription_required')
+        ?? readBooleanField(nestedRecord, 'subscriptionRequired')
+      ))
+    )
+  }
+
+  if (body && typeof body === 'object') return fromRecord(body as Record<string, unknown>)
+  if (typeof body !== 'string') return undefined
+
+  const jsonMatch = body.match(/\{[\s\S]*\}/)
+  if (!jsonMatch) return undefined
+  try {
+    const parsed: unknown = JSON.parse(jsonMatch[0])
+    if (parsed && typeof parsed === 'object') {
+      return fromRecord(parsed as Record<string, unknown>)
+    }
+  } catch {
+    return undefined
+  }
+  return undefined
+}
+
 function spendCapSentence(raw: string): string {
   const idx = raw.search(/A spend cap/i)
   const sentence = idx >= 0 ? raw.slice(idx) : raw
   return sentence.replace(/\s*Ask a workspace admin to raise it\.?/i, '').trim()
     || 'A spend cap for this workspace was reached.'
+}
+
+function insufficientBalancePresentation(
+  subscriptionRequired: boolean | undefined,
+): ProviderErrorPresentation {
+  if (subscriptionRequired === true) {
+    return {
+      severity: 'error',
+      icon: 'info',
+      message: '**Subscription Required:** Subscribe to continue running agents.',
+      paywall: { subscriptionRequired: true },
+    }
+  }
+  if (subscriptionRequired === false) {
+    return {
+      severity: 'error',
+      icon: 'info',
+      message: '**Insufficient Balance:** This workspace is out of credits.',
+      paywall: { subscriptionRequired: false },
+    }
+  }
+  return {
+    severity: 'error',
+    icon: 'info',
+    message: `**Insufficient Balance:** Subscribe or top up to continue running agents. [Go to billing](${ORG_BILLING_LINK})`,
+  }
 }
 
 // Null = not a platform-specific error class; the base provider applies the
@@ -45,11 +108,7 @@ export function parsePlatformErrorResponse(
   }
 
   if (isInsufficientBalance(inferred, raw)) {
-    return {
-      severity: 'error',
-      message: `**Insufficient Balance:** Subscribe or top up to continue running agents. [Go to billing](${ORG_BILLING_LINK})`,
-      icon: 'info',
-    }
+    return insufficientBalancePresentation(extractSubscriptionRequired(body))
   }
 
   return null

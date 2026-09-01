@@ -4,9 +4,10 @@ import {
   defaultParseErrorResponse,
   extractErrorMessage,
   inferErrorStatus,
+  providerErrorPresentationSchema,
   resolvePresentationMarkdown,
 } from './error-presentation'
-import { parsePlatformErrorResponse } from './platform-error-presentation'
+import { extractSubscriptionRequired, parsePlatformErrorResponse } from './platform-error-presentation'
 
 const SPEND_CAP =
   'API Error: Request rejected (429) · A spend cap for this workspace was reached. It resets within 30 days. Ask a workspace admin to raise it.'
@@ -96,13 +97,93 @@ describe('parsePlatformErrorResponse', () => {
     expect(parsePlatformErrorResponse(429, RATE_LIMIT)).toBeNull()
   })
 
-  it('returns markdown with a billing link for a 402', () => {
+  it('returns markdown with a billing link for a 402 without the proxy flag', () => {
     expect(parsePlatformErrorResponse(402, BILLING_402)).toEqual({
       severity: 'error',
       icon: 'info',
       message:
         '**Insufficient Balance:** Subscribe or top up to continue running agents. [Go to billing](/dashboard/organizations/{orgId}?tab=billing)',
     })
+  })
+
+  it('authors a subscribe paywall when the 402 JSON sets subscription_required', () => {
+    expect(parsePlatformErrorResponse(402, {
+      type: 'error',
+      error: {
+        type: 'insufficient_balance',
+        message: 'Workspace has insufficient balance. Top up to continue.',
+        subscription_required: true,
+      },
+    })).toEqual({
+      severity: 'error',
+      icon: 'info',
+      message: '**Subscription Required:** Subscribe to continue running agents.',
+      paywall: { subscriptionRequired: true },
+    })
+  })
+
+  it('authors a top-up paywall when the 402 JSON clears subscription_required', () => {
+    expect(parsePlatformErrorResponse(402, {
+      type: 'error',
+      error: {
+        type: 'insufficient_balance',
+        message: 'Workspace has insufficient balance. Top up to continue.',
+        subscription_required: false,
+      },
+    })).toEqual({
+      severity: 'error',
+      icon: 'info',
+      message: '**Insufficient Balance:** This workspace is out of credits.',
+      paywall: { subscriptionRequired: false },
+    })
+  })
+})
+
+describe('extractSubscriptionRequired', () => {
+  it('reads the flag from a nested error object', () => {
+    expect(extractSubscriptionRequired({
+      type: 'error',
+      error: { message: 'Workspace has insufficient balance. Top up to continue.', subscription_required: true },
+    })).toBe(true)
+  })
+
+  it('reads the flag from a JSON blob in the error string', () => {
+    expect(extractSubscriptionRequired(
+      'API Error: 402 {"type":"error","error":{"type":"insufficient_balance","message":"Workspace has insufficient balance. Top up to continue.","subscription_required":false}}',
+    )).toBe(false)
+  })
+
+  it('returns undefined when the proxy omitted the flag', () => {
+    expect(extractSubscriptionRequired(BILLING_402)).toBeUndefined()
+    expect(extractSubscriptionRequired({
+      type: 'error',
+      error: { message: 'Workspace has insufficient balance. Top up to continue.' },
+    })).toBeUndefined()
+  })
+})
+
+describe('providerErrorPresentationSchema', () => {
+  it('accepts a presentation without paywall', () => {
+    expect(providerErrorPresentationSchema.safeParse({
+      severity: 'error',
+      icon: 'info',
+      message: '**Insufficient Balance:** Subscribe or top up.',
+    }).success).toBe(true)
+  })
+
+  it('accepts a paywall field and rejects a non-boolean flag', () => {
+    expect(providerErrorPresentationSchema.safeParse({
+      severity: 'error',
+      icon: 'info',
+      message: '**Subscription Required:** Subscribe to continue running agents.',
+      paywall: { subscriptionRequired: true },
+    }).success).toBe(true)
+    expect(providerErrorPresentationSchema.safeParse({
+      severity: 'error',
+      icon: 'info',
+      message: '**Subscription Required:** Subscribe to continue running agents.',
+      paywall: { subscriptionRequired: 'yes' },
+    }).success).toBe(false)
   })
 })
 

@@ -58,6 +58,10 @@ vi.mock('@renderer/hooks/use-platform-auth', () => ({
   usePlatformAuthStatus: () => ({ data: platformAuth }),
 }))
 
+vi.mock('@renderer/hooks/use-billing-info', () => ({
+  useBillingInfo: () => ({ data: undefined, isLoading: false }),
+}))
+
 describe('MessageItem', () => {
   beforeEach(() => {
     platformAuth.connected = false

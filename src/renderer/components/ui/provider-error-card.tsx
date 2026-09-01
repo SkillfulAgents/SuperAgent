@@ -4,8 +4,11 @@ import ReactMarkdown from 'react-markdown'
 import { CircleDollarSign, Info, TriangleAlert, type LucideIcon } from 'lucide-react'
 
 import { defaultParseErrorResponse, type ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
+import type { PaywallCta } from '@shared/lib/llm-provider/paywall-cta'
 
 import { RequestError } from '@renderer/components/messages/request-error'
+import { PaywallActions } from '@renderer/components/ui/paywall-actions'
+import { usePaywallCta } from '@renderer/hooks/use-paywall-cta'
 import { useResolvedErrorPresentation } from '@renderer/hooks/use-provider-error-presentation'
 import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
 import { openExternalUrl } from '@renderer/lib/open-external'
@@ -56,26 +59,38 @@ function hasMarkdownLink(markdown: string): boolean {
 export function ProviderErrorView({
   presentation,
   rawMessage,
+  paywallCta = null,
+  paywallLoading = false,
   'data-testid': testId,
 }: {
   presentation: ProviderErrorPresentation
   rawMessage?: string
+  paywallCta?: PaywallCta | null
+  paywallLoading?: boolean
   'data-testid'?: string
 }) {
   const Icon = ICONS[presentation.icon] ?? Info
+  const hasPaywall = Boolean(presentation.paywall)
 
   return (
     <RequestError
       label={null}
       message={
-        <ReactMarkdown
-          urlTransform={markdownUrlTransform}
-          components={MARKDOWN_COMPONENTS}
-        >
-          {presentation.message}
-        </ReactMarkdown>
+        <>
+          <ReactMarkdown
+            urlTransform={markdownUrlTransform}
+            components={MARKDOWN_COMPONENTS}
+          >
+            {presentation.message}
+          </ReactMarkdown>
+          <PaywallActions cta={paywallCta} loading={paywallLoading} />
+        </>
       }
-      hint={hasMarkdownLink(presentation.message) ? undefined : defaultHint(rawMessage ?? presentation.message)}
+      hint={
+        hasMarkdownLink(presentation.message) || hasPaywall
+          ? undefined
+          : defaultHint(rawMessage ?? presentation.message)
+      }
       severity={presentation.severity}
       icon={Icon}
       className={OPAQUE_DARK[presentation.severity]}
@@ -101,10 +116,13 @@ export function ProviderErrorCard({
     [presentation, message],
   )
   const resolved = useResolvedErrorPresentation(base)
+  const paywall = usePaywallCta(resolved)
   return (
     <ProviderErrorView
       presentation={resolved}
       rawMessage={message}
+      paywallCta={paywall.cta}
+      paywallLoading={paywall.loading}
       data-testid={testId}
     />
   )
