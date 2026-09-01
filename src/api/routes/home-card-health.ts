@@ -18,7 +18,8 @@ homeCardHealth.get('/', async (c) => {
       agentSlugs,
       days: parseActivityDays(c.req.query('days')),
       tzOffsetMinutes: parseActivityTzOffset(c.req.query('tz')),
-      isSessionLive: (sessionId) => messagePersister.isSessionActive(sessionId),
+      isSessionLive: (agentSlug: string, sessionId: string) =>
+        messagePersister.isSessionActive(agentSlug, sessionId),
     }))
   } catch (error) {
     console.error('Failed to build home card health:', error)

@@ -1,10 +1,10 @@
 /**
  * Cross-agent session scoping — REAL services, REAL filesystem.
  *
- * `agents.test.ts` already covers this surface, but it mocks `sessionIsKnown`
- * and `sessionBelongsToAgent`. Those tests prove the routes CALL a gate and
- * honour its answer; they cannot prove the gate is right, and they would stay
- * green if the mechanism behind it were replaced with a broken one.
+ * `agents.test.ts` already covers this surface, but it mocks `sessionIsKnown`.
+ * Those tests prove the routes CALL a gate and honour its answer; they cannot
+ * prove the gate is right, and they would stay green if the mechanism behind
+ * it were replaced with a broken one.
  *
  * This file closes that gap. The session service, the file-storage paths and
  * the message persister are all real, over a real temp data dir. Only the
@@ -281,21 +281,21 @@ beforeEach(async () => {
   writeTranscript(ATTACKER, attackerSession)
 
   // The victim's session is LIVE: subscribed and streaming.
-  await messagePersister.subscribeToSession(victimSession, makeMockClient(), victimSession, VICTIM)
-  await messagePersister.subscribeToSession(attackerSession, makeMockClient(), attackerSession, ATTACKER)
-  messagePersister.markSessionActive(victimSession, VICTIM)
+  await messagePersister.subscribeToSession(VICTIM, victimSession, makeMockClient(), victimSession)
+  await messagePersister.subscribeToSession(ATTACKER, attackerSession, makeMockClient(), attackerSession)
+  messagePersister.markSessionActive(VICTIM, victimSession)
 
   victimEvents = []
   attackerEvents = []
-  cleanupVictimSse = messagePersister.addSSEClient(victimSession, (d) => { victimEvents.push(d) })
-  cleanupAttackerSse = messagePersister.addSSEClient(attackerSession, (d) => { attackerEvents.push(d) })
+  cleanupVictimSse = messagePersister.addSSEClient(VICTIM, victimSession, (d) => { victimEvents.push(d) })
+  cleanupAttackerSse = messagePersister.addSSEClient(ATTACKER, attackerSession, (d) => { attackerEvents.push(d) })
 })
 
 afterEach(() => {
   cleanupVictimSse?.()
   cleanupAttackerSse?.()
-  messagePersister.unsubscribeFromSession(victimSession)
-  messagePersister.unsubscribeFromSession(attackerSession)
+  messagePersister.unsubscribeFromSession(VICTIM, victimSession)
+  messagePersister.unsubscribeFromSession(ATTACKER, attackerSession)
   realFs.rmSync(tmpDir, { recursive: true, force: true })
   if (previousDataDir === undefined) delete process.env.SUPERAGENT_DATA_DIR
   else process.env.SUPERAGENT_DATA_DIR = previousDataDir
@@ -306,8 +306,8 @@ afterEach(() => {
  * Note what it does NOT mention: status codes, ownership indexes, map keys.
  */
 function expectVictimUntouched(): void {
-  expect(messagePersister.isSessionActive(victimSession)).toBe(true)
-  expect(messagePersister.isSubscribed(victimSession)).toBe(true)
+  expect(messagePersister.isSessionActive(VICTIM, victimSession)).toBe(true)
+  expect(messagePersister.isSubscribed(VICTIM, victimSession)).toBe(true)
   expect(victimEvents).toEqual([])
 }
 
@@ -387,6 +387,83 @@ describe('a forged transcript does not buy access to another agent’s live sess
   it('delete leaves the victim’s real transcript on disk', async () => {
     await app().request(url(ATTACKER, victimSession), { method: 'DELETE' })
     expect(await sessionExists(VICTIM, victimSession)).toBe(true)
+    expectVictimUntouched()
+  })
+})
+
+describe('a symlink forged in the attacker’s workspace resolves to the victim’s file', () => {
+  // Sharper than the plain forged file: a symlink named after the victim's
+  // session, planted in the attacker's own bind-mounted directory, RESOLVES to
+  // the victim's real transcript. A containment check that compares only path
+  // strings treats it as the attacker's own session. There is no benign
+  // reading of this id — it points at a file the attacker does not own — so
+  // here every gated route MUST refuse it (404), not merely leave the victim
+  // untouched.
+  beforeEach(() => {
+    const attackerDir = getAgentSessionsDir(ATTACKER)
+    realFs.mkdirSync(attackerDir, { recursive: true })
+    const link = path.join(attackerDir, `${victimSession}.jsonl`)
+    realFs.rmSync(link, { force: true })
+    realFs.symlinkSync(path.join(getAgentSessionsDir(VICTIM), `${victimSession}.jsonl`), link)
+  })
+
+  it('the messages listing refuses the id', async () => {
+    const res = await app().request(url(ATTACKER, victimSession, '/messages'), { method: 'GET' })
+    expect(res.status).toBe(404)
+    expectVictimUntouched()
+  })
+
+  it('the single-session read refuses the id', async () => {
+    const res = await app().request(url(ATTACKER, victimSession), { method: 'GET' })
+    expect(res.status).toBe(404)
+    expectVictimUntouched()
+  })
+
+  it('interrupt refuses the id', async () => {
+    const res = await post(url(ATTACKER, victimSession, '/interrupt'))
+    expect(res.status).toBe(404)
+    expect(mockInterruptSession).not.toHaveBeenCalled()
+    expectVictimUntouched()
+  })
+
+  it('delete refuses the id and leaves the victim’s real transcript', async () => {
+    const res = await app().request(url(ATTACKER, victimSession), { method: 'DELETE' })
+    expect(res.status).toBe(404)
+    expect(await sessionExists(VICTIM, victimSession)).toBe(true)
+    expectVictimUntouched()
+  })
+
+  it('media refuses the id even when the attacker also forges its metadata', async () => {
+    // The metadata makes sessionIsKnown pass (it is satisfied by a metadata
+    // entry alone), so only the media route's realpath guard stands between the
+    // request and openMediaBlob following the link into the victim's transcript.
+    await registerSession(ATTACKER, victimSession, 'Forged')
+    const res = await app().request(url(ATTACKER, victimSession, '/media/anyref'), { method: 'GET' })
+    expect(res.status).toBe(404)
+    expectVictimUntouched()
+  })
+})
+
+describe('the subagent-messages route stays inside the agent’s own tree', () => {
+  it('refuses a traversal-shaped session id', async () => {
+    const res = await app().request(
+      `http://localhost/api/agents/${ATTACKER}/sessions/..%2F..%2F${VICTIM}%2Fworkspace/subagent/x/messages`,
+      { method: 'GET' },
+    )
+    expect(res.status).toBe(404)
+    expectVictimUntouched()
+  })
+
+  it('refuses a traversal-shaped subagent id that escapes the session tree', async () => {
+    // Enough `..` to climb out of the agent's session directory entirely (the
+    // `agent-` filename prefix absorbs the first one). Without the guard this
+    // reads an arbitrary file off disk.
+    const escape = Array(10).fill('..').join('%2F')
+    const res = await app().request(
+      `http://localhost/api/agents/${ATTACKER}/sessions/${attackerSession}/subagent/${escape}%2Fetc%2Fpasswd/messages`,
+      { method: 'GET' },
+    )
+    expect(res.status).toBe(404)
     expectVictimUntouched()
   })
 })

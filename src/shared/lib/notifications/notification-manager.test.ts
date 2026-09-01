@@ -369,7 +369,7 @@ describe('session_waiting promotes automated sessions to interactive', () => {
   it('triggerSessionWaitingInput promotes before creating the notification', async () => {
     await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', 'secret')
 
-    expect(mockPromoteAutomatedSession).toHaveBeenCalledWith('sess-1', 'agent-x')
+    expect(mockPromoteAutomatedSession).toHaveBeenCalledWith('agent-x', 'sess-1')
     expect(mockCreateNotification).toHaveBeenCalledTimes(1)
     expect(mockPromoteAutomatedSession.mock.invocationCallOrder[0]).toBeLessThan(
       mockCreateNotification.mock.invocationCallOrder[0],
@@ -379,7 +379,7 @@ describe('session_waiting promotes automated sessions to interactive', () => {
   it('triggerSessionApiReviewWaiting promotes too — the proxy-review path was the original gap', async () => {
     await notificationManager.triggerSessionApiReviewWaiting('sess-1', 'agent-x', 'review-1', 'Allow?')
 
-    expect(mockPromoteAutomatedSession).toHaveBeenCalledWith('sess-1', 'agent-x')
+    expect(mockPromoteAutomatedSession).toHaveBeenCalledWith('agent-x', 'sess-1')
     expect(mockCreateNotification).toHaveBeenCalledTimes(1)
   })
 
@@ -404,7 +404,7 @@ describe('session_waiting promotes automated sessions to interactive', () => {
       },
     })
     await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', 'secret')
-    expect(mockPromoteAutomatedSession).toHaveBeenCalledWith('sess-1', 'agent-x')
+    expect(mockPromoteAutomatedSession).toHaveBeenCalledWith('agent-x', 'sess-1')
     expect(mockCreateNotification).not.toHaveBeenCalled()
   })
 })

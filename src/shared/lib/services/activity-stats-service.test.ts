@@ -381,7 +381,7 @@ describe('activity stats data pathways', () => {
       days: 1,
       now: NOW,
       cronSlots: 2,
-      isSessionLive: (sessionId) => sessionId === 'cron-live',
+      isSessionLive: (_agentSlug, sessionId) => sessionId === 'cron-live',
     })
 
     expect(result.cronByTaskId['cron-a']).toEqual([

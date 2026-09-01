@@ -8,10 +8,10 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import pLimit from 'p-limit'
-import { z } from 'zod'
 import {
   getAgentsDir,
   getAgentSessionsDir,
+  getAgentWorkspaceDir,
   getAgentSessionMetadataPath,
   getSessionJsonlPath,
   listDirectories,
@@ -56,180 +56,101 @@ import {
   ContentBlock,
 } from '@shared/lib/types/agent'
 import { captureException } from '@shared/lib/error-reporting'
+import { isRealPathWithinDir } from '@shared/lib/utils/path-safety'
 import {
   getSessionSummaryCacheSlot,
   applyActivity,
-  invalidateSessionSummaryCache,
   recordSessionActivity,
-  removeSessionFromSummaryCache,
   type SessionActivityEntry,
   SESSION_SUMMARY_CACHE_TTL_MS,
   type SessionSummaryCacheValue,
 } from './session-summary-cache'
 
-// Session transcripts and metadata live inside the agent workspace, which is
-// bind-mounted read/write into its container. They are therefore evidence that
-// a session exists, but NOT authoritative proof of which agent owns a globally
-// keyed session id: an agent can create arbitrary files in its own workspace.
+// A session id is unique within its agent, not across the install: it comes
+// from the container, and an agent can write any id it likes into its own
+// bind-mounted workspace. That used to matter because the process-global
+// registries (the message persister above all) were keyed by session id ALONE,
+// so a forged transcript let one agent's request address another agent's live
+// session (SUP-479). It was answered with a host-owned ownership index kept
+// outside every workspace.
 //
-// Keep the ownership index one directory above all workspaces so containers
-// cannot forge it. `null` is a fail-closed tombstone for a duplicate id found
-// during legacy migration; it must never be claimed implicitly by either agent.
-const sessionOwnershipMapSchema = z.record(z.string(), z.string().nullable())
-type SessionOwnershipMap = z.infer<typeof sessionOwnershipMapSchema>
-const sessionOwnershipByPath = new Map<string, Promise<SessionOwnershipMap>>()
-
-function getSessionOwnershipPath(): string {
-  return path.join(path.dirname(getAgentsDir()), 'session-ownership.json')
-}
-
-async function candidateSessionIdsForAgent(agentSlug: string): Promise<Set<string>> {
-  const ids = new Set(Object.keys(await readSessionMetadata(agentSlug)))
-  const sessionsDir = getAgentSessionsDir(agentSlug)
-  try {
-    const files = await fs.promises.readdir(sessionsDir)
-    for (const file of files) {
-      if (file.endsWith('.jsonl')) ids.add(file.slice(0, -'.jsonl'.length))
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-  }
-  return new Set([...ids].filter((sessionId) => {
-    try {
-      getSessionJsonlPath(agentSlug, sessionId)
-      return true
-    } catch {
-      return false
-    }
-  }))
-}
-
-async function discoverSessionOwners(): Promise<SessionOwnershipMap> {
-  const discovered = Object.create(null) as SessionOwnershipMap
-  for (const agentSlug of await listDirectories(getAgentsDir())) {
-    const ids = await candidateSessionIdsForAgent(agentSlug)
-    for (const id of ids) {
-      if (!Object.hasOwn(discovered, id)) {
-        discovered[id] = agentSlug
-      } else if (discovered[id] !== agentSlug) {
-        discovered[id] = null
-      }
-    }
-  }
-  return discovered
-}
-
-async function loadSessionOwnershipMap(): Promise<SessionOwnershipMap> {
-  const ownershipPath = getSessionOwnershipPath()
-  const cached = sessionOwnershipByPath.get(ownershipPath)
-  if (cached) return cached
-
-  const loading = withFileLock(ownershipPath, async () => {
-    const existed = await fileExists(ownershipPath)
-    const stored = await readJsonFileStrict(ownershipPath, sessionOwnershipMapSchema, {})
-    if (existed) {
-      return Object.assign(Object.create(null) as SessionOwnershipMap, stored)
-    }
-
-    const migrated = await discoverSessionOwners()
-    await ensureDirectory(path.dirname(ownershipPath))
-    await writeJsonFileAtomic(ownershipPath, migrated)
-    return migrated
-  })
-  sessionOwnershipByPath.set(ownershipPath, loading)
-  try {
-    return await loading
-  } catch (error) {
-    if (sessionOwnershipByPath.get(ownershipPath) === loading) {
-      sessionOwnershipByPath.delete(ownershipPath)
-    }
-    throw error
-  }
-}
-
-async function mutateSessionOwnership(
-  mutator: (owners: SessionOwnershipMap) => boolean,
-): Promise<void> {
-  const ownershipPath = getSessionOwnershipPath()
-  const owners = await loadSessionOwnershipMap()
-  await withFileLock(ownershipPath, async () => {
-    const next = Object.assign(Object.create(null) as SessionOwnershipMap, owners)
-    if (!mutator(next)) return
-    await writeJsonFileAtomic(ownershipPath, next)
-    for (const sessionId of Object.keys(owners)) delete owners[sessionId]
-    Object.assign(owners, next)
-  })
-}
-
-async function claimSessionOwnership(agentSlug: string, sessionId: string): Promise<boolean> {
-  // Apply the same containment check used by transcript operations before an
-  // externally produced id can become a durable registry key.
-  getSessionJsonlPath(agentSlug, sessionId)
-  let newlyClaimed = false
-  await mutateSessionOwnership((owners) => {
-    if (!Object.hasOwn(owners, sessionId)) {
-      owners[sessionId] = agentSlug
-      newlyClaimed = true
-      return true
-    }
-    if (owners[sessionId] !== agentSlug) {
-      throw new Error(`Session ${sessionId} is already owned by another agent`)
-    }
-    return false
-  })
-  if (newlyClaimed) invalidateSessionSummaryCache(agentSlug)
-  return newlyClaimed
-}
-
-async function releaseSessionOwnership(agentSlug: string, sessionIds: string[]): Promise<void> {
-  const released: string[] = []
-  await mutateSessionOwnership((owners) => {
-    let changed = false
-    for (const sessionId of sessionIds) {
-      if (owners[sessionId] === agentSlug) {
-        delete owners[sessionId]
-        released.push(sessionId)
-        changed = true
-      }
-    }
-    return changed
-  })
-  for (const sessionId of released) removeSessionFromSummaryCache(agentSlug, sessionId)
-}
-
-async function resolveSessionOwner(sessionId: string): Promise<string | null | undefined> {
-  const owners = await loadSessionOwnershipMap()
-  return Object.hasOwn(owners, sessionId) ? owners[sessionId] : undefined
-}
-
-/**
- * Reserve a newly allocated session id before exposing it through any
- * process-global lifecycle registry. Registration calls this again
- * idempotently when it persists the display metadata.
- */
-export async function reserveSessionOwnership(
-  agentSlug: string,
-  sessionId: string,
-): Promise<void> {
-  await claimSessionOwnership(agentSlug, sessionId)
-}
-
-/**
- * Authoritative ownership check for registries keyed by session id alone.
- * Unlike transcript/metadata existence, this cannot be forged from inside an
- * agent container because the ownership file is outside its mounted workspace.
- */
-export async function sessionBelongsToAgent(
-  agentSlug: string,
-  sessionId: string,
-): Promise<boolean> {
-  // Validate the externally supplied id before considering a registry entry.
+// Those registries are now keyed by agent AND session, so the same forged file
+// resolves to an empty slot in the forging agent's OWN namespace and reaches
+// nothing. There is no ownership question left to answer, and no second source
+// of truth to keep in step with imports, clones or deletes — which is what the
+// index kept getting wrong.
+//
+// What remains is containment, which the index also enforced: an id that
+// cannot name a file under this agent's session directory (`..`, an absolute
+// path, a separator) is not one of its sessions, and must not reach a registry
+// or the filesystem.
+// Path-shape validation, NOT an existence or ownership check: it answers true
+// for any well-formed id whether or not a session by that name exists — callers
+// that need "does this session exist / is it really this agent's" must use
+// sessionExists / sessionIsKnown, which layer those on top.
+//
+// Lexical containment only: `sessionId` names a file under this agent's session
+// directory (no `..`, absolute path, or separator). Deliberately touches no
+// filesystem — it runs once per transcript in the listing/summary hot loops,
+// whose op budget is pinned exactly by the perf suite. It is enough to reject a
+// traversal-shaped id; the SYMLINK escape (a link inside the agent's own dir
+// resolving to another agent's transcript) is caught on the content/action
+// gates instead — see {@link sessionFileRealPathWithinAgent} — because those
+// are the paths that actually read or mutate the file, and they are off the
+// listing hot path.
+function sessionIdPathWithinAgent(agentSlug: string, sessionId: string): boolean {
   try {
     getSessionJsonlPath(agentSlug, sessionId)
+    return true
   } catch {
     return false
   }
-  return (await resolveSessionOwner(sessionId)) === agentSlug
+}
+
+// Lexical containment PLUS symlink resolution: the id names a file whose REAL
+// location is inside this agent's own workspace. The workspace is bind-mounted
+// read/write into the container, so the agent can plant a symlink — named after
+// another agent's session, OR replacing a whole directory like `-workspace` —
+// that resolves to another agent's transcript: a name that looks local but
+// escapes on read. Use this on every gate that goes on to serve or act on the
+// transcript (never in a listing loop): it costs a realpath, but a session that
+// fails it must not be readable. This is what the deleted ownership index also
+// enforced, without a second source of truth.
+//
+// Containment is anchored on the WORKSPACE, not the session directory: the
+// session dir (and every dir under the workspace) is attacker-writable, so a
+// symlinked `-workspace` would make base and candidate realpath to the SAME
+// escaped location and pass. The workspace is the bind-mount point itself,
+// which the container cannot replace, so it is the trustworthy boundary.
+export function sessionFileRealPathWithinAgent(agentSlug: string, sessionId: string): boolean {
+  let jsonlPath: string
+  try {
+    jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+  } catch {
+    return false
+  }
+  return isRealPathWithinDir(getAgentWorkspaceDir(agentSlug), jsonlPath)
+}
+
+/**
+ * Delete the legacy session-ownership.json index that earlier builds kept one
+ * directory above all workspaces. This build derives ownership structurally
+ * (agent-keyed registries + containment) and never writes it, so a leftover
+ * file is dead — but a ROLLBACK to a build that reads it would find the stale
+ * copy, skip its first-read discovery migration, and treat every session
+ * created under this build as unowned (filtered from listings, 404 on open).
+ * Removing it on startup makes a rollback self-heal by re-running discovery.
+ *
+ * Best-effort and idempotent: a missing file (the common case after the first
+ * boot) is success, and any error is swallowed so it can never block startup.
+ */
+export async function removeLegacySessionOwnershipIndex(): Promise<void> {
+  const legacyPath = path.join(path.dirname(getAgentsDir()), 'session-ownership.json')
+  try {
+    await fs.promises.rm(legacyPath, { force: true })
+  } catch (error) {
+    console.warn('[session-service] Failed to remove legacy session-ownership index:', error)
+  }
 }
 
 // ============================================================================
@@ -382,19 +303,16 @@ export async function registerSession(
   name?: string,
   initialMetadata?: Partial<SessionMetadata>,
 ): Promise<void> {
-  const newlyClaimed = await claimSessionOwnership(agentSlug, sessionId)
-  try {
-    await mutateSessionMetadata(agentSlug, (metadata) => {
-      metadata[sessionId] = {
-        ...initialMetadata,
-        name: name || 'New Session',
-        createdAt: new Date().toISOString(),
-      }
-    })
-  } catch (error) {
-    if (newlyClaimed) await releaseSessionOwnership(agentSlug, [sessionId]).catch(() => {})
-    throw error
-  }
+  // Containment is checked here for the same reason transcript writes check
+  // it: an externally supplied id must not become a durable metadata key.
+  getSessionJsonlPath(agentSlug, sessionId)
+  await mutateSessionMetadata(agentSlug, (metadata) => {
+    metadata[sessionId] = {
+      ...initialMetadata,
+      name: name || 'New Session',
+      createdAt: new Date().toISOString(),
+    }
+  })
 }
 
 /**
@@ -657,6 +575,35 @@ async function statTranscriptForSummary(filePath: string): Promise<fs.Stats | nu
   }
 }
 
+/**
+ * Names of the `.jsonl` transcript files directly in `sessionsDir`, EXCLUDING
+ * symlinks.
+ *
+ * A real session transcript is always a regular file the container wrote; a
+ * symlink named like a session is an escape attempt — it resolves to another
+ * agent's transcript (the dir is bind-mounted read/write into the container).
+ * Dropping it here keeps it out of every listing consumer at once, including
+ * the home-card tail that goes on to READ the latest session's content — so a
+ * planted link can never surface a stranger's messages through a listing.
+ *
+ * The symlink test reads the dirent type that `readdir` already returns, so it
+ * adds no syscall over a plain `readdir` — this stays on the perf hot path.
+ * (Direct id access that bypasses the listing is caught separately by the
+ * realpath gate in {@link sessionFileRealPathWithinAgent}.)
+ *
+ * KNOWN RESIDUAL (accepted, out of scope): this drops symlinked ENTRIES, but
+ * `readdir` still follows a symlinked ANCESTOR (an agent that replaced its own
+ * `-workspace` with a link), so such a listing reflects another agent's dir.
+ * Fully closing it needs a per-listing realpath on the perf-pinned path — see
+ * the note in getLatestVisibleSessionTail, the one place it reaches content.
+ */
+async function readSessionTranscriptNames(sessionsDir: string): Promise<string[]> {
+  const entries = await fs.promises.readdir(sessionsDir, { withFileTypes: true })
+  return entries
+    .filter((e) => e.name.endsWith('.jsonl') && !e.isSymbolicLink())
+    .map((e) => e.name)
+}
+
 async function buildSessionActivityMap(
   agentSlug: string,
   sessionsDir: string,
@@ -664,15 +611,14 @@ async function buildSessionActivityMap(
 ): Promise<Map<string, SessionActivityEntry>> {
   if (directoryMtimeMs === null) return new Map()
 
-  const files = await fs.promises.readdir(sessionsDir)
-  const jsonlFiles = files.filter((file) => file.endsWith('.jsonl'))
+  const jsonlFiles = await readSessionTranscriptNames(sessionsDir)
   const limit = pLimit(10)
   const stats = await Promise.all(
     jsonlFiles.map((file) => limit(async () => {
       const stat = await statTranscriptForSummary(path.join(sessionsDir, file))
       if (!stat) return null
       const sessionId = path.basename(file, '.jsonl')
-      if (!(await sessionBelongsToAgent(agentSlug, sessionId))) return null
+      if (!sessionIdPathWithinAgent(agentSlug, sessionId)) return null
       return {
         sessionId,
         entry: { mtimeMs: stat.mtimeMs, birthtimeMs: stat.birthtimeMs, size: stat.size },
@@ -816,8 +762,7 @@ export async function listSessions(
 
   // First, process sessions with JSONL files
   if (await directoryExists(sessionsDir)) {
-    const files = await fs.promises.readdir(sessionsDir)
-    const jsonlFiles = files.filter((f) => f.endsWith('.jsonl'))
+    const jsonlFiles = await readSessionTranscriptNames(sessionsDir)
 
     const limit = pLimit(10)
     const statResults = await Promise.all(
@@ -839,7 +784,7 @@ export async function listSessions(
       const { sessionId, stat } = result
       processedSessionIds.add(sessionId)
 
-      if (!(await sessionBelongsToAgent(agentSlug, sessionId))) continue
+      if (!sessionIdPathWithinAgent(agentSlug, sessionId)) continue
 
       // Skip empty JSONL files that aren't registered in metadata
       // These are typically created by Claude SDK for subagent directories
@@ -867,7 +812,7 @@ export async function listSessions(
   // (newly created sessions where the agent hasn't streamed yet)
   for (const [sessionId, sessionMeta] of Object.entries(metadata)) {
     if (!processedSessionIds.has(sessionId) && sessionMeta.createdAt) {
-      if (!(await sessionBelongsToAgent(agentSlug, sessionId))) continue
+      if (!sessionIdPathWithinAgent(agentSlug, sessionId)) continue
       // Skip scheduled/webhook sessions when requested
       if (options?.excludeAutomated && isAutomated(sessionId)) {
         continue
@@ -900,7 +845,8 @@ export async function listSessions(
  * exactly the fidelity of the agent card's lastActivityAt.
  *
  * Applies the same rules as listSessions: ownership (the cache is built
- * through sessionBelongsToAgent; metadata-only sessions are checked here),
+ * a read of this agent's own session directory; metadata-only sessions are
+ * checked here),
  * unregistered empty transcripts skipped, visibility filtered BEFORE ordering
  * and limit.
  */
@@ -934,7 +880,7 @@ export async function listSessionsFromSummary(
   // Registered sessions whose agent has not streamed yet (no transcript).
   for (const [sessionId, sessionMeta] of Object.entries(metadata)) {
     if (activity.has(sessionId) || !sessionMeta.createdAt) continue
-    if (!(await sessionBelongsToAgent(agentSlug, sessionId))) continue
+    if (!sessionIdPathWithinAgent(agentSlug, sessionId)) continue
     if (options?.excludeAutomated && isAutomated(sessionId)) continue
     sessions.push(emptySessionFromMetadata(sessionId, agentSlug, sessionMeta))
   }
@@ -963,7 +909,7 @@ export async function listSessionsByIds(
   const sessions = await Promise.all(
     [...new Set(sessionIds)].map((sessionId) =>
       limit(async (): Promise<SessionInfo | null> => {
-        if (!(await sessionBelongsToAgent(agentSlug, sessionId))) return null
+        if (!sessionIdPathWithinAgent(agentSlug, sessionId)) return null
         if (options?.excludeAutomated && isAutomated(sessionId)) return null
         const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
         try {
@@ -997,7 +943,10 @@ export async function getSession(
   agentSlug: string,
   sessionId: string
 ): Promise<SessionInfo | null> {
-  if (!(await sessionBelongsToAgent(agentSlug, sessionId))) return null
+  // Content-serving path (the single-session route reads this): symlink-aware,
+  // so a planted link to another agent's transcript resolves to null, not that
+  // agent's session summary.
+  if (!sessionFileRealPathWithinAgent(agentSlug, sessionId)) return null
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
   const metadata = await getSessionMetadata(agentSlug, sessionId)
 
@@ -1985,7 +1934,6 @@ export async function deleteSession(
   })
 
   const deleted = jsonlExisted || hadMetadata
-  if (deleted) await releaseSessionOwnership(agentSlug, [sessionId])
   return deleted
 }
 
@@ -2030,7 +1978,6 @@ export async function deleteSessionsBatch(
       }
       return changed
     })
-    await releaseSessionOwnership(agentSlug, deleted)
   }
 
   return deleted
@@ -2048,12 +1995,19 @@ export async function updateSessionName(
 }
 
 /**
- * Check if a session exists
+ * Whether this agent has a transcript on disk for `sessionId`.
+ *
+ * Never throws, and never answers true for an id that is not this agent's:
+ * `sessionFileRealPathWithinAgent` rejects a traversal-shaped id (which would
+ * otherwise throw out of `getSessionJsonlPath` into the caller's `catch` and,
+ * on the routes that gate delete/interrupt on this, answer 500 instead of a
+ * clean 404) and a symlink whose real target escapes the agent's directory.
  */
 export async function sessionExists(
   agentSlug: string,
   sessionId: string
 ): Promise<boolean> {
+  if (!sessionFileRealPathWithinAgent(agentSlug, sessionId)) return false
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
   return fileExists(jsonlPath)
 }
@@ -2085,7 +2039,7 @@ export async function sessionIsKnown(
   agentSlug: string,
   sessionId: string
 ): Promise<boolean> {
-  if (!(await sessionBelongsToAgent(agentSlug, sessionId))) return false
+  if (!sessionIdPathWithinAgent(agentSlug, sessionId)) return false
   try {
     if (await sessionExists(agentSlug, sessionId)) return true
     const metadata = await getSessionMetadata(agentSlug, sessionId)
