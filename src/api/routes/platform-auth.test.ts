@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   postPlatformTopup: vi.fn(),
   startPlatformPaymentMethodSetup: vi.fn(),
   confirmPlatformPaymentMethod: vi.fn(),
+  postPlatformAutoReload: vi.fn(),
 }))
 
 vi.mock('../middleware/auth', () => ({
@@ -62,6 +63,7 @@ vi.mock('@shared/lib/services/platform-billing-service', () => ({
   postPlatformTopup: (...args: unknown[]) => mocks.postPlatformTopup(...args),
   startPlatformPaymentMethodSetup: (...args: unknown[]) => mocks.startPlatformPaymentMethodSetup(...args),
   confirmPlatformPaymentMethod: (...args: unknown[]) => mocks.confirmPlatformPaymentMethod(...args),
+  postPlatformAutoReload: (...args: unknown[]) => mocks.postPlatformAutoReload(...args),
 }))
 
 vi.mock('@shared/lib/services/cloud-workspace-service', () => ({
@@ -221,5 +223,37 @@ describe('POST /api/platform-auth/billing mutations', () => {
       clientSecret: 'seti_secret',
       publishableKey: 'pk_test_x',
     })
+  })
+
+  it('forwards a valid auto-reload config', async () => {
+    mocks.postPlatformAutoReload.mockResolvedValue({
+      status: 'updated',
+      enabled: true,
+      thresholdCents: 5000,
+      topupAmountCents: 20000,
+    })
+
+    const response = await makeApp().request('/api/platform-auth/billing/auto-reload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: true, thresholdCents: 5000, topupAmountCents: 20000 }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(mocks.postPlatformAutoReload).toHaveBeenCalledWith({
+      enabled: true,
+      thresholdCents: 5000,
+      topupAmountCents: 20000,
+    })
+  })
+
+  it('rejects a refill amount at or below the threshold', async () => {
+    const response = await makeApp().request('/api/platform-auth/billing/auto-reload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: true, thresholdCents: 5000, topupAmountCents: 5000 }),
+    })
+    expect(response.status).toBe(400)
+    expect(mocks.postPlatformAutoReload).not.toHaveBeenCalled()
   })
 })

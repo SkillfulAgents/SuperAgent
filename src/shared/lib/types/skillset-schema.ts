@@ -271,6 +271,11 @@ export const PlatformBillingInfoSchema = z.object({
   }),
   // Newer proxies may include this so the 402 paywall can choose add-card vs top-up.
   hasPaymentMethod: z.boolean().optional(),
+  autoReload: z.object({
+    enabled: z.boolean(),
+    thresholdCents: z.number().nullable(),
+    topupAmountCents: z.number().nullable(),
+  }).nullish(),
 })
 export type ParsedPlatformBillingInfo = z.infer<typeof PlatformBillingInfoSchema>
 

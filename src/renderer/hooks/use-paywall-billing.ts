@@ -4,6 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
 import { captureRendererException } from '@renderer/lib/error-reporting'
 import type {
+  PlatformAutoReloadRequest,
   PlatformPaymentMethodConfirmResponse,
   PlatformPaymentMethodSetup,
   PlatformTopupResponse,
@@ -100,6 +101,28 @@ export function usePaywallBilling() {
     }
   }, [refreshBilling])
 
+  const setAutoReload = useCallback(async (input: PlatformAutoReloadRequest): Promise<boolean> => {
+    setPending(true)
+    setError(null)
+    try {
+      const res = await apiFetch('/api/platform-auth/billing/auto-reload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      })
+      if (!res.ok) throw new Error(await readApiError(res, 'Could not save auto-refill. Please try again.'))
+      await refreshBilling()
+      return true
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not save auto-refill. Please try again.'
+      setError(message)
+      captureRendererException(err, { tags: { area: 'paywall', op: 'auto-reload' } })
+      return false
+    } finally {
+      setPending(false)
+    }
+  }, [refreshBilling])
+
   return {
     pending,
     error,
@@ -107,5 +130,6 @@ export function usePaywallBilling() {
     topup,
     setupCard,
     confirmCard,
+    setAutoReload,
   }
 }

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   isPlatformOrgAdmin,
+  parseAutoReloadThresholdDollars,
   parseCustomTopupDollars,
   resolveOrgBillingUrl,
   resolvePaywallCta,
@@ -61,6 +62,19 @@ describe('parseCustomTopupDollars', () => {
     expect(parseCustomTopupDollars('abc')).toBeNull()
     expect(parseCustomTopupDollars('')).toBeNull()
     expect(parseCustomTopupDollars('50001')).toBeNull()
+  })
+})
+
+describe('parseAutoReloadThresholdDollars', () => {
+  it('accepts whole dollars from $1 to $5,000', () => {
+    expect(parseAutoReloadThresholdDollars('1')).toBe(1)
+    expect(parseAutoReloadThresholdDollars('5000')).toBe(5000)
+  })
+
+  it('rejects zero, above the cap, and non-integers', () => {
+    expect(parseAutoReloadThresholdDollars('0')).toBeNull()
+    expect(parseAutoReloadThresholdDollars('5001')).toBeNull()
+    expect(parseAutoReloadThresholdDollars('20.5')).toBeNull()
   })
 })
 

@@ -56,4 +56,27 @@ describe('usePaywallBilling', () => {
       expect(result.current.error).toBe('Your card was declined.')
     })
   })
+
+  it('posts auto-reload and invalidates billing', async () => {
+    apiFetch.mockResolvedValue(jsonResponse({
+      status: 'updated',
+      enabled: true,
+      thresholdCents: 5000,
+      topupAmountCents: 20000,
+    }))
+    const { result } = renderHook(() => usePaywallBilling(), { wrapper })
+
+    await expect(result.current.setAutoReload({
+      enabled: true,
+      thresholdCents: 5000,
+      topupAmountCents: 20000,
+    })).resolves.toBe(true)
+    expect(apiFetch).toHaveBeenCalledWith(
+      '/api/platform-auth/billing/auto-reload',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ enabled: true, thresholdCents: 5000, topupAmountCents: 20000 }),
+      }),
+    )
+  })
 })

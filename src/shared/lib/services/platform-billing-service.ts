@@ -6,11 +6,15 @@ import {
 } from '@shared/lib/platform-auth/platform-fetch'
 import { PlatformBillingInfoSchema, type ParsedPlatformBillingInfo } from '@shared/lib/types/skillset-schema'
 import {
+  PlatformAutoReloadRequestSchema,
+  PlatformAutoReloadResponseSchema,
   PlatformPaymentMethodConfirmRequestSchema,
   PlatformPaymentMethodConfirmResponseSchema,
   PlatformPaymentMethodSetupSchema,
   PlatformTopupRequestSchema,
   PlatformTopupResponseSchema,
+  type PlatformAutoReloadRequest,
+  type PlatformAutoReloadResponse,
   type PlatformPaymentMethodConfirmResponse,
   type PlatformPaymentMethodSetup,
   type PlatformTopupResponse,
@@ -95,6 +99,23 @@ export async function confirmPlatformPaymentMethod(
     notConnectedMessage: 'Platform is not connected.',
     mapStatusError: (status, errorBody) =>
       billingMutationError(status, errorBody, 'Could not save this card. Please try again.'),
+  })
+}
+
+export async function postPlatformAutoReload(
+  input: PlatformAutoReloadRequest,
+): Promise<PlatformAutoReloadResponse> {
+  const body = PlatformAutoReloadRequestSchema.parse(input)
+  return fetchPlatformJson({
+    path: '/v1/billing/auto-reload',
+    method: 'POST',
+    token: getPlatformAccessToken(),
+    schema: PlatformAutoReloadResponseSchema,
+    area: 'platform-billing',
+    body,
+    notConnectedMessage: 'Platform is not connected.',
+    mapStatusError: (status, errorBody) =>
+      billingMutationError(status, errorBody, 'Could not save auto-refill. Please try again.'),
   })
 }
 

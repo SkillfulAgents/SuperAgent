@@ -27,10 +27,12 @@ import { getCloudWorkspace } from '@shared/lib/services/cloud-workspace-service'
 import { PlatformRequestError } from '@shared/lib/platform-auth/platform-fetch'
 import {
   confirmPlatformPaymentMethod,
+  postPlatformAutoReload,
   postPlatformTopup,
   startPlatformPaymentMethodSetup,
 } from '@shared/lib/services/platform-billing-service'
 import {
+  PlatformAutoReloadRequestSchema,
   PlatformPaymentMethodConfirmRequestSchema,
   PlatformTopupRequestSchema,
 } from '@shared/lib/services/platform-billing-schema'
@@ -137,6 +139,16 @@ platformAuth.post('/billing/payment-method', async (c) => {
     return c.json({ error: 'paymentMethodId is required.' }, 400)
   }
   return runBillingMutation(c, () => confirmPlatformPaymentMethod(parsed.data.paymentMethodId))
+})
+
+platformAuth.post('/billing/auto-reload', async (c) => {
+  const parsed = PlatformAutoReloadRequestSchema.safeParse(await c.req.json().catch(() => null))
+  if (!parsed.success) {
+    return c.json({
+      error: 'Auto-refill needs a threshold of $1–$5,000 and a refill amount above that threshold (minimum $20).',
+    }, 400)
+  }
+  return runBillingMutation(c, () => postPlatformAutoReload(parsed.data))
 })
 
 // Cloud-workspace discovery for the Account screen (Electron desktop only).

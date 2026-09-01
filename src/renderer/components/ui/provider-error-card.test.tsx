@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 
 import { parsePlatformErrorResponse } from '@shared/lib/llm-provider/platform-error-presentation'
 import { resolvePresentationMarkdown } from '@shared/lib/llm-provider/error-presentation'
@@ -19,12 +20,26 @@ const billingInfo = {
   isLoading: false,
 }
 
+const paywallBilling = {
+  topup: vi.fn(),
+  setAutoReload: vi.fn(),
+  setupCard: vi.fn(),
+  confirmCard: vi.fn(),
+  pending: false,
+  error: null,
+  setError: vi.fn(),
+}
+
 vi.mock('@renderer/hooks/use-platform-auth', () => ({
   usePlatformAuthStatus: () => ({ data: platformAuth }),
 }))
 
 vi.mock('@renderer/hooks/use-billing-info', () => ({
   useBillingInfo: () => billingInfo,
+}))
+
+vi.mock('@renderer/hooks/use-paywall-billing', () => ({
+  usePaywallBilling: () => paywallBilling,
 }))
 
 const SPEND_CAP =
@@ -36,6 +51,11 @@ beforeEach(() => {
   platformAuth.role = 'owner'
   billingInfo.data = undefined
   billingInfo.isLoading = false
+  paywallBilling.topup.mockReset()
+  paywallBilling.setAutoReload.mockReset()
+  paywallBilling.setAutoReload.mockResolvedValue(true)
+  paywallBilling.pending = false
+  paywallBilling.error = null
 })
 
 describe('ProviderErrorView', () => {
@@ -214,6 +234,45 @@ describe('ProviderErrorView', () => {
     expect(purchase).toBeDisabled()
     fireEvent.change(input, { target: { value: '50' } })
     expect(purchase).toBeEnabled()
+  })
+
+  it('saves auto-refill in-app after consent', async () => {
+    const openExternal = vi.fn()
+    ;(window as unknown as { electronAPI?: { openExternal: typeof openExternal } }).electronAPI = {
+      openExternal,
+    }
+
+    render(
+      <ProviderErrorView
+        presentation={{
+          severity: 'error',
+          icon: 'info',
+          message: '**Insufficient Balance:** This workspace is out of credits.',
+          paywall: { subscriptionRequired: false },
+        }}
+        paywallCta={{
+          kind: 'topup',
+          href: 'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
+          amountsCents: [5000],
+        }}
+      />,
+    )
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: /add usage/i }))
+    const dialog = screen.getByRole('dialog', { name: /add more usage credit/i })
+    await user.click(within(dialog).getByRole('tab', { name: /auto-refill/i }))
+    const save = await waitFor(() => within(dialog).getByRole('button', { name: /save auto-refill/i }))
+    expect(save).toBeDisabled()
+    await user.click(within(dialog).getByRole('checkbox'))
+    expect(save).toBeEnabled()
+    await user.click(save)
+
+    expect(paywallBilling.setAutoReload).toHaveBeenCalledWith({
+      enabled: true,
+      thresholdCents: 5000,
+      topupAmountCents: 20000,
+    })
+    expect(openExternal).not.toHaveBeenCalled()
   })
 
   it('renders a Go to billing button when the role is unknown', () => {

@@ -39,7 +39,27 @@ export const PlatformPaymentMethodConfirmResponseSchema = z.object({
   brand: z.string().nullable(),
 })
 
+export const PlatformAutoReloadRequestSchema = z.discriminatedUnion('enabled', [
+  z.object({
+    enabled: z.literal(true),
+    thresholdCents: z.number().int().min(100).max(500_000),
+    topupAmountCents: z.number().int().min(MIN_TOPUP_DOLLARS * 100).max(MAX_TOPUP_DOLLARS * 100),
+  }).refine((value) => value.topupAmountCents > value.thresholdCents),
+  z.object({
+    enabled: z.literal(false),
+  }),
+])
+
+export const PlatformAutoReloadResponseSchema = z.object({
+  status: z.literal('updated'),
+  enabled: z.boolean(),
+  thresholdCents: z.number().nullable(),
+  topupAmountCents: z.number().nullable(),
+})
+
 export type PlatformTopupRequest = z.infer<typeof PlatformTopupRequestSchema>
 export type PlatformTopupResponse = z.infer<typeof PlatformTopupResponseSchema>
 export type PlatformPaymentMethodSetup = z.infer<typeof PlatformPaymentMethodSetupSchema>
 export type PlatformPaymentMethodConfirmResponse = z.infer<typeof PlatformPaymentMethodConfirmResponseSchema>
+export type PlatformAutoReloadRequest = z.infer<typeof PlatformAutoReloadRequestSchema>
+export type PlatformAutoReloadResponse = z.infer<typeof PlatformAutoReloadResponseSchema>

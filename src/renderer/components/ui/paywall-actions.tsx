@@ -3,7 +3,9 @@ import { ChevronRight, CreditCard, Loader2 } from 'lucide-react'
 
 import {
   formatTopupDollars,
+  MIN_AUTO_RELOAD_THRESHOLD_DOLLARS,
   MIN_TOPUP_DOLLARS,
+  parseAutoReloadThresholdDollars,
   parseCustomTopupDollars,
   type PaywallCta,
 } from '@shared/lib/llm-provider/paywall-cta'
@@ -19,6 +21,7 @@ import {
 import { Input } from '@renderer/components/ui/input'
 import { Separator } from '@renderer/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@renderer/components/ui/tabs'
+import { usePaywallBilling } from '@renderer/hooks/use-paywall-billing'
 import { openExternalUrl } from '@renderer/lib/open-external'
 
 function stopCardToggle(event: MouseEvent) {
@@ -57,10 +60,12 @@ const CTA_LABELS = {
 function DollarInput({
   value,
   onChange,
+  min = MIN_TOPUP_DOLLARS,
   'aria-label': ariaLabel,
 }: {
   value: string
   onChange: (next: string) => void
+  min?: number
   'aria-label': string
 }) {
   return (
@@ -70,7 +75,7 @@ function DollarInput({
       </span>
       <Input
         type="number"
-        min={MIN_TOPUP_DOLLARS}
+        min={min}
         step={1}
         inputMode="numeric"
         aria-label={ariaLabel}
@@ -129,9 +134,8 @@ function SummaryRows({ dollars }: { dollars: number | null }) {
   )
 }
 
-// "Add usage" opens the purchase dialog (one-time top-up or auto-refill).
-// Confirming currently opens the org billing page — the in-app charge isn't
-// wired yet (see PR #914 notes).
+// One-time Purchase still opens org billing. Auto-refill saves in-app
+// (no charge today — billing charges when the pool drops below the threshold).
 function TopupDialog({
   href,
   amountsCents,
@@ -144,14 +148,29 @@ function TopupDialog({
   const [thresholdDollars, setThresholdDollars] = useState('50')
   const [refillDollars, setRefillDollars] = useState('200')
   const [agreed, setAgreed] = useState(false)
+  const { setAutoReload, pending, error } = usePaywallBilling()
 
   const onceDollars = parseCustomTopupDollars(dollarsInput)
   const refillAmount = parseCustomTopupDollars(refillDollars)
-  const thresholdValid = /^\d+$/.test(thresholdDollars.trim())
+  const thresholdAmount = parseAutoReloadThresholdDollars(thresholdDollars)
+  const canSaveAutoReload = agreed
+    && refillAmount !== null
+    && thresholdAmount !== null
+    && refillAmount > thresholdAmount
 
   const purchase = () => {
     if (href) void openExternalUrl(href)
     setOpen(false)
+  }
+
+  const saveAutoReload = async () => {
+    if (thresholdAmount === null || refillAmount === null) return
+    const saved = await setAutoReload({
+      enabled: true,
+      thresholdCents: thresholdAmount * 100,
+      topupAmountCents: refillAmount * 100,
+    })
+    if (saved) setOpen(false)
   }
 
   return (
@@ -218,12 +237,13 @@ function TopupDialog({
               <DollarInput
                 value={thresholdDollars}
                 onChange={setThresholdDollars}
+                min={MIN_AUTO_RELOAD_THRESHOLD_DOLLARS}
                 aria-label="Balance threshold in dollars"
               />
             </div>
             <div className="space-y-1.5">
               <p className="text-sm text-muted-foreground">
-                Amount to refill when balance drops below ${thresholdValid ? thresholdDollars.trim() : '…'}
+                Amount to refill when balance drops below ${thresholdAmount ?? '…'}
               </p>
               <DollarInput
                 value={refillDollars}
@@ -252,17 +272,19 @@ function TopupDialog({
                 onCheckedChange={(checked) => setAgreed(checked === true)}
               />
               <span>
-                You agree that Gamut will charge your payment method whenever
-                your balance falls below ${thresholdValid ? thresholdDollars.trim() : '…'}.
+                You agree that your organization will charge this payment method
+                whenever the balance falls below ${thresholdAmount ?? '…'}.
                 To cancel, turn off auto-refill.
               </span>
             </label>
+            {error ? <p className="text-xs text-destructive">{error}</p> : null}
             <Button
               className="w-full"
-              disabled={!agreed || refillAmount === null || !thresholdValid || !href}
-              onClick={purchase}
+              disabled={!canSaveAutoReload || pending}
+              onClick={() => void saveAutoReload()}
             >
-              Purchase and save
+              {pending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : null}
+              Save auto-refill
             </Button>
           </TabsContent>
         </Tabs>

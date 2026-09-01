@@ -13,6 +13,7 @@ let mockToken: string | null = 'plat_sa_token'
 import {
   confirmPlatformPaymentMethod,
   fetchPlatformBillingInfo,
+  postPlatformAutoReload,
   postPlatformTopup,
   startPlatformPaymentMethodSetup,
 } from './platform-billing-service'
@@ -140,6 +141,30 @@ describe('fetchPlatformBillingInfo', () => {
       last4: '4242',
       brand: 'visa',
     })
+  })
+
+  it('posts an auto-reload config to the proxy', async () => {
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(
+      jsonResponse({ status: 'updated', enabled: true, thresholdCents: 5000, topupAmountCents: 20000 }),
+    )
+
+    await expect(postPlatformAutoReload({
+      enabled: true,
+      thresholdCents: 5000,
+      topupAmountCents: 20000,
+    })).resolves.toEqual({
+      status: 'updated',
+      enabled: true,
+      thresholdCents: 5000,
+      topupAmountCents: 20000,
+    })
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'http://proxy.test/v1/billing/auto-reload',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ enabled: true, thresholdCents: 5000, topupAmountCents: 20000 }),
+      }),
+    )
   })
 
   it('surfaces a 402 top-up decline message', async () => {
