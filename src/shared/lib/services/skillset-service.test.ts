@@ -1260,6 +1260,71 @@ Instructions here`
   // ============================================================================
 
   describe('validateSkillsetUrl', () => {
+    function mockCloneWritingIndex(getIndex: () => unknown, cloneCalls: string[]) {
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === 'git' && args[0] === '--version') {
+          return { stdout: 'git version 2.44.0\n', stderr: '' }
+        }
+        if (cmd === 'git' && args[0] === 'clone') {
+          const dest = args[4]
+          cloneCalls.push(dest)
+          fs.mkdirSync(path.join(dest, '.git'), { recursive: true })
+          fs.writeFileSync(
+            path.join(dest, 'index.json'),
+            JSON.stringify(getIndex()),
+            'utf-8',
+          )
+        }
+        return { stdout: '', stderr: '' }
+      })
+    }
+
+    it('drops a newly cloned invalid cache so retry reads the corrected remote', async () => {
+      const url = 'https://github.com/TestOrg/stale-validation'
+      const repoDir = getSkillsetRepoDir(urlToSkillsetId(url))
+      const correctedIndex = buildIndex({ skillset_name: 'Corrected Skillset' })
+      let remoteIndex: unknown = { skills: [] }
+      const cloneCalls: string[] = []
+      mockCloneWritingIndex(() => remoteIndex, cloneCalls)
+
+      await expect(validateSkillsetUrl(url)).rejects.toThrow(
+        /skillset_name.*expected string.*received undefined/i,
+      )
+      expect(fs.existsSync(repoDir)).toBe(false)
+
+      remoteIndex = correctedIndex
+      await expect(validateSkillsetUrl(url)).resolves.toEqual(correctedIndex)
+      expect(cloneCalls).toEqual([repoDir, repoDir])
+    })
+
+    it('re-clones a malformed cache left by an older build on the first retry', async () => {
+      const url = 'https://github.com/TestOrg/legacy-stale-validation'
+      const repoDir = getSkillsetRepoDir(urlToSkillsetId(url))
+      await fs.promises.mkdir(path.join(repoDir, '.git'), { recursive: true })
+      await fs.promises.writeFile(
+        path.join(repoDir, 'index.json'),
+        JSON.stringify({ skills: [] }),
+        'utf-8',
+      )
+
+      const correctedIndex = buildIndex({ skillset_name: 'Corrected Skillset' })
+      const cloneCalls: string[] = []
+      mockCloneWritingIndex(() => correctedIndex, cloneCalls)
+
+      await expect(validateSkillsetUrl(url)).resolves.toEqual(correctedIndex)
+      expect(cloneCalls).toEqual([repoDir])
+    })
+
+    it('keeps the zero-network fast path for an already valid cache', async () => {
+      const url = 'https://github.com/TestOrg/valid-validation-cache'
+      const index = buildIndex()
+      await createSkillsetCache(urlToSkillsetId(url), index)
+      mockExecFileAsNoOp()
+
+      await expect(validateSkillsetUrl(url)).resolves.toEqual(index)
+      expect(mockExecFile).not.toHaveBeenCalled()
+    })
+
     it('throws helpful error with install link when git is not installed', async () => {
       mockExecFile.mockImplementation((cmd: string) => {
         if (cmd === 'git') {
