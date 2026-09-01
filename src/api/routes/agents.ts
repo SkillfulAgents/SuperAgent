@@ -80,11 +80,9 @@ import {
   removeMessage,
   removeToolCall,
 } from '@shared/lib/services/session-service'
+import { forkSession, ForkSessionError, type ForkSessionOpts } from '@shared/lib/services/session-fork-service'
 import { decodeMediaRef, openMediaBlob } from '@shared/lib/services/session-media'
-import { getSessionJsonlPath, getAgentSessionsDir, readJsonlFile, streamJsonlFile, writeJsonFileAtomic, displaySlug, createJsonArrayStringifyTransform, directoryExists, copyDirectoryFiltered } from '@shared/lib/utils/file-storage'
-import { ContainerConflictError, ContainerNotFoundError } from '@shared/lib/container/types'
-import { insertMessageAuthorsBestEffort } from './message-author'
-import { forkedUserLineSchema } from './fork-attribution-schema'
+import { getSessionJsonlPath, getAgentSessionsDir, readJsonlFile, writeJsonFileAtomic, displaySlug, createJsonArrayStringifyTransform, directoryExists } from '@shared/lib/utils/file-storage'
 import {
   MAX_UPLOAD_TOTAL_SIZE,
   UploadTooLargeError,
@@ -2884,7 +2882,7 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
         : undefined,
       forkedFromSessionId: metadata?.forkedFromSessionId,
       forkedFromSessionName: metadata?.forkedFromSessionId
-        ? (await getSession(agentSlug, metadata.forkedFromSessionId))?.name
+        ? (await getSessionMetadata(agentSlug, metadata.forkedFromSessionId))?.name
         : undefined,
       effort: metadata?.effort,
       speed: metadata?.speed,
@@ -2993,141 +2991,22 @@ agents.post('/:id/sessions/:sessionId/fork', AgentUser(), async (c) => {
   const slug = getAgentId(c)
   const sourceId = c.req.param('sessionId')
   try {
-    if (!(await sessionIsKnown(slug, sourceId))) {
-      return c.json({ error: 'Session not found' }, 404)
-    }
-    // Check-then-refuse, like the x-agent 409: no lock. The container checks its
-    // own turn tracker too; the residual window is one dropped partial line.
-    if (messagePersister.isSessionActive(sourceId)) {
-      return c.json({ error: 'Session is currently running' }, 409)
-    }
-    await containerManager.ensureRunning(slug)
-    const client = containerManager.getClient(slug)
-
-    // getSession derives transcript-based names; metadata holds the runtime choices.
-    const [source, metadata] = await Promise.all([getSession(slug, sourceId), getSessionMetadata(slug, sourceId)])
-    if (!source) {
-      return c.json({ error: 'Session not found' }, 404)
-    }
-
-    let forked: { id: string } | null
-    try {
-      forked = await client.forkSession(sourceId)
-    } catch (error) {
-      if (error instanceof ContainerConflictError) {
-        return c.json({ error: error.message }, 409)
-      }
-      if (error instanceof ContainerNotFoundError) {
-        return c.json({ error: error.message }, 404)
-      }
-      throw error
-    }
-    if (!forked) {
-      return c.json({ error: 'Container does not support fork; restart the agent to pull the latest image' }, 500)
-    }
-    const newId = forked.id
-    const name = `${source.name} (fork)`
-
-    const initialMetadata: Parameters<typeof updateSessionMetadata>[2] = {
-      forkedFromSessionId: sourceId,
-      ...(metadata?.model ? { model: metadata.model } : {}),
-      ...(metadata?.effort ? { effort: metadata.effort } : {}),
-      ...(metadata?.speed ? { speed: metadata.speed } : {}),
-      ...(metadata?.slashCommands ? { slashCommands: metadata.slashCommands } : {}),
-    }
+    const opts: ForkSessionOpts = {}
     if (isAuthMode()) {
-      initialMetadata.createdByUserId = getCurrentUserId(c)
+      opts.createdByUserId = getCurrentUserId(c)
       const deviceId = getRequestDeviceId(c)
-      if (deviceId) initialMetadata.createdByDeviceId = deviceId
+      if (deviceId) opts.createdByDeviceId = deviceId
+      opts.copyAttribution = true
     }
-
-    try {
-      // registerSession claims ownership and releases it on failure; no process
-      // is streaming, so there is no early-reserve race to win.
-      await registerSession(slug, newId, name, initialMetadata)
-    } catch (error) {
-      // A fork with no metadata is a dead file: remove it. The container delete
-      // is a no-op for a cold session today; it runs in finally so a host
-      // unlink failure cannot skip it.
-      try {
-        await deleteSession(slug, newId)
-      } catch (cleanupError) {
-        console.error(`fork: host delete of ${newId} failed`, cleanupError)
-      } finally {
-        await client.deleteSession(newId).catch(console.error)
-      }
-      throw error
-    }
-
-    // Sequenced before the response so the first messages request already sees
-    // them; best-effort so neither can fail a fork that exists.
-    const sessionsDir = getAgentSessionsDir(slug)
-    const sourceDir = path.join(sessionsDir, sourceId)
-    // lstat, not stat: a replaced session folder that is a symlink would
-    // otherwise be followed on the host and copy files from outside the workspace.
-    let sourceIsRealDir = false
-    try {
-      sourceIsRealDir = (await fs.promises.lstat(sourceDir)).isDirectory()
-    } catch {
-      sourceIsRealDir = false
-    }
-    if (sourceIsRealDir) {
-      await copyDirectoryFiltered(sourceDir, path.join(sessionsDir, newId))
-        .catch((error) => console.error(`fork: subagent/workflow copy for ${newId} failed (non-fatal)`, error))
-    }
-    if (isAuthMode()) {
-      await copyForkAttribution(slug, sourceId, newId)
-        .catch((error) => console.error(`fork: attribution copy for ${newId} failed (non-fatal)`, error))
-    }
-
-    return c.json(
-      {
-        id: newId,
-        agentSlug: slug,
-        name,
-        createdAt: new Date(),
-        lastActivityAt: new Date(),
-        messageCount: source.messageCount,
-        isActive: false,
-        forkedFromSessionId: sourceId,
-        forkedFromSessionName: source.name,
-        ...(metadata?.model ? { model: metadata.model } : {}),
-        ...(metadata?.effort ? { effort: metadata.effort } : {}),
-        ...(metadata?.speed ? { speed: metadata.speed } : {}),
-      },
-      201
-    )
+    return c.json(await forkSession(slug, sourceId, opts), 201)
   } catch (error) {
+    if (error instanceof ForkSessionError) {
+      return c.json({ error: error.message }, error.status)
+    }
     console.error('Failed to fork session:', error)
     return c.json({ error: 'Failed to fork session' }, 500)
   }
 })
-
-/**
- * Auth mode: the SDK fork remaps every message uuid and stamps
- * `forkedFrom.messageUuid` (the old uuid) on each line. Attribution rows are
- * keyed by uuid, so re-key the source's rows onto the fork's user messages.
- */
-async function copyForkAttribution(slug: string, sourceId: string, newId: string): Promise<void> {
-  const pairs: { newUuid: string; oldUuid: string }[] = []
-  for await (const raw of streamJsonlFile(getSessionJsonlPath(slug, newId))) {
-    const parsed = forkedUserLineSchema.safeParse(raw)
-    if (parsed.success) pairs.push({ newUuid: parsed.data.uuid, oldUuid: parsed.data.forkedFrom.messageUuid })
-  }
-  if (pairs.length === 0) return
-
-  const rows = await db
-    .select({ id: messageAuthor.id, userId: messageAuthor.userId })
-    .from(messageAuthor)
-    .where(and(eq(messageAuthor.sessionId, sourceId), inArray(messageAuthor.id, pairs.map((p) => p.oldUuid))))
-  const userByOld = new Map(rows.map((r) => [r.id, r.userId]))
-  await insertMessageAuthorsBestEffort(
-    pairs.flatMap(({ newUuid, oldUuid }) => {
-      const userId = userByOld.get(oldUuid)
-      return userId ? [{ id: newUuid, sessionId: newId, agentSlug: slug, userId }] : []
-    }),
-  )
-}
 
 // DELETE /api/agents/:id/sessions/:sessionId - Delete a session
 agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {

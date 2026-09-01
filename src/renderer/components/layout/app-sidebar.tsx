@@ -207,12 +207,11 @@ function SessionSubItem({
         sessionId={session.id}
         sessionName={session.name}
         agentSlug={agentSlug}
-        // Same condition `hasUnread` above gates the dot on — no point
-        // offering "Mark as Unread" where the dot would be suppressed.
-        sessionIsLive={!!session.isActive || !!session.isAwaitingInput}
-        // Not `isWorking`: that excludes awaiting-input sessions, which are still
-        // mid-turn for forking purposes (the transcript is open).
-        isActive={session.isActive || isStreaming}
+        activity={{
+          isActive: !!session.isActive,
+          isAwaitingInput: !!session.isAwaitingInput,
+          isStreaming,
+        }}
       >
         <SidebarMenuSubButton
           asChild

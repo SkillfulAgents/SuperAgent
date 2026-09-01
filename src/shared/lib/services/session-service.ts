@@ -995,11 +995,12 @@ export async function listSessionsByIds(
  */
 export async function getSession(
   agentSlug: string,
-  sessionId: string
+  sessionId: string,
+  already?: { metadata: SessionMetadata | null },
 ): Promise<SessionInfo | null> {
   if (!(await sessionBelongsToAgent(agentSlug, sessionId))) return null
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
-  const metadata = await getSessionMetadata(agentSlug, sessionId)
+  const metadata = already ? already.metadata : await getSessionMetadata(agentSlug, sessionId)
 
   if (await fileExists(jsonlPath)) {
     const summary = await summarizeSessionTranscript(jsonlPath)

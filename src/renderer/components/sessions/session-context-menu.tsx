@@ -46,18 +46,17 @@ function formatCost(cost: number): string {
   return `$${cost.toFixed(digits)}`
 }
 
+export interface SessionMenuActivity {
+  isActive: boolean
+  isAwaitingInput: boolean
+  isStreaming: boolean
+}
+
 interface SessionContextMenuProps {
   sessionId: string
   sessionName: string
   agentSlug: string
-  /**
-   * Session is working or awaiting input. Every list suppresses the unread dot
-   * in that state, so "Mark as Unread" is hidden rather than offered as a
-   * silent no-op.
-   */
-  sessionIsLive?: boolean
-  /** Mid-turn: Fork Session is disabled (the host refuses with 409 as the backstop). */
-  isActive?: boolean
+  activity: SessionMenuActivity
   children: React.ReactNode
 }
 
@@ -65,8 +64,7 @@ export function SessionContextMenu({
   sessionId,
   sessionName,
   agentSlug,
-  sessionIsLive = false,
-  isActive,
+  activity,
   children,
 }: SessionContextMenuProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
@@ -88,6 +86,10 @@ export function SessionContextMenu({
   const isOwner = canAdminAgent(agentSlug)
   const canUse = canUseAgent(agentSlug)
   const forkSession = useForkSession()
+  // Unread dots are suppressed while working or awaiting. Fork is refused
+  // while the transcript is open (active or still streaming).
+  const hideUnread = activity.isActive || activity.isAwaitingInput
+  const forkDisabled = activity.isActive || activity.isStreaming || forkSession.isPending
 
   const handleDelete = async () => {
     setIsDeleting(true)
@@ -191,7 +193,7 @@ export function SessionContextMenu({
           )}
           {/* Not permission-gated, unlike rename/delete: a mark is scoped to
               the acting user, so it is only ever a note to yourself. */}
-          {!sessionIsLive && (
+          {!hideUnread && (
             <ContextMenuItem data-testid="mark-unread-session-item" onClick={handleMarkUnread}>
               <MessageSquareDot className="h-4 w-4 mr-2" />
               Mark as Unread
@@ -200,7 +202,7 @@ export function SessionContextMenu({
           {canUse && (
             <ContextMenuItem
               data-testid="fork-session-item"
-              disabled={isActive || forkSession.isPending}
+              disabled={forkDisabled}
               onClick={handleFork}
             >
               <Split className="h-4 w-4 mr-2" />

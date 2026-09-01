@@ -192,8 +192,11 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
               sessionId={sessionId}
               sessionName={session?.name || 'Session'}
               agentSlug={slug}
-              sessionIsLive={!!session?.isActive || !!session?.isAwaitingInput}
-              isActive={session?.isActive || isStreaming}
+              activity={{
+                isActive: !!session?.isActive,
+                isAwaitingInput: !!session?.isAwaitingInput,
+                isStreaming,
+              }}
             >
               <span
                 className="text-sm font-light text-foreground cursor-context-menu app-no-drag"

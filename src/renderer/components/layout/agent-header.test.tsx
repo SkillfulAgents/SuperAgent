@@ -94,13 +94,13 @@ vi.mock('@renderer/components/sessions/session-context-menu', () => ({
     sessionId,
     sessionName,
     agentSlug,
-    isActive,
+    activity,
     children,
   }: {
     sessionId: string
     sessionName: string
     agentSlug: string
-    isActive?: boolean
+    activity: { isActive: boolean; isAwaitingInput: boolean; isStreaming: boolean }
     children: ReactNode
   }) => (
     <span
@@ -108,7 +108,7 @@ vi.mock('@renderer/components/sessions/session-context-menu', () => ({
       data-session-id={sessionId}
       data-session-name={sessionName}
       data-agent-slug={agentSlug}
-      data-is-active={String(isActive)}
+      data-is-active={String(activity.isActive || activity.isStreaming)}
     >
       {children}
     </span>

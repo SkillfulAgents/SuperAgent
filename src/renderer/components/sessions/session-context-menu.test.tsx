@@ -4,6 +4,8 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SessionContextMenu } from './session-context-menu'
 
+const IDLE = { isActive: false, isAwaitingInput: false, isStreaming: false }
+
 const mockApiFetch = vi.fn()
 const {
   mockFork,
@@ -154,7 +156,7 @@ describe('SessionContextMenu usage totals', () => {
     })
 
     render(
-      <SessionContextMenu sessionId="session-1" sessionName="Session One" agentSlug="agent-1">
+      <SessionContextMenu sessionId="session-1" sessionName="Session One" agentSlug="agent-1" activity={IDLE}>
         <button type="button">Session One</button>
       </SessionContextMenu>,
     )
@@ -182,7 +184,7 @@ describe('SessionContextMenu usage totals', () => {
     })
 
     render(
-      <SessionContextMenu sessionId="session-2" sessionName="Missing Price" agentSlug="agent-1">
+      <SessionContextMenu sessionId="session-2" sessionName="Missing Price" agentSlug="agent-1" activity={IDLE}>
         <button type="button">Missing Price</button>
       </SessionContextMenu>,
     )
@@ -206,7 +208,7 @@ describe('SessionContextMenu usage totals', () => {
     })
 
     render(
-      <SessionContextMenu sessionId="session-3" sessionName="Incomplete" agentSlug="agent-1">
+      <SessionContextMenu sessionId="session-3" sessionName="Incomplete" agentSlug="agent-1" activity={IDLE}>
         <button type="button">Incomplete</button>
       </SessionContextMenu>,
     )
@@ -230,7 +232,7 @@ describe('SessionContextMenu usage totals', () => {
     })
 
     render(
-      <SessionContextMenu sessionId="session-4" sessionName="Tiny Cost" agentSlug="agent-1">
+      <SessionContextMenu sessionId="session-4" sessionName="Tiny Cost" agentSlug="agent-1" activity={IDLE}>
         <button type="button">Tiny Cost</button>
       </SessionContextMenu>,
     )
@@ -253,7 +255,7 @@ describe('SessionContextMenu mark as unread', () => {
 
   it('raises the unread flag for the session it was opened on', async () => {
     render(
-      <SessionContextMenu sessionId="session-9" sessionName="Session Nine" agentSlug="agent-2">
+      <SessionContextMenu sessionId="session-9" sessionName="Session Nine" agentSlug="agent-2" activity={IDLE}>
         <button type="button">Session Nine</button>
       </SessionContextMenu>,
     )
@@ -274,7 +276,7 @@ describe('SessionContextMenu mark as unread', () => {
     mockCanAdminAgent.mockReturnValue(false)
 
     render(
-      <SessionContextMenu sessionId="session-9" sessionName="Session Nine" agentSlug="agent-2">
+      <SessionContextMenu sessionId="session-9" sessionName="Session Nine" agentSlug="agent-2" activity={IDLE}>
         <button type="button">Session Nine</button>
       </SessionContextMenu>,
     )
@@ -290,7 +292,7 @@ describe('SessionContextMenu mark as unread', () => {
     mockCanUseAgent.mockReturnValue(false)
 
     render(
-      <SessionContextMenu sessionId="session-9" sessionName="Session Nine" agentSlug="agent-2">
+      <SessionContextMenu sessionId="session-9" sessionName="Session Nine" agentSlug="agent-2" activity={IDLE}>
         <button type="button">Session Nine</button>
       </SessionContextMenu>,
     )
@@ -306,7 +308,22 @@ describe('SessionContextMenu mark as unread', () => {
         sessionId="session-9"
         sessionName="Session Nine"
         agentSlug="agent-2"
-        sessionIsLive
+        activity={{ ...IDLE, isActive: true }}
+      >
+        <button type="button">Session Nine</button>
+      </SessionContextMenu>,
+    )
+
+    expect(screen.queryByTestId('mark-unread-session-item')).not.toBeInTheDocument()
+  })
+
+  it('hides the item while the session is awaiting input', () => {
+    render(
+      <SessionContextMenu
+        sessionId="session-9"
+        sessionName="Session Nine"
+        agentSlug="agent-2"
+        activity={{ ...IDLE, isAwaitingInput: true }}
       >
         <button type="button">Session Nine</button>
       </SessionContextMenu>,
@@ -328,9 +345,9 @@ describe('Fork Session item', () => {
     mockCanUseAgent.mockReturnValue(true)
   })
 
-  function renderMenu(props: Partial<{ isActive: boolean }> = {}) {
+  function renderMenu(activity: Partial<typeof IDLE> = {}) {
     return render(
-      <SessionContextMenu sessionId="src-1" sessionName="Pricing" agentSlug="agent-a" {...props}>
+      <SessionContextMenu sessionId="src-1" sessionName="Pricing" agentSlug="agent-a" activity={{ ...IDLE, ...activity }}>
         <div>row</div>
       </SessionContextMenu>,
     )
@@ -349,6 +366,11 @@ describe('Fork Session item', () => {
 
   it('disables the item while the source is active', () => {
     renderMenu({ isActive: true })
+    expect(screen.getByTestId('fork-session-item')).toHaveAttribute('data-disabled')
+  })
+
+  it('disables the item while the source is streaming', () => {
+    renderMenu({ isStreaming: true })
     expect(screen.getByTestId('fork-session-item')).toHaveAttribute('data-disabled')
   })
 

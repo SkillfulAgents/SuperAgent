@@ -8649,6 +8649,13 @@ describe('POST /api/agents/:id/sessions/:sessionId/fork', () => {
       name: 'Pricing', model: 'claude-sonnet-5', effort: 'high', speed: 'fast',
       slashCommands: [{ name: 'review', description: 'Review', argumentHint: '' }],
     } as any)
+    vi.mocked(readSessionMetadata).mockResolvedValue({
+      'src-1': {
+        name: 'Pricing', createdAt: '2026-01-01T00:00:00Z',
+        model: 'claude-sonnet-5', effort: 'high', speed: 'fast',
+        slashCommands: [{ name: 'review', description: 'Review', argumentHint: '' }],
+      },
+    } as any)
     vi.mocked(registerSession).mockResolvedValue(undefined)
     vi.mocked(deleteSession).mockResolvedValue(true)
     vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
@@ -8662,10 +8669,11 @@ describe('POST /api/agents/:id/sessions/:sessionId/fork', () => {
   const fork = () => app.request('http://localhost/api/agents/test-agent/sessions/src-1/fork', { method: 'POST' })
 
   it('404s an unknown session before touching the container', async () => {
-    vi.mocked(sessionIsKnown).mockResolvedValue(false)
+    vi.mocked(sessionBelongsToAgent).mockResolvedValue(false)
     const res = await fork()
     expect(res.status).toBe(404)
     expect(mockForkSession).not.toHaveBeenCalled()
+    expect(containerManager.ensureRunning).not.toHaveBeenCalled()
   })
 
   it('409s while the source is active', async () => {
@@ -8708,6 +8716,11 @@ describe('POST /api/agents/:id/sessions/:sessionId/fork', () => {
     const body = await res.json()
     expect(body).toMatchObject({ id: 'fork-1', name: 'Pricing (fork)', isActive: false, model: 'claude-sonnet-5', forkedFromSessionId: 'src-1', forkedFromSessionName: 'Pricing' })
     expect(body.initialMessageUuid).toBeUndefined()
+    expect(readSessionMetadata).toHaveBeenCalledTimes(1)
+    expect(getSessionMetadata).not.toHaveBeenCalled()
+    expect(getSession).toHaveBeenCalledWith('test-agent', 'src-1', {
+      metadata: expect.objectContaining({ model: 'claude-sonnet-5', effort: 'high' }),
+    })
   })
 
   it('rolls back the copy when registration fails, and still asks the container to delete when the host unlink throws', async () => {
@@ -8787,11 +8800,10 @@ describe('session existence guards read metadata, not the transcript', () => {
     })
   })
 
-  it('returns fork lineage when the parent session still exists', async () => {
-    vi.mocked(getSessionMetadata).mockResolvedValue({ forkedFromSessionId: 'src-1' })
-    vi.mocked(getSession).mockImplementation(async (_slug, id) => {
-      if (id === 'sess-1') return SESSION_INFO
-      if (id === 'src-1') return { ...SESSION_INFO, id: 'src-1', name: 'Pricing' }
+  it('returns fork lineage from the parent listing name', async () => {
+    vi.mocked(getSessionMetadata).mockImplementation(async (_slug, id) => {
+      if (id === 'sess-1') return { forkedFromSessionId: 'src-1' }
+      if (id === 'src-1') return { name: 'Pricing' }
       return null
     })
 
@@ -8803,10 +8815,16 @@ describe('session existence guards read metadata, not the transcript', () => {
       forkedFromSessionId: 'src-1',
       forkedFromSessionName: 'Pricing',
     })
+    expect(getSession).toHaveBeenCalledTimes(1)
+    expect(getSession).toHaveBeenCalledWith('test-agent', 'sess-1')
   })
 
-  it('uses the live parent name when the listing has no title', async () => {
-    vi.mocked(getSessionMetadata).mockResolvedValue({ forkedFromSessionId: 'src-1' })
+  it('uses the registered listing name, not a transcript-derived title', async () => {
+    vi.mocked(getSessionMetadata).mockImplementation(async (_slug, id) => {
+      if (id === 'sess-1') return { forkedFromSessionId: 'src-1' }
+      if (id === 'src-1') return { name: 'Pricing' }
+      return null
+    })
     vi.mocked(getSession).mockImplementation(async (_slug, id) => {
       if (id === 'sess-1') return SESSION_INFO
       if (id === 'src-1') return { ...SESSION_INFO, id: 'src-1', name: 'First user message' }
@@ -8816,13 +8834,13 @@ describe('session existence guards read metadata, not the transcript', () => {
     const res = await getReq(app, '/api/agents/test-agent/sessions/sess-1')
 
     expect(res.status).toBe(200)
-    expect((await res.json()).forkedFromSessionName).toBe('First user message')
+    expect((await res.json()).forkedFromSessionName).toBe('Pricing')
+    expect(getSession).toHaveBeenCalledTimes(1)
   })
 
-  it('omits forkedFromSessionName when the parent session is gone', async () => {
-    vi.mocked(getSessionMetadata).mockResolvedValue({ forkedFromSessionId: 'src-1' })
-    vi.mocked(getSession).mockImplementation(async (_slug, id) => {
-      if (id === 'sess-1') return SESSION_INFO
+  it('omits forkedFromSessionName when the parent listing is gone', async () => {
+    vi.mocked(getSessionMetadata).mockImplementation(async (_slug, id) => {
+      if (id === 'sess-1') return { forkedFromSessionId: 'src-1' }
       return null
     })
 

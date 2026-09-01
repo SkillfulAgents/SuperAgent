@@ -74,6 +74,13 @@ export class SessionBusyError extends Error {
   }
 }
 
+/** Reaped or missing transcript. The fork route maps this to the same JSON 404 as an unknown source. */
+export function isSdkSessionNotFound(error: unknown): boolean {
+  if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /not found|no conversation found/i.test(message);
+}
+
 export class SessionManager extends EventEmitter {
   private sessions: Map<string, SessionData> = new Map();
   // In-flight resumes, keyed by session id — see resumeSession().
@@ -769,7 +776,18 @@ export class SessionManager extends EventEmitter {
 
     // CLAUDE_CONFIG_DIR=/workspace/.claude + dir '/workspace' resolves to the
     // same projects dir the source lives in; the fork lands beside it.
-    const { sessionId: newId } = await sdkForkSession(source.claudeSessionId, { dir: source.workingDirectory });
+    // A listing that survived CLI cleanup with no JSONL is gone: skip the SDK.
+    if (this.sourceTranscriptReaped(source.workingDirectory, source.claudeSessionId)) {
+      return null;
+    }
+
+    let newId: string;
+    try {
+      ({ sessionId: newId } = await sdkForkSession(source.claudeSessionId, { dir: source.workingDirectory }));
+    } catch (error) {
+      if (isSdkSessionNotFound(error)) return null;
+      throw error;
+    }
 
     const now = new Date().toISOString();
     try {
@@ -782,6 +800,12 @@ export class SessionManager extends EventEmitter {
         // Session-scoped grants are per-conversation approvals; a fork starts
         // with none, exactly like a new session.
         sessionCapabilityGrants: undefined,
+        // A fork is a new interactive chat. Keep the source's other metadata,
+        // but drop the automation class so idle eviction and runtime class
+        // match a user session, not the scheduled/webhook/x-agent parent.
+        metadata: source.metadata
+          ? { ...source.metadata, isAutomated: undefined }
+          : undefined,
       });
     } catch (error) {
       // Leave nothing on disk: the record did not persist, so the SDK file
@@ -794,6 +818,17 @@ export class SessionManager extends EventEmitter {
 
     console.log(`Forked session ${sourceId} -> ${newId}`);
     return newId;
+  }
+
+  /**
+   * True when the SDK project folder exists but the source JSONL does not —
+   * the listing survived CLI cleanup. Missing folder is left to the SDK call
+   * (tests never plant one; a first-run workspace has no projects dir yet).
+   */
+  private sourceTranscriptReaped(cwd: string, claudeSessionId: string): boolean {
+    const projectDir = `${this.baseWorkingDirectory}/.claude/projects/${cwd.replace(/[/\\]+/g, '-')}`;
+    if (!fs.existsSync(projectDir)) return false;
+    return !fs.existsSync(`${projectDir}/${claudeSessionId}.jsonl`);
   }
 
   async sendMessage(
