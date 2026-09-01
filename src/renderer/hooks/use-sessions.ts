@@ -94,6 +94,9 @@ export function useCreateSession() {
       model?: string
       // Provenance for sessions confirmed via a dashboard's dispatch dialog.
       dashboardDispatch?: SessionDashboardDispatch
+      // Analytics-only: distinguishes auto-started sessions (template onboarding)
+      // from user-typed ones. Not sent to the server.
+      origin?: 'user' | 'onboarding'
     }) => {
       const res = await apiFetch(`/api/agents/${data.agentSlug}/sessions`, {
         method: 'POST',
@@ -112,8 +115,9 @@ export function useCreateSession() {
       return res.json() as Promise<ApiSession & { initialMessageUuid: string }>
     },
     onSuccess: (_, variables) => {
-      track('session_created')
-      track('message_sent')
+      const origin = variables.origin ?? 'user'
+      track('session_created', { origin })
+      track('message_sent', { origin })
       queryClient.invalidateQueries({
         queryKey: ['sessions', resolveAgentSlugFromCache(queryClient, variables.agentSlug)],
       })
