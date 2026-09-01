@@ -3,17 +3,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { workspaceUnavailableBodySchema } from './workspace-unavailable-schema'
 import {
+  WORKSPACE_UNAVAILABLE_HEADER,
   _resetWorkspaceUnavailableForTest,
   _setWorkspaceUnavailableReloadForTest,
+  isWorkspaceAsleep,
   isWorkspaceUnavailableError,
   isWorkspaceUnavailableReloadPending,
   maybeReloadForWorkspaceUnavailable,
+  subscribeWorkspaceAsleep,
 } from './workspace-unavailable'
 
-function jsonResponse(status: number, body: unknown): Response {
+function jsonResponse(status: number, body: unknown, state?: string): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      ...(state ? { [WORKSPACE_UNAVAILABLE_HEADER]: state } : {}),
+    },
   })
 }
 
@@ -86,6 +92,55 @@ describe('maybeReloadForWorkspaceUnavailable', () => {
     await maybeReloadForWorkspaceUnavailable(jsonResponse(503, { error: 'deployment_unavailable' }))
     await maybeReloadForWorkspaceUnavailable(jsonResponse(503, { error: 'deployment_unavailable' }))
     expect(reload).toHaveBeenCalledOnce()
+  })
+
+  it('trusts the header without reading the body', async () => {
+    const response = new Response('not json', {
+      status: 503,
+      headers: { [WORKSPACE_UNAVAILABLE_HEADER]: 'waking' },
+    })
+    await maybeReloadForWorkspaceUnavailable(response)
+    expect(reload).toHaveBeenCalledOnce()
+  })
+
+  it('reloads on a header-tagged unreachable 502', async () => {
+    await maybeReloadForWorkspaceUnavailable(jsonResponse(502, {}, 'unreachable'))
+    expect(reload).toHaveBeenCalledOnce()
+  })
+
+  it('prompts instead of reloading when the workspace is sleeping (header)', async () => {
+    const notify = vi.fn()
+    subscribeWorkspaceAsleep(notify)
+    await maybeReloadForWorkspaceUnavailable(
+      jsonResponse(503, { error: 'deployment_unavailable', state: 'sleeping' }, 'sleeping'),
+    )
+    expect(reload).not.toHaveBeenCalled()
+    expect(isWorkspaceAsleep()).toBe(true)
+    expect(notify).toHaveBeenCalledOnce()
+  })
+
+  it('prompts instead of reloading when the workspace is sleeping (body fallback)', async () => {
+    await maybeReloadForWorkspaceUnavailable(
+      jsonResponse(503, { error: 'deployment_unavailable', state: 'sleeping' }),
+    )
+    expect(reload).not.toHaveBeenCalled()
+    expect(isWorkspaceAsleep()).toBe(true)
+  })
+
+  it('prompts on the error state too', async () => {
+    await maybeReloadForWorkspaceUnavailable(
+      jsonResponse(503, { error: 'deployment_unavailable', state: 'error' }, 'error'),
+    )
+    expect(reload).not.toHaveBeenCalled()
+    expect(isWorkspaceAsleep()).toBe(true)
+  })
+
+  it('notifies each asleep listener at most once', async () => {
+    const notify = vi.fn()
+    subscribeWorkspaceAsleep(notify)
+    await maybeReloadForWorkspaceUnavailable(jsonResponse(503, {}, 'sleeping'))
+    await maybeReloadForWorkspaceUnavailable(jsonResponse(503, {}, 'sleeping'))
+    expect(notify).toHaveBeenCalledOnce()
   })
 })
 

@@ -39,6 +39,7 @@ vi.mock('./workspace-reconnect', () => ({
 import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
 import {
   _armWorkspaceUnavailableReloadForTest,
+  _markWorkspaceAsleepForTest,
   _resetWorkspaceUnavailableForTest,
 } from '@renderer/lib/workspace-unavailable'
 import { AuthGate } from './auth-gate'
@@ -178,6 +179,22 @@ describe('which recovery AuthGate offers when there is no session', () => {
 
     expect(queryByTestId('auth-page')).not.toBeInTheDocument()
     expect(getByText('Loading...')).toBeInTheDocument()
+  })
+
+  it('overlays the asleep prompt while keeping the app mounted underneath', () => {
+    vi.stubGlobal('__AUTH_MODE__', true)
+    setActiveTarget('local', null)
+    setUser({ ...unauthenticated, isAuthenticated: true })
+    _markWorkspaceAsleepForTest()
+
+    const { getByTestId, getByText } = render(
+      <AuthGate>
+        <div>app</div>
+      </AuthGate>,
+    )
+
+    expect(getByTestId('workspace-asleep-overlay')).toBeInTheDocument()
+    expect(getByText('app')).toBeInTheDocument()
   })
 
   it('offers the login form for a web deployment', () => {
