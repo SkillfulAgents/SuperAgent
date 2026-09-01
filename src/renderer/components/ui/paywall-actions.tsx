@@ -1,7 +1,12 @@
-import { useState, type MouseEvent } from 'react'
+import { useState, type MouseEvent, type ReactNode } from 'react'
 import { Loader2 } from 'lucide-react'
 
-import { formatTopupDollars, type PaywallCta } from '@shared/lib/llm-provider/paywall-cta'
+import {
+  formatTopupDollars,
+  MIN_TOPUP_DOLLARS,
+  parseCustomTopupDollars,
+  type PaywallCta,
+} from '@shared/lib/llm-provider/paywall-cta'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { openExternalUrl } from '@renderer/lib/open-external'
@@ -11,10 +16,35 @@ function stopCardToggle(event: MouseEvent) {
   event.stopPropagation()
 }
 
-async function openHref(href: string | null) {
-  if (!href) return
-  await openExternalUrl(href)
+function ExternalCtaButton({
+  href,
+  disabled,
+  children,
+}: {
+  href: string | null
+  disabled?: boolean
+  children: ReactNode
+}) {
+  return (
+    <Button
+      size="xs"
+      variant="outline"
+      disabled={disabled || !href}
+      onClick={(event) => {
+        stopCardToggle(event)
+        if (href) void openExternalUrl(href)
+      }}
+    >
+      {children}
+    </Button>
+  )
 }
+
+const CTA_LABELS = {
+  subscribe: 'Subscribe',
+  add_card: 'Add credit card',
+  go_to_billing: 'Go to billing',
+} as const
 
 export function PaywallActions({
   cta,
@@ -44,81 +74,38 @@ export function PaywallActions({
     )
   }
 
-  if (cta.kind === 'subscribe') {
+  if (cta.kind === 'subscribe' || cta.kind === 'add_card' || cta.kind === 'go_to_billing') {
     return (
       <div className="mt-2" data-testid="paywall-actions">
-        <Button
-          size="xs"
-          variant="outline"
-          disabled={!cta.href}
-          onClick={(event) => {
-            stopCardToggle(event)
-            void openHref(cta.href)
-          }}
-        >
-          Subscribe
-        </Button>
+        <ExternalCtaButton href={cta.href}>{CTA_LABELS[cta.kind]}</ExternalCtaButton>
       </div>
     )
   }
 
-  if (cta.kind === 'add_card') {
-    return (
-      <div className="mt-2" data-testid="paywall-actions">
-        <Button
-          size="xs"
-          variant="outline"
-          disabled={!cta.href}
-          onClick={(event) => {
-            stopCardToggle(event)
-            void openHref(cta.href)
-          }}
-        >
-          Add credit card
-        </Button>
-      </div>
-    )
-  }
+  const customAmount = parseCustomTopupDollars(customDollars)
 
   return (
     <div className="mt-2 flex flex-wrap items-center gap-1.5" data-testid="paywall-actions">
       {cta.amountsCents.map((cents) => (
-        <Button
-          key={cents}
-          size="xs"
-          variant="outline"
-          disabled={!cta.href}
-          onClick={(event) => {
-            stopCardToggle(event)
-            void openHref(cta.href)
-          }}
-        >
+        <ExternalCtaButton key={cents} href={cta.href}>
           {formatTopupDollars(cents)}
-        </Button>
+        </ExternalCtaButton>
       ))}
       <Input
         type="number"
-        min={20}
+        min={MIN_TOPUP_DOLLARS}
         step={1}
         inputMode="numeric"
         placeholder="Custom"
-        aria-label="Custom top-up amount in dollars"
+        aria-label={`Custom top-up amount in dollars (minimum $${MIN_TOPUP_DOLLARS})`}
         className="h-7 w-20 px-2 text-xs"
         value={customDollars}
         onClick={stopCardToggle}
         onChange={(event) => setCustomDollars(event.target.value)}
       />
-      <Button
-        size="xs"
-        variant="outline"
-        disabled={!cta.href || !customDollars}
-        onClick={(event) => {
-          stopCardToggle(event)
-          void openHref(cta.href)
-        }}
-      >
+      <ExternalCtaButton href={cta.href} disabled={customAmount === null}>
         Top up
-      </Button>
+      </ExternalCtaButton>
     </div>
   )
 }

@@ -164,6 +164,51 @@ describe('ProviderErrorView', () => {
     expect(screen.getByRole('button', { name: '$200' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /top up/i })).toBeInTheDocument()
   })
+
+  it('enables the custom Top up button only for a valid amount', () => {
+    render(
+      <ProviderErrorView
+        presentation={{
+          severity: 'error',
+          icon: 'info',
+          message: '**Insufficient Balance:** This workspace is out of credits.',
+          paywall: { subscriptionRequired: false },
+        }}
+        paywallCta={{
+          kind: 'topup',
+          href: 'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
+          amountsCents: [2000],
+        }}
+      />,
+    )
+    const input = screen.getByRole('spinbutton', { name: /custom top-up amount/i })
+    const topUp = screen.getByRole('button', { name: /top up/i })
+
+    expect(topUp).toBeDisabled()
+    fireEvent.change(input, { target: { value: '5' } })
+    expect(topUp).toBeDisabled()
+    fireEvent.change(input, { target: { value: '50' } })
+    expect(topUp).toBeEnabled()
+  })
+
+  it('renders a Go to billing button when the role is unknown', () => {
+    render(
+      <ProviderErrorView
+        presentation={{
+          severity: 'error',
+          icon: 'info',
+          message: '**Insufficient Balance:** This workspace is out of credits.',
+          paywall: { subscriptionRequired: false },
+        }}
+        paywallCta={{
+          kind: 'go_to_billing',
+          href: 'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
+        }}
+      />,
+    )
+    expect(screen.getByRole('button', { name: /go to billing/i })).toBeInTheDocument()
+    expect(screen.queryByText(/ask a workspace admin/i)).not.toBeInTheDocument()
+  })
 })
 
 describe('ProviderErrorCard', () => {

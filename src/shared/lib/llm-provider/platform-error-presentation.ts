@@ -3,8 +3,7 @@ import {
   inferErrorStatus,
   type ProviderErrorPresentation,
 } from './error-presentation'
-
-const ORG_BILLING_LINK = '/dashboard/organizations/{orgId}?tab=billing'
+import { ORG_BILLING_PATH } from './paywall-cta'
 
 function isSpendCap(status: number | undefined, raw: string): boolean {
   if (!/spend cap/i.test(raw)) return false
@@ -44,15 +43,39 @@ export function extractSubscriptionRequired(body: unknown): boolean | undefined 
   if (body && typeof body === 'object') return fromRecord(body as Record<string, unknown>)
   if (typeof body !== 'string') return undefined
 
-  const jsonMatch = body.match(/\{[\s\S]*\}/)
-  if (!jsonMatch) return undefined
-  try {
-    const parsed: unknown = JSON.parse(jsonMatch[0])
-    if (parsed && typeof parsed === 'object') {
-      return fromRecord(parsed as Record<string, unknown>)
+  const parsed = parseFirstJsonObject(body)
+  if (parsed && typeof parsed === 'object') {
+    return fromRecord(parsed as Record<string, unknown>)
+  }
+  return undefined
+}
+
+// Balanced-brace scan: survives prose after the JSON blob, which a greedy
+// first-{ to last-} regex would not.
+function parseFirstJsonObject(raw: string): unknown {
+  for (let start = raw.indexOf('{'); start !== -1; start = raw.indexOf('{', start + 1)) {
+    let depth = 0
+    let inString = false
+    for (let i = start; i < raw.length; i++) {
+      const ch = raw[i]
+      if (inString) {
+        if (ch === '\\') i++
+        else if (ch === '"') inString = false
+        continue
+      }
+      if (ch === '"') inString = true
+      else if (ch === '{') depth++
+      else if (ch === '}') {
+        depth--
+        if (depth === 0) {
+          try {
+            return JSON.parse(raw.slice(start, i + 1))
+          } catch {
+            break
+          }
+        }
+      }
     }
-  } catch {
-    return undefined
   }
   return undefined
 }
@@ -86,7 +109,7 @@ function insufficientBalancePresentation(
   return {
     severity: 'error',
     icon: 'info',
-    message: `**Insufficient Balance:** Subscribe or top up to continue running agents. [Go to billing](${ORG_BILLING_LINK})`,
+    message: `**Insufficient Balance:** Subscribe or top up to continue running agents. [Go to billing](${ORG_BILLING_PATH})`,
   }
 }
 
@@ -102,7 +125,7 @@ export function parsePlatformErrorResponse(
   if (isSpendCap(inferred, raw)) {
     return {
       severity: 'warning',
-      message: `**Spend Limit Reached:** ${spendCapSentence(raw)} [Raise spend limit in the admin dashboard](${ORG_BILLING_LINK})`,
+      message: `**Spend Limit Reached:** ${spendCapSentence(raw)} [Raise spend limit in the admin dashboard](${ORG_BILLING_PATH})`,
       icon: 'circle-dollar-sign',
     }
   }

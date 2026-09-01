@@ -153,6 +153,12 @@ describe('extractSubscriptionRequired', () => {
     )).toBe(false)
   })
 
+  it('reads the flag when prose follows the JSON blob', () => {
+    expect(extractSubscriptionRequired(
+      'API Error: 402 {"type":"error","error":{"subscription_required":true,"message":"Top up to continue."}} Retry after billing.',
+    )).toBe(true)
+  })
+
   it('returns undefined when the proxy omitted the flag', () => {
     expect(extractSubscriptionRequired(BILLING_402)).toBeUndefined()
     expect(extractSubscriptionRequired({
