@@ -203,6 +203,20 @@ export function applySessionActivityStatus(
   patch: SessionStatusPatch,
 ): boolean {
   const aliases = agentSlugAliases(queryClient, agentSlug)
+
+  // O(1) relevance gate before any cache walk: the global stream carries
+  // lifecycle events for EVERY agent (all of a workspace's sessions — and in
+  // the shared-server e2e environment, every parallel worker's traffic). An
+  // agent whose session data this tab never cached has nothing to patch, and
+  // its rollup clears could not be validated anyway — its sidebar row keeps
+  // the refetch-driven cadence. Without this, every foreign event pays
+  // full-cache predicate walks plus an agents-list rebuild in every open tab.
+  const hasSessionData = [...aliases].some((alias) =>
+    queryClient.getQueryData(['sessions', alias]) !== undefined
+    || queryClient.getQueryData(['session', sessionId, alias]) !== undefined,
+  )
+  if (!hasSessionData) return false
+
   const changed = patchSessionWithAliases(
     queryClient,
     aliases,
@@ -247,9 +261,16 @@ export function applySessionActivityStatus(
     agentPatch[agentFlag] = value
   }
   if (Object.keys(agentPatch).length > 0) {
-    // No hand-rolled change detection: structural sharing restores identical
-    // results, so an effective no-op costs nothing downstream.
-    updateMatchingAgents(queryClient, agentSlug, (agent) => ({ ...agent, ...agentPatch }))
+    // Identity-preserving on purpose: a no-op patch (e.g. session_active for
+    // an already-working agent — the common case) must return the same agent
+    // reference, or every event rebuilds the agents array and pays a full
+    // deep-compare in structural sharing.
+    updateMatchingAgents(queryClient, agentSlug, (agent) => {
+      const rollupChanged = SESSION_ROLLUP_FLAGS.some(([, agentFlag]) => (
+        agentPatch[agentFlag] !== undefined && (agent[agentFlag] ?? false) !== agentPatch[agentFlag]
+      ))
+      return rollupChanged ? { ...agent, ...agentPatch } : agent
+    })
   }
   return changed
 }
