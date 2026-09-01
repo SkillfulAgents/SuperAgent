@@ -34,6 +34,26 @@ describe('host-auth', () => {
     expect(hostAuth.isValidHostToken(undefined)).toBe(false);
   });
 
+  // ELECTRON-DD: the host compares this id with the id of the token it is
+  // sending to tell a stale container (restart it) from a real 401.
+  it('exposes a one-way id of the token it was started with, never the token', async () => {
+    const hostAuth = await loadHostAuth('hostc_secret');
+    const id = hostAuth.hostTokenId();
+
+    expect(id).toHaveLength(16);
+    expect(id).toMatch(/^[0-9a-f]+$/);
+    expect(id).not.toContain('hostc');
+    expect('hostc_secret').not.toContain(id!);
+    // Stable for the same token, different for another.
+    expect(hostAuth.hostTokenId()).toBe(id);
+    expect((await loadHostAuth('hostc_other')).hostTokenId()).not.toBe(id);
+  });
+
+  it('reports no token id when host auth is disabled', async () => {
+    const hostAuth = await loadHostAuth(undefined);
+    expect(hostAuth.hostTokenId()).toBeUndefined();
+  });
+
   it('disables auth when no token was provided (older host)', async () => {
     const hostAuth = await loadHostAuth(undefined);
 

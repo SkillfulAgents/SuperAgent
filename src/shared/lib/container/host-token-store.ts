@@ -37,6 +37,18 @@ function readTokens(): HostTokens {
   }
 }
 
+/**
+ * Non-secret, one-way identifier for a host token ("key id").
+ *
+ * Used to tell whether a *running* container was started with the token the
+ * host is currently sending, without either side ever exchanging token
+ * material. A truncated SHA-256 of a 32-byte random secret is not reversible
+ * and is safe to log and to serve on the container's unauthenticated /health.
+ */
+export function hostTokenId(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex').slice(0, 16)
+}
+
 export function getOrCreateHostToken(agentSlug: string): string {
   const tokens = readTokens()
   const existing = tokens[agentSlug]

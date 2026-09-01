@@ -33,6 +33,21 @@ export function hostAuthHeaders(): Record<string, string> {
   return HOST_API_TOKEN ? { [HOST_TOKEN_HEADER]: HOST_API_TOKEN } : {};
 }
 
+/**
+ * Non-secret, one-way id of the host token this container was started with
+ * ("key id"), or undefined when host auth is disabled.
+ *
+ * Served on the unauthenticated /health so the host can tell a stale-token 401
+ * (container still holding a token the host has since rotated — it must be
+ * restarted) apart from a genuinely unauthorized caller, without either side
+ * exchanging token material. A truncated SHA-256 of a 32-byte random secret is
+ * not reversible, and the agent can already read its own boot environment.
+ */
+export function hostTokenId(): string | undefined {
+  if (!HOST_API_TOKEN) return undefined;
+  return crypto.createHash('sha256').update(HOST_API_TOKEN).digest('hex').slice(0, 16);
+}
+
 export function isValidHostToken(presented: string | undefined): boolean {
   if (!HOST_API_TOKEN) return true;
   if (!presented) return false;
