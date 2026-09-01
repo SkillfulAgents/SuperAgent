@@ -8678,7 +8678,7 @@ describe('POST /api/agents/:id/sessions/:sessionId/fork', () => {
   const fork = () => app.request('http://localhost/api/agents/test-agent/sessions/src-1/fork', { method: 'POST' })
 
   it('404s an unknown session before touching the container', async () => {
-    vi.mocked(sessionBelongsToAgent).mockResolvedValue(false)
+    vi.mocked(sessionIsKnown).mockResolvedValue(false)
     const res = await fork()
     expect(res.status).toBe(404)
     expect(mockForkSession).not.toHaveBeenCalled()

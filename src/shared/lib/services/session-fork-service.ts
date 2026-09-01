@@ -28,8 +28,7 @@ import {
   getSession,
   registerSession,
   readSessionMetadata,
-  sessionBelongsToAgent,
-  sessionExists,
+  sessionIsKnown,
 } from './session-service'
 
 export class ForkSessionError extends Error {
@@ -73,17 +72,16 @@ export async function forkSession(
   sourceId: string,
   opts: ForkSessionOpts = {},
 ): Promise<ForkedSession> {
-  if (messagePersister.isSessionActive(sourceId)) {
+  if (messagePersister.isSessionActive(slug, sourceId)) {
     throw new ForkSessionError(409, 'Session is currently running')
   }
 
-  const [belongs, exists, metadataMap] = await Promise.all([
-    sessionBelongsToAgent(slug, sourceId),
-    sessionExists(slug, sourceId),
+  const [known, metadataMap] = await Promise.all([
+    sessionIsKnown(slug, sourceId),
     readSessionMetadata(slug),
   ])
   const metadata = Object.hasOwn(metadataMap, sourceId) ? metadataMap[sourceId] : null
-  if (!belongs || !(exists || metadata?.createdAt)) {
+  if (!known) {
     throw new ForkSessionError(404, 'Session not found')
   }
 

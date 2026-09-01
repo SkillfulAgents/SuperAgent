@@ -7,16 +7,14 @@ const {
   getSessionMetadata,
   registerSession,
   deleteSession,
-  sessionBelongsToAgent,
-  sessionExists,
+  sessionIsKnown,
 } = vi.hoisted(() => ({
   readSessionMetadata: vi.fn(),
   getSession: vi.fn(),
   getSessionMetadata: vi.fn(),
   registerSession: vi.fn(),
   deleteSession: vi.fn(),
-  sessionBelongsToAgent: vi.fn(),
-  sessionExists: vi.fn(),
+  sessionIsKnown: vi.fn(),
 }))
 
 const { isSessionActive, ensureRunning, forkInContainer, deleteInContainer } = vi.hoisted(() => ({
@@ -42,8 +40,7 @@ vi.mock('./session-service', () => ({
   getSessionMetadata,
   registerSession,
   deleteSession,
-  sessionBelongsToAgent,
-  sessionExists,
+  sessionIsKnown,
 }))
 
 vi.mock('@shared/lib/container/container-manager', () => ({
@@ -114,8 +111,7 @@ describe('forkSession', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     isSessionActive.mockReturnValue(false)
-    sessionBelongsToAgent.mockResolvedValue(true)
-    sessionExists.mockResolvedValue(true)
+    sessionIsKnown.mockResolvedValue(true)
     readSessionMetadata.mockResolvedValue({ 'src-1': sourceMeta })
     getSession.mockResolvedValue(source)
     registerSession.mockResolvedValue(undefined)
@@ -214,7 +210,7 @@ describe('forkSession', () => {
   })
 
   it('throws 404 without booting when the source is unknown', async () => {
-    sessionBelongsToAgent.mockResolvedValue(false)
+    sessionIsKnown.mockResolvedValue(false)
     await expect(forkSession('test-agent', 'src-1')).rejects.toMatchObject({
       name: 'ForkSessionError',
       status: 404,
