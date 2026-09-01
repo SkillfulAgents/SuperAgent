@@ -70,6 +70,7 @@ vi.mock('@shared/lib/container/client-factory', () => ({
 vi.mock('@shared/lib/config/data-dir', () => ({
   getDataDir: () => '/mock/data',
   getAgentsDataDir: () => '/mock/data/agents',
+  getVolumesDataDir: () => '/mock/data/volumes',
 }))
 
 vi.mock('../../main/host-browser', () => ({

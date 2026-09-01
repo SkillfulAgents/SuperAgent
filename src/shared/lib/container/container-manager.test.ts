@@ -141,6 +141,8 @@ vi.mock('@shared/lib/config/settings', () => ({
 
 vi.mock('@shared/lib/config/data-dir', () => ({
   getAgentWorkspaceDir: (id: string) => `/workspace/${id}`,
+  getVolumeDir: (id: string) => `/data/volumes/${id}`,
+  getVolumesDataDir: () => '/data/volumes',
 }))
 
 vi.mock('./message-persister', () => ({
@@ -198,6 +200,17 @@ vi.mock('@shared/lib/services/mount-service', () => ({
   getMountsWithHealth: (...args: unknown[]) => mockGetMountsWithHealth(...args),
 }))
 
+const { mockGetAgentSharedVolumes, mockDirectoryExists } = vi.hoisted(() => ({
+  mockGetAgentSharedVolumes: vi.fn(() => [] as Array<{ id: string; mountName: string }>),
+  mockDirectoryExists: vi.fn(async (_dir: string) => true),
+}))
+vi.mock('@shared/lib/services/shared-volume-service', () => ({
+  getAgentSharedVolumes: mockGetAgentSharedVolumes,
+}))
+vi.mock('@shared/lib/utils/file-storage', () => ({
+  directoryExists: mockDirectoryExists,
+}))
+
 import { containerManager } from './container-manager'
 
 describe('containerManager.ensureRunning — env var construction', () => {
@@ -214,6 +227,8 @@ describe('containerManager.ensureRunning — env var construction', () => {
 
     // Default: no mounts
     mockGetMountsWithHealth.mockReturnValue([])
+    mockGetAgentSharedVolumes.mockReturnValue([])
+    mockDirectoryExists.mockResolvedValue(true)
 
     // Default: container not running
     containerManager.updateCachedStatus('test-agent', 'stopped', null)
@@ -518,6 +533,46 @@ describe('containerManager.ensureRunning — mount volumes', () => {
 
     const opts = mockStart.mock.calls[0][0]
     expect(opts.additionalVolumes).toEqual([])
+  })
+
+  it('passes attachedVolumes whose dirs exist and sets SUPERAGENT_SHARED_VOLUMES', async () => {
+    mockGetAgentSharedVolumes.mockReturnValue([
+      { id: 'vol-1', mountName: 'research' },
+      { id: 'vol-2', mountName: 'shared-notes' },
+    ])
+    mockDirectoryExists.mockResolvedValue(true)
+
+    await containerManager.ensureRunning('test-agent')
+
+    const opts = mockStart.mock.calls[0][0]
+    expect(opts.attachedVolumes).toEqual([
+      { id: 'vol-1', mountName: 'research' },
+      { id: 'vol-2', mountName: 'shared-notes' },
+    ])
+    expect(opts.envVars.SUPERAGENT_SHARED_VOLUMES).toBe('/volumes/research,/volumes/shared-notes')
+  })
+
+  it('drops missing volume dirs, broadcasts warning, and omits them from the env var', async () => {
+    mockGetAgentSharedVolumes.mockReturnValue([
+      { id: 'vol-ok', mountName: 'research' },
+      { id: 'vol-gone', mountName: 'archive' },
+    ])
+    mockDirectoryExists.mockImplementation(async (dir: string) => dir === '/data/volumes/vol-ok')
+
+    await containerManager.ensureRunning('test-agent')
+
+    const opts = mockStart.mock.calls[0][0]
+    expect(opts.attachedVolumes).toEqual([{ id: 'vol-ok', mountName: 'research' }])
+    expect(opts.envVars.SUPERAGENT_SHARED_VOLUMES).toBe('/volumes/research')
+
+    const broadcasts = vi.mocked(messagePersister.broadcastGlobal).mock.calls
+    const mountWarnings = broadcasts.filter(([msg]: any) => msg.type === 'mount_health_warning')
+    expect(mountWarnings).toHaveLength(1)
+    expect(mountWarnings[0][0]).toMatchObject({
+      type: 'mount_health_warning',
+      agentSlug: 'test-agent',
+      missingMounts: [{ folderName: 'archive', hostPath: '/data/volumes/vol-gone' }],
+    })
   })
 })
 

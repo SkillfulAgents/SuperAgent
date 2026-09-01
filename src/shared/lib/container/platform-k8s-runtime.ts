@@ -1,6 +1,7 @@
 import { createHash } from 'crypto'
 import fs from 'fs'
 import https from 'https'
+import { posix as posixPath } from 'path'
 import { z } from 'zod'
 import { BaseContainerClient, CONTAINER_INTERNAL_PORT } from './base-container-client'
 import type { ContainerConfig, ContainerInfo, ContainerStats, StartOptions, StopOptions, StopResult } from './types'
@@ -117,7 +118,7 @@ export class PlatformK8sRuntimeClient extends BaseContainerClient {
     await deleteResource(`/api/v1/namespaces/${kube.namespace}/pods/${this.podName()}`)
     await deleteResource(`/api/v1/namespaces/${kube.namespace}/services/${this.serviceName()}`)
     await createResource(`/api/v1/namespaces/${kube.namespace}/services`, buildAgentServiceManifest(kube, this.serviceName(), this.podName(), ownerRef))
-    await createResource(`/api/v1/namespaces/${kube.namespace}/pods`, buildAgentPodManifest(kube, this.podName(), this.config, this.buildAgentEnv(options?.envVars), ownerRef))
+    await createResource(`/api/v1/namespaces/${kube.namespace}/pods`, buildAgentPodManifest(kube, this.podName(), this.config, this.buildAgentEnv(options?.envVars), ownerRef, options?.attachedVolumes))
 
     await waitForPodReady(kube.namespace, this.podName(), 300_000)
 
@@ -277,12 +278,21 @@ export function buildAgentServiceManifest(kube: KubeConfig, serviceName: string,
   }
 }
 
+export function volumesSubPathPrefix(workspacePrefix: string): string {
+  const override = process.env.K8S_VOLUMES_SUBPATH_PREFIX?.trim()
+  if (override) return trimSlashes(override)
+  const parent = posixPath.dirname(trimSlashes(workspacePrefix))
+  if (!parent || parent === '.') return 'volumes'
+  return `${parent}/volumes`
+}
+
 export function buildAgentPodManifest(
   kube: KubeConfig,
   podName: string,
   config: ContainerConfig,
   envVars: Record<string, string>,
   ownerRef?: OwnerReference | null,
+  attachedVolumes?: Array<{ id: string; mountName: string }>,
 ): KubeResource {
   const settings = getSettings()
   const image = process.env.K8S_AGENT_IMAGE || settings.container.agentImage
@@ -314,11 +324,18 @@ export function buildAgentPodManifest(
         allowPrivilegeEscalation: false,
         capabilities: { drop: ['ALL'] },
       },
-      volumeMounts: [{
-        name: 'workspaces',
-        mountPath: '/workspace',
-        subPath: workspaceSubPath(kube.workspaceSubPathPrefix, config.agentId),
-      }],
+      volumeMounts: [
+        {
+          name: 'workspaces',
+          mountPath: '/workspace',
+          subPath: workspaceSubPath(kube.workspaceSubPathPrefix, config.agentId),
+        },
+        ...(attachedVolumes ?? []).map((volume) => ({
+          name: 'workspaces',
+          mountPath: `/volumes/${volume.mountName}`,
+          subPath: `${volumesSubPathPrefix(kube.workspaceSubPathPrefix)}/${volume.id}`,
+        })),
+      ],
     }],
     volumes: [{
       name: 'workspaces',

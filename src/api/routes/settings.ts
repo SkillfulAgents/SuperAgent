@@ -7,7 +7,7 @@ import { zValidator } from '@hono/zod-validator'
 import { getLlmProvider, getAllProviderInfo, GenericLlmProvider } from '@shared/lib/llm-provider'
 import type { LlmProviderId } from '@shared/lib/llm-provider'
 import type { BedrockLlmProvider } from '@shared/lib/llm-provider/bedrock-provider'
-import { getDataDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
+import { getDataDir, getAgentsDataDir, getVolumesDataDir } from '@shared/lib/config/data-dir'
 import { assertPathWithinDir } from '@shared/lib/utils/path-safety'
 import { Authenticated, IsAdmin } from '../middleware/auth'
 import { isAuthMode } from '@shared/lib/auth/mode'
@@ -81,6 +81,8 @@ import {
   apnsDevices,
   pushSubscriptions,
   pushVapidKeys,
+  agentSharedVolumes,
+  sharedVolumes,
 } from '@shared/lib/db/schema'
 import fs from 'fs'
 import { credentialBroker } from '../credentials/credential-broker'
@@ -198,6 +200,9 @@ const FACTORY_RESET_TABLES: SQLiteTable[] = [
   agentRemoteMcps,
   mcpToolPolicies,
   remoteMcpServers,
+  // shared volumes: junction first so the volume row delete is not blocked
+  agentSharedVolumes,
+  sharedVolumes,
   // per-user settings (user row itself is preserved)
   userSettings,
   // global app audit log
@@ -895,6 +900,9 @@ settings.post('/factory-reset', async (c) => {
     // Delete agents directory
     const agentsDir = getAgentsDataDir()
     await fs.promises.rm(agentsDir, { recursive: true, force: true })
+
+    const volumesDir = getVolumesDataDir()
+    await fs.promises.rm(volumesDir, { recursive: true, force: true })
 
     // Clear every agent/app-owned relational table (children before parents).
     // Better Auth tables (user/session/account/verification) are preserved.

@@ -949,12 +949,20 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     const env = this.buildAgentEnv(options?.envVars)
     const hasEnv = Object.keys(env).length > 0
     // Mount the same per-agent workspace path the k8s runtime uses.
+    const volumesPrefix = process.env.MICROVM_VOLUMES_SUBPATH_PREFIX || 'volumes'
+    const volumes = options?.attachedVolumes?.length
+      ? options.attachedVolumes.map((volume) => ({
+          subPath: `${volumesPrefix}/${volume.id}`,
+          name: volume.mountName,
+        }))
+      : undefined
     const mount = config.fsId && config.accessPoint && config.mountTargetIp
       ? {
           fsId: config.fsId,
           accessPoint: config.accessPoint,
           mountTargetIp: config.mountTargetIp,
           subPath: `${process.env.K8S_WORKSPACES_SUBPATH_PREFIX || 'agents'}/${this.config.agentId}/workspace`,
+          ...(volumes ? { volumes } : {}),
         }
       : undefined
     const hostApiBaseUrl = await this.getHostApiBaseUrl()
@@ -974,8 +982,11 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     const runHookPayload = JSON.stringify(payloadObj)
     const payloadBytes = runHookPayload ? Buffer.byteLength(runHookPayload, 'utf8') : 0
     if (payloadBytes > RUN_HOOK_PAYLOAD_MAX_BYTES) {
+      const volumeCount = options?.attachedVolumes?.length ?? 0
       throw new Error(
-        `MicroVM runHookPayload is ${payloadBytes} bytes, over the ${RUN_HOOK_PAYLOAD_MAX_BYTES} limit.`,
+        volumeCount > 0
+          ? `MicroVM runHookPayload is ${payloadBytes} bytes, over the ${RUN_HOOK_PAYLOAD_MAX_BYTES} limit (${volumeCount} shared volumes).`
+          : `MicroVM runHookPayload is ${payloadBytes} bytes, over the ${RUN_HOOK_PAYLOAD_MAX_BYTES} limit.`,
       )
     }
 

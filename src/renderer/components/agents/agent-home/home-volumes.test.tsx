@@ -17,6 +17,33 @@ const volumes = vi.hoisted(() => ({
 }))
 vi.mock('@renderer/hooks/use-mounts', () => ({ useVolumesManager: () => volumes }))
 
+const shared = vi.hoisted(() => ({
+  supported: false,
+  attached: [] as Array<{
+    id: string
+    name: string
+    mountName: string
+    attachedAgents: Array<{ slug: string; name: string }>
+  }>,
+  all: [] as Array<{
+    id: string
+    name: string
+    mountName: string
+    attachedAgents: Array<{ slug: string; name: string }>
+  }>,
+  isLoading: false,
+  create: vi.fn(),
+  attach: vi.fn(),
+  detach: vi.fn(),
+  remove: vi.fn(),
+  pendingRestart: false,
+  handleRestart: vi.fn(),
+  isRestarting: false,
+  restartError: null as string | null,
+  isAgentRunning: false,
+}))
+vi.mock('@renderer/hooks/use-shared-volumes', () => ({ useSharedVolumes: () => shared }))
+
 const { mockCanUseHostFeatures } = vi.hoisted(() => ({
   mockCanUseHostFeatures: vi.fn(() => true),
 }))
@@ -39,6 +66,11 @@ beforeEach(() => {
   volumes.mounts = [MOUNT]
   volumes.canAddMount = true
   volumes.pendingRestart = false
+  shared.supported = false
+  shared.attached = []
+  shared.all = []
+  shared.pendingRestart = false
+  shared.isAgentRunning = false
   mockCanUseHostFeatures.mockReturnValue(true)
   window.electronAPI = { platform: 'darwin', showInFolder: vi.fn() } as never
 })
@@ -106,5 +138,95 @@ describe('driving a cloud workspace', () => {
     // Otherwise: an empty box inviting you to "mount a folder from your
     // computer", with no button to do it.
     expect(container).toBeEmptyDOMElement()
+  })
+})
+
+describe('shared volumes when the server reports supported', () => {
+  const RESEARCH = {
+    id: 'vol-1',
+    name: 'Research',
+    mountName: 'research',
+    attachedAgents: [{ slug: 'a1', name: 'Agent One' }],
+  }
+  const ORPHAN = {
+    id: 'vol-2',
+    name: 'Archive',
+    mountName: 'archive',
+    attachedAgents: [],
+  }
+
+  beforeEach(() => {
+    shared.supported = true
+    shared.attached = []
+    shared.all = [ORPHAN]
+    shared.pendingRestart = false
+  })
+
+  it('shows the Shared Volumes card and locked empty-state copy', () => {
+    render(<HomeVolumes agentSlug="a1" />)
+    expect(screen.getByText('Shared Volumes')).toBeInTheDocument()
+    expect(screen.getByText('No shared volumes yet')).toBeInTheDocument()
+    expect(screen.getByText(
+      'Create a shared folder in your workspace. Every agent you attach it to can read and write its files.',
+    )).toBeInTheDocument()
+  })
+
+  it('opens the add menu with create, existing list, and orphan delete', async () => {
+    render(<HomeVolumes agentSlug="a1" />)
+    await userEvent.click(screen.getByRole('button', { name: /add shared volume/i }))
+    expect(screen.getByRole('button', { name: /new shared volume/i })).toBeInTheDocument()
+    expect(screen.getByText('Archive')).toBeInTheDocument()
+    expect(screen.getByText('No agents attached')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /delete archive/i })).toBeInTheDocument()
+  })
+
+  it('validates the create dialog and shows the derived mount path', async () => {
+    render(<HomeVolumes agentSlug="a1" />)
+    await userEvent.click(screen.getByRole('button', { name: /add shared volume/i }))
+    await userEvent.click(screen.getByRole('button', { name: /new shared volume/i }))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /^create$/i }))
+    expect(screen.getByRole('alert')).toHaveTextContent('Name is required')
+    await userEvent.type(screen.getByLabelText(/name/i), 'Team Brain')
+    expect(screen.getByText('/volumes/team-brain', { exact: false })).toBeInTheDocument()
+  })
+
+  it('attaches from the menu and shows the restart banner only when the agent is running', async () => {
+    shared.isAgentRunning = true
+    shared.pendingRestart = false
+    render(<HomeVolumes agentSlug="a1" />)
+    await userEvent.click(screen.getByRole('button', { name: /add shared volume/i }))
+    await userEvent.click(screen.getByRole('button', { name: /archive.*no agents attached/i }))
+    expect(shared.attach).toHaveBeenCalledWith('vol-2')
+    expect(volumes.handleAddMount).not.toHaveBeenCalled()
+
+    shared.attached = [RESEARCH]
+    shared.pendingRestart = true
+    cleanup()
+    render(<HomeVolumes agentSlug="a1" />)
+    expect(screen.getByText(/restart your agent for mount changes/i)).toBeInTheDocument()
+  })
+
+  it('lists an attached row without a health pill and with the cloud menu', async () => {
+    shared.attached = [RESEARCH]
+    shared.all = [RESEARCH]
+    render(<HomeVolumes agentSlug="a1" />)
+    expect(screen.getByText('Research')).toBeInTheDocument()
+    expect(screen.getByText('/volumes/research')).toBeInTheDocument()
+    expect(screen.queryByText(/^ok$/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/^missing$/i)).not.toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: /shared volume actions/i }))
+    expect(screen.queryByRole('button', { name: /copy path/i })).not.toBeInTheDocument()
+    expect(screen.getByText(/attached agents: agent one/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /detach shared volume/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /delete shared volume/i })).toBeInTheDocument()
+  })
+
+  it('never calls handleAddMount from the cloud branch', async () => {
+    render(<HomeVolumes agentSlug="a1" />)
+    await userEvent.click(screen.getByRole('button', { name: /add shared volume/i }))
+    await userEvent.click(screen.getByRole('button', { name: /new shared volume/i }))
+    expect(volumes.handleAddMount).not.toHaveBeenCalled()
   })
 })

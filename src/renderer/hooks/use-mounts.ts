@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAgent } from './use-agents'
 import type { AgentMount, AgentMountWithHealth } from '@shared/lib/types/mount'
 
-async function parseErrorMessage(res: Response, fallback: string): Promise<string> {
+export async function parseErrorMessage(res: Response, fallback: string): Promise<string> {
   try {
     const body = await res.json()
     return body.error || fallback

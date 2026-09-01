@@ -94,6 +94,8 @@ vi.mock('@shared/lib/config/settings', () => ({
 
 vi.mock('@shared/lib/config/data-dir', () => ({
   getAgentWorkspaceDir: (id: string) => `/workspace/${id}`,
+  getVolumeDir: (id: string) => `/data/volumes/${id}`,
+  getVolumesDataDir: () => '/data/volumes',
 }))
 
 vi.mock('./message-persister', () => ({
@@ -133,6 +135,10 @@ vi.mock('@shared/lib/services/timezone-resolver', () => ({
 
 vi.mock('@shared/lib/services/mount-service', () => ({
   getMountsWithHealth: () => [],
+}))
+
+vi.mock('@shared/lib/services/shared-volume-service', () => ({
+  getAgentSharedVolumes: () => [],
 }))
 
 import { containerManager } from './container-manager'

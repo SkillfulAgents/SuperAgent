@@ -32,6 +32,7 @@ import {
   resetPlatformK8sRuntimeStateForTests,
   requestJsonOnce,
   toKubernetesMemoryQuantity,
+  volumesSubPathPrefix,
   withRetry,
   KubeApiError,
   type KubeConfig,
@@ -246,6 +247,75 @@ describe('PlatformK8sRuntimeClient manifests', () => {
   it('omits ownerReferences when none is resolved', () => {
     const pod = buildAgentPodManifest(kube, 'superagent-a', { agentId: 'a', envVars: {} }, {}, null)
     expect(pod.metadata.ownerReferences).toBeUndefined()
+  })
+
+  it('mounts attached shared volumes as extra PVC subPaths', () => {
+    const pod = buildAgentPodManifest(
+      kube,
+      'superagent-a',
+      { agentId: 'a', envVars: {} },
+      {},
+      null,
+      [{ id: 'v1', mountName: 'team-brain' }],
+    )
+    const container = (pod.spec?.containers as Array<{
+      volumeMounts: Array<{ name: string; mountPath: string; subPath: string }>
+    }>)[0]
+    expect(container.volumeMounts).toEqual([
+      {
+        name: 'workspaces',
+        mountPath: '/workspace',
+        subPath: 'staging-usw2/org-abc123/superagent-data/agents/a/workspace',
+      },
+      {
+        name: 'workspaces',
+        mountPath: '/volumes/team-brain',
+        subPath: 'staging-usw2/org-abc123/superagent-data/volumes/v1',
+      },
+    ])
+  })
+
+  it('derives a volumes prefix sibling of the workspace prefix', () => {
+    expect(volumesSubPathPrefix('staging-usw2/org-abc123/superagent-data/agents'))
+      .toBe('staging-usw2/org-abc123/superagent-data/volumes')
+    expect(volumesSubPathPrefix('')).toBe('volumes')
+    expect(volumesSubPathPrefix('agents')).toBe('volumes')
+
+    const noPrefix: KubeConfig = { ...kube, workspaceSubPathPrefix: '' }
+    const pod = buildAgentPodManifest(
+      noPrefix,
+      'superagent-a',
+      { agentId: 'a', envVars: {} },
+      {},
+      null,
+      [{ id: 'v1', mountName: 'team-brain' }],
+    )
+    const container = (pod.spec?.containers as Array<{
+      volumeMounts: Array<{ subPath: string }>
+    }>)[0]
+    expect(container.volumeMounts[1].subPath).toBe('volumes/v1')
+  })
+
+  it('lets K8S_VOLUMES_SUBPATH_PREFIX override the derived volumes prefix', () => {
+    process.env.K8S_VOLUMES_SUBPATH_PREFIX = 'custom/volumes-root'
+    expect(volumesSubPathPrefix('staging-usw2/org-abc123/superagent-data/agents')).toBe('custom/volumes-root')
+    const noPrefix: KubeConfig = { ...kube, workspaceSubPathPrefix: '' }
+    const pod = buildAgentPodManifest(
+      noPrefix,
+      'superagent-a',
+      { agentId: 'a', envVars: {} },
+      {},
+      null,
+      [{ id: 'v1', mountName: 'team-brain' }],
+    )
+    const container = (pod.spec?.containers as Array<{
+      volumeMounts: Array<{ subPath: string; mountPath: string }>
+    }>)[0]
+    expect(container.volumeMounts[1]).toMatchObject({
+      mountPath: '/volumes/team-brain',
+      subPath: 'custom/volumes-root/v1',
+    })
+    delete process.env.K8S_VOLUMES_SUBPATH_PREFIX
   })
 })
 

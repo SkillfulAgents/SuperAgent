@@ -308,6 +308,8 @@ export interface SystemPromptVars {
   remoteMcps: RemoteMcpView[];
   hasEnvVars: boolean;
   envVars: string[];
+  hasSharedVolumes: boolean;
+  sharedVolumePathsJoined: string;
   userInstructions: string;
 }
 
@@ -336,6 +338,11 @@ export function buildSystemPromptVars(
   const remoteMcps = remoteMcpViews();
   const envVars = agentEnvVars(availableEnvVars);
   const userInstructions = userSystemPrompt?.trim() || '';
+  const sharedVolumePathsJoined = (process.env.SUPERAGENT_SHARED_VOLUMES || '')
+    .split(',')
+    .map((path) => path.trim())
+    .filter(Boolean)
+    .join(', ')
   return {
     CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR || PROMPT_ENV_DEFAULTS.CLAUDE_CONFIG_DIR,
     webSearchToolName: webSearchProvider ? 'mcp__web__web_search' : 'WebSearch',
@@ -357,6 +364,8 @@ export function buildSystemPromptVars(
     remoteMcps,
     hasEnvVars: envVars.length > 0,
     envVars,
+    hasSharedVolumes: sharedVolumePathsJoined.length > 0,
+    sharedVolumePathsJoined,
     userInstructions,
   };
 }

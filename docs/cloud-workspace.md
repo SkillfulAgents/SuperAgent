@@ -496,6 +496,16 @@ somewhere else.
 | Computer Use — the settings tab and the System Settings recovery link (`global-settings-page.tsx`, `computer-use-request-item.tsx`) | It drives the machine the agent runs on, and its whole UI is written for that being yours. The missing-permission *list* still shows remotely; only the button that would fix the wrong computer is withdrawn |
 | Dropped/picked folder paths (`file-utils.ts`, `use-message-composer.ts`) | A `folderPath` exists only to be mounted or read by the agent's machine. Remotely, the web route — enumerate and upload the bytes — is the only one that works, and the mount/upload choice is not offered |
 
+Desktop folder mounts stay on this gate. Shared Volumes (the cloud kind) do not — see the server-reported flag below.
+
+#### Server-reported capability → `supported` from `GET /api/volumes`
+
+The window cannot infer a cloud runner. A direct web deployment settles to the local API target while the server still runs kubernetes or lambda-microvm.
+
+| Site | Why |
+| --- | --- |
+| Shared Volumes card (`home-volumes.tsx`, `use-shared-volumes.ts`) | Forks on the server `supported` flag alone. Never `targetIsRemote()`. Desktop Volumes / `handleAddMount` stay on `canUseHostFeatures()` |
+
 #### Acts on the API's machine → `!targetIsRemote()`
 
 These act on the **server**, and a web deployment legitimately offers them — the
@@ -542,8 +552,9 @@ None of this is enforced. There is no lint rule, roughly a hundred raw
 next feature from asking the old question. Specifically, and unfixed:
 
 - **`handleAddMount` (`use-mounts.ts`) is itself ungated** — only the button that
-  calls it consults `canAddMount`. A second caller reintroduces the host-path
-  leak.
+  calls it consults `canAddMount`. The Shared Volumes cloud add path never calls
+  it (the card forks on the server `supported` flag). A second desktop caller
+  still reintroduces the host-path leak.
 - **Dock shortcuts carry no target.** `create-dock-shortcut` stores
   `agentSlug`/`dashboardSlug` only, and the deep-link handler opens them against
   whatever target is active at click time. A shortcut made for a cloud dashboard

@@ -54,6 +54,21 @@ export function getAgentsDataDir(): string {
 }
 
 /**
+ * Top-level shared volumes directory ($DATA_DIR/volumes).
+ * Sibling of agents/ — agent delete cannot reach it.
+ */
+export function getVolumesDataDir(): string {
+  return path.join(getDataDir(), 'volumes')
+}
+
+/**
+ * Directory for one shared volume, named by its opaque id.
+ */
+export function getVolumeDir(id: string): string {
+  return path.join(getVolumesDataDir(), id)
+}
+
+/**
  * Get the workspace directory for a specific agent.
  */
 export function getAgentWorkspaceDir(agentId: string): string {

@@ -91,6 +91,13 @@ import {
   storeUploadChunk,
 } from '@shared/lib/utils/chunked-upload'
 import { getMountsWithHealth, addMount, removeMount } from '@shared/lib/services/mount-service'
+import {
+  SharedVolumeError,
+  attachSharedVolume,
+  createSharedVolume,
+  deleteSharedVolume,
+  detachSharedVolume,
+} from '@shared/lib/services/shared-volume-service'
 import { readAgentHooks, removeAgentHook } from '@shared/lib/services/agent-hooks-service'
 import { removeAgentHookSchema } from '@shared/lib/services/agent-hooks-schema'
 import {
@@ -6214,6 +6221,74 @@ agents.delete('/:id/mounts/:mountId', AgentUser(), async (c) => {
   } catch (error) {
     console.error('Failed to remove mount:', error)
     return c.json({ error: 'Failed to remove mount' }, 500)
+  }
+})
+
+const agentVolumeBodySchema = z.union([
+  z.object({ volumeId: z.string().min(1) }),
+  z.object({ name: z.string().min(1) }),
+])
+
+// POST /api/agents/:id/volumes — attach an existing shared volume, or create + attach
+agents.post('/:id/volumes', AgentUser(), zValidator('json', agentVolumeBodySchema), async (c) => {
+  try {
+    const agentSlug = getAgentId(c)
+    const body = c.req.valid('json')
+    if ('name' in body) {
+      const volume = await createSharedVolume(body.name)
+      try {
+        attachSharedVolume(agentSlug, volume.id)
+      } catch (error) {
+        await deleteSharedVolume(volume.id, { userId: null, isAdmin: true })
+        throw error
+      }
+      logAuditEvent({
+        userId: getCurrentUserId(c),
+        object: 'volume',
+        objectId: volume.id,
+        action: 'created',
+        details: { agentSlug, name: volume.name, mountName: volume.mountName },
+      })
+      return c.json(volume, 201)
+    }
+    attachSharedVolume(agentSlug, body.volumeId)
+    logAuditEvent({
+      userId: getCurrentUserId(c),
+      object: 'volume',
+      objectId: body.volumeId,
+      action: 'attached',
+      details: { agentSlug },
+    })
+    return c.json({ success: true }, 201)
+  } catch (error) {
+    if (error instanceof SharedVolumeError) {
+      return c.json({ error: error.message }, error.status)
+    }
+    console.error('Failed to attach shared volume:', error)
+    return c.json({ error: 'Failed to attach shared volume' }, 500)
+  }
+})
+
+// DELETE /api/agents/:id/volumes/:volumeId — detach
+agents.delete('/:id/volumes/:volumeId', AgentUser(), async (c) => {
+  try {
+    const agentSlug = getAgentId(c)
+    const volumeId = c.req.param('volumeId')
+    detachSharedVolume(agentSlug, volumeId)
+    logAuditEvent({
+      userId: getCurrentUserId(c),
+      object: 'volume',
+      objectId: volumeId,
+      action: 'detached',
+      details: { agentSlug },
+    })
+    return c.json({ success: true })
+  } catch (error) {
+    if (error instanceof SharedVolumeError) {
+      return c.json({ error: error.message }, error.status)
+    }
+    console.error('Failed to detach shared volume:', error)
+    return c.json({ error: 'Failed to detach shared volume' }, 500)
   }
 })
 

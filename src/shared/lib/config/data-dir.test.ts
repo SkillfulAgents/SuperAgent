@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import os from 'os'
 import path from 'path'
-import { getCacheDir, getDataDir, getDatabasePath } from './data-dir'
+import { getCacheDir, getDataDir, getDatabasePath, getVolumeDir, getVolumesDataDir } from './data-dir'
 
 describe('getDataDir / getDatabasePath', () => {
   const prevDataDir = process.env.SUPERAGENT_DATA_DIR
@@ -55,5 +55,11 @@ describe('getDataDir / getDatabasePath', () => {
     process.env.SUPERAGENT_CACHE_DIR = '/tmp/sa-cache'
     expect(getCacheDir()).toBe(path.resolve('/tmp/sa-cache'))
     expect(getDataDir()).toBe(path.resolve('/tmp/sa-data'))
+  })
+
+  it('places a volume dir under SUPERAGENT_DATA_DIR/volumes/<id>', () => {
+    process.env.SUPERAGENT_DATA_DIR = '/tmp/sa-data'
+    expect(getVolumesDataDir()).toBe(path.join(path.resolve('/tmp/sa-data'), 'volumes'))
+    expect(getVolumeDir('abc')).toBe(path.join(path.resolve('/tmp/sa-data'), 'volumes', 'abc'))
   })
 })

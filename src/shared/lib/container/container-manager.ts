@@ -9,7 +9,7 @@ import { eq } from 'drizzle-orm'
 import { getOrCreateProxyToken } from '@shared/lib/proxy/token-store'
 import { getOrCreateHostToken } from '@shared/lib/container/host-token-store'
 import { getSettings, mutateSettings } from '@shared/lib/config/settings'
-import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
+import { getAgentWorkspaceDir, getVolumeDir } from '@shared/lib/config/data-dir'
 import { copyChromeProfileData } from '@shared/lib/browser/chrome-profile'
 import { messagePersister } from './message-persister'
 import { ungrabAC } from '@shared/lib/computer-use/executor'
@@ -17,6 +17,8 @@ import { computerUsePermissionManager } from '@shared/lib/computer-use/permissio
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { getMountsWithHealth } from '@shared/lib/services/mount-service'
+import { getAgentSharedVolumes } from '@shared/lib/services/shared-volume-service'
+import { directoryExists } from '@shared/lib/utils/file-storage'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { mergeCustomEnvVars } from './reserved-env-vars'
@@ -710,6 +712,36 @@ class ContainerManager {
         client.buildVolumeFlag(m.hostPath, m.containerPath)
       )
 
+      const requestedVolumes = getAgentSharedVolumes(agentId)
+      const attachedVolumes: Array<{ id: string; mountName: string }> = []
+      const missingVolumes: Array<{ id: string; mountName: string }> = []
+      for (const volume of requestedVolumes) {
+        if (await directoryExists(getVolumeDir(volume.id))) {
+          attachedVolumes.push(volume)
+        } else {
+          missingVolumes.push(volume)
+        }
+      }
+      if (missingVolumes.length > 0) {
+        console.warn(
+          `[ContainerManager] Skipping ${missingVolumes.length} missing shared volume(s) for ${agentId}:`,
+          missingVolumes.map((v) => v.mountName),
+        )
+        messagePersister.broadcastGlobal({
+          type: 'mount_health_warning',
+          agentSlug: agentId,
+          missingMounts: missingVolumes.map((v) => ({
+            folderName: v.mountName,
+            hostPath: getVolumeDir(v.id),
+          })),
+        })
+      }
+      if (attachedVolumes.length > 0) {
+        envVars['SUPERAGENT_SHARED_VOLUMES'] = attachedVolumes
+          .map((v) => `/volumes/${v.mountName}`)
+          .join(',')
+      }
+
       // Start container (user secrets are in .env file in workspace).
       // If a mount turns out to be inaccessible to the container runtime at run
       // time (e.g. a cloud-synced folder the Lima VM helper is denied — passes
@@ -720,6 +752,7 @@ class ContainerManager {
       const startedInfo = await client.start({
         envVars,
         additionalVolumes,
+        attachedVolumes,
         onMountDropped: (hostPath) => {
           const dropped = healthyMounts.find((m) => m.hostPath === hostPath)
           console.warn(`[ContainerManager] Mount inaccessible to runtime, dropped for ${agentId}: ${hostPath}`)

@@ -110,6 +110,7 @@ vi.mock('@shared/lib/container/client-factory', () => ({
 vi.mock('@shared/lib/config/data-dir', () => ({
   getDataDir: () => '/mock/data',
   getAgentsDataDir: () => '/mock/data/agents',
+  getVolumesDataDir: () => '/mock/data/volumes',
 }))
 
 vi.mock('../../main/host-browser', () => ({
@@ -186,6 +187,8 @@ vi.mock('@shared/lib/db/schema', () => ({
   apnsDevices: {},
   pushSubscriptions: {},
   pushVapidKeys: {},
+  agentSharedVolumes: {},
+  sharedVolumes: {},
 }))
 
 vi.mock('fs', () => ({

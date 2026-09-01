@@ -78,7 +78,7 @@ const TOUCHED = [
   'AWS_REGION', 'AWS_DEFAULT_REGION', 'MICROVM_AGENT_IMAGE_VERSION', 'MICROVM_INGRESS_CONNECTOR_ARN',
   'MICROVM_AGENT_PORT', 'MICROVM_MAX_DURATION_SECONDS', 'MICROVM_LOG_GROUP',
   'MICROVM_FS_ID', 'MICROVM_ACCESS_POINT', 'MICROVM_MOUNT_TARGET_IP', 'ECS_CONTAINER_METADATA_URI_V4', 'PORT',
-  'MICROVM_PROXY_URL', 'MICROVM_PROXY_TOKEN',
+  'MICROVM_PROXY_URL', 'MICROVM_PROXY_TOKEN', 'MICROVM_VOLUMES_SUBPATH_PREFIX',
 ]
 
 beforeEach(() => {
@@ -391,6 +391,66 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     await newClient().start()
     const input = sendMock.mock.calls.find((c) => c[0].type === 'Run')![0].input
     expect(JSON.parse(input.runHookPayload).mount).toBeUndefined()
+  })
+
+  it('rides attached shared volumes on the mount object', async () => {
+    Object.assign(process.env, {
+      MICROVM_FS_ID: 'fs-1',
+      MICROVM_ACCESS_POINT: 'fsap-1',
+      MICROVM_MOUNT_TARGET_IP: '10.0.0.5',
+    })
+    resetMicrovmRuntimeForTests()
+    await newClient().start({
+      attachedVolumes: [{ id: 'vol-1', mountName: 'team-brain' }],
+    })
+    const input = sendMock.mock.calls.find((c) => c[0].type === 'Run')![0].input
+    const payload = JSON.parse(input.runHookPayload)
+    expect(payload.mount.volumes).toEqual([
+      { subPath: 'volumes/vol-1', name: 'team-brain' },
+    ])
+  })
+
+  it('omits mount.volumes when no volumes are attached (old-host shape)', async () => {
+    Object.assign(process.env, {
+      MICROVM_FS_ID: 'fs-1',
+      MICROVM_ACCESS_POINT: 'fsap-1',
+      MICROVM_MOUNT_TARGET_IP: '10.0.0.5',
+    })
+    resetMicrovmRuntimeForTests()
+    await newClient().start()
+    const input = sendMock.mock.calls.find((c) => c[0].type === 'Run')![0].input
+    expect(JSON.parse(input.runHookPayload).mount).not.toHaveProperty('volumes')
+  })
+
+  it('uses MICROVM_VOLUMES_SUBPATH_PREFIX when set', async () => {
+    Object.assign(process.env, {
+      MICROVM_FS_ID: 'fs-1',
+      MICROVM_ACCESS_POINT: 'fsap-1',
+      MICROVM_MOUNT_TARGET_IP: '10.0.0.5',
+      MICROVM_VOLUMES_SUBPATH_PREFIX: 'org/volumes',
+    })
+    resetMicrovmRuntimeForTests()
+    await newClient().start({
+      attachedVolumes: [{ id: 'vol-1', mountName: 'team-brain' }],
+    })
+    const input = sendMock.mock.calls.find((c) => c[0].type === 'Run')![0].input
+    expect(JSON.parse(input.runHookPayload).mount.volumes).toEqual([
+      { subPath: 'org/volumes/vol-1', name: 'team-brain' },
+    ])
+  })
+
+  it('throws a readable shared-volumes error when the payload exceeds the budget', async () => {
+    Object.assign(process.env, {
+      MICROVM_FS_ID: 'fs-1',
+      MICROVM_ACCESS_POINT: 'fsap-1',
+      MICROVM_MOUNT_TARGET_IP: '10.0.0.5',
+    })
+    resetMicrovmRuntimeForTests()
+    const attachedVolumes = Array.from({ length: 50 }, (_, i) => ({
+      id: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+      mountName: `v${i.toString().padStart(63, 'x')}`,
+    }))
+    await expect(newClient().start({ attachedVolumes })).rejects.toThrow(/shared volumes/)
   })
 
   it('getInfoFromRuntime reports running with the proxy port after start', async () => {

@@ -20,12 +20,15 @@ import {
   Plus,
   Loader2,
   RefreshCw,
+  Unlink,
 } from 'lucide-react'
 import { HomeCollapsible } from './home-collapsible'
 import { useVolumesManager } from '@renderer/hooks/use-mounts'
+import { useSharedVolumes, type SharedVolumeListItem } from '@renderer/hooks/use-shared-volumes'
 import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { VolumeStatusBadge } from '../volume-status-badge'
 import type { AgentMountWithHealth } from '@shared/lib/types/mount'
+import { AddVolumeMenu } from './add-volume-menu'
 
 interface HomeVolumesProps {
   agentSlug: string
@@ -33,6 +36,83 @@ interface HomeVolumesProps {
 }
 
 export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
+  const shared = useSharedVolumes(agentSlug)
+  if (shared.supported) {
+    return <CloudSharedVolumes agentSlug={agentSlug} className={className} volumes={shared} />
+  }
+  if (shared.isLoading) return null
+  return <DesktopHomeVolumes agentSlug={agentSlug} className={className} />
+}
+
+function CloudSharedVolumes({
+  agentSlug,
+  className,
+  volumes,
+}: HomeVolumesProps & { volumes: ReturnType<typeof useSharedVolumes> }) {
+  return (
+    <HomeCollapsible title="Shared Volumes" className={className}>
+      {volumes.attached.length > 0 ? (
+        <div className="mt-2 divide-y divide-border/50">
+          {volumes.attached.map((volume) => (
+            <SharedVolumeRow
+              key={volume.id}
+              volume={volume}
+              agentSlug={agentSlug}
+              onDetach={() => { void volumes.detach(volume.id) }}
+              onDelete={() => { void volumes.remove(volume.id) }}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="mt-3 mx-4 rounded-lg border border-dashed p-4 text-muted-foreground">
+          <p className="text-xs font-medium text-foreground">No shared volumes yet</p>
+          <p className="text-xs mt-1">
+            Create a shared folder in your workspace. Every agent you attach it to can read and write its files.
+          </p>
+        </div>
+      )}
+
+      <div className="mt-3 px-4">
+        {volumes.pendingRestart ? (
+          <div className="flex flex-col gap-1 rounded-lg bg-orange-50 dark:bg-orange-950/30 p-2.5">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-orange-600 dark:text-orange-400 flex-1">
+                Restart your agent for mount changes to take effect.
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-orange-600 dark:text-orange-400 hover:bg-orange-100 dark:hover:bg-orange-900/40 hover:text-orange-700 dark:hover:text-orange-300"
+                onClick={volumes.handleRestart}
+                disabled={volumes.isRestarting}
+              >
+                <RefreshCw className={`${volumes.isRestarting ? 'animate-spin' : ''}`} />
+                {volumes.isRestarting ? 'Restarting...' : 'Restart'}
+              </Button>
+            </div>
+            {volumes.restartError && (
+              <span className="text-xs text-destructive" role="alert">
+                {volumes.restartError}
+              </span>
+            )}
+          </div>
+        ) : (
+          <div className="flex justify-end">
+            <AddVolumeMenu
+              agentSlug={agentSlug}
+              volumes={volumes.all}
+              onCreate={volumes.create}
+              onAttach={volumes.attach}
+              onDelete={volumes.remove}
+            />
+          </div>
+        )}
+      </div>
+    </HomeCollapsible>
+  )
+}
+
+function DesktopHomeVolumes({ agentSlug, className }: HomeVolumesProps) {
   const volumes = useVolumesManager(agentSlug)
 
   // Nothing mounted and no way to mount anything (a cloud workspace, where the
@@ -243,6 +323,109 @@ function VolumeRow({ mount, onRemove, isRemovingMount }: VolumeRowProps) {
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               {isRemovingMount ? 'Removing...' : 'Remove Mount'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  )
+}
+
+function SharedVolumeRow({
+  volume,
+  agentSlug,
+  onDetach,
+  onDelete,
+}: {
+  volume: SharedVolumeListItem
+  agentSlug: string
+  onDetach: () => void
+  onDelete: () => void
+}) {
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [confirm, setConfirm] = useState<'detach' | 'delete' | null>(null)
+  const containerPath = `/volumes/${volume.mountName}`
+  const attachedNames = volume.attachedAgents.map((agent) => agent.name).join(', ')
+  const canDelete = volume.attachedAgents.every((agent) => agent.slug === agentSlug)
+
+  return (
+    <>
+      <div className="group relative py-3 px-4">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium truncate">{volume.name}</span>
+        </div>
+        <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1 font-mono" title={containerPath}>
+          {containerPath}
+        </div>
+        <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+          <Popover open={menuOpen} onOpenChange={setMenuOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                size="icon"
+                variant="outline"
+                className="h-6 w-6"
+                aria-label="Shared volume actions"
+              >
+                <MoreVertical className="h-3.5 w-3.5" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-52 p-1">
+              {attachedNames && (
+                <div className="px-2 py-1.5 text-xs text-muted-foreground">
+                  Attached agents: {attachedNames}
+                </div>
+              )}
+              <button
+                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                onClick={() => {
+                  setConfirm('detach')
+                  setMenuOpen(false)
+                }}
+              >
+                <Unlink className="h-3.5 w-3.5" />
+                Detach shared volume
+              </button>
+              {canDelete && (
+                <button
+                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs text-destructive hover:bg-destructive/10 transition-colors"
+                  onClick={() => {
+                    setConfirm('delete')
+                    setMenuOpen(false)
+                  }}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Delete shared volume
+                </button>
+              )}
+            </PopoverContent>
+          </Popover>
+        </div>
+      </div>
+
+      <AlertDialog open={confirm !== null} onOpenChange={(open) => { if (!open) setConfirm(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {confirm === 'delete' ? 'Delete shared volume' : 'Detach shared volume'}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirm === 'delete'
+                ? `Delete "${volume.name}"? This permanently deletes the folder and its files.`
+                : `Detach "${volume.name}"? This agent will lose access after restart. Files stay on the shared volume.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (confirm === 'delete') onDelete()
+                else onDetach()
+                setConfirm(null)
+              }}
+              className={confirm === 'delete' ? 'bg-destructive text-destructive-foreground hover:bg-destructive/90' : undefined}
+            >
+              {confirm === 'delete' ? 'Delete' : 'Detach'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

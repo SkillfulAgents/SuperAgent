@@ -128,6 +128,7 @@ export interface StartOptions {
    * container is still started without that one mount.
    */
   onMountDropped?: (hostPath: string) => void
+  attachedVolumes?: Array<{ id: string; mountName: string }>
 }
 
 // Container resource usage stats

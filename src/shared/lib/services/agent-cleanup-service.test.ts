@@ -496,6 +496,33 @@ describe('agent-cleanup-service', () => {
       expect(triggers.every(t => t.status === 'cancelled')).toBe(true)
     })
 
+    it('deletes agent volume attachments but not the shared volume', async () => {
+      testDb.insert(schema.sharedVolumes).values({
+        id: 'vol-1',
+        name: 'Team Brain',
+        mountName: 'team-brain',
+        createdAt: new Date(),
+      }).run()
+      testDb.insert(schema.agentSharedVolumes).values({
+        id: 'asv-1',
+        agentSlug: AGENT_SLUG,
+        volumeId: 'vol-1',
+        createdAt: new Date(),
+      }).run()
+      testDb.insert(schema.agentSharedVolumes).values({
+        id: 'asv-2',
+        agentSlug: OTHER_AGENT_SLUG,
+        volumeId: 'vol-1',
+        createdAt: new Date(),
+      }).run()
+
+      await cleanupAgentData(AGENT_SLUG)
+
+      expect(countRows(schema.agentSharedVolumes, AGENT_SLUG)).toBe(0)
+      expect(countRows(schema.agentSharedVolumes, OTHER_AGENT_SLUG)).toBe(1)
+      expect(testDb.select().from(schema.sharedVolumes).all()).toHaveLength(1)
+    })
+
     it('is a no-op for an agent with no peripherals', async () => {
       await expect(cleanupAgentData(AGENT_SLUG)).resolves.not.toThrow()
     })

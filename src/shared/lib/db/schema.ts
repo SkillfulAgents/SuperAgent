@@ -688,6 +688,26 @@ export const chatIntegrationAccess = sqliteTable('chat_integration_access', {
   sourceCheck: check('chat_integration_access_source_check', sql`${table.approvalSource} is null or ${table.approvalSource} in ('auto_first_contact','owner','migration')`),
 }))
 
+// Shared volumes: named folders on cloud storage, outside every agent, opt-in per agent
+export const sharedVolumes = sqliteTable('shared_volumes', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  mountName: text('mount_name').notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  mountNameUnique: uniqueIndex('shared_volumes_mount_name_unique').on(table.mountName),
+}))
+
+export const agentSharedVolumes = sqliteTable('agent_shared_volumes', {
+  id: text('id').primaryKey(),
+  agentSlug: text('agent_slug').notNull(),
+  volumeId: text('volume_id').notNull()
+    .references(() => sharedVolumes.id, { onDelete: 'cascade' }),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  agentVolumeUnique: uniqueIndex('agent_shared_volumes_unique').on(table.agentSlug, table.volumeId),
+}))
+
 // Audit log - tracks key user actions across the app
 export const auditLog = sqliteTable('audit_log', {
   id: text('id').primaryKey(),
@@ -750,5 +770,9 @@ export type ChatIntegrationSession = typeof chatIntegrationSessions.$inferSelect
 export type NewChatIntegrationSession = typeof chatIntegrationSessions.$inferInsert
 export type ChatIntegrationAccess = typeof chatIntegrationAccess.$inferSelect
 export type NewChatIntegrationAccess = typeof chatIntegrationAccess.$inferInsert
+export type SharedVolume = typeof sharedVolumes.$inferSelect
+export type NewSharedVolume = typeof sharedVolumes.$inferInsert
+export type AgentSharedVolume = typeof agentSharedVolumes.$inferSelect
+export type NewAgentSharedVolume = typeof agentSharedVolumes.$inferInsert
 export type AuditLogEntry = typeof auditLog.$inferSelect
 export type NewAuditLogEntry = typeof auditLog.$inferInsert
