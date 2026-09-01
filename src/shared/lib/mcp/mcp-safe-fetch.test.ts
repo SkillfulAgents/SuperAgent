@@ -51,6 +51,25 @@ describe('mcpSafeFetch', () => {
     expect(secondHeaders.get('authorization')).toBeNull()
   })
 
+  it('returns the first response when followRedirects is false', async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response(null, {
+        status: 302,
+        headers: { Location: 'https://cdn.example/mcp' },
+      }),
+    )
+
+    const res = await mcpSafeFetch(
+      'https://public.example/authorize',
+      { method: 'GET' },
+      undefined,
+      { followRedirects: false },
+    )
+    expect(res.status).toBe(302)
+    expect(res.headers.get('location')).toBe('https://cdn.example/mcp')
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+  })
+
   it('refuses a redirect Location that resolves to a private IP', async () => {
     mockFetch.mockResolvedValue(
       new Response(null, {

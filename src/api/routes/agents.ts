@@ -2278,26 +2278,41 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
 
-    // No JSONL transcript on disk — e.g. it was deleted by the CLI's retention
-    // cleanup while the metadata entry lingers in the nav. Signal this distinctly
-    // from an empty (but present) transcript so the UI can show a clear message.
-    if (!(await sessionExists(agentSlug, sessionId))) {
-      return c.json({ error: 'Session transcript not found' }, 404)
-    }
-
     const rawLimit = c.req.query('limit')
     const rawCursor = c.req.query('cursor')
     const rawAfter = c.req.query('after')
     const rawMedia = c.req.query('media')
-    // `media` selects this branch too: it is only honored on the paginated
-    // path, so leaving it out would silently serve a full inline response to a
-    // client that asked for refs — and skip validating the value at all.
-    if (
+    // `media` selects the paginated branch too: it is only honored there, so
+    // leaving it out would silently serve a full inline response to a client
+    // that asked for refs — and skip validating the value at all.
+    const paginated =
       rawLimit !== undefined ||
       rawCursor !== undefined ||
       rawAfter !== undefined ||
       rawMedia !== undefined
-    ) {
+
+    if (!(await sessionExists(agentSlug, sessionId))) {
+      // A live session whose first turn has not persisted anything yet: the
+      // CLI creates the transcript on its first written line, seconds after
+      // createSession returns on a cold agent, and the creating client has
+      // already navigated in and asked for messages by then. That is an empty
+      // transcript, not a missing one — answer the empty page so the client
+      // keeps showing the running turn and picks the lines up as they land.
+      // (sessionIsKnown keeps the containment guarantee for the id.)
+      if (
+        messagePersister.isSessionActive(agentSlug, sessionId) &&
+        (await sessionIsKnown(agentSlug, sessionId))
+      ) {
+        return paginated ? c.json({ messages: [], nextCursor: null }) : c.json([])
+      }
+      // No JSONL transcript on disk — e.g. it was deleted by the CLI's
+      // retention cleanup while the metadata entry lingers in the nav. Signal
+      // this distinctly from an empty (but present) transcript so the UI can
+      // show a clear message.
+      return c.json({ error: 'Session transcript not found' }, 404)
+    }
+
+    if (paginated) {
       const parsed = messagesListQuerySchema.safeParse({
         ...(rawLimit !== undefined ? { limit: rawLimit } : {}),
         ...(rawCursor !== undefined ? { cursor: rawCursor } : {}),

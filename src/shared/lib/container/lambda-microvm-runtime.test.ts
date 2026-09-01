@@ -800,6 +800,71 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     superCreate.mockRestore()
   })
 
+  it('createSession replaces a live generation on a CLI launch failure (structured errorClass)', async () => {
+    const { BaseContainerClient } = await import('./base-container-client')
+    const client = newClient()
+    await client.start()
+    sendMock.mockClear()
+
+    let runCount = 0
+    sendMock.mockImplementation(async (cmd: { type: string }) => {
+      if (cmd.type === 'Run') {
+        runCount++
+        responses.getState = 'RUNNING'
+        return { microvmId: `mvm-launchfail-${runCount}`, endpoint: 'ep.lambda-microvm.aws' }
+      }
+      if (cmd.type === 'Get') return { state: responses.getState ?? 'RUNNING' }
+      if (cmd.type === 'Terminate') return {}
+      if (cmd.type === 'Token') return { authToken: { 'X-aws-proxy-auth': 'tok' } }
+      return {}
+    })
+    // The VM stays RUNNING throughout — the launch-failure path must replace
+    // it anyway, unlike the unreachable path which requires a dead generation.
+    responses.getState = 'RUNNING'
+
+    const superCreate = vi.spyOn(BaseContainerClient.prototype, 'createSession')
+    superCreate
+      .mockRejectedValueOnce(
+        Object.assign(new Error('Failed to create session: spawn failed [executable_launch_failed ENOENT]'), {
+          containerErrorClass: 'executable_launch_failed',
+          containerErrorCode: 'ENOENT',
+        }),
+      )
+      .mockResolvedValueOnce({ id: 'sess-fresh' } as never)
+
+    await expect(client.createSession({ initialMessage: 'hi' })).resolves.toEqual({ id: 'sess-fresh' })
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(true)
+    expect(runCount).toBe(1)
+    expect(superCreate).toHaveBeenCalledTimes(2)
+    expect(addErrorBreadcrumb).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ reason: 'executable_launch_failed' }),
+      }),
+    )
+    superCreate.mockRestore()
+  })
+
+  it('createSession does not replace on a launch-failure-shaped message without the structured errorClass', async () => {
+    const { BaseContainerClient } = await import('./base-container-client')
+    const client = newClient()
+    await client.start()
+    sendMock.mockClear()
+    responses.getState = 'RUNNING'
+
+    const superCreate = vi
+      .spyOn(BaseContainerClient.prototype, 'createSession')
+      .mockRejectedValue(
+        new Error(
+          'Failed to create session: Claude Code native binary at /app/node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64/claude exists but failed to launch.',
+        ),
+      )
+
+    await expect(client.createSession({ initialMessage: 'hi' })).rejects.toThrow(/failed to launch/)
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
+    expect(superCreate).toHaveBeenCalledTimes(1)
+    superCreate.mockRestore()
+  })
+
   it('createSession does not replace on timeout even if the generation later looks dead', async () => {
     const { BaseContainerClient } = await import('./base-container-client')
     const client = newClient()

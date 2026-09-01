@@ -1255,6 +1255,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       if (!response.ok) {
         // Try to get more details from response body
         let errorDetail = ''
+        let containerErrorCode: string | undefined
+        let containerErrorClass: string | undefined
         try {
           const errorBody = await response.text()
           if (errorBody) {
@@ -1262,6 +1264,10 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
             try {
               const parsed = JSON.parse(errorBody)
               errorDetail = parsed.error || errorBody
+              // Spawn errno + failure class forwarded by the container for
+              // CLI launch failures (see the POST /sessions handler).
+              if (typeof parsed.code === 'string') containerErrorCode = parsed.code
+              if (typeof parsed.errorClass === 'string') containerErrorClass = parsed.errorClass
             } catch {
               errorDetail = errorBody
             }
@@ -1277,7 +1283,16 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           )
         }
 
-        throw new Error(`Failed to create session: ${errorDetail || response.statusText}`)
+        // Fold the errno into the message so telemetry shows the real spawn
+        // failure (the SDK's message is a canned libc guess), and attach both
+        // fields for programmatic checks (microVM launch-failure auto-replace).
+        const diagnostic = [containerErrorClass, containerErrorCode].filter(Boolean).join(' ')
+        throw Object.assign(
+          new Error(
+            `Failed to create session: ${errorDetail || response.statusText}${diagnostic ? ` [${diagnostic}]` : ''}`,
+          ),
+          { containerErrorCode, containerErrorClass },
+        )
       }
 
       return response.json()

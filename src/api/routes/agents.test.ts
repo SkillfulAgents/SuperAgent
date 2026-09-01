@@ -3845,6 +3845,46 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
     expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
   })
 
+  // A session's transcript is created by the CLI on its first persisted line,
+  // seconds after createSession returns on a cold agent — and the creating
+  // client (an onboarding session has no optimistic ghost to hide behind) has
+  // already opened the session and asked for its messages. A live session with
+  // no file yet is EMPTY, not gone: answer the empty page, never the 404 that
+  // renders "Session transcript not found" over a running turn.
+  describe('live session whose first turn has not written its transcript yet', () => {
+    beforeEach(() => {
+      vi.mocked(sessionExists).mockResolvedValue(false)
+      vi.mocked(sessionIsKnown).mockResolvedValue(true)
+      vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
+    })
+
+    it('answers an empty page on the paginated path', async () => {
+      const res = await getReq(app, `${URL}?limit=50&media=ref`)
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ messages: [], nextCursor: null })
+      expect(getSessionMessagesPage).not.toHaveBeenCalled()
+    })
+
+    it('answers an empty array on the legacy unpaginated path', async () => {
+      const res = await getReq(app, URL)
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual([])
+      expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
+    })
+
+    it('still 404s once the session is no longer live (the retention-deleted case)', async () => {
+      vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
+      const res = await getReq(app, `${URL}?limit=50`)
+      expect(res.status).toBe(404)
+    })
+
+    it('still 404s for an id that is not a session of this agent', async () => {
+      vi.mocked(sessionIsKnown).mockResolvedValue(false)
+      const res = await getReq(app, `${URL}?limit=50`)
+      expect(res.status).toBe(404)
+    })
+  })
+
   it('does not query messageAuthor in non-auth mode', async () => {
     mockIsAuthMode.mockReturnValue(false)
     mockTransformMessages.mockReturnValue([

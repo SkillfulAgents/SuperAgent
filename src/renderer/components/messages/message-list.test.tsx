@@ -3,6 +3,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { useState } from 'react'
 import { MessageList } from './message-list'
+// Resolves to the mocked module's class below — the one the component's
+// instanceof check sees.
+import { TranscriptNotFoundError } from '@renderer/hooks/use-messages'
 import { useDraft } from '@renderer/context/drafts-context'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { createUserMessage, createAssistantMessage, createToolCall, createCompactBoundary } from '@renderer/test/factories'
@@ -201,6 +204,39 @@ describe('MessageList', () => {
     )
     expect(screen.getByText('Hi')).toBeInTheDocument()
     expect(screen.getByText('Hello!')).toBeInTheDocument()
+  })
+
+  describe('transcript not found', () => {
+    beforeEach(() => {
+      mockMessagesData.error = new TranscriptNotFoundError()
+    })
+
+    it('shows the not-found card for an idle session with no ghost', () => {
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getByTestId('session-transcript-not-found')).toBeInTheDocument()
+    })
+
+    it('hides it behind the creating client’s optimistic ghost', () => {
+      renderWithProviders(
+        <MessageList
+          sessionId="s-1"
+          agentSlug="agent-1"
+          pendingUserMessages={[{ localId: 'pm-1', uuid: 'pm-1', text: 'First message', sentAt: Date.now() }]}
+        />
+      )
+      expect(screen.queryByTestId('session-transcript-not-found')).not.toBeInTheDocument()
+      expect(screen.getByText('First message')).toBeInTheDocument()
+    })
+
+    // An onboarding session opens with no ghost, before the container has
+    // written its first line. The turn is running, so the transcript is not
+    // yet written rather than gone — render the (empty) live transcript.
+    it('hides it while the session is live, even with no ghost', () => {
+      mockStreamState.isActive = true
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.queryByTestId('session-transcript-not-found')).not.toBeInTheDocument()
+      expect(screen.getByTestId('message-list')).toBeInTheDocument()
+    })
   })
 
   describe('session time flags', () => {

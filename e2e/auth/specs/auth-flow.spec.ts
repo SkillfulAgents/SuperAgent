@@ -14,7 +14,10 @@ test.describe.configure({ mode: 'serial' })
 const user1 = { name: 'Alice Admin', email: 'alice@test.com', password: 'password123' }
 const user2 = { name: 'Bob Builder', email: 'bob@test.com', password: 'password123' }
 const user3 = { name: 'Carol Viewer', email: 'carol@test.com', password: 'password123' }
-const agentName = 'Auth Test Agent'
+// Minted per attempt in "user2 creates an agent": a serial-group retry runs
+// against the same live server, so a fixed name would match the failed
+// attempt's leftover agent too and strict-mode every name-based lookup below.
+let agentName = ''
 // Captured once user2 is viewing the agent — used by the cross-tenant deep-link
 // test to prove the loader gates access by URL, not just by sidebar visibility.
 let agentSlug = ''
@@ -122,6 +125,7 @@ test.describe('Auth Flow', () => {
   test('user2 creates an agent', async ({ user2Page }) => {
     const agentPage = new AgentPage(user2Page)
 
+    agentName = test.info().retry === 0 ? 'Auth Test Agent' : `Auth Test Agent R${test.info().retry}`
     await agentPage.createAgent(agentName)
 
     // Verify agent appears in sidebar

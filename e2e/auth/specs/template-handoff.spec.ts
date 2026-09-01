@@ -30,6 +30,18 @@ test.describe('Signup template handoff', () => {
   })
 
   test('template_slug installs on the workspace with no first-run screen', async ({ user1Page }) => {
+    // The installed agent's name is fixed by the template, so a serial-group
+    // retry (same live server) would install a second copy next to the failed
+    // attempt's and strict-mode the sidebar assertion below. Delete leftovers
+    // first; each attempt then proves a fresh install.
+    const listRes = await user1Page.request.get('/api/agents')
+    expect(listRes.ok()).toBe(true)
+    const existing = await listRes.json() as Array<{ slug: string; name: string }>
+    for (const leftover of existing.filter((a) => a.name === 'E2E Onboarding Template')) {
+      const del = await user1Page.request.delete(`/api/agents/${leftover.slug}`)
+      expect(del.ok(), `delete leftover install ${del.status()}`).toBe(true)
+    }
+
     // Per-user flag, so the PUT must ride the signed-in page's cookies, not the bare request fixture.
     const reset = await user1Page.request.put('/api/user-settings', {
       data: { setupCompleted: false, onboardingProgress: null },
@@ -51,7 +63,10 @@ test.describe('Signup template handoff', () => {
     await expect(user1Page.locator('[data-testid="wizard-container"]')).toHaveCount(0)
     await expect(user1Page.locator('[data-testid="create-agent-prompt"]')).toHaveCount(0)
     await expect(setup).toBeHidden()
-    await expect(sidebar.getByText('E2E Onboarding Template', { exact: true })).toBeVisible()
+    // The sidebar entry appears only after the install finishes writing the
+    // agent — give it the same budget as the install status above, not the 5s
+    // default that flaked on loaded CI runners.
+    await expect(sidebar.getByText('E2E Onboarding Template', { exact: true })).toBeVisible({ timeout: 15_000 })
 
     await expect.poll(async () => {
       const settings = await (await user1Page.request.get('/api/user-settings')).json()
