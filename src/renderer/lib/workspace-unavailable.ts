@@ -1,5 +1,9 @@
 import { isElectron } from './env'
-import { workspaceUnavailableBodySchema } from './workspace-unavailable-schema'
+import {
+  workspaceUnavailableBodySchema,
+  workspaceUnavailableStateSchema,
+  type WorkspaceUnavailableState,
+} from './workspace-unavailable-schema'
 
 // Set by the ingress on its 502/503 JSON; value is the route state ("waking",
 // "sleeping", "error") or "unreachable" for a dead upstream behind a ready route.
@@ -10,7 +14,7 @@ const COOLDOWN_MS = 15_000
 
 // sleeping/error mean click-to-wake: reloading would silently drop any typed
 // but unsent state, so those surface a prompt instead of a forced reload.
-const PROMPT_STATES = new Set(['sleeping', 'error'])
+const PROMPT_STATES = new Set<WorkspaceUnavailableState>(['sleeping', 'error'])
 
 let reloadPending = false
 let asleep = false
@@ -20,8 +24,7 @@ let reloadImpl = (): void => {
 }
 
 export function isWorkspaceUnavailableError(message: string | null | undefined): boolean {
-  if (!message) return false
-  return workspaceUnavailableBodySchema.safeParse({ error: message }).success
+  return message === 'deployment_unavailable'
 }
 
 export function isWorkspaceUnavailableReloadPending(): boolean {
@@ -75,10 +78,14 @@ function reloadForWorkspaceUnavailable(): void {
   reloadImpl()
 }
 
-async function unavailableStateOf(response: Response): Promise<string | null> {
+async function unavailableStateOf(response: Response): Promise<WorkspaceUnavailableState | null> {
   const header = response.headers.get(WORKSPACE_UNAVAILABLE_HEADER)
-  if (header) return header
-  // Fallback for ingress deployments that predate the header.
+  if (header) {
+    const parsed = workspaceUnavailableStateSchema.safeParse(header)
+    return parsed.success ? parsed.data : null
+  }
+  // Legacy 502 text also covered app-generated 502s, so only 503 has a safe fallback.
+  if (response.status !== 503) return null
   if (typeof response.clone !== 'function') return null
   let body: unknown
   try {
@@ -88,7 +95,7 @@ async function unavailableStateOf(response: Response): Promise<string | null> {
   }
   const parsed = workspaceUnavailableBodySchema.safeParse(body)
   if (!parsed.success) return null
-  return parsed.data.state ?? 'unreachable'
+  return parsed.data.state
 }
 
 // Open-tab 502/503 from ingress. Mid-boot states reload so the next document

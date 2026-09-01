@@ -25,19 +25,34 @@ function jsonResponse(status: number, body: unknown, state?: string): Response {
 
 describe('workspaceUnavailableBodySchema', () => {
   it('accepts the ingress 503 body', () => {
-    expect(workspaceUnavailableBodySchema.safeParse({ error: 'deployment_unavailable' }).success).toBe(true)
-  })
-
-  it('accepts the ingress 502 body', () => {
     expect(
       workspaceUnavailableBodySchema.safeParse({
-        error: 'The request could not reach your workspace. Please retry.',
+        error: 'deployment_unavailable',
+        state: 'waking',
       }).success,
     ).toBe(true)
   })
 
+  it('rejects the ambiguous legacy 502 body', () => {
+    expect(
+      workspaceUnavailableBodySchema.safeParse({
+        error: 'The request could not reach your workspace. Please retry.',
+      }).success,
+    ).toBe(false)
+  })
+
   it('rejects an unrelated error string', () => {
     expect(workspaceUnavailableBodySchema.safeParse({ error: 'Auth config unavailable' }).success).toBe(false)
+  })
+
+  it('rejects missing or unknown route states', () => {
+    expect(workspaceUnavailableBodySchema.safeParse({ error: 'deployment_unavailable' }).success).toBe(false)
+    expect(
+      workspaceUnavailableBodySchema.safeParse({
+        error: 'deployment_unavailable',
+        state: 'future-state',
+      }).success,
+    ).toBe(false)
   })
 })
 
@@ -64,11 +79,11 @@ describe('maybeReloadForWorkspaceUnavailable', () => {
     expect(await response.json()).toEqual({ error: 'deployment_unavailable', state: 'waking' })
   })
 
-  it('reloads on the ready-route 502 body', async () => {
+  it('does not reload on the ambiguous legacy 502 body', async () => {
     await maybeReloadForWorkspaceUnavailable(
       jsonResponse(502, { error: 'The request could not reach your workspace. Please retry.' }),
     )
-    expect(reload).toHaveBeenCalledOnce()
+    expect(reload).not.toHaveBeenCalled()
   })
 
   it('does not reload other 503s', async () => {
@@ -89,8 +104,9 @@ describe('maybeReloadForWorkspaceUnavailable', () => {
   })
 
   it('does not reload again inside the cooldown', async () => {
-    await maybeReloadForWorkspaceUnavailable(jsonResponse(503, { error: 'deployment_unavailable' }))
-    await maybeReloadForWorkspaceUnavailable(jsonResponse(503, { error: 'deployment_unavailable' }))
+    const unavailable = { error: 'deployment_unavailable', state: 'waking' }
+    await maybeReloadForWorkspaceUnavailable(jsonResponse(503, unavailable))
+    await maybeReloadForWorkspaceUnavailable(jsonResponse(503, unavailable))
     expect(reload).toHaveBeenCalledOnce()
   })
 
@@ -106,6 +122,14 @@ describe('maybeReloadForWorkspaceUnavailable', () => {
   it('reloads on a header-tagged unreachable 502', async () => {
     await maybeReloadForWorkspaceUnavailable(jsonResponse(502, {}, 'unreachable'))
     expect(reload).toHaveBeenCalledOnce()
+  })
+
+  it('ignores an unknown header state', async () => {
+    await maybeReloadForWorkspaceUnavailable(
+      jsonResponse(503, { error: 'deployment_unavailable', state: 'waking' }, 'future-state'),
+    )
+    expect(reload).not.toHaveBeenCalled()
+    expect(isWorkspaceAsleep()).toBe(false)
   })
 
   it('prompts instead of reloading when the workspace is sleeping (header)', async () => {

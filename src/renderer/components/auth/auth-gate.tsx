@@ -102,31 +102,23 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     }
   }, [isAuthMode, isPending, isAuthenticated])
 
-  let content: React.ReactNode
-  if (!isAuthMode) {
-    content = children
-  } else if ((isPending && !pendingApproval) || isWorkspaceUnavailableReloadPending()) {
-    content = <LoadingScreen />
-  } else if (!isAuthenticated && targetIsRemote()) {
-    // A cloud workspace has no interactive login, so offer reconnection.
-    content = <WorkspaceReconnect />
-  } else if (!isAuthenticated || pendingApproval) {
-    content = <AuthPage onPendingApproval={onPendingApproval} />
-  } else if (mustChangePassword) {
-    content = <ForcePasswordChange />
-  } else {
-    content = children
-  }
-
-  // Better Auth clears its session on fetch errors; freeze the last rendered
-  // content while asleep so that transition cannot unmount the app.
-  const visibleContentRef = useRef(content)
-  if (!asleep) visibleContentRef.current = content
-
-  return (
+  const withAsleepOverlay = (content: React.ReactNode) => (
     <>
-      {visibleContentRef.current}
+      {content}
       {asleep && <WorkspaceAsleepOverlay />}
     </>
   )
+
+  if (!isAuthMode) return withAsleepOverlay(children)
+  if ((isPending && !pendingApproval) || isWorkspaceUnavailableReloadPending()) {
+    return withAsleepOverlay(<LoadingScreen />)
+  }
+  // A cloud workspace authenticates with a token held by the main process, so
+  // there is no password to ask for — offer reconnection instead of a login form.
+  if (!isAuthenticated && targetIsRemote()) return withAsleepOverlay(<WorkspaceReconnect />)
+  if (!isAuthenticated || pendingApproval) {
+    return withAsleepOverlay(<AuthPage onPendingApproval={onPendingApproval} />)
+  }
+  if (mustChangePassword) return withAsleepOverlay(<ForcePasswordChange />)
+  return withAsleepOverlay(children)
 }
