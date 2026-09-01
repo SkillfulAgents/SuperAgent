@@ -14,12 +14,6 @@ export class PlatformRequestError extends Error {
   }
 }
 
-export function platformErrorMessage(body: unknown): string | null {
-  if (!body || typeof body !== 'object') return null
-  const error = (body as { error?: { message?: unknown } }).error
-  return typeof error?.message === 'string' && error.message.trim() ? error.message : null
-}
-
 interface FetchPlatformJsonOptions<T> {
   /** Proxy path, e.g. `/v1/account`. */
   path: string
@@ -30,12 +24,9 @@ interface FetchPlatformJsonOptions<T> {
   /** captureException tag, e.g. `platform-auth` / `platform-billing`. */
   area: string
   /** Maps a non-2xx HTTP status to a user-facing message + the status to surface. */
-  mapStatusError: (status: number, body?: unknown) => { message: string; status: number }
+  mapStatusError: (status: number) => { message: string; status: number }
   /** Message when there's no token (not connected). */
   notConnectedMessage?: string
-  method?: string
-  body?: unknown
-  headers?: Record<string, string>
 }
 
 /**
@@ -52,18 +43,10 @@ export async function fetchPlatformJson<T>(opts: FetchPlatformJsonOptions<T>): P
     throw new PlatformRequestError(opts.notConnectedMessage ?? 'Platform is not connected.', 401)
   }
 
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${opts.token}`,
-    ...opts.headers,
-  }
-  if (opts.body !== undefined) headers['Content-Type'] = 'application/json'
-
   let res: Response
   try {
     res = await fetch(`${proxyBase}${opts.path}`, {
-      method: opts.method ?? 'GET',
-      headers,
-      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+      headers: { Authorization: `Bearer ${opts.token}` },
     })
   } catch (error) {
     captureException(error, { tags: { area: opts.area, op: 'fetch' } })
@@ -71,8 +54,7 @@ export async function fetchPlatformJson<T>(opts: FetchPlatformJsonOptions<T>): P
   }
 
   if (!res.ok) {
-    const data = await res.json().catch(() => null)
-    const mapped = opts.mapStatusError(res.status, data)
+    const mapped = opts.mapStatusError(res.status)
     throw new PlatformRequestError(mapped.message, mapped.status)
   }
 

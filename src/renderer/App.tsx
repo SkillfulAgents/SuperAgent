@@ -11,6 +11,7 @@ import { DraftsProvider } from './context/drafts-context'
 import { SearchProvider } from './context/search-context'
 import { Toaster } from './components/ui/sonner'
 import { ErrorBoundary } from './components/ui/error-boundary'
+import { useBillingUpdatedListener } from './hooks/use-billing-updated'
 import { router } from './router'
 
 // Dev-only gallery of the 402 paywall CTA variants; excluded from prod bundles.
@@ -28,6 +29,7 @@ const PaywallCtaDevPanel = import.meta.env.DEV
 function RouterMount() {
   const queryClient = useQueryClient()
   const user = useUser()
+  useBillingUpdatedListener()
   return <RouterProvider router={router} context={{ queryClient, user }} />
 }
 

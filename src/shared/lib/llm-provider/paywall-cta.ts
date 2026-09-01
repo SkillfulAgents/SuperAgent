@@ -1,16 +1,10 @@
-export const TOPUP_AMOUNTS_CENTS = [5_000, 10_000, 20_000, 40_000] as const
-export const MIN_TOPUP_DOLLARS = 20
-export const MAX_TOPUP_DOLLARS = 50_000
-export const MIN_AUTO_RELOAD_THRESHOLD_DOLLARS = 1
-export const MAX_AUTO_RELOAD_THRESHOLD_DOLLARS = 5_000
-
 export const ORG_BILLING_PATH = '/dashboard/organizations/{orgId}?tab=billing'
 
 export type PaywallCta =
   | { kind: 'subscribe'; href: string | null }
   | { kind: 'ask_admin'; href: string | null }
   | { kind: 'add_card'; href: string | null }
-  | { kind: 'topup'; href: string | null; amountsCents: readonly number[] }
+  | { kind: 'topup'; href: string | null }
   | { kind: 'go_to_billing'; href: string | null }
 
 export function isPlatformOrgAdmin(role: string | null | undefined): boolean {
@@ -25,25 +19,24 @@ export function resolveOrgBillingUrl(
   return `${origin}${ORG_BILLING_PATH.replaceAll('{orgId}', org.orgId)}`
 }
 
-export function formatTopupDollars(cents: number): string {
-  return `$${cents / 100}`
-}
-
-// Whole dollars only; the platform's minimum top-up is $20.
-export function parseCustomTopupDollars(input: string): number | null {
-  const trimmed = input.trim()
-  if (!/^\d+$/.test(trimmed)) return null
-  const dollars = Number(trimmed)
-  return dollars >= MIN_TOPUP_DOLLARS && dollars <= MAX_TOPUP_DOLLARS ? dollars : null
-}
-
-export function parseAutoReloadThresholdDollars(input: string): number | null {
-  const trimmed = input.trim()
-  if (!/^\d+$/.test(trimmed)) return null
-  const dollars = Number(trimmed)
-  return dollars >= MIN_AUTO_RELOAD_THRESHOLD_DOLLARS && dollars <= MAX_AUTO_RELOAD_THRESHOLD_DOLLARS
-    ? dollars
-    : null
+// Dashboard hand-off for "Add usage": auto-opens the top-up dialog on arrival
+// and asks the website to deep-link back once the purchase lands (SUP-725).
+export function buildTopupHandoffUrl(
+  billingHref: string | null,
+  protocolScheme: string | null | undefined,
+): string | null {
+  if (!billingHref) return null
+  let url: URL
+  try {
+    url = new URL(billingHref)
+  } catch {
+    return null
+  }
+  url.searchParams.set('intent', 'topup')
+  if (protocolScheme) {
+    url.searchParams.set('return_app', `${protocolScheme}://billing-updated`)
+  }
+  return url.toString()
 }
 
 export function resolvePaywallCta(input: {
@@ -68,7 +61,7 @@ export function resolvePaywallCta(input: {
     return { kind: 'ask_admin', href: input.billingHref }
   }
   if (input.hasPaymentMethod === true) {
-    return { kind: 'topup', href: input.billingHref, amountsCents: TOPUP_AMOUNTS_CENTS }
+    return { kind: 'topup', href: input.billingHref }
   }
   return { kind: 'add_card', href: input.billingHref }
 }

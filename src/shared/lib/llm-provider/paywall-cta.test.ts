@@ -1,12 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  buildTopupHandoffUrl,
   isPlatformOrgAdmin,
-  parseAutoReloadThresholdDollars,
-  parseCustomTopupDollars,
   resolveOrgBillingUrl,
   resolvePaywallCta,
-  TOPUP_AMOUNTS_CENTS,
 } from './paywall-cta'
 
 const HREF = 'https://platform.example.com/dashboard/organizations/org_123?tab=billing'
@@ -49,32 +47,28 @@ describe('resolveOrgBillingUrl', () => {
   })
 })
 
-describe('parseCustomTopupDollars', () => {
-  it('accepts whole dollars at or above the minimum', () => {
-    expect(parseCustomTopupDollars('20')).toBe(20)
-    expect(parseCustomTopupDollars(' 150 ')).toBe(150)
+describe('buildTopupHandoffUrl', () => {
+  it('appends the intent and the return deep link', () => {
+    expect(buildTopupHandoffUrl(HREF, 'superagent')).toBe(
+      `${HREF}&intent=topup&return_app=superagent%3A%2F%2Fbilling-updated`,
+    )
   })
 
-  it('rejects below-minimum, negative, fractional, and non-numeric input', () => {
-    expect(parseCustomTopupDollars('19')).toBeNull()
-    expect(parseCustomTopupDollars('-30')).toBeNull()
-    expect(parseCustomTopupDollars('20.5')).toBeNull()
-    expect(parseCustomTopupDollars('abc')).toBeNull()
-    expect(parseCustomTopupDollars('')).toBeNull()
-    expect(parseCustomTopupDollars('50001')).toBeNull()
-  })
-})
-
-describe('parseAutoReloadThresholdDollars', () => {
-  it('accepts whole dollars from $1 to $5,000', () => {
-    expect(parseAutoReloadThresholdDollars('1')).toBe(1)
-    expect(parseAutoReloadThresholdDollars('5000')).toBe(5000)
+  it('uses the dev scheme when the app runs unpackaged', () => {
+    expect(buildTopupHandoffUrl(HREF, 'superagent-dev')).toContain(
+      'return_app=superagent-dev%3A%2F%2Fbilling-updated',
+    )
   })
 
-  it('rejects zero, above the cap, and non-integers', () => {
-    expect(parseAutoReloadThresholdDollars('0')).toBeNull()
-    expect(parseAutoReloadThresholdDollars('5001')).toBeNull()
-    expect(parseAutoReloadThresholdDollars('20.5')).toBeNull()
+  it('omits return_app when the protocol scheme is unknown', () => {
+    const url = buildTopupHandoffUrl(HREF, undefined)
+    expect(url).toContain('intent=topup')
+    expect(url).not.toContain('return_app')
+  })
+
+  it('returns null for a missing or unparseable billing href', () => {
+    expect(buildTopupHandoffUrl(null, 'superagent')).toBeNull()
+    expect(buildTopupHandoffUrl('not a url', 'superagent')).toBeNull()
   })
 })
 
@@ -135,12 +129,12 @@ describe('resolvePaywallCta', () => {
     })).toEqual({ kind: 'add_card', href: HREF })
   })
 
-  it('returns top-up amounts when the admin already has a card', () => {
+  it('returns the top-up CTA when the admin already has a card', () => {
     expect(resolvePaywallCta({
       subscriptionRequired: false,
       role: 'owner',
       hasPaymentMethod: true,
       billingHref: HREF,
-    })).toEqual({ kind: 'topup', href: HREF, amountsCents: TOPUP_AMOUNTS_CENTS })
+    })).toEqual({ kind: 'topup', href: HREF })
   })
 })

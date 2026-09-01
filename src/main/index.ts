@@ -1226,6 +1226,14 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
     mainWindow?.focus()
   }
 
+  // Billing hand-back: the dashboard's top-up flow deep-links here after a
+  // purchase so the paywall can refresh and unblock (SUP-725). Carries no data.
+  if (url.startsWith(`${PROTOCOL_SCHEME}://billing-updated`)) {
+    mainWindow.webContents.send('billing-updated')
+    mainWindow.focus()
+    return
+  }
+
   if (url.startsWith(`${PROTOCOL_SCHEME}://platform-auth-callback`)) {
     try {
       const callbackUrl = new URL(url)

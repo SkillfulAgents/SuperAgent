@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
+import { fireEvent, render, screen } from '@testing-library/react'
 
 import { parsePlatformErrorResponse } from '@shared/lib/llm-provider/platform-error-presentation'
 import { resolvePresentationMarkdown } from '@shared/lib/llm-provider/error-presentation'
@@ -20,26 +19,12 @@ const billingInfo = {
   isLoading: false,
 }
 
-const paywallBilling = {
-  topup: vi.fn(),
-  setAutoReload: vi.fn(),
-  setupCard: vi.fn(),
-  confirmCard: vi.fn(),
-  pending: false,
-  error: null,
-  setError: vi.fn(),
-}
-
 vi.mock('@renderer/hooks/use-platform-auth', () => ({
   usePlatformAuthStatus: () => ({ data: platformAuth }),
 }))
 
 vi.mock('@renderer/hooks/use-billing-info', () => ({
   useBillingInfo: () => billingInfo,
-}))
-
-vi.mock('@renderer/hooks/use-paywall-billing', () => ({
-  usePaywallBilling: () => paywallBilling,
 }))
 
 const SPEND_CAP =
@@ -51,15 +36,6 @@ beforeEach(() => {
   platformAuth.role = 'owner'
   billingInfo.data = undefined
   billingInfo.isLoading = false
-  paywallBilling.topup.mockReset()
-  paywallBilling.topup.mockResolvedValue(true)
-  paywallBilling.setAutoReload.mockReset()
-  paywallBilling.setAutoReload.mockResolvedValue(true)
-  paywallBilling.setupCard.mockReset()
-  paywallBilling.setupCard.mockResolvedValue(null)
-  paywallBilling.confirmCard.mockReset()
-  paywallBilling.pending = false
-  paywallBilling.error = null
 })
 
 describe('ProviderErrorView', () => {
@@ -177,7 +153,12 @@ describe('ProviderErrorView', () => {
     expect(screen.queryByRole('button', { name: /subscribe|add usage/i })).not.toBeInTheDocument()
   })
 
-  it('renders top-up amounts when a card is already on file', () => {
+  it('opens the dashboard top-up hand-off when a card is already on file', () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    ;(window as unknown as {
+      electronAPI?: { openExternal: typeof openExternal; desktopProtocol?: string }
+    }).electronAPI = { openExternal, desktopProtocol: 'superagent' }
+
     render(
       <ProviderErrorView
         presentation={{
@@ -189,190 +170,17 @@ describe('ProviderErrorView', () => {
         paywallCta={{
           kind: 'topup',
           href: 'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
-          amountsCents: [5000, 10000, 20000, 40000],
         }}
       />,
     )
-    // Amounts live in the dialog behind the single Add usage button.
-    expect(screen.queryByRole('button', { name: '$50' })).not.toBeInTheDocument()
+
+    // No in-app purchase dialog — the button hands off to the dashboard with
+    // the auto-open intent and the deep link back into the app.
     fireEvent.click(screen.getByRole('button', { name: /add usage/i }))
-    const dialog = screen.getByRole('dialog', { name: /add more usage credit/i })
-    expect(within(dialog).getByRole('tab', { name: /auto-refill/i })).toBeInTheDocument()
-    expect(within(dialog).getByRole('tab', { name: /one-time purchase/i })).toBeInTheDocument()
-    expect(within(dialog).getByRole('button', { name: '$50' })).toBeInTheDocument()
-    expect(within(dialog).getByRole('button', { name: '$100' })).toBeInTheDocument()
-    expect(within(dialog).getByRole('button', { name: '$200' })).toBeInTheDocument()
-    expect(within(dialog).getByRole('button', { name: '$400' })).toBeInTheDocument()
-
-    // A preset fills the amount field and arms Purchase.
-    const purchase = within(dialog).getByRole('button', { name: /^purchase$/i })
-    expect(purchase).toBeDisabled()
-    fireEvent.click(within(dialog).getByRole('button', { name: '$100' }))
-    expect(within(dialog).getByRole('spinbutton', { name: /amount in dollars/i })).toHaveValue(100)
-    expect(purchase).toBeEnabled()
-  })
-
-  it('enables Purchase only for a valid typed amount', () => {
-    render(
-      <ProviderErrorView
-        presentation={{
-          severity: 'error',
-          icon: 'info',
-          message: '**Insufficient Balance:** This workspace is out of credits.',
-          paywall: { subscriptionRequired: false },
-        }}
-        paywallCta={{
-          kind: 'topup',
-          href: 'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
-          amountsCents: [2000],
-        }}
-      />,
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(openExternal).toHaveBeenCalledWith(
+      'https://platform.example.com/dashboard/organizations/org_123?tab=billing&intent=topup&return_app=superagent%3A%2F%2Fbilling-updated',
     )
-    fireEvent.click(screen.getByRole('button', { name: /add usage/i }))
-    const dialog = screen.getByRole('dialog', { name: /add more usage credit/i })
-    const input = within(dialog).getByRole('spinbutton', { name: /amount in dollars/i })
-    const purchase = within(dialog).getByRole('button', { name: /^purchase$/i })
-
-    expect(purchase).toBeDisabled()
-    fireEvent.change(input, { target: { value: '5' } })
-    expect(purchase).toBeDisabled()
-    fireEvent.change(input, { target: { value: '50' } })
-    expect(purchase).toBeEnabled()
-  })
-
-  it('purchases a one-time top-up in-app', async () => {
-    const openExternal = vi.fn()
-    ;(window as unknown as { electronAPI?: { openExternal: typeof openExternal } }).electronAPI = {
-      openExternal,
-    }
-
-    render(
-      <ProviderErrorView
-        presentation={{
-          severity: 'error',
-          icon: 'info',
-          message: '**Insufficient Balance:** This workspace is out of credits.',
-          paywall: { subscriptionRequired: false },
-        }}
-        paywallCta={{
-          kind: 'topup',
-          href: 'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
-          amountsCents: [5000, 10000, 20000, 40000],
-        }}
-      />,
-    )
-    const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: /add usage/i }))
-    const dialog = screen.getByRole('dialog', { name: /add more usage credit/i })
-    await user.click(within(dialog).getByRole('button', { name: '$100' }))
-    await user.click(within(dialog).getByRole('button', { name: /^purchase$/i }))
-
-    await waitFor(() => {
-      expect(paywallBilling.topup).toHaveBeenCalledWith(10000)
-    })
-    expect(openExternal).not.toHaveBeenCalled()
-  })
-
-  it('opens the in-app card dialog from Add credit card', async () => {
-    const openExternal = vi.fn()
-    ;(window as unknown as { electronAPI?: { openExternal: typeof openExternal } }).electronAPI = {
-      openExternal,
-    }
-
-    render(
-      <ProviderErrorView
-        presentation={{
-          severity: 'error',
-          icon: 'info',
-          message: '**Insufficient Balance:** This workspace is out of credits.',
-          paywall: { subscriptionRequired: false },
-        }}
-        paywallCta={{
-          kind: 'add_card',
-          href: 'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
-        }}
-      />,
-    )
-    const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: /add credit card/i }))
-
-    expect(screen.getByRole('dialog', { name: /add credit card/i })).toBeInTheDocument()
-    await waitFor(() => {
-      expect(paywallBilling.setupCard).toHaveBeenCalled()
-    })
-    expect(openExternal).not.toHaveBeenCalled()
-  })
-
-  it('opens the in-app card dialog from Change', async () => {
-    const openExternal = vi.fn()
-    ;(window as unknown as { electronAPI?: { openExternal: typeof openExternal } }).electronAPI = {
-      openExternal,
-    }
-
-    render(
-      <ProviderErrorView
-        presentation={{
-          severity: 'error',
-          icon: 'info',
-          message: '**Insufficient Balance:** This workspace is out of credits.',
-          paywall: { subscriptionRequired: false },
-        }}
-        paywallCta={{
-          kind: 'topup',
-          href: 'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
-          amountsCents: [5000],
-        }}
-      />,
-    )
-    const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: /add usage/i }))
-    const dialog = screen.getByRole('dialog', { name: /add more usage credit/i })
-    await user.click(within(dialog).getByRole('button', { name: /^change$/i }))
-
-    expect(screen.getByRole('dialog', { name: /add credit card/i })).toBeInTheDocument()
-    await waitFor(() => {
-      expect(paywallBilling.setupCard).toHaveBeenCalled()
-    })
-    expect(openExternal).not.toHaveBeenCalled()
-  })
-
-  it('saves auto-refill in-app after consent', async () => {
-    const openExternal = vi.fn()
-    ;(window as unknown as { electronAPI?: { openExternal: typeof openExternal } }).electronAPI = {
-      openExternal,
-    }
-
-    render(
-      <ProviderErrorView
-        presentation={{
-          severity: 'error',
-          icon: 'info',
-          message: '**Insufficient Balance:** This workspace is out of credits.',
-          paywall: { subscriptionRequired: false },
-        }}
-        paywallCta={{
-          kind: 'topup',
-          href: 'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
-          amountsCents: [5000],
-        }}
-      />,
-    )
-    const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: /add usage/i }))
-    const dialog = screen.getByRole('dialog', { name: /add more usage credit/i })
-    await user.click(within(dialog).getByRole('tab', { name: /auto-refill/i }))
-    const save = await waitFor(() => within(dialog).getByRole('button', { name: /save auto-refill/i }))
-    expect(save).toBeDisabled()
-    await user.click(within(dialog).getByRole('checkbox'))
-    expect(save).toBeEnabled()
-    await user.click(save)
-
-    expect(paywallBilling.setAutoReload).toHaveBeenCalledWith({
-      enabled: true,
-      thresholdCents: 5000,
-      topupAmountCents: 20000,
-    })
-    expect(openExternal).not.toHaveBeenCalled()
   })
 
   it('renders a Go to billing button when the role is unknown', () => {

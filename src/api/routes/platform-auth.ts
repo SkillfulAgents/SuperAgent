@@ -25,17 +25,6 @@ import {
 import { platformService } from '@shared/lib/services/platform-service'
 import { getCloudWorkspace } from '@shared/lib/services/cloud-workspace-service'
 import { PlatformRequestError } from '@shared/lib/platform-auth/platform-fetch'
-import {
-  confirmPlatformPaymentMethod,
-  postPlatformAutoReload,
-  postPlatformTopup,
-  startPlatformPaymentMethodSetup,
-} from '@shared/lib/services/platform-billing-service'
-import {
-  PlatformAutoReloadRequestSchema,
-  PlatformPaymentMethodConfirmRequestSchema,
-  PlatformTopupRequestSchema,
-} from '@shared/lib/services/platform-billing-schema'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
 import { setErrorReportingUser } from '@shared/lib/error-reporting'
 
@@ -102,53 +91,6 @@ platformAuth.get('/billing', async (c) => {
     }
     throw error
   }
-})
-
-async function runBillingMutation<T>(
-  c: { json: (body: unknown, status?: ContentfulStatusCode) => Response },
-  run: () => Promise<T>,
-) {
-  if (!getPlatformAuthStatus().connected) {
-    return c.json({ error: 'Platform is not connected.' }, 401)
-  }
-  try {
-    return c.json(await run())
-  } catch (error) {
-    if (error instanceof PlatformRequestError) {
-      return c.json({ error: error.message }, error.status as ContentfulStatusCode)
-    }
-    throw error
-  }
-}
-
-platformAuth.post('/billing/topup', async (c) => {
-  const parsed = PlatformTopupRequestSchema.safeParse(await c.req.json().catch(() => null))
-  if (!parsed.success) {
-    return c.json({ error: 'Top-up amount must be a whole-dollar value between $20 and $50,000.' }, 400)
-  }
-  return runBillingMutation(c, () => postPlatformTopup(parsed.data.amountCents))
-})
-
-platformAuth.post('/billing/payment-method/setup', async (c) => {
-  return runBillingMutation(c, () => startPlatformPaymentMethodSetup())
-})
-
-platformAuth.post('/billing/payment-method', async (c) => {
-  const parsed = PlatformPaymentMethodConfirmRequestSchema.safeParse(await c.req.json().catch(() => null))
-  if (!parsed.success) {
-    return c.json({ error: 'paymentMethodId is required.' }, 400)
-  }
-  return runBillingMutation(c, () => confirmPlatformPaymentMethod(parsed.data.paymentMethodId))
-})
-
-platformAuth.post('/billing/auto-reload', async (c) => {
-  const parsed = PlatformAutoReloadRequestSchema.safeParse(await c.req.json().catch(() => null))
-  if (!parsed.success) {
-    return c.json({
-      error: 'Auto-refill needs a threshold of $1–$5,000 and a refill amount above that threshold (minimum $20).',
-    }, 400)
-  }
-  return runBillingMutation(c, () => postPlatformAutoReload(parsed.data))
 })
 
 // Cloud-workspace discovery for the Account screen (Electron desktop only).

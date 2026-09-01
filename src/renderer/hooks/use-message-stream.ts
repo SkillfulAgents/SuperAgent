@@ -1375,6 +1375,21 @@ export function consumeDiscardedCommand(sessionId: string, uuid: string): void {
   }
 }
 
+// Unblock sessions stuck on a paywall 402 after the user topped up on the
+// website (billing-updated deep link). Clearing the error restores the composer.
+export function clearPaywallErrors(): void {
+  for (const [sessionId, state] of streamStates) {
+    if (!state.errorPresentation?.paywall) continue
+    streamStates.set(sessionId, {
+      ...state,
+      error: null,
+      apiErrorCode: null,
+      errorPresentation: null,
+    })
+    streamListeners.get(sessionId)?.forEach((listener) => listener())
+  }
+}
+
 export function removePeerUserMessage(sessionId: string, uuid: string): void {
   const current = streamStates.get(sessionId)
   if (current && current.peerUserMessages.some((p) => p.uuid === uuid)) {
