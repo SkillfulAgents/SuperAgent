@@ -127,6 +127,15 @@ export function useCreateSession() {
           ? [created, ...sessions]
           : sessions
       ))
+      // The seeds are create-TIME snapshots and setQueryData marks them fresh —
+      // on a fast turn (E2E mock; a quick real reply) the session can change
+      // (schedule a wake, go idle) BEFORE this onSuccess runs, and the
+      // session_updated invalidation that announced it then predates the seed:
+      // without re-marking stale here, the detail entry would pin that stale
+      // snapshot (no poll refreshes it) and the pending-wake banner never
+      // appears. Invalidate both so the seed renders instantly while the
+      // refetch right behind it stays authoritative.
+      queryClient.invalidateQueries({ queryKey: ['session', created.id] })
       queryClient.invalidateQueries({ queryKey: ['sessions', resolvedSlug] })
     },
   })
@@ -169,6 +178,9 @@ export function useUpdateSessionName() {
       patchSessionInCaches(queryClient, variables.agentSlug, updated.id, (session) => (
         session.name === updated.name ? session : { ...session, name: updated.name }
       ))
+      // The write-through bumped the patched entries' freshness — re-mark them
+      // stale so concurrent server-side changes still refetch on mount.
+      queryClient.invalidateQueries({ queryKey: ['session', updated.id] })
       queryClient.invalidateQueries({
         queryKey: ['sessions', resolveAgentSlugFromCache(queryClient, variables.agentSlug)],
       })

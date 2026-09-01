@@ -4233,16 +4233,17 @@ describe('MessagePersister', () => {
     })
 
     // Args-keyed metadata mock for the two broadcast tests below. A
-    // mockResolvedValueOnce is consumed by ANY caller — a stray
-    // fire-and-forget promote leaked from an earlier test can eat it (seen as
-    // a CI-only flake), starving the test's own promote and polluting the
-    // event capture. Keying on the exact (agentSlug, sessionId) pair keeps
-    // strays on the null path. mockImplementation survives clearAllMocks, so
-    // restore the suite default afterwards.
-    function withHiddenScheduledMetadata(): () => void {
+    // mockResolvedValueOnce is consumed by ANY caller — this suite has
+    // fire-and-forget promotes still in flight from earlier tests (CI's
+    // slower interleaving even surfaced one carrying TRANSPOSED ids), and a
+    // stray both eats a queued Once and pollutes an unfiltered event capture.
+    // Keying on the exact (agentSlug, sessionId) pair keeps strays on the
+    // null path. mockImplementation survives clearAllMocks, so restore the
+    // suite default afterwards.
+    function withHiddenScheduledMetadata(agentSlug: string, sessionId: string): () => void {
       vi.mocked(getSessionMetadata).mockImplementation((slug, id) =>
         Promise.resolve(
-          slug === AGENT_SLUG && id === SESSION_ID
+          slug === agentSlug && id === sessionId
             ? ({ isScheduledExecution: true, scheduledTaskId: 'task-1' } as never)
             : null,
         ),
@@ -4253,26 +4254,36 @@ describe('MessagePersister', () => {
     }
 
     it('a direct promote of a non-awaiting session broadcasts session_updated, not an awaiting assertion', async () => {
-      const restoreMetadata = withHiddenScheduledMetadata()
+      // A dedicated id pair: ambient stray promotes target SESSION_ID /
+      // AGENT_SLUG, so a unique pair makes this test hermetic no matter what
+      // is still in flight — no streaming state exists for it, which is
+      // exactly the settled shape the else-branch broadcast covers.
+      const PROMOTE_SESSION = 'direct-promote-session'
+      const PROMOTE_AGENT = 'direct-promote-agent'
+      const restoreMetadata = withHiddenScheduledMetadata(PROMOTE_AGENT, PROMOTE_SESSION)
       const { events, cleanup } = collectGlobalEvents()
 
-      // The human-message route (agents.ts) promotes before delivery, usually
-      // on a session that is NOT awaiting. Clients echo session_awaiting_input
-      // into their caches as STATE (working + orange dot), so that promote
-      // must send the assertion-free refetch nudge instead.
-      await messagePersister.promoteAutomatedSession(SESSION_ID, AGENT_SLUG)
+      try {
+        // The human-message route (agents.ts) promotes before delivery, usually
+        // on a session that is NOT awaiting. Clients echo session_awaiting_input
+        // into their caches as STATE (working + orange dot), so that promote
+        // must send the assertion-free refetch nudge instead.
+        await messagePersister.promoteAutomatedSession(PROMOTE_SESSION, PROMOTE_AGENT)
 
-      const forSession = (e: { sessionId?: string }) => e.sessionId === SESSION_ID
-      expect(events.filter((e) => e.type === 'session_awaiting_input' && forSession(e))).toHaveLength(0)
-      const updated = events.filter((e) => e.type === 'session_updated' && forSession(e))
-      expect(updated).toHaveLength(1)
-      expect(updated[0]).toMatchObject({ sessionId: SESSION_ID, agentSlug: AGENT_SLUG })
-      cleanup()
-      restoreMetadata()
+        const forSession = (e: { sessionId?: string; agentSlug?: string }) =>
+          e.sessionId === PROMOTE_SESSION || e.agentSlug === PROMOTE_AGENT
+        expect(events.filter((e) => e.type === 'session_awaiting_input' && forSession(e))).toHaveLength(0)
+        const updated = events.filter((e) => e.type === 'session_updated' && forSession(e))
+        expect(updated).toHaveLength(1)
+        expect(updated[0]).toMatchObject({ sessionId: PROMOTE_SESSION, agentSlug: PROMOTE_AGENT })
+      } finally {
+        cleanup()
+        restoreMetadata()
+      }
     })
 
     it('a promote on the awaiting rising edge still asserts session_awaiting_input', async () => {
-      const restoreMetadata = withHiddenScheduledMetadata()
+      const restoreMetadata = withHiddenScheduledMetadata(AGENT_SLUG, SESSION_ID)
       const { events, cleanup } = collectGlobalEvents()
 
       simulateToolUse('mcp__user-input__request_secret', 'tool-1', { secretName: 'KEY' })

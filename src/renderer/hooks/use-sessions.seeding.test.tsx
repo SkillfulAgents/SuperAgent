@@ -78,7 +78,10 @@ describe('useCreateSession cache seeding', () => {
     })
     const list = queryClient.getQueryData<ApiSession[]>(['sessions', 'agent-1'])
     expect(list?.map((s) => s.id)).toEqual(['sess-new', 'sess-old'])
-    // The refetch still runs for the authoritative ordering/enrichment.
+    // The refetches still run for the authoritative state: the seeds are
+    // create-time snapshots, and a fast turn can change the session before
+    // onSuccess runs — the detail entry especially must not stay pinned fresh.
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['session', 'sess-new'] })
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['sessions', 'agent-1'] })
   })
 
