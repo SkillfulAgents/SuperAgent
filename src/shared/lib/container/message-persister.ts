@@ -1575,10 +1575,10 @@ class MessagePersister {
     toolName: string,
     toolUseId: string,
     toolInput: string,
-    agentSlug?: string,
+    agentSlug: string,
     parentToolId?: string,
   ): void {
-    const state = this.streamingStates.get(sessionId)
+    const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
     if (!state) return
     if (state.dispatchedAutomatedToolUseIds.has(toolUseId)) return
 
@@ -1594,9 +1594,7 @@ class MessagePersister {
     // reaches the host anyway.
     if (parentToolId && MessagePersister.MAIN_THREAD_ONLY_AUTOMATED_TOOLS.has(toolName)) {
       state.dispatchedAutomatedToolUseIds.add(toolUseId)
-      if (agentSlug) {
-        this.rejectContainerInput(agentSlug, toolUseId, MAIN_THREAD_ONLY_TOOL_REJECTION).catch(console.error)
-      }
+      this.rejectContainerInput(agentSlug, toolUseId, MAIN_THREAD_ONLY_TOOL_REJECTION).catch(console.error)
       return
     }
 
@@ -1614,7 +1612,7 @@ class MessagePersister {
   // day instead of failing fast.
   private static readonly AUTOMATED_TOOL_HANDLERS: Record<
     string,
-    (p: MessagePersister, sessionId: string, toolUseId: string, input: string, agentSlug?: string) => void
+    (p: MessagePersister, sessionId: string, toolUseId: string, input: string, agentSlug: string) => void
   > = {
     'mcp__user-input__schedule_task': (p, ...a) => p.handleScheduleTaskTool(...a),
     'mcp__user-input__schedule_resume': (p, ...a) => p.handleScheduleResumeTool(...a),

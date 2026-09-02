@@ -211,12 +211,12 @@ describe('automated blocking tools from a subagent must receive a container push
   beforeEach(async () => {
     userInputRequestManager.reset()
     mockClient = createMockClient()
-    await messagePersister.subscribeToSession(SESSION_ID, mockClient, SESSION_ID, AGENT_SLUG)
-    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    await messagePersister.subscribeToSession(AGENT_SLUG, SESSION_ID, mockClient, SESSION_ID)
+    messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
   })
 
   afterEach(() => {
-    messagePersister.unsubscribeFromSession(SESSION_ID)
+    messagePersister.unsubscribeFromSession(AGENT_SLUG, SESSION_ID)
     vi.clearAllMocks()
   })
 
@@ -372,7 +372,7 @@ describe('automated blocking tools from a subagent must receive a container push
     // A live session re-subscribes on every inbound chat message, wake and
     // x-agent call, which builds a fresh streaming state.
     mockClient = createMockClient()
-    await messagePersister.subscribeToSession(SESSION_ID, mockClient, SESSION_ID, AGENT_SLUG)
+    await messagePersister.subscribeToSession(AGENT_SLUG, SESSION_ID, mockClient, SESSION_ID)
     sendSidechainCompleteAssistantToolUse(toolName, toolId, input, parentToolId)
 
     await vi.waitFor(() => {
