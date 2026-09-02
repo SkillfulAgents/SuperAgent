@@ -110,6 +110,21 @@ describe('maybeReloadForWorkspaceUnavailable', () => {
     expect(reload).toHaveBeenCalledOnce()
   })
 
+  it('covers immediately and reloads after the cooldown expires', async () => {
+    vi.useFakeTimers()
+    try {
+      const unavailable = { error: 'deployment_unavailable', state: 'waking' }
+      await maybeReloadForWorkspaceUnavailable(jsonResponse(503, unavailable))
+      await maybeReloadForWorkspaceUnavailable(jsonResponse(503, unavailable))
+      expect(reload).toHaveBeenCalledOnce()
+      expect(isWorkspaceUnavailableReloadPending()).toBe(true)
+      await vi.advanceTimersByTimeAsync(15_000)
+      expect(reload).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('trusts the header without reading the body', async () => {
     const response = new Response('not json', {
       status: 503,

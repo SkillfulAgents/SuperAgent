@@ -19,6 +19,7 @@ const PROMPT_STATES = new Set<WorkspaceUnavailableState>(['sleeping', 'error'])
 let reloadPending = false
 let asleep = false
 const listeners = new Set<() => void>()
+let reloadTimer: ReturnType<typeof setTimeout> | null = null
 let reloadImpl = (): void => {
   window.location.reload()
 }
@@ -51,6 +52,10 @@ export function _resetWorkspaceUnavailableForTest(): void {
   reloadPending = false
   asleep = false
   listeners.clear()
+  if (reloadTimer != null) {
+    clearTimeout(reloadTimer)
+    reloadTimer = null
+  }
   reloadImpl = () => {
     window.location.reload()
   }
@@ -103,13 +108,28 @@ function rememberReloadAt(now: number): void {
   }
 }
 
-function reloadForWorkspaceUnavailable(): void {
-  const last = lastReloadAt()
-  const now = Date.now()
-  if (Number.isFinite(last) && now - last < COOLDOWN_MS) return
-  rememberReloadAt(now)
+function armReloadPending(): void {
+  if (reloadPending) return
   reloadPending = true
   notify()
+}
+
+function reloadForWorkspaceUnavailable(): void {
+  // Cover first so in-app 502/503 errors never paint over the last surface.
+  armReloadPending()
+  const last = lastReloadAt()
+  const now = Date.now()
+  if (Number.isFinite(last) && now - last < COOLDOWN_MS) {
+    if (reloadTimer == null) {
+      reloadTimer = setTimeout(() => {
+        reloadTimer = null
+        rememberReloadAt(Date.now())
+        reloadImpl()
+      }, COOLDOWN_MS - (now - last))
+    }
+    return
+  }
+  rememberReloadAt(now)
   reloadImpl()
 }
 

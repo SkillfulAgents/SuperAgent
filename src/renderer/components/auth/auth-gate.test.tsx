@@ -165,20 +165,37 @@ describe('which recovery AuthGate offers when there is no session', () => {
     mustChangePassword: false,
   }
 
-  it('holds the loading screen while a workspace-unavailable reload is in flight', () => {
+  it('covers the last surface with the updating overlay while a reload is in flight', () => {
     vi.stubGlobal('__AUTH_MODE__', true)
     setActiveTarget('local', null)
     _armWorkspaceUnavailableReloadForTest()
-    setUser(unauthenticated)
+    setUser({ ...unauthenticated, isAuthenticated: true })
 
-    const { queryByTestId, getByText } = render(
+    const { getByTestId, getByText, queryByTestId } = render(
       <AuthGate>
         <div>app</div>
       </AuthGate>,
     )
 
+    expect(getByTestId('workspace-updating-overlay')).toBeInTheDocument()
+    expect(getByText('app')).toBeInTheDocument()
     expect(queryByTestId('auth-page')).not.toBeInTheDocument()
-    expect(getByText('Loading...')).toBeInTheDocument()
+  })
+
+  it('covers AuthPage with the updating overlay when the session drops mid-reload', () => {
+    vi.stubGlobal('__AUTH_MODE__', true)
+    setActiveTarget('local', null)
+    _armWorkspaceUnavailableReloadForTest()
+    setUser(unauthenticated)
+
+    const { getByTestId } = render(
+      <AuthGate>
+        <div>app</div>
+      </AuthGate>,
+    )
+
+    expect(getByTestId('workspace-updating-overlay')).toBeInTheDocument()
+    expect(getByTestId('auth-page')).toBeInTheDocument()
   })
 
   it('overlays the asleep prompt while keeping the app mounted underneath', () => {
