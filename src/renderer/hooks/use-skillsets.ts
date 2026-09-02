@@ -99,6 +99,20 @@ export function useRemoveSkillset() {
 }
 
 /**
+ * Skillsets that accept publishes (excludes read-only ones, e.g. the public
+ * default library). `data` stays undefined while the list is loading so
+ * callers can distinguish "unknown" from "none available".
+ */
+export function usePublishableSkillsets() {
+  const query = useSkillsets()
+  const data = useMemo(
+    () => query.data?.filter((ss) => ss.publishMode !== 'none'),
+    [query.data],
+  )
+  return { ...query, data }
+}
+
+/**
  * Look up the publishMode for a skillset by its ID.
  * Falls back to 'pull_request' if the skillset is unknown (e.g. removed).
  */

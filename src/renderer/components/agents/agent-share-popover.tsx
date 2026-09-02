@@ -37,7 +37,7 @@ import {
   useHostExportStatus,
 } from '@renderer/hooks/use-agent-templates'
 import { AgentTemplatePublishPanel } from '@renderer/components/agents/agent-template-publish-panel'
-import { useSkillsets } from '@renderer/hooks/use-skillsets'
+import { usePublishableSkillsets } from '@renderer/hooks/use-skillsets'
 import { ActivityOrb } from '@renderer/components/messages/activity-orb'
 import { ArrowDownToLine, ArrowRight, Check, LibraryBig, Loader2, Lock, User, X } from 'lucide-react'
 import type { AgentRole } from '@shared/lib/types/agent'
@@ -110,8 +110,10 @@ function UserAvatar({ name, className }: { name: string; className?: string }) {
 export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverProps) {
   const queryClient = useQueryClient()
   const { user, isAuthMode } = useUser()
-  const { data: skillsets } = useSkillsets()
-  const publishAvailable = !!skillsets?.some((ss) => ss.publishMode !== 'none')
+  const { data: publishableSkillsets } = usePublishableSkillsets()
+  // undefined while loading — treat as available so the default tab doesn't
+  // land on Export and stick there once the Publish tab appears.
+  const publishAvailable = publishableSkillsets === undefined || publishableSkillsets.length > 0
   const [open, setOpen] = useState(false)
   const [tab, setTab] = useState<'share' | 'publish' | 'export'>(isAuthMode ? 'share' : 'publish')
   const visibleTab = tab === 'publish' && !publishAvailable

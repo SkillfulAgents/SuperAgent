@@ -6,7 +6,7 @@ import { Label } from '@renderer/components/ui/label'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { ArrowRight, ArrowUpFromLine, Check, Loader2, ExternalLink, AlertTriangle, ChevronLeft } from 'lucide-react'
 import { useAgentTemplatePublishInfo, usePublishAgentTemplate } from '@renderer/hooks/use-agent-templates'
-import { useSkillsets } from '@renderer/hooks/use-skillsets'
+import { usePublishableSkillsets } from '@renderer/hooks/use-skillsets'
 
 interface AgentTemplatePublishPanelProps {
   agentSlug: string
@@ -22,8 +22,7 @@ interface AgentTemplatePublishPanelProps {
  */
 export function AgentTemplatePublishPanel({ agentSlug, onBack }: AgentTemplatePublishPanelProps) {
   const [step, setStep] = useState<'form' | 'pick'>('form')
-  const { data: allSkillsets } = useSkillsets()
-  const skillsets = allSkillsets?.filter((ss) => ss.publishMode !== 'none')
+  const { data: skillsets } = usePublishableSkillsets()
 
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')

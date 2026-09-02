@@ -14,7 +14,7 @@ import { Label } from '@renderer/components/ui/label'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Loader2, ExternalLink, AlertTriangle, ChevronLeft } from 'lucide-react'
 import { useSkillPublishInfo, usePublishSkill } from '@renderer/hooks/use-agent-skills'
-import { useSkillsets } from '@renderer/hooks/use-skillsets'
+import { usePublishableSkillsets } from '@renderer/hooks/use-skillsets'
 import { getPublishDialogCopy } from '@renderer/lib/skillset-publish-ui'
 import type { ApiSkillsetConfig, ApiItemStatus } from '@shared/lib/types/api'
 
@@ -38,8 +38,7 @@ export function SkillPublishDialog({
   const canPublish = skillStatus.type === 'local'
   const [step, setStep] = useState<'pick' | 'form'>('pick')
   const [selectedSkillset, setSelectedSkillset] = useState<ApiSkillsetConfig | null>(null)
-  const { data: allSkillsets } = useSkillsets()
-  const skillsets = allSkillsets?.filter((ss) => ss.publishMode !== 'none')
+  const { data: skillsets } = usePublishableSkillsets()
 
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
