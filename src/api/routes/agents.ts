@@ -2904,7 +2904,7 @@ agents.post('/:id/sessions/:sessionId/resume-after-billing', AgentUser(), async 
     const page = await getSessionMessagesPage(agentSlug, sessionId, { limit: 20 })
     attachProviderErrorPresentations(page.messages)
     if (latestHiddenContinuationIsResume(page.messages)) {
-      finishBillingResumeAttempt(attemptId, sessionId, true)
+      finishBillingResumeAttempt(attemptId, sessionId, false)
       return c.json({ resumed: true, duplicate: true }, 202)
     }
     if (!latestVisibleAssistantHasPaywall(page.messages)) {
@@ -2916,7 +2916,10 @@ agents.post('/:id/sessions/:sessionId/resume-after-billing', AgentUser(), async 
     if (!messagePersister.isSubscribed(sessionId)) {
       await messagePersister.subscribeToSession(sessionId, client, sessionId, agentSlug)
     }
-    messagePersister.markSessionActive(sessionId, agentSlug)
+    if (!messagePersister.tryMarkSessionActiveForBillingResume(sessionId, agentSlug, attemptId)) {
+      finishBillingResumeAttempt(attemptId, sessionId, false)
+      return c.json({ error: 'Session is already active' }, 409)
+    }
     await client.sendMessage(sessionId, BILLING_RESUME_SYSTEM_PROMPT, randomUUID(), {
       shouldQuery: true,
     })
@@ -2924,7 +2927,7 @@ agents.post('/:id/sessions/:sessionId/resume-after-billing', AgentUser(), async 
     return c.json({ resumed: true }, 202)
   } catch (error) {
     finishBillingResumeAttempt(attemptId, sessionId, false)
-    messagePersister.markSessionIdle(sessionId)
+    messagePersister.markSessionIdleIfBillingResumeClaimed(sessionId, attemptId)
     console.error('Failed to resume after billing:', error)
     return c.json({ error: 'Failed to resume after billing' }, 500)
   }

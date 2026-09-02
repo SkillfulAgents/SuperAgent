@@ -180,6 +180,8 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     dropCoalescedUserMessage: vi.fn(() => false),
     markSessionActive: vi.fn(),
     markSessionIdle: vi.fn(),
+    tryMarkSessionActiveForBillingResume: vi.fn(() => true),
+    markSessionIdleIfBillingResumeClaimed: vi.fn(),
     markSessionInterrupted: vi.fn(),
     cancelAwaitingInput: vi.fn(),
     completeInputRequest: vi.fn(),
@@ -3632,6 +3634,7 @@ describe('POST /:id/sessions/:sessionId/resume-after-billing', () => {
       containerManager.getClient('test-agent'),
     )
     vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
+    vi.mocked(messagePersister.tryMarkSessionActiveForBillingResume).mockReturnValue(true)
     vi.mocked(getSessionMessagesPage).mockResolvedValue(paywallPage() as never)
     mockSendMessage.mockResolvedValue(undefined)
     providerSpy = vi.spyOn(llmProvider, 'getActiveLlmProvider').mockReturnValue({
@@ -3688,6 +3691,29 @@ describe('POST /:id/sessions/:sessionId/resume-after-billing', () => {
     expect(res.status).toBe(202)
     expect(await res.json()).toEqual({ resumed: true, duplicate: true })
     expect(mockSendMessage).not.toHaveBeenCalled()
+  })
+
+  it('rejects when a normal send wins the final activity claim', async () => {
+    vi.mocked(messagePersister.tryMarkSessionActiveForBillingResume).mockReturnValueOnce(false)
+
+    const res = await postJson(createApp(), URL, { attemptId: ATTEMPT })
+
+    expect(res.status).toBe(409)
+    expect(mockSendMessage).not.toHaveBeenCalled()
+    expect(messagePersister.markSessionIdleIfBillingResumeClaimed).not.toHaveBeenCalled()
+  })
+
+  it('only rolls back activity still owned by the failed resume', async () => {
+    mockSendMessage.mockRejectedValueOnce(new Error('send failed'))
+
+    const res = await postJson(createApp(), URL, { attemptId: ATTEMPT })
+
+    expect(res.status).toBe(500)
+    expect(messagePersister.markSessionIdleIfBillingResumeClaimed).toHaveBeenCalledWith(
+      'sess-1',
+      ATTEMPT,
+    )
+    expect(messagePersister.markSessionIdle).not.toHaveBeenCalled()
   })
 })
 

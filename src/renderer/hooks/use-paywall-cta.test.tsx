@@ -28,7 +28,9 @@ const billingState = {
       seat: { balanceCents: number; startingBalanceCents: number } | null
       orgPool: { poolBalanceCents: number }
       hasPaymentMethod?: boolean
+      access?: { allowed: boolean; reason: string }
     }
+    stale?: boolean
   } | undefined,
   isLoading: false,
   error: null as Error | null,
@@ -69,11 +71,25 @@ describe('usePaywallCta', () => {
     billingState.error = null
   })
 
-  it('hides billing details from members', async () => {
+  it('routes members to ask an admin', async () => {
     const { result } = renderHook(() => usePaywallCta(PAYWALL), { wrapper: wrapper() })
     await waitFor(() => {
       expect(result.current.cta?.kind).toBe('ask_admin')
-      expect(result.current.details).toBeNull()
     })
+  })
+
+  it('shows the subscription CTA immediately while the billing snapshot loads', () => {
+    platformAuth.role = 'owner'
+    billingState.data = undefined
+    billingState.isLoading = true
+    const presentation: ProviderErrorPresentation = {
+      ...PAYWALL,
+      paywall: { subscriptionRequired: true },
+    }
+
+    const { result } = renderHook(() => usePaywallCta(presentation), { wrapper: wrapper() })
+
+    expect(result.current.cta?.kind).toBe('subscribe')
+    expect(result.current.loading).toBe(true)
   })
 })

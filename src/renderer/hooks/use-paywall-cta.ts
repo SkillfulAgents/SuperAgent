@@ -3,11 +3,9 @@ import { useEffect, useMemo } from 'react'
 import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 import {
   isPlatformOrgAdmin,
-  paywallBillingDetailsFromSnapshot,
   resolveOrgBillingUrl,
   resolvePaywallCta,
   subscriptionRequiredFromBilling,
-  type PaywallBillingDetails,
   type PaywallCta,
 } from '@shared/lib/llm-provider/paywall-cta'
 import { useBillingInfo } from '@renderer/hooks/use-billing-info'
@@ -16,8 +14,9 @@ import { captureRendererException } from '@renderer/lib/error-reporting'
 
 export function usePaywallCta(presentation: ProviderErrorPresentation): {
   cta: PaywallCta | null
-  details: PaywallBillingDetails | null
   loading: boolean
+  billingAccessKnown: boolean
+  billingAccessAllowed: boolean
 } {
   const { data: platformAuth } = usePlatformAuthStatus()
   const role = platformAuth?.role
@@ -38,10 +37,33 @@ export function usePaywallCta(presentation: ProviderErrorPresentation): {
   }, [billingError])
 
   return useMemo(() => {
-    if (!presentation.paywall) return { cta: null, details: null, loading: false }
+    if (!presentation.paywall) {
+      return {
+        cta: null,
+        loading: false,
+        billingAccessKnown: false,
+        billingAccessAllowed: false,
+      }
+    }
 
     if (needsBilling && billingQuery.isLoading) {
-      return { cta: null, details: null, loading: true }
+      const canResolveFrom402 = platformAuth !== undefined && (
+        flagFrom402 === true
+        || (flagFrom402 === false && (role == null || !isPlatformOrgAdmin(role)))
+      )
+      return {
+        cta: canResolveFrom402
+          ? resolvePaywallCta({
+              subscriptionRequired: flagFrom402,
+              role,
+              hasPaymentMethod: undefined,
+              billingHref: resolveOrgBillingUrl(platformAuth),
+            })
+          : null,
+        loading: true,
+        billingAccessKnown: false,
+        billingAccessAllowed: false,
+      }
     }
 
     const billing = billingQuery.data?.billing
@@ -53,11 +75,16 @@ export function usePaywallCta(presentation: ProviderErrorPresentation): {
         paymentStatus: billing?.subscription.paymentStatus,
         billingHref: resolveOrgBillingUrl(platformAuth),
       }),
-      details: isPlatformOrgAdmin(role) ? paywallBillingDetailsFromSnapshot(billing) : null,
-      loading: false,
+      loading: billingQuery.isFetching,
+      billingAccessKnown:
+        billingQuery.data?.stale !== true && billing?.access !== undefined,
+      billingAccessAllowed:
+        billingQuery.data?.stale !== true && billing?.access?.allowed === true,
     }
   }, [
     billingQuery.data?.billing,
+    billingQuery.data?.stale,
+    billingQuery.isFetching,
     billingQuery.isLoading,
     flagFrom402,
     role,

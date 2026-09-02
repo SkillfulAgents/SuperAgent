@@ -19,7 +19,17 @@ const platformAuth = {
 }
 
 const billingInfo = {
-  data: undefined as { billing?: { hasPaymentMethod?: boolean } } | undefined,
+  data: undefined as {
+    stale?: boolean
+    billing?: {
+      configured: boolean
+      subscription: { status: string | null; paymentStatus?: string | null }
+      seat: { balanceCents: number; startingBalanceCents: number } | null
+      orgPool: { poolBalanceCents: number }
+      hasPaymentMethod?: boolean
+      access?: { allowed: boolean; reason: string }
+    }
+  } | undefined,
   isLoading: false,
 }
 
@@ -109,6 +119,25 @@ describe('ProviderErrorView', () => {
     )
   })
 
+  it('uses neutral copy while an unresolved billing snapshot loads', () => {
+    render(
+      <ProviderErrorView
+        presentation={{
+          severity: 'error',
+          icon: 'info',
+          message: '**You need more usage credit to continue**',
+          paywall: {},
+        }}
+        paywallCta={{ kind: 'subscribe', href: 'https://platform.example.com/billing' }}
+        paywallLoading
+      />,
+    )
+
+    const card = screen.getByTestId('provider-error-card')
+    expect(card).toHaveTextContent('Checking billing')
+    expect(card).not.toHaveTextContent('You need more usage credit')
+  })
+
   it('renders a Subscribe button for a subscription-required paywall', async () => {
     const openExternal = vi.fn().mockResolvedValue(undefined)
     ;(window as unknown as { electronAPI?: { openExternal: typeof openExternal } }).electronAPI = {
@@ -154,7 +183,9 @@ describe('ProviderErrorView', () => {
     )
     // Ask-admin guidance lives in the card subtitle; the action is a plain
     // billing button rather than a top-up flow the member can't complete.
-    expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Ask a workspace admin to add usage credit')
+    expect(screen.getByTestId('provider-error-card')).toHaveTextContent(
+      'Ask a workspace admin to resolve billing',
+    )
     expect(screen.getByRole('button', { name: /go to billing/i })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /subscribe|add usage/i })).not.toBeInTheDocument()
   })
@@ -252,4 +283,5 @@ describe('ProviderErrorCard', () => {
     )
     expect(screen.getByRole('button', { name: /subscribe/i })).toBeInTheDocument()
   })
+
 })

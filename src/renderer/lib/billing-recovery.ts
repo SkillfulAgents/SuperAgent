@@ -1,5 +1,6 @@
 import type { BillingInfoResponse } from '@renderer/hooks/use-billing-info'
 import {
+  clearBillingResumeTarget,
   getBillingResumeTarget,
   type BillingResumeTarget,
 } from '@renderer/lib/billing-resume-target'
@@ -26,6 +27,7 @@ export function decideBillingResume(
   now = Date.now(),
 ): 'resume' | 'wait' | 'abort' {
   if (now > target.expiresAt) return 'abort'
+  if (snapshot.stale) return 'wait'
   const access = snapshot.billing?.access
   if (!access) return 'abort'
   if (access.allowed && !target.initialAllowed) return 'resume'
@@ -53,7 +55,10 @@ export async function recoverAfterBillingEvent(opts: {
       if (delay > 0) await sleep(delay)
       const decision = decideBillingResume(await opts.refresh(), target, now())
       if (decision === 'resume') return (await opts.resume(target)) ? 'resumed' : 'waiting'
-      if (decision === 'abort') return 'aborted'
+      if (decision === 'abort') {
+        clearBillingResumeTarget(target)
+        return 'aborted'
+      }
     }
     return 'waiting'
   } finally {

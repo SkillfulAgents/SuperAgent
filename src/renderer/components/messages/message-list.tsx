@@ -33,6 +33,7 @@ import {
   useRef,
   useState,
   useCallback,
+  useLayoutEffect,
   useMemo,
   Fragment,
   type ReactNode,
@@ -41,6 +42,10 @@ import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
 import type { ApiMessage, ApiCompactBoundary, ApiMemoryRecall, ApiInformational } from '@shared/lib/types/api'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 import { useMessageListScroll } from './use-message-list-scroll'
+import {
+  latestPersistedPaywall,
+  type PaywallSource,
+} from '@renderer/hooks/use-session-paywall'
 import {
   collectEmbeddedImageAliases,
   reuseEqualEmbeddedImageAliases,
@@ -143,11 +148,20 @@ interface MessageListProps {
   suppressScrollToBottom?: boolean
   /** Height of an overlaid footer that the live edge must remain above. */
   bottomInset?: number
+  onPaywallSourceChange?: (source: PaywallSource | null) => void
+  suppressCurrentPaywall?: boolean
 }
 
-export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared, readOnly, suppressScrollToBottom = false, bottomInset = 0 }: MessageListProps) {
+export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared, readOnly, suppressScrollToBottom = false, bottomInset = 0, onPaywallSourceChange, suppressCurrentPaywall = false }: MessageListProps) {
   useRenderTracker('MessageList')
   const { data: messages, isLoading, error, fetchOlder, hasOlder, isFetchingOlder } = useMessages(sessionId, agentSlug)
+  const persistedPaywall = useMemo(
+    () => onPaywallSourceChange ? latestPersistedPaywall(messages) : null,
+    [messages, onPaywallSourceChange],
+  )
+  useLayoutEffect(() => {
+    onPaywallSourceChange?.(persistedPaywall)
+  }, [onPaywallSourceChange, persistedPaywall])
   const deleteMessage = useDeleteMessage()
   const deleteToolCall = useDeleteToolCall()
   const cancelQueuedMessage = useCancelQueuedMessage()
@@ -1173,6 +1187,14 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                       completedSubagents={completedSubagents}
                       onRemoveMessage={readOnly ? undefined : handleRemoveMessage}
                       onRemoveToolCall={readOnly ? undefined : handleRemoveToolCall}
+                      suppressPaywall={
+                        !readOnly
+                        && Boolean(displayedMessage.errorPresentation?.paywall)
+                        && (
+                          suppressCurrentPaywall
+                          || displayedMessage.id !== persistedPaywall?.messageId
+                        )
+                      }
                       readOnly={readOnly}
                       workDetailClassName={
                         expanded && isAnswerMessage

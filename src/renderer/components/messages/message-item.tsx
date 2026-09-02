@@ -1,7 +1,10 @@
 import { cn } from '@shared/lib/utils/cn'
 import { useState, useCallback, useRef, useLayoutEffect, useMemo, memo, type ReactNode } from 'react'
 import { Check, Copy, Link2 } from 'lucide-react'
-import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
+import {
+  ProviderErrorCard,
+  ProviderErrorView,
+} from '@renderer/components/ui/provider-error-card'
 import { ToolCallItem } from './tool-call-item'
 import { ThinkingBlockItem } from './thinking-block-item'
 import { SubAgentBlock } from './subagent-block'
@@ -276,6 +279,7 @@ interface MessageItemProps {
   completedSubagents?: Set<string> | null
   onRemoveMessage?: (messageId: string) => void
   onRemoveToolCall?: (toolCallId: string) => void
+  suppressPaywall?: boolean
   /** Read-only mirror (chat-integration replay): no edit actions; lift the
    *  connector's inline sender prefix into the sender label. */
   readOnly?: boolean
@@ -309,7 +313,7 @@ function resolveSubagentRun(
   }
 }
 
-function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall, readOnly, workDetailClassName, revealedToolCallIds, embeddedImageAliases }: MessageItemProps) {
+function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall, suppressPaywall, readOnly, workDetailClassName, revealedToolCallIds, embeddedImageAliases }: MessageItemProps) {
   useRenderTracker('MessageItem')
   const isUser = message.type === 'user'
   const isAssistant = message.type === 'assistant'
@@ -349,6 +353,9 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
 
   // Detect assistant messages that failed due to an LLM provider error (from SDK metadata)
   const isProviderErrorMessage = isAssistant && isProviderFacingError(message.apiError, message.errorPresentation)
+  if (suppressPaywall && isProviderErrorMessage && message.errorPresentation?.paywall) {
+    return null
+  }
 
   // Don't render assistant messages that have no text, no tool calls, and no
   // thinking (and aren't streaming). These are transient empty entries from
@@ -429,7 +436,19 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
 
               {/* LLM provider error display */}
               {hasText && !isSlashCommand && isProviderErrorMessage && (
-                <ProviderErrorCard message={text} presentation={message.errorPresentation} />
+                message.errorPresentation?.paywall
+                  ? (
+                      <ProviderErrorView
+                        presentation={message.errorPresentation}
+                        rawMessage={text}
+                      />
+                    )
+                  : (
+                      <ProviderErrorCard
+                        message={text}
+                        presentation={message.errorPresentation}
+                      />
+                    )
               )}
 
               {/* Text content */}

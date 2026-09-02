@@ -14,19 +14,31 @@ vi.mock('@renderer/components/messages/message-list', () => ({
 }))
 
 vi.mock('@renderer/components/messages/agent-activity-indicator', () => ({
-  AgentActivityIndicator: () => <div data-testid="activity-indicator" />,
+  AgentActivityIndicator: ({ suppressPaywall }: { suppressPaywall?: boolean }) => (
+    <div data-testid="activity-indicator" data-suppress-paywall={suppressPaywall || undefined} />
+  ),
 }))
 
-const mockStreamState = vi.hoisted(() => ({
-  error: null as string | null,
-  apiErrorCode: null as string | null,
-  errorPresentation: null as { paywall?: object } | null,
+const mockPaywall = vi.hoisted(() => ({
+  active: false,
+  source: null as {
+    message: string
+    presentation: {
+      severity: 'error'
+      icon: 'info'
+      message: string
+      paywall: { subscriptionRequired?: boolean }
+    }
+  } | null,
+  cta: null as { kind: 'subscribe'; href: string | null } | null,
+  loading: false,
+  suppressHistory: false,
+  billingAccessKnown: false,
+  billingAccessAllowed: false,
 }))
 
-// SessionThread reads the error state to swap the composer for the paywall
-// card; jsdom has no EventSource, so stub the stream with a quiet session.
-vi.mock('@renderer/hooks/use-message-stream', () => ({
-  useMessageStream: () => mockStreamState,
+vi.mock('@renderer/hooks/use-session-paywall', () => ({
+  useSessionPaywall: () => mockPaywall,
 }))
 
 vi.mock('@renderer/components/tray/tray-manager', () => ({
@@ -35,9 +47,13 @@ vi.mock('@renderer/components/tray/tray-manager', () => ({
 
 describe('SessionThread footer layout', () => {
   beforeEach(() => {
-    mockStreamState.error = null
-    mockStreamState.apiErrorCode = null
-    mockStreamState.errorPresentation = null
+    mockPaywall.active = false
+    mockPaywall.source = null
+    mockPaywall.cta = null
+    mockPaywall.loading = false
+    mockPaywall.suppressHistory = false
+    mockPaywall.billingAccessKnown = false
+    mockPaywall.billingAccessAllowed = false
     footerHeight = 180
     resizeCallback = undefined
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
@@ -103,8 +119,6 @@ describe('SessionThread footer layout', () => {
   })
 
   it('keeps the composer for an unknown 402 without a server paywall', () => {
-    mockStreamState.error = 'API Error: 402 Workspace has insufficient balance. Top up to continue.'
-    mockStreamState.apiErrorCode = 'unknown'
     renderWithProviders(
       <SessionThread
         sessionId="s-1"
@@ -114,5 +128,32 @@ describe('SessionThread footer layout', () => {
       />,
     )
     expect(screen.getByText('Composer')).toBeInTheDocument()
+  })
+
+  it('replaces the composer with a persisted unresolved paywall', () => {
+    mockPaywall.active = true
+    mockPaywall.source = {
+      message: 'API Error: 402 Workspace has insufficient balance.',
+      presentation: {
+        severity: 'error',
+        icon: 'info',
+        message: '**Subscription Required:** Subscribe to continue.',
+        paywall: { subscriptionRequired: true },
+      },
+    }
+    mockPaywall.cta = { kind: 'subscribe', href: 'https://platform.example.com/billing' }
+
+    renderWithProviders(
+      <SessionThread
+        sessionId="s-1"
+        agentSlug="agent-1"
+        footer={<div>Composer</div>}
+        overlayFooter
+      />,
+    )
+
+    expect(screen.queryByText('Composer')).not.toBeInTheDocument()
+    expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Subscribe to keep going')
+    expect(screen.getByTestId('activity-indicator')).toHaveAttribute('data-suppress-paywall', 'true')
   })
 })

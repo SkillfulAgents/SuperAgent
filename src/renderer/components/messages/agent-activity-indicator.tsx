@@ -7,7 +7,8 @@ import { apiFetch } from '@renderer/lib/api'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
 import { isProviderFacingError } from '@shared/lib/types/api'
 import { isTurnStartingUserMessage } from './pending-message'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useLayoutEffect, useMemo, useState } from 'react'
+import type { PaywallSource } from '@renderer/hooks/use-session-paywall'
 
 import { deriveTaskList, Todo } from '@shared/lib/utils/derive-task-list'
 import { ActivityCard, ActivityErrorCard, type ActivitySubagentItem } from './activity-card'
@@ -16,6 +17,8 @@ import { deriveActivityStatus } from './activity-orb'
 interface AgentActivityIndicatorProps {
   sessionId: string
   agentSlug: string
+  suppressPaywall?: boolean
+  onPaywallSourceChange?: (source: PaywallSource | null) => void
 }
 
 function extractResumedAgentId(result: unknown): string | null {
@@ -46,12 +49,26 @@ function extractResumedAgentId(result: unknown): string | null {
   return typeof text === 'string' ? extractResumedAgentId(text) : null
 }
 
-export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIndicatorProps) {
+export function AgentActivityIndicator({
+  sessionId,
+  agentSlug,
+  suppressPaywall,
+  onPaywallSourceChange,
+}: AgentActivityIndicatorProps) {
   const {
     isActive, error, apiErrorCode, errorPresentation, activeStartTime, isCompacting, activeSubagents, completedSubagents,
     apiRetry, computerUseApp, computerUseAppIcon, backgroundTasks,
     isThinking,
   } = useMessageStream(sessionId, agentSlug)
+  const livePaywall = useMemo(
+    () => errorPresentation?.paywall
+      ? { message: error ?? errorPresentation.message, presentation: errorPresentation }
+      : null,
+    [error, errorPresentation],
+  )
+  useLayoutEffect(() => {
+    onPaywallSourceChange?.(livePaywall)
+  }, [livePaywall, onPaywallSourceChange])
   const { data: pendingUserRequests } = usePendingUserRequests(agentSlug, sessionId)
 
   const [revoking, setRevoking] = useState(false)
@@ -245,6 +262,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
 
   // Show error if present
   if (error) {
+    if (suppressPaywall && errorPresentation?.paywall) return null
     const isProviderError = isProviderFacingError(apiErrorCode, errorPresentation)
     // Paywall cards replace the composer (see SessionThread), so they carry
     // the composer's bottom clearance themselves.

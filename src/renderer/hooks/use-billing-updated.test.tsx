@@ -39,8 +39,9 @@ vi.mock('@renderer/lib/error-reporting', () => ({
   captureRendererException: vi.fn(),
 }))
 
-function wrapper() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+function wrapper(
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
   return function Wrapper({ children }: { children: ReactNode }) {
     return React.createElement(QueryClientProvider, { client }, children)
   }
@@ -121,5 +122,27 @@ describe('useBillingUpdatedListener', () => {
       expect.anything(),
     )
     expect(mockClearPaywallError).not.toHaveBeenCalled()
+  })
+
+  it('coalesces billing lifecycle signals without a resume target', async () => {
+    mockGetTarget.mockReturnValue(null)
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const invalidate = vi.spyOn(client, 'invalidateQueries').mockResolvedValue()
+    renderHook(() => useBillingUpdatedListener(), { wrapper: wrapper(client) })
+
+    act(() => {
+      billingUpdated?.()
+      window.dispatchEvent(new Event('focus'))
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+
+    await waitFor(() => {
+      expect(invalidate).toHaveBeenCalledWith({
+        queryKey: ['platform-billing'],
+        refetchType: 'active',
+      })
+    })
+    expect(invalidate).toHaveBeenCalledTimes(1)
+    expect(mockApiFetch).not.toHaveBeenCalled()
   })
 })

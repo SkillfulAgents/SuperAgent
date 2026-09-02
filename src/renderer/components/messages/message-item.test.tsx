@@ -474,6 +474,23 @@ describe('MessageItem', () => {
       expect(screen.getByRole('link', { name: /raise spend limit/i })).toBeInTheDocument()
     })
 
+    it('suppresses a persisted paywall while the live paywall card is active', () => {
+      const message = createAssistantMessage({
+        content: { text: 'API Error: 402 Workspace has insufficient balance.' },
+        apiError: 'unknown',
+        errorPresentation: {
+          severity: 'error',
+          icon: 'info',
+          message: '**You need more usage credit to continue**',
+          paywall: { subscriptionRequired: true },
+        },
+      })
+
+      render(<MessageItem message={message} suppressPaywall />)
+
+      expect(screen.queryByTestId('provider-error-card')).not.toBeInTheDocument()
+    })
+
     it('falls back to the generic provider banner when no presentation is attached', () => {
       const msg = createAssistantMessage({
         content: {

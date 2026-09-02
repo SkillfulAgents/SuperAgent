@@ -49,34 +49,53 @@ export function useBillingUpdatedListener(): void {
   const queryClient = useQueryClient()
 
   useEffect(() => {
-    const run = () => {
-      void recoverAfterBillingEvent({
-        refresh: () => refreshBilling(queryClient),
-        resume: requestResume,
-      }).catch((error) => {
-        const target = getBillingResumeTarget()
-        console.warn('[BillingUpdated] automatic continuation failed:', error)
-        captureRendererException(error, {
-          tags: { area: 'paywall', op: 'resume-after-update' },
-          extra: target
-            ? { agentSlug: target.agentSlug, sessionId: target.sessionId, attemptId: target.attemptId }
-            : undefined,
-        })
+    const reportRefreshError = (error: unknown) => {
+      const target = getBillingResumeTarget()
+      console.warn('[BillingUpdated] billing refresh or continuation failed:', error)
+      captureRendererException(error, {
+        tags: { area: 'paywall', op: 'resume-after-update' },
+        extra: target
+          ? { agentSlug: target.agentSlug, sessionId: target.sessionId, attemptId: target.attemptId }
+          : undefined,
       })
     }
 
-    const removeElectronListener = window.electronAPI?.onBillingUpdated?.(run)
+    const run = () => {
+      if (!getBillingResumeTarget()) {
+        void queryClient.invalidateQueries({
+          queryKey: ['platform-billing'],
+          refetchType: 'active',
+        }).catch(reportRefreshError)
+        return
+      }
+      void recoverAfterBillingEvent({
+        refresh: () => refreshBilling(queryClient),
+        resume: requestResume,
+      }).catch(reportRefreshError)
+    }
+
+    let scheduledRun: ReturnType<typeof setTimeout> | null = null
+    const scheduleRun = () => {
+      if (scheduledRun !== null) return
+      scheduledRun = setTimeout(() => {
+        scheduledRun = null
+        run()
+      }, 50)
+    }
+
+    const removeElectronListener = window.electronAPI?.onBillingUpdated?.(scheduleRun)
     void window.electronAPI?.flushPendingBillingUpdated?.().then((had) => {
-      if (had) run()
+      if (had) scheduleRun()
     })
 
-    const onFocus = () => run()
+    const onFocus = () => scheduleRun()
     const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible') run()
+      if (document.visibilityState === 'visible') scheduleRun()
     }
     window.addEventListener('focus', onFocus)
     document.addEventListener('visibilitychange', onVisibilityChange)
     return () => {
+      if (scheduledRun !== null) clearTimeout(scheduledRun)
       removeElectronListener?.()
       window.removeEventListener('focus', onFocus)
       document.removeEventListener('visibilitychange', onVisibilityChange)

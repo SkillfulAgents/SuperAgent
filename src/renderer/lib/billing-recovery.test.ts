@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  getBillingResumeTarget,
   rememberBillingResumeTarget,
   resetBillingResumeTargetForTests,
 } from './billing-resume-target'
@@ -93,5 +94,34 @@ describe('recoverAfterBillingEvent', () => {
       delays: [0, 0, 0],
     })).resolves.toBe('waiting')
     expect(resume).not.toHaveBeenCalled()
+  })
+
+  it('does not resume from a stale allowed snapshot', async () => {
+    rememberBillingResumeTarget({ agentSlug: 'agent-1', sessionId: 'session-1' })
+    const staleAllowed = { ...snapshot({ allowed: true, reason: 'current_pool' }), stale: true }
+    const resume = vi.fn().mockResolvedValue(true)
+
+    await expect(recoverAfterBillingEvent({
+      refresh: vi.fn()
+        .mockResolvedValueOnce(staleAllowed)
+        .mockResolvedValueOnce(snapshot({ allowed: true, reason: 'current_pool' })),
+      resume,
+      sleep: async () => {},
+      delays: [0, 0],
+    })).resolves.toBe('resumed')
+
+    expect(resume).toHaveBeenCalledTimes(1)
+  })
+
+  it('clears a terminal target when access is unavailable', async () => {
+    rememberBillingResumeTarget({ agentSlug: 'agent-1', sessionId: 'session-1' })
+
+    await expect(recoverAfterBillingEvent({
+      refresh: async () => snapshot(),
+      resume: vi.fn(),
+      delays: [0],
+    })).resolves.toBe('aborted')
+
+    expect(getBillingResumeTarget()).toBeNull()
   })
 })

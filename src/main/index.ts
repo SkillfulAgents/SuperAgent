@@ -672,6 +672,9 @@ ipcMain.handle('flush-pending-billing-updated', () => {
   pendingBillingUpdated = false
   return had
 })
+ipcMain.on('billing-updated-consumed', () => {
+  pendingBillingUpdated = false
+})
 
 // --- Quick-dispatch launcher IPC ---
 

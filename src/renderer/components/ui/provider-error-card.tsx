@@ -4,7 +4,7 @@ import ReactMarkdown from 'react-markdown'
 import { CircleDollarSign, Info, TriangleAlert, type LucideIcon } from 'lucide-react'
 
 import { defaultParseErrorResponse, type ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
-import type { PaywallBillingDetails, PaywallCta } from '@shared/lib/llm-provider/paywall-cta'
+import type { PaywallCta } from '@shared/lib/llm-provider/paywall-cta'
 
 import { HomeEmptyClouds } from '@renderer/components/home/home-empty-clouds'
 import { RequestError } from '@renderer/components/messages/request-error'
@@ -66,22 +66,8 @@ function splitPaywallMessage(markdown: string): { title: string; body: string } 
   return { title: markdown, body: '' }
 }
 
-function formatMoney(cents: number): string {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(cents / 100)
-}
-
-function formatStatus(value: string): string {
-  return value.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
-}
-
 function paywallSubtitle(
   cta: PaywallCta | null,
-  details: PaywallBillingDetails | null,
   fallback: string,
 ): string {
   if (cta?.kind === 'subscribe') return 'Start a subscription to continue using this workspace.'
@@ -89,11 +75,7 @@ function paywallSubtitle(
   if (cta?.kind === 'topup') return 'Add usage credit to resume this answer.'
   if (cta?.kind === 'manage_payment') return 'Your payment needs attention before agents can continue.'
   if (cta?.kind === 'ask_admin') {
-    const paymentIssue = details?.paymentStatus
-      && ['past_due', 'blocked', 'payment_failed'].includes(details.paymentStatus)
-    return paymentIssue
-      ? 'Ask a workspace admin to resolve the payment issue.'
-      : 'Ask a workspace admin to add usage credit to this organization.'
+    return 'Ask a workspace admin to resolve billing for this organization.'
   }
   return fallback
 }
@@ -106,52 +88,27 @@ function paywallTitle(cta: PaywallCta | null, fallback: string): string {
   return fallback
 }
 
-function PaywallBillingSummary({ details }: { details: PaywallBillingDetails }) {
-  const items = [
-    details.subscriptionStatus && `Plan ${formatStatus(details.subscriptionStatus)}`,
-    details.paymentStatus && `Payment ${formatStatus(details.paymentStatus)}`,
-    details.seatBalanceCents != null && `Seat ${formatMoney(details.seatBalanceCents)}`,
-    `Organization ${formatMoney(details.orgPoolBalanceCents)}`,
-    details.hasPaymentMethod === true && 'Card on file',
-    details.hasPaymentMethod === false && 'No card',
-    details.autoReload === undefined
-      ? null
-      : details.autoReload?.enabled
-        ? `Auto-reload on${
-          details.autoReload.thresholdCents != null && details.autoReload.topupAmountCents != null
-            ? ` (${formatMoney(details.autoReload.topupAmountCents)} at ${formatMoney(details.autoReload.thresholdCents)})`
-            : ''
-        }`
-        : 'Auto-reload off',
-  ].filter((item): item is string => Boolean(item))
-
-  return (
-    <p className="mt-2 text-xs text-muted-foreground" data-testid="paywall-billing-summary">
-      {items.join(' · ')}
-    </p>
-  )
-}
-
 // The paywall is an invitation, not a failure: neutral card, no error reds.
 // Title + muted subtitle on the left, the CTA on the right.
 function PaywallCard({
   presentation,
   cta,
-  details,
   loading,
   resumeTarget,
   'data-testid': testId,
 }: {
   presentation: ProviderErrorPresentation
   cta: PaywallCta | null
-  details: PaywallBillingDetails | null
   loading: boolean
   resumeTarget?: PaywallResumeTarget
   'data-testid'?: string
 }) {
   const message = splitPaywallMessage(presentation.message)
-  const title = paywallTitle(cta, message.title)
-  const subtitle = paywallSubtitle(cta, details, message.body)
+  const checkingBilling = loading
+  const title = checkingBilling ? 'Checking billing' : paywallTitle(cta, message.title)
+  const subtitle = checkingBilling
+    ? 'Checking your workspace billing status.'
+    : paywallSubtitle(cta, message.body)
 
   return (
     <div className="relative mt-4">
@@ -175,7 +132,6 @@ function PaywallCard({
               </ReactMarkdown>
             </p>
           )}
-          {details && <PaywallBillingSummary details={details} />}
         </div>
         <PaywallActions cta={cta} loading={loading} resumeTarget={resumeTarget} />
       </div>
@@ -187,7 +143,6 @@ export function ProviderErrorView({
   presentation,
   rawMessage,
   paywallCta = null,
-  paywallDetails = null,
   paywallLoading = false,
   resumeTarget,
   'data-testid': testId,
@@ -195,7 +150,6 @@ export function ProviderErrorView({
   presentation: ProviderErrorPresentation
   rawMessage?: string
   paywallCta?: PaywallCta | null
-  paywallDetails?: PaywallBillingDetails | null
   paywallLoading?: boolean
   resumeTarget?: PaywallResumeTarget
   'data-testid'?: string
@@ -205,7 +159,6 @@ export function ProviderErrorView({
       <PaywallCard
         presentation={presentation}
         cta={paywallCta}
-        details={paywallDetails}
         loading={paywallLoading}
         resumeTarget={resumeTarget}
         data-testid={testId}
@@ -264,7 +217,6 @@ export function ProviderErrorCard({
       presentation={resolved}
       rawMessage={message}
       paywallCta={paywall.cta}
-      paywallDetails={paywall.details}
       paywallLoading={paywall.loading}
       resumeTarget={resumeTarget}
       data-testid={testId}

@@ -1,9 +1,11 @@
-import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { cn } from '@shared/lib/utils'
 import { MessageList } from '@renderer/components/messages/message-list'
 import { AgentActivityIndicator } from '@renderer/components/messages/agent-activity-indicator'
+import { ProviderErrorView } from '@renderer/components/ui/provider-error-card'
 import { TrayManager } from '@renderer/components/tray/tray-manager'
-import { useMessageStream } from '@renderer/hooks/use-message-stream'
+import { useSessionPaywall } from '@renderer/hooks/use-session-paywall'
+import type { PaywallSource } from '@renderer/hooks/use-session-paywall'
 import type { PendingMessage } from '@renderer/components/messages/pending-message'
 
 interface SessionThreadProps {
@@ -51,11 +53,35 @@ export function SessionThread({
 }: SessionThreadProps) {
   const footerRef = useRef<HTMLDivElement>(null)
   const [footerHeight, setFooterHeight] = useState(0)
+  const [livePaywall, setLivePaywall] = useState<PaywallSource | null>(null)
+  const [persistedPaywall, setPersistedPaywall] = useState<PaywallSource | null>(null)
+  const handleLivePaywallChange = useCallback((next: PaywallSource | null) => {
+    setLivePaywall((current) =>
+      current?.message === next?.message
+      && current?.presentation === next?.presentation
+        ? current
+        : next
+    )
+  }, [])
+  const handlePaywallSourceChange = useCallback((next: PaywallSource | null) => {
+    setPersistedPaywall((current) =>
+      current?.messageId === next?.messageId
+      && current?.presentation === next?.presentation
+        ? current
+        : next
+    )
+  }, [])
 
-  // A paywall 402 blocks further use of the session, so the paywall card
-  // (rendered by AgentActivityIndicator) replaces the composer.
-  const { errorPresentation } = useMessageStream(sessionId, agentSlug)
-  const paywallActive = Boolean(errorPresentation?.paywall)
+  const paywall = useSessionPaywall(
+    readOnly ? null : livePaywall,
+    readOnly ? null : persistedPaywall,
+  )
+  const paywallActive = paywall.active && !readOnly
+
+  useLayoutEffect(() => {
+    setLivePaywall(null)
+    setPersistedPaywall(null)
+  }, [sessionId, agentSlug])
 
   useLayoutEffect(() => {
     if (!overlayFooter) {
@@ -104,6 +130,8 @@ export function SessionThread({
           onPendingMessageAppeared={onPendingMessageAppeared}
           suppressScrollToBottom={suppressScrollToBottom}
           bottomInset={overlayFooter ? footerHeight : 0}
+          onPaywallSourceChange={readOnly ? undefined : handlePaywallSourceChange}
+          suppressCurrentPaywall={paywall.suppressHistory}
         />
         <div
           ref={footerRef}
@@ -115,7 +143,27 @@ export function SessionThread({
           data-composer-footer
           data-overlay-footer={overlayFooter || undefined}
         >
-          <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />
+          {paywallActive && paywall.source && (
+            <div className="mx-auto mb-5 w-full max-w-[740px] px-4">
+              <ProviderErrorView
+                presentation={paywall.source.presentation}
+                rawMessage={paywall.source.message}
+                paywallCta={paywall.cta}
+                paywallLoading={paywall.loading}
+                resumeTarget={{
+                  agentSlug,
+                  sessionId,
+                  initialAllowed: paywall.billingAccessAllowed,
+                }}
+              />
+            </div>
+          )}
+          <AgentActivityIndicator
+            sessionId={sessionId}
+            agentSlug={agentSlug}
+            suppressPaywall={!readOnly}
+            onPaywallSourceChange={readOnly ? undefined : handleLivePaywallChange}
+          />
           {paywallActive && !readOnly ? null : footer}
         </div>
       </div>

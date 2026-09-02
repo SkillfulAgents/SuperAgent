@@ -150,6 +150,25 @@ describe('AgentActivityIndicator', () => {
     expect(screen.queryByTestId('provider-error-card')).not.toBeInTheDocument()
   })
 
+  it('lets the session footer own the active paywall card', () => {
+    mockStreamState.error = 'API Error: 402 Workspace has insufficient balance.'
+    mockStreamState.apiErrorCode = 'unknown'
+    mockStreamState.errorPresentation = parsePlatformErrorResponse(402, {
+      error: { message: 'Insufficient balance.' },
+      subscription_required: true,
+    })
+
+    render(
+      <AgentActivityIndicator
+        sessionId="s-1"
+        agentSlug="agent-1"
+        suppressPaywall
+      />,
+    )
+
+    expect(screen.queryByTestId('provider-error-card')).not.toBeInTheDocument()
+  })
+
   it('shows generic error alert when no apiErrorCode', () => {
     mockStreamState.error = 'The agent process was terminated unexpectedly.'
     mockStreamState.apiErrorCode = null

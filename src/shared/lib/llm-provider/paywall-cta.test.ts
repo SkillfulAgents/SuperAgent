@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest'
 import {
   buildTopupHandoffUrl,
   isPlatformOrgAdmin,
-  paywallBillingDetailsFromSnapshot,
   resolveOrgBillingUrl,
   resolvePaywallCta,
   subscriptionRequiredFromBilling,
@@ -82,25 +81,6 @@ describe('subscriptionRequiredFromBilling', () => {
     expect(subscriptionRequiredFromBilling({ configured: true, subscription: { status: 'cancellation_scheduled' } })).toBe(false)
     expect(subscriptionRequiredFromBilling({ configured: true, subscription: { status: 'past_due' } })).toBeUndefined()
     expect(subscriptionRequiredFromBilling(undefined)).toBeUndefined()
-  })
-})
-
-describe('paywallBillingDetailsFromSnapshot', () => {
-  it('keeps balances, payment method, and auto-reload details', () => {
-    expect(paywallBillingDetailsFromSnapshot({
-      subscription: { status: 'active', paymentStatus: 'current' },
-      seat: { balanceCents: 1250 },
-      orgPool: { poolBalanceCents: 5000 },
-      hasPaymentMethod: true,
-      autoReload: { enabled: true, thresholdCents: 1000, topupAmountCents: 5000 },
-    })).toEqual({
-      subscriptionStatus: 'active',
-      paymentStatus: 'current',
-      seatBalanceCents: 1250,
-      orgPoolBalanceCents: 5000,
-      hasPaymentMethod: true,
-      autoReload: { enabled: true, thresholdCents: 1000, topupAmountCents: 5000 },
-    })
   })
 })
 

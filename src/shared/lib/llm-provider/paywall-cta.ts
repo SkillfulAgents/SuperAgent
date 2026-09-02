@@ -10,19 +10,6 @@ export type PaywallCta =
   | { kind: 'manage_payment'; href: string | null }
   | { kind: 'go_to_billing'; href: string | null }
 
-export interface PaywallBillingDetails {
-  subscriptionStatus: string | null
-  paymentStatus: string | null
-  seatBalanceCents: number | null
-  orgPoolBalanceCents: number
-  hasPaymentMethod: boolean | undefined
-  autoReload: {
-    enabled: boolean
-    thresholdCents: number | null
-    topupAmountCents: number | null
-  } | null | undefined
-}
-
 export function isPlatformOrgAdmin(role: string | null | undefined): boolean {
   return role === 'owner' || role === 'admin'
 }
@@ -60,26 +47,6 @@ const UNRESOLVED_SUBSCRIPTION = new Set(['past_due', 'blocked', 'payment_failed'
 const PAYMENT_NEEDS_ATTENTION = new Set(['past_due', 'blocked', 'payment_failed'])
 export function isArmablePaywallCta(kind: PaywallCta['kind']): boolean {
   return kind === 'subscribe' || kind === 'add_card' || kind === 'topup' || kind === 'manage_payment'
-}
-
-export function paywallBillingDetailsFromSnapshot(
-  billing: {
-    subscription?: { status?: string | null; paymentStatus?: string | null }
-    seat?: { balanceCents: number } | null
-    orgPool?: { poolBalanceCents: number }
-    hasPaymentMethod?: boolean
-    autoReload?: PaywallBillingDetails['autoReload']
-  } | null | undefined,
-): PaywallBillingDetails | null {
-  if (!billing?.subscription || !billing.orgPool) return null
-  return {
-    subscriptionStatus: billing.subscription.status ?? null,
-    paymentStatus: billing.subscription.paymentStatus ?? null,
-    seatBalanceCents: billing.seat?.balanceCents ?? null,
-    orgPoolBalanceCents: billing.orgPool.poolBalanceCents,
-    hasPaymentMethod: billing.hasPaymentMethod,
-    autoReload: billing.autoReload,
-  }
 }
 
 // CLI 402s drop `subscription_required`. The billing snapshot still knows

@@ -86,7 +86,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Billing hand-back deep link (superagent://billing-updated) after a
   // dashboard top-up; signal-only, no payload.
   onBillingUpdated: (callback: () => void): (() => void) => {
-    const handler = () => callback()
+    const handler = () => {
+      try {
+        callback()
+      } finally {
+        ipcRenderer.send('billing-updated-consumed')
+      }
+    }
     ipcRenderer.on('billing-updated', handler)
     return () => {
       ipcRenderer.removeListener('billing-updated', handler)
