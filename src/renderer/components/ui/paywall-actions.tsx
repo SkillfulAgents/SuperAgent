@@ -3,22 +3,38 @@ import { Loader2 } from 'lucide-react'
 
 import {
   buildTopupHandoffUrl,
+  isArmablePaywallCta,
   type PaywallCta,
 } from '@shared/lib/llm-provider/paywall-cta'
 import { Button } from '@renderer/components/ui/button'
+import {
+  rememberBillingResumeTarget,
+  type BillingResumeTarget,
+} from '@renderer/lib/billing-resume-target'
+
+export type PaywallResumeTarget = Pick<BillingResumeTarget, 'agentSlug' | 'sessionId'> & {
+  initialAllowed?: boolean
+}
 import { openExternalUrl } from '@renderer/lib/open-external'
 
 function stopCardToggle(event: MouseEvent) {
   event.stopPropagation()
 }
 
+function armResume(resumeTarget?: PaywallResumeTarget): void {
+  if (!resumeTarget) return
+  rememberBillingResumeTarget(resumeTarget)
+}
+
 function ExternalCtaButton({
   href,
   disabled,
+  onOpen,
   children,
 }: {
   href: string | null
   disabled?: boolean
+  onOpen?: () => void
   children: ReactNode
 }) {
   return (
@@ -28,6 +44,7 @@ function ExternalCtaButton({
       onClick={(event) => {
         stopCardToggle(event)
         if (!href) return
+        onOpen?.()
         void openExternalUrl(href)
       }}
     >
@@ -46,9 +63,11 @@ const CTA_LABELS = {
 export function PaywallActions({
   cta,
   loading,
+  resumeTarget,
 }: {
   cta: PaywallCta | null
   loading: boolean
+  resumeTarget?: PaywallResumeTarget
 }) {
   if (loading) {
     return (
@@ -69,6 +88,8 @@ export function PaywallActions({
     )
   }
 
+  const arm = isArmablePaywallCta(cta.kind) ? () => armResume(resumeTarget) : undefined
+
   if (cta.kind === 'topup') {
     const handoffHref = buildTopupHandoffUrl(cta.href, window.electronAPI?.desktopProtocol)
     return (
@@ -79,6 +100,7 @@ export function PaywallActions({
           onClick={(event) => {
             stopCardToggle(event)
             if (!handoffHref) return
+            arm?.()
             void openExternalUrl(handoffHref)
           }}
         >
@@ -90,7 +112,7 @@ export function PaywallActions({
 
   return (
     <div data-testid="paywall-actions">
-      <ExternalCtaButton href={cta.href}>{CTA_LABELS[cta.kind]}</ExternalCtaButton>
+      <ExternalCtaButton href={cta.href} onOpen={arm}>{CTA_LABELS[cta.kind]}</ExternalCtaButton>
     </div>
   )
 }

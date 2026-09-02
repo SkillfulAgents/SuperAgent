@@ -2503,6 +2503,36 @@ describe('MessagePersister', () => {
 
       expect(sseEvents).toHaveLength(0)
     })
+    it('only rolls back the billing resume that still owns the active claim', () => {
+      expect(
+        messagePersister.tryMarkSessionActiveForBillingResume(
+          AGENT_SLUG,
+          SESSION_ID,
+          'resume-1',
+        ),
+      ).toBe(true)
+
+      messagePersister.markSessionIdleIfBillingResumeClaimed(AGENT_SLUG, SESSION_ID, 'other-resume')
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+
+      messagePersister.markSessionIdleIfBillingResumeClaimed(AGENT_SLUG, SESSION_ID, 'resume-1')
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+    })
+
+    it('does not roll back after a normal send takes over the active session', () => {
+      expect(
+        messagePersister.tryMarkSessionActiveForBillingResume(
+          AGENT_SLUG,
+          SESSION_ID,
+          'resume-1',
+        ),
+      ).toBe(true)
+
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      messagePersister.markSessionIdleIfBillingResumeClaimed(AGENT_SLUG, SESSION_ID, 'resume-1')
+
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+    })
   })
 
   // ============================================================================

@@ -179,6 +179,9 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     coalesceIfRecovering: vi.fn(() => false),
     dropCoalescedUserMessage: vi.fn(() => false),
     markSessionActive: vi.fn(),
+    markSessionIdle: vi.fn(),
+    tryMarkSessionActiveForBillingResume: vi.fn(() => true),
+    markSessionIdleIfBillingResumeClaimed: vi.fn(),
     markSessionInterrupted: vi.fn(),
     cancelAwaitingInput: vi.fn(),
     completeInputRequest: vi.fn(),
@@ -618,6 +621,9 @@ import { listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesB
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
+import { resetBillingResumeAttemptsForTests } from '../billing-resume-attempts'
+import * as llmProvider from '@shared/lib/llm-provider'
+import { BILLING_RESUME_SYSTEM_PROMPT } from '@shared/lib/llm-provider/paywall-cta'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
@@ -3601,6 +3607,116 @@ describe('folder upload — POST /:id/upload-folder', () => {
 // ============================================================================
 // Message Author Attribution Tests
 // ============================================================================
+
+describe('POST /:id/sessions/:sessionId/resume-after-billing', () => {
+  const URL = '/api/agents/test-agent/sessions/sess-1/resume-after-billing'
+  const ATTEMPT = '550e8400-e29b-41d4-a716-446655440000'
+  let providerSpy: ReturnType<typeof vi.spyOn>
+
+  function paywallPage(text = 'API Error: 402 Workspace has insufficient balance. Top up to continue.') {
+    return {
+      messages: [{
+        id: 'asst-1',
+        type: 'assistant' as const,
+        content: { text },
+        toolCalls: [],
+        createdAt: new Date(),
+        apiError: 'unknown',
+      }],
+      nextCursor: null,
+    }
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    resetBillingResumeAttemptsForTests()
+    vi.mocked(containerManager.ensureRunning).mockResolvedValue(
+      containerManager.getClient('test-agent'),
+    )
+    vi.mocked(messagePersister.isSessionActive).mockReturnValue(false)
+    vi.mocked(messagePersister.tryMarkSessionActiveForBillingResume).mockReturnValue(true)
+    vi.mocked(getSessionMessagesPage).mockResolvedValue(paywallPage() as never)
+    mockSendMessage.mockResolvedValue(undefined)
+    providerSpy = vi.spyOn(llmProvider, 'getActiveLlmProvider').mockReturnValue({
+      parseSpecializedError: (_status: number | undefined, body: unknown) => {
+        const text = typeof body === 'string' ? body : ''
+        if (!text.includes('insufficient balance')) return null
+        return { severity: 'error', icon: 'circle-dollar-sign', message: text, paywall: {} }
+      },
+      parseErrorResponse: () => ({ severity: 'error', icon: 'info', message: 'x' }),
+    } as unknown as ReturnType<typeof llmProvider.getActiveLlmProvider>)
+  })
+
+  afterEach(() => {
+    providerSpy.mockRestore()
+    resetBillingResumeAttemptsForTests()
+    mockSendMessage.mockReset()
+    mockSendMessage.mockResolvedValue(undefined)
+  })
+
+  it('sends a fixed hidden continuation without creating a user message', async () => {
+    const res = await postJson(createApp(), URL, { attemptId: ATTEMPT })
+    expect(res.status).toBe(202)
+    expect(await res.json()).toEqual({ resumed: true })
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      'sess-1',
+      BILLING_RESUME_SYSTEM_PROMPT,
+      expect.any(String),
+      { shouldQuery: true },
+    )
+    expect(mockSendMessage.mock.calls[0][1]).not.toMatch(/billing|payment|credit/i)
+    expect(mockDbInsertValues).not.toHaveBeenCalled()
+  })
+
+  it('rejects a session whose latest assistant is not a paywall', async () => {
+    vi.mocked(getSessionMessagesPage).mockResolvedValue({
+      messages: [{
+        id: 'asst-1',
+        type: 'assistant',
+        content: { text: 'hello' },
+        toolCalls: [],
+        createdAt: new Date(),
+      }],
+      nextCursor: null,
+    } as never)
+    const res = await postJson(createApp(), URL, { attemptId: ATTEMPT })
+    expect(res.status).toBe(409)
+    expect(mockSendMessage).not.toHaveBeenCalled()
+  })
+
+  it('replays a completed attempt id without sending again', async () => {
+    expect((await postJson(createApp(), URL, { attemptId: ATTEMPT })).status).toBe(202)
+    mockSendMessage.mockClear()
+    const res = await postJson(createApp(), URL, { attemptId: ATTEMPT })
+    expect(res.status).toBe(202)
+    expect(await res.json()).toEqual({ resumed: true, duplicate: true })
+    expect(mockSendMessage).not.toHaveBeenCalled()
+  })
+
+  it('rejects when a normal send wins the final activity claim', async () => {
+    vi.mocked(messagePersister.tryMarkSessionActiveForBillingResume).mockReturnValueOnce(false)
+
+    const res = await postJson(createApp(), URL, { attemptId: ATTEMPT })
+
+    expect(res.status).toBe(409)
+    expect(mockSendMessage).not.toHaveBeenCalled()
+    expect(messagePersister.markSessionIdleIfBillingResumeClaimed).not.toHaveBeenCalled()
+  })
+
+  it('only rolls back activity still owned by the failed resume', async () => {
+    mockSendMessage.mockRejectedValueOnce(new Error('send failed'))
+
+    const res = await postJson(createApp(), URL, { attemptId: ATTEMPT })
+
+    expect(res.status).toBe(500)
+    expect(messagePersister.markSessionIdleIfBillingResumeClaimed).toHaveBeenCalledWith(
+      'test-agent',
+      'sess-1',
+      ATTEMPT,
+    )
+    expect(messagePersister.markSessionIdle).not.toHaveBeenCalled()
+  })
+})
 
 describe('message author attribution — POST /:id/sessions/:sessionId/messages', () => {
   let app: ReturnType<typeof createApp>
