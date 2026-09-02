@@ -33,6 +33,7 @@ const billingState = {
     stale?: boolean
   } | undefined,
   isLoading: false,
+  isFetching: false,
   error: null as Error | null,
 }
 
@@ -68,6 +69,7 @@ describe('usePaywallCta', () => {
       },
     }
     billingState.isLoading = false
+    billingState.isFetching = false
     billingState.error = null
   })
 
@@ -91,5 +93,13 @@ describe('usePaywallCta', () => {
 
     expect(result.current.cta?.kind).toBe('subscribe')
     expect(result.current.loading).toBe(true)
+  })
+
+  it('keeps background billing refreshes visually silent', () => {
+    billingState.isFetching = true
+
+    const { result } = renderHook(() => usePaywallCta(PAYWALL), { wrapper: wrapper() })
+
+    expect(result.current.loading).toBe(false)
   })
 })

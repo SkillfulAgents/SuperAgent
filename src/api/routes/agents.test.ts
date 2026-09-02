@@ -179,7 +179,6 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     coalesceIfRecovering: vi.fn(() => false),
     dropCoalescedUserMessage: vi.fn(() => false),
     markSessionActive: vi.fn(),
-    markSessionIdle: vi.fn(),
     markSessionInterrupted: vi.fn(),
     cancelAwaitingInput: vi.fn(),
     completeInputRequest: vi.fn(),

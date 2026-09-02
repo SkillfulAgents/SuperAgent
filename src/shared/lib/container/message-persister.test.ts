@@ -2503,7 +2503,6 @@ describe('MessagePersister', () => {
 
       expect(sseEvents).toHaveLength(0)
     })
-
   })
 
   // ============================================================================

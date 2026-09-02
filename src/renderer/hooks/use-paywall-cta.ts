@@ -75,7 +75,7 @@ export function usePaywallCta(presentation: ProviderErrorPresentation): {
         paymentStatus: billing?.subscription.paymentStatus,
         billingHref: resolveOrgBillingUrl(platformAuth),
       }),
-      loading: billingQuery.isFetching,
+      loading: false,
       billingAccessKnown:
         billingQuery.data?.stale !== true && billing?.access !== undefined,
       billingAccessAllowed:
@@ -84,7 +84,6 @@ export function usePaywallCta(presentation: ProviderErrorPresentation): {
   }, [
     billingQuery.data?.billing,
     billingQuery.data?.stale,
-    billingQuery.isFetching,
     billingQuery.isLoading,
     flagFrom402,
     role,
