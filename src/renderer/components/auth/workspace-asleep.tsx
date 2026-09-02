@@ -46,7 +46,3 @@ export function WorkspaceUnavailableOverlay({ mode }: { mode: WorkspaceUnavailab
     </div>
   )
 }
-
-export function WorkspaceAsleepOverlay() {
-  return <WorkspaceUnavailableOverlay mode="asleep" />
-}

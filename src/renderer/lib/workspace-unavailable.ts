@@ -84,9 +84,15 @@ function markWorkspaceAsleep(): void {
   notify()
 }
 
-function clearWorkspaceAsleep(): void {
-  if (!asleep) return
+// The workspace recovered on its own; drop the overlay and any queued reload.
+function clearWorkspaceUnavailable(): void {
+  if (reloadTimer != null) {
+    clearTimeout(reloadTimer)
+    reloadTimer = null
+  }
+  if (!asleep && !reloadPending) return
   asleep = false
+  reloadPending = false
   notify()
 }
 
@@ -159,7 +165,7 @@ export async function maybeReloadForWorkspaceUnavailable(response: Response): Pr
   // The workspace can wake through another path (another tab, ingress timer);
   // any success drops the prompt instead of forcing a pointless reload.
   if (response.ok) {
-    clearWorkspaceAsleep()
+    clearWorkspaceUnavailable()
     return
   }
   if (response.status !== 502 && response.status !== 503) return
