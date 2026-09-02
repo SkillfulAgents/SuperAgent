@@ -1,10 +1,25 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { watchStreamLiveness } from './stream-liveness'
+import {
+  STREAM_RECONNECT_MAX_MS,
+  STREAM_RECONNECT_MS,
+  reconnectDelayMs,
+  watchStreamLiveness,
+} from './stream-liveness'
 
 class FakeEventSource extends EventTarget {
   readyState = 0
 }
+
+describe('reconnectDelayMs', () => {
+  it('doubles from the base and caps', () => {
+    expect(reconnectDelayMs(0)).toBe(STREAM_RECONNECT_MS)
+    expect(reconnectDelayMs(1)).toBe(STREAM_RECONNECT_MS * 2)
+    expect(reconnectDelayMs(4)).toBe(STREAM_RECONNECT_MS * 16)
+    expect(reconnectDelayMs(5)).toBe(STREAM_RECONNECT_MAX_MS)
+    expect(reconnectDelayMs(40)).toBe(STREAM_RECONNECT_MAX_MS)
+  })
+})
 
 describe('watchStreamLiveness', () => {
   beforeEach(() => {

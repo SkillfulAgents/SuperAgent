@@ -46,7 +46,20 @@ import {
   USER_ACTIONABLE_NOTIFICATION_TYPES,
 } from '@shared/lib/notifications/notification-preferences'
 import { useRenderTracker } from '@renderer/lib/perf'
-import { STREAM_RECONNECT_MS, watchStreamLiveness } from '@renderer/lib/stream-liveness'
+import { reconnectDelayMs, watchStreamLiveness } from '@renderer/lib/stream-liveness'
+
+// Queries whose fetch runs an LLM completion server-side. Everything else is
+// refetched wholesale after the stream comes back from a fatal close.
+const EXPENSIVE_QUERY_KEYS = new Set<unknown>([
+  'agent-template-publish-info',
+  'agent-template-pr-info',
+  'skill-publish-info',
+  'skill-pr-info',
+])
+
+export function isRefetchableAfterOutage(query: { queryKey: readonly unknown[] }): boolean {
+  return !EXPENSIVE_QUERY_KEYS.has(query.queryKey[0])
+}
 
 // Optimistic status echo per session lifecycle event. Deliberately exhaustive
 // with NO fallback: an event type added to the lifecycle case group without a
@@ -95,6 +108,8 @@ export function GlobalNotificationHandler() {
   canAccessAgentRef.current = canAccessAgent
   const [reconnectKey, setReconnectKey] = useState(0)
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const reconnectAttemptRef = useRef(0)
+  const wasDeadRef = useRef(false)
   const streamRef = useRef<EventSource | null>(null)
 
   // Sync dock badge count with unread notifications (macOS Electron only)
@@ -562,6 +577,14 @@ export function GlobalNotificationHandler() {
     // Catch up anything missed while the stream was down, including the
     // window before the first successful connect.
     es.onopen = () => {
+      reconnectAttemptRef.current = 0
+      if (wasDeadRef.current) {
+        // The dead window can be arbitrarily long, and every family this
+        // stream feeds may have moved in it. Refetch what is mounted.
+        wasDeadRef.current = false
+        queryClient.invalidateQueries({ predicate: isRefetchableAfterOutage })
+        return
+      }
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
     }
@@ -573,11 +596,14 @@ export function GlobalNotificationHandler() {
     const disposeLiveness = watchStreamLiveness(es, () => {
       if (streamRef.current !== es) return
       es.close()
+      wasDeadRef.current = true
+      const delay = reconnectDelayMs(reconnectAttemptRef.current)
+      reconnectAttemptRef.current += 1
       reconnectTimerRef.current = setTimeout(() => {
         reconnectTimerRef.current = null
         if (streamRef.current !== es) return
         setReconnectKey((k) => k + 1)
-      }, STREAM_RECONNECT_MS)
+      }, delay)
     })
 
     return () => {
