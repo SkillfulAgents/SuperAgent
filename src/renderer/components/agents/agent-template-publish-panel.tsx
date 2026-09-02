@@ -22,7 +22,8 @@ interface AgentTemplatePublishPanelProps {
  */
 export function AgentTemplatePublishPanel({ agentSlug, onBack }: AgentTemplatePublishPanelProps) {
   const [step, setStep] = useState<'form' | 'pick'>('form')
-  const { data: skillsets } = useSkillsets()
+  const { data: allSkillsets } = useSkillsets()
+  const skillsets = allSkillsets?.filter((ss) => ss.publishMode !== 'none')
 
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')

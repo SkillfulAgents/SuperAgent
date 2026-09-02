@@ -38,7 +38,8 @@ export function SkillPublishDialog({
   const canPublish = skillStatus.type === 'local'
   const [step, setStep] = useState<'pick' | 'form'>('pick')
   const [selectedSkillset, setSelectedSkillset] = useState<ApiSkillsetConfig | null>(null)
-  const { data: skillsets } = useSkillsets()
+  const { data: allSkillsets } = useSkillsets()
+  const skillsets = allSkillsets?.filter((ss) => ss.publishMode !== 'none')
 
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
