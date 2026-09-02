@@ -12,6 +12,11 @@ vi.mock('@renderer/lib/api', () => ({
   apiJson: vi.fn(),
 }))
 
+const mockTrack = vi.fn()
+vi.mock('@renderer/context/analytics-context', () => ({
+  useAnalyticsTracking: () => ({ track: mockTrack }),
+}))
+
 let queryClient: QueryClient
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -22,6 +27,7 @@ function wrapper({ children }: { children: ReactNode }) {
 describe('useForkSession', () => {
   beforeEach(() => {
     mockApiFetch.mockReset()
+    mockTrack.mockReset()
   })
 
   it('seeds the fork cache and draft on success', async () => {
@@ -41,6 +47,8 @@ describe('useForkSession', () => {
     expect(queryClient.getQueryData(['session', 'fork-1', 'agent-a'])).toEqual(
       expect.objectContaining({ id: 'fork-1', agentSlug: 'agent-a' }),
     )
+    expect(mockTrack).toHaveBeenCalledWith('session_forked')
+    expect(mockTrack).not.toHaveBeenCalledWith('session_fork_failed', expect.anything())
   })
 
   it('throws the server error text', async () => {
@@ -52,5 +60,7 @@ describe('useForkSession', () => {
     await expect(
       result.current.mutateAsync({ sessionId: 'src-1', agentSlug: 'agent-a' }),
     ).rejects.toThrow('Session is currently running')
+    expect(mockTrack).toHaveBeenCalledWith('session_fork_failed', { reason: 'Session is currently running' })
+    expect(mockTrack).not.toHaveBeenCalledWith('session_forked')
   })
 })
