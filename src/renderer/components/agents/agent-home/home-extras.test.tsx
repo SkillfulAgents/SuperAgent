@@ -21,6 +21,7 @@ vi.mock('@renderer/context/file-preview-context', () => ({
 // home-default-model.test.tsx) — only its data hooks are stubbed, so this
 // file still covers the composition rather than a placeholder.
 vi.mock('@renderer/hooks/use-settings', () => ({
+  useSettings: () => ({ data: { app: { autoDeleteInactiveDays: 0, apiLogAutoDeleteDays: 30 } } }),
   useModelSettings: () => ({
     data: {
       llmProvider: 'anthropic',

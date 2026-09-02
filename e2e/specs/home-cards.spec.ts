@@ -122,7 +122,7 @@ test.describe('home card arrangement', () => {
     // Arrange owns pointer dragging, but desktop right-click still bubbles
     // through its overlay to the unified agent context menu.
     await widget.click({ button: 'right', position: { x: 30, y: 30 } })
-    await expect(page.getByTestId('agent-settings-item')).toBeVisible()
+    await expect(page.getByTestId('move-agent-to-folder-trigger')).toBeVisible()
     const expanded = page.getByRole('menuitemcheckbox', { name: 'Expanded' })
     await expect(expanded).toBeVisible()
     await expanded.click()
@@ -136,7 +136,7 @@ test.describe('home card arrangement', () => {
     // until Done commits both the layout and visibility changes.
     await expect(dashboardWidget).not.toBeVisible()
     await page.keyboard.press('Escape')
-    await expect(page.getByTestId('agent-settings-item')).not.toBeVisible()
+    await expect(page.getByTestId('move-agent-to-folder-trigger')).not.toBeVisible()
     // Same Radix teardown wait as above before the next pointer gesture.
     await page.waitForFunction(() => document.body.style.pointerEvents !== 'none')
 

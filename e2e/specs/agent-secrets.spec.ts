@@ -184,16 +184,18 @@ test.describe('Agent Secrets (reach the container & persist)', () => {
     })
 
     await test.step('AlertDialogContent: an overlong agent name leaves Confirm reachable and wraps', async () => {
-      // The header gear is a popover now; the full settings dialog (whose
-      // delete confirm quotes the LIVE name field, unsaved) opens via the
-      // sidebar context menu.
+      // The delete confirm quotes the agent's name, so give it an overlong
+      // one first via the context menu's rename dialog, then delete from the
+      // renamed row's menu.
       await page.locator('[data-testid^="agent-item-"]', { hasText: agentName }).click({ button: 'right' })
-      await page.locator('[data-testid="agent-settings-item"]').click()
-      await expect(page.locator('[data-testid="agent-settings-dialog"]')).toBeVisible()
-      // The confirmation quotes the live value of this field, so the dialog inflates
-      // without the rename ever being saved.
-      await page.locator('#agent-name').fill(longToken)
-      await page.locator('[data-testid="agent-settings-dialog"] [data-testid="delete-agent-button"]').click()
+      await page.locator('[data-testid="rename-agent-item"]').click()
+      await page.locator('[data-testid="rename-agent-name-input"]').fill(longToken)
+      await page.locator('[data-testid="confirm-rename-agent-button"]').click()
+      await expect(page.locator('[data-testid="rename-agent-dialog"]')).not.toBeVisible({ timeout: 10000 })
+      const renamedRow = page.locator('[data-testid^="agent-item-"]', { hasText: longToken })
+      await expect(renamedRow).toBeVisible()
+      await renamedRow.click({ button: 'right' })
+      await page.locator('[data-testid="delete-agent-item"]').click()
 
       const alertDialog = page.getByRole('alertdialog')
       const confirmButton = page.locator('[data-testid="confirm-delete-agent-button"]')

@@ -24,9 +24,9 @@ interface DeleteAgentConfirmDialogProps {
 }
 
 /**
- * The one delete-agent confirmation, shared by the header settings popover,
- * the sidebar context menu, and the settings dialog's Danger Zone. Owns the
- * mutation, the navigate-away-when-viewing-the-agent behavior, and the copy.
+ * The one delete-agent confirmation, opened from the agent context menu
+ * (every agent entry point shares that menu). Owns the mutation, the
+ * navigate-away-when-viewing-the-agent behavior, and the copy.
  */
 export function DeleteAgentConfirmDialog({
   agentSlug,

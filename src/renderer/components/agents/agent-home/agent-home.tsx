@@ -3,7 +3,7 @@ import { useState, useRef, useMemo, useCallback, useEffect } from 'react'
 import { cn } from '@shared/lib/utils/cn'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { ArrowUp, Loader2, Eye, Maximize2, Minimize2, Search } from 'lucide-react'
+import { ArrowUp, Loader2, Eye, Maximize2, Minimize2, MoreVertical, Search } from 'lucide-react'
 import { useCreateSession, useSessions } from '@renderer/hooks/use-sessions'
 import { useScheduledTasks } from '@renderer/hooks/use-scheduled-tasks'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
@@ -12,10 +12,10 @@ import { RelatedSessions, type SortOrder } from '@renderer/components/sessions/r
 import { SortPopover } from '@renderer/components/sessions/sort-popover'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { useNavTransient } from '@renderer/context/nav-transient-context'
+import { useFilePreview } from '@renderer/context/file-preview-context'
 import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
-import { AgentSettingsPopover } from '@renderer/components/agents/agent-settings-popover'
-import { AgentSharePopover } from '@renderer/components/agents/agent-share-popover'
+import { AgentSharePopover, type AgentSharePopoverHandle } from '@renderer/components/agents/agent-share-popover'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { SystemPromptDialog } from '@renderer/components/agents/system-prompt-dialog'
 import { toast } from 'sonner'
@@ -68,7 +68,8 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   // The new-agent morph tag lives in NavTransientContext — above the router, so
   // it survives in-app nav and dies on hard reload. justCreatedSlug producer =
   // use-create-untitled-agent.
-  const { justCreatedSlug, setJustCreatedSlug } = useNavTransient()
+  const { justCreatedSlug, setJustCreatedSlug, pendingAgentHomeAction, setPendingAgentHomeAction } = useNavTransient()
+  const { openFolder } = useFilePreview()
   const navigate = useNavigate()
   const [introStagger] = useState(() => {
     if (justCreatedSlug !== agent.slug) return false
@@ -129,6 +130,23 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   // popover on the gear now; the sidebar context menu keeps the full dialog.
   const [systemPromptOpen, setSystemPromptOpen] = useState(false)
   const titleRef = useRef<InlineEditableTitleHandle>(null)
+  // The three-dot button opens the title's context menu (see below).
+  const menuTriggerRef = useRef<HTMLDivElement>(null)
+  const shareRef = useRef<AgentSharePopoverHandle>(null)
+  const openExport = useCallback(() => shareRef.current?.openExport(), [])
+  // Same panel the HomeExtras "Agent Directory" row opens.
+  const openDirectory = useCallback(() => openFolder('/workspace', agent.slug), [openFolder, agent.slug])
+
+  // "Export Agent" / "Agent Directory" chosen from a menu away from this page
+  // (sidebar row, home card, breadcrumb) navigates here with the action
+  // parked in NavTransient; run it now that its surface is mounted.
+  useEffect(() => {
+    if (pendingAgentHomeAction?.slug !== agent.slug) return
+    const { action } = pendingAgentHomeAction
+    setPendingAgentHomeAction(null)
+    if (action === 'export') openExport()
+    else openDirectory()
+  }, [pendingAgentHomeAction, agent.slug, setPendingAgentHomeAction, openExport, openDirectory])
   const handleOpenSettings = useCallback((tab?: string) => {
     if (tab === 'system-prompt') setSystemPromptOpen(true)
   }, [])
@@ -312,8 +330,13 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
         {/* Left Column — Chat composer + Sessions */}
         <div className="space-y-6 w-full min-w-0 xl:min-w-[480px] xl:max-w-[720px]">
           <ScrollAwarePageTitle className="flex items-center justify-between gap-2 intro-step intro-step-1">
-            <AgentContextMenu agent={agent}>
-              <div className="flex-1 min-w-0 cursor-context-menu">
+            <AgentContextMenu
+              agent={agent}
+              onRename={() => titleRef.current?.startEditing()}
+              onExport={openExport}
+              onOpenDirectory={openDirectory}
+            >
+              <div ref={menuTriggerRef} className="flex-1 min-w-0 cursor-context-menu">
                 <InlineEditableTitle
                   ref={titleRef}
                   value={agent.name}
@@ -342,15 +365,32 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
             {/* Share (ACL + publish) lives on the header, not in settings. Owners
                 only; outside auth mode everyone is an owner and the popover
                 shows just the Publish pane. */}
-            {isOwner && <AgentSharePopover agentSlug={agent.slug} agentName={agent.name} />}
-            {/* Gear = compact settings popover; Rename delegates to the
-                InlineEditableTitle above via its imperative handle. */}
-            {isOwner && (
-              <AgentSettingsPopover
-                agent={agent}
-                onRename={() => titleRef.current?.startEditing()}
-              />
-            )}
+            {isOwner && <AgentSharePopover ref={shareRef} agentSlug={agent.slug} agentName={agent.name} />}
+            {/* Three-dot = the same agent menu a right-click on the title (or
+                the sidebar row) opens, so the two never drift apart. A click
+                replays as a contextmenu event on the title's trigger, anchored
+                under this button; Rename hands off to the inline title above. */}
+            <Button
+              type="button"
+              size="icon"
+              variant="outline"
+              className="h-8 w-8 shrink-0"
+              aria-label="Agent menu"
+              data-testid="agent-settings-button"
+              onClick={(event) => {
+                const rect = event.currentTarget.getBoundingClientRect()
+                menuTriggerRef.current?.dispatchEvent(
+                  new MouseEvent('contextmenu', {
+                    bubbles: true,
+                    cancelable: true,
+                    clientX: rect.left,
+                    clientY: rect.bottom + 4,
+                  })
+                )
+              }}
+            >
+              <MoreVertical className="h-4 w-4" />
+            </Button>
           </ScrollAwarePageTitle>
           {isViewOnly ? (
             <div className="flex items-center justify-center gap-2 text-sm font-medium text-muted-foreground border rounded-lg p-6" data-testid="view-only-banner">

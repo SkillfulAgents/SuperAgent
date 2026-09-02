@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useState, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
 import { useUser } from '@renderer/context/user-context'
@@ -60,6 +60,12 @@ interface AgentSharePopoverProps {
   agentName: string
 }
 
+/** Imperative surface: lets the agent menu's "Export Agent" open this
+ *  popover straight onto its Export pane. */
+export interface AgentSharePopoverHandle {
+  openExport: () => void
+}
+
 const ROLE_OPTIONS: { value: AgentRole; label: string; description: string }[] = [
   { value: 'owner', label: 'Owner', description: 'Full control of this agent' },
   { value: 'user', label: 'User', description: 'Can start sessions and chat' },
@@ -106,7 +112,8 @@ function UserAvatar({ name, className }: { name: string; className?: string }) {
  * moved here from the settings General tab). Rendered for agent owners; in
  * non-auth deployments everyone is an owner and only Publish shows.
  */
-export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverProps) {
+export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentSharePopoverProps>(
+  function AgentSharePopover({ agentSlug, agentName }, ref) {
   const queryClient = useQueryClient()
   const { user, isAuthMode } = useUser()
   const [open, setOpen] = useState(false)
@@ -119,6 +126,13 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
   const [exportChoice, setExportChoice] = useState<'template' | 'full'>('template')
   const [confirmFullExportOpen, setConfirmFullExportOpen] = useState(false)
   const searchInputRef = useRef<HTMLInputElement>(null)
+
+  useImperativeHandle(ref, () => ({
+    openExport: () => {
+      setTab('export')
+      setOpen(true)
+    },
+  }), [])
 
   // Publish pane data/mutations. Status only fetches once the popover opens.
   const {
@@ -621,8 +635,8 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
                 } else {
                   // Full exports contain secrets — confirm before downloading.
                   // The dialog is modal (outside the popover), so opening it
-                  // dismisses the popover, same as the settings popover's
-                  // delete confirm.
+                  // dismisses the popover, same as the agent menu's delete
+                  // confirm.
                   setOpen(false)
                   setConfirmFullExportOpen(true)
                 }
@@ -822,4 +836,4 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
     </AlertDialog>
     </>
   )
-}
+})

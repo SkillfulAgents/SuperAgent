@@ -55,10 +55,6 @@ export class AccessPage {
   }
 
   /** Verify the no-permission overlay is shown (agent settings dialog) */
-  async expectNoPermissionOverlay() {
-    await expect(this.page.locator('[data-testid="agent-settings-no-permission"]')).toBeVisible()
-  }
-
   /** Close the Share popover */
   async closeSettings() {
     await this.page.keyboard.press('Escape')
