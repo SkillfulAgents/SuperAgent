@@ -18,9 +18,13 @@ const PROMPT_STATES = new Set<WorkspaceUnavailableState>(['sleeping', 'error'])
 
 let reloadPending = false
 let asleep = false
-const asleepListeners = new Set<() => void>()
+const listeners = new Set<() => void>()
 let reloadImpl = (): void => {
   window.location.reload()
+}
+
+function notify(): void {
+  for (const listener of listeners) listener()
 }
 
 export function isWorkspaceUnavailableError(message: string | null | undefined): boolean {
@@ -35,21 +39,26 @@ export function isWorkspaceAsleep(): boolean {
   return asleep
 }
 
-export function subscribeWorkspaceAsleep(listener: () => void): () => void {
-  asleepListeners.add(listener)
+// One store for both flags; snapshots above are the useSyncExternalStore reads.
+export function subscribeWorkspaceUnavailable(listener: () => void): () => void {
+  listeners.add(listener)
   return () => {
-    asleepListeners.delete(listener)
+    listeners.delete(listener)
   }
 }
 
 export function _resetWorkspaceUnavailableForTest(): void {
   reloadPending = false
   asleep = false
-  asleepListeners.clear()
+  listeners.clear()
   reloadImpl = () => {
     window.location.reload()
   }
-  sessionStorage.removeItem(RELOAD_KEY)
+  try {
+    sessionStorage.removeItem(RELOAD_KEY)
+  } catch {
+    // jsdom without storage; nothing to clear.
+  }
 }
 
 export function _setWorkspaceUnavailableReloadForTest(fn: () => void): void {
@@ -67,14 +76,40 @@ export function _markWorkspaceAsleepForTest(): void {
 function markWorkspaceAsleep(): void {
   if (asleep) return
   asleep = true
-  for (const listener of asleepListeners) listener()
+  notify()
+}
+
+function clearWorkspaceAsleep(): void {
+  if (!asleep) return
+  asleep = false
+  notify()
+}
+
+// Some privacy modes throw on any sessionStorage access; a broken cooldown
+// must degrade to "reload anyway", never to an exception out of apiFetch.
+function lastReloadAt(): number {
+  try {
+    return Number(sessionStorage.getItem(RELOAD_KEY) ?? 0)
+  } catch {
+    return 0
+  }
+}
+
+function rememberReloadAt(now: number): void {
+  try {
+    sessionStorage.setItem(RELOAD_KEY, String(now))
+  } catch {
+    // Cooldown persistence is best-effort.
+  }
 }
 
 function reloadForWorkspaceUnavailable(): void {
-  const last = Number(sessionStorage.getItem(RELOAD_KEY) ?? 0)
-  if (Number.isFinite(last) && Date.now() - last < COOLDOWN_MS) return
-  sessionStorage.setItem(RELOAD_KEY, String(Date.now()))
+  const last = lastReloadAt()
+  const now = Date.now()
+  if (Number.isFinite(last) && now - last < COOLDOWN_MS) return
+  rememberReloadAt(now)
   reloadPending = true
+  notify()
   reloadImpl()
 }
 
@@ -101,6 +136,12 @@ async function unavailableStateOf(response: Response): Promise<WorkspaceUnavaila
 // Open-tab 502/503 from ingress. Mid-boot states reload so the next document
 // request gets the waiting page; sleeping/error only flag a wake prompt.
 export async function maybeReloadForWorkspaceUnavailable(response: Response): Promise<void> {
+  // The workspace can wake through another path (another tab, ingress timer);
+  // any success drops the prompt instead of forcing a pointless reload.
+  if (response.ok) {
+    clearWorkspaceAsleep()
+    return
+  }
   if (response.status !== 502 && response.status !== 503) return
   // An Electron renderer loads local assets, so a reload never reaches the
   // ingress waiting page — WorkspaceReconnect handles this case instead.

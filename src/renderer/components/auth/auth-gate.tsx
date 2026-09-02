@@ -5,7 +5,7 @@ import { targetIsRemote } from '@renderer/lib/api-target'
 import {
   isWorkspaceAsleep,
   isWorkspaceUnavailableReloadPending,
-  subscribeWorkspaceAsleep,
+  subscribeWorkspaceUnavailable,
 } from '@renderer/lib/workspace-unavailable'
 import { AuthPage } from './auth-page'
 import { ForcePasswordChange } from './force-password-change'
@@ -77,7 +77,8 @@ function useSignalPainted(isPending: boolean): void {
 export function AuthGate({ children }: { children: React.ReactNode }) {
   const { isAuthMode, isAuthenticated, isPending, mustChangePassword } = useUser()
   const [pendingApproval, setPendingApproval] = useState(false)
-  const asleep = useSyncExternalStore(subscribeWorkspaceAsleep, isWorkspaceAsleep)
+  const asleep = useSyncExternalStore(subscribeWorkspaceUnavailable, isWorkspaceAsleep)
+  const reloadPending = useSyncExternalStore(subscribeWorkspaceUnavailable, isWorkspaceUnavailableReloadPending)
   useSignalPainted(isPending && !pendingApproval)
 
   const onPendingApproval = useCallback((pending = true) => setPendingApproval(pending), [])
@@ -110,7 +111,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   )
 
   if (!isAuthMode) return withAsleepOverlay(children)
-  if ((isPending && !pendingApproval) || isWorkspaceUnavailableReloadPending()) {
+  if ((isPending && !pendingApproval) || reloadPending) {
     return withAsleepOverlay(<LoadingScreen />)
   }
   // A cloud workspace authenticates with a token held by the main process, so

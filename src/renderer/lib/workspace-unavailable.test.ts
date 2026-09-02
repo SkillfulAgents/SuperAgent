@@ -10,7 +10,7 @@ import {
   isWorkspaceUnavailableError,
   isWorkspaceUnavailableReloadPending,
   maybeReloadForWorkspaceUnavailable,
-  subscribeWorkspaceAsleep,
+  subscribeWorkspaceUnavailable,
 } from './workspace-unavailable'
 
 function jsonResponse(status: number, body: unknown, state?: string): Response {
@@ -134,7 +134,7 @@ describe('maybeReloadForWorkspaceUnavailable', () => {
 
   it('prompts instead of reloading when the workspace is sleeping (header)', async () => {
     const notify = vi.fn()
-    subscribeWorkspaceAsleep(notify)
+    subscribeWorkspaceUnavailable(notify)
     await maybeReloadForWorkspaceUnavailable(
       jsonResponse(503, { error: 'deployment_unavailable', state: 'sleeping' }, 'sleeping'),
     )
@@ -161,10 +161,51 @@ describe('maybeReloadForWorkspaceUnavailable', () => {
 
   it('notifies each asleep listener at most once', async () => {
     const notify = vi.fn()
-    subscribeWorkspaceAsleep(notify)
+    subscribeWorkspaceUnavailable(notify)
     await maybeReloadForWorkspaceUnavailable(jsonResponse(503, {}, 'sleeping'))
     await maybeReloadForWorkspaceUnavailable(jsonResponse(503, {}, 'sleeping'))
     expect(notify).toHaveBeenCalledOnce()
+  })
+
+  it('notifies subscribers when a reload becomes pending', async () => {
+    const notify = vi.fn()
+    subscribeWorkspaceUnavailable(notify)
+    await maybeReloadForWorkspaceUnavailable(jsonResponse(503, {}, 'waking'))
+    expect(isWorkspaceUnavailableReloadPending()).toBe(true)
+    expect(notify).toHaveBeenCalledOnce()
+  })
+
+  it('clears the asleep prompt when a later request succeeds', async () => {
+    const notify = vi.fn()
+    await maybeReloadForWorkspaceUnavailable(jsonResponse(503, {}, 'sleeping'))
+    expect(isWorkspaceAsleep()).toBe(true)
+    subscribeWorkspaceUnavailable(notify)
+    await maybeReloadForWorkspaceUnavailable(new Response('ok', { status: 200 }))
+    expect(isWorkspaceAsleep()).toBe(false)
+    expect(notify).toHaveBeenCalledOnce()
+  })
+
+  it('a success without a prior prompt notifies nobody', async () => {
+    const notify = vi.fn()
+    subscribeWorkspaceUnavailable(notify)
+    await maybeReloadForWorkspaceUnavailable(new Response('ok', { status: 200 }))
+    expect(notify).not.toHaveBeenCalled()
+  })
+
+  it('still reloads when sessionStorage is unavailable', async () => {
+    const getItem = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('denied')
+    })
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('denied')
+    })
+    try {
+      await maybeReloadForWorkspaceUnavailable(jsonResponse(503, {}, 'waking'))
+      expect(reload).toHaveBeenCalledOnce()
+    } finally {
+      getItem.mockRestore()
+      setItem.mockRestore()
+    }
   })
 })
 
