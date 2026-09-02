@@ -2485,10 +2485,19 @@ class MessagePersister {
           // The active provider owns the copy for its own upstream errors
           // (severity, icon, markdown message + CTA link). Sent alongside the
           // raw error so the UI never re-derives provider-specific copy.
+          const provider = getActiveLlmProvider()
+          const isApiError =
+            apiErrorStatus != null
+            || Boolean(apiErrorCode)
+            || terminalReason === 'api_error'
+          const specialized = isApiError
+            ? provider.parseSpecializedError(apiErrorStatus ?? undefined, errorMessage)
+            : null
           const errorPresentation =
-            apiErrorCode && PROVIDER_ERROR_CODES.has(apiErrorCode)
-              ? getActiveLlmProvider().parseErrorResponse(apiErrorStatus ?? undefined, errorMessage)
-              : null
+            specialized
+            ?? (apiErrorCode && PROVIDER_ERROR_CODES.has(apiErrorCode)
+              ? provider.parseErrorResponse(apiErrorStatus ?? undefined, errorMessage)
+              : null)
           console.error(
             `[MessagePersister] Session ${sessionId} error:`,
             errorMessage,

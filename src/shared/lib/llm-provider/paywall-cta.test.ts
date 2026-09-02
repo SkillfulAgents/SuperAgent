@@ -3,8 +3,10 @@ import { describe, expect, it } from 'vitest'
 import {
   buildTopupHandoffUrl,
   isPlatformOrgAdmin,
+  paywallBillingDetailsFromSnapshot,
   resolveOrgBillingUrl,
   resolvePaywallCta,
+  subscriptionRequiredFromBilling,
 } from './paywall-cta'
 
 const HREF = 'https://platform.example.com/dashboard/organizations/org_123?tab=billing'
@@ -72,6 +74,46 @@ describe('buildTopupHandoffUrl', () => {
   })
 })
 
+describe('subscriptionRequiredFromBilling', () => {
+  it('is true when billing is not set up or the plan is inactive', () => {
+    expect(subscriptionRequiredFromBilling({ configured: false, subscription: { status: null } })).toBe(true)
+    expect(subscriptionRequiredFromBilling({ configured: true, subscription: { status: 'inactive' } })).toBe(true)
+    expect(subscriptionRequiredFromBilling({ configured: true, subscription: { status: 'canceled' } })).toBe(true)
+  })
+
+  it('is false when the org already has a live plan', () => {
+    expect(subscriptionRequiredFromBilling({ configured: true, subscription: { status: 'active' } })).toBe(false)
+    expect(subscriptionRequiredFromBilling({ configured: true, subscription: { status: 'trialing' } })).toBe(false)
+    expect(subscriptionRequiredFromBilling({ configured: true, subscription: { status: 'cancellation_scheduled' } })).toBe(false)
+  })
+
+  it('stays unknown when billing is missing or the status is a payment block', () => {
+    expect(subscriptionRequiredFromBilling(undefined)).toBeUndefined()
+    expect(subscriptionRequiredFromBilling({ configured: true, subscription: { status: null } })).toBeUndefined()
+    expect(subscriptionRequiredFromBilling({ configured: true, subscription: { status: 'past_due' } })).toBeUndefined()
+    expect(subscriptionRequiredFromBilling({ configured: true, subscription: { status: 'blocked' } })).toBeUndefined()
+  })
+})
+
+describe('paywallBillingDetailsFromSnapshot', () => {
+  it('keeps balances, payment method, and auto-reload details', () => {
+    expect(paywallBillingDetailsFromSnapshot({
+      subscription: { status: 'active', paymentStatus: 'current' },
+      seat: { balanceCents: 1250 },
+      orgPool: { poolBalanceCents: 5000 },
+      hasPaymentMethod: true,
+      autoReload: { enabled: true, thresholdCents: 1000, topupAmountCents: 5000 },
+    })).toEqual({
+      subscriptionStatus: 'active',
+      paymentStatus: 'current',
+      seatBalanceCents: 1250,
+      orgPoolBalanceCents: 5000,
+      hasPaymentMethod: true,
+      autoReload: { enabled: true, thresholdCents: 1000, topupAmountCents: 5000 },
+    })
+  })
+})
+
 describe('resolvePaywallCta', () => {
   it('falls back to a billing button when the proxy omitted the flag', () => {
     expect(resolvePaywallCta({
@@ -82,13 +124,22 @@ describe('resolvePaywallCta', () => {
     })).toEqual({ kind: 'go_to_billing', href: HREF })
   })
 
-  it('returns subscribe when the proxy says subscription is required', () => {
+  it('returns subscribe when an admin needs a plan', () => {
+    expect(resolvePaywallCta({
+      subscriptionRequired: true,
+      role: 'owner',
+      hasPaymentMethod: undefined,
+      billingHref: HREF,
+    })).toEqual({ kind: 'subscribe', href: HREF })
+  })
+
+  it('asks an admin for every write action, including subscribe', () => {
     expect(resolvePaywallCta({
       subscriptionRequired: true,
       role: 'member',
       hasPaymentMethod: undefined,
       billingHref: HREF,
-    })).toEqual({ kind: 'subscribe', href: HREF })
+    })).toEqual({ kind: 'ask_admin', href: HREF })
   })
 
   it('shows a billing button, not ask-admin, when the role is unknown', () => {
@@ -120,13 +171,49 @@ describe('resolvePaywallCta', () => {
     })).toEqual({ kind: 'add_card', href: HREF })
   })
 
-  it('treats an unknown payment method as add-card', () => {
+  it('does not guess add-card when the payment method is unknown', () => {
     expect(resolvePaywallCta({
       subscriptionRequired: false,
       role: 'admin',
       hasPaymentMethod: undefined,
       billingHref: HREF,
-    })).toEqual({ kind: 'add_card', href: HREF })
+    })).toEqual({ kind: 'go_to_billing', href: HREF })
+  })
+
+  it('treats a scheduled cancellation as a usage-credit path', () => {
+    expect(resolvePaywallCta({
+      subscriptionRequired: subscriptionRequiredFromBilling({
+        configured: true,
+        subscription: { status: 'cancellation_scheduled' },
+      }),
+      role: 'owner',
+      hasPaymentMethod: true,
+      billingHref: HREF,
+    })).toEqual({ kind: 'topup', href: HREF })
+  })
+
+  it('subscribes when a flag-less 402 is filled in from an inactive plan', () => {
+    expect(resolvePaywallCta({
+      subscriptionRequired: subscriptionRequiredFromBilling({
+        configured: true,
+        subscription: { status: 'inactive' },
+      }),
+      role: 'owner',
+      hasPaymentMethod: false,
+      billingHref: HREF,
+    })).toEqual({ kind: 'subscribe', href: HREF })
+  })
+
+  it('tops up when a flag-less 402 is filled in from an active plan with a card', () => {
+    expect(resolvePaywallCta({
+      subscriptionRequired: subscriptionRequiredFromBilling({
+        configured: true,
+        subscription: { status: 'active' },
+      }),
+      role: 'owner',
+      hasPaymentMethod: true,
+      billingHref: HREF,
+    })).toEqual({ kind: 'topup', href: HREF })
   })
 
   it('returns the top-up CTA when the admin already has a card', () => {
@@ -136,5 +223,25 @@ describe('resolvePaywallCta', () => {
       hasPaymentMethod: true,
       billingHref: HREF,
     })).toEqual({ kind: 'topup', href: HREF })
+  })
+
+  it('prioritizes fixing a failed payment for an admin', () => {
+    expect(resolvePaywallCta({
+      subscriptionRequired: false,
+      role: 'owner',
+      hasPaymentMethod: true,
+      paymentStatus: 'past_due',
+      billingHref: HREF,
+    })).toEqual({ kind: 'manage_payment', href: HREF })
+  })
+
+  it('asks a member to contact an admin for a failed payment', () => {
+    expect(resolvePaywallCta({
+      subscriptionRequired: false,
+      role: 'member',
+      hasPaymentMethod: true,
+      paymentStatus: 'payment_failed',
+      billingHref: HREF,
+    })).toEqual({ kind: 'ask_admin', href: HREF })
   })
 })

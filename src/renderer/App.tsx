@@ -1,4 +1,3 @@
-import { lazy, Suspense } from 'react'
 import { RouterProvider } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { QueryProvider } from './providers/query-provider'
@@ -13,11 +12,6 @@ import { Toaster } from './components/ui/sonner'
 import { ErrorBoundary } from './components/ui/error-boundary'
 import { useBillingUpdatedListener } from './hooks/use-billing-updated'
 import { router } from './router'
-
-// Dev-only gallery of the 402 paywall CTA variants; excluded from prod bundles.
-const PaywallCtaDevPanel = import.meta.env.DEV
-  ? lazy(() => import('./components/dev/paywall-cta-dev-panel'))
-  : null
 
 /**
  * Mounts the router. Read inside the provider stack so the live `queryClient`
@@ -46,11 +40,6 @@ export default function App() {
                     <ErrorBoundary>
                       <RouterMount />
                       <Toaster />
-                      {PaywallCtaDevPanel && (
-                        <Suspense fallback={null}>
-                          <PaywallCtaDevPanel />
-                        </Suspense>
-                      )}
                     </ErrorBoundary>
                   </SearchProvider>
                 </DraftsProvider>

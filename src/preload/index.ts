@@ -92,6 +92,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.removeListener('billing-updated', handler)
     }
   },
+  flushPendingBillingUpdated: (): Promise<boolean> => {
+    return ipcRenderer.invoke('flush-pending-billing-updated')
+  },
 
   // Full screen state handling
   onFullScreenChange: (callback: (isFullScreen: boolean) => void): (() => void) => {
@@ -493,6 +496,7 @@ declare global {
       onPlatformAuthCallback: (callback: (params: { success: boolean; email?: string | null; error?: string | null }) => void) => () => void
       removePlatformAuthCallback: () => void
       onBillingUpdated?: (callback: () => void) => () => void
+      flushPendingBillingUpdated?: () => Promise<boolean>
       onFullScreenChange: (callback: (isFullScreen: boolean) => void) => () => void
       removeFullScreenChange: () => void
       getFullScreenState: () => Promise<boolean>

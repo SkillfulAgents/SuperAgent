@@ -1,21 +1,40 @@
 import { type MouseEvent, type ReactNode } from 'react'
 import { Loader2 } from 'lucide-react'
 
-import { buildTopupHandoffUrl, type PaywallCta } from '@shared/lib/llm-provider/paywall-cta'
+import {
+  buildTopupHandoffUrl,
+  isArmablePaywallCta,
+  type PaywallCta,
+} from '@shared/lib/llm-provider/paywall-cta'
 import { Button } from '@renderer/components/ui/button'
+import {
+  rememberBillingResumeTarget,
+  type BillingResumeTarget,
+} from '@renderer/lib/billing-resume-target'
+
+export type PaywallResumeTarget = Pick<BillingResumeTarget, 'agentSlug' | 'sessionId'> & {
+  initialAllowed?: boolean
+}
 import { openExternalUrl } from '@renderer/lib/open-external'
 
 function stopCardToggle(event: MouseEvent) {
   event.stopPropagation()
 }
 
+function armResume(resumeTarget?: PaywallResumeTarget): void {
+  if (!resumeTarget) return
+  rememberBillingResumeTarget(resumeTarget)
+}
+
 function ExternalCtaButton({
   href,
   disabled,
+  onOpen,
   children,
 }: {
   href: string | null
   disabled?: boolean
+  onOpen?: () => void
   children: ReactNode
 }) {
   return (
@@ -24,7 +43,9 @@ function ExternalCtaButton({
       disabled={disabled || !href}
       onClick={(event) => {
         stopCardToggle(event)
-        if (href) void openExternalUrl(href)
+        if (!href) return
+        onOpen?.()
+        void openExternalUrl(href)
       }}
     >
       {children}
@@ -35,19 +56,18 @@ function ExternalCtaButton({
 const CTA_LABELS = {
   subscribe: 'Subscribe',
   add_card: 'Add credit card',
+  manage_payment: 'Fix payment',
   go_to_billing: 'Go to billing',
 } as const
 
-// Renders into the right-hand slot of the paywall card. Every CTA opens the
-// dashboard in the browser — money never moves through the app. "Add usage"
-// carries the top-up hand-off params so the website auto-opens its purchase
-// dialog and deep-links back (superagent://billing-updated) when done.
 export function PaywallActions({
   cta,
   loading,
+  resumeTarget,
 }: {
   cta: PaywallCta | null
   loading: boolean
+  resumeTarget?: PaywallResumeTarget
 }) {
   if (loading) {
     return (
@@ -60,7 +80,6 @@ export function PaywallActions({
 
   if (!cta) return null
 
-  // Non-admins can't top up, but they can still see the billing page.
   if (cta.kind === 'ask_admin') {
     return (
       <div data-testid="paywall-actions">
@@ -69,18 +88,31 @@ export function PaywallActions({
     )
   }
 
+  const arm = isArmablePaywallCta(cta.kind) ? () => armResume(resumeTarget) : undefined
+
   if (cta.kind === 'topup') {
     const handoffHref = buildTopupHandoffUrl(cta.href, window.electronAPI?.desktopProtocol)
     return (
       <div data-testid="paywall-actions">
-        <ExternalCtaButton href={handoffHref}>Add usage</ExternalCtaButton>
+        <Button
+          size="sm"
+          disabled={!handoffHref}
+          onClick={(event) => {
+            stopCardToggle(event)
+            if (!handoffHref) return
+            arm?.()
+            void openExternalUrl(handoffHref)
+          }}
+        >
+          Add usage
+        </Button>
       </div>
     )
   }
 
   return (
     <div data-testid="paywall-actions">
-      <ExternalCtaButton href={cta.href}>{CTA_LABELS[cta.kind]}</ExternalCtaButton>
+      <ExternalCtaButton href={cta.href} onOpen={arm}>{CTA_LABELS[cta.kind]}</ExternalCtaButton>
     </div>
   )
 }

@@ -1,11 +1,27 @@
 export const ORG_BILLING_PATH = '/dashboard/organizations/{orgId}?tab=billing'
+export const BILLING_RESUME_SYSTEM_PROMPT =
+  '[SYSTEM] Continue the interrupted request from where you stopped. Do not repeat work that was already completed.'
 
 export type PaywallCta =
   | { kind: 'subscribe'; href: string | null }
   | { kind: 'ask_admin'; href: string | null }
   | { kind: 'add_card'; href: string | null }
   | { kind: 'topup'; href: string | null }
+  | { kind: 'manage_payment'; href: string | null }
   | { kind: 'go_to_billing'; href: string | null }
+
+export interface PaywallBillingDetails {
+  subscriptionStatus: string | null
+  paymentStatus: string | null
+  seatBalanceCents: number | null
+  orgPoolBalanceCents: number
+  hasPaymentMethod: boolean | undefined
+  autoReload: {
+    enabled: boolean
+    thresholdCents: number | null
+    topupAmountCents: number | null
+  } | null | undefined
+}
 
 export function isPlatformOrgAdmin(role: string | null | undefined): boolean {
   return role === 'owner' || role === 'admin'
@@ -39,21 +55,77 @@ export function buildTopupHandoffUrl(
   return url.toString()
 }
 
+const ACTIVE_SUBSCRIPTION = new Set(['active', 'trialing', 'cancellation_scheduled'])
+const UNRESOLVED_SUBSCRIPTION = new Set(['past_due', 'blocked', 'payment_failed'])
+const PAYMENT_NEEDS_ATTENTION = new Set(['past_due', 'blocked', 'payment_failed'])
+export function isArmablePaywallCta(kind: PaywallCta['kind']): boolean {
+  return kind === 'subscribe' || kind === 'add_card' || kind === 'topup' || kind === 'manage_payment'
+}
+
+export function paywallBillingDetailsFromSnapshot(
+  billing: {
+    subscription?: { status?: string | null; paymentStatus?: string | null }
+    seat?: { balanceCents: number } | null
+    orgPool?: { poolBalanceCents: number }
+    hasPaymentMethod?: boolean
+    autoReload?: PaywallBillingDetails['autoReload']
+  } | null | undefined,
+): PaywallBillingDetails | null {
+  if (!billing?.subscription || !billing.orgPool) return null
+  return {
+    subscriptionStatus: billing.subscription.status ?? null,
+    paymentStatus: billing.subscription.paymentStatus ?? null,
+    seatBalanceCents: billing.seat?.balanceCents ?? null,
+    orgPoolBalanceCents: billing.orgPool.poolBalanceCents,
+    hasPaymentMethod: billing.hasPaymentMethod,
+    autoReload: billing.autoReload,
+  }
+}
+
+// CLI 402s drop `subscription_required`. The billing snapshot still knows
+// whether this org needs a plan vs usage credit.
+export function subscriptionRequiredFromBilling(
+  billing: {
+    configured?: boolean
+    subscription?: { status?: string | null }
+  } | null | undefined,
+): boolean | undefined {
+  if (!billing) return undefined
+  if (billing.configured === false) return true
+  const status = billing.subscription?.status
+  if (!status) return undefined
+  if (ACTIVE_SUBSCRIPTION.has(status)) return false
+  if (UNRESOLVED_SUBSCRIPTION.has(status)) return undefined
+  return true
+}
+
+function writeActionCta(
+  kind: 'subscribe' | 'add_card' | 'topup' | 'manage_payment',
+  role: string | null | undefined,
+  billingHref: string | null,
+): PaywallCta {
+  if (role == null) return { kind: 'go_to_billing', href: billingHref }
+  if (!isPlatformOrgAdmin(role)) return { kind: 'ask_admin', href: billingHref }
+  return { kind, href: billingHref }
+}
+
 export function resolvePaywallCta(input: {
   subscriptionRequired: boolean | undefined
   role: string | null | undefined
   hasPaymentMethod: boolean | undefined
+  paymentStatus?: string | null
   billingHref: string | null
 }): PaywallCta {
+  if (input.paymentStatus && PAYMENT_NEEDS_ATTENTION.has(input.paymentStatus)) {
+    return writeActionCta('manage_payment', input.role, input.billingHref)
+  }
   // Proxy omitted the flag (legacy 402): no branching info, so offer billing.
   if (input.subscriptionRequired === undefined) {
     return { kind: 'go_to_billing', href: input.billingHref }
   }
   if (input.subscriptionRequired) {
-    return { kind: 'subscribe', href: input.billingHref }
+    return writeActionCta('subscribe', input.role, input.billingHref)
   }
-  // Role unknown (settings-backed / self-hosted auth): don't strand a possible
-  // owner on "ask an admin" — show a plain billing button instead.
   if (input.role == null) {
     return { kind: 'go_to_billing', href: input.billingHref }
   }
@@ -63,5 +135,8 @@ export function resolvePaywallCta(input: {
   if (input.hasPaymentMethod === true) {
     return { kind: 'topup', href: input.billingHref }
   }
-  return { kind: 'add_card', href: input.billingHref }
+  if (input.hasPaymentMethod === false) {
+    return { kind: 'add_card', href: input.billingHref }
+  }
+  return { kind: 'go_to_billing', href: input.billingHref }
 }

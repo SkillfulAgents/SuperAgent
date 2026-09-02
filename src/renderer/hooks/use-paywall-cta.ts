@@ -3,8 +3,11 @@ import { useEffect, useMemo } from 'react'
 import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 import {
   isPlatformOrgAdmin,
+  paywallBillingDetailsFromSnapshot,
   resolveOrgBillingUrl,
   resolvePaywallCta,
+  subscriptionRequiredFromBilling,
+  type PaywallBillingDetails,
   type PaywallCta,
 } from '@shared/lib/llm-provider/paywall-cta'
 import { useBillingInfo } from '@renderer/hooks/use-billing-info'
@@ -13,15 +16,15 @@ import { captureRendererException } from '@renderer/lib/error-reporting'
 
 export function usePaywallCta(presentation: ProviderErrorPresentation): {
   cta: PaywallCta | null
+  details: PaywallBillingDetails | null
   loading: boolean
 } {
   const { data: platformAuth } = usePlatformAuthStatus()
   const role = platformAuth?.role
-  const needsBilling = Boolean(
-    presentation.paywall
-    && presentation.paywall.subscriptionRequired === false
-    && isPlatformOrgAdmin(role),
-  )
+  const flagFrom402 = presentation.paywall?.subscriptionRequired
+  // Every paywall fetches the snapshot: it fills in a missing 402 flag and
+  // supplies the status, balances, card, and auto-reload details shown below.
+  const needsBilling = Boolean(presentation.paywall)
   const billingQuery = useBillingInfo(Boolean(platformAuth?.connected) && needsBilling)
 
   const billingError = needsBilling ? billingQuery.error : null
@@ -35,20 +38,31 @@ export function usePaywallCta(presentation: ProviderErrorPresentation): {
   }, [billingError])
 
   return useMemo(() => {
-    if (!presentation.paywall) return { cta: null, loading: false }
+    if (!presentation.paywall) return { cta: null, details: null, loading: false }
 
     if (needsBilling && billingQuery.isLoading) {
-      return { cta: null, loading: true }
+      return { cta: null, details: null, loading: true }
     }
 
+    const billing = billingQuery.data?.billing
     return {
       cta: resolvePaywallCta({
-        subscriptionRequired: presentation.paywall.subscriptionRequired,
+        subscriptionRequired: flagFrom402 ?? subscriptionRequiredFromBilling(billing),
         role,
-        hasPaymentMethod: billingQuery.data?.billing?.hasPaymentMethod,
+        hasPaymentMethod: billing?.hasPaymentMethod,
+        paymentStatus: billing?.subscription.paymentStatus,
         billingHref: resolveOrgBillingUrl(platformAuth),
       }),
+      details: isPlatformOrgAdmin(role) ? paywallBillingDetailsFromSnapshot(billing) : null,
       loading: false,
     }
-  }, [billingQuery.data?.billing?.hasPaymentMethod, billingQuery.isLoading, role, needsBilling, platformAuth, presentation.paywall])
+  }, [
+    billingQuery.data?.billing,
+    billingQuery.isLoading,
+    flagFrom402,
+    role,
+    needsBilling,
+    platformAuth,
+    presentation.paywall,
+  ])
 }

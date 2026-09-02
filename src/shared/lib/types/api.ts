@@ -236,6 +236,16 @@ export const PROVIDER_ERROR_CODES = new Set([
   'server_error',
 ])
 
+// The CLI often tags a platform 402 as `unknown`. Trust a paywall presentation
+// even when the SDK code is not in PROVIDER_ERROR_CODES.
+export function isProviderFacingError(
+  apiErrorCode: string | null | undefined,
+  presentation?: ProviderErrorPresentation | null,
+): boolean {
+  if (presentation?.paywall) return true
+  return typeof apiErrorCode === 'string' && PROVIDER_ERROR_CODES.has(apiErrorCode)
+}
+
 /**
  * Compact boundary marker in API response
  */

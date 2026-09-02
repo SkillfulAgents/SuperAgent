@@ -17,10 +17,16 @@ vi.mock('@renderer/components/messages/agent-activity-indicator', () => ({
   AgentActivityIndicator: () => <div data-testid="activity-indicator" />,
 }))
 
+const mockStreamState = vi.hoisted(() => ({
+  error: null as string | null,
+  apiErrorCode: null as string | null,
+  errorPresentation: null as { paywall?: object } | null,
+}))
+
 // SessionThread reads the error state to swap the composer for the paywall
 // card; jsdom has no EventSource, so stub the stream with a quiet session.
 vi.mock('@renderer/hooks/use-message-stream', () => ({
-  useMessageStream: () => ({ error: null, apiErrorCode: null, errorPresentation: null }),
+  useMessageStream: () => mockStreamState,
 }))
 
 vi.mock('@renderer/components/tray/tray-manager', () => ({
@@ -29,6 +35,9 @@ vi.mock('@renderer/components/tray/tray-manager', () => ({
 
 describe('SessionThread footer layout', () => {
   beforeEach(() => {
+    mockStreamState.error = null
+    mockStreamState.apiErrorCode = null
+    mockStreamState.errorPresentation = null
     footerHeight = 180
     resizeCallback = undefined
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
@@ -91,5 +100,34 @@ describe('SessionThread footer layout', () => {
     expect(screen.getByTestId('session-thread-main')).toHaveClass('grid', 'grid-rows-[1fr_auto]')
     expect(screen.getByText('Read-only footer').parentElement).not.toHaveAttribute('data-overlay-footer')
     expect(screen.getByTestId('message-list')).toHaveAttribute('data-bottom-inset', '0')
+  })
+
+  it('hides the composer only when the server authored a paywall', () => {
+    mockStreamState.error = 'API Error: 402 Workspace has insufficient balance. Top up to continue.'
+    mockStreamState.apiErrorCode = 'unknown'
+    mockStreamState.errorPresentation = { paywall: {} }
+    renderWithProviders(
+      <SessionThread
+        sessionId="s-1"
+        agentSlug="agent-1"
+        footer={<div>Composer</div>}
+        overlayFooter
+      />,
+    )
+    expect(screen.queryByText('Composer')).not.toBeInTheDocument()
+  })
+
+  it('keeps the composer for an unknown 402 without a server paywall', () => {
+    mockStreamState.error = 'API Error: 402 Workspace has insufficient balance. Top up to continue.'
+    mockStreamState.apiErrorCode = 'unknown'
+    renderWithProviders(
+      <SessionThread
+        sessionId="s-1"
+        agentSlug="agent-1"
+        footer={<div>Composer</div>}
+        overlayFooter
+      />,
+    )
+    expect(screen.getByText('Composer')).toBeInTheDocument()
   })
 })

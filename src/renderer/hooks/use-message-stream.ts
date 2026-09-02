@@ -1,4 +1,3 @@
-
 import { useState, useEffect, useCallback } from 'react'
 import { useQueryClient, QueryClient } from '@tanstack/react-query'
 import { getApiBaseUrl } from '@renderer/lib/env'
@@ -1375,19 +1374,21 @@ export function consumeDiscardedCommand(sessionId: string, uuid: string): void {
   }
 }
 
-// Unblock sessions stuck on a paywall 402 after the user topped up on the
-// website (billing-updated deep link). Clearing the error restores the composer.
+export function clearPaywallError(sessionId: string): void {
+  const state = streamStates.get(sessionId)
+  if (!state) return
+  if (!state.errorPresentation?.paywall) return
+  streamStates.set(sessionId, {
+    ...state,
+    error: null,
+    apiErrorCode: null,
+    errorPresentation: null,
+  })
+  streamListeners.get(sessionId)?.forEach((listener) => listener())
+}
+
 export function clearPaywallErrors(): void {
-  for (const [sessionId, state] of streamStates) {
-    if (!state.errorPresentation?.paywall) continue
-    streamStates.set(sessionId, {
-      ...state,
-      error: null,
-      apiErrorCode: null,
-      errorPresentation: null,
-    })
-    streamListeners.get(sessionId)?.forEach((listener) => listener())
-  }
+  for (const sessionId of streamStates.keys()) clearPaywallError(sessionId)
 }
 
 export function removePeerUserMessage(sessionId: string, uuid: string): void {

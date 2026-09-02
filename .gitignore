@@ -65,3 +65,6 @@ docs/superpowers/
 # perf suite output (npm run test:perf)
 perf-results.jsonl
 perf-results.txt
+
+# Local auth-mode workspace data
+.tmp-authmode-*-data/

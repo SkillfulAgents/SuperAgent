@@ -165,6 +165,11 @@ export abstract class BaseLlmProvider {
     return this.parseErrorResponseOverride(status, body) ?? defaultParseErrorResponse(status, body)
   }
 
+  // Override-only: null means "not this provider's class" (e.g. a 402 paywall).
+  parseSpecializedError(status: number | undefined, body: unknown): ProviderErrorPresentation | null {
+    return this.parseErrorResponseOverride(status, body)
+  }
+
   /**
    * Provider-specific presentation for the error classes this provider
    * recognizes. Return null for everything else — the generic banner is

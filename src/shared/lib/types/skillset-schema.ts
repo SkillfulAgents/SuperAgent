@@ -271,6 +271,29 @@ export const PlatformBillingInfoSchema = z.object({
   }),
   // Newer proxies may include this so the 402 paywall can choose add-card vs top-up.
   hasPaymentMethod: z.boolean().optional(),
+  autoReload: z
+    .object({
+      enabled: z.boolean(),
+      thresholdCents: z.number().nullable(),
+      topupAmountCents: z.number().nullable(),
+    })
+    .nullable()
+    .optional(),
+  // Proxy KV gate. Balance fields are display-only; this decides auto-resume.
+  access: z
+    .object({
+      allowed: z.boolean(),
+      reason: z.enum([
+        'current_subscription',
+        'current_pool',
+        'insufficient_balance',
+        'past_due',
+        'blocked',
+        'fail_open_unmigrated',
+        'billing_gate_error',
+      ]),
+    })
+    .optional(),
 })
 export type ParsedPlatformBillingInfo = z.infer<typeof PlatformBillingInfoSchema>
 

@@ -78,6 +78,14 @@ describe('parseErrorResponse', () => {
     expect(parsed.severity).toBe('error')
     expect(parsed.message).toContain('**LLM Provider Error:**')
   })
+
+  it('recognizes a CLI 402 string as a paywall without a billing_error code', () => {
+    const parsed = provider.parseSpecializedError(
+      undefined,
+      'API Error: 402 Workspace has insufficient balance. Top up to continue.',
+    )
+    expect(parsed?.paywall).toEqual({})
+  })
 })
 
 describe('sanitizeAgentName', () => {

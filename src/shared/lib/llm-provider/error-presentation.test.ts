@@ -7,7 +7,8 @@ import {
   providerErrorPresentationSchema,
   resolvePresentationMarkdown,
 } from './error-presentation'
-import { extractSubscriptionRequired, parsePlatformErrorResponse } from './platform-error-presentation'
+import { coalesceProviderErrorPresentation, extractSubscriptionRequired, parsePlatformErrorResponse } from './platform-error-presentation'
+import { isProviderFacingError } from '@shared/lib/types/api'
 
 const SPEND_CAP =
   'API Error: Request rejected (429) · A spend cap for this workspace was reached. It resets within 30 days. Ask a workspace admin to raise it.'
@@ -165,6 +166,29 @@ describe('extractSubscriptionRequired', () => {
       type: 'error',
       error: { message: 'Workspace has insufficient balance. Top up to continue.' },
     })).toBeUndefined()
+  })
+})
+
+describe('coalesceProviderErrorPresentation', () => {
+  it('parses a 402 string when the stream omitted presentation', () => {
+    const parsed = coalesceProviderErrorPresentation(BILLING_402, null)
+    expect(parsed?.paywall).toEqual({})
+  })
+
+  it('keeps an authored presentation', () => {
+    const authored = parsePlatformErrorResponse(402, {
+      type: 'error',
+      error: { type: 'insufficient_balance', message: 'Top up.', subscription_required: false },
+    })
+    expect(coalesceProviderErrorPresentation(BILLING_402, authored)).toBe(authored)
+  })
+})
+
+describe('isProviderFacingError', () => {
+  it('treats a paywall presentation as provider-facing even when the SDK said unknown', () => {
+    expect(isProviderFacingError('unknown', { severity: 'error', icon: 'info', message: 'x', paywall: {} })).toBe(true)
+    expect(isProviderFacingError('unknown', null)).toBe(false)
+    expect(isProviderFacingError('billing_error', null)).toBe(true)
   })
 })
 

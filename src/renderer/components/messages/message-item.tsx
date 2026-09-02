@@ -16,7 +16,7 @@ import { parseSenderPrefix } from '@shared/lib/utils/sender-prefix'
 import ReactMarkdown, { type Components, type Options as ReactMarkdownOptions } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { splitStreamingMarkdown } from './split-streaming-markdown'
-import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
+import { isProviderFacingError } from '@shared/lib/types/api'
 import type { ApiMessage, ApiToolCall } from '@shared/lib/types/api'
 import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
 import { useRenderTracker } from '@renderer/lib/perf'
@@ -348,7 +348,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   const streamingSplit = isStreaming && text ? splitStreamingMarkdown(text) : null
 
   // Detect assistant messages that failed due to an LLM provider error (from SDK metadata)
-  const isProviderErrorMessage = isAssistant && !!message.apiError && PROVIDER_ERROR_CODES.has(message.apiError)
+  const isProviderErrorMessage = isAssistant && isProviderFacingError(message.apiError, message.errorPresentation)
 
   // Don't render assistant messages that have no text, no tool calls, and no
   // thinking (and aren't streaming). These are transient empty entries from

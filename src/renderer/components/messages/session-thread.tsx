@@ -1,9 +1,7 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { cn } from '@shared/lib/utils'
-import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
 import { MessageList } from '@renderer/components/messages/message-list'
 import { AgentActivityIndicator } from '@renderer/components/messages/agent-activity-indicator'
-import { useDevPaywallOverride } from '@renderer/components/dev/paywall-dev-override'
 import { TrayManager } from '@renderer/components/tray/tray-manager'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import type { PendingMessage } from '@renderer/components/messages/pending-message'
@@ -55,16 +53,9 @@ export function SessionThread({
   const [footerHeight, setFooterHeight] = useState(0)
 
   // A paywall 402 blocks further use of the session, so the paywall card
-  // (rendered by AgentActivityIndicator) REPLACES the composer instead of
-  // stacking above it. Dev builds can force this via the paywall dev panel.
-  const { error, apiErrorCode, errorPresentation } = useMessageStream(sessionId, agentSlug)
-  const devPaywallOverride = useDevPaywallOverride()
-  const paywallActive = Boolean(devPaywallOverride) || Boolean(
-    error
-    && apiErrorCode != null
-    && PROVIDER_ERROR_CODES.has(apiErrorCode)
-    && errorPresentation?.paywall,
-  )
+  // (rendered by AgentActivityIndicator) replaces the composer.
+  const { errorPresentation } = useMessageStream(sessionId, agentSlug)
+  const paywallActive = Boolean(errorPresentation?.paywall)
 
   useLayoutEffect(() => {
     if (!overlayFooter) {

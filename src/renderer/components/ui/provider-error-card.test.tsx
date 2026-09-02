@@ -4,6 +4,10 @@ import { fireEvent, render, screen } from '@testing-library/react'
 
 import { parsePlatformErrorResponse } from '@shared/lib/llm-provider/platform-error-presentation'
 import { resolvePresentationMarkdown } from '@shared/lib/llm-provider/error-presentation'
+import {
+  getBillingResumeTarget,
+  resetBillingResumeTargetForTests,
+} from '@renderer/lib/billing-resume-target'
 
 import { ProviderErrorCard, ProviderErrorView } from './provider-error-card'
 
@@ -15,8 +19,22 @@ const platformAuth = {
 }
 
 const billingInfo = {
-  data: undefined as { billing?: { hasPaymentMethod?: boolean } } | undefined,
+  data: undefined as {
+    billing?: {
+      configured: boolean
+      subscription: { status: string | null; paymentStatus: string | null }
+      seat: { balanceCents: number; startingBalanceCents: number } | null
+      orgPool: { poolBalanceCents: number }
+      hasPaymentMethod?: boolean
+      autoReload?: {
+        enabled: boolean
+        thresholdCents: number | null
+        topupAmountCents: number | null
+      } | null
+    }
+  } | undefined,
   isLoading: false,
+  error: null as Error | null,
 }
 
 vi.mock('@renderer/hooks/use-platform-auth', () => ({
@@ -29,13 +47,16 @@ vi.mock('@renderer/hooks/use-billing-info', () => ({
 
 const SPEND_CAP =
   'API Error: Request rejected (429) · A spend cap for this workspace was reached. It resets within 30 days. Ask a workspace admin to raise it.'
+const RESUME_TARGET = { agentSlug: 'agent-1', sessionId: 'session-1' }
 
 beforeEach(() => {
+  resetBillingResumeTargetForTests()
   platformAuth.connected = true
   platformAuth.orgId = 'org_123'
   platformAuth.role = 'owner'
   billingInfo.data = undefined
   billingInfo.isLoading = false
+  billingInfo.error = null
 })
 
 describe('ProviderErrorView', () => {
@@ -124,7 +145,7 @@ describe('ProviderErrorView', () => {
       />,
     )
 
-    expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Subscription Required')
+    expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Subscribe to keep going')
     fireEvent.click(screen.getByRole('button', { name: /subscribe/i }))
     expect(openExternal).toHaveBeenCalledWith(
       'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
@@ -171,6 +192,7 @@ describe('ProviderErrorView', () => {
           kind: 'topup',
           href: 'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
         }}
+        resumeTarget={RESUME_TARGET}
       />,
     )
 
@@ -181,6 +203,7 @@ describe('ProviderErrorView', () => {
     expect(openExternal).toHaveBeenCalledWith(
       'https://platform.example.com/dashboard/organizations/org_123?tab=billing&intent=topup&return_app=superagent%3A%2F%2Fbilling-updated',
     )
+    expect(getBillingResumeTarget()).toMatchObject(RESUME_TARGET)
   })
 
   it('renders a Go to billing button when the role is unknown', () => {
@@ -243,5 +266,33 @@ describe('ProviderErrorCard', () => {
       />,
     )
     expect(screen.getByRole('button', { name: /subscribe/i })).toBeInTheDocument()
+  })
+
+  it('shows the full billing snapshot and a payment-recovery CTA', () => {
+    billingInfo.data = {
+      billing: {
+        configured: true,
+        subscription: { status: 'active', paymentStatus: 'past_due' },
+        seat: { balanceCents: 1250, startingBalanceCents: 2000 },
+        orgPool: { poolBalanceCents: 5000 },
+        hasPaymentMethod: true,
+        autoReload: { enabled: true, thresholdCents: 1000, topupAmountCents: 5000 },
+      },
+    }
+    render(
+      <ProviderErrorCard
+        message="API Error: 402 Workspace has insufficient balance. Top up to continue."
+        presentation={parsePlatformErrorResponse(
+          402,
+          'API Error: 402 Workspace has insufficient balance. Top up to continue.',
+        )!}
+      />,
+    )
+
+    expect(screen.getByText('Payment needs attention')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /fix payment/i })).toBeInTheDocument()
+    expect(screen.getByTestId('paywall-billing-summary')).toHaveTextContent(
+      'Plan Active · Payment Past Due · Seat $12.50 · Organization $50.00 · Card on file · Auto-reload on ($50.00 at $10.00)',
+    )
   })
 })

@@ -54,6 +54,32 @@ describe('fetchPlatformBillingInfo', () => {
     expect(result.hasPaymentMethod).toBe(true)
   })
 
+  it('keeps a proxy access snapshot from newer proxies', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      jsonResponse({
+        ...VALID_SNAPSHOT,
+        access: { allowed: false, reason: 'insufficient_balance' },
+      }),
+    )
+    const result = await fetchPlatformBillingInfo()
+    expect(result.access).toEqual({ allowed: false, reason: 'insufficient_balance' })
+  })
+
+  it('keeps auto-reload settings from newer proxies', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      jsonResponse({
+        ...VALID_SNAPSHOT,
+        autoReload: { enabled: true, thresholdCents: 1000, topupAmountCents: 5000 },
+      }),
+    )
+    const result = await fetchPlatformBillingInfo()
+    expect(result.autoReload).toEqual({
+      enabled: true,
+      thresholdCents: 1000,
+      topupAmountCents: 5000,
+    })
+  })
+
   it('accepts a configured:false snapshot with null seat', async () => {
     vi.spyOn(global, 'fetch').mockResolvedValue(
       jsonResponse({
