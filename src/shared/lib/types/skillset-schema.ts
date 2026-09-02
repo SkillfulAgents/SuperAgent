@@ -272,18 +272,12 @@ export const PlatformBillingInfoSchema = z.object({
   // Newer proxies may include this so the 402 paywall can choose add-card vs top-up.
   hasPaymentMethod: z.boolean().optional(),
   // Proxy KV gate. Balance fields are display-only; this decides auto-resume.
+  // Only `allowed` drives decisions; `reason` stays a free string so a new
+  // proxy-side reason can't fail the whole snapshot parse.
   access: z
     .object({
       allowed: z.boolean(),
-      reason: z.enum([
-        'current_subscription',
-        'current_pool',
-        'insufficient_balance',
-        'past_due',
-        'blocked',
-        'fail_open_unmigrated',
-        'billing_gate_error',
-      ]),
+      reason: z.string(),
     })
     .optional(),
 })

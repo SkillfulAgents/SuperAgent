@@ -1,3 +1,6 @@
+import { useEffect, useMemo } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
+
 import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 import type { ApiMessageOrBoundary } from '@shared/lib/types/api'
 import { usePaywallCta } from '@renderer/hooks/use-paywall-cta'
@@ -35,9 +38,28 @@ export function useSessionPaywall(
   persisted: PaywallSource | null,
 ) {
   const source = live ?? persisted
+  const queryClient = useQueryClient()
+
+  // A live 402 outranks any snapshot fetched before it: within staleTime a
+  // cached `allowed: true` from a previous recovery would instantly dismiss
+  // the new paywall. Stamp its arrival and refetch.
+  const liveSeenAt = useMemo(() => (live ? Date.now() : 0), [live])
+  useEffect(() => {
+    if (!live) return
+    void queryClient.invalidateQueries({
+      queryKey: ['platform-billing'],
+      refetchType: 'active',
+    })
+  }, [live, queryClient])
+
   const billing = usePaywallCta(source?.presentation ?? NO_PAYWALL)
+  const awaitingFreshVerdict =
+    live !== null
+    && billing.billingAccessKnown
+    && billing.billingUpdatedAt <= liveSeenAt
   const active = source !== null && (
     billing.loading
+    || awaitingFreshVerdict
     || (billing.billingAccessKnown && !billing.billingAccessAllowed)
   )
 

@@ -17,6 +17,8 @@ export function usePaywallCta(presentation: ProviderErrorPresentation): {
   loading: boolean
   billingAccessKnown: boolean
   billingAccessAllowed: boolean
+  /** When the snapshot was fetched (react-query dataUpdatedAt; 0 = never). */
+  billingUpdatedAt: number
 } {
   const { data: platformAuth } = usePlatformAuthStatus()
   const role = platformAuth?.role
@@ -43,6 +45,7 @@ export function usePaywallCta(presentation: ProviderErrorPresentation): {
         loading: false,
         billingAccessKnown: false,
         billingAccessAllowed: false,
+        billingUpdatedAt: 0,
       }
     }
 
@@ -63,6 +66,7 @@ export function usePaywallCta(presentation: ProviderErrorPresentation): {
         loading: true,
         billingAccessKnown: false,
         billingAccessAllowed: false,
+        billingUpdatedAt: 0,
       }
     }
 
@@ -80,10 +84,12 @@ export function usePaywallCta(presentation: ProviderErrorPresentation): {
         billingQuery.data?.stale !== true && billing?.access !== undefined,
       billingAccessAllowed:
         billingQuery.data?.stale !== true && billing?.access?.allowed === true,
+      billingUpdatedAt: billingQuery.dataUpdatedAt ?? 0,
     }
   }, [
     billingQuery.data?.billing,
     billingQuery.data?.stale,
+    billingQuery.dataUpdatedAt,
     billingQuery.isLoading,
     flagFrom402,
     role,

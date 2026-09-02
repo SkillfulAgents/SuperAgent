@@ -1,10 +1,7 @@
 import { cn } from '@shared/lib/utils/cn'
 import { useState, useCallback, useRef, useLayoutEffect, useMemo, memo, type ReactNode } from 'react'
 import { Check, Copy, Link2 } from 'lucide-react'
-import {
-  ProviderErrorCard,
-  ProviderErrorView,
-} from '@renderer/components/ui/provider-error-card'
+import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
 import { ToolCallItem } from './tool-call-item'
 import { ThinkingBlockItem } from './thinking-block-item'
 import { SubAgentBlock } from './subagent-block'
@@ -434,21 +431,13 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                 </div>
               )}
 
-              {/* LLM provider error display */}
+              {/* LLM provider error display. Paywalls included: ProviderErrorCard
+                  resolves the CTA itself, so a historical 402 keeps its button. */}
               {hasText && !isSlashCommand && isProviderErrorMessage && (
-                message.errorPresentation?.paywall
-                  ? (
-                      <ProviderErrorView
-                        presentation={message.errorPresentation}
-                        rawMessage={text}
-                      />
-                    )
-                  : (
-                      <ProviderErrorCard
-                        message={text}
-                        presentation={message.errorPresentation}
-                      />
-                    )
+                <ProviderErrorCard
+                  message={text}
+                  presentation={message.errorPresentation}
+                />
               )}
 
               {/* Text content */}
