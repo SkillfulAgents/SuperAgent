@@ -8,7 +8,7 @@ import type { PaywallCta } from '@shared/lib/llm-provider/paywall-cta'
 
 import { HomeEmptyClouds } from '@renderer/components/home/home-empty-clouds'
 import { RequestError } from '@renderer/components/messages/request-error'
-import { PaywallActions, type PaywallResumeTarget } from '@renderer/components/ui/paywall-actions'
+import { PaywallActions } from '@renderer/components/ui/paywall-actions'
 import { usePaywallCta } from '@renderer/hooks/use-paywall-cta'
 import { useResolvedErrorPresentation } from '@renderer/hooks/use-provider-error-presentation'
 import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
@@ -94,13 +94,11 @@ function PaywallCard({
   presentation,
   cta,
   loading,
-  resumeTarget,
   'data-testid': testId,
 }: {
   presentation: ProviderErrorPresentation
   cta: PaywallCta | null
   loading: boolean
-  resumeTarget?: PaywallResumeTarget
   'data-testid'?: string
 }) {
   const message = splitPaywallMessage(presentation.message)
@@ -133,7 +131,7 @@ function PaywallCard({
             </p>
           )}
         </div>
-        <PaywallActions cta={cta} loading={loading} resumeTarget={resumeTarget} />
+        <PaywallActions cta={cta} loading={loading} />
       </div>
     </div>
   )
@@ -144,14 +142,12 @@ export function ProviderErrorView({
   rawMessage,
   paywallCta = null,
   paywallLoading = false,
-  resumeTarget,
   'data-testid': testId,
 }: {
   presentation: ProviderErrorPresentation
   rawMessage?: string
   paywallCta?: PaywallCta | null
   paywallLoading?: boolean
-  resumeTarget?: PaywallResumeTarget
   'data-testid'?: string
 }) {
   if (presentation.paywall) {
@@ -160,7 +156,6 @@ export function ProviderErrorView({
         presentation={presentation}
         cta={paywallCta}
         loading={paywallLoading}
-        resumeTarget={resumeTarget}
         data-testid={testId}
       />
     )
@@ -198,12 +193,10 @@ export function ProviderErrorView({
 export function ProviderErrorCard({
   message,
   presentation,
-  resumeTarget,
   'data-testid': testId,
 }: {
   message: string
   presentation?: ProviderErrorPresentation
-  resumeTarget?: PaywallResumeTarget
   'data-testid'?: string
 }) {
   const base = useMemo(
@@ -218,7 +211,6 @@ export function ProviderErrorCard({
       rawMessage={message}
       paywallCta={paywall.cta}
       paywallLoading={paywall.loading}
-      resumeTarget={resumeTarget}
       data-testid={testId}
     />
   )

@@ -29,16 +29,6 @@ import {
 } from '@shared/lib/services/agent-service'
 import { containerManager } from '@shared/lib/container/container-manager'
 import {
-  beginBillingResumeAttempt,
-  finishBillingResumeAttempt,
-} from '../billing-resume-attempts'
-import {
-  latestHiddenContinuationIsResume,
-  latestVisibleAssistantHasPaywall,
-  resumeAfterBillingBodySchema,
-} from '@shared/lib/llm-provider/billing-resume'
-import { BILLING_RESUME_SYSTEM_PROMPT } from '@shared/lib/llm-provider/paywall-cta'
-import {
   syncAgentConnectionEnvironment,
   updateConnectedAccountsEnvironment,
   updateRemoteMcpEnvironment,
@@ -2869,67 +2859,6 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
   } catch (error) {
     console.error('Failed to send message:', error)
     return c.json({ error: 'Failed to send message' }, 500)
-  }
-})
-
-// Resume a turn interrupted by a billing 402. The prompt is fixed and hidden
-// from the transcript UI; callers cannot use this route to inject content.
-agents.post('/:id/sessions/:sessionId/resume-after-billing', AgentUser(), async (c) => {
-  const agentSlug = getAgentId(c)
-  const sessionId = c.req.param('sessionId')
-  if (!(await sessionIsKnown(agentSlug, sessionId))) {
-    return c.json({ error: 'Session not found' }, 404)
-  }
-
-  const parsed = resumeAfterBillingBodySchema.safeParse(await c.req.json().catch(() => ({})))
-  if (!parsed.success) {
-    return c.json({ error: 'Invalid resume request' }, 400)
-  }
-  const { attemptId } = parsed.data
-
-  const claim = beginBillingResumeAttempt(attemptId, sessionId)
-  if (!claim.ok && claim.duplicate) {
-    return c.json({ resumed: true, duplicate: true }, 202)
-  }
-  if (!claim.ok) {
-    return c.json({ error: 'Resume already in progress' }, 409)
-  }
-
-  if (messagePersister.isSessionActive(sessionId)) {
-    finishBillingResumeAttempt(attemptId, sessionId, false)
-    return c.json({ error: 'Session is already active' }, 409)
-  }
-
-  try {
-    const page = await getSessionMessagesPage(agentSlug, sessionId, { limit: 20 })
-    attachProviderErrorPresentations(page.messages)
-    if (latestHiddenContinuationIsResume(page.messages)) {
-      finishBillingResumeAttempt(attemptId, sessionId, false)
-      return c.json({ resumed: true, duplicate: true }, 202)
-    }
-    if (!latestVisibleAssistantHasPaywall(page.messages)) {
-      finishBillingResumeAttempt(attemptId, sessionId, false)
-      return c.json({ error: 'Session is not waiting on billing' }, 409)
-    }
-
-    const client = await containerManager.ensureRunning(agentSlug)
-    if (!messagePersister.isSubscribed(sessionId)) {
-      await messagePersister.subscribeToSession(sessionId, client, sessionId, agentSlug)
-    }
-    if (!messagePersister.tryMarkSessionActiveForBillingResume(sessionId, agentSlug, attemptId)) {
-      finishBillingResumeAttempt(attemptId, sessionId, false)
-      return c.json({ error: 'Session is already active' }, 409)
-    }
-    await client.sendMessage(sessionId, BILLING_RESUME_SYSTEM_PROMPT, randomUUID(), {
-      shouldQuery: true,
-    })
-    finishBillingResumeAttempt(attemptId, sessionId, true)
-    return c.json({ resumed: true }, 202)
-  } catch (error) {
-    finishBillingResumeAttempt(attemptId, sessionId, false)
-    messagePersister.markSessionIdleIfBillingResumeClaimed(sessionId, attemptId)
-    console.error('Failed to resume after billing:', error)
-    return c.json({ error: 'Failed to resume after billing' }, 500)
   }
 })
 

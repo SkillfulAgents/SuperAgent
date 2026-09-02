@@ -1374,23 +1374,6 @@ export function consumeDiscardedCommand(sessionId: string, uuid: string): void {
   }
 }
 
-export function clearPaywallError(sessionId: string): void {
-  const state = streamStates.get(sessionId)
-  if (!state) return
-  if (!state.errorPresentation?.paywall) return
-  streamStates.set(sessionId, {
-    ...state,
-    error: null,
-    apiErrorCode: null,
-    errorPresentation: null,
-  })
-  streamListeners.get(sessionId)?.forEach((listener) => listener())
-}
-
-export function clearPaywallErrors(): void {
-  for (const sessionId of streamStates.keys()) clearPaywallError(sessionId)
-}
-
 export function removePeerUserMessage(sessionId: string, uuid: string): void {
   const current = streamStates.get(sessionId)
   if (current && current.peerUserMessages.some((p) => p.uuid === uuid)) {

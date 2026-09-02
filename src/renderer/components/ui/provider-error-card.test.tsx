@@ -4,10 +4,6 @@ import { fireEvent, render, screen } from '@testing-library/react'
 
 import { parsePlatformErrorResponse } from '@shared/lib/llm-provider/platform-error-presentation'
 import { resolvePresentationMarkdown } from '@shared/lib/llm-provider/error-presentation'
-import {
-  getBillingResumeTarget,
-  resetBillingResumeTargetForTests,
-} from '@renderer/lib/billing-resume-target'
 
 import { ProviderErrorCard, ProviderErrorView } from './provider-error-card'
 
@@ -43,10 +39,8 @@ vi.mock('@renderer/hooks/use-billing-info', () => ({
 
 const SPEND_CAP =
   'API Error: Request rejected (429) · A spend cap for this workspace was reached. It resets within 30 days. Ask a workspace admin to raise it.'
-const RESUME_TARGET = { agentSlug: 'agent-1', sessionId: 'session-1' }
 
 beforeEach(() => {
-  resetBillingResumeTargetForTests()
   platformAuth.connected = true
   platformAuth.orgId = 'org_123'
   platformAuth.role = 'owner'
@@ -208,7 +202,6 @@ describe('ProviderErrorView', () => {
           kind: 'topup',
           href: 'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
         }}
-        resumeTarget={RESUME_TARGET}
       />,
     )
 
@@ -219,7 +212,6 @@ describe('ProviderErrorView', () => {
     expect(openExternal).toHaveBeenCalledWith(
       'https://platform.example.com/dashboard/organizations/org_123?tab=billing&intent=topup&return_app=superagent%3A%2F%2Fbilling-updated',
     )
-    expect(getBillingResumeTarget()).toMatchObject(RESUME_TARGET)
   })
 
   it('renders a Go to billing button when the role is unknown', () => {

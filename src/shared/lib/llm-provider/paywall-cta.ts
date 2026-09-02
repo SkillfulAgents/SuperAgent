@@ -1,6 +1,4 @@
 export const ORG_BILLING_PATH = '/dashboard/organizations/{orgId}?tab=billing'
-export const BILLING_RESUME_SYSTEM_PROMPT =
-  '[SYSTEM] Continue the interrupted request from where you stopped. Do not repeat work that was already completed.'
 
 export type PaywallCta =
   | { kind: 'subscribe'; href: string | null }
@@ -45,9 +43,6 @@ export function buildTopupHandoffUrl(
 const ACTIVE_SUBSCRIPTION = new Set(['active', 'trialing', 'cancellation_scheduled'])
 const UNRESOLVED_SUBSCRIPTION = new Set(['past_due', 'blocked', 'payment_failed'])
 const PAYMENT_NEEDS_ATTENTION = new Set(['past_due', 'blocked', 'payment_failed'])
-export function isArmablePaywallCta(kind: PaywallCta['kind']): boolean {
-  return kind === 'subscribe' || kind === 'add_card' || kind === 'topup' || kind === 'manage_payment'
-}
 
 // CLI 402s drop `subscription_required`. The billing snapshot still knows
 // whether this org needs a plan vs usage credit.

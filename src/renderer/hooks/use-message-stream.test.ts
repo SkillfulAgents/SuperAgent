@@ -273,40 +273,6 @@ describe('useMessageStream', () => {
     expect(result.current.apiErrorCode).toBe('authentication_failed')
   })
 
-  it('clears only a server-authored paywall', async () => {
-    const { useMessageStream, clearPaywallErrors } = await getHookModule()
-    const { result } = renderHook(
-      () => useMessageStream('session-1', 'agent-1'),
-      { wrapper: createWrapper() }
-    )
-
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({
-        type: 'session_error',
-        error: 'API Error: 402 Workspace has insufficient balance. Top up to continue.',
-        apiErrorCode: 'unknown',
-        errorPresentation: {
-          severity: 'error',
-          icon: 'info',
-          message: '**You need more usage credit to continue**',
-          paywall: {},
-        },
-      })
-    })
-    act(() => clearPaywallErrors())
-    expect(result.current.error).toBeNull()
-
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({
-        type: 'session_error',
-        error: 'API Error: 402 Workspace has insufficient balance. Top up to continue.',
-        apiErrorCode: 'unknown',
-      })
-    })
-    act(() => clearPaywallErrors())
-    expect(result.current.error).toContain('insufficient balance')
-  })
-
   it('sets apiErrorCode from stream_api_error event', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(

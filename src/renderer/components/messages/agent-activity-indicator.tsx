@@ -273,7 +273,6 @@ export function AgentActivityIndicator({
           <ProviderErrorCard
             message={error}
             presentation={errorPresentation ?? undefined}
-            resumeTarget={{ agentSlug, sessionId }}
           />
         ) : (
           <ActivityErrorCard message={error} />

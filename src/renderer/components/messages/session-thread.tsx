@@ -150,11 +150,6 @@ export function SessionThread({
                 rawMessage={paywall.source.message}
                 paywallCta={paywall.cta}
                 paywallLoading={paywall.loading}
-                resumeTarget={{
-                  agentSlug,
-                  sessionId,
-                  initialAllowed: paywall.billingAccessAllowed,
-                }}
               />
             </div>
           )}

@@ -189,7 +189,6 @@ interface StreamingState {
   // rolled back (markSessionIdle), so a failed send cannot leave the session
   // ranked as if it had just been used.
   provisionalActivity: SessionActivityMark | null
-  billingResumeClaimId?: string | null
   lastContextWindow: number // Last known context window size (default 200k)
   lastAssistantUsage: SessionUsage | null // Per-call usage from most recent assistant message
   completedSubagentIds: Set<string> // completed agentIds; a new task_started with the same ID is a resumed run
@@ -714,13 +713,6 @@ class MessagePersister {
     }
     state.provisionalActivity = null
     this.finalizeIdle(agentSlug, sessionId, state)
-  }
-
-  markSessionIdleIfBillingResumeClaimed(sessionId: string, claimId: string): void {
-    const state = this.streamingStates.get(sessionId)
-    if (state?.billingResumeClaimId !== claimId) return
-    state.billingResumeClaimId = null
-    this.markSessionIdle(sessionId)
   }
 
   // Check if a session is currently active (processing user request)
@@ -1372,7 +1364,6 @@ class MessagePersister {
         this.capture.recordNote(sessionId, 'state_created', { agentSlug }).catch(() => {})
       }
     }
-    state.billingResumeClaimId = null
     // Re-marking an ALREADY-active session is how a queued/steering message is
     // accepted mid-turn — it is not a turn boundary. Split the resets the same way
     // the app's session_active handler does (see use-message-stream.ts): what any
@@ -1448,19 +1439,6 @@ class MessagePersister {
     // makes a session that joins mid-review show awaiting immediately (the
     // review used to mark only the sessions active at request time).
     this.syncSessionAwaiting(agentSlug, sessionId)
-  }
-
-  tryMarkSessionActiveForBillingResume(
-    sessionId: string,
-    agentSlug: string,
-    claimId: string,
-  ): boolean {
-    if (this.isSessionActive(sessionId)) return false
-    this.markSessionActive(sessionId, agentSlug)
-    const state = this.streamingStates.get(sessionId)
-    if (!state?.isActive) return false
-    state.billingResumeClaimId = claimId
-    return true
   }
 
   // Recompute the derived awaiting projection for a session and broadcast on
@@ -1847,7 +1825,6 @@ class MessagePersister {
       recordSessionActivity(state.agentSlug, sessionId, message.timestamp)
       // The turn is real; the optimistic send record no longer needs undoing.
       state.provisionalActivity = null
-      state.billingResumeClaimId = null
     }
 
     // Container late-join catch-up: the runtime replays the last turn's
