@@ -7,7 +7,7 @@ import {
   providerErrorPresentationSchema,
   resolvePresentationMarkdown,
 } from './error-presentation'
-import { coalesceProviderErrorPresentation, extractSubscriptionRequired, parsePlatformErrorResponse } from './platform-error-presentation'
+import { extractSubscriptionRequired, parsePlatformErrorResponse } from './platform-error-presentation'
 import { isProviderFacingError } from '@shared/lib/types/api'
 
 const SPEND_CAP =
@@ -166,21 +166,6 @@ describe('extractSubscriptionRequired', () => {
       type: 'error',
       error: { message: 'Workspace has insufficient balance. Top up to continue.' },
     })).toBeUndefined()
-  })
-})
-
-describe('coalesceProviderErrorPresentation', () => {
-  it('parses a 402 string when the stream omitted presentation', () => {
-    const parsed = coalesceProviderErrorPresentation(BILLING_402, null)
-    expect(parsed?.paywall).toEqual({})
-  })
-
-  it('keeps an authored presentation', () => {
-    const authored = parsePlatformErrorResponse(402, {
-      type: 'error',
-      error: { type: 'insufficient_balance', message: 'Top up.', subscription_required: false },
-    })
-    expect(coalesceProviderErrorPresentation(BILLING_402, authored)).toBe(authored)
   })
 })
 

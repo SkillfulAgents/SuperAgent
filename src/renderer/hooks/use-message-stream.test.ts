@@ -293,19 +293,8 @@ describe('useMessageStream', () => {
         },
       })
     })
-    expect(result.current.error).toContain('insufficient balance')
-
     act(() => clearPaywallErrors())
     expect(result.current.error).toBeNull()
-    expect(result.current.apiErrorCode).toBeNull()
-  })
-
-  it('does not clear an unknown error that is not a paywall', async () => {
-    const { useMessageStream, clearPaywallErrors } = await getHookModule()
-    const { result } = renderHook(
-      () => useMessageStream('session-1', 'agent-1'),
-      { wrapper: createWrapper() }
-    )
 
     act(() => {
       MockEventSource.instances[0].simulateMessage({

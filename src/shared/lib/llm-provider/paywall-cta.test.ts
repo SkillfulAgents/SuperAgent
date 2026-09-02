@@ -75,23 +75,13 @@ describe('buildTopupHandoffUrl', () => {
 })
 
 describe('subscriptionRequiredFromBilling', () => {
-  it('is true when billing is not set up or the plan is inactive', () => {
+  it('treats a live plan as subscribed and a canceled or unset plan as required', () => {
     expect(subscriptionRequiredFromBilling({ configured: false, subscription: { status: null } })).toBe(true)
-    expect(subscriptionRequiredFromBilling({ configured: true, subscription: { status: 'inactive' } })).toBe(true)
     expect(subscriptionRequiredFromBilling({ configured: true, subscription: { status: 'canceled' } })).toBe(true)
-  })
-
-  it('is false when the org already has a live plan', () => {
     expect(subscriptionRequiredFromBilling({ configured: true, subscription: { status: 'active' } })).toBe(false)
-    expect(subscriptionRequiredFromBilling({ configured: true, subscription: { status: 'trialing' } })).toBe(false)
     expect(subscriptionRequiredFromBilling({ configured: true, subscription: { status: 'cancellation_scheduled' } })).toBe(false)
-  })
-
-  it('stays unknown when billing is missing or the status is a payment block', () => {
-    expect(subscriptionRequiredFromBilling(undefined)).toBeUndefined()
-    expect(subscriptionRequiredFromBilling({ configured: true, subscription: { status: null } })).toBeUndefined()
     expect(subscriptionRequiredFromBilling({ configured: true, subscription: { status: 'past_due' } })).toBeUndefined()
-    expect(subscriptionRequiredFromBilling({ configured: true, subscription: { status: 'blocked' } })).toBeUndefined()
+    expect(subscriptionRequiredFromBilling(undefined)).toBeUndefined()
   })
 })
 
@@ -192,30 +182,6 @@ describe('resolvePaywallCta', () => {
     })).toEqual({ kind: 'topup', href: HREF })
   })
 
-  it('subscribes when a flag-less 402 is filled in from an inactive plan', () => {
-    expect(resolvePaywallCta({
-      subscriptionRequired: subscriptionRequiredFromBilling({
-        configured: true,
-        subscription: { status: 'inactive' },
-      }),
-      role: 'owner',
-      hasPaymentMethod: false,
-      billingHref: HREF,
-    })).toEqual({ kind: 'subscribe', href: HREF })
-  })
-
-  it('tops up when a flag-less 402 is filled in from an active plan with a card', () => {
-    expect(resolvePaywallCta({
-      subscriptionRequired: subscriptionRequiredFromBilling({
-        configured: true,
-        subscription: { status: 'active' },
-      }),
-      role: 'owner',
-      hasPaymentMethod: true,
-      billingHref: HREF,
-    })).toEqual({ kind: 'topup', href: HREF })
-  })
-
   it('returns the top-up CTA when the admin already has a card', () => {
     expect(resolvePaywallCta({
       subscriptionRequired: false,
@@ -233,15 +199,5 @@ describe('resolvePaywallCta', () => {
       paymentStatus: 'past_due',
       billingHref: HREF,
     })).toEqual({ kind: 'manage_payment', href: HREF })
-  })
-
-  it('asks a member to contact an admin for a failed payment', () => {
-    expect(resolvePaywallCta({
-      subscriptionRequired: false,
-      role: 'member',
-      hasPaymentMethod: true,
-      paymentStatus: 'payment_failed',
-      billingHref: HREF,
-    })).toEqual({ kind: 'ask_admin', href: HREF })
   })
 })

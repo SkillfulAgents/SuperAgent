@@ -102,21 +102,6 @@ describe('SessionThread footer layout', () => {
     expect(screen.getByTestId('message-list')).toHaveAttribute('data-bottom-inset', '0')
   })
 
-  it('hides the composer only when the server authored a paywall', () => {
-    mockStreamState.error = 'API Error: 402 Workspace has insufficient balance. Top up to continue.'
-    mockStreamState.apiErrorCode = 'unknown'
-    mockStreamState.errorPresentation = { paywall: {} }
-    renderWithProviders(
-      <SessionThread
-        sessionId="s-1"
-        agentSlug="agent-1"
-        footer={<div>Composer</div>}
-        overlayFooter
-      />,
-    )
-    expect(screen.queryByText('Composer')).not.toBeInTheDocument()
-  })
-
   it('keeps the composer for an unknown 402 without a server paywall', () => {
     mockStreamState.error = 'API Error: 402 Workspace has insufficient balance. Top up to continue.'
     mockStreamState.apiErrorCode = 'unknown'

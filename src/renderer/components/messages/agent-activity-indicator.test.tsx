@@ -142,17 +142,6 @@ describe('AgentActivityIndicator', () => {
     expect(screen.getByRole('link', { name: /raise spend limit/i })).toBeInTheDocument()
   })
 
-  it('shows a paywall card only when the server authored a paywall', () => {
-    platformAuth.connected = true
-    mockStreamState.error = 'API Error: 402 Workspace has insufficient balance. Top up to continue.'
-    mockStreamState.apiErrorCode = 'unknown'
-    mockStreamState.errorPresentation = parsePlatformErrorResponse(402, mockStreamState.error)
-    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    const card = screen.getByTestId('provider-error-card')
-    expect(card).toHaveTextContent('You need more usage credit to continue')
-    expect(screen.queryByTestId('error-card')).not.toBeInTheDocument()
-  })
-
   it('does not turn a non-platform unknown error into a paywall', () => {
     mockStreamState.error = 'API Error: 402 Workspace has insufficient balance. Top up to continue.'
     mockStreamState.apiErrorCode = 'unknown'

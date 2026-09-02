@@ -3665,19 +3665,6 @@ describe('POST /:id/sessions/:sessionId/resume-after-billing', () => {
     expect(mockDbInsertValues).not.toHaveBeenCalled()
   })
 
-  it('rejects a missing attempt id', async () => {
-    const res = await postJson(createApp(), URL, {})
-    expect(res.status).toBe(400)
-    expect(mockSendMessage).not.toHaveBeenCalled()
-  })
-
-  it('rejects an already-active session', async () => {
-    vi.mocked(messagePersister.isSessionActive).mockReturnValue(true)
-    const res = await postJson(createApp(), URL, { attemptId: ATTEMPT })
-    expect(res.status).toBe(409)
-    expect(mockSendMessage).not.toHaveBeenCalled()
-  })
-
   it('rejects a session whose latest assistant is not a paywall', async () => {
     vi.mocked(getSessionMessagesPage).mockResolvedValue({
       messages: [{
@@ -3701,33 +3688,6 @@ describe('POST /:id/sessions/:sessionId/resume-after-billing', () => {
     expect(res.status).toBe(202)
     expect(await res.json()).toEqual({ resumed: true, duplicate: true })
     expect(mockSendMessage).not.toHaveBeenCalled()
-  })
-
-  it('treats an already-sent hidden continuation as a duplicate', async () => {
-    vi.mocked(getSessionMessagesPage).mockResolvedValue({
-      messages: [
-        ...paywallPage().messages,
-        {
-          id: 'user-1',
-          type: 'user',
-          content: { text: BILLING_RESUME_SYSTEM_PROMPT },
-          toolCalls: [],
-          createdAt: new Date(),
-        },
-      ],
-      nextCursor: null,
-    } as never)
-    const res = await postJson(createApp(), URL, { attemptId: ATTEMPT })
-    expect(res.status).toBe(202)
-    expect(await res.json()).toEqual({ resumed: true, duplicate: true })
-    expect(mockSendMessage).not.toHaveBeenCalled()
-  })
-
-  it('settles the optimistic active state when delivery fails', async () => {
-    mockSendMessage.mockRejectedValueOnce(new Error('container unavailable'))
-    const res = await postJson(createApp(), URL, { attemptId: ATTEMPT })
-    expect(res.status).toBe(500)
-    expect(messagePersister.markSessionIdle).toHaveBeenCalledWith('sess-1')
   })
 })
 

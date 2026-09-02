@@ -140,13 +140,3 @@ export function parsePlatformErrorResponse(
 
   return null
 }
-
-// Stream events omit presentation when the SDK tagged the 402 `unknown`.
-export function coalesceProviderErrorPresentation(
-  error: string | null | undefined,
-  presentation: ProviderErrorPresentation | null | undefined,
-): ProviderErrorPresentation | null {
-  if (presentation) return presentation
-  if (!error) return null
-  return parsePlatformErrorResponse(undefined, error)
-}

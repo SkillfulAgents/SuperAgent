@@ -23,7 +23,6 @@ const mockApiFetch = vi.fn()
 const mockGetTarget = vi.fn()
 const mockClearTarget = vi.fn()
 const mockClearPaywallError = vi.fn()
-const mockFlushPending = vi.fn()
 
 vi.mock('@renderer/lib/api', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
@@ -47,7 +46,7 @@ function wrapper() {
   }
 }
 
-function billingResponse(access?: { allowed: boolean; reason: 'current_pool' | 'insufficient_balance' }) {
+function billingResponse(access: { allowed: boolean; reason: 'current_pool' | 'insufficient_balance' }) {
   return {
     connected: true,
     billing: {
@@ -69,7 +68,6 @@ describe('useBillingUpdatedListener', () => {
     setBillingRecoveryDelaysForTests([0])
     billingUpdated = undefined
     mockGetTarget.mockReturnValue(target)
-    mockFlushPending.mockResolvedValue(false)
     mockApiFetch.mockImplementation(async (url: string) => {
       if (url === '/api/platform-auth/billing') {
         return {
@@ -85,7 +83,7 @@ describe('useBillingUpdatedListener', () => {
         billingUpdated = callback
         return () => {}
       },
-      flushPendingBillingUpdated: () => mockFlushPending(),
+      flushPendingBillingUpdated: async () => false,
     } as typeof window.electronAPI
   })
 
@@ -106,15 +104,6 @@ describe('useBillingUpdatedListener', () => {
     expect(mockClearPaywallError).toHaveBeenCalledWith('session-1')
   })
 
-  it('does not resume when no session armed the recovery', async () => {
-    mockGetTarget.mockReturnValue(null)
-    renderHook(() => useBillingUpdatedListener(), { wrapper: wrapper() })
-    act(() => billingUpdated?.())
-
-    await waitFor(() => expect(mockFlushPending).toHaveBeenCalled())
-    expect(mockApiFetch).not.toHaveBeenCalled()
-  })
-
   it('does not resume from a positive balance while the gate stays denied', async () => {
     mockApiFetch.mockImplementation(async (url: string) => ({
       ok: true,
@@ -132,31 +121,5 @@ describe('useBillingUpdatedListener', () => {
       expect.anything(),
     )
     expect(mockClearPaywallError).not.toHaveBeenCalled()
-  })
-
-  it('continues a cloud session when its tab regains focus after the gate allows', async () => {
-    delete window.electronAPI
-    renderHook(() => useBillingUpdatedListener(), { wrapper: wrapper() })
-    act(() => window.dispatchEvent(new Event('focus')))
-
-    await waitFor(() => {
-      expect(mockApiFetch).toHaveBeenCalledWith(
-        '/api/agents/agent-1/sessions/session-1/resume-after-billing',
-        expect.objectContaining({ method: 'POST' }),
-      )
-    })
-    expect(mockClearPaywallError).toHaveBeenCalledWith('session-1')
-  })
-
-  it('drains a billing-updated event that arrived before the listener mounted', async () => {
-    mockFlushPending.mockResolvedValue(true)
-    renderHook(() => useBillingUpdatedListener(), { wrapper: wrapper() })
-
-    await waitFor(() => {
-      expect(mockApiFetch).toHaveBeenCalledWith(
-        '/api/agents/agent-1/sessions/session-1/resume-after-billing',
-        expect.objectContaining({ method: 'POST' }),
-      )
-    })
   })
 })

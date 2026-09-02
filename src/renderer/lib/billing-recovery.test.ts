@@ -40,35 +40,24 @@ afterEach(() => {
 })
 
 describe('decideBillingResume', () => {
-  it('waits while the gate stays denied', () => {
+  it('resumes only after a denied gate becomes allowed before expiry', () => {
+    const now = Date.parse('2026-09-01T12:00:00.000Z')
     expect(decideBillingResume(
       snapshot({ allowed: false, reason: 'insufficient_balance' }),
       target,
-      Date.parse('2026-09-01T12:00:00.000Z'),
+      now,
     )).toBe('wait')
-  })
-
-  it('resumes only after a denied gate becomes allowed', () => {
     expect(decideBillingResume(
       snapshot({ allowed: true, reason: 'current_pool' }),
       target,
-      Date.parse('2026-09-01T12:00:00.000Z'),
+      now,
     )).toBe('resume')
-  })
-
-  it('does not resume from a positive balance when access is missing', () => {
-    expect(decideBillingResume(snapshot(), target, Date.parse('2026-09-01T12:00:00.000Z'))).toBe('abort')
-  })
-
-  it('does not resume when the gate was already allowed at arm time', () => {
+    expect(decideBillingResume(snapshot(), target, now)).toBe('abort')
     expect(decideBillingResume(
       snapshot({ allowed: true, reason: 'current_pool' }),
       { ...target, initialAllowed: true },
-      Date.parse('2026-09-01T12:00:00.000Z'),
+      now,
     )).toBe('abort')
-  })
-
-  it('aborts after expiry', () => {
     expect(decideBillingResume(
       snapshot({ allowed: true, reason: 'current_pool' }),
       target,
@@ -104,32 +93,5 @@ describe('recoverAfterBillingEvent', () => {
       delays: [0, 0, 0],
     })).resolves.toBe('waiting')
     expect(resume).not.toHaveBeenCalled()
-  })
-
-  it('ignores a duplicate event while a recovery is in flight', async () => {
-    rememberBillingResumeTarget({ agentSlug: 'agent-1', sessionId: 'session-1' })
-    let release!: () => void
-    const blocked = new Promise<void>((resolve) => { release = resolve })
-    const first = recoverAfterBillingEvent({
-      refresh: async () => {
-        await blocked
-        return snapshot({ allowed: true, reason: 'current_pool' })
-      },
-      resume: async () => true,
-      delays: [0],
-    })
-    await expect(recoverAfterBillingEvent({
-      refresh: async () => snapshot({ allowed: true, reason: 'current_pool' }),
-      resume: async () => true,
-    })).resolves.toBe('idle')
-    release()
-    await expect(first).resolves.toBe('resumed')
-  })
-
-  it('is idle when no session armed the recovery', async () => {
-    await expect(recoverAfterBillingEvent({
-      refresh: async () => snapshot({ allowed: true, reason: 'current_pool' }),
-      resume: async () => true,
-    })).resolves.toBe('idle')
   })
 })

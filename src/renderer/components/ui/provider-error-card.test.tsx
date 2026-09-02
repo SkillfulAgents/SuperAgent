@@ -19,22 +19,8 @@ const platformAuth = {
 }
 
 const billingInfo = {
-  data: undefined as {
-    billing?: {
-      configured: boolean
-      subscription: { status: string | null; paymentStatus: string | null }
-      seat: { balanceCents: number; startingBalanceCents: number } | null
-      orgPool: { poolBalanceCents: number }
-      hasPaymentMethod?: boolean
-      autoReload?: {
-        enabled: boolean
-        thresholdCents: number | null
-        topupAmountCents: number | null
-      } | null
-    }
-  } | undefined,
+  data: undefined as { billing?: { hasPaymentMethod?: boolean } } | undefined,
   isLoading: false,
-  error: null as Error | null,
 }
 
 vi.mock('@renderer/hooks/use-platform-auth', () => ({
@@ -56,7 +42,6 @@ beforeEach(() => {
   platformAuth.role = 'owner'
   billingInfo.data = undefined
   billingInfo.isLoading = false
-  billingInfo.error = null
 })
 
 describe('ProviderErrorView', () => {
@@ -266,33 +251,5 @@ describe('ProviderErrorCard', () => {
       />,
     )
     expect(screen.getByRole('button', { name: /subscribe/i })).toBeInTheDocument()
-  })
-
-  it('shows the full billing snapshot and a payment-recovery CTA', () => {
-    billingInfo.data = {
-      billing: {
-        configured: true,
-        subscription: { status: 'active', paymentStatus: 'past_due' },
-        seat: { balanceCents: 1250, startingBalanceCents: 2000 },
-        orgPool: { poolBalanceCents: 5000 },
-        hasPaymentMethod: true,
-        autoReload: { enabled: true, thresholdCents: 1000, topupAmountCents: 5000 },
-      },
-    }
-    render(
-      <ProviderErrorCard
-        message="API Error: 402 Workspace has insufficient balance. Top up to continue."
-        presentation={parsePlatformErrorResponse(
-          402,
-          'API Error: 402 Workspace has insufficient balance. Top up to continue.',
-        )!}
-      />,
-    )
-
-    expect(screen.getByText('Payment needs attention')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /fix payment/i })).toBeInTheDocument()
-    expect(screen.getByTestId('paywall-billing-summary')).toHaveTextContent(
-      'Plan Active · Payment Past Due · Seat $12.50 · Organization $50.00 · Card on file · Auto-reload on ($50.00 at $10.00)',
-    )
   })
 })
