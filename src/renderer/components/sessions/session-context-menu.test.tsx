@@ -134,9 +134,12 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
   return {
     ...actual,
     useNavigate: () => mockNavigate,
-    useParams: () => ({}),
   }
 })
+// Off the session route, as when the menu is opened from a list row.
+vi.mock('@renderer/router/use-route-location', () => ({
+  useRouteLocation: () => ({ selectedAgentSlug: 'agent-1', view: { kind: 'home' } }),
+}))
 
 describe('SessionContextMenu usage totals', () => {
   beforeEach(() => {
@@ -355,7 +358,7 @@ describe('Fork Session item', () => {
 
   it('shows the item for anyone who can use the agent', () => {
     renderMenu()
-    expect(screen.getByTestId('fork-session-item')).toHaveTextContent('Fork Session')
+    expect(screen.getByTestId('fork-session-item')).toHaveTextContent('Fork')
   })
 
   it('hides the item without canUseAgent', () => {

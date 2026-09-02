@@ -60,6 +60,9 @@ vi.mock('@renderer/hooks/use-agents', () => ({
 let mockSessionsData: unknown = []
 
 vi.mock('@renderer/hooks/use-sessions', () => ({
+  // The session list rows now render SessionContextMenu, which reads these.
+  useSetSessionMarkedUnread: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useForkSession: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useCreateSession: () => mockCreateSession,
   useSessions: () => ({ data: mockSessionsData }),
   useDeleteSession: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),

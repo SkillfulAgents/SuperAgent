@@ -28,9 +28,10 @@ import {
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { useDeleteSession, useUpdateSessionName, useSetSessionMarkedUnread, useForkSession } from '@renderer/hooks/use-sessions'
-import { useNavigate, useParams } from '@tanstack/react-router'
+import { useNavigate } from '@tanstack/react-router'
+import { useRouteLocation } from '@renderer/router/use-route-location'
 import { useUser } from '@renderer/context/user-context'
-import { Trash2, ClipboardCopy, Pencil, MessageSquareDot, Split } from 'lucide-react'
+import { Trash2, ClipboardCopy, Pencil, Eye, Split } from 'lucide-react'
 import { apiFetch } from '@renderer/lib/api'
 import type { SessionUsageTotals } from '@shared/lib/types/usage'
 
@@ -52,6 +53,12 @@ export interface SessionMenuActivity {
   isStreaming: boolean
 }
 
+/**
+ * The one session menu. Every entry point — sidebar row right-click, the
+ * breadcrumb, and the agent home's session list (its three-dot replays a
+ * contextmenu on the row) — opens this same list, so an action is never only
+ * reachable from one of them. Styled to match AgentContextMenu.
+ */
 interface SessionContextMenuProps {
   sessionId: string
   sessionName: string
@@ -78,10 +85,11 @@ export function SessionContextMenu({
   const updateSessionName = useUpdateSessionName()
   const setSessionMarkedUnread = useSetSessionMarkedUnread()
   const navigate = useNavigate()
-  // strict:false → undefined when the menu is opened off the session route
-  // (e.g. from the sidebar list), so the up-nav only fires when we're actually
+  // null when the menu is opened off the session route (e.g. from the sidebar
+  // or the agent home's list), so the up-nav only fires when we're actually
   // viewing the session being deleted.
-  const params = useParams({ strict: false }) as { sessionId?: string }
+  const { view } = useRouteLocation()
+  const routeSessionId = view.kind === 'session' ? view.id : null
   const { canAdminAgent, canUseAgent } = useUser()
   const isOwner = canAdminAgent(agentSlug)
   const canUse = canUseAgent(agentSlug)
@@ -96,7 +104,7 @@ export function SessionContextMenu({
     try {
       await deleteSession.mutateAsync({ id: sessionId, agentSlug })
       setShowDeleteDialog(false)
-      if (params.sessionId === sessionId) {
+      if (routeSessionId === sessionId) {
         void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
       }
     } catch (error) {
@@ -178,7 +186,7 @@ export function SessionContextMenu({
         <ContextMenuTrigger asChild>
           {children}
         </ContextMenuTrigger>
-        <ContextMenuContent>
+        <ContextMenuContent className="w-52 rounded-xl p-2" data-testid="session-context-menu">
           {isOwner && (
             <ContextMenuItem
               data-testid="rename-session-item"
@@ -188,15 +196,7 @@ export function SessionContextMenu({
               }}
             >
               <Pencil className="h-4 w-4 mr-2" />
-              Rename Session
-            </ContextMenuItem>
-          )}
-          {/* Not permission-gated, unlike rename/delete: a mark is scoped to
-              the acting user, so it is only ever a note to yourself. */}
-          {!hideUnread && (
-            <ContextMenuItem data-testid="mark-unread-session-item" onClick={handleMarkUnread}>
-              <MessageSquareDot className="h-4 w-4 mr-2" />
-              Mark as Unread
+              Edit
             </ContextMenuItem>
           )}
           {canUse && (
@@ -206,26 +206,35 @@ export function SessionContextMenu({
               onClick={handleFork}
             >
               <Split className="h-4 w-4 mr-2" />
-              Fork Session
+              Fork
             </ContextMenuItem>
           )}
-          <ContextMenuItem onClick={handleCopyRawLog}>
+          {/* Not permission-gated, unlike rename/delete: a mark is scoped to
+              the acting user, so it is only ever a note to yourself. */}
+          {!hideUnread && (
+            <ContextMenuItem data-testid="mark-unread-session-item" onClick={handleMarkUnread}>
+              <Eye className="h-4 w-4 mr-2" />
+              Mark as Unread
+            </ContextMenuItem>
+          )}
+          <ContextMenuItem onClick={handleCopyRawLog} data-testid="copy-session-raw-log-item">
             <ClipboardCopy className="h-4 w-4 mr-2" />
             Copy Raw Log
           </ContextMenuItem>
           {isOwner && (
-            <ContextMenuItem
-              className="text-destructive focus:bg-destructive/10 focus:text-destructive"
-              onClick={() => setShowDeleteDialog(true)}
-              data-testid="delete-session-item"
-            >
-              <Trash2 className="h-4 w-4 mr-2" />
-              Delete Session
-            </ContextMenuItem>
+            <>
+              <ContextMenuSeparator className="mx-1" />
+              <ContextMenuItem
+                onClick={() => setShowDeleteDialog(true)}
+                data-testid="delete-session-item"
+              >
+                <Trash2 className="h-4 w-4 mr-2" />
+                Delete
+              </ContextMenuItem>
+            </>
           )}
-          <ContextMenuSeparator />
           <div
-            className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 px-2 py-1.5 text-xs"
+            className="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 rounded-md bg-muted px-2 py-1.5 text-xs"
             data-testid="session-usage-totals"
           >
             {usage.status === 'loading' || usage.status === 'idle' ? (
@@ -235,13 +244,13 @@ export function SessionContextMenu({
             ) : (
               <>
                 <span className="text-muted-foreground">Cost</span>
-                <span className="text-right tabular-nums">
+                <span className="text-right tabular-nums text-muted-foreground">
                   {usage.totals.priceMissing
                     ? 'Model price missing'
                     : formatCost(usage.totals.totalCost)}
                 </span>
                 <span className="text-muted-foreground">Tokens</span>
-                <span className="text-right tabular-nums">
+                <span className="text-right tabular-nums text-muted-foreground">
                   {usage.totals.totalTokens.toLocaleString('en-US')}
                 </span>
                 {usage.totals.usageIncomplete && (
