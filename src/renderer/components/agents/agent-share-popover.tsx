@@ -37,6 +37,7 @@ import {
   useHostExportStatus,
 } from '@renderer/hooks/use-agent-templates'
 import { AgentTemplatePublishPanel } from '@renderer/components/agents/agent-template-publish-panel'
+import { useSkillsets } from '@renderer/hooks/use-skillsets'
 import { ActivityOrb } from '@renderer/components/messages/activity-orb'
 import { ArrowDownToLine, ArrowRight, Check, LibraryBig, Loader2, Lock, User, X } from 'lucide-react'
 import type { AgentRole } from '@shared/lib/types/agent'
@@ -109,8 +110,13 @@ function UserAvatar({ name, className }: { name: string; className?: string }) {
 export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverProps) {
   const queryClient = useQueryClient()
   const { user, isAuthMode } = useUser()
+  const { data: skillsets } = useSkillsets()
+  const publishAvailable = !!skillsets?.some((ss) => ss.publishMode !== 'none')
   const [open, setOpen] = useState(false)
   const [tab, setTab] = useState<'share' | 'publish' | 'export'>(isAuthMode ? 'share' : 'publish')
+  const visibleTab = tab === 'publish' && !publishAvailable
+    ? (isAuthMode ? 'share' : 'export')
+    : tab
   const [searchQuery, setSearchQuery] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [selectedUsers, setSelectedUsers] = useState<SearchUser[]>([])
@@ -147,7 +153,7 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
     // lands on Share with the invite input focused.
     setPublishFlowOpen(false)
     setExportChoice('template')
-    setTab(isAuthMode ? 'share' : 'publish')
+    setTab(isAuthMode ? 'share' : publishAvailable ? 'publish' : 'export')
   }
 
   const invalidateAccess = () => {
@@ -390,7 +396,7 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
         onOpenAutoFocus={(e) => {
           e.preventDefault()
           // Defer past Radix's FocusScope so it can't reclaim focus after us.
-          if (isAuthMode && tab === 'share') {
+          if (isAuthMode && visibleTab === 'share') {
             setTimeout(() => searchInputRef.current?.focus(), 0)
           }
         }}
@@ -399,13 +405,13 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
         {/* Tab bar — Share only exists in auth mode (no ACL without auth).
             The publish flow replaces it with its own back navigation. Same
             segmented Tabs control as the connection directory's APIs/MCPs. */}
-        {!(tab === 'publish' && publishFlowOpen) && (
-          <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)}>
+        {!(visibleTab === 'publish' && publishFlowOpen) && (
+          <Tabs value={visibleTab} onValueChange={(v) => setTab(v as typeof tab)}>
             <div className="px-3 pt-3">
               <TabsList className="h-8">
                 {([
                   ...(isAuthMode ? [{ id: 'share', label: 'Invite' } as const] : []),
-                  { id: 'publish', label: 'Publish' } as const,
+                  ...(publishAvailable ? [{ id: 'publish', label: 'Publish' } as const] : []),
                   { id: 'export', label: 'Export' } as const,
                 ]).map((t) => (
                   <TabsTrigger
@@ -422,7 +428,7 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
           </Tabs>
         )}
 
-        {tab === 'publish' && (
+        {visibleTab === 'publish' && (
           /* ── Publish pane: skillset publishing, flow inline in the popover ── */
           publishFlowOpen ? (
             <AgentTemplatePublishPanel
@@ -572,7 +578,7 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
           )
         )}
 
-        {tab === 'export' && (
+        {visibleTab === 'export' && (
           /* ── Export pane: template + full-agent downloads ── */
           <div className="space-y-3 p-3" data-testid="agent-export-pane">
             <div role="radiogroup" aria-label="Export type" className="-mx-2 space-y-1">
@@ -641,7 +647,7 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
           </div>
         )}
 
-        {tab === 'share' && (
+        {visibleTab === 'share' && (
           <>
         {/* Invite row: chip box + batch role + Add */}
         <div className="space-y-2 px-3 pb-4 pt-5">
