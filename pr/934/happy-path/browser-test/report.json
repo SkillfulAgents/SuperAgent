@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the agent can successfully open a browser, navigate to a URL, retrieve the page title, and return the result in chat.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application homepage with agent list visible.",
+    "Clicked on \"QA-20260902-214631-mbcq\" agent in the sidebar — Successfully opened the agent configuration page with chat input ready.",
+    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully sent, agent status changed to \"working\", new session created.",
+    "Waited for agent response (polling every 5 seconds, up to 3 minutes) — Agent completed work after 9 seconds with 4 tool calls and 163,699 tokens used.",
+    "Verified response mentions \"Example Domain\" — Response states: \"The page title is \"Example Domain\" — the page contains that heading plus a short note that the domain is for use in documentation examples, and a \"Learn more\" link. Browser is closed.\" ✅"
+  ],
+  "bugs": [],
+  "durationMs": 87952,
+  "sessionId": "a177f514-f9d4-4284-ad48-b173e288190e",
+  "cost": {
+    "inputTokens": 454,
+    "outputTokens": 14375,
+    "cacheCreationTokens": 82733,
+    "cacheReadTokens": 1402496,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.315995
+  }
+}
