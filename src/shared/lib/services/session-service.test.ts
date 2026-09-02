@@ -603,6 +603,20 @@ describe('session-service', () => {
       expect(Number.isNaN(session!.createdAt.getTime())).toBe(false)
     })
 
+    it('uses preloaded metadata instead of reading the file again', async () => {
+      await createSessionFile('test-agent', 'test-session', SAMPLE_JSONL_ENTRIES)
+      await createSessionMetadata('test-agent', {
+        'test-session': { name: 'On Disk', createdAt: '2026-01-24T01:31:30.000Z' },
+      })
+
+      const session = await getSession('test-agent', 'test-session', {
+        metadata: { name: 'Preloaded', createdAt: '2026-02-01T00:00:00.000Z' },
+      })
+
+      expect(session?.name).toBe('Preloaded')
+      expect(session?.createdAt.toISOString()).toBe('2026-02-01T00:00:00.000Z')
+    })
+
     it('returns an empty session for a registered session with no JSONL yet', async () => {
       // A just-created session is registered in metadata before the agent
       // streams its first message (which is what writes the JSONL). getSession

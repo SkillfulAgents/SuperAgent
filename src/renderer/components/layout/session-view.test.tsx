@@ -5,12 +5,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import { SessionView } from './session-view'
 
+const xAgentSession = {
+  id: 'x-session', agentSlug: 'target-agent', name: 'Invoked by Caller Agent',
+  invokedByAgentSlug: 'caller-agent', invokedByAgentName: 'Caller Agent',
+}
 const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
   markRead: vi.fn(),
   setMarkedUnread: vi.fn(),
   // Reports whether a dot was actually showing; defaults to the common no-op open.
   clearUnread: vi.fn(() => false),
+  session: {} as Record<string, unknown>,
 }))
 
 vi.mock('@tanstack/react-router', () => ({
@@ -18,16 +23,7 @@ vi.mock('@tanstack/react-router', () => ({
 }))
 
 vi.mock('@renderer/hooks/use-sessions', () => ({
-  useSession: () => ({
-    data: {
-      id: 'x-session',
-      agentSlug: 'target-agent',
-      name: 'Invoked by Caller Agent',
-      invokedByAgentSlug: 'caller-agent',
-      invokedByAgentName: 'Caller Agent',
-    },
-    error: null,
-  }),
+  useSession: () => ({ data: mocks.session, error: null }),
   // Opening a session clears any "mark as unread" flag alongside the
   // notification read-marking below.
   useSetSessionMarkedUnread: () => ({ mutate: mocks.setMarkedUnread }),
@@ -68,6 +64,7 @@ vi.mock('@renderer/context/workflow-context', () => ({
 describe('SessionView unread clearing', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.session = xAgentSession
     mocks.clearUnread.mockReturnValue(false)
   })
 
@@ -105,6 +102,7 @@ describe('SessionView unread clearing', () => {
 describe('SessionView x-agent provenance', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.session = xAgentSession
     mocks.clearUnread.mockReturnValue(false)
   })
 
@@ -119,5 +117,31 @@ describe('SessionView x-agent provenance', () => {
       to: '/agents/$slug/called-from-agents',
       params: { slug: 'target-agent' },
     })
+  })
+})
+
+describe('SessionView fork provenance', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('shows Forked from with a Back link to the source', () => {
+    mocks.session = { id: 'fork-1', agentSlug: 'agent-a', name: 'Pricing (fork)', forkedFromSessionId: 'src-1', forkedFromSessionName: 'Pricing' }
+    render(<SessionView agentSlug="agent-a" sessionId="fork-1" />)
+
+    expect(screen.getByTestId('fork-session-banner')).toHaveTextContent('Forked from "Pricing"')
+    fireEvent.click(screen.getByTestId('fork-session-back-button'))
+    expect(mocks.navigate).toHaveBeenCalledWith({
+      to: '/agents/$slug/sessions/$sessionId',
+      params: { slug: 'agent-a', sessionId: 'src-1' },
+    })
+  })
+
+  it('degrades to plain text without a Back link when the source is gone', () => {
+    mocks.session = { id: 'fork-1', agentSlug: 'agent-a', name: 'Pricing (fork)', forkedFromSessionId: 'src-1' }
+    render(<SessionView agentSlug="agent-a" sessionId="fork-1" />)
+
+    expect(screen.getByTestId('fork-session-banner')).toHaveTextContent('Forked from a deleted session')
+    expect(screen.queryByTestId('fork-session-back-button')).toBeNull()
   })
 })

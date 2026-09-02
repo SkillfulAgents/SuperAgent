@@ -6,8 +6,11 @@ import {
   appendToSessionDraft,
   DraftsProvider,
   seedAgentTemplatePrompt,
+  snapshotSessionDraft,
+  seedSessionDraft,
   useDraft,
   useDraftsStore,
+  type DraftsStore,
 } from './drafts-context'
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -148,5 +151,37 @@ describe('seedAgentTemplatePrompt', () => {
 
     expect(seedAgentTemplatePrompt(result.current, 'new-agent', undefined)).toBe(false)
     expect(result.current.get('agent:new-agent')).toBeUndefined()
+  })
+})
+
+function memoryStore(): Pick<DraftsStore, 'get' | 'set'> {
+  const m = new Map<string, unknown>()
+  return {
+    get: <T,>(k: string) => m.get(k) as T | undefined,
+    set: <T,>(k: string, v: T | undefined) => { if (v === undefined) m.delete(k); else m.set(k, v) },
+  }
+}
+
+describe('snapshotSessionDraft / seedSessionDraft', () => {
+  it('captures text and secured secrets at snapshot time and seeds them on the target, source untouched', () => {
+    const store = memoryStore()
+    store.set('session:src', 'unsent text')
+    store.set('session:src:secured-secrets', [{ id: 's1' }])
+
+    const snapshot = snapshotSessionDraft(store, 'src')
+    store.set('session:src', 'edited after click') // click-time values must win
+    seedSessionDraft(store, 'fork', snapshot)
+
+    expect(store.get('session:fork')).toBe('unsent text')
+    expect(store.get('session:fork:secured-secrets')).toEqual([{ id: 's1' }])
+    expect(store.get('session:src')).toBe('edited after click')
+    expect(store.get('session:src:secured-secrets')).toEqual([{ id: 's1' }])
+  })
+
+  it('seeds nothing when the source had no draft', () => {
+    const store = memoryStore()
+    seedSessionDraft(store, 'fork', snapshotSessionDraft(store, 'src'))
+    expect(store.get('session:fork')).toBeUndefined()
+    expect(store.get('session:fork:secured-secrets')).toBeUndefined()
   })
 })

@@ -27,10 +27,10 @@ import {
 } from '@renderer/components/ui/dialog'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { useDeleteSession, useUpdateSessionName, useSetSessionMarkedUnread } from '@renderer/hooks/use-sessions'
+import { useDeleteSession, useUpdateSessionName, useSetSessionMarkedUnread, useForkSession } from '@renderer/hooks/use-sessions'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
-import { Trash2, ClipboardCopy, Pencil, MessageSquareDot } from 'lucide-react'
+import { Trash2, ClipboardCopy, Pencil, MessageSquareDot, Split } from 'lucide-react'
 import { apiFetch } from '@renderer/lib/api'
 import type { SessionUsageTotals } from '@shared/lib/types/usage'
 
@@ -46,16 +46,17 @@ function formatCost(cost: number): string {
   return `$${cost.toFixed(digits)}`
 }
 
+export interface SessionMenuActivity {
+  isActive: boolean
+  isAwaitingInput: boolean
+  isStreaming: boolean
+}
+
 interface SessionContextMenuProps {
   sessionId: string
   sessionName: string
   agentSlug: string
-  /**
-   * Session is working or awaiting input. Every list suppresses the unread dot
-   * in that state, so "Mark as Unread" is hidden rather than offered as a
-   * silent no-op.
-   */
-  sessionIsLive?: boolean
+  activity: SessionMenuActivity
   children: React.ReactNode
 }
 
@@ -63,7 +64,7 @@ export function SessionContextMenu({
   sessionId,
   sessionName,
   agentSlug,
-  sessionIsLive = false,
+  activity,
   children,
 }: SessionContextMenuProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
@@ -81,8 +82,14 @@ export function SessionContextMenu({
   // (e.g. from the sidebar list), so the up-nav only fires when we're actually
   // viewing the session being deleted.
   const params = useParams({ strict: false }) as { sessionId?: string }
-  const { canAdminAgent } = useUser()
+  const { canAdminAgent, canUseAgent } = useUser()
   const isOwner = canAdminAgent(agentSlug)
+  const canUse = canUseAgent(agentSlug)
+  const forkSession = useForkSession()
+  // Unread dots are suppressed while working or awaiting. Fork is refused
+  // while the transcript is open (active or still streaming).
+  const hideUnread = activity.isActive || activity.isAwaitingInput
+  const forkDisabled = activity.isActive || activity.isStreaming || forkSession.isPending
 
   const handleDelete = async () => {
     setIsDeleting(true)
@@ -96,6 +103,15 @@ export function SessionContextMenu({
       console.error('Failed to delete session:', error)
     } finally {
       setIsDeleting(false)
+    }
+  }
+
+  const handleFork = async () => {
+    try {
+      const fork = await forkSession.mutateAsync({ sessionId, agentSlug })
+      void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agentSlug, sessionId: fork.id } })
+    } catch (error) {
+      console.error('Failed to fork session:', error)
     }
   }
 
@@ -177,10 +193,20 @@ export function SessionContextMenu({
           )}
           {/* Not permission-gated, unlike rename/delete: a mark is scoped to
               the acting user, so it is only ever a note to yourself. */}
-          {!sessionIsLive && (
+          {!hideUnread && (
             <ContextMenuItem data-testid="mark-unread-session-item" onClick={handleMarkUnread}>
               <MessageSquareDot className="h-4 w-4 mr-2" />
               Mark as Unread
+            </ContextMenuItem>
+          )}
+          {canUse && (
+            <ContextMenuItem
+              data-testid="fork-session-item"
+              disabled={forkDisabled}
+              onClick={handleFork}
+            >
+              <Split className="h-4 w-4 mr-2" />
+              Fork Session
             </ContextMenuItem>
           )}
           <ContextMenuItem onClick={handleCopyRawLog}>

@@ -655,7 +655,7 @@ export async function installAgentFromSkillset(
   const workspaceDir = getAgentWorkspaceDir(agent.slug)
 
   // Copy template files from repo to workspace
-  await copyDirectoryFiltered(agentDirInRepo, workspaceDir)
+  await copyDirectoryFiltered(agentDirInRepo, workspaceDir, undefined, { followSymlinks: true })
 
   // The template's CLAUDE.md overwrites the one createAgentFromExistingWorkspace
   // wrote, so patch the frontmatter name and createdAt to the install time.
@@ -757,7 +757,7 @@ export async function updateAgentFromSkillset(
 }
 
 async function copyTemplateFiles(src: string, dest: string): Promise<void> {
-  return copyDirectoryFiltered(src, dest, ['.skillset-agent-metadata.json'])
+  return copyDirectoryFiltered(src, dest, ['.skillset-agent-metadata.json'], { followSymlinks: true })
 }
 
 // ============================================================================

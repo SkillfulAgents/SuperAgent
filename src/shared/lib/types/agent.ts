@@ -131,6 +131,9 @@ export interface SessionMetadata {
   // so these sessions stay interactive (never hidden as automated).
   dispatchedByDashboardSlug?: string
   dispatchedByDashboardAgentSlug?: string
+  // Fork lineage: the session this one was copied from (Fork Session). Provenance
+  // only — a fork stays interactive; do not add it to the automated-hide list.
+  forkedFromSessionId?: string
 }
 
 /**

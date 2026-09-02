@@ -843,9 +843,19 @@ export async function copyDirectoryFiltered(
   src: string,
   dest: string,
   extraExclusions?: string[],
+  options: { followSymlinks?: boolean } = {},
 ): Promise<void> {
+  const srcStat = await fs.promises.lstat(src)
+  // Default skips a source-root symlink. Template/skillset callers pass
+  // followSymlinks for symlink-to-dir roots that directoryExists (stat)
+  // already accepted.
+  if (!options.followSymlinks && !srcStat.isDirectory()) {
+    console.warn(`copyDirectoryFiltered: skipped non-directory source ${src}`)
+    return
+  }
+
   const limit = pLimit(8)
-  await copyDirectoryFilteredLimited(src, dest, extraExclusions, limit)
+  await copyDirectoryFilteredLimited(src, dest, extraExclusions, limit, options)
 }
 
 async function copyDirectoryFilteredLimited(
@@ -853,6 +863,7 @@ async function copyDirectoryFilteredLimited(
   dest: string,
   extraExclusions: string[] | undefined,
   limit: ReturnType<typeof pLimit>,
+  options: { followSymlinks?: boolean } = {},
 ): Promise<void> {
   await ensureDirectory(dest)
   const entries = await fs.promises.readdir(src, { withFileTypes: true })
@@ -869,9 +880,11 @@ async function copyDirectoryFilteredLimited(
     const destPath = path.join(dest, entry.name)
 
     if (entry.isDirectory()) {
-      tasks.push(copyDirectoryFilteredLimited(srcPath, destPath, extraExclusions, limit))
-    } else {
+      tasks.push(copyDirectoryFilteredLimited(srcPath, destPath, extraExclusions, limit, options))
+    } else if (options.followSymlinks || entry.isFile()) {
       tasks.push(limit(() => fs.promises.copyFile(srcPath, destPath)))
+    } else {
+      console.warn(`copyDirectoryFiltered: skipped ${srcPath}`)
     }
   }
   await Promise.all(tasks)

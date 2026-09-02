@@ -79,6 +79,7 @@ import {
   removeMessage,
   removeToolCall,
 } from '@shared/lib/services/session-service'
+import { forkSession, ForkSessionError, type ForkSessionOpts } from '@shared/lib/services/session-fork-service'
 import { decodeMediaRef, openMediaBlob } from '@shared/lib/services/session-media'
 import { getSessionJsonlPath, getAgentSessionsDir, readJsonlFile, writeJsonFileAtomic, displaySlug, createJsonArrayStringifyTransform, directoryExists } from '@shared/lib/utils/file-storage'
 import {
@@ -2948,6 +2949,10 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       invokedByAgentName: metadata?.invokedByAgentSlug
         ? invokingAgent?.frontmatter.name ?? metadata.invokedByAgentSlug
         : undefined,
+      forkedFromSessionId: metadata?.forkedFromSessionId,
+      forkedFromSessionName: metadata?.forkedFromSessionId
+        ? (await getSessionMetadata(agentSlug, metadata.forkedFromSessionId))?.name
+        : undefined,
       effort: metadata?.effort,
       speed: metadata?.speed,
       model: metadata?.model,
@@ -3047,6 +3052,29 @@ agents.post('/:id/sessions/:sessionId/unread', AgentRead(), async (c) => {
 
 agents.delete('/:id/sessions/:sessionId/unread', AgentRead(), async (c) => {
   return setUnreadFlag(c, c.req.param('sessionId'), false)
+})
+
+// POST /api/agents/:id/sessions/:sessionId/fork - Fork Session: copy the
+// conversation into a new session carrying the full prior context.
+agents.post('/:id/sessions/:sessionId/fork', AgentUser(), async (c) => {
+  const slug = getAgentId(c)
+  const sourceId = c.req.param('sessionId')
+  try {
+    const opts: ForkSessionOpts = {}
+    if (isAuthMode()) {
+      opts.createdByUserId = getCurrentUserId(c)
+      const deviceId = getRequestDeviceId(c)
+      if (deviceId) opts.createdByDeviceId = deviceId
+      opts.copyAttribution = true
+    }
+    return c.json(await forkSession(slug, sourceId, opts), 201)
+  } catch (error) {
+    if (error instanceof ForkSessionError) {
+      return c.json({ error: error.message }, error.status)
+    }
+    console.error('Failed to fork session:', error)
+    return c.json({ error: 'Failed to fork session' }, 500)
+  }
 })
 
 // DELETE /api/agents/:id/sessions/:sessionId - Delete a session

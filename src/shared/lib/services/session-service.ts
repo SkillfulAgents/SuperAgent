@@ -941,14 +941,15 @@ export async function listSessionsByIds(
  */
 export async function getSession(
   agentSlug: string,
-  sessionId: string
+  sessionId: string,
+  already?: { metadata: SessionMetadata | null },
 ): Promise<SessionInfo | null> {
   // Content-serving path (the single-session route reads this): symlink-aware,
   // so a planted link to another agent's transcript resolves to null, not that
   // agent's session summary.
   if (!sessionFileRealPathWithinAgent(agentSlug, sessionId)) return null
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
-  const metadata = await getSessionMetadata(agentSlug, sessionId)
+  const metadata = already ? already.metadata : await getSessionMetadata(agentSlug, sessionId)
 
   if (await fileExists(jsonlPath)) {
     const summary = await summarizeSessionTranscript(jsonlPath)

@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
 import { z } from 'zod'
+import { ContainerNotFoundError } from './types'
 import type {
   ContainerClient,
   ContainerConfig,
@@ -17,7 +18,7 @@ import type {
 } from './types'
 import type { ObserveUnexpectedDeathInput, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
 import { resolveContainerModel } from './resolve-model'
-import { getAgentWorkspaceDir, getSessionJsonlPath } from '../utils/file-storage'
+import { getAgentWorkspaceDir, getSessionJsonlPath, readJsonlFile } from '../utils/file-storage'
 import { reviewManager } from '../proxy/review-manager'
 import { db } from '../db'
 import { connectedAccounts } from '../db/schema'
@@ -33,6 +34,14 @@ const seededDashboardPackageSchema = z
     description: z.string().optional(),
   })
   .loose()
+
+const mockJsonlLineSchema = z
+  .object({
+    uuid: z.string(),
+    parentUuid: z.string().nullable().optional(),
+    logicalParentUuid: z.string().nullable().optional(),
+  })
+  .passthrough()
 
 // E2E mock scenarios reference a fake connected account by id. The
 // /proxy-review/.../always endpoint persists an apiScopePolicies row whose
@@ -2857,6 +2866,51 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     this.interruptEpochs.delete(sessionId)
     console.log(`[MockContainerClient] Deleted session ${sessionId}`)
     return existed
+  }
+
+  /**
+   * Fork Session in mock mode: copy the source JSONL to a new id the way the
+   * SDK does (fresh uuids, parent chain remapped, `forkedFrom` backlink on
+   * every line) and register a cold session so the fork is sendable.
+   */
+  async forkSession(sessionId: string): Promise<{ id: string } | null> {
+    const source = this.sessions.get(sessionId)
+    if (!source) throw new ContainerNotFoundError('Session not found')
+
+    const agentSlug = this.config.agentId
+    const sourcePath = getSessionJsonlPath(agentSlug, sessionId)
+    const newId = `session_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
+    const entries = (await readJsonlFile(sourcePath)).flatMap((raw) => {
+      const parsed = mockJsonlLineSchema.safeParse(raw)
+      return parsed.success ? [parsed.data] : []
+    })
+    // Two passes, like the SDK: assign fresh ids, then rewrite parent links.
+    const idMap = new Map<string, string>()
+    for (const entry of entries) idMap.set(entry.uuid, randomUUID())
+    const forked = entries.map((entry) => ({
+      ...entry,
+      uuid: idMap.get(entry.uuid)!,
+      parentUuid: entry.parentUuid ? idMap.get(entry.parentUuid) ?? null : null,
+      ...(entry.logicalParentUuid ? { logicalParentUuid: idMap.get(entry.logicalParentUuid) ?? null } : {}),
+      sessionId: newId,
+      forkedFrom: { sessionId, messageUuid: entry.uuid },
+    }))
+
+    const targetPath = getSessionJsonlPath(agentSlug, newId)
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true })
+    fs.writeFileSync(targetPath, forked.map((e) => JSON.stringify(e) + '\n').join(''))
+
+    const now = new Date().toISOString()
+    this.sessions.set(newId, {
+      id: newId,
+      createdAt: now,
+      lastActivity: now,
+      workingDirectory: source.workingDirectory,
+      slashCommands: source.slashCommands ? [...source.slashCommands] : [],
+    })
+    this.streamCallbacks.set(newId, new Set())
+    console.log(`[MockContainerClient] Forked session ${sessionId} -> ${newId}`)
+    return { id: newId }
   }
 
   // Message operations

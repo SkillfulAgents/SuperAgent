@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { UUID } from 'crypto';
+import { forkSession as sdkForkSession, deleteSession as sdkDeleteSession } from '@anthropic-ai/claude-agent-sdk';
 import { Session, SDKMessage, CreateSessionRequest, EffortLevel, SpeedLevel, AgentCapabilityPolicies } from './types';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
 import { ClaudeCodeProcess } from './claude-code';
@@ -63,6 +64,21 @@ function formatIdleThreshold(ms: number): string {
   if (ms < 0) return 'disabled';
   if (ms === 0) return 'immediate';
   return `${Math.round(ms / 60_000)}m`;
+}
+
+/** Thrown by forkSession when the source is mid-turn. The route maps it to 409. */
+export class SessionBusyError extends Error {
+  constructor(sessionId: string) {
+    super(`Session ${sessionId} is currently running`);
+    this.name = 'SessionBusyError';
+  }
+}
+
+/** Reaped or missing transcript. The fork route maps this to the same JSON 404 as an unknown source. */
+export function isSdkSessionNotFound(error: unknown): boolean {
+  if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /not found|no conversation found/i.test(message);
 }
 
 export class SessionManager extends EventEmitter {
@@ -711,7 +727,14 @@ export class SessionManager extends EventEmitter {
 
   async deleteSession(sessionId: string): Promise<boolean> {
     const sessionData = this.sessions.get(sessionId);
-    if (!sessionData) return false;
+    if (!sessionData) {
+      // A never-opened (cold) session lives only in the listing. Forget it
+      // there too — otherwise a rollback leaves a record pointing at a
+      // deleted transcript, with no GC path.
+      if (!this.persistence.getSession(sessionId)) return false;
+      this.persistence.deleteSession(sessionId);
+      return true;
+    }
 
     // Release browser lock if this session owns it
     const released = releaseBrowserLock(sessionId);
@@ -735,6 +758,83 @@ export class SessionManager extends EventEmitter {
 
     console.log(`Deleted session ${sessionId}`);
     return true;
+  }
+
+  /**
+   * Copy a session's transcript into a new session (Fork Session). Pure file
+   * operation: the SDK writes `{newId}.jsonl` next to the source and we record
+   * the new id so the first sendMessage resumes it through resumeSession. No
+   * process is started. Returns null for an unknown source.
+   */
+  async forkSession(sourceId: string): Promise<string | null> {
+    const source = this.persistence.getSession(sourceId);
+    if (!source) return null;
+
+    // A live process mid-turn is still appending to the transcript; refuse
+    // rather than copy a half-written turn. (The host checks its own view too;
+    // the residual window between this check and the SDK's read is accepted —
+    // the SDK drops a partial final line, so the fork is at worst one message
+    // short, never corrupt.)
+    const live = this.sessions.get(sourceId);
+    if (live && !live.settlement.isSettled()) {
+      throw new SessionBusyError(sourceId);
+    }
+
+    // CLAUDE_CONFIG_DIR=/workspace/.claude + dir '/workspace' resolves to the
+    // same projects dir the source lives in; the fork lands beside it.
+    // A listing that survived CLI cleanup with no JSONL is gone: skip the SDK.
+    if (this.sourceTranscriptReaped(source.workingDirectory, source.claudeSessionId)) {
+      return null;
+    }
+
+    let newId: string;
+    try {
+      ({ sessionId: newId } = await sdkForkSession(source.claudeSessionId, { dir: source.workingDirectory }));
+    } catch (error) {
+      if (isSdkSessionNotFound(error)) return null;
+      throw error;
+    }
+
+    const now = new Date().toISOString();
+    try {
+      this.persistence.saveSessionChecked({
+        ...source,
+        sessionId: newId,
+        claudeSessionId: newId,
+        createdAt: now,
+        lastActivity: now,
+        // Session-scoped grants are per-conversation approvals; a fork starts
+        // with none, exactly like a new session.
+        sessionCapabilityGrants: undefined,
+        // A fork is a new interactive chat. Keep the source's other metadata,
+        // but drop the automation class so idle eviction and runtime class
+        // match a user session, not the scheduled/webhook/x-agent parent.
+        metadata: source.metadata
+          ? { ...source.metadata, isAutomated: undefined }
+          : undefined,
+      });
+    } catch (error) {
+      // Leave nothing on disk: the record did not persist, so the SDK file
+      // would be an unowned transcript nobody lists.
+      await sdkDeleteSession(newId, { dir: source.workingDirectory }).catch((e) =>
+        console.error(`forkSession: cleanup of ${newId} failed`, e),
+      );
+      throw error;
+    }
+
+    console.log(`Forked session ${sourceId} -> ${newId}`);
+    return newId;
+  }
+
+  /**
+   * True when the SDK project folder exists but the source JSONL does not —
+   * the listing survived CLI cleanup. Missing folder is left to the SDK call
+   * (tests never plant one; a first-run workspace has no projects dir yet).
+   */
+  private sourceTranscriptReaped(cwd: string, claudeSessionId: string): boolean {
+    const projectDir = `${this.baseWorkingDirectory}/.claude/projects/${cwd.replace(/[/\\]+/g, '-')}`;
+    if (!fs.existsSync(projectDir)) return false;
+    return !fs.existsSync(`${projectDir}/${claudeSessionId}.jsonl`);
   }
 
   async sendMessage(

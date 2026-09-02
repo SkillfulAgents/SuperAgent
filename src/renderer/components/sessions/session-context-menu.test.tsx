@@ -4,7 +4,29 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { SessionContextMenu } from './session-context-menu'
 
+const IDLE = { isActive: false, isAwaitingInput: false, isStreaming: false }
+
 const mockApiFetch = vi.fn()
+const {
+  mockFork,
+  mockSnapshot,
+  mockSeed,
+  mockSetQueryData,
+  mockNavigate,
+  mockStore,
+  mockCanUse,
+} = vi.hoisted(() => {
+  const mockCanUse = { value: true }
+  return {
+    mockFork: vi.fn(),
+    mockSnapshot: vi.fn(() => ({ text: 'draft', securedSecrets: undefined })),
+    mockSeed: vi.fn(),
+    mockSetQueryData: vi.fn(),
+    mockNavigate: vi.fn(),
+    mockStore: { get: vi.fn(), set: vi.fn() },
+    mockCanUse,
+  }
+})
 
 vi.mock('@renderer/lib/api', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
@@ -30,8 +52,28 @@ vi.mock('@renderer/components/ui/context-menu', () => ({
   ),
   ContextMenuTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   ContextMenuContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  ContextMenuItem: ({ children, ...props }: { children: React.ReactNode }) => (
-    <div {...props}>{children}</div>
+  ContextMenuItem: ({
+    children,
+    onClick,
+    disabled,
+    'data-testid': testId,
+    ...props
+  }: {
+    children: React.ReactNode
+    onClick?: () => void
+    disabled?: boolean
+    'data-testid'?: string
+  }) => (
+    <button
+      type="button"
+      data-testid={testId}
+      data-disabled={disabled ? '' : undefined}
+      disabled={disabled}
+      onClick={disabled ? undefined : onClick}
+      {...props}
+    >
+      {children}
+    </button>
   ),
   ContextMenuSeparator: () => <hr />,
 }))
@@ -64,20 +106,34 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
   useDeleteSession: () => ({ mutateAsync: vi.fn() }),
   useUpdateSessionName: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useSetSessionMarkedUnread: () => ({ mutateAsync: mockSetMarkedUnread, isPending: false }),
+  useForkSession: () => ({ mutateAsync: mockFork, isPending: false }),
 }))
 
 const mockCanAdminAgent = vi.fn(() => true)
 const mockCanUseAgent = vi.fn(() => true)
 
 vi.mock('@renderer/context/user-context', () => ({
-  useUser: () => ({ canAdminAgent: mockCanAdminAgent, canUseAgent: mockCanUseAgent }),
+  useUser: () => ({
+    canAdminAgent: mockCanAdminAgent,
+    canUseAgent: () => mockCanUse.value && mockCanUseAgent(),
+  }),
+}))
+
+vi.mock('@renderer/context/drafts-context', () => ({
+  useDraftsStore: () => mockStore,
+  snapshotSessionDraft: mockSnapshot,
+  seedSessionDraft: mockSeed,
+}))
+
+vi.mock('@tanstack/react-query', () => ({
+  useQueryClient: () => ({ setQueryData: mockSetQueryData }),
 }))
 
 vi.mock('@tanstack/react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-router')>()
   return {
     ...actual,
-    useNavigate: () => vi.fn(),
+    useNavigate: () => mockNavigate,
     useParams: () => ({}),
   }
 })
@@ -85,6 +141,7 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
 describe('SessionContextMenu usage totals', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockCanUse.value = true
   })
 
   it('does not calculate usage until the context menu opens', async () => {
@@ -99,7 +156,7 @@ describe('SessionContextMenu usage totals', () => {
     })
 
     render(
-      <SessionContextMenu sessionId="session-1" sessionName="Session One" agentSlug="agent-1">
+      <SessionContextMenu sessionId="session-1" sessionName="Session One" agentSlug="agent-1" activity={IDLE}>
         <button type="button">Session One</button>
       </SessionContextMenu>,
     )
@@ -127,7 +184,7 @@ describe('SessionContextMenu usage totals', () => {
     })
 
     render(
-      <SessionContextMenu sessionId="session-2" sessionName="Missing Price" agentSlug="agent-1">
+      <SessionContextMenu sessionId="session-2" sessionName="Missing Price" agentSlug="agent-1" activity={IDLE}>
         <button type="button">Missing Price</button>
       </SessionContextMenu>,
     )
@@ -151,7 +208,7 @@ describe('SessionContextMenu usage totals', () => {
     })
 
     render(
-      <SessionContextMenu sessionId="session-3" sessionName="Incomplete" agentSlug="agent-1">
+      <SessionContextMenu sessionId="session-3" sessionName="Incomplete" agentSlug="agent-1" activity={IDLE}>
         <button type="button">Incomplete</button>
       </SessionContextMenu>,
     )
@@ -175,7 +232,7 @@ describe('SessionContextMenu usage totals', () => {
     })
 
     render(
-      <SessionContextMenu sessionId="session-4" sessionName="Tiny Cost" agentSlug="agent-1">
+      <SessionContextMenu sessionId="session-4" sessionName="Tiny Cost" agentSlug="agent-1" activity={IDLE}>
         <button type="button">Tiny Cost</button>
       </SessionContextMenu>,
     )
@@ -190,6 +247,7 @@ describe('SessionContextMenu usage totals', () => {
 describe('SessionContextMenu mark as unread', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockCanUse.value = true
     mockSetMarkedUnread.mockResolvedValue({ success: true })
     mockCanAdminAgent.mockReturnValue(true)
     mockCanUseAgent.mockReturnValue(true)
@@ -197,7 +255,7 @@ describe('SessionContextMenu mark as unread', () => {
 
   it('raises the unread flag for the session it was opened on', async () => {
     render(
-      <SessionContextMenu sessionId="session-9" sessionName="Session Nine" agentSlug="agent-2">
+      <SessionContextMenu sessionId="session-9" sessionName="Session Nine" agentSlug="agent-2" activity={IDLE}>
         <button type="button">Session Nine</button>
       </SessionContextMenu>,
     )
@@ -218,7 +276,7 @@ describe('SessionContextMenu mark as unread', () => {
     mockCanAdminAgent.mockReturnValue(false)
 
     render(
-      <SessionContextMenu sessionId="session-9" sessionName="Session Nine" agentSlug="agent-2">
+      <SessionContextMenu sessionId="session-9" sessionName="Session Nine" agentSlug="agent-2" activity={IDLE}>
         <button type="button">Session Nine</button>
       </SessionContextMenu>,
     )
@@ -234,7 +292,7 @@ describe('SessionContextMenu mark as unread', () => {
     mockCanUseAgent.mockReturnValue(false)
 
     render(
-      <SessionContextMenu sessionId="session-9" sessionName="Session Nine" agentSlug="agent-2">
+      <SessionContextMenu sessionId="session-9" sessionName="Session Nine" agentSlug="agent-2" activity={IDLE}>
         <button type="button">Session Nine</button>
       </SessionContextMenu>,
     )
@@ -250,12 +308,94 @@ describe('SessionContextMenu mark as unread', () => {
         sessionId="session-9"
         sessionName="Session Nine"
         agentSlug="agent-2"
-        sessionIsLive
+        activity={{ ...IDLE, isActive: true }}
       >
         <button type="button">Session Nine</button>
       </SessionContextMenu>,
     )
 
     expect(screen.queryByTestId('mark-unread-session-item')).not.toBeInTheDocument()
+  })
+
+  it('hides the item while the session is awaiting input', () => {
+    render(
+      <SessionContextMenu
+        sessionId="session-9"
+        sessionName="Session Nine"
+        agentSlug="agent-2"
+        activity={{ ...IDLE, isAwaitingInput: true }}
+      >
+        <button type="button">Session Nine</button>
+      </SessionContextMenu>,
+    )
+
+    expect(screen.queryByTestId('mark-unread-session-item')).not.toBeInTheDocument()
+  })
+})
+
+describe('Fork Session item', () => {
+  beforeEach(() => {
+    mockFork.mockReset()
+    mockSnapshot.mockClear()
+    mockSeed.mockReset()
+    mockSetQueryData.mockReset()
+    mockNavigate.mockReset()
+    mockCanUse.value = true
+    mockCanAdminAgent.mockReturnValue(true)
+    mockCanUseAgent.mockReturnValue(true)
+  })
+
+  function renderMenu(activity: Partial<typeof IDLE> = {}) {
+    return render(
+      <SessionContextMenu sessionId="src-1" sessionName="Pricing" agentSlug="agent-a" activity={{ ...IDLE, ...activity }}>
+        <div>row</div>
+      </SessionContextMenu>,
+    )
+  }
+
+  it('shows the item for anyone who can use the agent', () => {
+    renderMenu()
+    expect(screen.getByTestId('fork-session-item')).toHaveTextContent('Fork Session')
+  })
+
+  it('hides the item without canUseAgent', () => {
+    mockCanUse.value = false
+    renderMenu()
+    expect(screen.queryByTestId('fork-session-item')).toBeNull()
+  })
+
+  it('disables the item while the source is active', () => {
+    renderMenu({ isActive: true })
+    expect(screen.getByTestId('fork-session-item')).toHaveAttribute('data-disabled')
+  })
+
+  it('disables the item while the source is streaming', () => {
+    renderMenu({ isStreaming: true })
+    expect(screen.getByTestId('fork-session-item')).toHaveAttribute('data-disabled')
+  })
+
+  it('forks and navigates; draft and cache seed live in the hook', async () => {
+    mockFork.mockResolvedValue({ id: 'fork-1', agentSlug: 'agent-a', name: 'Pricing (fork)' })
+    renderMenu()
+    fireEvent.click(screen.getByTestId('fork-session-item'))
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith({
+      to: '/agents/$slug/sessions/$sessionId',
+      params: { slug: 'agent-a', sessionId: 'fork-1' },
+    }))
+    expect(mockFork).toHaveBeenCalledWith({ sessionId: 'src-1', agentSlug: 'agent-a' })
+    expect(mockSnapshot).not.toHaveBeenCalled()
+    expect(mockSeed).not.toHaveBeenCalled()
+    expect(mockSetQueryData).not.toHaveBeenCalled()
+  })
+
+  it('stays put and logs when the fork fails', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    mockFork.mockRejectedValue(new Error('nope'))
+    renderMenu()
+    fireEvent.click(screen.getByTestId('fork-session-item'))
+    await waitFor(() => expect(err).toHaveBeenCalled())
+    expect(mockNavigate).not.toHaveBeenCalled()
+    expect(mockSeed).not.toHaveBeenCalled()
+    err.mockRestore()
   })
 })
