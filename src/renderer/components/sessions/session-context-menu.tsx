@@ -30,7 +30,7 @@ import { Input } from '@renderer/components/ui/input'
 import { useDeleteSession, useUpdateSessionName, useSetSessionMarkedUnread, useForkSession } from '@renderer/hooks/use-sessions'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
-import { Trash2, ClipboardCopy, Pencil, MessageSquareDot, Split } from 'lucide-react'
+import { Trash2, ClipboardCopy, Pencil, Eye, Split } from 'lucide-react'
 import { apiFetch } from '@renderer/lib/api'
 import type { SessionUsageTotals } from '@shared/lib/types/usage'
 
@@ -179,51 +179,8 @@ export function SessionContextMenu({
           {children}
         </ContextMenuTrigger>
         <ContextMenuContent>
-          {isOwner && (
-            <ContextMenuItem
-              data-testid="rename-session-item"
-              onClick={() => {
-                setNewName(sessionName)
-                setShowRenameDialog(true)
-              }}
-            >
-              <Pencil className="h-4 w-4 mr-2" />
-              Rename Session
-            </ContextMenuItem>
-          )}
-          {/* Not permission-gated, unlike rename/delete: a mark is scoped to
-              the acting user, so it is only ever a note to yourself. */}
-          {!hideUnread && (
-            <ContextMenuItem data-testid="mark-unread-session-item" onClick={handleMarkUnread}>
-              <MessageSquareDot className="h-4 w-4 mr-2" />
-              Mark as Unread
-            </ContextMenuItem>
-          )}
-          {canUse && (
-            <ContextMenuItem
-              data-testid="fork-session-item"
-              disabled={forkDisabled}
-              onClick={handleFork}
-            >
-              <Split className="h-4 w-4 mr-2" />
-              Fork Session
-            </ContextMenuItem>
-          )}
-          <ContextMenuItem onClick={handleCopyRawLog}>
-            <ClipboardCopy className="h-4 w-4 mr-2" />
-            Copy Raw Log
-          </ContextMenuItem>
-          {isOwner && (
-            <ContextMenuItem
-              className="text-destructive focus:bg-destructive/10 focus:text-destructive"
-              onClick={() => setShowDeleteDialog(true)}
-              data-testid="delete-session-item"
-            >
-              <Trash2 className="h-4 w-4 mr-2" />
-              Delete Session
-            </ContextMenuItem>
-          )}
-          <ContextMenuSeparator />
+          {/* Usage readout first: it is the one thing every menu open fetches
+              and the reason most people right-click a session. */}
           <div
             className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 px-2 py-1.5 text-xs"
             data-testid="session-usage-totals"
@@ -252,6 +209,55 @@ export function SessionContextMenu({
               </>
             )}
           </div>
+          <ContextMenuSeparator />
+          {isOwner && (
+            <ContextMenuItem
+              data-testid="rename-session-item"
+              onClick={() => {
+                setNewName(sessionName)
+                setShowRenameDialog(true)
+              }}
+            >
+              <Pencil className="h-4 w-4 mr-2" />
+              Rename Session
+            </ContextMenuItem>
+          )}
+          {/* Not permission-gated, unlike rename/delete: a mark is scoped to
+              the acting user, so it is only ever a note to yourself. */}
+          {!hideUnread && (
+            <ContextMenuItem data-testid="mark-unread-session-item" onClick={handleMarkUnread}>
+              <Eye className="h-4 w-4 mr-2" />
+              Mark as Unread
+            </ContextMenuItem>
+          )}
+          {canUse && (
+            <ContextMenuItem
+              data-testid="fork-session-item"
+              disabled={forkDisabled}
+              onClick={handleFork}
+            >
+              <Split className="h-4 w-4 mr-2" />
+              Fork Session
+            </ContextMenuItem>
+          )}
+          <ContextMenuItem onClick={handleCopyRawLog}>
+            <ClipboardCopy className="h-4 w-4 mr-2" />
+            Copy Raw Log
+          </ContextMenuItem>
+          {/* Destructive action last, set apart from the everyday items. */}
+          {isOwner && (
+            <>
+              <ContextMenuSeparator />
+              <ContextMenuItem
+                className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                onClick={() => setShowDeleteDialog(true)}
+                data-testid="delete-session-item"
+              >
+                <Trash2 className="h-4 w-4 mr-2" />
+                Delete Session
+              </ContextMenuItem>
+            </>
+          )}
         </ContextMenuContent>
       </ContextMenu>
 
