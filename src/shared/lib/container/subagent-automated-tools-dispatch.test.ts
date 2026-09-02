@@ -132,7 +132,7 @@ vi.mock('./container-manager', () => ({
 // Import after mocks are set up
 import { messagePersister } from './message-persister'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
-import { createScheduledTask } from '@shared/lib/services/scheduled-task-service'
+import { createScheduledTask, createSessionWake } from '@shared/lib/services/scheduled-task-service'
 
 function createMockClient(): ContainerClient & {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -379,5 +379,39 @@ describe('automated blocking tools from a subagent must receive a container push
       expect(resolvePushesFor(toolId)).toHaveLength(1)
     })
     expect(createScheduledTask).toHaveBeenCalledTimes(1)
+  })
+
+  // A wake resumes the main thread and a session holds one pending wake, so a
+  // subagent's schedule_resume would replace the main agent's wake and never
+  // resume the subagent. The host rejects it instead of creating the wake.
+  describe('schedule_resume is main-thread only', () => {
+    const toolName = 'mcp__user-input__schedule_resume'
+    const input = { wakeTime: 'tomorrow 9am', note: 'check inbox' }
+    const rejectPushesFor = (toolUseId: string) =>
+      mockContainerClientFetch.mock.calls.filter(([path]) => path === `/inputs/${toolUseId}/reject`)
+
+    it('main stream (control): creates the wake', async () => {
+      const toolId = 'resume-main'
+      sendMainToolUse(toolName, toolId, input)
+
+      await vi.waitFor(() => {
+        expect(resolvePushesFor(toolId)).toHaveLength(1)
+      })
+      expect(createSessionWake).toHaveBeenCalledTimes(1)
+    })
+
+    it.each([
+      ['subagent stream', (id: string) => sendSidechainStreamToolUse(toolName, id, input)],
+      ['subagent complete assistant message', (id: string) => sendSidechainCompleteAssistantToolUse(toolName, id, input)],
+    ])('%s: rejects without creating a wake', async (label, send) => {
+      const toolId = `resume-${label.replace(/\s+/g, '-')}`
+      send(toolId)
+
+      await vi.waitFor(() => {
+        expect(rejectPushesFor(toolId)).toHaveLength(1)
+      })
+      expect(resolvePushesFor(toolId)).toHaveLength(0)
+      expect(createSessionWake).not.toHaveBeenCalled()
+    })
   })
 })

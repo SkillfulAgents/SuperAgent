@@ -311,6 +311,10 @@ const SECRET_BEARING_TOOL_NAMES = new Set([
 // context and 50 events × 2KB would crowd out the actual work.
 const INSPECT_BODY_PREVIEW_CHARS = 200
 
+// Mirrors the container's canUseTool deny for MAIN_THREAD_ONLY_TOOLS.
+const MAIN_THREAD_ONLY_TOOL_REJECTION =
+  'schedule_resume is only available to the main session, not to subagents: a wake resumes the main conversation, not this subagent. Finish your task and report back; the main agent can pause the session itself.'
+
 export function formatWebhookEventLine(event: WebhookEndpointEvent): string {
   const filterNote = event.filter
     ? ` · filter: ${event.filter.outcome}${event.filter.outcome === 'error' && event.filter.error ? ` (${event.filter.error})` : ''}`
@@ -1572,6 +1576,7 @@ class MessagePersister {
     toolUseId: string,
     toolInput: string,
     agentSlug?: string,
+    parentToolId?: string,
   ): void {
     const state = this.streamingStates.get(sessionId)
     if (!state) return
@@ -1583,9 +1588,25 @@ class MessagePersister {
     const handlers = MessagePersister.AUTOMATED_TOOL_HANDLERS
     if (!Object.hasOwn(handlers, toolName)) return
 
+    // A wake resumes the main thread, never the subagent that asked for it,
+    // and would replace the main agent's own pending wake. The container's
+    // permission gate denies this first; this is the backstop for a call that
+    // reaches the host anyway.
+    if (parentToolId && MessagePersister.MAIN_THREAD_ONLY_AUTOMATED_TOOLS.has(toolName)) {
+      state.dispatchedAutomatedToolUseIds.add(toolUseId)
+      if (agentSlug) {
+        this.rejectContainerInput(agentSlug, toolUseId, MAIN_THREAD_ONLY_TOOL_REJECTION).catch(console.error)
+      }
+      return
+    }
+
     handlers[toolName](this, sessionId, toolUseId, toolInput, agentSlug)
     state.dispatchedAutomatedToolUseIds.add(toolUseId)
   }
+
+  private static readonly MAIN_THREAD_ONLY_AUTOMATED_TOOLS: ReadonlySet<string> = new Set([
+    'mcp__user-input__schedule_resume',
+  ])
 
   // Automated blocking tool name → its handler. The container keys the same 13
   // names, unprefixed, in AUTOMATED_INPUT_TYPES to pick the 10-minute automated
@@ -2905,6 +2926,7 @@ class MessagePersister {
               block.id,
               input,
               state.agentSlug,
+              parentToolId,
             )
             if (block.name === 'mcp__user-input__request_script_run') {
               this.handleScriptRunRequestTool(sessionId, block.id, input, state.agentSlug, parentToolId)
@@ -3287,6 +3309,7 @@ class MessagePersister {
             sub.currentToolUse.id,
             sub.currentToolInput,
             state.agentSlug,
+            parentToolId,
           )
 
           if (sub.currentToolUse.name === 'mcp__user-input__request_script_run') {

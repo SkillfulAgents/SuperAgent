@@ -462,6 +462,17 @@ export interface ClaudeCodeProcessOptions {
   sessionCapabilityGrants?: Capability[];
 }
 
+/**
+ * Tools only the main thread may call. A session wake resumes the main
+ * conversation and a session holds one pending wake, so a subagent calling
+ * schedule_resume would replace the main agent's wake and never itself resume.
+ * The host rejects the same names as a backstop (message-persister
+ * MAIN_THREAD_ONLY_AUTOMATED_TOOLS).
+ */
+const MAIN_THREAD_ONLY_TOOLS: ReadonlySet<string> = new Set(['mcp__user-input__schedule_resume']);
+const MAIN_THREAD_ONLY_TOOL_MESSAGE =
+  'schedule_resume is only available to the main session, not to subagents: a wake resumes the main conversation, not this subagent. Finish your task and report back; the main agent can pause the session itself.';
+
 export class ClaudeCodeProcess extends EventEmitter {
   private queryInstance: Query | null = null;
   private messageQueue: MessageQueue | null = null;
@@ -933,7 +944,16 @@ export class ClaudeCodeProcess extends EventEmitter {
         } : {}),
       },
       // Handle AskUserQuestion via canUseTool callback (per SDK docs)
-      canUseTool: async (toolName: string, toolInput: Record<string, unknown>, options: { toolUseID: string; signal: AbortSignal }) => {
+      canUseTool: async (toolName: string, toolInput: Record<string, unknown>, options: { toolUseID: string; signal: AbortSignal; agentID?: string }) => {
+        // Built-in subagents (general-purpose, Explore, ...) inherit every
+        // parent tool; the custom agents above allowlist theirs. Deny the
+        // main-thread-only tools here, where the SDK tags subagent calls with
+        // agentID, so a subagent gets a reason instead of a silent no-op.
+        if (options.agentID && MAIN_THREAD_ONLY_TOOLS.has(toolName)) {
+          console.log(`[canUseTool] Denied ${toolName} from subagent ${options.agentID}`);
+          return { behavior: 'deny' as const, message: MAIN_THREAD_ONLY_TOOL_MESSAGE };
+        }
+
         if (toolName === 'AskUserQuestion') {
           console.log('[canUseTool] AskUserQuestion called, toolUseID:', options.toolUseID);
 

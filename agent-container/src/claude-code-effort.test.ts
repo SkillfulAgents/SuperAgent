@@ -101,8 +101,9 @@ vi.mock('./file-hooks', () => ({
   resolveToolFilePath: () => '',
 }))
 
+const { setCurrentToolUseId } = vi.hoisted(() => ({ setCurrentToolUseId: vi.fn() }))
 vi.mock('./input-manager', () => ({
-  inputManager: {},
+  inputManager: { setCurrentToolUseId },
   HUMAN_INPUT_TTL_MS: 24 * 60 * 60 * 1000,
 }))
 
@@ -559,5 +560,61 @@ describe('ClaudeCodeProcess dashboard browser tools', () => {
     expect(tools).toContain('mcp__browser__browser_get_state')
     expect(tools).toContain('mcp__browser__browser_click')
     expect(tools).toContain('mcp__browser__browser_close')
+  })
+})
+
+describe('ClaudeCodeProcess main-thread-only tools', () => {
+  type CanUseTool = (
+    toolName: string,
+    input: Record<string, unknown>,
+    options: { toolUseID: string; signal: AbortSignal; agentID?: string },
+  ) => Promise<{ behavior: 'allow' | 'deny'; message?: string }>
+
+  beforeEach(() => {
+    calls.length = 0
+    setCurrentToolUseId.mockClear()
+  })
+
+  async function canUseToolOf(sessionId: string): Promise<CanUseTool> {
+    const process = new ClaudeCodeProcess({ sessionId, workingDirectory: '/tmp' })
+    await process.start()
+    return calls[0].options.canUseTool as CanUseTool
+  }
+
+  const input = { wakeTime: 'tomorrow 9am', note: 'check inbox' }
+
+  it('denies schedule_resume from a subagent with a reason', async () => {
+    const canUseTool = await canUseToolOf('test-main-only-1')
+    const result = await canUseTool('mcp__user-input__schedule_resume', input, {
+      toolUseID: 'tu-sub',
+      signal: new AbortController().signal,
+      agentID: 'agent-abc',
+    })
+
+    expect(result.behavior).toBe('deny')
+    expect(result.message).toMatch(/main session/)
+    expect(setCurrentToolUseId).not.toHaveBeenCalled()
+  })
+
+  it('allows schedule_resume from the main thread', async () => {
+    const canUseTool = await canUseToolOf('test-main-only-2')
+    const result = await canUseTool('mcp__user-input__schedule_resume', input, {
+      toolUseID: 'tu-main',
+      signal: new AbortController().signal,
+    })
+
+    expect(result.behavior).toBe('allow')
+    expect(setCurrentToolUseId).toHaveBeenCalledWith('tu-main', 'test-main-only-2')
+  })
+
+  it('still allows other user-input tools from a subagent', async () => {
+    const canUseTool = await canUseToolOf('test-main-only-3')
+    const result = await canUseTool('mcp__user-input__list_triggers', {}, {
+      toolUseID: 'tu-sub-2',
+      signal: new AbortController().signal,
+      agentID: 'agent-abc',
+    })
+
+    expect(result.behavior).toBe('allow')
   })
 })
