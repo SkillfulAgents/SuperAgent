@@ -110,35 +110,25 @@ describe('maybeReloadForWorkspaceUnavailable', () => {
     expect(reload).toHaveBeenCalledOnce()
   })
 
-  it('covers immediately and reloads after the cooldown expires', async () => {
+  it('does not schedule a later reload after the cooldown — ingress waits for ready', async () => {
     vi.useFakeTimers()
     try {
       const unavailable = { error: 'deployment_unavailable', state: 'waking' }
       await maybeReloadForWorkspaceUnavailable(jsonResponse(503, unavailable))
       await maybeReloadForWorkspaceUnavailable(jsonResponse(503, unavailable))
       expect(reload).toHaveBeenCalledOnce()
-      expect(isWorkspaceUnavailableReloadPending()).toBe(true)
-      await vi.advanceTimersByTimeAsync(15_000)
-      expect(reload).toHaveBeenCalledTimes(2)
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('a success cancels the queued reload and drops the overlay', async () => {
-    vi.useFakeTimers()
-    try {
-      const unavailable = { error: 'deployment_unavailable', state: 'waking' }
-      await maybeReloadForWorkspaceUnavailable(jsonResponse(503, unavailable))
-      await maybeReloadForWorkspaceUnavailable(jsonResponse(503, unavailable))
-      expect(reload).toHaveBeenCalledOnce()
-      await maybeReloadForWorkspaceUnavailable(new Response('ok', { status: 200 }))
-      expect(isWorkspaceUnavailableReloadPending()).toBe(false)
       await vi.advanceTimersByTimeAsync(30_000)
       expect(reload).toHaveBeenCalledOnce()
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('a success drops the overlay and does not reload later', async () => {
+    await maybeReloadForWorkspaceUnavailable(jsonResponse(503, {}, 'waking'))
+    expect(isWorkspaceUnavailableReloadPending()).toBe(true)
+    await maybeReloadForWorkspaceUnavailable(new Response('ok', { status: 200 }))
+    expect(isWorkspaceUnavailableReloadPending()).toBe(false)
   })
 
   it('trusts the header without reading the body', async () => {

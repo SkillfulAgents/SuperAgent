@@ -4,10 +4,7 @@ import { Card, CardContent, CardHeader } from '@renderer/components/ui/card'
 
 export type WorkspaceUnavailableOverlayMode = 'asleep' | 'updating'
 
-/**
- * Full-window sheet over the last painted app. Waking covers in-app errors
- * until the document reload hits the waiting page; sleeping waits for a click.
- */
+/** Waking: cover red errors until reload hits the ingress page. Sleeping: click to wake. */
 export function WorkspaceUnavailableOverlay({ mode }: { mode: WorkspaceUnavailableOverlayMode }) {
   const asleep = mode === 'asleep'
   return (

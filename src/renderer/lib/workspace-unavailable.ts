@@ -19,7 +19,6 @@ const PROMPT_STATES = new Set<WorkspaceUnavailableState>(['sleeping', 'error'])
 let reloadPending = false
 let asleep = false
 const listeners = new Set<() => void>()
-let reloadTimer: ReturnType<typeof setTimeout> | null = null
 let reloadImpl = (): void => {
   window.location.reload()
 }
@@ -52,10 +51,6 @@ export function _resetWorkspaceUnavailableForTest(): void {
   reloadPending = false
   asleep = false
   listeners.clear()
-  if (reloadTimer != null) {
-    clearTimeout(reloadTimer)
-    reloadTimer = null
-  }
   reloadImpl = () => {
     window.location.reload()
   }
@@ -84,12 +79,7 @@ function markWorkspaceAsleep(): void {
   notify()
 }
 
-// The workspace recovered on its own; drop the overlay and any queued reload.
 function clearWorkspaceUnavailable(): void {
-  if (reloadTimer != null) {
-    clearTimeout(reloadTimer)
-    reloadTimer = null
-  }
   if (!asleep && !reloadPending) return
   asleep = false
   reloadPending = false
@@ -114,26 +104,15 @@ function rememberReloadAt(now: number): void {
   }
 }
 
-function armReloadPending(): void {
-  if (reloadPending) return
-  reloadPending = true
-  notify()
-}
-
 function reloadForWorkspaceUnavailable(): void {
-  // Cover first so in-app 502/503 errors never paint over the last surface.
-  armReloadPending()
   const last = lastReloadAt()
   const now = Date.now()
-  if (Number.isFinite(last) && now - last < COOLDOWN_MS) {
-    if (reloadTimer == null) {
-      reloadTimer = setTimeout(() => {
-        reloadTimer = null
-        rememberReloadAt(Date.now())
-        reloadImpl()
-      }, COOLDOWN_MS - (now - last))
-    }
-    return
+  // Loop guard only. Do not sit on this overlay waiting — the ingress waking
+  // page is what polls until the host is ready.
+  if (Number.isFinite(last) && now - last < COOLDOWN_MS) return
+  if (!reloadPending) {
+    reloadPending = true
+    notify()
   }
   rememberReloadAt(now)
   reloadImpl()
@@ -159,11 +138,9 @@ async function unavailableStateOf(response: Response): Promise<WorkspaceUnavaila
   return parsed.data.state
 }
 
-// Open-tab 502/503 from ingress. Mid-boot states reload so the next document
-// request gets the waiting page; sleeping/error only flag a wake prompt.
+// Open-tab 502/503 from ingress. Mid-boot states cover then reload so the next
+// document request gets the waiting page; sleeping/error only flag a wake prompt.
 export async function maybeReloadForWorkspaceUnavailable(response: Response): Promise<void> {
-  // The workspace can wake through another path (another tab, ingress timer);
-  // any success drops the prompt instead of forcing a pointless reload.
   if (response.ok) {
     clearWorkspaceUnavailable()
     return
