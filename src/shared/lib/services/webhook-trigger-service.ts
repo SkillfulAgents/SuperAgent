@@ -18,6 +18,7 @@ import { captureException } from '@shared/lib/error-reporting'
 import { trackServerEvent } from '../analytics/server-analytics'
 import { deleteComposioTrigger } from '@shared/lib/composio/triggers'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
+import { attribution, runWithAttribution, type Attribution } from '@shared/lib/platform-attribution'
 import { disablePlatformWebhookEndpoint } from '@shared/lib/services/webhook-endpoints-client'
 import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
 
@@ -458,16 +459,19 @@ export async function cancelWebhookTriggerWithCleanup(
   const canReachUpstream =
     trigger.kind === 'custom' ? Boolean(getPlatformAccessToken()) : isPlatformComposioActive()
   if (trigger.composioTriggerId && canReachUpstream) {
-    const remaining = await countActiveTriggersForComposioId(trigger.composioTriggerId)
+    const upstreamId = trigger.composioTriggerId
+    const remaining = await countActiveTriggersForComposioId(upstreamId)
     if (remaining === 0) {
       try {
         if (trigger.kind === 'custom') {
-          await disablePlatformWebhookEndpoint(
-            resolveCleanupMemberId(trigger),
-            trigger.composioTriggerId,
-          )
+          await disablePlatformWebhookEndpoint(resolveCleanupMemberId(trigger), upstreamId)
         } else {
-          await deleteComposioTrigger(trigger.composioTriggerId)
+          // The proxy scopes trigger DELETE to the subscription's Composio user
+          // (the creator); the ambient deleter 404s cross-member (SUP-765).
+          await runWithAttribution(
+            resolveCleanupAttribution(trigger),
+            () => deleteComposioTrigger(upstreamId),
+          )
         }
       } catch (error) {
         console.error('[webhook-trigger-service] Failed to tear down upstream subscription:', error)
@@ -499,6 +503,26 @@ export async function cancelWebhookTriggerWithCleanup(
 function resolveCleanupMemberId(trigger: WebhookTrigger): string {
   const resolved = resolvePlatformMemberForCandidates([trigger.createdByUserId])
   return resolved?.memberId ?? getStoredPlatformMemberId() ?? 'local'
+}
+
+// Creator first, then connected-account owner (SUP-226 candidate order);
+// null keeps the ambient request attribution.
+function resolveCleanupAttribution(trigger: WebhookTrigger): Attribution | null {
+  return (
+    attribution.fromResourceCreator(trigger.createdByUserId) ??
+    attribution.fromResourceCreator(getConnectedAccountOwnerUserId(trigger.connectedAccountId))
+  )
+}
+
+function getConnectedAccountOwnerUserId(connectedAccountId: string | null): string | null {
+  if (!connectedAccountId) return null
+  const rows = db
+    .select({ userId: connectedAccounts.userId })
+    .from(connectedAccounts)
+    .where(eq(connectedAccounts.id, connectedAccountId))
+    .limit(1)
+    .all()
+  return rows[0]?.userId ?? null
 }
 
 /**
