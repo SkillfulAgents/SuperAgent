@@ -290,6 +290,33 @@ describe('AgentHome', () => {
     ])
   })
 
+  it('stamps each session with its last activity rather than its creation time', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-08-27T12:00:00.000Z'))
+      mockSessionsData = [
+        {
+          id: 'old-but-active',
+          agentSlug: testAgent.slug,
+          name: 'Old but active session',
+          createdAt: new Date('2026-08-17T12:00:00.000Z'),
+          lastActivityAt: new Date('2026-08-27T11:00:00.000Z'),
+          messageCount: 2,
+        },
+      ]
+
+      renderWithProviders(
+        <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+      )
+
+      expect(screen.getByText('Old but active session')).toBeInTheDocument()
+      expect(screen.getByText('about 1 hour ago')).toBeInTheDocument()
+      expect(screen.queryByText('10 days ago')).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps the non-owner layout full-width below the desktop breakpoint', () => {
     renderWithProviders(
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />

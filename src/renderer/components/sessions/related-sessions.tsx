@@ -269,7 +269,8 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
           </div>
           {!dateAsTitle && (
             <div className="text-xs text-muted-foreground truncate">
-              {formatDate(session.createdAt)}
+              {/* Match the activity ordering: the stamp is the last chat, not the creation date. */}
+              {formatDate(session.lastActivityAt ?? session.createdAt)}
             </div>
           )}
         </div>

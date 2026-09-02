@@ -500,7 +500,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                 {sessions.length > 0 ? (
                   <>
                     <div className="flex items-center gap-2">
-                      <h2 className="text-sm font-medium text-muted-foreground flex-1">Sessions</h2>
+                      <h2 className="text-sm font-medium text-muted-foreground flex-1">Recent Sessions</h2>
                       <SortPopover value={sessionSort} onChange={setSessionSort} ariaLabel="Sort sessions" />
                       <Button
                         type="button"
