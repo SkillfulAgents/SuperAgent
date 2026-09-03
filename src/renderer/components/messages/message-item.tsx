@@ -10,7 +10,7 @@ import { WorkflowResultCard } from './workflow-result-card'
 import { parseTaskNotifications } from '@shared/lib/utils/task-notifications'
 import { MessageContextMenu } from './message-context-menu'
 import { MessageErrorBoundary } from './message-error-boundary'
-import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
+import { SentAttachmentChip, imageSizeForCount, isImageAttachment } from './sent-attachment-chip'
 import { parseAttachedFiles, parseMountedFolders } from '@shared/lib/utils/attached-files'
 import { parseSenderPrefix } from '@shared/lib/utils/sender-prefix'
 import ReactMarkdown, { type Components, type Options as ReactMarkdownOptions } from 'react-markdown'
@@ -479,13 +479,45 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
         )}
 
         {/* Attached file chips for user messages */}
-        {isUser && attachedFiles.length > 0 && agentSlug && (
-          <div className="flex flex-wrap gap-1.5 justify-end">
-            {attachedFiles.map((filePath, idx) => (
-              <FileDownloadPill key={idx} filePath={filePath} agentSlug={agentSlug} />
-            ))}
-          </div>
-        )}
+        {isUser && attachedFiles.length > 0 && agentSlug && (() => {
+          // Files and images are laid out separately so a tall picture never
+          // stretches the chips sharing its row. Chips sit right under the
+          // text; images trail below: stacked at native aspect for up to three,
+          // a 3-column grid of squares beyond that.
+          const fileAttachments = attachedFiles.filter((f) => !isImageAttachment(f))
+          const imageAttachments = attachedFiles.filter(isImageAttachment)
+          return (
+            <>
+              {fileAttachments.length > 0 && (
+                <div className="flex flex-wrap items-start justify-end gap-2" data-testid="sent-files">
+                  {fileAttachments.map((filePath) => (
+                    <SentAttachmentChip key={filePath} filePath={filePath} agentSlug={agentSlug} />
+                  ))}
+                </div>
+              )}
+              {imageAttachments.length > 0 && (() => {
+                const imageSize = imageSizeForCount(imageAttachments.length)
+                return (
+                  <div
+                    className={cn(
+                      imageSize === 'grid'
+                        // more than three: a 3-column grid of squares, right-aligned and bounded
+                        ? 'ml-auto grid w-full max-w-md grid-cols-3 gap-2'
+                        // up to three: stacked, each at native aspect
+                        : 'flex flex-col items-end gap-2',
+                    )}
+                    data-testid="sent-images"
+                    data-image-layout={imageSize}
+                  >
+                    {imageAttachments.map((filePath) => (
+                      <SentAttachmentChip key={filePath} filePath={filePath} agentSlug={agentSlug} imageSize={imageSize} />
+                    ))}
+                  </div>
+                )
+              })()}
+            </>
+          )
+        })()}
 
         {/* Mounted folder pills for user messages */}
         {isUser && mountedFolders.length > 0 && (

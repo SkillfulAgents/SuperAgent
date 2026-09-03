@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useCallback, useEffect, useMemo, type ReactNode } from 'react'
+import { displayNameForPath } from '@shared/lib/utils/upload-display-name'
 import { useRouteLocation } from '@renderer/router/use-route-location'
 
 export interface FileTab {
@@ -94,9 +95,9 @@ function nextFileVersion(): number {
   return lastFileVersion
 }
 
+/** Basename for tabs and the title row, with the upload timestamp prefix removed. */
 function getDisplayName(filePath: string): string {
-  const normalized = filePath.replace(/\/+$/, '')
-  return normalized.split('/').pop() || normalized
+  return displayNameForPath(filePath)
 }
 
 function normalizeFolderPath(folderPath: string): string {

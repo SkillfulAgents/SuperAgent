@@ -1,7 +1,7 @@
-import { X, Link2, Check, AlertTriangle, Loader2 } from 'lucide-react'
+import { X, Link2, AlertTriangle, Loader2 } from 'lucide-react'
 import { formatFileSize } from '@shared/lib/utils/format-file-size'
 import { cn } from '@shared/lib/utils'
-import { FileTypeIcon } from '@renderer/components/ui/file-type-icon'
+import { FileIconTile } from '@renderer/components/ui/file-icon-tile'
 import { Progress } from '@renderer/components/ui/progress'
 
 export interface UploadState {
@@ -100,14 +100,8 @@ function UploadMeta({ attachment, sizeText, onRetry }: { attachment: FileAttachm
       </>
     )
   }
-  if (status === 'done') {
-    return (
-      <span className="flex items-center gap-1 text-muted-foreground">
-        <Check className="h-3 w-3 text-emerald-500" data-testid="attachment-done" />
-        {sizeText || null}
-      </span>
-    )
-  }
+  // Done reads the same as queued: the chip's status attribute carries the
+  // state for tests, and a finished upload needs no badge — just the size.
   return sizeText ? <span className="text-muted-foreground">{sizeText}</span> : null
 }
 
@@ -116,11 +110,18 @@ export function AttachmentPreview({ attachments, onRemove, onRetry }: Attachment
 
   return (
     <div className="flex flex-wrap gap-2">
-      {attachments.map((attachment) => (
+      {attachments.map((attachment) => {
+        // Images with a preview are just the picture: a square chip, full bleed,
+        // no name or size. Everything else is the icon-tile-plus-text chip.
+        const imageChip = attachment.type === 'file' && attachment.file.type.startsWith('image/') && !!attachment.preview
+        return (
         <div
           key={attachment.id}
           className={cn(
-            'flex items-center gap-2 rounded-md border bg-muted/50 px-2 py-1.5 text-xs',
+            'relative rounded-md border bg-background text-xs',
+            imageChip
+              ? 'h-11 w-11 shrink-0 overflow-hidden'
+              : 'flex items-center gap-2 py-1.5 pl-2 pr-7',
             attachment.error && 'border-destructive/50 bg-destructive/10'
           )}
           data-testid="attachment-preview"
@@ -132,8 +133,8 @@ export function AttachmentPreview({ attachments, onRemove, onRetry }: Attachment
           {attachment.type === 'mount' ? (
             <>
               <div className="relative">
-                <FileTypeIcon filename={attachment.folderName} size="xl" folder />
-                <Link2 className="h-2.5 w-2.5 absolute -bottom-0.5 -right-0.5 text-blue-500" />
+                <FileIconTile filename={attachment.folderName} folder />
+                <Link2 className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full bg-background text-blue-500" />
               </div>
               <div className="flex flex-col min-w-0">
                 <span className="truncate max-w-[160px] font-medium" title={attachment.folderName}>
@@ -150,7 +151,7 @@ export function AttachmentPreview({ attachments, onRemove, onRetry }: Attachment
             </>
           ) : attachment.type === 'folder' ? (
             <>
-              <FileTypeIcon filename={attachment.folderName} size="xl" folder />
+              <FileIconTile filename={attachment.folderName} folder />
               <div className="flex flex-col min-w-0">
                 <span className="truncate max-w-[160px] font-medium" title={attachment.folderName}>
                   {attachment.folderName}
@@ -160,34 +161,57 @@ export function AttachmentPreview({ attachments, onRemove, onRetry }: Attachment
             </>
           ) : (
             <>
-              {attachment.file.type.startsWith('image/') && attachment.preview ? (
-                <img
-                  src={attachment.preview}
-                  alt={attachment.file.name}
-                  className="h-8 w-8 rounded object-cover"
-                />
+              {imageChip ? (
+                <>
+                  <img
+                    src={attachment.preview}
+                    alt={attachment.file.name}
+                    title={`${attachment.file.name} · ${formatFileSize(attachment.file.size)}`}
+                    className="h-full w-full object-cover"
+                  />
+                  {/* Upload state as an overlay, since there's no text line to carry it. */}
+                  {attachmentStatus(attachment) === 'uploading' && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-background/60" data-testid="attachment-progress">
+                      <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                    </div>
+                  )}
+                  {attachment.error && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-destructive/40" title={attachment.error}>
+                      <AlertTriangle className="h-4 w-4 text-destructive-foreground" />
+                    </div>
+                  )}
+                </>
               ) : (
-                <FileTypeIcon filename={attachment.file.name} size="xl" />
+                <>
+                  <FileIconTile filename={attachment.file.name} />
+                  <div className="flex flex-col min-w-0">
+                    <span className="truncate max-w-[160px] font-medium" title={attachment.file.name}>
+                      {attachment.file.name}
+                    </span>
+                    <UploadMeta attachment={attachment} sizeText={formatFileSize(attachment.file.size)} onRetry={onRetry} />
+                  </div>
+                </>
               )}
-              <div className="flex flex-col min-w-0">
-                <span className="truncate max-w-[160px] font-medium" title={attachment.file.name}>
-                  {attachment.file.name}
-                </span>
-                <UploadMeta attachment={attachment} sizeText={formatFileSize(attachment.file.size)} onRetry={onRetry} />
-              </div>
             </>
           )}
           <button
             type="button"
             onClick={() => onRemove(attachment.id)}
-            className="ml-1 rounded-full p-0.5 hover:bg-muted text-muted-foreground hover:text-foreground"
+            className={cn(
+              // Always visible on a gray circle, so it's discoverable without hover
+              // and stays legible over an image.
+              'absolute rounded-full bg-muted p-0.5 text-foreground transition-colors hover:bg-muted-foreground/20',
+              imageChip ? 'right-0.5 top-0.5' : 'right-1 top-1',
+            )}
+            aria-label={`Remove ${attachmentName(attachment)}`}
             data-testid="attachment-remove"
             data-attachment-name={attachmentName(attachment)}
           >
             <X className="h-3 w-3" />
           </button>
         </div>
-      ))}
+        )
+      })}
     </div>
   )
 }

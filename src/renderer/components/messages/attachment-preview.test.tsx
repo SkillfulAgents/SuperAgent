@@ -69,6 +69,28 @@ describe('AttachmentPreview', () => {
     expect(img).toHaveAttribute('src', 'blob:http://localhost/abc123')
   })
 
+  it('image chips are a bare square: no name or size text, details on hover', () => {
+    const attachments = [
+      createAttachment({ name: 'photo.png', size: 2048, type: 'image/png', preview: 'blob:http://localhost/abc123' }),
+    ]
+    render(<AttachmentPreview attachments={attachments} onRemove={vi.fn()} />)
+    const chip = screen.getByTestId('attachment-preview')
+    expect(chip.className).toContain('h-11 w-11')
+    expect(screen.queryByText('photo.png')).toBeNull()
+    expect(screen.queryByText('2.0 KB')).toBeNull()
+    expect(screen.getByAltText('photo.png')).toHaveAttribute('title', 'photo.png · 2.0 KB')
+    expect(screen.getByRole('button', { name: 'Remove photo.png' })).toBeInTheDocument()
+  })
+
+  it('image chips overlay the uploading state instead of a progress bar', () => {
+    const attachments = [
+      createAttachment({ name: 'photo.png', type: 'image/png', preview: 'blob:x', upload: { status: 'uploading', percent: 40, agentSlug: 'a' } }),
+    ]
+    render(<AttachmentPreview attachments={attachments} onRemove={vi.fn()} />)
+    expect(screen.getByTestId('attachment-progress').querySelector('.animate-spin')).not.toBeNull()
+    expect(screen.getByTestId('attachment-preview')).toHaveAttribute('data-attachment-status', 'uploading')
+  })
+
   it('calls onRemove with attachment id when remove button is clicked', async () => {
     const user = userEvent.setup()
     const onRemove = vi.fn()
@@ -237,10 +259,12 @@ describe('upload status', () => {
     expect(screen.getByTestId('attachment-preview').querySelector('.animate-spin')).not.toBeNull()
   })
 
-  it('done shows a check', () => {
-    render(<AttachmentPreview attachments={[createAttachment({ upload: { status: 'done', path: '/p', agentSlug: 'a' } })]} onRemove={vi.fn()} />)
+  it('done shows just the size, with no badge or progress', () => {
+    render(<AttachmentPreview attachments={[createAttachment({ size: 2048, upload: { status: 'done', path: '/p', agentSlug: 'a' } })]} onRemove={vi.fn()} />)
     expect(screen.getByTestId('attachment-preview')).toHaveAttribute('data-attachment-status', 'done')
-    expect(screen.getByTestId('attachment-done')).toBeInTheDocument()
+    expect(screen.getByText('2.0 KB')).toBeInTheDocument()
+    expect(screen.queryByTestId('attachment-done')).toBeNull()
+    expect(screen.queryByTestId('attachment-progress')).toBeNull()
   })
 
   it('error shows the reason on hover and a retry control', async () => {

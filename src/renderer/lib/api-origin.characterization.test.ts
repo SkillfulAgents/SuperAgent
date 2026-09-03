@@ -148,6 +148,7 @@ const DIRECT_BASE_URL_CONSUMERS: Record<string, string> = {
   'components/file-preview/file-preview-tray-content.tsx': 'file URL passed to previewers/<img>',
   'components/file-preview/renderers/unsupported-renderer.tsx': 'download link href',
   'components/ui/file-delivery-row.tsx': 'download link href on the delivered-file row',
+  'components/messages/sent-attachment-chip.tsx': '<img src> — thumbnail of an uploaded image on a sent message',
   'components/messages/message-input.tsx': 'fire-and-forget typing ping (deliberately not awaited)',
   'components/notifications/global-notification-handler.tsx':
     'EventSource — global notification stream',
