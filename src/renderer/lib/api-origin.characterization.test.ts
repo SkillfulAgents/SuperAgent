@@ -85,7 +85,9 @@ const PRIMITIVE_CONSTRUCTORS = new Set(['EventSource', 'WebSocket'])
  */
 const PINNED_CALL_SITES: Record<string, string> = {
   'components/file-preview/renderers/use-file-content.ts::useFileContent::fetch(url)':
-    'prebuilt `url` prop; composed by file-preview-tray-content.tsx from getApiBaseUrl()',
+    'prebuilt `url` prop; composed by use-preview-file-source.ts from getApiBaseUrl()',
+  'components/file-preview/use-preview-file-source.ts::usePreviewFileSource::fetch(primaryUrl!)':
+    'heading-jump probe on a prebuilt file URL from getApiBaseUrl(); same origin as use-file-content.ts',
   'components/file-preview/renderers/audio-renderer.tsx::AudioRenderer.decodeWaveform::fetch(url)':
     'prebuilt `url` prop; same origin as use-file-content.ts above',
   'components/file-preview/copy-file-button.tsx::fetchText::fetch(url)':
@@ -145,7 +147,8 @@ const DIRECT_BASE_URL_CONSUMERS: Record<string, string> = {
   'components/ui/model-icon.tsx': '<img src> — model icon asset',
   'components/home/dashboard-card.tsx': '<img src> — dashboard screenshot',
   'components/dashboards/dashboard-view.tsx': '<iframe src> — embedded dashboard',
-  'components/file-preview/file-preview-tray-content.tsx': 'file URL passed to previewers/<img>',
+  'components/file-preview/use-preview-file-source.ts':
+    'file URL passed to previewers/<img>, plus the heading-jump existence probe',
   'components/file-preview/renderers/unsupported-renderer.tsx': 'download link href',
   'components/messages/message-input.tsx': 'fire-and-forget typing ping (deliberately not awaited)',
   'components/notifications/global-notification-handler.tsx':
