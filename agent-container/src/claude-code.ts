@@ -42,6 +42,11 @@ function mcpToolNames(
     .map(t => `mcp__${serverName}__${t.name}`)
 }
 import { inputManager } from './input-manager';
+import {
+  MAIN_THREAD_ONLY_INPUT_TYPES,
+  MAIN_THREAD_ONLY_TOOL_MESSAGE,
+  userInputToolName,
+} from './automated-input-types';
 import { sanitizeMcpName } from './sanitize-mcp-name';
 import { withAgentAttributionHeaders, withSpeedHeader } from './attribution-headers';
 import { renderPrompt } from './render-prompt';
@@ -462,16 +467,11 @@ export interface ClaudeCodeProcessOptions {
   sessionCapabilityGrants?: Capability[];
 }
 
-/**
- * Tools only the main thread may call. A session wake resumes the main
- * conversation and a session holds one pending wake, so a subagent calling
- * schedule_resume would replace the main agent's wake and never itself resume.
- * Enforced by a PreToolUse hook below; the host rejects the same names as a
- * backstop (message-persister MAIN_THREAD_ONLY_AUTOMATED_TOOLS).
- */
-const MAIN_THREAD_ONLY_TOOLS: ReadonlySet<string> = new Set(['mcp__user-input__schedule_resume']);
-const MAIN_THREAD_ONLY_TOOL_MESSAGE =
-  'schedule_resume is only available to the main session, not to subagents: a wake resumes the main conversation, not this subagent. Finish your task and report back; the main agent can pause the session itself.';
+// Denied inside subagents by the PreToolUse hook below; see
+// automated-input-types for why.
+const MAIN_THREAD_ONLY_TOOLS: ReadonlySet<string> = new Set(
+  MAIN_THREAD_ONLY_INPUT_TYPES.map((type) => userInputToolName(type)),
+);
 
 export class ClaudeCodeProcess extends EventEmitter {
   private queryInstance: Query | null = null;
