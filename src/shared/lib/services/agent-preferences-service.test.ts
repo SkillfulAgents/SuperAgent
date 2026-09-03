@@ -78,9 +78,15 @@ describe('agent-preferences-service', () => {
       expect(agentPreferencesSchema.parse({})).toEqual({})
     })
 
-    it('rejects zero', () => {
+    it('accepts zero as an explicit "Never" override', () => {
+      expect(agentPreferencesSchema.parse({ autoDeleteInactiveDays: 0 })).toEqual({
+        autoDeleteInactiveDays: 0,
+      })
+    })
+
+    it('rejects negative days', () => {
       expect(() =>
-        agentPreferencesSchema.parse({ autoDeleteInactiveDays: 0 })
+        agentPreferencesSchema.parse({ autoDeleteInactiveDays: -1 })
       ).toThrow()
     })
 
