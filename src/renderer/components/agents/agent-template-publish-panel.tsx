@@ -7,6 +7,8 @@ import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { ArrowRight, ArrowUpFromLine, Check, Loader2, ExternalLink, AlertTriangle, ChevronLeft } from 'lucide-react'
 import { useAgentTemplatePublishInfo, usePublishAgentTemplate } from '@renderer/hooks/use-agent-templates'
 import { useSkillsets } from '@renderer/hooks/use-skillsets'
+import { isSkillsetPublishable } from '@renderer/lib/skillset-publish-ui'
+import { cn } from '@shared/lib/utils'
 
 interface AgentTemplatePublishPanelProps {
   agentSlug: string
@@ -16,8 +18,8 @@ interface AgentTemplatePublishPanelProps {
 
 /**
  * Inline publish flow for the agent share popover's Publish tab:
- * title/description/version form first, then choosing a library as the final,
- * committing step — clicking a library publishes to it. State resets by
+ * title/description/version form first, then choosing a skillset as the final,
+ * committing step — clicking a writable skillset selects it. State resets by
  * unmounting when the user navigates back.
  */
 export function AgentTemplatePublishPanel({ agentSlug, onBack }: AgentTemplatePublishPanelProps) {
@@ -30,13 +32,13 @@ export function AgentTemplatePublishPanel({ agentSlug, onBack }: AgentTemplatePu
   const [selectedSkillsetId, setSelectedSkillsetId] = useState<string | null>(null)
   const [publishResult, setPublishResult] = useState<{ prUrl?: string; successMessage: string } | null>(null)
 
-  // Selection defaults to the first library, mirroring the Export tab's
-  // preselected radio pattern.
-  const firstSkillsetId = skillsets?.[0]?.id ?? null
-  const selectedId = selectedSkillsetId ?? firstSkillsetId
+  // Selection defaults to the first writable skillset, mirroring the Export
+  // tab's preselected radio pattern. Read-only skillsets stay listed.
+  const firstWritableId = skillsets?.find((ss) => isSkillsetPublishable(ss.publishMode))?.id ?? null
+  const selectedId = selectedSkillsetId ?? firstWritableId
 
   // Suggested title/body/version derive from the agent's CLAUDE.md (see
-  // getAgentPublishInfo); the fetch targets the currently selected library so
+  // getAgentPublishInfo); the fetch targets the currently selected skillset so
   // its publish preconditions are checked before the final Publish click.
   const {
     data: publishInfo,
@@ -96,7 +98,7 @@ export function AgentTemplatePublishPanel({ agentSlug, onBack }: AgentTemplatePu
           <ChevronLeft className="h-4 w-4" />
         </Button>
         <p className="text-sm font-medium">
-          {publishResult ? 'Published' : step === 'form' ? 'Publish details' : 'Choose a library'}
+          {publishResult ? 'Published' : step === 'form' ? 'Publish details' : 'Choose a skillset'}
         </p>
       </div>
 
@@ -131,8 +133,8 @@ export function AgentTemplatePublishPanel({ agentSlug, onBack }: AgentTemplatePu
             if (title.trim() && body.trim()) setStep('pick')
           }}
         >
-          {/* Suggestion fetch failure (e.g. the library's publish
-              preconditions fail) — the form stays usable; the library picker
+          {/* Suggestion fetch failure (e.g. the skillset's publish
+              preconditions fail) — the form stays usable; the skillset picker
               and final Publish surface their own errors. */}
           {infoError && (
             <Alert variant="destructive">
@@ -207,12 +209,13 @@ export function AgentTemplatePublishPanel({ agentSlug, onBack }: AgentTemplatePu
         </form>
       ) : !skillsets || skillsets.length === 0 ? (
         <p className="py-6 text-center text-sm text-muted-foreground">
-          No libraries connected. Add one in Settings first.
+          No skillsets configured. Add a skillset in Settings first.
         </p>
       ) : (
         <div className="space-y-3">
-          <div role="radiogroup" aria-label="Library" className="-mx-2 space-y-1">
+          <div role="radiogroup" aria-label="Skillset" className="-mx-2 space-y-1">
             {skillsets.map((ss) => {
+              const publishable = isSkillsetPublishable(ss.publishMode)
               const isSelected = selectedId === ss.id
               return (
                 <button
@@ -220,12 +223,21 @@ export function AgentTemplatePublishPanel({ agentSlug, onBack }: AgentTemplatePu
                   type="button"
                   role="radio"
                   aria-checked={isSelected}
-                  className="flex w-full items-center gap-3 rounded-md px-2 py-2 text-left hover:bg-accent"
+                  disabled={!publishable}
+                  className={cn(
+                    'flex w-full items-center gap-3 rounded-md px-2 py-2 text-left',
+                    publishable ? 'hover:bg-accent' : 'cursor-not-allowed opacity-70',
+                  )}
                   onClick={() => setSelectedSkillsetId(ss.id)}
                   data-testid={`publish-skillset-option-${ss.id}`}
                 >
                   <span className="min-w-0 flex-1">
-                    <p className="text-[11px]">{ss.name}</p>
+                    <p className="text-[11px]">
+                      {ss.name}
+                      {!publishable && (
+                        <span className="ml-1.5 font-medium text-muted-foreground">Read only</span>
+                      )}
+                    </p>
                     <p className="mt-0.5 line-clamp-2 text-[11px] text-muted-foreground">
                       {ss.description}
                     </p>
@@ -242,6 +254,7 @@ export function AgentTemplatePublishPanel({ agentSlug, onBack }: AgentTemplatePu
           <Button
             className="w-full gap-1.5"
             onClick={() => void handlePublish()}
+            disabled={!selectedId}
             data-testid="publish-flow-publish"
           >
             {publishAgent.isPending ? (

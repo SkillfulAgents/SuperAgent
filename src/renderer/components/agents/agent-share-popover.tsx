@@ -446,10 +446,10 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
                 <div className="space-y-4">
                   {/* Hero (Notion "Publish to web"-style) */}
                   <div className="space-y-1 pt-2 text-center">
-                    <p className="text-sm font-medium">Publish to a Library</p>
+                    <p className="text-sm font-medium">Publish to a Skillset</p>
                     <p className="text-xs text-muted-foreground">
                       <span className="block">
-                        Libraries are shared collections of agent templates and skills.
+                        Skillsets are shared collections of agent templates and skills.
                       </span>
                       <span className="block">
                         Publish this agent so teammates can install their own copy.
@@ -457,7 +457,7 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
                     </p>
                   </div>
 
-                  {/* Diagram: the agent card rises to the cloud library, which
+                  {/* Diagram: the agent card rises to the cloud skillset, which
                       fans out to clustered teammates ready to run their copy. */}
                   {/* Fixed 416x224 coordinate system: user centers sit on a
                       75px radius around the cloud center (208,116) at 0° and
@@ -488,14 +488,14 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
                         </marker>
                       </defs>
                       {([
-                        // [x1, y1, x2, y2, arrowhead] — only the card→library
+                        // [x1, y1, x2, y2, arrowhead] — only the card→skillset
                         // line keeps its head; the radial spokes are plain.
-                        [208, 168, 208, 147, true], // agent card up to the library
-                        [208, 86, 208, 65, false], // library → top teammate
-                        [185, 97, 169, 83, false], // library → upper-left
-                        [231, 97, 247, 83, false], // library → upper-right
-                        [178, 119, 157, 120, false], // library → lower-left
-                        [238, 119, 259, 120, false], // library → lower-right
+                        [208, 168, 208, 147, true], // agent card up to the skillset
+                        [208, 86, 208, 65, false], // skillset → top teammate
+                        [185, 97, 169, 83, false], // skillset → upper-left
+                        [231, 97, 247, 83, false], // skillset → upper-right
+                        [178, 119, 157, 120, false], // skillset → lower-left
+                        [238, 119, 259, 120, false], // skillset → lower-right
                       ] as const).map(([x1, y1, x2, y2, arrowhead]) => (
                         <line
                           key={`${x1}-${y1}`}
@@ -512,7 +512,7 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
                       ))}
                     </svg>
 
-                    {/* Teammates, all 75px from the library center (5th on top) */}
+                    {/* Teammates, all 75px from the skillset center (5th on top) */}
                     <div className="absolute left-1/2 top-[23px] flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full border bg-background shadow-sm">
                       <User className="h-4 w-4 text-muted-foreground" />
                     </div>
@@ -529,7 +529,7 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
                       <User className="h-4 w-4 text-muted-foreground" />
                     </div>
 
-                    {/* The library in the cloud */}
+                    {/* The skillset in the cloud */}
                     <div className="absolute left-1/2 top-[92px] flex h-12 w-12 -translate-x-1/2 items-center justify-center rounded-xl border bg-background shadow-md">
                       <LibraryBig className="h-5 w-5 text-foreground/70" />
                     </div>
@@ -553,7 +553,7 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
                     <ArrowRight className="h-4 w-4" />
                   </Button>
 
-                  {/* What publishing to a library actually means */}
+                  {/* What publishing to a skillset actually means */}
                   <div className="space-y-2 text-xs text-muted-foreground">
                     <p className="flex items-start gap-2">
                       <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -565,7 +565,7 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
               ) : (
                 <p className="px-2 py-4 text-center text-sm text-muted-foreground">
                   Publishing isn&apos;t available — this agent is already linked to a
-                  library or can&apos;t be republished from this workspace.
+                  skillset or can&apos;t be republished from this workspace.
                 </p>
               )}
             </div>
