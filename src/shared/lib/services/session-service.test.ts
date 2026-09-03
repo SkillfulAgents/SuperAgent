@@ -35,6 +35,9 @@ import {
   getSessionForScheduledExecution,
   getSessionsByWebhookTrigger,
 } from './session-service'
+import { parsePageCursor } from './session-page-cursor'
+
+const cursorId = (cursor: string | null) => (cursor === null ? null : parsePageCursor(cursor).id)
 
 describe('session-service', () => {
   let testDir: string
@@ -934,7 +937,7 @@ describe('session-service', () => {
 
       const page = await getSessionMessagesPage('test-agent', 'page-session', { limit: 5 })
       expect(page.messages.map((m) => m.id)).toEqual(['a-7', 'u-8', 'a-8', 'u-9', 'a-9'])
-      expect(page.nextCursor).toBe('a-7')
+      expect(cursorId(page.nextCursor)).toBe('a-7')
     })
 
     it('returns the page before a cursor', async () => {
@@ -945,7 +948,7 @@ describe('session-service', () => {
         cursor: 'a-7',
       })
       expect(page.messages.map((m) => m.id)).toEqual(['u-5', 'a-5', 'u-6', 'a-6', 'u-7'])
-      expect(page.nextCursor).toBe('u-5')
+      expect(cursorId(page.nextCursor)).toBe('u-5')
     })
 
     it('returns no cursor on the oldest page', async () => {
@@ -970,7 +973,7 @@ describe('session-service', () => {
       const page = await getSessionMessagesPage('test-agent', 'page-session', { limit: 4 })
       expect(page.messages.map((m) => m.id)).toEqual(['u-18', 'a-18', 'u-19', 'a-19'])
       expect(page.messages.some((m) => m.id === 'huge-prefix')).toBe(false)
-      expect(page.nextCursor).toBe('u-18')
+      expect(cursorId(page.nextCursor)).toBe('u-18')
     })
 
     it('does not use a mid-merge assistant uuid as the page cursor', async () => {
@@ -1027,7 +1030,7 @@ describe('session-service', () => {
       const first = await getSessionMessagesPage('test-agent', 'page-session', { limit: 5 })
       expect(first.messages.map((m) => m.id)).not.toContain('X-1')
       expect(first.messages[0]?.id).toBe('X-0')
-      expect(first.nextCursor).toBe('X-0')
+      expect(cursorId(first.nextCursor)).toBe('X-0')
       expect(first.messages.find((m) => m.id === 'X-0')).toMatchObject({
         type: 'assistant',
         content: { text: 'leading' },
@@ -1098,7 +1101,7 @@ describe('session-service', () => {
         signal: controller.signal,
       })
       expect(page.messages.map((m) => m.id)).toEqual(['a-7', 'u-8', 'a-8', 'u-9', 'a-9'])
-      expect(page.nextCursor).toBe('a-7')
+      expect(cursorId(page.nextCursor)).toBe('a-7')
     })
 
     it('byte budget truncates a page short and cursor paging walks the remainder', async () => {
@@ -1112,7 +1115,7 @@ describe('session-service', () => {
       })
       expect(first.messages.length).toBeGreaterThan(0)
       expect(first.messages.length).toBeLessThan(20)
-      expect(first.nextCursor).toBe(first.messages[0]!.id)
+      expect(cursorId(first.nextCursor)).toBe(first.messages[0]!.id)
 
       const collected = [...first.messages.map((m) => m.id)]
       let cursor = first.nextCursor
@@ -1152,7 +1155,7 @@ describe('session-service', () => {
       // The budget floor guarantees at least one servable item beyond the
       // sacrificial head — the giant trailing item must not become an empty page.
       expect(page.messages.map((m) => m.id)).toEqual(['a-giant'])
-      expect(page.nextCursor).toBe('a-giant')
+      expect(cursorId(page.nextCursor)).toBe('a-giant')
 
       const older = await getSessionMessagesPage('test-agent', 'page-session', {
         limit: 5,
@@ -1224,11 +1227,41 @@ describe('session-service', () => {
       expect(queued).toMatchObject({ type: 'user', queued: true, content: { text: 'steer' } })
     })
 
-    it('terminates and returns each item once when history is replayed verbatim', async () => {
+    it('terminates and covers every item when history is replayed verbatim', async () => {
       // Session resume can re-append prior history to the transcript with the
-      // SAME uuids. The transform canonicalizes duplicates to their oldest
-      // occurrence; cursor resolution must do the same, or paging anchors on
-      // the newest copy and cycles over the same pages forever.
+      // SAME uuids. Paging must never cycle: each cursor the server hands out
+      // sits strictly deeper in the file than the last, so the walk ends at
+      // the file start. Offset cursors seek instead of re-scanning from EOF,
+      // so they serve the replayed copy and then the originals (the client
+      // dedupes by id and skips all-duplicate pages); every item is served,
+      // and the walk is bounded by the file's row count.
+      const six = makeThread(3)
+      await createSessionFile('test-agent', 'page-session', [...six, ...six])
+
+      const first = await getSessionMessagesPage('test-agent', 'page-session', { limit: 3 })
+      const collected = [...first.messages.map((m) => m.id)]
+      let cursor = first.nextCursor
+      let pages = 0
+      for (let i = 0; i < 10 && cursor; i++) {
+        const page = await getSessionMessagesPage('test-agent', 'page-session', {
+          limit: 3,
+          cursor,
+        })
+        pages++
+        // No page repeats an item within itself.
+        expect(new Set(page.messages.map((m) => m.id)).size).toBe(page.messages.length)
+        collected.unshift(...page.messages.map((m) => m.id))
+        cursor = page.nextCursor
+      }
+
+      expect(cursor).toBeNull()
+      expect(pages).toBeLessThanOrEqual(4)
+      expect([...new Set(collected)].sort()).toEqual(['a-0', 'a-1', 'a-2', 'u-0', 'u-1', 'u-2'])
+    })
+
+    it('id-only cursors still anchor on the deepest replayed occurrence', async () => {
+      // Legacy shape (bare uuid): the EOF-down scan re-anchors on the deepest
+      // duplicate, so the walk serves each item exactly once.
       const six = makeThread(3)
       await createSessionFile('test-agent', 'page-session', [...six, ...six])
 
@@ -1238,7 +1271,7 @@ describe('session-service', () => {
       for (let i = 0; i < 10 && cursor; i++) {
         const page = await getSessionMessagesPage('test-agent', 'page-session', {
           limit: 3,
-          cursor,
+          cursor: cursorId(cursor)!,
         })
         collected.unshift(...page.messages.map((m) => m.id))
         cursor = page.nextCursor
