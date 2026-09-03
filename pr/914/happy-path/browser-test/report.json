@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser Use feature successfully executed - agent opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and returned the result in the chat within the 3-minute timeout.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully, displaying Gamut interface with sidebar containing two agents.",
+    "Found and clicked the \"QA-20260903-184414-3wyy\" agent in the sidebar — Agent page loaded successfully with chat interface displaying the agent name \"QA-20260903-184414-3wyy\" and session titled \"Browser Navigation and Page Title Retrieval\".",
+    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was accepted and the agent session started processing.",
+    "Waited up to 3 minutes for a response — Response was received within approximately 10 seconds. Metadata shows \"Worked for 11s · 4 tool calls · 163,689 tokens\".",
+    "Verified the response mentions \"Example Domain\" and took screenshot — Response confirmed: \"The page title is 'Example Domain' — the page shows that heading plus a short note that the domain is for use in documentation examples. Browser is closed.\" Screenshot captured showing the complete conversation and agent response."
+  ],
+  "bugs": [],
+  "durationMs": 70186,
+  "sessionId": "c5f5cf57-78ba-44ce-9b49-99d5d5a48d90",
+  "cost": {
+    "inputTokens": 340,
+    "outputTokens": 10868,
+    "cacheCreationTokens": 101188,
+    "cacheReadTokens": 850146,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.26618
+  }
+}
