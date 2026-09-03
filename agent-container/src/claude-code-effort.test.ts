@@ -563,58 +563,73 @@ describe('ClaudeCodeProcess dashboard browser tools', () => {
   })
 })
 
+// The gate must be a PreToolUse hook: under permissionMode 'bypassPermissions'
+// the SDK never consults canUseTool for regular tool calls, so a canUseTool
+// deny would be dead code.
 describe('ClaudeCodeProcess main-thread-only tools', () => {
-  type CanUseTool = (
-    toolName: string,
-    input: Record<string, unknown>,
-    options: { toolUseID: string; signal: AbortSignal; agentID?: string },
-  ) => Promise<{ behavior: 'allow' | 'deny'; message?: string }>
+  type HookOutput = {
+    hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string }
+  }
+  type Hook = (input: Record<string, unknown>, toolUseId: string | undefined, opts: { signal: AbortSignal }) => Promise<HookOutput>
+  type Matcher = { matcher?: string; hooks: Hook[] }
 
   beforeEach(() => {
     calls.length = 0
-    setCurrentToolUseId.mockClear()
   })
 
-  async function canUseToolOf(sessionId: string): Promise<CanUseTool> {
+  const TOOL = 'mcp__user-input__schedule_resume'
+
+  // The PreToolUse matchers whose pattern selects the tool, in registration order.
+  async function preToolUseHooksFor(sessionId: string, toolName: string): Promise<Hook[]> {
     const process = new ClaudeCodeProcess({ sessionId, workingDirectory: '/tmp' })
     await process.start()
-    return calls[0].options.canUseTool as CanUseTool
+    const matchers = (calls[0].options.hooks as { PreToolUse: Matcher[] }).PreToolUse
+    return matchers
+      .filter((m) => m.matcher !== undefined && new RegExp(m.matcher).test(toolName))
+      .flatMap((m) => m.hooks)
   }
 
-  const input = { wakeTime: 'tomorrow 9am', note: 'check inbox' }
+  async function runHooks(hooks: Hook[], input: Record<string, unknown>): Promise<HookOutput[]> {
+    const results: HookOutput[] = []
+    for (const hook of hooks) {
+      results.push(await hook(input, 'tu-1', { signal: new AbortController().signal }))
+    }
+    return results
+  }
+
+  const hookInput = (agentId?: string) => ({
+    hook_event_name: 'PreToolUse',
+    session_id: 's',
+    transcript_path: '/tmp/t.jsonl',
+    cwd: '/tmp',
+    tool_name: TOOL,
+    tool_input: { wakeTime: 'tomorrow 9am', note: 'check inbox' },
+    tool_use_id: 'tu-1',
+    ...(agentId ? { agent_id: agentId, agent_type: 'general-purpose' } : {}),
+  })
 
   it('denies schedule_resume from a subagent with a reason', async () => {
-    const canUseTool = await canUseToolOf('test-main-only-1')
-    const result = await canUseTool('mcp__user-input__schedule_resume', input, {
-      toolUseID: 'tu-sub',
-      signal: new AbortController().signal,
-      agentID: 'agent-abc',
-    })
+    const hooks = await preToolUseHooksFor('test-main-only-1', TOOL)
+    const denies = (await runHooks(hooks, hookInput('agent-abc')))
+      .map((r) => r.hookSpecificOutput)
+      .filter((o) => o?.permissionDecision === 'deny')
 
-    expect(result.behavior).toBe('deny')
-    expect(result.message).toMatch(/main session/)
-    expect(setCurrentToolUseId).not.toHaveBeenCalled()
+    expect(denies).toHaveLength(1)
+    expect(denies[0]?.permissionDecisionReason).toMatch(/main session/)
   })
 
   it('allows schedule_resume from the main thread', async () => {
-    const canUseTool = await canUseToolOf('test-main-only-2')
-    const result = await canUseTool('mcp__user-input__schedule_resume', input, {
-      toolUseID: 'tu-main',
-      signal: new AbortController().signal,
-    })
+    const hooks = await preToolUseHooksFor('test-main-only-2', TOOL)
+    const results = await runHooks(hooks, hookInput())
 
-    expect(result.behavior).toBe('allow')
-    expect(setCurrentToolUseId).toHaveBeenCalledWith('tu-main', 'test-main-only-2')
+    expect(results.some((r) => r.hookSpecificOutput?.permissionDecision === 'deny')).toBe(false)
   })
 
-  it('still allows other user-input tools from a subagent', async () => {
-    const canUseTool = await canUseToolOf('test-main-only-3')
-    const result = await canUseTool('mcp__user-input__list_triggers', {}, {
-      toolUseID: 'tu-sub-2',
-      signal: new AbortController().signal,
-      agentID: 'agent-abc',
-    })
+  it('does not gate other user-input tools from a subagent', async () => {
+    const other = 'mcp__user-input__list_triggers'
+    const hooks = await preToolUseHooksFor('test-main-only-3', other)
+    const results = await runHooks(hooks, { ...hookInput('agent-abc'), tool_name: other, tool_input: {} })
 
-    expect(result.behavior).toBe('allow')
+    expect(results.some((r) => r.hookSpecificOutput?.permissionDecision === 'deny')).toBe(false)
   })
 })

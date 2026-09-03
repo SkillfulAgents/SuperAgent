@@ -311,7 +311,7 @@ const SECRET_BEARING_TOOL_NAMES = new Set([
 // context and 50 events × 2KB would crowd out the actual work.
 const INSPECT_BODY_PREVIEW_CHARS = 200
 
-// Mirrors the container's canUseTool deny for MAIN_THREAD_ONLY_TOOLS.
+// Mirrors the container's PreToolUse deny for MAIN_THREAD_ONLY_TOOLS.
 const MAIN_THREAD_ONLY_TOOL_REJECTION =
   'schedule_resume is only available to the main session, not to subagents: a wake resumes the main conversation, not this subagent. Finish your task and report back; the main agent can pause the session itself.'
 
@@ -1590,7 +1590,7 @@ class MessagePersister {
 
     // A wake resumes the main thread, never the subagent that asked for it,
     // and would replace the main agent's own pending wake. The container's
-    // permission gate denies this first; this is the backstop for a call that
+    // PreToolUse hook denies this first; this is the backstop for a call that
     // reaches the host anyway.
     if (parentToolId && MessagePersister.MAIN_THREAD_ONLY_AUTOMATED_TOOLS.has(toolName)) {
       state.dispatchedAutomatedToolUseIds.add(toolUseId)
