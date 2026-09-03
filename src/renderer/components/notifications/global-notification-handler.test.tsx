@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, cleanup, waitFor } from '@testing-library/react'
+import { act, render, cleanup, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 // ---------------------------------------------------------------------------
@@ -8,17 +8,24 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 // ---------------------------------------------------------------------------
 
 // Mock EventSource
-class MockEventSource {
+class MockEventSource extends EventTarget {
   static instances: MockEventSource[] = []
+  static CONNECTING = 0
+  static OPEN = 1
+  static CLOSED = 2
   onmessage: ((event: { data: string }) => void) | null = null
   onopen: (() => void) | null = null
   onerror: (() => void) | null = null
   url: string
+  readyState = MockEventSource.OPEN
   constructor(url: string) {
+    super()
     this.url = url
     MockEventSource.instances.push(this)
   }
-  close() {}
+  close() {
+    this.readyState = MockEventSource.CLOSED
+  }
 }
 
 vi.stubGlobal('EventSource', MockEventSource)
@@ -72,7 +79,8 @@ vi.mock('@renderer/hooks/use-mount-warnings', () => ({
   setMountWarning: vi.fn(),
 }))
 
-import { GlobalNotificationHandler } from './global-notification-handler'
+import { STREAM_RECONNECT_MS } from '@renderer/lib/stream-liveness'
+import { GlobalNotificationHandler, isRefetchableAfterOutage } from './global-notification-handler'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -886,5 +894,105 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     es.onopen?.()
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
+    // Mount and a browser-handled reconnect are not outages.
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ predicate: isRefetchableAfterOutage })
+  })
+})
+
+describe('stream healing', () => {
+  let queryClient: QueryClient
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    MockEventSource.instances = []
+    queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+  })
+
+  function renderHandler() {
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+  }
+
+  async function killLatest() {
+    const es = getLatestEventSource()
+    es.readyState = MockEventSource.CLOSED
+    await act(async () => {
+      es.dispatchEvent(new Event('error'))
+    })
+  }
+
+  async function advance(ms: number) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms)
+    })
+  }
+
+  it('error at readyState 2 reopens and the reopen refetches everything mounted except LLM-backed queries', async () => {
+    renderHandler()
+    expect(MockEventSource.instances).toHaveLength(1)
+
+    await killLatest()
+    await advance(STREAM_RECONNECT_MS)
+
+    expect(MockEventSource.instances).toHaveLength(2)
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+    getLatestEventSource().onopen?.()
+    expect(invalidateSpy).toHaveBeenCalledWith({ predicate: isRefetchableAfterOutage })
+    expect(isRefetchableAfterOutage({ queryKey: ['sessions', 'a1'] })).toBe(true)
+    for (const key of ['agent-template-publish-info', 'agent-template-pr-info', 'skill-publish-info', 'skill-pr-info']) {
+      expect(isRefetchableAfterOutage({ queryKey: [key, 'a1'] })).toBe(false)
+    }
+
+    // A later transient reconnect on the same stream is not an outage.
+    invalidateSpy.mockClear()
+    getLatestEventSource().onopen?.()
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ predicate: isRefetchableAfterOutage })
+  })
+
+  it('reopen delay doubles per consecutive fatal close and resets on open', async () => {
+    renderHandler()
+
+    await killLatest()
+    await advance(STREAM_RECONNECT_MS)
+    expect(MockEventSource.instances).toHaveLength(2)
+
+    // Second consecutive fatal close: 2s, not 1s.
+    await killLatest()
+    await advance(STREAM_RECONNECT_MS)
+    expect(MockEventSource.instances).toHaveLength(2)
+    await advance(STREAM_RECONNECT_MS)
+    expect(MockEventSource.instances).toHaveLength(3)
+
+    // A successful open resets the ladder to 1s.
+    getLatestEventSource().onopen?.()
+    await killLatest()
+    await advance(STREAM_RECONNECT_MS)
+    expect(MockEventSource.instances).toHaveLength(4)
+  })
+
+  it('unmount does not reopen after a fatal close', async () => {
+    const { unmount } = renderHandler()
+    expect(MockEventSource.instances).toHaveLength(1)
+
+    const first = getLatestEventSource()
+    first.readyState = MockEventSource.CLOSED
+    unmount()
+    await act(async () => {
+      first.dispatchEvent(new Event('error'))
+      await vi.advanceTimersByTimeAsync(STREAM_RECONNECT_MS)
+    })
+
+    expect(MockEventSource.instances).toHaveLength(1)
   })
 })

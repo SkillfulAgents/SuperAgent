@@ -39,7 +39,16 @@ import {
 import { AgentTemplatePublishPanel } from '@renderer/components/agents/agent-template-publish-panel'
 import { AgentTemplateStatus } from '@renderer/components/agents/agent-template-status'
 import { ActivityOrb } from '@renderer/components/messages/activity-orb'
-import { ArrowDownToLine, ArrowRight, Check, LibraryBig, Loader2, Lock, User, X } from 'lucide-react'
+import {
+  ArrowDownToLine,
+  ArrowRight,
+  Check,
+  LibraryBig,
+  Loader2,
+  Lock,
+  User,
+  X,
+} from 'lucide-react'
 import type { AgentRole } from '@shared/lib/types/agent'
 
 interface AccessEntry {
@@ -106,19 +115,95 @@ function UserAvatar({ name, className }: { name: string; className?: string }) {
   )
 }
 
+/** Placeholder people rows behind the local-mode Invite explainer. */
+const GHOST_MEMBERS = [
+  { name: 'A', nameWidth: 'w-24', emailWidth: 'w-36' },
+  { name: 'M', nameWidth: 'w-20', emailWidth: 'w-32' },
+  { name: 'J', nameWidth: 'w-28', emailWidth: 'w-40' },
+]
+
 /**
- * Share button + popover for the agent header, with two Notion-style panes:
- * Share (per-user ACL, auth mode only — the /access endpoints are
- * AgentAdmin()-guarded) and Publish (template export + skillset publishing,
- * moved here from the settings General tab). Rendered for agent owners; in
- * non-auth deployments everyone is an owner and only Publish shows.
+ * Invite pane outside auth mode: there is no per-user ACL on a local agent,
+ * so instead of hiding the tab we show the invite UI in a disabled state and
+ * point at Cloud, where it works.
+ */
+function InviteEducationPane() {
+  return (
+    <div data-testid="agent-invite-education-pane">
+      {/* Why it is off. Same hero typography as the Publish pane's title
+          + subtitle. */}
+      <div className="space-y-1 px-3 pt-5 text-center">
+        <p className="text-sm font-medium">Switch to Gamut Cloud to invite team members.</p>
+        <p className="text-xs text-muted-foreground">
+          Local agents run on this computer, so only you can use them.
+        </p>
+      </div>
+
+      {/* Disabled replica of the real Invite pane. Real controls (not
+          pictures) so it reads as the feature itself, just switched off.
+          It fades into the background at the bottom rather than ending at
+          a hard edge. */}
+      <div className="relative pointer-events-none select-none" aria-hidden="true">
+        <div className="opacity-50">
+          <div className="space-y-2 px-3 pb-4 pt-6">
+            <div className="flex items-start gap-2">
+              <div className="flex min-h-8 min-w-0 flex-1 items-start gap-1 rounded-md border bg-transparent px-1.5 py-0.5">
+                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
+                  <input
+                    disabled
+                    tabIndex={-1}
+                    placeholder="Invite by name or email..."
+                    className="h-6 min-w-20 flex-1 bg-transparent px-1 text-[11px] outline-none placeholder:text-muted-foreground"
+                  />
+                </div>
+                <span className="flex h-6 shrink-0 items-center px-1 text-[11px] text-muted-foreground">
+                  {ROLE_LABELS.user}
+                </span>
+              </div>
+              <Button size="sm" className="h-8 shrink-0 text-[11px]" disabled tabIndex={-1}>
+                Invite
+              </Button>
+            </div>
+          </div>
+
+          <div className="px-1 pb-2">
+            <p className="px-2 pb-1 pt-0.5 text-[11px] text-muted-foreground">
+              Members with access
+            </p>
+            {GHOST_MEMBERS.map((m) => (
+              <div key={m.name} className="flex items-center gap-2 rounded-md px-2 py-1.5">
+                <UserAvatar name={m.name} />
+                <div className="min-w-0 flex-1 space-y-1.5 py-0.5">
+                  <div className={cn('h-2 rounded-full bg-muted-foreground/30', m.nameWidth)} />
+                  <div className={cn('h-2 rounded-full bg-muted-foreground/20', m.emailWidth)} />
+                </div>
+                <span className="px-1.5 text-[11px] text-muted-foreground">{ROLE_LABELS.user}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        {/* After the content in the DOM: the half-opacity block is its own
+            stacking context, so an earlier sibling would paint beneath it. */}
+        <div className="absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-background to-transparent" />
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Share button + popover for the agent header, with Notion-style panes:
+ * Invite (per-user ACL, auth mode only — the /access endpoints are
+ * AgentAdmin()-guarded), Publish (template export + skillset publishing,
+ * moved here from the settings General tab) and Export. Rendered for agent
+ * owners; in non-auth deployments everyone is an owner and the Invite tab
+ * becomes a disabled preview pointing at Cloud instead of disappearing.
  */
 export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentSharePopoverProps>(
   function AgentSharePopover({ agentSlug, agentName }, ref) {
   const queryClient = useQueryClient()
   const { user, isAuthMode } = useUser()
   const [open, setOpen] = useState(false)
-  const [tab, setTab] = useState<'share' | 'publish' | 'export'>(isAuthMode ? 'share' : 'publish')
+  const [tab, setTab] = useState<'share' | 'publish' | 'export'>('share')
   const [searchQuery, setSearchQuery] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [selectedUsers, setSelectedUsers] = useState<SearchUser[]>([])
@@ -159,10 +244,10 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
     setError(null)
     // Closing the popover also abandons an in-progress publish flow and
     // returns to the default tab and export choice, so reopening always
-    // lands on Share with the invite input focused.
+    // lands on Invite (with the invite input focused in auth mode).
     setPublishFlowOpen(false)
     setExportChoice('template')
-    setTab(isAuthMode ? 'share' : 'publish')
+    setTab('share')
   }
 
   const invalidateAccess = () => {
@@ -411,15 +496,15 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
         }}
         data-testid="agent-share-popover"
       >
-        {/* Tab bar — Share only exists in auth mode (no ACL without auth).
-            The publish flow replaces it with its own back navigation. Same
-            segmented Tabs control as the connection directory's APIs/MCPs. */}
+        {/* Tab bar — the publish flow replaces it with its own back
+            navigation. Same segmented Tabs control as the connection
+            directory's APIs/MCPs. */}
         {!(tab === 'publish' && publishFlowOpen) && (
           <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)}>
             <div className="px-3 pt-3">
               <TabsList className="h-8">
                 {([
-                  ...(isAuthMode ? [{ id: 'share', label: 'Invite' } as const] : []),
+                  { id: 'share', label: 'Invite' } as const,
                   { id: 'publish', label: 'Publish' } as const,
                   { id: 'export', label: 'Export' } as const,
                 ]).map((t) => (
@@ -461,10 +546,10 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
                 <div className="space-y-4">
                   {/* Hero (Notion "Publish to web"-style) */}
                   <div className="space-y-1 pt-2 text-center">
-                    <p className="text-sm font-medium">Publish to a Library</p>
+                    <p className="text-sm font-medium">Publish to a Skillset</p>
                     <p className="text-xs text-muted-foreground">
                       <span className="block">
-                        Libraries are shared collections of agent templates and skills.
+                        Skillsets are shared collections of agent templates and skills.
                       </span>
                       <span className="block">
                         Publish this agent so teammates can install their own copy.
@@ -472,7 +557,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
                     </p>
                   </div>
 
-                  {/* Diagram: the agent card rises to the cloud library, which
+                  {/* Diagram: the agent card rises to the cloud skillset, which
                       fans out to clustered teammates ready to run their copy. */}
                   {/* Fixed 416x224 coordinate system: user centers sit on a
                       75px radius around the cloud center (208,116) at 0° and
@@ -503,14 +588,14 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
                         </marker>
                       </defs>
                       {([
-                        // [x1, y1, x2, y2, arrowhead] — only the card→library
+                        // [x1, y1, x2, y2, arrowhead] — only the card→skillset
                         // line keeps its head; the radial spokes are plain.
-                        [208, 168, 208, 147, true], // agent card up to the library
-                        [208, 86, 208, 65, false], // library → top teammate
-                        [185, 97, 169, 83, false], // library → upper-left
-                        [231, 97, 247, 83, false], // library → upper-right
-                        [178, 119, 157, 120, false], // library → lower-left
-                        [238, 119, 259, 120, false], // library → lower-right
+                        [208, 168, 208, 147, true], // agent card up to the skillset
+                        [208, 86, 208, 65, false], // skillset → top teammate
+                        [185, 97, 169, 83, false], // skillset → upper-left
+                        [231, 97, 247, 83, false], // skillset → upper-right
+                        [178, 119, 157, 120, false], // skillset → lower-left
+                        [238, 119, 259, 120, false], // skillset → lower-right
                       ] as const).map(([x1, y1, x2, y2, arrowhead]) => (
                         <line
                           key={`${x1}-${y1}`}
@@ -527,7 +612,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
                       ))}
                     </svg>
 
-                    {/* Teammates, all 75px from the library center (5th on top) */}
+                    {/* Teammates, all 75px from the skillset center (5th on top) */}
                     <div className="absolute left-1/2 top-[23px] flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full border bg-background shadow-sm">
                       <User className="h-4 w-4 text-muted-foreground" />
                     </div>
@@ -544,7 +629,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
                       <User className="h-4 w-4 text-muted-foreground" />
                     </div>
 
-                    {/* The library in the cloud */}
+                    {/* The skillset in the cloud */}
                     <div className="absolute left-1/2 top-[92px] flex h-12 w-12 -translate-x-1/2 items-center justify-center rounded-xl border bg-background shadow-md">
                       <LibraryBig className="h-5 w-5 text-foreground/70" />
                     </div>
@@ -568,7 +653,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
                     <ArrowRight className="h-4 w-4" />
                   </Button>
 
-                  {/* What publishing to a library actually means */}
+                  {/* What publishing to a skillset actually means */}
                   <div className="space-y-2 text-xs text-muted-foreground">
                     <p className="flex items-start gap-2">
                       <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -660,7 +745,12 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
           </div>
         )}
 
-        {tab === 'share' && (
+        {tab === 'share' && !isAuthMode && (
+          /* ── Invite pane, local mode: the real UI switched off, pointing at Cloud ── */
+          <InviteEducationPane />
+        )}
+
+        {tab === 'share' && isAuthMode && (
           <>
         {/* Invite row: chip box + batch role + Add */}
         <div className="space-y-2 px-3 pb-4 pt-5">

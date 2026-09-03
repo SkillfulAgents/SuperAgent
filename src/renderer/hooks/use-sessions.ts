@@ -266,6 +266,7 @@ export function useClearSessionUnread() {
 export function useForkSession() {
   const queryClient = useQueryClient()
   const draftsStore = useDraftsStore()
+  const { track } = useAnalyticsTracking()
 
   return useMutation({
     mutationFn: async ({ sessionId, agentSlug }: { sessionId: string; agentSlug: string }) => {
@@ -284,7 +285,11 @@ export function useForkSession() {
       return res.json() as Promise<ApiSession>
     },
     onMutate: ({ sessionId }) => ({ draft: snapshotSessionDraft(draftsStore, sessionId) }),
+    onError: (error) => {
+      track('session_fork_failed', { reason: error instanceof Error ? error.message : 'unknown' })
+    },
     onSuccess: (fork, variables, context) => {
+      track('session_forked')
       queryClient.setQueryData(['session', fork.id, fork.agentSlug], fork)
       seedSessionDraft(draftsStore, fork.id, context.draft)
       queryClient.invalidateQueries({

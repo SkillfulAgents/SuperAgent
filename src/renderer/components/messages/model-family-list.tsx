@@ -15,7 +15,12 @@ function capitalize(s: string): string {
 }
 
 // Acronym families that shouldn't be title-cased (e.g. 'gpt' → 'GPT', not 'Gpt').
-const FAMILY_LABELS: Record<string, string> = { gpt: 'GPT', glm: 'GLM' }
+const FAMILY_LABELS: Record<string, string> = {
+  gpt: 'GPT',
+  glm: 'GLM',
+  muse: 'Muse Spark',
+  'muse-contributor': 'Muse Spark Contributor',
+}
 
 /** Display name for a family key, special-casing acronyms. */
 export function familyDisplayName(family: string): string {
@@ -60,7 +65,7 @@ export function vendorDefault(
  * Families outside this set (e.g. 'gpt', where each entry is a distinct tier)
  * keep one row per concrete model.
  */
-const LINEAGE_FAMILIES = new Set(['fable', 'opus', 'sonnet', 'haiku', 'kimi'])
+const LINEAGE_FAMILIES = new Set(['fable', 'opus', 'sonnet', 'haiku', 'kimi', 'muse', 'muse-contributor'])
 
 /** Chip label for a version: its label minus the family prefix ("Opus 4.8" → "4.8"). */
 function versionChipLabel(label: string, familyName: string): string {

@@ -456,6 +456,47 @@ describe('containerManager — stopContainer during in-flight start', () => {
     mockStop.mockResolvedValue({ forceStopUsed: false })
   })
 
+  it('ensureRunning does not start while stopContainer is in flight', async () => {
+    let releaseStop: (value: { forceStopUsed: boolean }) => void = () => {}
+    mockStop.mockImplementation(() => new Promise<{ forceStopUsed: boolean }>((resolve) => {
+      releaseStop = resolve
+    }))
+
+    const stopPromise = containerManager.stopContainer('test-agent')
+    await vi.waitFor(() => expect(mockStop).toHaveBeenCalled())
+
+    await expect(containerManager.ensureRunning('test-agent')).rejects.toThrow(
+      'Cannot start agent test-agent while it is stopping',
+    )
+    expect(mockStart).not.toHaveBeenCalled()
+
+    releaseStop({ forceStopUsed: false })
+    await stopPromise
+  })
+
+  it('does not cache running when stop starts during start()', async () => {
+    mockStart.mockImplementation(() => new Promise<{ status: string; port: number }>((resolve) => {
+      startResolvers.push(() => resolve({ status: 'running', port: 4001 }))
+    }))
+
+    const startPromise = containerManager.ensureRunning('test-agent')
+    await vi.waitFor(() => expect(mockStart).toHaveBeenCalledTimes(1))
+
+    let releaseStop: (value: { forceStopUsed: boolean }) => void = () => {}
+    mockStop.mockImplementation(() => new Promise<{ forceStopUsed: boolean }>((resolve) => {
+      releaseStop = resolve
+    }))
+    const stopPromise = containerManager.stopContainer('test-agent')
+    await vi.waitFor(() => expect(mockStop).toHaveBeenCalled())
+
+    startResolvers[0]?.()
+    await expect(startPromise).rejects.toThrow('Cannot start agent test-agent while it is stopping')
+    expect(containerManager.getCachedInfo('test-agent').status).toBe('stopped')
+
+    releaseStop({ forceStopUsed: false })
+    await stopPromise
+  })
+
   it('stopContainer clears the inflight promise', async () => {
     mockStart.mockImplementation(() => new Promise<void>((resolve) => {
       startResolvers.push(resolve)

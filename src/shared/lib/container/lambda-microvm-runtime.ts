@@ -619,6 +619,9 @@ interface AgentMicrovmState {
   endpoint: string
   proxy: LocalAuthForwardProxy
   proxyPort: number
+  // PENDING is only "alive" after this generation has been seen RUNNING.
+  reachedRunning: boolean
+  lastObservedState?: 'RUNNING' | 'PENDING'
 }
 const agentStates = new Map<string, AgentMicrovmState>()
 
@@ -929,9 +932,15 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
 
   async start(options?: StartOptions): Promise<ContainerInfo> {
     const info = await this.getInfoFromRuntime()
-    if (info.status === 'running') {
+    const local = agentStates.get(this.config.agentId)
+    // PENDING-as-alive is for waitForHealthy. start() must not adopt a stuck
+    // PENDING generation — replace it so the next Run can self-heal.
+    if (info.status === 'running' && local?.lastObservedState !== 'PENDING') {
       this.rememberRunningPort(info.port)
       return info
+    }
+    if (agentStates.has(this.config.agentId)) {
+      await this.teardown()
     }
 
     const config = getMicrovmRuntimeConfig()
@@ -989,7 +998,13 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     // env after the cleanup (which clears stale stashes) so it isn't wiped.
     this.cleanupLocal()
     if (hasEnv) setBootstrapEnv(this.config.agentId, env)
-    agentStates.set(this.config.agentId, { microvmId: run.microvmId, endpoint: run.endpoint, proxy, proxyPort })
+    agentStates.set(this.config.agentId, {
+      microvmId: run.microvmId,
+      endpoint: run.endpoint,
+      proxy,
+      proxyPort,
+      reachedRunning: false,
+    })
     // start()/stop() are overridden — report the proxy port to the base cache.
     this.rememberRunningPort(proxyPort)
 
@@ -1061,12 +1076,8 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     try {
       const mvm = await getMicrovm(config.region, observedId)
       if (mvm.state === 'RUNNING') {
-        const current = agentStates.get(this.config.agentId)
-        // Generation swapped during GetMicrovm — report whatever is installed now.
-        if (current && current.microvmId !== observedId) {
-          return { status: 'running', port: current.proxyPort }
-        }
-        return { status: 'running', port: state.proxyPort }
+        this.markReachedRunning(observedId)
+        return this.liveInfoOrStopped()
       }
       // One-time migration for pre-terminate-on-stop SUSPENDED leftovers (CAS).
       if (mvm.state === 'SUSPENDED' || mvm.state === 'SUSPENDING') {
@@ -1074,22 +1085,23 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
           await this.terminateObserved(observedId)
           this.cleanupLocalIf(observedId)
         }
-        const current = agentStates.get(this.config.agentId)
-        if (current) return { status: 'running', port: current.proxyPort }
-        return { status: 'stopped', port: null }
+        return this.liveInfoOrStopped()
       }
-      // Terminal: drop only the generation we observed (CAS) so a concurrent
-      // replace/start isn't wiped by a stale answer.
+      if (TERMINAL_MICROVM_STATES.has(mvm.state ?? '')) {
+        this.cleanupLocalIf(observedId)
+        return this.liveInfoOrStopped()
+      }
+      // PENDING after RUNNING keeps the proxy so waitForHealthy can finish.
+      if (mvm.state === 'PENDING') {
+        return this.infoForPending(observedId)
+      }
+      this.reportUnrecognizedMicrovmState(observedId, mvm.state)
       this.cleanupLocalIf(observedId)
-      const current = agentStates.get(this.config.agentId)
-      if (current) return { status: 'running', port: current.proxyPort }
-      return { status: 'stopped', port: null }
+      return this.liveInfoOrStopped()
     } catch (error) {
       if (isNotFound(error)) {
         this.cleanupLocalIf(observedId)
-        const current = agentStates.get(this.config.agentId)
-        if (current) return { status: 'running', port: current.proxyPort }
-        return { status: 'stopped', port: null }
+        return this.liveInfoOrStopped()
       }
       // Transient (throttling/network): keep last known state so we don't orphan a live
       // VM; container-manager's TTL /health re-probe backstops a genuinely dead one.
@@ -1233,7 +1245,10 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     const startedAt = Date.now()
     while (Date.now() - startedAt < timeoutMs) {
       const mvm = await getMicrovm(region, microvmId)
-      if (mvm.state === 'RUNNING') return
+      if (mvm.state === 'RUNNING') {
+        this.markReachedRunning(microvmId)
+        return
+      }
       if (TERMINAL_MICROVM_STATES.has(mvm.state ?? '')) {
         throw new Error(`MicroVM ${microvmId} entered ${mvm.state} before becoming ready`)
       }
@@ -1277,6 +1292,42 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     if (agentStates.get(this.config.agentId)?.microvmId === observedId) {
       this.cleanupLocal()
     }
+  }
+
+  private markReachedRunning(microvmId: string): void {
+    const current = agentStates.get(this.config.agentId)
+    if (current && current.microvmId === microvmId) {
+      current.reachedRunning = true
+      current.lastObservedState = 'RUNNING'
+    }
+  }
+
+  // Local state may have been torn down or swapped during GetMicrovm.
+  private liveInfoOrStopped(): ContainerInfo {
+    const current = agentStates.get(this.config.agentId)
+    if (!current) return { status: 'stopped', port: null }
+    return { status: 'running', port: current.proxyPort }
+  }
+
+  private infoForPending(observedId: string): ContainerInfo {
+    const current = agentStates.get(this.config.agentId)
+    if (!current) return { status: 'stopped', port: null }
+    if (current.microvmId !== observedId) {
+      return { status: 'running', port: current.proxyPort }
+    }
+    current.lastObservedState = 'PENDING'
+    if (!current.reachedRunning) return { status: 'stopped', port: null }
+    return { status: 'running', port: current.proxyPort }
+  }
+
+  private reportUnrecognizedMicrovmState(microvmId: string, state: string | undefined): void {
+    console.warn(
+      `[LambdaMicroVmRuntimeClient] Unrecognized MicroVM state agent=${this.config.agentId} microvm=${microvmId} state=${state ?? '(omitted)'}`,
+    )
+    captureException(new Error(`Unrecognized MicroVM state: ${state ?? '(omitted)'}`), {
+      tags: { area: 'container', op: 'microvm.getInfo' },
+      extra: { microvmId, state },
+    })
   }
 }
 
