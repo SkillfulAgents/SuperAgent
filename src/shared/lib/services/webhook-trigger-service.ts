@@ -502,30 +502,44 @@ export async function cancelWebhookTriggerWithCleanup(
 }
 
 /**
+ * The trigger's platform principal via the SUP-226 candidate order: creator
+ * first, then connected-account owner. Single source for teardown, polling
+ * attribution, and session attribution so the chains cannot drift.
+ */
+export function resolveTriggerPrincipal(
+  trigger: Pick<WebhookTrigger, 'createdByUserId' | 'connectedAccountId'>,
+): { userId: string; memberId: string } | null {
+  return resolvePlatformMemberForCandidates([
+    trigger.createdByUserId,
+    getConnectedAccountOwnerUserId(trigger.connectedAccountId),
+  ])
+}
+
+/**
  * Member context for platform-endpoint teardown calls. Org JWTs need a real
  * member suffix; opaque platform keys ignore it, so the 'local' placeholder is
  * safe as the final fallback.
  */
 function resolveCleanupMemberId(trigger: WebhookTrigger): string {
-  if (trigger.mintedByMemberId) return trigger.mintedByMemberId
-  const resolved = resolvePlatformMemberForCandidates([trigger.createdByUserId])
-  return resolved?.memberId ?? getStoredPlatformMemberId() ?? 'local'
-}
-
-// Minting member first (recorded at mint time, the only guaranteed-correct
-// principal), then creator, then connected-account owner (SUP-226 candidate
-// order); null keeps the ambient request attribution. In opaque-access-key
-// mode the member suffix is ignored by the proxy, so skip the lookups.
-function resolveCleanupAttribution(trigger: WebhookTrigger): Attribution | null {
-  if (!attribution.requiresActingMember()) return null
   return (
-    (trigger.mintedByMemberId ? attribution.fromMemberId(trigger.mintedByMemberId) : null) ??
-    attribution.fromResourceCreator(trigger.createdByUserId) ??
-    attribution.fromResourceCreator(getConnectedAccountOwnerUserId(trigger.connectedAccountId))
+    trigger.mintedByMemberId ??
+    resolveTriggerPrincipal(trigger)?.memberId ??
+    getStoredPlatformMemberId() ??
+    'local'
   )
 }
 
-function getConnectedAccountOwnerUserId(connectedAccountId: string | null): string | null {
+// Minting member first (recorded at mint time, the only guaranteed-correct
+// principal), then the resolved trigger principal; null keeps the ambient
+// request attribution. In opaque-access-key mode the member suffix is ignored
+// by the proxy, so skip the lookups.
+function resolveCleanupAttribution(trigger: WebhookTrigger): Attribution | null {
+  if (!attribution.requiresActingMember()) return null
+  const memberId = trigger.mintedByMemberId ?? resolveTriggerPrincipal(trigger)?.memberId
+  return memberId ? attribution.fromMemberId(memberId) : null
+}
+
+export function getConnectedAccountOwnerUserId(connectedAccountId: string | null): string | null {
   if (!connectedAccountId) return null
   const rows = db
     .select({ userId: connectedAccounts.userId })
