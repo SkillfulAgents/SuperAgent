@@ -1,4 +1,4 @@
-import { Download, FileText, Folder, PanelRightClose, X } from 'lucide-react'
+import { ArrowDownToLine, PanelRight, X } from 'lucide-react'
 import { useFilePreview } from '@renderer/context/file-preview-context'
 import { CopyFileButton } from './copy-file-button'
 import { FileTabBar } from './file-tab-bar'
@@ -9,7 +9,10 @@ import { FolderHostActions } from './folder-host-actions'
 import { CommentBar } from './comments/comment-bar'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { getAgentFileApiPath } from '@renderer/lib/workspace-file-url'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { cn } from '@shared/lib/utils/cn'
+import { formatFileSize } from '@shared/lib/utils/format-file-size'
+import { useFileSize } from '@renderer/hooks/use-file-size'
 
 interface FilePreviewTrayContentProps {
   sessionId: string
@@ -20,6 +23,11 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
   const { openTabs, activeTabIndex, setActiveTab, setPdfPage, closeTab, comments } = useFilePreview()
 
   const activeTab = openTabs[activeTabIndex]
+  // Hooks run before the early return so their order is stable across renders.
+  const { data: fileSize } = useFileSize(
+    activeTab?.kind === 'file' ? getAgentFileApiPath(activeTab.agentSlug, activeTab.filePath) : null,
+    activeTab?.kind === 'file' ? activeTab.version : 0,
+  )
   if (!activeTab) return null
 
   const baseUrl = getApiBaseUrl()
@@ -36,73 +44,94 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
 
   return (
     <div className="contents" data-testid="file-preview-tray">
-      {/* Header */}
-      <div className="flex items-center gap-2 px-4 py-2 text-sm text-muted-foreground select-none shrink-0" data-testid="file-preview-header">
-        <button
-          className="file-preview-compact-close -ml-1 hidden p-0.5 rounded hover:bg-muted transition-colors"
-          onClick={onClose}
-          title="Close file preview"
-          aria-label="Close file preview"
-        >
-          <X className="h-4 w-4" />
-        </button>
-        {activeTab.kind === 'folder' ? (
-          <Folder className="h-4 w-4 shrink-0" />
-        ) : (
-          <FileText className="h-4 w-4 shrink-0" />
-        )}
-        <span className="flex-1 text-xs truncate font-medium">Files</span>
-        {fileUrl && activeTab.kind === 'file' && isCopyableTextFile(activeTab.filePath) && (
-          <CopyFileButton fileUrl={fileUrl} displayName={activeTab.displayName} />
-        )}
-        {activeTab.kind === 'folder' && <FolderHostActions folder={activeTab} />}
-        {downloadUrl && (
-          <a
-            href={downloadUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="p-0.5 rounded hover:bg-muted transition-colors"
-            title="Download file"
-          >
-            <Download className="h-4 w-4" />
-          </a>
-        )}
-        <button
-          className="file-preview-wide-close inline-flex p-0.5 rounded hover:bg-muted transition-colors"
-          onClick={onClose}
-          title="Hide files panel"
-          aria-label="Hide files panel"
-        >
-          <PanelRightClose className="h-4 w-4" />
-        </button>
-      </div>
-
       {/* File tabs */}
       <FileTabBar
         tabs={openTabs}
         activeIndex={activeTabIndex}
         onTabClick={setActiveTab}
         onCloseTab={closeTab}
+        trailing={
+          // The drawer's own controls. Compact layouts show the close button;
+          // wide layouts show the panel-hide button (see globals.css).
+          <div className="flex items-center gap-1" data-testid="file-preview-header">
+            <button
+              className="file-preview-compact-close hidden p-0.5 rounded hover:bg-muted transition-colors"
+              onClick={onClose}
+              title="Close file preview"
+              aria-label="Close file preview"
+            >
+              <X className="h-4 w-4" />
+            </button>
+            <button
+              className="file-preview-wide-close inline-flex p-0.5 rounded hover:bg-muted transition-colors"
+              onClick={onClose}
+              title="Hide files panel"
+              aria-label="Hide files panel"
+            >
+              <PanelRight className="h-4 w-4" />
+            </button>
+          </div>
+        }
       />
 
-      {/* File content */}
-      <div
-        className={cn(
-          'flex-1 min-h-0',
-          activeTab.kind === 'folder' ? 'overflow-hidden' : 'overflow-auto',
-        )}
-      >
-        {activeTab.kind === 'folder' ? (
-          <FolderBrowser folder={activeTab} />
-        ) : fileUrl ? (
-          <FileRenderer
-            filePath={activeTab.filePath}
-            fileUrl={fileUrl}
-            agentSlug={activeTab.agentSlug}
-            pdfPage={activeTab.pdfPage}
-            onPdfPageChange={(page) => setPdfPage(activeTab.filePath, page)}
-          />
-        ) : null}
+      {/* File content: a card inset 16px on every side, on the same gray as the tab rail. */}
+      <div className="flex flex-1 min-h-0 flex-col bg-muted/60 px-4 pb-4">
+      <div className="flex flex-1 min-h-0 flex-col overflow-hidden rounded-lg rounded-tl-none border border-black/5 bg-background dark:border-white/5">
+        <div className="flex shrink-0 items-center gap-2 px-4 pt-4 pb-2" data-testid="file-preview-title">
+          <div className="flex min-w-0 flex-1 items-baseline gap-2">
+            <h2 className="truncate text-sm font-medium text-foreground">{activeTab.displayName}</h2>
+            {activeTab.kind === 'file' && typeof fileSize === 'number' && (
+              <span className="shrink-0 text-xs font-normal text-muted-foreground" data-testid="file-preview-size">
+                {formatFileSize(fileSize)}
+              </span>
+            )}
+          </div>
+          {/* A tab's own actions live with its name, not in the panel header —
+              the folder's host actions for the same reason as the file's. */}
+          <TooltipProvider delayDuration={300}>
+          <div className="flex shrink-0 items-center gap-1 text-muted-foreground">
+            {activeTab.kind === 'folder' && <FolderHostActions folder={activeTab} />}
+            {fileUrl && activeTab.kind === 'file' && isCopyableTextFile(activeTab.filePath) && (
+              <CopyFileButton fileUrl={fileUrl} displayName={activeTab.displayName} />
+            )}
+            {downloadUrl && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <a
+                    href={downloadUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="p-0.5 rounded hover:bg-muted transition-colors"
+                    aria-label="Download file"
+                  >
+                    <ArrowDownToLine className="h-4 w-4" />
+                  </a>
+                </TooltipTrigger>
+                <TooltipContent>Download file</TooltipContent>
+              </Tooltip>
+            )}
+          </div>
+          </TooltipProvider>
+        </div>
+        <div
+          className={cn(
+            'flex-1 min-h-0',
+            activeTab.kind === 'folder' ? 'overflow-hidden' : 'overflow-auto',
+          )}
+        >
+          {activeTab.kind === 'folder' ? (
+            <FolderBrowser folder={activeTab} />
+          ) : fileUrl ? (
+            <FileRenderer
+              filePath={activeTab.filePath}
+              fileUrl={fileUrl}
+              agentSlug={activeTab.agentSlug}
+              pdfPage={activeTab.pdfPage}
+              onPdfPageChange={(page) => setPdfPage(activeTab.filePath, page)}
+            />
+          ) : null}
+        </div>
+      </div>
       </div>
 
       {/* Comment bar */}

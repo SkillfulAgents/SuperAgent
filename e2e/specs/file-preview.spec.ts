@@ -447,7 +447,8 @@ test.describe('File Preview', () => {
       // right-side panel control with a left-side close button.
       const viewportWidth = page.viewportSize()!.width
       await expect(async () => {
-        for (const control of [header.getByTitle('Close file preview'), header.getByTitle('Download file')]) {
+        const title = page.getByTestId('file-preview-title')
+        for (const control of [header.getByTitle('Close file preview'), title.getByLabel('Download file')]) {
           await expect(control).toBeVisible()
           const box = await control.boundingBox()
           expect(box).not.toBeNull()
