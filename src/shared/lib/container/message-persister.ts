@@ -4408,10 +4408,12 @@ ${continuation}`
         const filterExp = input.filter_exp ?? undefined
 
         const memberId = await this.resolvePlatformMemberForSession(agentSlug, sessionId)
-        // Persist only a real acting member (SUP-765): `memberId` can be the
-        // 'local' placeholder in opaque-key mode, and a persisted 'local' would
-        // short-circuit every fallback after a later switch to an org JWT.
-        const mintedByMemberId = attribution.current()?.actingMemberId() ?? undefined
+        // The endpoint is minted explicitly as `token::memberId` below, so that is
+        // the principal to record when no ALS attribution is active (container
+        // stream dispatch). Never persist the opaque-key 'local' placeholder: it
+        // would short-circuit every fallback after a later switch to an org JWT.
+        const mintedByMemberId =
+          attribution.current()?.actingMemberId() ?? (memberId === 'local' ? undefined : memberId)
 
         // 1. Mint the endpoint on the platform proxy
         const endpoint = await createPlatformWebhookEndpoint(memberId, {

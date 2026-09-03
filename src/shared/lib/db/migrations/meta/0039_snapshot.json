@@ -2859,6 +2859,13 @@
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
+        },
+        "upstream_deleted_at": {
+          "name": "upstream_deleted_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
         }
       },
       "indexes": {

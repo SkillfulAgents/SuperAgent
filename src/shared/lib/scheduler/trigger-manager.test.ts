@@ -44,7 +44,7 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
 }))
 
 const mockGetWebhookTriggersByComposioId = vi.fn()
-const mockDeleteOrphanedUpstreamSubscription = vi.fn().mockResolvedValue(undefined)
+const mockReconcileOrphans = vi.fn().mockResolvedValue(0)
 const mockMarkTriggerFired = vi.fn().mockResolvedValue(undefined)
 const mockMarkTriggerFailed = vi.fn().mockResolvedValue(undefined)
 const mockGetDistinctMemberIds = vi.fn(() => ['sub_test_member'])
@@ -53,7 +53,7 @@ const mockResolveTriggerPrincipal =
 vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   getDistinctPlatformMemberIdsForActiveTriggers: () => mockGetDistinctMemberIds(),
   listAllWebhookTriggersByComposioId: (...args: unknown[]) => mockGetWebhookTriggersByComposioId(...args),
-  deleteOrphanedUpstreamSubscription: (...args: unknown[]) => mockDeleteOrphanedUpstreamSubscription(...args),
+  reconcileOrphanedUpstreamSubscriptions: () => mockReconcileOrphans(),
   markTriggerFired: (...args: unknown[]) => mockMarkTriggerFired(...args),
   markTriggerFailed: (...args: unknown[]) => mockMarkTriggerFailed(...args),
   resolveTriggerPrincipal: (trigger: unknown) => mockResolveTriggerPrincipal(trigger),
@@ -277,43 +277,12 @@ describe('TriggerManager', () => {
       await triggerManager.start()
 
       expect(mockCreateSession).not.toHaveBeenCalled()
-      // No local rows: another host sharing this org/member may own the
-      // subscription, so no lazy teardown — ack only.
-      expect(mockDeleteOrphanedUpstreamSubscription).not.toHaveBeenCalled()
       expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_orphan'], 'sub_test_member')
 
       triggerManager.stop()
     })
 
-    // SUP-765 lazy reconcile: an event for a subscription whose local rows are
-    // all terminal means the upstream teardown was missed — delete it now,
-    // under the member the events were claimed as.
-    it('tears down the upstream subscription when every local row is terminal', async () => {
-      mockPollAndClaimEvents.mockResolvedValue({
-        events: [
-          { id: 'whe_1', composio_trigger_id: 'ti_orphan', trigger_type: 'X', payload: {}, created_at: '' },
-        ],
-        realtime: null,
-      })
-      mockGetWebhookTriggersByComposioId.mockResolvedValue([
-        { id: 'wt_1', kind: 'composio', composioTriggerId: 'ti_orphan', status: 'cancelled' },
-        { id: 'wt_2', kind: 'composio', composioTriggerId: 'ti_orphan', status: 'failed' },
-      ])
-
-      await triggerManager.start()
-
-      expect(mockDeleteOrphanedUpstreamSubscription).toHaveBeenCalledWith(
-        'composio',
-        'ti_orphan',
-        'sub_test_member',
-      )
-      expect(mockCreateSession).not.toHaveBeenCalled()
-      expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_1'], 'sub_test_member')
-
-      triggerManager.stop()
-    })
-
-    it('does not tear down when a paused row still holds the subscription', async () => {
+    it('acks paused-subscription events without spawning a session', async () => {
       mockPollAndClaimEvents.mockResolvedValue({
         events: [
           { id: 'whe_1', composio_trigger_id: 'ti_paused', trigger_type: 'X', payload: {}, created_at: '' },
@@ -327,28 +296,64 @@ describe('TriggerManager', () => {
 
       await triggerManager.start()
 
-      expect(mockDeleteOrphanedUpstreamSubscription).not.toHaveBeenCalled()
       expect(mockCreateSession).not.toHaveBeenCalled()
       expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_1'], 'sub_test_member')
 
       triggerManager.stop()
     })
 
-    it('still acks events when the lazy teardown fails', async () => {
-      mockPollAndClaimEvents.mockResolvedValue({
-        events: [
-          { id: 'whe_1', composio_trigger_id: 'ti_orphan', trigger_type: 'X', payload: {}, created_at: '' },
-        ],
-        realtime: null,
+    // SUP-765: owed upstream teardowns are found from local rows on every
+    // pass, not from events — the claim never returns events for terminal ids.
+    it('reconciles orphaned upstream subscriptions once per poll pass, before claiming', async () => {
+      const order: string[] = []
+      mockReconcileOrphans.mockImplementation(async () => {
+        order.push('reconcile')
+        return 0
       })
-      mockGetWebhookTriggersByComposioId.mockResolvedValue([
-        { id: 'wt_1', kind: 'composio', composioTriggerId: 'ti_orphan', status: 'cancelled' },
-      ])
-      mockDeleteOrphanedUpstreamSubscription.mockRejectedValueOnce(new Error('proxy 502'))
+      mockPollAndClaimEvents.mockImplementation(async () => {
+        order.push('poll')
+        return { events: [], realtime: null }
+      })
 
       await triggerManager.start()
 
-      expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_1'], 'sub_test_member')
+      expect(mockReconcileOrphans).toHaveBeenCalledTimes(1)
+      expect(order).toEqual(['reconcile', 'poll'])
+
+      triggerManager.stop()
+    })
+
+    it('reconciles even when no member has an active trigger to poll as', async () => {
+      mockGetDistinctMemberIds.mockReturnValue([])
+      mockDecodeOrgIdFromToken.mockReturnValue('org_1')
+      mockPollAndClaimEvents.mockResolvedValue({ events: [], realtime: null })
+
+      await triggerManager.start()
+
+      expect(mockReconcileOrphans).toHaveBeenCalledTimes(1)
+      expect(mockPollAndClaimEvents).not.toHaveBeenCalled()
+
+      triggerManager.stop()
+    })
+
+    it('skips reconcile without a platform token', async () => {
+      mockGetPlatformAccessToken.mockReturnValue(null)
+      mockGetDistinctMemberIds.mockReturnValue([])
+
+      await triggerManager.start()
+
+      expect(mockReconcileOrphans).not.toHaveBeenCalled()
+
+      triggerManager.stop()
+    })
+
+    it('still polls when the reconcile step rejects', async () => {
+      mockReconcileOrphans.mockRejectedValueOnce(new Error('db locked'))
+      mockPollAndClaimEvents.mockResolvedValue({ events: [], realtime: null })
+
+      await triggerManager.start()
+
+      expect(mockPollAndClaimEvents).toHaveBeenCalledTimes(1)
 
       triggerManager.stop()
     })

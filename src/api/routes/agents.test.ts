@@ -1046,6 +1046,7 @@ describe('GET /:id/webhook-triggers', () => {
     createdAt: new Date('2026-07-17T00:00:00Z'),
     cancelledAt: null,
     pausedAt: null,
+    upstreamDeletedAt: null,
   }
 
   it.each(['viewer', 'user'] as const)('redacts list rows for %s members', async (role) => {

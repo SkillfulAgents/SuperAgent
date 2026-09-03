@@ -30,7 +30,7 @@ vi.mock('../analytics/server-analytics', () => ({
 import {
   createWebhookTrigger,
   getWebhookTrigger,
-  getWebhookTriggerByComposioId,
+  listAllWebhookTriggersByComposioId,
   getActiveComposioTriggerIds,
   listWebhookTriggers,
   listActiveWebhookTriggers,
@@ -106,38 +106,32 @@ describe('webhook-trigger-service', () => {
     })
   })
 
-  describe('getWebhookTriggerByComposioId', () => {
-    it('finds active trigger by composio ID', async () => {
-      await createWebhookTrigger({
+  describe('listAllWebhookTriggersByComposioId', () => {
+    it('returns every row on the id regardless of status', async () => {
+      const activeId = await createWebhookTrigger({
         agentSlug: 'agent-1',
-        composioTriggerId: 'ti_findme',
+        composioTriggerId: 'ti_shared',
         connectedAccountId: 'ca_1',
         triggerType: 'GMAIL_NEW_EMAIL',
         prompt: 'Test',
       })
-
-      const found = await getWebhookTriggerByComposioId('ti_findme')
-      expect(found).not.toBeNull()
-      expect(found!.composioTriggerId).toBe('ti_findme')
-    })
-
-    it('returns null for cancelled triggers', async () => {
-      const id = await createWebhookTrigger({
-        agentSlug: 'agent-1',
-        composioTriggerId: 'ti_cancelled',
+      const cancelledId = await createWebhookTrigger({
+        agentSlug: 'agent-2',
+        composioTriggerId: 'ti_shared',
         connectedAccountId: 'ca_1',
         triggerType: 'GMAIL_NEW_EMAIL',
         prompt: 'Test',
       })
+      await cancelWebhookTrigger(cancelledId)
 
-      await cancelWebhookTrigger(id)
-      const found = await getWebhookTriggerByComposioId('ti_cancelled')
-      expect(found).toBeNull()
+      const rows = await listAllWebhookTriggersByComposioId('ti_shared')
+      expect(rows.map((r) => [r.id, r.status]).sort()).toEqual(
+        [[activeId, 'active'], [cancelledId, 'cancelled']].sort(),
+      )
     })
 
-    it('returns null for non-existent composio ID', async () => {
-      const found = await getWebhookTriggerByComposioId('ti_nonexistent')
-      expect(found).toBeNull()
+    it('returns an empty list for an unknown id', async () => {
+      expect(await listAllWebhookTriggersByComposioId('ti_nonexistent')).toEqual([])
     })
   })
 

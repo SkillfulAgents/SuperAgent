@@ -28,6 +28,7 @@ const trigger: WebhookTrigger = {
   createdAt: new Date('2026-07-17T00:00:00Z'),
   cancelledAt: null,
   pausedAt: null,
+  upstreamDeletedAt: null,
 }
 
 describe('toPublicWebhookTrigger', () => {

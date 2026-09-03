@@ -19,7 +19,7 @@ import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-servi
 import {
   getDistinctPlatformMemberIdsForActiveTriggers,
   listAllWebhookTriggersByComposioId,
-  deleteOrphanedUpstreamSubscription,
+  reconcileOrphanedUpstreamSubscriptions,
   markTriggerFired,
   markTriggerFailed,
   resolveTriggerPrincipal,
@@ -155,6 +155,16 @@ class TriggerManager {
     this.isProcessing = true
 
     try {
+      // Owed upstream teardowns are found from local rows, not events: the
+      // claim is scoped to active/paused ids, so an orphan never delivers
+      // an event here (SUP-765). Runs before the member early-return so a
+      // host with only terminal rows still converges.
+      if (getPlatformAccessToken()) {
+        await reconcileOrphanedUpstreamSubscriptions().catch((error) => {
+          console.error('[TriggerManager] Upstream reconcile failed:', error)
+        })
+      }
+
       // Poll once per distinct trigger owner; first realtime config wins.
       // Opaque-key mode has no authAccount rows, so fall back to a placeholder
       // (buildBearer ignores it). Org JWT mode returns early to avoid a bogus
@@ -265,36 +275,13 @@ class TriggerManager {
     events: WebhookEvent[],
     memberId: string,
   ): Promise<void> {
-    // Look up ALL local triggers sharing this Composio trigger ID
+    // Paused rows (subscription intentionally kept alive) and ids with no
+    // local rows (another host sharing this org/member may own them) both
+    // land here and are ack-only.
     const triggers = await listAllWebhookTriggersByComposioId(composioTriggerId)
     const activeTriggers = triggers.filter((t) => t.status === 'active')
 
     if (activeTriggers.length === 0) {
-      // Lazy reconcile (SUP-765): every local row is terminal, yet the upstream
-      // still delivers — a teardown crashed or 404ed cross-member. The member
-      // these events were claimed under is the one the proxy scopes DELETE to.
-      // Paused rows fall through to ack-only (subscription must stay alive),
-      // and ids with no local rows stay ack-only too — another host sharing
-      // this org/member may own them.
-      const allTerminal =
-        triggers.length > 0 &&
-        triggers.every((t) => t.status === 'cancelled' || t.status === 'failed')
-      if (allTerminal) {
-        await deleteOrphanedUpstreamSubscription(
-          triggers[0].kind,
-          composioTriggerId,
-          memberId,
-        ).catch((error) => {
-          console.warn(
-            `[TriggerManager] Lazy teardown of orphaned subscription ${composioTriggerId} failed:`,
-            error,
-          )
-          captureException(error, {
-            tags: { area: 'webhook-triggers', op: 'lazy-reconcile' },
-            extra: { composioTriggerId, memberId },
-          })
-        })
-      }
       console.warn(
         `[TriggerManager] No active local triggers for composio ID ${composioTriggerId}, acking events`
       )

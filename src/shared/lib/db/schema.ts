@@ -607,6 +607,9 @@ export const webhookTriggers = sqliteTable('webhook_triggers', {
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   cancelledAt: integer('cancelled_at', { mode: 'timestamp_ms' }),
   pausedAt: integer('paused_at', { mode: 'timestamp_ms' }),
+  // Set once the upstream subscription is confirmed gone (deleted or 404);
+  // null on a terminal row means the reconcile step still owes a teardown (SUP-765).
+  upstreamDeletedAt: integer('upstream_deleted_at', { mode: 'timestamp_ms' }),
 }, (table) => ({
   agentSlugIdx: index('webhook_triggers_agent_slug_idx').on(table.agentSlug),
   statusIdx: index('webhook_triggers_status_idx').on(table.status),

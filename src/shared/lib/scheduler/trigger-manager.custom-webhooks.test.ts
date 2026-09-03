@@ -44,7 +44,7 @@ const mockMarkTriggerFired = vi.fn().mockResolvedValue(undefined)
 vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   getDistinctPlatformMemberIdsForActiveTriggers: () => ['sub_test_member'],
   listAllWebhookTriggersByComposioId: (...args: unknown[]) => mockGetWebhookTriggersByComposioId(...args),
-  deleteOrphanedUpstreamSubscription: vi.fn().mockResolvedValue(undefined),
+  reconcileOrphanedUpstreamSubscriptions: vi.fn().mockResolvedValue(0),
   markTriggerFired: (...args: unknown[]) => mockMarkTriggerFired(...args),
   markTriggerFailed: vi.fn().mockResolvedValue(undefined),
   resolveTriggerPrincipal: () => null,
