@@ -1,0 +1,87 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e8]:
+        - generic [ref=e9]: Gamut
+        - button "Search" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+      - generic [ref=e15]:
+        - list [ref=e18]:
+          - listitem [ref=e19]:
+            - link "Home" [ref=e20] [cursor=pointer]:
+              - /url: /
+              - img [ref=e21]
+              - generic [ref=e26]: Home
+          - listitem [ref=e27]:
+            - link "Notifications" [ref=e28] [cursor=pointer]:
+              - /url: /notifications
+              - img [ref=e29]
+              - generic [ref=e32]: Notifications
+          - listitem [ref=e33]:
+            - link "Discover New Agents New" [ref=e34] [cursor=pointer]:
+              - /url: /explore
+              - img [ref=e35]
+              - generic [ref=e38]: Discover New Agents
+              - generic [ref=e39]: New
+          - listitem [ref=e40]:
+            - button "New Agent" [ref=e41] [cursor=pointer]:
+              - img [ref=e42]
+              - generic [ref=e43]: New Agent
+        - list [ref=e46]:
+          - listitem [ref=e47]:
+            - button "Your Agents 1" [ref=e48] [cursor=pointer]:
+              - button "Your Agents 1" [expanded] [ref=e49]:
+                - generic [ref=e50]: Your Agents
+                - generic [ref=e52]: "1"
+            - button "New folder" [ref=e53] [cursor=pointer]:
+              - img [ref=e54]
+            - list [ref=e57]:
+              - button "QA-20260903-210501-ml00 idle" [ref=e58] [cursor=pointer]:
+                - link "QA-20260903-210501-ml00 idle" [ref=e60]:
+                  - /url: /agents/qa-20260903-210501-ml00-uzqt3wmpu4
+                  - generic [ref=e62]: QA-20260903-210501-ml00
+                  - img "idle" [ref=e63]:
+                    - img [ref=e64]
+          - status [ref=e73]
+      - generic [ref=e75]:
+        - button "Settings" [ref=e76] [cursor=pointer]:
+          - img [ref=e77]
+          - generic [ref=e80]: Settings
+        - button "0.5.16" [ref=e81] [cursor=pointer]:
+          - generic [ref=e82]: 0.5.16
+      - button "Toggle Sidebar" [ref=e83]
+    - main [ref=e84]:
+      - generic [ref=e85]:
+        - generic [ref=e86]:
+          - button "Toggle Sidebar" [ref=e87] [cursor=pointer]:
+            - img
+            - generic [ref=e88]: Toggle Sidebar
+          - button "Search agents and sessions... Ctrl+K" [ref=e90] [cursor=pointer]:
+            - img [ref=e91]
+            - generic [ref=e94]: Search agents and sessions...
+            - generic [ref=e95]: Ctrl+K
+          - generic [ref=e96]:
+            - button "Card view" [pressed] [ref=e97] [cursor=pointer]:
+              - img [ref=e98]
+            - button "Graph view" [ref=e103] [cursor=pointer]:
+              - img [ref=e104]
+        - generic [ref=e113]:
+          - generic [ref=e114]:
+            - generic [ref=e115]:
+              - heading "Your Agents" [level=2] [ref=e116]
+              - button "Agent layout options" [ref=e117] [cursor=pointer]:
+                - img [ref=e118]
+            - button "New Agent" [ref=e122] [cursor=pointer]:
+              - img
+              - text: New Agent
+          - generic [ref=e126]:
+            - link "Open QA-20260903-210501-ml00" [ref=e127] [cursor=pointer]:
+              - /url: /agents/qa-20260903-210501-ml00-uzqt3wmpu4
+            - generic [ref=e129]:
+              - generic [ref=e130]: Idle
+              - button "Stop agent" [ref=e131] [cursor=pointer]:
+                - img [ref=e132]
+            - generic:
+              - generic: QA-20260903-210501-ml00
+              - generic: Last run never
+  - region "Notifications alt+T"

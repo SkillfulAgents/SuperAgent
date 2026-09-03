@@ -1,23 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the agent can successfully open a browser, navigate to a URL, retrieve the page title, and return the result in chat.",
+  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title, and returned a response mentioning \"Example Domain\"",
   "steps": [
-    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application homepage with agent list visible.",
-    "Clicked on \"QA-20260902-214631-mbcq\" agent in the sidebar — Successfully opened the agent configuration page with chat input ready.",
-    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully sent, agent status changed to \"working\", new session created.",
-    "Waited for agent response (polling every 5 seconds, up to 3 minutes) — Agent completed work after 9 seconds with 4 tool calls and 163,699 tokens used.",
-    "Verified response mentions \"Example Domain\" — Response states: \"The page title is \"Example Domain\" — the page contains that heading plus a short note that the domain is for use in documentation examples, and a \"Learn more\" link. Browser is closed.\" ✅"
+    "Step 1: Navigated to http://localhost:47891 using browser_run_code with domcontentloaded strategy — Successfully loaded, page title \"Gamut\"",
+    "Step 2: Located agent \"QA-20260903-210501-ml00\" in sidebar using snapshot accessibility tree (ref=e58) and clicked it — Successfully opened agent chat interface, page changed to agent URL",
+    "Step 3: Clicked on chat input textbox (ref=e175) and typed message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully entered in input field",
+    "Step 4: Clicked send button (ref=e316) to send the message — Message sent successfully, session created, agent status changed to \"working\"",
+    "Step 5: Waited up to 3 minutes for agent response using polling loop checking for \"Working\" indicator — Agent completed work in approximately 12 seconds",
+    "Step 6: Took screenshot to verify response mentions \"Example Domain\" — Screenshot confirmed: Response text states \"The page title is 'Example Domain'\" and describes the domain being for use in documentation examples"
   ],
   "bugs": [],
-  "durationMs": 87952,
-  "sessionId": "a177f514-f9d4-4284-ad48-b173e288190e",
+  "durationMs": 159176,
+  "sessionId": "8328a21b-43ca-4615-bd37-d1c6217bc3e1",
   "cost": {
-    "inputTokens": 454,
-    "outputTokens": 14375,
-    "cacheCreationTokens": 82733,
-    "cacheReadTokens": 1402496,
+    "inputTokens": 552,
+    "outputTokens": 15388,
+    "cacheCreationTokens": 81174,
+    "cacheReadTokens": 1649241,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.315995
+    "totalCostUsd": 0.343884
   }
 }
