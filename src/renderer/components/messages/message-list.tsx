@@ -1109,11 +1109,20 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
           aria-relevant="additions"
           aria-busy={isStreaming || undefined}
         >
-        {hiddenCount > 0 && (
+        {hiddenCount > 0 ? (
           <div className="flex items-center justify-center py-3 text-xs text-muted-foreground">
             {hiddenCount} earlier {hiddenCount === 1 ? 'message' : 'messages'} hidden — scroll up to load
           </div>
-        )}
+        ) : isFetchingOlder ? (
+          <div
+            className="flex items-center justify-center gap-2 py-3 text-xs text-muted-foreground"
+            role="status"
+            aria-live="polite"
+          >
+            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+            Loading older messages…
+          </div>
+        ) : null}
         {windowedMessages.map((item, index) => {
           const turn = completedTurnByItemId.get(item.id)
           const expanded = !!turn && expandedTurnIds.has(turn.id)

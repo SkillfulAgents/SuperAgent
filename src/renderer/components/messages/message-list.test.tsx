@@ -2378,6 +2378,22 @@ describe('MessageList', () => {
       expect(mockFetchOlder).toHaveBeenCalledOnce()
     })
 
+    it('shows a loading indicator at the top while an older page is in flight', () => {
+      mockMessagesData.data = manyMessages(50)
+      mockMessagesData.hasOlder = true
+      mockMessagesData.isFetchingOlder = true
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getByRole('status')).toHaveTextContent('Loading older messages')
+    })
+
+    it('hides the loading indicator once the older page has landed', () => {
+      mockMessagesData.data = manyMessages(50)
+      mockMessagesData.hasOlder = true
+      mockMessagesData.isFetchingOlder = false
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.queryByText(/Loading older messages/)).not.toBeInTheDocument()
+    })
+
     it('retries fetchOlder after a failed older page instead of wedging scroll-up', () => {
       mockFetchOlder.mockResolvedValue(false)
       mockMessagesData.data = manyMessages(50)
