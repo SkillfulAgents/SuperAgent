@@ -1,4 +1,4 @@
-import { Folder, X } from 'lucide-react'
+import { X } from 'lucide-react'
 import { FileTypeIcon } from '@renderer/components/ui/file-type-icon'
 import { cn } from '@shared/lib/utils/cn'
 import { getPreviewTabKey, type PreviewTab } from '@renderer/context/file-preview-context'
@@ -31,11 +31,7 @@ export function FileTabBar({ tabs, activeIndex, onTabClick, onCloseTab }: FileTa
               : 'bg-muted/30 text-muted-foreground hover:bg-muted/60 hover:text-foreground'
           )}
         >
-          {tab.kind === 'folder' ? (
-            <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          ) : (
-            <FileTypeIcon filename={tab.displayName} size={14} />
-          )}
+          <FileTypeIcon filename={tab.displayName} size="sm" folder={tab.kind === 'folder'} />
           <span className="truncate">{tab.displayName}</span>
           <span
             role="button"

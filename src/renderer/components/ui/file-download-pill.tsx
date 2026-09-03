@@ -1,4 +1,3 @@
-import { FolderIcon } from 'lucide-react'
 import { FileTypeIcon } from './file-type-icon'
 import { useFilePreview } from '@renderer/context/file-preview-context'
 
@@ -36,7 +35,7 @@ export function FileDownloadPill({ filePath, agentSlug, onClick }: FileDownloadP
         data-file-name={displayName}
         data-file-path={filePath}
       >
-        <FolderIcon className="h-3.5 w-3.5 shrink-0" />
+        <FileTypeIcon filename={displayName} size="sm" folder />
         {displayName}
       </span>
     )
@@ -60,7 +59,7 @@ export function FileDownloadPill({ filePath, agentSlug, onClick }: FileDownloadP
       data-file-name={displayName}
       data-file-path={filePath}
     >
-      <FileTypeIcon filename={displayName} size={14} />
+      <FileTypeIcon filename={displayName} size="sm" />
       {displayName}
     </span>
   )

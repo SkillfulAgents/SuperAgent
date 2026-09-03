@@ -25,7 +25,7 @@ export function UnsupportedRenderer({ filePath, agentSlug }: UnsupportedRenderer
       </div>
       <div className="space-y-1">
         <div className="flex items-center gap-2 justify-center">
-          <FileTypeIcon filename={filename} size={16} />
+          <FileTypeIcon filename={filename} size="md" />
           <span className="text-sm font-medium">{filename}</span>
         </div>
         <p className="text-xs text-muted-foreground">

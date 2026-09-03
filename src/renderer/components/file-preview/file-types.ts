@@ -13,6 +13,72 @@ export const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', '
 export const VIDEO_EXTS = new Set(['mp4', 'mov', 'webm', 'm4v', 'ogv'])
 export const AUDIO_EXTS = new Set(['mp3', 'wav', 'm4a', 'aac', 'ogg', 'oga', 'opus', 'flac', 'weba'])
 
+/**
+ * Coarse file-type categories shared by the preview and the file icon. An
+ * extension belongs to at most one category; unknown extensions are `other`.
+ */
+export type FileCategory =
+  | 'document'
+  | 'text'
+  | 'code'
+  | 'data'
+  | 'config'
+  | 'shell'
+  | 'spreadsheet'
+  | 'presentation'
+  | 'image'
+  | 'video'
+  | 'audio'
+  | 'archive'
+  | 'font'
+  | 'model'
+  | 'other'
+
+const DOCUMENT_EXTS = new Set(['pdf', 'doc', 'docx', 'odt', 'fodt', 'rtf', 'pages', 'epub', 'wpd', 'wps', 'tex'])
+const PLAIN_TEXT_EXTS = new Set(['txt', 'log', 'text', 'readme', 'license'])
+const CODE_EXTS = new Set([
+  'js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs', 'py', 'rb', 'php', 'java', 'kt', 'swift', 'go', 'rs', 'c', 'cpp', 'h', 'hpp',
+  'cs', 'r', 'scala', 'dart', 'lua', 'pl', 'html', 'htm', 'css', 'scss', 'less', 'vue', 'svelte', 'sql', 'graphql',
+  'proto', 'asp', 'aspx', 'jsp',
+])
+const DATA_EXTS = new Set(['json', 'jsonl', 'xml', 'parquet', 'avro', 'ndjson', 'geojson'])
+const CONFIG_EXTS = new Set(['yml', 'yaml', 'toml', 'ini', 'cfg', 'conf', 'env', 'plist', 'properties', 'editorconfig', 'lock'])
+const SHELL_EXTS = new Set(['sh', 'bash', 'zsh', 'fish', 'bat', 'cmd', 'ps1'])
+const SPREADSHEET_EXTS = new Set(['xls', 'xlsx', 'xlsm', 'xlr', 'ods', 'fods', 'numbers', ...CSV_EXTS])
+const PRESENTATION_EXTS = new Set(['ppt', 'pptx', 'odp', 'fodp', 'key'])
+const IMAGE_CATEGORY_EXTS = new Set([...IMAGE_EXTS, 'tif', 'tiff', 'heic', 'avif', 'psd', 'ai', 'eps', 'indd', 'sketch', 'fig'])
+const VIDEO_CATEGORY_EXTS = new Set([...VIDEO_EXTS, 'avi', 'mkv', 'mpg', 'mpeg', 'wmv', 'flv', '3gp', '3g2', 'asf', 'rm', 'swf'])
+const AUDIO_CATEGORY_EXTS = new Set([...AUDIO_EXTS, 'aif', 'aiff', 'mid', 'midi', 'wma'])
+const ARCHIVE_EXTS = new Set(['zip', 'zipx', '7z', '7zip', 'rar', 'gz', 'tgz', 'tar', 'bz2', 'xz', 'sitx', 'dmg', 'pkg', 'apk', 'apkm', 'apks', 'xapk', 'aab', 'jar'])
+const FONT_EXTS = new Set(['ttf', 'otf', 'woff', 'woff2', 'eot', 'fnt', 'fon'])
+const MODEL_EXTS = new Set(['3dm', '3ds', 'obj', 'max', 'dwg', 'dxf', 'skp', 'stl', 'fbx', 'glb', 'gltf', 'blend'])
+
+const CATEGORY_SETS: [FileCategory, Set<string>][] = [
+  ['document', DOCUMENT_EXTS],
+  ['text', new Set([...PLAIN_TEXT_EXTS, ...MARKDOWN_EXTS])],
+  ['code', CODE_EXTS],
+  ['data', DATA_EXTS],
+  ['config', CONFIG_EXTS],
+  ['shell', SHELL_EXTS],
+  ['spreadsheet', SPREADSHEET_EXTS],
+  ['presentation', PRESENTATION_EXTS],
+  ['image', IMAGE_CATEGORY_EXTS],
+  ['video', VIDEO_CATEGORY_EXTS],
+  ['audio', AUDIO_CATEGORY_EXTS],
+  ['archive', ARCHIVE_EXTS],
+  ['font', FONT_EXTS],
+  ['model', MODEL_EXTS],
+]
+
+/** Category for a filename or path, keyed on its lowercase extension. */
+export function fileCategory(filePath: string): FileCategory {
+  const ext = getFileExtension(filePath)
+  for (const [category, exts] of CATEGORY_SETS) {
+    if (exts.has(ext)) return category
+  }
+  return 'other'
+}
+
 const BINARY_EXTS = new Set([
   ...[...IMAGE_EXTS].filter(ext => ext !== 'svg'),
   ...VIDEO_EXTS,
