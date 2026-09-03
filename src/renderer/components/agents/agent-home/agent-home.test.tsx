@@ -115,6 +115,8 @@ vi.mock('@renderer/context/nav-transient-context', () => ({
   useNavTransient: () => ({
     justCreatedSlug: mockJustCreatedSlug,
     setJustCreatedSlug: mockSetJustCreatedSlug,
+    pendingAgentHomeAction: null,
+    setPendingAgentHomeAction: vi.fn(),
   }),
   NavTransientProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))

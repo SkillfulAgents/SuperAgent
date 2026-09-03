@@ -5,6 +5,7 @@ import { FileTabBar } from './file-tab-bar'
 import { isCopyableTextFile } from './file-types'
 import { FileRenderer } from './renderers/file-renderer'
 import { FolderBrowser } from './folder-browser'
+import { FolderHostActions } from './folder-host-actions'
 import { CommentBar } from './comments/comment-bar'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { getAgentFileApiPath } from '@renderer/lib/workspace-file-url'
@@ -54,6 +55,7 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
         {fileUrl && activeTab.kind === 'file' && isCopyableTextFile(activeTab.filePath) && (
           <CopyFileButton fileUrl={fileUrl} displayName={activeTab.displayName} />
         )}
+        {activeTab.kind === 'folder' && <FolderHostActions folder={activeTab} />}
         {downloadUrl && (
           <a
             href={downloadUrl}

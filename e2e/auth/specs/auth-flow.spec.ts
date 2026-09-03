@@ -251,15 +251,15 @@ test.describe('Auth Flow', () => {
   })
 
   test('user3 cannot modify agent settings', async ({ user3Page }) => {
-    const accessPage = new AccessPage(user3Page)
-
-    // Open agent settings via context menu (find by name text, slug has random suffix)
+    // Open the agent menu via context menu (find by name text, slug has random suffix)
     await user3Page.locator('[data-testid^="agent-item-"]', { hasText: agentName }).click({ button: 'right' })
-    await user3Page.locator('[data-testid="agent-settings-item"]').click()
-    await expect(user3Page.locator('[data-testid="agent-settings-dialog"]')).toBeVisible()
+    await expect(user3Page.locator('[data-testid="move-agent-to-folder-trigger"]')).toBeVisible()
 
-    // Permission overlay should be shown
-    await accessPage.expectNoPermissionOverlay()
+    // Owner-only settings are not offered to a plain user
+    await expect(user3Page.locator('[data-testid="rename-agent-item"]')).not.toBeVisible()
+    await expect(user3Page.locator('[data-testid="open-agent-directory-item"]')).not.toBeVisible()
+    await expect(user3Page.locator('[data-testid="export-agent-item"]')).not.toBeVisible()
+    await expect(user3Page.locator('[data-testid="delete-agent-item"]')).not.toBeVisible()
 
     // Close
     await user3Page.keyboard.press('Escape')

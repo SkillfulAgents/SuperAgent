@@ -4,6 +4,7 @@ import { ChevronRight, PanelRightOpen } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { useFilePreview } from '@renderer/context/file-preview-context'
 import { HomeDefaultModel } from './home-default-model'
+import { HomeRetention } from './home-retention'
 
 interface HomeExtrasProps {
   agentSlug: string
@@ -19,6 +20,7 @@ export function HomeExtras({ agentSlug, onOpenSettings, className }: HomeExtrasP
     <div className={cn("rounded-xl border bg-background py-2", className)}>
       <div className="divide-y divide-border/50">
         <HomeDefaultModel agentSlug={agentSlug} />
+        <HomeRetention agentSlug={agentSlug} />
         <ExtrasButton
           label="Agent-to-agent connections"
           onClick={() => {

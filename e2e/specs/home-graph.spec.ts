@@ -58,6 +58,31 @@ test.describe('home connections graph', () => {
     expect(errors).toEqual([])
   })
 
+  test('a right-click on an agent node opens the unified agent menu', async ({ page, request }, testInfo) => {
+    const agent = await createAgent(request, uniqueName(testInfo, 'Graph Menu'))
+    const errors = collectPageErrors(page)
+
+    await page.goto('/?view=graph')
+    const node = page.getByTestId(`graph-node-agent-${agent.slug}`)
+    await expect(node).toBeVisible()
+
+    // The same menu the sidebar row and the home cards open.
+    await node.click({ button: 'right' })
+    await expect(page.getByTestId('agent-context-menu')).toBeVisible()
+    await expect(page.getByTestId('rename-agent-item')).toBeVisible()
+    await expect(page.getByTestId('move-agent-to-folder-trigger')).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(page.getByTestId('agent-context-menu')).toHaveCount(0)
+
+    // Keyboard: the focused node opens it with Shift+F10.
+    await node.focus()
+    await page.keyboard.press('Shift+F10')
+    await expect(page.getByTestId('agent-context-menu')).toBeVisible()
+    await page.keyboard.press('Escape')
+
+    expect(errors).toEqual([])
+  })
+
   test('renders topology edges between agents and navigates on node click', async ({ page, request }, testInfo) => {
     const caller = await createAgent(request, uniqueName(testInfo, 'Graph Caller'))
     const target = await createAgent(request, uniqueName(testInfo, 'Graph Target'))

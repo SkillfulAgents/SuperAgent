@@ -24,7 +24,7 @@ interface InlineEditableTitleProps {
   saveButtonTestId?: string
 }
 
-/** Imperative surface: lets a parent (e.g. a settings popover's "Rename"
+/** Imperative surface: lets a parent (e.g. the agent menu's "Rename"
  *  action) enter edit mode without simulating a click on the title. */
 export interface InlineEditableTitleHandle {
   startEditing: () => void

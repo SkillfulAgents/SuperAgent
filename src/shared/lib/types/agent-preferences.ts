@@ -3,7 +3,8 @@ import { EFFORT_LEVELS, SPEED_LEVELS } from '@shared/lib/container/types'
 
 // Keep in sync with agent-container/src/file-hooks/agent-preferences-hook.ts
 export const agentPreferencesSchema = z.object({
-  autoDeleteInactiveDays: z.number().int().positive().optional(),
+  /** Days of inactivity after which sessions are deleted. 0 = Never. */
+  autoDeleteInactiveDays: z.number().int().nonnegative().optional(),
   /** Days after which this agent's API / MCP audit rows are deleted. 0 = Never. */
   apiLogAutoDeleteDays: z.number().int().nonnegative().optional(),
   /** Default model for new sessions — a concrete id (pinned) or a bare family alias (latest). Overrides the global default; per-session/trigger picks still win. */
@@ -21,7 +22,7 @@ export type AgentPreferences = z.infer<typeof agentPreferencesSchema>
  * back to the app-wide default. Unknown keys are stripped.
  */
 export const agentPreferencesUpdateSchema = z.object({
-  autoDeleteInactiveDays: z.number().int().positive().nullish(),
+  autoDeleteInactiveDays: z.number().int().nonnegative().nullish(),
   apiLogAutoDeleteDays: z.number().int().nonnegative().nullish(),
   defaultModel: z.string().trim().min(1).nullish(),
   defaultEffort: z.enum(EFFORT_LEVELS).nullish(),

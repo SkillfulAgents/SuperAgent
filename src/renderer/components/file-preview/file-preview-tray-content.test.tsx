@@ -28,6 +28,13 @@ vi.mock('@renderer/context/file-preview-context', () => ({
   }),
 }))
 
+// The folder header's host-path actions read the user's role; grant it so a
+// folder tab renders them (their own behaviour is covered in
+// folder-host-actions.test.tsx).
+vi.mock('@renderer/context/user-context', () => ({
+  useUser: () => ({ canAdminAgent: () => true }),
+}))
+
 vi.mock('./file-tab-bar', () => ({ FileTabBar: () => null }))
 vi.mock('./renderers/file-renderer', () => ({ FileRenderer: () => <div data-testid="file-renderer" /> }))
 vi.mock('./folder-browser', () => ({ FolderBrowser: () => <div data-testid="folder-browser" /> }))
@@ -77,6 +84,8 @@ describe('FilePreviewTrayContent', () => {
       query: '',
     }]
     renderTray()
+
+    expect(screen.getByTestId('folder-copy-path')).toBeInTheDocument()
 
     expect(screen.getByTestId('folder-browser')).toBeVisible()
     expect(screen.queryByTitle('Download file')).not.toBeInTheDocument()

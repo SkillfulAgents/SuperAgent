@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useState, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
 import { useUser } from '@renderer/context/user-context'
@@ -37,6 +37,7 @@ import {
   useHostExportStatus,
 } from '@renderer/hooks/use-agent-templates'
 import { AgentTemplatePublishPanel } from '@renderer/components/agents/agent-template-publish-panel'
+import { AgentTemplateStatus } from '@renderer/components/agents/agent-template-status'
 import { ActivityOrb } from '@renderer/components/messages/activity-orb'
 import {
   ArrowDownToLine,
@@ -67,6 +68,12 @@ interface SearchUser {
 interface AgentSharePopoverProps {
   agentSlug: string
   agentName: string
+}
+
+/** Imperative surface: lets the agent menu's "Export Agent" open this
+ *  popover straight onto its Export pane. */
+export interface AgentSharePopoverHandle {
+  openExport: () => void
 }
 
 const ROLE_OPTIONS: { value: AgentRole; label: string; description: string }[] = [
@@ -191,7 +198,8 @@ function InviteEducationPane() {
  * owners; in non-auth deployments everyone is an owner and the Invite tab
  * becomes a disabled preview pointing at Cloud instead of disappearing.
  */
-export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverProps) {
+export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentSharePopoverProps>(
+  function AgentSharePopover({ agentSlug, agentName }, ref) {
   const queryClient = useQueryClient()
   const { user, isAuthMode } = useUser()
   const [open, setOpen] = useState(false)
@@ -204,6 +212,13 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
   const [exportChoice, setExportChoice] = useState<'template' | 'full'>('template')
   const [confirmFullExportOpen, setConfirmFullExportOpen] = useState(false)
   const searchInputRef = useRef<HTMLInputElement>(null)
+
+  useImperativeHandle(ref, () => ({
+    openExport: () => {
+      setTab('export')
+      setOpen(true)
+    },
+  }), [])
 
   // Publish pane data/mutations. Status only fetches once the popover opens.
   const {
@@ -647,10 +662,14 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
                     </p>
                   </div>
                 </div>
+              ) : templateStatus && (templateStatus.type !== 'local' || !!templateStatus.sourceLabel) ? (
+                // Installed from a library: instead of a publish flow, show
+                // where it came from and the update / sync / review actions.
+                <AgentTemplateStatus agentSlug={agentSlug} templateStatus={templateStatus} />
               ) : (
                 <p className="px-2 py-4 text-center text-sm text-muted-foreground">
-                  Publishing isn&apos;t available — this agent is already linked to a
-                  skillset or can&apos;t be republished from this workspace.
+                  Publishing isn&apos;t available — this agent can&apos;t be republished
+                  from this workspace.
                 </p>
               )}
             </div>
@@ -706,8 +725,8 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
                 } else {
                   // Full exports contain secrets — confirm before downloading.
                   // The dialog is modal (outside the popover), so opening it
-                  // dismisses the popover, same as the settings popover's
-                  // delete confirm.
+                  // dismisses the popover, same as the agent menu's delete
+                  // confirm.
                   setOpen(false)
                   setConfirmFullExportOpen(true)
                 }
@@ -912,4 +931,4 @@ export function AgentSharePopover({ agentSlug, agentName }: AgentSharePopoverPro
     </AlertDialog>
     </>
   )
-}
+})

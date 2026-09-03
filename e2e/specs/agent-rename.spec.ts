@@ -32,17 +32,18 @@ test.describe('Agent Rename', () => {
     return agent
   }
 
-  test('can type and save spaces in agent name input when settings opened via context menu', async ({ page, request }, testInfo) => {
+  test('can type and save spaces in agent name via the context menu rename dialog', async ({ page, request }, testInfo) => {
     const agent = await createAndOpenAgent(request, page, testInfo, 'Rename Context')
     const newName = uniqueName(testInfo, 'Context Name With Spaces')
 
+    // The sidebar row has no inline title, so Rename opens a dialog there.
     await getAgentItem(page, agent).click({ button: 'right' })
-    await page.locator('[data-testid="agent-settings-item"]').click()
+    await page.locator('[data-testid="rename-agent-item"]').click()
 
-    const dialog = page.locator('[data-testid="agent-settings-dialog"]')
+    const dialog = page.locator('[data-testid="rename-agent-dialog"]')
     await expect(dialog).toBeVisible()
 
-    const nameInput = page.locator('#agent-name')
+    const nameInput = page.locator('[data-testid="rename-agent-name-input"]')
     await expect(nameInput).toBeVisible()
 
     await nameInput.clear()
@@ -50,7 +51,7 @@ test.describe('Agent Rename', () => {
     await nameInput.pressSequentially(newName)
     await expect(nameInput).toHaveValue(newName)
 
-    await dialog.getByRole('button', { name: /^Save$/ }).click()
+    await page.locator('[data-testid="confirm-rename-agent-button"]').click()
     await expect(dialog).not.toBeVisible({ timeout: 10000 })
 
     const renamedAgent = await expectAgentNamed(request, agent, newName)
@@ -115,13 +116,13 @@ test.describe('Agent Rename', () => {
     await expect(page.locator('[data-testid^="agent-item-"]', { hasText: unsavedName })).toHaveCount(0)
   })
 
-  test('control: can type spaces in rename input when opened via settings popover without saving', async ({ page, request }, testInfo) => {
+  test('control: can type spaces in rename input when opened via the agent menu without saving', async ({ page, request }, testInfo) => {
     const agent = await createAndOpenAgent(request, page, testInfo, 'Rename Button')
     const unsavedName = uniqueName(testInfo, 'Button Name With Spaces')
 
-    // Gear popover → "Rename agent" puts the inline title into edit mode
-    await agentPage.openSettings()
-    await page.locator('[data-testid="rename-agent-button"]').click()
+    // Header three-dot → "Rename Agent" puts the inline title into edit mode
+    await agentPage.openAgentMenu()
+    await page.locator('[data-testid="rename-agent-item"]').click()
 
     const nameInput = page.locator('[data-testid="agent-name-input"]')
     await expect(nameInput).toBeVisible()

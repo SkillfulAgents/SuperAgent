@@ -3,7 +3,7 @@ import { FileHook, type FileHookReadResult, type FileHookWriteResult } from './f
 
 // Keep in sync with src/shared/lib/types/agent-preferences.ts
 const agentPreferencesSchema = z.object({
-  autoDeleteInactiveDays: z.number().int().positive().optional(),
+  autoDeleteInactiveDays: z.number().int().nonnegative().optional(),
   apiLogAutoDeleteDays: z.number().int().nonnegative().optional(),
   defaultModel: z.string().trim().min(1).optional(),
   defaultEffort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
@@ -15,7 +15,7 @@ const PREFERENCES_PATH = '/workspace/agent-preferences.json'
 const READ_HINT = `This is the agent preferences file. It stores per-agent settings that override app-wide defaults.
 
 Format: a JSON object with optional fields:
-- "autoDeleteInactiveDays" (positive integer, optional): Automatically delete sessions inactive for this many days. Starred sessions are preserved.
+- "autoDeleteInactiveDays" (non-negative integer, optional): Automatically delete sessions inactive for this many days. 0 means never. Starred sessions are preserved.
 - "apiLogAutoDeleteDays" (non-negative integer, optional): Automatically delete API / MCP audit log rows older than this many days. 0 means Never.
 - "defaultModel" (string, optional): Default model for this agent's new sessions — a concrete model id or a bare family alias. Per-session and per-trigger picks still win.
 - "defaultEffort" (one of "low" | "medium" | "high" | "xhigh" | "max", optional): Default reasoning effort for this agent's new sessions.
