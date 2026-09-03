@@ -14,8 +14,9 @@ import { Label } from '@renderer/components/ui/label'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Loader2, ExternalLink, AlertTriangle, ChevronLeft } from 'lucide-react'
 import { useSkillPublishInfo, usePublishSkill } from '@renderer/hooks/use-agent-skills'
-import { usePublishableSkillsets } from '@renderer/hooks/use-skillsets'
-import { getPublishDialogCopy } from '@renderer/lib/skillset-publish-ui'
+import { useSkillsets } from '@renderer/hooks/use-skillsets'
+import { getPublishDialogCopy, isSkillsetPublishable } from '@renderer/lib/skillset-publish-ui'
+import { cn } from '@shared/lib/utils'
 import type { ApiSkillsetConfig, ApiItemStatus } from '@shared/lib/types/api'
 
 interface SkillPublishDialogProps {
@@ -38,7 +39,7 @@ export function SkillPublishDialog({
   const canPublish = skillStatus.type === 'local'
   const [step, setStep] = useState<'pick' | 'form'>('pick')
   const [selectedSkillset, setSelectedSkillset] = useState<ApiSkillsetConfig | null>(null)
-  const { data: skillsets } = usePublishableSkillsets()
+  const { data: skillsets } = useSkillsets()
 
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
@@ -138,19 +139,36 @@ export function SkillPublishDialog({
                 </p>
               ) : (
                 <div className="space-y-2">
-                  {skillsets.map((ss) => (
-                    <button
-                      key={ss.id}
-                      type="button"
-                      className="w-full text-left p-3 rounded-lg bg-muted/50 hover:bg-muted transition-colors"
-                      onClick={() => handleSkillsetSelect(ss)}
-                    >
-                      <p className="text-sm font-medium">{ss.name}</p>
-                      <p className="text-xs text-muted-foreground line-clamp-2 mt-0.5">
-                        {ss.description}
-                      </p>
-                    </button>
-                  ))}
+                  {skillsets.map((ss) => {
+                    const publishable = isSkillsetPublishable(ss.publishMode)
+                    return (
+                      <button
+                        key={ss.id}
+                        type="button"
+                        disabled={!publishable}
+                        className={cn(
+                          'w-full text-left p-3 rounded-lg transition-colors',
+                          publishable
+                            ? 'bg-muted/50 hover:bg-muted'
+                            : 'cursor-not-allowed bg-muted/30 opacity-70',
+                        )}
+                        onClick={() => handleSkillsetSelect(ss)}
+                        data-testid={`publish-skillset-option-${ss.id}`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-medium">{ss.name}</p>
+                          {!publishable && (
+                            <span className="text-2xs font-medium text-muted-foreground">
+                              Read only
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-muted-foreground line-clamp-2 mt-0.5">
+                          {ss.description}
+                        </p>
+                      </button>
+                    )
+                  })}
                 </div>
               )}
             </div>
