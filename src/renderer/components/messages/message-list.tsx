@@ -22,7 +22,8 @@ import { InformationalItem } from './informational-item'
 import { isSessionTimeGap, SessionTimeFlag } from './session-time-flag'
 import { MessageErrorBoundary } from './message-error-boundary'
 import { ArrowDown, ChevronRight, FileX2, Loader2, MessageSquarePlus, WifiOff } from 'lucide-react'
-import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
+import { FileDeliveryRow } from '@renderer/components/ui/file-delivery-row'
+import { getDeliveredFileSize } from '@shared/lib/tool-definitions/deliver-file'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
 import { appendToSessionDraft, useDraft, useDraftsStore } from '@renderer/context/drafts-context'
@@ -119,11 +120,23 @@ function TurnSummaryRow({
   )
 }
 
-function DeliveredFiles({ files, agentSlug }: { files: { filePath: string }[]; agentSlug: string }) {
+interface DeliveredFile {
+  filePath: string
+  description?: string
+  sizeBytes?: number
+}
+
+function DeliveredFiles({ files, agentSlug }: { files: DeliveredFile[]; agentSlug: string }) {
   return (
-    <div className="flex flex-wrap gap-1.5 ml-11 -mt-1 pb-1">
+    <div className="flex flex-col gap-1.5 -mt-1 pb-1" data-testid="delivered-files">
       {files.map((file) => (
-        <FileDownloadPill key={file.filePath} filePath={file.filePath} agentSlug={agentSlug} />
+        <FileDeliveryRow
+          key={file.filePath}
+          filePath={file.filePath}
+          agentSlug={agentSlug}
+          description={file.description}
+          sizeBytes={file.sizeBytes}
+        />
       ))}
     </div>
   )
@@ -594,10 +607,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
 
   // Collect delivered files for each completed turn.
   const turnDeliveredFiles = useMemo(() => {
-    const filesMap = new Map<string, { filePath: string }[]>()
+    const filesMap = new Map<string, DeliveredFile[]>()
     if (!messages) return filesMap
 
-    let turnFiles: { filePath: string }[] = []
+    let turnFiles: DeliveredFile[] = []
     let lastAssistantMessageId: string | null = null
 
     for (const msg of messages) {
@@ -611,9 +624,13 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         lastAssistantMessageId = msg.id
         for (const tc of msg.toolCalls) {
           if (tc.name === 'mcp__user-input__deliver_file' && !tc.isError) {
-            const input = tc.input as { filePath?: string }
+            const input = tc.input as { filePath?: string; description?: string }
             if (input.filePath) {
-              turnFiles.push({ filePath: input.filePath })
+              turnFiles.push({
+                filePath: input.filePath,
+                description: input.description,
+                sizeBytes: getDeliveredFileSize(tc.result),
+              })
             }
           }
         }
