@@ -5,10 +5,10 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import {
   MarkdownComposerEditor,
-  selectAllMarkdownComposer,
   setMarkdownComposerSelection,
 } from './markdown-composer-editor'
-import { findPotentialSecrets, type SecuredSecret } from '@renderer/lib/secret-detection'
+import { formatChipMarker } from './chip-marker'
+import { findPotentialSecrets } from '@renderer/lib/secret-detection'
 
 function ControlledEditor({ initialValue = '' }: { initialValue?: string }) {
   const [value, setValue] = useState(initialValue)
@@ -19,31 +19,6 @@ function ControlledEditor({ initialValue = '' }: { initialValue?: string }) {
         onChange={setValue}
         placeholder="Write a message"
         dataTestId="markdown-editor"
-      />
-      <output data-testid="markdown-value">{value}</output>
-    </>
-  )
-}
-
-function SecuredEditorHarness({
-  initialValue,
-  secrets,
-  onRemove,
-}: {
-  initialValue: string
-  secrets: SecuredSecret[]
-  onRemove: (secrets: SecuredSecret[]) => void
-}) {
-  const [value, setValue] = useState(initialValue)
-  return (
-    <>
-      <MarkdownComposerEditor
-        value={value}
-        onChange={setValue}
-        placeholder="Write a message"
-        dataTestId="markdown-editor"
-        securedSecrets={secrets}
-        onRemoveSecuredSecrets={onRemove}
       />
       <output data-testid="markdown-value">{value}</output>
     </>
@@ -344,53 +319,64 @@ describe('MarkdownComposerEditor', () => {
     expect(editor).toHaveTextContent('[unsafe](javascript:alert(1))')
   })
 
-  it('deletes the complete selection when it contains a secured pill', async () => {
-    const user = userEvent.setup()
-    const secret: SecuredSecret = {
-      id: 'first',
-      key: 'Token',
-      envVar: 'TOKEN_ONE',
-      displayText: '[Token | *********]',
-    }
-    const onRemove = vi.fn()
-    render(
-      <SecuredEditorHarness
-        initialValue={`Before ${secret.displayText} after`}
-        secrets={[secret]}
-        onRemove={onRemove}
-      />
-    )
-    const editor = screen.getByTestId('markdown-editor')
+  it('lifts a secret marker to a pill and serializes the same marker', () => {
+    const marker = formatChipMarker('secret', 'GITHUB_TOKEN', 'GitHub Token')
+    render(<ControlledEditor initialValue={`Use ${marker}`} />)
 
-    expect(selectAllMarkdownComposer(editor)).toBe(true)
-    await user.keyboard('{Backspace}')
-
-    expect(screen.getByTestId('markdown-value').textContent).toBe('')
-    expect(onRemove).toHaveBeenCalledWith([secret])
+    expect(screen.getByTestId('secured-secret')).toHaveTextContent('[GitHub Token | *********]')
+    expect(screen.getByTestId('markdown-value').textContent).toBe(`Use ${marker}`)
   })
 
-  it('deletes the selected occurrence when secured pills have identical labels', async () => {
-    const user = userEvent.setup()
-    const displayText = '[Token | *********]'
-    const first: SecuredSecret = { id: 'first', key: 'Token', envVar: 'TOKEN_ONE', displayText }
-    const second: SecuredSecret = { id: 'second', key: 'Token', envVar: 'TOKEN_TWO', displayText }
-    const value = `A ${displayText} B ${displayText} C`
-    const onRemove = vi.fn()
-    render(
-      <SecuredEditorHarness
-        initialValue={value}
-        secrets={[first, second]}
-        onRemove={onRemove}
-      />
-    )
-    const editor = screen.getByTestId('markdown-editor')
-    const secondPillEnd = 1 + value.lastIndexOf(displayText) + displayText.length
+  it('leaves unknown and incomplete markers as text', () => {
+    const unknown = formatChipMarker('foo', 'bar', 'baz')
+    const incomplete = '[[secret:GITHUB_TOKEN'
+    render(<ControlledEditor initialValue={`See ${unknown} ${incomplete}`} />)
 
-    expect(setMarkdownComposerSelection(editor, secondPillEnd)).toBe(true)
+    expect(screen.queryByTestId('secured-secret')).not.toBeInTheDocument()
+    expect(screen.getByTestId('markdown-value').textContent).toBe(`See ${unknown} ${incomplete}`)
+  })
+
+  it('pastes a secret marker as a live chip', () => {
+    const marker = formatChipMarker('secret', 'GITHUB_TOKEN', 'GitHub Token')
+    render(<ControlledEditor />)
+    const editor = screen.getByTestId('markdown-editor')
+
+    fireEvent.paste(editor, {
+      clipboardData: {
+        getData: (type: string) => type === 'text/plain' ? marker : '',
+        items: [],
+      },
+    })
+
+    expect(screen.getByTestId('secured-secret')).toBeInTheDocument()
+    expect(screen.getByTestId('markdown-value').textContent).toBe(marker)
+  })
+
+  it('removes a secret pill atomically with Backspace', async () => {
+    const user = userEvent.setup()
+    const marker = formatChipMarker('secret', 'TOKEN_ONE', 'Token')
+    const before = 'Before '
+    render(<ControlledEditor initialValue={`${before}${marker} after`} />)
+    const editor = screen.getByTestId('markdown-editor')
+    // paragraph starts at 1; the atom occupies one position after `before`
+    expect(setMarkdownComposerSelection(editor, 1 + before.length + 1)).toBe(true)
     await user.keyboard('{Backspace}')
 
-    expect(screen.getByTestId('markdown-value').textContent).toBe(`A ${displayText} B  C`)
-    expect(onRemove).toHaveBeenCalledWith([second])
+    expect(screen.queryByTestId('secured-secret')).not.toBeInTheDocument()
+    expect(screen.getByTestId('markdown-value').textContent).toBe('Before  after')
+  })
+
+  it('removes a secret pill atomically with Delete', async () => {
+    const user = userEvent.setup()
+    const marker = formatChipMarker('secret', 'TOKEN_ONE', 'Token')
+    const before = 'Before '
+    render(<ControlledEditor initialValue={`${before}${marker} after`} />)
+    const editor = screen.getByTestId('markdown-editor')
+    expect(setMarkdownComposerSelection(editor, 1 + before.length)).toBe(true)
+    await user.keyboard('{Delete}')
+
+    expect(screen.queryByTestId('secured-secret')).not.toBeInTheDocument()
+    expect(screen.getByTestId('markdown-value').textContent).toBe('Before  after')
   })
 
   it('keeps a Shift+Enter line break in the Markdown source', async () => {

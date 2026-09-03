@@ -11,12 +11,11 @@ import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { attachmentStatus, type Attachment, type MountAttachment } from '@renderer/components/messages/attachment-preview'
 import type { UploadProgress } from '@renderer/lib/upload'
 import { usePendingAttachmentDrop } from '@renderer/lib/pending-attachment-drop'
+import { rewriteChipsForSend } from '@renderer/components/messages/composer-chips'
+import { secretChip } from '@renderer/components/messages/secret-chip'
 import {
   findPotentialSecrets,
-  replaceSecuredSecrets,
-  secretDisplayText,
   type PotentialSecret,
-  type SecuredSecret,
 } from '@renderer/lib/secret-detection'
 
 interface UseMessageComposerOptions {
@@ -35,8 +34,6 @@ interface UseMessageComposerOptions {
   draftKey?: string
   /** One-shot attachment seed, used when moving a draft into a new session. */
   initialAttachments?: Attachment[]
-  /** One-shot secure-pill seed, used when moving a draft into a new session. */
-  initialSecuredSecrets?: SecuredSecret[]
   /** Fires on composer-mic transcript updates (before message state changes). */
   onVoiceTranscript?: () => void
 }
@@ -45,13 +42,8 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   const { agentSlug, onSubmit, submitDisabled, keepMessageUntilComplete, draftKey } = options
 
   const [draft, setDraft] = useDraft<string>(draftKey)
-  const securedDraftKey = draftKey ? `${draftKey}:secured-secrets` : undefined
-  const [draftSecuredSecrets, setDraftSecuredSecrets] = useDraft<SecuredSecret[]>(securedDraftKey)
   const [message, setMessage] = useState(draft ?? '')
   const [dismissedSecretValues, setDismissedSecretValues] = useState<Set<string>>(() => new Set())
-  const [securedSecrets, setSecuredSecrets] = useState<SecuredSecret[]>(
-    () => options.initialSecuredSecrets ?? draftSecuredSecrets ?? []
-  )
   const [isUploading, setIsUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const addMountMutation = useAddMount()
@@ -68,10 +60,6 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     }
     setDraft(message || undefined)
   }, [message, setDraft])
-
-  useEffect(() => {
-    setDraftSecuredSecrets(securedSecrets.length > 0 ? securedSecrets : undefined)
-  }, [securedSecrets, setDraftSecuredSecrets])
 
   // Sync externally-injected drafts (e.g. voice feedback) into the local message.
   useEffect(() => {
@@ -110,21 +98,12 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   ) => {
     setMessage((current) => {
       if (current.slice(candidate.start, candidate.end) !== candidate.value) return current
-      const displayText = secretDisplayText(savedSecret.key)
-      const securedSecret: SecuredSecret = {
-        id: `${candidate.id}:${savedSecret.envVar}`,
-        key: savedSecret.key,
-        envVar: savedSecret.envVar,
-        displayText,
-      }
-      setSecuredSecrets((existing) => [...existing, securedSecret])
-      return `${current.slice(0, candidate.start)}${displayText}${current.slice(candidate.end)}`
+      const marker = secretChip.composer.raw({
+        kind: 'secret',
+        payload: { key: savedSecret.key, envVar: savedSecret.envVar },
+      })
+      return `${current.slice(0, candidate.start)}${marker}${current.slice(candidate.end)}`
     })
-  }, [])
-
-  const removeSecuredSecrets = useCallback((secrets: SecuredSecret[]) => {
-    const secretIds = new Set(secrets.map((secret) => secret.id))
-    setSecuredSecrets((current) => current.filter((secret) => !secretIds.has(secret.id)))
   }, [])
 
   // Mount choice dialog state
@@ -322,7 +301,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     }
 
     const editableContent = content
-    const submittedContent = replaceSecuredSecrets(content, securedSecrets)
+    const submittedContent = rewriteChipsForSend(content)
 
     try {
       await onSubmit(submittedContent)
@@ -340,7 +319,6 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
       setDraft(undefined)
       clearAttachments()
     }
-    setSecuredSecrets([])
   }
 
   const canSubmit = (!!message.trim() || attachments.length > 0 || voiceInput.isRecording) && !uploadsInFlight && !isUploading && !submitDisabled
@@ -350,10 +328,8 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     message,
     setMessage,
     potentialSecrets,
-    securedSecrets,
     dismissPotentialSecret,
     securePotentialSecret,
-    removeSecuredSecrets,
 
     // Attachments
     attachments,

@@ -5,6 +5,7 @@ import { createElement } from 'react'
 import type { Attachment } from '@renderer/components/messages/attachment-preview'
 import type { FolderGroup } from '@renderer/lib/file-utils'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { formatChipMarker } from '@renderer/components/messages/chip-marker'
 import { DraftsProvider, useDraft } from '@renderer/context/drafts-context'
 
 // --- Mocks ---
@@ -189,9 +190,10 @@ describe('useMessageComposer', () => {
       envVar: 'GITHUB_TOKEN',
     }))
 
-    expect(result.current.message).toBe('Use [GitHub Token | *********] please')
-    expect(result.current.securedSecrets).toHaveLength(1)
-    expect(JSON.stringify(result.current.securedSecrets)).not.toContain(key)
+    expect(result.current.message).toBe(
+      `Use ${formatChipMarker('secret', 'GITHUB_TOKEN', 'GitHub Token')} please`
+    )
+    expect(result.current.message).not.toContain(key)
 
     await act(async () => {
       await result.current.handleSubmit({ preventDefault: vi.fn() } as any)

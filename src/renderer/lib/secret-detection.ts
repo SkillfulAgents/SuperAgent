@@ -1,3 +1,5 @@
+import { CHIP_MARKER } from '@renderer/components/messages/chip-marker'
+
 const MIN_SECRET_LENGTH = 20
 const MASK = '*********'
 
@@ -6,13 +8,6 @@ export interface PotentialSecret {
   value: string
   start: number
   end: number
-}
-
-export interface SecuredSecret {
-  id: string
-  key: string
-  envVar: string
-  displayText: string
 }
 
 const KNOWN_SECRET_PREFIX = /^(?:sk[-_]|pk[-_]|gh[pousr]_|github_pat_|xox[baprs]-|AIza|AKIA|ASIA|eyJ|SG\.|sq0atp-|npm_)/i
@@ -67,9 +62,11 @@ function looksLikeSecret(value: string, precedingText: string): boolean {
  */
 export function findPotentialSecrets(text: string): PotentialSecret[] {
   const protectedRanges: Array<{ start: number; end: number }> = []
-  for (const match of text.matchAll(SECURED_DISPLAY_PATTERN)) {
-    const start = match.index
-    protectedRanges.push({ start, end: start + match[0].length })
+  for (const pattern of [new RegExp(CHIP_MARKER.source, 'g'), SECURED_DISPLAY_PATTERN]) {
+    for (const match of text.matchAll(pattern)) {
+      const start = match.index
+      protectedRanges.push({ start, end: start + match[0].length })
+    }
   }
 
   const candidates: PotentialSecret[] = []
@@ -87,8 +84,7 @@ export function findPotentialSecrets(text: string): PotentialSecret[] {
     if (overlaps(start, end, protectedRanges)) continue
     if (!looksLikeSecret(value, text.slice(Math.max(0, start - 3), start))) continue
     candidates.push({
-      // IDs are persisted alongside secured draft pills, so they must never
-      // contain the credential itself. The range is unique within a draft.
+      // IDs must never contain the credential. The range is unique within a draft.
       id: `${start}:${end}`,
       value,
       start,
@@ -100,16 +96,4 @@ export function findPotentialSecrets(text: string): PotentialSecret[] {
 
 export function secretDisplayText(key: string): string {
   return `[${key} | ${MASK}]`
-}
-
-/** Replace only pills created by this composer; arbitrary bracketed text is untouched. */
-export function replaceSecuredSecrets(message: string, securedSecrets: SecuredSecret[]): string {
-  let result = message
-  for (const secret of securedSecrets) {
-    const index = result.indexOf(secret.displayText)
-    if (index === -1) continue
-    const placeholder = `[Key saved to .env - ${secret.envVar}]`
-    result = `${result.slice(0, index)}${placeholder}${result.slice(index + secret.displayText.length)}`
-  }
-  return result
 }

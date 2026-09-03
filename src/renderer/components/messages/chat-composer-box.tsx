@@ -9,11 +9,10 @@ import type {
 import { cn } from '@shared/lib/utils'
 import { AttachmentPreview, type Attachment } from './attachment-preview'
 import { SecretDetectionPrompt } from './secret-detection-prompt'
-import type { PotentialSecret, SecuredSecret } from '@renderer/lib/secret-detection'
+import type { PotentialSecret } from '@renderer/lib/secret-detection'
 import { MarkdownComposerEditor } from './markdown-composer-editor'
 
 const EMPTY_POTENTIAL_SECRETS: PotentialSecret[] = []
-const EMPTY_SECURED_SECRETS: SecuredSecret[] = []
 
 /**
  * The floating translucent treatment for a composer that sits over content —
@@ -26,10 +25,8 @@ export const FLOATING_COMPOSER_CLASS =
 interface SecureSecretsProps {
   agentSlug: string
   potentialSecrets?: PotentialSecret[]
-  securedSecrets?: SecuredSecret[]
   onDismiss: (candidate: PotentialSecret) => void
   onSecure: (candidate: PotentialSecret, secret: { key: string; envVar: string }) => void
-  onRemove: (secrets: SecuredSecret[]) => void
 }
 
 interface ChatComposerBoxProps {
@@ -94,7 +91,6 @@ export function ChatComposerBox({
   }, [textareaRef])
 
   const potentialSecrets = secureSecrets?.potentialSecrets ?? EMPTY_POTENTIAL_SECRETS
-  const securedSecrets = secureSecrets?.securedSecrets ?? EMPTY_SECURED_SECRETS
 
   return (
     <div className={cn(
@@ -123,8 +119,6 @@ export function ChatComposerBox({
           enterKeyHint={enterKeyHint}
           className={cn('max-h-[200px]', textareaClassName)}
           potentialSecrets={potentialSecrets}
-          securedSecrets={securedSecrets}
-          onRemoveSecuredSecrets={secureSecrets?.onRemove}
           onEditorElement={setEditorRef}
         />
       </div>

@@ -23,7 +23,7 @@ test.describe('composer secret detection', () => {
     await agentPage.createAgent(`Composer Secret ${testInfo.workerIndex}-${Date.now()}`)
   })
 
-  test('saves a detected key, masks the draft, and sends only the .env placeholder', async ({ page }, testInfo) => {
+  test('saves a detected key, paints a masked pill, and starts the session with only the .env placeholder', async ({ page }, testInfo) => {
     const tag = `W${testInfo.workerIndex}T${Date.now()}`
     const rawKey = ['sk-', `proj-${tag}-Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z`].join('')
     const keyName = `Deploy Key ${tag}`
@@ -75,30 +75,32 @@ test.describe('composer secret detection', () => {
     await expect(input).toHaveText(rawKey)
   })
 
-  test('removes a saved key pill atomically with Backspace', async ({ page }) => {
-    const rawKey = ['gh', 'p_Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z'].join('')
+  test('pastes a secret marker as a pill and starts the session with only the .env placeholder', async ({ page }, testInfo) => {
+    const tag = `W${testInfo.workerIndex}T${Date.now()}`
+    const envVar = `PASTE_KEY_${tag.toUpperCase()}`
+    const keyName = `Paste Key ${tag}`
+    const marker = `[[secret:${envVar}|${encodeURIComponent(keyName)}]]`
     const input = page.locator('[data-testid="home-message-input"]')
 
-    await input.fill(`Before ${rawKey} after`)
-    await page.getByRole('button', { name: 'Send securely to the agent' }).click()
-    const dialog = page.getByRole('dialog', { name: 'Send key securely' })
-    await dialog.getByLabel('Key name').fill('GitHub Token')
-    await dialog.getByRole('button', { name: 'Save securely' }).click()
+    await input.fill('Use ')
+    await input.evaluate((element, text) => {
+      const clipboardData = new DataTransfer()
+      clipboardData.setData('text/plain', text)
+      element.dispatchEvent(new ClipboardEvent('paste', {
+        bubbles: true,
+        cancelable: true,
+        clipboardData,
+      }))
+    }, marker)
 
-    const pill = page.locator('[data-testid="secured-secret"]')
-    await expect(pill).toHaveText('[GitHub Token | *********]')
-    await expect(pill).toHaveClass(/outline-amber-500\/70/)
-    await input.focus()
-    await pill.evaluate((element) => {
-      const selection = window.getSelection()
-      const range = document.createRange()
-      range.selectNodeContents(element)
-      selection?.removeAllRanges()
-      selection?.addRange(range)
-    })
-    await input.press('Backspace')
+    await expect(page.locator('[data-testid="secured-secret"]')).toHaveText(`[${keyName} | *********]`)
 
-    await expect(input).toHaveText('Before  after')
-    await expect(pill).toHaveCount(0)
+    await page.locator('[data-testid="home-send-button"]').click()
+    await expect(page.locator('[data-testid="message-list"]')).toBeVisible({ timeout: 15_000 })
+
+    const expectedMessage = `Use [Key saved to .env - ${envVar}]`
+    const record = await recorder.waitFor((candidate) => candidate.type === 'createSession' && candidate.initialMessage === expectedMessage
+    )
+    expect(record.initialMessage).not.toContain('[[secret:')
   })
 })
