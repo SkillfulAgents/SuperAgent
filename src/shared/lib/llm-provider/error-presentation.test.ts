@@ -16,6 +16,8 @@ const STREAM_PREFIXED_SPEND_CAP =
   'Let me check what Meta is actually reporting on the ad set right now, then explain.API Error: Request rejected (429) · A spend cap for this workspace was reached. It resets within 30 days. Ask a workspace admin to raise it.'
 const RATE_LIMIT = 'API Error: Request rejected (429) · Rate limit exceeded. Slow down and retry shortly.'
 const BILLING_402 = 'API Error: 402 Workspace has insufficient balance. Top up to continue.'
+const STREAM_DROPPED_402 =
+  'API Error: 402 The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()'
 
 describe('extractErrorMessage', () => {
   it('returns a plain string unchanged', () => {
@@ -42,6 +44,10 @@ describe('inferErrorStatus', () => {
 
   it('reads a bare 402', () => {
     expect(inferErrorStatus(BILLING_402)).toBe(402)
+  })
+
+  it('reads 402 from a dropped-body stream error', () => {
+    expect(inferErrorStatus(STREAM_DROPPED_402)).toBe(402)
   })
 
   it('returns undefined when no status is present', () => {
@@ -105,6 +111,17 @@ describe('parsePlatformErrorResponse', () => {
       message: '**You need more usage credit to continue** Subscribe or top up to resume this answer.',
       paywall: {},
     })
+  })
+
+  it('authors an unbranched paywall when a streaming 402 drops the body', () => {
+    const expected = {
+      severity: 'error' as const,
+      icon: 'info',
+      message: '**You need more usage credit to continue** Subscribe or top up to resume this answer.',
+      paywall: {},
+    }
+    expect(parsePlatformErrorResponse(402, STREAM_DROPPED_402)).toEqual(expected)
+    expect(parsePlatformErrorResponse(undefined, STREAM_DROPPED_402)).toEqual(expected)
   })
 
   it('authors a subscribe paywall when the 402 JSON sets subscription_required', () => {

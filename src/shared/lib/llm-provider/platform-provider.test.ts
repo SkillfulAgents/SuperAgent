@@ -86,6 +86,15 @@ describe('parseErrorResponse', () => {
     )
     expect(parsed?.paywall).toEqual({})
   })
+
+  it('recognizes a streaming 402 that lost its JSON body as an unbranched paywall', () => {
+    const parsed = provider.parseSpecializedError(
+      402,
+      'API Error: 402 The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()',
+    )
+    expect(parsed?.paywall).toEqual({})
+    expect(parsed?.paywall).not.toHaveProperty('subscriptionRequired')
+  })
 })
 
 describe('sanitizeAgentName', () => {

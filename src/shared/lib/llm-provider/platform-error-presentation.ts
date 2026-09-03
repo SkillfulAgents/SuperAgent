@@ -10,12 +10,15 @@ function isSpendCap(status: number | undefined, raw: string): boolean {
   return status === 429 || /\b429\b/.test(raw)
 }
 
+// Streaming 402s often drop the JSON body and surface as "socket closed".
+// Any 402 from this provider is a billing deny; snapshot picks the CTA.
 function isInsufficientBalance(status: number | undefined, raw: string): boolean {
   const lower = raw.toLowerCase()
   return (
-    lower.includes('insufficient balance')
+    status === 402
+    || /\b402\b/.test(lower)
+    || lower.includes('insufficient balance')
     || lower.includes('insufficient_balance')
-    || ((status === 402 || lower.includes('402')) && lower.includes('top up'))
   )
 }
 
