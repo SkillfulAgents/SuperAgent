@@ -206,6 +206,17 @@ describe('MessageList', () => {
     expect(screen.getByText('Hello!')).toBeInTheDocument()
   })
 
+  it('renders the interrupt marker as a user message', () => {
+    mockMessagesData.data = [
+      createUserMessage({ content: { text: '[Request interrupted by user]' } }),
+    ]
+
+    renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+    const marker = screen.getByText('[Request interrupted by user]')
+    expect(marker.closest('[data-testid="message-user"]')).toBeTruthy()
+  })
+
   describe('transcript not found', () => {
     beforeEach(() => {
       mockMessagesData.error = new TranscriptNotFoundError()

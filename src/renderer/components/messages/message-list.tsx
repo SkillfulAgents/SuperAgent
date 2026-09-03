@@ -10,7 +10,8 @@ import {
   clearPeerUserMessages,
   consumeDiscardedCommand,
 } from '@renderer/hooks/use-message-stream'
-import { isInterruptMarkerMessage, isTurnStartingUserMessage, type PendingMessage } from './pending-message'
+import { isTurnStartingUserMessage, type PendingMessage } from './pending-message'
+import { classifyUserMessage, classifyUserText } from './user-message-classifier'
 import { MessageItem } from './message-item'
 import { ToolCallItem, StreamingToolCallItem } from './tool-call-item'
 import { ThinkingBlockItem } from './thinking-block-item'
@@ -47,13 +48,7 @@ import {
   type EmbeddedImageAliases,
 } from '@renderer/lib/parse-tool-result'
 
-// Prefix for system-injected user messages that should be hidden in the UI.
-// Keep in sync with SYSTEM_MESSAGE_PREFIX in agent-container/src/claude-code.ts
-const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] '
-
 const TURN_WORK_REVEAL_CLASS = 'animate-in fade-in-0 slide-in-from-top-2 duration-200 ease-out motion-reduce:animate-none'
-
-const isManualCompactCommand = (text: string) => /^\/compact(?:\s|$)/.test(text.trim())
 
 interface CompletedTurn {
   id: string
@@ -307,7 +302,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         match = findTextMatch(pending.text, pending.sentAt - 5000)
         if (match) claimed.add(match.id)
       }
-      if (!match && isManualCompactCommand(pending.text)) {
+      if (!match && classifyUserText(pending.text).kind === 'compact') {
         match = messages.find(
           (m) =>
             m.type === 'compact_boundary' &&
@@ -396,7 +391,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     const timerId = setTimeout(() => {
       if (undelivered.length > 0) {
         const restored = undelivered
-          .filter((p) => !isManualCompactCommand(p.text))
+          .filter((p) => classifyUserText(p.text).kind !== 'compact')
           .map((p) => p.text.trim())
           .filter(Boolean)
         if (restored.length > 0) {
@@ -413,13 +408,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // consume window slots, and the windowing operates on what the user can see).
   const visibleMessages = useMemo(() => {
     if (!messages) return []
-    return messages.filter((item) => {
-      if (item.type === 'user') {
-        const msg = item as ApiMessage
-        if (msg.content?.text?.startsWith(SYSTEM_MESSAGE_PREFIX)) return false
-      }
-      return true
-    })
+    return messages.filter((item) => !classifyUserMessage(item).hidden)
   }, [messages])
 
   // Time flags are derived from all loaded history rather than the trailing DOM
@@ -443,7 +432,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       if (
         item.type !== 'user' ||
         item.queued ||
-        isInterruptMarkerMessage(item)
+        classifyUserMessage(item).kind === 'interrupt'
       ) continue
 
       const createdAt = new Date(item.createdAt)
@@ -539,7 +528,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       // the interrupted turn — breaking on it would collect none of that
       // turn's persisted thinking and let every live block re-render at the
       // end. Keep scanning into the turn it terminated.
-      if (isInterruptMarkerMessage(m)) {
+      if (classifyUserMessage(m).kind === 'interrupt') {
         interrupted = true
         continue
       }

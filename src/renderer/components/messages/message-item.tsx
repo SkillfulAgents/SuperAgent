@@ -11,8 +11,7 @@ import { parseTaskNotifications } from '@shared/lib/utils/task-notifications'
 import { MessageContextMenu } from './message-context-menu'
 import { MessageErrorBoundary } from './message-error-boundary'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
-import { parseAttachedFiles, parseMountedFolders } from '@shared/lib/utils/attached-files'
-import { parseSenderPrefix } from '@shared/lib/utils/sender-prefix'
+import { parseUserMessageParts } from './user-message-parts'
 import ReactMarkdown, { type Components, type Options as ReactMarkdownOptions } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { splitStreamingMarkdown } from './split-streaming-markdown'
@@ -318,11 +317,9 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   // Read-only chat mirror: the connector prefixes incoming messages with an
   // escaped "\[sender]: " so the agent can attribute them. Lift that into the
   // sender label instead of showing it inline. Live sessions never carry it.
-  const { sender: senderFromPrefix, cleanText: baseText } = readOnly && isUser && rawText
-    ? parseSenderPrefix(rawText)
-    : { sender: null, cleanText: rawText }
-  const { cleanText: textAfterFiles, attachedFiles } = isUser && baseText ? parseAttachedFiles(baseText) : { cleanText: baseText, attachedFiles: [] }
-  const { cleanText, mountedFolders } = isUser && textAfterFiles ? parseMountedFolders(textAfterFiles) : { cleanText: textAfterFiles, mountedFolders: [] }
+  const { sender: senderFromPrefix, attachedFiles, mountedFolders, text: cleanText } = isUser && rawText
+    ? parseUserMessageParts(rawText, { readOnly: !!readOnly })
+    : { sender: null, attachedFiles: [], mountedFolders: [], text: rawText }
   // Strip SDK-injected `<task-notification>` blocks that land in assistant text on
   // the busy path; surface any `workflow-complete` result as a structured card.
   const { cleanText: textAfterNotifs, workflowResults } = isAssistant && cleanText
