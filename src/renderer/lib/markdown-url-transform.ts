@@ -1,5 +1,6 @@
 import { defaultUrlTransform, type UrlTransform } from 'react-markdown'
 import { getApiBaseUrl } from './env'
+import { encodeWorkspaceFilePath, workspaceFilePathFromFileUrl, workspaceFilePathFromRelativeHref } from './workspace-file-url'
 
 // react-markdown's defaultUrlTransform passes only URLs whose scheme matches
 // ^(https?|ircs?|mailto|xmpp)$ and rewrites everything else to '' (an empty
@@ -31,8 +32,10 @@ export function safeHref(url: string): string {
  * Shared `urlTransform` for every <ReactMarkdown> renderer.
  *
  * Composes react-markdown's defaultUrlTransform — so dangerous schemes
- * (javascript:, file:, data:, vbscript:, custom protocols, …) are still blanked
+ * (javascript:, data:, vbscript:, custom protocols, …) are still blanked
  * exactly as before — and additionally permits tel:/sms: on link hrefs.
+ * Workspace `file:` hrefs stay blank here. Chat and preview rewrite them
+ * in `createMarkdownUrlTransform`.
  *
  * Scoped to `key === 'href'` on purpose: it widens what links may point at, not
  * what images/other resources may load.
@@ -49,48 +52,50 @@ export interface MarkdownImageContext {
   aliases?: ReadonlyMap<string, string>
   /** Enables file:///workspace images through the authenticated workspace route. */
   agentSlug?: string
+  /** Open preview file. Relative hrefs and image srcs resolve against its folder. Chat omits this. */
+  baseFilePath?: string
 }
 
 const IMAGE_FILE_EXTENSION = /\.(?:avif|gif|jpe?g|png|webp)$/i
 
 /** Resolve an agent-workspace file without ever handing `file:` to Chromium. */
-function workspaceImageUrl(url: string, agentSlug: string): string | null {
-  let pathname: string
-  try {
-    const parsed = new URL(url)
-    if (parsed.protocol !== 'file:' || parsed.hostname !== '') return null
-    pathname = decodeURIComponent(parsed.pathname)
-  } catch {
-    return null
-  }
+function workspaceImageUrl(url: string, agentSlug: string, baseFilePath?: string): string | null {
+  const normalized = workspaceFilePathFromFileUrl(url)
+    ?? (baseFilePath ? workspaceFilePathFromRelativeHref(url, baseFilePath) : null)
+  if (!normalized || !IMAGE_FILE_EXTENSION.test(normalized)) return null
 
-  const prefix = '/workspace/'
-  if (!pathname.startsWith(prefix) || !IMAGE_FILE_EXTENSION.test(pathname)) return null
-
-  const parts = pathname.slice(prefix.length).split('/')
-  if (parts.length === 0 || parts.some((part) => !part || part === '.' || part === '..')) return null
-
-  const encodedPath = parts.map(encodeURIComponent).join('/')
   return (
     `${getApiBaseUrl()}/api/agents/${encodeURIComponent(agentSlug)}` +
-    `/files/${encodedPath}?inline=true`
+    `/files/${encodeWorkspaceFilePath(normalized)}?inline=true`
   )
 }
 
 /**
- * Per-message Markdown policy for embedded images. Links and ordinary images
- * retain the shared default policy. A blocked `file:` image is widened only
- * when it resolves to a verified tool-result alias or an authenticated file in
- * that agent's `/workspace`; arbitrary host/container paths stay blocked.
+ * Per-message Markdown policy for embedded images. Chat and preview
+ * rewrite workspace `file:` hrefs to `/workspace/...`.
+ * A blocked `file:` image is widened only when it resolves to a verified
+ * tool-result alias or an authenticated file in that agent's `/workspace`;
+ * arbitrary host/container paths stay blocked.
  */
 export function createMarkdownUrlTransform(context: MarkdownImageContext = {}): UrlTransform {
   return (url, key, node) => {
+    if (key === 'href' && typeof url === 'string') {
+      if (context.baseFilePath || context.agentSlug) {
+        const fromFile = workspaceFilePathFromFileUrl(url)
+        if (fromFile) return fromFile
+      }
+      if (context.baseFilePath) {
+        const resolved = workspaceFilePathFromRelativeHref(url, context.baseFilePath)
+        if (resolved) return resolved
+      }
+    }
+
     if (key === 'src' && typeof url === 'string') {
       const alias = context.aliases?.get(url)
       if (alias) return alias
 
       if (context.agentSlug) {
-        const workspaceUrl = workspaceImageUrl(url, context.agentSlug)
+        const workspaceUrl = workspaceImageUrl(url, context.agentSlug, context.baseFilePath)
         if (workspaceUrl) return workspaceUrl
       }
     }

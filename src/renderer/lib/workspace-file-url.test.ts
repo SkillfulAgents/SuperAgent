@@ -1,6 +1,5 @@
-import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { encodeWorkspaceFilePath, getAgentFileApiPath, workspaceFilePathFromHref } from './workspace-file-url'
+import { encodeWorkspaceFilePath, fallbackWorkspaceFilePath, getAgentFileApiPath, workspaceFilePathFromFileUrl, workspaceFilePathFromHref, workspaceFilePathFromRelativeHref } from './workspace-file-url'
 
 describe('workspaceFilePathFromHref', () => {
   it('returns a /workspace/ file path', () => {
@@ -16,9 +15,9 @@ describe('workspaceFilePathFromHref', () => {
     )
   })
 
-  it('falls back to the stripped path when the full destination has a navigation segment', () => {
+  it('collapses dots in the full destination, including after a query mark', () => {
     expect(workspaceFilePathFromHref('/workspace/output/report.md?/../gone')).toBe(
-      '/workspace/output/report.md',
+      '/workspace/output/gone',
     )
   })
 
@@ -35,15 +34,19 @@ describe('workspaceFilePathFromHref', () => {
     expect(workspaceFilePathFromHref('/workspace/bad%zz.md')).toBe('/workspace/bad%zz.md')
   })
 
-  it('rejects decoded dot path segments before they can be URL-normalized', () => {
+  it('collapses dots that stay in the workspace', () => {
+    expect(workspaceFilePathFromHref('/workspace/output/../report.md')).toBe('/workspace/report.md')
+    expect(workspaceFilePathFromHref('/workspace/./report.md')).toBe('/workspace/report.md')
+    expect(workspaceFilePathFromHref('/workspace/reports%2F..%2Fsecret.md')).toBe('/workspace/secret.md')
+  })
+
+  it('refuses a path that leaves /workspace after collapse', () => {
     const unsafeHrefs = [
       '/workspace/../secret.md',
-      '/workspace/./report.md',
       '/workspace/reports/../../secret.md',
       '/workspace/%2e%2e/secret.md',
       '/workspace/%2E./secret.md',
       '/workspace/.%2e/secret.md',
-      '/workspace/reports%2F..%2Fsecret.md',
       '/workspace/../../../../../../api/agents/local-agent/files/private.md',
     ]
 
@@ -62,12 +65,14 @@ describe('workspaceFilePathFromHref', () => {
     )
   })
 
-  it('rejects web, in-app, relative, and scheme hrefs', () => {
+  it('rejects web, in-app, relative, and file: hrefs', () => {
     expect(workspaceFilePathFromHref('https://example.com/x.md')).toBeNull()
     expect(workspaceFilePathFromHref('/agents/foo')).toBeNull()
     expect(workspaceFilePathFromHref('report.md')).toBeNull()
     expect(workspaceFilePathFromHref('./notes.md')).toBeNull()
-    expect(workspaceFilePathFromHref('file:///workspace/x.md')).toBeNull()
+    expect(workspaceFilePathFromHref('file:///workspace/output/report.md')).toBeNull()
+    expect(workspaceFilePathFromHref('file:///etc/passwd')).toBeNull()
+    expect(workspaceFilePathFromHref('file:///workspace/../secret.md')).toBeNull()
   })
 
   it('rejects empty, missing, and the bare /workspace/ prefix', () => {
@@ -76,6 +81,38 @@ describe('workspaceFilePathFromHref', () => {
     expect(workspaceFilePathFromHref(null)).toBeNull()
     expect(workspaceFilePathFromHref('/workspace/')).toBeNull()
     expect(workspaceFilePathFromHref('/workspace')).toBeNull()
+  })
+})
+
+describe('workspaceFilePathFromRelativeHref', () => {
+  const fromReport = '/workspace/output/report.md'
+
+  it('joins a relative name to the open file folder', () => {
+    expect(workspaceFilePathFromRelativeHref('notes.md', fromReport)).toBe(
+      '/workspace/output/notes.md',
+    )
+    expect(workspaceFilePathFromRelativeHref('./notes.md', fromReport)).toBe(
+      '/workspace/output/notes.md',
+    )
+    expect(workspaceFilePathFromRelativeHref('../readme.md', fromReport)).toBe(
+      '/workspace/readme.md',
+    )
+  })
+
+  it('keeps an absolute workspace href unchanged', () => {
+    expect(workspaceFilePathFromRelativeHref('/workspace/other/a.md', fromReport)).toBe(
+      '/workspace/other/a.md',
+    )
+  })
+
+  it('refuses a relative path that leaves /workspace', () => {
+    expect(workspaceFilePathFromRelativeHref('../../secret.md', fromReport)).toBeNull()
+  })
+
+  it('leaves fragments, schemes, and in-app routes unresolved', () => {
+    expect(workspaceFilePathFromRelativeHref('#s2', fromReport)).toBeNull()
+    expect(workspaceFilePathFromRelativeHref('https://example.com/x.md', fromReport)).toBeNull()
+    expect(workspaceFilePathFromRelativeHref('/agents/foo', fromReport)).toBeNull()
   })
 })
 
@@ -110,21 +147,26 @@ describe('workspace file URLs', () => {
     expect(getAgentFileApiPath('agent-1', '/secret.md')).toBeNull()
   })
 
-  it('matches path.posix.normalize for the delivered-file cases', () => {
-    const cases = [
-      './output/report.md',
-      'output/../report.md',
-      '/workspace/output/../report.md',
-    ]
-    for (const filePath of cases) {
-      const joined = filePath.startsWith('/workspace')
-        ? filePath
-        : path.posix.join('/workspace', filePath)
-      const relative = path.posix.relative('/workspace', path.posix.normalize(joined))
-      expect(getAgentFileApiPath('agent-1', filePath)).toBe(
-        `/api/agents/agent-1/files/${relative}`,
-      )
-    }
+  it('offers a stripped fallback only when the path still has a query or hash', () => {
+    expect(fallbackWorkspaceFilePath('/workspace/output/report.md#results')).toBe(
+      '/workspace/output/report.md',
+    )
+    expect(fallbackWorkspaceFilePath('/workspace/output/report.md?v=2')).toBe(
+      '/workspace/output/report.md',
+    )
+    expect(fallbackWorkspaceFilePath('/workspace/output/report.md')).toBeNull()
+    expect(fallbackWorkspaceFilePath('/workspace/output/Issue #12 notes.md')).toBe(
+      '/workspace/output/Issue ',
+    )
+  })
+
+  it('accepts FILE: the same way as file:', () => {
+    expect(workspaceFilePathFromFileUrl('FILE:///workspace/output/report.md')).toBe(
+      '/workspace/output/report.md',
+    )
+    expect(workspaceFilePathFromFileUrl('file:///workspace/output/report.md')).toBe(
+      '/workspace/output/report.md',
+    )
   })
 
   it('safely re-encodes a literal percent-encoded filename', () => {

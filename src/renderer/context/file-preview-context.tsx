@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useCallback, useEffect, useMemo, type ReactNode } from 'react'
 import { useRouteLocation } from '@renderer/router/use-route-location'
+import { normalizeWorkspaceFilePath } from '@renderer/lib/workspace-file-url'
 
 export interface FileTab {
   kind: 'file'
@@ -71,6 +72,7 @@ interface FilePreviewContextType {
   setFolderQuery: (rootPath: string, query: string) => void
   selectFolderEntry: (rootPath: string, entryPath: string) => void
   renameFilePath: (oldPath: string, newPath: string) => void
+  adoptFilePath: (fromPath: string, toPath: string) => void
   removeFilePath: (filePath: string) => void
   renameDirectoryPath: (oldPath: string, newPath: string) => void
   removeDirectoryPath: (directoryPath: string) => void
@@ -146,8 +148,9 @@ export function FilePreviewProvider({
     // Minted outside the updater: React may invoke an updater more than once per
     // commit, and a token that changes between passes is a different file URL.
     const version = nextFileVersion()
+    const canonicalPath = normalizeWorkspaceFilePath(filePath) ?? filePath
     setOpenTabs(prev => {
-      const existingIndex = prev.findIndex(tab => tab.kind === 'file' && tab.filePath === filePath)
+      const existingIndex = prev.findIndex(tab => tab.kind === 'file' && tab.filePath === canonicalPath)
       if (existingIndex >= 0) {
         setActiveTabIndex(existingIndex)
         setIsOpen(true)
@@ -158,9 +161,9 @@ export function FilePreviewProvider({
       }
       const newTab: FileTab = {
         kind: 'file',
-        filePath,
+        filePath: canonicalPath,
         agentSlug,
-        displayName: getDisplayName(filePath),
+        displayName: getDisplayName(canonicalPath),
         description,
         version,
         pdfPage: 1,
@@ -241,6 +244,32 @@ export function FilePreviewProvider({
       const next = new Map(prev)
       next.delete(oldPath)
       next.set(newPath, existing.map(comment => ({ ...comment, filePath: newPath })))
+      return next
+    })
+  }, [])
+
+  const adoptFilePath = useCallback((fromPath: string, toPath: string) => {
+    if (fromPath === toPath) return
+    setOpenTabs(prev => {
+      const fromIdx = prev.findIndex(tab => tab.kind === 'file' && tab.filePath === fromPath)
+      if (fromIdx < 0) return prev
+      const toIdx = prev.findIndex(tab => tab.kind === 'file' && tab.filePath === toPath)
+      if (toIdx >= 0 && toIdx !== fromIdx) {
+        setActiveTabIndex(toIdx < fromIdx ? toIdx : toIdx - 1)
+        return prev.filter((_, i) => i !== fromIdx)
+      }
+      const next = [...prev]
+      const tab = next[fromIdx] as FileTab
+      next[fromIdx] = { ...tab, filePath: toPath, displayName: getDisplayName(toPath) }
+      return next
+    })
+    setComments(prev => {
+      const moving = prev.get(fromPath)
+      if (!moving) return prev
+      const next = new Map(prev)
+      next.delete(fromPath)
+      const kept = next.get(toPath) ?? []
+      next.set(toPath, [...kept, ...moving.map(comment => ({ ...comment, filePath: toPath }))])
       return next
     })
   }, [])
@@ -432,6 +461,7 @@ export function FilePreviewProvider({
     setFolderQuery,
     selectFolderEntry,
     renameFilePath,
+    adoptFilePath,
     removeFilePath,
     renameDirectoryPath,
     removeDirectoryPath,
@@ -442,7 +472,7 @@ export function FilePreviewProvider({
     addComment,
     removeComment,
     clearComments,
-  }), [openTabs, activeTabIndex, comments, isOpen, commentsEnabled, openFile, openFolder, toggleFolder, setFolderQuery, selectFolderEntry, renameFilePath, removeFilePath, renameDirectoryPath, removeDirectoryPath, closeTab, setActiveTab, setPdfPage, close, addComment, removeComment, clearComments])
+  }), [openTabs, activeTabIndex, comments, isOpen, commentsEnabled, openFile, openFolder, toggleFolder, setFolderQuery, selectFolderEntry, renameFilePath, adoptFilePath, removeFilePath, renameDirectoryPath, removeDirectoryPath, closeTab, setActiveTab, setPdfPage, close, addComment, removeComment, clearComments])
 
   return (
     <FilePreviewContext.Provider value={value}>

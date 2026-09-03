@@ -37,8 +37,3 @@ export const tooltip = {
   TooltipTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   TooltipContent: ({ children }: { children: React.ReactNode }) => <span data-testid="tooltip-content">{children}</span>,
 }
-
-export const insufficientBalanceCard = {
-  usePlatformBillingUrl: () => null,
-  InsufficientBalanceCard: () => <div data-testid="insufficient-balance-card" />,
-}

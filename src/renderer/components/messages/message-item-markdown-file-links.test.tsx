@@ -6,13 +6,12 @@ import { createAssistantMessage } from '@renderer/test/factories'
 import { MessageItem } from './message-item'
 import { TranscriptText } from './agent-transcript'
 import { WorkflowResultCard } from './workflow-result-card'
-import { FilePreviewProbe } from './file-preview-probe'
+import { FilePreviewProbe } from '@renderer/test/file-preview-probe'
 
-vi.mock('./subagent-block', async () => (await import('./message-item-test-mocks')).subagentBlock)
-vi.mock('./tool-call-item', async () => (await import('./message-item-test-mocks')).toolCallItem)
-vi.mock('./message-context-menu', async () => (await import('./message-item-test-mocks')).messageContextMenu)
-vi.mock('@renderer/components/ui/tooltip', async () => (await import('./message-item-test-mocks')).tooltip)
-vi.mock('./insufficient-balance-card', async () => (await import('./message-item-test-mocks')).insufficientBalanceCard)
+vi.mock('./subagent-block', async () => (await import('@renderer/test/message-item-test-mocks')).subagentBlock)
+vi.mock('./tool-call-item', async () => (await import('@renderer/test/message-item-test-mocks')).toolCallItem)
+vi.mock('./message-context-menu', async () => (await import('@renderer/test/message-item-test-mocks')).messageContextMenu)
+vi.mock('@renderer/components/ui/tooltip', async () => (await import('@renderer/test/message-item-test-mocks')).tooltip)
 
 function renderChat(text: string, { streaming = false, agentSlug = 'agent-1' }: { streaming?: boolean; agentSlug?: string } = {}) {
   return renderWithProviders(

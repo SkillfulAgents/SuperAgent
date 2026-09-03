@@ -192,6 +192,7 @@ import { getActiveLlmProvider, resolveActiveProviderModel } from '@shared/lib/ll
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import { isPathWithinDir, isRealPathWithinDir, sanitizeUploadFilename } from '@shared/lib/utils/path-safety'
+import { normalizeWorkspacePath } from '@shared/lib/utils/workspace-path'
 import { AGENT_PACKAGE_EXTENSION, SKILL_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
 import { readAgentPreferences, updateAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { agentPreferencesUpdateSchema } from '@shared/lib/types/agent-preferences'
@@ -222,7 +223,7 @@ const WorkspaceBookmarkSchema = z.object({
   file: z.string().min(1).optional(),
   folder: z.string()
     .min(1)
-    .transform(folderPath => normalizeWorkspaceContainerPath(folderPath) ?? folderPath)
+    .transform(folderPath => normalizeWorkspacePath(folderPath) ?? folderPath)
     .optional(),
 }).superRefine((bookmark, ctx) => {
   const resourceCount = [bookmark.link, bookmark.file, bookmark.folder]
@@ -233,7 +234,7 @@ const WorkspaceBookmarkSchema = z.object({
       message: 'Each bookmark must have exactly one of link, file, or folder',
     })
   }
-  if (bookmark.folder && normalizeWorkspaceContainerPath(bookmark.folder) == null) {
+  if (bookmark.folder && normalizeWorkspacePath(bookmark.folder) == null) {
     ctx.addIssue({
       code: 'custom',
       path: ['folder'],
@@ -272,21 +273,13 @@ class WorkspaceFolderAccessError extends Error {
   }
 }
 
-function normalizeWorkspaceContainerPath(rawPath: string): string | null {
-  if (!rawPath.startsWith('/') || rawPath.includes('\0')) return null
-  const normalizedPath = path.posix.normalize(rawPath)
-  const normalized = normalizedPath === '/' ? normalizedPath : normalizedPath.replace(/\/+$/, '')
-  if (normalized !== '/workspace' && !normalized.startsWith('/workspace/')) return null
-  return normalized
-}
-
 function isContainerPathWithin(basePath: string, candidatePath: string): boolean {
   const relative = path.posix.relative(basePath, candidatePath)
   return relative === '' || (!relative.startsWith('../') && relative !== '..' && !path.posix.isAbsolute(relative))
 }
 
 function workspaceContainerPathToHost(workspaceDir: string, containerPath: string): string | null {
-  const normalized = normalizeWorkspaceContainerPath(containerPath)
+  const normalized = normalizeWorkspacePath(containerPath)
   if (!normalized) return null
   const relative = path.posix.relative('/workspace', normalized)
   return path.resolve(workspaceDir, ...relative.split('/').filter(Boolean))
@@ -326,8 +319,8 @@ async function resolveBookmarkedWorkspacePath(
   rawRoot: string,
   rawCurrentPath: string,
 ) {
-  const rootPath = normalizeWorkspaceContainerPath(rawRoot)
-  const currentPath = normalizeWorkspaceContainerPath(rawCurrentPath)
+  const rootPath = normalizeWorkspacePath(rawRoot)
+  const currentPath = normalizeWorkspacePath(rawCurrentPath)
   if (!rootPath || !currentPath || !isContainerPathWithin(rootPath, currentPath)) {
     throw new WorkspaceFolderAccessError('Invalid folder path', 400)
   }
@@ -338,7 +331,7 @@ async function resolveBookmarkedWorkspacePath(
   if (rootPath !== '/workspace') {
     const bookmarks = await readWorkspaceBookmarks(agentSlug)
     const isBookmarkedRoot = bookmarks.some(bookmark => (
-      bookmark.folder != null && normalizeWorkspaceContainerPath(bookmark.folder) === rootPath
+      bookmark.folder != null && normalizeWorkspacePath(bookmark.folder) === rootPath
     ))
     if (!isBookmarkedRoot) {
       throw new WorkspaceFolderAccessError('Folder bookmark not found', 404)
@@ -6229,7 +6222,7 @@ agents.get('/:id/folders', AgentRead(), async (c) => {
   // Explicit folder bookmarks are shareable with viewers. The built-in full
   // workspace browser is an owner-only surface and must not become an API-level
   // directory enumeration capability for shared users.
-  if (normalizeWorkspaceContainerPath(rawRoot) === '/workspace' && getAuthorizedAgentRole(c) !== 'owner') {
+  if (normalizeWorkspacePath(rawRoot) === '/workspace' && getAuthorizedAgentRole(c) !== 'owner') {
     return c.json({ error: 'Forbidden' }, 403)
   }
 

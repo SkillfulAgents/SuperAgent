@@ -32,9 +32,26 @@ describe('markdownUrlTransform (SUP-238)', () => {
     expect(onHref('?q=1')).toBe('?q=1')
   })
 
+  it('rewrites a workspace file: link only on chat and preview transforms', () => {
+    expect(onHref('file:///workspace/output/report.md')).toBe('')
+    expect(onHref('FILE:///workspace/output/report.md')).toBe('')
+    const chat = createMarkdownUrlTransform({ agentSlug: 'agent-1' })
+    expect(chat('file:///workspace/output/report.md', 'href', node)).toBe(
+      '/workspace/output/report.md',
+    )
+    expect(chat('FILE:///workspace/output/report.md', 'href', node)).toBe(
+      '/workspace/output/report.md',
+    )
+    const preview = createMarkdownUrlTransform({ baseFilePath: '/workspace/output/notes.md' })
+    expect(preview('file:///workspace/output/report.md', 'href', node)).toBe(
+      '/workspace/output/report.md',
+    )
+  })
+
   it('still blanks dangerous / unknown schemes exactly as the default does', () => {
     expect(onHref('javascript:alert(1)')).toBe('')
     expect(onHref('file:///etc/passwd')).toBe('')
+    expect(onHref('file:///workspace/../secret.md')).toBe('')
     expect(onHref('data:text/html,<script>alert(1)</script>')).toBe('')
     expect(onHref('vbscript:msgbox(1)')).toBe('')
     expect(onHref('myapp://do-something')).toBe('')
@@ -68,6 +85,28 @@ describe('markdownUrlTransform (SUP-238)', () => {
     expect(transform('file:///workspace/reports/chart 1.png', 'src', node)).toBe(
       '/api/agents/my%20agent/files/reports/chart%201.png?inline=true'
     )
+  })
+
+  it('resolves a relative href only when a preview base file is set', () => {
+    const preview = createMarkdownUrlTransform({ baseFilePath: '/workspace/output/report.md' })
+    expect(preview('notes.md', 'href', node)).toBe('/workspace/output/notes.md')
+    expect(onHref('notes.md')).toBe('notes.md')
+  })
+
+  it('routes a relative preview image through the authenticated file endpoint', () => {
+    const preview = createMarkdownUrlTransform({
+      agentSlug: 'agent-1',
+      baseFilePath: '/workspace/output/report.md',
+    })
+    expect(preview('chart.png', 'src', node)).toBe(
+      '/api/agents/agent-1/files/output/chart.png?inline=true',
+    )
+    expect(preview('../hero.png', 'src', node)).toBe(
+      '/api/agents/agent-1/files/hero.png?inline=true',
+    )
+    expect(preview('../../secret.png', 'src', node)).toBe('../../secret.png')
+    const chat = createMarkdownUrlTransform({ agentSlug: 'agent-1' })
+    expect(chat('chart.png', 'src', node)).toBe('chart.png')
   })
 
   it('does not widen traversals, non-images, or file URLs outside the workspace', () => {

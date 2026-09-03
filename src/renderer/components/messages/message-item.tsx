@@ -215,7 +215,10 @@ export const MarkdownBlock = memo(function MarkdownBlock({ text, embeddedImageAl
     () => createMarkdownUrlTransform({ aliases: embeddedImageAliases, agentSlug }),
     [embeddedImageAliases, agentSlug]
   )
-  const components = agentSlug ? markdownComponentsForAgent(agentSlug) : MARKDOWN_COMPONENTS
+  const components = useMemo(
+    () => (agentSlug ? markdownComponentsForAgent(agentSlug) : MARKDOWN_COMPONENTS),
+    [agentSlug],
+  )
   return (
     <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={components} urlTransform={urlTransform}>
       {text}
@@ -401,7 +404,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
           <div className={cn('w-full space-y-2', workDetailClassName)}>
             {thinking.map((t, i) => (
               <MessageErrorBoundary key={i} kind="thinking block" raw={t} itemId={`${message.id}-thinking-${i}`}>
-                <ThinkingBlockItem text={t.text} durationMs={t.durationMs} active={false} />
+                <ThinkingBlockItem text={t.text} durationMs={t.durationMs} active={false} agentSlug={agentSlug} />
               </MessageErrorBoundary>
             ))}
           </div>

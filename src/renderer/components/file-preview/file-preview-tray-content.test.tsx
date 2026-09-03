@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { FilePreviewTrayContent } from './file-preview-tray-content'
 import type { PreviewTab } from '@renderer/context/file-preview-context'
 
-const mocks = vi.hoisted((): { openTabs: PreviewTab[] } => ({
+const mocks = vi.hoisted((): { openTabs: PreviewTab[]; adoptFilePath: ReturnType<typeof vi.fn> } => ({
   openTabs: [{
     kind: 'file' as const,
     filePath: '/workspace/report.md',
@@ -14,6 +14,7 @@ const mocks = vi.hoisted((): { openTabs: PreviewTab[] } => ({
     version: 0,
     pdfPage: 1,
   }],
+  adoptFilePath: vi.fn(),
 }))
 
 vi.mock('@renderer/context/file-preview-context', () => ({
@@ -25,17 +26,22 @@ vi.mock('@renderer/context/file-preview-context', () => ({
     closeTab: vi.fn(),
     comments: new Map(),
     commentsEnabled: true,
+    adoptFilePath: mocks.adoptFilePath,
   }),
 }))
 
 vi.mock('./file-tab-bar', () => ({ FileTabBar: () => null }))
-vi.mock('./renderers/file-renderer', () => ({ FileRenderer: () => <div data-testid="file-renderer" /> }))
+vi.mock('./renderers/file-renderer', () => ({
+  FileRenderer: ({ filePath }: { filePath: string }) => (
+    <div data-testid="file-renderer">{filePath}</div>
+  ),
+}))
 vi.mock('./folder-browser', () => ({ FolderBrowser: () => <div data-testid="folder-browser" /> }))
 vi.mock('./comments/comment-bar', () => ({ CommentBar: () => <div data-testid="comment-bar" /> }))
 
 function renderTray(onClose = vi.fn()) {
   return render(
-    <QueryClientProvider client={new QueryClient()}>
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
       <FilePreviewTrayContent sessionId="test-session" onClose={onClose} />
     </QueryClientProvider>,
   )
@@ -43,6 +49,7 @@ function renderTray(onClose = vi.fn()) {
 
 describe('FilePreviewTrayContent', () => {
   beforeEach(() => {
+    mocks.adoptFilePath.mockReset()
     mocks.openTabs = [{
       kind: 'file',
       filePath: '/workspace/report.md',
@@ -51,6 +58,10 @@ describe('FilePreviewTrayContent', () => {
       version: 0,
       pdfPage: 1,
     }]
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
   })
 
   it('exposes container-responsive close controls on opposite sides', () => {
@@ -103,5 +114,41 @@ describe('FilePreviewTrayContent', () => {
 
     expect(screen.queryByTestId('file-preview-copy')).not.toBeInTheDocument()
     expect(screen.getByTitle('Download file')).toBeInTheDocument()
+  })
+
+  it('explains when the path cannot be opened', () => {
+    mocks.openTabs = [{
+      kind: 'file',
+      filePath: '/workspace/../secret.md',
+      agentSlug: 'test-agent',
+      displayName: 'secret.md',
+      version: 0,
+      pdfPage: 1,
+    }]
+    renderTray()
+
+    expect(screen.getByText("Couldn't open this file")).toBeInTheDocument()
+    expect(screen.queryByTestId('file-renderer')).not.toBeInTheDocument()
+  })
+
+  it('loads the stripped path after a heading-jump miss', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 404 })))
+    mocks.openTabs = [{
+      kind: 'file',
+      filePath: '/workspace/output/report.md#results',
+      agentSlug: 'test-agent',
+      displayName: 'report.md#results',
+      version: 0,
+      pdfPage: 1,
+    }]
+    renderTray()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('file-renderer')).toHaveTextContent('/workspace/output/report.md')
+    })
+    expect(mocks.adoptFilePath).toHaveBeenCalledWith(
+      '/workspace/output/report.md#results',
+      '/workspace/output/report.md',
+    )
   })
 })

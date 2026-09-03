@@ -1,8 +1,9 @@
 import { Loader2, AlertCircle } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
-import { useRef } from 'react'
+import { createMarkdownUrlTransform } from '@renderer/lib/markdown-url-transform'
+import { markdownLinkComponents } from '@renderer/components/messages/markdown-file-link'
+import { useMemo, useRef } from 'react'
 import { useTextSelection } from '../comments/use-text-selection'
 import { CommentOverlay } from '../comments/comment-overlay'
 import { useFileContent } from './use-file-content'
@@ -10,12 +11,17 @@ import { useFileContent } from './use-file-content'
 interface MarkdownRendererProps {
   url: string
   filePath: string
+  agentSlug?: string
   commentsEnabled?: boolean
 }
 
-export function MarkdownRenderer({ url, filePath, commentsEnabled = true }: MarkdownRendererProps) {
+export function MarkdownRenderer({ url, filePath, agentSlug, commentsEnabled = true }: MarkdownRendererProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const { selection, clearSelection } = useTextSelection(containerRef, commentsEnabled)
+  const urlTransform = useMemo(
+    () => createMarkdownUrlTransform({ baseFilePath: filePath, agentSlug }),
+    [filePath, agentSlug],
+  )
 
   // Shares the ['file-content', url] cache with the text/CSV renderers, so all
   // consumers of that key must agree on the cached shape (see use-file-content).
@@ -40,7 +46,7 @@ export function MarkdownRenderer({ url, filePath, commentsEnabled = true }: Mark
         >
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
-            urlTransform={markdownUrlTransform}
+            urlTransform={urlTransform}
             components={{
               // `prose` colours a code block for its own dark `pre` background
               // (--tw-prose-pre-code is gray-200). This one is a light tinted
@@ -72,11 +78,7 @@ export function MarkdownRenderer({ url, filePath, commentsEnabled = true }: Mark
               td: ({ children }) => (
                 <td className="border-b border-border px-3 py-1.5">{children}</td>
               ),
-              a: ({ href, children }) => (
-                <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">
-                  {children}
-                </a>
-              ),
+              ...markdownLinkComponents(agentSlug),
             }}
           >
             {content || ''}

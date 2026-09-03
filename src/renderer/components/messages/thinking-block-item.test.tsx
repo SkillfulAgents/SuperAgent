@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
+import { renderWithProviders } from '@renderer/test/test-utils'
+import { FilePreviewProbe } from '@renderer/test/file-preview-probe'
 import { ThinkingBlockItem } from './thinking-block-item'
 
 describe('ThinkingBlockItem Markdown', () => {
@@ -47,5 +49,24 @@ describe('ThinkingBlockItem Markdown', () => {
     // role, so inspect the rendered element directly.
     expect(screen.getByText('Bad').closest('a')).toHaveAttribute('href', '')
     expect(screen.getByRole('link', { name: 'Docs' })).toHaveAttribute('target', '_blank')
+  })
+
+  it('opens a /workspace/ link from reasoning text in the preview tray', () => {
+    renderWithProviders(
+      <>
+        <FilePreviewProbe />
+        <ThinkingBlockItem
+          active
+          agentSlug="agent-1"
+          text="I should check [the report](/workspace/output/report.md) before answering."
+        />
+      </>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'the report' }))
+
+    expect(screen.getByTestId('file-preview-probe').textContent).toBe(
+      '/workspace/output/report.md|agent-1',
+    )
   })
 })

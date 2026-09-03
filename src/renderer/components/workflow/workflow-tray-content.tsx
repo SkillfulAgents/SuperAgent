@@ -1,13 +1,38 @@
 import { useEffect, useMemo } from 'react'
 import { Workflow as WorkflowIcon, PanelRightClose, ChevronDown, ChevronRight } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { cn } from '@shared/lib/utils/cn'
 import { useWorkflow } from '@renderer/context/workflow-context'
 import { useMessageStream, type WorkflowAgentLive } from '@renderer/hooks/use-message-stream'
 import { useWorkflowTree, useWorkflowAgentMessages } from '@renderer/hooks/use-messages'
 import { StatusIndicator } from '@renderer/components/messages/tool-call-item'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
+import { markdownLinkComponents } from '@renderer/components/messages/markdown-file-link'
+import { TranscriptText } from '@renderer/components/messages/agent-transcript'
+import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
 import { WorkflowAgentTranscript } from './workflow-agent-transcript'
 import type { WorkflowAgentNode } from '@shared/lib/workflows/workflow-schemas'
+
+/** One-line result preview: same /workspace/ routing as chat, no block prose. */
+function InlineResultMarkdown({ text, agentSlug }: { text: string; agentSlug: string }) {
+  const components = useMemo(
+    () => markdownLinkComponents(agentSlug),
+    [agentSlug],
+  )
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={components}
+      urlTransform={markdownUrlTransform}
+      allowedElements={['a', 'em', 'strong', 'code', 'del']}
+      unwrapDisallowed
+    >
+      {text}
+    </ReactMarkdown>
+  )
+}
+
 
 function formatTokens(tokens: number): string {
   if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`
@@ -321,40 +346,52 @@ function WorkflowAgentRow({
 
   return (
     <div className="border border-border/70 rounded-md overflow-hidden">
-      <button
-        onClick={onToggle}
+      {/* Split expand vs result link so /workspace/ buttons are not nested in the row button. */}
+      <div
         className={cn(
           'flex w-full items-center gap-2 px-2 py-1.5 group hover:bg-muted/50 transition-colors',
           expanded && 'bg-muted/50'
         )}
       >
-        <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-          <StatusIndicator status={indicatorStatus} />
-        </span>
-        {/* shrink-0 + cap: a long result/tool string must truncate itself, not crush the label to zero width */}
-        <span className="text-xs text-foreground/80 truncate shrink-0 max-w-[70%]">{agent.label}</span>
-        {/* While running, show the current tool (live from the wire). */}
-        {isRunning && agent.lastTool && (
-          <>
-            <span aria-hidden className="shrink-0 text-foreground/40 text-xs leading-none">→</span>
-            <span className="text-[11px] text-muted-foreground/70 truncate min-w-0 font-mono">{agent.lastTool}</span>
-          </>
-        )}
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={expanded}
+          className="flex shrink-0 items-center gap-2 text-left"
+        >
+          <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+            <StatusIndicator status={indicatorStatus} />
+          </span>
+          <span className="text-xs text-foreground/80 truncate max-w-[8rem]">{agent.label}</span>
+          {/* While running, show the current tool (live from the wire). */}
+          {isRunning && agent.lastTool && (
+            <>
+              <span aria-hidden className="shrink-0 text-foreground/40 text-xs leading-none">→</span>
+              <span className="text-[11px] text-muted-foreground/70 truncate min-w-0 font-mono">{agent.lastTool}</span>
+            </>
+          )}
+        </button>
         {/* Terminal agents show their return value — or, for failed ones, the error. */}
         {(agent.status === 'done' || agent.status === 'failed') && agent.result && (
-          <span
+          <div
             className={cn(
-              'text-[11px] truncate min-w-0',
+              'min-w-0 flex-1 truncate text-[11px]',
               agent.status === 'failed' ? 'text-destructive/80' : 'text-muted-foreground/80'
             )}
           >
-            {agent.result}
-          </span>
+            <InlineResultMarkdown text={agent.result} agentSlug={agentSlug} />
+          </div>
         )}
-        <span className="ml-auto shrink-0 text-muted-foreground/60">
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={expanded}
+          aria-label={expanded ? 'Collapse agent' : 'Expand agent'}
+          className="ml-auto shrink-0 text-muted-foreground/60"
+        >
           {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-        </span>
-      </button>
+        </button>
+      </div>
       {expanded && (
         <div className="border-t border-border/70 bg-muted/40 px-3 py-3 space-y-3">
           {agent.prompt && (
@@ -369,9 +406,9 @@ function WorkflowAgentRow({
               <span className="font-medium text-foreground/70">
                 {agent.status === 'failed' ? 'Error: ' : 'Result: '}
               </span>
-              <span className={agent.status === 'failed' ? 'text-destructive' : 'text-muted-foreground'}>
-                {agent.result}
-              </span>
+              <div className={agent.status === 'failed' ? 'text-destructive' : 'text-muted-foreground'}>
+                <TranscriptText agentSlug={agentSlug}>{agent.result}</TranscriptText>
+              </div>
             </div>
           )}
           <WorkflowAgentTranscript messages={messages.data} agentSlug={agentSlug} isRunning={isRunning} />

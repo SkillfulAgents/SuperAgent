@@ -8,7 +8,7 @@ import { MessageList } from './message-list'
 import { TranscriptNotFoundError } from '@renderer/hooks/use-messages'
 import { useDraft } from '@renderer/context/drafts-context'
 import { renderWithProviders } from '@renderer/test/test-utils'
-import { FilePreviewProbe } from './file-preview-probe'
+import { FilePreviewProbe } from '@renderer/test/file-preview-probe'
 import { createUserMessage, createAssistantMessage, createToolCall, createCompactBoundary } from '@renderer/test/factories'
 import type { ApiMessageOrBoundary } from '@shared/lib/types/api'
 
