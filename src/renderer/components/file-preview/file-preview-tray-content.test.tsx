@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import type { ReactNode } from 'react'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { FilePreviewTrayContent } from './file-preview-tray-content'
 import type { PreviewTab } from '@renderer/context/file-preview-context'
@@ -28,7 +29,9 @@ vi.mock('@renderer/context/file-preview-context', () => ({
   }),
 }))
 
-vi.mock('./file-tab-bar', () => ({ FileTabBar: () => null }))
+vi.mock('@renderer/hooks/use-file-size', () => ({ useFileSize: () => ({ data: 12_800 }) }))
+// The drawer's close controls ride in the tab bar's trailing slot; render just that.
+vi.mock('./file-tab-bar', () => ({ FileTabBar: ({ trailing }: { trailing?: ReactNode }) => <div>{trailing}</div> }))
 vi.mock('./renderers/file-renderer', () => ({ FileRenderer: () => <div data-testid="file-renderer" /> }))
 vi.mock('./folder-browser', () => ({ FolderBrowser: () => <div data-testid="folder-browser" /> }))
 vi.mock('./comments/comment-bar', () => ({ CommentBar: () => <div data-testid="comment-bar" /> }))
@@ -53,7 +56,16 @@ describe('FilePreviewTrayContent', () => {
     }]
   })
 
-  it('exposes container-responsive close controls on opposite sides', () => {
+  it('shows the filename with its size, and the file actions, in the title row', () => {
+    renderTray()
+    const title = screen.getByTestId('file-preview-title')
+    expect(title).toHaveTextContent('report.md')
+    expect(screen.getByTestId('file-preview-size')).toHaveTextContent('12.5 KB')
+    expect(title.querySelector('[aria-label="Download file"]')).not.toBeNull()
+    expect(screen.getByTestId('file-preview-header').querySelector('[aria-label="Download file"]')).toBeNull()
+  })
+
+  it('exposes container-responsive close controls after the tabs', () => {
     const onClose = vi.fn()
     renderTray(onClose)
 
@@ -79,7 +91,7 @@ describe('FilePreviewTrayContent', () => {
     renderTray()
 
     expect(screen.getByTestId('folder-browser')).toBeVisible()
-    expect(screen.queryByTitle('Download file')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Download file')).not.toBeInTheDocument()
     expect(screen.queryByTestId('file-preview-copy')).not.toBeInTheDocument()
     expect(screen.queryByTestId('comment-bar')).not.toBeInTheDocument()
   })
@@ -102,6 +114,6 @@ describe('FilePreviewTrayContent', () => {
     renderTray()
 
     expect(screen.queryByTestId('file-preview-copy')).not.toBeInTheDocument()
-    expect(screen.getByTitle('Download file')).toBeInTheDocument()
+    expect(screen.getByLabelText('Download file')).toBeInTheDocument()
   })
 })
