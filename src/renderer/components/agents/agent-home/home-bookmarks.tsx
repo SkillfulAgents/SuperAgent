@@ -114,7 +114,7 @@ function BookmarkRow({
       title={`Preview ${getPathName(bookmark.file)}`}
       aria-label={bookmark.name}
     >
-      <FileTypeIcon filename={getPathName(bookmark.file)} size={16} />
+      <FileTypeIcon filename={getPathName(bookmark.file)} size="md" />
       <span className="text-xs font-medium truncate">{bookmark.name}</span>
       <PanelRightOpen className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity ml-auto" />
     </button>
