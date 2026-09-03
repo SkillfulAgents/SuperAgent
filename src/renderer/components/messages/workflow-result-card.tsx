@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import { CheckCircle2 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -25,6 +26,7 @@ export function WorkflowResultCard({
 }) {
   const { openWorkflow } = useWorkflow()
   const runId = notification.runId
+  const components = useMemo(() => markdownLinkComponents(agentSlug), [agentSlug])
 
   const header = (
     <>
@@ -53,7 +55,7 @@ export function WorkflowResultCard({
       <div className="px-3 py-2 prose prose-sm max-w-none min-w-0 break-words dark:prose-invert prose-strong:font-medium">
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
-          components={markdownLinkComponents(agentSlug)}
+          components={components}
           urlTransform={markdownUrlTransform}
         >
           {notification.result}

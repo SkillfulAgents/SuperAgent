@@ -42,6 +42,23 @@ function MarkdownAnchor({
   )
 }
 
+function WorkspaceFileLink({
+  children,
+  filePath,
+  agentSlug,
+}: {
+  children?: ReactNode
+  filePath: string
+  agentSlug: string
+}) {
+  const { openFile } = useFilePreview()
+  return (
+    <MarkdownAnchor onActivate={() => openFile(filePath, agentSlug)}>
+      {children}
+    </MarkdownAnchor>
+  )
+}
+
 function MarkdownFileLink({
   children,
   href,
@@ -51,13 +68,12 @@ function MarkdownFileLink({
   href?: string
   agentSlug: string
 }) {
-  const { openFile } = useFilePreview()
   const filePath = workspaceFilePathFromHref(href)
   if (filePath) {
     return (
-      <MarkdownAnchor onActivate={() => openFile(filePath, agentSlug)}>
+      <WorkspaceFileLink filePath={filePath} agentSlug={agentSlug}>
         {children}
-      </MarkdownAnchor>
+      </WorkspaceFileLink>
     )
   }
   return <MarkdownAnchor href={href}>{children}</MarkdownAnchor>

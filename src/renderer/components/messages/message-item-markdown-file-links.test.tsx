@@ -1,58 +1,23 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { screen, cleanup, fireEvent } from '@testing-library/react'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { createAssistantMessage } from '@renderer/test/factories'
-import { useFilePreview } from '@renderer/context/file-preview-context'
 import { MessageItem } from './message-item'
 import { TranscriptText } from './agent-transcript'
 import { WorkflowResultCard } from './workflow-result-card'
+import { FilePreviewProbe } from './file-preview-probe'
 
-vi.mock('./subagent-block', () => ({
-  SubAgentBlock: ({ toolCall }: { toolCall: { name: string } }) => (
-    <div data-testid="subagent-block">{toolCall.name}</div>
-  ),
-}))
-
-vi.mock('./tool-call-item', () => ({
-  ToolCallItem: ({ toolCall }: { toolCall: { name: string } }) => (
-    <div data-testid={`tool-call-${toolCall.name}`}>{toolCall.name}</div>
-  ),
-  StreamingToolCallItem: ({ name }: { name: string }) => (
-    <div data-testid="streaming-tool-call">{name}</div>
-  ),
-}))
-
-vi.mock('./message-context-menu', () => ({
-  MessageContextMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}))
-
-vi.mock('@renderer/components/ui/tooltip', () => ({
-  TooltipProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  TooltipTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  TooltipContent: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
-}))
-
-vi.mock('./insufficient-balance-card', () => ({
-  usePlatformBillingUrl: () => null,
-  InsufficientBalanceCard: () => <div data-testid="insufficient-balance-card" />,
-}))
-
-function PreviewProbe() {
-  const { isOpen, openTabs } = useFilePreview()
-  const active = openTabs[0]
-  return (
-    <div data-testid="preview-probe">
-      {isOpen && active?.kind === 'file' ? `${active.filePath}|${active.agentSlug}` : 'closed'}
-    </div>
-  )
-}
+vi.mock('./subagent-block', async () => (await import('./message-item-test-mocks')).subagentBlock)
+vi.mock('./tool-call-item', async () => (await import('./message-item-test-mocks')).toolCallItem)
+vi.mock('./message-context-menu', async () => (await import('./message-item-test-mocks')).messageContextMenu)
+vi.mock('@renderer/components/ui/tooltip', async () => (await import('./message-item-test-mocks')).tooltip)
+vi.mock('./insufficient-balance-card', async () => (await import('./message-item-test-mocks')).insufficientBalanceCard)
 
 function renderChat(text: string, { streaming = false, agentSlug = 'agent-1' }: { streaming?: boolean; agentSlug?: string } = {}) {
   return renderWithProviders(
     <>
-      <PreviewProbe />
+      <FilePreviewProbe />
       <MessageItem
         message={createAssistantMessage({ content: { text } })}
         agentSlug={agentSlug}
@@ -71,7 +36,7 @@ describe('chat workspace file links', () => {
     const link = screen.getByRole('button', { name: 'the report' })
     fireEvent.click(link)
 
-    expect(screen.getByTestId('preview-probe').textContent).toBe(
+    expect(screen.getByTestId('file-preview-probe').textContent).toBe(
       '/workspace/output/report.md|agent-1',
     )
   })
@@ -81,7 +46,7 @@ describe('chat workspace file links', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'the report' }))
 
-    expect(screen.getByTestId('preview-probe').textContent).toBe(
+    expect(screen.getByTestId('file-preview-probe').textContent).toBe(
       '/workspace/output/report.md|agent-1',
     )
   })
@@ -91,7 +56,7 @@ describe('chat workspace file links', () => {
 
     fireEvent.click(screen.getByText('the report'))
 
-    expect(screen.getByTestId('preview-probe').textContent).toBe(
+    expect(screen.getByTestId('file-preview-probe').textContent).toBe(
       '/workspace/my report.md|agent-1',
     )
   })
@@ -103,13 +68,13 @@ describe('chat workspace file links', () => {
     expect(link.getAttribute('href')).toBe('https://example.com/x.md')
     fireEvent.click(link)
 
-    expect(screen.getByTestId('preview-probe').textContent).toBe('closed')
+    expect(screen.getByTestId('file-preview-probe').textContent).toBe('closed')
   })
 
   it('leaves workspace links as normal links when the agent is unknown', () => {
     renderWithProviders(
       <>
-        <PreviewProbe />
+        <FilePreviewProbe />
         <MessageItem
           message={createAssistantMessage({
             content: { text: 'See [the report](/workspace/output/report.md)' },
@@ -122,20 +87,20 @@ describe('chat workspace file links', () => {
     expect(link.getAttribute('href')).toBe('/workspace/output/report.md')
     fireEvent.click(link)
 
-    expect(screen.getByTestId('preview-probe').textContent).toBe('closed')
+    expect(screen.getByTestId('file-preview-probe').textContent).toBe('closed')
   })
 
   it('opens a /workspace/ link from a subagent transcript', () => {
     renderWithProviders(
       <>
-        <PreviewProbe />
+        <FilePreviewProbe />
         <TranscriptText agentSlug="agent-1">See [the report](/workspace/output/report.md)</TranscriptText>
       </>,
     )
 
     fireEvent.click(screen.getByText('the report'))
 
-    expect(screen.getByTestId('preview-probe').textContent).toBe(
+    expect(screen.getByTestId('file-preview-probe').textContent).toBe(
       '/workspace/output/report.md|agent-1',
     )
   })
@@ -143,7 +108,7 @@ describe('chat workspace file links', () => {
   it('opens a /workspace/ link from a workflow result card', () => {
     renderWithProviders(
       <>
-        <PreviewProbe />
+        <FilePreviewProbe />
         <WorkflowResultCard
           agentSlug="agent-1"
           notification={{ result: 'See [the report](/workspace/output/report.md)' }}
@@ -153,8 +118,25 @@ describe('chat workspace file links', () => {
 
     fireEvent.click(screen.getByText('the report'))
 
-    expect(screen.getByTestId('preview-probe').textContent).toBe(
+    expect(screen.getByTestId('file-preview-probe').textContent).toBe(
       '/workspace/output/report.md|agent-1',
     )
+  })
+
+  it('shows a workflow result card when the assistant text is only a notification', () => {
+    renderWithProviders(
+      <MessageItem
+        message={createAssistantMessage({
+          content: {
+            text: '<task-notification>{"result":"Audit done","title":"Audit"}</task-notification>',
+          },
+        })}
+        agentSlug="agent-1"
+      />,
+    )
+
+    expect(screen.getByText('Workflow completed')).toBeInTheDocument()
+    expect(screen.getByText('Audit done')).toBeInTheDocument()
+    expect(screen.getByText('Audit')).toBeInTheDocument()
   })
 })

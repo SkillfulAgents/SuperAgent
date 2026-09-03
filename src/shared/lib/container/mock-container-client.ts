@@ -2088,8 +2088,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       'Task scheduled successfully. ID: task_123',
       'I\'ve scheduled the daily issue summary task.'
     )],
-    // Wide, many-column markdown table to exercise table breakout (SUP-319).
-    // Longer 'link *' triggers first: substring match is first-hit.
+    // Chat file-link e2e fixtures. Each trigger is a distinct phrase.
     ['link long file', new SimpleTextResponseScenario(
       `See [${'a'.repeat(240)}](/workspace/output/report.md).`
     )],

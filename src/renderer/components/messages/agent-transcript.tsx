@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
@@ -37,11 +38,12 @@ export function flattenAssistantMessages(messages: ApiMessageOrBoundary[] | unde
 
 /** A markdown text block styled for a transcript (prose, xs). */
 export function TranscriptText({ children, agentSlug }: { children: string; agentSlug?: string }) {
+  const components = useMemo(() => markdownLinkComponents(agentSlug), [agentSlug])
   return (
     <div className="prose prose-sm max-w-none break-words dark:prose-invert text-xs">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        components={markdownLinkComponents(agentSlug)}
+        components={components}
         urlTransform={markdownUrlTransform}
       >
         {children}

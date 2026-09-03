@@ -7,8 +7,8 @@ import { MessageList } from './message-list'
 // instanceof check sees.
 import { TranscriptNotFoundError } from '@renderer/hooks/use-messages'
 import { useDraft } from '@renderer/context/drafts-context'
-import { useFilePreview } from '@renderer/context/file-preview-context'
 import { renderWithProviders } from '@renderer/test/test-utils'
+import { FilePreviewProbe } from './file-preview-probe'
 import { createUserMessage, createAssistantMessage, createToolCall, createCompactBoundary } from '@renderer/test/factories'
 import type { ApiMessageOrBoundary } from '@shared/lib/types/api'
 
@@ -154,18 +154,6 @@ vi.mock('@renderer/components/ui/tooltip', () => ({
   TooltipTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   TooltipContent: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
 }))
-
-function FilePreviewProbe() {
-  const { isOpen, openTabs, activeTabIndex } = useFilePreview()
-  const active = openTabs[activeTabIndex]
-  return (
-    <div data-testid="file-preview-probe">
-      {isOpen && active?.kind === 'file'
-        ? `${active.filePath}|${active.agentSlug}`
-        : 'closed'}
-    </div>
-  )
-}
 
 describe('MessageList', () => {
   beforeEach(() => {

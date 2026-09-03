@@ -1,3 +1,4 @@
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { encodeWorkspaceFilePath, getAgentFileApiPath, workspaceFilePathFromHref } from './workspace-file-url'
 
@@ -6,11 +7,17 @@ describe('workspaceFilePathFromHref', () => {
     expect(workspaceFilePathFromHref('/workspace/output/report.md')).toBe('/workspace/output/report.md')
   })
 
-  it('strips a hash fragment and a query string', () => {
-    expect(workspaceFilePathFromHref('/workspace/output/report.md#section')).toBe(
-      '/workspace/output/report.md',
+  it('keeps a literal hash or query in the filename', () => {
+    expect(workspaceFilePathFromHref('/workspace/output/Issue #12 notes.md')).toBe(
+      '/workspace/output/Issue #12 notes.md',
     )
     expect(workspaceFilePathFromHref('/workspace/output/report.md?v=2')).toBe(
+      '/workspace/output/report.md?v=2',
+    )
+  })
+
+  it('falls back to the stripped path when the full destination has a navigation segment', () => {
+    expect(workspaceFilePathFromHref('/workspace/output/report.md?/../gone')).toBe(
       '/workspace/output/report.md',
     )
   })
@@ -23,8 +30,9 @@ describe('workspaceFilePathFromHref', () => {
     )
   })
 
-  it('rejects a malformed percent-escape', () => {
-    expect(workspaceFilePathFromHref('/workspace/bad%zz.md')).toBeNull()
+  it('keeps the raw name when a percent-escape is malformed', () => {
+    expect(workspaceFilePathFromHref('/workspace/90%done.md')).toBe('/workspace/90%done.md')
+    expect(workspaceFilePathFromHref('/workspace/bad%zz.md')).toBe('/workspace/bad%zz.md')
   })
 
   it('rejects decoded dot path segments before they can be URL-normalized', () => {
@@ -84,9 +92,39 @@ describe('workspace file URLs', () => {
     )
   })
 
-  it('rejects dot segments even when the caller bypasses markdown parsing', () => {
+  it('normalizes delivered dotted paths that stay in the workspace', () => {
+    expect(getAgentFileApiPath('agent-1', './output/report.md')).toBe(
+      '/api/agents/agent-1/files/output/report.md',
+    )
+    expect(getAgentFileApiPath('agent-1', 'output/../report.md')).toBe(
+      '/api/agents/agent-1/files/report.md',
+    )
+    expect(getAgentFileApiPath('agent-1', '/workspace/output/../report.md')).toBe(
+      '/api/agents/agent-1/files/report.md',
+    )
+  })
+
+  it('rejects a path that escapes /workspace/ after normalize', () => {
     expect(getAgentFileApiPath('agent-1', '/workspace/../secret.md')).toBeNull()
     expect(getAgentFileApiPath('agent-1', 'reports/../../secret.md')).toBeNull()
+    expect(getAgentFileApiPath('agent-1', '/secret.md')).toBeNull()
+  })
+
+  it('matches path.posix.normalize for the delivered-file cases', () => {
+    const cases = [
+      './output/report.md',
+      'output/../report.md',
+      '/workspace/output/../report.md',
+    ]
+    for (const filePath of cases) {
+      const joined = filePath.startsWith('/workspace')
+        ? filePath
+        : path.posix.join('/workspace', filePath)
+      const relative = path.posix.relative('/workspace', path.posix.normalize(joined))
+      expect(getAgentFileApiPath('agent-1', filePath)).toBe(
+        `/api/agents/agent-1/files/${relative}`,
+      )
+    }
   })
 
   it('safely re-encodes a literal percent-encoded filename', () => {

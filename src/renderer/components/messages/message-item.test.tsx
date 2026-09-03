@@ -5,48 +5,11 @@ import { MessageItem } from './message-item'
 import { parsePlatformErrorResponse } from '@shared/lib/llm-provider/platform-error-presentation'
 import { createUserMessage, createAssistantMessage, createToolCall } from '@renderer/test/factories'
 
-// Mock SubAgentBlock and ToolCallItem to isolate MessageItem
-vi.mock('./subagent-block', () => ({
-  SubAgentBlock: ({
-    toolCall,
-    activeSubagent,
-    isCompleted,
-  }: {
-    toolCall: { name: string }
-    activeSubagent?: { parentToolId: string } | null
-    isCompleted?: boolean
-  }) => (
-    <div
-      data-testid="subagent-block"
-      data-active-parent={activeSubagent?.parentToolId ?? ''}
-      data-completed={String(!!isCompleted)}
-    >
-      {toolCall.name}
-    </div>
-  ),
-}))
-
-vi.mock('./tool-call-item', () => ({
-  ToolCallItem: ({ toolCall }: { toolCall: { name: string } }) => (
-    <div data-testid={`tool-call-${toolCall.name}`}>{toolCall.name}</div>
-  ),
-  StreamingToolCallItem: ({ name }: { name: string }) => (
-    <div data-testid="streaming-tool-call">{name}</div>
-  ),
-}))
-
-// Mock MessageContextMenu to just render children
-vi.mock('./message-context-menu', () => ({
-  MessageContextMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}))
-
-// Mock tooltip to render inline (avoids Radix portal issues in tests)
-vi.mock('@renderer/components/ui/tooltip', () => ({
-  TooltipProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  TooltipTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  TooltipContent: ({ children }: { children: React.ReactNode }) => <span data-testid="tooltip-content">{children}</span>,
-}))
+vi.mock('./subagent-block', async () => (await import('./message-item-test-mocks')).subagentBlock)
+vi.mock('./tool-call-item', async () => (await import('./message-item-test-mocks')).toolCallItem)
+vi.mock('./message-context-menu', async () => (await import('./message-item-test-mocks')).messageContextMenu)
+vi.mock('@renderer/components/ui/tooltip', async () => (await import('./message-item-test-mocks')).tooltip)
+vi.mock('./insufficient-balance-card', async () => (await import('./message-item-test-mocks')).insufficientBalanceCard)
 
 const platformAuth = {
   connected: false as boolean,

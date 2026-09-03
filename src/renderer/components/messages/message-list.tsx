@@ -1291,7 +1291,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
               }}
               agentSlug={agentSlug}
               isStreaming={isStreaming}
-              agentSlug={agentSlug}
               sessionId={sessionId}
               embeddedImageAliases={embeddedImageAliases}
             />
