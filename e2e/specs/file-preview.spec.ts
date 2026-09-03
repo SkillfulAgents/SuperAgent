@@ -514,6 +514,27 @@ test.describe('File Preview', () => {
   test.describe('narrow window', () => {
     test.use({ viewport: { width: 800, height: 700 } })
 
+    test('long workspace link labels wrap inside the message', async ({ page }) => {
+      await agentPage.createAgent(`LongFileLink ${Date.now()}`)
+      const agentSlug = await getLatestAgentSlug(page)
+      seedWorkspaceFile(agentSlug, 'output/report.md', '# Long Link Report')
+
+      await sendLinkTrigger('link long file')
+
+      const link = page.getByRole('button', { name: /^a{240}$/ })
+      await expect(link).toBeVisible({ timeout: 10000 })
+      const paragraph = link.locator('xpath=..')
+      await expect.poll(
+        () => paragraph.evaluate(element => element.scrollWidth - element.clientWidth),
+      ).toBeLessThanOrEqual(0)
+      expect(await link.evaluate(element => getComputedStyle(element).textAlign)).toBe('left')
+
+      await link.click()
+      await expect(markdown(page).getByRole('heading', { name: 'Long Link Report' })).toBeVisible({
+        timeout: 10000,
+      })
+    })
+
     test('header controls stay on-screen when the stored drawer width exceeds the window', async ({ page }) => {
       // Persisted drawer width wider than the window used to push the drawer
       // past the right viewport edge, clipping the download/close buttons.
