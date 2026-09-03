@@ -61,7 +61,7 @@ describe('getProviderCatalog', () => {
       ['openai', 'gpt-5.6-sol'],
       ['xai', 'grok-4.6'],
       ['kimi', 'kimi-k3'],
-      ['meta', 'muse-spark-1.2'],
+      ['meta', 'muse-spark-1.3'],
       ['zai', 'glm-5.3-flash'],
     ])
   })

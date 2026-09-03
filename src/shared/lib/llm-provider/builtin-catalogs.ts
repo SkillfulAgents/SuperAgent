@@ -465,8 +465,9 @@ const MUSE_SPARK_SHARED = {
   contextWindow: 1_000_000,
 } as const
 
-/** Standard-tier rates, identical across muse-spark 1.1 and 1.2. */
+/** Standard-tier rates, identical across muse-spark 1.1, 1.2, and 1.3. */
 const MUSE_SPARK_STANDARD_PRICING = { inputPerMtok: 1.25, outputPerMtok: 4.25 } as const
+const MUSE_SPARK_CONTRIBUTOR_PRICING = { inputPerMtok: 0.1, outputPerMtok: 0.2 } as const
 
 const MUSE_SPARK_MODELS: ModelDefinition[] = [
   {
@@ -481,9 +482,7 @@ const MUSE_SPARK_MODELS: ModelDefinition[] = [
     ...MUSE_SPARK_SHARED,
     id: 'muse-spark-1.2',
     label: 'Muse Spark 1.2',
-    blurb: 'Meta flagship, served via Platform',
-    isLatest: true,
-    isDefault: true,
+    blurb: 'Meta, served via Platform',
     pricing: MUSE_SPARK_STANDARD_PRICING,
   },
   {
@@ -496,7 +495,24 @@ const MUSE_SPARK_MODELS: ModelDefinition[] = [
     id: 'muse-spark-1.2-contributor',
     label: 'Muse Spark 1.2c',
     blurb: 'Meta contributor tier, served via Platform',
-    pricing: { inputPerMtok: 0.1, outputPerMtok: 0.2 },
+    pricing: MUSE_SPARK_CONTRIBUTOR_PRICING,
+    dataUsedForProductImprovement: true,
+  },
+  {
+    ...MUSE_SPARK_SHARED,
+    id: 'muse-spark-1.3',
+    label: 'Muse Spark 1.3',
+    blurb: 'Meta flagship, served via Platform',
+    isLatest: true,
+    isDefault: true,
+    pricing: MUSE_SPARK_STANDARD_PRICING,
+  },
+  {
+    ...MUSE_SPARK_SHARED,
+    id: 'muse-spark-1.3-contributor',
+    label: 'Muse Spark 1.3c',
+    blurb: 'Meta contributor tier, served via Platform',
+    pricing: MUSE_SPARK_CONTRIBUTOR_PRICING,
     dataUsedForProductImprovement: true,
   },
 ]
