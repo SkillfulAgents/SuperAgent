@@ -116,16 +116,12 @@ test.describe('Session deletion', () => {
 
     await gotoAgentHome(page, agent)
 
-    // exact:true — role-name matching is substring by default, and the row
-    // button's accessible name embeds the kebab's label, so a substring match
-    // resolves to both the row and its kebab
     const kebabFor = (session: TestSession) =>
-      page.getByRole('button', { name: `Actions for ${session.name}`, exact: true })
+      page.locator(`[data-testid="session-row-menu-${session.id}"]`)
     const deleteDialog = page.getByRole('alertdialog')
 
     // Cancel path: open the kebab (the shared session menu), choose Delete,
-    // then back out — the
-    // session must survive
+    // then back out — the session must survive
     await kebabFor(sessionB).click()
     await page.locator('[data-testid="delete-session-item"]').click()
     await expect(deleteDialog).toBeVisible()

@@ -196,7 +196,7 @@ export function SessionContextMenu({
               }}
             >
               <Pencil className="h-4 w-4 mr-2" />
-              Edit
+              Rename
             </ContextMenuItem>
           )}
           {canUse && (
@@ -225,6 +225,7 @@ export function SessionContextMenu({
             <>
               <ContextMenuSeparator className="mx-1" />
               <ContextMenuItem
+                className="text-destructive focus:bg-destructive/10 focus:text-destructive"
                 onClick={() => setShowDeleteDialog(true)}
                 data-testid="delete-session-item"
               >
