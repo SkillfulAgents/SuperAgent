@@ -1,8 +1,9 @@
 # Agent Settings
 
 Per-agent settings live in one menu, reached from every agent entry point:
-right-click an agent row in the sidebar, right-click the agent title or
-breadcrumb, or click the three-dot button on the agent home header.
+right-click an agent row in the sidebar, a home card, or a node on the home
+connections graph; right-click the agent title or breadcrumb; or click the
+three-dot button on the agent home header.
 
 ## Prerequisites
 
