@@ -149,6 +149,8 @@ export interface CreateWebhookTriggerParams {
   name?: string
   createdBySessionId?: string
   createdByUserId?: string
+  /** Acting platform member the upstream subscription was minted under (SUP-765). */
+  mintedByMemberId?: string
   model?: string
   effort?: string
   speed?: string
@@ -175,6 +177,7 @@ export async function createWebhookTrigger(params: CreateWebhookTriggerParams): 
     fireCount: 0,
     createdBySessionId: params.createdBySessionId ?? null,
     createdByUserId: params.createdByUserId ?? null,
+    mintedByMemberId: params.mintedByMemberId ?? null,
     model: params.model ?? null,
     effort: params.effort ?? null,
     speed: params.speed ?? null,
@@ -463,16 +466,19 @@ export async function cancelWebhookTriggerWithCleanup(
     const remaining = await countActiveTriggersForComposioId(upstreamId)
     if (remaining === 0) {
       try {
-        if (trigger.kind === 'custom') {
-          await disablePlatformWebhookEndpoint(resolveCleanupMemberId(trigger), upstreamId)
-        } else {
-          // The proxy scopes trigger DELETE to the subscription's Composio user
-          // (the creator); the ambient deleter 404s cross-member (SUP-765).
-          await runWithAttribution(
-            resolveCleanupAttribution(trigger),
-            () => deleteComposioTrigger(upstreamId),
-          )
-        }
+        // The proxy scopes upstream DELETE to the subscription's minting member;
+        // an ambient deleter identity 404s cross-member (SUP-765). Both branches
+        // run under the resolved attribution — the fetch interceptor overrides
+        // any explicitly-set Authorization, so ALS is the one mechanism.
+        const cleanupAuth = resolveCleanupAttribution(trigger)
+        await runWithAttribution(cleanupAuth, () =>
+          trigger.kind === 'custom'
+            ? disablePlatformWebhookEndpoint(
+                cleanupAuth?.actingMemberId() ?? resolveCleanupMemberId(trigger),
+                upstreamId,
+              )
+            : deleteComposioTrigger(upstreamId),
+        )
       } catch (error) {
         console.error('[webhook-trigger-service] Failed to tear down upstream subscription:', error)
         // Silent to the user: the trigger row is already cancelled, but the
@@ -484,7 +490,7 @@ export async function cancelWebhookTriggerWithCleanup(
           extra: {
             triggerId,
             agentSlug: trigger.agentSlug,
-            upstreamId: trigger.composioTriggerId,
+            upstreamId,
             kind: trigger.kind,
           },
         })
@@ -501,14 +507,19 @@ export async function cancelWebhookTriggerWithCleanup(
  * safe as the final fallback.
  */
 function resolveCleanupMemberId(trigger: WebhookTrigger): string {
+  if (trigger.mintedByMemberId) return trigger.mintedByMemberId
   const resolved = resolvePlatformMemberForCandidates([trigger.createdByUserId])
   return resolved?.memberId ?? getStoredPlatformMemberId() ?? 'local'
 }
 
-// Creator first, then connected-account owner (SUP-226 candidate order);
-// null keeps the ambient request attribution.
+// Minting member first (recorded at mint time, the only guaranteed-correct
+// principal), then creator, then connected-account owner (SUP-226 candidate
+// order); null keeps the ambient request attribution. In opaque-access-key
+// mode the member suffix is ignored by the proxy, so skip the lookups.
 function resolveCleanupAttribution(trigger: WebhookTrigger): Attribution | null {
+  if (!attribution.requiresActingMember()) return null
   return (
+    (trigger.mintedByMemberId ? attribution.fromMemberId(trigger.mintedByMemberId) : null) ??
     attribution.fromResourceCreator(trigger.createdByUserId) ??
     attribution.fromResourceCreator(getConnectedAccountOwnerUserId(trigger.connectedAccountId))
   )

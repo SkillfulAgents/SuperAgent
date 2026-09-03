@@ -41,6 +41,8 @@ export interface Attribution {
   applyTo(headers: Headers): void
   bearerToken(): string
   getKey(): string
+  /** Acting member id for org-scoped tokens; null in opaque-access-key mode. */
+  actingMemberId(): string | null
 }
 
 class PlatformAttribution implements Attribution {
@@ -63,6 +65,10 @@ class PlatformAttribution implements Attribution {
   getKey(): string {
     if (!this.orgScoped) return 'access_key'
     return this.memberId ? `member:${this.memberId}` : 'org'
+  }
+
+  actingMemberId(): string | null {
+    return this.orgScoped ? this.memberId : null
   }
 }
 
@@ -106,6 +112,10 @@ export const attribution = {
   },
   fromResourceCreator(ownerUserId: string | null): Attribution | null {
     return ownerUserId ? buildAttribution(getPlatformAccountIdForUserId(ownerUserId)) : null
+  },
+  // For background jobs that already resolved a member id (no request user).
+  fromMemberId(memberId: string): Attribution | null {
+    return buildAttribution(memberId)
   },
   current(): Attribution | null {
     return attributionContext.getStore()?.auth ?? fromCurrentRequest()
