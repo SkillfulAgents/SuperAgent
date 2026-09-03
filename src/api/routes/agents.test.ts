@@ -8028,6 +8028,23 @@ describe('agent preferences — PUT /:id/preferences', () => {
     })
   })
 
+  it('accepts 0 for autoDeleteInactiveDays as an explicit "never" override', async () => {
+    // The agent home's Session Auto-Delete row offers "Never" (0), matching
+    // the app-wide setting; the monitor treats 0 as disabled.
+    const res = await putJson(PREFS_URL, { autoDeleteInactiveDays: 0 })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ autoDeleteInactiveDays: 0 })
+    expect(writeJsonFileAtomic).toHaveBeenCalledWith(PREFS_PATH, { autoDeleteInactiveDays: 0 })
+  })
+
+  it('rejects a negative autoDeleteInactiveDays with 400', async () => {
+    const res = await putJson(PREFS_URL, { autoDeleteInactiveDays: -1 })
+
+    expect(res.status).toBe(400)
+    expect(writeJsonFileAtomic).not.toHaveBeenCalled()
+  })
+
   it('rejects an unknown defaultEffort with 400 and never writes', async () => {
     const res = await putJson(PREFS_URL, { defaultEffort: 'turbo' })
 

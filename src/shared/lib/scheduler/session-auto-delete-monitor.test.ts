@@ -205,6 +205,17 @@ describe('SessionAutoDeleteMonitor', () => {
     expect(mockDeleteSessionsBatch).toHaveBeenCalledWith('test-agent', ['s100'])
   })
 
+  it('a per-agent override of 0 ("Never") disables cleanup even with a global default', async () => {
+    mockGetSettings.mockReturnValue({ app: { autoDeleteInactiveDays: 30 } })
+    mockListAgents.mockResolvedValue([makeAgent('test-agent')])
+    mockReadAgentPreferences.mockResolvedValue({ autoDeleteInactiveDays: 0 })
+
+    await startAndTrigger()
+
+    expect(mockListSessions).not.toHaveBeenCalled()
+    expect(mockDeleteSessionsBatch).not.toHaveBeenCalled()
+  })
+
   // --------------------------------------------------------------------------
   // Filtering logic
   // --------------------------------------------------------------------------

@@ -55,9 +55,8 @@ export function HomeRetention({ agentSlug }: HomeRetentionProps) {
         label="Session Auto-Delete"
         testId="home-session-auto-delete"
         options={sessionOptions}
-        // Session retention has no explicit "never" override (the schema only
-        // stores positive day counts); "Never" is what the app default reads
-        // as when unset.
+        // 0 is an explicit "Never" override (the app default may be a day
+        // count); undefined follows the app default.
         value={prefs?.autoDeleteInactiveDays}
         appDefaultLabel={capitalize(formatAutoDeleteLabel(settings?.app?.autoDeleteInactiveDays))}
         appDefaultShortLabel={shortLabel(settings?.app?.autoDeleteInactiveDays ?? 0)}

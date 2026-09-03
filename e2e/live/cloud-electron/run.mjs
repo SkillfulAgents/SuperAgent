@@ -434,20 +434,20 @@ try {
     await closeSettings(page)
   })
 
-  await check('D2 the agent directory action degrades to copy-the-path', async () => {
-    // The directory action lives in the agent header's settings popover
-    // (moved there from the sidebar context menu).
+  await check('D2 the agent directory opens in-app, and reveal-on-this-computer is withdrawn', async () => {
+    // "Agent Directory" lives in the agent menu (header three-dot) and opens
+    // the in-app workspace folder panel. The panel header offers Copy path
+    // everywhere, but the reveal-in-Finder action is host-gated: the path the
+    // deployment returns describes ITS filesystem, not this computer's.
     const row = page.locator('[data-testid^="agent-item-"]', { hasText: CLOUD_AGENT }).first()
     await row.click()
     await page.waitForSelector('[data-testid="agent-settings-button"]', { timeout: 15_000 })
     await page.click('[data-testid="agent-settings-button"]')
     await page.waitForSelector('[data-testid="open-agent-directory-item"]', { timeout: 15_000 })
-    const label = await page.locator('[data-testid="open-agent-directory-item"]').innerText()
-    expect(
-      /copy agent directory path/i.test(label),
-      `expected the copy action in cloud mode, got "${label}"`,
-    )
-    await page.keyboard.press('Escape')
+    await page.click('[data-testid="open-agent-directory-item"]')
+    await page.waitForSelector('[data-testid="folder-copy-path"]', { timeout: 15_000 })
+    const revealCount = await page.locator('[data-testid="folder-reveal"]').count()
+    expect(revealCount === 0, `expected no reveal action in cloud mode, found ${revealCount}`)
   })
 
   // ── E ─────────────────────────────────────────────────────────────────────

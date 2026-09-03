@@ -60,6 +60,14 @@ describe('HomeRetention', () => {
     expect(mutateMock).toHaveBeenCalledWith({ autoDeleteInactiveDays: null })
   })
 
+  it('writes "Never" for sessions as zero, an explicit override of the default', async () => {
+    render(<HomeRetention agentSlug="sales" />)
+
+    await userEvent.click(screen.getByTestId('home-session-auto-delete-option-0'))
+
+    expect(mutateMock).toHaveBeenCalledWith({ autoDeleteInactiveDays: 0 })
+  })
+
   it('writes "Never" for API logs as zero, distinct from the default', async () => {
     render(<HomeRetention agentSlug="sales" />)
 

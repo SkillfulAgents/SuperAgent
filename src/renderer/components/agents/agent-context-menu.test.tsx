@@ -149,13 +149,26 @@ describe('moving an agent into a left-nav folder', () => {
     return typeof arg === 'function' ? arg(settings) : arg
   }
 
-  it('lists every folder but not "Your Agents" while the agent is unfiled', () => {
+  it('lists every folder plus the default "Your Agents" option', () => {
     mockUserSettings.mockReturnValue({ agentFolders: FOLDERS, agentFolderAssignments: {} })
     render(<AgentContextMenu agent={AGENT}><span>row</span></AgentContextMenu>)
 
-    expect(screen.queryByTestId('move-agent-to-no-folder-item')).not.toBeInTheDocument()
+    expect(screen.getByTestId('move-agent-to-no-folder-item')).toHaveTextContent('Your Agents')
+    expect(screen.getByTestId('move-agent-to-no-folder-item')).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByTestId('move-agent-to-folder-f1')).toHaveTextContent('Work')
     expect(screen.getByTestId('move-agent-to-folder-f2')).toHaveTextContent('Personal')
+  })
+
+  it('does not write anything when the current folder is re-selected', async () => {
+    mockUserSettings.mockReturnValue({
+      agentFolders: FOLDERS,
+      agentFolderAssignments: { sales: 'f1' },
+    })
+    render(<AgentContextMenu agent={AGENT}><span>row</span></AgentContextMenu>)
+
+    await userEvent.click(screen.getByTestId('move-agent-to-folder-f1'))
+
+    expect(mockUpdateSettings).not.toHaveBeenCalled()
   })
 
   it('files the agent at the end of the folder and keeps agentOrder canonical', async () => {
@@ -180,16 +193,16 @@ describe('moving an agent into a left-nav folder', () => {
     expect(patch.agentFolders).toEqual(FOLDERS)
   })
 
-  it('leaves out the folder the agent is in and offers "Your Agents" instead', () => {
+  it('marks the folder the agent is currently in', () => {
     mockUserSettings.mockReturnValue({
       agentFolders: FOLDERS,
-      agentFolderAssignments: { sales: 'f1' },
+      agentFolderAssignments: { sales: 'f2' },
     })
     render(<AgentContextMenu agent={AGENT}><span>row</span></AgentContextMenu>)
 
-    expect(screen.queryByTestId('move-agent-to-folder-f1')).not.toBeInTheDocument()
-    expect(screen.getByTestId('move-agent-to-folder-f2')).toHaveTextContent('Personal')
-    expect(screen.getByTestId('move-agent-to-no-folder-item')).toHaveTextContent('Your Agents')
+    expect(screen.getByTestId('move-agent-to-folder-f2')).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId('move-agent-to-folder-f1')).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByTestId('move-agent-to-no-folder-item')).toHaveAttribute('aria-checked', 'false')
   })
 
   it('preserves other agents\u2019 assignments when filing this one', async () => {
@@ -237,15 +250,15 @@ describe('moving an agent into a left-nav folder', () => {
 
   it('reads an assignment naming a deleted folder as the default folder', () => {
     // The sidebar renders such an agent under "Your Agents", so the menu has
-    // to agree: "Your Agents" is where it is, so it is not a destination.
+    // to agree and mark "Your Agents" as where it is.
     mockUserSettings.mockReturnValue({
       agentFolders: FOLDERS,
       agentFolderAssignments: { sales: 'gone' },
     })
     render(<AgentContextMenu agent={AGENT}><span>row</span></AgentContextMenu>)
 
-    expect(screen.queryByTestId('move-agent-to-no-folder-item')).not.toBeInTheDocument()
-    expect(screen.getByTestId('move-agent-to-folder-f1')).toBeInTheDocument()
+    expect(screen.getByTestId('move-agent-to-no-folder-item')).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId('move-agent-to-folder-f1')).toHaveAttribute('aria-checked', 'false')
   })
 
   it('creates a named folder and files the agent into it in one write', async () => {
@@ -288,13 +301,11 @@ describe('moving an agent into a left-nav folder', () => {
     expect(mockUpdateSettings).not.toHaveBeenCalled()
   })
 
-  it('offers only "New Folder" with no folders defined yet', () => {
-    // Unfiled with nowhere else to go: no destinations, just the way to make one.
+  it('offers the folder submenu with no folders defined yet', () => {
     mockUserSettings.mockReturnValue(undefined)
     render(<AgentContextMenu agent={AGENT}><span>row</span></AgentContextMenu>)
 
-    expect(screen.queryByTestId('move-agent-to-no-folder-item')).not.toBeInTheDocument()
-    expect(screen.queryByRole('menuitemradio')).not.toBeInTheDocument()
+    expect(screen.getByTestId('move-agent-to-no-folder-item')).toBeInTheDocument()
     expect(screen.getByTestId('move-agent-to-new-folder-item')).toBeInTheDocument()
   })
 })
@@ -306,7 +317,7 @@ describe('the unified agent menu', () => {
   it('offers every per-agent setting to an owner, and no separate settings dialog', () => {
     renderMenu()
 
-    expect(screen.getByTestId('rename-agent-item')).toHaveTextContent('Edit Agent')
+    expect(screen.getByTestId('rename-agent-item')).toHaveTextContent('Rename Agent')
     expect(screen.getByTestId('export-agent-item')).toBeInTheDocument()
     expect(screen.getByTestId('open-agent-directory-item')).toBeInTheDocument()
     expect(screen.getByTestId('move-agent-to-folder-trigger')).toBeInTheDocument()

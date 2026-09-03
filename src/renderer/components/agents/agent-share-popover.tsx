@@ -37,6 +37,7 @@ import {
   useHostExportStatus,
 } from '@renderer/hooks/use-agent-templates'
 import { AgentTemplatePublishPanel } from '@renderer/components/agents/agent-template-publish-panel'
+import { AgentTemplateStatus } from '@renderer/components/agents/agent-template-status'
 import { ActivityOrb } from '@renderer/components/messages/activity-orb'
 import { ArrowDownToLine, ArrowRight, Check, LibraryBig, Loader2, Lock, User, X } from 'lucide-react'
 import type { AgentRole } from '@shared/lib/types/agent'
@@ -576,10 +577,14 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
                     </p>
                   </div>
                 </div>
+              ) : templateStatus && (templateStatus.type !== 'local' || !!templateStatus.sourceLabel) ? (
+                // Installed from a library: instead of a publish flow, show
+                // where it came from and the update / sync / review actions.
+                <AgentTemplateStatus agentSlug={agentSlug} templateStatus={templateStatus} />
               ) : (
                 <p className="px-2 py-4 text-center text-sm text-muted-foreground">
-                  Publishing isn&apos;t available — this agent is already linked to a
-                  library or can&apos;t be republished from this workspace.
+                  Publishing isn&apos;t available — this agent can&apos;t be republished
+                  from this workspace.
                 </p>
               )}
             </div>

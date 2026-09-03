@@ -20,15 +20,19 @@ type AgentPreferencesUpdate = {
 
 export function useUpdateAgentPreferences(agentSlug: string) {
   const queryClient = useQueryClient()
+  // No skipGlobalErrorToast: every caller is a fire-and-forget control (a
+  // dropdown, a picker), so the global toast is the only failure signal.
   return useMutation<AgentPreferences, Error, AgentPreferencesUpdate>({
-    meta: { skipGlobalErrorToast: true },
     mutationFn: async (data) => {
       const res = await apiFetch(`/api/agents/${agentSlug}/preferences`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       })
-      if (!res.ok) throw new Error('Failed to update agent preferences')
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null) as { error?: string } | null
+        throw new Error(payload?.error || 'Failed to update agent preferences')
+      }
       return res.json()
     },
     onSuccess: () => {

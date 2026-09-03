@@ -305,6 +305,115 @@ export function useAgentTemplateStatus(agentSlug: string | null) {
   return query
 }
 
+export function useRefreshAgentTemplateStatus() {
+  const queryClient = useQueryClient()
+
+  return useMutation<
+    ApiAgentTemplateStatus,
+    Error,
+    { agentSlug: string }
+  >({
+    meta: { skipGlobalErrorToast: true },
+    mutationFn: async ({ agentSlug }) => {
+      const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/template-refresh`, {
+        method: 'POST',
+      })
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || 'Failed to refresh template status')
+      }
+      return res.json()
+    },
+    onSuccess: (data, vars) => {
+      queryClient.setQueryData(['agent-template-status', vars.agentSlug], data)
+    },
+  })
+}
+
+function useTemplateUpdateMutation(errorMessage: string) {
+  const queryClient = useQueryClient()
+
+  return useMutation<
+    { updated: boolean },
+    Error,
+    { agentSlug: string }
+  >({
+    mutationFn: async ({ agentSlug }) => {
+      const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/template-update`, {
+        method: 'POST',
+      })
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || errorMessage)
+      }
+      return res.json()
+    },
+    onSuccess: (_, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['agent-template-status', vars.agentSlug] })
+      queryClient.invalidateQueries({ queryKey: ['agents'] })
+    },
+  })
+}
+
+export function useUpdateAgentTemplate() {
+  return useTemplateUpdateMutation('Failed to update template')
+}
+
+export function useForceSyncAgentTemplate() {
+  return useTemplateUpdateMutation('Failed to sync template from remote')
+}
+
+export interface AgentTemplatePRInfo {
+  agentName: string
+  agentPath: string
+  skillsetUrl: string
+  suggestedTitle: string
+  suggestedBody: string
+  suggestedVersion: string
+}
+
+export function useAgentTemplatePRInfo(agentSlug: string | null) {
+  return useQuery<AgentTemplatePRInfo>({
+    queryKey: ['agent-template-pr-info', agentSlug],
+    queryFn: async () => {
+      const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug!)}/template-pr-info`)
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || 'Failed to get PR info')
+      }
+      return res.json()
+    },
+    enabled: !!agentSlug,
+  })
+}
+
+export function useCreateAgentTemplatePR() {
+  const queryClient = useQueryClient()
+
+  return useMutation<
+    { prUrl?: string; successMessage: string },
+    Error,
+    { agentSlug: string; title: string; body: string; newVersion?: string }
+  >({
+    meta: { skipGlobalErrorToast: true },
+    mutationFn: async ({ agentSlug, title, body, newVersion }) => {
+      const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/template-create-pr`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, body, newVersion }),
+      })
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || 'Failed to create PR')
+      }
+      return res.json()
+    },
+    onSuccess: (_, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['agent-template-status', vars.agentSlug] })
+    },
+  })
+}
+
 export interface AgentTemplatePublishInfo {
   agentName: string
   skillsetUrl: string

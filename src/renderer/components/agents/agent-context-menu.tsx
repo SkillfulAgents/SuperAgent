@@ -5,6 +5,8 @@ import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
+  ContextMenuRadioGroup,
+  ContextMenuRadioItem,
   ContextMenuSeparator,
   ContextMenuSub,
   ContextMenuSubContent,
@@ -83,6 +85,8 @@ interface AgentContextMenuProps {
    * home and the panel opens on arrival.
    */
   onOpenDirectory?: () => void
+  /** Reports the menu opening and closing (e.g. for a button's aria-expanded). */
+  onOpenChange?: (open: boolean) => void
   /** Homepage-only controls that should share the agent's single menu surface. */
   additionalOptions?: React.ReactNode
   /** Enables the homepage grid's explicit arrange mode from any agent card. */
@@ -103,6 +107,7 @@ export function AgentContextMenu({
   onRename,
   onExport,
   onOpenDirectory,
+  onOpenChange,
   additionalOptions,
   onArrange,
   disableTouchLongPress,
@@ -147,13 +152,6 @@ export function AgentContextMenu({
     currentFolderId && folders.some((f) => f.id === currentFolderId)
       ? currentFolderId
       : ROOT_FOLDER_ID
-  const moveDestinations = useMemo(
-    () =>
-      [{ id: ROOT_FOLDER_ID, name: ROOT_FOLDER_NAME }, ...folders].filter(
-        (dest) => dest.id !== selectedFolderValue
-      ),
-    [folders, selectedFolderValue]
-  )
 
   // Filing writes the whole canonical tree — the same shape a drag writes —
   // so the two filing paths leave identical settings and the flat agentOrder
@@ -175,8 +173,9 @@ export function AgentContextMenu({
   )
 
   const handleMoveToFolder = useCallback((value: string) => {
-    // The current folder is not offered, but guard anyway: the agent is
-    // already there, so there is nothing to write.
+    // Radix reports a selection even when the checked item is re-picked; the
+    // agent is already there, so there is nothing to write (and nothing to
+    // move to the folder's end).
     if (value === selectedFolderValue) return
     updateSettings.mutate((current) =>
       sectionsToSettings(
@@ -214,6 +213,16 @@ export function AgentContextMenu({
     setNewFolderName('')
   }, [agent.slug, buildSections, newFolderName, updateSettings])
 
+  // Runs from the close hook, never from the item click: if the agent home is
+  // already the page underneath, its effect opens the popover at once, and
+  // the still-closing menu then hands focus back to its trigger — which the
+  // non-modal Share popover reads as an outside interaction and dismisses.
+  // Waiting for the close (and suppressing that focus return) keeps it open.
+  const parkAgentHomeAction = (action: 'export' | 'directory') => {
+    setPendingAgentHomeAction({ slug: agent.slug, action })
+    void navigate({ to: '/agents/$slug', params: { slug: agent.displaySlug } })
+  }
+
   const handleRenameItem = () => {
     if (onRename) {
       pendingCloseActionRef.current = onRename
@@ -240,16 +249,6 @@ export function AgentContextMenu({
     }
     // Same hand-off as Export: the folder panel lives on the agent home.
     pendingCloseActionRef.current = () => parkAgentHomeAction('directory')
-  }
-
-  // Runs from the close hook, never from the item click: if the agent home is
-  // already the page underneath, its effect opens the popover at once, and
-  // the still-closing menu then hands focus back to its trigger — which the
-  // non-modal Share popover reads as an outside interaction and dismisses.
-  // Waiting for the close (and suppressing that focus return) keeps it open.
-  const parkAgentHomeAction = (action: 'export' | 'directory') => {
-    setPendingAgentHomeAction({ slug: agent.slug, action })
-    void navigate({ to: '/agents/$slug', params: { slug: agent.displaySlug } })
   }
 
   const handleRename = async () => {
@@ -293,7 +292,7 @@ export function AgentContextMenu({
 
   return (
     <>
-      <ContextMenu>
+      <ContextMenu onOpenChange={onOpenChange}>
         <ContextMenuTrigger asChild disableTouchLongPress={disableTouchLongPress}>
           {children}
         </ContextMenuTrigger>
@@ -326,7 +325,7 @@ export function AgentContextMenu({
           {isOwner && (
             <ContextMenuItem onClick={handleRenameItem} data-testid="rename-agent-item">
               <Pencil className="h-4 w-4 mr-2" />
-              Edit Agent
+              Rename Agent
             </ContextMenuItem>
           )}
           {isOwner && (
@@ -342,22 +341,27 @@ export function AgentContextMenu({
               Move to Folder
             </ContextMenuSubTrigger>
             <ContextMenuSubContent className="rounded-xl p-2">
-              {/* Only destinations: the folder the agent is already in is
-                  left out rather than shown checked. */}
-              {moveDestinations.map((dest) => (
-                <ContextMenuItem
-                  key={dest.id}
-                  onClick={() => handleMoveToFolder(dest.id)}
-                  data-testid={
-                    dest.id === ROOT_FOLDER_ID
-                      ? 'move-agent-to-no-folder-item'
-                      : `move-agent-to-folder-${dest.id}`
-                  }
+              <ContextMenuRadioGroup
+                value={selectedFolderValue}
+                onValueChange={handleMoveToFolder}
+              >
+                <ContextMenuRadioItem
+                  value={ROOT_FOLDER_ID}
+                  data-testid="move-agent-to-no-folder-item"
                 >
-                  {dest.name}
-                </ContextMenuItem>
-              ))}
-              {moveDestinations.length > 0 && <ContextMenuSeparator className="mx-1" />}
+                  {ROOT_FOLDER_NAME}
+                </ContextMenuRadioItem>
+                {folders.map((folder) => (
+                  <ContextMenuRadioItem
+                    key={folder.id}
+                    value={folder.id}
+                    data-testid={`move-agent-to-folder-${folder.id}`}
+                  >
+                    {folder.name}
+                  </ContextMenuRadioItem>
+                ))}
+              </ContextMenuRadioGroup>
+              <ContextMenuSeparator className="mx-1" />
               <ContextMenuItem
                 // Secondary to the destinations above: muted until focused.
                 className="text-muted-foreground"
@@ -383,6 +387,7 @@ export function AgentContextMenu({
             <>
               <ContextMenuSeparator className="mx-1" />
               <ContextMenuItem
+                className="text-destructive focus:bg-destructive/10 focus:text-destructive"
                 onClick={() => setShowDeleteDialog(true)}
                 data-testid="delete-agent-item"
               >
@@ -450,7 +455,6 @@ export function AgentContextMenu({
           </form>
         </DialogContent>
       </Dialog>
-
 
       <AlertDialog open={showLeaveDialog} onOpenChange={setShowLeaveDialog}>
         <AlertDialogContent data-testid="confirm-leave-agent-dialog">

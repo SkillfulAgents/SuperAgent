@@ -259,6 +259,7 @@ test.describe('Auth Flow', () => {
     await expect(user3Page.locator('[data-testid="rename-agent-item"]')).not.toBeVisible()
     await expect(user3Page.locator('[data-testid="open-agent-directory-item"]')).not.toBeVisible()
     await expect(user3Page.locator('[data-testid="export-agent-item"]')).not.toBeVisible()
+    await expect(user3Page.locator('[data-testid="delete-agent-item"]')).not.toBeVisible()
 
     // Close
     await user3Page.keyboard.press('Escape')

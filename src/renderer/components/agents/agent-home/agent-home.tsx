@@ -132,6 +132,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const titleRef = useRef<InlineEditableTitleHandle>(null)
   // The three-dot button opens the title's context menu (see below).
   const menuTriggerRef = useRef<HTMLDivElement>(null)
+  const [menuOpen, setMenuOpen] = useState(false)
   const shareRef = useRef<AgentSharePopoverHandle>(null)
   const openExport = useCallback(() => shareRef.current?.openExport(), [])
   // Same panel the HomeExtras "Agent Directory" row opens.
@@ -335,6 +336,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
               onRename={() => titleRef.current?.startEditing()}
               onExport={openExport}
               onOpenDirectory={openDirectory}
+              onOpenChange={setMenuOpen}
             >
               <div ref={menuTriggerRef} className="flex-1 min-w-0 cursor-context-menu">
                 <InlineEditableTitle
@@ -376,6 +378,8 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
               variant="outline"
               className="h-8 w-8 shrink-0"
               aria-label="Agent menu"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
               data-testid="agent-settings-button"
               onClick={(event) => {
                 const rect = event.currentTarget.getBoundingClientRect()
