@@ -53,7 +53,11 @@ vi.mock('@shared/lib/services/platform-auth-service', () => ({
 }))
 
 import { attribution } from '@shared/lib/platform-attribution'
-import { createWebhookTrigger, cancelWebhookTriggerWithCleanup } from './webhook-trigger-service'
+import {
+  createWebhookTrigger,
+  cancelWebhookTriggerWithCleanup,
+  deleteOrphanedUpstreamSubscription,
+} from './webhook-trigger-service'
 
 function buildOrgToken(orgId: string): string {
   const header = Buffer.from('{"alg":"none"}').toString('base64url')
@@ -219,5 +223,40 @@ describe('composio teardown attribution (SUP-765)', () => {
     expect(await cancelWebhookTriggerWithCleanup(triggerId)).toBe(true)
     expect(mockDisableEndpoint).toHaveBeenCalledWith('sub_minted', 'whep_1')
     expect(deleteAttributionKey).toBe('member:sub_minted')
+  })
+
+  // Lazy reconcile (SUP-765): the claiming member is by construction the
+  // minting principal, so the delete runs directly under it.
+  describe('deleteOrphanedUpstreamSubscription', () => {
+    it('deletes a composio subscription under the claiming member', async () => {
+      await deleteOrphanedUpstreamSubscription('composio', 'ti_orphan', 'sub_claimer')
+
+      expect(mockDeleteComposioTrigger).toHaveBeenCalledWith('ti_orphan')
+      expect(deleteAttributionKey).toBe('member:sub_claimer')
+    })
+
+    it('disables a custom endpoint under the claiming member', async () => {
+      await deleteOrphanedUpstreamSubscription('custom', 'whep_orphan', 'sub_claimer')
+
+      expect(mockDisableEndpoint).toHaveBeenCalledWith('sub_claimer', 'whep_orphan')
+      expect(deleteAttributionKey).toBe('member:sub_claimer')
+    })
+
+    it('keeps ambient attribution in opaque-access-key mode', async () => {
+      mockGetPlatformAccessToken.mockReturnValue('plat_sa_opaque_key')
+
+      await deleteOrphanedUpstreamSubscription('composio', 'ti_orphan', 'local')
+
+      expect(mockDeleteComposioTrigger).toHaveBeenCalledWith('ti_orphan')
+      expect(deleteAttributionKey).toBeNull()
+    })
+
+    it('is a no-op for composio kind when platform Composio is inactive', async () => {
+      mockIsPlatformComposioActive.mockReturnValue(false)
+
+      await deleteOrphanedUpstreamSubscription('composio', 'ti_orphan', 'sub_claimer')
+
+      expect(mockDeleteComposioTrigger).not.toHaveBeenCalled()
+    })
   })
 })

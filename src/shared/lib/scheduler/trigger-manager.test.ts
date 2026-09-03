@@ -44,6 +44,7 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
 }))
 
 const mockGetWebhookTriggersByComposioId = vi.fn()
+const mockDeleteOrphanedUpstreamSubscription = vi.fn().mockResolvedValue(undefined)
 const mockMarkTriggerFired = vi.fn().mockResolvedValue(undefined)
 const mockMarkTriggerFailed = vi.fn().mockResolvedValue(undefined)
 const mockGetDistinctMemberIds = vi.fn(() => ['sub_test_member'])
@@ -51,7 +52,8 @@ const mockResolveTriggerPrincipal =
   vi.fn<(trigger: unknown) => { userId: string; memberId: string } | null>(() => null)
 vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   getDistinctPlatformMemberIdsForActiveTriggers: () => mockGetDistinctMemberIds(),
-  getWebhookTriggersByComposioId: (...args: unknown[]) => mockGetWebhookTriggersByComposioId(...args),
+  listAllWebhookTriggersByComposioId: (...args: unknown[]) => mockGetWebhookTriggersByComposioId(...args),
+  deleteOrphanedUpstreamSubscription: (...args: unknown[]) => mockDeleteOrphanedUpstreamSubscription(...args),
   markTriggerFired: (...args: unknown[]) => mockMarkTriggerFired(...args),
   markTriggerFailed: (...args: unknown[]) => mockMarkTriggerFailed(...args),
   resolveTriggerPrincipal: (trigger: unknown) => mockResolveTriggerPrincipal(trigger),
@@ -275,7 +277,78 @@ describe('TriggerManager', () => {
       await triggerManager.start()
 
       expect(mockCreateSession).not.toHaveBeenCalled()
+      // No local rows: another host sharing this org/member may own the
+      // subscription, so no lazy teardown — ack only.
+      expect(mockDeleteOrphanedUpstreamSubscription).not.toHaveBeenCalled()
       expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_orphan'], 'sub_test_member')
+
+      triggerManager.stop()
+    })
+
+    // SUP-765 lazy reconcile: an event for a subscription whose local rows are
+    // all terminal means the upstream teardown was missed — delete it now,
+    // under the member the events were claimed as.
+    it('tears down the upstream subscription when every local row is terminal', async () => {
+      mockPollAndClaimEvents.mockResolvedValue({
+        events: [
+          { id: 'whe_1', composio_trigger_id: 'ti_orphan', trigger_type: 'X', payload: {}, created_at: '' },
+        ],
+        realtime: null,
+      })
+      mockGetWebhookTriggersByComposioId.mockResolvedValue([
+        { id: 'wt_1', kind: 'composio', composioTriggerId: 'ti_orphan', status: 'cancelled' },
+        { id: 'wt_2', kind: 'composio', composioTriggerId: 'ti_orphan', status: 'failed' },
+      ])
+
+      await triggerManager.start()
+
+      expect(mockDeleteOrphanedUpstreamSubscription).toHaveBeenCalledWith(
+        'composio',
+        'ti_orphan',
+        'sub_test_member',
+      )
+      expect(mockCreateSession).not.toHaveBeenCalled()
+      expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_1'], 'sub_test_member')
+
+      triggerManager.stop()
+    })
+
+    it('does not tear down when a paused row still holds the subscription', async () => {
+      mockPollAndClaimEvents.mockResolvedValue({
+        events: [
+          { id: 'whe_1', composio_trigger_id: 'ti_paused', trigger_type: 'X', payload: {}, created_at: '' },
+        ],
+        realtime: null,
+      })
+      mockGetWebhookTriggersByComposioId.mockResolvedValue([
+        { id: 'wt_1', kind: 'composio', composioTriggerId: 'ti_paused', status: 'cancelled' },
+        { id: 'wt_2', kind: 'composio', composioTriggerId: 'ti_paused', status: 'paused' },
+      ])
+
+      await triggerManager.start()
+
+      expect(mockDeleteOrphanedUpstreamSubscription).not.toHaveBeenCalled()
+      expect(mockCreateSession).not.toHaveBeenCalled()
+      expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_1'], 'sub_test_member')
+
+      triggerManager.stop()
+    })
+
+    it('still acks events when the lazy teardown fails', async () => {
+      mockPollAndClaimEvents.mockResolvedValue({
+        events: [
+          { id: 'whe_1', composio_trigger_id: 'ti_orphan', trigger_type: 'X', payload: {}, created_at: '' },
+        ],
+        realtime: null,
+      })
+      mockGetWebhookTriggersByComposioId.mockResolvedValue([
+        { id: 'wt_1', kind: 'composio', composioTriggerId: 'ti_orphan', status: 'cancelled' },
+      ])
+      mockDeleteOrphanedUpstreamSubscription.mockRejectedValueOnce(new Error('proxy 502'))
+
+      await triggerManager.start()
+
+      expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_1'], 'sub_test_member')
 
       triggerManager.stop()
     })

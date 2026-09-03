@@ -4408,10 +4408,10 @@ ${continuation}`
         const filterExp = input.filter_exp ?? undefined
 
         const memberId = await this.resolvePlatformMemberForSession(agentSlug, sessionId)
-        // The fetch interceptor overrides the explicit bearer with the ambient
-        // attribution when one is active, so the real minting member is the
-        // ambient one; record it for teardown (SUP-765).
-        const mintedByMemberId = attribution.current()?.actingMemberId() ?? memberId
+        // Persist only a real acting member (SUP-765): `memberId` can be the
+        // 'local' placeholder in opaque-key mode, and a persisted 'local' would
+        // short-circuit every fallback after a later switch to an org JWT.
+        const mintedByMemberId = attribution.current()?.actingMemberId() ?? undefined
 
         // 1. Mint the endpoint on the platform proxy
         const endpoint = await createPlatformWebhookEndpoint(memberId, {

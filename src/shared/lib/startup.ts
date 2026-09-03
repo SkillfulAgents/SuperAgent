@@ -7,7 +7,6 @@ import { accountReauthManager } from './proxy/account-reauth-manager'
 import { mcpReauthManager } from './proxy/mcp-reauth-manager'
 import { taskScheduler } from './scheduler/task-scheduler'
 import { triggerManager } from './scheduler/trigger-manager'
-import { composioTriggerReconciler } from './services/composio-trigger-reconciler'
 import { platformNotificationsManager } from './scheduler/platform-notifications-manager'
 import { chatIntegrationManager } from './chat-integrations/chat-integration-manager'
 import { captureException } from './error-reporting'
@@ -250,10 +249,6 @@ async function initializeServicesInner() {
     ).catch((error) => {
       console.error('Failed to start trigger manager:', error)
     })
-
-    // Janitor for orphaned upstream Composio subscriptions (failed teardowns).
-    // First run is internally delayed past the startup burst.
-    composioTriggerReconciler.start()
   }
 
   // Start auto-sleep monitor
@@ -306,7 +301,6 @@ export async function shutdownServices() {
   await stopAllProviders()
   taskScheduler.stop()
   triggerManager.stop()
-  composioTriggerReconciler.stop()
   platformNotificationsManager.stop()
   autoSleepMonitor.stop()
   sessionAutoDeleteMonitor.stop()

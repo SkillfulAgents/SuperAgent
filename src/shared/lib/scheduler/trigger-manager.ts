@@ -18,7 +18,8 @@ import { runWithOptionalUser, attribution } from '@shared/lib/platform-attributi
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import {
   getDistinctPlatformMemberIdsForActiveTriggers,
-  getWebhookTriggersByComposioId,
+  listAllWebhookTriggersByComposioId,
+  deleteOrphanedUpstreamSubscription,
   markTriggerFired,
   markTriggerFailed,
   resolveTriggerPrincipal,
@@ -265,10 +266,35 @@ class TriggerManager {
     memberId: string,
   ): Promise<void> {
     // Look up ALL local triggers sharing this Composio trigger ID
-    const triggers = await getWebhookTriggersByComposioId(composioTriggerId)
+    const triggers = await listAllWebhookTriggersByComposioId(composioTriggerId)
     const activeTriggers = triggers.filter((t) => t.status === 'active')
 
     if (activeTriggers.length === 0) {
+      // Lazy reconcile (SUP-765): every local row is terminal, yet the upstream
+      // still delivers — a teardown crashed or 404ed cross-member. The member
+      // these events were claimed under is the one the proxy scopes DELETE to.
+      // Paused rows fall through to ack-only (subscription must stay alive),
+      // and ids with no local rows stay ack-only too — another host sharing
+      // this org/member may own them.
+      const allTerminal =
+        triggers.length > 0 &&
+        triggers.every((t) => t.status === 'cancelled' || t.status === 'failed')
+      if (allTerminal) {
+        await deleteOrphanedUpstreamSubscription(
+          triggers[0].kind,
+          composioTriggerId,
+          memberId,
+        ).catch((error) => {
+          console.warn(
+            `[TriggerManager] Lazy teardown of orphaned subscription ${composioTriggerId} failed:`,
+            error,
+          )
+          captureException(error, {
+            tags: { area: 'webhook-triggers', op: 'lazy-reconcile' },
+            extra: { composioTriggerId, memberId },
+          })
+        })
+      }
       console.warn(
         `[TriggerManager] No active local triggers for composio ID ${composioTriggerId}, acking events`
       )

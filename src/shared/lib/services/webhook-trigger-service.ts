@@ -63,6 +63,7 @@ export function resolvePlatformMemberForCandidates(
 export function getDistinctPlatformMemberIdsForActiveTriggers(): string[] {
   const rows = db
     .select({
+      mintedByMemberId: webhookTriggers.mintedByMemberId,
       createdByUserId: webhookTriggers.createdByUserId,
       ownerUserId: connectedAccounts.userId,
     })
@@ -73,9 +74,16 @@ export function getDistinctPlatformMemberIdsForActiveTriggers(): string[] {
 
   const ids = new Set<string>()
   for (const row of rows) {
-    // Prefer the creator, but fall back to the connected-account owner when the
-    // creator has no platform member — otherwise the trigger is silently dropped
-    // from the poll set even though the owner could claim its events (SUP-226).
+    // The recorded minting member is the one the proxy scopes the subscription
+    // (and its events) to, so it must be in the poll set first (SUP-765).
+    if (row.mintedByMemberId) {
+      ids.add(row.mintedByMemberId)
+      continue
+    }
+    // Pre-column rows: prefer the creator, but fall back to the connected-account
+    // owner when the creator has no platform member — otherwise the trigger is
+    // silently dropped from the poll set even though the owner could claim its
+    // events (SUP-226).
     const resolved = resolvePlatformMemberForCandidates([row.createdByUserId, row.ownerUserId])
     if (resolved) {
       ids.add(resolved.memberId)
@@ -239,6 +247,17 @@ export async function getWebhookTriggersByComposioId(composioTriggerId: string):
         eq(webhookTriggers.status, 'active')
       )
     )
+}
+
+/** All local rows for an upstream id regardless of status; the lazy reconcile
+ * needs the terminal ones too (SUP-765). */
+export async function listAllWebhookTriggersByComposioId(
+  composioTriggerId: string,
+): Promise<WebhookTrigger[]> {
+  return db
+    .select()
+    .from(webhookTriggers)
+    .where(eq(webhookTriggers.composioTriggerId, composioTriggerId))
 }
 
 /**
@@ -455,13 +474,7 @@ export async function cancelWebhookTriggerWithCleanup(
   const cancelled = await cancelWebhookTrigger(triggerId)
   if (!cancelled) return false
 
-  // Custom endpoints live on the platform proxy regardless of which Composio
-  // key mode is active — gate their teardown on platform auth, not the
-  // Composio condition, or a user-supplied Composio key would silently leave
-  // the public URL live.
-  const canReachUpstream =
-    trigger.kind === 'custom' ? Boolean(getPlatformAccessToken()) : isPlatformComposioActive()
-  if (trigger.composioTriggerId && canReachUpstream) {
+  if (trigger.composioTriggerId && canReachUpstream(trigger.kind)) {
     const upstreamId = trigger.composioTriggerId
     const remaining = await countActiveTriggersForComposioId(upstreamId)
     if (remaining === 0) {
@@ -472,12 +485,11 @@ export async function cancelWebhookTriggerWithCleanup(
         // any explicitly-set Authorization, so ALS is the one mechanism.
         const cleanupAuth = resolveCleanupAttribution(trigger)
         await runWithAttribution(cleanupAuth, () =>
-          trigger.kind === 'custom'
-            ? disablePlatformWebhookEndpoint(
-                cleanupAuth?.actingMemberId() ?? resolveCleanupMemberId(trigger),
-                upstreamId,
-              )
-            : deleteComposioTrigger(upstreamId),
+          deleteUpstream(
+            trigger.kind,
+            cleanupAuth?.actingMemberId() ?? resolveCleanupMemberId(trigger),
+            upstreamId,
+          ),
         )
       } catch (error) {
         console.error('[webhook-trigger-service] Failed to tear down upstream subscription:', error)
@@ -499,6 +511,41 @@ export async function cancelWebhookTriggerWithCleanup(
   }
 
   return true
+}
+
+// Custom endpoints live on the platform proxy regardless of which Composio
+// key mode is active — gate their teardown on platform auth, not the Composio
+// condition, or a user-supplied Composio key would silently leave the URL live.
+function canReachUpstream(kind: WebhookTrigger['kind']): boolean {
+  return kind === 'custom' ? Boolean(getPlatformAccessToken()) : isPlatformComposioActive()
+}
+
+// One place that speaks both upstream vocabularies (platform endpoint disable
+// vs Composio subscription delete). Callers own attribution.
+async function deleteUpstream(
+  kind: WebhookTrigger['kind'],
+  memberId: string,
+  upstreamId: string,
+): Promise<void> {
+  if (kind === 'custom') await disablePlatformWebhookEndpoint(memberId, upstreamId)
+  else await deleteComposioTrigger(upstreamId)
+}
+
+/**
+ * Lazy reconcile (SUP-765): an event just arrived for an upstream subscription
+ * whose local rows are all terminal, so the upstream should no longer exist.
+ * Deletes it under the claiming member's attribution — the proxy only hands a
+ * member events for subscriptions it minted, so that member is by construction
+ * the principal allowed to delete. Opaque-key mode keeps ambient attribution.
+ */
+export async function deleteOrphanedUpstreamSubscription(
+  kind: WebhookTrigger['kind'],
+  upstreamId: string,
+  memberId: string,
+): Promise<void> {
+  if (!canReachUpstream(kind)) return
+  const auth = attribution.requiresActingMember() ? attribution.fromMemberId(memberId) : null
+  await runWithAttribution(auth, () => deleteUpstream(kind, memberId, upstreamId))
 }
 
 /**
