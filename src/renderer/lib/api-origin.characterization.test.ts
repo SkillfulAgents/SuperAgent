@@ -147,6 +147,7 @@ const DIRECT_BASE_URL_CONSUMERS: Record<string, string> = {
   'components/dashboards/dashboard-view.tsx': '<iframe src> — embedded dashboard',
   'lib/workspace-file-url.ts':
     'getAgentFileUrl() — the one place a workspace-file URL is composed, for the preview tray\'s previewers/<img>, the unsupported renderer\'s download link and the delivered-file row\'s. None of those can carry a request header, and building the URL once here is what keeps their encoding and cache-busting from drifting apart',
+  'components/messages/sent-attachment-chip.tsx': '<img src> — thumbnail of an uploaded image on a sent message',
   'components/messages/message-input.tsx': 'fire-and-forget typing ping (deliberately not awaited)',
   'components/notifications/global-notification-handler.tsx':
     'EventSource — global notification stream',
