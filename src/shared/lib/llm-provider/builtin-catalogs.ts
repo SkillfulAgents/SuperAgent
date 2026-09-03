@@ -454,9 +454,13 @@ const PLATFORM_RESPONSES_WEB = { supportsWebSearch: true, supportsWebFetch: fals
  *
  * The `meta` icon key follows the one-brand-icon-per-vendor convention the
  * catalog test enforces; the mark lives at `public/model-icons/meta.svg`.
+ *
+ * Two families, one per billing tier, so the picker shows two version rows
+ * ("Muse Spark" and "Muse Spark Contributor") the way it does for Opus and
+ * Fable, rather than one flat row per release. Each family is also a bare
+ * alias (`muse`, `muse-contributor`) that rides upgrades to its isLatest id.
  */
 const MUSE_SPARK_SHARED = {
-  family: 'muse',
   icon: 'meta',
   supportedEfforts: NON_CLAUDE_EFFORTS,
   supportsWebSearch: false,
@@ -466,54 +470,62 @@ const MUSE_SPARK_SHARED = {
 } as const
 
 /** Standard-tier rates, identical across muse-spark 1.1, 1.2, and 1.3. */
-const MUSE_SPARK_STANDARD_PRICING = { inputPerMtok: 1.25, outputPerMtok: 4.25 } as const
-const MUSE_SPARK_CONTRIBUTOR_PRICING = { inputPerMtok: 0.1, outputPerMtok: 0.2 } as const
+const MUSE_SPARK_STANDARD = {
+  ...MUSE_SPARK_SHARED,
+  family: 'muse',
+  pricing: { inputPerMtok: 1.25, outputPerMtok: 4.25 },
+} as const
+
+/**
+ * Meta's discounted tier, ~12x cheaper in exchange for data use: Meta uses
+ * Contributor prompts and outputs to improve its products, and has not
+ * clarified whether that is training-only. Anything touching customer data,
+ * PII, or secrets belongs on the standard tier — which is what
+ * `dataUsedForProductImprovement` puts in front of the user at pick time.
+ */
+const MUSE_SPARK_CONTRIBUTOR = {
+  ...MUSE_SPARK_SHARED,
+  family: 'muse-contributor',
+  pricing: { inputPerMtok: 0.1, outputPerMtok: 0.2 },
+  dataUsedForProductImprovement: true,
+} as const
 
 const MUSE_SPARK_MODELS: ModelDefinition[] = [
   {
-    ...MUSE_SPARK_SHARED,
+    ...MUSE_SPARK_STANDARD,
     id: 'muse-spark-1.1',
     label: 'Muse Spark 1.1',
     blurb: 'Meta, served via Platform',
-    pricing: MUSE_SPARK_STANDARD_PRICING,
   },
   {
     // Bare id matches the platform proxy's muse-spark-* → meta route.
-    ...MUSE_SPARK_SHARED,
+    ...MUSE_SPARK_STANDARD,
     id: 'muse-spark-1.2',
     label: 'Muse Spark 1.2',
     blurb: 'Meta, served via Platform',
-    pricing: MUSE_SPARK_STANDARD_PRICING,
   },
   {
-    // Meta's discounted tier, ~12x cheaper in exchange for data use: Meta uses
-    // Contributor prompts and outputs to improve its products, and has not
-    // clarified whether that is training-only. Anything touching customer
-    // data, PII, or secrets belongs on the standard tier above — which is what
-    // `dataUsedForProductImprovement` puts in front of the user at pick time.
-    ...MUSE_SPARK_SHARED,
-    id: 'muse-spark-1.2-contributor',
-    label: 'Muse Spark 1.2c',
-    blurb: 'Meta contributor tier, served via Platform',
-    pricing: MUSE_SPARK_CONTRIBUTOR_PRICING,
-    dataUsedForProductImprovement: true,
-  },
-  {
-    ...MUSE_SPARK_SHARED,
+    ...MUSE_SPARK_STANDARD,
     id: 'muse-spark-1.3',
     label: 'Muse Spark 1.3',
     blurb: 'Meta flagship, served via Platform',
     isLatest: true,
     isDefault: true,
-    pricing: MUSE_SPARK_STANDARD_PRICING,
+  },
+  // Labels carry the full family name so the picker's version chips strip to
+  // the bare version ("1.3"), matching the standard row beside them.
+  {
+    ...MUSE_SPARK_CONTRIBUTOR,
+    id: 'muse-spark-1.2-contributor',
+    label: 'Muse Spark Contributor 1.2',
+    blurb: 'Meta contributor tier, served via Platform',
   },
   {
-    ...MUSE_SPARK_SHARED,
+    ...MUSE_SPARK_CONTRIBUTOR,
     id: 'muse-spark-1.3-contributor',
-    label: 'Muse Spark 1.3c',
+    label: 'Muse Spark Contributor 1.3',
     blurb: 'Meta contributor tier, served via Platform',
-    pricing: MUSE_SPARK_CONTRIBUTOR_PRICING,
-    dataUsedForProductImprovement: true,
+    isLatest: true,
   },
 ]
 
