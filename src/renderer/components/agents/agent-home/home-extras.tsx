@@ -17,13 +17,16 @@ export function HomeExtras({ agentSlug, onOpenSettings, className }: HomeExtrasP
   const { openFolder } = useFilePreview()
 
   return (
-    // No vertical padding on the card: it would stack onto the first and last
-    // rows and make them taller than the rest. Rows are clipped to the rounded
-    // corners instead so their hover fill stays inside.
+    // Two sections. The per-agent defaults (pickers) keep their own padding
+    // around the group; the navigation rows below are one uniform height and
+    // sit flush with the card, which clips them to its rounded corners so the
+    // hover fill stays inside.
     <div className={cn("overflow-hidden rounded-xl border bg-background", className)}>
-      <div className="divide-y divide-border/50">
+      <div className="divide-y divide-border/50 py-2">
         <HomeDefaultModel agentSlug={agentSlug} />
         <HomeRetention agentSlug={agentSlug} />
+      </div>
+      <div className="divide-y divide-border/50 border-t border-border/50">
         <ExtrasButton
           label="Agent-to-agent connections"
           onClick={() => {
@@ -63,9 +66,9 @@ function ExtrasButton({ label, onClick, hoverIcon, testId }: { label: string; on
       type="button"
       onClick={onClick}
       data-testid={testId}
-      // min-h-12: every row in the card is the same height, whether it holds
-      // this chevron or one of the 34px picker triggers above. The focus ring
-      // is inset because the card clips its rows to the rounded corners.
+      // min-h-12: every navigation row is the same height, including the last
+      // one, which sits flush with the card's bottom edge. The focus ring is
+      // inset because the card clips its rows to the rounded corners.
       className="group flex min-h-12 w-full items-center justify-between px-4 text-left outline-none transition-colors hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
     >
       <span className="text-sm font-medium text-muted-foreground">{label}</span>
