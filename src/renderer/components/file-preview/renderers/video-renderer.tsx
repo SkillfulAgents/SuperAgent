@@ -8,6 +8,7 @@ import { formatMediaTime } from '../comments/format-media-time'
 interface VideoRendererProps {
   url: string
   filePath: string
+  agentSlug: string
   commentsEnabled?: boolean
 }
 
@@ -32,7 +33,7 @@ function clampPct(value: number): number {
   return Math.min(100, Math.max(0, value))
 }
 
-export function VideoRenderer({ url, filePath, commentsEnabled = true }: VideoRendererProps) {
+export function VideoRenderer({ url, filePath, agentSlug, commentsEnabled = true }: VideoRendererProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const frameRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
@@ -42,8 +43,8 @@ export function VideoRenderer({ url, filePath, commentsEnabled = true }: VideoRe
   const [duration, setDuration] = useState(0)
   const [pending, setPending] = useState<PendingComment | null>(null)
 
-  const { comments } = useFilePreview()
-  const fileComments = comments.get(filePath) || []
+  const { commentsFor } = useFilePreview()
+  const fileComments = commentsFor(filePath, agentSlug)
   const videoComments = fileComments.filter((c): c is VideoComment => c.timestamp != null)
 
   const togglePlay = useCallback(() => {
@@ -174,6 +175,7 @@ export function VideoRenderer({ url, filePath, commentsEnabled = true }: VideoRe
               timestamp: pending.timestamp,
             }}
             filePath={filePath}
+            agentSlug={agentSlug}
             autoEdit
             onClose={() => setPending(null)}
           />

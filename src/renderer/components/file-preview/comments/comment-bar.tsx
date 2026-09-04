@@ -10,6 +10,7 @@ import { getPathName } from '@shared/lib/utils/workspace-path'
 interface CommentBarProps {
   comments: FileComment[]
   filePath: string
+  agentSlug: string
   sessionId: string
 }
 
@@ -64,7 +65,7 @@ export function formatComments(filePath: string, comments: FileComment[]): strin
   return lines.join('\n')
 }
 
-export function CommentBar({ comments, filePath, sessionId }: CommentBarProps) {
+export function CommentBar({ comments, filePath, agentSlug, sessionId }: CommentBarProps) {
   const { clearComments, removeComment } = useFilePreview()
   const draftsStore = useDraftsStore()
 
@@ -72,9 +73,9 @@ export function CommentBar({ comments, filePath, sessionId }: CommentBarProps) {
     if (comments.length === 0) return
     const content = formatComments(filePath, comments)
     appendToSessionDraft(draftsStore, sessionId, content, { prepend: false })
-    clearComments(filePath)
+    clearComments(filePath, agentSlug)
     queueMicrotask(() => focusSessionComposer(sessionId))
-  }, [comments, filePath, sessionId, draftsStore, clearComments])
+  }, [comments, filePath, agentSlug, sessionId, draftsStore, clearComments])
 
   if (comments.length === 0) return null
 
@@ -109,7 +110,7 @@ export function CommentBar({ comments, filePath, sessionId }: CommentBarProps) {
               <div className="text-foreground">{comment.text}</div>
             </div>
             <button
-              onClick={() => removeComment(filePath, comment.id)}
+              onClick={() => removeComment(filePath, agentSlug, comment.id)}
               className="p-0.5 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
               title="Remove comment"
             >
@@ -130,7 +131,7 @@ export function CommentBar({ comments, filePath, sessionId }: CommentBarProps) {
             size="sm"
             variant="ghost"
             className="h-7 text-xs"
-            onClick={() => clearComments(filePath)}
+            onClick={() => clearComments(filePath, agentSlug)}
           >
             <X className="h-3 w-3 mr-1" />
             Cancel

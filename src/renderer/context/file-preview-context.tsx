@@ -41,18 +41,31 @@ export type PreviewTab = FileTab | FolderTab
  * name.
  */
 export function getPreviewTabKey(tab: PreviewTab): string {
-  return tab.kind === 'file'
-    ? getFileTabKey(tab.agentSlug, tab.filePath)
-    : `folder:${tab.agentSlug}:${tab.rootPath}`
+  const path = tab.kind === 'file' ? tab.filePath : tab.rootPath
+  return `${tab.kind}:${getWorkspaceFileKey(tab.agentSlug, path)}`
 }
 
-function getFileTabKey(agentSlug: string, filePath: string): string {
-  return `file:${agentSlug}:${filePath}`
+/**
+ * Identity of one agent's copy of a path.
+ *
+ * Everything the drawer keys by a file keys by this: the tab, and the comments
+ * hanging off it. Keying only half the drawer by the agent would be worse than
+ * keying none of it — the tabs would separate while the state behind them still
+ * aliased, so feedback left on one agent's report would appear on, and be
+ * submitted with, another's.
+ */
+export function getWorkspaceFileKey(agentSlug: string, filePath: string): string {
+  return `${agentSlug}:${filePath}`
 }
 
 /** Does this tab hold that agent's copy of that path? */
 function isFileTabFor(tab: PreviewTab, agentSlug: string, filePath: string): boolean {
   return tab.kind === 'file' && tab.agentSlug === agentSlug && tab.filePath === filePath
+}
+
+/** The folder equivalent: two agents can have a browser open on the same root. */
+function isFolderTabFor(tab: PreviewTab, agentSlug: string, rootPath: string): tab is FolderTab {
+  return tab.kind === 'folder' && tab.agentSlug === agentSlug && tab.rootPath === rootPath
 }
 
 export interface CellRef {
@@ -70,6 +83,8 @@ export interface CellRef {
 export interface FileComment {
   id: string
   filePath: string
+  /** Which agent's copy of `filePath` this is feedback on. */
+  agentSlug: string
   text: string
   selectedText?: string
   x?: number
@@ -88,9 +103,9 @@ interface FilePreviewContextType {
 
   openFile: (filePath: string, agentSlug: string, description?: string) => void
   openFolder: (folderPath: string, agentSlug: string) => void
-  toggleFolder: (rootPath: string, folderPath: string) => void
-  setFolderQuery: (rootPath: string, query: string) => void
-  selectFolderEntry: (rootPath: string, entryPath: string) => void
+  toggleFolder: (rootPath: string, agentSlug: string, folderPath: string) => void
+  setFolderQuery: (rootPath: string, agentSlug: string, query: string) => void
+  selectFolderEntry: (rootPath: string, agentSlug: string, entryPath: string) => void
   renameFilePath: (oldPath: string, newPath: string, agentSlug: string) => void
   removeFilePath: (filePath: string, agentSlug: string) => void
   renameDirectoryPath: (oldPath: string, newPath: string, agentSlug: string) => void
@@ -100,9 +115,11 @@ interface FilePreviewContextType {
   setPdfPage: (filePath: string, agentSlug: string, page: number) => void
   close: () => void
 
+  /** Comments on one agent's copy of a path; the one place the key is composed. */
+  commentsFor: (filePath: string, agentSlug: string) => FileComment[]
   addComment: (comment: Omit<FileComment, 'id'>) => void
-  removeComment: (filePath: string, commentId: string) => void
-  clearComments: (filePath: string) => void
+  removeComment: (filePath: string, agentSlug: string, commentId: string) => void
+  clearComments: (filePath: string, agentSlug: string) => void
 }
 
 const FilePreviewContext = createContext<FilePreviewContextType | null>(null)
@@ -136,6 +153,9 @@ function replacePathPrefix(candidatePath: string, oldPath: string, newPath: stri
 
 let commentIdCounter = 0
 
+/** One shared empty array: a fresh [] per call would change every consumer's deps. */
+const EMPTY_COMMENTS: FileComment[] = []
+
 export function FilePreviewProvider({
   children,
   sessionId: sessionIdProp,
@@ -152,6 +172,7 @@ export function FilePreviewProvider({
 
   const [openTabs, setOpenTabs] = useState<PreviewTab[]>([])
   const [activeTabIndex, setActiveTabIndex] = useState(0)
+  // Keyed by getWorkspaceFileKey, not by path: see the note on that function.
   const [comments, setComments] = useState<Map<string, FileComment[]>>(new Map())
   const [isOpen, setIsOpen] = useState(false)
 
@@ -196,9 +217,7 @@ export function FilePreviewProvider({
   const openFolder = useCallback((folderPath: string, agentSlug: string) => {
     const rootPath = normalizeFolderPath(folderPath)
     setOpenTabs(prev => {
-      const existingIndex = prev.findIndex(tab => (
-        tab.kind === 'folder' && tab.agentSlug === agentSlug && tab.rootPath === rootPath
-      ))
+      const existingIndex = prev.findIndex(tab => isFolderTabFor(tab, agentSlug, rootPath))
       if (existingIndex >= 0) {
         setActiveTabIndex(existingIndex)
         setIsOpen(true)
@@ -220,9 +239,9 @@ export function FilePreviewProvider({
     })
   }, [])
 
-  const toggleFolder = useCallback((rootPath: string, folderPath: string) => {
+  const toggleFolder = useCallback((rootPath: string, agentSlug: string, folderPath: string) => {
     setOpenTabs(prev => prev.map(tab => {
-      if (tab.kind !== 'folder' || tab.rootPath !== rootPath || folderPath === rootPath) return tab
+      if (!isFolderTabFor(tab, agentSlug, rootPath) || folderPath === rootPath) return tab
       const expanded = new Set(tab.expandedPaths)
       if (expanded.has(folderPath)) expanded.delete(folderPath)
       else expanded.add(folderPath)
@@ -230,15 +249,15 @@ export function FilePreviewProvider({
     }))
   }, [])
 
-  const setFolderQuery = useCallback((rootPath: string, query: string) => {
+  const setFolderQuery = useCallback((rootPath: string, agentSlug: string, query: string) => {
     setOpenTabs(prev => prev.map(tab => (
-      tab.kind === 'folder' && tab.rootPath === rootPath ? { ...tab, query } : tab
+      isFolderTabFor(tab, agentSlug, rootPath) ? { ...tab, query } : tab
     )))
   }, [])
 
-  const selectFolderEntry = useCallback((rootPath: string, entryPath: string) => {
+  const selectFolderEntry = useCallback((rootPath: string, agentSlug: string, entryPath: string) => {
     setOpenTabs(prev => prev.map(tab => (
-      tab.kind === 'folder' && tab.rootPath === rootPath ? { ...tab, selectedPath: entryPath } : tab
+      isFolderTabFor(tab, agentSlug, rootPath) ? { ...tab, selectedPath: entryPath } : tab
     )))
   }, [])
 
@@ -259,11 +278,15 @@ export function FilePreviewProvider({
       return tab
     }))
     setComments(prev => {
-      const existing = prev.get(oldPath)
+      const from = getWorkspaceFileKey(agentSlug, oldPath)
+      const existing = prev.get(from)
       if (!existing) return prev
       const next = new Map(prev)
-      next.delete(oldPath)
-      next.set(newPath, existing.map(comment => ({ ...comment, filePath: newPath })))
+      next.delete(from)
+      next.set(
+        getWorkspaceFileKey(agentSlug, newPath),
+        existing.map(comment => ({ ...comment, filePath: newPath })),
+      )
       return next
     })
   }, [])
@@ -277,11 +300,11 @@ export function FilePreviewProvider({
       // the agent slug joined it.
       const closed = prev[idx]
       if (closed.kind === 'file') {
-        const { filePath } = closed
+        const commentKey = getWorkspaceFileKey(closed.agentSlug, closed.filePath)
         setComments(current => {
-          if (!current.has(filePath)) return current
+          if (!current.has(commentKey)) return current
           const next = new Map(current)
-          next.delete(filePath)
+          next.delete(commentKey)
           return next
         })
       }
@@ -301,7 +324,7 @@ export function FilePreviewProvider({
   }, [])
 
   const removeFilePath = useCallback((filePath: string, agentSlug: string) => {
-    closeTab(getFileTabKey(agentSlug, filePath))
+    closeTab(`file:${getWorkspaceFileKey(agentSlug, filePath)}`)
     setOpenTabs(prev => prev.map(tab => (
       tab.kind === 'folder' && tab.agentSlug === agentSlug && tab.selectedPath === filePath
         ? { ...tab, selectedPath: undefined }
@@ -338,12 +361,23 @@ export function FilePreviewProvider({
     setComments(prev => {
       let changed = false
       const next = new Map<string, FileComment[]>()
-      for (const [filePath, fileComments] of prev) {
-        const nextPath = replacePathPrefix(filePath, oldPath, newPath)
-        changed ||= nextPath !== filePath
-        next.set(nextPath, nextPath === filePath
-          ? fileComments
-          : fileComments.map(comment => ({ ...comment, filePath: nextPath })))
+      for (const [key, fileComments] of prev) {
+        // Every comment in a bucket shares the file it is on, so the first one
+        // carries the bucket's identity — which beats parsing it back out of
+        // the key, since a path may contain the separator.
+        const owner = fileComments[0]
+        const nextPath = owner && owner.agentSlug === agentSlug
+          ? replacePathPrefix(owner.filePath, oldPath, newPath)
+          : null
+        if (!owner || nextPath === null || nextPath === owner.filePath) {
+          next.set(key, fileComments)
+          continue
+        }
+        changed = true
+        next.set(
+          getWorkspaceFileKey(agentSlug, nextPath),
+          fileComments.map(comment => ({ ...comment, filePath: nextPath })),
+        )
       }
       return changed ? next : prev
     })
@@ -384,9 +418,11 @@ export function FilePreviewProvider({
     setComments(prev => {
       const next = new Map(prev)
       let changed = false
-      for (const filePath of next.keys()) {
-        if (isPathAtOrBelow(directoryPath, filePath)) {
-          next.delete(filePath)
+      for (const [key, fileComments] of prev) {
+        const owner = fileComments[0]
+        if (!owner || owner.agentSlug !== agentSlug) continue
+        if (isPathAtOrBelow(directoryPath, owner.filePath)) {
+          next.delete(key)
           changed = true
         }
       }
@@ -417,34 +453,40 @@ export function FilePreviewProvider({
     setIsOpen(false)
   }, [])
 
+  const commentsFor = useCallback((filePath: string, agentSlug: string) => (
+    comments.get(getWorkspaceFileKey(agentSlug, filePath)) ?? EMPTY_COMMENTS
+  ), [comments])
+
   const addComment = useCallback((comment: Omit<FileComment, 'id'>) => {
     if (!commentsEnabled) return
     const id = `comment-${++commentIdCounter}`
+    const key = getWorkspaceFileKey(comment.agentSlug, comment.filePath)
     setComments(prev => {
       const next = new Map(prev)
-      const existing = next.get(comment.filePath) || []
-      next.set(comment.filePath, [...existing, { ...comment, id }])
+      next.set(key, [...(next.get(key) ?? []), { ...comment, id }])
       return next
     })
   }, [commentsEnabled])
 
-  const removeComment = useCallback((filePath: string, commentId: string) => {
+  const removeComment = useCallback((filePath: string, agentSlug: string, commentId: string) => {
+    const key = getWorkspaceFileKey(agentSlug, filePath)
     setComments(prev => {
+      const existing = prev.get(key)
+      if (!existing) return prev
       const next = new Map(prev)
-      const existing = next.get(filePath)
-      if (existing) {
-        const filtered = existing.filter(c => c.id !== commentId)
-        if (filtered.length === 0) next.delete(filePath)
-        else next.set(filePath, filtered)
-      }
+      const filtered = existing.filter(c => c.id !== commentId)
+      if (filtered.length === 0) next.delete(key)
+      else next.set(key, filtered)
       return next
     })
   }, [])
 
-  const clearComments = useCallback((filePath: string) => {
+  const clearComments = useCallback((filePath: string, agentSlug: string) => {
+    const key = getWorkspaceFileKey(agentSlug, filePath)
     setComments(prev => {
+      if (!prev.has(key)) return prev
       const next = new Map(prev)
-      next.delete(filePath)
+      next.delete(key)
       return next
     })
   }, [])
@@ -468,10 +510,11 @@ export function FilePreviewProvider({
     setActiveTab,
     setPdfPage,
     close,
+    commentsFor,
     addComment,
     removeComment,
     clearComments,
-  }), [openTabs, activeTabIndex, comments, isOpen, commentsEnabled, openFile, openFolder, toggleFolder, setFolderQuery, selectFolderEntry, renameFilePath, removeFilePath, renameDirectoryPath, removeDirectoryPath, closeTab, setActiveTab, setPdfPage, close, addComment, removeComment, clearComments])
+  }), [openTabs, activeTabIndex, comments, isOpen, commentsEnabled, openFile, openFolder, toggleFolder, setFolderQuery, selectFolderEntry, renameFilePath, removeFilePath, renameDirectoryPath, removeDirectoryPath, closeTab, setActiveTab, setPdfPage, close, commentsFor, addComment, removeComment, clearComments])
 
   return (
     <FilePreviewContext.Provider value={value}>

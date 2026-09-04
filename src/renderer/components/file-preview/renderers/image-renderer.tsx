@@ -8,6 +8,7 @@ import { useDismissOnOutsideClick } from '../comments/use-dismiss-on-outside-cli
 interface ImageRendererProps {
   url: string
   filePath: string
+  agentSlug: string
   commentsEnabled?: boolean
 }
 
@@ -19,12 +20,12 @@ interface ClickPoint {
 
 const IMAGE_DISMISS_IGNORE = ['[data-comment-overlay]']
 
-export function ImageRenderer({ url, filePath, commentsEnabled = true }: ImageRendererProps) {
+export function ImageRenderer({ url, filePath, agentSlug, commentsEnabled = true }: ImageRendererProps) {
   const [loaded, setLoaded] = useState(false)
   const [clickPoint, setClickPoint] = useState<ClickPoint | null>(null)
   const imgContainerRef = useRef<HTMLDivElement>(null)
-  const { comments } = useFilePreview()
-  const fileComments = comments.get(filePath) || []
+  const { commentsFor } = useFilePreview()
+  const fileComments = commentsFor(filePath, agentSlug)
   const imageComments = fileComments.filter((c): c is FileComment & { x: number; y: number } => c.x != null && c.y != null)
 
   useDismissOnOutsideClick(clickPoint != null, () => setClickPoint(null), IMAGE_DISMISS_IGNORE)
@@ -83,6 +84,7 @@ export function ImageRenderer({ url, filePath, commentsEnabled = true }: ImageRe
             y: clickPoint.y,
           }}
           filePath={filePath}
+          agentSlug={agentSlug}
           onClose={() => setClickPoint(null)}
         />
       )}

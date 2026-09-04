@@ -20,7 +20,7 @@ interface FilePreviewTrayContentProps {
 }
 
 export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayContentProps) {
-  const { openTabs, activeTabIndex, setActiveTab, setPdfPage, closeTab, comments } = useFilePreview()
+  const { openTabs, activeTabIndex, setActiveTab, setPdfPage, closeTab, commentsFor } = useFilePreview()
   // The body card squares off its top-left corner only while the active tab sits
   // directly above it; the strip is the only thing that knows when that is.
   const [leadingTabFlush, setLeadingTabFlush] = useState(false)
@@ -37,7 +37,7 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
   const { data: fileSize } = useFileSize(file?.apiPath ?? null, activeFile?.version ?? 0)
   if (!activeTab) return null
 
-  const activeComments = activeFile ? comments.get(activeFile.filePath) || [] : []
+  const activeComments = file ? commentsFor(file.path, file.agentSlug) : []
 
   return (
     <div className="contents" data-testid="file-preview-tray">
@@ -147,6 +147,7 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
         <CommentBar
           comments={activeComments}
           filePath={activeFile.filePath}
+          agentSlug={activeFile.agentSlug}
           sessionId={sessionId}
         />
       )}

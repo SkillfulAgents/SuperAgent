@@ -10,7 +10,10 @@ const addComment = vi.fn()
 let comments = new Map<string, FileComment[]>()
 
 vi.mock('@renderer/context/file-preview-context', () => ({
-  useFilePreview: () => ({ comments, addComment }),
+  useFilePreview: () => ({
+    commentsFor: (filePath: string, agentSlug: string) => comments.get(`${agentSlug}:${filePath}`) ?? [],
+    addComment,
+  }),
 }))
 
 beforeEach(() => {
@@ -34,6 +37,7 @@ describe('AudioRenderer', () => {
       <AudioRenderer
         url="/voice-note.mp3"
         filePath="/workspace/voice-note.mp3"
+        agentSlug="test-agent"
         commentsEnabled={false}
       />,
     )
@@ -42,7 +46,7 @@ describe('AudioRenderer', () => {
   })
 
   it('renders custom playback controls and a waveform timeline', () => {
-    render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" />)
+    render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" agentSlug="test-agent" />)
 
     expect(screen.getByTestId('audio-element')).toBeInTheDocument()
     expect(screen.getByTestId('audio-waveform')).toBeVisible()
@@ -52,7 +56,7 @@ describe('AudioRenderer', () => {
   })
 
   it('uses one inset coordinate layer for the waveform and playhead', () => {
-    render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" />)
+    render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" agentSlug="test-agent" />)
 
     const audio = screen.getByTestId('audio-element') as HTMLAudioElement
     Object.defineProperty(audio, 'duration', { configurable: true, value: 120 })
@@ -70,7 +74,7 @@ describe('AudioRenderer', () => {
   })
 
   it('waits for metadata before fetching audio for waveform decoding', () => {
-    render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" />)
+    render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" agentSlug="test-agent" />)
     expect(fetch).not.toHaveBeenCalled()
 
     const audio = screen.getByTestId('audio-element') as HTMLAudioElement
@@ -81,7 +85,7 @@ describe('AudioRenderer', () => {
   })
 
   it('skips waveform decoding for long recordings', () => {
-    render(<AudioRenderer url="/long-recording.mp3" filePath="/workspace/long-recording.mp3" />)
+    render(<AudioRenderer url="/long-recording.mp3" filePath="/workspace/long-recording.mp3" agentSlug="test-agent" />)
 
     const audio = screen.getByTestId('audio-element') as HTMLAudioElement
     Object.defineProperty(audio, 'duration', { configurable: true, value: 20 * 60 })
@@ -91,7 +95,7 @@ describe('AudioRenderer', () => {
   })
 
   it('shows an add-comment affordance when the waveform is hovered', () => {
-    render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" />)
+    render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" agentSlug="test-agent" />)
 
     fireEvent.pointerMove(screen.getByTestId('audio-waveform'), { clientX: 40 })
 
@@ -101,7 +105,7 @@ describe('AudioRenderer', () => {
 
   it('keeps the hover affordance open while the pointer moves to it', () => {
     vi.useFakeTimers()
-    render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" />)
+    render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" agentSlug="test-agent" />)
 
     const waveform = screen.getByTestId('audio-waveform')
     fireEvent.pointerMove(waveform, { clientX: 40 })
@@ -123,7 +127,7 @@ describe('AudioRenderer', () => {
     })
     vi.stubGlobal('requestAnimationFrame', requestFrame)
     vi.stubGlobal('cancelAnimationFrame', vi.fn())
-    render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" />)
+    render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" agentSlug="test-agent" />)
 
     const audio = screen.getByTestId('audio-element') as HTMLAudioElement
     Object.defineProperty(audio, 'paused', { configurable: true, value: false })
@@ -140,7 +144,7 @@ describe('AudioRenderer', () => {
 
   it('pauses playback and saves the locked timestamp when adding a comment', async () => {
     const user = userEvent.setup()
-    render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" />)
+    render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" agentSlug="test-agent" />)
 
     await user.click(screen.getByTestId('audio-add-comment'))
 
@@ -152,6 +156,7 @@ describe('AudioRenderer', () => {
 
     expect(addComment).toHaveBeenCalledWith({
       filePath: '/workspace/voice-note.mp3',
+      agentSlug: 'test-agent',
       text: 'Reduce the background noise',
       selectedText: undefined,
       x: undefined,
@@ -162,14 +167,15 @@ describe('AudioRenderer', () => {
   })
 
   it('renders existing timestamp comments as waveform markers', () => {
-    comments.set('/workspace/voice-note.mp3', [{
+    comments.set('test-agent:/workspace/voice-note.mp3', [{
       id: 'comment-1',
       filePath: '/workspace/voice-note.mp3',
+      agentSlug: 'test-agent',
       text: 'Cut this section',
       timestamp: 12,
     }])
 
-    render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" />)
+    render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" agentSlug="test-agent" />)
 
     expect(screen.getByRole('button', { name: 'Seek to comment 1 at 0:12' })).toBeVisible()
   })

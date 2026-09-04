@@ -25,6 +25,7 @@ vi.mock('@renderer/context/file-preview-context', () => ({
     setPdfPage: vi.fn(),
     closeTab: vi.fn(),
     comments: new Map(),
+    commentsFor: () => [],
     commentsEnabled: true,
   }),
 }))

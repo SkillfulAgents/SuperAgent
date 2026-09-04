@@ -36,6 +36,7 @@ describe('PdfRenderer', () => {
       <PdfRenderer
         url="/files/report.pdf"
         filePath="/workspace/report.pdf"
+        agentSlug="test-agent"
         pageNumber={4}
         onPageChange={onPageChange}
       />,
@@ -59,6 +60,7 @@ describe('PdfRenderer', () => {
       <PdfRenderer
         url="/files/short.pdf"
         filePath="/workspace/short.pdf"
+        agentSlug="test-agent"
         pageNumber={8}
         onPageChange={onPageChange}
       />,

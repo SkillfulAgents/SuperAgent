@@ -146,7 +146,7 @@ function FolderDirectory({
                     selected && 'bg-muted',
                   )}
                   style={{ paddingLeft: `${entryDepth * 16 + 10}px` }}
-                  onClick={() => toggleFolder(folder.rootPath, entry.path)}
+                  onClick={() => toggleFolder(folder.rootPath, folder.agentSlug, entry.path)}
                   aria-expanded={expanded}
                   data-testid="folder-entry"
                   data-entry-type="directory"
@@ -192,7 +192,7 @@ function FolderDirectory({
               )}
               style={{ paddingLeft: `${entryDepth * 16 + 30}px` }}
               onClick={() => {
-                selectFolderEntry(folder.rootPath, entry.path)
+                selectFolderEntry(folder.rootPath, folder.agentSlug, entry.path)
                 openFile(entry.path, folder.agentSlug)
               }}
               data-testid="folder-entry"
@@ -227,7 +227,7 @@ export function FolderBrowser({ folder }: FolderBrowserProps) {
         <Search className="pointer-events-none absolute left-4 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
         <Input
           value={folder.query}
-          onChange={event => setFolderQuery(folder.rootPath, event.target.value)}
+          onChange={event => setFolderQuery(folder.rootPath, folder.agentSlug, event.target.value)}
           placeholder="Filter files..."
           aria-label="Filter files"
           className="h-8 rounded-lg pl-8 text-xs"
