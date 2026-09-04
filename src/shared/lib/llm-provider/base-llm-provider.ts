@@ -4,6 +4,7 @@ import type { ModelDefinition, ModelSearchResult } from './model-catalog-schema'
 import type { CatalogDefaultModels } from './model-catalog-defaults'
 import type { LlmProviderId } from './provider-types'
 import { defaultParseErrorResponse, type ProviderErrorPresentation } from './error-presentation'
+import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
 
 export { LLM_PROVIDER_IDS } from './provider-types'
 export type { LlmProviderId } from './provider-types'
@@ -163,6 +164,20 @@ export abstract class BaseLlmProvider {
    */
   parseErrorResponse(status: number | undefined, body: unknown): ProviderErrorPresentation {
     return this.parseErrorResponseOverride(status, body) ?? defaultParseErrorResponse(status, body)
+  }
+
+  // Presentation for a failed turn. Classes this provider recognizes always get
+  // one, even under a generic SDK code (the CLI tags some upstream denials as
+  // `unknown`); everything else only when the SDK code marks a provider error.
+  presentationForTurnError(
+    status: number | undefined,
+    body: unknown,
+    apiErrorCode: string | null | undefined,
+  ): ProviderErrorPresentation | null {
+    const specialized = this.parseErrorResponseOverride(status, body)
+    if (specialized) return specialized
+    if (apiErrorCode && PROVIDER_ERROR_CODES.has(apiErrorCode)) return defaultParseErrorResponse(status, body)
+    return null
   }
 
   /**

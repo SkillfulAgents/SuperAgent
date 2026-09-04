@@ -5,7 +5,7 @@ import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
 import { usePendingUserRequests } from '@renderer/hooks/use-pending-user-requests'
 import { apiFetch } from '@renderer/lib/api'
 import { resolveProviderError } from '@renderer/components/provider-error/provider-error-registry'
-import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
+import { isProviderFacingError } from '@shared/lib/types/api'
 import { isTurnStartingUserMessage } from './pending-message'
 import { useCallback, useMemo, useState } from 'react'
 
@@ -246,7 +246,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
 
   // Show error if present
   if (error) {
-    const isProviderError = apiErrorCode != null && PROVIDER_ERROR_CODES.has(apiErrorCode)
+    const isProviderError = isProviderFacingError(apiErrorCode, errorPresentation)
     const providerError = resolveProviderError(errorPresentation)
     // Routed to another placement (e.g. composer): ProviderErrorPlacement renders it there.
     if (isProviderError && providerError.placement !== 'inline') return null

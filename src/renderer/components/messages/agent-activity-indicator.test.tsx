@@ -138,6 +138,14 @@ describe('AgentActivityIndicator', () => {
     expect(screen.getByRole('link', { name: /raise spend limit/i })).toBeInTheDocument()
   })
 
+  it('shows the provider card for a generic SDK code when a presentation is attached', () => {
+    mockStreamState.error = 'API Error: 402'
+    mockStreamState.apiErrorCode = 'unknown'
+    mockStreamState.errorPresentation = { severity: 'error', message: '**Attached**', icon: 'info' }
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Attached')
+  })
+
   it('renders nothing for a provider error routed to the composer placement', () => {
     mockStreamState.error = 'API Error: 402 insufficient balance'
     mockStreamState.apiErrorCode = 'billing_error'

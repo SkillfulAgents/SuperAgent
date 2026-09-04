@@ -80,6 +80,25 @@ describe('parseErrorResponse', () => {
   })
 })
 
+describe('presentationForTurnError', () => {
+  const SPEND_CAP = 'A spend cap for this workspace was reached. It resets within 30 days.'
+
+  it('attaches a recognized class even when the SDK code is generic', () => {
+    const parsed = provider.presentationForTurnError(429, SPEND_CAP, 'unknown')
+    expect(parsed?.message).toContain('**Spend Limit Reached:**')
+  })
+
+  it('attaches the generic banner when the SDK code marks a provider error', () => {
+    const parsed = provider.presentationForTurnError(500, 'Overloaded', 'server_error')
+    expect(parsed?.message).toContain('**LLM Provider Error:**')
+  })
+
+  it('returns null for an unrecognized error with a non-provider SDK code', () => {
+    expect(provider.presentationForTurnError(undefined, 'Output too long', 'max_output_tokens')).toBeNull()
+    expect(provider.presentationForTurnError(undefined, 'Output too long', null)).toBeNull()
+  })
+})
+
 describe('sanitizeAgentName', () => {
   it('collapses runs of control chars and spaces to a single space', () => {
     expect(sanitizeAgentName('a\r\n\r\nb   c')).toBe('a b c')

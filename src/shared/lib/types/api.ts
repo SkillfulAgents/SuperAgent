@@ -236,6 +236,17 @@ export const PROVIDER_ERROR_CODES = new Set([
   'server_error',
 ])
 
+// The server only attaches a presentation when the active provider recognized
+// the error, so its presence outranks a generic SDK code (the CLI tags some
+// upstream denials, e.g. a 402, as `unknown`).
+export function isProviderFacingError(
+  apiErrorCode: string | null | undefined,
+  presentation?: ProviderErrorPresentation | null,
+): boolean {
+  if (presentation) return true
+  return typeof apiErrorCode === 'string' && PROVIDER_ERROR_CODES.has(apiErrorCode)
+}
+
 /**
  * Compact boundary marker in API response
  */

@@ -206,7 +206,7 @@ import { Readable, pipeline } from 'stream'
 import { pipeline as streamPipeline } from 'stream/promises'
 import pLimit from 'p-limit'
 import * as path from 'path'
-import { PROVIDER_ERROR_CODES, type ApiAgent } from '@shared/lib/types/api'
+import type { ApiAgent } from '@shared/lib/types/api'
 import type { SessionInfo, SessionMetadataMap } from '@shared/lib/types/agent'
 import { toPublicChatIntegration } from '@shared/lib/chat-integrations/public'
 import { toPublicWebhookTrigger } from '@shared/lib/webhook-triggers/public'
@@ -2191,8 +2191,9 @@ const messagesListQuerySchema = z
 function attachProviderErrorPresentations(transformed: TransformedItem[]): void {
   for (const item of transformed) {
     // Holes serialize as null (JSON.stringify / streamJsonArrayResponse); skip so this walk does not 500.
-    if (!item || item.type !== 'assistant' || !item.apiError || !PROVIDER_ERROR_CODES.has(item.apiError)) continue
-    item.errorPresentation = getActiveLlmProvider().parseErrorResponse(undefined, item.content.text)
+    if (!item || item.type !== 'assistant' || !item.apiError) continue
+    item.errorPresentation =
+      getActiveLlmProvider().presentationForTurnError(undefined, item.content.text, item.apiError) ?? undefined
   }
 }
 

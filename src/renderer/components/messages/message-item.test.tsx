@@ -477,6 +477,16 @@ describe('MessageItem', () => {
       expect(screen.getByRole('link', { name: /raise spend limit/i })).toBeInTheDocument()
     })
 
+    it('renders the provider card for a generic SDK code when a presentation is attached', () => {
+      const msg = createAssistantMessage({
+        content: { text: 'API Error: 402' },
+        apiError: 'unknown',
+        errorPresentation: { severity: 'error', message: '**Attached**', icon: 'info' },
+      })
+      render(<MessageItem message={msg} />)
+      expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Attached')
+    })
+
     it('renders nothing in the stream for a provider error routed to the composer placement', () => {
       const msg = createAssistantMessage({
         content: { text: 'API Error: 402 insufficient balance' },

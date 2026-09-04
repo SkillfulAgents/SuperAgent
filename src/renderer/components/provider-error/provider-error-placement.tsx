@@ -4,7 +4,7 @@ import type {
   ProviderErrorPlacement as Placement,
   ProviderErrorPresentation,
 } from '@shared/lib/llm-provider/error-presentation'
-import { PROVIDER_ERROR_CODES, type ApiMessageOrBoundary } from '@shared/lib/types/api'
+import { isProviderFacingError, type ApiMessageOrBoundary } from '@shared/lib/types/api'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useMessages } from '@renderer/hooks/use-messages'
 
@@ -28,14 +28,15 @@ export function currentProviderError(
   live: LiveErrorState,
   messages: readonly ApiMessageOrBoundary[] | undefined,
 ): CurrentProviderError | null {
-  if (live.error && live.apiErrorCode && PROVIDER_ERROR_CODES.has(live.apiErrorCode)) {
+  if (live.error && isProviderFacingError(live.apiErrorCode, live.errorPresentation)) {
     return { message: live.error, presentation: live.errorPresentation ?? undefined }
   }
   if (live.isActive || !messages) return null
   for (let i = messages.length - 1; i >= 0; i--) {
     const item = messages[i]
     if (item.type !== 'assistant') continue
-    const isProviderError = !!item.apiError && PROVIDER_ERROR_CODES.has(item.apiError) && !!item.content.text
+    const isProviderError =
+      !!item.apiError && isProviderFacingError(item.apiError, item.errorPresentation) && !!item.content.text
     return isProviderError ? { message: item.content.text, presentation: item.errorPresentation } : null
   }
   return null

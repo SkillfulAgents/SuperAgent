@@ -54,6 +54,16 @@ describe('currentProviderError', () => {
     })
   })
 
+  it('accepts a live error with a generic SDK code when a presentation is attached', () => {
+    const live = { isActive: false, error: 'API Error: 402', apiErrorCode: 'unknown', errorPresentation: composerError }
+    expect(currentProviderError(live, [])).toEqual({ message: 'API Error: 402', presentation: composerError })
+  })
+
+  it('accepts a persisted error with a generic SDK code when a presentation is attached', () => {
+    const msg = createAssistantMessage({ content: { text: 'API Error: 402' }, apiError: 'unknown', errorPresentation: composerError })
+    expect(currentProviderError(idle, [msg])).toEqual({ message: 'API Error: 402', presentation: composerError })
+  })
+
   it('ignores a live error that is not a provider error', () => {
     const live = { isActive: false, error: 'container died', apiErrorCode: null, errorPresentation: null }
     expect(currentProviderError(live, [])).toBeNull()

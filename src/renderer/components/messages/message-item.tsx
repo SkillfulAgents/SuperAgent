@@ -16,7 +16,7 @@ import { classifyUserText } from './user-message-kinds'
 import ReactMarkdown, { type Components, type Options as ReactMarkdownOptions } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { splitStreamingMarkdown } from './split-streaming-markdown'
-import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
+import { isProviderFacingError } from '@shared/lib/types/api'
 import type { ApiMessage, ApiToolCall } from '@shared/lib/types/api'
 import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
 import { useRenderTracker } from '@renderer/lib/perf'
@@ -365,7 +365,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   const streamingSplit = isStreaming && text ? splitStreamingMarkdown(text) : null
 
   // Detect assistant messages that failed due to an LLM provider error (from SDK metadata)
-  const isProviderErrorMessage = isAssistant && !!message.apiError && PROVIDER_ERROR_CODES.has(message.apiError)
+  const isProviderErrorMessage = isAssistant && !!message.apiError && isProviderFacingError(message.apiError, message.errorPresentation)
   // Errors routed to another placement (e.g. composer) are rendered there, not in the stream.
   const providerError = resolveProviderError(message.errorPresentation)
   const showInlineError = isProviderErrorMessage && providerError.placement === 'inline'
