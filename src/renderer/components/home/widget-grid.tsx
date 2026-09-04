@@ -39,6 +39,9 @@ export function widgetSizeKey(w: number, h: number): WidgetSizeKey {
 
 const GAP = 16 // px between cells
 const TARGET_CELL = 232 // desired cell+gap size — drives the column count
+// Rows are a bit taller than cells are wide, so a Wide card fits three session
+// rows + the health carousel between the status chip and the title pill.
+const CELL_EXTRA_H = 24
 
 export interface Placed extends GridRect {
   id: string
@@ -196,12 +199,14 @@ export function WidgetBoard({
     return items.map((it) => map.get(it.id)!).filter(Boolean)
   }, [items, cols])
 
-  const unit = cellW + GAP
+  const cellH = cellW + CELL_EXTRA_H
+  const unitX = cellW + GAP
+  const unitY = cellH + GAP
   const pos = (g: GridRect) => ({
-    left: g.x * unit,
-    top: g.y * unit,
+    left: g.x * unitX,
+    top: g.y * unitY,
     width: g.w * cellW + (g.w - 1) * GAP,
-    height: g.h * cellW + (g.h - 1) * GAP,
+    height: g.h * cellH + (g.h - 1) * GAP,
   })
 
   const [drag, setDrag] = useState<DragState | null>(null)
@@ -259,8 +264,8 @@ export function WidgetBoard({
       const left = ev.clientX - boardRect.left - dx
       const top = ev.clientY - boardRect.top - dy
       const maxX = cols - item.w
-      const tx = Math.max(0, Math.min(maxX, Math.round(left / unit)))
-      const ty = Math.max(0, Math.round(top / unit))
+      const tx = Math.max(0, Math.min(maxX, Math.round(left / unitX)))
+      const ty = Math.max(0, Math.round(top / unitY))
       const moved = placed.map((g) => (g.id === item.id ? { ...g, x: tx, y: ty } : g))
       const preview = resolveLayout(moved, item.id)
       setDrag({ id: item.id, left, top, w: item.w, h: item.h, target: { x: tx, y: ty }, preview })
@@ -313,22 +318,22 @@ export function WidgetBoard({
     }),
     drag ? drag.target.y + drag.h : 0
   )
-  const boardH = rows * unit - GAP + (drag ? unit : 0)
+  const boardH = rows * unitY - GAP + (drag ? unitY : 0)
 
   return (
     <div
       ref={wrapRef}
       className="relative w-full transition-[height] duration-200 ease-out"
-      style={{ height: Math.max(boardH, unit) }}
+      style={{ height: Math.max(boardH, unitY) }}
     >
       {drag && (
         <div
           className="absolute rounded-lg bg-muted/40 transition-[left,top] duration-100"
           style={{
-            left: drag.target.x * unit,
-            top: drag.target.y * unit,
+            left: drag.target.x * unitX,
+            top: drag.target.y * unitY,
             width: drag.w * cellW + (drag.w - 1) * GAP,
-            height: drag.h * cellW + (drag.h - 1) * GAP,
+            height: drag.h * cellH + (drag.h - 1) * GAP,
           }}
         />
       )}
