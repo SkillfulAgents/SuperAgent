@@ -13,7 +13,7 @@ import {
 import { isTurnStartingUserMessage, type PendingMessage } from './pending-message'
 import { classifyUserMessage, classifyUserText } from './user-message-kinds'
 import { MessageItem } from './message-item'
-import { currentProviderErrorId } from '@renderer/components/provider-error/provider-error-placement'
+import { currentRoutedProviderError } from '@renderer/components/provider-error/provider-error-placement'
 import { ToolCallItem, StreamingToolCallItem } from './tool-call-item'
 import { ThinkingBlockItem } from './thinking-block-item'
 import { SubAgentBlock } from './subagent-block'
@@ -474,9 +474,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     }
   }, [isCompacting, boundaryCount, sessionId])
 
-  // The one persisted row whose provider error a ProviderErrorPlacement is showing right now.
-  const currentErrorMessageId = useMemo(
-    () => currentProviderErrorId({ isActive, error: streamError, apiErrorCode, errorPresentation }, messages),
+  // The one row (streaming or persisted) whose provider error a ProviderErrorPlacement shows right now.
+  const currentRoutedError = useMemo(
+    () => currentRoutedProviderError({ isActive, error: streamError, apiErrorCode, errorPresentation }, messages),
     [isActive, streamError, apiErrorCode, errorPresentation, messages],
   )
 
@@ -1183,7 +1183,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                           : undefined
                       }
                       embeddedImageAliases={embeddedImageAliases}
-                      suppressInlineError={item.id === currentErrorMessageId}
+                      suppressInlineError={item.id === currentRoutedError?.messageId}
                     />
                   </MessageErrorBoundary>
                   {turnDeliveredFiles.has(item.id) && item.id !== deferredElapsedMessageId && (
@@ -1296,8 +1296,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                 toolCalls: [],
                 createdAt: new Date(),
                 ...(apiErrorCode && { apiError: apiErrorCode }),
+                ...(errorPresentation && { errorPresentation }),
               }}
               isStreaming={isStreaming}
+              suppressInlineError={currentRoutedError?.live === true}
               agentSlug={agentSlug}
               sessionId={sessionId}
               embeddedImageAliases={embeddedImageAliases}

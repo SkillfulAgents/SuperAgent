@@ -48,16 +48,16 @@ export function currentProviderError(
   return null
 }
 
-// Id of the persisted row whose error a ProviderErrorPlacement renders right now, so the
-// transcript skips only that row's inline card. Inline-routed errors live in the
-// transcript itself, so they never qualify; older routed rows keep their inline card.
-export function currentProviderErrorId(
+// The current error only when a ProviderErrorPlacement renders it (placement other than
+// inline), so the transcript skips that one row's inline card. Inline errors live in the
+// transcript itself and never qualify; older routed rows keep their inline card.
+export function currentRoutedProviderError(
   live: LiveErrorState,
   messages: readonly ApiMessageOrBoundary[] | undefined,
-): string | null {
+): CurrentProviderError | null {
   const current = currentProviderError(live, messages)
   if (!current || resolveProviderError(current.presentation).placement === 'inline') return null
-  return current.messageId
+  return current
 }
 
 interface ProviderErrorPlacementProps {

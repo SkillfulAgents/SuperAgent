@@ -6,7 +6,7 @@ import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-p
 import type { ApiMessageOrBoundary } from '@shared/lib/types/api'
 import { createAssistantMessage, createCompactBoundary, createUserMessage } from '@renderer/test/factories'
 
-import { currentProviderError, currentProviderErrorId, ProviderErrorPlacement } from './provider-error-placement'
+import { currentProviderError, currentRoutedProviderError, ProviderErrorPlacement } from './provider-error-placement'
 
 const mockStreamState = {
   isActive: false,
@@ -105,24 +105,26 @@ describe('currentProviderError', () => {
   })
 })
 
-describe('currentProviderErrorId', () => {
-  it('is the id of the persisted row a composer placement is showing', () => {
+describe('currentRoutedProviderError', () => {
+  it('is the persisted row a composer placement is showing', () => {
     const msg = errorMessage(composerError)
-    expect(currentProviderErrorId(idle, [createUserMessage(), msg])).toBe(msg.id)
+    expect(currentRoutedProviderError(idle, [createUserMessage(), msg])?.messageId).toBe(msg.id)
   })
 
-  it('is null for a live error (no persisted row yet)', () => {
+  it('is the live error (no persisted row yet) while it is routed to the composer', () => {
     const live = { isActive: false, error: 'API Error: 402', apiErrorCode: 'billing_error', errorPresentation: composerError }
-    expect(currentProviderErrorId(live, [errorMessage(composerError)])).toBeNull()
+    expect(currentRoutedProviderError(live, [errorMessage(composerError)])).toMatchObject({ live: true, messageId: null })
   })
 
   it('is null for an inline error, which the transcript renders itself', () => {
-    expect(currentProviderErrorId(idle, [errorMessage(inlineError)])).toBeNull()
-    expect(currentProviderErrorId(idle, [errorMessage()])).toBeNull()
+    expect(currentRoutedProviderError(idle, [errorMessage(inlineError)])).toBeNull()
+    expect(currentRoutedProviderError(idle, [errorMessage()])).toBeNull()
+    const live = { isActive: false, error: 'API Error: 429', apiErrorCode: 'rate_limit', errorPresentation: inlineError }
+    expect(currentRoutedProviderError(live, [])).toBeNull()
   })
 
   it('is null once a normal reply follows, so the old routed row returns to the transcript', () => {
-    expect(currentProviderErrorId(idle, [errorMessage(composerError), createUserMessage(), createAssistantMessage()])).toBeNull()
+    expect(currentRoutedProviderError(idle, [errorMessage(composerError), createUserMessage(), createAssistantMessage()])).toBeNull()
   })
 })
 

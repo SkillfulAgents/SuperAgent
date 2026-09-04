@@ -2148,6 +2148,31 @@ describe('MessageList', () => {
       renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
       expect(screen.getAllByTestId('provider-error-card')).toHaveLength(1)
     })
+
+    it('renders neither raw text nor a card for the streaming row while the live error is routed', () => {
+      mockMessagesData.data = [createUserMessage({ content: { text: 'summarize' } })]
+      Object.assign(mockStreamState, {
+        streamingMessage: 'API Error: 402 {"error":"insufficient_balance"}',
+        error: 'API Error: 402 {"error":"insufficient_balance"}',
+        apiErrorCode: 'unknown',
+        errorPresentation: routed,
+      })
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.queryByText(/API Error: 402/)).not.toBeInTheDocument()
+      expect(screen.queryByTestId('provider-error-card')).not.toBeInTheDocument()
+    })
+
+    it('still renders the streaming row inline when the live error is not routed away', () => {
+      mockMessagesData.data = [createUserMessage()]
+      Object.assign(mockStreamState, {
+        streamingMessage: 'API Error: 429 rate limited',
+        error: 'API Error: 429 rate limited',
+        apiErrorCode: 'rate_limit',
+        errorPresentation: { severity: 'error', message: '**Inline 429**', icon: 'info' },
+      })
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Inline 429')
+    })
   })
 
   describe('peer user message (SSE)', () => {
