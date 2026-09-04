@@ -81,9 +81,11 @@ const VALUE_CLASS = 'text-xs text-muted-foreground truncate max-w-[260px]'
 function PlatformBillingCard({
   platformBaseUrl,
   orgId,
+  canManageBilling,
 }: {
   platformBaseUrl?: string | null
   orgId?: string | null
+  canManageBilling: boolean
 }) {
   const { data, isLoading, isFetching, error, refetch } = useBillingInfo(true)
   const billing = data?.billing
@@ -121,14 +123,18 @@ function PlatformBillingCard({
             name="Subscription"
             subtitle="No billing set up for this organization"
             right={
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => void handleManageBilling()}
-                disabled={!platformBaseUrl || !orgId}
-              >
-                Set up
-              </Button>
+              canManageBilling ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void handleManageBilling()}
+                  disabled={!platformBaseUrl || !orgId}
+                >
+                  Set up
+                </Button>
+              ) : (
+                <span className={VALUE_CLASS}>Managed by workspace admins</span>
+              )
             }
           />
         ) : billing ? (
@@ -150,21 +156,23 @@ function PlatformBillingCard({
               subtitle="Shared pool used after your seat quota"
               right={<span className={VALUE_CLASS}>{formatCents(billing.orgPool.poolBalanceCents)}</span>}
             />
-            <SettingRow
-              name="Manage billing on the web"
-              right={
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="group gap-0"
-                  onClick={() => void handleManageBilling()}
-                  disabled={!platformBaseUrl || !orgId}
-                >
-                  Manage
-                  <HoverArrow />
-                </Button>
-              }
-            />
+            {canManageBilling && (
+              <SettingRow
+                name="Manage billing on the web"
+                right={
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="group gap-0"
+                    onClick={() => void handleManageBilling()}
+                    disabled={!platformBaseUrl || !orgId}
+                  >
+                    Manage
+                    <HoverArrow />
+                  </Button>
+                }
+              />
+            )}
           </>
         ) : (
           <div className="py-6 px-4 text-xs text-muted-foreground">Billing information is unavailable.</div>
@@ -524,6 +532,10 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
 
   const valueClass = 'text-xs text-muted-foreground truncate max-w-[260px]'
 
+  // Platform gates the billing tab to owner/admin; mirror that here. Unknown
+  // role fails open — the platform still enforces access on its side.
+  const canManageBilling = !data?.role || data.role === 'owner' || data.role === 'admin'
+
   return (
     <div className="space-y-6">
       {isConnected && (
@@ -575,7 +587,11 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
         // Billing is non-critical display data — never let a glitch here take
         // down the Account screen. Errors render a compact, retryable fallback.
         <ErrorBoundary compact>
-          <PlatformBillingCard platformBaseUrl={data?.platformBaseUrl} orgId={data?.orgId} />
+          <PlatformBillingCard
+            platformBaseUrl={data?.platformBaseUrl}
+            orgId={data?.orgId}
+            canManageBilling={canManageBilling}
+          />
         </ErrorBoundary>
       )}
 
