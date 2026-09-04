@@ -97,7 +97,6 @@ export const settingsSearchSchema = z
 // local dialog) and `secrets` (agent-scoped page, /agents/$slug/secrets) are
 // deliberately absent — they are not global settings routes.
 export const SETTINGS_TABS = [
-  'profile',
   'mobile',
   'general',
   'notifications',
