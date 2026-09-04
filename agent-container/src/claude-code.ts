@@ -1,4 +1,14 @@
-import { query, startup, Options, Query, WarmQuery, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import {
+  query,
+  startup,
+  Options,
+  Query,
+  WarmQuery,
+  SDKMessage,
+  SDKUserMessage,
+  McpServerConfig,
+  McpSetServersResult,
+} from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { UUID } from 'crypto';
 import { EventEmitter } from 'events';
@@ -136,11 +146,17 @@ function parseRemoteMcps(): RemoteMcpConfig[] {
   }
 }
 
-function runtimeConnectionConfigSnapshot(): string {
-  return JSON.stringify([
-    process.env.CONNECTED_ACCOUNTS || '{}',
-    process.env.REMOTE_MCPS || '[]',
-  ])
+// The two runtime connection projections are tracked separately because they
+// take different paths into a live query: connected accounts only reach the
+// model through the system prompt (baked at query creation, so a change needs
+// a re-query), while remote MCP servers can be swapped into the running query
+// with Query.setMcpServers(). Unset and serialized-empty are the same thing.
+function connectedAccountsSnapshot(): string {
+  return process.env.CONNECTED_ACCOUNTS || '{}';
+}
+
+function remoteMcpsSnapshot(): string {
+  return process.env.REMOTE_MCPS || '[]';
 }
 
 /**
@@ -487,9 +503,16 @@ export class ClaudeCodeProcess extends EventEmitter {
   private capabilityPolicies: AgentCapabilityPolicies | undefined;
   // Connection metadata is mutable at runtime when Agent Settings changes.
   // The SDK snapshots MCP servers, allowed tool patterns, and the system prompt
-  // when query() is created, so the next user message must refresh a stale
-  // query before it is delivered.
-  private runtimeConnectionSnapshot = '';
+  // when query() is created. A connected-accounts change must therefore
+  // refresh a stale query before the next message is delivered; a remote-MCP
+  // change is pushed into the live query instead (see applyRemoteMcpServers).
+  private connectedAccountsSnapshot = '';
+  private remoteMcpsSnapshot = '';
+  // The in-process (SDK) MCP servers handed to the live query. Kept so a
+  // dynamic setMcpServers() call can name the same instances: the SDK leaves
+  // an already-registered SDK server untouched, but disconnects any it does
+  // not see in the map.
+  private sdkMcpServerConfigs: Record<string, McpServerConfig> | null = null;
   // Session-scoped review grants ("Allow for this session"). Scoped to the
   // SESSION, not the process: they must survive idle-eviction + resume (the
   // session-manager persists them via the 'capability-grant' event), or the
@@ -581,14 +604,106 @@ export class ClaudeCodeProcess extends EventEmitter {
   }
 
   /**
-   * Interrupt and restart the query after MCP approval.
-   * Called by request_remote_mcp tool after user approval. The env var REMOTE_MCPS
-   * is already updated by the host. We can't inject tools into the running query
-   * mid-stream, so we interrupt the current query and restart. The new query
-   * picks up the MCP server from the env var, and we send a continuation message
-   * so the model proceeds with the original request using the newly available tools.
+   * Regenerate the system prompt from the current runtime env. The live query
+   * keeps the prompt it was created with; the refreshed text is what the NEXT
+   * query creation (cold restart, effort/model re-query) carries.
    */
-  addRemoteMcpServer(name: string): void {
+  private refreshSystemPrompt(): void {
+    this.systemPrompt = generateSystemPrompt(
+      this.availableEnvVars,
+      this.userSystemPrompt,
+      this.modelPromptHints,
+      this.webSearchProvider,
+      this.webFetchProvider,
+      this.capabilityPolicies,
+      this.subagentModels,
+    );
+  }
+
+  /**
+   * Push the current REMOTE_MCPS projection into the live query without a
+   * re-query: Query.setMcpServers() replaces the CLI's dynamic MCP set in
+   * place, connecting servers that are new and disconnecting ones that are
+   * gone, while the turn (and any tool call that is mid-flight) stays alive.
+   *
+   * The map handed over is the FULL set — every in-process SDK server plus
+   * every remote server — because the SDK treats the call as a replace:
+   * an SDK server missing from the map is disconnected, and the CLI drops
+   * dynamic process servers it no longer sees. The start-time servers passed
+   * via --mcp-config count as dynamic on the CLI side, so this is safe to
+   * call on a query that already has remote servers (verified on 0.3.257:
+   * they report scope 'dynamic' and are re-added, not duplicated).
+   *
+   * Throws when there is no live query or the CLI rejects the control
+   * request (older CLI) — callers fall back to the interrupt + re-query path.
+   */
+  private async applyRemoteMcpServers(): Promise<McpSetServersResult> {
+    const queryInstance = this.queryInstance;
+    if (!queryInstance || !this.sdkMcpServerConfigs) {
+      throw new Error('No live query to apply remote MCP servers to');
+    }
+    const remoteMcpConfigs = this.buildRemoteMcpServers();
+    const result = await queryInstance.setMcpServers({
+      ...this.sdkMcpServerConfigs,
+      ...remoteMcpConfigs,
+    });
+    // The live query now matches the projection, so the next send must not
+    // treat it as stale. The prompt still lists the old server set until the
+    // next query creation; the tool result (and the host's projection) name
+    // the new tools, and ToolSearch finds them by name.
+    this.remoteMcpsSnapshot = remoteMcpsSnapshot();
+    this.refreshSystemPrompt();
+    const errors = Object.entries(result.errors ?? {});
+    console.log(
+      `[Session ${this.sessionId}] Applied remote MCP servers in place: added=[${result.added.join(', ')}] removed=[${result.removed.join(', ')}]` +
+        (errors.length ? ` errors=${JSON.stringify(result.errors)}` : ''),
+    );
+    return result;
+  }
+
+  /**
+   * Make an approved remote MCP server's tools available to the running query.
+   * Called by the request_remote_mcp tool after user approval; the host has
+   * already written the server into REMOTE_MCPS. The server is hot-added with
+   * setMcpServers() so the tool result that names its tools lands in the same
+   * turn and the model carries on — no interrupt, no "Stopped" marker, no
+   * continuation message.
+   *
+   * Resolves once the server is connected. Rejects when the server was
+   * registered but failed to connect (the tool reports that to the model
+   * instead of claiming the tools exist). When the CLI has no dynamic MCP
+   * support at all, falls back to the interrupt + re-query path and resolves
+   * immediately — the re-query picks the server up from the env var.
+   */
+  async addRemoteMcpServer(name: string): Promise<void> {
+    const sanitizedName = sanitizeMcpName(name);
+    if (this.queryInstance && this.isProcessing && !this.stopping) {
+      let result: McpSetServersResult;
+      try {
+        result = await this.applyRemoteMcpServers();
+      } catch (err) {
+        console.warn(`[Session ${this.sessionId}] Dynamic MCP set failed for "${sanitizedName}", falling back to re-query:`, err);
+        this.restartForRemoteMcp(name);
+        return;
+      }
+      const error = result.errors?.[sanitizedName];
+      if (error) {
+        throw new Error(`MCP server "${sanitizedName}" was registered but failed to connect: ${error}`);
+      }
+      console.log(`[Session ${this.sessionId}] MCP server "${sanitizedName}" hot-added to the live query`);
+      return;
+    }
+    this.restartForRemoteMcp(name);
+  }
+
+  /**
+   * Legacy path: interrupt and restart the query so it is rebuilt with the
+   * server from REMOTE_MCPS, then send a continuation so the model proceeds
+   * with the original request. Only reached when the live query cannot take a
+   * dynamic MCP set (older CLI, or no query running). Leaves the interrupt
+   * marker in the transcript that the hot path avoids.
+   */
+  private restartForRemoteMcp(name: string): void {
     const sanitizedName = sanitizeMcpName(name);
     console.log(`[ClaudeCodeProcess] MCP server "${sanitizedName}" approved, scheduling interrupt to inject tools`);
 
@@ -739,10 +854,33 @@ export class ClaudeCodeProcess extends EventEmitter {
     return model ? this.modelContextWindows[model] : undefined;
   }
 
+  /**
+   * The in-process MCP servers for one query. Fresh instances per query (the
+   * MCP protocol allows one transport per server instance), remembered on the
+   * process so applyRemoteMcpServers can hand the SAME instances back to
+   * setMcpServers — which skips servers it already has registered.
+   */
+  private buildSdkMcpServers(browserMcpTools: ReturnType<typeof createBrowserTools>): Record<string, McpServerConfig> {
+    const servers: Record<string, McpServerConfig> = {
+      'user-input': createUserInputMcpServer(() => this),
+      'browser': createBrowserMcpServer(browserMcpTools),
+      'dashboards': createDashboardsMcpServer(),
+      'agents': createAgentsMcpServer(() => this.sessionId),
+      'chat': createChatMcpServer(() => this.sessionId),
+      ...((this.webSearchProvider || this.webFetchProvider)
+        ? { 'web': createWebMcpServer({ search: !!this.webSearchProvider, fetch: !!this.webFetchProvider }) }
+        : {}),
+      ...(isComputerUseHost() ? { 'computer-use': createComputerUseMcpServer() } : {}),
+    };
+    this.sdkMcpServerConfigs = servers;
+    return servers;
+  }
+
   private buildQueryOptions(): Options {
     const remoteMcpConfigs = this.buildRemoteMcpServers();
     const remoteMcpToolPatterns = Object.keys(remoteMcpConfigs).map(name => `mcp__${name}__*`);
-    this.runtimeConnectionSnapshot = runtimeConnectionConfigSnapshot();
+    this.connectedAccountsSnapshot = connectedAccountsSnapshot();
+    this.remoteMcpsSnapshot = remoteMcpsSnapshot();
 
     // Browser tools are bound per-session via a getter read on every request:
     // this.sessionId changes when the query (re)starts, and a module-global id
@@ -855,15 +993,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           }),
       }), this.speed),
       mcpServers: {
-        'user-input': createUserInputMcpServer(() => this),
-        'browser': createBrowserMcpServer(browserMcpTools),
-        'dashboards': createDashboardsMcpServer(),
-        'agents': createAgentsMcpServer(() => this.sessionId),
-        'chat': createChatMcpServer(() => this.sessionId),
-        ...((this.webSearchProvider || this.webFetchProvider)
-          ? { 'web': createWebMcpServer({ search: !!this.webSearchProvider, fetch: !!this.webFetchProvider }) }
-          : {}),
-        ...(isComputerUseHost() ? { 'computer-use': createComputerUseMcpServer() } : {}),
+        ...this.buildSdkMcpServers(browserMcpTools),
         ...remoteMcpConfigs,
       },
       agents: {
@@ -1323,20 +1453,13 @@ export class ClaudeCodeProcess extends EventEmitter {
     const effort = options?.effort;
     const speed = options?.speed;
     const model = options?.model;
-    const runtimeConnectionConfigChanged =
-      runtimeConnectionConfigSnapshot() !== this.runtimeConnectionSnapshot;
-    if (runtimeConnectionConfigChanged) {
+    const connectedAccountsChanged =
+      connectedAccountsSnapshot() !== this.connectedAccountsSnapshot;
+    const remoteMcpsChanged = remoteMcpsSnapshot() !== this.remoteMcpsSnapshot;
+    if (connectedAccountsChanged || remoteMcpsChanged) {
       // The prompt's connected-account and remote-MCP sections are generated
       // from runtime env metadata, so refresh them alongside the query config.
-      this.systemPrompt = generateSystemPrompt(
-        this.availableEnvVars,
-        this.userSystemPrompt,
-        this.modelPromptHints,
-        this.webSearchProvider,
-        this.webFetchProvider,
-        this.capabilityPolicies,
-        this.subagentModels,
-      );
+      this.refreshSystemPrompt();
     }
 
     // Treat undefined stored effort as 'high' so pre-existing sessions (created before
@@ -1391,6 +1514,11 @@ export class ClaudeCodeProcess extends EventEmitter {
       this.model = model;
     }
 
+    // Whether the query was rebuilt on this send. A rebuild re-reads REMOTE_MCPS
+    // itself, so a pending remote-MCP change rides along and only needs the
+    // handshake gate below; otherwise it is applied to the live query in place.
+    let queryRebuilt = false;
+
     if (this.stopping || !this.messageQueue || !this.isReady) {
       // Cold session, or a stop in flight (queue closed but not yet nulled —
       // pushing would throw and lose the message): wait the stop out, then
@@ -1400,11 +1528,12 @@ export class ClaudeCodeProcess extends EventEmitter {
         await this.currentStop.catch(() => undefined);
       }
       await this.restart();
+      queryRebuilt = true;
     } else if (
       effortChanged ||
       speedChanged ||
       capabilityBlockChanged ||
-      runtimeConnectionConfigChanged ||
+      connectedAccountsChanged ||
       contextWindowChanged
     ) {
       // Effort can only be set at query creation time — the SDK has no setEffort
@@ -1412,16 +1541,20 @@ export class ClaudeCodeProcess extends EventEmitter {
       // lives in the query env (ANTHROPIC_CUSTOM_HEADERS), which is likewise
       // baked at query creation. The new model (if also changed) is picked up by
       // the same restart. A capability block boundary flip re-queries for the
-      // same reason: the tool lists and system prompt only apply at query creation.
+      // same reason: the tool lists and system prompt only apply at query
+      // creation — and so does a connected-accounts change, which reaches the
+      // model through the prompt alone.
       const reasons: string[] = [];
       if (effortChanged) reasons.push(`effort ${currentEffort} -> ${effort}`);
       if (speedChanged) reasons.push(`speed ${currentSpeed} -> ${speed}`);
       if (capabilityBlockChanged) reasons.push('capability block boundary changed');
-      if (runtimeConnectionConfigChanged) reasons.push('runtime connection configuration changed');
+      if (connectedAccountsChanged) reasons.push('connected accounts changed');
+      if (remoteMcpsChanged) reasons.push('remote MCP servers changed');
       if (contextWindowChanged) reasons.push('model context window changed');
       if (modelChanged) reasons.push(`model -> ${this.model}`);
       console.log(`[Session ${this.sessionId}] Restarting query (${reasons.join(', ')})`);
       await this.interrupt();
+      queryRebuilt = true;
     } else if (modelChanged && this.queryInstance) {
       // Model-only change — use the SDK's dynamic setModel() so the running query
       // is reused and only subsequent turns are served by the new model. No
@@ -1434,14 +1567,31 @@ export class ClaudeCodeProcess extends EventEmitter {
         // the conservative restart path so the new model still takes effect.
         console.warn(`[Session ${this.sessionId}] setModel failed, falling back to restart:`, err);
         await this.interrupt();
+        queryRebuilt = true;
       }
     }
 
-    // Deliberately outside the branch chain above: BOTH the cold-session
-    // restart() and the interrupt() re-query rebuild the query with the new
-    // connection set, so both race the handshake. Effort- or speed-only
-    // re-queries pay nothing because the runtime connection set is unchanged.
-    if (runtimeConnectionConfigChanged) {
+    if (remoteMcpsChanged && !queryRebuilt) {
+      // Agent Settings assigned or removed a remote MCP while the query is
+      // live: swap the server set in place. setMcpServers() returns once the
+      // new servers have finished their handshake (or failed), so there is no
+      // half-connected window to gate on. Only a CLI without the control
+      // request sends us down the re-query path.
+      console.log(`[Session ${this.sessionId}] Applying remote MCP change to the live query`);
+      try {
+        await this.applyRemoteMcpServers();
+      } catch (err) {
+        console.warn(`[Session ${this.sessionId}] Dynamic MCP set failed, falling back to re-query:`, err);
+        await this.interrupt();
+        queryRebuilt = true;
+      }
+    }
+
+    // BOTH the cold-session restart() and the interrupt() re-query rebuild the
+    // query with the new connection set and race its handshake, so a rebuilt
+    // query with a changed remote-MCP set waits here. Effort- or speed-only
+    // re-queries pay nothing because the remote MCP set is unchanged.
+    if (remoteMcpsChanged && queryRebuilt) {
       await this.waitForRemoteMcpsReady();
     }
 

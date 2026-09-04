@@ -172,4 +172,42 @@ describe('requestRemoteMcpTool', () => {
 
     expect(injections).toEqual([GRANOLA_MCP.name])
   })
+
+  // The hot-add is awaited: the result that names the tools is only returned
+  // once they can be called, and a server that registered but never connected
+  // is reported as such instead of the model being sent after phantom tools.
+  it('waits for the hot-add and names the live tools in the result', async () => {
+    process.env.REMOTE_MCPS = JSON.stringify([GRANOLA_MCP])
+    let settled = false
+    mockAddRemoteMcpServer.mockImplementation(
+      () => new Promise<void>((resolve) => setTimeout(() => { settled = true; resolve() }, 20)),
+    )
+    const toolUseId = `mcp-test-${Date.now()}-7`
+    inputManager.setCurrentToolUseId(toolUseId)
+    inputManager.resolve(toolUseId, GRANOLA_MCP.id)
+
+    const result = await invokeTool()
+
+    expect(settled).toBe(true)
+    expect(result.isError).toBeUndefined()
+    expect(result.content[0].text).toContain('mcp__granola__list_meetings')
+    expect(result.content[0].text).toContain('live in this session now')
+  })
+
+  it('reports a server that was granted but could not connect, as an error', async () => {
+    process.env.REMOTE_MCPS = JSON.stringify([GRANOLA_MCP])
+    mockAddRemoteMcpServer.mockRejectedValueOnce(
+      new Error('MCP server "granola" was registered but failed to connect: ECONNREFUSED'),
+    )
+    const toolUseId = `mcp-test-${Date.now()}-8`
+    inputManager.setCurrentToolUseId(toolUseId)
+    inputManager.resolve(toolUseId, GRANOLA_MCP.id)
+
+    const result = await invokeTool()
+
+    expect(result.isError).toBe(true)
+    expect(result.content[0].text).toContain('could not be connected')
+    expect(result.content[0].text).toContain('ECONNREFUSED')
+    expect(result.content[0].text).not.toContain('Use these tools')
+  })
 })
