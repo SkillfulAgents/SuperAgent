@@ -6,6 +6,7 @@ import { useState, type ReactNode } from 'react'
 import { AgentHome } from './agent-home'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
+import type { AgentHomeAction } from '@renderer/context/nav-transient-context'
 import { useDraftsStore } from '@renderer/context/drafts-context'
 import {
   newSessionCarryoverKey,
@@ -113,13 +114,17 @@ vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({
 // intro-morph test can flip justCreatedSlug and assert the clear.
 let mockJustCreatedSlug: string | null = null
 const mockSetJustCreatedSlug = vi.fn()
+// A parked "Export Agent" / "Agent Directory" from a menu elsewhere. Seeded
+// at mount by the hand-off test, which asserts it is consumed.
+let mockPendingAgentHomeAction: AgentHomeAction | null = null
+const mockSetPendingAgentHomeAction = vi.fn()
 
 vi.mock('@renderer/context/nav-transient-context', () => ({
   useNavTransient: () => ({
     justCreatedSlug: mockJustCreatedSlug,
     setJustCreatedSlug: mockSetJustCreatedSlug,
-    pendingAgentHomeAction: null,
-    setPendingAgentHomeAction: vi.fn(),
+    pendingAgentHomeAction: mockPendingAgentHomeAction,
+    setPendingAgentHomeAction: mockSetPendingAgentHomeAction,
   }),
   NavTransientProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
@@ -250,6 +255,7 @@ describe('AgentHome', () => {
     capturedComposerOptions = undefined
     mockSessionsData = []
     mockJustCreatedSlug = null
+    mockPendingAgentHomeAction = null
   })
 
   // --- Rendering ---
@@ -411,6 +417,28 @@ describe('AgentHome', () => {
   })
 
   // --- Send button disabled state ---
+
+  it('runs a parked Export Agent only after the composer has taken its mount focus', async () => {
+    // "Export Agent" from a menu away from this page parks the action and
+    // navigates here. The composer autofocuses on the frame after it mounts,
+    // and the Share popover is non-modal, so opening it before that frame let
+    // the focus land outside it and dismiss it — the flaky sidebar export.
+    mockCanAdminAgent = true
+    mockPendingAgentHomeAction = { slug: testAgent.slug, action: 'export' }
+    renderWithProviders(<AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />)
+
+    // Consumed at mount, but not opened in the same tick.
+    expect(mockSetPendingAgentHomeAction).toHaveBeenCalledWith(null)
+    expect(screen.queryByTestId('agent-export-pane')).not.toBeInTheDocument()
+
+    const pane = await screen.findByTestId('agent-export-pane')
+    // Let the composer's autofocus frame (and a spare) fire: the popover must
+    // still be open, i.e. it opened after that focus rather than before it.
+    await act(
+      () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+    )
+    expect(pane).toBeInTheDocument()
+  })
 
   it('send button is disabled when canSubmit is false', () => {
     mockComposer.canSubmit = false

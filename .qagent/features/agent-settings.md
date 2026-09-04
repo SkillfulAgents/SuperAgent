@@ -17,7 +17,7 @@ three-dot button on the agent home header.
 - **Rename Agent** (`data-testid='rename-agent-item'`) - owners only. From the agent home it puts the inline title into edit mode; elsewhere it opens a rename dialog (`data-testid='rename-agent-dialog'`).
 - **Export Agent** (`data-testid='export-agent-item'`) - owners only. Opens the Share popover on its Export pane; from a menu away from the agent home it navigates there first.
 - **Agent Directory** (`data-testid='open-agent-directory-item'`) - owners only. Opens the workspace folder panel (the same one the agent home's "Agent Directory" row opens); from a menu away from the agent home it navigates there first.
-- **Move to Folder** (`data-testid='move-agent-to-folder-trigger'`) - submenu of left-nav folders.
+- **Move to Folder** (`data-testid='move-agent-to-folder-trigger'`) - submenu (`data-testid='move-agent-to-folder-menu'`) listing only the left-nav folders the agent can move to (`move-agent-to-folder-<id>`, or `move-agent-to-no-folder-item` for "Your Agents"); the folder it is in is left out, so nothing is marked as selected. **New Folder** (`move-agent-to-new-folder-item`) is always offered.
 - **Delete Agent** (`data-testid='delete-agent-item'`) - owners only; opens the confirm dialog.
 - **Leave Agent** (`data-testid='leave-agent-item'`) - non-owners in auth mode.
 

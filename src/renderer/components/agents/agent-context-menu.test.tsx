@@ -58,8 +58,7 @@ vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 const { menuClose } = vi.hoisted(() => ({
   menuClose: { current: null as null | ((event: { preventDefault: () => void }) => void) },
 }))
-vi.mock('@renderer/components/ui/context-menu', async () => {
-  const React = await import('react')
+vi.mock('@renderer/components/ui/context-menu', () => {
   return {
     ContextMenu: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
     ContextMenuTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -73,32 +72,11 @@ vi.mock('@renderer/components/ui/context-menu', async () => {
     ContextMenuSeparator: () => <hr />,
     ContextMenuSub: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
     ContextMenuSubTrigger: ({ children, ...props }: React.HTMLAttributes<HTMLDivElement>) => <div {...props}>{children}</div>,
-    ContextMenuSubContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-    // Radix routes the selection through context; the stub hands each item its
-    // own value so a click reports the same thing the real menu would.
-    ContextMenuRadioGroup: ({ children, value, onValueChange }: any) => (
-      <div>
-        {React.Children.map(children, (child) =>
-          React.isValidElement<{ value: string }>(child)
-            ? React.cloneElement(child as never, {
-                onClick: () => onValueChange?.(child.props.value),
-                'aria-checked': child.props.value === value,
-              })
-            : child
-        )}
-      </div>
-    ),
-    // aria-checked is spread in from the group above; the literal default is
-    // there so the role is never rendered without its required attribute.
-    ContextMenuRadioItem: ({ children, onClick, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
-      <button type="button" role="menuitemradio" aria-checked={false} onClick={onClick} {...props}>
-        {children}
-      </button>
-    ),
+    ContextMenuSubContent: ({ children, ...props }: React.HTMLAttributes<HTMLDivElement>) => <div {...props}>{children}</div>,
   }
 })
 
-import { act, render, screen, cleanup, waitFor } from '@testing-library/react'
+import { act, render, screen, cleanup, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AgentContextMenu } from './agent-context-menu'
 
@@ -149,26 +127,29 @@ describe('moving an agent into a left-nav folder', () => {
     return typeof arg === 'function' ? arg(settings) : arg
   }
 
-  it('lists every folder plus the default "Your Agents" option', () => {
+  it('lists every folder the agent is not in, and leaves out "Your Agents" while it is there', () => {
     mockUserSettings.mockReturnValue({ agentFolders: FOLDERS, agentFolderAssignments: {} })
     render(<AgentContextMenu agent={AGENT}><span>row</span></AgentContextMenu>)
 
-    expect(screen.getByTestId('move-agent-to-no-folder-item')).toHaveTextContent('Your Agents')
-    expect(screen.getByTestId('move-agent-to-no-folder-item')).toHaveAttribute('aria-checked', 'true')
+    // Only destinations are offered, so nothing is marked as current.
+    expect(screen.queryByTestId('move-agent-to-no-folder-item')).not.toBeInTheDocument()
     expect(screen.getByTestId('move-agent-to-folder-f1')).toHaveTextContent('Work')
     expect(screen.getByTestId('move-agent-to-folder-f2')).toHaveTextContent('Personal')
+    // The destinations are set off from New Folder below them.
+    const submenu = screen.getByTestId('move-agent-to-folder-menu')
+    expect(within(submenu).getByRole('separator')).toBeInTheDocument()
   })
 
-  it('does not write anything when the current folder is re-selected', async () => {
+  it('leaves out the folder the agent is in and offers "Your Agents" instead', () => {
     mockUserSettings.mockReturnValue({
       agentFolders: FOLDERS,
       agentFolderAssignments: { sales: 'f1' },
     })
     render(<AgentContextMenu agent={AGENT}><span>row</span></AgentContextMenu>)
 
-    await userEvent.click(screen.getByTestId('move-agent-to-folder-f1'))
-
-    expect(mockUpdateSettings).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('move-agent-to-folder-f1')).not.toBeInTheDocument()
+    expect(screen.getByTestId('move-agent-to-folder-f2')).toHaveTextContent('Personal')
+    expect(screen.getByTestId('move-agent-to-no-folder-item')).toHaveTextContent('Your Agents')
   })
 
   it('files the agent at the end of the folder and keeps agentOrder canonical', async () => {
@@ -191,18 +172,6 @@ describe('moving an agent into a left-nav folder', () => {
       'agent-folder::f2',
     ])
     expect(patch.agentFolders).toEqual(FOLDERS)
-  })
-
-  it('marks the folder the agent is currently in', () => {
-    mockUserSettings.mockReturnValue({
-      agentFolders: FOLDERS,
-      agentFolderAssignments: { sales: 'f2' },
-    })
-    render(<AgentContextMenu agent={AGENT}><span>row</span></AgentContextMenu>)
-
-    expect(screen.getByTestId('move-agent-to-folder-f2')).toHaveAttribute('aria-checked', 'true')
-    expect(screen.getByTestId('move-agent-to-folder-f1')).toHaveAttribute('aria-checked', 'false')
-    expect(screen.getByTestId('move-agent-to-no-folder-item')).toHaveAttribute('aria-checked', 'false')
   })
 
   it('preserves other agents\u2019 assignments when filing this one', async () => {
@@ -250,15 +219,16 @@ describe('moving an agent into a left-nav folder', () => {
 
   it('reads an assignment naming a deleted folder as the default folder', () => {
     // The sidebar renders such an agent under "Your Agents", so the menu has
-    // to agree and mark "Your Agents" as where it is.
+    // to agree: that is where it is, so it is not offered as a destination.
     mockUserSettings.mockReturnValue({
       agentFolders: FOLDERS,
       agentFolderAssignments: { sales: 'gone' },
     })
     render(<AgentContextMenu agent={AGENT}><span>row</span></AgentContextMenu>)
 
-    expect(screen.getByTestId('move-agent-to-no-folder-item')).toHaveAttribute('aria-checked', 'true')
-    expect(screen.getByTestId('move-agent-to-folder-f1')).toHaveAttribute('aria-checked', 'false')
+    expect(screen.queryByTestId('move-agent-to-no-folder-item')).not.toBeInTheDocument()
+    expect(screen.getByTestId('move-agent-to-folder-f1')).toBeInTheDocument()
+    expect(screen.getByTestId('move-agent-to-folder-f2')).toBeInTheDocument()
   })
 
   it('creates a named folder and files the agent into it in one write', async () => {
@@ -301,12 +271,16 @@ describe('moving an agent into a left-nav folder', () => {
     expect(mockUpdateSettings).not.toHaveBeenCalled()
   })
 
-  it('offers the folder submenu with no folders defined yet', () => {
+  it('offers only New Folder when there is nowhere to move the agent yet', () => {
+    // No folders and the agent in the default one: the destination list is
+    // empty, so New Folder stands alone with no rule above it.
     mockUserSettings.mockReturnValue(undefined)
     render(<AgentContextMenu agent={AGENT}><span>row</span></AgentContextMenu>)
 
-    expect(screen.getByTestId('move-agent-to-no-folder-item')).toBeInTheDocument()
-    expect(screen.getByTestId('move-agent-to-new-folder-item')).toBeInTheDocument()
+    const submenu = screen.getByTestId('move-agent-to-folder-menu')
+    expect(within(submenu).queryByTestId('move-agent-to-no-folder-item')).not.toBeInTheDocument()
+    expect(within(submenu).queryByRole('separator')).not.toBeInTheDocument()
+    expect(within(submenu).getByTestId('move-agent-to-new-folder-item')).toBeInTheDocument()
   })
 })
 

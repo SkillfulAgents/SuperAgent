@@ -358,7 +358,7 @@ describe('Fork Session item', () => {
 
   it('shows the item for anyone who can use the agent', () => {
     renderMenu()
-    expect(screen.getByTestId('fork-session-item')).toHaveTextContent('Fork')
+    expect(screen.getByTestId('fork-session-item')).toHaveTextContent('Fork Session')
   })
 
   it('hides the item without canUseAgent', () => {
