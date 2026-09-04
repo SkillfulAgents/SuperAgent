@@ -1,26 +1,26 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser-use feature successfully executed: agent opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and returned the result with tool call tracking and token usage metrics.",
+  "reason": "Browser-use feature successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and returned the result in the chat interface.",
   "steps": [
-    "Navigated to http://localhost:47891 — page loaded successfully showing Gamut application with sidebar containing two agents",
-    "Found and clicked the \"QA-20260904-225058-mkf2\" agent button in the sidebar — agent page loaded with chat interface and configuration panel",
-    "Clicked on the message input textbox — textbox became active and ready for input",
-    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" into the input field — message text appeared in the textbox",
-    "Clicked the \"Send message\" button — message was sent and a new session was created with URL showing session ID 39f43882-e47e-470c-86dd-24911c785426",
-    "Waited up to 3 minutes for agent response — agent completed processing in 9 seconds with 4 tool calls using 163,676 tokens",
-    "Verified response mentions \"Example Domain\" — response text confirms: \"The page title is \"Example Domain\" — a placeholder page reserved for use in documentation examples. Browser is closed.\"",
-    "Took screenshot showing full page with agent response and work metrics — screenshot captured showing complete response with browser tool execution details"
+    "Navigated to http://localhost:47891 — Gamut application loaded successfully showing home page with agents list",
+    "Clicked on agent \"QA-20260904-231438-ja1t\" in the sidebar — Agent page opened with chat interface ready for input",
+    "Clicked on chat input textbox — Textbox became active and ready for input",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message entered successfully in the textbox, send button became enabled",
+    "Clicked send button — Message sent successfully, agent status changed to \"working\", session created with URL /agents/qa-20260904-231438-ja1t-i1dfe6ts4p/sessions/64dd0938-48d7-40f9-b979-0b46aa7474e0",
+    "Waited for response with timeout 180 seconds — Response received within ~10 seconds, agent completed work and returned to idle status",
+    "Verified response contains \"Example Domain\" — Response text clearly states: \"The page title is \\\"Example Domain\\\" — the standard IANA placeholder page. Browser is closed.\"",
+    "Took screenshot of completed interaction — Screenshot shows the full chat exchange with agent's response visible"
   ],
   "bugs": [],
-  "durationMs": 265241,
-  "sessionId": "f7dd4ca1-f5dc-4e97-8b63-77b1f03cac90",
+  "durationMs": 92750,
+  "sessionId": "55ef6534-2b1b-4115-a1a8-e6e2d5dd5196",
   "cost": {
-    "inputTokens": 320,
-    "outputTokens": 10274,
-    "cacheCreationTokens": 69097,
-    "cacheReadTokens": 879517,
+    "inputTokens": 478,
+    "outputTokens": 12676,
+    "cacheCreationTokens": 88244,
+    "cacheReadTokens": 1556885,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.226013
+    "totalCostUsd": 0.329852
   }
 }
