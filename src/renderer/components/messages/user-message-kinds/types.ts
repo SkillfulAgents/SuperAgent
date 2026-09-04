@@ -1,4 +1,4 @@
-import type { ComponentType } from 'react'
+import type { ComponentType, ReactNode } from 'react'
 import type { ApiMessage } from '@shared/lib/types/api'
 
 export type UserMessageKind = 'system' | 'interrupt' | 'compact' | 'slash' | 'plain'
@@ -7,6 +7,12 @@ export interface UserMessageRenderProps {
   /** Bubble text after the structured blocks (sender, files, folders) are peeled. */
   text: string
   message: ApiMessage
+  /**
+   * The bubble's default Markdown rendering, bound to the current message's
+   * image aliases and agent. A custom Render decorates what it needs and
+   * hands the rest back here, so it stays in step with the plain bubble.
+   */
+  renderMarkdown: (text: string) => ReactNode
 }
 
 /**

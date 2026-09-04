@@ -266,6 +266,12 @@ const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({ text, embe
   )
 })
 
+/** Bubble text body: the default Markdown surface for every message kind. */
+const PROSE_CLASS = cn(
+  'prose prose-sm max-w-none min-w-0 break-words font-normal dark:prose-invert',
+  'prose-strong:font-medium'
+)
+
 interface MessageItemProps {
   message: ApiMessage
   isStreaming?: boolean
@@ -342,8 +348,14 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
 
   // Kinds with a custom bubble body (slash commands today) replace the
   // Markdown rendering. Classified on the peeled text so a mirrored
-  // "\[sender]: /cmd" still draws as a command.
+  // "\[sender]: /cmd" still draws as a command. They get the default body
+  // back as a callback so whatever they don't decorate renders as usual.
   const CustomUserRender = isUser && hasText ? classifyUserText(text).Render : undefined
+  const renderMarkdown = useCallback((markdown: string) => (
+    <div dir="auto" className={PROSE_CLASS}>
+      <MarkdownBlock text={markdown} embeddedImageAliases={embeddedImageAliases} agentSlug={agentSlug} />
+    </div>
+  ), [embeddedImageAliases, agentSlug])
 
   // While streaming, pre-split the markdown into fence-safe blocks so each
   // settled block parses once; only the small trailing block re-parses per
@@ -417,7 +429,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
             >
               {/* Kind-specific user bubble (e.g. slash command) */}
               {CustomUserRender && hasText && (
-                <CustomUserRender text={text} message={message} />
+                <CustomUserRender text={text} message={message} renderMarkdown={renderMarkdown} />
               )}
 
               {/* LLM provider error display */}
@@ -427,10 +439,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
 
               {/* Text content */}
               {hasText && !CustomUserRender && !isProviderErrorMessage && (
-                <div dir="auto" className={cn(
-                  'prose prose-sm max-w-none min-w-0 break-words font-normal dark:prose-invert',
-                  'prose-strong:font-medium'
-                )}>
+                <div dir="auto" className={PROSE_CLASS}>
                   {streamingSplit ? (
                     <>
                       {streamingSplit.settled.map((block, i) => (
