@@ -224,10 +224,8 @@ export interface ApiMessage {
   }
 }
 
-/**
- * SDK error codes that indicate an external LLM provider issue
- * (as opposed to application-level errors like max_output_tokens).
- */
+// SDK codes split: NON_UPSTREAM = not an API error; PROVIDER = upstream with a generic banner; the
+// rest of the enum is upstream, provider-facing only with a presentation. api.test.ts pins the enum.
 export const PROVIDER_ERROR_CODES = new Set([
   'authentication_failed',
   'billing_error',
@@ -236,12 +234,10 @@ export const PROVIDER_ERROR_CODES = new Set([
   'server_error',
 ])
 
-// SDK codes for turn failures that are not an upstream API error. A provider
-// override must never claim these, whatever the error text happens to contain.
 export const NON_UPSTREAM_ERROR_CODES = new Set(['max_output_tokens'])
 
-// True when the SDK reported that the upstream API call itself failed (any
-// code, including `unknown`). Null = the turn failed for a non-API reason.
+// Upstream = any code not in NON_UPSTREAM (so `unknown`, `overloaded`, … count).
+// Null = the turn failed for a non-API reason (container died, tool failure).
 export function isUpstreamApiErrorCode(apiErrorCode: string | null | undefined): apiErrorCode is string {
   return typeof apiErrorCode === 'string' && !NON_UPSTREAM_ERROR_CODES.has(apiErrorCode)
 }

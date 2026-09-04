@@ -1,8 +1,44 @@
 import { describe, expect, it } from 'vitest'
 
-import { isProviderFacingError, isUpstreamApiErrorCode } from './api'
+import { isProviderFacingError, isUpstreamApiErrorCode, NON_UPSTREAM_ERROR_CODES, PROVIDER_ERROR_CODES } from './api'
 
 const presentation = { severity: 'error' as const, message: 'x', icon: 'info' }
+
+// `SDKAssistantMessageError` from @anthropic-ai/claude-agent-sdk (agent-container pin). The host
+// cannot import the SDK types, so the enum is pinned here; update on an SDK bump.
+const SDK_ASSISTANT_ERROR_CODES = [
+  'authentication_failed',
+  'oauth_org_not_allowed',
+  'account_on_hold',
+  'billing_error',
+  'rate_limit',
+  'overloaded',
+  'invalid_request',
+  'model_not_found',
+  'server_error',
+  'unknown',
+  'max_output_tokens',
+] as const
+
+// Upstream codes with no generic banner; provider-facing only when a presentation is attached.
+const UPSTREAM_WITHOUT_BANNER = ['oauth_org_not_allowed', 'account_on_hold', 'overloaded', 'model_not_found', 'unknown']
+
+describe('SDK error code classification', () => {
+  it('keeps NON_UPSTREAM_ERROR_CODES and PROVIDER_ERROR_CODES disjoint', () => {
+    for (const code of NON_UPSTREAM_ERROR_CODES) expect(PROVIDER_ERROR_CODES.has(code)).toBe(false)
+  })
+
+  it('classifies every SDK code exactly once (drift here must be a deliberate choice)', () => {
+    const classified = [...NON_UPSTREAM_ERROR_CODES, ...PROVIDER_ERROR_CODES, ...UPSTREAM_WITHOUT_BANNER].sort()
+    expect(classified).toEqual([...SDK_ASSISTANT_ERROR_CODES].sort())
+  })
+
+  it('treats every code outside NON_UPSTREAM_ERROR_CODES as upstream', () => {
+    for (const code of SDK_ASSISTANT_ERROR_CODES) {
+      expect(isUpstreamApiErrorCode(code)).toBe(!NON_UPSTREAM_ERROR_CODES.has(code))
+    }
+  })
+})
 
 describe('isUpstreamApiErrorCode', () => {
   it('is true for any SDK code that marks an upstream API failure, including unknown', () => {

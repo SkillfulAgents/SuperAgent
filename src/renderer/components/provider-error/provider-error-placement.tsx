@@ -14,6 +14,8 @@ export interface CurrentProviderError {
   message: string
   presentation?: ProviderErrorPresentation
   live: boolean
+  /** Persisted row this error comes from; null for the live turn error. */
+  messageId: string | null
 }
 
 interface LiveErrorState {
@@ -30,26 +32,40 @@ export function currentProviderError(
   messages: readonly ApiMessageOrBoundary[] | undefined,
 ): CurrentProviderError | null {
   if (live.error && isProviderFacingError(live.apiErrorCode, live.errorPresentation)) {
-    return { message: live.error, presentation: live.errorPresentation ?? undefined, live: true }
+    return { message: live.error, presentation: live.errorPresentation ?? undefined, live: true, messageId: null }
   }
   if (live.isActive || !messages) return null
+  // `messages` is the trailing page, newest last (same contract message-list relies on).
   for (let i = messages.length - 1; i >= 0; i--) {
     const item = messages[i]
     if (item.type !== 'assistant') continue
     const isProviderError =
       !!item.apiError && isProviderFacingError(item.apiError, item.errorPresentation) && !!item.content.text
     return isProviderError
-      ? { message: item.content.text, presentation: item.errorPresentation, live: false }
+      ? { message: item.content.text, presentation: item.errorPresentation, live: false, messageId: item.id }
       : null
   }
   return null
+}
+
+// Id of the persisted row whose error a ProviderErrorPlacement renders right now, so the
+// transcript skips only that row's inline card. Inline-routed errors live in the
+// transcript itself, so they never qualify; older routed rows keep their inline card.
+export function currentProviderErrorId(
+  live: LiveErrorState,
+  messages: readonly ApiMessageOrBoundary[] | undefined,
+): string | null {
+  const current = currentProviderError(live, messages)
+  if (!current || resolveProviderError(current.presentation).placement === 'inline') return null
+  return current.messageId
 }
 
 interface ProviderErrorPlacementProps {
   placement: Placement
   sessionId: string
   agentSlug: string
-  /** What normally lives here (e.g. the composer). Displaced while an error targets this placement. */
+  /** Everything that normally lives here, displaced while an error targets this placement. At
+   *  `composer` that is the composer plus its banners (pending wake, stale session), not just the input. */
   children?: ReactNode
 }
 

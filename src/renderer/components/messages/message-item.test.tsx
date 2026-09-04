@@ -487,14 +487,24 @@ describe('MessageItem', () => {
       expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Attached')
     })
 
-    it('renders nothing in the stream for a provider error routed to the composer placement', () => {
+    it('renders nothing in the stream while its composer-routed error is shown by the placement', () => {
       const msg = createAssistantMessage({
         content: { text: 'API Error: 402 insufficient balance' },
         apiError: 'billing_error',
         errorPresentation: { severity: 'error', message: '**Routed**', icon: 'info', placement: 'composer' },
       })
-      const { container } = render(<MessageItem message={msg} />)
+      const { container } = render(<MessageItem message={msg} suppressInlineError />)
       expect(container.innerHTML).toBe('')
+    })
+
+    it('keeps a composer-routed error in the transcript as the default card once it is no longer current', () => {
+      const msg = createAssistantMessage({
+        content: { text: 'API Error: 402 insufficient balance' },
+        apiError: 'billing_error',
+        errorPresentation: { severity: 'error', message: '**Routed**', icon: 'info', placement: 'composer' },
+      })
+      render(<MessageItem message={msg} />)
+      expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Routed')
     })
 
     it('still renders the inline card when placement is explicitly inline', () => {

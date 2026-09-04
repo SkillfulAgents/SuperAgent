@@ -9,6 +9,7 @@ import { TranscriptNotFoundError } from '@renderer/hooks/use-messages'
 import { useDraft } from '@renderer/context/drafts-context'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { createUserMessage, createAssistantMessage, createToolCall, createCompactBoundary } from '@renderer/test/factories'
+import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 import type { ApiMessageOrBoundary } from '@shared/lib/types/api'
 
 // Mock useMessages
@@ -68,6 +69,9 @@ const mockStreamState = {
   peerUserMessages: [] as Array<{ uuid: string; receivedAt: number; content: string; sender: { id: string; name?: string; email?: string }; queued?: boolean }>,
   discardedCommandUuids: [] as string[],
   thinkingBlocks: [] as Array<{ id: number; persistedId?: string; text: string; startedAt: number; endedAt: number | null }>,
+  error: null as string | null,
+  apiErrorCode: null as string | null,
+  errorPresentation: null as ProviderErrorPresentation | null,
 }
 
 const mockClearCompacting = vi.fn()
@@ -81,6 +85,10 @@ vi.mock('@renderer/hooks/use-message-stream', () => ({
   removePeerUserMessage: (...args: unknown[]) => mockRemovePeerUserMessage(...args),
   clearPeerUserMessages: (...args: unknown[]) => mockClearPeerUserMessages(...args),
   consumeDiscardedCommand: (...args: unknown[]) => mockConsumeDiscardedCommand(...args),
+}))
+
+vi.mock('@renderer/hooks/use-platform-auth', () => ({
+  usePlatformAuthStatus: () => ({ data: { connected: false, platformBaseUrl: null, orgId: null } }),
 }))
 
 // Mock useUser — default no user, override per test
@@ -178,6 +186,9 @@ describe('MessageList', () => {
       peerUserMessages: [],
       discardedCommandUuids: [],
       thinkingBlocks: [],
+      error: null,
+      apiErrorCode: null,
+      errorPresentation: null,
     })
   })
 
@@ -2107,6 +2118,36 @@ describe('MessageList', () => {
 
     // The file should still render (deferred position, after streaming content)
     expect(screen.getByText('deferred.csv')).toBeInTheDocument()
+  })
+
+  describe('provider error routed to the composer', () => {
+    const routed: ProviderErrorPresentation = { severity: 'error', message: '**Routed 402**', icon: 'info', placement: 'composer' }
+    const routedError = () =>
+      createAssistantMessage({ content: { text: 'API Error: 402 insufficient balance' }, apiError: 'billing_error', errorPresentation: routed })
+
+    it('skips the inline card only while the row is the current error', () => {
+      mockMessagesData.data = [createUserMessage({ content: { text: 'summarize' } }), routedError()]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.queryByTestId('provider-error-card')).not.toBeInTheDocument()
+    })
+
+    it('keeps the routed row in the transcript once a normal reply follows', () => {
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'summarize' } }),
+        routedError(),
+        createUserMessage({ content: { text: 'try again' } }),
+        createAssistantMessage({ content: { text: 'Here you go' } }),
+      ]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Routed 402')
+      expect(screen.getByText('Here you go')).toBeInTheDocument()
+    })
+
+    it('keeps an older routed row while a newer one is current', () => {
+      mockMessagesData.data = [createUserMessage(), routedError(), createUserMessage(), routedError()]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getAllByTestId('provider-error-card')).toHaveLength(1)
+    })
   })
 
   describe('peer user message (SSE)', () => {

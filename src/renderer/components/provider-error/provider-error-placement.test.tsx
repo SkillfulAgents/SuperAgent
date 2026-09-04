@@ -6,7 +6,7 @@ import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-p
 import type { ApiMessageOrBoundary } from '@shared/lib/types/api'
 import { createAssistantMessage, createCompactBoundary, createUserMessage } from '@renderer/test/factories'
 
-import { currentProviderError, ProviderErrorPlacement } from './provider-error-placement'
+import { currentProviderError, currentProviderErrorId, ProviderErrorPlacement } from './provider-error-placement'
 
 const mockStreamState = {
   isActive: false,
@@ -52,17 +52,18 @@ describe('currentProviderError', () => {
       message: 'live 429',
       presentation: composerError,
       live: true,
+      messageId: null,
     })
   })
 
   it('accepts a live error with a generic SDK code when a presentation is attached', () => {
     const live = { isActive: false, error: 'API Error: 402', apiErrorCode: 'unknown', errorPresentation: composerError }
-    expect(currentProviderError(live, [])).toEqual({ message: 'API Error: 402', presentation: composerError, live: true })
+    expect(currentProviderError(live, [])).toEqual({ message: 'API Error: 402', presentation: composerError, live: true, messageId: null })
   })
 
   it('accepts a persisted error with a generic SDK code when a presentation is attached', () => {
     const msg = createAssistantMessage({ content: { text: 'API Error: 402' }, apiError: 'unknown', errorPresentation: composerError })
-    expect(currentProviderError(idle, [msg])).toEqual({ message: 'API Error: 402', presentation: composerError, live: false })
+    expect(currentProviderError(idle, [msg])).toEqual({ message: 'API Error: 402', presentation: composerError, live: false, messageId: msg.id })
   })
 
   it('ignores a live error that is not a provider error', () => {
@@ -76,6 +77,7 @@ describe('currentProviderError', () => {
       message: msg.content.text,
       presentation: composerError,
       live: false,
+      messageId: msg.id,
     })
   })
 
@@ -100,6 +102,27 @@ describe('currentProviderError', () => {
   it('returns null with no messages', () => {
     expect(currentProviderError(idle, undefined)).toBeNull()
     expect(currentProviderError(idle, [])).toBeNull()
+  })
+})
+
+describe('currentProviderErrorId', () => {
+  it('is the id of the persisted row a composer placement is showing', () => {
+    const msg = errorMessage(composerError)
+    expect(currentProviderErrorId(idle, [createUserMessage(), msg])).toBe(msg.id)
+  })
+
+  it('is null for a live error (no persisted row yet)', () => {
+    const live = { isActive: false, error: 'API Error: 402', apiErrorCode: 'billing_error', errorPresentation: composerError }
+    expect(currentProviderErrorId(live, [errorMessage(composerError)])).toBeNull()
+  })
+
+  it('is null for an inline error, which the transcript renders itself', () => {
+    expect(currentProviderErrorId(idle, [errorMessage(inlineError)])).toBeNull()
+    expect(currentProviderErrorId(idle, [errorMessage()])).toBeNull()
+  })
+
+  it('is null once a normal reply follows, so the old routed row returns to the transcript', () => {
+    expect(currentProviderErrorId(idle, [errorMessage(composerError), createUserMessage(), createAssistantMessage()])).toBeNull()
   })
 })
 

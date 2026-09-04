@@ -13,6 +13,7 @@ import {
 import { isTurnStartingUserMessage, type PendingMessage } from './pending-message'
 import { classifyUserMessage, classifyUserText } from './user-message-kinds'
 import { MessageItem } from './message-item'
+import { currentProviderErrorId } from '@renderer/components/provider-error/provider-error-placement'
 import { ToolCallItem, StreamingToolCallItem } from './tool-call-item'
 import { ThinkingBlockItem } from './thinking-block-item'
 import { SubAgentBlock } from './subagent-block'
@@ -236,7 +237,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     isCompacting,
     activeSubagents,
     completedSubagents,
+    error: streamError,
     apiErrorCode,
+    errorPresentation,
     typingUser,
     peerUserMessages,
     discardedCommandUuids,
@@ -470,6 +473,12 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       boundaryCountRef.current = boundaryCount
     }
   }, [isCompacting, boundaryCount, sessionId])
+
+  // The one persisted row whose provider error a ProviderErrorPlacement is showing right now.
+  const currentErrorMessageId = useMemo(
+    () => currentProviderErrorId({ isActive, error: streamError, apiErrorCode, errorPresentation }, messages),
+    [isActive, streamError, apiErrorCode, errorPresentation, messages],
+  )
 
   // Check if streaming message is already in persisted messages (prevents double-render)
   const isStreamingMessagePersisted = useMemo(() => {
@@ -1174,6 +1183,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                           : undefined
                       }
                       embeddedImageAliases={embeddedImageAliases}
+                      suppressInlineError={item.id === currentErrorMessageId}
                     />
                   </MessageErrorBoundary>
                   {turnDeliveredFiles.has(item.id) && item.id !== deferredElapsedMessageId && (
