@@ -1,0 +1,29 @@
+{
+  "baseUrl": "http://localhost:47897",
+  "viewport": { "width": 1280, "height": 800 },
+  "seed": {
+    "agents": [
+      {
+        "name": "Release Notes Writer",
+        "description": "Turns merged PRs into release notes",
+        "sessions": ["Summarise everything merged this week"]
+      },
+      { "name": "Inbox Triager", "description": "Sorts and labels incoming mail" }
+    ]
+  },
+  "shots": [
+    { "name": "home", "alt": "Home", "path": "/" },
+    {
+      "name": "agent-home",
+      "alt": "Agent home",
+      "path": "/agents/{{agent:Release Notes Writer}}"
+    },
+    {
+      "name": "session",
+      "alt": "Session thread",
+      "path": "/agents/{{agent:Release Notes Writer}}/sessions/{{session:Release Notes Writer:0}}",
+      "colorScheme": "dark"
+    },
+    { "name": "settings", "alt": "Settings", "path": "/settings", "colorScheme": "light" }
+  ]
+}
