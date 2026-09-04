@@ -12,11 +12,12 @@ describe('classifyUserText', () => {
     expect(spec.Render).toBeUndefined()
   })
 
-  it('classifies an interrupt marker as a visible default bubble', () => {
+  it('classifies an interrupt marker as a visible bare chip', () => {
     const spec = classifyUserText('[Request interrupted by user]')
     expect(spec.kind).toBe('interrupt')
     expect(spec.hidden).toBe(false)
-    expect(spec.Render).toBeUndefined()
+    expect(spec.Render).toBeDefined()
+    expect(spec.chrome).toBe('bare')
     expect(kindOf('[Request interrupted by user for tool use]')).toBe('interrupt')
   })
 

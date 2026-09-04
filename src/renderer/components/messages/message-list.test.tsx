@@ -206,15 +206,17 @@ describe('MessageList', () => {
     expect(screen.getByText('Hello!')).toBeInTheDocument()
   })
 
-  it('renders the interrupt marker as a user message', () => {
+  it('renders the interrupt marker as a bare chip in the user column', () => {
     mockMessagesData.data = [
       createUserMessage({ content: { text: '[Request interrupted by user]' } }),
     ]
 
     renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
 
-    const marker = screen.getByText('[Request interrupted by user]')
+    const marker = screen.getByTestId('interrupt-marker')
+    expect(marker).toHaveTextContent('Stopped')
     expect(marker.closest('[data-testid="message-user"]')).toBeTruthy()
+    expect(screen.queryByText('[Request interrupted by user]')).not.toBeInTheDocument()
   })
 
   describe('transcript not found', () => {

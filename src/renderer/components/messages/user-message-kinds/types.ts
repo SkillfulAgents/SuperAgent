@@ -30,4 +30,10 @@ export interface UserMessageKindSpec {
   hidden: boolean
   /** Custom bubble body. Absent means the default Markdown rendering. */
   Render?: ComponentType<UserMessageRenderProps>
+  /**
+   * 'bubble' (default) draws Render inside the grey user bubble with its
+   * context menu. 'bare' hands Render the whole row slot: no bubble, no menu,
+   * for markers that are not something the person said.
+   */
+  chrome?: 'bubble' | 'bare'
 }

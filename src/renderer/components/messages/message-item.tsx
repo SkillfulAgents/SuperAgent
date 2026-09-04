@@ -350,7 +350,9 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   // Markdown rendering. Classified on the peeled text so a mirrored
   // "\[sender]: /cmd" still draws as a command. They get the default body
   // back as a callback so whatever they don't decorate renders as usual.
-  const CustomUserRender = isUser && hasText ? classifyUserText(text).Render : undefined
+  const userKind = isUser && hasText ? classifyUserText(text) : null
+  const CustomUserRender = userKind?.Render
+  const bareUserRender = CustomUserRender && userKind?.chrome === 'bare'
   const renderMarkdown = useCallback((markdown: string) => (
     <div dir="auto" className={PROSE_CLASS}>
       <MarkdownBlock text={markdown} embeddedImageAliases={embeddedImageAliases} agentSlug={agentSlug} />
@@ -413,8 +415,13 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
           </div>
         )}
 
+        {/* Bare kinds (e.g. the interrupt marker) own the row: no bubble, no context menu */}
+        {showMessageBubble && bareUserRender && (
+          <CustomUserRender text={text} message={message} renderMarkdown={renderMarkdown} />
+        )}
+
         {/* Message bubble - only show if there's text content */}
-        {showMessageBubble && (
+        {showMessageBubble && !bareUserRender && (
           <MessageContextMenu text={text || ''} onRemove={onRemoveMessage ? () => onRemoveMessage(message.id) : undefined}>
             <div
               dir="auto"
