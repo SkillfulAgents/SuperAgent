@@ -11,7 +11,8 @@ import { parseTaskNotifications } from '@shared/lib/utils/task-notifications'
 import { MessageContextMenu } from './message-context-menu'
 import { MessageErrorBoundary } from './message-error-boundary'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
-import { parseUserMessageParts } from './user-message-parts'
+import { parseUserMessageParts } from '@shared/lib/utils/user-message-parts'
+import { classifyUserText } from './user-message-kinds'
 import ReactMarkdown, { type Components, type Options as ReactMarkdownOptions } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { splitStreamingMarkdown } from './split-streaming-markdown'
@@ -314,12 +315,14 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   const isAssistant = message.type === 'assistant'
 
   const rawText = message.content.text
-  // Read-only chat mirror: the connector prefixes incoming messages with an
-  // escaped "\[sender]: " so the agent can attribute them. Lift that into the
-  // sender label instead of showing it inline. Live sessions never carry it.
-  const { sender: senderFromPrefix, attachedFiles, mountedFolders, text: cleanText } = isUser && rawText
-    ? parseUserMessageParts(rawText, { readOnly: !!readOnly })
-    : { sender: null, attachedFiles: [], mountedFolders: [], text: rawText }
+  // User bubbles: lift the attached-files / mounted-folders blocks into pills
+  // (every session) and the read-only mirror's connector sender prefix into
+  // the sender label (mirrors only), leaving just the typed text.
+  const userParts = isUser ? parseUserMessageParts(rawText, { readOnly: !!readOnly }) : null
+  const senderFromPrefix = userParts?.sender ?? null
+  const attachedFiles = userParts?.attachedFiles ?? []
+  const mountedFolders = userParts?.mountedFolders ?? []
+  const cleanText = userParts?.text ?? rawText
   // Strip SDK-injected `<task-notification>` blocks that land in assistant text on
   // the busy path; surface any `workflow-complete` result as a structured card.
   const { cleanText: textAfterNotifs, workflowResults } = isAssistant && cleanText
@@ -337,7 +340,10 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
       )
     : []
 
-  const isSlashCommand = isUser && hasText && text.startsWith('/')
+  // Kinds with a custom bubble body (slash commands today) replace the
+  // Markdown rendering. Classified on the peeled text so a mirrored
+  // "\[sender]: /cmd" still draws as a command.
+  const CustomUserRender = isUser && hasText ? classifyUserText(text).Render : undefined
 
   // While streaming, pre-split the markdown into fence-safe blocks so each
   // settled block parses once; only the small trailing block re-parses per
@@ -409,28 +415,18 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                 isAssistant && 'py-1'
               )}
             >
-              {/* Slash command display */}
-              {isSlashCommand && hasText && (
-                <div className="text-sm">
-                  <span className="font-mono font-medium">
-                    {text.split(' ')[0]}
-                  </span>
-                  {text.includes(' ') && (
-                    <span className="opacity-80">
-                      {' '}
-                      {text.slice(text.indexOf(' ') + 1)}
-                    </span>
-                  )}
-                </div>
+              {/* Kind-specific user bubble (e.g. slash command) */}
+              {CustomUserRender && hasText && (
+                <CustomUserRender text={text} message={message} />
               )}
 
               {/* LLM provider error display */}
-              {hasText && !isSlashCommand && isProviderErrorMessage && (
+              {hasText && !CustomUserRender && isProviderErrorMessage && (
                 <ProviderErrorCard message={text} presentation={message.errorPresentation} />
               )}
 
               {/* Text content */}
-              {hasText && !isSlashCommand && !isProviderErrorMessage && (
+              {hasText && !CustomUserRender && !isProviderErrorMessage && (
                 <div dir="auto" className={cn(
                   'prose prose-sm max-w-none min-w-0 break-words font-normal dark:prose-invert',
                   'prose-strong:font-medium'

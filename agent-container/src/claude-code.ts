@@ -62,7 +62,7 @@ import {
 import { mergeCanonicalSlashCommands } from './slash-commands';
 
 // Prefix for system-injected user messages that should be hidden in the UI.
-// Keep in sync with SYSTEM_MESSAGE_PREFIX in src/renderer/components/messages/user-message-classifier.ts
+// Keep in sync with SYSTEM_MESSAGE_PREFIX in src/shared/lib/utils/system-message.ts
 const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] ';
 
 // Upper bound on how long a message waits for freshly (re)connected remote MCP

@@ -11,7 +11,7 @@ import {
   consumeDiscardedCommand,
 } from '@renderer/hooks/use-message-stream'
 import { isTurnStartingUserMessage, type PendingMessage } from './pending-message'
-import { classifyUserMessage, classifyUserText } from './user-message-classifier'
+import { classifyUserMessage, classifyUserText } from './user-message-kinds'
 import { MessageItem } from './message-item'
 import { ToolCallItem, StreamingToolCallItem } from './tool-call-item'
 import { ThinkingBlockItem } from './thinking-block-item'
