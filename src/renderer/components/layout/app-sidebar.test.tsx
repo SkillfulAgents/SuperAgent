@@ -1017,7 +1017,7 @@ describe('footer version in cloud mode', () => {
 
     await userEvent.click(screen.getByTestId('sidebar-version-cloud'))
     expect(mockOpenExternalUrl).toHaveBeenCalledWith(
-      'https://platform.example/dashboard/organizations/org_1?tab=cloud',
+      'https://platform.example/dashboard/organizations/org_1?tab=settings',
     )
   })
 

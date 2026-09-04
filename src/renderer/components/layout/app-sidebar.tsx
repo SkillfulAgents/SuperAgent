@@ -1695,7 +1695,7 @@ export function AppSidebar() {
                   const orgId = platformAuth?.orgId
                   if (!base || !orgId) return
                   void openExternalUrl(
-                    `${base}/dashboard/organizations/${orgId}?tab=cloud`,
+                    `${base}/dashboard/organizations/${orgId}?tab=settings`,
                   )
                 }}
                 className="inline-flex items-center gap-0.5 hover:text-foreground"
