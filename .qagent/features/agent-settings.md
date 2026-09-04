@@ -27,7 +27,7 @@ three-dot button on the agent home header.
 
 ## Retention rows (agent home card)
 
-Under **Agent Default Model** in the agent home's right-hand card:
+Under **Agent Default Model**, in the pickers' own card (`data-testid='home-preferences-group'`) above the agent home's navigation-rows card:
 - **Session Auto-Delete** (`data-testid='home-session-auto-delete-trigger'`) - dropdown; options plus "Reset to Global Default".
 - **API Log Auto-Delete** (`data-testid='home-api-log-auto-delete-trigger'`) - same dropdown shape.
 
