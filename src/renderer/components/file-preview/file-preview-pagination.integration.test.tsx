@@ -14,6 +14,9 @@ vi.mock('@renderer/router/use-route-location', () => ({
 }))
 
 vi.mock('./file-tab-bar', () => ({ FileTabBar: () => null }))
+// The tray reads the file's size over HEAD; jsdom has no server to answer, and
+// the size is not what this test is about.
+vi.mock('@renderer/hooks/use-file-size', () => ({ useFileSize: () => ({ data: null }) }))
 vi.mock('./comments/comment-bar', () => ({ CommentBar: () => null }))
 vi.mock('react-pdf', () => ({
   pdfjs: { GlobalWorkerOptions: {} },

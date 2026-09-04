@@ -3,8 +3,7 @@ import { buttonVariants } from './button'
 import { FileIconTile } from './file-icon-tile'
 import { previewKind } from '@renderer/components/file-preview/file-types'
 import { useFilePreview } from '@renderer/context/file-preview-context'
-import { getApiBaseUrl } from '@renderer/lib/env'
-import { getAgentFileApiPath } from '@renderer/lib/workspace-file-url'
+import { getAgentFileUrl } from '@renderer/lib/workspace-file-url'
 import { cn } from '@shared/lib/utils/cn'
 import { formatFileSize } from '@shared/lib/utils/format-file-size'
 import { getPathName, toWorkspaceRelativePath } from '@shared/lib/utils/workspace-path'
@@ -75,7 +74,7 @@ export function FileDeliveryRow({ filePath, agentSlug, description, sizeBytes, c
         <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" aria-hidden="true" />
       ) : (
         <a
-          href={`${getApiBaseUrl()}${getAgentFileApiPath(agentSlug, filePath)}`}
+          href={getAgentFileUrl(agentSlug, filePath)}
           target="_blank"
           rel="noopener noreferrer"
           onClick={(e) => e.stopPropagation()}

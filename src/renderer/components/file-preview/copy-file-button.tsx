@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Check, Copy } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { copyLazyTextToClipboard, copyTextToClipboard } from '@renderer/lib/clipboard'
 import { looksBinary } from './file-types'
 import { MAX_CONTENT_CHARS, type FileContent } from './renderers/use-file-content'
@@ -51,9 +51,9 @@ export function CopyFileButton({ fileUrl, displayName }: CopyFileButtonProps) {
       : `Copied contents of “${displayName}”`)
   }
 
-  // Self-contained provider so the button works anywhere it is dropped in.
+  // No provider of its own: it shares the one around the action row, so moving
+  // between these buttons skips the second tooltip's open delay.
   return (
-    <TooltipProvider delayDuration={300}>
     <Tooltip>
       <TooltipTrigger asChild>
         <button
@@ -70,7 +70,6 @@ export function CopyFileButton({ fileUrl, displayName }: CopyFileButtonProps) {
       </TooltipTrigger>
       <TooltipContent>{copied ? 'Copied' : 'Copy file contents'}</TooltipContent>
     </Tooltip>
-    </TooltipProvider>
   )
 }
 

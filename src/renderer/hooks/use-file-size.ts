@@ -3,9 +3,11 @@ import { apiFetch } from '@renderer/lib/api'
 
 /**
  * Byte size of a workspace file, read from the Content-Length of a HEAD
- * request against its API path. The file route answers HEAD with the same
- * headers as GET, so this never downloads the body. `version` is the tab's
- * cache-busting token: a redelivered file gets a fresh size.
+ * request against its API path. The file route answers a HEAD with the same
+ * headers as a GET and no body, and the cloud proxy passes that length through
+ * rather than stripping it as it does for a re-framed body — so this costs one
+ * round trip and no bytes, in either mode. `version` is the tab's cache-busting
+ * token: a redelivered file gets a fresh size.
  */
 export function useFileSize(fileApiPath: string | null, version = 0) {
   return useQuery<number | null>({

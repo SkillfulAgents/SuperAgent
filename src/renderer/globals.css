@@ -322,6 +322,18 @@ html[data-keyboard-open] [data-composer-footer] {
   background-color: rgba(120, 120, 130, .55);
 }
 
+/* The file drawer's tab strip. It scrolls horizontally so a trackpad swipe, a
+   touch drag and the browser's focus reveal work natively, but a scrollbar
+   drawn under the tabs would sit a second, competing affordance next to the
+   arrows that already say the same thing. Hidden, not removed: everything that
+   scrolls the strip still scrolls it. */
+.file-tab-scroller {
+  scrollbar-width: none;
+}
+.file-tab-scroller::-webkit-scrollbar {
+  display: none;
+}
+
 /* Fix Radix ScrollArea viewport using display: table which causes content to expand */
 [data-radix-scroll-area-viewport] {
   display: block !important;

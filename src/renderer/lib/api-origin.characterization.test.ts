@@ -85,7 +85,7 @@ const PRIMITIVE_CONSTRUCTORS = new Set(['EventSource', 'WebSocket'])
  */
 const PINNED_CALL_SITES: Record<string, string> = {
   'components/file-preview/renderers/use-file-content.ts::useFileContent::fetch(url)':
-    'prebuilt `url` prop; composed by file-preview-tray-content.tsx from getApiBaseUrl()',
+    'prebuilt `url` prop; composed by lib/workspace-file-url.ts from getApiBaseUrl()',
   'components/file-preview/renderers/audio-renderer.tsx::AudioRenderer.decodeWaveform::fetch(url)':
     'prebuilt `url` prop; same origin as use-file-content.ts above',
   'components/file-preview/copy-file-button.tsx::fetchText::fetch(url)':
@@ -145,9 +145,8 @@ const DIRECT_BASE_URL_CONSUMERS: Record<string, string> = {
   'components/ui/model-icon.tsx': '<img src> — model icon asset',
   'components/home/dashboard-card.tsx': '<img src> — dashboard screenshot',
   'components/dashboards/dashboard-view.tsx': '<iframe src> — embedded dashboard',
-  'components/file-preview/file-preview-tray-content.tsx': 'file URL passed to previewers/<img>',
-  'components/file-preview/renderers/unsupported-renderer.tsx': 'download link href',
-  'components/ui/file-delivery-row.tsx': 'download link href on the delivered-file row',
+  'lib/workspace-file-url.ts':
+    'getAgentFileUrl() — the one place a workspace-file URL is composed, for the preview tray\'s previewers/<img>, the unsupported renderer\'s download link and the delivered-file row\'s. None of those can carry a request header, and building the URL once here is what keeps their encoding and cache-busting from drifting apart',
   'components/messages/message-input.tsx': 'fire-and-forget typing ping (deliberately not awaited)',
   'components/notifications/global-notification-handler.tsx':
     'EventSource — global notification stream',
