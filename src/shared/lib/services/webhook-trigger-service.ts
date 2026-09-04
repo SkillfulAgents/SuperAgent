@@ -578,15 +578,15 @@ async function tearDownUpstream(trigger: WebhookTrigger, upstreamId: string): Pr
   }
   // A concurrent teardown (cancel path vs background reconcile) may have
   // already confirmed the upstream gone; its 404s are then expected, not a lost owner.
-  if (await isUpstreamMarkedDeleted(upstreamId)) return
+  if (await isTriggerUpstreamMarkedDeleted(trigger.id)) return
   throw new UpstreamOwnerUnresolvedError(upstreamId, memberIds)
 }
 
-async function isUpstreamMarkedDeleted(upstreamId: string): Promise<boolean> {
+async function isTriggerUpstreamMarkedDeleted(triggerId: string): Promise<boolean> {
   const [row] = await db
     .select({ value: count() })
     .from(webhookTriggers)
-    .where(and(eq(webhookTriggers.composioTriggerId, upstreamId), isNotNull(webhookTriggers.upstreamDeletedAt)))
+    .where(and(eq(webhookTriggers.id, triggerId), isNotNull(webhookTriggers.upstreamDeletedAt)))
   return row.value > 0
 }
 
@@ -718,10 +718,16 @@ export const RECONCILE_BATCH_SIZE = 25
  * One reconcile pass (SUP-765): retry owed teardowns — a crash, or a
  * pre-column cross-member 404. Bounded by the `upstreamDeletedAt` marker;
  * failures are captured per row and bump the row's attempt counter.
- * Returns how many upstreams were confirmed gone this pass.
+ * Reports resolved upstreams and whether another pass has untried work.
  */
-export async function reconcileOrphanedUpstreamSubscriptions(): Promise<number> {
+export interface ReconcileUpstreamResult {
+  resolved: number
+  hasUnattempted: boolean
+}
+
+export async function reconcileOrphanedUpstreamSubscriptions(): Promise<ReconcileUpstreamResult> {
   const candidates = listOwedUpstreamTeardowns(RECONCILE_BATCH_SIZE)
+  const attemptedIds = new Set(candidates.map((trigger) => trigger.composioTriggerId!))
   let resolved = 0
   for (const trigger of candidates) {
     const upstreamId = trigger.composioTriggerId!
@@ -736,7 +742,9 @@ export async function reconcileOrphanedUpstreamSubscriptions(): Promise<number> 
       })
     }
   }
-  return resolved
+  const hasUnattempted = listOwedUpstreamTeardowns(RECONCILE_BATCH_SIZE)
+    .some((trigger) => !attemptedIds.has(trigger.composioTriggerId!))
+  return { resolved, hasUnattempted }
 }
 
 /**

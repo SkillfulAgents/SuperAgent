@@ -44,7 +44,10 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
 }))
 
 const mockGetWebhookTriggersByComposioId = vi.fn()
-const mockReconcileOrphans = vi.fn().mockResolvedValue(0)
+const mockReconcileOrphans = vi.fn().mockResolvedValue({
+  resolved: 0,
+  hasUnattempted: false,
+})
 const mockMarkTriggerFired = vi.fn().mockResolvedValue(undefined)
 const mockCancelWithCleanup = vi.fn().mockResolvedValue(true)
 const mockGetDistinctMemberIds = vi.fn(() => ['sub_test_member'])
@@ -140,6 +143,10 @@ import { triggerManager } from './trigger-manager'
 describe('TriggerManager', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockReconcileOrphans.mockResolvedValue({
+      resolved: 0,
+      hasUnattempted: false,
+    })
     mockCreateSession.mockResolvedValue({ id: 'session_123' })
     mockReadAgentPreferences.mockResolvedValue({})
     mockGetDistinctMemberIds.mockReturnValue(['sub_test_member'])
@@ -311,7 +318,7 @@ describe('TriggerManager', () => {
       const order: string[] = []
       mockReconcileOrphans.mockImplementation(async () => {
         order.push('reconcile')
-        return 0
+        return { resolved: 0, hasUnattempted: false }
       })
       mockPollAndClaimEvents.mockImplementation(async () => {
         order.push('poll')
@@ -326,9 +333,10 @@ describe('TriggerManager', () => {
       triggerManager.stop()
     })
 
-    it('drains the backlog only while a full batch succeeds', async () => {
-      // 25 = full batch → more may be waiting; 3 = the rest failed or nothing left → stop.
-      mockReconcileOrphans.mockResolvedValueOnce(25).mockResolvedValueOnce(3)
+    it('drains unattempted backlog even when part of the first batch fails', async () => {
+      mockReconcileOrphans
+        .mockResolvedValueOnce({ resolved: 24, hasUnattempted: true })
+        .mockResolvedValueOnce({ resolved: 1, hasUnattempted: false })
       mockPollAndClaimEvents.mockResolvedValue({ events: [], realtime: null })
 
       await triggerManager.start()
@@ -361,7 +369,9 @@ describe('TriggerManager', () => {
     it('does not block the next claim on a slow reconcile', async () => {
       let releaseReconcile!: () => void
       mockReconcileOrphans.mockImplementationOnce(
-        () => new Promise<number>((resolve) => { releaseReconcile = () => resolve(0) }),
+        () => new Promise<{ resolved: number; hasUnattempted: boolean }>((resolve) => {
+          releaseReconcile = () => resolve({ resolved: 0, hasUnattempted: false })
+        }),
       )
       mockPollAndClaimEvents.mockResolvedValue({ events: [], realtime: null })
 

@@ -20,7 +20,6 @@ import {
   getDistinctPlatformMemberIdsForActiveTriggers,
   listAllWebhookTriggersByComposioId,
   reconcileOrphanedUpstreamSubscriptions,
-  RECONCILE_BATCH_SIZE,
   cancelWebhookTriggerWithCleanup,
   markTriggerFired,
   resolveTriggerPrincipal,
@@ -183,8 +182,8 @@ class TriggerManager {
     void (async () => {
       try {
         while (this.isRunning) {
-          const resolved = await reconcileOrphanedUpstreamSubscriptions()
-          if (resolved < RECONCILE_BATCH_SIZE) break
+          const result = await reconcileOrphanedUpstreamSubscriptions()
+          if (!result.hasUnattempted) break
         }
       } catch (error) {
         console.error('[TriggerManager] Upstream reconcile failed:', error)

@@ -23,12 +23,13 @@
  * AUTH_MODE=true PLATFORM_TOKEN=... the host-app runs with.
  *
  *   SUPERAGENT_DATA_DIR=/srv/superagent PLATFORM_PROXY_URL=https://proxy.example.com \
- *     npx tsx scripts/cleanup-orphaned-upstream-subscriptions.ts [--dry-run]
+ *     npx tsx scripts/cleanup-orphaned-upstream-subscriptions.ts --dry-run
+ *     npx tsx scripts/cleanup-orphaned-upstream-subscriptions.ts --upstream-id ti_123
  *
  * The DB schema must already be at this checkout's latest migration; the
  * script checks that read-only first and exits if not, so it never migrates a
- * live DB. `--dry-run` lists what would be checked and makes no network calls
- * or writes.
+ * live DB. `--dry-run` lists candidates without network calls or writes.
+ * Mutation requires explicit IDs because another host may share a live ID.
  */
 import fs from 'node:fs'
 import Database from 'better-sqlite3'
@@ -58,6 +59,15 @@ import {
 } from '../src/shared/lib/services/webhook-trigger-service'
 
 const dryRun = process.argv.includes('--dry-run')
+
+function requestedUpstreamIds(): Set<string> {
+  const ids = new Set<string>()
+  for (let i = 0; i < process.argv.length; i++) {
+    if (process.argv[i] === '--upstream-id' && process.argv[i + 1]) ids.add(process.argv[++i])
+    else if (process.argv[i].startsWith('--upstream-id=')) ids.add(process.argv[i].slice(14))
+  }
+  return ids
+}
 
 function fail(message: string): never {
   console.error(message)
@@ -144,7 +154,20 @@ async function main(): Promise<void> {
 
   const reachable = new Set<WebhookTrigger['kind']>(['custom'])
   if (isPlatformComposioActive()) reachable.add('composio')
-  const candidates = listTerminalUpstreamTriggers().filter((t) => reachable.has(t.kind))
+  const requested = requestedUpstreamIds()
+  if (!dryRun && requested.size === 0) {
+    fail('Mutation requires at least one explicit --upstream-id; IDs may be live on another host.')
+  }
+  const candidates = listTerminalUpstreamTriggers().filter(
+    (trigger) =>
+      reachable.has(trigger.kind) &&
+      (dryRun || requested.has(trigger.composioTriggerId!)),
+  )
+  if (!dryRun) {
+    const found = new Set(candidates.map((trigger) => trigger.composioTriggerId!))
+    const missing = [...requested].filter((id) => !found.has(id))
+    if (missing.length > 0) fail(`Requested IDs are not eligible local terminal rows: ${missing.join(', ')}`)
+  }
   const byUpstreamId = new Map(candidates.map((t) => [t.composioTriggerId!, t]))
   const memberIds = collectMemberIds(candidates)
 

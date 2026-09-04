@@ -585,6 +585,25 @@ describe('composio teardown attribution (SUP-765)', () => {
       expect((await getWebhookTrigger(triggerId))!.upstreamDeletedAt).toBeNull()
     })
 
+    it('does not trust a stale marker from another row sharing the upstream id', async () => {
+      const historical = await createComposioTrigger({ composioTriggerId: 'ti_reused', mintedByMemberId: 'sub_old' })
+      await cancelWebhookTriggerWithCleanup(historical)
+      await insertUser('user-creator')
+      await insertPlatformAccount('user-creator', 'sub_creator')
+      const current = await createComposioTrigger({
+        composioTriggerId: 'ti_reused',
+        createdByUserId: 'user-creator',
+      })
+      await cancelWebhookTrigger(current)
+      mockDeleteComposioTrigger.mockRejectedValue(new ComposioTriggerError('Trigger not found', 404))
+
+      await expect(
+        deleteOrphanedUpstreamSubscription((await getWebhookTrigger(current))!),
+      ).rejects.toBeInstanceOf(UpstreamOwnerUnresolvedError)
+
+      expect((await getWebhookTrigger(current))!.upstreamDeletedAt).toBeNull()
+    })
+
     it('rethrows other failures and leaves the marker null', async () => {
       mockDeleteComposioTrigger.mockRejectedValue(new ComposioTriggerError('forbidden', 403))
       const triggerId = await createComposioTrigger({ mintedByMemberId: 'sub_minted' })
@@ -631,7 +650,10 @@ describe('composio teardown attribution (SUP-765)', () => {
         if (id === 'ti_bad') throw new ComposioTriggerError('upstream 502', 502)
       })
 
-      expect(await reconcileOrphanedUpstreamSubscriptions()).toBe(1)
+      expect(await reconcileOrphanedUpstreamSubscriptions()).toEqual({
+        resolved: 1,
+        hasUnattempted: false,
+      })
 
       expect(mockCaptureException).toHaveBeenCalledTimes(1)
       expect((await getWebhookTrigger(ok))!.upstreamDeletedAt).toBeInstanceOf(Date)
@@ -658,7 +680,9 @@ describe('composio teardown attribution (SUP-765)', () => {
       const first = await reconcileOrphanedUpstreamSubscriptions()
       const second = await reconcileOrphanedUpstreamSubscriptions()
 
-      expect(first + second).toBe(RECONCILE_BATCH_SIZE)
+      expect(first.resolved + second.resolved).toBe(RECONCILE_BATCH_SIZE)
+      expect(first.hasUnattempted).toBe(true)
+      expect(second.hasUnattempted).toBe(false)
       for (const id of rest) expect((await getWebhookTrigger(id))!.upstreamDeletedAt).toBeInstanceOf(Date)
       expect((await getWebhookTrigger(stuck))!.upstreamDeletedAt).toBeNull()
       expect(listOwedUpstreamTeardowns().map((t) => t.composioTriggerId)).toEqual(['ti_stuck'])
@@ -667,7 +691,10 @@ describe('composio teardown attribution (SUP-765)', () => {
     it('does nothing when there are no owed teardowns', async () => {
       await createComposioTrigger({ mintedByMemberId: 'sub_minted' })
 
-      expect(await reconcileOrphanedUpstreamSubscriptions()).toBe(0)
+      expect(await reconcileOrphanedUpstreamSubscriptions()).toEqual({
+        resolved: 0,
+        hasUnattempted: false,
+      })
       expect(mockDeleteComposioTrigger).not.toHaveBeenCalled()
     })
   })
