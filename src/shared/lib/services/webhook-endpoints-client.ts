@@ -9,7 +9,7 @@
 import { captureException } from '@shared/lib/error-reporting'
 import { decodeOrgIdFromToken } from '@shared/lib/platform-attribution'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
-import { platformFetchSignal } from '@shared/lib/platform-auth/fetch-timeout'
+import { upstreamDeleteSignal } from '@shared/lib/platform-auth/fetch-timeout'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import {
   webhookEndpointSchema,
@@ -51,11 +51,7 @@ async function endpointsFetch(
   headers.set('Content-Type', 'application/json')
   headers.set('Authorization', `Bearer ${buildBearer(memberId)}`)
 
-  const response = await fetch(`${baseUrl}/v1/webhook-endpoints${endpoint}`, {
-    ...options,
-    headers,
-    signal: platformFetchSignal(options),
-  })
+  const response = await fetch(`${baseUrl}/v1/webhook-endpoints${endpoint}`, { ...options, headers })
 
   if (!response.ok) {
     const text = await response.text().catch(() => '')
@@ -191,5 +187,8 @@ export async function disablePlatformWebhookEndpoint(
   memberId: string,
   endpointId: string,
 ): Promise<void> {
-  await endpointsFetch(`/${encodeURIComponent(endpointId)}`, memberId, { method: 'DELETE' })
+  await endpointsFetch(`/${encodeURIComponent(endpointId)}`, memberId, {
+    method: 'DELETE',
+    signal: upstreamDeleteSignal(),
+  })
 }

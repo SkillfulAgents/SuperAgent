@@ -377,10 +377,15 @@ class TriggerManager {
       await cancelWebhookTriggerWithCleanup(trigger.id)
       return
     }
+    // The proxy has no claim lease: a claimed event is never re-delivered, so
+    // these events are dropped when the caller acks. Make that visible.
     if (presence === 'unknown') {
-      console.warn(
-        `[TriggerManager] Could not read agent dir for ${trigger.agentSlug}; keeping trigger ${trigger.id}, skipping ${events.length} event(s)`
-      )
+      const message = `Could not read agent dir for ${trigger.agentSlug}; keeping trigger ${trigger.id}, dropping ${events.length} claimed event(s)`
+      console.warn(`[TriggerManager] ${message}`)
+      captureException(new Error(message), {
+        tags: { area: 'webhook-triggers', op: 'agent-presence-unknown' },
+        extra: { triggerId: trigger.id, agentSlug: trigger.agentSlug, eventIds: events.map((e) => e.id) },
+      })
       return
     }
 

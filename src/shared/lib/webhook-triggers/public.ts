@@ -3,7 +3,13 @@ import type { AgentRole } from '@shared/lib/types/agent'
 
 type OwnerOnlyWebhookTriggerFields = Pick<
   WebhookTrigger,
-  'triggerConfig' | 'composioTriggerId' | 'connectedAccountId' | 'createdByUserId' | 'mintedByMemberId'
+  | 'triggerConfig'
+  | 'composioTriggerId'
+  | 'connectedAccountId'
+  | 'createdByUserId'
+  | 'mintedByMemberId'
+  | 'upstreamDeletedAt'
+  | 'upstreamTeardownAttempts'
 >
 
 /**
@@ -30,6 +36,8 @@ export function toPublicWebhookTrigger(
     connectedAccountId: _connectedAccountId,
     createdByUserId: _createdByUserId,
     mintedByMemberId: _mintedByMemberId,
+    upstreamDeletedAt: _upstreamDeletedAt,
+    upstreamTeardownAttempts: _upstreamTeardownAttempts,
     ...publicFields
   } = trigger
 

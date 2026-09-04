@@ -44,6 +44,8 @@ describe('toPublicWebhookTrigger', () => {
       expect(result).not.toHaveProperty('connectedAccountId')
       expect(result).not.toHaveProperty('createdByUserId')
       expect(result).not.toHaveProperty('mintedByMemberId')
+      expect(result).not.toHaveProperty('upstreamDeletedAt')
+      expect(result).not.toHaveProperty('upstreamTeardownAttempts')
       expect(result).toMatchObject({ id: 'trigger-1', name: 'Inbound events' })
       expect(serialized).not.toContain('private-capability')
       expect(serialized).not.toContain('private-id')
