@@ -17,6 +17,7 @@ import {
   findPotentialSecrets,
   type PotentialSecret,
 } from '@renderer/lib/secret-detection'
+import { useAgentSecrets } from './use-secrets'
 
 interface UseMessageComposerOptions {
   agentSlug: string
@@ -44,6 +45,13 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   const [draft, setDraft] = useDraft<string>(draftKey)
   const [message, setMessage] = useState(draft ?? '')
   const [dismissedSecretValues, setDismissedSecretValues] = useState<Set<string>>(() => new Set())
+  const [justSecuredEnvVars, setJustSecuredEnvVars] = useState<string[]>([])
+  const { data: savedSecrets } = useAgentSecrets(agentSlug)
+  const knownSecretEnvVars = useMemo(() => {
+    const next = new Set(justSecuredEnvVars)
+    for (const secret of savedSecrets ?? []) next.add(secret.envVar)
+    return [...next]
+  }, [justSecuredEnvVars, savedSecrets])
   const [isUploading, setIsUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const addMountMutation = useAddMount()
@@ -96,6 +104,9 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     candidate: PotentialSecret,
     savedSecret: { key: string; envVar: string }
   ) => {
+    setJustSecuredEnvVars((current) => (
+      current.includes(savedSecret.envVar) ? current : [...current, savedSecret.envVar]
+    ))
     setMessage((current) => {
       if (current.slice(candidate.start, candidate.end) !== candidate.value) return current
       const marker = secretChip.composer.raw({
@@ -301,7 +312,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     }
 
     const editableContent = content
-    const submittedContent = rewriteChipsForSend(content)
+    const submittedContent = rewriteChipsForSend(content, knownSecretEnvVars)
 
     try {
       await onSubmit(submittedContent)
@@ -328,6 +339,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     message,
     setMessage,
     potentialSecrets,
+    knownSecretEnvVars,
     dismissPotentialSecret,
     securePotentialSecret,
 

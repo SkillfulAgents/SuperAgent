@@ -1,5 +1,5 @@
-import { secretDisplayText } from '@renderer/lib/secret-detection'
-import { formatChipMarker, parseChipMarker } from './chip-marker'
+import { parseSecretMarker, secretDisplayText } from '@renderer/lib/secret-detection'
+import { formatChipMarker } from './chip-marker'
 import type { ComposerChipKind } from './composer-chips'
 
 export const secretChip: ComposerChipKind = {
@@ -7,9 +7,9 @@ export const secretChip: ComposerChipKind = {
   composer: {
     raw: (chip) => formatChipMarker('secret', chip.payload.envVar, chip.payload.key),
     parse: (raw) => {
-      const parts = parseChipMarker(raw)
-      if (!parts || parts.kind !== 'secret') return null
-      return { kind: 'secret', payload: { envVar: parts.referent, key: parts.label } }
+      const parsed = parseSecretMarker(raw)
+      if (!parsed) return null
+      return { kind: 'secret', payload: parsed }
     },
     render: (chip) => ['span', {
       'data-testid': 'secured-secret',

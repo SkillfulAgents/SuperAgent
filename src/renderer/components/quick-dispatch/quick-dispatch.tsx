@@ -397,6 +397,7 @@ export function QuickDispatch() {
             value={composer.message}
             onChange={composer.setMessage}
             onKeyDown={handleKeyDown}
+            knownSecretEnvVars={composer.knownSecretEnvVars}
             placeholder={selectedAgent ? `Dispatch ${selectedAgent.name}…` : 'Dispatch an agent…'}
             disabled={isDisabled}
             minRows={1}

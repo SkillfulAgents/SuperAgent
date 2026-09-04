@@ -2,7 +2,13 @@ import type { DOMOutputSpec } from 'prosemirror-model'
 import { CHIP_MARKER } from './chip-marker'
 import { secretChip } from './secret-chip'
 
-export { CHIP_MARKER, formatChipMarker, parseChipMarker } from './chip-marker'
+export {
+  CHIP_MARKER,
+  CHIP_MARKER_ANCHORED,
+  CHIP_MARKER_STICKY,
+  formatChipMarker,
+  parseChipMarker,
+} from './chip-marker'
 export { secretChip } from './secret-chip'
 
 export interface Chip<P extends Record<string, string> = Record<string, string>> {
@@ -24,15 +30,25 @@ export interface ComposerChipKind<P extends Record<string, string> = Record<stri
 
 export const COMPOSER_CHIP_KINDS: readonly ComposerChipKind<Record<string, string>>[] = [secretChip]
 
-export function rewriteChipsForSend(text: string): string {
-  const byKind = new Map(COMPOSER_CHIP_KINDS.map((kind) => [kind.kind, kind]))
+const chipKindsByName = new Map(COMPOSER_CHIP_KINDS.map((kind) => [kind.kind, kind]))
+
+export function getChipKind(name: string) {
+  return chipKindsByName.get(name)
+}
+
+export function isBackedSecretChip(chip: Chip, knownSecretEnvVars: ReadonlySet<string>): boolean {
+  return chip.kind !== 'secret' || knownSecretEnvVars.has(chip.payload.envVar)
+}
+
+export function rewriteChipsForSend(text: string, knownSecretEnvVars: Iterable<string>): string {
+  const known = knownSecretEnvVars instanceof Set ? knownSecretEnvVars : new Set(knownSecretEnvVars)
   return text.replace(
     CHIP_MARKER,
     (raw, kindName: string) => {
-      const kind = byKind.get(kindName)
+      const kind = getChipKind(kindName)
       if (!kind) return raw
       const chip = kind.composer.parse(raw)
-      if (!chip) return raw
+      if (!chip || !isBackedSecretChip(chip, known)) return raw
       return kind.transcript?.raw?.(chip) ?? raw
     }
   )

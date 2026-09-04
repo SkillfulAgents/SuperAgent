@@ -25,9 +25,24 @@ describe('findPotentialSecrets', () => {
     expect(findPotentialSecrets(text)).toEqual([])
   })
 
-  it('does not flag a credential that was stored as a chip label', () => {
-    const key = ['gh', 'p_Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z'].join('')
-    expect(findPotentialSecrets(`Use ${formatChipMarker('secret', 'GITHUB_TOKEN', key)}`)).toEqual([])
+  it('flags a credential typed in the old display shape', () => {
+    const key = ['sk-', 'proj-Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z'].join('')
+    expect(findPotentialSecrets(`[${key} | ****]`).map((candidate) => candidate.value)).toEqual([key])
+  })
+
+  it('does not flag text inside a well-formed secret chip', () => {
+    expect(findPotentialSecrets(`Use ${formatChipMarker('secret', 'GITHUB_TOKEN', 'GitHub Token')}`)).toEqual([])
+  })
+
+  it('does not treat an ordinary key name with a digit as a credential', () => {
+    expect(findPotentialSecrets(
+      formatChipMarker('secret', 'OPENAI_KEY', 'my_openai_key_2024_prod')
+    )).toEqual([])
+  })
+
+  it('flags a credential pasted as a fake chip label', () => {
+    const key = ['sk-', 'proj-Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z'].join('')
+    expect(findPotentialSecrets(`[[secret:A|${key}]]`).map((candidate) => candidate.value)).toEqual([key])
   })
 
   it('still flags a credential that sits next to a chip', () => {

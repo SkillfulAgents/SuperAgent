@@ -25,6 +25,7 @@ export const FLOATING_COMPOSER_CLASS =
 interface SecureSecretsProps {
   agentSlug: string
   potentialSecrets?: PotentialSecret[]
+  knownSecretEnvVars?: readonly string[]
   onDismiss: (candidate: PotentialSecret) => void
   onSecure: (candidate: PotentialSecret, secret: { key: string; envVar: string }) => void
 }
@@ -119,6 +120,7 @@ export function ChatComposerBox({
           enterKeyHint={enterKeyHint}
           className={cn('max-h-[200px]', textareaClassName)}
           potentialSecrets={potentialSecrets}
+          knownSecretEnvVars={secureSecrets?.knownSecretEnvVars}
           onEditorElement={setEditorRef}
         />
       </div>

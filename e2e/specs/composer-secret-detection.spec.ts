@@ -80,6 +80,13 @@ test.describe('composer secret detection', () => {
     const envVar = `PASTE_KEY_${tag.toUpperCase()}`
     const keyName = `Paste Key ${tag}`
     const marker = `[[secret:${envVar}|${encodeURIComponent(keyName)}]]`
+    const slug = /\/agents\/([^/]+)/.exec(page.url())?.[1]
+    expect(slug).toBeTruthy()
+    const saved = await page.request.post(`/api/agents/${slug}/secrets`, {
+      data: { key: keyName, value: `sk-paste-${tag}` },
+    })
+    expect(saved.ok()).toBeTruthy()
+    await page.reload()
     const input = page.locator('[data-testid="home-message-input"]')
 
     await input.fill('Use ')

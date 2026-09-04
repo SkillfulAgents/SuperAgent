@@ -296,6 +296,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
         secureSecrets={{
           agentSlug,
           potentialSecrets: composer.potentialSecrets,
+          knownSecretEnvVars: composer.knownSecretEnvVars,
           onDismiss: composer.dismissPotentialSecret,
           onSecure: composer.securePotentialSecret,
         }}

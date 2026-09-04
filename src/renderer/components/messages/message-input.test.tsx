@@ -35,6 +35,7 @@ vi.mock('@renderer/hooks/use-messages', () => ({
 
 vi.mock('@renderer/hooks/use-secrets', () => ({
   useCreateSecret: () => mockCreateSecret,
+  useAgentSecrets: () => ({ data: [] }),
 }))
 
 const mockStreamState = {
