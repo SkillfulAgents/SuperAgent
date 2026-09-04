@@ -25,27 +25,45 @@ interface LiveErrorState {
   errorPresentation: ProviderErrorPresentation | null
 }
 
-// Live error wins. Otherwise the last assistant message, if it is a provider
-// error and the agent is not working again. A normal reply after it expires it.
-export function currentProviderError(
-  live: LiveErrorState,
-  messages: readonly ApiMessageOrBoundary[] | undefined,
-): CurrentProviderError | null {
-  if (live.error && isProviderFacingError(live.apiErrorCode, live.errorPresentation)) {
-    return { message: live.error, presentation: live.errorPresentation ?? undefined, live: true, messageId: null }
-  }
-  if (live.isActive || !messages) return null
+interface PersistedProviderError {
+  id: string
+  text: string
+  presentation?: ProviderErrorPresentation
+}
+
+// The last assistant row, if it is a provider error. A normal reply after it expires it.
+function lastAssistantProviderError(messages: readonly ApiMessageOrBoundary[] | undefined): PersistedProviderError | null {
+  if (!messages) return null
   // `messages` is the trailing page, newest last (same contract message-list relies on).
   for (let i = messages.length - 1; i >= 0; i--) {
     const item = messages[i]
     if (item.type !== 'assistant') continue
     const isProviderError =
       !!item.apiError && isProviderFacingError(item.apiError, item.errorPresentation) && !!item.content.text
-    return isProviderError
-      ? { message: item.content.text, presentation: item.errorPresentation, live: false, messageId: item.id }
-      : null
+    return isProviderError ? { id: item.id, text: item.content.text, presentation: item.errorPresentation } : null
   }
   return null
+}
+
+// Live error wins. Otherwise the last assistant message, if it is a provider
+// error and the agent is not working again.
+// The live error stays set after its row is persisted (until the next stream_start), so
+// the live variant still reports that row's id and the transcript suppresses both copies.
+export function currentProviderError(
+  live: LiveErrorState,
+  messages: readonly ApiMessageOrBoundary[] | undefined,
+): CurrentProviderError | null {
+  const persisted = lastAssistantProviderError(messages)
+  if (live.error && isProviderFacingError(live.apiErrorCode, live.errorPresentation)) {
+    return {
+      message: live.error,
+      presentation: live.errorPresentation ?? undefined,
+      live: true,
+      messageId: persisted?.id ?? null,
+    }
+  }
+  if (live.isActive || !persisted) return null
+  return { message: persisted.text, presentation: persisted.presentation, live: false, messageId: persisted.id }
 }
 
 // The current error only when a ProviderErrorPlacement renders it (placement other than

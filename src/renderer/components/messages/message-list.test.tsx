@@ -2162,6 +2162,19 @@ describe('MessageList', () => {
       expect(screen.queryByTestId('provider-error-card')).not.toBeInTheDocument()
     })
 
+    it('renders no card while the live error and its persisted row coexist', () => {
+      mockMessagesData.data = [createUserMessage({ content: { text: 'summarize' } }), routedError()]
+      Object.assign(mockStreamState, {
+        streamingMessage: 'API Error: 402 insufficient balance',
+        error: 'API Error: 402 insufficient balance',
+        apiErrorCode: 'billing_error',
+        errorPresentation: routed,
+      })
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.queryByTestId('provider-error-card')).not.toBeInTheDocument()
+      expect(screen.queryByText(/API Error: 402/)).not.toBeInTheDocument()
+    })
+
     it('still renders the streaming row inline when the live error is not routed away', () => {
       mockMessagesData.data = [createUserMessage()]
       Object.assign(mockStreamState, {

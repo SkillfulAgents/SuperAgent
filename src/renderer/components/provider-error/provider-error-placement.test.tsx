@@ -46,14 +46,25 @@ function errorMessage(presentation?: ProviderErrorPresentation) {
 }
 
 describe('currentProviderError', () => {
-  it('prefers the live error', () => {
+  it('prefers the live error and reports the persisted row it was written into', () => {
     const live = { isActive: false, error: 'live 429', apiErrorCode: 'rate_limit', errorPresentation: composerError }
-    expect(currentProviderError(live, [errorMessage(inlineError)])).toEqual({
+    const persisted = errorMessage(inlineError)
+    expect(currentProviderError(live, [persisted])).toEqual({
       message: 'live 429',
       presentation: composerError,
       live: true,
-      messageId: null,
+      messageId: persisted.id,
     })
+  })
+
+  it('reports no row for a live error whose persisted row has not arrived yet', () => {
+    const live = { isActive: false, error: 'live 429', apiErrorCode: 'rate_limit', errorPresentation: composerError }
+    expect(currentProviderError(live, [createUserMessage()])?.messageId).toBeNull()
+  })
+
+  it('does not bind a live error to a persisted normal reply', () => {
+    const live = { isActive: false, error: 'live 429', apiErrorCode: 'rate_limit', errorPresentation: composerError }
+    expect(currentProviderError(live, [createAssistantMessage()])?.messageId).toBeNull()
   })
 
   it('accepts a live error with a generic SDK code when a presentation is attached', () => {
@@ -113,7 +124,13 @@ describe('currentRoutedProviderError', () => {
 
   it('is the live error (no persisted row yet) while it is routed to the composer', () => {
     const live = { isActive: false, error: 'API Error: 402', apiErrorCode: 'billing_error', errorPresentation: composerError }
-    expect(currentRoutedProviderError(live, [errorMessage(composerError)])).toMatchObject({ live: true, messageId: null })
+    expect(currentRoutedProviderError(live, [createUserMessage()])).toMatchObject({ live: true, messageId: null })
+  })
+
+  it('is the live error plus its persisted row once that row has arrived', () => {
+    const live = { isActive: false, error: 'API Error: 402', apiErrorCode: 'billing_error', errorPresentation: composerError }
+    const msg = errorMessage(composerError)
+    expect(currentRoutedProviderError(live, [createUserMessage(), msg])).toMatchObject({ live: true, messageId: msg.id })
   })
 
   it('is null for an inline error, which the transcript renders itself', () => {
