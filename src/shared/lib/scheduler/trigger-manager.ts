@@ -16,15 +16,13 @@ import { messagePersister } from '@shared/lib/container/message-persister'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { runWithOptionalUser, attribution } from '@shared/lib/platform-attribution'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
-import { db } from '@shared/lib/db'
-import { connectedAccounts } from '@shared/lib/db/schema'
-import { eq } from 'drizzle-orm'
 import {
   getDistinctPlatformMemberIdsForActiveTriggers,
   getWebhookTriggersByComposioId,
   markTriggerFired,
   markTriggerFailed,
-  resolvePlatformMemberForCandidates,
+  resolveTriggerPrincipal,
+  getConnectedAccountOwnerUserId,
 } from '@shared/lib/services/webhook-trigger-service'
 import type { WebhookTrigger } from '@shared/lib/services/webhook-trigger-service'
 import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
@@ -41,17 +39,6 @@ import {
   webhookEnvelopeSchema,
   CUSTOM_WEBHOOK_TRIGGER_TYPE,
 } from '@shared/lib/services/webhook-endpoint-schema'
-
-function resolveConnectedAccountOwner(connectedAccountId: string | null): string | null {
-  if (!connectedAccountId) return null
-  const rows = db
-    .select({ userId: connectedAccounts.userId })
-    .from(connectedAccounts)
-    .where(eq(connectedAccounts.id, connectedAccountId))
-    .limit(1)
-    .all()
-  return rows[0]?.userId ?? null
-}
 
 /**
  * Custom-endpoint events carry a request envelope from the public ingest
@@ -327,12 +314,10 @@ class TriggerManager {
     // creator has no platform member (SUP-226). If neither resolves to a
     // platform member (e.g. opaque-key / single-user mode), keep the prior
     // best-effort attribution (creator, else owner).
-    const candidates = [
-      trigger.createdByUserId,
-      resolveConnectedAccountOwner(trigger.connectedAccountId),
-    ]
-    const resolved = resolvePlatformMemberForCandidates(candidates)
-    const ownerUserId = resolved?.userId ?? candidates.find((c) => c) ?? null
+    const ownerUserId =
+      resolveTriggerPrincipal(trigger)?.userId ??
+      trigger.createdByUserId ??
+      getConnectedAccountOwnerUserId(trigger.connectedAccountId)
     await runWithOptionalUser(ownerUserId, () => this.spawnSessionInner(trigger, events))
   }
 

@@ -55,6 +55,7 @@ import {
   type WebhookEndpointEvent,
 } from '@shared/lib/services/webhook-endpoint-schema'
 import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
+import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
 import {
   getAvailableTriggers,
   enableComposioTrigger,
@@ -4288,11 +4289,27 @@ ${continuation}`
           return
         }
 
+        // The proxy scopes the subscription to the acting member of THIS mint
+        // request (ambient ALS), which is not always the session creator (SUP-765).
+        // Tool handlers run off the stream loop with no guaranteed ALS scope, so
+        // when none is active mint explicitly under the session's member instead
+        // of letting the call go out as a bare org token with nothing recorded.
+        const sessionMemberId = await this.resolvePlatformMemberForSession(agentSlug, sessionId)
+        const mintAttribution =
+          attribution.current() ??
+          // Never mint as the opaque-key 'local' placeholder — that would send `token::local`.
+          (sessionMemberId === 'local' ? null : attribution.fromMemberId(sessionMemberId))
+        const mintedByMemberId = mintAttribution?.actingMemberId() ?? undefined
+
         // 1. Enable trigger on Composio via proxy (using Composio's ca_* ID)
-        const composioTriggerId = await enableComposioTrigger(
-          input.trigger_type,
-          providerConnectionId,
-          input.trigger_config,
+        // Under mintAttribution so the recorded member is the one the proxy
+        // actually scoped the subscription to, not a guess made after the fact.
+        const composioTriggerId = await runWithAttribution(mintAttribution, () =>
+          enableComposioTrigger(
+            input.trigger_type,
+            providerConnectionId,
+            input.trigger_config,
+          ),
         )
 
         // 2. Save to SQLite (store the local account ID for app-level lookups)
@@ -4309,6 +4326,7 @@ ${continuation}`
             name: input.name,
             createdBySessionId: sessionId,
             createdByUserId: triggerOwnerId ?? undefined,
+            mintedByMemberId,
             model: input.model,
             effort: input.effort,
             speed: input.speed,
@@ -4401,6 +4419,10 @@ ${continuation}`
         const filterExp = input.filter_exp ?? undefined
 
         const memberId = await this.resolvePlatformMemberForSession(agentSlug, sessionId)
+        // Minted explicitly as `token::memberId` below, so record that when no ALS
+        // attribution is active; never persist the opaque-key 'local' placeholder.
+        const mintedByMemberId =
+          attribution.current()?.actingMemberId() ?? (memberId === 'local' ? undefined : memberId)
 
         // 1. Mint the endpoint on the platform proxy
         const endpoint = await createPlatformWebhookEndpoint(memberId, {
@@ -4425,6 +4447,7 @@ ${continuation}`
             name: input.name.trim(),
             createdBySessionId: sessionId,
             createdByUserId: triggerOwnerId ?? undefined,
+            mintedByMemberId,
             model: input.model,
             effort: input.effort,
             speed: input.speed,
@@ -4556,9 +4579,11 @@ ${continuation}`
           return
         }
 
-        // Creator-first member resolution, matching teardown: the endpoint is
-        // scoped to whoever minted it, not whoever's session runs the update.
+        // Minting-member-first resolution, matching teardown: the endpoint is
+        // scoped to whoever minted it, not to whoever created the session that
+        // runs the update (SUP-765). Pre-column rows fall back to the creator.
         const memberId =
+          trigger.mintedByMemberId ??
           resolvePlatformMemberForCandidates([trigger.createdByUserId])?.memberId ??
           (await this.resolvePlatformMemberForSession(agentSlug, sessionId))
         await updatePlatformWebhookEndpoint(memberId, trigger.composioTriggerId, patch)
@@ -4638,8 +4663,9 @@ ${continuation}`
           return
         }
 
-        // Creator-first member resolution, same as update/teardown.
+        // Minting-member-first resolution, same as update/teardown (SUP-765).
         const memberId =
+          trigger.mintedByMemberId ??
           resolvePlatformMemberForCandidates([trigger.createdByUserId])?.memberId ??
           (await this.resolvePlatformMemberForSession(agentSlug, sessionId))
 
