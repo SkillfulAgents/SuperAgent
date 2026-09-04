@@ -103,7 +103,7 @@ test.describe('Stop button interrupts the working agent', () => {
     await expect(sessionPage.getStopButton()).not.toBeVisible()
     await sessionPage.waitForUserMessageCount(5)
     await sessionPage.expectUserMessage('please work slowly for the stop test', 1)
-    await sessionPage.expectUserMessage('[Request interrupted by user]', 2)
+    await sessionPage.expectInterruptMarker(2)
   })
 
   test('stopping with a queued message rescues its text into the composer for resend', async ({ page }) => {
@@ -140,7 +140,7 @@ test.describe('Stop button interrupts the working agent', () => {
     // The abort appended the interrupt marker after the slow-work user message
     await sessionPage.waitForUserMessageCount(3, 15000)
     await sessionPage.expectUserMessage('please work slowly for the draft rescue test', 0)
-    await sessionPage.expectUserMessage('[Request interrupted by user]', 1)
+    await sessionPage.expectInterruptMarker(1)
     await sessionPage.expectUserMessage(queuedText, 2)
 
     // Chain two more 3s turns: with the resend gated on the 1.5s rescue grace,
