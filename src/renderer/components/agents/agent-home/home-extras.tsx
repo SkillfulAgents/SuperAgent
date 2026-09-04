@@ -17,14 +17,18 @@ export function HomeExtras({ agentSlug, onOpenSettings, className }: HomeExtrasP
   const { openFolder } = useFilePreview()
 
   return (
-    // Two sections. The per-agent defaults (pickers) keep their own padding
-    // around the group; the navigation rows below are one uniform height and
-    // sit flush with the card, which clips them to its rounded corners so the
+    // Two sections. The per-agent preferences (pickers) are a labelled section
+    // group, the same shape as a group in the settings nav, with their original
+    // row padding; the navigation rows below are one uniform height and sit
+    // flush with the card, which clips them to its rounded corners so the
     // hover fill stays inside.
     <div className={cn("overflow-hidden rounded-xl border bg-background", className)}>
-      <div className="divide-y divide-border/50 py-2">
-        <HomeDefaultModel agentSlug={agentSlug} />
-        <HomeRetention agentSlug={agentSlug} />
+      <div className="pb-2" data-testid="home-preferences-group">
+        <p className="px-4 pt-4 pb-1 text-xs font-medium text-muted-foreground">Preferences</p>
+        <div className="divide-y divide-border/50">
+          <HomeDefaultModel agentSlug={agentSlug} />
+          <HomeRetention agentSlug={agentSlug} />
+        </div>
       </div>
       <div className="divide-y divide-border/50 border-t border-border/50">
         <ExtrasButton
