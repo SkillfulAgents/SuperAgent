@@ -6,10 +6,12 @@
  * - Placeholders such as "No response requested." — pure transcript noise,
  *   nothing the model said, nothing the person needs to see.
  * - API errors ("API Error: 529 Overloaded ...") — also synthetic, but
- *   flagged `isApiErrorMessage: true` and rendered as an error card.
+ *   rendered as an error card. The persisted JSONL entry flags them with
+ *   `isApiErrorMessage: true`; the live SDK frame carries the code in
+ *   `error` instead (e.g. "model_not_found"). Either marks an error.
  *
- * Only the first kind is hidden. Match on the model tag and the flag, never
- * on the placeholder text.
+ * Only the first kind is hidden. Match on the model tag and the error
+ * markers, never on the placeholder text.
  */
 export const SYNTHETIC_MODEL = '<synthetic>'
 
@@ -17,6 +19,7 @@ export interface SyntheticCandidate {
   type?: unknown
   message?: { model?: unknown } | null
   isApiErrorMessage?: unknown
+  error?: unknown
 }
 
 /** True for a CLI-authored assistant placeholder that stands in for a missing response. */
@@ -24,6 +27,7 @@ export function isSyntheticPlaceholderMessage(entry: SyntheticCandidate): boolea
   return (
     entry.type === 'assistant' &&
     entry.message?.model === SYNTHETIC_MODEL &&
-    entry.isApiErrorMessage !== true
+    entry.isApiErrorMessage !== true &&
+    !entry.error
   )
 }

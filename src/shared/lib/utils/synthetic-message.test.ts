@@ -14,11 +14,16 @@ describe('isSyntheticPlaceholderMessage', () => {
     })).toBe(true)
   })
 
-  it('keeps synthetic API errors', () => {
+  it('keeps synthetic API errors, flagged on the JSONL entry or coded on the live frame', () => {
     expect(isSyntheticPlaceholderMessage({
       type: 'assistant',
       message: { model: '<synthetic>' },
       isApiErrorMessage: true,
+    })).toBe(false)
+    expect(isSyntheticPlaceholderMessage({
+      type: 'assistant',
+      message: { model: '<synthetic>' },
+      error: 'model_not_found',
     })).toBe(false)
   })
 
