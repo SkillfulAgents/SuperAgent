@@ -6,7 +6,7 @@ import { SERVICES } from './tools/search-connected-account-services'
 import { BROWSER_USE_GUIDANCE_HINT } from './tools/browser'
 import { COMPUTER_USE_GUIDANCE_HINT } from './tools/computer-use'
 
-const KEYS = ['COMPOSIO_PLATFORM_MODE', 'PLATFORM_AUTH_ACTIVE', 'CONNECTED_ACCOUNTS', 'REMOTE_MCPS', 'CLAUDE_CONFIG_DIR', 'HOST_PLATFORM', 'SUPERAGENT_SHARED_VOLUMES']
+const KEYS = ['COMPOSIO_PLATFORM_MODE', 'PLATFORM_AUTH_ACTIVE', 'CONNECTED_ACCOUNTS', 'REMOTE_MCPS', 'CLAUDE_CONFIG_DIR', 'HOST_PLATFORM', 'SUPERAGENT_MOUNTS']
 let saved: Record<string, string | undefined>
 beforeEach(() => { saved = Object.fromEntries(KEYS.map(k => [k, process.env[k]])); for (const k of KEYS) delete process.env[k] })
 afterEach(() => { for (const k of KEYS) { saved[k] === undefined ? delete process.env[k] : process.env[k] = saved[k]! } })
@@ -16,36 +16,53 @@ describe('buildSystemPromptVars', () => {
     expect(buildSystemPromptVars(undefined, undefined, undefined, undefined).CLAUDE_CONFIG_DIR).toBe('/workspace/.claude')
   })
 
-  it('parses SUPERAGENT_SHARED_VOLUMES into the joined prompt scalar', () => {
-    process.env.SUPERAGENT_SHARED_VOLUMES = '/volumes/research,/volumes/shared-notes'
+  it('parses SUPERAGENT_MOUNTS into the joined list and flags shared volumes by prefix', () => {
+    process.env.SUPERAGENT_MOUNTS = JSON.stringify(['/mounts/project', '/volumes/research'])
     const vars = buildSystemPromptVars()
+    expect(vars.hasMounts).toBe(true)
+    expect(vars.mountPathsJoined).toBe('/mounts/project, /volumes/research')
     expect(vars.hasSharedVolumes).toBe(true)
-    expect(vars.sharedVolumePathsJoined).toBe('/volumes/research, /volumes/shared-notes')
   })
 
-  it('leaves shared volumes off when the env is absent', () => {
+  it('keeps a folder name that contains a comma as one path', () => {
+    process.env.SUPERAGENT_MOUNTS = JSON.stringify(['/mounts/Acme, Inc', '/volumes/research'])
     const vars = buildSystemPromptVars()
+    expect(vars.mountPathsJoined).toBe('/mounts/Acme, Inc, /volumes/research')
+    expect(vars.hasSharedVolumes).toBe(true)
+  })
+
+  it('does not flag shared volumes for folder mounts only', () => {
+    process.env.SUPERAGENT_MOUNTS = JSON.stringify(['/mounts/project'])
+    const vars = buildSystemPromptVars()
+    expect(vars.hasMounts).toBe(true)
     expect(vars.hasSharedVolumes).toBe(false)
-    expect(vars.sharedVolumePathsJoined).toBe('')
+  })
+
+  it('leaves mounts off when the env is absent', () => {
+    const vars = buildSystemPromptVars()
+    expect(vars.hasMounts).toBe(false)
+    expect(vars.hasSharedVolumes).toBe(false)
+    expect(vars.mountPathsJoined).toBe('')
   })
 })
 
 describe('generateSystemPrompt rendering', () => {
-  it('renders the shared volumes block under Workspace vs Tmp only when the env is set', () => {
-    expect(generateSystemPrompt()).not.toContain('Shared volumes (read/write')
-    process.env.SUPERAGENT_SHARED_VOLUMES = '/volumes/research,/volumes/notes'
-    const out = generateSystemPrompt()
-    expect(out).toContain(
-      'Shared volumes (read/write, shared with other agents in this workspace): /volumes/research, /volumes/notes',
-    )
-    expect(out).toContain("Use them for files that should be common. Keep this agent's own work in `/workspace`. Only the paths listed here exist.")
-    expect(out).toContain('If a volume grows past what `ls` makes obvious, write or update `INDEX.md` at its root: purpose, top-level layout, how to add things. Read that file before you write, when it exists.')
+  it('renders the mounted-folders block only when the env is set, and the shared guidance only for /volumes paths', () => {
+    expect(generateSystemPrompt()).not.toContain('Mounted folders:')
+    process.env.SUPERAGENT_MOUNTS = JSON.stringify(['/mounts/project'])
+    let out = generateSystemPrompt()
+    expect(out).toContain('Mounted folders: /mounts/project')
+    expect(out).not.toContain('Paths under `/volumes`')
+    process.env.SUPERAGENT_MOUNTS = JSON.stringify(['/mounts/project', '/volumes/research'])
+    out = generateSystemPrompt()
+    expect(out).toContain('Mounted folders: /mounts/project, /volumes/research')
+    expect(out).toContain('Paths under `/volumes` are shared read/write with other agents in this workspace.')
+    expect(out).toContain('If a shared volume grows past what `ls` makes obvious, write or update `INDEX.md` at its root')
     const workspaceIdx = out.indexOf('## Workspace vs Tmp')
-    const volumesIdx = out.indexOf('Shared volumes (read/write')
+    const mountsIdx = out.indexOf('Mounted folders:')
     const fileHandlingIdx = out.indexOf('## File Handling')
-    expect(workspaceIdx).toBeGreaterThan(-1)
-    expect(volumesIdx).toBeGreaterThan(workspaceIdx)
-    expect(fileHandlingIdx).toBeGreaterThan(volumesIdx)
+    expect(workspaceIdx).toBeLessThan(mountsIdx)
+    expect(mountsIdx).toBeLessThan(fileHandlingIdx)
   })
 
   // Trigger gating across every env combination, in one table so each case is

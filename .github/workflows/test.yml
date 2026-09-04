@@ -310,6 +310,51 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  e2e-cloud-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # 11.14.1 = newest npm with min-release-age support (needs >=11.10) where
+      # `npm ls --json --long` still works (broken in 11.15+, breaks electron-builder)
+      - name: Upgrade npm (pinned)
+        run: npm install -g npm@11.14.1
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Rebuild native modules
+        run: npm rebuild better-sqlite3
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Cloud E2E tests
+        env:
+          PORT: '3011'
+          SUPERAGENT_DATA_DIR: .e2e-data/cloud
+          PLAYWRIGHT_OUTPUT_DIR: test-results/cloud
+          PLAYWRIGHT_HTML_REPORT: playwright-report/cloud
+        run: npm run test:e2e:cloud
+
+      - name: Upload cloud Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-cloud-playwright-artifacts
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7
+
   # Drives the real Electron app over CDP against a real auth-mode deployment,
   # with only the platform's discovery + grant minting stubbed. This is the only
   # job in which a renderer ever resolves a cloud target, so it is the only one

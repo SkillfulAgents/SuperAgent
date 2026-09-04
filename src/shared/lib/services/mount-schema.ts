@@ -14,3 +14,25 @@ export const agentMountSchema = z.object({
 }) satisfies z.ZodType<AgentMount>
 
 export const agentMountsSchema = z.array(agentMountSchema)
+
+export const mountRecordSchema = agentMountSchema.extend({
+  source: z.enum(['folder', 'shared']),
+  health: z.enum(['ok', 'missing']),
+})
+
+export const agentMountsResponseSchema = z.object({
+  hostFolders: z.boolean(),
+  sharedVolumes: z.boolean(),
+  mounts: z.array(mountRecordSchema),
+})
+
+export const sharedVolumeListItemSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  mountName: z.string(),
+  attachedAgents: z.array(z.object({ slug: z.string(), name: z.string() })),
+})
+
+export const sharedVolumeListResponseSchema = z.object({
+  volumes: z.array(sharedVolumeListItemSchema),
+})

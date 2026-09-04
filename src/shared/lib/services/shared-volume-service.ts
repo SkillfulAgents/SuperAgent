@@ -3,6 +3,8 @@ import { and, eq, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { agentAcl, agentSharedVolumes, sharedVolumes, type SharedVolume } from '@shared/lib/db/schema'
 import { getVolumeDir } from '@shared/lib/config/data-dir'
+import { isCloudRunner } from '@shared/lib/config/settings'
+import type { AgentMount } from '@shared/lib/types/mount'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { hasMinRole, type AgentRole } from '@shared/lib/types/agent'
 import {
@@ -34,6 +36,9 @@ function validateMountName(mountName: string): void {
 }
 
 export async function createSharedVolume(name: string): Promise<SharedVolume> {
+  if (!isCloudRunner()) {
+    throw new SharedVolumeError('Shared volumes are not available on this runner', 400)
+  }
   const trimmed = name.trim()
   if (!trimmed) {
     throw new SharedVolumeError('Name is required', 400)
@@ -85,6 +90,9 @@ export function listSharedVolumes(): Array<SharedVolume & { attachedAgents: { sl
 }
 
 export function attachSharedVolume(agentSlug: string, volumeId: string): void {
+  if (!isCloudRunner()) {
+    throw new SharedVolumeError('Shared volumes are not available on this runner', 400)
+  }
   const volume = db.select().from(sharedVolumes).where(eq(sharedVolumes.id, volumeId)).get()
   if (!volume) {
     throw new SharedVolumeError('Shared volume not found', 404)
@@ -162,14 +170,24 @@ export async function deleteSharedVolume(
   }
 }
 
-export function getAgentSharedVolumes(agentSlug: string): Array<{ id: string; mountName: string }> {
+/** The agent's attached volumes in the desktop-mount shape, so both sources share one pipe. */
+export function getAgentSharedVolumeMounts(agentSlug: string): AgentMount[] {
   return db
     .select({
       id: sharedVolumes.id,
+      name: sharedVolumes.name,
       mountName: sharedVolumes.mountName,
+      attachedAt: agentSharedVolumes.createdAt,
     })
     .from(agentSharedVolumes)
     .innerJoin(sharedVolumes, eq(agentSharedVolumes.volumeId, sharedVolumes.id))
     .where(eq(agentSharedVolumes.agentSlug, agentSlug))
     .all()
+    .map((row) => ({
+      id: row.id,
+      hostPath: getVolumeDir(row.id),
+      containerPath: `/volumes/${row.mountName}`,
+      folderName: row.name,
+      addedAt: row.attachedAt.toISOString(),
+    }))
 }

@@ -6,8 +6,14 @@ import { EventEmitter } from 'events'
 
 const mockGetSettings = vi.fn()
 const mockCaptureException = vi.fn()
+const { mockStorageSubPath } = vi.hoisted(() => ({ mockStorageSubPath: vi.fn((_p: string): string | null => null) }))
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: (...args: unknown[]) => mockGetSettings(...args),
+}))
+vi.mock('@shared/lib/config/data-dir', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/config/data-dir')>()),
+  getAgentWorkspaceDir: (id: string) => `/data/agents/${id}/workspace`,
+  storageSubPath: (p: string) => mockStorageSubPath(p),
 }))
 
 vi.mock('@shared/lib/llm-provider', () => ({
@@ -32,17 +38,17 @@ import {
   resetPlatformK8sRuntimeStateForTests,
   requestJsonOnce,
   toKubernetesMemoryQuantity,
-  volumesSubPathPrefix,
+  acceptCloudMounts,
   withRetry,
   KubeApiError,
   type KubeConfig,
   type OwnerReference,
 } from './platform-k8s-runtime'
+import type { AgentMount } from '@shared/lib/types/mount'
 
 const kube: KubeConfig = {
   namespace: 'org-abc123',
   pvcName: 'org-data',
-  workspaceSubPathPrefix: 'staging-usw2/org-abc123/superagent-data/agents',
   imagePullSecretName: 'ghcr-pull-secret',
   extraLabels: {
     'gamut.cloud/component': 'agent-container',
@@ -51,10 +57,13 @@ const kube: KubeConfig = {
   extraAnnotations: { 'gamut.cloud/deployment-id': 'staging-usw2' },
 }
 
+const record = (over: Partial<AgentMount>): AgentMount => ({
+  id: 'v1', hostPath: '/data/volumes/v1', containerPath: '/volumes/team-brain', folderName: 'Team brain', addedAt: '2026-01-01', ...over,
+})
+
 const KUBE_ENV_KEYS = [
   'K8S_NAMESPACE',
   'K8S_WORKSPACES_PVC',
-  'K8S_WORKSPACES_SUBPATH_PREFIX',
   'K8S_IMAGE_PULL_SECRET_NAME',
   'K8S_EXTRA_LABELS',
   'K8S_EXTRA_ANNOTATIONS',
@@ -63,16 +72,19 @@ const KUBE_ENV_KEYS = [
   'HOST_PUBLIC_URL',
 ] as const
 
-function installHttpsMock(handler: (path: string) => { statusCode: number; body: string }) {
+function installHttpsMock(handler: (method: string, path: string, body: string) => { statusCode: number; body: string }) {
   vi.spyOn(https, 'request').mockImplementation(((opts, callback) => {
     const path = String((opts as { path?: string }).path ?? '')
-    const { statusCode, body } = handler(path)
+    const method = String((opts as { method?: string }).method ?? 'GET')
     const res = new EventEmitter() as EventEmitter & { statusCode: number; setEncoding: ReturnType<typeof vi.fn> }
-    res.statusCode = statusCode
     res.setEncoding = vi.fn()
     const req = new EventEmitter() as EventEmitter & { write: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn> }
-    req.write = vi.fn()
-    req.end = vi.fn(() => {
+    let written = ''
+    req.write = vi.fn((chunk: unknown) => { written += String(chunk ?? '') })
+    req.end = vi.fn((chunk?: unknown) => {
+      if (chunk !== undefined) written += String(chunk)
+      const { statusCode, body } = handler(method, path, written)
+      res.statusCode = statusCode
       process.nextTick(() => {
         res.emit('data', body)
         res.emit('end')
@@ -89,6 +101,7 @@ describe('PlatformK8sRuntimeClient manifests', () => {
       container: { agentImage: 'settings-agent-image', resourceLimits: { cpu: 2, memory: '4g' } },
       enableToolSearch: true,
     })
+    mockStorageSubPath.mockImplementation((p) => p.startsWith('/data/') ? p.slice('/data/'.length) : null)
     process.env.K8S_AGENT_IMAGE = 'k8s-agent-image'
   })
 
@@ -149,7 +162,7 @@ describe('PlatformK8sRuntimeClient manifests', () => {
     ]))
     expect(container.volumeMounts[0]).toMatchObject({
       mountPath: '/workspace',
-      subPath: 'staging-usw2/org-abc123/superagent-data/agents/agent-with-spaces/workspace',
+      subPath: 'agents/agent-with-spaces/workspace',
     })
     expect(container.resources).toEqual({
       requests: { cpu: '2', memory: '4Gi' },
@@ -225,13 +238,6 @@ describe('PlatformK8sRuntimeClient manifests', () => {
     expect(service.spec?.selector).toEqual({ 'app.kubernetes.io/instance': 'superagent-a' })
   })
 
-  it('mounts <agentId>/workspace directly when no subPath prefix is configured', () => {
-    const noPrefix: KubeConfig = { ...kube, workspaceSubPathPrefix: '' }
-    const pod = buildAgentPodManifest(noPrefix, 'superagent-a', { agentId: 'a', envVars: {} }, {})
-    const container = (pod.spec?.containers as Array<{ volumeMounts: Array<{ subPath: string }> }>)[0]
-    expect(container.volumeMounts[0].subPath).toBe('a/workspace')
-  })
-
   it('stamps ownerReferences on pod and service for cluster GC when provided', () => {
     const owner: OwnerReference = {
       apiVersion: 'v1', kind: 'Pod', name: 'host-app-xyz', uid: 'uid-123',
@@ -249,73 +255,22 @@ describe('PlatformK8sRuntimeClient manifests', () => {
     expect(pod.metadata.ownerReferences).toBeUndefined()
   })
 
-  it('mounts attached shared volumes as extra PVC subPaths', () => {
-    const pod = buildAgentPodManifest(
-      kube,
-      'superagent-a',
-      { agentId: 'a', envVars: {} },
-      {},
-      null,
-      [{ id: 'v1', mountName: 'team-brain' }],
-    )
-    const container = (pod.spec?.containers as Array<{
-      volumeMounts: Array<{ name: string; mountPath: string; subPath: string }>
-    }>)[0]
+  it('mounts accepted records as PVC subPaths beside the workspace', () => {
+    const { accepted } = acceptCloudMounts([record({})])
+    const pod = buildAgentPodManifest(kube, 'superagent-a', { agentId: 'a', envVars: {} }, {}, null, accepted)
+    const container = (pod.spec?.containers as Array<{ volumeMounts: Array<{ name: string; mountPath: string; subPath: string }> }>)[0]
     expect(container.volumeMounts).toEqual([
-      {
-        name: 'workspaces',
-        mountPath: '/workspace',
-        subPath: 'staging-usw2/org-abc123/superagent-data/agents/a/workspace',
-      },
-      {
-        name: 'workspaces',
-        mountPath: '/volumes/team-brain',
-        subPath: 'staging-usw2/org-abc123/superagent-data/volumes/v1',
-      },
+      { name: 'workspaces', mountPath: '/workspace', subPath: 'agents/a/workspace' },
+      { name: 'workspaces', mountPath: '/volumes/team-brain', subPath: 'volumes/v1' },
     ])
   })
 
-  it('derives a volumes prefix sibling of the workspace prefix', () => {
-    expect(volumesSubPathPrefix('staging-usw2/org-abc123/superagent-data/agents'))
-      .toBe('staging-usw2/org-abc123/superagent-data/volumes')
-    expect(volumesSubPathPrefix('')).toBe('volumes')
-    expect(volumesSubPathPrefix('agents')).toBe('volumes')
-
-    const noPrefix: KubeConfig = { ...kube, workspaceSubPathPrefix: '' }
-    const pod = buildAgentPodManifest(
-      noPrefix,
-      'superagent-a',
-      { agentId: 'a', envVars: {} },
-      {},
-      null,
-      [{ id: 'v1', mountName: 'team-brain' }],
-    )
-    const container = (pod.spec?.containers as Array<{
-      volumeMounts: Array<{ subPath: string }>
-    }>)[0]
-    expect(container.volumeMounts[1].subPath).toBe('volumes/v1')
-  })
-
-  it('lets K8S_VOLUMES_SUBPATH_PREFIX override the derived volumes prefix', () => {
-    process.env.K8S_VOLUMES_SUBPATH_PREFIX = 'custom/volumes-root'
-    expect(volumesSubPathPrefix('staging-usw2/org-abc123/superagent-data/agents')).toBe('custom/volumes-root')
-    const noPrefix: KubeConfig = { ...kube, workspaceSubPathPrefix: '' }
-    const pod = buildAgentPodManifest(
-      noPrefix,
-      'superagent-a',
-      { agentId: 'a', envVars: {} },
-      {},
-      null,
-      [{ id: 'v1', mountName: 'team-brain' }],
-    )
-    const container = (pod.spec?.containers as Array<{
-      volumeMounts: Array<{ subPath: string; mountPath: string }>
-    }>)[0]
-    expect(container.volumeMounts[1]).toMatchObject({
-      mountPath: '/volumes/team-brain',
-      subPath: 'custom/volumes-root/v1',
-    })
-    delete process.env.K8S_VOLUMES_SUBPATH_PREFIX
+  it('acceptCloudMounts keeps /volumes records on the disk and drops the rest', () => {
+    const folder = record({ id: 'm1', hostPath: '/data/agents/other/workspace', containerPath: '/mounts/other', folderName: 'other' })
+    const offDisk = record({ id: 'v2', hostPath: '/sqlite/x', containerPath: '/volumes/x', folderName: 'x' })
+    const { accepted, dropped } = acceptCloudMounts([record({}), folder, offDisk])
+    expect(accepted.map((m) => m.subPath)).toEqual(['volumes/v1'])
+    expect(dropped).toEqual([folder, offDisk])
   })
 })
 
@@ -410,7 +365,6 @@ describe('resolveKubeConfigOrNull', () => {
     expect(resolveKubeConfigOrNull()).toEqual({
       namespace: 'org-abc123',
       pvcName: 'org-data',
-      workspaceSubPathPrefix: '',
       imagePullSecretName: null,
       extraLabels: { 'gamut.cloud/org-id': 'org_abc123' },
       extraAnnotations: { 'gamut.cloud/deployment-id': 'staging-usw2' },
@@ -473,6 +427,11 @@ describe('PlatformK8sRuntimeClient operability', () => {
     process.env.K8S_WORKSPACES_PVC = 'org-data'
     process.env.KUBERNETES_SERVICE_HOST = '10.96.0.1'
     process.env.HOST_PUBLIC_URL = 'https://org.example.com'
+    mockStorageSubPath.mockImplementation((p) => p.startsWith('/data/') ? p.slice('/data/'.length) : null)
+    mockGetSettings.mockReturnValue({
+      container: { agentImage: 'img', resourceLimits: { cpu: 1, memory: '1g' } },
+      enableToolSearch: true,
+    })
     vi.spyOn(fs, 'readFileSync').mockImplementation((path) => {
       if (String(path).includes('token')) return 'test-token'
       if (String(path).includes('ca.crt')) return 'ca-cert'
@@ -499,8 +458,33 @@ describe('PlatformK8sRuntimeClient operability', () => {
     await expect(client.start()).resolves.toEqual({ status: 'running', port: 3000 })
   })
 
+  it('start() reports dropped records and creates the pod with only the accepted mounts and SUPERAGENT_MOUNTS', async () => {
+    mockGetSettings.mockReturnValue({ container: { agentImage: 'img', resourceLimits: { cpu: 1, memory: '1g' } }, enableToolSearch: true })
+    const posted: Array<{ path: string; body: unknown }> = []
+    let podCreated = false
+    installHttpsMock((method, path, body) => {
+      if (method === 'POST') { posted.push({ path, body: JSON.parse(body) }); if (path.endsWith('/pods')) podCreated = true; return { statusCode: 201, body: '{}' } }
+      if (method === 'DELETE') return { statusCode: 404, body: '{}' }
+      if (path.includes('/pods/')) {
+        return podCreated
+          ? { statusCode: 200, body: JSON.stringify({ status: { phase: 'Running', containerStatuses: [{ name: 'agent', ready: true }] } }) }
+          : { statusCode: 404, body: '{}' }
+      }
+      return { statusCode: 404, body: '{}' }
+    })
+    vi.spyOn(PlatformK8sRuntimeClient.prototype as unknown as { waitForHealthy: () => Promise<boolean> }, 'waitForHealthy').mockResolvedValue(true)
+    const dropped: AgentMount[] = []
+    const folder = record({ id: 'm1', hostPath: '/data/agents/other/workspace', containerPath: '/mounts/other', folderName: 'other' })
+    const client = new PlatformK8sRuntimeClient({ agentId: 'agent-a', envVars: {} })
+    await client.start({ mounts: [record({}), folder], onMountDropped: (m) => dropped.push(m) })
+    expect(dropped).toEqual([folder])
+    const pod = posted.find((p) => p.path.endsWith('/pods'))!.body as { spec: { containers: Array<{ volumeMounts: Array<{ mountPath: string }>; env: Array<{ name: string; value: string }> }> } }
+    expect(pod.spec.containers[0].volumeMounts.map((v) => v.mountPath)).toEqual(['/workspace', '/volumes/team-brain'])
+    expect(pod.spec.containers[0].env).toContainEqual({ name: 'SUPERAGENT_MOUNTS', value: JSON.stringify(['/volumes/team-brain']) })
+  })
+
   it('fetches pod logs via the Kubernetes log API', async () => {
-    installHttpsMock((path) => {
+    installHttpsMock((_method, path) => {
       expect(path).toContain('/log?container=agent&tailLines=20')
       return { statusCode: 200, body: 'agent started\nlistening on 3000' }
     })
@@ -509,7 +493,7 @@ describe('PlatformK8sRuntimeClient operability', () => {
   })
 
   it('returns stats from metrics-server when available', async () => {
-    installHttpsMock((path) => {
+    installHttpsMock((_method, path) => {
       if (path.includes('metrics.k8s.io')) {
         return {
           statusCode: 200,
@@ -537,7 +521,7 @@ describe('PlatformK8sRuntimeClient operability', () => {
   })
 
   it('returns null stats when metrics-server is unavailable', async () => {
-    installHttpsMock((path) => ({
+    installHttpsMock((_method, path) => ({
       statusCode: path.includes('metrics.k8s.io') ? 404 : 200,
       body: path.includes('metrics.k8s.io')
         ? 'not found'
@@ -579,7 +563,7 @@ describe('PlatformK8sRuntimeClient operability', () => {
 
   it('stop waits until the pod is actually gone before resolving', async () => {
     let podCallCount = 0
-    installHttpsMock((path) => {
+    installHttpsMock((_method, path) => {
       if (path.includes('/services/')) return { statusCode: 200, body: '{}' }
       // pod path: DELETE accepted, then GET polls present-once before 404.
       podCallCount++

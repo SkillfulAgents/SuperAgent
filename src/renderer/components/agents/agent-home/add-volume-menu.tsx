@@ -22,8 +22,8 @@ import {
 } from '@renderer/components/ui/dialog'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
-import { Plus, Trash2 } from 'lucide-react'
-import type { SharedVolumeListItem } from '@renderer/hooks/use-shared-volumes'
+import { Folder, Loader2, Plus, Trash2 } from 'lucide-react'
+import type { SharedVolumeListItem } from '@renderer/hooks/use-mounts'
 
 const MOUNT_NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/
 
@@ -43,13 +43,17 @@ const nameSchema = z.string().trim().min(1, 'Name is required').refine(
 
 interface AddVolumeMenuProps {
   agentSlug: string
-  volumes: SharedVolumeListItem[]
+  canAddFolder: boolean
+  isAddingFolder: boolean
+  onAddFolder: () => Promise<void>
+  sharedVolumes: boolean
+  registry: SharedVolumeListItem[]
   onCreate: (name: string) => Promise<void>
   onAttach: (volumeId: string) => Promise<void>
   onDelete: (volumeId: string) => Promise<void>
 }
 
-export function AddVolumeMenu({ agentSlug, volumes, onCreate, onAttach, onDelete }: AddVolumeMenuProps) {
+export function AddVolumeMenu({ agentSlug, canAddFolder, isAddingFolder, onAddFolder, sharedVolumes, registry, onCreate, onAttach, onDelete }: AddVolumeMenuProps) {
   const [open, setOpen] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<SharedVolumeListItem | null>(null)
@@ -58,11 +62,26 @@ export function AddVolumeMenu({ agentSlug, volumes, onCreate, onAttach, onDelete
     <>
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
-          <Button variant="ghost" size="sm" aria-label="Add shared volume">
+          <Button variant="ghost" size="sm" aria-label="Add volume">
             <Plus />
           </Button>
         </PopoverTrigger>
         <PopoverContent align="end" className="w-64 p-1">
+          {canAddFolder && (
+            <button
+              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors disabled:opacity-50"
+              disabled={isAddingFolder}
+              onClick={() => {
+                setOpen(false)
+                void onAddFolder()
+              }}
+            >
+              {isAddingFolder ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Folder className="h-3.5 w-3.5" />}
+              Add folder from this computer
+            </button>
+          )}
+          {sharedVolumes && (
+            <>
           <button
             className="flex w-full items-center rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
             onClick={() => {
@@ -72,9 +91,9 @@ export function AddVolumeMenu({ agentSlug, volumes, onCreate, onAttach, onDelete
           >
             New shared volume…
           </button>
-          {volumes.length > 0 && (
+          {registry.length > 0 && (
             <div className="mt-1 border-t border-border/50 pt-1">
-              {volumes.map((volume) => {
+              {registry.map((volume) => {
                 const attachedHere = volume.attachedAgents.some((agent) => agent.slug === agentSlug)
                 const hint = volume.attachedAgents.length > 0
                   ? volume.attachedAgents.map((agent) => agent.name).join(', ')
@@ -84,9 +103,12 @@ export function AddVolumeMenu({ agentSlug, volumes, onCreate, onAttach, onDelete
                     <button
                       className="flex min-w-0 flex-1 flex-col items-start rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors disabled:opacity-50"
                       disabled={attachedHere}
+                      aria-label={`${volume.name} ${hint}`}
                       onClick={() => {
-                        void onAttach(volume.id)
-                        setOpen(false)
+                        void onAttach(volume.id).then(
+                          () => setOpen(false),
+                          () => setOpen(false),
+                        )
                       }}
                     >
                       <span className="truncate w-full text-left">{volume.name}</span>
@@ -108,6 +130,8 @@ export function AddVolumeMenu({ agentSlug, volumes, onCreate, onAttach, onDelete
                 )
               })}
             </div>
+          )}
+            </>
           )}
         </PopoverContent>
       </Popover>
@@ -131,7 +155,7 @@ export function AddVolumeMenu({ agentSlug, volumes, onCreate, onAttach, onDelete
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               onClick={() => {
-                if (pendingDelete) void onDelete(pendingDelete.id)
+                if (pendingDelete) void onDelete(pendingDelete.id).catch(() => {})
                 setPendingDelete(null)
               }}
             >

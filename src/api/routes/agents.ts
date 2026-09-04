@@ -91,6 +91,7 @@ import {
   storeUploadChunk,
 } from '@shared/lib/utils/chunked-upload'
 import { getMountsWithHealth, addMount, removeMount } from '@shared/lib/services/mount-service'
+import { agentMountsResponseSchema } from '@shared/lib/services/mount-schema'
 import {
   SharedVolumeError,
   attachSharedVolume,
@@ -190,7 +191,7 @@ import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import type { SkillsetConfig } from '@shared/lib/types/skillset'
 import { transformMessages, type TransformedMessage, type TransformedItem } from '@shared/lib/utils/message-transform'
 import { workflowRoutes } from './workflows'
-import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
+import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings, isCloudRunner, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { executeComputerUseCommand, checkACPermissions, ungrabAC } from '@shared/lib/computer-use/executor'
 import { resolveTargetApp } from '@shared/lib/computer-use/types'
@@ -6163,8 +6164,12 @@ agents.post('/:id/sessions/:sessionId/upload-folder', AgentUser(), async (c) => 
 agents.get('/:id/mounts', AgentRead(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
-    const mounts = await getMountsWithHealth(agentSlug)
-    return c.json(mounts)
+    const cloud = isCloudRunner()
+    return c.json(agentMountsResponseSchema.parse({
+      hostFolders: !cloud,
+      sharedVolumes: cloud,
+      mounts: await getMountsWithHealth(agentSlug),
+    }))
   } catch (error) {
     console.error('Failed to list mounts:', error)
     return c.json({ error: 'Failed to list mounts' }, 500)

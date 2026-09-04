@@ -36,6 +36,9 @@ const webTestIgnore = [
   // the suite's top flake. Runs under the web-graph project on its own server
   // and data dir (see test:e2e:graph).
   '**/home-graph.spec.ts',
+  // Creates and attaches shared volumes, which the server refuses on the docker
+  // seed. Runs under playwright.cloud.config.ts with a cloud-runner seed.
+  '**/shared-volumes.spec.ts',
 ]
 
 if (process.env.E2E_INCLUDE_A11Y !== 'true') {

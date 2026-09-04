@@ -1,13 +1,45 @@
-import { describe, it, expect, afterEach, vi } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import { writeEnvFile, parseMemoryValue, shellQuote, isConnectionError, getEnhancedPath, BaseContainerClient } from './base-container-client'
 import type { ContainerInfo, ContainerConfig, StreamMessage } from './types'
+import type { AgentMount } from '@shared/lib/types/mount'
 
 const enableToolSearch = vi.fn((): boolean | undefined => true)
 vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: () => ({ enableToolSearch: enableToolSearch() }),
+  getSettings: () => ({
+    enableToolSearch: enableToolSearch(),
+    container: { agentImage: 'img', resourceLimits: { cpu: 1, memory: '1g' }, containerRunner: 'docker' },
+  }),
+}))
+
+const startHarness = vi.hoisted(() => ({
+  runCommands: [] as string[],
+  pendingRunError: null as Error | null,
+  workspaceDir: '',
+}))
+
+vi.mock('child_process', async (orig) => ({
+  ...(await orig<typeof import('child_process')>()),
+  exec: (cmd: string, ...rest: unknown[]) => {
+    const cb = rest[rest.length - 1] as (err: Error | null, result?: { stdout: string; stderr: string }) => void
+    if (typeof cmd === 'string' && cmd.includes(' run -d ')) {
+      startHarness.runCommands.push(cmd)
+      if (startHarness.pendingRunError) {
+        const err = startHarness.pendingRunError
+        startHarness.pendingRunError = null
+        cb(err)
+        return
+      }
+    }
+    cb(null, { stdout: 'container-id\n', stderr: '' })
+  },
+}))
+
+vi.mock('@shared/lib/config/data-dir', async (orig) => ({
+  ...(await orig<typeof import('@shared/lib/config/data-dir')>()),
+  getAgentWorkspaceDir: () => startHarness.workspaceDir,
 }))
 const getContainerEnvVars = vi.fn(() => ({ ANTHROPIC_API_KEY: 'provider-key' }))
 const toolSearchEnv = vi.fn((): 'true' | undefined => 'true')
@@ -977,5 +1009,109 @@ describe('BaseContainerClient.observeUnexpectedDeath', () => {
       action: 'ignore',
       liveSessionIds: ['live'],
     })
+  })
+})
+
+function inaccessibleMountError(hostPath: string): Error {
+  return Object.assign(new Error(`failed to stat "${hostPath}": operation not permitted`), { stderr: '' })
+}
+
+function makeStartHarness() {
+  const envFiles: Record<string, string>[] = []
+  startHarness.runCommands.length = 0
+  startHarness.pendingRunError = null
+
+  class StartTestClient extends BaseContainerClient {
+    protected getRunnerCommand(): string {
+      return 'docker'
+    }
+    protected getRunnerShellCommand(): string {
+      return 'docker'
+    }
+    protected async ensureImageExistsWithRecovery(): Promise<void> {}
+    protected async getUsedPorts(): Promise<Set<number>> {
+      return new Set()
+    }
+    async getInfo(): Promise<ContainerInfo> {
+      return { status: 'stopped', port: null }
+    }
+    async waitForHealthy(): Promise<boolean> {
+      return true
+    }
+    protected extractInaccessibleMountPath(error: unknown): string | null {
+      const message = error instanceof Error ? error.message : String(error)
+      const match = message.match(/stat "([^"]+)"/)
+      if (!match) return null
+      return match[1].replace(/\\/g, '/')
+    }
+    protected buildEnvFile(env?: Record<string, string>): { flag: string; cleanup: () => void } {
+      envFiles.push({ ...(env ?? {}) })
+      return { flag: '--env-file /dev/null', cleanup: () => {} }
+    }
+  }
+
+  const client = new StartTestClient({ agentId: 'agent-1' })
+  return {
+    client,
+    runCommands: startHarness.runCommands,
+    envFiles,
+    failFirstRunWith(err: Error) {
+      startHarness.pendingRunError = err
+    },
+  }
+}
+
+describe('start() mounts', () => {
+  const projectMount: AgentMount = { id: 'm1', hostPath: '/host/project', containerPath: '/mounts/project', folderName: 'project', addedAt: '2026-01-01T00:00:00.000Z' }
+  const notesMount: AgentMount = { id: 'v1', hostPath: '/data/volumes/v1', containerPath: '/volumes/notes', folderName: 'Notes', addedAt: '2026-01-01T00:00:00.000Z' }
+
+  beforeEach(() => {
+    startHarness.workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-ws-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(startHarness.workspaceDir, { recursive: true, force: true })
+  })
+
+  it('serialises every record and the workspace through buildVolumeFlag', async () => {
+    const { client, runCommands } = makeStartHarness()
+    await client.start({ mounts: [projectMount, notesMount] })
+    const cmd = runCommands[0]
+    expect(cmd).toContain(`-v ${client.buildVolumeFlag(startHarness.workspaceDir, '/workspace')}`)
+    expect(cmd).toContain(`-v ${client.buildVolumeFlag('/host/project', '/mounts/project')}`)
+    expect(cmd).toContain(`-v ${client.buildVolumeFlag('/data/volumes/v1', '/volumes/notes')}`)
+  })
+
+  it('writes SUPERAGENT_MOUNTS from the accepted records into the env file', async () => {
+    const { client, envFiles } = makeStartHarness()
+    await client.start({ mounts: [projectMount, notesMount] })
+    expect(envFiles[0].SUPERAGENT_MOUNTS).toBe(JSON.stringify(['/mounts/project', '/volumes/notes']))
+  })
+
+  it('keeps a comma in a folder path as one env entry', async () => {
+    const { client, envFiles } = makeStartHarness()
+    await client.start({ mounts: [{ ...projectMount, containerPath: '/mounts/Acme, Inc' }] })
+    expect(envFiles[0].SUPERAGENT_MOUNTS).toBe(JSON.stringify(['/mounts/Acme, Inc']))
+  })
+
+  it('omits SUPERAGENT_MOUNTS when nothing is mounted', async () => {
+    const { client, envFiles } = makeStartHarness()
+    await client.start({ mounts: [] })
+    expect(envFiles[0]).not.toHaveProperty('SUPERAGENT_MOUNTS')
+  })
+
+  it.each([
+    ['a single quote', "/host/it's here"],
+    ['a backslash', '/host/back\\slash'],
+  ])('drops an inaccessible mount by host path (%s), rewrites the env, and retries', async (_label, hostPath) => {
+    const bad = { ...projectMount, hostPath }
+    const dropped: unknown[] = []
+    const { client, runCommands, envFiles, failFirstRunWith } = makeStartHarness()
+    failFirstRunWith(inaccessibleMountError(hostPath))
+    await client.start({ mounts: [bad, notesMount], onMountDropped: (m) => dropped.push(m) })
+    expect(dropped).toEqual([bad])
+    expect(runCommands).toHaveLength(2)
+    expect(runCommands[1]).not.toContain(client.buildVolumeFlag(hostPath, '/mounts/project'))
+    expect(envFiles[1].SUPERAGENT_MOUNTS).toBe(JSON.stringify(['/volumes/notes']))
   })
 })

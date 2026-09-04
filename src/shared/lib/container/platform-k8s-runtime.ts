@@ -1,10 +1,11 @@
 import { createHash } from 'crypto'
 import fs from 'fs'
 import https from 'https'
-import { posix as posixPath } from 'path'
 import { z } from 'zod'
 import { BaseContainerClient, CONTAINER_INTERNAL_PORT } from './base-container-client'
 import type { ContainerConfig, ContainerInfo, ContainerStats, StartOptions, StopOptions, StopResult } from './types'
+import type { AgentMount } from '@shared/lib/types/mount'
+import { getAgentWorkspaceDir, storageSubPath } from '@shared/lib/config/data-dir'
 import { getSettings } from '@shared/lib/config/settings'
 import { captureException } from '@shared/lib/error-reporting'
 import { isRunningInKubernetes } from './runtime-env'
@@ -29,7 +30,6 @@ const AGENT_RUN_AS_UID = 1000
 export interface KubeConfig {
   namespace: string
   pvcName: string
-  workspaceSubPathPrefix: string
   imagePullSecretName: string | null
   // Opaque deployment-supplied metadata stamped onto every pod & service. The
   // runtime never interprets these: Gamut injects gamut.cloud/*, self-host {}.
@@ -117,8 +117,11 @@ export class PlatformK8sRuntimeClient extends BaseContainerClient {
     const ownerRef = await resolveOwnerReference(kube.namespace)
     await deleteResource(`/api/v1/namespaces/${kube.namespace}/pods/${this.podName()}`)
     await deleteResource(`/api/v1/namespaces/${kube.namespace}/services/${this.serviceName()}`)
+    const { accepted, dropped } = acceptCloudMounts(options?.mounts ?? [])
+    dropped.forEach((m) => options?.onMountDropped?.(m))
+    const env = this.buildAgentEnv(this.withMountsEnv(options?.envVars, accepted))
     await createResource(`/api/v1/namespaces/${kube.namespace}/services`, buildAgentServiceManifest(kube, this.serviceName(), this.podName(), ownerRef))
-    await createResource(`/api/v1/namespaces/${kube.namespace}/pods`, buildAgentPodManifest(kube, this.podName(), this.config, this.buildAgentEnv(options?.envVars), ownerRef, options?.attachedVolumes))
+    await createResource(`/api/v1/namespaces/${kube.namespace}/pods`, buildAgentPodManifest(kube, this.podName(), this.config, env, ownerRef, accepted))
 
     await waitForPodReady(kube.namespace, this.podName(), 300_000)
 
@@ -228,10 +231,6 @@ export class PlatformK8sRuntimeClient extends BaseContainerClient {
     }
   }
 
-  public buildVolumeFlag(_hostPath: string, _containerPath: string): string {
-    return ''
-  }
-
   protected getBaseUrl(port: number): string {
     const { namespace } = getKubeConfig()
     return `http://${this.serviceName()}.${namespace}.svc.cluster.local:${port}`
@@ -278,12 +277,28 @@ export function buildAgentServiceManifest(kube: KubeConfig, serviceName: string,
   }
 }
 
-export function volumesSubPathPrefix(workspacePrefix: string): string {
-  const override = process.env.K8S_VOLUMES_SUBPATH_PREFIX?.trim()
-  if (override) return trimSlashes(override)
-  const parent = posixPath.dirname(trimSlashes(workspacePrefix))
-  if (!parent || parent === '.') return 'volumes'
-  return `${parent}/volumes`
+/**
+ * A cloud runtime binds app-managed folders only: a record under /volumes/
+ * whose host path sits on the shared org disk. Anything else (a host folder
+ * from a desktop install, a path outside the data dir) is dropped and reported.
+ * Inside-the-data-dir is not owned-by-this-agent, so the /volumes/ check is
+ * what keeps one agent's workspace out of another's pod.
+ */
+export function acceptCloudMounts(mounts: AgentMount[]): { accepted: Array<AgentMount & { subPath: string }>; dropped: AgentMount[] } {
+  const accepted: Array<AgentMount & { subPath: string }> = []
+  const dropped: AgentMount[] = []
+  for (const mount of mounts) {
+    const subPath = mount.containerPath.startsWith('/volumes/') ? storageSubPath(mount.hostPath) : null
+    if (subPath) accepted.push({ ...mount, subPath })
+    else dropped.push(mount)
+  }
+  return { accepted, dropped }
+}
+
+export function workspaceStorageSubPath(agentId: string): string {
+  const subPath = storageSubPath(getAgentWorkspaceDir(agentId))
+  if (!subPath) throw new Error(`Agent workspace for ${agentId} is missing or not under the data dir`)
+  return subPath
 }
 
 export function buildAgentPodManifest(
@@ -292,7 +307,7 @@ export function buildAgentPodManifest(
   config: ContainerConfig,
   envVars: Record<string, string>,
   ownerRef?: OwnerReference | null,
-  attachedVolumes?: Array<{ id: string; mountName: string }>,
+  mounts?: Array<AgentMount & { subPath: string }>,
 ): KubeResource {
   const settings = getSettings()
   const image = process.env.K8S_AGENT_IMAGE || settings.container.agentImage
@@ -328,12 +343,12 @@ export function buildAgentPodManifest(
         {
           name: 'workspaces',
           mountPath: '/workspace',
-          subPath: workspaceSubPath(kube.workspaceSubPathPrefix, config.agentId),
+          subPath: workspaceStorageSubPath(config.agentId),
         },
-        ...(attachedVolumes ?? []).map((volume) => ({
+        ...(mounts ?? []).map((mount) => ({
           name: 'workspaces',
-          mountPath: `/volumes/${volume.mountName}`,
-          subPath: `${volumesSubPathPrefix(kube.workspaceSubPathPrefix)}/${volume.id}`,
+          mountPath: mount.containerPath,
+          subPath: mount.subPath,
         })),
       ],
     }],
@@ -470,7 +485,6 @@ function computeKubeConfigOrNull(): KubeConfig | null {
   return {
     namespace,
     pvcName,
-    workspaceSubPathPrefix: trimSlashes(process.env.K8S_WORKSPACES_SUBPATH_PREFIX || ''),
     imagePullSecretName: process.env.K8S_IMAGE_PULL_SECRET_NAME?.trim() || null,
     extraLabels: parseLabelMapEnv('K8S_EXTRA_LABELS'),
     extraAnnotations: parseStringMapEnv('K8S_EXTRA_ANNOTATIONS'),
@@ -485,11 +499,6 @@ function agentResourceLabels(kube: KubeConfig, podName: string): Record<string, 
     [COMPONENT_LABEL]: COMPONENT_VALUE,
     [INSTANCE_LABEL]: podName,
   }
-}
-
-function workspaceSubPath(prefix: string, agentId: string): string {
-  const tail = `${agentId}/workspace`
-  return prefix ? `${prefix}/${tail}` : tail
 }
 
 const stringMapSchema = z.record(z.string(), z.string())
@@ -538,10 +547,6 @@ export function kubeResourceName(prefix: string, value: string): string {
   const maxBaseLength = 63 - prefix.length - hash.length - 2
   const base = sanitized.slice(0, maxBaseLength).replace(/-+$/g, '') || 'agent'
   return `${prefix}-${base}-${hash}`
-}
-
-function trimSlashes(value: string): string {
-  return value.replace(/^\/+|\/+$/g, '')
 }
 
 function readOptionalFile(filePath: string): string | null {

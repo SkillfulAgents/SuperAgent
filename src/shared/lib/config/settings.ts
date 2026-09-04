@@ -428,6 +428,16 @@ function getDefaultContainerRunner(): string {
   return 'docker'
 }
 
+const CLOUD_RUNNERS: ReadonlySet<string> = new Set(['kubernetes', 'lambda-microvm'])
+
+/**
+ * True when the configured runner mounts a shared org disk instead of binding
+ * host folders. Gates which volume sources the app offers and accepts.
+ */
+export function isCloudRunner(): boolean {
+  return CLOUD_RUNNERS.has(getSettings().container.containerRunner)
+}
+
 const DEFAULT_SETTINGS: AppSettings = {
   container: {
     containerRunner: getDefaultContainerRunner(),

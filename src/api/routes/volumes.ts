@@ -3,7 +3,6 @@ import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { Authenticated } from '../middleware/auth'
 import { getCurrentUserId } from '@shared/lib/auth/config'
-import { getSettings } from '@shared/lib/config/settings'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import {
   SharedVolumeError,
@@ -11,14 +10,9 @@ import {
   deleteSharedVolume,
   listSharedVolumes,
 } from '@shared/lib/services/shared-volume-service'
+import { sharedVolumeListResponseSchema } from '@shared/lib/services/mount-schema'
 
 const volumes = new Hono()
-
-const CLOUD_RUNNERS = ['kubernetes', 'lambda-microvm']
-
-function cloudVolumesSupported(): boolean {
-  return CLOUD_RUNNERS.includes(getSettings().container.containerRunner)
-}
 
 function callerFrom(c: Context): { userId: string | null; isAdmin: boolean } {
   const user = c.get('user' as never) as { role?: string } | undefined
@@ -37,10 +31,7 @@ function handleError(c: Context, error: unknown, fallback: string) {
 }
 
 volumes.get('/', Authenticated(), (c) => {
-  return c.json({
-    supported: cloudVolumesSupported(),
-    volumes: listSharedVolumes(),
-  })
+  return c.json(sharedVolumeListResponseSchema.parse({ volumes: listSharedVolumes() }))
 })
 
 volumes.post(

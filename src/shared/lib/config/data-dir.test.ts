@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { getCacheDir, getDataDir, getDatabasePath, getVolumeDir, getVolumesDataDir } from './data-dir'
+import { getCacheDir, getDataDir, getDatabasePath, getVolumeDir, getVolumesDataDir, storageSubPath } from './data-dir'
 
 describe('getDataDir / getDatabasePath', () => {
   const prevDataDir = process.env.SUPERAGENT_DATA_DIR
@@ -61,5 +62,58 @@ describe('getDataDir / getDatabasePath', () => {
     process.env.SUPERAGENT_DATA_DIR = '/tmp/sa-data'
     expect(getVolumesDataDir()).toBe(path.join(path.resolve('/tmp/sa-data'), 'volumes'))
     expect(getVolumeDir('abc')).toBe(path.join(path.resolve('/tmp/sa-data'), 'volumes', 'abc'))
+  })
+})
+
+describe('storageSubPath', () => {
+  let dataDir: string
+  let outside: string
+  const prev = process.env.SUPERAGENT_DATA_DIR
+
+  beforeEach(() => {
+    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-data-'))
+    outside = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-outside-'))
+    fs.mkdirSync(path.join(dataDir, 'volumes', 'abc'), { recursive: true })
+    fs.mkdirSync(path.join(dataDir, 'agents', 'x', 'workspace'), { recursive: true })
+    process.env.SUPERAGENT_DATA_DIR = dataDir
+  })
+
+  afterEach(() => {
+    if (prev === undefined) delete process.env.SUPERAGENT_DATA_DIR
+    else process.env.SUPERAGENT_DATA_DIR = prev
+    fs.rmSync(dataDir, { recursive: true, force: true })
+    fs.rmSync(outside, { recursive: true, force: true })
+  })
+
+  it('maps a shared volume dir to volumes/<id>', () => {
+    expect(storageSubPath(path.join(dataDir, 'volumes', 'abc'))).toBe('volumes/abc')
+  })
+
+  it('maps an agent workspace to agents/<slug>/workspace', () => {
+    expect(storageSubPath(path.join(dataDir, 'agents', 'x', 'workspace'))).toBe('agents/x/workspace')
+  })
+
+  it('resolves a symlinked data dir to the same sub-path', () => {
+    const link = path.join(os.tmpdir(), `sa-link-${process.pid}`)
+    fs.symlinkSync(dataDir, link)
+    try {
+      process.env.SUPERAGENT_DATA_DIR = link
+      expect(storageSubPath(path.join(link, 'volumes', 'abc'))).toBe('volumes/abc')
+      expect(storageSubPath(path.join(dataDir, 'volumes', 'abc'))).toBe('volumes/abc')
+    } finally {
+      fs.unlinkSync(link)
+    }
+  })
+
+  it('refuses a path outside the data dir', () => {
+    expect(storageSubPath(outside)).toBeNull()
+  })
+
+  it('refuses the data dir itself', () => {
+    expect(storageSubPath(dataDir)).toBeNull()
+  })
+
+  it('refuses a path that does not exist', () => {
+    expect(storageSubPath(path.join(dataDir, 'volumes', 'missing'))).toBeNull()
   })
 })

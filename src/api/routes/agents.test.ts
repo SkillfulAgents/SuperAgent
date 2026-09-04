@@ -380,6 +380,16 @@ const mockCreateSharedVolume = vi.fn()
 const mockAttachSharedVolume = vi.fn()
 const mockDetachSharedVolume = vi.fn()
 const mockDeleteSharedVolume = vi.fn()
+const { mockGetMountsWithHealth, mockAddMount } = vi.hoisted(() => ({
+  mockGetMountsWithHealth: vi.fn(async () => [] as unknown[]),
+  mockAddMount: vi.fn(async () => ({ id: 'm1' })),
+}))
+vi.mock('@shared/lib/services/mount-service', () => ({
+  getMountsWithHealth: mockGetMountsWithHealth,
+  addMount: mockAddMount,
+  removeMount: vi.fn(async () => undefined),
+}))
+
 vi.mock('@shared/lib/services/shared-volume-service', () => ({
   SharedVolumeError: class SharedVolumeError extends Error {
     constructor(
@@ -526,12 +536,14 @@ const mockRuntimeSettings = vi.hoisted(() => vi.fn(() => ({
   skillsets: [],
   app: { configuredPasswordManagers: ['apple-passwords'] },
 })))
+const mockIsCloudRunner = vi.hoisted(() => vi.fn(() => false))
 vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveAnthropicApiKey: () => 'test-key',
   getEffectiveModels: () => mockGetEffectiveModels(),
   getEffectiveAgentLimits: () => ({}),
   getCustomEnvVars: () => ({}),
   getSettings: () => mockRuntimeSettings(),
+  isCloudRunner: () => mockIsCloudRunner(),
   mutateSettings: vi.fn(),
   getModelCatalogSettings: () => ({}),
   VALID_SCRIPT_TYPES: {
@@ -648,6 +660,7 @@ import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-
 import { readJsonFileStrict, readJsonlFile, streamJsonlFile, writeJsonFileAtomic, readFileOrNull } from '@shared/lib/utils/file-storage'
 import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
 import { listWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
+import { agentMountsResponseSchema } from '@shared/lib/services/mount-schema'
 
 // ============================================================================
 // Test Helpers
@@ -9389,5 +9402,41 @@ describe('shared volume agent routes', () => {
   it('returns 400 on a bad attach body', async () => {
     const res = await postJson(app, '/api/agents/agent-a/volumes', {})
     expect(res.status).toBe(400)
+  })
+})
+
+describe('GET/POST /:id/mounts', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockAgentExists.mockResolvedValue(true)
+    mockIsCloudRunner.mockReturnValue(false)
+    mockGetMountsWithHealth.mockResolvedValue([])
+  })
+
+  it('returns capability flags and records of both sources', async () => {
+    mockIsCloudRunner.mockReturnValue(true)
+    mockGetMountsWithHealth.mockResolvedValue([
+      { id: 'm1', hostPath: '/host/project', containerPath: '/mounts/project', folderName: 'project', addedAt: '2026-01-01', source: 'folder', health: 'missing' },
+      { id: 'v1', hostPath: '/data/volumes/v1', containerPath: '/volumes/notes', folderName: 'Notes', addedAt: '2026-01-01', source: 'shared', health: 'ok' },
+    ])
+    const res = await createApp().request('http://localhost/api/agents/agent-a/mounts')
+    expect(res.status).toBe(200)
+    expect(agentMountsResponseSchema.parse(await res.json())).toEqual({
+      hostFolders: false,
+      sharedVolumes: true,
+      mounts: [
+        expect.objectContaining({ containerPath: '/mounts/project', source: 'folder', health: 'missing' }),
+        expect.objectContaining({ containerPath: '/volumes/notes', source: 'shared', health: 'ok' }),
+      ],
+    })
+  })
+
+  it('POST refuses on a cloud runner with the service message', async () => {
+    mockAddMount.mockRejectedValue(new Error('Folders from this computer cannot be mounted on a cloud runner'))
+    const res = await createApp().request('http://localhost/api/agents/agent-a/mounts', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hostPath: '/Users/me/Docs' }),
+    })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'Folders from this computer cannot be mounted on a cloud runner' })
   })
 })

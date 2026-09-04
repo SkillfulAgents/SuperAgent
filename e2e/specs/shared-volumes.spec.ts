@@ -1,5 +1,7 @@
-import { test, expect, type APIRequestContext, type Page } from '@playwright/test'
+import { test, expect, type APIRequestContext } from '@playwright/test'
+import path from 'node:path'
 import { createAgent, deleteAgentViaApi, gotoAgentHome, uniqueName } from '../helpers/agents'
+import { mockRecorder } from '../helpers/mock-recorder'
 
 test.describe.configure({ mode: 'serial' })
 
@@ -10,10 +12,19 @@ interface VolumeRow {
   attachedAgents: Array<{ slug: string; name: string }>
 }
 
+interface StartRecord {
+  type: string
+  agentSlug?: string
+  mounts?: string[]
+  mountsEnv?: string | null
+}
+
+const recorder = mockRecorder<StartRecord>({ defaultDataDir: path.join(__dirname, '..', '..', '.e2e-data', 'cloud') })
+
 async function listVolumes(request: APIRequestContext) {
   const res = await request.get('/api/volumes')
   expect(res.ok()).toBeTruthy()
-  return await res.json() as { supported: boolean; volumes: VolumeRow[] }
+  return await res.json() as { volumes: VolumeRow[] }
 }
 
 async function createVolume(request: APIRequestContext, name: string, expected = 201) {
@@ -34,41 +45,15 @@ async function deleteVolume(request: APIRequestContext, volumeId: string, expect
   return res
 }
 
-/**
- * The Shared Volumes card is gated on GET /api/volumes.supported, which follows
- * the process-wide container runner. Settings refuse a runner change while any
- * agent is running, so a parallel e2e suite cannot flip it. Rewrite this page's
- * registry reads only; create/attach/detach still hit the real API.
- */
-async function showSharedVolumesCard(page: Page) {
-  await page.route('**/api/volumes', async (route) => {
-    const path = route.request().url().split('?')[0]
-    if (route.request().method() !== 'GET' || !path.endsWith('/api/volumes')) {
-      await route.continue()
-      return
-    }
-    const response = await route.fetch()
-    const body = await response.json() as { supported: boolean; volumes: VolumeRow[] }
-    await route.fulfill({
-      status: response.status(),
-      contentType: 'application/json',
-      body: JSON.stringify({ ...body, supported: true }),
-    })
-  })
-}
-
-test.describe('shared volumes', () => {
-  test('default runner reports unsupported', async ({ request }) => {
-    const body = await listVolumes(request)
-    expect(body.supported).toBe(false)
-  })
-
-  test('reserved prompt env is rejected at settings write', async ({ request }) => {
-    const res = await request.put('/api/settings', {
-      data: { customEnvVars: { SUPERAGENT_SHARED_VOLUMES: '/volumes/fake' } },
-    })
-    expect(res.status()).toBe(400)
-    expect(await res.text()).toContain('SUPERAGENT_SHARED_VOLUMES')
+test.describe('shared volumes on a cloud runner', () => {
+  test('the mounts route reports shared volumes and not host folders', async ({ request }, testInfo) => {
+    const agent = await createAgent(request, uniqueName(testInfo, 'Flags'))
+    const res = await request.get(`/api/agents/${agent.slug}/mounts`)
+    expect(res.ok()).toBeTruthy()
+    expect(await res.json()).toMatchObject({ hostFolders: false, sharedVolumes: true, mounts: [] })
+    const folder = await request.post(`/api/agents/${agent.slug}/mounts`, { data: { hostPath: '/tmp' } })
+    expect(folder.status()).toBe(400)
+    await deleteAgentViaApi(request, agent)
   })
 
   test('create, attach, refuse delete while shared, detach, delete', async ({ request }, testInfo) => {
@@ -118,17 +103,36 @@ test.describe('shared volumes', () => {
     await deleteAgentViaApi(request, agentA)
   })
 
-  test('shared-volumes card create and detach', async ({ page, request }, testInfo) => {
-    const agent = await createAgent(request, uniqueName(testInfo, 'Vol Card'))
-    await showSharedVolumesCard(page)
+  test('attach, start, and the runtime receives the path and the prompt env', async ({ request }, testInfo) => {
+    const agent = await createAgent(request, uniqueName(testInfo, 'Mounted'))
+    const name = uniqueName(testInfo, 'Runtime notes')
+    const created = await (await createVolume(request, name)).json() as VolumeRow
+    await attachVolume(request, agent.slug, created.id)
 
+    const start = await request.post(`/api/agents/${agent.slug}/start`)
+    expect(start.ok(), await start.text()).toBeTruthy()
+    const record = await recorder.waitFor(
+      (r) => r.type === 'container_start' && r.agentSlug === agent.slug && (r.mounts?.length ?? 0) > 0,
+      { label: `container_start with mounts for ${agent.slug}` },
+    )
+    expect(record.mounts).toEqual([`/volumes/${created.mountName}`])
+    expect(record.mountsEnv).toBe(JSON.stringify([`/volumes/${created.mountName}`]))
+
+    await request.post(`/api/agents/${agent.slug}/stop`)
+    await request.delete(`/api/agents/${agent.slug}/volumes/${created.id}`)
+    await deleteVolume(request, created.id)
+    await deleteAgentViaApi(request, agent)
+  })
+
+  test('the Volumes card creates, detaches, and re-attaches a shared volume', async ({ page, request }, testInfo) => {
+    const agent = await createAgent(request, uniqueName(testInfo, 'Vol Card'))
     await gotoAgentHome(page, agent)
-    await expect(page.getByText('Shared Volumes', { exact: true })).toBeVisible()
-    await expect(page.getByText('No shared volumes yet')).toBeVisible()
-    await expect(page.getByText('Volumes', { exact: true })).toHaveCount(0)
+    await expect(page.getByText('Volumes', { exact: true })).toBeVisible()
+    await expect(page.getByText('No volumes yet')).toBeVisible()
 
     const name = uniqueName(testInfo, 'Shared notes')
-    await page.getByRole('button', { name: 'Add shared volume' }).click()
+    await page.getByRole('button', { name: 'Add volume' }).click()
+    await expect(page.getByRole('button', { name: 'Add folder from this computer' })).toHaveCount(0)
     await page.getByRole('button', { name: 'New shared volume…' }).click()
     await page.getByRole('textbox', { name: 'Name' }).fill(name)
     await page.getByRole('button', { name: 'Create' }).click()
@@ -138,13 +142,13 @@ test.describe('shared volumes', () => {
     await page.getByRole('button', { name: 'Shared volume actions' }).click()
     await page.getByRole('button', { name: 'Detach shared volume' }).click()
     await page.getByRole('button', { name: 'Detach' }).click()
-    await expect(page.getByText('No shared volumes yet')).toBeVisible()
+    await expect(page.getByText('No volumes yet')).toBeVisible()
 
     const leftover = (await listVolumes(request)).volumes.find((volume) => volume.name === name)
     expect(leftover).toBeTruthy()
     expect(leftover?.attachedAgents).toEqual([])
 
-    await page.getByRole('button', { name: 'Add shared volume' }).click()
+    await page.getByRole('button', { name: 'Add volume' }).click()
     await page.getByRole('button', { name: `${name} No agents attached` }).click()
     await expect(page.getByText(`/volumes/${leftover!.mountName}`)).toBeVisible()
 

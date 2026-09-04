@@ -34,6 +34,9 @@ vi.mock('../auth/mode', () => ({
   isAuthMode: () => mockIsAuthMode(),
 }))
 
+const { mockIsCloudRunner } = vi.hoisted(() => ({ mockIsCloudRunner: vi.fn(() => true) }))
+vi.mock('@shared/lib/config/settings', () => ({ isCloudRunner: mockIsCloudRunner }))
+
 import {
   MAX_SHARED_VOLUMES_PER_AGENT,
   SharedVolumeError,
@@ -42,8 +45,9 @@ import {
   attachSharedVolume,
   detachSharedVolume,
   deleteSharedVolume,
-  getAgentSharedVolumes,
+  getAgentSharedVolumeMounts,
 } from './shared-volume-service'
+import { getVolumeDir } from '../config/data-dir'
 
 describe('shared-volume-service', () => {
   beforeEach(async () => {
@@ -58,6 +62,7 @@ describe('shared-volume-service', () => {
     mockRemoveDirectory.mockReset()
     mockRemoveDirectory.mockResolvedValue(undefined)
     mockIsAuthMode.mockReturnValue(false)
+    mockIsCloudRunner.mockReturnValue(true)
   })
 
   afterEach(async () => {
@@ -112,8 +117,10 @@ describe('shared-volume-service', () => {
     attachSharedVolume('agent-a', vol.id)
     attachSharedVolume('agent-b', vol.id)
     detachSharedVolume('agent-a', vol.id)
-    expect(getAgentSharedVolumes('agent-a')).toEqual([])
-    expect(getAgentSharedVolumes('agent-b')).toEqual([{ id: vol.id, mountName: 'shared' }])
+    expect(getAgentSharedVolumeMounts('agent-a')).toEqual([])
+    expect(getAgentSharedVolumeMounts('agent-b')).toEqual([
+      expect.objectContaining({ id: vol.id, folderName: 'Shared', containerPath: '/volumes/shared' }),
+    ])
     expect(listSharedVolumes()).toHaveLength(1)
   })
 
@@ -129,7 +136,7 @@ describe('shared-volume-service', () => {
     attachSharedVolume('agent-a', vol.id)
     await deleteSharedVolume(vol.id, { userId: null, isAdmin: false })
     expect(listSharedVolumes()).toEqual([])
-    expect(getAgentSharedVolumes('agent-a')).toEqual([])
+    expect(getAgentSharedVolumeMounts('agent-a')).toEqual([])
     expect(mockRemoveDirectory).toHaveBeenCalled()
   })
 
@@ -173,10 +180,43 @@ describe('shared-volume-service', () => {
     log.mockRestore()
   })
 
-  it('getAgentSharedVolumes returns id and mountName pairs', async () => {
-    const vol = await createSharedVolume('Team Brain')
-    attachSharedVolume('agent-a', vol.id)
-    expect(getAgentSharedVolumes('agent-a')).toEqual([{ id: vol.id, mountName: 'team-brain' }])
-    expect(getAgentSharedVolumes('agent-b')).toEqual([])
+  it('projects attached volumes as mount records', async () => {
+    const volume = await createSharedVolume('Team notes')
+    attachSharedVolume('agent-a', volume.id)
+    const [record] = getAgentSharedVolumeMounts('agent-a')
+    expect(record).toEqual({
+      id: volume.id,
+      hostPath: getVolumeDir(volume.id),
+      containerPath: '/volumes/team-notes',
+      folderName: 'Team notes',
+      addedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+    })
+    expect(getAgentSharedVolumeMounts('agent-b')).toEqual([])
+  })
+
+  describe('capability gate', () => {
+    it('refuses create on a desktop runner', async () => {
+      mockIsCloudRunner.mockReturnValue(false)
+      await expect(createSharedVolume('Team notes')).rejects.toMatchObject({
+        status: 400,
+        message: 'Shared volumes are not available on this runner',
+      })
+    })
+
+    it('refuses attach on a desktop runner', async () => {
+      mockIsCloudRunner.mockReturnValue(true)
+      const volume = await createSharedVolume('Team notes')
+      mockIsCloudRunner.mockReturnValue(false)
+      expect(() => attachSharedVolume('agent-a', volume.id)).toThrow('Shared volumes are not available on this runner')
+    })
+
+    it('still detaches and deletes on a desktop runner', async () => {
+      mockIsCloudRunner.mockReturnValue(true)
+      const volume = await createSharedVolume('Team notes')
+      attachSharedVolume('agent-a', volume.id)
+      mockIsCloudRunner.mockReturnValue(false)
+      expect(() => detachSharedVolume('agent-a', volume.id)).not.toThrow()
+      await expect(deleteSharedVolume(volume.id, { userId: null, isAdmin: true })).resolves.toBeUndefined()
+    })
   })
 })

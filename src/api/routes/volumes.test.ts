@@ -14,18 +14,13 @@ vi.mock('../middleware/auth', () => {
 const { mockGetCurrentUserId, mockCreate, mockList, mockDelete, mockAttach, mockDetach } = vi.hoisted(() => ({
   mockGetCurrentUserId: vi.fn(() => 'user-1'),
   mockCreate: vi.fn(),
-  mockList: vi.fn(() => []),
+  mockList: vi.fn((): Array<{ id: string; name: string; mountName: string; attachedAgents: { slug: string; name: string }[] }> => []),
   mockDelete: vi.fn(),
   mockAttach: vi.fn(),
   mockDetach: vi.fn(),
 }))
 vi.mock('@shared/lib/auth/config', () => ({
   getCurrentUserId: () => mockGetCurrentUserId(),
-}))
-
-const mockGetSettings = vi.fn(() => ({ container: { containerRunner: 'docker' } }))
-vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: () => mockGetSettings(),
 }))
 
 const mockLogAuditEvent = vi.fn()
@@ -52,6 +47,7 @@ vi.mock('@shared/lib/services/shared-volume-service', () => ({
 
 import volumes from './volumes'
 import { SharedVolumeError } from '@shared/lib/services/shared-volume-service'
+import { sharedVolumeListResponseSchema } from '@shared/lib/services/mount-schema'
 
 function createApp() {
   const app = new Hono()
@@ -63,19 +59,15 @@ describe('GET /api/volumes', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockList.mockReturnValue([])
-    mockGetSettings.mockReturnValue({ container: { containerRunner: 'docker' } })
   })
 
-  it('reports supported=false on a desktop runner', async () => {
+  it('returns the registry list', async () => {
+    mockList.mockReturnValue([{ id: 'vol-1', name: 'Notes', mountName: 'notes', attachedAgents: [] }])
     const res = await createApp().request('http://localhost/api/volumes')
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ supported: false, volumes: [] })
-  })
-
-  it('reports supported=true on a cloud runner', async () => {
-    mockGetSettings.mockReturnValue({ container: { containerRunner: 'lambda-microvm' } })
-    const res = await createApp().request('http://localhost/api/volumes')
-    expect(await res.json()).toMatchObject({ supported: true })
+    expect(sharedVolumeListResponseSchema.parse(await res.json())).toEqual({
+      volumes: [{ id: 'vol-1', name: 'Notes', mountName: 'notes', attachedAgents: [] }],
+    })
   })
 })
 

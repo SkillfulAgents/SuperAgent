@@ -241,6 +241,12 @@ if (process.env.AUTH_MODE === 'true') {
   }
 }
 
+// A cloud runner offers shared volumes and refuses host folders. E2E_MOCK still
+// swaps in the mock container client, so no real cluster is needed.
+if (process.env.CLOUD_RUNNER) {
+  settings.container.containerRunner = process.env.CLOUD_RUNNER
+}
+
 fs.writeFileSync(path.join(resolvedDir, 'settings.json'), JSON.stringify(settings, null, 2))
 console.log(`[E2E Setup] Data dir prepared: ${resolvedDir}`)
 console.log(`[E2E Setup] Seeded skillset at: ${SKILLSET_REPO_DIR}`)

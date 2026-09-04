@@ -9,7 +9,7 @@ import { eq } from 'drizzle-orm'
 import { getOrCreateProxyToken } from '@shared/lib/proxy/token-store'
 import { getOrCreateHostToken } from '@shared/lib/container/host-token-store'
 import { getSettings, mutateSettings } from '@shared/lib/config/settings'
-import { getAgentWorkspaceDir, getVolumeDir } from '@shared/lib/config/data-dir'
+import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { copyChromeProfileData } from '@shared/lib/browser/chrome-profile'
 import { messagePersister } from './message-persister'
 import { ungrabAC } from '@shared/lib/computer-use/executor'
@@ -17,8 +17,6 @@ import { computerUsePermissionManager } from '@shared/lib/computer-use/permissio
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { getMountsWithHealth } from '@shared/lib/services/mount-service'
-import { getAgentSharedVolumes } from '@shared/lib/services/shared-volume-service'
-import { directoryExists } from '@shared/lib/utils/file-storage'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { mergeCustomEnvVars } from './reserved-env-vars'
@@ -694,76 +692,36 @@ class ContainerManager {
 
       envVars['CLAUDE_CODE_ATTRIBUTION_HEADER'] = '0'
 
-      // Load mounts and build volume flags for healthy ones
-      const mountsWithHealth = await getMountsWithHealth(agentId)
-      const healthyMounts = mountsWithHealth.filter((m) => m.health === 'ok')
-      const missingMounts = mountsWithHealth.filter((m) => m.health === 'missing')
-
-      if (missingMounts.length > 0) {
-        console.warn(`[ContainerManager] Skipping ${missingMounts.length} missing mount(s) for ${agentId}:`, missingMounts.map((m) => m.hostPath))
+      // Every mount from every source, health stamped once. A record whose host
+      // folder is missing is skipped here; one whose folder exists but the
+      // runtime cannot realise (a cloud-synced folder the VM helper is denied,
+      // a host folder on a cloud runner) is dropped by the runtime and reported
+      // back through onMountDropped. The container starts in both cases.
+      const records = await getMountsWithHealth(agentId)
+      const mounts = records.filter((m) => m.health === 'ok')
+      const missing = records.filter((m) => m.health === 'missing')
+      const warn = (dropped: Array<{ folderName: string; hostPath: string }>, hint?: string) => {
         messagePersister.broadcastGlobal({
           type: 'mount_health_warning',
           agentSlug: agentId,
-          missingMounts: missingMounts.map((m) => ({ folderName: m.folderName, hostPath: m.hostPath })),
+          missingMounts: dropped.map((m) => ({ folderName: m.folderName, hostPath: m.hostPath })),
+          ...(hint ? { hint } : {}),
         })
       }
 
-      const additionalVolumes = healthyMounts.map((m) =>
-        client.buildVolumeFlag(m.hostPath, m.containerPath)
-      )
-
-      const requestedVolumes = getAgentSharedVolumes(agentId)
-      const attachedVolumes: Array<{ id: string; mountName: string }> = []
-      const missingVolumes: Array<{ id: string; mountName: string }> = []
-      for (const volume of requestedVolumes) {
-        if (await directoryExists(getVolumeDir(volume.id))) {
-          attachedVolumes.push(volume)
-        } else {
-          missingVolumes.push(volume)
-        }
-      }
-      if (missingVolumes.length > 0) {
-        console.warn(
-          `[ContainerManager] Skipping ${missingVolumes.length} missing shared volume(s) for ${agentId}:`,
-          missingVolumes.map((v) => v.mountName),
-        )
-        messagePersister.broadcastGlobal({
-          type: 'mount_health_warning',
-          agentSlug: agentId,
-          missingMounts: missingVolumes.map((v) => ({
-            folderName: v.mountName,
-            hostPath: getVolumeDir(v.id),
-          })),
-        })
-      }
-      if (attachedVolumes.length > 0) {
-        envVars['SUPERAGENT_SHARED_VOLUMES'] = attachedVolumes
-          .map((v) => `/volumes/${v.mountName}`)
-          .join(',')
+      if (missing.length > 0) {
+        console.warn(`[ContainerManager] Skipping ${missing.length} missing mount(s) for ${agentId}:`, missing.map((m) => m.hostPath))
+        warn(missing)
       }
 
-      // Start container (user secrets are in .env file in workspace).
-      // If a mount turns out to be inaccessible to the container runtime at run
-      // time (e.g. a cloud-synced folder the Lima VM helper is denied — passes
-      // the host health check but fails EPERM-on-stat inside the VM), start()
-      // drops that one mount and the container still comes up. Surface the same
-      // mount-health warning banner with a macOS-specific hint instead of
-      // failing the whole agent.
       const startedInfo = await client.start({
         envVars,
-        additionalVolumes,
-        attachedVolumes,
-        onMountDropped: (hostPath) => {
-          const dropped = healthyMounts.find((m) => m.hostPath === hostPath)
-          console.warn(`[ContainerManager] Mount inaccessible to runtime, dropped for ${agentId}: ${hostPath}`)
-          messagePersister.broadcastGlobal({
-            type: 'mount_health_warning',
-            agentSlug: agentId,
-            missingMounts: [{ folderName: dropped?.folderName ?? hostPath, hostPath }],
-            hint: process.platform === 'darwin'
-              ? 'This folder is in iCloud Drive or a cloud-synced location, which can’t be shared into the agent sandbox. Move it to a regular local folder.'
-              : undefined,
-          })
+        mounts,
+        onMountDropped: (mount) => {
+          console.warn(`[ContainerManager] Mount inaccessible to runtime, dropped for ${agentId}: ${mount.hostPath}`)
+          warn([mount], process.platform === 'darwin'
+            ? 'This folder is in iCloud Drive or a cloud-synced location, which can’t be shared into the agent sandbox. Move it to a regular local folder.'
+            : undefined)
         },
       })
 

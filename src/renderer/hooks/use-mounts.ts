@@ -1,11 +1,17 @@
 import { useEffect, useState } from 'react'
+import type { z } from 'zod'
 import { apiFetch } from '@renderer/lib/api'
 import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAgent } from './use-agents'
-import type { AgentMount, AgentMountWithHealth } from '@shared/lib/types/mount'
+import {
+  agentMountSchema,
+  agentMountsResponseSchema,
+  sharedVolumeListItemSchema,
+  sharedVolumeListResponseSchema,
+} from '@shared/lib/services/mount-schema'
 
-export async function parseErrorMessage(res: Response, fallback: string): Promise<string> {
+async function parseErrorMessage(res: Response, fallback: string): Promise<string> {
   try {
     const body = await res.json()
     return body.error || fallback
@@ -14,15 +20,32 @@ export async function parseErrorMessage(res: Response, fallback: string): Promis
   }
 }
 
+export type SharedVolumeListItem = z.infer<typeof sharedVolumeListItemSchema>
+export type AgentMountsResponse = z.infer<typeof agentMountsResponseSchema>
+
+const EMPTY: AgentMountsResponse = { hostFolders: false, sharedVolumes: false, mounts: [] }
+
 export function useAgentMounts(agentSlug: string) {
-  return useQuery<AgentMountWithHealth[]>({
+  return useQuery<AgentMountsResponse>({
     queryKey: ['mounts', agentSlug],
     queryFn: async () => {
       const res = await apiFetch(`/api/agents/${agentSlug}/mounts`)
       if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to fetch mounts'))
-      return res.json()
+      return agentMountsResponseSchema.parse(await res.json())
     },
     enabled: !!agentSlug,
+  })
+}
+
+/** Every shared volume in the workspace, for the attach-existing list and the row menus. */
+export function useSharedVolumeRegistry() {
+  return useQuery<SharedVolumeListItem[]>({
+    queryKey: ['shared-volumes'],
+    queryFn: async () => {
+      const res = await apiFetch('/api/volumes')
+      if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to fetch shared volumes'))
+      return sharedVolumeListResponseSchema.parse(await res.json()).volumes
+    },
   })
 }
 
@@ -40,7 +63,7 @@ export function useAddMount() {
         body: JSON.stringify({ hostPath: data.hostPath, restart: data.restart }),
       })
       if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to add mount'))
-      return res.json() as Promise<AgentMount>
+      return agentMountSchema.parse(await res.json())
     },
     onSuccess: () => {
       // Bare prefix (not keyed on agentSlug): the agent-home Volumes card keys on the
@@ -68,8 +91,11 @@ export function useRemoveMount() {
 }
 
 export function useVolumesManager(agentSlug: string) {
-  const { data: mountsData, isLoading, refetch } = useAgentMounts(agentSlug)
-  const mounts = Array.isArray(mountsData) ? mountsData : []
+  const queryClient = useQueryClient()
+  const { data, isLoading, refetch } = useAgentMounts(agentSlug)
+  const { hostFolders, sharedVolumes, mounts } = data ?? EMPTY
+  const { data: registryData, isSuccess: registryReady } = useSharedVolumeRegistry()
+  const registry = registryData ?? []
   const { data: agent } = useAgent(agentSlug)
   const isAgentRunning = agent?.status === 'running'
   const addMount = useAddMount()
@@ -77,6 +103,7 @@ export function useVolumesManager(agentSlug: string) {
   const [pendingRestart, setPendingRestart] = useState(false)
   const [isRestarting, setIsRestarting] = useState(false)
   const [restartError, setRestartError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
 
   // A stopped agent picks up mount changes on next start — no restart needed.
   useEffect(() => {
@@ -86,21 +113,58 @@ export function useVolumesManager(agentSlug: string) {
     }
   }, [isAgentRunning, pendingRestart])
 
-  const handleAddMount = async () => {
-    const dirPath = await window.electronAPI?.openDirectory()
-    if (!dirPath) return
-    await addMount.mutateAsync({ agentSlug, hostPath: dirPath })
+  const markRestartIfRunning = () => {
     if (isAgentRunning) setPendingRestart(true)
   }
 
+  // Shared writes change both the agent's list and the workspace registry.
+  const invalidateShared = () => {
+    void queryClient.invalidateQueries({ queryKey: ['mounts'] })
+    void queryClient.invalidateQueries({ queryKey: ['shared-volumes'] })
+  }
+
+  const handleAddFolder = async () => {
+    const dirPath = await window.electronAPI?.openDirectory()
+    if (!dirPath) return
+    await addMount.mutateAsync({ agentSlug, hostPath: dirPath })
+    markRestartIfRunning()
+  }
+
   const handleRemove = async (mountId: string) => {
+    setActionError(null)
     try {
       await removeMount.mutateAsync({ agentSlug, mountId })
-      if (isAgentRunning) setPendingRestart(true)
+      markRestartIfRunning()
     } catch (error) {
-      console.error('Failed to remove mount:', error)
+      setActionError(error instanceof Error ? error.message : 'Failed to remove mount')
     }
   }
+
+  const sharedWrite = async (url: string, init: RequestInit, fallback: string) => {
+    const res = await apiFetch(url, init)
+    if (!res.ok) throw new Error(await parseErrorMessage(res, fallback))
+    invalidateShared()
+    markRestartIfRunning()
+  }
+
+  const trackedWrite = async (url: string, init: RequestInit, fallback: string) => {
+    setActionError(null)
+    try {
+      await sharedWrite(url, init, fallback)
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : fallback)
+      throw error
+    }
+  }
+
+  const createShared = (name: string) =>
+    sharedWrite(`/api/agents/${agentSlug}/volumes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }, 'Failed to create shared volume')
+  const attachShared = (volumeId: string) =>
+    trackedWrite(`/api/agents/${agentSlug}/volumes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ volumeId }) }, 'Failed to attach shared volume')
+  const detachShared = (volumeId: string) =>
+    trackedWrite(`/api/agents/${agentSlug}/volumes/${volumeId}`, { method: 'DELETE' }, 'Failed to detach shared volume')
+  const deleteShared = (volumeId: string) =>
+    trackedWrite(`/api/volumes/${volumeId}`, { method: 'DELETE' }, 'Failed to delete shared volume')
 
   const handleRestart = async () => {
     setIsRestarting(true)
@@ -124,19 +188,27 @@ export function useVolumesManager(agentSlug: string) {
 
   return {
     mounts,
+    hostFolders,
+    sharedVolumes,
+    registry,
+    registryReady,
     isLoading,
     pendingRestart,
     isRestarting,
     restartError,
+    actionError,
     isAddingMount: addMount.isPending,
     isRemovingMount: removeMount.isPending,
-    // A mount is a path on the machine that runs the agent. Picking one here
-    // opens *this* computer's directory picker, so it only means something when
-    // this computer is also the one running them. Existing mounts still list —
-    // they are real on whichever Superagent is being driven.
-    canAddMount: canUseHostFeatures(),
-    handleAddMount,
+    // A host folder is a path on the machine that runs the agent, picked with
+    // this computer's directory picker. Both the server and the window must be
+    // able to do it.
+    canAddFolder: hostFolders && canUseHostFeatures(),
+    handleAddFolder,
     handleRemove,
+    createShared,
+    attachShared,
+    detachShared,
+    deleteShared,
     handleRestart,
   }
 }

@@ -32,6 +32,8 @@ import {
   DEFAULT_SETTINGS,
   DEFAULT_AUTH_SETTINGS,
   isAutoResumeOnUnexpectedDeathEnabled,
+  isCloudRunner,
+  mutateSettings,
 } from './settings'
 import type { AppSettings } from './settings'
 
@@ -1647,5 +1649,25 @@ describe('agentCapabilities', () => {
 
   it('DEFAULT_SETTINGS carries the section so new files persist it', () => {
     expect(DEFAULT_SETTINGS.agentCapabilities).toEqual({ subagents: 'allow', workflows: 'review' })
+  })
+})
+
+describe('isCloudRunner', () => {
+  beforeEach(() => {
+    clearSettingsCache()
+    mockNoSettingsFile()
+  })
+
+  it.each([
+    ['docker', false],
+    ['lima', false],
+    ['wsl2', false],
+    ['podman', false],
+    ['apple-container', false],
+    ['kubernetes', true],
+    ['lambda-microvm', true],
+  ])('%s → %s', (runner, expected) => {
+    mutateSettings((s) => { s.container.containerRunner = runner })
+    expect(isCloudRunner()).toBe(expected)
   })
 })
