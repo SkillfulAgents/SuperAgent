@@ -28,7 +28,7 @@ export function HomeDefaultModel({ agentSlug }: HomeDefaultModelProps) {
 
   return (
     <div
-      className="flex items-center justify-between gap-2 py-2 px-4"
+      className="flex min-h-12 items-center justify-between gap-2 px-4"
       data-testid="home-default-model-card"
     >
       <span className="text-sm font-medium text-muted-foreground">Agent Default Model</span>

@@ -118,7 +118,7 @@ function RetentionRow({
   const triggerLabel = isOverride ? shortLabel(value) : appDefaultShortLabel
 
   return (
-    <div className="flex items-center justify-between gap-2 py-2 px-4" data-testid={`${testId}-card`}>
+    <div className="flex min-h-12 items-center justify-between gap-2 px-4" data-testid={`${testId}-card`}>
       <span className="text-sm font-medium text-muted-foreground">{label}</span>
       <Popover>
         <PopoverTrigger asChild>

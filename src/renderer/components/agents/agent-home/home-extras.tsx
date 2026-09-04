@@ -17,7 +17,10 @@ export function HomeExtras({ agentSlug, onOpenSettings, className }: HomeExtrasP
   const { openFolder } = useFilePreview()
 
   return (
-    <div className={cn("rounded-xl border bg-background py-2", className)}>
+    // No vertical padding on the card: it would stack onto the first and last
+    // rows and make them taller than the rest. Rows are clipped to the rounded
+    // corners instead so their hover fill stays inside.
+    <div className={cn("overflow-hidden rounded-xl border bg-background", className)}>
       <div className="divide-y divide-border/50">
         <HomeDefaultModel agentSlug={agentSlug} />
         <HomeRetention agentSlug={agentSlug} />
@@ -60,7 +63,10 @@ function ExtrasButton({ label, onClick, hoverIcon, testId }: { label: string; on
       type="button"
       onClick={onClick}
       data-testid={testId}
-      className="group flex w-full items-center justify-between py-3 px-4 text-left hover:bg-muted/50 transition-colors"
+      // min-h-12: every row in the card is the same height, whether it holds
+      // this chevron or one of the 34px picker triggers above. The focus ring
+      // is inset because the card clips its rows to the rounded corners.
+      className="group flex min-h-12 w-full items-center justify-between px-4 text-left outline-none transition-colors hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
     >
       <span className="text-sm font-medium text-muted-foreground">{label}</span>
       {hoverIcon ? (
