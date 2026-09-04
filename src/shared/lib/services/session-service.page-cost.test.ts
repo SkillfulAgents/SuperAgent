@@ -28,6 +28,9 @@ import * as path from 'path'
 import * as os from 'os'
 
 import { getSessionMessagesPage } from './session-service'
+import { parsePageCursor } from './session-page-cursor'
+
+const cursorId = (cursor: string | null) => (cursor === null ? null : parsePageCursor(cursor).id)
 
 const KB = 1024
 const MB = 1024 * KB
@@ -191,7 +194,7 @@ describe('messages page read cost — bounded window', () => {
     // back short with a cursor rather than growing the window to fit.
     expect(page.messages.length).toBeGreaterThan(0)
     expect(page.messages.length).toBeLessThan(2000)
-    expect(page.nextCursor).toBe(page.messages[0]!.id)
+    expect(cursorId(page.nextCursor)).toBe(page.messages[0]!.id)
     // The window is capped at 2x the budget and is covered twice — once by the
     // scan, once by the read.
     expect(account.bytes).toBeLessThan(byteBudget * 4)
@@ -236,6 +239,26 @@ describe('messages page read cost — cursor pages', () => {
     expect(page.messages).toHaveLength(5)
     // The window here is a handful of rows, so the whole cost is the scan.
     expect(account.bytes).toBeLessThan(size + CHUNK_SLACK)
+  })
+
+  it('seeks an offset cursor at the very start without traversing the transcript', async () => {
+    const size = await writeTranscript('seek-cursor', thread(600, 2600))
+    expect(size).toBeGreaterThan(1 * MB)
+    // Learn the offset the way a client does: from a page the server served.
+    const { page: upgrade } = await costOf('seek-cursor', { limit: 1, cursor: 'u-6' })
+    expect(parsePageCursor(upgrade.nextCursor!)).toEqual({ id: 'a-5', offset: expect.any(Number) })
+    const { page: seeded } = await costOf('seek-cursor', { limit: 1, cursor: upgrade.nextCursor! })
+    const cursor = seeded.nextCursor!
+    expect(parsePageCursor(cursor)).toEqual({ id: 'u-5', offset: expect.any(Number) })
+
+    const { account, page } = await costOf('seek-cursor', { limit: 10, cursor })
+
+    expect(page.messages.map((m) => m.id)).toEqual(['u-0', 'a-0', 'u-1', 'a-1', 'u-2', 'a-2', 'u-3', 'a-3', 'u-4', 'a-4'])
+    // The probe reads the cursor row, the grace lookup reads ahead up to
+    // CURSOR_GRACE, and the window is a handful of rows: nowhere near the
+    // 1MB+ of history above.
+    expect(account.bytes).toBeLessThan(CURSOR_GRACE + 4 * CHUNK_SLACK)
+    expect(account.bytes).toBeLessThan(size / 2)
   })
 
   it('gives up on a vanished cursor after one traversal, with no window read', async () => {
