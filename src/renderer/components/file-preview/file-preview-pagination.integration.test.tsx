@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { beforeAll, describe, expect, it, vi } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { FilePreviewProvider, useFilePreview } from '@renderer/context/file-preview-context'
@@ -61,9 +62,11 @@ function PreviewHarness() {
 describe('PDF preview pagination integration', () => {
   it('rerenders the visible PDF page after clicking next', async () => {
     render(
-      <FilePreviewProvider sessionId="test-session">
-        <PreviewHarness />
-      </FilePreviewProvider>,
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <FilePreviewProvider sessionId="test-session">
+          <PreviewHarness />
+        </FilePreviewProvider>
+      </QueryClientProvider>,
     )
 
     fireEvent.click(screen.getByRole('button', { name: 'Open PDF' }))

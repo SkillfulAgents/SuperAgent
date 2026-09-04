@@ -8,6 +8,7 @@ import { MessageList } from './message-list'
 import { TranscriptNotFoundError } from '@renderer/hooks/use-messages'
 import { useDraft } from '@renderer/context/drafts-context'
 import { renderWithProviders } from '@renderer/test/test-utils'
+import { FilePreviewProbe } from '@renderer/test/file-preview-probe'
 import { createUserMessage, createAssistantMessage, createToolCall, createCompactBoundary } from '@renderer/test/factories'
 import type { ApiMessageOrBoundary } from '@shared/lib/types/api'
 
@@ -447,6 +448,30 @@ describe('MessageList', () => {
     )
     // Streamed prose is split into per-word reveal spans, so match on textContent.
     expect(screen.getByTestId('message-assistant')).toHaveTextContent('Streaming response...')
+  })
+
+  it('opens a workspace link from the unpersisted streaming message', () => {
+    mockMessagesData.data = [
+      createUserMessage({ content: { text: 'Create the report' } }),
+    ]
+    Object.assign(mockStreamState, {
+      isActive: true,
+      isStreaming: true,
+      streamingMessage: 'See [the live report](/workspace/output/report.md)',
+    })
+
+    renderWithProviders(
+      <>
+        <FilePreviewProbe />
+        <MessageList sessionId="s-1" agentSlug="agent-1" />
+      </>,
+    )
+
+    expect(screen.queryByRole('link', { name: 'the live report' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'the live report' }))
+    expect(screen.getByTestId('file-preview-probe')).toHaveTextContent(
+      '/workspace/output/report.md|agent-1',
+    )
   })
 
   it('hides streaming message when persisted', () => {

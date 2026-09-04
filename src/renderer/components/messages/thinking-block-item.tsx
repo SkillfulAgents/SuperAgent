@@ -7,9 +7,12 @@ import { useElapsedTimer, formatElapsed } from '@renderer/hooks/use-elapsed-time
 import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
 import { StatusIndicator } from './tool-call-item'
 import { splitStreamingMarkdown } from './split-streaming-markdown'
+import { markdownLinkComponents } from './markdown-file-link'
 
 interface ThinkingBlockItemProps {
   text: string
+  /** Opens /workspace/ links in the preview tray. Same slug the chat markdown uses. */
+  agentSlug?: string
   /** True while this block is the one currently streaming reasoning text. */
   active: boolean
   /**
@@ -33,17 +36,8 @@ const THINKING_REMARK_PLUGINS = [remarkGfm]
 // Thinking traces use the same safe URL policy as assistant messages. Keep the
 // renderer deliberately compact: these blocks live in a narrow, capped card,
 // where a wide table should scroll instead of widening the whole transcript.
-const THINKING_MARKDOWN_COMPONENTS: Components = {
-  a: ({ children, href }) => (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="text-blue-500 hover:underline"
-    >
-      {children}
-    </a>
-  ),
+// Spread markdownLinkComponents last so /workspace/ links share the chat tray.
+const THINKING_TABLE_COMPONENT: Pick<Components, 'table'> = {
   table: ({ children }) => (
     <div className="code-scrollbar my-2 max-w-full overflow-x-auto">
       <table className="my-0">{children}</table>
@@ -51,11 +45,24 @@ const THINKING_MARKDOWN_COMPONENTS: Components = {
   ),
 }
 
-const ThinkingMarkdownBlock = memo(function ThinkingMarkdownBlock({ text }: { text: string }) {
+const ThinkingMarkdownBlock = memo(function ThinkingMarkdownBlock({
+  text,
+  agentSlug,
+}: {
+  text: string
+  agentSlug?: string
+}) {
+  const components = useMemo(
+    () => ({
+      ...THINKING_TABLE_COMPONENT,
+      ...markdownLinkComponents(agentSlug),
+    }),
+    [agentSlug],
+  )
   return (
     <ReactMarkdown
       remarkPlugins={THINKING_REMARK_PLUGINS}
-      components={THINKING_MARKDOWN_COMPONENTS}
+      components={components}
       urlTransform={markdownUrlTransform}
     >
       {text}
@@ -71,7 +78,7 @@ const ThinkingMarkdownBlock = memo(function ThinkingMarkdownBlock({ text }: { te
  * "Thought for Ns" header (unless the user toggled it themselves, which wins).
  * Persisted transcript blocks render the same card, collapsed, headed "Thought".
  */
-export function ThinkingBlockItem({ text, active, startedAt, endedAt, durationMs }: ThinkingBlockItemProps) {
+export function ThinkingBlockItem({ text, active, startedAt, endedAt, durationMs, agentSlug }: ThinkingBlockItemProps) {
   // null = follow the default (expanded while active); a user click overrides it
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null)
   const expanded = userExpanded ?? active
@@ -181,12 +188,12 @@ export function ThinkingBlockItem({ text, active, startedAt, endedAt, durationMs
             ) : streamingSplit ? (
               <>
                 {streamingSplit.settled.map((block, i) => (
-                  <ThinkingMarkdownBlock key={i} text={block} />
+                  <ThinkingMarkdownBlock key={i} text={block} agentSlug={agentSlug} />
                 ))}
-                {streamingSplit.tail && <ThinkingMarkdownBlock text={streamingSplit.tail} />}
+                {streamingSplit.tail && <ThinkingMarkdownBlock text={streamingSplit.tail} agentSlug={agentSlug} />}
               </>
             ) : (
-              <ThinkingMarkdownBlock text={text} />
+              <ThinkingMarkdownBlock text={text} agentSlug={agentSlug} />
             )}
             {active && <span className="ml-0.5 inline-block h-3 w-1 animate-pulse bg-current align-text-bottom" />}
           </div>

@@ -1270,6 +1270,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                 startedAt={block.startedAt}
                 endedAt={block.endedAt}
                 active={isActive && block.endedAt === null}
+                agentSlug={agentSlug}
               />
             </div>
           </MessageErrorBoundary>
@@ -1287,8 +1288,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                 createdAt: new Date(),
                 ...(apiErrorCode && { apiError: apiErrorCode }),
               }}
-              isStreaming={isStreaming}
               agentSlug={agentSlug}
+              isStreaming={isStreaming}
               sessionId={sessionId}
               embeddedImageAliases={embeddedImageAliases}
             />

@@ -22,6 +22,7 @@ import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { createMarkdownUrlTransform } from '@renderer/lib/markdown-url-transform'
 import type { EmbeddedImageAliases } from '@renderer/lib/parse-tool-result'
+import { markdownLinkComponents } from './markdown-file-link'
 import { rehypeStreamingWordReveal } from './streaming-word-reveal'
 
 // Re-export for use by other components
@@ -178,20 +179,6 @@ const MARKDOWN_COMPONENTS: Components = {
       <div className="max-w-[32rem]">{children}</div>
     </td>
   ),
-  // Ensure links open in new tab
-  a: ({ children, href }) => (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className={cn(
-        'hover:underline',
-        'text-blue-500'
-      )}
-    >
-      {children}
-    </a>
-  ),
   img: ({ alt, src }) => (
     <img
       src={src}
@@ -201,13 +188,22 @@ const MARKDOWN_COMPONENTS: Components = {
       className="h-auto max-w-full rounded-md"
     />
   ),
+  ...markdownLinkComponents(),
+}
+
+function markdownComponentsForAgent(agentSlug: string): Components {
+  return {
+    ...MARKDOWN_COMPONENTS,
+    ...markdownLinkComponents(agentSlug),
+  }
 }
 
 // A single markdown block. Memoized so that, while a response streams, each
 // already-settled block parses exactly once even though later deltas keep
 // re-rendering the parent MessageItem. See split-streaming-markdown.ts.
 // Exported so the agent-markdown link/scheme handling can be tested directly
-// (SUP-238) without standing up a full MessageItem.
+// (SUP-238) without standing up a full MessageItem. Passing agentSlug reaches
+// FilePreviewProvider via the file-link override — notifications must omit it.
 interface MarkdownBlockProps {
   text: string
   embeddedImageAliases?: EmbeddedImageAliases
@@ -219,8 +215,12 @@ export const MarkdownBlock = memo(function MarkdownBlock({ text, embeddedImageAl
     () => createMarkdownUrlTransform({ aliases: embeddedImageAliases, agentSlug }),
     [embeddedImageAliases, agentSlug]
   )
+  const components = useMemo(
+    () => (agentSlug ? markdownComponentsForAgent(agentSlug) : MARKDOWN_COMPONENTS),
+    [agentSlug],
+  )
   return (
-    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={MARKDOWN_COMPONENTS} urlTransform={urlTransform}>
+    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={components} urlTransform={urlTransform}>
       {text}
     </ReactMarkdown>
   )
@@ -253,12 +253,16 @@ const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({ text, embe
     () => createMarkdownUrlTransform({ aliases: embeddedImageAliases, agentSlug }),
     [embeddedImageAliases, agentSlug]
   )
+  const components = useMemo(
+    () => (agentSlug ? markdownComponentsForAgent(agentSlug) : MARKDOWN_COMPONENTS),
+    [agentSlug],
+  )
 
   return (
     <ReactMarkdown
       remarkPlugins={REMARK_PLUGINS}
       rehypePlugins={rehypePlugins}
-      components={MARKDOWN_COMPONENTS}
+      components={components}
       urlTransform={urlTransform}
     >
       {text}
@@ -367,10 +371,18 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   // Detect assistant messages that failed due to an LLM provider error (from SDK metadata)
   const isProviderErrorMessage = isAssistant && !!message.apiError && PROVIDER_ERROR_CODES.has(message.apiError)
 
-  // Don't render assistant messages that have no text, no tool calls, and no
-  // thinking (and aren't streaming). These are transient empty entries from
-  // partially-persisted JSONL that will be filled in on the next refetch.
-  if (isAssistant && !hasText && toolCalls.length === 0 && thinking.length === 0 && !isStreaming) {
+  // Don't render assistant messages that have no text, no tool calls, no
+  // thinking, and no workflow result card (and aren't streaming). These are
+  // transient empty entries from partially-persisted JSONL that will be filled
+  // in on the next refetch.
+  if (
+    isAssistant
+    && !hasText
+    && toolCalls.length === 0
+    && thinking.length === 0
+    && workflowResults.length === 0
+    && !isStreaming
+  ) {
     return null
   }
 
@@ -409,7 +421,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
           <div className={cn('w-full space-y-2', workDetailClassName)}>
             {thinking.map((t, i) => (
               <MessageErrorBoundary key={i} kind="thinking block" raw={t} itemId={`${message.id}-thinking-${i}`}>
-                <ThinkingBlockItem text={t.text} durationMs={t.durationMs} active={false} />
+                <ThinkingBlockItem text={t.text} durationMs={t.durationMs} active={false} agentSlug={agentSlug} />
               </MessageErrorBoundary>
             ))}
           </div>
@@ -517,7 +529,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
         {isAssistant && workflowResults.length > 0 && (
           <div className="w-full space-y-2">
             {workflowResults.map((wf, idx) => (
-              <WorkflowResultCard key={wf.runId ?? idx} notification={wf} />
+              <WorkflowResultCard key={wf.runId ?? idx} notification={wf} agentSlug={agentSlug} />
             ))}
           </div>
         )}

@@ -40,7 +40,14 @@ export function FileRenderer({
   const { commentsEnabled } = useFilePreview()
 
   if (MARKDOWN_EXTS.has(ext)) {
-    return <MarkdownRenderer url={fileUrl} filePath={filePath} commentsEnabled={commentsEnabled} />
+    return (
+      <MarkdownRenderer
+        url={fileUrl}
+        filePath={filePath}
+        agentSlug={agentSlug}
+        commentsEnabled={commentsEnabled}
+      />
+    )
   }
 
   if (ext === 'html' || ext === 'htm') {

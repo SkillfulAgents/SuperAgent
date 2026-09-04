@@ -59,7 +59,7 @@ function trimTrailingPunctuation(url: string): string {
  * Deliberately not markdown: these strings are shown in compact cards where
  * emphasis, headings and tables would be noise, and where markdown's collapsing
  * of single newlines would drop line breaks `whitespace-pre-line` preserves.
- * Anchor attributes match the markdown renderer's (message-item.tsx) so both
+ * Anchor attributes match the markdown file-link renderer so both
  * reach the Electron shell opener through setWindowOpenHandler.
  */
 export function linkify(text: string): ReactNode {

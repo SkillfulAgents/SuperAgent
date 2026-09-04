@@ -1,4 +1,5 @@
-import { Download, FileText, Folder, PanelRightClose, X } from 'lucide-react'
+import { useEffect } from 'react'
+import { AlertCircle, Download, FileText, Folder, Loader2, PanelRightClose, X } from 'lucide-react'
 import { useFilePreview } from '@renderer/context/file-preview-context'
 import { CopyFileButton } from './copy-file-button'
 import { FileTabBar } from './file-tab-bar'
@@ -7,8 +8,7 @@ import { FileRenderer } from './renderers/file-renderer'
 import { FolderBrowser } from './folder-browser'
 import { FolderHostActions } from './folder-host-actions'
 import { CommentBar } from './comments/comment-bar'
-import { getApiBaseUrl } from '@renderer/lib/env'
-import { getAgentFileApiPath } from '@renderer/lib/workspace-file-url'
+import { usePreviewFileSource } from './use-preview-file-source'
 import { cn } from '@shared/lib/utils/cn'
 
 interface FilePreviewTrayContentProps {
@@ -17,21 +17,26 @@ interface FilePreviewTrayContentProps {
 }
 
 export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayContentProps) {
-  const { openTabs, activeTabIndex, setActiveTab, setPdfPage, closeTab, comments } = useFilePreview()
+  const { openTabs, activeTabIndex, setActiveTab, setPdfPage, closeTab, comments, adoptFilePath } = useFilePreview()
 
   const activeTab = openTabs[activeTabIndex]
+  const preview = usePreviewFileSource(
+    activeTab?.kind === 'file' ? activeTab.agentSlug : '',
+    activeTab?.kind === 'file' ? activeTab.filePath : '',
+    activeTab?.kind === 'file' ? activeTab.version : 0,
+  )
+
+  useEffect(() => {
+    if (activeTab?.kind !== 'file' || preview.isResolving || !preview.fileUrl) return
+    if (preview.filePath === activeTab.filePath) return
+    adoptFilePath(activeTab.filePath, preview.filePath)
+  }, [activeTab, preview.filePath, preview.fileUrl, preview.isResolving, adoptFilePath])
+
   if (!activeTab) return null
 
-  const baseUrl = getApiBaseUrl()
-  const fileApiPath = activeTab.kind === 'file'
-    ? getAgentFileApiPath(activeTab.agentSlug, activeTab.filePath)
-    : null
-  // `v` is a cache buster, not a server-read param: the route ignores it, but it
-  // keeps a redelivered file from resolving to a URL that a browser or CDN still
-  // holds the previous body for.
-  const versionQuery = activeTab.kind === 'file' && activeTab.version > 0 ? `v=${activeTab.version}` : ''
-  const fileUrl = fileApiPath ? `${baseUrl}${fileApiPath}?inline=true${versionQuery ? `&${versionQuery}` : ''}` : null
-  const downloadUrl = fileApiPath ? `${baseUrl}${fileApiPath}${versionQuery ? `?${versionQuery}` : ''}` : null
+  const fileUrl = activeTab.kind === 'file' ? preview.fileUrl : null
+  const downloadUrl = activeTab.kind === 'file' ? preview.downloadUrl : null
+  const renderPath = activeTab.kind === 'file' ? preview.filePath : ''
   const activeComments = activeTab.kind === 'file' ? comments.get(activeTab.filePath) || [] : []
 
   return (
@@ -52,7 +57,7 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
           <FileText className="h-4 w-4 shrink-0" />
         )}
         <span className="flex-1 text-xs truncate font-medium">Files</span>
-        {fileUrl && activeTab.kind === 'file' && isCopyableTextFile(activeTab.filePath) && (
+        {fileUrl && activeTab.kind === 'file' && isCopyableTextFile(renderPath) && (
           <CopyFileButton fileUrl={fileUrl} displayName={activeTab.displayName} />
         )}
         {activeTab.kind === 'folder' && <FolderHostActions folder={activeTab} />}
@@ -94,15 +99,24 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
       >
         {activeTab.kind === 'folder' ? (
           <FolderBrowser folder={activeTab} />
+        ) : preview.isResolving ? (
+          <div className="flex items-center justify-center py-12">
+            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+          </div>
         ) : fileUrl ? (
           <FileRenderer
-            filePath={activeTab.filePath}
+            filePath={renderPath}
             fileUrl={fileUrl}
             agentSlug={activeTab.agentSlug}
             pdfPage={activeTab.pdfPage}
             onPdfPageChange={(page) => setPdfPage(activeTab.filePath, page)}
           />
-        ) : null}
+        ) : (
+          <div className="flex items-center gap-2 p-4 text-sm text-destructive">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            <span>Couldn&apos;t open this file</span>
+          </div>
+        )}
       </div>
 
       {/* Comment bar */}

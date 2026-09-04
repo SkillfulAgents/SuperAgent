@@ -44,6 +44,46 @@ describe('FilePreviewContext', () => {
       expect(result.current.activeTabIndex).toBe(0)
     })
 
+    it('renames a heading-jump tab to the loaded file and merges a delivery of the same file', () => {
+      const { result } = renderHook(() => useFilePreview(), { wrapper })
+      const jumped = '/workspace/output/report.md#results'
+      const loaded = '/workspace/output/report.md'
+
+      act(() => result.current.openFile(jumped, 'agent-1'))
+      act(() => result.current.addComment({ filePath: jumped, text: 'keep me' }))
+      act(() => result.current.adoptFilePath(jumped, loaded))
+
+      expect(result.current.openTabs).toHaveLength(1)
+      expect(result.current.openTabs[0]).toMatchObject({
+        kind: 'file',
+        filePath: loaded,
+        displayName: 'report.md',
+      })
+      expect(result.current.comments.get(jumped)).toBeUndefined()
+      expect(result.current.comments.get(loaded)?.[0]).toMatchObject({
+        filePath: loaded,
+        text: 'keep me',
+      })
+
+      act(() => result.current.openFile(jumped, 'agent-1'))
+      act(() => result.current.adoptFilePath(jumped, loaded))
+
+      expect(result.current.openTabs).toHaveLength(1)
+      expect(result.current.activeTabIndex).toBe(0)
+    })
+
+    it('treats a relative delivery and a /workspace/ chat link as one tab', () => {
+      const { result } = renderHook(() => useFilePreview(), { wrapper })
+      act(() => result.current.openFile('output/report.md', 'agent-1'))
+      act(() => result.current.openFile('/workspace/output/report.md', 'agent-1'))
+
+      expect(result.current.openTabs).toHaveLength(1)
+      expect(result.current.openTabs[0]).toMatchObject({
+        kind: 'file',
+        filePath: '/workspace/output/report.md',
+      })
+    })
+
     it('switches to existing tab without duplicating', () => {
       const { result } = renderHook(() => useFilePreview(), { wrapper })
       act(() => result.current.openFile('/workspace/a.md', 'agent-1'))
