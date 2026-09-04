@@ -439,12 +439,12 @@ function AgentHealthCarousel({
     if (s.kind === 'cron') {
       const activity = health?.cronByTaskId[s.id] ?? []
       const succeeded = activity.filter((p) => p.status === 'succeeded').length
-      chart = <CronSparkChart label={s.name} data={activity} className="h-5 w-24" />
+      chart = <CronSparkChart label={s.name} data={activity} />
       metric = `${succeeded}/${activity.length}`
     } else {
       const activity = health?.webhookByTriggerId[s.id] ?? []
       const { total } = summarizeDailyActivity(activity)
-      chart = <ActivitySparkChart label={s.name} data={activity} className="h-5 w-24" />
+      chart = <ActivitySparkChart label={s.name} data={activity} />
       metric = `${total}/${health?.days ?? DEFAULT_ACTIVITY_DAYS}d`
     }
     return (
