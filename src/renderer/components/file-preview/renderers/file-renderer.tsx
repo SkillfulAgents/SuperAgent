@@ -9,7 +9,7 @@ import { AudioRenderer } from './audio-renderer'
 import { HtmlRenderer } from './html-renderer'
 import { UnsupportedRenderer } from './unsupported-renderer'
 import { useFilePreview } from '@renderer/context/file-preview-context'
-import { previewKind } from '../file-types'
+import { previewKind } from '@renderer/lib/file-types'
 
 const PdfRenderer = lazy(() => import('./pdf-renderer').then(m => ({ default: m.PdfRenderer })))
 

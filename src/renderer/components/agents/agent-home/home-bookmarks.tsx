@@ -28,8 +28,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
-import { useBookmarks, useUpdateBookmarks, type Bookmark } from '@renderer/hooks/use-bookmarks'
+import { useBookmarks, useUpdateBookmarks } from '@renderer/hooks/use-bookmarks'
 import { useFilePreview } from '@renderer/context/file-preview-context'
+import { bookmarkTarget, type Bookmark } from '@shared/lib/utils/bookmarks'
 import { getPathName } from '@shared/lib/utils/workspace-path'
 
 interface HomeBookmarksProps {
@@ -79,44 +80,40 @@ function BookmarkRow({
   onOpenFile: (filePath: string) => void
   onOpenFolder: (folderPath: string) => void
 }) {
-  const inner = bookmark.link ? (
+  const target = bookmarkTarget(bookmark)
+  // A bookmark carrying none of link/file/folder is not one the type allows and
+  // not one the server stores; if the API returns one anyway, draw nothing.
+  if (!target) return null
+
+  const inner = target.kind === 'link' ? (
     <a
-      href={bookmark.link}
+      href={target.url}
       target="_blank"
       rel="noopener noreferrer"
       className="group flex items-center gap-3 py-2.5 px-1 hover:bg-muted/50 transition-colors"
     >
-      <LinkIcon link={bookmark.link} />
+      <LinkIcon link={target.url} />
       <span className="text-xs font-medium truncate">{bookmark.name}</span>
       <ExternalLink className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity ml-auto" />
     </a>
-  ) : bookmark.folder ? (
+  ) : (
     <button
       type="button"
-      onClick={() => onOpenFolder(bookmark.folder!)}
+      onClick={() => target.kind === 'folder' ? onOpenFolder(target.path) : onOpenFile(target.path)}
       className="group flex w-full items-center gap-3 py-2.5 px-1 text-left hover:bg-muted/50 transition-colors"
-      title={`Browse ${getPathName(bookmark.folder)}`}
+      title={`${target.kind === 'folder' ? 'Browse' : 'Preview'} ${getPathName(target.path)}`}
       aria-label={bookmark.name}
     >
-      <FileTypeIcon filename={getPathName(bookmark.folder)} size="md" folder className="text-muted-foreground" />
+      <FileTypeIcon
+        filename={getPathName(target.path)}
+        size="md"
+        folder={target.kind === 'folder'}
+        className="text-muted-foreground"
+      />
       <span className="text-xs font-medium truncate">{bookmark.name}</span>
       <PanelRightOpen className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity ml-auto" />
     </button>
-  ) : bookmark.file ? (
-    <button
-      type="button"
-      onClick={() => onOpenFile(bookmark.file!)}
-      className="group flex w-full items-center gap-3 py-2.5 px-1 text-left hover:bg-muted/50 transition-colors"
-      title={`Preview ${getPathName(bookmark.file)}`}
-      aria-label={bookmark.name}
-    >
-      <FileTypeIcon filename={getPathName(bookmark.file)} size="md" className="text-muted-foreground" />
-      <span className="text-xs font-medium truncate">{bookmark.name}</span>
-      <PanelRightOpen className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity ml-auto" />
-    </button>
-  ) : null
-
-  if (!inner) return null
+  )
 
   if (!isOwner) return inner
 

@@ -12,6 +12,7 @@ import { Skeleton } from '@renderer/components/ui/skeleton'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
 import type { ApiToolCall } from '@shared/lib/types/api'
 import { formatToolName } from '@shared/lib/tool-definitions/types'
+import { formatFileSize } from '@shared/lib/utils/format-file-size'
 
 export { formatToolName } from '@shared/lib/tool-definitions/types'
 
@@ -184,12 +185,6 @@ function ToolResultImage({ image }: { image: ParsedToolResultImage }) {
   )
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-}
-
 type DocumentLoadState = { status: 'loading' } | { status: 'failed' } | { status: 'ready'; url: string }
 
 /** A tool result's PDF (the Read tool on a .pdf), shown in the browser's own
@@ -259,7 +254,7 @@ function ToolResultDocument({ document }: { document: ParsedToolResultDocument }
         <FileText className="h-3.5 w-3.5 shrink-0" />
         <span className="truncate">{label}</span>
         {document.bytes !== undefined && (
-          <span className="ml-auto shrink-0 tabular-nums">{formatBytes(document.bytes)}</span>
+          <span className="ml-auto shrink-0 tabular-nums">{formatFileSize(document.bytes)}</span>
         )}
       </div>
       <div className="relative h-[28rem] w-full bg-background">

@@ -1,5 +1,5 @@
 import { FileTypeIcon } from './file-type-icon'
-import { fileCategory, type FileCategory } from '@renderer/components/file-preview/file-types'
+import { fileCategory, type FileCategory } from '@renderer/lib/file-types'
 import { cn } from '@shared/lib/utils/cn'
 
 /**

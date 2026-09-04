@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { copyLazyTextToClipboard, copyTextToClipboard } from '@renderer/lib/clipboard'
-import { looksBinary } from './file-types'
+import { looksBinary } from '@renderer/lib/file-types'
 import { MAX_CONTENT_CHARS, type FileContent } from './renderers/use-file-content'
 
 const CONFIRMATION_MS = 2000

@@ -31,8 +31,28 @@ export interface FolderTab {
 
 export type PreviewTab = FileTab | FolderTab
 
+/**
+ * Identity of an open tab.
+ *
+ * The agent slug is part of it because a path on its own is not unique: two
+ * agents can each have a `/workspace/report.md`, and a drawer that outlives one
+ * agent — the chat-integration views, the dashboard — would otherwise treat the
+ * two files as one tab, showing the first agent's bytes under the second's
+ * name.
+ */
 export function getPreviewTabKey(tab: PreviewTab): string {
-  return tab.kind === 'file' ? `file:${tab.filePath}` : `folder:${tab.rootPath}`
+  return tab.kind === 'file'
+    ? getFileTabKey(tab.agentSlug, tab.filePath)
+    : `folder:${tab.agentSlug}:${tab.rootPath}`
+}
+
+function getFileTabKey(agentSlug: string, filePath: string): string {
+  return `file:${agentSlug}:${filePath}`
+}
+
+/** Does this tab hold that agent's copy of that path? */
+function isFileTabFor(tab: PreviewTab, agentSlug: string, filePath: string): boolean {
+  return tab.kind === 'file' && tab.agentSlug === agentSlug && tab.filePath === filePath
 }
 
 export interface CellRef {
@@ -71,13 +91,13 @@ interface FilePreviewContextType {
   toggleFolder: (rootPath: string, folderPath: string) => void
   setFolderQuery: (rootPath: string, query: string) => void
   selectFolderEntry: (rootPath: string, entryPath: string) => void
-  renameFilePath: (oldPath: string, newPath: string) => void
-  removeFilePath: (filePath: string) => void
-  renameDirectoryPath: (oldPath: string, newPath: string) => void
-  removeDirectoryPath: (directoryPath: string) => void
+  renameFilePath: (oldPath: string, newPath: string, agentSlug: string) => void
+  removeFilePath: (filePath: string, agentSlug: string) => void
+  renameDirectoryPath: (oldPath: string, newPath: string, agentSlug: string) => void
+  removeDirectoryPath: (directoryPath: string, agentSlug: string) => void
   closeTab: (tabKey: string) => void
   setActiveTab: (index: number) => void
-  setPdfPage: (filePath: string, page: number) => void
+  setPdfPage: (filePath: string, agentSlug: string, page: number) => void
   close: () => void
 
   addComment: (comment: Omit<FileComment, 'id'>) => void
@@ -148,7 +168,7 @@ export function FilePreviewProvider({
     // commit, and a token that changes between passes is a different file URL.
     const version = nextFileVersion()
     setOpenTabs(prev => {
-      const existingIndex = prev.findIndex(tab => tab.kind === 'file' && tab.filePath === filePath)
+      const existingIndex = prev.findIndex(tab => isFileTabFor(tab, agentSlug, filePath))
       if (existingIndex >= 0) {
         setActiveTabIndex(existingIndex)
         setIsOpen(true)
@@ -176,7 +196,9 @@ export function FilePreviewProvider({
   const openFolder = useCallback((folderPath: string, agentSlug: string) => {
     const rootPath = normalizeFolderPath(folderPath)
     setOpenTabs(prev => {
-      const existingIndex = prev.findIndex(tab => tab.kind === 'folder' && tab.rootPath === rootPath)
+      const existingIndex = prev.findIndex(tab => (
+        tab.kind === 'folder' && tab.agentSlug === agentSlug && tab.rootPath === rootPath
+      ))
       if (existingIndex >= 0) {
         setActiveTabIndex(existingIndex)
         setIsOpen(true)
@@ -220,10 +242,10 @@ export function FilePreviewProvider({
     )))
   }, [])
 
-  const renameFilePath = useCallback((oldPath: string, newPath: string) => {
+  const renameFilePath = useCallback((oldPath: string, newPath: string, agentSlug: string) => {
     const version = nextFileVersion()
     setOpenTabs(prev => prev.map(tab => {
-      if (tab.kind === 'file' && tab.filePath === oldPath) {
+      if (isFileTabFor(tab, agentSlug, oldPath)) {
         return {
           ...tab,
           filePath: newPath,
@@ -231,7 +253,7 @@ export function FilePreviewProvider({
           version,
         }
       }
-      if (tab.kind === 'folder' && tab.selectedPath === oldPath) {
+      if (tab.kind === 'folder' && tab.agentSlug === agentSlug && tab.selectedPath === oldPath) {
         return { ...tab, selectedPath: newPath }
       }
       return tab
@@ -247,10 +269,22 @@ export function FilePreviewProvider({
   }, [])
 
   const closeTab = useCallback((tabKey: string) => {
-    const closedFilePath = tabKey.startsWith('file:') ? tabKey.slice('file:'.length) : null
     setOpenTabs(prev => {
       const idx = prev.findIndex(tab => getPreviewTabKey(tab) === tabKey)
       if (idx < 0) return prev
+      // The path comes off the tab rather than back out of the key: a key is an
+      // identity, not a container, and it stopped being parseable the moment
+      // the agent slug joined it.
+      const closed = prev[idx]
+      if (closed.kind === 'file') {
+        const { filePath } = closed
+        setComments(current => {
+          if (!current.has(filePath)) return current
+          const next = new Map(current)
+          next.delete(filePath)
+          return next
+        })
+      }
       const next = prev.filter((_, i) => i !== idx)
       if (next.length === 0) {
         setIsOpen(false)
@@ -264,27 +298,21 @@ export function FilePreviewProvider({
       }
       return next
     })
-    if (closedFilePath) {
-      setComments(prev => {
-        const next = new Map(prev)
-        next.delete(closedFilePath!)
-        return next
-      })
-    }
   }, [])
 
-  const removeFilePath = useCallback((filePath: string) => {
-    closeTab(`file:${filePath}`)
+  const removeFilePath = useCallback((filePath: string, agentSlug: string) => {
+    closeTab(getFileTabKey(agentSlug, filePath))
     setOpenTabs(prev => prev.map(tab => (
-      tab.kind === 'folder' && tab.selectedPath === filePath
+      tab.kind === 'folder' && tab.agentSlug === agentSlug && tab.selectedPath === filePath
         ? { ...tab, selectedPath: undefined }
         : tab
     )))
   }, [closeTab])
 
-  const renameDirectoryPath = useCallback((oldPath: string, newPath: string) => {
+  const renameDirectoryPath = useCallback((oldPath: string, newPath: string, agentSlug: string) => {
     const version = nextFileVersion()
     setOpenTabs(prev => prev.map(tab => {
+      if (tab.agentSlug !== agentSlug) return tab
       if (tab.kind === 'file') {
         const filePath = replacePathPrefix(tab.filePath, oldPath, newPath)
         return filePath === tab.filePath
@@ -321,15 +349,15 @@ export function FilePreviewProvider({
     })
   }, [])
 
-  const removeDirectoryPath = useCallback((directoryPath: string) => {
+  const removeDirectoryPath = useCallback((directoryPath: string, agentSlug: string) => {
     setOpenTabs(prev => {
       const next = prev
-        .filter(tab => !isPathAtOrBelow(
+        .filter(tab => tab.agentSlug !== agentSlug || !isPathAtOrBelow(
           directoryPath,
           tab.kind === 'file' ? tab.filePath : tab.rootPath,
         ))
         .map(tab => {
-          if (tab.kind !== 'folder') return tab
+          if (tab.kind !== 'folder' || tab.agentSlug !== agentSlug) return tab
           const expandedPaths = tab.expandedPaths.filter(path => !isPathAtOrBelow(directoryPath, path))
           const selectedPath = tab.selectedPath && isPathAtOrBelow(directoryPath, tab.selectedPath)
             ? undefined
@@ -370,10 +398,10 @@ export function FilePreviewProvider({
     setActiveTabIndex(index)
   }, [])
 
-  const setPdfPage = useCallback((filePath: string, page: number) => {
+  const setPdfPage = useCallback((filePath: string, agentSlug: string, page: number) => {
     const nextPage = Number.isFinite(page) ? Math.max(1, Math.floor(page)) : 1
     setOpenTabs(prev => {
-      const index = prev.findIndex(tab => tab.kind === 'file' && tab.filePath === filePath)
+      const index = prev.findIndex(tab => isFileTabFor(tab, agentSlug, filePath))
       if (index < 0) return prev
 
       const file = prev[index] as FileTab

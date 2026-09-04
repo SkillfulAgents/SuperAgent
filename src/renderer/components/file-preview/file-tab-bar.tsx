@@ -130,14 +130,14 @@ export function FileTabBar({ tabs, activeIndex, onTabClick, onCloseTab, onLeadin
       >
         <div ref={trackRef} className="flex w-full items-end gap-px">
           {tabs.map((tab, index) => (
-            <button
+            // The tab is a shell, not a control: it holds two buttons, and a
+            // <button> may not contain another interactive element. The close
+            // control used to be a role="button" span nested inside the tab's
+            // own button, which is invalid content either way round and left
+            // its Enter handling hand-rolled. Two real buttons side by side get
+            // keyboard activation from the browser.
+            <div
               key={getPreviewTabKey(tab)}
-              type="button"
-              onClick={() => onTabClick(index)}
-              // A clipped tab is still in the tab order, and the strip cannot
-              // rely on the browser to reveal it during a smooth scroll of its
-              // own; bring it in explicitly.
-              onFocus={() => reveal(index)}
               data-testid="file-tab"
               data-tab-kind={tab.kind}
               data-file-name={tab.displayName}
@@ -146,7 +146,7 @@ export function FileTabBar({ tabs, activeIndex, onTabClick, onCloseTab, onLeadin
               className={cn(
                 // Uniform tabs, like Chrome: every tab starts from the same 160px basis
                 // and shrinks in lockstep, down to a floor that still fits icon + close.
-                'group relative flex h-8 flex-[0_1_160px] items-center gap-1.5 rounded-t-lg px-3 text-left text-xs transition-colors',
+                'group relative flex h-8 flex-[0_1_160px] items-center rounded-t-lg pr-2 text-left text-xs transition-colors',
                 index === activeIndex
                   // The one tab whose name the user needs to read is the one
                   // they are looking at, so it holds a floor wide enough for a
@@ -158,40 +158,40 @@ export function FileTabBar({ tabs, activeIndex, onTabClick, onCloseTab, onLeadin
                   'before:absolute before:left-0 before:top-2 before:bottom-2 before:w-px before:bg-border/60',
               )}
             >
-              {/* Follow the tab's own color so the icon darkens with the label on the
-                  active tab and on hover, instead of the icon's muted default. */}
-              <FileTypeIcon filename={tab.displayName} size="sm" folder={tab.kind === 'folder'} className="text-inherit" />
-              {/* Overflowing names fade out at the right edge instead of ellipsizing, as in Chrome. */}
-              <span className="min-w-0 flex-1 overflow-hidden whitespace-nowrap [mask-image:linear-gradient(to_right,black_calc(100%-16px),transparent)]">
-                {tab.displayName}
-              </span>
-              <span
-                role="button"
-                tabIndex={0}
+              <button
+                type="button"
+                onClick={() => onTabClick(index)}
+                // A clipped tab is still in the tab order, and the strip cannot
+                // rely on the browser to reveal it during a smooth scroll of its
+                // own; bring it in explicitly.
+                onFocus={() => reveal(index)}
+                data-testid="file-tab-select"
+                className="flex h-full min-w-0 flex-1 items-center gap-1.5 pl-3 pr-1 text-left"
+              >
+                {/* Follow the tab's own color so the icon darkens with the label on the
+                    active tab and on hover, instead of the icon's muted default. */}
+                <FileTypeIcon filename={tab.displayName} size="sm" folder={tab.kind === 'folder'} className="text-inherit" />
+                {/* Overflowing names fade out at the right edge instead of ellipsizing, as in Chrome. */}
+                <span className="min-w-0 flex-1 overflow-hidden whitespace-nowrap [mask-image:linear-gradient(to_right,black_calc(100%-16px),transparent)]">
+                  {tab.displayName}
+                </span>
+              </button>
+              <button
+                type="button"
                 data-testid="file-tab-close"
                 data-file-name={tab.displayName}
                 data-path={tab.kind === 'file' ? tab.filePath : tab.rootPath}
                 aria-label={`Close ${tab.displayName}`}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onCloseTab(getPreviewTabKey(tab))
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.stopPropagation()
-                    e.preventDefault()
-                    onCloseTab(getPreviewTabKey(tab))
-                  }
-                }}
+                onClick={() => onCloseTab(getPreviewTabKey(tab))}
                 className={cn(
-                  'ml-auto shrink-0 rounded p-0.5 text-muted-foreground transition-opacity hover:bg-muted-foreground/20 hover:text-foreground group-hover:opacity-100 touch:opacity-100',
+                  'shrink-0 rounded p-0.5 text-muted-foreground transition-opacity hover:bg-muted-foreground/20 hover:text-foreground group-hover:opacity-100 touch:opacity-100',
                   // the selected tab keeps its close visible; the rest reveal it on hover
                   index === activeIndex ? 'opacity-100' : 'opacity-0',
                 )}
               >
                 <X className="h-3 w-3" />
-              </span>
-            </button>
+              </button>
+            </div>
           ))}
         </div>
       </div>

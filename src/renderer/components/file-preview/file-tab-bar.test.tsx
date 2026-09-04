@@ -85,7 +85,7 @@ describe('FileTabBar', () => {
     expect(rendered[0]).toHaveAttribute('data-active', 'true')
     expect(rendered[1]).not.toHaveAttribute('data-active')
 
-    await user.click(rendered[1])
+    await user.click(screen.getAllByTestId('file-tab-select')[1])
     expect(onTabClick).toHaveBeenCalledWith(1)
   })
 
@@ -96,8 +96,25 @@ describe('FileTabBar', () => {
     render(<FileTabBar tabs={tabs} activeIndex={1} onTabClick={onTabClick} onCloseTab={onCloseTab} />)
 
     await user.click(screen.getAllByTestId('file-tab-close')[0])
-    expect(onCloseTab).toHaveBeenCalledWith('folder:/workspace/reports')
+    expect(onCloseTab).toHaveBeenCalledWith('folder:test-agent:/workspace/reports')
     expect(onTabClick).not.toHaveBeenCalled()
+  })
+
+  // Selecting and closing are two real buttons side by side, not a role="button"
+  // span nested inside a <button>, which is invalid content and left the close
+  // control's Enter handling hand-rolled.
+  it('closes on Enter without nesting an interactive element inside a button', async () => {
+    const user = userEvent.setup()
+    const onCloseTab = vi.fn()
+    render(<FileTabBar tabs={tabs} activeIndex={0} onTabClick={vi.fn()} onCloseTab={onCloseTab} />)
+
+    const close = screen.getAllByTestId('file-tab-close')[0]
+    expect(close.tagName).toBe('BUTTON')
+    expect(close.closest('button')).toBe(close)
+
+    close.focus()
+    await user.keyboard('{Enter}')
+    expect(onCloseTab).toHaveBeenCalledWith('folder:test-agent:/workspace/reports')
   })
 
   // Every other tab collapses to icon + close; the one the user is reading keeps
@@ -156,7 +173,7 @@ describe('FileTabBar', () => {
     render(<FileTabBar tabs={tabs} activeIndex={0} onTabClick={vi.fn()} onCloseTab={vi.fn()} />)
     expect(scrollLeft()).toBe(0)
 
-    fireEvent.focus(screen.getAllByTestId('file-tab')[1])
+    fireEvent.focus(screen.getAllByTestId('file-tab-select')[1])
     expect(scrollLeft()).toBe(81)
   })
 

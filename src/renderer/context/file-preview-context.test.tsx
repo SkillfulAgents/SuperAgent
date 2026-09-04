@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
-import { FilePreviewProvider, useFilePreview, type FileTab } from './file-preview-context'
+import { FilePreviewProvider, getPreviewTabKey, useFilePreview, type FileTab } from './file-preview-context'
 
 // Mock the route-derived location — FilePreviewProvider reads useRouteLocation and
 // watches view.kind/view.id for session changes.
@@ -42,6 +42,40 @@ describe('FilePreviewContext', () => {
       expect((result.current.openTabs[0] as FileTab).version).toBeGreaterThan(0)
       expect(result.current.isOpen).toBe(true)
       expect(result.current.activeTabIndex).toBe(0)
+    })
+
+    // A path is not an identity on its own: two agents can each have a
+    // /workspace/report.md, and a drawer that outlives one agent would
+    // otherwise show the first agent's bytes under the second's name.
+    it('keeps two agents\' identically-named files in separate tabs', () => {
+      const { result } = renderHook(() => useFilePreview(), { wrapper })
+      act(() => result.current.openFile('/workspace/report.md', 'agent-1'))
+      act(() => result.current.openFile('/workspace/report.md', 'agent-2'))
+
+      expect(result.current.openTabs).toHaveLength(2)
+      expect(result.current.openTabs[0]).toMatchObject({ agentSlug: 'agent-1' })
+      expect(result.current.openTabs[1]).toMatchObject({ agentSlug: 'agent-2' })
+      expect(getPreviewTabKey(result.current.openTabs[0]))
+        .not.toBe(getPreviewTabKey(result.current.openTabs[1]))
+
+      // and closing one leaves the other alone
+      act(() => result.current.closeTab(getPreviewTabKey(result.current.openTabs[0])))
+      expect(result.current.openTabs).toHaveLength(1)
+      expect(result.current.openTabs[0]).toMatchObject({ agentSlug: 'agent-2' })
+    })
+
+    it('leaves another agent\'s tab untouched when a file is renamed or deleted', () => {
+      const { result } = renderHook(() => useFilePreview(), { wrapper })
+      act(() => result.current.openFile('/workspace/report.md', 'agent-1'))
+      act(() => result.current.openFile('/workspace/report.md', 'agent-2'))
+
+      act(() => result.current.renameFilePath('/workspace/report.md', '/workspace/final.md', 'agent-1'))
+      expect(result.current.openTabs[0]).toMatchObject({ filePath: '/workspace/final.md' })
+      expect(result.current.openTabs[1]).toMatchObject({ filePath: '/workspace/report.md' })
+
+      act(() => result.current.removeFilePath('/workspace/report.md', 'agent-2'))
+      expect(result.current.openTabs).toHaveLength(1)
+      expect(result.current.openTabs[0]).toMatchObject({ agentSlug: 'agent-1' })
     })
 
     it('switches to existing tab without duplicating', () => {
@@ -84,8 +118,8 @@ describe('FilePreviewContext', () => {
       act(() => result.current.openFile('/workspace/long.pdf', 'agent-1'))
       act(() => result.current.openFile('/workspace/short.pdf', 'agent-1'))
 
-      act(() => result.current.setPdfPage('/workspace/long.pdf', 8))
-      act(() => result.current.setPdfPage('/workspace/short.pdf', 2))
+      act(() => result.current.setPdfPage('/workspace/long.pdf', 'agent-1', 8))
+      act(() => result.current.setPdfPage('/workspace/short.pdf', 'agent-1', 2))
 
       expect(result.current.openTabs[0]).toMatchObject({ pdfPage: 8 })
       expect(result.current.openTabs[1]).toMatchObject({ pdfPage: 2 })
@@ -100,7 +134,7 @@ describe('FilePreviewContext', () => {
       const { result } = renderHook(() => useFilePreview(), { wrapper })
       act(() => result.current.openFile('/workspace/report.pdf', 'agent-1'))
 
-      act(() => result.current.setPdfPage('/workspace/report.pdf', 0))
+      act(() => result.current.setPdfPage('/workspace/report.pdf', 'agent-1', 0))
 
       expect(result.current.openTabs[0]).toMatchObject({ pdfPage: 1 })
     })
@@ -137,7 +171,7 @@ describe('FilePreviewContext', () => {
       act(() => result.current.selectFolderEntry('/workspace/reports', oldPath))
       act(() => result.current.openFile(oldPath, 'agent-1'))
       act(() => result.current.addComment({ filePath: oldPath, text: 'keep me' }))
-      act(() => result.current.renameFilePath(oldPath, newPath))
+      act(() => result.current.renameFilePath(oldPath, newPath, 'agent-1'))
 
       expect(result.current.openTabs[0]).toMatchObject({ selectedPath: newPath })
       expect(result.current.openTabs[1]).toMatchObject({
@@ -161,7 +195,7 @@ describe('FilePreviewContext', () => {
       act(() => result.current.openFile(filePath, 'agent-1'))
       act(() => result.current.addComment({ filePath, text: 'remove me' }))
       act(() => result.current.setActiveTab(0))
-      act(() => result.current.removeFilePath(filePath))
+      act(() => result.current.removeFilePath(filePath, 'agent-1'))
 
       expect(result.current.openTabs).toHaveLength(1)
       expect(result.current.openTabs[0]).toMatchObject({ kind: 'folder' })
@@ -181,7 +215,7 @@ describe('FilePreviewContext', () => {
       act(() => result.current.openFile(filePath, 'agent-1'))
       act(() => result.current.addComment({ filePath, text: 'move me' }))
       act(() => result.current.openFolder(oldPath, 'agent-1'))
-      act(() => result.current.renameDirectoryPath(oldPath, newPath))
+      act(() => result.current.renameDirectoryPath(oldPath, newPath, 'agent-1'))
 
       expect(result.current.openTabs[0]).toMatchObject({
         rootPath: '/workspace/reports',
@@ -216,7 +250,7 @@ describe('FilePreviewContext', () => {
       act(() => result.current.openFile(filePath, 'agent-1'))
       act(() => result.current.addComment({ filePath, text: 'remove me' }))
       act(() => result.current.openFolder(directoryPath, 'agent-1'))
-      act(() => result.current.removeDirectoryPath(directoryPath))
+      act(() => result.current.removeDirectoryPath(directoryPath, 'agent-1'))
 
       expect(result.current.openTabs).toHaveLength(1)
       expect(result.current.openTabs[0]).toMatchObject({
@@ -235,7 +269,7 @@ describe('FilePreviewContext', () => {
       const { result } = renderHook(() => useFilePreview(), { wrapper })
       act(() => result.current.openFile('/workspace/a.md', 'agent-1'))
       act(() => result.current.openFile('/workspace/b.md', 'agent-1'))
-      act(() => result.current.closeTab('file:/workspace/a.md'))
+      act(() => result.current.closeTab(getPreviewTabKey(result.current.openTabs[0])))
 
       expect(result.current.openTabs).toHaveLength(1)
       expect(result.current.openTabs[0]).toMatchObject({ filePath: '/workspace/b.md' })
@@ -244,7 +278,7 @@ describe('FilePreviewContext', () => {
     it('closes tray when last tab is closed', () => {
       const { result } = renderHook(() => useFilePreview(), { wrapper })
       act(() => result.current.openFile('/workspace/a.md', 'agent-1'))
-      act(() => result.current.closeTab('file:/workspace/a.md'))
+      act(() => result.current.closeTab(getPreviewTabKey(result.current.openTabs[0])))
 
       expect(result.current.openTabs).toHaveLength(0)
       expect(result.current.isOpen).toBe(false)
@@ -258,7 +292,7 @@ describe('FilePreviewContext', () => {
       // Active is c (index 2)
       expect(result.current.activeTabIndex).toBe(2)
 
-      act(() => result.current.closeTab('file:/workspace/a.md'))
+      act(() => result.current.closeTab(getPreviewTabKey(result.current.openTabs[0])))
       // c is now at index 1
       expect(result.current.activeTabIndex).toBe(1)
       expect(result.current.openTabs[result.current.activeTabIndex]).toMatchObject({ filePath: '/workspace/c.md' })
@@ -271,7 +305,7 @@ describe('FilePreviewContext', () => {
       act(() => result.current.openFile('/workspace/c.md', 'agent-1'))
       // Switch to b (index 1)
       act(() => result.current.setActiveTab(1))
-      act(() => result.current.closeTab('file:/workspace/b.md'))
+      act(() => result.current.closeTab(getPreviewTabKey(result.current.openTabs[1])))
 
       // Should stay at index 1 (now c) or go to 0 if at end
       expect(result.current.activeTabIndex).toBeLessThan(result.current.openTabs.length)
@@ -283,7 +317,7 @@ describe('FilePreviewContext', () => {
       act(() => result.current.addComment({ filePath: '/workspace/a.md', text: 'test' }))
       expect(result.current.comments.get('/workspace/a.md')).toHaveLength(1)
 
-      act(() => result.current.closeTab('file:/workspace/a.md'))
+      act(() => result.current.closeTab(getPreviewTabKey(result.current.openTabs[0])))
       expect(result.current.comments.get('/workspace/a.md')).toBeUndefined()
     })
   })

@@ -215,6 +215,7 @@ import {
   toAgentRemoteMcpDto,
 } from '@shared/lib/agent-connections/public'
 import { createSecretRequestSchema, updateSecretRequestSchema } from './secrets-schema'
+import type { Bookmark } from '@shared/lib/utils/bookmarks'
 
 const WorkspaceBookmarkSchema = z.object({
   name: z.string().min(1),
@@ -244,6 +245,14 @@ const WorkspaceBookmarkSchema = z.object({
 
 const WorkspaceBookmarksSchema = z.array(WorkspaceBookmarkSchema)
 type WorkspaceBookmark = z.infer<typeof WorkspaceBookmarkSchema>
+
+// The renderer's Bookmark is this shape with "exactly one of link/file/folder"
+// expressed in the type system rather than in the superRefine above, so the two
+// cannot be one declaration — but everything the renderer can construct has to
+// be something this schema accepts. If that stops holding this stops compiling,
+// which is what keeps the two definitions in step.
+type AssertAssignable<A extends B, B> = A
+type _RendererBookmarkIsWritable = AssertAssignable<Bookmark, WorkspaceBookmark>
 
 const WorkspaceFolderFileSchema = z.object({
   root: z.string().min(1),

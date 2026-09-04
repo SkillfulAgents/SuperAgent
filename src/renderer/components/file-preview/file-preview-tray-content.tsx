@@ -3,12 +3,12 @@ import { ArrowDownToLine, PanelRight, X } from 'lucide-react'
 import { useFilePreview } from '@renderer/context/file-preview-context'
 import { CopyFileButton } from './copy-file-button'
 import { FileTabBar } from './file-tab-bar'
-import { isCopyableTextFile } from './file-types'
+import { isCopyableTextFile } from '@renderer/lib/file-types'
 import { FileRenderer } from './renderers/file-renderer'
 import { FolderBrowser } from './folder-browser'
 import { FolderHostActions } from './folder-host-actions'
 import { CommentBar } from './comments/comment-bar'
-import { getAgentFileApiPath, getAgentFileUrl } from '@renderer/lib/workspace-file-url'
+import { describeWorkspaceFile } from '@renderer/lib/workspace-file'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { cn } from '@shared/lib/utils/cn'
 import { formatFileSize } from '@shared/lib/utils/format-file-size'
@@ -28,19 +28,15 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
 
   const activeTab = openTabs[activeTabIndex]
   const activeFile = activeTab?.kind === 'file' ? activeTab : null
+  // The tab is the only surface with a cache-busting token, so it is the only
+  // one that hands the descriptor a version.
+  const file = activeFile
+    ? describeWorkspaceFile(activeFile.filePath, activeFile.agentSlug, { version: activeFile.version })
+    : null
   // Hooks run before the early return so their order is stable across renders.
-  const { data: fileSize } = useFileSize(
-    activeFile ? getAgentFileApiPath(activeFile.agentSlug, activeFile.filePath) : null,
-    activeFile?.version ?? 0,
-  )
+  const { data: fileSize } = useFileSize(file?.apiPath ?? null, activeFile?.version ?? 0)
   if (!activeTab) return null
 
-  const fileUrl = activeFile
-    ? getAgentFileUrl(activeFile.agentSlug, activeFile.filePath, { inline: true, version: activeFile.version })
-    : null
-  const downloadUrl = activeFile
-    ? getAgentFileUrl(activeFile.agentSlug, activeFile.filePath, { version: activeFile.version })
-    : null
   const activeComments = activeFile ? comments.get(activeFile.filePath) || [] : []
 
   return (
@@ -90,7 +86,7 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
         <div className="flex shrink-0 items-center gap-2 px-4 pt-4 pb-2" data-testid="file-preview-title">
           <div className="flex min-w-0 flex-1 items-baseline gap-2">
             <h2 className="truncate text-sm font-medium text-foreground">{activeTab.displayName}</h2>
-            {activeFile && typeof fileSize === 'number' && (
+            {file && typeof fileSize === 'number' && (
               <span className="shrink-0 text-xs font-normal text-muted-foreground" data-testid="file-preview-size">
                 {formatFileSize(fileSize)}
               </span>
@@ -103,14 +99,14 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
           <TooltipProvider delayDuration={300}>
           <div className="flex shrink-0 items-center gap-1 text-muted-foreground">
             {activeTab.kind === 'folder' && <FolderHostActions folder={activeTab} />}
-            {fileUrl && activeFile && isCopyableTextFile(activeFile.filePath) && (
-              <CopyFileButton fileUrl={fileUrl} displayName={activeFile.displayName} />
+            {file?.inlineUrl && isCopyableTextFile(file.path) && (
+              <CopyFileButton fileUrl={file.inlineUrl} displayName={activeTab.displayName} />
             )}
-            {downloadUrl && (
+            {file?.downloadUrl && (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <a
-                    href={downloadUrl}
+                    href={file.downloadUrl}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="p-0.5 rounded hover:bg-muted transition-colors"
@@ -133,13 +129,13 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
         >
           {activeTab.kind === 'folder' ? (
             <FolderBrowser folder={activeTab} />
-          ) : fileUrl && activeFile ? (
+          ) : activeFile && file?.inlineUrl ? (
             <FileRenderer
-              filePath={activeFile.filePath}
-              fileUrl={fileUrl}
-              agentSlug={activeFile.agentSlug}
+              filePath={file.path}
+              fileUrl={file.inlineUrl}
+              agentSlug={file.agentSlug}
               pdfPage={activeFile.pdfPage}
-              onPdfPageChange={(page) => setPdfPage(activeFile.filePath, page)}
+              onPdfPageChange={(page) => setPdfPage(file.path, file.agentSlug, page)}
             />
           ) : null}
         </div>
