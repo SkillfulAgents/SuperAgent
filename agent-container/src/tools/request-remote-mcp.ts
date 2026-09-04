@@ -17,7 +17,11 @@ import { sanitizeMcpName } from '../sanitize-mcp-name'
  * tool module doesn't import back into claude-code.ts.
  */
 export interface RemoteMcpInjectionTarget {
-  addRemoteMcpServer(name: string): void
+  /**
+   * Resolves once the approved server's tools are available to the running
+   * query; rejects when the server was registered but could not connect.
+   */
+  addRemoteMcpServer(name: string): Promise<void> | void
 }
 
 /**
@@ -122,12 +126,32 @@ Never ask the user to paste a client secret into the chat. If they want you to l
               const fullToolNames = matchingMcp.tools.map((t) => `mcp__${sanitizedName}__${t.name}`).join(', ')
               return `MCP Server registered as: ${sanitizedName}\nUse these tools: ${fullToolNames}`
             })
-            mcpInfo = `\n\n${mcpBlocks.join('\n\n')}`
+            mcpInfo = `\n\n${mcpBlocks.join('\n\n')}\n\nThe tools are live in this session now (load them with ToolSearch if they are deferred) — continue with the original request.`
 
-            // Trigger interrupt + restart so the new query picks up the MCP from env var.
+            // Hot-add the approved server(s) to the running query. Awaited so
+            // the tool result that names the tools is delivered only once they
+            // can actually be called. A server that registered but failed to
+            // connect rejects, and the model is told instead of being sent
+            // after tools that do not exist.
             const proc = getProcess()
             if (proc) {
-              matchingMcps.forEach((matchingMcp) => proc.addRemoteMcpServer(matchingMcp.name))
+              try {
+                for (const matchingMcp of matchingMcps) {
+                  await proc.addRemoteMcpServer(matchingMcp.name)
+                }
+              } catch (err) {
+                const detail = err instanceof Error ? err.message : String(err)
+                console.error('[request_remote_mcp] Hot-adding the approved MCP server failed:', detail)
+                return {
+                  content: [
+                    {
+                      type: 'text' as const,
+                      text: `Access to the remote MCP server was granted, but it could not be connected to this session: ${detail}. Tell the user the server is assigned but unreachable right now (they can check its connection settings), and do not assume its tools are available.`,
+                    },
+                  ],
+                  isError: true,
+                }
+              }
             } else {
               console.error('[request_remote_mcp] No active ClaudeCodeProcess found')
             }

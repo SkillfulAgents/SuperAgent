@@ -110,7 +110,7 @@ describe('mcpSafeFetch pin (live connect)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     originalE2EMock = process.env.E2E_MOCK
-    process.env.E2E_MOCK = '1'
+    process.env.E2E_MOCK = 'true'
     lookupMock.mockResolvedValue({ address: '127.0.0.1', family: 4 })
   })
 
