@@ -15,18 +15,21 @@ describe('FileIconTile', () => {
     expect(el.className).toContain('text-emerald-700')
     expect(el.className).not.toMatch(/bg-emerald/)
     expect(el.dataset.tinted).toBe('true')
-    // the icon defers to the tile's color instead of its own muted default
-    expect(container.querySelector('[data-file-icon-size]')?.className).toContain('text-inherit')
+    // the icon carries no color of its own, so it takes the tile's hue
+    expect(container.querySelector('[data-file-icon-size]')?.className).not.toContain('text-')
   })
 
-  it('stays neutral for categories without a hue, folders, and when tinting is off', () => {
-    for (const props of [{ filename: 'bundle.zip' }, { filename: 'src', folder: true }, { filename: 'a.png', tinted: false }]) {
-      const { container, unmount } = render(<FileIconTile {...props} />)
-      const el = tile(container)
-      expect(el.className, JSON.stringify(props)).toContain('text-muted-foreground')
-      expect(el.className, JSON.stringify(props)).not.toMatch(/text-(blue|indigo|emerald|orange|violet|pink)/)
-      unmount()
-    }
+  it.each([
+    ['a category with no hue', { filename: 'bundle.zip' }],
+    ['a folder', { filename: 'src', folder: true }],
+    ['tinting turned off', { filename: 'a.png', tinted: false }],
+  ])('stays neutral for %s', (_label, props) => {
+    const { container } = render(<FileIconTile {...props} />)
+    const el = tile(container)
+    expect(el.className).toContain('text-muted-foreground')
+    expect(el.className).not.toMatch(/text-(blue|indigo|emerald|orange|violet|pink)/)
+    // data-tinted reports the hue actually applied, so an untinted tile has none
+    expect(el.dataset.tinted).toBeUndefined()
   })
 
   it('uses the 20px icon token inside the 32px box', () => {

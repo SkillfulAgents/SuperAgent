@@ -43,10 +43,12 @@ export function FileIconTile({ filename, folder = false, tinted = true, classNam
   return (
     <div
       className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-black/5 bg-muted/50 dark:border-white/5', tint, className)}
-      data-tinted={tinted || undefined}
+      // Reports the hue that was actually applied, not the prop: folders and
+      // the categories that map to NEUTRAL render untinted whatever is asked.
+      data-tinted={tint !== NEUTRAL || undefined}
     >
-      {/* Override the icon's own muted color so the stroke takes the tile's hue. */}
-      <FileTypeIcon filename={filename} size="lg" folder={folder} className="text-inherit" />
+      {/* The icon inherits the tile's color, so the stroke takes the hue. */}
+      <FileTypeIcon filename={filename} size="lg" folder={folder} />
     </div>
   )
 }

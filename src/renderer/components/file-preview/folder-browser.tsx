@@ -200,7 +200,7 @@ function FolderDirectory({
               data-entry-path={entry.path}
             >
               <span aria-hidden="true" className="shrink-0">
-                <FileTypeIcon filename={entry.name} size="sm" />
+                <FileTypeIcon filename={entry.name} size="sm" className="text-muted-foreground" />
               </span>
               <HighlightedEntryName name={entry.name} query={folder.query} />
             </button>

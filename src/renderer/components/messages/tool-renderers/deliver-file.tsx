@@ -26,7 +26,7 @@ function ExpandedView({ input, result, isError, agentSlug }: ToolRendererProps) 
       )}
       {filePath && (
         <div className="flex items-center gap-2">
-          <FileTypeIcon filename={getFilename(filePath)} size="md" />
+          <FileTypeIcon filename={getFilename(filePath)} size="lg" className="text-muted-foreground" />
           <code className="bg-background px-1.5 py-0.5 rounded text-xs">
             {getFilename(filePath)}
           </code>

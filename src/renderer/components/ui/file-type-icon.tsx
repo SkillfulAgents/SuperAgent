@@ -32,7 +32,13 @@ import { cn } from '@shared/lib/utils/cn'
  */
 export type FileTypeIconSize = 'sm' | 'md' | 'lg' | 'xl'
 
-const SIZE_PX: Record<FileTypeIconSize, number> = { sm: 14, md: 16, lg: 20, xl: 24 }
+/** Height/width pairs rather than `size-*`, so a caller's `className` can override either axis. */
+const SIZE_CLASS: Record<FileTypeIconSize, string> = {
+  sm: 'h-3.5 w-3.5',
+  md: 'h-4 w-4',
+  lg: 'h-5 w-5',
+  xl: 'h-6 w-6',
+}
 
 /**
  * Lucide `file-*` icon per category. All but file-archive draw the glyph
@@ -58,13 +64,6 @@ const CATEGORY_ICONS: Record<FileCategory, LucideIcon> = {
   other: File,
 }
 
-/** Lowercase extension, or '' for dotless names (unlike the shared mime helper). */
-export function getExtension(filename: string): string {
-  const parts = filename.split('.')
-  if (parts.length < 2) return ''
-  return parts.pop()!.toLowerCase()
-}
-
 interface FileTypeIconProps {
   filename: string
   size?: FileTypeIconSize
@@ -78,20 +77,20 @@ interface FileTypeIconProps {
  * file's category, plain `file` when the category has none, or the lucide
  * folder glyph. Everything is drawn at stroke width 1, so all three share an
  * outline weight and scale together with the size token.
+ *
+ * The glyph takes its color from whatever it sits in, so it brightens with a
+ * row on hover and turns red inside an error line. Callers that want it quieter
+ * than their text pass `text-muted-foreground` themselves.
  */
 export function FileTypeIcon({ filename, size = 'sm', folder = false, className }: FileTypeIconProps) {
-  const px = SIZE_PX[size]
-  const ext = getExtension(filename)
-  const category = folder ? undefined : fileCategory(filename)
-  const Icon = folder ? Folder : CATEGORY_ICONS[category ?? 'other']
+  const category = folder ? null : fileCategory(filename)
+  const Icon = category === null ? Folder : CATEGORY_ICONS[category]
 
   return (
     <span
-      style={{ width: px, height: px }}
-      className={cn('inline-flex shrink-0 items-center justify-center text-muted-foreground', className)}
+      className={cn('inline-flex shrink-0 items-center justify-center', SIZE_CLASS[size], className)}
       data-file-icon-size={size}
-      data-file-ext={folder ? undefined : ext || undefined}
-      data-file-category={category}
+      data-file-category={category ?? undefined}
       aria-hidden="true"
     >
       <Icon className="h-full w-full" strokeWidth={1} />
