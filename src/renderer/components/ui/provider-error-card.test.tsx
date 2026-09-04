@@ -55,12 +55,7 @@ describe('ProviderErrorView', () => {
     )
   })
 
-  it('renders insufficient-balance markdown with a billing link', async () => {
-    const openExternal = vi.fn().mockResolvedValue(undefined)
-    ;(window as unknown as { electronAPI?: { openExternal: typeof openExternal } }).electronAPI = {
-      openExternal,
-    }
-
+  it('renders the paywall copy as a plain card when a 402 falls back to the inline card', () => {
     const parsed = parsePlatformErrorResponse(
       402,
       'API Error: 402 Workspace has insufficient balance. Top up to continue.',
@@ -75,14 +70,10 @@ describe('ProviderErrorView', () => {
     )
 
     const card = screen.getByTestId('provider-error-card')
-    expect(card).toHaveTextContent('Insufficient Balance')
+    expect(card).toHaveTextContent('You need more usage credit to continue')
     expect(card).toHaveAttribute('data-severity', 'error')
     expect(card).toHaveClass('bg-red-50', 'dark:bg-red-950')
-
-    fireEvent.click(screen.getByRole('link', { name: /go to billing/i }))
-    expect(openExternal).toHaveBeenCalledWith(
-      'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
-    )
+    expect(screen.queryByRole('link')).not.toBeInTheDocument()
   })
 })
 
