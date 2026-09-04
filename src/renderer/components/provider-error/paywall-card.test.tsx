@@ -85,7 +85,10 @@ function renderCard(
   )
 }
 
-const returnToWindow = () => act(() => { window.dispatchEvent(new Event('focus')) })
+function clickRecheck(ctaName: string) {
+  act(() => { screen.getByRole('button', { name: ctaName }).click() })
+  act(() => { screen.getByRole('button', { name: 'Recheck' }).click() })
+}
 
 describe('PaywallCard', () => {
   beforeEach(() => {
@@ -231,7 +234,7 @@ describe('PaywallCard', () => {
     renderCard()
     await screen.findByText('Workspace billing needs attention')
     fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
-    returnToWindow()
+    clickRecheck('Go to billing')
     await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
     expect(screen.getByTestId('composer')).toBeInTheDocument()
   })
@@ -239,24 +242,12 @@ describe('PaywallCard', () => {
   it('stays up (but unblocks) when the allowed snapshot is a stale cached fallback', async () => {
     renderCard()
     await screen.findByText('Workspace billing needs attention')
+    const before = fetchBilling.mock.calls.length
     fetchBilling.mockResolvedValue({ ...billing({ access: ALLOWED }), stale: true })
-    returnToWindow()
-    await waitFor(() => expect(fetchBilling).toHaveBeenCalledTimes(2))
+    clickRecheck('Go to billing')
+    await waitFor(() => expect(fetchBilling.mock.calls.length).toBeGreaterThan(before))
     await act(async () => {})
     expect(screen.getByTestId('paywall-card')).toBeInTheDocument()
     expect(screen.getByTestId('composer')).toBeInTheDocument()
-  })
-
-  it('coalesces focus and visibility signals into one refetch', async () => {
-    renderCard()
-    await screen.findByText('Workspace billing needs attention')
-    const before = fetchBilling.mock.calls.length
-    act(() => {
-      window.dispatchEvent(new Event('focus'))
-      document.dispatchEvent(new Event('visibilitychange'))
-    })
-    await waitFor(() => expect(fetchBilling.mock.calls.length).toBe(before + 1))
-    await act(async () => {})
-    expect(fetchBilling.mock.calls.length).toBe(before + 1)
   })
 })

@@ -29,31 +29,6 @@ function invalidateBillingSnapshot(queryClient: QueryClient, op: string): Promis
     })
 }
 
-// Refetch when the window comes back (user returns from the dashboard).
-function useBillingRefreshOnReturn(): void {
-  const queryClient = useQueryClient()
-  useEffect(() => {
-    let scheduled: ReturnType<typeof setTimeout> | null = null
-    const schedule = () => {
-      if (scheduled !== null) return
-      scheduled = setTimeout(() => {
-        scheduled = null
-        void invalidateBillingSnapshot(queryClient, 'refresh-on-return')
-      }, 50)
-    }
-    const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible') schedule()
-    }
-    window.addEventListener('focus', schedule)
-    document.addEventListener('visibilitychange', onVisibilityChange)
-    return () => {
-      if (scheduled !== null) clearTimeout(scheduled)
-      window.removeEventListener('focus', schedule)
-      document.removeEventListener('visibilitychange', onVisibilityChange)
-    }
-  }, [queryClient])
-}
-
 function useBillingRecheckPoll(enabled: boolean): void {
   const queryClient = useQueryClient()
   useEffect(() => {
@@ -83,7 +58,6 @@ export function usePaywallBilling(
     if (!live) return
     void invalidateBillingSnapshot(queryClient, 'refresh-on-mount')
   }, [live, queryClient])
-  useBillingRefreshOnReturn()
 
   const billingError = billingQuery.error
   useEffect(() => {
