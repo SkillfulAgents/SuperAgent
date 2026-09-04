@@ -1,9 +1,15 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
 import { useUser } from '@renderer/context/user-context'
 import { stashRedirectTarget } from '@renderer/lib/api'
 import { targetIsRemote } from '@renderer/lib/api-target'
+import {
+  isWorkspaceAsleep,
+  isWorkspaceUnavailableReloadPending,
+  subscribeWorkspaceUnavailable,
+} from '@renderer/lib/workspace-unavailable'
 import { AuthPage } from './auth-page'
 import { ForcePasswordChange } from './force-password-change'
+import { WorkspaceUnavailableOverlay } from './workspace-asleep'
 import { WorkspaceReconnect } from './workspace-reconnect'
 
 /**
@@ -71,6 +77,8 @@ function useSignalPainted(isPending: boolean): void {
 export function AuthGate({ children }: { children: React.ReactNode }) {
   const { isAuthMode, isAuthenticated, isPending, mustChangePassword } = useUser()
   const [pendingApproval, setPendingApproval] = useState(false)
+  const asleep = useSyncExternalStore(subscribeWorkspaceUnavailable, isWorkspaceAsleep)
+  const reloadPending = useSyncExternalStore(subscribeWorkspaceUnavailable, isWorkspaceUnavailableReloadPending)
   useSignalPainted(isPending && !pendingApproval)
 
   const onPendingApproval = useCallback((pending = true) => setPendingApproval(pending), [])
@@ -95,12 +103,24 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     }
   }, [isAuthMode, isPending, isAuthenticated])
 
-  if (!isAuthMode) return <>{children}</>
-  if (isPending && !pendingApproval) return <LoadingScreen />
+  const overlayMode = asleep ? 'asleep' : reloadPending ? 'updating' : null
+  const withUnavailableOverlay = (content: React.ReactNode) => (
+    <>
+      {content}
+      {overlayMode && <WorkspaceUnavailableOverlay mode={overlayMode} />}
+    </>
+  )
+
+  if (!isAuthMode) return withUnavailableOverlay(children)
+  if (isPending && !pendingApproval) {
+    return withUnavailableOverlay(<LoadingScreen />)
+  }
   // A cloud workspace authenticates with a token held by the main process, so
   // there is no password to ask for — offer reconnection instead of a login form.
-  if (!isAuthenticated && targetIsRemote()) return <WorkspaceReconnect />
-  if (!isAuthenticated || pendingApproval) return <AuthPage onPendingApproval={onPendingApproval} />
-  if (mustChangePassword) return <ForcePasswordChange />
-  return <>{children}</>
+  if (!isAuthenticated && targetIsRemote()) return withUnavailableOverlay(<WorkspaceReconnect />)
+  if (!isAuthenticated || pendingApproval) {
+    return withUnavailableOverlay(<AuthPage onPendingApproval={onPendingApproval} />)
+  }
+  if (mustChangePassword) return withUnavailableOverlay(<ForcePasswordChange />)
+  return withUnavailableOverlay(children)
 }

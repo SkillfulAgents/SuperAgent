@@ -37,6 +37,11 @@ vi.mock('./workspace-reconnect', () => ({
 }))
 
 import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
+import {
+  _armWorkspaceUnavailableReloadForTest,
+  _markWorkspaceAsleepForTest,
+  _resetWorkspaceUnavailableForTest,
+} from '@renderer/lib/workspace-unavailable'
 import { AuthGate } from './auth-gate'
 
 type UserState = {
@@ -65,6 +70,7 @@ describe('AuthGate cold-stash vs sign-out (wasAuthenticatedRef guard)', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+    _resetWorkspaceUnavailableForTest()
   })
 
   it('cold deep-link: stashes the target once the session settles unauthenticated', () => {
@@ -149,6 +155,7 @@ describe('which recovery AuthGate offers when there is no session', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
     _resetApiTargetForTest()
+    _resetWorkspaceUnavailableForTest()
   })
 
   const unauthenticated = {
@@ -157,6 +164,55 @@ describe('which recovery AuthGate offers when there is no session', () => {
     isPending: false,
     mustChangePassword: false,
   }
+
+  it('covers the last surface with the updating overlay while a reload is in flight', () => {
+    vi.stubGlobal('__AUTH_MODE__', true)
+    setActiveTarget('local', null)
+    _armWorkspaceUnavailableReloadForTest()
+    setUser({ ...unauthenticated, isAuthenticated: true })
+
+    const { getByTestId, getByText, queryByTestId } = render(
+      <AuthGate>
+        <div>app</div>
+      </AuthGate>,
+    )
+
+    expect(getByTestId('workspace-updating-overlay')).toBeInTheDocument()
+    expect(getByText('app')).toBeInTheDocument()
+    expect(queryByTestId('auth-page')).not.toBeInTheDocument()
+  })
+
+  it('covers AuthPage with the updating overlay when the session drops mid-reload', () => {
+    vi.stubGlobal('__AUTH_MODE__', true)
+    setActiveTarget('local', null)
+    _armWorkspaceUnavailableReloadForTest()
+    setUser(unauthenticated)
+
+    const { getByTestId } = render(
+      <AuthGate>
+        <div>app</div>
+      </AuthGate>,
+    )
+
+    expect(getByTestId('workspace-updating-overlay')).toBeInTheDocument()
+    expect(getByTestId('auth-page')).toBeInTheDocument()
+  })
+
+  it('overlays the asleep prompt while keeping the app mounted underneath', () => {
+    vi.stubGlobal('__AUTH_MODE__', true)
+    setActiveTarget('local', null)
+    setUser({ ...unauthenticated, isAuthenticated: true })
+    _markWorkspaceAsleepForTest()
+
+    const { getByTestId, getByText } = render(
+      <AuthGate>
+        <div>app</div>
+      </AuthGate>,
+    )
+
+    expect(getByTestId('workspace-asleep-overlay')).toBeInTheDocument()
+    expect(getByText('app')).toBeInTheDocument()
+  })
 
   it('offers the login form for a web deployment', () => {
     vi.stubGlobal('__AUTH_MODE__', true)

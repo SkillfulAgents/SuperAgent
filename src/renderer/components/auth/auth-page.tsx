@@ -4,6 +4,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { signIn, signUp, signOut } from '@renderer/lib/auth-client'
 import { apiFetch, consumeRedirectStash, peekRedirectStash } from '@renderer/lib/api'
+import { isWorkspaceUnavailableError } from '@renderer/lib/workspace-unavailable'
 import { Card, CardContent, CardHeader } from '@renderer/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@renderer/components/ui/tabs'
 import { Input } from '@renderer/components/ui/input'
@@ -406,10 +407,12 @@ export function AuthPage({ onPendingApproval }: { onPendingApproval?: (pending?:
           <h1 className="text-2xl font-medium">Gamut</h1>
         </CardHeader>
         <CardContent className="space-y-4">
-          {isLoading ? (
+          {isLoading || isWorkspaceUnavailableError(error) ? (
             <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground" data-testid="auth-config-loading">
               <Loader2 className="h-4 w-4 animate-spin" />
-              Loading authentication options...
+              {isWorkspaceUnavailableError(error)
+                ? 'Updating your workspace...'
+                : 'Loading authentication options...'}
             </div>
           ) : error ? (
             <Alert variant="destructive" data-testid="auth-config-error">

@@ -1,6 +1,7 @@
 import { getApiBaseUrl } from './env'
 import { hasInteractiveLogin, isAuthMode } from './auth-mode'
 import { reportCloudSessionRejected } from './cloud-session'
+import { maybeReloadForWorkspaceUnavailable } from './workspace-unavailable'
 
 /**
  * Fetch wrapper that prepends the API base URL.
@@ -15,6 +16,7 @@ export async function apiFetch(
 ): Promise<Response> {
   const baseUrl = getApiBaseUrl()
   const response = await fetch(`${baseUrl}${path}`, init)
+  await maybeReloadForWorkspaceUnavailable(response)
   await handleUnauthorizedResponse(response.status, path)
   return response
 }

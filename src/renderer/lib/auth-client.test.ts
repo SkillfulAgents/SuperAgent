@@ -7,7 +7,7 @@ vi.unmock('@renderer/lib/auth-client')
 
 const { createAuthClient, baseUrl, remote } = vi.hoisted(() => ({
   remote: { value: false },
-  createAuthClient: vi.fn((_options: { baseURL?: string; fetchOptions?: { credentials?: string } }) => ({
+  createAuthClient: vi.fn((_options: { baseURL?: string; fetchOptions?: { credentials?: string; customFetchImpl?: unknown } }) => ({
     signIn: { email: vi.fn() },
     signUp: { email: vi.fn() },
     signOut: vi.fn(),
@@ -69,6 +69,11 @@ describe('construction timing', () => {
     expect(createAuthClient.mock.calls[0][0]).toMatchObject({
       baseURL: 'http://localhost:3000/cloud/KEY123/api/auth',
     })
+  })
+
+  it('installs a fetch wrapper so a waking ingress reloads the document', () => {
+    useSession()
+    expect(typeof createAuthClient.mock.calls[0][0].fetchOptions?.customFetchImpl).toBe('function')
   })
 
   it('builds only once across many uses', () => {
