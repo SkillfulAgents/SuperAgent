@@ -68,19 +68,27 @@ export function defaultParseErrorResponse(
 
 const ORG_PLACEHOLDER_LINK = /\[([^\]]+)\]\(([^)]*\{orgId\}[^)]*)\)/g
 
+export interface OrgLinkContext {
+  connected?: boolean
+  platformBaseUrl?: string | null
+  orgId?: string | null
+}
+
+// `{orgId}` path or absolute URL → concrete URL on the connected org; null without org context.
+export function resolveOrgLink(pathOrUrl: string, org: OrgLinkContext | null | undefined): string | null {
+  if (!org?.connected || !org.orgId || !org.platformBaseUrl) return null
+  const path = pathOrUrl.replaceAll('{orgId}', org.orgId)
+  if (/^https?:\/\//i.test(path)) return path
+  return `${org.platformBaseUrl.replace(/\/$/, '')}${path}`
+}
+
 export function resolvePresentationMarkdown(
   markdown: string,
-  org: { connected?: boolean; platformBaseUrl?: string | null; orgId?: string | null } | null | undefined,
+  org: OrgLinkContext | null | undefined,
 ): string {
   if (!markdown.includes('{orgId}')) return markdown
-  if (!org?.connected || !org.orgId || !org.platformBaseUrl) {
-    return markdown.replace(ORG_PLACEHOLDER_LINK, '$1')
-  }
-  const origin = org.platformBaseUrl.replace(/\/$/, '')
-  const orgId = org.orgId
   return markdown.replace(ORG_PLACEHOLDER_LINK, (_match, label: string, href: string) => {
-    const path = href.replaceAll('{orgId}', orgId)
-    const url = /^https?:\/\//i.test(path) ? path : `${origin}${path}`
-    return `[${label}](${url})`
+    const url = resolveOrgLink(href, org)
+    return url ? `[${label}](${url})` : label
   })
 }

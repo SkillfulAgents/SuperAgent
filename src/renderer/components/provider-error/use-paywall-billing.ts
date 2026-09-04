@@ -1,0 +1,104 @@
+import { useEffect, useMemo, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
+
+import { BILLING_QUERY_KEY, useBillingInfo } from '@renderer/hooks/use-billing-info'
+import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
+import { captureRendererException } from '@renderer/lib/error-reporting'
+
+import { resolveOrgBillingUrl, resolvePaywallCta, subscriptionRequiredFromBilling, type PaywallCta } from './paywall-cta'
+
+export interface PaywallBilling {
+  cta: PaywallCta | null
+  loading: boolean
+  /** A fresh snapshot positively denies access: the composer can be withheld. */
+  blocked: boolean
+  /** A fresh snapshot allows access again (after this paywall appeared, if live): the card can go. */
+  cleared: boolean
+}
+
+// Refetch billing when the window comes back (the user returns from the dashboard
+// without the deep link). Only runs while a paywall is on screen.
+function useBillingRefreshOnReturn(): void {
+  const queryClient = useQueryClient()
+  useEffect(() => {
+    let scheduled: ReturnType<typeof setTimeout> | null = null
+    const schedule = () => {
+      if (scheduled !== null) return
+      scheduled = setTimeout(() => {
+        scheduled = null
+        void queryClient
+          .invalidateQueries({ queryKey: BILLING_QUERY_KEY, refetchType: 'active' })
+          .catch((error: unknown) => {
+            console.warn('[Paywall] billing refresh failed:', error)
+            captureRendererException(error, { tags: { area: 'paywall', op: 'refresh-on-return' } })
+          })
+      }, 50)
+    }
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') schedule()
+    }
+    window.addEventListener('focus', schedule)
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => {
+      if (scheduled !== null) clearTimeout(scheduled)
+      window.removeEventListener('focus', schedule)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
+  }, [queryClient])
+}
+
+// `flagFrom402` is the proxy's subscription_required flag when the 402 body kept it.
+// A live 402 ignores a leftover `allowed` snapshot from a previous recovery.
+// A persisted 402 (switch session after a top-up) trusts the current snapshot.
+export function usePaywallBilling(flagFrom402: boolean | undefined, live: boolean): PaywallBilling {
+  const { data: platformAuth } = usePlatformAuthStatus()
+  const role = platformAuth?.role
+  const billingQuery = useBillingInfo(Boolean(platformAuth?.connected))
+  const queryClient = useQueryClient()
+
+  const [seenAt] = useState(() => Date.now())
+  useEffect(() => {
+    if (!live) return
+    void queryClient.invalidateQueries({ queryKey: BILLING_QUERY_KEY, refetchType: 'active' })
+  }, [live, queryClient])
+  useBillingRefreshOnReturn()
+
+  const billingError = billingQuery.error
+  useEffect(() => {
+    if (!billingError) return
+    console.warn('[Paywall] billing snapshot fetch failed:', billingError)
+    captureRendererException(billingError, { tags: { area: 'paywall', op: 'billing-info' } })
+  }, [billingError])
+
+  return useMemo(() => {
+    const billingHref = resolveOrgBillingUrl(platformAuth)
+    if (billingQuery.isLoading) {
+      return { cta: null, loading: true, blocked: false, cleared: false }
+    }
+    const fresh = billingQuery.data?.stale !== true
+    const billing = billingQuery.data?.billing
+    const allowed = fresh ? billing?.access?.allowed : undefined
+    return {
+      cta: resolvePaywallCta({
+        subscriptionRequired: flagFrom402 ?? subscriptionRequiredFromBilling(billing),
+        role,
+        hasPaymentMethod: billing?.hasPaymentMethod,
+        paymentStatus: billing?.subscription.paymentStatus,
+        billingHref,
+      }),
+      loading: false,
+      blocked: allowed === false,
+      cleared: allowed === true && (!live || billingQuery.dataUpdatedAt > seenAt),
+    }
+  }, [
+    billingQuery.data?.billing,
+    billingQuery.data?.stale,
+    billingQuery.dataUpdatedAt,
+    billingQuery.isLoading,
+    flagFrom402,
+    live,
+    platformAuth,
+    role,
+    seenAt,
+  ])
+}

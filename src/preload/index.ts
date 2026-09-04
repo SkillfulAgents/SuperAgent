@@ -85,20 +85,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Billing hand-back deep link (<scheme>://billing-updated) after a dashboard top-up; signal-only.
   onBillingUpdated: (callback: () => void): (() => void) => {
-    const handler = () => {
-      try {
-        callback()
-      } finally {
-        ipcRenderer.send('billing-updated-consumed')
-      }
-    }
+    const handler = () => callback()
     ipcRenderer.on('billing-updated', handler)
     return () => {
       ipcRenderer.removeListener('billing-updated', handler)
     }
-  },
-  flushPendingBillingUpdated: (): Promise<boolean> => {
-    return ipcRenderer.invoke('flush-pending-billing-updated')
   },
 
   // Full screen state handling
@@ -501,7 +492,6 @@ declare global {
       onPlatformAuthCallback: (callback: (params: { success: boolean; email?: string | null; error?: string | null }) => void) => () => void
       removePlatformAuthCallback: () => void
       onBillingUpdated?: (callback: () => void) => () => void
-      flushPendingBillingUpdated?: () => Promise<boolean>
       onFullScreenChange: (callback: (isFullScreen: boolean) => void) => () => void
       removeFullScreenChange: () => void
       getFullScreenState: () => Promise<boolean>

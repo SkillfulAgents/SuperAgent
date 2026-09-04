@@ -12,6 +12,7 @@ import { MenuCommandHandler } from '@renderer/components/menu-command-handler'
 import { PackageImportHandler } from '@renderer/components/package-import-handler'
 import { HistoryNavigationHandler } from '@renderer/components/history-navigation-handler'
 import { GlobalNotificationHandler } from '@renderer/components/notifications/global-notification-handler'
+import { BillingUpdatedHandler } from '@renderer/components/billing-updated-handler'
 import { SignupHandoffConsumer } from '@renderer/components/signup-handoff-consumer'
 import { OnboardingProvider } from '@renderer/context/onboarding-context'
 import { useSearch } from '@renderer/context/search-context'
@@ -154,6 +155,7 @@ export function RootLayout() {
           <PackageImportHandler />
           <HistoryNavigationHandler />
           <GlobalNotificationHandler />
+          <BillingUpdatedHandler />
           <ContainerSetupHandler />
           <WindowControls />
           <UpdateToastNotifier />

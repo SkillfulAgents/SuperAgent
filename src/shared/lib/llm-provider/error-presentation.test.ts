@@ -6,6 +6,7 @@ import {
   extractErrorMessage,
   inferErrorStatus,
   providerErrorPresentationSchema,
+  resolveOrgLink,
   resolvePresentationMarkdown,
 } from './error-presentation'
 import { extractSubscriptionRequired, parsePlatformErrorResponse } from './platform-error-presentation'
@@ -158,6 +159,11 @@ describe('parsePlatformErrorResponse', () => {
     const parsed = parsePlatformErrorResponse(undefined, 'API Error: 402 {"error":"insufficient_balance"}')
     expect(parsed?.component).toBe('paywall')
   })
+
+  it('does not route a non-402 status to the paywall because "402" appears elsewhere in the text', () => {
+    expect(parsePlatformErrorResponse(undefined, 'Request rejected (500) · upstream id 402-abc')).toBeNull()
+    expect(parsePlatformErrorResponse(500, 'upstream id 402')).toBeNull()
+  })
 })
 
 describe('extractSubscriptionRequired', () => {
@@ -169,6 +175,27 @@ describe('extractSubscriptionRequired', () => {
   it('is undefined when the body dropped the flag', () => {
     expect(extractSubscriptionRequired('API Error: 402 {"error":"insufficient_balance"}')).toBeUndefined()
     expect(extractSubscriptionRequired('Payment required')).toBeUndefined()
+  })
+})
+
+describe('resolveOrgLink', () => {
+  const org = { connected: true, platformBaseUrl: 'https://platform.example.com/', orgId: 'org_123' }
+
+  it('fills orgId and prefixes the origin without a double slash', () => {
+    expect(resolveOrgLink('/dashboard/organizations/{orgId}?tab=billing', org)).toBe(
+      'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
+    )
+  })
+
+  it('leaves an absolute URL on its own host', () => {
+    expect(resolveOrgLink('https://docs.example.com/{orgId}', org)).toBe('https://docs.example.com/org_123')
+  })
+
+  it('is null without a connected org', () => {
+    expect(resolveOrgLink('/x/{orgId}', null)).toBeNull()
+    expect(resolveOrgLink('/x/{orgId}', { ...org, connected: false })).toBeNull()
+    expect(resolveOrgLink('/x/{orgId}', { ...org, orgId: null })).toBeNull()
+    expect(resolveOrgLink('/x/{orgId}', { ...org, platformBaseUrl: null })).toBeNull()
   })
 })
 

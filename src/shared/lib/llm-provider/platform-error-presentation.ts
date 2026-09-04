@@ -4,7 +4,7 @@ import {
   type ProviderErrorPresentation,
 } from './error-presentation'
 
-const ORG_BILLING_LINK = '/dashboard/organizations/{orgId}?tab=billing'
+export const ORG_BILLING_LINK = '/dashboard/organizations/{orgId}?tab=billing'
 
 export const PAYWALL_COMPONENT = 'paywall'
 
@@ -13,16 +13,11 @@ function isSpendCap(status: number | undefined, raw: string): boolean {
   return status === 429 || /\b429\b/.test(raw)
 }
 
-// Streaming 402s often drop the JSON body and surface as "socket closed".
-// Any 402 from this provider is a billing deny; the card picks the CTA.
+// Any 402 from this provider is a billing deny; the card picks the CTA. `status` is the
+// declared or inferred one, so a bare "402" elsewhere in the text must not count.
 function isInsufficientBalance(status: number | undefined, raw: string): boolean {
   const lower = raw.toLowerCase()
-  return (
-    status === 402
-    || /\b402\b/.test(lower)
-    || lower.includes('insufficient balance')
-    || lower.includes('insufficient_balance')
-  )
+  return status === 402 || lower.includes('insufficient balance') || lower.includes('insufficient_balance')
 }
 
 function readBooleanField(record: Record<string, unknown>, key: string): boolean | undefined {

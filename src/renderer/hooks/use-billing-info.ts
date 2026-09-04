@@ -13,6 +13,8 @@ export interface BillingInfoResponse {
   error?: string
 }
 
+export const BILLING_QUERY_KEY = ['platform-billing'] as const
+
 /**
  * Billing snapshot for the Account screen. Fetches on mount (which, since the
  * settings tab is lazily mounted, == refresh-on-view) and exposes `refetch`
@@ -20,7 +22,7 @@ export interface BillingInfoResponse {
  */
 export function useBillingInfo(enabled: boolean) {
   return useQuery<BillingInfoResponse>({
-    queryKey: ['platform-billing'],
+    queryKey: BILLING_QUERY_KEY,
     enabled,
     queryFn: async () => {
       const res = await apiFetch('/api/platform-auth/billing')

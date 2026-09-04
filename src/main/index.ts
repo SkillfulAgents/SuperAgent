@@ -148,8 +148,6 @@ let notificationEventSource: EventSource | null = null
 let apiReady = false
 const pendingDashboardLinks: { agentSlug: string; dashboardSlug: string }[] = []
 const pendingProtocolUrls: string[] = []
-// Set by the `billing-updated` deep link; the renderer flushes it on mount.
-let pendingBillingUpdated = false
 // Queues for notifications fired while the window was closed. The renderer
 // pulls these on mount via the `flush-pending-notification-events` IPC so no
 // click/action gets lost to the inevitable `webContents.send` race against
@@ -666,15 +664,6 @@ ipcMain.handle('flush-pending-notification-events', () => {
 // attached, so no command is lost to the webContents.send race (SUP-264).
 ipcMain.handle('flush-pending-menu-commands', () => {
   return flushPendingMenuCommands()
-})
-
-ipcMain.handle('flush-pending-billing-updated', () => {
-  const had = pendingBillingUpdated
-  pendingBillingUpdated = false
-  return had
-})
-ipcMain.on('billing-updated-consumed', () => {
-  pendingBillingUpdated = false
 })
 
 // --- Quick-dispatch launcher IPC ---
@@ -1237,10 +1226,9 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
     mainWindow?.focus()
   }
 
-  // Billing hand-back: the dashboard top-up flow deep-links here after a
-  // purchase so an open paywall can refresh and clear (SUP-725). No payload.
+  // Billing hand-back: the dashboard top-up flow deep-links here after a purchase
+  // so the renderer refetches billing (SUP-725). No payload.
   if (url.startsWith(`${PROTOCOL_SCHEME}://billing-updated`)) {
-    pendingBillingUpdated = true
     showOrCreateMainWindow()
     sendToMainWindowWhenReady((win) => {
       win.webContents.send('billing-updated')
