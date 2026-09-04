@@ -1,13 +1,12 @@
+import { useState } from 'react'
 import { FileIconTile } from '@renderer/components/ui/file-icon-tile'
-import { IMAGE_EXTS } from '@renderer/components/file-preview/file-types'
+import { isPreviewableImage } from '@renderer/components/file-preview/file-types'
 import { useFilePreview } from '@renderer/context/file-preview-context'
 import { useFileSize } from '@renderer/hooks/use-file-size'
-import { getApiBaseUrl } from '@renderer/lib/env'
-import { getAgentFileApiPath } from '@renderer/lib/workspace-file-url'
+import { getAgentFileApiPath, getAgentFileUrl } from '@renderer/lib/workspace-file-url'
 import { cn } from '@shared/lib/utils/cn'
 import { formatFileSize } from '@shared/lib/utils/format-file-size'
-import { getFileExtension } from '@shared/lib/utils/mime'
-import { displayNameForPath } from '@shared/lib/utils/upload-display-name'
+import { getPathName } from '@shared/lib/utils/workspace-path'
 
 interface SentAttachmentChipProps {
   filePath: string
@@ -27,11 +26,6 @@ export function imageSizeForCount(count: number): ImageSize {
   return count > 3 ? 'grid' : 'single'
 }
 
-/** True for paths the sent-message layout should show as pictures rather than chips. */
-export function isImageAttachment(filePath: string): boolean {
-  return !filePath.endsWith('/') && IMAGE_EXTS.has(getFileExtension(filePath))
-}
-
 /**
  * An attachment on a sent user message, drawn the same way the composer drew
  * it before send, except images, which show the picture itself at native
@@ -41,11 +35,17 @@ export function isImageAttachment(filePath: string): boolean {
  */
 export function SentAttachmentChip({ filePath, agentSlug, imageSize = 'single' }: SentAttachmentChipProps) {
   const filePreview = useFilePreview()
+  // A picture that will not load is worse than no picture: an alt-text box, or
+  // a blank square in a grid. Falling back to the chip still names the file and
+  // still opens it, which is everything the row is for.
+  const [imageBroken, setImageBroken] = useState(false)
   const folder = filePath.endsWith('/')
-  const name = displayNameForPath(filePath)
-  const image = isImageAttachment(filePath)
+  const name = getPathName(filePath)
+  const image = isPreviewableImage(filePath) && !imageBroken
   const fileApiPath = folder ? null : getAgentFileApiPath(agentSlug, filePath)
-  const { data: sizeBytes } = useFileSize(fileApiPath)
+  // An upload lives at a path stamped with the millisecond it arrived and is
+  // never rewritten, so its size cannot go stale.
+  const { data: sizeBytes } = useFileSize(fileApiPath, 0, { immutable: true })
   const sizeText = typeof sizeBytes === 'number' ? formatFileSize(sizeBytes) : null
 
   const open = () => {
@@ -77,18 +77,23 @@ export function SentAttachmentChip({ filePath, agentSlug, imageSize = 'single' }
       data-image-size={image ? imageSize : undefined}
     >
       {image ? (
-        <>
-          <img
-            src={`${getApiBaseUrl()}${fileApiPath}?inline=true`}
-            alt={name}
-            className={cn(
-              'block',
-              imageSize === 'grid' ? 'h-full w-full object-cover' : 'h-auto max-h-64 w-auto max-w-full',
-            )}
-          />
-          {/* Name for assistive tech and text-based lookups; the square itself is picture-only. */}
-          <span className="sr-only">{name}</span>
-        </>
+        // `alt` is the whole accessible name here — a second copy in an sr-only
+        // span had screen readers announce the filename twice for one picture.
+        <img
+          src={getAgentFileUrl(agentSlug, filePath, { inline: true })}
+          alt={name}
+          onError={() => setImageBroken(true)}
+          // These are the uploaded originals at full resolution, drawn into a
+          // 256px-capped box or a grid square. Lazily loaded so a thread of them
+          // costs nothing until scrolled to, and decoded off the main thread so
+          // a phone photo does not stall the message list when it is.
+          loading="lazy"
+          decoding="async"
+          className={cn(
+            'block',
+            imageSize === 'grid' ? 'h-full w-full object-cover' : 'h-auto max-h-64 w-auto max-w-full',
+          )}
+        />
       ) : (
         <>
           <FileIconTile filename={name} folder={folder} />

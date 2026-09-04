@@ -1,5 +1,5 @@
 import { defaultUrlTransform, type UrlTransform } from 'react-markdown'
-import { getApiBaseUrl } from './env'
+import { getAgentFileUrl } from './workspace-file-url'
 
 // react-markdown's defaultUrlTransform passes only URLs whose scheme matches
 // ^(https?|ircs?|mailto|xmpp)$ and rewrites everything else to '' (an empty
@@ -67,14 +67,13 @@ function workspaceImageUrl(url: string, agentSlug: string): string | null {
   const prefix = '/workspace/'
   if (!pathname.startsWith(prefix) || !IMAGE_FILE_EXTENSION.test(pathname)) return null
 
+  // Traversal and empty segments are rejected here rather than in the URL
+  // builder: the builder encodes whatever it is handed, and `..` survives
+  // encoding intact.
   const parts = pathname.slice(prefix.length).split('/')
   if (parts.length === 0 || parts.some((part) => !part || part === '.' || part === '..')) return null
 
-  const encodedPath = parts.map(encodeURIComponent).join('/')
-  return (
-    `${getApiBaseUrl()}/api/agents/${encodeURIComponent(agentSlug)}` +
-    `/files/${encodedPath}?inline=true`
-  )
+  return getAgentFileUrl(agentSlug, pathname, { inline: true })
 }
 
 /**

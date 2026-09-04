@@ -1,7 +1,8 @@
-import { X, Link2, AlertTriangle, Loader2 } from 'lucide-react'
+import { X, Link2, AlertTriangle, Clock, Loader2, RotateCw } from 'lucide-react'
 import { formatFileSize } from '@shared/lib/utils/format-file-size'
 import { cn } from '@shared/lib/utils'
 import { FileIconTile } from '@renderer/components/ui/file-icon-tile'
+import { isPreviewableImage } from '@renderer/components/file-preview/file-types'
 import { Progress } from '@renderer/components/ui/progress'
 
 export interface UploadState {
@@ -105,6 +106,75 @@ function UploadMeta({ attachment, sizeText, onRetry }: { attachment: FileAttachm
   return sizeText ? <span className="text-muted-foreground">{sizeText}</span> : null
 }
 
+/**
+ * Upload state for the picture-only chip.
+ *
+ * The text chip carries this on its meta line; a 44px square has no room for
+ * one, so the same three things it would have said are drawn over the image
+ * instead of dropped: that the upload is still queued, that it is moving and
+ * roughly how far along, and that it failed in a way you can retry.
+ */
+function ImageUploadOverlay({ attachment, onRetry }: { attachment: FileAttachment; onRetry?: (id: string) => void }) {
+  const status = attachmentStatus(attachment)
+
+  if (status === 'error') {
+    // The whole square is the retry target: a second button beside the remove
+    // control, inside 44px, would be too small to aim at.
+    if (!onRetry) {
+      return (
+        <div className="absolute inset-0 flex items-center justify-center bg-destructive/40" title={attachment.error}>
+          <AlertTriangle className="h-4 w-4 text-destructive-foreground" />
+        </div>
+      )
+    }
+    return (
+      <button
+        type="button"
+        onClick={() => onRetry(attachment.id)}
+        className="absolute inset-0 flex items-center justify-center bg-destructive/40 transition-colors hover:bg-destructive/60"
+        title={`${attachment.error ?? 'Upload failed'} — click to retry`}
+        aria-label={`Retry upload of ${attachment.file.name}`}
+        data-testid="attachment-retry"
+      >
+        <RotateCw className="h-4 w-4 text-destructive-foreground" />
+      </button>
+    )
+  }
+
+  if (status === 'queued') {
+    return (
+      <div
+        className="absolute inset-0 flex items-center justify-center bg-background/60"
+        title="Waiting to upload"
+        data-testid="attachment-queued"
+      >
+        <Clock className="h-4 w-4 text-muted-foreground" />
+      </div>
+    )
+  }
+
+  if (status === 'uploading') {
+    const percent = attachment.upload?.percent
+    if (percent === undefined) {
+      return (
+        <div className="absolute inset-0 flex items-center justify-center bg-background/60" data-testid="attachment-progress">
+          <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+        </div>
+      )
+    }
+    // The same bar the text chip draws, pinned to the bottom edge over a dimmed
+    // picture. A bar this narrow cannot report a figure and does not need to —
+    // what it has to show is that the upload is moving.
+    return (
+      <div className="absolute inset-0 flex items-end bg-background/40" data-testid="attachment-progress">
+        <Progress percent={percent} className="m-1" />
+      </div>
+    )
+  }
+
+  return null
+}
+
 export function AttachmentPreview({ attachments, onRemove, onRetry }: AttachmentPreviewProps) {
   if (attachments.length === 0) return null
 
@@ -113,7 +183,7 @@ export function AttachmentPreview({ attachments, onRemove, onRetry }: Attachment
       {attachments.map((attachment) => {
         // Images with a preview are just the picture: a square chip, full bleed,
         // no name or size. Everything else is the icon-tile-plus-text chip.
-        const imageChip = attachment.type === 'file' && attachment.file.type.startsWith('image/') && !!attachment.preview
+        const imageChip = attachment.type === 'file' && !!attachment.preview && isPreviewableImage(attachment.file.name)
         return (
         <div
           key={attachment.id}
@@ -169,17 +239,7 @@ export function AttachmentPreview({ attachments, onRemove, onRetry }: Attachment
                     title={`${attachment.file.name} · ${formatFileSize(attachment.file.size)}`}
                     className="h-full w-full object-cover"
                   />
-                  {/* Upload state as an overlay, since there's no text line to carry it. */}
-                  {attachmentStatus(attachment) === 'uploading' && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-background/60" data-testid="attachment-progress">
-                      <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                    </div>
-                  )}
-                  {attachment.error && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-destructive/40" title={attachment.error}>
-                      <AlertTriangle className="h-4 w-4 text-destructive-foreground" />
-                    </div>
-                  )}
+                  <ImageUploadOverlay attachment={attachment} onRetry={onRetry} />
                 </>
               ) : (
                 <>
@@ -201,7 +261,9 @@ export function AttachmentPreview({ attachments, onRemove, onRetry }: Attachment
               // Always visible on a gray circle, so it's discoverable without hover
               // and stays legible over an image.
               'absolute rounded-full bg-muted p-0.5 text-foreground transition-colors hover:bg-muted-foreground/20',
-              imageChip ? 'right-0.5 top-0.5' : 'right-1 top-1',
+              // Over a picture the gray circle can land on gray pixels; a
+              // background-coloured ring keeps its edge no matter what is behind it.
+              imageChip ? 'right-0.5 top-0.5 ring-1 ring-background' : 'right-1 top-1',
             )}
             aria-label={`Remove ${attachmentName(attachment)}`}
             data-testid="attachment-remove"

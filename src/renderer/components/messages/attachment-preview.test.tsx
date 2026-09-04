@@ -82,13 +82,69 @@ describe('AttachmentPreview', () => {
     expect(screen.getByRole('button', { name: 'Remove photo.png' })).toBeInTheDocument()
   })
 
-  it('image chips overlay the uploading state instead of a progress bar', () => {
+  // A picture-only chip has no meta line, so the three things that line would
+  // have said are drawn over the image rather than lost.
+  describe('image chip upload state', () => {
+    const image = (over: Record<string, unknown>) =>
+      [createAttachment({ name: 'photo.png', type: 'image/png', preview: 'blob:x', ...over })]
+
+    // A bar, like the text chip's — narrow enough that it reports movement
+    // rather than a figure, which is what it is there for.
+    it('fills a bar as the upload moves', () => {
+      const { rerender } = render(
+        <AttachmentPreview attachments={image({ upload: { status: 'uploading', percent: 40, agentSlug: 'a' } })} onRemove={vi.fn()} />,
+      )
+      // overlay > Progress track > fill
+      const fill = () =>
+        screen.getByTestId('attachment-progress').firstElementChild!.firstElementChild as HTMLElement
+      expect(fill()).not.toBeNull()
+      expect(fill().style.width).toBe('40%')
+      expect(screen.getByTestId('attachment-preview')).toHaveAttribute('data-attachment-status', 'uploading')
+
+      rerender(<AttachmentPreview attachments={image({ upload: { status: 'uploading', percent: 85, agentSlug: 'a' } })} onRemove={vi.fn()} />)
+      expect(fill().style.width).toBe('85%')
+    })
+
+    it('spins instead when there is no byte progress to report', () => {
+      render(<AttachmentPreview attachments={image({ upload: { status: 'uploading', agentSlug: 'a' } })} onRemove={vi.fn()} />)
+      const progress = screen.getByTestId('attachment-progress')
+      expect(progress.querySelector('.animate-spin')).not.toBeNull()
+    })
+
+    it('marks a queued upload as waiting', () => {
+      render(<AttachmentPreview attachments={image({ upload: { status: 'queued', agentSlug: 'a' } })} onRemove={vi.fn()} />)
+      expect(screen.getByTestId('attachment-queued')).toHaveAttribute('title', 'Waiting to upload')
+    })
+
+    // The whole square is the retry target — a second button beside the remove
+    // control, inside 44px, would be too small to aim at.
+    it('offers retry over the picture when the upload failed', async () => {
+      const user = userEvent.setup()
+      const onRetry = vi.fn()
+      render(<AttachmentPreview attachments={image({ id: 'att-9', error: 'network down' })} onRetry={onRetry} onRemove={vi.fn()} />)
+
+      const retry = screen.getByRole('button', { name: 'Retry upload of photo.png' })
+      expect(retry).toHaveAttribute('title', 'network down — click to retry')
+      await user.click(retry)
+      expect(onRetry).toHaveBeenCalledWith('att-9')
+    })
+
+    it('still reports a failure when there is nothing to retry with', () => {
+      render(<AttachmentPreview attachments={image({ error: 'network down' })} onRemove={vi.fn()} />)
+      expect(screen.queryByTestId('attachment-retry')).toBeNull()
+      expect(screen.getByTitle('network down')).toBeInTheDocument()
+    })
+  })
+
+  // The composer asked the browser's MIME and the sent message asked the
+  // extension, so a .tiff drew as a picture before send and a chip after.
+  it('treats a file no renderer can display as a chip, whatever its MIME says', () => {
     const attachments = [
-      createAttachment({ name: 'photo.png', type: 'image/png', preview: 'blob:x', upload: { status: 'uploading', percent: 40, agentSlug: 'a' } }),
+      createAttachment({ name: 'scan.tiff', size: 2048, type: 'image/tiff', preview: 'blob:x' }),
     ]
     render(<AttachmentPreview attachments={attachments} onRemove={vi.fn()} />)
-    expect(screen.getByTestId('attachment-progress').querySelector('.animate-spin')).not.toBeNull()
-    expect(screen.getByTestId('attachment-preview')).toHaveAttribute('data-attachment-status', 'uploading')
+    expect(screen.queryByAltText('scan.tiff')).toBeNull()
+    expect(screen.getByText('scan.tiff')).toBeInTheDocument()
   })
 
   it('calls onRemove with attachment id when remove button is clicked', async () => {

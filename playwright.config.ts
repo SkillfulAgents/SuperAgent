@@ -20,6 +20,10 @@ const webTestIgnore = [
   '**/auth/**',
   // Real-container probes with their own config (playwright.live-mcp.config.ts).
   '**/live/**',
+  // Recorded walkthroughs, not regression tests — they throttle the network and
+  // sit still on purpose. Run them with playwright.demo.config.ts (see the
+  // pr-demo-video skill).
+  '**/*.demo.spec.ts',
   '**/getting-started-wizard.spec.ts',
   // Mutates the global provider API key — quarantined to the wizard config.
   '**/provider-api-key.spec.ts',
