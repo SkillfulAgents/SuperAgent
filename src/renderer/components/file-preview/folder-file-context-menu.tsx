@@ -46,7 +46,7 @@ import { canUseHostFeatures } from '@renderer/lib/host-features'
 import { getAgentFileApiPath } from '@renderer/lib/workspace-file-url'
 import type { FolderEntry } from '@renderer/hooks/use-folder-entries'
 import type { Bookmark } from '@renderer/hooks/use-bookmarks'
-import { isCopyableTextFile, looksBinary } from './file-types'
+import { isCopyableTextFile, looksBinary } from '@renderer/lib/file-types'
 
 interface FolderEntryContextMenuProps {
   folder: FolderTab
@@ -217,8 +217,8 @@ export function FolderEntryContextMenu({
       )
       if (!response.ok) throw new Error(await getResponseError(response, `Failed to rename ${entryKind}`))
       const result = await response.json() as { path: string }
-      if (isDirectory) renameDirectoryPath(entry.path, result.path)
-      else renameFilePath(entry.path, result.path)
+      if (isDirectory) renameDirectoryPath(entry.path, result.path, folder.agentSlug)
+      else renameFilePath(entry.path, result.path, folder.agentSlug)
       setRenameOpen(false)
       await refreshFolder()
       const updatedBookmarks = bookmarkList.map(bookmark => {
@@ -259,8 +259,8 @@ export function FolderEntryContextMenu({
         },
       )
       if (!response.ok) throw new Error(await getResponseError(response, `Failed to delete ${entryKind}`))
-      if (isDirectory) removeDirectoryPath(entry.path)
-      else removeFilePath(entry.path)
+      if (isDirectory) removeDirectoryPath(entry.path, folder.agentSlug)
+      else removeFilePath(entry.path, folder.agentSlug)
       setDeleteOpen(false)
       await refreshFolder()
       const updatedBookmarks = bookmarkList.filter(bookmark => (

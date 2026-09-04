@@ -1,12 +1,11 @@
 import { useState } from 'react'
 import { FileIconTile } from '@renderer/components/ui/file-icon-tile'
-import { isPreviewableImage } from '@renderer/components/file-preview/file-types'
 import { useFilePreview } from '@renderer/context/file-preview-context'
 import { useFileSize } from '@renderer/hooks/use-file-size'
-import { getAgentFileApiPath, getAgentFileUrl } from '@renderer/lib/workspace-file-url'
+import { openableProps } from '@renderer/lib/openable'
+import { describeWorkspaceFile } from '@renderer/lib/workspace-file'
 import { cn } from '@shared/lib/utils/cn'
 import { formatFileSize } from '@shared/lib/utils/format-file-size'
-import { getPathName } from '@shared/lib/utils/workspace-path'
 
 interface SentAttachmentChipProps {
   filePath: string
@@ -34,31 +33,26 @@ export function imageSizeForCount(count: number): ImageSize {
  * preview drawer. Unlike the composer chip there is no remove control.
  */
 export function SentAttachmentChip({ filePath, agentSlug, imageSize = 'single' }: SentAttachmentChipProps) {
-  const filePreview = useFilePreview()
+  const { openFile, openFolder } = useFilePreview()
   // A picture that will not load is worse than no picture: an alt-text box, or
   // a blank square in a grid. Falling back to the chip still names the file and
   // still opens it, which is everything the row is for.
   const [imageBroken, setImageBroken] = useState(false)
-  const folder = filePath.endsWith('/')
-  const name = getPathName(filePath)
-  const image = isPreviewableImage(filePath) && !imageBroken
-  const fileApiPath = folder ? null : getAgentFileApiPath(agentSlug, filePath)
+  const file = describeWorkspaceFile(filePath, agentSlug)
+  const image = file.isImage && !imageBroken
   // An upload lives at a path stamped with the millisecond it arrived and is
   // never rewritten, so its size cannot go stale.
-  const { data: sizeBytes } = useFileSize(fileApiPath, 0, { immutable: true })
+  const { data: sizeBytes } = useFileSize(file.apiPath, 0, { immutable: true })
   const sizeText = typeof sizeBytes === 'number' ? formatFileSize(sizeBytes) : null
 
   const open = () => {
-    if (folder) filePreview.openFolder(filePath, agentSlug)
-    else filePreview.openFile(filePath, agentSlug)
+    if (file.isFolder) openFolder(file.path, file.agentSlug)
+    else openFile(file.path, file.agentSlug)
   }
 
   return (
     <div
-      role="button"
-      tabIndex={0}
-      onClick={open}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open() } }}
+      {...openableProps(open)}
       className={cn(
         'relative cursor-pointer rounded-md border bg-background text-xs text-left transition-colors',
         'hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
@@ -69,19 +63,19 @@ export function SentAttachmentChip({ filePath, agentSlug, imageSize = 'single' }
           ? imageSize === 'grid' ? 'aspect-square w-full overflow-hidden' : 'max-w-full overflow-hidden'
           : 'flex items-center gap-2 py-1.5 pl-2 pr-3',
       )}
-      title={image && sizeText ? `${name} · ${sizeText}` : undefined}
+      title={image && sizeText ? `${file.name} · ${sizeText}` : undefined}
       data-testid="file-pill"
-      data-file-name={name}
-      data-file-path={filePath}
-      data-attachment-kind={folder ? 'folder' : image ? 'image' : 'file'}
+      data-file-name={file.name}
+      data-file-path={file.path}
+      data-attachment-kind={file.isFolder ? 'folder' : image ? 'image' : 'file'}
       data-image-size={image ? imageSize : undefined}
     >
-      {image ? (
+      {image && file.inlineUrl ? (
         // `alt` is the whole accessible name here — a second copy in an sr-only
         // span had screen readers announce the filename twice for one picture.
         <img
-          src={getAgentFileUrl(agentSlug, filePath, { inline: true })}
-          alt={name}
+          src={file.inlineUrl}
+          alt={file.name}
           onError={() => setImageBroken(true)}
           // These are the uploaded originals at full resolution, drawn into a
           // 256px-capped box or a grid square. Lazily loaded so a thread of them
@@ -96,9 +90,9 @@ export function SentAttachmentChip({ filePath, agentSlug, imageSize = 'single' }
         />
       ) : (
         <>
-          <FileIconTile filename={name} folder={folder} />
+          <FileIconTile filename={file.name} folder={file.isFolder} />
           <div className="flex min-w-0 flex-col">
-            <span className="max-w-[160px] truncate font-medium" title={name}>{name}</span>
+            <span className="max-w-[160px] truncate font-medium" title={file.name}>{file.name}</span>
             {sizeText && <span className="text-muted-foreground">{sizeText}</span>}
           </div>
         </>

@@ -6,6 +6,7 @@ import { FolderEntryContextMenu } from './folder-file-context-menu'
 import type { FolderTab } from '@renderer/context/file-preview-context'
 import type { FolderEntry } from '@renderer/hooks/use-folder-entries'
 import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
+import type { Bookmark } from '@shared/lib/utils/bookmarks'
 
 const mocks = vi.hoisted(() => ({
   apiFetch: vi.fn(),
@@ -16,7 +17,7 @@ const mocks = vi.hoisted(() => ({
   renameDirectoryPath: vi.fn(),
   removeDirectoryPath: vi.fn(),
   updateBookmarks: vi.fn().mockResolvedValue([]),
-  bookmarks: [] as Array<{ name: string; file?: string; folder?: string }>,
+  bookmarks: [] as Bookmark[],
   revealInFolder: vi.fn().mockResolvedValue(null),
   canManage: true,
   toastSuccess: vi.fn(),
@@ -240,6 +241,7 @@ describe('FolderFileContextMenu', () => {
     await waitFor(() => expect(mocks.renameFilePath).toHaveBeenCalledWith(
       '/workspace/reports/notes.md',
       '/workspace/reports/renamed.md',
+      'test-agent',
     ))
     expect(mocks.invalidateQueries).toHaveBeenCalledWith({
       queryKey: ['folder-entries', 'test-agent', '/workspace/reports'],
@@ -260,6 +262,7 @@ describe('FolderFileContextMenu', () => {
 
     await waitFor(() => expect(mocks.removeFilePath).toHaveBeenCalledWith(
       '/workspace/reports/notes.md',
+      'test-agent',
     ))
   })
 
@@ -285,6 +288,7 @@ describe('FolderFileContextMenu', () => {
     await waitFor(() => expect(mocks.renameDirectoryPath).toHaveBeenCalledWith(
       '/workspace/reports/drafts',
       '/workspace/reports/archive',
+      'test-agent',
     ))
 
     unmount()
@@ -294,6 +298,7 @@ describe('FolderFileContextMenu', () => {
     await user.click(screen.getAllByRole('button', { name: 'Delete' }).at(-1)!)
     await waitFor(() => expect(mocks.removeDirectoryPath).toHaveBeenCalledWith(
       '/workspace/reports/drafts',
+      'test-agent',
     ))
   })
 

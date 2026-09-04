@@ -2,7 +2,7 @@ import { X, Link2, AlertTriangle, Clock, Loader2, RotateCw } from 'lucide-react'
 import { formatFileSize } from '@shared/lib/utils/format-file-size'
 import { cn } from '@shared/lib/utils'
 import { FileIconTile } from '@renderer/components/ui/file-icon-tile'
-import { isPreviewableImage } from '@renderer/components/file-preview/file-types'
+import { isPreviewableImage } from '@renderer/lib/file-types'
 import { Progress } from '@renderer/components/ui/progress'
 
 export interface UploadState {

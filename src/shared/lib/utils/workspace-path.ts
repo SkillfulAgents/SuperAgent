@@ -18,7 +18,14 @@ export function getPathName(filePath: string): string {
   return trimmed.split('/').pop() || filePath
 }
 
-/** Path relative to the workspace root, without a trailing slash: `/workspace/out/a.txt` → `out/a.txt`. */
+/**
+ * Path relative to the workspace root, without a trailing slash:
+ * `/workspace/out/a.txt` → `out/a.txt`.
+ *
+ * The prefix has to end at a segment boundary. Without the lookahead a
+ * `/workspaceX/a.txt` — a sibling directory, not the workspace — came back as
+ * `X/a.txt`, which reads as a path inside the workspace and is not one.
+ */
 export function toWorkspaceRelativePath(filePath: string): string {
-  return filePath.replace(/^\/workspace\/?/, '').replace(/\/+$/, '')
+  return filePath.replace(/^\/workspace(?=\/|$)\/?/, '').replace(/\/+$/, '')
 }

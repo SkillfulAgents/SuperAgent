@@ -1,12 +1,11 @@
 import { ArrowDownToLine, ChevronRight } from 'lucide-react'
 import { buttonVariants } from './button'
 import { FileIconTile } from './file-icon-tile'
-import { previewKind } from '@renderer/components/file-preview/file-types'
 import { useFilePreview } from '@renderer/context/file-preview-context'
-import { getAgentFileUrl } from '@renderer/lib/workspace-file-url'
+import { openableProps } from '@renderer/lib/openable'
+import { describeWorkspaceFile } from '@renderer/lib/workspace-file'
 import { cn } from '@shared/lib/utils/cn'
 import { formatFileSize } from '@shared/lib/utils/format-file-size'
-import { getPathName, toWorkspaceRelativePath } from '@shared/lib/utils/workspace-path'
 
 interface FileDeliveryRowProps {
   filePath: string
@@ -28,57 +27,43 @@ interface FileDeliveryRowProps {
  * can still be downloaded from inside the drawer.
  */
 export function FileDeliveryRow({ filePath, agentSlug, description, sizeBytes, className }: FileDeliveryRowProps) {
-  const filePreview = useFilePreview()
-  const displayName = getPathName(filePath)
-  const relativePath = toWorkspaceRelativePath(filePath)
-  const detail = description?.trim() || (relativePath !== displayName ? relativePath : null)
+  const { openFile } = useFilePreview()
+  const file = describeWorkspaceFile(filePath, agentSlug)
+  const detail = description?.trim() || (file.relativePath !== file.name ? file.relativePath : null)
   const metadata = [detail, sizeBytes !== undefined ? formatFileSize(sizeBytes) : null].filter(Boolean)
-  const previewable = previewKind(filePath) !== null
-
-  const open = () => filePreview.openFile(filePath, agentSlug, description)
 
   return (
     <div
-      role="button"
-      tabIndex={0}
-      onClick={open}
-      // Only the row's own key presses open the preview. Without the target
-      // check this also swallows Enter on the Download link inside it, which
-      // would cancel the download and open the drawer instead.
-      onKeyDown={(e) => {
-        if (e.target !== e.currentTarget) return
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault()
-          open()
-        }
-      }}
+      {...openableProps(() => openFile(file.path, file.agentSlug, description))}
       className={cn(
         'group flex w-full items-center gap-3 rounded-lg border bg-background px-3 py-2 text-left cursor-pointer',
         'hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring transition-colors',
         className,
       )}
       data-testid="file-delivery-row"
-      data-file-name={displayName}
-      data-file-action={previewable ? 'preview' : 'download'}
+      data-file-name={file.name}
+      data-file-action={file.previewable ? 'preview' : 'download'}
     >
-      <FileIconTile filename={displayName} />
+      <FileIconTile filename={file.name} />
       <div className="min-w-0 flex-1">
-        <div className="truncate text-xs font-medium text-foreground">{displayName}</div>
+        <div className="truncate text-xs font-medium text-foreground">{file.name}</div>
         {metadata.length > 0 && (
           <div className="truncate text-xs font-normal text-muted-foreground" data-testid="file-delivery-meta">
             {metadata.join(' · ')}
           </div>
         )}
       </div>
-      {previewable ? (
+      {file.previewable || !file.downloadUrl ? (
         <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" aria-hidden="true" />
       ) : (
         <a
-          href={getAgentFileUrl(agentSlug, filePath)}
+          href={file.downloadUrl}
           target="_blank"
           rel="noopener noreferrer"
+          // Opts this link out of the row's activation, for the mouse and — since
+          // Enter on a link dispatches a click — for the keyboard too.
           onClick={(e) => e.stopPropagation()}
-          aria-label={`Download ${displayName}`}
+          aria-label={`Download ${file.name}`}
           className={cn(buttonVariants({ variant: 'outline', size: 'xs' }), 'shrink-0')}
         >
           <ArrowDownToLine className="h-3.5 w-3.5" />

@@ -80,14 +80,9 @@ function CollapsedContent({ input, isError, agentSlug }: CollapsedContentProps) 
   if (!agentSlug) return null
 
   // The collapsed row is a one-line summary beside the tool name, so it keeps
-  // the inline pill; the full row belongs to the expanded view.
-  return (
-    <FileDownloadPill
-      filePath={filePath}
-      agentSlug={agentSlug}
-      onClick={(e) => e.stopPropagation()}
-    />
-  )
+  // the inline pill; the full row belongs to the expanded view. The pill keeps
+  // its own activation off this row.
+  return <FileDownloadPill filePath={filePath} agentSlug={agentSlug} />
 }
 
 export const deliverFileRenderer: ToolRenderer = {

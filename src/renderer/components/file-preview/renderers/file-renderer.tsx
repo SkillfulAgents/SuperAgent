@@ -9,7 +9,7 @@ import { AudioRenderer } from './audio-renderer'
 import { HtmlRenderer } from './html-renderer'
 import { UnsupportedRenderer } from './unsupported-renderer'
 import { useFilePreview } from '@renderer/context/file-preview-context'
-import { previewKind } from '../file-types'
+import { previewKind } from '@renderer/lib/file-types'
 
 const PdfRenderer = lazy(() => import('./pdf-renderer').then(m => ({ default: m.PdfRenderer })))
 
@@ -32,25 +32,25 @@ export function FileRenderer({
 
   switch (previewKind(filePath)) {
     case 'markdown':
-      return <MarkdownRenderer url={fileUrl} filePath={filePath} commentsEnabled={commentsEnabled} />
+      return <MarkdownRenderer url={fileUrl} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />
 
     case 'html':
       return <HtmlRenderer url={fileUrl} />
 
     case 'csv':
-      return <CsvRenderer url={fileUrl} filePath={filePath} commentsEnabled={commentsEnabled} />
+      return <CsvRenderer url={fileUrl} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />
 
     case 'text':
-      return <TextRenderer url={fileUrl} filePath={filePath} commentsEnabled={commentsEnabled} />
+      return <TextRenderer url={fileUrl} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />
 
     case 'image':
-      return <ImageRenderer url={fileUrl} filePath={filePath} commentsEnabled={commentsEnabled} />
+      return <ImageRenderer url={fileUrl} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />
 
     case 'video':
-      return <VideoRenderer key={`${filePath}:${fileUrl}`} url={fileUrl} filePath={filePath} commentsEnabled={commentsEnabled} />
+      return <VideoRenderer key={`${filePath}:${fileUrl}`} url={fileUrl} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />
 
     case 'audio':
-      return <AudioRenderer key={`${filePath}:${fileUrl}`} url={fileUrl} filePath={filePath} commentsEnabled={commentsEnabled} />
+      return <AudioRenderer key={`${filePath}:${fileUrl}`} url={fileUrl} filePath={filePath} agentSlug={agentSlug} commentsEnabled={commentsEnabled} />
 
     case 'pdf':
       return (
@@ -63,6 +63,7 @@ export function FileRenderer({
             key={`${filePath}:${fileUrl}`}
             url={fileUrl}
             filePath={filePath}
+            agentSlug={agentSlug}
             pageNumber={pdfPage}
             onPageChange={onPdfPageChange}
             commentsEnabled={commentsEnabled}

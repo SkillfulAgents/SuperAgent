@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { encodeWorkspaceFilePath, getAgentFileApiPath, getAgentFileUrl } from './workspace-file-url'
+import { encodeWorkspaceFilePath, getAgentFileApiPath, getAgentFileUrl, isSafeWorkspaceFilePath } from './workspace-file-url'
 
 vi.mock('@renderer/lib/env', () => ({ getApiBaseUrl: () => 'http://api.test' }))
 
@@ -38,6 +38,33 @@ describe('workspace file URLs', () => {
       expect(getAgentFileUrl('a', '/workspace/report.md', { inline: true, version: 3 })).toBe(
         'http://api.test/api/agents/a/files/report.md?inline=true&v=3',
       )
+    })
+  })
+
+  describe('isSafeWorkspaceFilePath', () => {
+    it.each([
+      '/workspace/report.md',
+      '/workspace/reports/q3/summary.md',
+      '/workspace/a file with spaces.txt',
+    ])('accepts %s', (path) => {
+      expect(isSafeWorkspaceFilePath(path)).toBe(true)
+    })
+
+    // The encoder escapes; it cannot sanitise. `..` and `.` come through
+    // encodeURIComponent unchanged, so they have to be refused rather than
+    // escaped — which is what makes this the one check.
+    it.each([
+      ['a traversal', '/workspace/../etc/passwd'],
+      ['a traversal mid-path', '/workspace/reports/../../etc/passwd'],
+      ['a bare dot segment', '/workspace/./report.md'],
+      ['an empty segment', '/workspace/reports//report.md'],
+      ['a path outside the workspace', '/etc/passwd'],
+      // /workspaceX is a sibling directory, not the workspace
+      ['a directory that merely starts the same way', '/workspaceX/report.md'],
+      ['the workspace root itself', '/workspace'],
+      ['a NUL byte', '/workspace/report\u0000.md'],
+    ])('refuses %s', (_why, path) => {
+      expect(isSafeWorkspaceFilePath(path)).toBe(false)
     })
   })
 })

@@ -7,10 +7,11 @@ import { useFileContent } from './use-file-content'
 interface TextRendererProps {
   url: string
   filePath: string
+  agentSlug: string
   commentsEnabled?: boolean
 }
 
-export function TextRenderer({ url, filePath, commentsEnabled = true }: TextRendererProps) {
+export function TextRenderer({ url, filePath, agentSlug, commentsEnabled = true }: TextRendererProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const { selection, clearSelection } = useTextSelection(containerRef, commentsEnabled)
 
@@ -67,6 +68,7 @@ export function TextRenderer({ url, filePath, commentsEnabled = true }: TextRend
         <CommentOverlay
           selection={selection}
           filePath={filePath}
+          agentSlug={agentSlug}
           onClose={clearSelection}
         />
       )}

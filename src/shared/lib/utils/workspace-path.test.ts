@@ -31,6 +31,9 @@ describe('toWorkspaceRelativePath', () => {
     // already relative, or outside the workspace: left alone apart from the slash
     ['output/report.pdf', 'output/report.pdf'],
     ['/tmp/scratch.txt', '/tmp/scratch.txt'],
+    // the prefix ends at a segment boundary: a sibling directory is not the workspace
+    ['/workspaceX/report.pdf', '/workspaceX/report.pdf'],
+    ['/workspace', ''],
   ])('%s → %s', (input, expected) => {
     expect(toWorkspaceRelativePath(input)).toBe(expected)
   })
