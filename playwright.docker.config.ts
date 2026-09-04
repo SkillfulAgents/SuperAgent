@@ -44,6 +44,9 @@ const webTestIgnore = [
   '**/global-connections.spec.ts',
   // Launches a host Chromium for the screencast; same host-only topology.
   '**/browser-stream.spec.ts',
+  // Creates and attaches shared volumes, which the server refuses on the docker
+  // seed. Runs under playwright.cloud.config.ts with a cloud-runner seed.
+  '**/shared-volumes.spec.ts',
 ]
 
 if (process.env.E2E_INCLUDE_A11Y !== 'true') {

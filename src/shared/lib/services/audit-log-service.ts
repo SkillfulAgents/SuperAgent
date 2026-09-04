@@ -16,6 +16,7 @@ export const AUDIT_EVENT_MAP = {
   secret:           ['created', 'updated', 'deleted', 'revealed'],
   file:             ['uploaded'],
   mount:            ['created', 'deleted'],
+  volume:           ['created', 'attached', 'detached', 'deleted'],
   settings:         ['updated', 'factory_reset'],
   policy:           ['updated'],
   user:             ['invited', 'reset_password'],

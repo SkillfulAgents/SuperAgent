@@ -12,7 +12,9 @@ import {
 } from '@shared/lib/utils/file-storage'
 import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 import { captureException } from '@shared/lib/error-reporting'
-import type { AgentMount, AgentMountWithHealth } from '@shared/lib/types/mount'
+import type { AgentMount, MountRecord, MountSource } from '@shared/lib/types/mount'
+import { isCloudRunner } from '@shared/lib/config/settings'
+import { getAgentSharedVolumeMounts } from '@shared/lib/services/shared-volume-service'
 import { agentMountsSchema } from './mount-schema'
 
 function getMountsFilePath(slug: string): string {
@@ -96,6 +98,12 @@ async function writeMounts(slug: string, mounts: AgentMount[]): Promise<void> {
 }
 
 export async function addMount(slug: string, hostPath: string): Promise<AgentMount> {
+  // A host folder is a path on this machine. A cloud runner binds the shared
+  // org disk, never a host path, so the record would only ever produce a
+  // warning. The runtime drops such records too (see storageSubPath callers).
+  if (isCloudRunner()) {
+    throw new Error('Folders from this computer cannot be mounted on a cloud runner')
+  }
   if (!path.isAbsolute(hostPath)) {
     throw new Error('hostPath must be an absolute path')
   }
@@ -150,12 +158,25 @@ export function removeMount(slug: string, mountId: string): Promise<void> {
   })
 }
 
-export async function getMountsWithHealth(slug: string): Promise<AgentMountWithHealth[]> {
-  const mounts = await getMounts(slug)
-  return Promise.all(
-    mounts.map(async (m) => ({
-      ...m,
-      health: (await directoryExists(m.hostPath)) ? ('ok' as const) : ('missing' as const),
-    }))
-  )
+/**
+ * Every mount the agent should have, from both registries, health stamped once.
+ * Read by the mounts route and by container start. Sources are a list so a new
+ * kind of mount is one more entry here, not a second pipe.
+ */
+export async function getMountsWithHealth(slug: string): Promise<MountRecord[]> {
+  const sources: Array<[MountSource, AgentMount[]]> = [
+    ['folder', await getMounts(slug)],
+    ['shared', getAgentSharedVolumeMounts(slug)],
+  ]
+  const records: MountRecord[] = []
+  for (const [source, mounts] of sources) {
+    for (const mount of mounts) {
+      records.push({
+        ...mount,
+        source,
+        health: (await directoryExists(mount.hostPath)) ? 'ok' : 'missing',
+      })
+    }
+  }
+  return records
 }

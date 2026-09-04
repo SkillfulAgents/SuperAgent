@@ -692,45 +692,36 @@ class ContainerManager {
 
       envVars['CLAUDE_CODE_ATTRIBUTION_HEADER'] = '0'
 
-      // Load mounts and build volume flags for healthy ones
-      const mountsWithHealth = await getMountsWithHealth(agentId)
-      const healthyMounts = mountsWithHealth.filter((m) => m.health === 'ok')
-      const missingMounts = mountsWithHealth.filter((m) => m.health === 'missing')
-
-      if (missingMounts.length > 0) {
-        console.warn(`[ContainerManager] Skipping ${missingMounts.length} missing mount(s) for ${agentId}:`, missingMounts.map((m) => m.hostPath))
+      // Every mount from every source, health stamped once. A record whose host
+      // folder is missing is skipped here; one whose folder exists but the
+      // runtime cannot realise (a cloud-synced folder the VM helper is denied,
+      // a host folder on a cloud runner) is dropped by the runtime and reported
+      // back through onMountDropped. The container starts in both cases.
+      const records = await getMountsWithHealth(agentId)
+      const mounts = records.filter((m) => m.health === 'ok')
+      const missing = records.filter((m) => m.health === 'missing')
+      const warn = (dropped: Array<{ folderName: string; hostPath: string }>, hint?: string) => {
         messagePersister.broadcastGlobal({
           type: 'mount_health_warning',
           agentSlug: agentId,
-          missingMounts: missingMounts.map((m) => ({ folderName: m.folderName, hostPath: m.hostPath })),
+          missingMounts: dropped.map((m) => ({ folderName: m.folderName, hostPath: m.hostPath })),
+          ...(hint ? { hint } : {}),
         })
       }
 
-      const additionalVolumes = healthyMounts.map((m) =>
-        client.buildVolumeFlag(m.hostPath, m.containerPath)
-      )
+      if (missing.length > 0) {
+        console.warn(`[ContainerManager] Skipping ${missing.length} missing mount(s) for ${agentId}:`, missing.map((m) => m.hostPath))
+        warn(missing)
+      }
 
-      // Start container (user secrets are in .env file in workspace).
-      // If a mount turns out to be inaccessible to the container runtime at run
-      // time (e.g. a cloud-synced folder the Lima VM helper is denied — passes
-      // the host health check but fails EPERM-on-stat inside the VM), start()
-      // drops that one mount and the container still comes up. Surface the same
-      // mount-health warning banner with a macOS-specific hint instead of
-      // failing the whole agent.
       const startedInfo = await client.start({
         envVars,
-        additionalVolumes,
-        onMountDropped: (hostPath) => {
-          const dropped = healthyMounts.find((m) => m.hostPath === hostPath)
-          console.warn(`[ContainerManager] Mount inaccessible to runtime, dropped for ${agentId}: ${hostPath}`)
-          messagePersister.broadcastGlobal({
-            type: 'mount_health_warning',
-            agentSlug: agentId,
-            missingMounts: [{ folderName: dropped?.folderName ?? hostPath, hostPath }],
-            hint: process.platform === 'darwin'
-              ? 'This folder is in iCloud Drive or a cloud-synced location, which can’t be shared into the agent sandbox. Move it to a regular local folder.'
-              : undefined,
-          })
+        mounts,
+        onMountDropped: (mount) => {
+          console.warn(`[ContainerManager] Mount inaccessible to runtime, dropped for ${agentId}: ${mount.hostPath}`)
+          warn([mount], process.platform === 'darwin'
+            ? 'This folder is in iCloud Drive or a cloud-synced location, which can’t be shared into the agent sandbox. Move it to a regular local folder.'
+            : undefined)
         },
       })
 

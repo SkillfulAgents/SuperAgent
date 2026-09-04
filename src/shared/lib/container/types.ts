@@ -1,3 +1,4 @@
+import type { AgentMount } from '@shared/lib/types/mount'
 import type { RuntimeOptions } from './runtime-options'
 import type { ObserveUnexpectedDeathInput, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
 
@@ -120,14 +121,13 @@ export interface CreateSessionOptions {
 
 export interface StartOptions {
   envVars?: Record<string, string>
-  additionalVolumes?: string[] // Extra -v flag values for bind mounts
   /**
-   * Called when a bind mount is dropped at run time because the container
-   * runtime can't access it (e.g. a cloud-synced folder the Lima VM helper is
-   * denied). Receives the host path so the caller can warn the user. The
-   * container is still started without that one mount.
+   * Every mount the agent should have, from every source. The runtime decides
+   * which it can realise, sets SUPERAGENT_MOUNTS from that subset, and reports
+   * the rest through onMountDropped. The container still starts.
    */
-  onMountDropped?: (hostPath: string) => void
+  mounts?: AgentMount[]
+  onMountDropped?: (mount: AgentMount) => void
 }
 
 // Container resource usage stats
@@ -188,9 +188,6 @@ export interface ContainerClient {
   start(options?: StartOptions): Promise<ContainerInfo | void>
   stop(options?: StopOptions): Promise<StopResult>
   stopSync(): void // Synchronous stop for exit handlers
-
-  // Build a -v flag value for a volume mount (hostPath:containerPath with runtime-specific suffix)
-  buildVolumeFlag(hostPath: string, containerPath: string): string
 
   // Host-internal bridge IP that a host-side service must bind to so THIS runner's
   // containers can reach it via host.docker.internal, or null when containers reach

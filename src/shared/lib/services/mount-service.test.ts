@@ -1,7 +1,14 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+import type { AgentMount } from '@shared/lib/types/mount'
+
+const { mockIsCloudRunner } = vi.hoisted(() => ({ mockIsCloudRunner: vi.fn(() => false) }))
+vi.mock('@shared/lib/config/settings', () => ({ isCloudRunner: mockIsCloudRunner }))
+
+const { mockSharedMounts } = vi.hoisted(() => ({ mockSharedMounts: vi.fn((): AgentMount[] => []) }))
+vi.mock('@shared/lib/services/shared-volume-service', () => ({ getAgentSharedVolumeMounts: mockSharedMounts }))
 
 let tmpDir: string
 
@@ -9,6 +16,8 @@ beforeEach(() => {
   // Use realpathSync to resolve macOS /tmp -> /private/var symlink
   tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mount-service-test-')))
   process.env.SUPERAGENT_DATA_DIR = tmpDir
+  mockIsCloudRunner.mockReturnValue(false)
+  mockSharedMounts.mockReturnValue([])
 })
 
 afterEach(() => {
@@ -124,6 +133,12 @@ describe('mount-service', () => {
       const cloudDir = path.join(os.homedir(), 'Library', 'CloudStorage', 'Dropbox', 'work')
       await expect(addMount('test-agent', cloudDir)).rejects.toThrow(/cloud-synced|iCloud/i)
     })
+
+    it('refuses a host folder on a cloud runner', async () => {
+      const { addMount } = await importService()
+      mockIsCloudRunner.mockReturnValue(true)
+      await expect(addMount('test-agent', makeHostDir('cloud'))).rejects.toThrow('Folders from this computer cannot be mounted on a cloud runner')
+    })
   })
 
   describe('isCloudStoragePath', () => {
@@ -179,6 +194,19 @@ describe('mount-service', () => {
       const mounts = await getMountsWithHealth('test-agent')
       expect(mounts).toHaveLength(1)
       expect(mounts[0].health).toBe('missing')
+    })
+
+    it('merges folder and shared records with health stamped once', async () => {
+      const { addMount, getMountsWithHealth } = await importService()
+      const hostPath = makeHostDir('merge')
+      await addMount('test-agent', hostPath)
+      mockSharedMounts.mockReturnValue([
+        { id: 'vol-1', hostPath: path.join(tmpDir, 'nope'), containerPath: '/volumes/notes', folderName: 'Notes', addedAt: '2026-01-01T00:00:00.000Z' },
+      ])
+      const records = await getMountsWithHealth('test-agent')
+      expect(records).toHaveLength(2)
+      expect(records[0]).toMatchObject({ source: 'folder', health: 'ok', hostPath })
+      expect(records[1]).toMatchObject({ source: 'shared', health: 'missing', containerPath: '/volumes/notes' })
     })
   })
 

@@ -29,6 +29,12 @@ vi.mock('@aws-sdk/client-lambda-microvms', () => {
   }
 })
 
+const { mockStorageSubPath } = vi.hoisted(() => ({ mockStorageSubPath: vi.fn((_p: string): string | null => null) }))
+vi.mock('@shared/lib/config/data-dir', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/config/data-dir')>()),
+  getAgentWorkspaceDir: (id: string) => `/data/agents/${id}/workspace`,
+  storageSubPath: (p: string) => mockStorageSubPath(p),
+}))
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn(), addErrorBreadcrumb: vi.fn() }))
 // Inert: the env builder reaches for the active provider; we don't assert its
 // output here (that's the builder's concern), we only verify the runtime
@@ -85,6 +91,7 @@ beforeEach(() => {
   for (const k of TOUCHED) delete process.env[k]
   for (const k in responses) delete responses[k]
   autoSleepTimeoutMinutes.mockReturnValue(30)
+  mockStorageSubPath.mockImplementation((p) => p.startsWith('/data/') ? p.slice('/data/'.length) : null)
   sendMock.mockReset()
   tlsConnectMock.mockReset()
   sendMock.mockImplementation(async (cmd: { type: string }) => {
@@ -391,6 +398,75 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     await newClient().start()
     const input = sendMock.mock.calls.find((c) => c[0].type === 'Run')![0].input
     expect(JSON.parse(input.runHookPayload).mount).toBeUndefined()
+  })
+
+  it('rides accepted records on the mount object and sets SUPERAGENT_MOUNTS in the stashed env', async () => {
+    Object.assign(process.env, { MICROVM_FS_ID: 'fs-1', MICROVM_ACCESS_POINT: 'fsap-1', MICROVM_MOUNT_TARGET_IP: '10.0.0.5' })
+    resetMicrovmRuntimeForTests()
+    await newClient().start({
+      envVars: { PROXY_TOKEN: 't' },
+      mounts: [{ id: 'vol-1', hostPath: '/data/volumes/vol-1', containerPath: '/volumes/team-brain', folderName: 'Team brain', addedAt: '2026-01-01' }],
+    })
+    const input = sendMock.mock.calls.find((c) => c[0].type === 'Run')![0].input
+    const payload = JSON.parse(input.runHookPayload)
+    expect(payload.mount.volumes).toEqual([{ subPath: 'volumes/vol-1', name: 'team-brain' }])
+    expect(readBootstrapEnv('agent-xyz')!.SUPERAGENT_MOUNTS).toBe(JSON.stringify(['/volumes/team-brain']))
+  })
+
+  it('drops a /mounts record and reports it', async () => {
+    Object.assign(process.env, { MICROVM_FS_ID: 'fs-1', MICROVM_ACCESS_POINT: 'fsap-1', MICROVM_MOUNT_TARGET_IP: '10.0.0.5' })
+    resetMicrovmRuntimeForTests()
+    const dropped: unknown[] = []
+    const folder = { id: 'm1', hostPath: '/data/agents/other/workspace', containerPath: '/mounts/other', folderName: 'other', addedAt: '2026-01-01' }
+    await newClient().start({ envVars: { PROXY_TOKEN: 't' }, mounts: [folder], onMountDropped: (m) => dropped.push(m) })
+    expect(dropped).toEqual([folder])
+    const input = sendMock.mock.calls.find((c) => c[0].type === 'Run')![0].input
+    expect(JSON.parse(input.runHookPayload).mount).not.toHaveProperty('volumes')
+    expect(readBootstrapEnv('agent-xyz')).not.toHaveProperty('SUPERAGENT_MOUNTS')
+  })
+
+  it('drops every record and lists none when storage is unconfigured', async () => {
+    Object.assign(process.env, { MICROVM_FS_ID: 'fs-1' })
+    resetMicrovmRuntimeForTests()
+    const dropped: unknown[] = []
+    const shared = { id: 'vol-1', hostPath: '/data/volumes/vol-1', containerPath: '/volumes/team-brain', folderName: 'Team brain', addedAt: '2026-01-01' }
+    await newClient().start({ envVars: { PROXY_TOKEN: 't' }, mounts: [shared], onMountDropped: (m) => dropped.push(m) })
+    expect(dropped).toEqual([shared])
+    expect(readBootstrapEnv('agent-xyz')).not.toHaveProperty('SUPERAGENT_MOUNTS')
+  })
+
+  it('omits mount.volumes when no volumes are attached (old-host shape)', async () => {
+    Object.assign(process.env, {
+      MICROVM_FS_ID: 'fs-1',
+      MICROVM_ACCESS_POINT: 'fsap-1',
+      MICROVM_MOUNT_TARGET_IP: '10.0.0.5',
+    })
+    resetMicrovmRuntimeForTests()
+    await newClient().start()
+    const input = sendMock.mock.calls.find((c) => c[0].type === 'Run')![0].input
+    expect(JSON.parse(input.runHookPayload).mount).not.toHaveProperty('volumes')
+  })
+
+  it('fits the admitted maximum of 19 max-length names under the payload budget', async () => {
+    Object.assign(process.env, { MICROVM_FS_ID: 'fs-1', MICROVM_ACCESS_POINT: 'fsap-1', MICROVM_MOUNT_TARGET_IP: '10.0.0.5' })
+    resetMicrovmRuntimeForTests()
+    const mounts = Array.from({ length: 19 }, (_, i) => {
+      const id = `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`
+      const name = `v${i.toString().padStart(63, 'x')}`
+      return { id, hostPath: `/data/volumes/${id}`, containerPath: `/volumes/${name}`, folderName: name, addedAt: '2026-01-01' }
+    })
+    await expect(newClient().start({ envVars: { PROXY_TOKEN: 't' }, mounts })).resolves.toMatchObject({ status: 'running' })
+  })
+
+  it('throws a readable mounts error when the payload exceeds the budget', async () => {
+    Object.assign(process.env, { MICROVM_FS_ID: 'fs-1', MICROVM_ACCESS_POINT: 'fsap-1', MICROVM_MOUNT_TARGET_IP: '10.0.0.5' })
+    resetMicrovmRuntimeForTests()
+    const mounts = Array.from({ length: 50 }, (_, i) => {
+      const id = `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`
+      const name = `v${i.toString().padStart(63, 'x')}`
+      return { id, hostPath: `/data/volumes/${id}`, containerPath: `/volumes/${name}`, folderName: name, addedAt: '2026-01-01' }
+    })
+    await expect(newClient().start({ mounts })).rejects.toThrow(/\(50 mounts\)/)
   })
 
   it('getInfoFromRuntime reports running with the proxy port after start', async () => {

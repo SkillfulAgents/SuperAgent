@@ -376,6 +376,36 @@ vi.mock('@shared/lib/services/audit-log-service', () => ({
   logAuditEventOrThrow: vi.fn(),
 }))
 
+const mockCreateSharedVolume = vi.fn()
+const mockAttachSharedVolume = vi.fn()
+const mockDetachSharedVolume = vi.fn()
+const mockDeleteSharedVolume = vi.fn()
+const { mockGetMountsWithHealth, mockAddMount } = vi.hoisted(() => ({
+  mockGetMountsWithHealth: vi.fn(async () => [] as unknown[]),
+  mockAddMount: vi.fn(async () => ({ id: 'm1' })),
+}))
+vi.mock('@shared/lib/services/mount-service', () => ({
+  getMountsWithHealth: mockGetMountsWithHealth,
+  addMount: mockAddMount,
+  removeMount: vi.fn(async () => undefined),
+}))
+
+vi.mock('@shared/lib/services/shared-volume-service', () => ({
+  SharedVolumeError: class SharedVolumeError extends Error {
+    constructor(
+      message: string,
+      public status: 400 | 404 | 409,
+    ) {
+      super(message)
+      this.name = 'SharedVolumeError'
+    }
+  },
+  createSharedVolume: (...args: unknown[]) => mockCreateSharedVolume(...args),
+  attachSharedVolume: (...args: unknown[]) => mockAttachSharedVolume(...args),
+  detachSharedVolume: (...args: unknown[]) => mockDetachSharedVolume(...args),
+  deleteSharedVolume: (...args: unknown[]) => mockDeleteSharedVolume(...args),
+}))
+
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   listScheduledTasks: vi.fn(),
   listPendingScheduledTasks: vi.fn(),
@@ -506,12 +536,14 @@ const mockRuntimeSettings = vi.hoisted(() => vi.fn(() => ({
   skillsets: [],
   app: { configuredPasswordManagers: ['apple-passwords'] },
 })))
+const mockIsCloudRunner = vi.hoisted(() => vi.fn(() => false))
 vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveAnthropicApiKey: () => 'test-key',
   getEffectiveModels: () => mockGetEffectiveModels(),
   getEffectiveAgentLimits: () => ({}),
   getCustomEnvVars: () => ({}),
   getSettings: () => mockRuntimeSettings(),
+  isCloudRunner: () => mockIsCloudRunner(),
   mutateSettings: vi.fn(),
   getModelCatalogSettings: () => ({}),
   VALID_SCRIPT_TYPES: {
@@ -628,6 +660,7 @@ import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-
 import { readJsonFileStrict, readJsonlFile, streamJsonlFile, writeJsonFileAtomic, readFileOrNull } from '@shared/lib/utils/file-storage'
 import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
 import { listWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
+import { agentMountsResponseSchema } from '@shared/lib/services/mount-schema'
 
 // ============================================================================
 // Test Helpers
@@ -9315,5 +9348,95 @@ describe('cross-agent session scoping', () => {
       expect(messagePersister.unsubscribeFromSession).toHaveBeenCalledWith(ATTACKER, OWN_SESSION)
       expect(deleteSession).toHaveBeenCalledWith(ATTACKER, OWN_SESSION)
     })
+  })
+})
+
+describe('shared volume agent routes', () => {
+  let app: Hono
+
+  beforeEach(() => {
+    app = createApp()
+    mockCreateSharedVolume.mockReset()
+    mockAttachSharedVolume.mockReset()
+    mockDetachSharedVolume.mockReset()
+    mockDeleteSharedVolume.mockReset()
+    mockDeleteSharedVolume.mockResolvedValue(undefined)
+    mockCreateSharedVolume.mockResolvedValue({
+      id: 'vol-1',
+      name: 'Team Brain',
+      mountName: 'team-brain',
+      createdAt: new Date('2026-08-31'),
+    })
+  })
+
+  it('attaches via volumeId', async () => {
+    const res = await postJson(app, '/api/agents/agent-a/volumes', { volumeId: 'vol-1' })
+    expect(res.status).toBe(201)
+    expect(mockAttachSharedVolume).toHaveBeenCalledWith('agent-a', 'vol-1')
+  })
+
+  it('creates and attaches via name', async () => {
+    const res = await postJson(app, '/api/agents/agent-a/volumes', { name: 'Team Brain' })
+    expect(res.status).toBe(201)
+    expect(mockCreateSharedVolume).toHaveBeenCalledWith('Team Brain')
+    expect(mockAttachSharedVolume).toHaveBeenCalledWith('agent-a', 'vol-1')
+    expect(mockDeleteSharedVolume).not.toHaveBeenCalled()
+  })
+
+  it('deletes the created volume if attach fails', async () => {
+    const { SharedVolumeError } = await import('@shared/lib/services/shared-volume-service')
+    mockAttachSharedVolume.mockImplementation(() => {
+      throw new SharedVolumeError('This agent already has the maximum of 19 shared volumes', 409)
+    })
+    const res = await postJson(app, '/api/agents/agent-a/volumes', { name: 'Overflow' })
+    expect(res.status).toBe(409)
+    expect(mockDeleteSharedVolume).toHaveBeenCalledWith('vol-1', { userId: null, isAdmin: true })
+  })
+
+  it('detaches a volume', async () => {
+    const res = await deleteReq(app, '/api/agents/agent-a/volumes/vol-1')
+    expect(res.status).toBe(200)
+    expect(mockDetachSharedVolume).toHaveBeenCalledWith('agent-a', 'vol-1')
+  })
+
+  it('returns 400 on a bad attach body', async () => {
+    const res = await postJson(app, '/api/agents/agent-a/volumes', {})
+    expect(res.status).toBe(400)
+  })
+})
+
+describe('GET/POST /:id/mounts', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockAgentExists.mockResolvedValue(true)
+    mockIsCloudRunner.mockReturnValue(false)
+    mockGetMountsWithHealth.mockResolvedValue([])
+  })
+
+  it('returns capability flags and records of both sources', async () => {
+    mockIsCloudRunner.mockReturnValue(true)
+    mockGetMountsWithHealth.mockResolvedValue([
+      { id: 'm1', hostPath: '/host/project', containerPath: '/mounts/project', folderName: 'project', addedAt: '2026-01-01', source: 'folder', health: 'missing' },
+      { id: 'v1', hostPath: '/data/volumes/v1', containerPath: '/volumes/notes', folderName: 'Notes', addedAt: '2026-01-01', source: 'shared', health: 'ok' },
+    ])
+    const res = await createApp().request('http://localhost/api/agents/agent-a/mounts')
+    expect(res.status).toBe(200)
+    expect(agentMountsResponseSchema.parse(await res.json())).toEqual({
+      hostFolders: false,
+      sharedVolumes: true,
+      mounts: [
+        expect.objectContaining({ containerPath: '/mounts/project', source: 'folder', health: 'missing' }),
+        expect.objectContaining({ containerPath: '/volumes/notes', source: 'shared', health: 'ok' }),
+      ],
+    })
+  })
+
+  it('POST refuses on a cloud runner with the service message', async () => {
+    mockAddMount.mockRejectedValue(new Error('Folders from this computer cannot be mounted on a cloud runner'))
+    const res = await createApp().request('http://localhost/api/agents/agent-a/mounts', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hostPath: '/Users/me/Docs' }),
+    })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'Folders from this computer cannot be mounted on a cloud runner' })
   })
 })

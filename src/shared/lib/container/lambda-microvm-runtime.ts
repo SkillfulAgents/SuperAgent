@@ -29,6 +29,7 @@ import type {
   StopResult,
 } from './types'
 import { getSettings, isAutoResumeOnUnexpectedDeathEnabled } from '@shared/lib/config/settings'
+import { acceptCloudMounts, workspaceStorageSubPath } from './platform-k8s-runtime'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { setBootstrapEnv, clearBootstrapEnv } from './agent-bootstrap-env-store'
 import {
@@ -944,26 +945,34 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     }
 
     const config = getMicrovmRuntimeConfig()
+    // Storage must be fully configured for any mount to exist. When it is not,
+    // every record is dropped and reported, and the prompt lists none.
+    const storageConfigured = Boolean(config.fsId && config.accessPoint && config.mountTargetIp)
+    const filtered = acceptCloudMounts(options?.mounts ?? [])
+    const accepted = storageConfigured ? filtered.accepted : []
+    const dropped = storageConfigured ? filtered.dropped : [...(options?.mounts ?? [])]
+    dropped.forEach((m) => options?.onMountDropped?.(m))
+
     // Full env exceeds the 4096-byte payload cap, so stash it host-side and pass the
     // VM only a small bootstrap credential to fetch it at boot via /api/agent-bootstrap.
-    const env = this.buildAgentEnv(options?.envVars)
+    const env = this.buildAgentEnv(this.withMountsEnv(options?.envVars, accepted))
     const hasEnv = Object.keys(env).length > 0
-    // Mount the same per-agent workspace path the k8s runtime uses.
-    const mount = config.fsId && config.accessPoint && config.mountTargetIp
+    const volumes = accepted.length > 0
+      ? accepted.map((mount) => ({ subPath: mount.subPath, name: mount.containerPath.slice('/volumes/'.length) }))
+      : undefined
+    const mount = storageConfigured
       ? {
-          fsId: config.fsId,
-          accessPoint: config.accessPoint,
-          mountTargetIp: config.mountTargetIp,
-          subPath: `${process.env.K8S_WORKSPACES_SUBPATH_PREFIX || 'agents'}/${this.config.agentId}/workspace`,
+          fsId: config.fsId!,
+          accessPoint: config.accessPoint!,
+          mountTargetIp: config.mountTargetIp!,
+          subPath: workspaceStorageSubPath(this.config.agentId),
+          ...(volumes ? { volumes } : {}),
         }
       : undefined
     const hostApiBaseUrl = await this.getHostApiBaseUrl()
     console.info(`[LambdaMicroVmRuntimeClient] Using host API base URL for MicroVM talk-back: ${hostApiBaseUrl}`)
     const bootstrap = hasEnv
-      ? {
-          url: `${hostApiBaseUrl}/api/agent-bootstrap/${this.config.agentId}/env`,
-          token: env.PROXY_TOKEN ?? '',
-        }
+      ? { url: `${hostApiBaseUrl}/api/agent-bootstrap/${this.config.agentId}/env`, token: env.PROXY_TOKEN ?? '' }
       : undefined
     // Per-VM secret the supervisor pins on its first (trusted) run hook and then
     // requires on every later /run, so the untrusted in-VM agent can't forge a
@@ -972,10 +981,12 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     const hookToken = randomUUID()
     const payloadObj = { ...(bootstrap ? { bootstrap } : {}), ...(mount ? { mount } : {}), hookToken }
     const runHookPayload = JSON.stringify(payloadObj)
-    const payloadBytes = runHookPayload ? Buffer.byteLength(runHookPayload, 'utf8') : 0
+    const payloadBytes = Buffer.byteLength(runHookPayload, 'utf8')
     if (payloadBytes > RUN_HOOK_PAYLOAD_MAX_BYTES) {
       throw new Error(
-        `MicroVM runHookPayload is ${payloadBytes} bytes, over the ${RUN_HOOK_PAYLOAD_MAX_BYTES} limit.`,
+        accepted.length > 0
+          ? `MicroVM runHookPayload is ${payloadBytes} bytes, over the ${RUN_HOOK_PAYLOAD_MAX_BYTES} limit (${accepted.length} mounts).`
+          : `MicroVM runHookPayload is ${payloadBytes} bytes, over the ${RUN_HOOK_PAYLOAD_MAX_BYTES} limit.`,
       )
     }
 
@@ -1113,11 +1124,6 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
   async getStats(): Promise<ContainerStats | null> {
     // lambda-microvms exposes no per-VM resource metrics; surface none.
     return null
-  }
-
-  public buildVolumeFlag(_hostPath: string, _containerPath: string): string {
-    // Workspace is an S3 Files mount performed inside the VM, not a host bind.
-    return ''
   }
 
   public getHostApiBaseUrl(): Promise<string> {

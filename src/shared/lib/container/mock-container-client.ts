@@ -2382,11 +2382,6 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     })
   }
 
-  // Volume flag builder (no-op in mock — mounts are not simulated)
-  buildVolumeFlag(hostPath: string, containerPath: string): string {
-    return `"${hostPath}:${containerPath}"`
-  }
-
   // No real host networking in mock mode — report loopback-direct (no proxy).
   getHostBridgeIp(): string | null {
     return null
@@ -2401,18 +2396,21 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   async start(options?: StartOptions): Promise<ContainerInfo> {
     this.running = true
-    // Surface the container env that carries the proxy credentials so E2E
-    // specs can call the API/MCP proxies the way a real container would
-    // (there is deliberately no HTTP endpoint that returns the proxy token).
-    if (options?.envVars?.['PROXY_TOKEN']) {
-      this.writeMockRecord({
-        type: 'container_start',
-        agentSlug: this.config.agentId,
-        proxyToken: options.envVars['PROXY_TOKEN'],
-        remoteMcps: options.envVars['REMOTE_MCPS'] ?? null,
-        timestamp: new Date().toISOString(),
-      })
-    }
+    const mounts = options?.mounts ?? []
+    const env = { ...(options?.envVars ?? {}) }
+    if (mounts.length > 0) env.SUPERAGENT_MOUNTS = JSON.stringify(mounts.map((m) => m.containerPath))
+    // Surface the container env and the mount list so E2E specs can see what
+    // the full API path actually sent to the runtime (there is deliberately no
+    // HTTP endpoint that returns either).
+    this.writeMockRecord({
+      type: 'container_start',
+      agentSlug: this.config.agentId,
+      proxyToken: env['PROXY_TOKEN'] ?? null,
+      remoteMcps: env['REMOTE_MCPS'] ?? null,
+      mounts: mounts.map((m) => m.containerPath),
+      mountsEnv: env['SUPERAGENT_MOUNTS'] ?? null,
+      timestamp: new Date().toISOString(),
+    })
     console.log(`[MockContainerClient] Started mock container for agent ${this.config.agentId}`)
     return this.getInfoFromRuntime()
   }

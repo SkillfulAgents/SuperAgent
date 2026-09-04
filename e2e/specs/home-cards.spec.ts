@@ -1,7 +1,7 @@
 import { test, expect, type Locator, type Page } from '@playwright/test'
 import fs from 'node:fs'
 import path from 'node:path'
-import { createAgent, uniqueName } from '../helpers/agents'
+import { createAgent, deleteAgentViaApi, uniqueName } from '../helpers/agents'
 
 /**
  * Drag a grid tile down by `dy` px and only return once the grid has visibly
@@ -212,4 +212,19 @@ test.describe('home card arrangement', () => {
     expect(afterMobileArrange.homeGridMobileLayout?.[agent.slug]).toBeDefined()
     expect(afterMobileArrange.homeGridLayout?.[agent.slug]).toEqual(desktopRect)
   })
+})
+
+test('the mounts route reports host folders and not shared volumes on the desktop seed', async ({ request }, testInfo) => {
+  const agent = await createAgent(request, uniqueName(testInfo, 'Flags'))
+  const res = await request.get(`/api/agents/${agent.slug}/mounts`)
+  expect(await res.json()).toMatchObject({ hostFolders: true, sharedVolumes: false })
+  const create = await request.post('/api/volumes', { data: { name: 'nope' } })
+  expect(create.status()).toBe(400)
+  await deleteAgentViaApi(request, agent)
+})
+
+test('reserved prompt env is rejected at settings write', async ({ request }) => {
+  const res = await request.put('/api/settings', { data: { customEnvVars: { SUPERAGENT_MOUNTS: '/volumes/fake' } } })
+  expect(res.status()).toBe(400)
+  expect(await res.text()).toContain('SUPERAGENT_MOUNTS')
 })

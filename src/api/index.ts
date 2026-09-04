@@ -43,6 +43,7 @@ import tokenExchange from './routes/token-exchange'
 import mobilePairing from './routes/mobile-pairing'
 import agentBootstrap from './routes/agent-bootstrap'
 import activityRouter from './routes/activity'
+import volumes from './routes/volumes'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
@@ -215,6 +216,7 @@ app.get('/api/llm/anthropic-sdk.js', async (c) => {
 
 // Mount route handlers
 app.route('/api/agents', agents)
+app.route('/api/volumes', volumes)
 app.route('/api/activity', activityRouter)
 app.route('/api/x-agent', xAgent)
 app.route('/api/x-agent/chat', xAgentChat)

@@ -7,6 +7,7 @@ import {
   notifications,
   sessionUnreadMarks,
   agentRemoteMcps,
+  agentSharedVolumes,
   proxyAuditLog,
   mcpAuditLog,
   agentAcl,
@@ -28,6 +29,7 @@ export async function cleanupAgentData(agentSlug: string): Promise<void> {
     db.delete(sessionUnreadMarks).where(eq(sessionUnreadMarks.agentSlug, agentSlug)).run()
     db.delete(agentConnectedAccounts).where(eq(agentConnectedAccounts.agentSlug, agentSlug)).run()
     db.delete(agentRemoteMcps).where(eq(agentRemoteMcps.agentSlug, agentSlug)).run()
+    db.delete(agentSharedVolumes).where(eq(agentSharedVolumes.agentSlug, agentSlug)).run()
     db.delete(proxyAuditLog).where(eq(proxyAuditLog.agentSlug, agentSlug)).run()
     db.delete(mcpAuditLog).where(eq(mcpAuditLog.agentSlug, agentSlug)).run()
     db.delete(agentAcl).where(eq(agentAcl.agentSlug, agentSlug)).run()

@@ -22,8 +22,6 @@ const mockStart = vi.fn().mockImplementation(() => {
 const mockStop = vi.fn().mockResolvedValue({ forceStopUsed: false })
 const mockGetInfoFromRuntime = vi.fn()
 const mockGetStats = vi.fn()
-const mockBuildVolumeFlag = vi.fn((hostPath: string, containerPath: string) => `"${hostPath}:${containerPath}"`)
-
 vi.mock('./client-factory', () => ({
   createContainerClient: () => ({
     start: (...args: unknown[]) => mockStart(...args),
@@ -33,7 +31,6 @@ vi.mock('./client-factory', () => ({
     getStats: mockGetStats,
     fetch: vi.fn(),
     getHostApiBaseUrl: () => 'http://127.0.0.1:3000',
-    buildVolumeFlag: (...args: unknown[]) => mockBuildVolumeFlag(...args as [string, string]),
     createSession: vi.fn(),
     onFatalResult: () => 'settle',
     observeUnexpectedDeath: async () => ({ action: 'settle' as const }),
@@ -94,6 +91,8 @@ vi.mock('@shared/lib/config/settings', () => ({
 
 vi.mock('@shared/lib/config/data-dir', () => ({
   getAgentWorkspaceDir: (id: string) => `/workspace/${id}`,
+  getVolumeDir: (id: string) => `/data/volumes/${id}`,
+  getVolumesDataDir: () => '/data/volumes',
 }))
 
 vi.mock('./message-persister', () => ({
