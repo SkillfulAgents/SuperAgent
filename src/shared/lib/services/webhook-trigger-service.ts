@@ -14,7 +14,7 @@ import {
   type NewWebhookTrigger,
 } from '@shared/lib/db/schema'
 import { eq, and, inArray, isNotNull, sql, count, desc } from 'drizzle-orm'
-import { captureException } from '@shared/lib/error-reporting'
+import { captureException, captureMessage } from '@shared/lib/error-reporting'
 import { trackServerEvent } from '../analytics/server-analytics'
 import { deleteComposioTrigger } from '@shared/lib/composio/triggers'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
@@ -75,15 +75,14 @@ export function getDistinctPlatformMemberIdsForActiveTriggers(): string[] {
   const ids = new Set<string>()
   for (const row of rows) {
     // The recorded minting member is the one the proxy scopes the subscription
-    // (and its events) to, so it must lead the poll set (SUP-765).
-    if (row.mintedByMemberId) {
-      ids.add(row.mintedByMemberId)
-      continue
-    }
-    // Pre-column rows: prefer the creator, but fall back to the connected-account
-    // owner when the creator has no platform member — otherwise the trigger is
-    // silently dropped from the poll set even though the owner could claim its
-    // events (SUP-226).
+    // (and its events) to, so it leads the poll set (SUP-765). It does not
+    // replace the fallbacks below: if that member has since left the org their
+    // poll throws and the loop only logs it, so without the other candidates the
+    // trigger would silently stop firing forever. Duplicates collapse in the Set.
+    if (row.mintedByMemberId) ids.add(row.mintedByMemberId)
+    // Prefer the creator, but fall back to the connected-account owner when the
+    // creator has no platform member — otherwise the trigger is silently dropped
+    // from the poll set even though the owner could claim its events (SUP-226).
     const resolved = resolvePlatformMemberForCandidates([row.createdByUserId, row.ownerUserId])
     if (resolved) {
       ids.add(resolved.memberId)
@@ -562,7 +561,24 @@ async function tearDownUpstream(trigger: WebhookTrigger, upstreamId: string): Pr
       if (!isUpstreamNotFound(error)) throw error
     }
   }
-  if (known) return
+  if (known) {
+    // Normally "already gone" — but a recorded minter who has since left the org
+    // 404s identically while the subscription stays live, which is the SUP-765
+    // failure mode itself. Report it so that orphan is at least diagnosable.
+    // Ambient teardown (no members) is exempt: there the proxy ignores members,
+    // so a 404 really does mean gone.
+    if (memberIds.length > 0) {
+      console.warn(
+        `[WebhookTriggerService] Upstream ${upstreamId} 404'd under its recorded minting member ${memberIds[0]} — already deleted, or that member left the org and the subscription is orphaned`,
+      )
+      captureMessage('Upstream teardown 404 under the recorded minting member', {
+        level: 'info',
+        tags: { area: 'webhook-triggers', op: 'teardown-known-404', kind: trigger.kind },
+        extra: { triggerId: trigger.id, agentSlug: trigger.agentSlug, upstreamId, memberId: memberIds[0] },
+      })
+    }
+    return
+  }
   throw new UpstreamOwnerUnresolvedError(upstreamId, memberIds)
 }
 

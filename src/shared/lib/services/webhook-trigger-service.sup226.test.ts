@@ -176,9 +176,11 @@ describe('SUP-226: getDistinctPlatformMemberIdsForActiveTriggers owner fallback'
   })
 
   // SUP-765: the proxy scopes the subscription (and its events) to the minting
-  // member, so it must win over the creator in the poll set or the trigger
-  // silently never fires.
-  it('polls as the recorded minting member even when the creator resolves elsewhere', async () => {
+  // member, so it must lead the poll set or the trigger silently never fires.
+  // The creator stays in the set behind it: if the minter has since left the
+  // org their poll throws and the loop only logs it, so dropping the SUP-226
+  // fallback here would strand the trigger for good.
+  it('leads with the recorded minting member, keeping the creator as fallback', async () => {
     await insertUser('creator_user')
     await insertPlatformAccount('creator_user', 'sub_creator_member')
 
@@ -191,6 +193,9 @@ describe('SUP-226: getDistinctPlatformMemberIdsForActiveTriggers owner fallback'
       mintedByMemberId: 'sub_minted_member',
     })
 
-    expect(getDistinctPlatformMemberIdsForActiveTriggers()).toEqual(['sub_minted_member'])
+    expect(getDistinctPlatformMemberIdsForActiveTriggers()).toEqual([
+      'sub_minted_member',
+      'sub_creator_member',
+    ])
   })
 })

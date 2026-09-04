@@ -54,8 +54,10 @@ vi.mock('@shared/lib/services/webhook-endpoints-client', async (importOriginal) 
 })
 
 const mockCaptureException = vi.fn()
+const mockCaptureMessage = vi.fn()
 vi.mock('@shared/lib/error-reporting', () => ({
   captureException: (...args: unknown[]) => mockCaptureException(...args),
+  captureMessage: (...args: unknown[]) => mockCaptureMessage(...args),
 }))
 
 const mockGetPlatformAccessToken = vi.fn()
@@ -71,6 +73,7 @@ import { WebhookEndpointsApiError } from '@shared/lib/services/webhook-endpoints
 import {
   createWebhookTrigger,
   cancelWebhookTriggerWithCleanup,
+  getDistinctPlatformMemberIdsForActiveTriggers,
   getWebhookTrigger,
   resolveTeardownMembers,
   UpstreamOwnerUnresolvedError,
@@ -262,6 +265,34 @@ describe('upstream teardown attribution (SUP-765)', () => {
     expect(deleteAttributionKey).toBe('member:sub_minted')
   })
 
+  // The poll set is the other half of SUP-765: events for the subscription are
+  // claimed as the minting member. But the minter can leave the org, and the
+  // poll loop only logs the resulting failure — so the recorded member leads the
+  // set without evicting the SUP-226 fallbacks that would still find the events.
+  describe('poll set', () => {
+    it('leads with the recorded minting member and keeps the creator fallback', async () => {
+      await insertUser('user-creator')
+      await insertPlatformAccount('user-creator', 'sub_creator')
+      await createComposioTrigger({ createdByUserId: 'user-creator', mintedByMemberId: 'sub_minted' })
+
+      expect(getDistinctPlatformMemberIdsForActiveTriggers()).toEqual(['sub_minted', 'sub_creator'])
+    })
+
+    it('collapses to one member when the minter is also the creator', async () => {
+      await insertUser('user-creator')
+      await insertPlatformAccount('user-creator', 'sub_creator')
+      await createComposioTrigger({ createdByUserId: 'user-creator', mintedByMemberId: 'sub_creator' })
+
+      expect(getDistinctPlatformMemberIdsForActiveTriggers()).toEqual(['sub_creator'])
+    })
+
+    it('polls the minting member alone when nothing else resolves', async () => {
+      await createComposioTrigger({ mintedByMemberId: 'sub_minted' })
+
+      expect(getDistinctPlatformMemberIdsForActiveTriggers()).toEqual(['sub_minted'])
+    })
+  })
+
   describe('resolveTeardownMembers', () => {
     it('is known and single when the minting member was recorded', async () => {
       await insertUser('user-creator')
@@ -300,7 +331,10 @@ describe('upstream teardown attribution (SUP-765)', () => {
   // The proxy 404s a cross-member DELETE exactly like a missing subscription,
   // so a 404 only means "gone" when the acting member is known.
   describe('404 handling', () => {
-    it('is silent when the upstream is already gone under the recorded minting member', async () => {
+    // "Already gone" and "the minter left the org, so the subscription is still
+    // live" 404 identically, so the known-member case is reported (at info, not
+    // as an error) rather than swallowed — otherwise the orphan is invisible.
+    it('accepts a 404 under the recorded minting member but reports it as a possible orphan', async () => {
       mockDeleteComposioTrigger.mockRejectedValue(new ComposioTriggerError('Trigger not found', 404))
       const triggerId = await createComposioTrigger({ mintedByMemberId: 'sub_minted' })
 
@@ -308,6 +342,11 @@ describe('upstream teardown attribution (SUP-765)', () => {
 
       expect(mockDeleteComposioTrigger).toHaveBeenCalledTimes(1)
       expect(mockCaptureException).not.toHaveBeenCalled()
+      expect(mockCaptureMessage).toHaveBeenCalledTimes(1)
+      expect(mockCaptureMessage.mock.calls[0][1]).toMatchObject({
+        level: 'info',
+        extra: expect.objectContaining({ memberId: 'sub_minted', upstreamId: 'ti_composio_1' }),
+      })
     })
 
     it('is silent on a 404 in opaque-access-key mode (the proxy ignores members)', async () => {
@@ -318,6 +357,8 @@ describe('upstream teardown attribution (SUP-765)', () => {
       expect(await cancelWebhookTriggerWithCleanup(triggerId)).toBe(true)
 
       expect(mockCaptureException).not.toHaveBeenCalled()
+      // No member was tried, so a 404 really does mean gone.
+      expect(mockCaptureMessage).not.toHaveBeenCalled()
     })
 
     it('tries the next guessed member after a 404 and stops on the one that succeeds', async () => {
