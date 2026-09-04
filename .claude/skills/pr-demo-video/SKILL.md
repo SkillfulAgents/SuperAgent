@@ -44,7 +44,7 @@ Write the demo as a normal spec, then pace it for a viewer:
 - Type with `locator.pressSequentially(text, { delay: 8 })` instead of `fill()` so the prompt is readable.
 - Add short pauses at the moments a viewer needs to read (a card appearing, a button about to be clicked). `page.waitForTimeout()` is fine here and only here; put an `eslint-disable-next-line local-rules/no-brittle-playwright-selectors` on it with a comment saying it is pacing, not synchronization. Every real wait still goes through `expect(...).toBeVisible()`.
 - Hold 2–3 s on the final state before the test ends, or the video cuts on the last assertion.
-- Keep the whole thing under ~60 s. Mock-container flows (`E2E_MOCK=true`) are fast and deterministic; real-container flows go through a live harness (see `e2e/live/mcp-hot-add/run.mjs`, landing in #960, for the pattern: seed a data dir, boot the host, run the spec, capture the container log).
+- Keep the whole thing under ~60 s. Mock-container flows (`E2E_MOCK=true`) are fast and deterministic; real-container flows go through a live harness (see `e2e/live/mcp-hot-add/run.mjs` for the pattern: seed a data dir, boot the host, run the spec, capture the container log).
 
 Run it and pipe the output through `tee` as usual:
 
@@ -56,7 +56,7 @@ The recordings land under the config's `outputDir`, in a folder named after the 
 
 ### Popups and second pages
 
-A `window.open` popup (OAuth login, external link) is its own page and gets its own video file. To fold it into one clip, note wall-clock marks in the spec (`Date.now()` at test start, at popup open, at test end), write them to `test.info().outputDir` (create the dir first: Playwright makes it lazily), and overlay the popup recording on the main one. `e2e/live/mcp-hot-add/compose-video.mjs` (landing in #960) does exactly that with ffmpeg: it corrects for the main recording starting a few seconds after the test body, crops the popup to its centred content, and places it top-right so it never covers the composer area.
+A `window.open` popup (OAuth login, external link) is its own page and gets its own video file. To fold it into one clip, note wall-clock marks in the spec (`Date.now()` at test start, at popup open, at test end), write them to `test.info().outputDir` (create the dir first: Playwright makes it lazily), and overlay the popup recording on the main one. `e2e/live/mcp-hot-add/compose-video.mjs` does exactly that with ffmpeg: it corrects for the main recording starting a few seconds after the test body, crops the popup to its centred content, and places it top-right so it never covers the composer area.
 
 ## 2. Convert
 
