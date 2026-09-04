@@ -121,7 +121,7 @@ function AgentCardPowerButton({ agent }: { agent: ApiAgent }) {
     // Frosted status chip with a white-bordered stop/power button inside. It's a
     // flex item in the card's control row (see AgentCard), so the kebab aligns
     // with it natively.
-    <div className="flex items-center gap-1.5 rounded-md border border-border/50 bg-white/10 py-0.5 pl-1.5 pr-1 text-xs backdrop-blur-sm">
+    <div className="flex items-center gap-1.5 rounded-md border border-border/50 bg-white/10 py-0.5 pl-1.5 pr-0.5 text-xs backdrop-blur-sm">
       <span className="leading-none text-muted-foreground">{label}</span>
       <button
         type="button"
