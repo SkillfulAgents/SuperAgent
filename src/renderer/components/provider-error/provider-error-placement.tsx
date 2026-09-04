@@ -13,6 +13,7 @@ import { resolveProviderError } from './provider-error-registry'
 export interface CurrentProviderError {
   message: string
   presentation?: ProviderErrorPresentation
+  live: boolean
 }
 
 interface LiveErrorState {
@@ -29,7 +30,7 @@ export function currentProviderError(
   messages: readonly ApiMessageOrBoundary[] | undefined,
 ): CurrentProviderError | null {
   if (live.error && isProviderFacingError(live.apiErrorCode, live.errorPresentation)) {
-    return { message: live.error, presentation: live.errorPresentation ?? undefined }
+    return { message: live.error, presentation: live.errorPresentation ?? undefined, live: true }
   }
   if (live.isActive || !messages) return null
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -37,7 +38,9 @@ export function currentProviderError(
     if (item.type !== 'assistant') continue
     const isProviderError =
       !!item.apiError && isProviderFacingError(item.apiError, item.errorPresentation) && !!item.content.text
-    return isProviderError ? { message: item.content.text, presentation: item.errorPresentation } : null
+    return isProviderError
+      ? { message: item.content.text, presentation: item.errorPresentation, live: false }
+      : null
   }
   return null
 }
@@ -64,7 +67,7 @@ export function ProviderErrorPlacement({ placement, sessionId, agentSlug, childr
   if (!current || !resolved || resolved.placement !== placement) return <>{children}</>
   return (
     <div data-testid={`provider-error-placement-${placement}`}>
-      <resolved.Component message={current.message} presentation={current.presentation}>
+      <resolved.Component message={current.message} presentation={current.presentation} live={current.live}>
         {children}
       </resolved.Component>
     </div>

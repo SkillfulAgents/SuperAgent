@@ -12,6 +12,8 @@ export interface ProviderErrorComponentProps {
   presentation?: ProviderErrorPresentation
   /** Content this error displaced (the composer, at `composer`). Render it to give it back. */
   children?: ReactNode
+  /** True when this is the in-flight turn error, not a persisted history row. */
+  live?: boolean
 }
 
 export const DEFAULT_ERROR_COMPONENT = 'default'
