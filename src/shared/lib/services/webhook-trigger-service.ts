@@ -18,6 +18,7 @@ import { captureException } from '@shared/lib/error-reporting'
 import { trackServerEvent } from '../analytics/server-analytics'
 import { deleteComposioTrigger } from '@shared/lib/composio/triggers'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
+import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
 import { disablePlatformWebhookEndpoint } from '@shared/lib/services/webhook-endpoints-client'
 import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
 
@@ -62,6 +63,7 @@ export function resolvePlatformMemberForCandidates(
 export function getDistinctPlatformMemberIdsForActiveTriggers(): string[] {
   const rows = db
     .select({
+      mintedByMemberId: webhookTriggers.mintedByMemberId,
       createdByUserId: webhookTriggers.createdByUserId,
       ownerUserId: connectedAccounts.userId,
     })
@@ -72,9 +74,16 @@ export function getDistinctPlatformMemberIdsForActiveTriggers(): string[] {
 
   const ids = new Set<string>()
   for (const row of rows) {
-    // Prefer the creator, but fall back to the connected-account owner when the
-    // creator has no platform member — otherwise the trigger is silently dropped
-    // from the poll set even though the owner could claim its events (SUP-226).
+    // The recorded minting member is the one the proxy scopes the subscription
+    // (and its events) to, so it must lead the poll set (SUP-765).
+    if (row.mintedByMemberId) {
+      ids.add(row.mintedByMemberId)
+      continue
+    }
+    // Pre-column rows: prefer the creator, but fall back to the connected-account
+    // owner when the creator has no platform member — otherwise the trigger is
+    // silently dropped from the poll set even though the owner could claim its
+    // events (SUP-226).
     const resolved = resolvePlatformMemberForCandidates([row.createdByUserId, row.ownerUserId])
     if (resolved) {
       ids.add(resolved.memberId)
@@ -148,6 +157,8 @@ export interface CreateWebhookTriggerParams {
   name?: string
   createdBySessionId?: string
   createdByUserId?: string
+  /** Acting platform member the upstream subscription was minted under (SUP-765). */
+  mintedByMemberId?: string
   model?: string
   effort?: string
   speed?: string
@@ -174,6 +185,7 @@ export async function createWebhookTrigger(params: CreateWebhookTriggerParams): 
     fireCount: 0,
     createdBySessionId: params.createdBySessionId ?? null,
     createdByUserId: params.createdByUserId ?? null,
+    mintedByMemberId: params.mintedByMemberId ?? null,
     model: params.model ?? null,
     effort: params.effort ?? null,
     speed: params.speed ?? null,
@@ -451,24 +463,12 @@ export async function cancelWebhookTriggerWithCleanup(
   const cancelled = await cancelWebhookTrigger(triggerId)
   if (!cancelled) return false
 
-  // Custom endpoints live on the platform proxy regardless of which Composio
-  // key mode is active — gate their teardown on platform auth, not the
-  // Composio condition, or a user-supplied Composio key would silently leave
-  // the public URL live.
-  const canReachUpstream =
-    trigger.kind === 'custom' ? Boolean(getPlatformAccessToken()) : isPlatformComposioActive()
-  if (trigger.composioTriggerId && canReachUpstream) {
-    const remaining = await countActiveTriggersForComposioId(trigger.composioTriggerId)
+  if (trigger.composioTriggerId && canReachUpstream(trigger.kind)) {
+    const upstreamId = trigger.composioTriggerId
+    const remaining = await countActiveTriggersForComposioId(upstreamId)
     if (remaining === 0) {
       try {
-        if (trigger.kind === 'custom') {
-          await disablePlatformWebhookEndpoint(
-            resolveCleanupMemberId(trigger),
-            trigger.composioTriggerId,
-          )
-        } else {
-          await deleteComposioTrigger(trigger.composioTriggerId)
-        }
+        await tearDownUpstream(trigger, upstreamId)
       } catch (error) {
         console.error('[webhook-trigger-service] Failed to tear down upstream subscription:', error)
         // Silent to the user: the trigger row is already cancelled, but the
@@ -480,7 +480,7 @@ export async function cancelWebhookTriggerWithCleanup(
           extra: {
             triggerId,
             agentSlug: trigger.agentSlug,
-            upstreamId: trigger.composioTriggerId,
+            upstreamId,
             kind: trigger.kind,
           },
         })
@@ -491,14 +491,101 @@ export async function cancelWebhookTriggerWithCleanup(
   return true
 }
 
-/**
- * Member context for platform-endpoint teardown calls. Org JWTs need a real
- * member suffix; opaque platform keys ignore it, so the 'local' placeholder is
- * safe as the final fallback.
- */
-function resolveCleanupMemberId(trigger: WebhookTrigger): string {
-  const resolved = resolvePlatformMemberForCandidates([trigger.createdByUserId])
-  return resolved?.memberId ?? getStoredPlatformMemberId() ?? 'local'
+// Custom endpoints live on the platform proxy regardless of Composio key mode,
+// so gate on platform auth or a user-supplied Composio key leaves the URL live.
+function canReachUpstream(kind: WebhookTrigger['kind']): boolean {
+  return kind === 'custom' ? Boolean(getPlatformAccessToken()) : isPlatformComposioActive()
+}
+
+// One place that speaks both upstream vocabularies (platform endpoint disable
+// vs Composio subscription delete). Callers own attribution.
+async function deleteUpstream(
+  kind: WebhookTrigger['kind'],
+  memberId: string,
+  upstreamId: string,
+): Promise<void> {
+  if (kind === 'custom') await disablePlatformWebhookEndpoint(memberId, upstreamId)
+  else await deleteComposioTrigger(upstreamId)
+}
+
+// Duck-typed so a new upstream client can't silently regress to perpetual retries.
+function isUpstreamNotFound(error: unknown): boolean {
+  return error instanceof Error && (error as { statusCode?: unknown }).statusCode === 404
+}
+
+// The proxy 404s a cross-member DELETE exactly like a missing subscription, so
+// a 404 under a guessed member proves nothing. Thrown so the orphan is reported.
+export class UpstreamOwnerUnresolvedError extends Error {
+  constructor(
+    public readonly upstreamId: string,
+    public readonly triedMemberIds: string[],
+  ) {
+    super(
+      `Upstream ${upstreamId} not found under any candidate member (${triedMemberIds.join(', ') || 'none'}); owner unknown`,
+    )
+    this.name = 'UpstreamOwnerUnresolvedError'
+  }
+}
+
+export interface TeardownMembers {
+  /** Members that may own the upstream, best guess first. Empty = ambient. */
+  memberIds: string[]
+  /** True when the first entry is the recorded minting member, or the proxy ignores members. */
+  known: boolean
+}
+
+// Minting member when recorded (the only guaranteed principal); pre-column rows
+// guess via the SUP-226 chain (creator, owner) then the stored member.
+export function resolveTeardownMembers(trigger: WebhookTrigger): TeardownMembers {
+  if (!attribution.requiresActingMember()) return { memberIds: [], known: true }
+  if (trigger.mintedByMemberId) return { memberIds: [trigger.mintedByMemberId], known: true }
+  const candidates = [
+    resolvePlatformMemberForCandidates([trigger.createdByUserId])?.memberId,
+    resolvePlatformMemberForCandidates([getConnectedAccountOwnerUserId(trigger.connectedAccountId)])?.memberId,
+    getStoredPlatformMemberId(),
+  ]
+  return { memberIds: [...new Set(candidates.filter((m): m is string => Boolean(m)))], known: false }
+}
+
+// Delete as the minting member via ALS (the interceptor overrides explicit auth).
+// 404 = gone only for a known member; guessed members are tried in turn, all-404 throws.
+async function tearDownUpstream(trigger: WebhookTrigger, upstreamId: string): Promise<void> {
+  const { memberIds, known } = resolveTeardownMembers(trigger)
+  const attempts: Array<string | null> = memberIds.length > 0 ? memberIds : [null]
+  for (const memberId of attempts) {
+    try {
+      await runWithAttribution(memberId ? attribution.fromMemberId(memberId) : null, () =>
+        deleteUpstream(trigger.kind, memberId ?? getStoredPlatformMemberId() ?? 'local', upstreamId),
+      )
+      return
+    } catch (error) {
+      if (!isUpstreamNotFound(error)) throw error
+    }
+  }
+  if (known) return
+  throw new UpstreamOwnerUnresolvedError(upstreamId, memberIds)
+}
+
+// SUP-226 candidate order (creator, then connected-account owner), shared by
+// polling and session attribution so the two chains cannot drift.
+export function resolveTriggerPrincipal(
+  trigger: Pick<WebhookTrigger, 'createdByUserId' | 'connectedAccountId'>,
+): { userId: string; memberId: string } | null {
+  return resolvePlatformMemberForCandidates([
+    trigger.createdByUserId,
+    getConnectedAccountOwnerUserId(trigger.connectedAccountId),
+  ])
+}
+
+export function getConnectedAccountOwnerUserId(connectedAccountId: string | null): string | null {
+  if (!connectedAccountId) return null
+  const rows = db
+    .select({ userId: connectedAccounts.userId })
+    .from(connectedAccounts)
+    .where(eq(connectedAccounts.id, connectedAccountId))
+    .limit(1)
+    .all()
+  return rows[0]?.userId ?? null
 }
 
 /**

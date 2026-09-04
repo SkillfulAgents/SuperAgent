@@ -38,6 +38,12 @@ vi.mock('../analytics/server-analytics', () => ({
   trackServerEvent: vi.fn(),
 }))
 
+// Hermetic: the stored-member fallback must not read this machine's settings.
+vi.mock('@shared/lib/services/platform-auth-service', () => ({
+  getPlatformAccessToken: () => null,
+  getStoredPlatformMemberId: () => null,
+}))
+
 import {
   createWebhookTrigger,
   getDistinctPlatformMemberIdsForActiveTriggers,
@@ -167,5 +173,24 @@ describe('SUP-226: getDistinctPlatformMemberIdsForActiveTriggers owner fallback'
     })
 
     expect(getDistinctPlatformMemberIdsForActiveTriggers()).toEqual([])
+  })
+
+  // SUP-765: the proxy scopes the subscription (and its events) to the minting
+  // member, so it must win over the creator in the poll set or the trigger
+  // silently never fires.
+  it('polls as the recorded minting member even when the creator resolves elsewhere', async () => {
+    await insertUser('creator_user')
+    await insertPlatformAccount('creator_user', 'sub_creator_member')
+
+    await createWebhookTrigger({
+      agentSlug: 'agent-1',
+      composioTriggerId: 'ti_1',
+      triggerType: 'GMAIL_NEW_EMAIL',
+      prompt: 'Handle email',
+      createdByUserId: 'creator_user',
+      mintedByMemberId: 'sub_minted_member',
+    })
+
+    expect(getDistinctPlatformMemberIdsForActiveTriggers()).toEqual(['sub_minted_member'])
   })
 })

@@ -55,6 +55,7 @@ import {
   type WebhookEndpointEvent,
 } from '@shared/lib/services/webhook-endpoint-schema'
 import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
+import { attribution } from '@shared/lib/platform-attribution'
 import {
   getAvailableTriggers,
   enableComposioTrigger,
@@ -4288,6 +4289,10 @@ ${continuation}`
           return
         }
 
+        // The proxy scopes the subscription to the acting member of THIS mint
+        // request (ambient ALS), which is not always the session creator (SUP-765).
+        const mintedByMemberId = attribution.current()?.actingMemberId() ?? undefined
+
         // 1. Enable trigger on Composio via proxy (using Composio's ca_* ID)
         const composioTriggerId = await enableComposioTrigger(
           input.trigger_type,
@@ -4309,6 +4314,7 @@ ${continuation}`
             name: input.name,
             createdBySessionId: sessionId,
             createdByUserId: triggerOwnerId ?? undefined,
+            mintedByMemberId,
             model: input.model,
             effort: input.effort,
             speed: input.speed,
@@ -4401,6 +4407,10 @@ ${continuation}`
         const filterExp = input.filter_exp ?? undefined
 
         const memberId = await this.resolvePlatformMemberForSession(agentSlug, sessionId)
+        // Minted explicitly as `token::memberId` below, so record that when no ALS
+        // attribution is active; never persist the opaque-key 'local' placeholder.
+        const mintedByMemberId =
+          attribution.current()?.actingMemberId() ?? (memberId === 'local' ? undefined : memberId)
 
         // 1. Mint the endpoint on the platform proxy
         const endpoint = await createPlatformWebhookEndpoint(memberId, {
@@ -4425,6 +4435,7 @@ ${continuation}`
             name: input.name.trim(),
             createdBySessionId: sessionId,
             createdByUserId: triggerOwnerId ?? undefined,
+            mintedByMemberId,
             model: input.model,
             effort: input.effort,
             speed: input.speed,

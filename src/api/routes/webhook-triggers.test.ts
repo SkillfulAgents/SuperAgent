@@ -77,6 +77,7 @@ const trigger: WebhookTrigger = {
   lastSessionId: null,
   createdBySessionId: null,
   createdByUserId: 'owner-private-id',
+  mintedByMemberId: 'sub_member-private-id',
   model: null,
   effort: null,
   speed: null,
@@ -110,6 +111,7 @@ describe('webhook trigger response access', () => {
     expect(body).not.toHaveProperty('composioTriggerId')
     expect(body).not.toHaveProperty('connectedAccountId')
     expect(body).not.toHaveProperty('createdByUserId')
+    expect(body).not.toHaveProperty('mintedByMemberId')
     expect(JSON.stringify(body)).not.toContain('private-capability')
   })
 
@@ -140,5 +142,6 @@ describe('webhook trigger response access', () => {
     expect(body).not.toHaveProperty('composioTriggerId')
     expect(body).not.toHaveProperty('connectedAccountId')
     expect(body).not.toHaveProperty('createdByUserId')
+    expect(body).not.toHaveProperty('mintedByMemberId')
   })
 })

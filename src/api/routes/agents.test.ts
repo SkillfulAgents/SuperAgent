@@ -1039,6 +1039,7 @@ describe('GET /:id/webhook-triggers', () => {
     lastSessionId: null,
     createdBySessionId: null,
     createdByUserId: 'owner-private-id',
+    mintedByMemberId: 'sub_member-private-id',
     model: null,
     effort: null,
     speed: null,
@@ -1059,6 +1060,7 @@ describe('GET /:id/webhook-triggers', () => {
     expect(body[0]).not.toHaveProperty('composioTriggerId')
     expect(body[0]).not.toHaveProperty('connectedAccountId')
     expect(body[0]).not.toHaveProperty('createdByUserId')
+    expect(body[0]).not.toHaveProperty('mintedByMemberId')
     expect(JSON.stringify(body)).not.toContain('private-capability')
   })
 
