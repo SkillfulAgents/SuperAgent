@@ -1,0 +1,25 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified browser-use feature executes correctly: agent opens browser, navigates to URL, retrieves page title, and response includes \"Example Domain\"",
+  "steps": [
+    "Navigated to http://localhost:47891 — Home page loaded successfully with agent list visible in sidebar",
+    "Clicked on \"QA-20260904-214157-jwar\" agent in sidebar — Agent page opened with chat input ready, session URL changed to agent detail page",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into chat input — Message appeared in input field",
+    "Clicked Send button — Message sent successfully, new session created with URL containing session ID, agent status changed to \"working\"",
+    "Waited up to 3 minutes for response using browser_run_code wait function — Agent completed processing in approximately 9 seconds",
+    "Verified response mentions \"Example Domain\" — Response text states: \"The page title is \"Example Domain\" — the page just has that heading, a line about the domain being for documentation examples, and a \"Learn more\" link. Browser is closed.\"",
+    "Took final screenshot showing complete interaction — Screenshot captured showing user message, agent response with \"Example Domain\" clearly visible, and session metadata showing \"Worked for 9s · 4 tool calls · 163,690 tokens\""
+  ],
+  "bugs": [],
+  "durationMs": 80238,
+  "sessionId": "c5190dd3-b2a3-49fe-92db-1e11c39148ff",
+  "cost": {
+    "inputTokens": 454,
+    "outputTokens": 11263,
+    "cacheCreationTokens": 76844,
+    "cacheReadTokens": 1355274,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.288351
+  }
+}
