@@ -411,6 +411,13 @@ describe('MessageItem', () => {
       expect(screen.queryByText('Alice Baker')).not.toBeInTheDocument()
     })
 
+    it('renders a leading escaped sender prefix literally in a live session', () => {
+      const msg = createUserMessage({ content: { text: '\\[Dana]: hello' } })
+      render(<MessageItem message={msg} />)
+      expect(screen.getByTestId('message-user')).toHaveTextContent('[Dana]: hello')
+      expect(screen.queryByText('Dana')).not.toBeInTheDocument()
+    })
+
     it('does not render sender on assistant messages', () => {
       const msg = createAssistantMessage({
         content: { text: 'Hi there' },
