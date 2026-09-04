@@ -53,6 +53,8 @@ const RUNNER_LABELS: Record<string, string> = {
   podman: 'Podman',
   lima: 'Built-in Runtime',
   wsl2: 'Built-in Runtime',
+  kubernetes: 'Kubernetes',
+  'lambda-microvm': 'AWS Lambda MicroVM',
 }
 
 function normalizeEnvVarName(name: string): string {
@@ -169,8 +171,8 @@ export function RuntimeTab() {
     return map
   }, [settings?.runnerAvailability])
 
-  // Runners whose image is fixed by the deployment (e.g. lambda-microvm) ignore
-  // settings.container.agentImage — lock the field so edits aren't misleading.
+  // Runners whose image is fixed by the deployment (e.g. lambda-microvm) also
+  // lock the runner itself — cloud Settings cannot switch it.
   const agentImageLocked =
     runnerAvailabilityMap.get(containerRunner)?.supportsCustomAgentImage === false
 
@@ -265,8 +267,9 @@ export function RuntimeTab() {
     try {
       await updateSettings.mutateAsync({
         container: {
-          containerRunner,
-          // A locked field never submits edits — keep whatever is persisted.
+          containerRunner: agentImageLocked
+            ? (settings?.container.containerRunner ?? containerRunner)
+            : containerRunner,
           agentImage: agentImageLocked
             ? (settings?.container.agentImage ?? trimmedAgentImage)
             : trimmedAgentImage,
@@ -469,9 +472,9 @@ export function RuntimeTab() {
           <Select
             value={containerRunner}
             onValueChange={setContainerRunner}
-            disabled={isLoading || hasRunningAgents}
+            disabled={isLoading || hasRunningAgents || agentImageLocked}
           >
-            <SelectTrigger id="container-runner" className={`flex-1 ${hasRunningAgents ? 'bg-muted' : ''}`}>
+            <SelectTrigger id="container-runner" className={`flex-1 ${hasRunningAgents || agentImageLocked ? 'bg-muted' : ''}`}>
               <SelectValue placeholder="Select a container runtime" />
             </SelectTrigger>
             <SelectContent>
