@@ -236,6 +236,16 @@ export const PROVIDER_ERROR_CODES = new Set([
   'server_error',
 ])
 
+// SDK codes for turn failures that are not an upstream API error. A provider
+// override must never claim these, whatever the error text happens to contain.
+export const NON_UPSTREAM_ERROR_CODES = new Set(['max_output_tokens'])
+
+// True when the SDK reported that the upstream API call itself failed (any
+// code, including `unknown`). Null = the turn failed for a non-API reason.
+export function isUpstreamApiErrorCode(apiErrorCode: string | null | undefined): apiErrorCode is string {
+  return typeof apiErrorCode === 'string' && !NON_UPSTREAM_ERROR_CODES.has(apiErrorCode)
+}
+
 // The server only attaches a presentation when the active provider recognized
 // the error, so its presence outranks a generic SDK code (the CLI tags some
 // upstream denials, e.g. a 402, as `unknown`).

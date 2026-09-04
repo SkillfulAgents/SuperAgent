@@ -85,7 +85,7 @@ export function ProviderErrorView({
 }
 
 // `presentation` is authored server-side by the active LLM provider's
-// parseErrorResponse. Without one (older server, missed event) the card falls
+// presentationForTurnError. Without one (older server, missed event) the card falls
 // back to the provider-agnostic default banner built from the raw message.
 export function ProviderErrorCard({
   message,

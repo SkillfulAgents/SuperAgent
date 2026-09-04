@@ -1,8 +1,22 @@
 import { describe, expect, it } from 'vitest'
 
-import { isProviderFacingError } from './api'
+import { isProviderFacingError, isUpstreamApiErrorCode } from './api'
 
 const presentation = { severity: 'error' as const, message: 'x', icon: 'info' }
+
+describe('isUpstreamApiErrorCode', () => {
+  it('is true for any SDK code that marks an upstream API failure, including unknown', () => {
+    expect(isUpstreamApiErrorCode('rate_limit')).toBe(true)
+    expect(isUpstreamApiErrorCode('unknown')).toBe(true)
+    expect(isUpstreamApiErrorCode('overloaded')).toBe(true)
+  })
+
+  it('is false for max_output_tokens and for no code at all', () => {
+    expect(isUpstreamApiErrorCode('max_output_tokens')).toBe(false)
+    expect(isUpstreamApiErrorCode(null)).toBe(false)
+    expect(isUpstreamApiErrorCode(undefined)).toBe(false)
+  })
+})
 
 describe('isProviderFacingError', () => {
   it('is true for a provider SDK code without a presentation', () => {

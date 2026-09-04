@@ -59,11 +59,15 @@ describe('getContainerEnvVars agent identity', () => {
   })
 })
 
-describe('parseErrorResponse', () => {
+describe('presentationForTurnError', () => {
+  const SPEND_CAP = 'A spend cap for this workspace was reached. It resets within 30 days.'
+  const INSUFFICIENT = 'API Error: 402 insufficient balance — top up to continue.'
+
   it('returns warning markdown for a workspace spend cap', () => {
-    const parsed = provider.parseErrorResponse(
+    const parsed = provider.presentationForTurnError(
       429,
       'A spend cap for this workspace was reached. It resets within 30 days. Ask a workspace admin to raise it.',
+      'rate_limit',
     )
     expect(parsed).toEqual({
       severity: 'warning',
@@ -74,14 +78,10 @@ describe('parseErrorResponse', () => {
   })
 
   it('falls back to the generic banner for a non-spend 429', () => {
-    const parsed = provider.parseErrorResponse(429, 'Rate limit exceeded. Slow down and retry shortly.')
-    expect(parsed.severity).toBe('error')
-    expect(parsed.message).toContain('**LLM Provider Error:**')
+    const parsed = provider.presentationForTurnError(429, 'Rate limit exceeded. Slow down and retry shortly.', 'rate_limit')
+    expect(parsed?.severity).toBe('error')
+    expect(parsed?.message).toContain('**LLM Provider Error:**')
   })
-})
-
-describe('presentationForTurnError', () => {
-  const SPEND_CAP = 'A spend cap for this workspace was reached. It resets within 30 days.'
 
   it('attaches a recognized class even when the SDK code is generic', () => {
     const parsed = provider.presentationForTurnError(429, SPEND_CAP, 'unknown')
@@ -96,6 +96,15 @@ describe('presentationForTurnError', () => {
   it('returns null for an unrecognized error with a non-provider SDK code', () => {
     expect(provider.presentationForTurnError(undefined, 'Output too long', 'max_output_tokens')).toBeNull()
     expect(provider.presentationForTurnError(undefined, 'Output too long', null)).toBeNull()
+  })
+
+  it('does not let a recognized class claim a max_output_tokens failure', () => {
+    expect(provider.presentationForTurnError(undefined, SPEND_CAP, 'max_output_tokens')).toBeNull()
+  })
+
+  it('does not let a recognized class claim a turn that failed without an API error', () => {
+    expect(provider.presentationForTurnError(undefined, INSUFFICIENT, null)).toBeNull()
+    expect(provider.presentationForTurnError(undefined, INSUFFICIENT, undefined)).toBeNull()
   })
 })
 

@@ -126,7 +126,7 @@ describe('AgentActivityIndicator', () => {
     platformAuth.connected = true
     mockStreamState.error = 'API Error: Request rejected (429) · A spend cap for this workspace was reached. It resets within 30 days. Ask a workspace admin to raise it.'
     mockStreamState.apiErrorCode = 'rate_limit'
-    // Presentation is authored server-side by PlatformLlmProvider.parseErrorResponse
+    // Presentation is authored server-side by PlatformLlmProvider.presentationForTurnError
     // and arrives on the session_error event.
     mockStreamState.errorPresentation = parsePlatformErrorResponse(429, mockStreamState.error)
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)

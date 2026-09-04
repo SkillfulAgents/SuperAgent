@@ -4,7 +4,7 @@ import type { ModelDefinition, ModelSearchResult } from './model-catalog-schema'
 import type { CatalogDefaultModels } from './model-catalog-defaults'
 import type { LlmProviderId } from './provider-types'
 import { defaultParseErrorResponse, type ProviderErrorPresentation } from './error-presentation'
-import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
+import { PROVIDER_ERROR_CODES, isUpstreamApiErrorCode } from '@shared/lib/types/api'
 
 export { LLM_PROVIDER_IDS } from './provider-types'
 export type { LlmProviderId } from './provider-types'
@@ -158,26 +158,19 @@ export abstract class BaseLlmProvider {
     throw new Error(`${this.name} does not support model search`)
   }
 
-  /**
-   * Banner presentation for an upstream HTTP error. Providers customize copy by
-   * overriding parseErrorResponseOverride, not this method.
-   */
-  parseErrorResponse(status: number | undefined, body: unknown): ProviderErrorPresentation {
-    return this.parseErrorResponseOverride(status, body) ?? defaultParseErrorResponse(status, body)
-  }
-
-  // Presentation for a failed turn. Classes this provider recognizes always get
-  // one, even under a generic SDK code (the CLI tags some upstream denials as
-  // `unknown`); everything else only when the SDK code marks a provider error.
+  // Presentation for a failed turn, or null when it is not a provider error.
+  // Only consulted for upstream API failures: classes this provider recognizes
+  // get one under any upstream code (the CLI tags some denials `unknown`);
+  // the generic banner only under a code that marks a provider error.
   presentationForTurnError(
     status: number | undefined,
     body: unknown,
     apiErrorCode: string | null | undefined,
   ): ProviderErrorPresentation | null {
+    if (!isUpstreamApiErrorCode(apiErrorCode)) return null
     const specialized = this.parseErrorResponseOverride(status, body)
     if (specialized) return specialized
-    if (apiErrorCode && PROVIDER_ERROR_CODES.has(apiErrorCode)) return defaultParseErrorResponse(status, body)
-    return null
+    return PROVIDER_ERROR_CODES.has(apiErrorCode) ? defaultParseErrorResponse(status, body) : null
   }
 
   /**
