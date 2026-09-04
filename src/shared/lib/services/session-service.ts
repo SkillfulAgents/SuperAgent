@@ -1229,6 +1229,11 @@ interface PageWindowScan {
    * cursor's uuid (transcript rewritten since the cursor was issued). Nothing
    * was scanned; the caller retries with the id-only scan. */
   stale?: true
+  /** Cursor pages: line-start offset of the row the scan anchored on (the
+   * cursor row in offset mode; the deepest occurrence of the uuid in id-only
+   * mode). Lets the page be split by row position when the cursor's item id
+   * does not survive the deeper window's transform. */
+  anchorOffset?: number
 }
 
 /** Smallest recorded line-start offset at or past the grace distance, so the
@@ -1371,6 +1376,7 @@ async function scanMessagesPageWindow(
   let displayCount = 0
   let windowBytes = 0
   let startOffset = 0
+  let anchorOffset: number | undefined
   let hitLineCap = false
   // Conservative default: with nothing counted, treat the head as partial.
   let deepestCountedIsGroup = true
@@ -1402,7 +1408,14 @@ async function scanMessagesPageWindow(
     }
     lineOffsets?.push(offset)
 
-    if (cursorNeedle && line.includes(cursorNeedle)) {
+    // Offset mode anchors exactly once, on the validated row the walk starts
+    // from: a deeper occurrence of the same uuid is a replayed row's
+    // original and must be counted as an ordinary row, not re-anchored on
+    // (re-anchoring would move the page split below the original and skip
+    // everything between it and the copy). Id-only mode has no way to tell
+    // which occurrence issued the cursor and keeps the deepest.
+    const mayAnchor = cursorNeedle !== null && !(cursorOffset !== undefined && anchored)
+    if (mayAnchor && line.includes(cursorNeedle!)) {
       const parsed = parseJsonlLine<JsonlEntry>(line)
       const normalized = parsed !== undefined ? normalizeQueuedCommandEntry(parsed) : undefined
       if (normalized !== undefined && (normalized as { uuid?: string }).uuid === cursor) {
@@ -1421,6 +1434,7 @@ async function scanMessagesPageWindow(
         suppressUntilAnchorRow = normalized.type === 'system'
         boundaryCountedSinceAnchor = false
         startOffset = offset
+        anchorOffset = offset
         // In offset mode the lines above the seek point were never scanned,
         // so a grace target beyond them falls back to the forward-located
         // line start (a superset window: it sits ≥ the target, within one
@@ -1563,6 +1577,7 @@ async function scanMessagesPageWindow(
     endOffset,
     reachedStart: startOffset === 0,
     dropHead: deepestCountedIsGroup,
+    anchorOffset,
   }
 }
 
@@ -1711,20 +1726,40 @@ export async function getSessionMessagesPage(
 
   if (cursor) {
     const idx = transformed.findIndex((item) => item.id === cursor)
-    if (idx === -1) {
-      // The index scan located the cursor's line but the transform of the
-      // materialized window disagrees — a concurrent rewrite between the two
-      // passes, or a replayed duplicate id. Terminate like a vanished cursor
-      // rather than serving a mislabeled page.
+    let messages: TransformedItem[]
+    let hasOlder: boolean
+    if (idx !== -1) {
+      const start = Math.max(dropHead ? 1 : 0, idx - limit)
+      messages = transformed.slice(start, idx)
+      hasOlder = messages.length > 0 && (!reachedStart || start > 0)
+    } else if (scan.anchorOffset !== undefined) {
+      // The index scan located the cursor's row but its item id does not
+      // survive this window's transform. Seen with a partial history replay
+      // (the CLI re-appends a few rows verbatim just before a compaction): in
+      // the page that issued the cursor the replayed assistant row stood
+      // alone and got its own id; here the window also holds the original,
+      // the uuid dedupe keeps that, and it merges into a multi-row group
+      // under the group's own id. Ending pagination here is what made
+      // scroll-up go dead mid-conversation. The row position is still
+      // authoritative: serve every item whose rows sit below the cursor row
+      // — every one of them is display-before whatever the previous page
+      // started with. Items above it were served by that page; a system
+      // row the transform reorders across the boundary may repeat, which
+      // the client's id dedupe absorbs.
+      const cursorRow = scan.anchorOffset
+      const kept = transformed.filter((item) => (offsets.get(item.id) ?? Infinity) < cursorRow)
+      const usable = dropHead ? kept.slice(1) : kept
+      messages = usable.slice(-limit)
+      hasOlder = messages.length > 0 && (!reachedStart || usable.length > messages.length)
+    } else {
+      // A concurrent rewrite between the two passes. Terminate like a vanished
+      // cursor rather than serving a mislabeled page.
       console.warn(
         `getSessionMessagesPage: cursor ${cursor} vanished between scan and ` +
         `read for session ${sessionId}; ending pagination`
       )
       return { messages: [], nextCursor: null }
     }
-    const start = Math.max(dropHead ? 1 : 0, idx - limit)
-    const messages = transformed.slice(start, idx)
-    const hasOlder = messages.length > 0 && (!reachedStart || start > 0)
     // Sequential walks end here when a cap truncates the page to empty.
     if (messages.length === 0 && !reachedStart) {
       console.warn(

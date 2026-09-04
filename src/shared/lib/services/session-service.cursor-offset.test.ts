@@ -292,6 +292,73 @@ describe('offset cursors — stale offsets degrade to the id scan', () => {
   })
 })
 
+describe('partial history replay before a compaction', () => {
+  // Reproduces a real transcript shape (datawizz session d9d97dab): the CLI
+  // re-appended a handful of rows verbatim — including ONE tool_use row of a
+  // multi-row assistant message — right before a compact boundary. When a
+  // page boundary lands on that replayed row it stands alone and becomes the
+  // cursor; the next, deeper window holds the original, the uuid dedupe keeps
+  // that, and it merges into its group under the group's own id. The old
+  // code reported the cursor "vanished" and ended pagination mid-transcript.
+  function replayedThread(): object[] {
+    const rows: object[] = []
+    let t = 0
+    const pad = 'z'.repeat(3 * 1024)
+    const turn = (i: number) => {
+      rows.push({ type: 'user', uuid: `u-${i}`, timestamp: ts(t++), sessionId: 's', parentUuid: null, message: { role: 'user', content: `q${i} ${pad}` } })
+      rows.push({ type: 'assistant', uuid: `a-${i}-0`, timestamp: ts(t++), sessionId: 's', parentUuid: `u-${i}`, message: { id: `msg-${i}`, role: 'assistant', content: [{ type: 'text', text: `plan ${i}` }] } })
+      rows.push({ type: 'assistant', uuid: `a-${i}-1`, timestamp: ts(t++), sessionId: 's', parentUuid: `a-${i}-0`, message: { id: `msg-${i}`, role: 'assistant', content: [{ type: 'tool_use', id: `t-${i}-1`, name: 'Bash', input: { command: `one ${i}` } }] } })
+      rows.push({ type: 'assistant', uuid: `a-${i}-2`, timestamp: ts(t++), sessionId: 's', parentUuid: `a-${i}-1`, message: { id: `msg-${i}`, role: 'assistant', content: [{ type: 'tool_use', id: `t-${i}-2`, name: 'Bash', input: { command: `two ${i}` } }] } })
+      rows.push({ type: 'user', uuid: `r-${i}-2`, timestamp: ts(t++), sessionId: 's', parentUuid: `a-${i}-2`, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `t-${i}-2`, content: `out two ${i} ${pad}` }] } })
+      rows.push({ type: 'user', uuid: `r-${i}-1`, timestamp: ts(t++), sessionId: 's', parentUuid: `a-${i}-1`, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `t-${i}-1`, content: `out one ${i} ${pad}` }] } })
+    }
+    for (let i = 0; i < 12; i++) turn(i)
+    // Replay: the second tool_use row of turn 8 and its result, verbatim.
+    const copy = (uuid: string) => rows.find((r) => (r as { uuid: string }).uuid === uuid)!
+    rows.push(copy('r-6-1'), copy('a-8-2'), copy('r-8-2'))
+    rows.push({ type: 'system', uuid: 'cb', subtype: 'compact_boundary', content: '', isMeta: false, timestamp: ts(t++), compactMetadata: { trigger: 'auto', preTokens: 1 } })
+    rows.push({ type: 'user', uuid: 'cs', timestamp: ts(t++), sessionId: 's', parentUuid: 'cb', isCompactSummary: true, message: { role: 'user', content: 'summary' } })
+    for (let i = 12; i < 16; i++) turn(i)
+    return rows
+  }
+
+  it('offset cursors page through the replayed row and reach the start', async () => {
+    await writeTranscript('replay', replayedThread())
+    const full = await fullIds('replay')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    // The failure needs a page whose oldest item is the replayed row (first:
+    // 10 is exactly the items from the copy to EOF) followed by an older
+    // page wide enough to reach the original row. Sweep around that.
+    for (const first of [2, 6, 10, 11, 14]) {
+      for (const older of [3, 8, 60]) {
+        for (const byteBudget of [16 * 1024, 64 * 1024, 256 * 1024, undefined]) {
+          const seek = await walk('replay', { first, older, ...(byteBudget ? { byteBudget } : {}) })
+          const missing = full.filter((id) => !seek.ids.includes(id))
+          expect(missing, `first ${first} older ${older} budget ${byteBudget}`).toEqual([])
+          expect(seek.ids[0]).toBe(full[0])
+        }
+      }
+    }
+    expect(warn.mock.calls.some(([m]) => String(m).includes('vanished'))).toBe(false)
+  })
+
+  it('id-only cursors no longer end pagination on the replayed row', async () => {
+    await writeTranscript('replay-legacy', replayedThread())
+    const full = await fullIds('replay-legacy')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    for (const byteBudget of [4 * 1024, 8 * 1024, 16 * 1024]) {
+      for (const older of [1, 2, 3]) {
+        const legacy = await walk('replay-legacy', { first: 2, older, byteBudget, legacy: true })
+        // The legacy scan anchors on the deepest occurrence, so the rows
+        // between the original and the replayed copy can be skipped — but the
+        // walk must reach the start of the transcript.
+        expect(legacy.ids[0], `budget ${byteBudget} limit ${older}`).toBe(full[0])
+      }
+    }
+    expect(warn.mock.calls.some(([m]) => String(m).includes('vanished'))).toBe(false)
+  })
+})
+
 describe('offset cursors — grace window', () => {
   it('attaches a tool result that sits above the cursor row, like the id-only scan', async () => {
     // Cursor on the tool_use's assistant group; its result is the next row up.
