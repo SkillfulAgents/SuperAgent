@@ -8,6 +8,7 @@
 import { ContentBlock, JsonlMessageEntry, JsonlSystemEntry } from '@shared/lib/types/agent'
 import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 import { makeThinkingBlockId } from '@shared/lib/utils/thinking-block-id'
+import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
 
 export interface TransformedThinkingBlock {
   /** Stable live↔persisted identity when the SDK message id is available. */
@@ -271,6 +272,9 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
     if (skipIndices.has(i)) continue
     const entry = entries[i]
     if (entry.type === 'user' || entry.type === 'assistant') {
+      // "No response requested." and friends: the CLI's stand-in for a turn
+      // that produced no model output. Nothing to show.
+      if (isSyntheticPlaceholderMessage(entry)) continue
       const uuid = (entry as JsonlMessageEntry).uuid
       if (uuid) {
         if (seenUuids.has(uuid)) continue
