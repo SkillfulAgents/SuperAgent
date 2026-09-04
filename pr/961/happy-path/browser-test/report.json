@@ -1,24 +1,26 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Successfully verified that the SuperAgent browser-use feature can open a browser, navigate to https://example.com, retrieve the page title \"Example Domain\", and return it in the chat response.",
+  "reason": "Browser-use feature successfully executed: agent opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and returned the result with tool call tracking and token usage metrics.",
   "steps": [
-    "Step 1 - Navigated to http://localhost:47891 - Successfully loaded the SuperAgent application with page title \"Gamut\"",
-    "Step 2 - Found and clicked the \"QA-20260904-222740-xmeu\" agent in the sidebar - Successfully opened the agent chat interface, page URL changed to /agents/qa-20260904-222740-xmeu-vpasiczo5l",
-    "Step 3 - Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field - Message successfully entered in the textbox with placeholder \"How can I help? Press cmd+enter to send\"",
-    "Step 4 - Clicked the Send button - Message sent successfully, page navigated to the session page with URL /agents/qa-20260904-222740-xmeu-vpasiczo5l/sessions/4405a971-15f2-42a5-b09d-b43448d3cdf3",
-    "Step 5 - Waited for agent to process the request - Agent completed processing within the timeout, \"Working...\" indicator disappeared after agent finished executing 4 tool calls in approximately 10 seconds",
-    "Step 6 - Verified response mentions \"Example Domain\" - Response text confirmed: \"The page title is \\\"Example Domain\\\" — the page just has that heading, a line about the domain being for documentation examples, and a \"Learn more\" link. Browser closed.\""
+    "Navigated to http://localhost:47891 — page loaded successfully showing Gamut application with sidebar containing two agents",
+    "Found and clicked the \"QA-20260904-225058-mkf2\" agent button in the sidebar — agent page loaded with chat interface and configuration panel",
+    "Clicked on the message input textbox — textbox became active and ready for input",
+    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" into the input field — message text appeared in the textbox",
+    "Clicked the \"Send message\" button — message was sent and a new session was created with URL showing session ID 39f43882-e47e-470c-86dd-24911c785426",
+    "Waited up to 3 minutes for agent response — agent completed processing in 9 seconds with 4 tool calls using 163,676 tokens",
+    "Verified response mentions \"Example Domain\" — response text confirms: \"The page title is \"Example Domain\" — a placeholder page reserved for use in documentation examples. Browser is closed.\"",
+    "Took screenshot showing full page with agent response and work metrics — screenshot captured showing complete response with browser tool execution details"
   ],
   "bugs": [],
-  "durationMs": 142286,
-  "sessionId": "d314856a-12c7-4e52-8f93-060fe2550259",
+  "durationMs": 265241,
+  "sessionId": "f7dd4ca1-f5dc-4e97-8b63-77b1f03cac90",
   "cost": {
-    "inputTokens": 440,
-    "outputTokens": 12401,
-    "cacheCreationTokens": 65626,
-    "cacheReadTokens": 1218783,
+    "inputTokens": 320,
+    "outputTokens": 10274,
+    "cacheCreationTokens": 69097,
+    "cacheReadTokens": 879517,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.266356
+    "totalCostUsd": 0.226013
   }
 }
