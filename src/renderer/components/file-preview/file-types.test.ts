@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isCopyableTextFile, looksBinary } from './file-types'
+import { isCopyableTextFile, isPreviewableImage, looksBinary } from './file-types'
 
 describe('isCopyableTextFile', () => {
   it.each(['notes.md', 'data.csv', 'config.json', 'index.html', 'icon.svg', 'Dockerfile'])(
@@ -35,5 +35,28 @@ describe('looksBinary', () => {
 
   it('only sniffs the head, so a NUL past the sample window is not decisive', () => {
     expect(looksBinary(`${'a'.repeat(8000)}\u0000`)).toBe(false)
+  })
+})
+
+describe('isPreviewableImage', () => {
+  it.each(['photo.png', 'shot.PNG', 'anim.gif', 'logo.svg', 'pic.webp', '/workspace/uploads/1-photo.jpeg'])(
+    'draws %s as a picture',
+    (path) => expect(isPreviewableImage(path)).toBe(true),
+  )
+
+  // Browsers report these as image/*, but no renderer here can display one, so
+  // calling them pictures is how the composer and the sent message disagreed.
+  it.each(['scan.tiff', 'scan.tif', 'photo.heic', 'art.psd', 'design.fig'])(
+    'draws %s as a chip despite its image MIME',
+    (path) => expect(isPreviewableImage(path)).toBe(false),
+  )
+
+  it.each(['report.pdf', 'notes.md', 'archive.zip', 'LICENSE'])(
+    'draws %s as a chip',
+    (path) => expect(isPreviewableImage(path)).toBe(false),
+  )
+
+  it('never draws a folder as a picture, whatever it is named', () => {
+    expect(isPreviewableImage('/workspace/uploads/shots.png/')).toBe(false)
   })
 })

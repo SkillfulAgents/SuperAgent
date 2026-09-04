@@ -173,6 +173,20 @@ export function previewKind(filePath: string): PreviewKind | null {
   return fileType(filePath)?.preview ?? null
 }
 
+/**
+ * Whether to draw this path as a picture rather than as a file chip.
+ *
+ * The single answer on both sides of the send boundary. The composer used to
+ * ask the browser (`File.type.startsWith('image/')`) and the sent message asked
+ * the extension, so a `.tiff` — which browsers report as `image/tiff` but no
+ * renderer here can display — drew as a picture in the composer and as a chip
+ * once sent. Asking the same table both times is what keeps a file looking like
+ * itself across the send.
+ */
+export function isPreviewableImage(filePath: string): boolean {
+  return !filePath.endsWith('/') && previewKind(filePath) === 'image'
+}
+
 const BINARY_EXTS = new Set([
   ...[...IMAGE_EXTS].filter(ext => ext !== 'svg'),
   ...extensionsFor('video'),

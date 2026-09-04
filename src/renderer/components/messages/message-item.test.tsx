@@ -35,6 +35,15 @@ vi.mock('./tool-call-item', () => ({
   ),
 }))
 
+// Stub the chip: these cover how the message lays attachments out, not how a
+// single chip draws itself (sent-attachment-chip.test.tsx does that).
+vi.mock('./sent-attachment-chip', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./sent-attachment-chip')>()),
+  SentAttachmentChip: ({ filePath }: { filePath: string }) => (
+    <div data-testid="file-pill" data-file-path={filePath} />
+  ),
+}))
+
 // Mock MessageContextMenu to just render children
 vi.mock('./message-context-menu', () => ({
   MessageContextMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -74,6 +83,47 @@ describe('MessageItem', () => {
       const msg = createUserMessage({ content: { text: 'Hello world' } })
       render(<MessageItem message={msg} />)
       expect(screen.getByText('Hello world')).toBeInTheDocument()
+    })
+  })
+
+  describe('attachments on a sent message', () => {
+    const withFiles = (...paths: string[]) =>
+      createUserMessage({ content: { text: `look\n\n[Attached files:]\n${paths.map((p) => `- ${p}`).join('\n')}` } })
+
+    it('splits pictures from files so a tall image never stretches the chips', () => {
+      render(<MessageItem message={withFiles('/workspace/uploads/1-a.png', '/workspace/uploads/1-b.pdf')} agentSlug="a1" />)
+      const files = screen.getByTestId('sent-files').querySelectorAll('[data-file-pill], [data-testid="file-pill"]')
+      const images = screen.getByTestId('sent-images').querySelectorAll('[data-testid="file-pill"]')
+      expect([...files].map((el) => el.getAttribute('data-file-path'))).toEqual(['/workspace/uploads/1-b.pdf'])
+      expect([...images].map((el) => el.getAttribute('data-file-path'))).toEqual(['/workspace/uploads/1-a.png'])
+    })
+
+    it('lays four or more images out as a grid', () => {
+      const paths = ['a', 'b', 'c', 'd'].map((n) => `/workspace/uploads/1-${n}.png`)
+      render(<MessageItem message={withFiles(...paths)} agentSlug="a1" />)
+      expect(screen.getByTestId('sent-images')).toHaveAttribute('data-image-layout', 'grid')
+      expect(screen.getAllByTestId('file-pill')).toHaveLength(4)
+    })
+
+    // Attaching the same file twice is legal, and a key of the path alone
+    // collides. React still paints both on a first render, so the defect shows
+    // as its duplicate-key warning — and as reconciliation reusing the wrong
+    // chip once the list changes.
+    it.each([
+      ['files', '/workspace/uploads/1-a.pdf'],
+      ['pictures', '/workspace/uploads/1-a.png'],
+    ])('keys repeated %s apart', (_kind, filePath) => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        render(<MessageItem message={withFiles(filePath, filePath)} agentSlug="a1" />)
+        expect(screen.getAllByTestId('file-pill')).toHaveLength(2)
+        const warnings = consoleError.mock.calls
+          .map((args) => args.join(' '))
+          .filter((message) => message.includes('same key'))
+        expect(warnings).toEqual([])
+      } finally {
+        consoleError.mockRestore()
+      }
     })
   })
 
