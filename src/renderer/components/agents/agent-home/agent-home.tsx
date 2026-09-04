@@ -141,12 +141,25 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   // "Export Agent" / "Agent Directory" chosen from a menu away from this page
   // (sidebar row, home card, breadcrumb) navigates here with the action
   // parked in NavTransient; run it now that its surface is mounted.
+  //
+  // Not synchronously, though: the composer below focuses itself on the
+  // animation frame after it mounts (see MarkdownComposerEditor's autoFocus),
+  // and the Share popover is non-modal, so if it opens before that frame the
+  // composer's focus lands outside it and Radix dismisses it as an outside
+  // interaction. Whether the popover or the focus came first depended on how
+  // this page mounted, which made "Export Agent" from the sidebar flaky.
+  // Frame callbacks run in the order they were requested, so deferring the
+  // action by one frame always puts it after that autofocus. No cleanup on
+  // purpose: clearing the parked action re-runs this effect, and cancelling
+  // the frame there would drop the action.
   useEffect(() => {
     if (pendingAgentHomeAction?.slug !== agent.slug) return
     const { action } = pendingAgentHomeAction
     setPendingAgentHomeAction(null)
-    if (action === 'export') openExport()
-    else openDirectory()
+    requestAnimationFrame(() => {
+      if (action === 'export') openExport()
+      else openDirectory()
+    })
   }, [pendingAgentHomeAction, agent.slug, setPendingAgentHomeAction, openExport, openDirectory])
   const handleOpenSettings = useCallback((tab?: string) => {
     if (tab === 'system-prompt') setSystemPromptOpen(true)
