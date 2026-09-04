@@ -8,7 +8,7 @@ import {
   providerErrorPresentationSchema,
   resolvePresentationMarkdown,
 } from './error-presentation'
-import { parsePlatformErrorResponse } from './platform-error-presentation'
+import { extractSubscriptionRequired, parsePlatformErrorResponse } from './platform-error-presentation'
 
 const SPEND_CAP =
   'API Error: Request rejected (429) · A spend cap for this workspace was reached. It resets within 30 days. Ask a workspace admin to raise it.'
@@ -136,13 +136,39 @@ describe('parsePlatformErrorResponse', () => {
     expect(parsePlatformErrorResponse(429, RATE_LIMIT)).toBeNull()
   })
 
-  it('returns markdown with a billing link for a 402', () => {
+  it('routes a 402 to the paywall component above the composer', () => {
     expect(parsePlatformErrorResponse(402, BILLING_402)).toEqual({
       severity: 'error',
       icon: 'info',
-      message:
-        '**Insufficient Balance:** Subscribe or top up to continue running agents. [Go to billing](/dashboard/organizations/{orgId}?tab=billing)',
+      message: '**You need more usage credit to continue** Subscribe or top up to resume this answer.',
+      component: 'paywall',
+      placement: 'composer',
     })
+  })
+
+  it('tailors the 402 copy to the subscription_required flag when the body kept it', () => {
+    const needsPlan = parsePlatformErrorResponse(402, '{"error":"insufficient_balance","subscription_required":true}')
+    expect(needsPlan?.message).toContain('Subscribe')
+    expect(needsPlan?.message).not.toContain('top up')
+    const needsCredit = parsePlatformErrorResponse(402, '{"error":"insufficient_balance","subscription_required":false}')
+    expect(needsCredit?.message).toContain('Add usage credit')
+  })
+
+  it('recognizes a 402 the CLI flattened into an "API Error: 402" string', () => {
+    const parsed = parsePlatformErrorResponse(undefined, 'API Error: 402 {"error":"insufficient_balance"}')
+    expect(parsed?.component).toBe('paywall')
+  })
+})
+
+describe('extractSubscriptionRequired', () => {
+  it('reads the flag from a JSON body or an embedded JSON object', () => {
+    expect(extractSubscriptionRequired({ error: 'x', subscription_required: true })).toBe(true)
+    expect(extractSubscriptionRequired('API Error: 402 {"subscription_required":false}')).toBe(false)
+  })
+
+  it('is undefined when the body dropped the flag', () => {
+    expect(extractSubscriptionRequired('API Error: 402 {"error":"insufficient_balance"}')).toBeUndefined()
+    expect(extractSubscriptionRequired('Payment required')).toBeUndefined()
   })
 })
 
