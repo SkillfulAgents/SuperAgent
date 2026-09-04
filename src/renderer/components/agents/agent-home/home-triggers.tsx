@@ -35,7 +35,6 @@ import {
   useResumeWebhookTrigger,
   type WebhookTrigger,
 } from '@renderer/hooks/use-webhook-triggers'
-import { useHumanizedCron } from '@renderer/hooks/use-humanized-cron'
 import { formatDistanceToNow } from 'date-fns'
 import { HomeCollapsible } from './home-collapsible'
 import type { ApiScheduledTask } from '@shared/lib/types/api'
@@ -213,8 +212,8 @@ export function HomeTriggers({
 
 interface TriggerRowProps {
   name: string
-  subtitleLeft: ReactNode
-  subtitleRight: ReactNode
+  /** One line: the trigger kind, then its next/last run. Nothing else. */
+  subtitle: ReactNode
   isPaused: boolean
   canTogglePause: boolean
   togglePending: boolean
@@ -234,8 +233,7 @@ interface TriggerRowProps {
 
 function TriggerRow({
   name,
-  subtitleLeft,
-  subtitleRight,
+  subtitle,
   isPaused,
   canTogglePause,
   togglePending,
@@ -272,9 +270,8 @@ function TriggerRow({
                 </span>
               )}
             </div>
-            <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground mt-0.5">
-              {subtitleLeft}
-              {subtitleRight}
+            <div className="mt-0.5 truncate text-xs text-muted-foreground">
+              {subtitle}
             </div>
           </div>
           {activityChart && <div className="shrink-0 mr-6">{activityChart}</div>}
@@ -449,7 +446,6 @@ function CronRow({
   const cancelTask = useCancelScheduledTask()
   const pauseTask = usePauseScheduledTask()
   const resumeTask = useResumeScheduledTask()
-  const humanizedCron = useHumanizedCron(task.isRecurring ? task.scheduleExpression : null)
   const isPaused = task.status === 'paused'
   const isDeleted = task.status === 'cancelled'
 
@@ -458,14 +454,13 @@ function CronRow({
       kind="cron"
       isDeleted={isDeleted}
       name={task.name ?? 'Scheduled Task'}
-      subtitleLeft={<span>cron · {humanizedCron ?? 'One-time'}</span>}
-      subtitleRight={
-        task.nextExecutionAt && !isPaused ? (
-          <span className="shrink-0">
-            <span className="text-muted-foreground">next run </span>
-            {formatDistanceToNow(new Date(task.nextExecutionAt), { addSuffix: true })}
-          </span>
-        ) : null
+      subtitle={
+        <>
+          cron
+          {task.nextExecutionAt && !isPaused ? (
+            <> · next run {formatDistanceToNow(new Date(task.nextExecutionAt), { addSuffix: true })}</>
+          ) : null}
+        </>
       }
       isPaused={isPaused}
       canTogglePause={task.isRecurring}
@@ -510,29 +505,19 @@ function WebhookRow({
   const isPaused = trigger.status === 'paused'
   const isDeleted = trigger.status === 'cancelled'
   const displayName = trigger.name ?? trigger.triggerType
-  const isCustom = trigger.kind === 'custom'
 
   return (
     <TriggerRow
       kind="webhook"
       isDeleted={isDeleted}
       name={displayName}
-      subtitleLeft={
-        <span className="truncate lowercase">
-          {isCustom ? 'webhook · custom endpoint' : `webhook · ${trigger.triggerType}`}
-        </span>
-      }
-      subtitleRight={
-        <span className="shrink-0">
-          {trigger.lastFiredAt ? (
-            <>
-              <span className="text-muted-foreground">last run </span>
-              {formatDistanceToNow(new Date(trigger.lastFiredAt), { addSuffix: true })}
-            </>
-          ) : (
-            'No runs yet'
-          )}
-        </span>
+      subtitle={
+        <>
+          webhook
+          {trigger.lastFiredAt
+            ? <> · last run {formatDistanceToNow(new Date(trigger.lastFiredAt), { addSuffix: true })}</>
+            : <> · no runs yet</>}
+        </>
       }
       isPaused={isPaused}
       canTogglePause
