@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified the Browser Use feature allows agents to open browsers, navigate to URLs, and retrieve page titles via browser tools, with responses visible in the chat interface.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application homepage.",
+    "Clicked on \"QA-20260904-194909-woa5\" agent in the sidebar — Successfully opened the agent's chat interface, page URL changed to /agents/qa-20260904-194909-woa5-0vj84xo30q.",
+    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" into the message input box — Message appeared in the textbox and was ready to send.",
+    "Clicked the \"Send message\" button — Message was sent successfully, agent status changed to \"working\", session was created with title \"Browser Page Title Lookup\".",
+    "Waited up to 3 minutes for the agent response — Agent completed the task in 10 seconds with 4 tool calls and 163,674 tokens used.",
+    "Verified the response mentions \"Example Domain\" and took a screenshot — Response clearly states: \"The page title is 'Example Domain' — a placeholder page reserved for documentation examples. Browser is closed.\" The requirement to verify \"Example Domain\" in the response was met."
+  ],
+  "bugs": [],
+  "durationMs": 148830,
+  "sessionId": "6fe152fd-d1e6-4e44-901e-72dd6ed08197",
+  "cost": {
+    "inputTokens": 392,
+    "outputTokens": 13487,
+    "cacheCreationTokens": 62568,
+    "cacheReadTokens": 1072505,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.253288
+  }
+}
