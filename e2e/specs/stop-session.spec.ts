@@ -104,6 +104,9 @@ test.describe('Stop button interrupts the working agent', () => {
     await sessionPage.waitForUserMessageCount(5)
     await sessionPage.expectUserMessage('please work slowly for the stop test', 1)
     await sessionPage.expectInterruptMarker(2)
+    // The CLI's synthetic "No response requested." stand-in after the abort
+    // is transcript noise and never renders.
+    await expect(page.getByText('No response requested.')).toHaveCount(0)
   })
 
   test('stopping with a queued message rescues its text into the composer for resend', async ({ page }) => {

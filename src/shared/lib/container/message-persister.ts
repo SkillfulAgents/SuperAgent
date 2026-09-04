@@ -87,6 +87,7 @@ import { resolveAppFromWindowRef } from '@shared/lib/computer-use/executor'
 import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp, type ComputerUsePermissionLevel } from '@shared/lib/computer-use/types'
 import { getAgentSessionsDir, getSessionJsonlPath } from '@shared/lib/utils/file-storage'
 import { makeThinkingBlockId } from '@shared/lib/utils/thinking-block-id'
+import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
 import { WorkflowJournalTailer } from './workflow-journal-tailer'
 import { SubagentCapture } from './subagent-capture'
 import * as fs from 'fs'
@@ -1850,6 +1851,10 @@ class MessagePersister {
 
     switch (content.type) {
       case 'assistant': {
+        // The CLI's "No response requested." stand-in for a turn with no model
+        // output. The transform hides it, so it must not become the
+        // notification body or trigger a refetch either.
+        if (isSyntheticPlaceholderMessage(content)) break
         if (state.resetAssistantBeforeNextTurnOutput) {
           this.resetSessionCompleteResponse(state)
           state.resetAssistantBeforeNextTurnOutput = false

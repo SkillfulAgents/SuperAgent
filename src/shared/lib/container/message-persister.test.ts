@@ -547,6 +547,51 @@ describe('MessagePersister', () => {
       await expect(call?.[2]?.responseTranscriptEndOffset).resolves.toBe(12_345)
     })
 
+    it('ignores the synthetic "No response requested." placeholder as a response candidate', async () => {
+      mockStat.mockResolvedValueOnce({ size: 12_345 })
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'capabilities',
+        session_state_events: true,
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'real-entry',
+        message: {
+          id: 'msg-real',
+          content: [{ type: 'text', text: 'Real answer.' }],
+        },
+      })
+      // The CLI's stand-in after an interrupt: a newer assistant message id,
+      // but nothing the model said. It must not replace the real answer.
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'synthetic-entry',
+        isApiErrorMessage: false,
+        message: {
+          id: 'msg-synthetic',
+          model: '<synthetic>',
+          content: [{ type: 'text', text: 'No response requested.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'session_state_changed',
+        state: 'idle',
+      })
+
+      const call = vi.mocked(notificationManager.triggerSessionComplete).mock.calls.at(-1)
+      expect(call?.[2]?.responseText).toBe('Real answer.')
+    })
+
     it('dispatches completion without waiting for the transcript stat', async () => {
       let resolveStat: ((value: { size: number }) => void) | undefined
       mockStat.mockImplementationOnce(

@@ -37,6 +37,7 @@ import {
   isTaskNotificationMessage,
   type TransformedItem,
 } from '@shared/lib/utils/message-transform'
+import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
 import { findDeltaWindowStart } from '@shared/lib/messages-delta'
 import {
   sortSessionsByActivity,
@@ -1147,6 +1148,7 @@ interface DisplayCountState {
 function countsAsDisplayStart(entry: JsonlEntry, state: DisplayCountState): boolean {
   if (!isMessageOrSystemDisplayEntry(entry)) return false
   if ('isMeta' in entry && entry.isMeta) return false
+  if (isSyntheticPlaceholderMessage(entry)) return false
 
   if (entry.type === 'system') {
     const sys = entry as JsonlSystemEntry
@@ -1236,6 +1238,7 @@ function classifyExtensionRow(
   if (normalized === undefined) return 'filtered'
   if (!isMessageOrSystemDisplayEntry(normalized)) return 'filtered'
   if ('isMeta' in normalized && normalized.isMeta) return 'filtered'
+  if (isSyntheticPlaceholderMessage(normalized)) return 'filtered'
   if (normalized.type === 'system') {
     const sys = normalized as JsonlSystemEntry
     // Mirror countsAsDisplayStart's synthetic-copy tracking so the copy of an
