@@ -1,24 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser use feature test: Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it back correctly.",
+  "reason": "Browser use feature successfully executed - agent opened browser, navigated to https://example.com, retrieved page title \"Example Domain\", and returned the correct information.",
   "steps": [
-    "Navigated to http://localhost:47891 - Page loaded successfully with title \"Gamut\" and showed the agents list in sidebar.",
-    "Found and clicked agent \"QA-20260904-031630-cqoy\" in the sidebar - Agent page loaded successfully, URL changed to agent detail page with session creation capability.",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the message input field - Message appeared in the input field correctly.",
-    "Clicked send button to submit the message - Message was sent successfully, session was created with ID cf28b04a-e05d-4d13-933c-83ecaa7eefa0.",
-    "Waited for agent response (5+ seconds) - Agent completed work in 12 seconds total, executing 4 tool calls and consuming 163,676 tokens.",
-    "Verified response mentions \"Example Domain\" - Agent's response clearly states: \"The page title is 'Example Domain' — it's the standard IANA placeholder page. Browser closed.\" ✓ VERIFIED"
+    "Step 1 - Navigated to http://localhost:47891 — Successfully loaded the Gamut application home page showing two agents in the sidebar and main panel.",
+    "Step 2 - Clicked on \"QA-20260904-174239-iypa\" agent in sidebar — Successfully opened the agent page with the message input interface visible.",
+    "Step 3 - Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Message successfully entered in the textbox.",
+    "Step 4 - Clicked send button — Message sent successfully and agent began processing. URL changed to session view, agent status changed to \"working\", and initial response started appearing.",
+    "Step 5 - Waited for agent response (up to 3 minutes) — Agent completed work in approximately 11 seconds. Response became visible showing the agent successfully completed the task with 4 tool calls and used 163,699 tokens.",
+    "Step 6 - Verified response contains \"Example Domain\" — Response clearly states: \"The page title is \"Example Domain\" — the page just has that heading, a short paragraph about the domain being for documentation examples, and a \"Learn more\" link. Browser is closed.\" The response correctly mentions \"Example Domain\" as the page title."
   ],
   "bugs": [],
-  "durationMs": 160549,
-  "sessionId": "ea579f7d-d77a-41c5-822e-9b9feb17f160",
+  "durationMs": 76708,
+  "sessionId": "761cef53-14b1-4bd2-bf37-a16521c785d2",
   "cost": {
-    "inputTokens": 374,
-    "outputTokens": 10935,
-    "cacheCreationTokens": 55775,
-    "cacheReadTokens": 953980,
+    "inputTokens": 410,
+    "outputTokens": 12732,
+    "cacheCreationTokens": 82460,
+    "cacheReadTokens": 1226369,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.220166
+    "totalCostUsd": 0.289782
   }
 }
