@@ -9,7 +9,7 @@ import { captureException } from '@shared/lib/error-reporting'
 
 // Run migrations on startup
 // This is safe to run on every start - it only applies pending migrations
-function getMigrationsFolder(): string {
+export function getMigrationsFolder(): string {
   // In packaged Electron app, use resources path
   if (process.type === 'browser' && !process.defaultApp) {
     // We're in packaged Electron main process

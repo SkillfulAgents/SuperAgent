@@ -610,6 +610,8 @@ export const webhookTriggers = sqliteTable('webhook_triggers', {
   // Set once the upstream subscription is confirmed gone (deleted or 404);
   // null on a terminal row means the reconcile step still owes a teardown (SUP-765).
   upstreamDeletedAt: integer('upstream_deleted_at', { mode: 'timestamp_ms' }),
+  // Failed reconcile passes; orders the bounded batch so stuck rows rotate out.
+  upstreamTeardownAttempts: integer('upstream_teardown_attempts').notNull().default(0),
 }, (table) => ({
   agentSlugIdx: index('webhook_triggers_agent_slug_idx').on(table.agentSlug),
   statusIdx: index('webhook_triggers_status_idx').on(table.status),

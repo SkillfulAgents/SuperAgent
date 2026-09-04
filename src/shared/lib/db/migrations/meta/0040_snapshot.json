@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "8951f2e5-73f8-4f99-9d8d-749ce07fa0a4",
-  "prevId": "4b98a85f-7a32-4af9-bd5e-d37628875f43",
+  "id": "525e8ee1-dbee-42d2-aa32-8f39c6aa8762",
+  "prevId": "8951f2e5-73f8-4f99-9d8d-749ce07fa0a4",
   "tables": {
     "agent_acl": {
       "name": "agent_acl",
@@ -2859,6 +2859,21 @@
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
+        },
+        "upstream_deleted_at": {
+          "name": "upstream_deleted_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "upstream_teardown_attempts": {
+          "name": "upstream_teardown_attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
         }
       },
       "indexes": {

@@ -46,6 +46,7 @@ import {
   updateAgent,
   deleteAgent,
   agentExists,
+  getAgentPresence,
   getAgentClaudeMdContent,
   setAgentClaudeMdContent,
 } from './agent-service'
@@ -492,6 +493,28 @@ Instructions`
 
       const exists = await agentExists('test-agent')
       expect(exists).toBe(true)
+    })
+  })
+
+  describe('getAgentPresence', () => {
+    it('is missing only for a confirmed-absent directory', async () => {
+      expect(await getAgentPresence('nonexistent')).toBe('missing')
+    })
+
+    it('is present for an existing agent', async () => {
+      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+      expect(await getAgentPresence('test-agent')).toBe('present')
+    })
+
+    it('is unknown when the directory cannot be read (not a deletion signal)', async () => {
+      const statSpy = vi.spyOn(fs.promises, 'stat').mockRejectedValueOnce(
+        Object.assign(new Error('EIO: i/o error'), { code: 'EIO' }),
+      )
+      try {
+        expect(await getAgentPresence('test-agent')).toBe('unknown')
+      } finally {
+        statSpy.mockRestore()
+      }
     })
   })
 

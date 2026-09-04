@@ -23,10 +23,7 @@ import { removeLegacySessionOwnershipIndex } from './services/session-service'
 import { isAuthMode } from './auth/mode'
 import { clearPendingApprovalBans } from './auth/clear-pending-approval-bans'
 import { validateAuthModeStartup } from './auth/startup-validation'
-import {
-  decodeOrgIdFromToken,
-  installPlatformFetchInterceptor,
-} from './platform-attribution'
+import { installPlatformFetchInterceptorIfOrgToken } from './platform-attribution'
 import { getPlatformAccessToken } from './services/platform-auth-service'
 import { setupBrowserStreamProxy } from '../../main/browser-stream-proxy'
 import { setupCloudStreamProxy } from '../../main/cloud-stream-proxy'
@@ -160,12 +157,8 @@ async function initializeServicesInner() {
         }
       }
 
-      // Install fetch interceptor for org JWTs (opaque keys don't need attribution).
       try {
-        const platformToken = getPlatformAccessToken()
-        if (platformToken && decodeOrgIdFromToken(platformToken) !== null) {
-          installPlatformFetchInterceptor()
-        }
+        installPlatformFetchInterceptorIfOrgToken()
       } catch (error) {
         captureException(error, { tags: { component: 'startup', operation: 'install-fetch-interceptor' } })
       }

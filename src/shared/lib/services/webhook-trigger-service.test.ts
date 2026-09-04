@@ -36,7 +36,6 @@ import {
   listActiveWebhookTriggers,
   cancelWebhookTrigger,
   markTriggerFired,
-  markTriggerFailed,
   updateComposioTriggerId,
 } from './webhook-trigger-service'
 
@@ -258,21 +257,6 @@ describe('webhook-trigger-service', () => {
       trigger = await getWebhookTrigger(id)
       expect(trigger!.fireCount).toBe(2)
       expect(trigger!.lastSessionId).toBe('sess_run2')
-    })
-  })
-
-  describe('markTriggerFailed', () => {
-    it('sets status to failed', async () => {
-      const id = await createWebhookTrigger({
-        agentSlug: 'agent-1',
-        connectedAccountId: 'ca_1',
-        triggerType: 'GMAIL_NEW_EMAIL',
-        prompt: 'Test',
-      })
-
-      await markTriggerFailed(id, 'Agent not found')
-      const trigger = await getWebhookTrigger(id)
-      expect(trigger!.status).toBe('failed')
     })
   })
 

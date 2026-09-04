@@ -45,8 +45,9 @@ vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   getDistinctPlatformMemberIdsForActiveTriggers: () => ['sub_test_member'],
   listAllWebhookTriggersByComposioId: (...args: unknown[]) => mockGetWebhookTriggersByComposioId(...args),
   reconcileOrphanedUpstreamSubscriptions: vi.fn().mockResolvedValue(0),
+  RECONCILE_BATCH_SIZE: 25,
   markTriggerFired: (...args: unknown[]) => mockMarkTriggerFired(...args),
-  markTriggerFailed: vi.fn().mockResolvedValue(undefined),
+  cancelWebhookTriggerWithCleanup: vi.fn().mockResolvedValue(true),
   resolveTriggerPrincipal: () => null,
   getConnectedAccountOwnerUserId: () => null,
 }))
@@ -61,7 +62,7 @@ vi.mock('@shared/lib/services/secrets-service', () => ({
 }))
 
 vi.mock('@shared/lib/services/agent-service', () => ({
-  agentExists: vi.fn().mockResolvedValue(true),
+  getAgentPresence: vi.fn().mockResolvedValue('present'),
 }))
 
 const mockPollAndClaimEvents = vi.fn()

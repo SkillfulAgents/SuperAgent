@@ -48,8 +48,7 @@ vi.mock('./services/platform-auth-service', () => ({
   getPlatformAccessToken: () => getPlatformAccessToken(),
 }))
 vi.mock('./platform-attribution', () => ({
-  decodeOrgIdFromToken: () => null,
-  installPlatformFetchInterceptor: vi.fn(),
+  installPlatformFetchInterceptorIfOrgToken: vi.fn(() => false),
 }))
 vi.mock('./account-providers/register', () => ({
   registerAllAccountProviders: vi.fn(),

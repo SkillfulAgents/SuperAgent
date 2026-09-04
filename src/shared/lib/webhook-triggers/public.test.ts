@@ -29,6 +29,7 @@ const trigger: WebhookTrigger = {
   cancelledAt: null,
   pausedAt: null,
   upstreamDeletedAt: null,
+  upstreamTeardownAttempts: 0,
 }
 
 describe('toPublicWebhookTrigger', () => {

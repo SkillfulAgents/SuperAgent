@@ -46,7 +46,7 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
 const mockGetWebhookTriggersByComposioId = vi.fn()
 const mockReconcileOrphans = vi.fn().mockResolvedValue(0)
 const mockMarkTriggerFired = vi.fn().mockResolvedValue(undefined)
-const mockMarkTriggerFailed = vi.fn().mockResolvedValue(undefined)
+const mockCancelWithCleanup = vi.fn().mockResolvedValue(true)
 const mockGetDistinctMemberIds = vi.fn(() => ['sub_test_member'])
 const mockResolveTriggerPrincipal =
   vi.fn<(trigger: unknown) => { userId: string; memberId: string } | null>(() => null)
@@ -54,8 +54,9 @@ vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   getDistinctPlatformMemberIdsForActiveTriggers: () => mockGetDistinctMemberIds(),
   listAllWebhookTriggersByComposioId: (...args: unknown[]) => mockGetWebhookTriggersByComposioId(...args),
   reconcileOrphanedUpstreamSubscriptions: () => mockReconcileOrphans(),
+  RECONCILE_BATCH_SIZE: 25,
   markTriggerFired: (...args: unknown[]) => mockMarkTriggerFired(...args),
-  markTriggerFailed: (...args: unknown[]) => mockMarkTriggerFailed(...args),
+  cancelWebhookTriggerWithCleanup: (...args: unknown[]) => mockCancelWithCleanup(...args),
   resolveTriggerPrincipal: (trigger: unknown) => mockResolveTriggerPrincipal(trigger),
   getConnectedAccountOwnerUserId: () => null,
 }))
@@ -75,9 +76,9 @@ vi.mock('@shared/lib/services/agent-preferences-service', () => ({
   readAgentPreferences: (...args: unknown[]) => mockReadAgentPreferences(...args),
 }))
 
-const mockAgentExists = vi.fn().mockResolvedValue(true)
+const mockGetAgentPresence = vi.fn<() => Promise<'present' | 'missing' | 'unknown'>>(async () => 'present')
 vi.mock('@shared/lib/services/agent-service', () => ({
-  agentExists: (...args: unknown[]) => mockAgentExists(...args),
+  getAgentPresence: (...args: unknown[]) => mockGetAgentPresence(...(args as [])),
 }))
 
 const mockPollAndClaimEvents = vi.fn()
@@ -145,6 +146,7 @@ describe('TriggerManager', () => {
     mockGetPlatformAccessToken.mockReturnValue('opaque_test_token')
     mockDecodeOrgIdFromToken.mockReturnValue(null)
     mockResolveTriggerPrincipal.mockReturnValue(null)
+    mockGetAgentPresence.mockResolvedValue('present')
   })
 
   describe('start', () => {
@@ -302,9 +304,10 @@ describe('TriggerManager', () => {
       triggerManager.stop()
     })
 
-    // SUP-765: owed upstream teardowns are found from local rows on every
-    // pass, not from events — the claim never returns events for terminal ids.
-    it('reconciles orphaned upstream subscriptions once per poll pass, before claiming', async () => {
+    // SUP-765: owed upstream teardowns are found from local rows, not from
+    // events — the claim never returns events for terminal ids. The reconcile
+    // runs after the claim so teardown trouble never delays delivery.
+    it('reconciles orphaned upstream subscriptions after the claim, off the poll path', async () => {
       const order: string[] = []
       mockReconcileOrphans.mockImplementation(async () => {
         order.push('reconcile')
@@ -316,10 +319,62 @@ describe('TriggerManager', () => {
       })
 
       await triggerManager.start()
+      await vi.waitFor(() => expect(mockReconcileOrphans).toHaveBeenCalledTimes(1))
 
+      expect(order).toEqual(['poll', 'reconcile'])
+
+      triggerManager.stop()
+    })
+
+    it('drains the backlog only while a full batch succeeds', async () => {
+      // 25 = full batch → more may be waiting; 3 = the rest failed or nothing left → stop.
+      mockReconcileOrphans.mockResolvedValueOnce(25).mockResolvedValueOnce(3)
+      mockPollAndClaimEvents.mockResolvedValue({ events: [], realtime: null })
+
+      await triggerManager.start()
+      await vi.waitFor(() => expect(mockReconcileOrphans).toHaveBeenCalledTimes(2))
+      await new Promise((r) => setTimeout(r, 10))
+      expect(mockReconcileOrphans).toHaveBeenCalledTimes(2)
+
+      triggerManager.stop()
+    })
+
+    it('throttles reconcile so a burst of realtime nudges costs one run, not one per event', async () => {
+      mockPollAndClaimEvents.mockResolvedValue({ events: [], realtime: null })
+      const nowSpy = vi.spyOn(Date, 'now')
+      nowSpy.mockReturnValue(1_000_000)
+
+      await triggerManager.start()
+      await triggerManager.pollAndProcess()
+      await triggerManager.pollAndProcess()
+      expect(mockPollAndClaimEvents).toHaveBeenCalledTimes(3)
       expect(mockReconcileOrphans).toHaveBeenCalledTimes(1)
-      expect(order).toEqual(['reconcile', 'poll'])
 
+      nowSpy.mockReturnValue(1_000_000 + 60_001)
+      await triggerManager.pollAndProcess()
+      expect(mockReconcileOrphans).toHaveBeenCalledTimes(2)
+
+      nowSpy.mockRestore()
+      triggerManager.stop()
+    })
+
+    it('does not block the next claim on a slow reconcile', async () => {
+      let releaseReconcile!: () => void
+      mockReconcileOrphans.mockImplementationOnce(
+        () => new Promise<number>((resolve) => { releaseReconcile = () => resolve(0) }),
+      )
+      mockPollAndClaimEvents.mockResolvedValue({ events: [], realtime: null })
+
+      await triggerManager.start()
+      expect(mockReconcileOrphans).toHaveBeenCalledTimes(1)
+
+      // A nudge while the reconcile hangs must still claim.
+      await triggerManager.pollAndProcess()
+      expect(mockPollAndClaimEvents).toHaveBeenCalledTimes(2)
+      // Only one reconcile in flight at a time.
+      expect(mockReconcileOrphans).toHaveBeenCalledTimes(1)
+
+      releaseReconcile()
       triggerManager.stop()
     })
 
@@ -329,8 +384,8 @@ describe('TriggerManager', () => {
       mockPollAndClaimEvents.mockResolvedValue({ events: [], realtime: null })
 
       await triggerManager.start()
+      await vi.waitFor(() => expect(mockReconcileOrphans).toHaveBeenCalledTimes(1))
 
-      expect(mockReconcileOrphans).toHaveBeenCalledTimes(1)
       expect(mockPollAndClaimEvents).not.toHaveBeenCalled()
 
       triggerManager.stop()
@@ -352,13 +407,17 @@ describe('TriggerManager', () => {
       mockPollAndClaimEvents.mockResolvedValue({ events: [], realtime: null })
 
       await triggerManager.start()
-
       expect(mockPollAndClaimEvents).toHaveBeenCalledTimes(1)
+
+      await triggerManager.pollAndProcess()
+      expect(mockPollAndClaimEvents).toHaveBeenCalledTimes(2)
 
       triggerManager.stop()
     })
 
-    it('marks trigger as failed when agent does not exist', async () => {
+    // Same path as user-initiated agent deletion, so the upstream is torn
+    // down with the last-one-out guard instead of leaving a `failed` orphan.
+    it('cancels the trigger with upstream cleanup when the agent does not exist', async () => {
       mockPollAndClaimEvents.mockResolvedValue({
         events: [
           { id: 'whe_1', composio_trigger_id: 'ti_abc', trigger_type: 'X', payload: {}, created_at: '' },
@@ -375,17 +434,42 @@ describe('TriggerManager', () => {
         fireCount: 0,
       }])
 
-      mockAgentExists.mockResolvedValue(false)
+      mockGetAgentPresence.mockResolvedValue('missing')
 
       await triggerManager.start()
 
-      expect(mockMarkTriggerFailed).toHaveBeenCalledWith('trigger_1', 'Agent no longer exists')
+      expect(mockCancelWithCleanup).toHaveBeenCalledWith('trigger_1')
       expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_1'], 'sub_test_member')
       expect(mockCreateSession).not.toHaveBeenCalled()
       expect(mockRegisterSession).not.toHaveBeenCalled()
 
       triggerManager.stop()
-      mockAgentExists.mockResolvedValue(true) // restore for other tests
+    })
+
+    // A network-filesystem blip must not tear down a live subscription.
+    it('keeps the trigger and skips the batch when the agent dir cannot be read', async () => {
+      mockPollAndClaimEvents.mockResolvedValue({
+        events: [
+          { id: 'whe_1', composio_trigger_id: 'ti_abc', trigger_type: 'X', payload: {}, created_at: '' },
+        ],
+        realtime: null,
+      })
+      mockGetWebhookTriggersByComposioId.mockResolvedValue([{
+        id: 'trigger_1',
+        agentSlug: 'flaky-fs-agent',
+        composioTriggerId: 'ti_abc',
+        prompt: 'Test',
+        status: 'active',
+        fireCount: 0,
+      }])
+      mockGetAgentPresence.mockResolvedValue('unknown')
+
+      await triggerManager.start()
+
+      expect(mockCancelWithCleanup).not.toHaveBeenCalled()
+      expect(mockCreateSession).not.toHaveBeenCalled()
+
+      triggerManager.stop()
     })
 
     // SUP-226: runtime attribution must select the same user the poller claimed

@@ -9,6 +9,7 @@
 import { captureException } from '@shared/lib/error-reporting'
 import { decodeOrgIdFromToken } from '@shared/lib/platform-attribution'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
+import { platformFetchSignal } from '@shared/lib/platform-auth/fetch-timeout'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import {
   webhookEndpointSchema,
@@ -53,6 +54,7 @@ async function endpointsFetch(
   const response = await fetch(`${baseUrl}/v1/webhook-endpoints${endpoint}`, {
     ...options,
     headers,
+    signal: platformFetchSignal(options),
   })
 
   if (!response.ok) {

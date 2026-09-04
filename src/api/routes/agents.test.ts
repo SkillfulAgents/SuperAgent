@@ -1047,6 +1047,7 @@ describe('GET /:id/webhook-triggers', () => {
     cancelledAt: null,
     pausedAt: null,
     upstreamDeletedAt: null,
+    upstreamTeardownAttempts: 0,
   }
 
   it.each(['viewer', 'user'] as const)('redacts list rows for %s members', async (role) => {

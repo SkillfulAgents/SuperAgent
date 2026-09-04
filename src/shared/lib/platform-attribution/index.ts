@@ -8,6 +8,7 @@ import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/s
 import { decodeOrgIdFromToken } from '@shared/lib/platform-auth/decode-org-id'
 
 import { getRequestUserId } from './request-context'
+import { installPlatformFetchInterceptor } from './install-fetch-interceptor'
 
 // Re-export so existing consumers keep importing from here.
 export { decodeOrgIdFromToken }
@@ -123,4 +124,11 @@ export const attribution = {
   requiresActingMember,
 } as const
 
-export { installPlatformFetchInterceptor } from './install-fetch-interceptor'
+export { installPlatformFetchInterceptor }
+
+/** Install the interceptor only for org JWTs (opaque keys need no member suffix). Returns whether it was installed. */
+export function installPlatformFetchInterceptorIfOrgToken(): boolean {
+  if (!requiresActingMember()) return false
+  installPlatformFetchInterceptor()
+  return true
+}

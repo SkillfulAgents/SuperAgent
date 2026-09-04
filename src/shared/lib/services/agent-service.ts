@@ -22,6 +22,7 @@ import {
   generateAgentId,
   displaySlug,
 } from '@shared/lib/utils/file-storage'
+import fs from 'fs'
 import pLimit from 'p-limit'
 import {
   AgentFrontmatter,
@@ -417,6 +418,19 @@ export async function createAgentFromExistingWorkspace(rawName: string): Promise
 export async function agentExists(slug: string): Promise<boolean> {
   const agentDir = getAgentDir(slug)
   return directoryExists(agentDir)
+}
+
+export type AgentPresence = 'present' | 'missing' | 'unknown'
+
+// For callers with a destructive "agent is gone" fallback: only ENOENT/ENOTDIR
+// is a confirmed absence; any other stat error (network FS blip) is 'unknown'.
+export async function getAgentPresence(slug: string): Promise<AgentPresence> {
+  try {
+    return (await fs.promises.stat(getAgentDir(slug))).isDirectory() ? 'present' : 'missing'
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    return code === 'ENOENT' || code === 'ENOTDIR' ? 'missing' : 'unknown'
+  }
 }
 
 /**

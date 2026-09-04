@@ -20,8 +20,9 @@ import {
   getDistinctPlatformMemberIdsForActiveTriggers,
   listAllWebhookTriggersByComposioId,
   reconcileOrphanedUpstreamSubscriptions,
+  RECONCILE_BATCH_SIZE,
+  cancelWebhookTriggerWithCleanup,
   markTriggerFired,
-  markTriggerFailed,
   resolveTriggerPrincipal,
   getConnectedAccountOwnerUserId,
 } from '@shared/lib/services/webhook-trigger-service'
@@ -29,7 +30,7 @@ import type { WebhookTrigger } from '@shared/lib/services/webhook-trigger-servic
 import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import { registerSession } from '@shared/lib/services/session-service'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
-import { agentExists } from '@shared/lib/services/agent-service'
+import { getAgentPresence } from '@shared/lib/services/agent-service'
 import {
   pollAndClaimEvents,
   acknowledgeEvents,
@@ -92,11 +93,16 @@ function isHandshakeEvent(event: WebhookEvent): boolean {
   return envelope.success && envelope.data.kind === 'handshake'
 }
 
+// Floor between background reconcile runs; nudges inside the window skip it.
+const RECONCILE_MIN_INTERVAL_MS = 60_000
+
 class TriggerManager {
   private isRunning = false
   private realtimeClient: SupabaseRealtimeClient | null = null
   private jwtRefreshInterval: NodeJS.Timeout | null = null
   private isProcessing = false
+  private isReconciling = false
+  private lastReconcileAt = 0
 
   async start(): Promise<void> {
     if (this.isRunning) {
@@ -128,6 +134,7 @@ class TriggerManager {
 
   stop(): void {
     this.isRunning = false
+    this.lastReconcileAt = 0
 
     if (this.realtimeClient) {
       this.realtimeClient.disconnect()
@@ -153,48 +160,68 @@ class TriggerManager {
   async pollAndProcess(): Promise<void> {
     if (this.isProcessing) return
     this.isProcessing = true
-
     try {
-      // Owed upstream teardowns are found from local rows, not events: the
-      // claim is scoped to active/paused ids, so an orphan never delivers
-      // an event here (SUP-765). Runs before the member early-return so a
-      // host with only terminal rows still converges.
-      if (getPlatformAccessToken()) {
-        await reconcileOrphanedUpstreamSubscriptions().catch((error) => {
-          console.error('[TriggerManager] Upstream reconcile failed:', error)
-        })
-      }
-
-      // Poll once per distinct trigger owner; first realtime config wins.
-      // Opaque-key mode has no authAccount rows, so fall back to a placeholder
-      // (buildBearer ignores it). Org JWT mode returns early to avoid a bogus
-      // `${token}::local` bearer.
-      let memberIds = getDistinctPlatformMemberIdsForActiveTriggers()
-      if (memberIds.length === 0) {
-        if (attribution.requiresActingMember() || !getPlatformAccessToken()) return
-        memberIds = ['local']
-      }
-
-      for (const memberId of memberIds) {
-        try {
-          const result = await pollAndClaimEvents(memberId)
-
-          if (result.events.length > 0) {
-            console.log(
-              `[TriggerManager] Processing ${result.events.length} event(s) for member ${memberId}`,
-            )
-            await this.processEvents(result.events, memberId)
-          }
-
-          if (result.realtime && !this.realtimeClient?.isActive()) {
-            await this.subscribeToRealtime(result.realtime, memberId)
-          }
-        } catch (error) {
-          console.error(`[TriggerManager] Poll failed for member ${memberId}:`, error)
-        }
-      }
+      await this.claimAndProcess()
     } finally {
       this.isProcessing = false
+    }
+    // After the claim and outside the guard: teardown trouble must never
+    // delay event delivery or swallow a realtime nudge.
+    this.reconcileUpstreamInBackground()
+  }
+
+  // Owed upstream teardowns are found from local rows, not events: the claim
+  // is scoped to active/paused ids, so an orphan never delivers an event
+  // (SUP-765). Throttled: pollAndProcess runs on every realtime nudge, and a
+  // stuck row must not cost a proxy call per incoming event. Drains only
+  // while a full batch succeeds, so failing rows are retried at most once per run.
+  private reconcileUpstreamInBackground(): void {
+    if (this.isReconciling || !getPlatformAccessToken()) return
+    if (Date.now() - this.lastReconcileAt < RECONCILE_MIN_INTERVAL_MS) return
+    this.isReconciling = true
+    this.lastReconcileAt = Date.now()
+    void (async () => {
+      try {
+        while (this.isRunning) {
+          const resolved = await reconcileOrphanedUpstreamSubscriptions()
+          if (resolved < RECONCILE_BATCH_SIZE) break
+        }
+      } catch (error) {
+        console.error('[TriggerManager] Upstream reconcile failed:', error)
+      } finally {
+        this.isReconciling = false
+      }
+    })()
+  }
+
+  private async claimAndProcess(): Promise<void> {
+    // Poll once per distinct trigger owner; first realtime config wins.
+    // Opaque-key mode has no authAccount rows, so fall back to a placeholder
+    // (buildBearer ignores it). Org JWT mode returns early to avoid a bogus
+    // `${token}::local` bearer.
+    let memberIds = getDistinctPlatformMemberIdsForActiveTriggers()
+    if (memberIds.length === 0) {
+      if (attribution.requiresActingMember() || !getPlatformAccessToken()) return
+      memberIds = ['local']
+    }
+
+    for (const memberId of memberIds) {
+      try {
+        const result = await pollAndClaimEvents(memberId)
+
+        if (result.events.length > 0) {
+          console.log(
+            `[TriggerManager] Processing ${result.events.length} event(s) for member ${memberId}`,
+          )
+          await this.processEvents(result.events, memberId)
+        }
+
+        if (result.realtime && !this.realtimeClient?.isActive()) {
+          await this.subscribeToRealtime(result.realtime, memberId)
+        }
+      } catch (error) {
+        console.error(`[TriggerManager] Poll failed for member ${memberId}:`, error)
+      }
     }
   }
 
@@ -338,12 +365,22 @@ class TriggerManager {
     trigger: WebhookTrigger,
     events: WebhookEvent[]
   ): Promise<void> {
-    // Verify agent still exists
-    if (!(await agentExists(trigger.agentSlug))) {
+    // Agent gone: same path as user-initiated agent deletion, so the upstream
+    // is torn down with the last-one-out and reachability guards (SUP-765).
+    // Only a confirmed absence cancels — a filesystem blip must not delete a
+    // live subscription, so 'unknown' skips this batch and keeps the trigger.
+    const presence = await getAgentPresence(trigger.agentSlug)
+    if (presence === 'missing') {
       console.error(
-        `[TriggerManager] Agent ${trigger.agentSlug} no longer exists, marking trigger as failed`
+        `[TriggerManager] Agent ${trigger.agentSlug} no longer exists, cancelling trigger ${trigger.id}`
       )
-      await markTriggerFailed(trigger.id, 'Agent no longer exists')
+      await cancelWebhookTriggerWithCleanup(trigger.id)
+      return
+    }
+    if (presence === 'unknown') {
+      console.warn(
+        `[TriggerManager] Could not read agent dir for ${trigger.agentSlug}; keeping trigger ${trigger.id}, skipping ${events.length} event(s)`
+      )
       return
     }
 

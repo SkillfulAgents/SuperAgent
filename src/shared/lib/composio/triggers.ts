@@ -7,6 +7,7 @@
 
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
+import { platformFetchSignal } from '@shared/lib/platform-auth/fetch-timeout'
 
 function getPlatformComposioBaseUrl(): string {
   return `${getPlatformProxyBaseUrl()}/v1/composio`
@@ -36,7 +37,7 @@ async function triggerFetch<T>(
   headers.set('Authorization', `Bearer ${token}`)
 
   const url = `${getPlatformComposioBaseUrl()}${endpoint}`
-  const response = await fetch(url, { ...options, headers })
+  const response = await fetch(url, { ...options, headers, signal: platformFetchSignal(options) })
 
   if (!response.ok) {
     let errorMessage = `Composio trigger API error: ${response.status}`

@@ -12,6 +12,7 @@ import * as path from 'path'
 import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
+import { eq } from 'drizzle-orm'
 import * as schema from '../db/schema'
 
 let testDb: ReturnType<typeof drizzle>
@@ -35,32 +36,24 @@ vi.mock('@shared/lib/composio/client', () => ({
   isPlatformComposioActive: () => mockIsPlatformComposioActive(),
 }))
 
-// Status-carrying error shapes the service uses to recognise a 404.
-const { MockComposioTriggerError, MockWebhookEndpointsApiError } = vi.hoisted(() => {
-  class MockComposioTriggerError extends Error {
-    constructor(message: string, public statusCode: number) {
-      super(message)
-    }
+// Real error classes so a constructor change here fails these tests.
+const mockDeleteComposioTrigger = vi.fn()
+vi.mock('@shared/lib/composio/triggers', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@shared/lib/composio/triggers')>()
+  return {
+    ComposioTriggerError: actual.ComposioTriggerError,
+    deleteComposioTrigger: (...args: unknown[]) => mockDeleteComposioTrigger(...args),
   }
-  class MockWebhookEndpointsApiError extends Error {
-    constructor(message: string, public statusCode: number) {
-      super(message)
-    }
-  }
-  return { MockComposioTriggerError, MockWebhookEndpointsApiError }
 })
 
-const mockDeleteComposioTrigger = vi.fn()
-vi.mock('@shared/lib/composio/triggers', () => ({
-  ComposioTriggerError: MockComposioTriggerError,
-  deleteComposioTrigger: (...args: unknown[]) => mockDeleteComposioTrigger(...args),
-}))
-
 const mockDisableEndpoint = vi.fn()
-vi.mock('@shared/lib/services/webhook-endpoints-client', () => ({
-  WebhookEndpointsApiError: MockWebhookEndpointsApiError,
-  disablePlatformWebhookEndpoint: (...args: unknown[]) => mockDisableEndpoint(...args),
-}))
+vi.mock('@shared/lib/services/webhook-endpoints-client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@shared/lib/services/webhook-endpoints-client')>()
+  return {
+    WebhookEndpointsApiError: actual.WebhookEndpointsApiError,
+    disablePlatformWebhookEndpoint: (...args: unknown[]) => mockDisableEndpoint(...args),
+  }
+})
 
 const mockCaptureException = vi.fn()
 vi.mock('@shared/lib/error-reporting', () => ({
@@ -75,16 +68,28 @@ vi.mock('@shared/lib/services/platform-auth-service', () => ({
 }))
 
 import { attribution } from '@shared/lib/platform-attribution'
+import { ComposioTriggerError } from '@shared/lib/composio/triggers'
+import { WebhookEndpointsApiError } from '@shared/lib/services/webhook-endpoints-client'
 import {
   createWebhookTrigger,
   cancelWebhookTriggerWithCleanup,
   cancelWebhookTrigger,
   getWebhookTrigger,
-  markTriggerFailed,
-  listOrphanedUpstreamTriggers,
+  listOwedUpstreamTeardowns,
+  listTerminalUpstreamTriggers,
   deleteOrphanedUpstreamSubscription,
   reconcileOrphanedUpstreamSubscriptions,
+  resolveTeardownMembers,
+  markUpstreamDeleted,
+  UpstreamOwnerUnresolvedError,
+  RECONCILE_BATCH_SIZE,
+  MAX_TEARDOWN_ATTEMPTS,
 } from './webhook-trigger-service'
+
+// `failed` has no producer any more; legacy rows can still carry it.
+async function forceStatusFailed(triggerId: string) {
+  await testDb.update(schema.webhookTriggers).set({ status: 'failed' }).where(eq(schema.webhookTriggers.id, triggerId))
+}
 
 function buildOrgToken(orgId: string): string {
   const header = Buffer.from('{"alg":"none"}').toString('base64url')
@@ -253,19 +258,59 @@ describe('composio teardown attribution (SUP-765)', () => {
     expect(deleteAttributionKey).toBe('member:sub_minted')
   })
 
-  describe('upstreamDeletedAt marker', () => {
-    it('is set by a successful teardown so the row is not reconciled again', async () => {
-      const triggerId = await createComposioTrigger({ mintedByMemberId: 'sub_minted' })
+  describe('resolveTeardownMembers', () => {
+    it('is known and single when the minting member was recorded', async () => {
+      await insertUser('user-creator')
+      await insertPlatformAccount('user-creator', 'sub_creator')
+      const triggerId = await createComposioTrigger({ createdByUserId: 'user-creator', mintedByMemberId: 'sub_minted' })
 
-      await cancelWebhookTriggerWithCleanup(triggerId)
-
-      expect((await getWebhookTrigger(triggerId))!.upstreamDeletedAt).toBeInstanceOf(Date)
-      expect(listOrphanedUpstreamTriggers()).toEqual([])
+      expect(resolveTeardownMembers((await getWebhookTrigger(triggerId))!)).toEqual({
+        memberIds: ['sub_minted'],
+        known: true,
+      })
     })
 
-    it('is set when the upstream is already gone (404)', async () => {
-      mockDeleteComposioTrigger.mockRejectedValue(new MockComposioTriggerError('Trigger not found', 404))
+    it('is a guessed creator → owner → stored chain for pre-column rows', async () => {
+      await insertUser('user-creator')
+      await insertPlatformAccount('user-creator', 'sub_creator')
+      await insertUser('user-owner')
+      await insertPlatformAccount('user-owner', 'sub_owner')
+      await insertConnectedAccount('ca_1', 'user-owner')
+      mockGetStoredPlatformMemberId.mockReturnValue('sub_stored')
+      const triggerId = await createComposioTrigger({ createdByUserId: 'user-creator', connectedAccountId: 'ca_1' })
+
+      expect(resolveTeardownMembers((await getWebhookTrigger(triggerId))!)).toEqual({
+        memberIds: ['sub_creator', 'sub_owner', 'sub_stored'],
+        known: false,
+      })
+    })
+
+    it('is known with no members in opaque-access-key mode', async () => {
+      mockGetPlatformAccessToken.mockReturnValue('plat_sa_opaque_key')
+      const triggerId = await createComposioTrigger({ createdByUserId: 'user-creator' })
+
+      expect(resolveTeardownMembers((await getWebhookTrigger(triggerId))!)).toEqual({ memberIds: [], known: true })
+    })
+  })
+
+  // The proxy 404s a cross-member DELETE exactly like a missing subscription,
+  // so a 404 only means "gone" when the acting member is known.
+  describe('404 handling', () => {
+    it('is set when the upstream is already gone under the recorded minting member', async () => {
+      mockDeleteComposioTrigger.mockRejectedValue(new ComposioTriggerError('Trigger not found', 404))
       const triggerId = await createComposioTrigger({ mintedByMemberId: 'sub_minted' })
+
+      expect(await cancelWebhookTriggerWithCleanup(triggerId)).toBe(true)
+
+      expect(mockDeleteComposioTrigger).toHaveBeenCalledTimes(1)
+      expect((await getWebhookTrigger(triggerId))!.upstreamDeletedAt).toBeInstanceOf(Date)
+      expect(mockCaptureException).not.toHaveBeenCalled()
+    })
+
+    it('is set on a 404 in opaque-access-key mode (the proxy ignores members)', async () => {
+      mockGetPlatformAccessToken.mockReturnValue('plat_sa_opaque_key')
+      mockDeleteComposioTrigger.mockRejectedValue(new ComposioTriggerError('Trigger not found', 404))
+      const triggerId = await createComposioTrigger({ createdByUserId: 'user-creator' })
 
       expect(await cancelWebhookTriggerWithCleanup(triggerId)).toBe(true)
 
@@ -273,15 +318,99 @@ describe('composio teardown attribution (SUP-765)', () => {
       expect(mockCaptureException).not.toHaveBeenCalled()
     })
 
-    it('stays null when the teardown fails for any other reason', async () => {
-      mockDeleteComposioTrigger.mockRejectedValue(new MockComposioTriggerError('upstream 502', 502))
-      const triggerId = await createComposioTrigger({ mintedByMemberId: 'sub_minted' })
+    it('tries the next guessed member after a 404 and marks on the one that succeeds', async () => {
+      await insertUser('user-creator')
+      await insertPlatformAccount('user-creator', 'sub_creator')
+      await insertUser('user-owner')
+      await insertPlatformAccount('user-owner', 'sub_owner')
+      await insertConnectedAccount('ca_1', 'user-owner')
+      const keys: Array<string | null> = []
+      mockDeleteComposioTrigger.mockImplementation(async () => {
+        const key = attribution.current()?.getKey() ?? null
+        keys.push(key)
+        if (key !== 'member:sub_owner') throw new ComposioTriggerError('Trigger not found', 404)
+      })
+      const triggerId = await createComposioTrigger({ createdByUserId: 'user-creator', connectedAccountId: 'ca_1' })
 
       expect(await cancelWebhookTriggerWithCleanup(triggerId)).toBe(true)
 
+      expect(keys).toEqual(['member:sub_creator', 'member:sub_owner'])
+      expect((await getWebhookTrigger(triggerId))!.upstreamDeletedAt).toBeInstanceOf(Date)
+      expect(mockCaptureException).not.toHaveBeenCalled()
+    })
+
+    it('leaves the marker null and reports when every guessed member 404s', async () => {
+      await insertUser('user-creator')
+      await insertPlatformAccount('user-creator', 'sub_creator')
+      mockGetStoredPlatformMemberId.mockReturnValue('sub_stored')
+      mockDeleteComposioTrigger.mockRejectedValue(new ComposioTriggerError('Trigger not found', 404))
+      const triggerId = await createComposioTrigger({ createdByUserId: 'user-creator' })
+
+      expect(await cancelWebhookTriggerWithCleanup(triggerId)).toBe(true)
+
+      expect(mockDeleteComposioTrigger).toHaveBeenCalledTimes(2)
       expect((await getWebhookTrigger(triggerId))!.upstreamDeletedAt).toBeNull()
       expect(mockCaptureException).toHaveBeenCalledTimes(1)
-      expect(listOrphanedUpstreamTriggers().map((t) => t.id)).toEqual([triggerId])
+      expect(mockCaptureException.mock.calls[0][0]).toBeInstanceOf(UpstreamOwnerUnresolvedError)
+      expect(listOwedUpstreamTeardowns().map((t) => t.id)).toEqual([triggerId])
+    })
+
+    it('treats all-404 as expected when a concurrent teardown already set the marker', async () => {
+      await insertUser('user-creator')
+      await insertPlatformAccount('user-creator', 'sub_creator')
+      const triggerId = await createComposioTrigger({ createdByUserId: 'user-creator' })
+      // Background reconcile wins the race: it deletes upstream and marks before our 404s land.
+      mockDeleteComposioTrigger.mockImplementation(async () => {
+        await markUpstreamDeleted('ti_composio_1')
+        throw new ComposioTriggerError('Trigger not found', 404)
+      })
+
+      expect(await cancelWebhookTriggerWithCleanup(triggerId)).toBe(true)
+
+      expect((await getWebhookTrigger(triggerId))!.upstreamDeletedAt).toBeInstanceOf(Date)
+      expect(mockCaptureException).not.toHaveBeenCalled()
+    })
+
+    it('stops at the first non-404 failure and leaves the marker null', async () => {
+      await insertUser('user-creator')
+      await insertPlatformAccount('user-creator', 'sub_creator')
+      mockGetStoredPlatformMemberId.mockReturnValue('sub_stored')
+      mockDeleteComposioTrigger.mockRejectedValue(new ComposioTriggerError('upstream 502', 502))
+      const triggerId = await createComposioTrigger({ createdByUserId: 'user-creator' })
+
+      expect(await cancelWebhookTriggerWithCleanup(triggerId)).toBe(true)
+
+      expect(mockDeleteComposioTrigger).toHaveBeenCalledTimes(1)
+      expect((await getWebhookTrigger(triggerId))!.upstreamDeletedAt).toBeNull()
+      expect(mockCaptureException).toHaveBeenCalledTimes(1)
+    })
+
+    it('recognises a 404 from any status-carrying error, not one class', async () => {
+      mockDisableEndpoint.mockRejectedValue(new WebhookEndpointsApiError('API error 404', 404))
+      const triggerId = await createWebhookTrigger({
+        agentSlug: 'agent-1',
+        kind: 'custom',
+        composioTriggerId: 'whep_1',
+        triggerType: 'CUSTOM_WEBHOOK',
+        prompt: 'Handle it',
+        mintedByMemberId: 'sub_minted',
+      })
+
+      expect(await cancelWebhookTriggerWithCleanup(triggerId)).toBe(true)
+
+      expect((await getWebhookTrigger(triggerId))!.upstreamDeletedAt).toBeInstanceOf(Date)
+      expect(mockCaptureException).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('upstreamDeletedAt marker', () => {
+    it('is set by a successful teardown so the row is not reconciled again', async () => {
+      const triggerId = await createComposioTrigger({ mintedByMemberId: 'sub_minted' })
+
+      await cancelWebhookTriggerWithCleanup(triggerId)
+
+      expect((await getWebhookTrigger(triggerId))!.upstreamDeletedAt).toBeInstanceOf(Date)
+      expect(listOwedUpstreamTeardowns()).toEqual([])
     })
 
     it('is set on every terminal sibling sharing the upstream id', async () => {
@@ -302,22 +431,27 @@ describe('composio teardown attribution (SUP-765)', () => {
 
   // Poll-loop reconcile (SUP-765): owed teardowns are found from local rows —
   // the claim is scoped to active/paused ids, so orphans never deliver events.
-  describe('listOrphanedUpstreamTriggers', () => {
-    it('selects terminal rows with an upstream id and no marker, one per upstream id', async () => {
+  describe('listOwedUpstreamTeardowns', () => {
+    it('selects cancelled rows with an upstream id and no marker, one per upstream id', async () => {
       const cancelled = await createComposioTrigger({ composioTriggerId: 'ti_a' })
       await cancelWebhookTrigger(cancelled)
-      const failed = await createComposioTrigger({ composioTriggerId: 'ti_b' })
-      await markTriggerFailed(failed, 'Agent no longer exists')
       const preColumn = await createComposioTrigger({ composioTriggerId: 'ti_c' })
       const minted = await createComposioTrigger({ composioTriggerId: 'ti_c', mintedByMemberId: 'sub_minted' })
       await cancelWebhookTrigger(preColumn)
       await cancelWebhookTrigger(minted)
 
-      const orphans = listOrphanedUpstreamTriggers()
+      const owed = listOwedUpstreamTeardowns()
 
-      expect(orphans.map((t) => t.composioTriggerId).sort()).toEqual(['ti_a', 'ti_b', 'ti_c'])
+      expect(owed.map((t) => t.composioTriggerId).sort()).toEqual(['ti_a', 'ti_c'])
       // The row carrying the minting member represents the shared id.
-      expect(orphans.find((t) => t.composioTriggerId === 'ti_c')!.id).toBe(minted)
+      expect(owed.find((t) => t.composioTriggerId === 'ti_c')!.id).toBe(minted)
+    })
+
+    it('excludes legacy failed rows: nothing produces failed any more and no teardown was decided', async () => {
+      const failed = await createComposioTrigger({ composioTriggerId: 'ti_failed' })
+      await forceStatusFailed(failed)
+
+      expect(listOwedUpstreamTeardowns()).toEqual([])
     })
 
     it('excludes ids still held by an active or paused row', async () => {
@@ -325,7 +459,7 @@ describe('composio teardown attribution (SUP-765)', () => {
       await createComposioTrigger({ composioTriggerId: 'ti_live' })
       await cancelWebhookTrigger(cancelled)
 
-      expect(listOrphanedUpstreamTriggers()).toEqual([])
+      expect(listOwedUpstreamTeardowns()).toEqual([])
     })
 
     it('excludes active rows and rows without an upstream id', async () => {
@@ -337,7 +471,79 @@ describe('composio teardown attribution (SUP-765)', () => {
       })
       await cancelWebhookTrigger(noUpstream)
 
-      expect(listOrphanedUpstreamTriggers()).toEqual([])
+      expect(listOwedUpstreamTeardowns()).toEqual([])
+    })
+
+    it('excludes composio rows while platform Composio is inactive, keeping custom rows', async () => {
+      mockIsPlatformComposioActive.mockReturnValue(false)
+      const composio = await createComposioTrigger({ composioTriggerId: 'ti_x', mintedByMemberId: 'sub_minted' })
+      const custom = await createWebhookTrigger({
+        agentSlug: 'agent-1',
+        kind: 'custom',
+        composioTriggerId: 'whep_1',
+        triggerType: 'CUSTOM_WEBHOOK',
+        prompt: 'Handle it',
+        mintedByMemberId: 'sub_minted',
+      })
+      await cancelWebhookTrigger(composio)
+      await cancelWebhookTrigger(custom)
+
+      expect(listOwedUpstreamTeardowns().map((t) => t.id)).toEqual([custom])
+    })
+
+    it('returns nothing without a platform token', async () => {
+      mockGetPlatformAccessToken.mockReturnValue(null)
+      mockIsPlatformComposioActive.mockReturnValue(false)
+      const custom = await createWebhookTrigger({
+        agentSlug: 'agent-1',
+        kind: 'custom',
+        composioTriggerId: 'whep_1',
+        triggerType: 'CUSTOM_WEBHOOK',
+        prompt: 'Handle it',
+      })
+      await cancelWebhookTrigger(custom)
+
+      expect(listOwedUpstreamTeardowns()).toEqual([])
+    })
+
+    it('orders least-attempted first so the bounded batch rotates', async () => {
+      const stuck = await createComposioTrigger({ composioTriggerId: 'ti_stuck', mintedByMemberId: 'sub_a' })
+      const fresh = await createComposioTrigger({ composioTriggerId: 'ti_fresh', mintedByMemberId: 'sub_b' })
+      await cancelWebhookTrigger(stuck)
+      await cancelWebhookTrigger(fresh)
+      await testDb
+        .update(schema.webhookTriggers)
+        .set({ upstreamTeardownAttempts: 3 })
+        .where(eq(schema.webhookTriggers.id, stuck))
+
+      expect(listOwedUpstreamTeardowns().map((t) => t.composioTriggerId)).toEqual(['ti_fresh', 'ti_stuck'])
+      expect(listOwedUpstreamTeardowns(1).map((t) => t.composioTriggerId)).toEqual(['ti_fresh'])
+    })
+
+    it('leaves rows at the attempt cap to the cleanup script', async () => {
+      const capped = await createComposioTrigger({ composioTriggerId: 'ti_capped', mintedByMemberId: 'sub_a' })
+      await cancelWebhookTrigger(capped)
+      await testDb
+        .update(schema.webhookTriggers)
+        .set({ upstreamTeardownAttempts: MAX_TEARDOWN_ATTEMPTS })
+        .where(eq(schema.webhookTriggers.id, capped))
+
+      expect(listOwedUpstreamTeardowns()).toEqual([])
+      expect(listTerminalUpstreamTriggers().map((t) => t.id)).toEqual([capped])
+    })
+  })
+
+  describe('listTerminalUpstreamTriggers', () => {
+    it('includes marked and failed rows (the legacy script confirms liveness upstream instead)', async () => {
+      const marked = await createComposioTrigger({ composioTriggerId: 'ti_marked', mintedByMemberId: 'sub_a' })
+      await cancelWebhookTriggerWithCleanup(marked)
+      const failed = await createComposioTrigger({ composioTriggerId: 'ti_failed' })
+      await forceStatusFailed(failed)
+      const live = await createComposioTrigger({ composioTriggerId: 'ti_live' })
+      await createComposioTrigger({ composioTriggerId: 'ti_live' })
+      await cancelWebhookTrigger(live)
+
+      expect(listTerminalUpstreamTriggers().map((t) => t.composioTriggerId).sort()).toEqual(['ti_failed', 'ti_marked'])
     })
   })
 
@@ -345,7 +551,7 @@ describe('composio teardown attribution (SUP-765)', () => {
     it('deletes under the recorded minting member and sets the marker', async () => {
       const triggerId = await createComposioTrigger({ mintedByMemberId: 'sub_minted' })
       await cancelWebhookTrigger(triggerId)
-      const [orphan] = listOrphanedUpstreamTriggers()
+      const [orphan] = listOwedUpstreamTeardowns()
 
       expect(await deleteOrphanedUpstreamSubscription(orphan)).toBe(true)
 
@@ -365,36 +571,22 @@ describe('composio teardown attribution (SUP-765)', () => {
       expect(deleteAttributionKey).toBe('member:sub_creator')
     })
 
-    it('treats a 404 as already gone', async () => {
-      mockDeleteComposioTrigger.mockRejectedValue(new MockComposioTriggerError('Trigger not found', 404))
-      const triggerId = await createComposioTrigger({ mintedByMemberId: 'sub_minted' })
+    it('throws UpstreamOwnerUnresolvedError when every guessed member 404s, leaving the marker null', async () => {
+      await insertUser('user-creator')
+      await insertPlatformAccount('user-creator', 'sub_creator')
+      mockDeleteComposioTrigger.mockRejectedValue(new ComposioTriggerError('Trigger not found', 404))
+      const triggerId = await createComposioTrigger({ createdByUserId: 'user-creator' })
       await cancelWebhookTrigger(triggerId)
 
-      expect(await deleteOrphanedUpstreamSubscription((await getWebhookTrigger(triggerId))!)).toBe(true)
+      await expect(
+        deleteOrphanedUpstreamSubscription((await getWebhookTrigger(triggerId))!),
+      ).rejects.toBeInstanceOf(UpstreamOwnerUnresolvedError)
 
-      expect((await getWebhookTrigger(triggerId))!.upstreamDeletedAt).toBeInstanceOf(Date)
-    })
-
-    it('treats a custom-endpoint 404 as already gone', async () => {
-      mockDisableEndpoint.mockRejectedValue(new MockWebhookEndpointsApiError('API error 404', 404))
-      const triggerId = await createWebhookTrigger({
-        agentSlug: 'agent-1',
-        kind: 'custom',
-        composioTriggerId: 'whep_1',
-        triggerType: 'CUSTOM_WEBHOOK',
-        prompt: 'Handle it',
-        mintedByMemberId: 'sub_minted',
-      })
-      await cancelWebhookTrigger(triggerId)
-
-      expect(await deleteOrphanedUpstreamSubscription((await getWebhookTrigger(triggerId))!)).toBe(true)
-
-      expect(mockDisableEndpoint).toHaveBeenCalledWith('sub_minted', 'whep_1')
-      expect((await getWebhookTrigger(triggerId))!.upstreamDeletedAt).toBeInstanceOf(Date)
+      expect((await getWebhookTrigger(triggerId))!.upstreamDeletedAt).toBeNull()
     })
 
     it('rethrows other failures and leaves the marker null', async () => {
-      mockDeleteComposioTrigger.mockRejectedValue(new MockComposioTriggerError('forbidden', 403))
+      mockDeleteComposioTrigger.mockRejectedValue(new ComposioTriggerError('forbidden', 403))
       const triggerId = await createComposioTrigger({ mintedByMemberId: 'sub_minted' })
       await cancelWebhookTrigger(triggerId)
 
@@ -408,7 +600,7 @@ describe('composio teardown attribution (SUP-765)', () => {
     it('skips when the upstream id was re-subscribed since the scan', async () => {
       const triggerId = await createComposioTrigger({ mintedByMemberId: 'sub_minted' })
       await cancelWebhookTrigger(triggerId)
-      const [orphan] = listOrphanedUpstreamTriggers()
+      const [orphan] = listOwedUpstreamTeardowns()
       // Same-slug re-enable gets the same upstream id back.
       await createComposioTrigger({ mintedByMemberId: 'sub_minted' })
 
@@ -430,13 +622,13 @@ describe('composio teardown attribution (SUP-765)', () => {
   })
 
   describe('reconcileOrphanedUpstreamSubscriptions', () => {
-    it('tears down every orphan, captures per-row failures, and converges', async () => {
+    it('tears down every owed upstream, captures per-row failures, and converges', async () => {
       const ok = await createComposioTrigger({ composioTriggerId: 'ti_ok', mintedByMemberId: 'sub_a' })
       const bad = await createComposioTrigger({ composioTriggerId: 'ti_bad', mintedByMemberId: 'sub_b' })
       await cancelWebhookTrigger(ok)
-      await markTriggerFailed(bad, 'Agent no longer exists')
+      await cancelWebhookTrigger(bad)
       mockDeleteComposioTrigger.mockImplementation(async (id: string) => {
-        if (id === 'ti_bad') throw new MockComposioTriggerError('upstream 502', 502)
+        if (id === 'ti_bad') throw new ComposioTriggerError('upstream 502', 502)
       })
 
       expect(await reconcileOrphanedUpstreamSubscriptions()).toBe(1)
@@ -444,11 +636,35 @@ describe('composio teardown attribution (SUP-765)', () => {
       expect(mockCaptureException).toHaveBeenCalledTimes(1)
       expect((await getWebhookTrigger(ok))!.upstreamDeletedAt).toBeInstanceOf(Date)
       expect((await getWebhookTrigger(bad))!.upstreamDeletedAt).toBeNull()
+      expect((await getWebhookTrigger(bad))!.upstreamTeardownAttempts).toBe(1)
       // Only the failed one is retried next pass.
-      expect(listOrphanedUpstreamTriggers().map((t) => t.composioTriggerId)).toEqual(['ti_bad'])
+      expect(listOwedUpstreamTeardowns().map((t) => t.composioTriggerId)).toEqual(['ti_bad'])
     })
 
-    it('does nothing when there are no orphans', async () => {
+    it('rotates a stuck row behind untried rows across passes (no head-of-line starvation)', async () => {
+      // One persistently failing row plus a full batch of untried rows behind it.
+      const stuck = await createComposioTrigger({ composioTriggerId: 'ti_stuck', mintedByMemberId: 'sub_a' })
+      await cancelWebhookTrigger(stuck)
+      const rest: string[] = []
+      for (let i = 0; i < RECONCILE_BATCH_SIZE; i++) {
+        const id = await createComposioTrigger({ composioTriggerId: `ti_${i}`, mintedByMemberId: 'sub_a' })
+        await cancelWebhookTrigger(id)
+        rest.push(id)
+      }
+      mockDeleteComposioTrigger.mockImplementation(async (id: string) => {
+        if (id === 'ti_stuck') throw new ComposioTriggerError('forbidden', 403)
+      })
+
+      const first = await reconcileOrphanedUpstreamSubscriptions()
+      const second = await reconcileOrphanedUpstreamSubscriptions()
+
+      expect(first + second).toBe(RECONCILE_BATCH_SIZE)
+      for (const id of rest) expect((await getWebhookTrigger(id))!.upstreamDeletedAt).toBeInstanceOf(Date)
+      expect((await getWebhookTrigger(stuck))!.upstreamDeletedAt).toBeNull()
+      expect(listOwedUpstreamTeardowns().map((t) => t.composioTriggerId)).toEqual(['ti_stuck'])
+    })
+
+    it('does nothing when there are no owed teardowns', async () => {
       await createComposioTrigger({ mintedByMemberId: 'sub_minted' })
 
       expect(await reconcileOrphanedUpstreamSubscriptions()).toBe(0)

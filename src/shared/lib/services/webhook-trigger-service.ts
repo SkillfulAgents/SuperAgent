@@ -13,19 +13,20 @@ import {
   type WebhookTrigger,
   type NewWebhookTrigger,
 } from '@shared/lib/db/schema'
-import { eq, and, inArray, isNotNull, isNull, sql, count, desc } from 'drizzle-orm'
+import { eq, and, inArray, notInArray, isNotNull, isNull, lt, sql, count, desc, asc } from 'drizzle-orm'
 import { captureException } from '@shared/lib/error-reporting'
 import { trackServerEvent } from '../analytics/server-analytics'
-import { deleteComposioTrigger, ComposioTriggerError } from '@shared/lib/composio/triggers'
+import { deleteComposioTrigger } from '@shared/lib/composio/triggers'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
-import { attribution, runWithAttribution, type Attribution } from '@shared/lib/platform-attribution'
-import {
-  disablePlatformWebhookEndpoint,
-  WebhookEndpointsApiError,
-} from '@shared/lib/services/webhook-endpoints-client'
+import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
+import { disablePlatformWebhookEndpoint } from '@shared/lib/services/webhook-endpoints-client'
 import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
 
 const PLATFORM_PROVIDER_ID = 'platform'
+
+// Rows in these statuses still hold the upstream subscription (paused keeps it
+// alive so events resume later).
+export const SUBSCRIBED_STATUSES: WebhookTrigger['status'][] = ['active', 'paused']
 
 function lookupPlatformMemberId(userId: string): string | null {
   const rows = db
@@ -36,6 +37,16 @@ function lookupPlatformMemberId(userId: string): string | null {
     .limit(1)
     .all()
   return rows[0]?.accountId ?? null
+}
+
+/** Every platform member with a local authAccount row (any member that could have minted an upstream). */
+export function listPlatformMemberIds(): string[] {
+  return db
+    .selectDistinct({ accountId: authAccount.accountId })
+    .from(authAccount)
+    .where(eq(authAccount.providerId, PLATFORM_PROVIDER_ID))
+    .all()
+    .map((r) => r.accountId)
 }
 
 /**
@@ -72,7 +83,7 @@ export function getDistinctPlatformMemberIdsForActiveTriggers(): string[] {
     })
     .from(webhookTriggers)
     .leftJoin(connectedAccounts, eq(connectedAccounts.id, webhookTriggers.connectedAccountId))
-    .where(inArray(webhookTriggers.status, ['active', 'paused']))
+    .where(inArray(webhookTriggers.status, SUBSCRIBED_STATUSES))
     .all()
 
   const ids = new Set<string>()
@@ -131,7 +142,7 @@ export function getSubscribedComposioTriggerIds(): string[] {
     .from(webhookTriggers)
     .where(
       and(
-        inArray(webhookTriggers.status, ['active', 'paused']),
+        inArray(webhookTriggers.status, SUBSCRIBED_STATUSES),
         isNotNull(webhookTriggers.composioTriggerId),
       ),
     )
@@ -257,7 +268,7 @@ export async function countActiveTriggersForComposioId(composioTriggerId: string
     .where(
       and(
         eq(webhookTriggers.composioTriggerId, composioTriggerId),
-        inArray(webhookTriggers.status, ['active', 'paused'])
+        inArray(webhookTriggers.status, SUBSCRIBED_STATUSES)
       )
     )
   return result.value
@@ -266,7 +277,7 @@ export async function countActiveTriggersForComposioId(composioTriggerId: string
 // TODO: In multi-tenant (auth) mode, callers must pass accountIds to scope results.
 // Without accountIds, this returns counts across ALL accounts (fine for single-user mode).
 export async function countActiveTriggersPerAccount(accountIds?: string[]): Promise<Record<string, number>> {
-  const conditions = [inArray(webhookTriggers.status, ['active', 'paused'])]
+  const conditions = [inArray(webhookTriggers.status, SUBSCRIBED_STATUSES)]
   if (accountIds && accountIds.length > 0) {
     conditions.push(inArray(webhookTriggers.connectedAccountId, accountIds))
   }
@@ -317,14 +328,14 @@ export async function listActiveWebhookTriggers(agentSlug?: string): Promise<Web
       .where(
         and(
           eq(webhookTriggers.agentSlug, agentSlug),
-          inArray(webhookTriggers.status, ['active', 'paused'])
+          inArray(webhookTriggers.status, SUBSCRIBED_STATUSES)
         )
       )
   }
   return db
     .select()
     .from(webhookTriggers)
-    .where(inArray(webhookTriggers.status, ['active', 'paused']))
+    .where(inArray(webhookTriggers.status, SUBSCRIBED_STATUSES))
 }
 
 /**
@@ -341,7 +352,7 @@ export async function listActiveWebhookTriggersByAgents(
     .where(
       and(
         inArray(webhookTriggers.agentSlug, agentSlugs),
-        inArray(webhookTriggers.status, ['active', 'paused'])
+        inArray(webhookTriggers.status, SUBSCRIBED_STATUSES)
       )
     )
 
@@ -368,7 +379,7 @@ export async function cancelWebhookTrigger(triggerId: string): Promise<boolean> 
     .where(
       and(
         eq(webhookTriggers.id, triggerId),
-        inArray(webhookTriggers.status, ['active', 'paused'])
+        inArray(webhookTriggers.status, SUBSCRIBED_STATUSES)
       )
     )
 
@@ -428,13 +439,6 @@ export async function markTriggerFired(
       lastSessionId: sessionId,
       fireCount: sql`${webhookTriggers.fireCount} + 1`,
     })
-    .where(eq(webhookTriggers.id, triggerId))
-}
-
-export async function markTriggerFailed(triggerId: string, _error: string): Promise<void> {
-  await db
-    .update(webhookTriggers)
-    .set({ status: 'failed' })
     .where(eq(webhookTriggers.id, triggerId))
 }
 
@@ -505,65 +509,128 @@ async function deleteUpstream(
   else await deleteComposioTrigger(upstreamId)
 }
 
+// Duck-typed so a new upstream client can't silently regress to perpetual retries.
 function isUpstreamNotFound(error: unknown): boolean {
-  return (
-    (error instanceof ComposioTriggerError || error instanceof WebhookEndpointsApiError) &&
-    error.statusCode === 404
-  )
+  return error instanceof Error && (error as { statusCode?: unknown }).statusCode === 404
 }
 
-// Delete the upstream as the member that minted it — the proxy scopes DELETE
-// to that member, so an ambient deleter 404s cross-member (SUP-765). The fetch
-// interceptor overrides any explicit Authorization, so ALS is the one mechanism.
-// A 404 counts as gone. Marks every terminal row on the id; rethrows otherwise.
-async function tearDownUpstream(trigger: WebhookTrigger, upstreamId: string): Promise<void> {
-  const cleanupAuth = resolveCleanupAttribution(trigger)
-  try {
-    await runWithAttribution(cleanupAuth, () =>
-      deleteUpstream(
-        trigger.kind,
-        cleanupAuth?.actingMemberId() ?? resolveCleanupMemberId(trigger),
-        upstreamId,
-      ),
+// The proxy 404s a cross-member DELETE exactly like a missing subscription, so
+// a 404 under a guessed member proves nothing. Thrown to keep the marker null.
+export class UpstreamOwnerUnresolvedError extends Error {
+  constructor(
+    public readonly upstreamId: string,
+    public readonly triedMemberIds: string[],
+  ) {
+    super(
+      `Upstream ${upstreamId} not found under any candidate member (${triedMemberIds.join(', ') || 'none'}); owner unknown`,
     )
-  } catch (error) {
-    if (!isUpstreamNotFound(error)) throw error
+    this.name = 'UpstreamOwnerUnresolvedError'
   }
-  await markUpstreamDeleted(upstreamId)
 }
 
-async function markUpstreamDeleted(upstreamId: string): Promise<void> {
+export interface TeardownMembers {
+  /** Members that may own the upstream, best guess first. Empty = ambient. */
+  memberIds: string[]
+  /** True when the first entry is the recorded minting member, or the proxy ignores members. */
+  known: boolean
+}
+
+/**
+ * Who can delete this trigger's upstream. The recorded minting member is the
+ * only guaranteed-correct principal; pre-column rows fall back to the SUP-226
+ * chain (creator, connected-account owner) and finally the stored member.
+ */
+export function resolveTeardownMembers(trigger: WebhookTrigger): TeardownMembers {
+  if (!attribution.requiresActingMember()) return { memberIds: [], known: true }
+  if (trigger.mintedByMemberId) return { memberIds: [trigger.mintedByMemberId], known: true }
+  const candidates = [
+    resolvePlatformMemberForCandidates([trigger.createdByUserId])?.memberId,
+    resolvePlatformMemberForCandidates([getConnectedAccountOwnerUserId(trigger.connectedAccountId)])?.memberId,
+    getStoredPlatformMemberId(),
+  ]
+  return { memberIds: [...new Set(candidates.filter((m): m is string => Boolean(m)))], known: false }
+}
+
+/**
+ * Delete the upstream as the member that minted it (the proxy scopes DELETE to
+ * that member; SUP-765). The fetch interceptor overrides any explicit
+ * Authorization, so ALS is the one mechanism. A 404 counts as gone only once
+ * the member is known; with guessed members every candidate is tried and an
+ * all-404 outcome throws so the row stays owed and diagnosable.
+ */
+async function tearDownUpstream(trigger: WebhookTrigger, upstreamId: string): Promise<void> {
+  const { memberIds, known } = resolveTeardownMembers(trigger)
+  const attempts: Array<string | null> = memberIds.length > 0 ? memberIds : [null]
+  for (const memberId of attempts) {
+    try {
+      await runWithAttribution(memberId ? attribution.fromMemberId(memberId) : null, () =>
+        deleteUpstream(trigger.kind, memberId ?? getStoredPlatformMemberId() ?? 'local', upstreamId),
+      )
+      await markUpstreamDeleted(upstreamId)
+      return
+    } catch (error) {
+      if (!isUpstreamNotFound(error)) throw error
+    }
+  }
+  if (known) {
+    await markUpstreamDeleted(upstreamId)
+    return
+  }
+  // A concurrent teardown (cancel path vs background reconcile) may have
+  // already confirmed the upstream gone; its 404s are then expected, not a lost owner.
+  if (await isUpstreamMarkedDeleted(upstreamId)) return
+  throw new UpstreamOwnerUnresolvedError(upstreamId, memberIds)
+}
+
+async function isUpstreamMarkedDeleted(upstreamId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ value: count() })
+    .from(webhookTriggers)
+    .where(and(eq(webhookTriggers.composioTriggerId, upstreamId), isNotNull(webhookTriggers.upstreamDeletedAt)))
+  return row.value > 0
+}
+
+/** Stamp every non-subscribed row on the id: the upstream is confirmed gone. */
+export async function markUpstreamDeleted(upstreamId: string): Promise<void> {
   await db
     .update(webhookTriggers)
     .set({ upstreamDeletedAt: new Date() })
     .where(
       and(
         eq(webhookTriggers.composioTriggerId, upstreamId),
-        inArray(webhookTriggers.status, ['cancelled', 'failed']),
+        notInArray(webhookTriggers.status, SUBSCRIBED_STATUSES),
         isNull(webhookTriggers.upstreamDeletedAt),
       ),
     )
 }
 
-/**
- * Terminal rows whose upstream teardown is still owed: cancelled/failed, an
- * upstream id, no marker, and no active/paused sibling on that id. One row per
- * upstream id (the one carrying `mintedByMemberId` wins).
- */
-export function listOrphanedUpstreamTriggers(): WebhookTrigger[] {
-  const subscribed = new Set(getSubscribedComposioTriggerIds())
-  const rows = db
-    .select()
-    .from(webhookTriggers)
+// Rotation for the bounded reconcile batch: rows that keep failing sink below
+// rows never tried, so one stuck upstream can't starve the rest.
+async function bumpTeardownAttempts(upstreamId: string): Promise<void> {
+  await db
+    .update(webhookTriggers)
+    .set({ upstreamTeardownAttempts: sql`${webhookTriggers.upstreamTeardownAttempts} + 1` })
     .where(
       and(
-        inArray(webhookTriggers.status, ['cancelled', 'failed']),
-        isNotNull(webhookTriggers.composioTriggerId),
+        eq(webhookTriggers.composioTriggerId, upstreamId),
+        notInArray(webhookTriggers.status, SUBSCRIBED_STATUSES),
         isNull(webhookTriggers.upstreamDeletedAt),
       ),
     )
-    .all()
+}
 
+// Only kinds whose upstream this host can currently talk to; an unreachable
+// kind would otherwise fill the batch with rows that can never get a marker.
+function reachableKinds(): WebhookTrigger['kind'][] {
+  const kinds: WebhookTrigger['kind'][] = []
+  if (getPlatformAccessToken()) kinds.push('custom')
+  if (isPlatformComposioActive()) kinds.push('composio')
+  return kinds
+}
+
+// One row per upstream id, the one carrying `mintedByMemberId` preferred.
+function dedupeByUpstreamId(rows: WebhookTrigger[]): WebhookTrigger[] {
+  const subscribed = new Set(getSubscribedComposioTriggerIds())
   const byUpstream = new Map<string, WebhookTrigger>()
   for (const row of rows) {
     const upstreamId = row.composioTriggerId!
@@ -576,10 +643,62 @@ export function listOrphanedUpstreamTriggers(): WebhookTrigger[] {
   return [...byUpstream.values()]
 }
 
+// After this many failed passes the row is left to the cleanup script; Sentry
+// already holds one capture per attempt, and retrying forever only burns proxy calls.
+export const MAX_TEARDOWN_ATTEMPTS = 10
+
 /**
- * Tear down one orphaned upstream subscription. Returns true when the upstream
- * is confirmed gone (deleted or 404) and the marker is set; false when skipped
- * (unreachable, or re-subscribed since the scan). Throws on other failures.
+ * Cancelled rows whose upstream teardown is still owed: an upstream id, a null
+ * `upstreamDeletedAt`, a reachable kind, under the attempt cap, and no
+ * active/paused sibling on that id. Least-attempted first so the bounded batch
+ * rotates. `failed` is not included: nothing produces it any more, and legacy
+ * failed rows never had a teardown decision recorded.
+ */
+export function listOwedUpstreamTeardowns(limit?: number): WebhookTrigger[] {
+  const kinds = reachableKinds()
+  if (kinds.length === 0) return []
+  const rows = db
+    .select()
+    .from(webhookTriggers)
+    .where(
+      and(
+        eq(webhookTriggers.status, 'cancelled'),
+        inArray(webhookTriggers.kind, kinds),
+        isNotNull(webhookTriggers.composioTriggerId),
+        isNull(webhookTriggers.upstreamDeletedAt),
+        lt(webhookTriggers.upstreamTeardownAttempts, MAX_TEARDOWN_ATTEMPTS),
+      ),
+    )
+    .orderBy(asc(webhookTriggers.upstreamTeardownAttempts), asc(webhookTriggers.cancelledAt))
+    .all()
+  const owed = dedupeByUpstreamId(rows)
+  return limit === undefined ? owed : owed.slice(0, limit)
+}
+
+/**
+ * Every terminal row with an upstream id and no active/paused sibling,
+ * marker or not. For the one-time legacy cleanup script, which confirms
+ * liveness upstream instead of trusting the backfilled marker.
+ */
+export function listTerminalUpstreamTriggers(): WebhookTrigger[] {
+  const rows = db
+    .select()
+    .from(webhookTriggers)
+    .where(
+      and(
+        notInArray(webhookTriggers.status, SUBSCRIBED_STATUSES),
+        isNotNull(webhookTriggers.composioTriggerId),
+      ),
+    )
+    .all()
+  return dedupeByUpstreamId(rows)
+}
+
+/**
+ * Tear down one owed upstream subscription. Returns true when the upstream is
+ * confirmed gone and the marker is set; false when skipped (unreachable, or
+ * re-subscribed since the scan). Throws on other failures, including an
+ * unresolved owner.
  */
 export async function deleteOrphanedUpstreamSubscription(trigger: WebhookTrigger): Promise<boolean> {
   const upstreamId = trigger.composioTriggerId
@@ -591,39 +710,39 @@ export async function deleteOrphanedUpstreamSubscription(trigger: WebhookTrigger
   return true
 }
 
-// Per-pass bound so a legacy backlog can't stall a poll pass; the marker makes
-// the remainder converge over subsequent passes.
-const RECONCILE_BATCH_SIZE = 25
+// Per-pass bound so a backlog can't monopolise the poll loop; the caller
+// drains by repeating while a pass makes progress.
+export const RECONCILE_BATCH_SIZE = 25
 
 /**
- * Poll-loop reconcile (SUP-765): retry owed teardowns — a crash, a pre-column
- * cross-member 404, or `markTriggerFailed` (which never tears down upstream).
- * Bounded by the `upstreamDeletedAt` marker; failures are captured per row.
+ * One reconcile pass (SUP-765): retry owed teardowns — a crash, or a
+ * pre-column cross-member 404. Bounded by the `upstreamDeletedAt` marker;
+ * failures are captured per row and bump the row's attempt counter.
+ * Returns how many upstreams were confirmed gone this pass.
  */
 export async function reconcileOrphanedUpstreamSubscriptions(): Promise<number> {
-  const candidates = listOrphanedUpstreamTriggers().slice(0, RECONCILE_BATCH_SIZE)
-  let deleted = 0
+  const candidates = listOwedUpstreamTeardowns(RECONCILE_BATCH_SIZE)
+  let resolved = 0
   for (const trigger of candidates) {
+    const upstreamId = trigger.composioTriggerId!
     try {
-      if (await deleteOrphanedUpstreamSubscription(trigger)) deleted++
+      if (await deleteOrphanedUpstreamSubscription(trigger)) resolved++
     } catch (error) {
-      console.warn(
-        `[webhook-trigger-service] Reconcile of orphaned upstream ${trigger.composioTriggerId} failed:`,
-        error,
-      )
+      await bumpTeardownAttempts(upstreamId)
+      console.warn(`[webhook-trigger-service] Reconcile of owed upstream ${upstreamId} failed:`, error)
       captureException(error, {
         tags: { area: 'webhook-triggers', op: 'reconcile-upstream' },
-        extra: { triggerId: trigger.id, upstreamId: trigger.composioTriggerId, kind: trigger.kind },
+        extra: { triggerId: trigger.id, upstreamId, kind: trigger.kind },
       })
     }
   }
-  return deleted
+  return resolved
 }
 
 /**
  * The trigger's platform principal via the SUP-226 candidate order: creator
- * first, then connected-account owner. Single source for teardown, polling
- * attribution, and session attribution so the chains cannot drift.
+ * first, then connected-account owner. Single source for polling attribution
+ * and session attribution so the chains cannot drift.
  */
 export function resolveTriggerPrincipal(
   trigger: Pick<WebhookTrigger, 'createdByUserId' | 'connectedAccountId'>,
@@ -632,30 +751,6 @@ export function resolveTriggerPrincipal(
     trigger.createdByUserId,
     getConnectedAccountOwnerUserId(trigger.connectedAccountId),
   ])
-}
-
-/**
- * Member context for platform-endpoint teardown calls. Org JWTs need a real
- * member suffix; opaque platform keys ignore it, so the 'local' placeholder is
- * safe as the final fallback.
- */
-function resolveCleanupMemberId(trigger: WebhookTrigger): string {
-  return (
-    trigger.mintedByMemberId ??
-    resolveTriggerPrincipal(trigger)?.memberId ??
-    getStoredPlatformMemberId() ??
-    'local'
-  )
-}
-
-// Minting member first (recorded at mint time, the only guaranteed-correct
-// principal), then the resolved trigger principal; null keeps the ambient
-// request attribution. In opaque-access-key mode the member suffix is ignored
-// by the proxy, so skip the lookups.
-function resolveCleanupAttribution(trigger: WebhookTrigger): Attribution | null {
-  if (!attribution.requiresActingMember()) return null
-  const memberId = trigger.mintedByMemberId ?? resolveTriggerPrincipal(trigger)?.memberId
-  return memberId ? attribution.fromMemberId(memberId) : null
 }
 
 export function getConnectedAccountOwnerUserId(connectedAccountId: string | null): string | null {
@@ -690,7 +785,7 @@ export async function cancelTriggersForConnectedAccount(connectedAccountId: stri
     .where(
       and(
         eq(webhookTriggers.connectedAccountId, connectedAccountId),
-        inArray(webhookTriggers.status, ['active', 'paused'])
+        inArray(webhookTriggers.status, SUBSCRIBED_STATUSES)
       )
     )
 
