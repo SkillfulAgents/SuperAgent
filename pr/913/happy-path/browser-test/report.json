@@ -1,25 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser-use feature successfully enabled agent to open browser, navigate to https://example.com, retrieve page title \"Example Domain\", and return accurate response.",
+  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title, and returned the response mentioning \"Example Domain\"",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully showing Gamut application with agent sidebar",
-    "Found and clicked \"QA-20260901-235724-w4wu\" agent in sidebar — Agent page opened with chat interface ready",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into input field — Message appeared in textbox",
-    "Clicked \"Send message\" button — Message sent successfully, agent status changed to \"working\", session created with title \"Browser Page Title Retrieval\"",
-    "Waited for agent response (up to 3 minutes) — Agent completed work in 14 seconds using 4 tool calls and 163,687 tokens",
-    "Verified response mentions \"Example Domain\" — Response displayed: 'The page title is \"Example Domain\" — the page shows that heading plus a short note that the domain is for documentation examples. Browser is closed.'",
-    "Took final screenshot — Screenshot captured showing complete chat with successful agent response"
+    "Step 1: Navigated to http://localhost:47891 — Page loaded successfully with title \"Gamut\", showing the agent list with \"QA-20260904-234738-snib\" visible in the sidebar.",
+    "Step 2: Clicked on \"QA-20260904-234738-snib\" agent in the sidebar — Agent page loaded successfully, URL changed to http://localhost:47891/agents/qa-20260904-234738-snib-1viygmj99v with title \"QA-20260904-234738-snib · Gamut\"",
+    "Step 3: Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was entered in the input field and sent using Cmd+Enter. The page transitioned to a new session at URL http://localhost:47891/agents/qa-20260904-234738-snib-1viygmj99v/sessions/4ad283ab-b4ad-4b5a-9154-9691298827cf with title \"Browser Page Title Check — QA-20260904-234738-snib\"",
+    "Step 4: Waited up to 3 minutes for response — Agent completed processing in 8 seconds. The page shows \"Worked for 8s · 4 tool calls · 163,669 tokens\" indicating the task completed successfully.",
+    "Step 5: Verified response mentions \"Example Domain\" and took final screenshot — Response clearly states: 'The page title is \"Example Domain\" — the standard IANA placeholder page.' with additional note \"Browser closed.\" The browser use feature executed successfully and provided the correct page title."
   ],
   "bugs": [],
-  "durationMs": 74678,
-  "sessionId": "33e6defc-ff87-4a81-910d-c0857d3e16fc",
+  "durationMs": 113760,
+  "sessionId": "2269dd28-f225-4e1c-9ed4-19d8522802fc",
   "cost": {
-    "inputTokens": 320,
-    "outputTokens": 9751,
-    "cacheCreationTokens": 66407,
-    "cacheReadTokens": 866309,
+    "inputTokens": 314,
+    "outputTokens": 10199,
+    "cacheCreationTokens": 49112,
+    "cacheReadTokens": 774448,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.218715
+    "totalCostUsd": 0.190144
   }
 }
