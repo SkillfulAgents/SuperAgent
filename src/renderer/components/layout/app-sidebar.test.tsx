@@ -106,8 +106,15 @@ vi.mock('@renderer/hooks/use-user-settings', () => ({
 const mockRuntimeStatus: { runtimeReadiness: { status: string }; appVersion?: string } = {
   runtimeReadiness: { status: 'READY' },
 }
+/** The deployment's own runtime status, read through the cloud proxy on both tabs. */
+const mockCloudRuntimeStatus: { appVersion?: string } = {}
+let mockCloudRuntimeLoading = false
 vi.mock('@renderer/hooks/use-runtime-status', () => ({
   useRuntimeStatus: () => ({ data: mockRuntimeStatus }),
+  useCloudRuntimeStatus: () => ({
+    data: mockCloudRuntimeStatus,
+    isLoading: mockCloudRuntimeLoading,
+  }),
 }))
 
 vi.mock('@renderer/hooks/use-artifacts', () => ({
@@ -186,9 +193,16 @@ vi.mock('@renderer/context/update-status-context', () => ({
   useUpdateStatus: () => mockUpdateStatus,
 }))
 
-const mockPlatformAuth: { platformBaseUrl?: string; orgId?: string } = {}
+const mockPlatformAuth: { platformBaseUrl?: string; orgId?: string; connected?: boolean } = {}
 vi.mock('@renderer/hooks/use-platform-auth', () => ({
-  usePlatformAuthStatus: () => ({ data: mockPlatformAuth }),
+  usePlatformAuthStatus: () => ({ data: mockPlatformAuth, isLoading: false }),
+}))
+
+const mockCloudWorkspaceQuery: { data?: { found: boolean; hasValidToken: boolean }; isLoading: boolean } = {
+  isLoading: false,
+}
+vi.mock('@renderer/hooks/use-cloud-workspace', () => ({
+  useCloudWorkspace: () => mockCloudWorkspaceQuery,
 }))
 
 const mockOpenExternalUrl = vi.fn()
@@ -435,11 +449,16 @@ beforeEach(() => {
   mockUnreadCount.mockReturnValue({ data: { count: 0 } })
   mockUserSettings.mockReturnValue({ setupCompleted: true, agentOrder: [] })
   delete mockRuntimeStatus.appVersion
+  delete mockCloudRuntimeStatus.appVersion
   mockRuntimeStatus.runtimeReadiness = { status: 'READY' }
   mockUpdateStatus.state = 'idle'
   delete mockUpdateStatus.version
   delete mockPlatformAuth.platformBaseUrl
   delete mockPlatformAuth.orgId
+  delete mockPlatformAuth.connected
+  mockCloudWorkspaceQuery.data = undefined
+  mockCloudWorkspaceQuery.isLoading = false
+  mockCloudRuntimeLoading = false
   mockOpenExternalUrl.mockReset()
   mockNavigate.mockReset()
   mockGetItemsFromDataTransfer.mockReset()
@@ -960,13 +979,14 @@ describe('footer version in cloud mode', () => {
   })
 
   afterEach(() => {
-    delete mockRuntimeStatus.appVersion
+    delete mockCloudRuntimeStatus.appVersion
+    mockCloudRuntimeLoading = false
     mockUpdateStatus.state = 'idle'
     delete mockUpdateStatus.version
   })
 
   it('shows one number when desktop and cloud match and no update is waiting', async () => {
-    mockRuntimeStatus.appVersion = desktopVersion
+    mockCloudRuntimeStatus.appVersion = desktopVersion
 
     renderWithProviders(<AppSidebar />)
 
@@ -981,7 +1001,7 @@ describe('footer version in cloud mode', () => {
   })
 
   it('shows a quiet pair when they differ and nobody is behind', async () => {
-    mockRuntimeStatus.appVersion = PATCH_AHEAD
+    mockCloudRuntimeStatus.appVersion = PATCH_AHEAD
     mockPlatformAuth.platformBaseUrl = 'https://platform.example'
     mockPlatformAuth.orgId = 'org_1'
 
@@ -997,12 +1017,12 @@ describe('footer version in cloud mode', () => {
 
     await userEvent.click(screen.getByTestId('sidebar-version-cloud'))
     expect(mockOpenExternalUrl).toHaveBeenCalledWith(
-      'https://platform.example/dashboard/organizations/org_1?tab=cloud',
+      'https://platform.example/dashboard/organizations/org_1?tab=settings',
     )
   })
 
   it('puts a blue dot on cloud when it is a patch behind', () => {
-    mockRuntimeStatus.appVersion = PATCH_BEHIND
+    mockCloudRuntimeStatus.appVersion = PATCH_BEHIND
 
     renderWithProviders(<AppSidebar />)
 
@@ -1012,7 +1032,7 @@ describe('footer version in cloud mode', () => {
   })
 
   it('puts an orange dot on cloud when it is a major or minor behind', () => {
-    mockRuntimeStatus.appVersion = MINOR_BEHIND
+    mockCloudRuntimeStatus.appVersion = MINOR_BEHIND
 
     renderWithProviders(<AppSidebar />)
 
@@ -1021,7 +1041,7 @@ describe('footer version in cloud mode', () => {
   })
 
   it('puts an orange dot on desktop when the feed matches a newer cloud', () => {
-    mockRuntimeStatus.appVersion = MINOR_AHEAD
+    mockCloudRuntimeStatus.appVersion = MINOR_AHEAD
     mockUpdateStatus.state = 'available'
     mockUpdateStatus.version = MINOR_AHEAD
 
@@ -1032,7 +1052,7 @@ describe('footer version in cloud mode', () => {
   })
 
   it('puts orange dots on both when they match and the feed is a major ahead', () => {
-    mockRuntimeStatus.appVersion = desktopVersion
+    mockCloudRuntimeStatus.appVersion = desktopVersion
     mockUpdateStatus.state = 'available'
     mockUpdateStatus.version = MAJOR_AHEAD
 
@@ -1045,7 +1065,7 @@ describe('footer version in cloud mode', () => {
   })
 
   it('keeps one number and a desktop update dot when they match the feed', () => {
-    mockRuntimeStatus.appVersion = desktopVersion
+    mockCloudRuntimeStatus.appVersion = desktopVersion
     mockUpdateStatus.state = 'available'
     mockUpdateStatus.version = desktopVersion
 
@@ -1064,7 +1084,7 @@ describe('footer version in cloud mode', () => {
   })
 
   it('falls back to the desktop number when appVersion is not a version', () => {
-    mockRuntimeStatus.appVersion = 'not-a-version'
+    mockCloudRuntimeStatus.appVersion = 'not-a-version'
 
     renderWithProviders(<AppSidebar />)
 
@@ -1073,13 +1093,76 @@ describe('footer version in cloud mode', () => {
   })
 
   it('does not open the cloud tab when org is missing', async () => {
-    mockRuntimeStatus.appVersion = PATCH_AHEAD
+    mockCloudRuntimeStatus.appVersion = PATCH_AHEAD
     mockPlatformAuth.platformBaseUrl = 'https://platform.example'
 
     renderWithProviders(<AppSidebar />)
 
     await userEvent.click(screen.getByTestId('sidebar-version-cloud'))
     expect(mockOpenExternalUrl).not.toHaveBeenCalled()
+  })
+})
+
+describe('footer version on the local tab', () => {
+  const desktopVersion = APP_VERSION
+
+  beforeEach(() => {
+    _resetApiTargetForTest()
+    setActiveTarget('local', null)
+  })
+
+  afterEach(() => {
+    delete mockCloudRuntimeStatus.appVersion
+    mockCloudRuntimeLoading = false
+    mockUpdateStatus.state = 'idle'
+    delete mockUpdateStatus.version
+  })
+
+  it('shows no chip while the cloud version is still loading', () => {
+    mockCloudRuntimeLoading = true
+    mockCloudRuntimeStatus.appVersion = PATCH_AHEAD
+
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.queryByTestId('sidebar-version')).not.toBeInTheDocument()
+  })
+
+  it('shows no chip while the workspace check is still in flight', () => {
+    mockIsElectron.mockReturnValue(true)
+    mockPlatformAuth.connected = true
+    mockCloudWorkspaceQuery.isLoading = true
+    mockCloudRuntimeStatus.appVersion = PATCH_AHEAD
+
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.queryByTestId('sidebar-version')).not.toBeInTheDocument()
+  })
+
+  it('shows the pair when the cloud workspace runs a different build', () => {
+    mockCloudRuntimeStatus.appVersion = PATCH_AHEAD
+
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByTestId('sidebar-version-desktop')).toHaveTextContent(`${desktopVersion}`)
+    expect(screen.getByTestId('sidebar-version-cloud')).toHaveTextContent(PATCH_AHEAD)
+    expect(screen.queryByLabelText('Desktop update available')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Cloud update available')).not.toBeInTheDocument()
+  })
+
+  it('shows one number when there is no cloud workspace to compare against', () => {
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByTestId('sidebar-version')).toHaveTextContent(`${desktopVersion}`)
+    expect(screen.queryByTestId('sidebar-version-cloud')).not.toBeInTheDocument()
+  })
+
+  it('does not take the cloud number from the active-tab runtime status', () => {
+    mockRuntimeStatus.appVersion = PATCH_AHEAD
+
+    renderWithProviders(<AppSidebar />)
+
+    expect(screen.getByTestId('sidebar-version')).toHaveTextContent(`${desktopVersion}`)
+    expect(screen.queryByTestId('sidebar-version-cloud')).not.toBeInTheDocument()
   })
 })
 

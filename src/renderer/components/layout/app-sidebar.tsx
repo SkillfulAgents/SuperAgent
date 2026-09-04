@@ -9,7 +9,6 @@ import { AppLink } from '@renderer/components/ui/app-link'
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
 import { openExternalUrl } from '@renderer/lib/open-external'
-import { targetIsRemote } from '@renderer/lib/api-target'
 import { resolveSidebarVersionState } from '@renderer/components/layout/sidebar-version-state'
 import { TargetSwitcher } from '@renderer/components/layout/target-switcher'
 import { useTargetSwitch } from '@renderer/hooks/use-target-switch'
@@ -54,7 +53,7 @@ import { useSessions, type ApiSession } from '@renderer/hooks/use-sessions'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
-import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
+import { useCloudRuntimeStatus, useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
@@ -869,12 +868,13 @@ export function AppSidebar() {
   const { data: userSettings } = useUserSettings()
   const updateSettings = useUpdateUserSettings()
   const { data: runtimeStatus } = useRuntimeStatus()
+  const { data: cloudStatus, isLoading: cloudVersionPending } = useCloudRuntimeStatus()
+  const { availabilityPending } = useTargetSwitch()
   const { data: platformAuth } = usePlatformAuthStatus()
-  const isCloud = targetIsRemote()
   const desktopVersion = __APP_VERSION__
   const versionState = resolveSidebarVersionState({
     desktopVersion,
-    cloudVersion: isCloud ? runtimeStatus?.appVersion : undefined,
+    cloudVersion: cloudStatus?.appVersion,
     feedVersion: updateAvailable ? updateStatus.version : undefined,
   })
   const isFullScreen = useFullScreen()
@@ -1665,7 +1665,8 @@ export function AppSidebar() {
             <Settings className="h-4 w-4" />
             <span>Settings</span>
           </SidebarMenuButton>
-          {isCloud && versionState.showPair && versionState.cloudVersion ? (
+          {!cloudVersionPending && !availabilityPending &&
+            (versionState.showPair && versionState.cloudVersion ? (
             <div
               className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground shrink-0"
               data-testid="sidebar-version"
@@ -1694,7 +1695,7 @@ export function AppSidebar() {
                   const orgId = platformAuth?.orgId
                   if (!base || !orgId) return
                   void openExternalUrl(
-                    `${base}/dashboard/organizations/${orgId}?tab=cloud`,
+                    `${base}/dashboard/organizations/${orgId}?tab=settings`,
                   )
                 }}
                 className="inline-flex items-center gap-0.5 hover:text-foreground"
@@ -1716,18 +1717,18 @@ export function AppSidebar() {
               type="button"
               onClick={() => openSettings('general')}
               className="inline-flex items-center gap-1.5 px-2 text-xs text-muted-foreground shrink-0 hover:text-foreground"
-              title={updateAvailable ? `${isCloud ? 'Desktop update available' : 'Update available'}: v${updateStatus.version}` : undefined}
+              title={updateAvailable ? `${versionState.cloudVersion ? 'Desktop update available' : 'Update available'}: v${updateStatus.version}` : undefined}
               data-testid="sidebar-version"
             >
               <span>{versionState.cloudVersion ?? desktopVersion}</span>
               {updateAvailable && (
                 <span
                   className="h-1.5 w-1.5 rounded-full bg-blue-500"
-                  aria-label={isCloud ? 'Desktop update available' : 'Update available'}
+                  aria-label={versionState.cloudVersion ? 'Desktop update available' : 'Update available'}
                 />
               )}
             </button>
-          )}
+          ))}
         </div>
       </SidebarFooter>
 

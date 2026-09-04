@@ -9,6 +9,10 @@
  * `fetch` at all (an `<img src>`, an `EventSource`, a `WebSocket`, an Electron
  * `downloadURL`) and so cannot use the wrapper.
  *
+ * One exception, pinned below and nowhere else: `cloudApiFetch` prepends the
+ * cloud proxy door (`getCloudApiBaseUrl()`) so a local window can read the
+ * deployment's state without switching target. It is the door's only exit.
+ *
  * That invariant is currently upheld by convention alone. Nothing fails if a
  * new call site hardcodes a same-origin `/api/...` path: it works in the
  * browser, it works in Electron dev, and it only breaks where the API is not
@@ -106,6 +110,24 @@ const PINNED_CALL_SITES: Record<string, string> = {
     'third-party Deepgram STT endpoint, not this API — must NOT follow the API origin',
   'lib/stt.ts::OpenaiAdapter.createSocket::WebSocket(url)':
     'third-party OpenAI STT endpoint, not this API — must NOT follow the API origin',
+  // The one sanctioned second origin. Pinned rather than taught to the analysis
+  // above on purpose: making `getCloudApiBaseUrl()` derive an origin would bless
+  // every future use of it, including `${getCloudApiBaseUrl()}/api/x` with no
+  // null check (a same-origin path when the door is absent) and a
+  // `getCloudApiBaseUrl() ?? getApiBaseUrl()` fallback that answers a question
+  // about the deployment with this laptop. One exemption, read once.
+  //
+  // The `${...}` below is the call's argument text quoted verbatim, which is
+  // what makes a pin re-open for review when the call changes — not an
+  // interpolation that lost its backticks.
+  // eslint-disable-next-line no-template-curly-in-string
+  'lib/api.ts::cloudApiFetch::fetch(`${baseUrl}${path}`)':
+    'the cloud proxy door (getCloudApiBaseUrl(), lib/env.ts) — handed to every ' +
+    'window at boot so a local window can read the deployment without ' +
+    'switching target, null-checked here before use. This wrapper is the ' +
+    "door's only exit: a new site that builds a URL from it fails the " +
+    'assertion above and must route through cloudApiFetch or be pinned here ' +
+    'with its own reason.',
   'lib/voice-agent-deepgram.ts::DeepgramVoiceAgentAdapter.connect::WebSocket(url)':
     'third-party Deepgram voice-agent socket — must NOT follow the API origin',
   'lib/voice-agent-openai.ts::OpenAIVoiceAgentAdapter.connect::WebSocket(url)':
@@ -124,12 +146,18 @@ const EXTERNAL_ENDPOINT_MODULES = [
 ]
 
 /**
- * Modules that call `getApiBaseUrl()` directly instead of going through
- * `apiFetch`, and why the wrapper does not fit. Every entry is a URL handed to
- * something that cannot carry a request header.
+ * Modules that read an origin getter directly instead of leaving the URL to
+ * `apiFetch`, and why the wrapper does not fit. Almost every entry is a URL
+ * handed to something that cannot carry a request header; the exception is
+ * called out in its own reason.
  *
  * Growing this list is a real cost: each entry has to be revisited by hand
  * whenever the API origin changes.
+ *
+ * Do not route around this list by re-exporting a getter under another name.
+ * The inventory is what catches the `<img src>` and `<iframe src>` class, which
+ * composes a URL without ever touching a network primitive, so an alias would
+ * leave such a module in no inventory and no pin.
  */
 const DIRECT_BASE_URL_CONSUMERS: Record<string, string> = {
   'lib/api.ts': 'the wrapper itself',
@@ -152,6 +180,11 @@ const DIRECT_BASE_URL_CONSUMERS: Record<string, string> = {
     'EventSource — global notification stream',
   'hooks/use-message-stream.ts': 'EventSource — per-session message stream',
   'hooks/use-browser-stream.ts': 'WebSocket — browser view frames',
+  'hooks/use-runtime-status.ts':
+    'the one entry that is NOT a URL: both origins are read as react-query ' +
+    'cache keys, so the local and cloud polls collapse onto one query on the ' +
+    'cloud tab, where the two are the same string. The requests themselves go ' +
+    'through apiFetch and cloudApiFetch — this module composes no URL.',
 }
 
 // ---------------------------------------------------------------------------
@@ -410,14 +443,32 @@ function allCallSites(): CallSite[] {
   )
 }
 
-/** Modules that reference `getApiBaseUrl` as a value. */
+/**
+ * Modules that reference an origin getter as a value.
+ *
+ * Both getters, not just `getApiBaseUrl`: a module that reads only the cloud
+ * door composes a URL no assertion above would see, because a door handed to an
+ * `<img src>` or an `<iframe src>` is not a network primitive at all. Keying on
+ * one getter would leave that module in no inventory and no pin.
+ *
+ * Deliberately NOT shared with `analyzeOrigin`, which still recognizes
+ * `getApiBaseUrl` alone. The two answer different questions: this one asks who
+ * can see an origin at all, that one asks whether a request provably starts
+ * from this window's API. Teaching `analyzeOrigin` the door would bless every
+ * future use of it — including `${getCloudApiBaseUrl()}/api/x` with no null
+ * check, and a `door ?? local` fallback — which is what the pin on
+ * `cloudApiFetch` above exists to avoid. The scanner suite has a case pinning
+ * that difference; do not unify these two sets.
+ */
+const ORIGIN_GETTERS = new Set(['getApiBaseUrl', 'getCloudApiBaseUrl'])
+
 function directBaseUrlConsumers(): string[] {
   return collectSourceFiles(RENDERER_ROOT)
     .filter((file) => {
       const sourceFile = parseSource(relativeTo(file), fs.readFileSync(file, 'utf-8'))
       let uses = false
       const visit = (node: ts.Node): void => {
-        if (ts.isIdentifier(node) && node.text === 'getApiBaseUrl') uses = true
+        if (ts.isIdentifier(node) && ORIGIN_GETTERS.has(node.text)) uses = true
         ts.forEachChild(node, visit)
       }
       visit(sourceFile)
@@ -549,6 +600,28 @@ describe('scanner', () => {
       }
     `)
     expect(site.derivesOrigin).toBe(true)
+  })
+
+  it('does not treat the cloud door as an origin, so door URLs must be pinned', () => {
+    // The door is a real origin, but only `cloudApiFetch` may prepend it, and
+    // that one call site is pinned by name above. If this ever starts deriving,
+    // both shapes below pass unreviewed: the first is a document-relative
+    // `null/api/x` whenever the proxy is off, and the second answers a question
+    // about the deployment with this laptop.
+    const [bare] = scan(`
+      function load() {
+        return fetch(\`\${getCloudApiBaseUrl()}/api/agents\`)
+      }
+    `)
+    expect(bare.derivesOrigin).toBe(false)
+
+    const [fallback] = scan(`
+      function load() {
+        const base = getCloudApiBaseUrl() ?? getApiBaseUrl()
+        return fetch(\`\${base}/api/agents\`)
+      }
+    `)
+    expect(fallback.derivesOrigin).toBe(false)
   })
 
   it('rejects an identifier that merely happens to be named baseUrl', () => {
