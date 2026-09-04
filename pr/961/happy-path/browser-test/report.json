@@ -1,24 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the agent can open a browser, navigate to https://example.com, and report the page title as \"Example Domain\"",
+  "reason": "Successfully verified that the SuperAgent browser-use feature can open a browser, navigate to https://example.com, retrieve the page title \"Example Domain\", and return it in the chat response.",
   "steps": [
-    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application home page with agent list visible in the sidebar",
-    "Found and clicked the \"QA-20260904-212241-2goc\" agent in the sidebar — Successfully opened the agent detail page with message input interface",
-    "Typed and sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully submitted to the agent, which immediately began processing",
-    "Waited up to 3 minutes for the agent response — Agent completed processing and returned response within 9 seconds",
-    "Verified the response mentions \"Example Domain\" — The agent's response explicitly states: \"The page title is \\\"Example Domain\\\" — the page has a matching <h1>, a short paragraph about the domain being for documentation examples, and a 'Learn more' link. Browser is closed.\"",
-    "Took a screenshot of the final state — Screenshot (agent-response.png) captured showing the complete conversation with the agent's response clearly visible"
+    "Step 1 - Navigated to http://localhost:47891 - Successfully loaded the SuperAgent application with page title \"Gamut\"",
+    "Step 2 - Found and clicked the \"QA-20260904-222740-xmeu\" agent in the sidebar - Successfully opened the agent chat interface, page URL changed to /agents/qa-20260904-222740-xmeu-vpasiczo5l",
+    "Step 3 - Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field - Message successfully entered in the textbox with placeholder \"How can I help? Press cmd+enter to send\"",
+    "Step 4 - Clicked the Send button - Message sent successfully, page navigated to the session page with URL /agents/qa-20260904-222740-xmeu-vpasiczo5l/sessions/4405a971-15f2-42a5-b09d-b43448d3cdf3",
+    "Step 5 - Waited for agent to process the request - Agent completed processing within the timeout, \"Working...\" indicator disappeared after agent finished executing 4 tool calls in approximately 10 seconds",
+    "Step 6 - Verified response mentions \"Example Domain\" - Response text confirmed: \"The page title is \\\"Example Domain\\\" — the page just has that heading, a line about the domain being for documentation examples, and a \"Learn more\" link. Browser closed.\""
   ],
   "bugs": [],
-  "durationMs": 69313,
-  "sessionId": "7ecbf13e-27f7-464a-86a9-e548dac99135",
+  "durationMs": 142286,
+  "sessionId": "d314856a-12c7-4e52-8f93-060fe2550259",
   "cost": {
-    "inputTokens": 344,
-    "outputTokens": 10531,
-    "cacheCreationTokens": 68137,
-    "cacheReadTokens": 972775,
+    "inputTokens": 440,
+    "outputTokens": 12401,
+    "cacheCreationTokens": 65626,
+    "cacheReadTokens": 1218783,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.235448
+    "totalCostUsd": 0.266356
   }
 }
