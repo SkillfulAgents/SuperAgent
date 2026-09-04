@@ -127,7 +127,7 @@ export function AttachmentPicker({
                   ) : file.thumbnail ? (
                     <img src={file.thumbnail} alt="" className="h-5 w-5 shrink-0 rounded-sm object-cover" />
                   ) : (
-                    <FileTypeIcon filename={file.name} size={14} />
+                    <FileTypeIcon filename={file.name} size="sm" className="text-muted-foreground" />
                   )}
                   <span className="truncate text-xs">{file.name}</span>
                 </button>

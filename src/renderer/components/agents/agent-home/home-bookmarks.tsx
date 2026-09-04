@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ExternalLink, Folder, PanelRightOpen, Pencil, Trash2 } from 'lucide-react'
+import { ExternalLink, PanelRightOpen, Pencil, Trash2 } from 'lucide-react'
 import { FileTypeIcon } from '@renderer/components/ui/file-type-icon'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
@@ -102,7 +102,7 @@ function BookmarkRow({
       title={`Browse ${getPathName(bookmark.folder)}`}
       aria-label={bookmark.name}
     >
-      <Folder className="h-4 w-4 shrink-0 text-muted-foreground" />
+      <FileTypeIcon filename={getPathName(bookmark.folder)} size="md" folder className="text-muted-foreground" />
       <span className="text-xs font-medium truncate">{bookmark.name}</span>
       <PanelRightOpen className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity ml-auto" />
     </button>
@@ -114,7 +114,7 @@ function BookmarkRow({
       title={`Preview ${getPathName(bookmark.file)}`}
       aria-label={bookmark.name}
     >
-      <FileTypeIcon filename={getPathName(bookmark.file)} size={16} />
+      <FileTypeIcon filename={getPathName(bookmark.file)} size="md" className="text-muted-foreground" />
       <span className="text-xs font-medium truncate">{bookmark.name}</span>
       <PanelRightOpen className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity ml-auto" />
     </button>

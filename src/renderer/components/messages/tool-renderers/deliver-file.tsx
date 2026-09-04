@@ -26,7 +26,7 @@ function ExpandedView({ input, result, isError, agentSlug }: ToolRendererProps) 
       )}
       {filePath && (
         <div className="flex items-center gap-2">
-          <FileTypeIcon filename={getFilename(filePath)} size={20} />
+          <FileTypeIcon filename={getFilename(filePath)} size="lg" className="text-muted-foreground" />
           <code className="bg-background px-1.5 py-0.5 rounded text-xs">
             {getFilename(filePath)}
           </code>
@@ -79,7 +79,7 @@ function CollapsedContent({ input, isError, agentSlug }: CollapsedContentProps) 
   if (isError) {
     return (
       <span className="inline-flex min-w-0 items-center gap-1 text-xs text-red-800 dark:text-red-200">
-        <FileTypeIcon filename={getFilename(filePath)} size={14} />
+        <FileTypeIcon filename={getFilename(filePath)} size="sm" />
         <span className="truncate">delivery failed</span>
       </span>
     )

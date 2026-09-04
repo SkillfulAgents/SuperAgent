@@ -1,4 +1,4 @@
-import { X, FolderIcon, Link2, Check, AlertTriangle, Loader2 } from 'lucide-react'
+import { X, Link2, Check, AlertTriangle, Loader2 } from 'lucide-react'
 import { cn } from '@shared/lib/utils'
 import { FileTypeIcon } from '@renderer/components/ui/file-type-icon'
 import { Progress } from '@renderer/components/ui/progress'
@@ -137,7 +137,7 @@ export function AttachmentPreview({ attachments, onRemove, onRetry }: Attachment
           {attachment.type === 'mount' ? (
             <>
               <div className="relative">
-                <FolderIcon className="h-4 w-4 text-muted-foreground" />
+                <FileTypeIcon filename={attachment.folderName} size="xl" folder className="text-muted-foreground" />
                 <Link2 className="h-2.5 w-2.5 absolute -bottom-0.5 -right-0.5 text-blue-500" />
               </div>
               <div className="flex flex-col min-w-0">
@@ -155,7 +155,7 @@ export function AttachmentPreview({ attachments, onRemove, onRetry }: Attachment
             </>
           ) : attachment.type === 'folder' ? (
             <>
-              <FolderIcon className="h-4 w-4 text-muted-foreground" />
+              <FileTypeIcon filename={attachment.folderName} size="xl" folder className="text-muted-foreground" />
               <div className="flex flex-col min-w-0">
                 <span className="truncate max-w-[160px] font-medium" title={attachment.folderName}>
                   {attachment.folderName}
@@ -172,7 +172,7 @@ export function AttachmentPreview({ attachments, onRemove, onRetry }: Attachment
                   className="h-8 w-8 rounded object-cover"
                 />
               ) : (
-                <FileTypeIcon filename={attachment.file.name} size={24} />
+                <FileTypeIcon filename={attachment.file.name} size="xl" className="text-muted-foreground" />
               )}
               <div className="flex flex-col min-w-0">
                 <span className="truncate max-w-[160px] font-medium" title={attachment.file.name}>
