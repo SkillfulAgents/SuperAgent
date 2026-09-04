@@ -49,6 +49,9 @@ const TRACK_HEIGHT = HEIGHT - TRACK_INSET * 2
 const TRACK_BASELINE = HEIGHT - TRACK_INSET
 const TRACK_CLASS = 'fill-muted-foreground/10'
 
+/** Keeps a lone call in a tall series from rendering as a sub-pixel sliver. */
+const MIN_SEGMENT = 1.5
+
 interface SparkTooltipRow {
   /** Tailwind background class for the legend swatch. */
   swatch: string
@@ -264,19 +267,32 @@ export function ActivitySparkChart({ label, data, className }: ActivitySparkChar
     >
       {data.map((point, index) => {
         const x = barX(index)
-        const successHeight = (point.succeeded / max) * TRACK_HEIGHT
-        const failureHeight = (point.failed / max) * TRACK_HEIGHT
-        const zeroHeight = point.succeeded === 0 && point.failed === 0 ? 1 : 0
+        const successHeight = point.succeeded > 0
+          ? Math.max(MIN_SEGMENT, (point.succeeded / max) * TRACK_HEIGHT)
+          : 0
+        const failureHeight = point.failed > 0
+          ? Math.max(MIN_SEGMENT, (point.failed / max) * TRACK_HEIGHT)
+          : 0
         return (
           <g key={point.date}>
             <rect
+              data-testid="activity-day-track"
+              aria-hidden="true"
+              x={x}
+              y={TRACK_INSET}
+              width={barWidth}
+              height={TRACK_HEIGHT}
+              rx={radius}
+              className={TRACK_CLASS}
+            />
+            <rect
               data-testid="activity-success-bar"
               x={x}
-              y={TRACK_BASELINE - successHeight - zeroHeight}
+              y={TRACK_BASELINE - successHeight}
               width={barWidth}
-              height={successHeight + zeroHeight}
+              height={successHeight}
               rx={radius}
-              className={point.succeeded === 0 ? 'fill-muted' : 'fill-emerald-500'}
+              className="fill-emerald-500"
             />
             <rect
               data-testid="activity-failure-bar"

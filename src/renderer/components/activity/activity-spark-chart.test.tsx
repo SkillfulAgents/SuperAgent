@@ -27,6 +27,36 @@ describe('activity spark charts', () => {
     expect(tip).toHaveTextContent('1 Failed')
   })
 
+  it('draws a track per day so an empty window still reads as 14 days', () => {
+    render(<ActivitySparkChart
+      label="GitHub activity"
+      data={Array.from({ length: 14 }, (_, i) => ({
+        date: `2026-07-${String(i + 1).padStart(2, '0')}`, succeeded: 0, failed: 0,
+      }))}
+    />)
+
+    expect(screen.getAllByTestId('activity-day-track')).toHaveLength(14)
+    // Nothing ran, so no segment has height.
+    for (const bar of screen.getAllByTestId('activity-success-bar')) {
+      expect(bar).toHaveAttribute('height', '0')
+    }
+  })
+
+  it('floors a lone call so it cannot render as a sub-pixel sliver', () => {
+    render(<ActivitySparkChart
+      label="GitHub activity"
+      data={[
+        { date: '2026-07-08', succeeded: 500, failed: 0 },
+        { date: '2026-07-09', succeeded: 1, failed: 0 },
+      ]}
+    />)
+
+    const [tall, lone] = screen.getAllByTestId('activity-success-bar')
+    expect(Number(tall.getAttribute('height'))).toBeGreaterThan(10)
+    // 1/500 of the track would be ~0.04px; the floor keeps it visible.
+    expect(Number(lone.getAttribute('height'))).toBeGreaterThanOrEqual(1.5)
+  })
+
   it('keeps an all-zero series visible and truthful', () => {
     render(<ActivitySparkChart
       label="Slack activity"
