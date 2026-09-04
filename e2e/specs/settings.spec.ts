@@ -1,5 +1,6 @@
 import { test, expect, type APIRequestContext, type Page, type TestInfo } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
+import { clearBusyAgentsForSettingsSave, waitForSettingsPutOk } from '../helpers/settings'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -47,9 +48,7 @@ async function pickSelectOption(page: Page, triggerId: string, optionText: strin
 
 /** Wait for a PUT /api/settings request to complete. */
 async function waitForSettingsSave(page: Page) {
-  await page.waitForResponse(
-    (res) => res.url().includes('/api/settings') && res.request().method() === 'PUT' && res.ok(),
-  )
+  await waitForSettingsPutOk(page)
 }
 
 /** Wait for a PUT /api/user-settings request to complete. */
@@ -66,8 +65,13 @@ async function settings(request: APIRequestContext) {
 }
 
 async function saveSettings(request: APIRequestContext, data: Record<string, unknown>) {
+  await clearBusyAgentsForSettingsSave(request)
+
   const res = await request.put('/api/settings', { data })
-  expect(res.ok()).toBe(true)
+  if (!res.ok()) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(`PUT /api/settings failed (${res.status()}): ${JSON.stringify(body)}`)
+  }
   return await res.json() as GlobalSettingsSnapshot
 }
 
