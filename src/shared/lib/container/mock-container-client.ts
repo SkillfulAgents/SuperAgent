@@ -3097,6 +3097,18 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         message: { content: '[Request interrupted by user]' },
         timestamp: new Date().toISOString(),
       })
+      // ...followed by the CLI's synthetic "No response requested." assistant
+      // stand-in (model "<synthetic>"). The app hides it; mirroring it here
+      // keeps E2E honest about the post-interrupt transcript shape.
+      this.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: {
+          model: '<synthetic>',
+          content: [{ type: 'text', text: 'No response requested.' }],
+        },
+        isApiErrorMessage: false,
+        timestamp: new Date().toISOString(),
+      })
     }
 
     // Queued steering messages die with the turn — the real CLI never picks

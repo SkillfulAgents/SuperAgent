@@ -25,6 +25,7 @@ import {
   type ChatProvider,
 } from '@shared/lib/chat-integrations/config-schema'
 import { getSessionJsonlPath } from '@shared/lib/utils/file-storage'
+import { SYSTEM_MESSAGE_PREFIX } from '@shared/lib/utils/system-message'
 import { recordSessionActivity } from '@shared/lib/services/session-summary-cache'
 import { captureException } from '@shared/lib/error-reporting'
 import { isChatAllowed } from '@shared/lib/services/chat-integration-access-service'
@@ -441,8 +442,8 @@ async function notifySessionOfOutboundMessage(
   const sessionId = await chatIntegrationManager.ensureSession(integrationId, chatId)
 
   const notificationText = context
-    ? `[SYSTEM] A message was sent to the user on your behalf via chat integration:\n[Internal context: ${context}]\n\n${message}`
-    : `[SYSTEM] A message was sent to the user on your behalf via chat integration:\n${message}`
+    ? `${SYSTEM_MESSAGE_PREFIX}A message was sent to the user on your behalf via chat integration:\n[Internal context: ${context}]\n\n${message}`
+    : `${SYSTEM_MESSAGE_PREFIX}A message was sent to the user on your behalf via chat integration:\n${message}`
 
   // Try the SDK-aware path (appends to transcript without triggering a response).
   // Falls back to raw JSONL if the container isn't running or the session doesn't

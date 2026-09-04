@@ -17,17 +17,14 @@ import {
   isToolResultOnlyMessage,
   parseCommandMessage,
 } from '@shared/lib/utils/message-transform'
-import {
-  parseAttachedFiles,
-  parseMountedFolders,
-} from '@shared/lib/utils/attached-files'
+import { isSystemMessageText } from '@shared/lib/utils/system-message'
 import { parseTaskNotifications } from '@shared/lib/utils/task-notifications'
+import { parseUserMessageParts } from '@shared/lib/utils/user-message-parts'
 
 /** One compact body that remains useful on APNs, Web Push, and desktop OS UI. */
 export const SESSION_COMPLETE_BODY_MAX_CHARS = 240
 export const SESSION_COMPLETE_SUMMARY_TIMEOUT_MS = 8_000
 
-const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] '
 const USER_REQUEST_CONTEXT_MAX_CHARS = 8_000
 const AGENT_RESPONSE_CONTEXT_MAX_CHARS = 24_000
 
@@ -97,7 +94,7 @@ function userRequestText(
       .join('')
   }
 
-  if (!text.trim() || text.trimStart().startsWith(SYSTEM_MESSAGE_PREFIX)) {
+  if (!text.trim() || isSystemMessageText(text)) {
     return null
   }
 
@@ -107,8 +104,9 @@ function userRequestText(
     text = command.args ? `/${command.name} ${command.args}` : `/${command.name}`
   }
 
-  text = parseAttachedFiles(text).cleanText
-  text = parseMountedFolders(text).cleanText
+  // Same peel as the transcript bubble, minus the sender prefix (the summary
+  // wants the request as the agent saw it, attribution included).
+  text = parseUserMessageParts(text, { readOnly: false }).text
   return text.trim() || null
 }
 

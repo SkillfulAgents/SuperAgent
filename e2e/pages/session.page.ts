@@ -220,6 +220,19 @@ export class SessionPage {
   }
 
   /**
+   * The "[Request interrupted by user]" marker the CLI appends on abort. It
+   * occupies a user-message slot but renders as a bare "Stopped" chip, so it
+   * is located by test id rather than by the raw marker text.
+   */
+  getInterruptMarkers() {
+    return this.getUserMessages().filter({ has: this.page.locator('[data-testid="interrupt-marker"]') })
+  }
+
+  async expectInterruptMarker(index = 0) {
+    await expect(this.getUserMessages().nth(index).getByTestId('interrupt-marker')).toBeVisible()
+  }
+
+  /**
    * Click the first session in the sidebar for a given agent (by display name,
    * which lets us fall back to text match since agent slugs aren't derived from
    * the user-visible name).

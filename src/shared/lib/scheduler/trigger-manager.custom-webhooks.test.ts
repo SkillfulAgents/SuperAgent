@@ -46,7 +46,8 @@ vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   getWebhookTriggersByComposioId: (...args: unknown[]) => mockGetWebhookTriggersByComposioId(...args),
   markTriggerFired: (...args: unknown[]) => mockMarkTriggerFired(...args),
   markTriggerFailed: vi.fn().mockResolvedValue(undefined),
-  resolvePlatformMemberForCandidates: () => null,
+  resolveTriggerPrincipal: () => null,
+  getConnectedAccountOwnerUserId: () => null,
 }))
 
 vi.mock('@shared/lib/services/session-service', () => ({

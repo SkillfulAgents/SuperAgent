@@ -13,14 +13,7 @@ import {
   messageAuthor,
 } from '@shared/lib/db/schema'
 import { eq, and, inArray } from 'drizzle-orm'
-import { captureException } from '@shared/lib/error-reporting'
-import { deleteComposioTrigger } from '@shared/lib/composio/triggers'
-import { isPlatformComposioActive } from '@shared/lib/composio/client'
-import { disablePlatformWebhookEndpoint } from '@shared/lib/services/webhook-endpoints-client'
-import {
-  resolvePlatformMemberForCandidates,
-} from '@shared/lib/services/webhook-trigger-service'
-import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
+import { cancelWebhookTriggerWithCleanup } from '@shared/lib/services/webhook-trigger-service'
 
 export async function cleanupAgentData(agentSlug: string): Promise<void> {
   await cleanupWebhookTriggers(agentSlug)
@@ -42,9 +35,11 @@ export async function cleanupAgentData(agentSlug: string): Promise<void> {
   })
 }
 
+// Delegates per-trigger cancel + upstream teardown to the shared path so the
+// minting-member-attributed delete (SUP-765) applies to agent deletion too.
 async function cleanupWebhookTriggers(agentSlug: string): Promise<void> {
   const triggers = db
-    .select()
+    .select({ id: webhookTriggers.id })
     .from(webhookTriggers)
     .where(
       and(
@@ -54,55 +49,7 @@ async function cleanupWebhookTriggers(agentSlug: string): Promise<void> {
     )
     .all()
 
-  for (const trigger of triggers) {
-    db.update(webhookTriggers)
-      .set({ status: 'cancelled', cancelledAt: new Date() })
-      .where(eq(webhookTriggers.id, trigger.id))
-      .run()
-
-    // Custom endpoints live on the platform proxy regardless of Composio key
-    // mode — gate their teardown on platform auth, not the Composio condition.
-    const canReachUpstream =
-      trigger.kind === 'custom' ? Boolean(getPlatformAccessToken()) : isPlatformComposioActive()
-    if (trigger.composioTriggerId && canReachUpstream) {
-      const remaining = db
-        .select()
-        .from(webhookTriggers)
-        .where(
-          and(
-            eq(webhookTriggers.composioTriggerId, trigger.composioTriggerId),
-            inArray(webhookTriggers.status, ['active', 'paused']),
-          ),
-        )
-        .all().length
-
-      if (remaining === 0) {
-        try {
-          if (trigger.kind === 'custom') {
-            // Disable the platform endpoint so its public URL 404s at the edge.
-            const memberId =
-              resolvePlatformMemberForCandidates([trigger.createdByUserId])?.memberId ??
-              getStoredPlatformMemberId() ??
-              'local'
-            await disablePlatformWebhookEndpoint(memberId, trigger.composioTriggerId)
-          } else {
-            await deleteComposioTrigger(trigger.composioTriggerId)
-          }
-        } catch (error) {
-          console.error('[agent-cleanup] Failed to tear down upstream subscription:', error)
-          // Agent is being deleted; no owner is left to notice a live public
-          // URL. Capture so the orphaned endpoint is diagnosable.
-          captureException(error, {
-            tags: { area: 'webhook-endpoints', op: 'cleanup-disable' },
-            extra: {
-              agentSlug: trigger.agentSlug,
-              triggerId: trigger.id,
-              upstreamId: trigger.composioTriggerId,
-              kind: trigger.kind,
-            },
-          })
-        }
-      }
-    }
+  for (const { id } of triggers) {
+    await cancelWebhookTriggerWithCleanup(id)
   }
 }

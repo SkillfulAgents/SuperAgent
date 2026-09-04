@@ -117,12 +117,15 @@ const mockCreateWebhookTrigger = vi.fn<MockFn>(() => Promise.resolve('trigger_ne
 const mockListActiveWebhookTriggers = vi.fn<MockFn>(() => Promise.resolve([]))
 const mockCancelWebhookTriggerWithCleanup = vi.fn<MockFn>(() => Promise.resolve(true))
 const mockGetWebhookTrigger = vi.fn<MockFn>(() => Promise.resolve(null))
+const mockUpdateWebhookTriggerName = vi.fn<MockFn>(() => Promise.resolve())
+const mockResolvePlatformMemberForCandidates = vi.fn<MockFn>(() => null)
 vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   createWebhookTrigger: (...args: unknown[]) => mockCreateWebhookTrigger(...args),
   listActiveWebhookTriggers: (...args: unknown[]) => mockListActiveWebhookTriggers(...args),
   cancelWebhookTriggerWithCleanup: (...args: unknown[]) => mockCancelWebhookTriggerWithCleanup(...args),
   getWebhookTrigger: (...args: unknown[]) => mockGetWebhookTrigger(...args),
-  resolvePlatformMemberForCandidates: () => null,
+  updateWebhookTriggerName: (...args: unknown[]) => mockUpdateWebhookTriggerName(...args),
+  resolvePlatformMemberForCandidates: (...args: unknown[]) => mockResolvePlatformMemberForCandidates(...args),
 }))
 
 const mockCreatePlatformWebhookEndpoint = vi.fn<MockFn>()
@@ -142,8 +145,9 @@ vi.mock('@shared/lib/services/webhook-endpoints-client', () => ({
 // access token (NOT on Composio mode — custom endpoints must work with a
 // personal Composio key).
 const mockGetPlatformAccessToken = vi.fn(() => 'opaque_token' as string | null)
+const mockGetStoredPlatformMemberId = vi.fn(() => null as string | null)
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
-  getStoredPlatformMemberId: () => null,
+  getStoredPlatformMemberId: () => mockGetStoredPlatformMemberId(),
   getPlatformAccessToken: () => mockGetPlatformAccessToken(),
 }))
 
@@ -186,6 +190,15 @@ import { messagePersister, redactStreamedToolInput, sessionKeyOf, WaitForIdleTim
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
+import { attribution } from '@shared/lib/platform-attribution'
+
+// An org-scoped platform JWT (the mode where every proxy call must carry an
+// acting member); the payload only has to decode, the signature is never checked.
+function buildOrgToken(orgId: string): string {
+  const header = Buffer.from('{"alg":"none"}').toString('base64url')
+  const payload = Buffer.from(JSON.stringify({ orgId })).toString('base64url')
+  return `${header}.${payload}.sig`
+}
 
 describe('redactStreamedToolInput', () => {
   it('masks the secret in create/update_webhook_endpoint streamed input', () => {
@@ -532,6 +545,51 @@ describe('MessagePersister', () => {
       expect(call?.slice(0, 2)).toEqual([SESSION_ID, AGENT_SLUG])
       expect(call?.[2]?.responseText).toBe('Final answer.')
       await expect(call?.[2]?.responseTranscriptEndOffset).resolves.toBe(12_345)
+    })
+
+    it('ignores the synthetic "No response requested." placeholder as a response candidate', async () => {
+      mockStat.mockResolvedValueOnce({ size: 12_345 })
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'capabilities',
+        session_state_events: true,
+      })
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'real-entry',
+        message: {
+          id: 'msg-real',
+          content: [{ type: 'text', text: 'Real answer.' }],
+        },
+      })
+      // The CLI's stand-in after an interrupt: a newer assistant message id,
+      // but nothing the model said. It must not replace the real answer.
+      mockClient._sendMessage({
+        type: 'assistant',
+        uuid: 'synthetic-entry',
+        isApiErrorMessage: false,
+        message: {
+          id: 'msg-synthetic',
+          model: '<synthetic>',
+          content: [{ type: 'text', text: 'No response requested.' }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'session_state_changed',
+        state: 'idle',
+      })
+
+      const call = vi.mocked(notificationManager.triggerSessionComplete).mock.calls.at(-1)
+      expect(call?.[2]?.responseText).toBe('Real answer.')
     })
 
     it('dispatches completion without waiting for the transcript stat', async () => {
@@ -5209,6 +5267,8 @@ describe('MessagePersister', () => {
 
       mockIsPlatformComposioActive.mockReturnValue(true)
       mockGetPlatformAccessToken.mockReturnValue('opaque_token')
+      mockGetStoredPlatformMemberId.mockReturnValue(null)
+      mockResolvePlatformMemberForCandidates.mockReturnValue(null)
       mockContainerClientFetch.mockResolvedValue({ ok: true })
       mockCreateWebhookTrigger.mockResolvedValue('trigger_new_id')
       mockCancelWebhookTriggerWithCleanup.mockResolvedValue(true)
@@ -5317,6 +5377,54 @@ describe('MessagePersister', () => {
             method: 'POST',
             body: expect.stringContaining('not found'),
           }),
+        )
+      })
+
+      // SUP-765: the row must record the member the proxy actually scoped the
+      // subscription to. Tool handlers run off the stream loop with no
+      // guaranteed ALS scope, so the mint has to establish one itself.
+      it('mints under the session member and records it when no ambient attribution is active', async () => {
+        mockGetPlatformAccessToken.mockReturnValue(buildOrgToken('org_test'))
+        mockGetStoredPlatformMemberId.mockReturnValue('sub_session')
+        let mintKey: string | null | undefined
+        mockEnableComposioTrigger.mockImplementation(async () => {
+          mintKey = attribution.current()?.getKey() ?? null
+          return 'composio_trigger_id'
+        })
+
+        simulateToolUse('mcp__user-input__setup_trigger', 'tool-setup-minted', {
+          connected_account_id: 'ca_1',
+          trigger_type: 'GMAIL_NEW_EMAIL',
+          prompt: 'Summarize this email',
+        })
+
+        await flushHandlers('/inputs/tool-setup-minted/resolve')
+
+        expect(mintKey).toBe('member:sub_session')
+        expect(mockCreateWebhookTrigger).toHaveBeenCalledWith(
+          expect.objectContaining({ mintedByMemberId: 'sub_session' }),
+        )
+      })
+
+      it('never mints as the opaque-key placeholder member', async () => {
+        // Nothing resolves: the bearer must stay the bare token, not `token::local`.
+        let mintKey: string | null | undefined
+        mockEnableComposioTrigger.mockImplementation(async () => {
+          mintKey = attribution.current()?.getKey() ?? null
+          return 'composio_trigger_id'
+        })
+
+        simulateToolUse('mcp__user-input__setup_trigger', 'tool-setup-local', {
+          connected_account_id: 'ca_1',
+          trigger_type: 'GMAIL_NEW_EMAIL',
+          prompt: 'Summarize this email',
+        })
+
+        await flushHandlers('/inputs/tool-setup-local/resolve')
+
+        expect(mintKey).toBeNull()
+        expect(mockCreateWebhookTrigger).toHaveBeenCalledWith(
+          expect.objectContaining({ mintedByMemberId: undefined }),
         )
       })
 
@@ -5678,6 +5786,41 @@ describe('MessagePersister', () => {
         expect(JSON.parse(resolveCall[1].body).value).toContain('signature-verified')
       })
 
+      // SUP-765: the endpoint is scoped to whoever minted it, so a PATCH under
+      // the session creator's member 404s at the proxy.
+      it('patches as the recorded minting member, not the trigger creator', async () => {
+        mockGetWebhookTrigger.mockResolvedValue({ ...customTrigger, mintedByMemberId: 'sub_minted' })
+        mockResolvePlatformMemberForCandidates.mockReturnValue({ userId: 'u1', memberId: 'sub_creator' })
+
+        simulateToolUse('mcp__user-input__update_webhook_endpoint', 'tool-upd-minted', {
+          trigger_id: 'trigger_custom_1',
+          name: 'renamed',
+        })
+
+        await flushHandlers('/inputs/tool-upd-minted/resolve')
+        expect(mockUpdatePlatformWebhookEndpoint).toHaveBeenCalledWith(
+          'sub_minted',
+          customTrigger.composioTriggerId,
+          { name: 'renamed' },
+        )
+      })
+
+      it('falls back to the creator member for rows minted before the column existed', async () => {
+        mockResolvePlatformMemberForCandidates.mockReturnValue({ userId: 'u1', memberId: 'sub_creator' })
+
+        simulateToolUse('mcp__user-input__update_webhook_endpoint', 'tool-upd-precolumn', {
+          trigger_id: 'trigger_custom_1',
+          name: 'renamed',
+        })
+
+        await flushHandlers('/inputs/tool-upd-precolumn/resolve')
+        expect(mockUpdatePlatformWebhookEndpoint).toHaveBeenCalledWith(
+          'sub_creator',
+          customTrigger.composioTriggerId,
+          { name: 'renamed' },
+        )
+      })
+
       it('rejects for a non-custom trigger', async () => {
         mockGetWebhookTrigger.mockResolvedValue({ ...customTrigger, kind: 'composio' })
 
@@ -5751,6 +5894,47 @@ describe('MessagePersister', () => {
         mockTestPlatformWebhookFilter.mockClear()
         mockGetWebhookTrigger.mockResolvedValue(customTrigger)
         mockListPlatformWebhookEvents.mockResolvedValue({ filterExp: null, events: [] })
+      })
+
+      // SUP-765: same scoping as update/teardown — a read under the creator's
+      // member 404s for anything minted by someone else.
+      it('reads as the recorded minting member, not the trigger creator', async () => {
+        mockGetWebhookTrigger.mockResolvedValue({ ...customTrigger, mintedByMemberId: 'sub_minted' })
+        mockResolvePlatformMemberForCandidates.mockReturnValue({ userId: 'u1', memberId: 'sub_creator' })
+
+        simulateToolUse('mcp__user-input__inspect_webhook_events', 'tool-insp-minted', {
+          trigger_id: 'trigger_custom_1',
+        })
+
+        await flushHandlers('/inputs/tool-insp-minted/resolve')
+        expect(mockListPlatformWebhookEvents).toHaveBeenCalledWith(
+          'sub_minted',
+          customTrigger.composioTriggerId,
+          undefined,
+        )
+      })
+
+      it('dry-runs a filter as the recorded minting member too', async () => {
+        mockGetWebhookTrigger.mockResolvedValue({ ...customTrigger, mintedByMemberId: 'sub_minted' })
+        mockTestPlatformWebhookFilter.mockResolvedValue({
+          filter_exp: 'body.action == "update"',
+          evaluated: 0,
+          summary: { passed: 0, filtered: 0, error: 0, skipped: 0 },
+          results: [],
+        })
+
+        simulateToolUse('mcp__user-input__inspect_webhook_events', 'tool-insp-minted-filter', {
+          trigger_id: 'trigger_custom_1',
+          test_filter_exp: 'body.action == "update"',
+        })
+
+        await flushHandlers('/inputs/tool-insp-minted-filter/resolve')
+        expect(mockTestPlatformWebhookFilter).toHaveBeenCalledWith(
+          'sub_minted',
+          customTrigger.composioTriggerId,
+          'body.action == "update"',
+          undefined,
+        )
       })
 
       it('lists recent deliveries with filter verdicts and body previews', async () => {

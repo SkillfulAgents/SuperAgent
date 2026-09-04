@@ -18,6 +18,8 @@ const configuredWorkers = process.env.PLAYWRIGHT_WORKERS
 
 const webTestIgnore = [
   '**/auth/**',
+  // Real-container probes with their own config (playwright.live-mcp.config.ts).
+  '**/live/**',
   '**/getting-started-wizard.spec.ts',
   // Mutates the global provider API key — quarantined to the wizard config.
   '**/provider-api-key.spec.ts',
@@ -68,7 +70,10 @@ function buildWebServerCommand() {
 
 export default defineConfig({
   testDir: './e2e',
-  testIgnore: ['**/auth/**'],  // Auth tests use separate config (playwright.auth.config.ts)
+  // Auth tests use a separate config (playwright.auth.config.ts); e2e/live
+  // holds probes against the REAL container (playwright.live-mcp.config.ts
+  // and the .mjs harnesses), which the mock host cannot satisfy.
+  testIgnore: ['**/auth/**', '**/live/**'],
   outputDir: playwrightOutputDir,
   fullyParallel: true,
   forbidOnly: !!process.env.CI,

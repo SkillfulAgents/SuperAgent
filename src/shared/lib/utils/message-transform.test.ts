@@ -690,6 +690,32 @@ describe('transformMessages', () => {
   // ============================================================================
 
   describe('edge cases', () => {
+    it('drops the synthetic "No response requested." placeholder but keeps synthetic API errors', () => {
+      const placeholder = createAssistantMessage('a-synth', 'msg-synth', [
+        { type: 'text', text: 'No response requested.' },
+      ])
+      placeholder.message.model = '<synthetic>'
+      placeholder.isApiErrorMessage = false
+      const apiError = createAssistantMessage('a-err', 'msg-err', [
+        { type: 'text', text: 'API Error: 529 Overloaded.' },
+      ])
+      apiError.message.model = '<synthetic>'
+      apiError.isApiErrorMessage = true
+
+      const result = transformMessages([
+        createUserMessage('u1', 'hello'),
+        createUserMessage('u2', '[Request interrupted by user]'),
+        placeholder,
+        apiError,
+      ])
+
+      expect(result.map((item) => asMessage(item).content.text)).toEqual([
+        'hello',
+        '[Request interrupted by user]',
+        'API Error: 529 Overloaded.',
+      ])
+    })
+
     it('handles empty entries array', () => {
       const result = transformMessages([])
       expect(result).toEqual([])

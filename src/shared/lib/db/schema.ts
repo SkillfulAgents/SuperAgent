@@ -594,6 +594,9 @@ export const webhookTriggers = sqliteTable('webhook_triggers', {
   // Ownership
   createdBySessionId: text('created_by_session_id'),
   createdByUserId: text('created_by_user_id'),
+  // Acting platform member the upstream subscription was minted under (SUP-765).
+  // Teardown must delete as this member; the proxy scopes DELETE to it.
+  mintedByMemberId: text('minted_by_member_id'),
 
   // Runtime options (override global defaults when set)
   model: text('model'),

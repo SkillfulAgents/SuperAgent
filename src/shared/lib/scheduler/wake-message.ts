@@ -1,4 +1,5 @@
 import type { ScheduledTask } from '@shared/lib/services/scheduled-task-service'
+import { SYSTEM_MESSAGE_PREFIX } from '@shared/lib/utils/system-message'
 
 /**
  * Build the system message delivered when a session wake fires. The [SYSTEM]
@@ -18,5 +19,5 @@ export function buildWakeMessage(
     trigger === 'manual'
       ? `This session is resuming now — the user chose to wake it early (it was scheduled to resume at ${scheduledFor}).`
       : `This session is resuming as scheduled. You asked (on ${task.createdAt.toISOString()}) to be woken at ${scheduledFor}.`
-  return `[SYSTEM] ${intro}\nYour note: ${task.prompt}`
+  return `${SYSTEM_MESSAGE_PREFIX}${intro}\nYour note: ${task.prompt}`
 }

@@ -177,6 +177,9 @@ export interface JsonlMessageEntry {
       cache_read_input_tokens?: number
     }
   }
+  // Set by the CLI on synthetic assistant entries that carry an API error
+  // text ("API Error: 529 Overloaded ..."). See utils/synthetic-message.ts.
+  isApiErrorMessage?: boolean
   // Tool result specific fields (present when type is 'user' with tool_result content)
   toolUseResult?: {
     stdout: string
