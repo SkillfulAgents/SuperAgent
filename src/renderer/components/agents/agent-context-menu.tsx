@@ -5,8 +5,6 @@ import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
-  ContextMenuRadioGroup,
-  ContextMenuRadioItem,
   ContextMenuSeparator,
   ContextMenuSub,
   ContextMenuSubContent,
@@ -145,13 +143,20 @@ export function AgentContextMenu({
   const { data: allAgents } = useAgents()
   const updateSettings = useUpdateUserSettings()
   const folders = useMemo(() => sanitizeFolders(userSettings?.agentFolders), [userSettings?.agentFolders])
-  const currentFolderId = userSettings?.agentFolderAssignments?.[agent.slug]
+  const assignedFolderId = userSettings?.agentFolderAssignments?.[agent.slug]
   // An assignment naming a folder that no longer exists reads as the default
   // folder, the same way the sidebar renders it.
-  const selectedFolderValue =
-    currentFolderId && folders.some((f) => f.id === currentFolderId)
-      ? currentFolderId
+  const currentFolderId =
+    assignedFolderId && folders.some((f) => f.id === assignedFolderId)
+      ? assignedFolderId
       : ROOT_FOLDER_ID
+  // The submenu offers only where the agent can go. Leaving out the folder it
+  // is already in means there is no current value to mark, so the list is
+  // plain items rather than a radio group.
+  const destinations: Array<{ id: string; name: string }> = [
+    { id: ROOT_FOLDER_ID, name: ROOT_FOLDER_NAME },
+    ...folders,
+  ].filter((folder) => folder.id !== currentFolderId)
 
   // Filing writes the whole canonical tree — the same shape a drag writes —
   // so the two filing paths leave identical settings and the flat agentOrder
@@ -172,22 +177,18 @@ export function AgentContextMenu({
     [allAgents]
   )
 
-  const handleMoveToFolder = useCallback((value: string) => {
-    // Radix reports a selection even when the checked item is re-picked; the
-    // agent is already there, so there is nothing to write (and nothing to
-    // move to the folder's end).
-    if (value === selectedFolderValue) return
+  const handleMoveToFolder = useCallback((folderId: string) => {
     updateSettings.mutate((current) =>
       sectionsToSettings(
         applyTreeOperation(buildSections(current), {
           kind: 'placeAgent',
           slug: agent.slug,
-          folderId: value,
+          folderId,
           index: Number.MAX_SAFE_INTEGER,
         })
       )
     )
-  }, [agent.slug, buildSections, selectedFolderValue, updateSettings])
+  }, [agent.slug, buildSections, updateSettings])
 
   const handleCreateFolderWithAgent = useCallback(() => {
     const name = newFolderName.trim()
@@ -340,28 +341,23 @@ export function AgentContextMenu({
               <FolderInput className="h-4 w-4 mr-2" />
               Move to Folder
             </ContextMenuSubTrigger>
-            <ContextMenuSubContent className="rounded-xl p-2">
-              <ContextMenuRadioGroup
-                value={selectedFolderValue}
-                onValueChange={handleMoveToFolder}
-              >
-                <ContextMenuRadioItem
-                  value={ROOT_FOLDER_ID}
-                  data-testid="move-agent-to-no-folder-item"
+            <ContextMenuSubContent className="rounded-xl p-2" data-testid="move-agent-to-folder-menu">
+              {destinations.map((folder) => (
+                <ContextMenuItem
+                  key={folder.id}
+                  onClick={() => handleMoveToFolder(folder.id)}
+                  data-testid={
+                    folder.id === ROOT_FOLDER_ID
+                      ? 'move-agent-to-no-folder-item'
+                      : `move-agent-to-folder-${folder.id}`
+                  }
                 >
-                  {ROOT_FOLDER_NAME}
-                </ContextMenuRadioItem>
-                {folders.map((folder) => (
-                  <ContextMenuRadioItem
-                    key={folder.id}
-                    value={folder.id}
-                    data-testid={`move-agent-to-folder-${folder.id}`}
-                  >
-                    {folder.name}
-                  </ContextMenuRadioItem>
-                ))}
-              </ContextMenuRadioGroup>
-              <ContextMenuSeparator className="mx-1" />
+                  {folder.name}
+                </ContextMenuItem>
+              ))}
+              {/* With nowhere to go (no folders, agent already in the default
+                  one) the list is empty, so no rule sits above New Folder. */}
+              {destinations.length > 0 && <ContextMenuSeparator className="mx-1" />}
               <ContextMenuItem
                 // Secondary to the destinations above: muted until focused.
                 className="text-muted-foreground"
