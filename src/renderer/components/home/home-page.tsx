@@ -9,12 +9,7 @@ import { useHomeCardHealth } from '@renderer/hooks/use-home-card-health'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
 import { useNotableSessions } from '@renderer/hooks/use-sessions'
 import { LazyHalftone } from '@renderer/components/agents/halftone'
-import {
-  ActivitySparkChart,
-  CronSparkChart,
-  summarizeDailyActivity,
-} from '@renderer/components/activity/activity-spark-chart'
-import { DEFAULT_ACTIVITY_DAYS } from '@shared/lib/types/activity'
+import { ActivitySparkChart, CronSparkChart } from '@renderer/components/activity/activity-spark-chart'
 import {
   type HomeCardCron,
   type HomeCardHealthData,
@@ -36,7 +31,7 @@ import { DashboardCard } from './dashboard-card'
 import { HomeEmptyClouds } from './home-empty-clouds'
 import { PwaInstallBanner } from './pwa-install-banner'
 import { isElectron, getPlatform } from '@renderer/lib/env'
-import { Plus, Loader2, Search, Power, Square, Check, ArrowRight, LayoutGrid, Waypoints, MoreVertical, Move, Sparkle } from 'lucide-react'
+import { Plus, Loader2, Search, Power, Square, Check, ArrowRight, ChevronUp, ChevronDown, LayoutGrid, Waypoints, MoreVertical, Move, Sparkle } from 'lucide-react'
 import { useSearch } from '@renderer/context/search-context'
 import { cn } from '@shared/lib/utils/cn'
 import type { ApiAgent } from '@shared/lib/types/api'
@@ -387,7 +382,7 @@ type HealthSlide = { kind: 'cron' | 'webhook'; id: string; name: string }
  * a time — each cron's run history (CronSparkChart) and each webhook's daily
  * volume (ActivitySparkChart), fed by the real /api/activity rollups — so
  * labels get the whole row instead of clipping. Auto-advances every few
- * seconds, pauses on hover; the dots jump straight to a slide; a slide click
+ * seconds, pauses on hover; the pager steps through slides; a slide click
  * opens that trigger's page.
  */
 function AgentHealthCarousel({
@@ -434,19 +429,12 @@ function AgentHealthCarousel({
   }
 
   const renderSlide = (s: HealthSlide) => {
-    let chart: ReactNode
-    let metric = ''
-    if (s.kind === 'cron') {
-      const activity = health?.cronByTaskId[s.id] ?? []
-      const succeeded = activity.filter((p) => p.status === 'succeeded').length
-      chart = <CronSparkChart label={s.name} data={activity} className="h-5 w-24" />
-      metric = `${succeeded}/${activity.length}`
-    } else {
-      const activity = health?.webhookByTriggerId[s.id] ?? []
-      const { total } = summarizeDailyActivity(activity)
-      chart = <ActivitySparkChart label={s.name} data={activity} className="h-5 w-24" />
-      metric = `${total}/${health?.days ?? DEFAULT_ACTIVITY_DAYS}d`
-    }
+    const chart: ReactNode =
+      s.kind === 'cron' ? (
+        <CronSparkChart label={s.name} data={health?.cronByTaskId[s.id] ?? []} className="h-5 w-24" />
+      ) : (
+        <ActivitySparkChart label={s.name} data={health?.webhookByTriggerId[s.id] ?? []} className="h-5 w-24" />
+      )
     return (
       <button
         type="button"
@@ -454,14 +442,13 @@ function AgentHealthCarousel({
           e.stopPropagation()
           openSlide(s)
         }}
-        className="flex w-full cursor-pointer items-center gap-2 text-xs"
+        className="flex w-full cursor-pointer items-center gap-2 text-left text-xs"
       >
         <span className="min-w-0 flex-1 truncate">
           <span className="text-foreground">{s.name}</span>{' '}
           <span className="text-muted-foreground">{s.kind === 'cron' ? 'Cron' : 'Webhook'}</span>
         </span>
         <span className="shrink-0">{chart}</span>
-        <span className="shrink-0 tabular-nums text-muted-foreground">{metric}</span>
       </button>
     )
   }
@@ -488,29 +475,39 @@ function AgentHealthCarousel({
           {renderSlide(active)}
         </div>
       </div>
-      {/* Vertical position dots, outside the chip to the right */}
+      {/* Fixed-width up/down pager outside the chip. Unlike a dot per slide,
+          its footprint doesn't grow with the trigger count, so the chip keeps
+          its width however many crons + webhooks an agent has. The position is
+          announced to screen readers only. */}
       {count > 1 && (
-        <span className="flex shrink-0 items-center">
-          {slides.map((s, i) => (
+        <span className="flex shrink-0 items-center text-muted-foreground">
+          <span aria-live="polite" className="sr-only">
+            {(index % count) + 1} of {count}
+          </span>
+          <span className="flex flex-col">
             <button
               type="button"
-              key={s.id}
               onClick={(e) => {
                 e.stopPropagation()
-                setIndex(i)
+                setIndex((i) => (i - 1 + count) % count)
               }}
-              aria-label={`Show health row ${i + 1} of ${count}`}
-              aria-pressed={i === index % count}
-              className="group inline-flex h-6 w-6 items-center justify-center rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label="Previous health row"
+              className="inline-flex h-3 w-5 cursor-pointer items-center justify-center rounded-t transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
-              <span
-                className={cn(
-                  'h-[3px] w-[3px] rounded-full transition-colors',
-                  i === index % count ? 'bg-foreground/70' : 'bg-muted-foreground/30 group-hover:bg-muted-foreground/60'
-                )}
-              />
+              <ChevronUp className="h-3 w-3" />
             </button>
-          ))}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                setIndex((i) => (i + 1) % count)
+              }}
+              aria-label="Next health row"
+              className="inline-flex h-3 w-5 cursor-pointer items-center justify-center rounded-b transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <ChevronDown className="h-3 w-3" />
+            </button>
+          </span>
         </span>
       )}
     </div>
