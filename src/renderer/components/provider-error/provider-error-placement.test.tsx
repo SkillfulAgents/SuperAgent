@@ -29,7 +29,7 @@ vi.mock('@renderer/hooks/use-platform-auth', () => ({
 
 const composerError: ProviderErrorPresentation = {
   severity: 'warning',
-  message: '**Routed:** shown above the composer',
+  message: '**Routed:** replaces the composer',
   icon: 'info',
   placement: 'composer',
 }
@@ -107,44 +107,60 @@ describe('ProviderErrorPlacement', () => {
     mockMessages.length = 0
   })
 
-  it('renders nothing when there is no current error', () => {
-    const { container } = render(<ProviderErrorPlacement placement="composer" sessionId="s" agentSlug="a" />)
-    expect(container.innerHTML).toBe('')
+  const composer = <div data-testid="composer">composer</div>
+  const mount = (placement: 'composer' | 'inline' = 'composer') =>
+    render(<ProviderErrorPlacement placement={placement} sessionId="s" agentSlug="a">{composer}</ProviderErrorPlacement>)
+
+  it('renders its children untouched when there is no current error', () => {
+    mount()
+    expect(screen.getByTestId('composer')).toBeInTheDocument()
+    expect(screen.queryByTestId('provider-error-placement-composer')).not.toBeInTheDocument()
   })
 
-  it('renders nothing for an error whose placement is inline', () => {
+  it('renders only children for an error whose placement is inline', () => {
     mockStreamState.error = 'API rate limit exceeded'
     mockStreamState.apiErrorCode = 'rate_limit'
     mockStreamState.errorPresentation = inlineError
-    const { container } = render(<ProviderErrorPlacement placement="composer" sessionId="s" agentSlug="a" />)
-    expect(container.innerHTML).toBe('')
+    mount()
+    expect(screen.getByTestId('composer')).toBeInTheDocument()
+    expect(screen.queryByTestId('provider-error-card')).not.toBeInTheDocument()
   })
 
-  it('renders nothing for an error with no presentation (placement defaults to inline)', () => {
+  it('renders only children for an error with no presentation (placement defaults to inline)', () => {
     mockStreamState.error = 'API rate limit exceeded'
     mockStreamState.apiErrorCode = 'rate_limit'
-    const { container } = render(<ProviderErrorPlacement placement="composer" sessionId="s" agentSlug="a" />)
-    expect(container.innerHTML).toBe('')
+    mount()
+    expect(screen.getByTestId('composer')).toBeInTheDocument()
+    expect(screen.queryByTestId('provider-error-card')).not.toBeInTheDocument()
   })
 
-  it('renders the default component for a live error routed to composer', () => {
+  it('renders the component in place of children for a live error routed to composer', () => {
     mockStreamState.error = 'API Error: 402'
     mockStreamState.apiErrorCode = 'billing_error'
     mockStreamState.errorPresentation = composerError
-    render(<ProviderErrorPlacement placement="composer" sessionId="s" agentSlug="a" />)
+    mount()
     expect(screen.getByTestId('provider-error-placement-composer')).toBeInTheDocument()
-    expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Routed: shown above the composer')
+    expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Routed: replaces the composer')
+  })
+
+  it('hands the displaced children to the component (the default card renders them back)', () => {
+    mockStreamState.error = 'API Error: 402'
+    mockStreamState.apiErrorCode = 'billing_error'
+    mockStreamState.errorPresentation = composerError
+    mount()
+    const placement = screen.getByTestId('provider-error-placement-composer')
+    expect(placement).toContainElement(screen.getByTestId('composer'))
   })
 
   it('renders a persisted error routed to composer once the session is idle', () => {
     mockMessages.push(createUserMessage(), errorMessage(composerError))
-    render(<ProviderErrorPlacement placement="composer" sessionId="s" agentSlug="a" />)
-    expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Routed: shown above the composer')
+    mount()
+    expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Routed: replaces the composer')
   })
 
   it('renders an inline-routed error only in the inline placement', () => {
     mockMessages.push(errorMessage(inlineError))
-    render(<ProviderErrorPlacement placement="inline" sessionId="s" agentSlug="a" />)
+    mount('inline')
     expect(screen.getByTestId('provider-error-placement-inline')).toBeInTheDocument()
   })
 })

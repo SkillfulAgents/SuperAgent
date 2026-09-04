@@ -8,7 +8,7 @@ export const providerErrorPresentationSchema = z.object({
   message: z.string(),
   /** Lucide icon name, e.g. `info`, `circle-dollar-sign`. */
   icon: z.string(),
-  /** Where the renderer shows it. Unset = `inline` (a row in the chat stream). */
+  /** Where the renderer shows it. `inline` (default) = a row in the chat stream; `composer` = in place of the composer. */
   placement: providerErrorPlacementSchema.optional(),
   /** Renderer component-registry key. Unset or unknown = the default card. */
   component: z.string().optional(),

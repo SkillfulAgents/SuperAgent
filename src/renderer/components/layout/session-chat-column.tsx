@@ -115,8 +115,7 @@ export function SessionChatColumn({
             </PendingRequestStack>
           </div>
         ) : (
-          <>
-            <ProviderErrorPlacement placement="composer" sessionId={sessionId} agentSlug={agentSlug} />
+          <ProviderErrorPlacement placement="composer" sessionId={sessionId} agentSlug={agentSlug}>
             {pendingWakeAt && pendingWakeTaskId && !isActive && (
               <PendingWakeBanner
                 sessionId={sessionId}
@@ -193,7 +192,7 @@ export function SessionChatColumn({
                 <span>New line</span>
               </span>
             </div>
-          </>
+          </ProviderErrorPlacement>
         )
       }
     />

@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, type ReactNode } from 'react'
 
 import type {
   ProviderErrorPlacement as Placement,
@@ -46,22 +46,27 @@ interface ProviderErrorPlacementProps {
   placement: Placement
   sessionId: string
   agentSlug: string
+  /** What normally lives here (e.g. the composer). Displaced while an error targets this placement. */
+  children?: ReactNode
 }
 
-// Renders the session's current provider error iff its presentation targets this placement.
-export function ProviderErrorPlacement({ placement, sessionId, agentSlug }: ProviderErrorPlacementProps) {
+// Renders children, or the session's current provider error in their place when
+// its presentation targets this placement. The component gets the displaced
+// children and renders them back once it is resolved.
+export function ProviderErrorPlacement({ placement, sessionId, agentSlug, children }: ProviderErrorPlacementProps) {
   const { isActive, error, apiErrorCode, errorPresentation } = useMessageStream(sessionId, agentSlug)
   const { data: messages } = useMessages(sessionId, agentSlug)
   const current = useMemo(
     () => currentProviderError({ isActive, error, apiErrorCode, errorPresentation }, messages),
     [isActive, error, apiErrorCode, errorPresentation, messages],
   )
-  if (!current) return null
-  const resolved = resolveProviderError(current.presentation)
-  if (resolved.placement !== placement) return null
+  const resolved = current ? resolveProviderError(current.presentation) : null
+  if (!current || !resolved || resolved.placement !== placement) return <>{children}</>
   return (
-    <div className="px-4 pb-2" data-testid={`provider-error-placement-${placement}`}>
-      <resolved.Component message={current.message} presentation={current.presentation} />
+    <div data-testid={`provider-error-placement-${placement}`}>
+      <resolved.Component message={current.message} presentation={current.presentation}>
+        {children}
+      </resolved.Component>
     </div>
   )
 }

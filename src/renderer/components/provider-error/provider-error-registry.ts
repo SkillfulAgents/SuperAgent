@@ -1,4 +1,4 @@
-import type { ComponentType } from 'react'
+import type { ComponentType, ReactNode } from 'react'
 
 import {
   errorPlacement,
@@ -10,6 +10,8 @@ import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
 export interface ProviderErrorComponentProps {
   message: string
   presentation?: ProviderErrorPresentation
+  /** Content this error displaced (the composer, at `composer`). Render it to give it back. */
+  children?: ReactNode
 }
 
 export const DEFAULT_ERROR_COMPONENT = 'default'
