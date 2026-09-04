@@ -249,6 +249,38 @@ describe('targeted agent cache updates', () => {
       expect(client.getQueryData<ApiAgent[]>(['agents'])?.[0].hasActiveSessions).toBe(true)
       expect(client.getQueryData<ApiAgent[]>(['agents'])?.[0].hasSessionsAwaitingInput).toBeUndefined()
     })
+
+    it('an active raise also asserts the container is running in every agent cache', () => {
+      const client = seededSessionClient([session('sess-1', { isActive: false })])
+
+      applySessionActivityStatus(client, 'agent-a', 'sess-1', { isActive: true })
+
+      expect(client.getQueryData<ApiAgent[]>(['agents'])?.[0].status).toBe('running')
+      expect(client.getQueryData<ApiAgent>(['agents', 'agent-a'])?.status).toBe('running')
+      expect(client.getQueryData<ApiAgent>(['agents', 'agent-a-display'])?.status).toBe('running')
+      expect(client.getQueryData<ApiAgent[]>(['agents'])?.[1].status).toBe('stopped')
+    })
+
+    it('an awaiting raise asserts running; clears never lower the container status', () => {
+      const client = seededSessionClient([session('sess-1', { isActive: false })])
+
+      applySessionActivityStatus(client, 'agent-a', 'sess-1', { isAwaitingInput: true })
+      expect(client.getQueryData<ApiAgent>(['agents', 'agent-a'])?.status).toBe('running')
+
+      applySessionActivityStatus(client, 'agent-a', 'sess-1', { isActive: false, isAwaitingInput: false })
+      expect(client.getQueryData<ApiAgent>(['agents', 'agent-a'])?.status).toBe('running')
+    })
+
+    it('a raise on an already-running agent keeps the agent reference', () => {
+      const client = seededSessionClient([session('sess-1')])
+      updateAgentRuntimeCache(client, 'agent-a', 'running', 3456)
+      applySessionActivityStatus(client, 'agent-a', 'sess-1', { isActive: true })
+      const before = client.getQueryData<ApiAgent>(['agents', 'agent-a'])
+
+      applySessionActivityStatus(client, 'agent-a', 'sess-1', { isActive: true })
+
+      expect(client.getQueryData<ApiAgent>(['agents', 'agent-a'])).toBe(before)
+    })
   })
 
   it('invalidates only the matching agent artifact queries, including its display alias', () => {

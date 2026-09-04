@@ -7,6 +7,7 @@ import type { SlashCommandInfo } from '@shared/lib/container/types'
 import type { ApiMessage, ApiMessageOrBoundary } from '@shared/lib/types/api'
 import type { WorkflowAgentNode } from '@shared/lib/workflows/workflow-schemas'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
+import { applySessionActivityStatus } from '@renderer/lib/agent-cache'
 import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
 import {
   providerErrorPresentationSchema,
@@ -484,6 +485,13 @@ function getOrCreateEventSource(
       else if (data.type === 'session_active') {
         // Session became active - user sent a message
         if (data.sessionId && data.sessionId !== sessionId) return
+        // Echo the flip into the session/agent caches from THIS stream too.
+        // The global notifications stream normally carries it, but that
+        // stream can be silently stale while this one (opened with the view)
+        // is live — and then the sidebar/header would show a sleeping agent
+        // streaming tokens until the next refetch. Idempotent with the global
+        // handler's echo: identical patches leave the caches untouched.
+        applySessionActivityStatus(queryClient, agentSlug, sessionId, { isActive: true })
         // This frame carries TWO meanings: a genuinely new turn, and a
         // queued/steering message accepted into a turn that is already running
         // (`queuedMidTurn`). Deciding reset-vs-preserve field by field produced a

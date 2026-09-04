@@ -165,6 +165,28 @@ describe('useMessageStream', () => {
     expect(result.current.activeStartTime).not.toBeNull()
   })
 
+  it('session_active echoes running + active into the agent and session caches', async () => {
+    const { useMessageStream } = await getHookModule()
+    const wrapper = createWrapper()
+    const agent = { slug: 'agent-1', name: 'Agent', status: 'stopped', hasActiveSessions: false }
+    const session = { id: 'session-1', agentSlug: 'agent-1', isActive: false }
+    wrapper.queryClient.setQueryData(['agents'], [agent])
+    wrapper.queryClient.setQueryData(['agents', 'agent-1'], agent)
+    wrapper.queryClient.setQueryData(['sessions', 'agent-1'], [session])
+    renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: false })
+      MockEventSource.instances[0].simulateMessage({ type: 'session_active' })
+    })
+
+    expect(wrapper.queryClient.getQueryData(['agents', 'agent-1'])).toMatchObject({
+      status: 'running',
+      hasActiveSessions: true,
+    })
+    expect(wrapper.queryClient.getQueryData(['sessions', 'agent-1'])).toMatchObject([{ isActive: true }])
+  })
+
   it('handles streaming: stream_start → stream_delta → stream_end', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(
