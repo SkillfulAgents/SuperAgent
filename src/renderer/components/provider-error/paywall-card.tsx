@@ -157,18 +157,19 @@ function useBillingRefreshSignals(): void {
 }
 
 // `flagFrom402` is the proxy's subscription_required flag when the 402 body kept it.
-function usePaywallBilling(flagFrom402: boolean | undefined): PaywallBilling {
+// A live 402 ignores a leftover `allowed` snapshot from a previous recovery.
+// A persisted 402 (switch session after a top-up) trusts the current snapshot.
+function usePaywallBilling(flagFrom402: boolean | undefined, live: boolean): PaywallBilling {
   const { data: platformAuth } = usePlatformAuthStatus()
   const role = platformAuth?.role
   const billingQuery = useBillingInfo(Boolean(platformAuth?.connected))
   const queryClient = useQueryClient()
 
-  // A snapshot cached before this paywall appeared may say `allowed: true`
-  // from a previous recovery. Only a fetch newer than the paywall can clear it.
   const [seenAt] = useState(() => Date.now())
   useEffect(() => {
+    if (!live) return
     void queryClient.invalidateQueries({ queryKey: BILLING_QUERY_KEY, refetchType: 'active' })
-  }, [queryClient])
+  }, [live, queryClient])
   useBillingRefreshSignals()
 
   const billingError = billingQuery.error
@@ -205,7 +206,10 @@ function usePaywallBilling(flagFrom402: boolean | undefined): PaywallBilling {
         billingHref,
       }),
       loading: false,
-      cleared: fresh && billing?.access?.allowed === true && billingQuery.dataUpdatedAt > seenAt,
+      cleared:
+        fresh
+        && billing?.access?.allowed === true
+        && (!live || billingQuery.dataUpdatedAt > seenAt),
     }
   }, [
     billingQuery.data?.billing,
@@ -213,6 +217,7 @@ function usePaywallBilling(flagFrom402: boolean | undefined): PaywallBilling {
     billingQuery.dataUpdatedAt,
     billingQuery.isLoading,
     flagFrom402,
+    live,
     platformAuth,
     role,
     seenAt,
@@ -291,8 +296,8 @@ function PaywallActions({ cta, loading }: { cta: PaywallCta | null; loading: boo
 // Platform 402. An invitation, not a failure: neutral card, title + muted
 // subtitle, one role/billing-aware CTA. Displaces the composer; hands it
 // back once the proxy gate allows access again.
-export function PaywallCard({ message, presentation, children }: ProviderErrorComponentProps) {
-  const billing = usePaywallBilling(extractSubscriptionRequired(message))
+export function PaywallCard({ message, presentation, children, live = true }: ProviderErrorComponentProps) {
+  const billing = usePaywallBilling(extractSubscriptionRequired(message), live)
   if (billing.cleared) return <>{children}</>
 
   const fallback = splitMessage(presentation?.message ?? message)

@@ -75,9 +75,12 @@ let client: QueryClient
 function Wrapper({ children }: { children: ReactNode }) {
   return <QueryClientProvider client={client}>{children}</QueryClientProvider>
 }
-function renderCard(message = 'API Error: 402 {"error":"insufficient_balance"}') {
+function renderCard(
+  message = 'API Error: 402 {"error":"insufficient_balance"}',
+  live = true,
+) {
   return render(
-    <PaywallCard message={message} presentation={PRESENTATION}>
+    <PaywallCard message={message} presentation={PRESENTATION} live={live}>
       <div data-testid="composer">composer</div>
     </PaywallCard>,
     { wrapper: Wrapper },
@@ -149,12 +152,20 @@ describe('PaywallCard', () => {
     expect(screen.getByTestId('paywall-actions-loading')).toBeInTheDocument()
   })
 
-  it('does not clear on a snapshot cached before the paywall appeared', async () => {
+  it('does not clear a live 402 on a snapshot cached before it appeared', async () => {
     client.setQueryData(['platform-billing'], billing({ access: { allowed: true, reason: 'ok' } }))
     fetchBilling.mockReturnValue(new Promise(() => {}))
     renderCard()
     await act(async () => {})
     expect(screen.getByTestId('paywall-card')).toBeInTheDocument()
+  })
+
+  it('clears a persisted 402 from the current allowed snapshot (session switch after top-up)', async () => {
+    client.setQueryData(['platform-billing'], billing({ access: { allowed: true, reason: 'ok' } }))
+    fetchBilling.mockReturnValue(new Promise(() => {}))
+    renderCard('API Error: 402 {"error":"insufficient_balance"}', false)
+    await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
+    expect(screen.getByTestId('composer')).toBeInTheDocument()
   })
 
   it('hands the composer back once a fresh snapshot says access is allowed again', async () => {
