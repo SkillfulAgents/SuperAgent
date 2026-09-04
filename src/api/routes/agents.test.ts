@@ -668,6 +668,10 @@ async function getReq(app: Hono, url: string): Promise<Response> {
   return app.request(`http://localhost${url}`, { method: 'GET' })
 }
 
+async function headReq(app: Hono, url: string, headers?: HeadersInit): Promise<Response> {
+  return app.request(`http://localhost${url}`, { method: 'HEAD', headers })
+}
+
 async function postFormData(app: Hono, url: string, body: FormData): Promise<Response> {
   return app.request(`http://localhost${url}`, {
     method: 'POST',
@@ -2240,6 +2244,50 @@ describe('path traversal security — GET /:id/files/*', () => {
 
     expect(res.status).toBe(400)
     expect(mockCreateReadStream).not.toHaveBeenCalled()
+  })
+
+  // Hono has no HEAD routing: it answers a HEAD by running this GET handler and
+  // throwing the body away. A stream opened here is never read and never
+  // closed, so every HEAD of a file past the stream's 64KB high-water mark
+  // leaked a descriptor — and the drawer sends one HEAD per file it opens, for
+  // the size beside the filename.
+  describe('HEAD', () => {
+    it('answers with the size and no file descriptor opened', async () => {
+      mockFsStat.mockResolvedValueOnce({ isFile: () => true, size: 5_242_880 })
+
+      const res = await headReq(app, '/api/agents/test-agent/files/out/render.mp4?inline=true')
+
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-length')).toBe('5242880')
+      expect(res.headers.get('accept-ranges')).toBe('bytes')
+      expect(res.headers.get('content-type')).toBe('video/mp4')
+      expect(mockCreateReadStream).not.toHaveBeenCalled()
+    })
+
+    it('answers a ranged HEAD with the range headers and still opens nothing', async () => {
+      mockFsStat.mockResolvedValueOnce({ isFile: () => true, size: 1000 })
+
+      const res = await headReq(app, '/api/agents/test-agent/files/out/render.mp4', { range: 'bytes=0-99' })
+
+      expect(res.status).toBe(206)
+      expect(res.headers.get('content-range')).toBe('bytes 0-99/1000')
+      expect(res.headers.get('content-length')).toBe('100')
+      expect(mockCreateReadStream).not.toHaveBeenCalled()
+    })
+
+    it('still 404s a missing file', async () => {
+      mockFsStat.mockResolvedValueOnce(null)
+      const res = await headReq(app, '/api/agents/test-agent/files/gone.txt')
+      expect(res.status).toBe(404)
+    })
+
+    it('leaves the GET streaming the body', async () => {
+      mockFsStat.mockResolvedValueOnce({ isFile: () => true, size: 100 })
+      mockCreateReadStream.mockReturnValueOnce({ pipe: vi.fn() })
+
+      await getReq(app, '/api/agents/test-agent/files/out/render.mp4')
+      expect(mockCreateReadStream).toHaveBeenCalled()
+    })
   })
 
   // Note: path traversal with ../ in URLs (e.g. /files/../../etc/passwd) is typically

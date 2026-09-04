@@ -6522,12 +6522,22 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
 
     // Advertise range support so media players (e.g. <video>) can seek. When the
     // client requests a byte range, serve just that slice as 206 Partial
-    // Content; otherwise stream the whole file. Only the stream we actually
-    // return is opened, so we never leak a dangling read descriptor.
+    // Content; otherwise stream the whole file.
     c.header('Accept-Ranges', 'bytes')
     const size = stat.size
     const rangeHeader = c.req.header('range')
     const parsedRange = rangeHeader ? parseByteRange(rangeHeader, size) : null
+
+    // Hono has no HEAD routing: its dispatcher answers a HEAD by running the
+    // GET handler and dropping the body (`new Response(null, await dispatch(…,
+    // 'GET'))`). A stream opened below would therefore be constructed, never
+    // read and never closed — Node's stream only closes its descriptor once the
+    // consumer drains or destroys it, so every HEAD of a file past the 64KB
+    // high-water mark leaks one fd for the life of the process. The headers are
+    // the entire answer to a HEAD anyway; return before opening anything.
+    // (`c.req.method` is the real method — the dispatcher overrides its routing
+    // key, not the request.)
+    const bodyless = c.req.method === 'HEAD'
 
     if (rangeHeader && !parsedRange) {
       // Unsatisfiable range → 416 with the valid extent so the client can retry.
@@ -6537,14 +6547,16 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
 
     if (parsedRange) {
       const { start, end } = parsedRange
-      const chunk = Readable.toWeb(fs.createReadStream(canonicalFile, { start, end })) as ReadableStream
       c.header('Content-Range', `bytes ${start}-${end}/${size}`)
       c.header('Content-Length', (end - start + 1).toString())
+      if (bodyless) return c.body(null, 206)
+      const chunk = Readable.toWeb(fs.createReadStream(canonicalFile, { start, end })) as ReadableStream
       return c.body(chunk, 206)
     }
 
-    const webStream = Readable.toWeb(fs.createReadStream(canonicalFile)) as ReadableStream
     c.header('Content-Length', size.toString())
+    if (bodyless) return c.body(null)
+    const webStream = Readable.toWeb(fs.createReadStream(canonicalFile)) as ReadableStream
     return c.body(webStream)
   } catch (error) {
     console.error('Failed to download file:', error)

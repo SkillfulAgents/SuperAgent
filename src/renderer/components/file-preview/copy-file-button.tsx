@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Check, Copy } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { copyLazyTextToClipboard, copyTextToClipboard } from '@renderer/lib/clipboard'
 import { looksBinary } from './file-types'
 import { MAX_CONTENT_CHARS, type FileContent } from './renderers/use-file-content'
@@ -50,19 +51,25 @@ export function CopyFileButton({ fileUrl, displayName }: CopyFileButtonProps) {
       : `Copied contents of “${displayName}”`)
   }
 
+  // No provider of its own: it shares the one around the action row, so moving
+  // between these buttons skips the second tooltip's open delay.
   return (
-    <button
-      type="button"
-      onClick={handleCopy}
-      className="p-0.5 rounded hover:bg-muted transition-colors"
-      title="Copy file contents"
-      aria-label="Copy file contents"
-      data-testid="file-preview-copy"
-    >
-      {copied
-        ? <Check data-testid="file-preview-copied-icon" className="h-4 w-4 text-green-600 dark:text-green-400" />
-        : <Copy data-testid="file-preview-copy-icon" className="h-4 w-4" />}
-    </button>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="p-0.5 rounded hover:bg-muted transition-colors"
+          aria-label="Copy file contents"
+          data-testid="file-preview-copy"
+        >
+          {copied
+            ? <Check data-testid="file-preview-copied-icon" className="h-4 w-4 text-green-600 dark:text-green-400" />
+            : <Copy data-testid="file-preview-copy-icon" className="h-4 w-4" />}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>{copied ? 'Copied' : 'Copy file contents'}</TooltipContent>
+    </Tooltip>
   )
 }
 

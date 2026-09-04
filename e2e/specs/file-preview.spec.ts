@@ -447,7 +447,8 @@ test.describe('File Preview', () => {
       // right-side panel control with a left-side close button.
       const viewportWidth = page.viewportSize()!.width
       await expect(async () => {
-        for (const control of [header.getByTitle('Close file preview'), header.getByTitle('Download file')]) {
+        const title = page.getByTestId('file-preview-title')
+        for (const control of [header.getByTitle('Close file preview'), title.getByLabel('Download file')]) {
           await expect(control).toBeVisible()
           const box = await control.boundingBox()
           expect(box).not.toBeNull()
@@ -513,7 +514,7 @@ test.describe('File Preview', () => {
     await expect(page.getByTestId('file-preview-copy')).toHaveCount(0)
   })
 
-  test('copies the open text file from the preview header', async ({ page }) => {
+  test('copies the open text file from the title row', async ({ page }) => {
     await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
     await agentPage.createAgent(`CopyFile ${Date.now()}`)
     const agentSlug = await getLatestAgentSlug(page)
@@ -526,8 +527,9 @@ test.describe('File Preview', () => {
     await filePill.click()
     await expect(markdown(page).getByRole('heading', { name: 'Test Report' })).toBeVisible({ timeout: 10000 })
 
-    const header = page.getByTestId('file-preview-header')
-    await header.getByTestId('file-preview-copy').click()
+    // The per-file actions live with the filename, not in the panel header.
+    const titleRow = page.getByTestId('file-preview-title')
+    await titleRow.getByTestId('file-preview-copy').click()
 
     // The real gate: a browser only honours the write while the click's user
     // gesture is live, so this fails if the handler awaits a fetch first.
@@ -535,7 +537,7 @@ test.describe('File Preview', () => {
       .toBe('# Test Report\n\nThis is a test with **bold** text.')
 
     await expect(page.getByText('Copied contents of “report.md”')).toBeVisible()
-    await expect(header.getByTestId('file-preview-copied-icon')).toBeVisible()
-    await expect(header.getByTestId('file-preview-copy-icon')).toBeVisible({ timeout: 5000 })
+    await expect(titleRow.getByTestId('file-preview-copied-icon')).toBeVisible()
+    await expect(titleRow.getByTestId('file-preview-copy-icon')).toBeVisible({ timeout: 5000 })
   })
 })
