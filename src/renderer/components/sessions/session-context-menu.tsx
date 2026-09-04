@@ -196,7 +196,7 @@ export function SessionContextMenu({
               }}
             >
               <Pencil className="h-4 w-4 mr-2" />
-              Rename
+              Rename Session
             </ContextMenuItem>
           )}
           {canUse && (
@@ -206,7 +206,7 @@ export function SessionContextMenu({
               onClick={handleFork}
             >
               <Split className="h-4 w-4 mr-2" />
-              Fork
+              Fork Session
             </ContextMenuItem>
           )}
           {/* Not permission-gated, unlike rename/delete: a mark is scoped to
