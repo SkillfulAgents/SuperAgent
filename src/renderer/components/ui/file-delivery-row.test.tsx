@@ -1,15 +1,12 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
-import { type ReactNode } from 'react'
 import { FileDeliveryRow } from './file-delivery-row'
 
 const openFile = vi.fn()
-const openFolder = vi.fn()
 
 vi.mock('@renderer/context/file-preview-context', () => ({
-  useFilePreview: () => ({ openFile, openFolder }),
-  FilePreviewProvider: ({ children }: { children: ReactNode }) => children,
+  useFilePreview: () => ({ openFile }),
 }))
 
 vi.mock('@renderer/lib/env', () => ({
@@ -19,10 +16,9 @@ vi.mock('@renderer/lib/env', () => ({
 describe('FileDeliveryRow', () => {
   beforeEach(() => {
     openFile.mockClear()
-    openFolder.mockClear()
   })
 
-  it('renders the filename, description, size, and a download link', () => {
+  it('renders the filename, description, and size', () => {
     render(
       <FileDeliveryRow
         filePath="/workspace/output/report.pdf"
@@ -31,11 +27,8 @@ describe('FileDeliveryRow', () => {
         sizeBytes={12_800}
       />
     )
-    const row = screen.getByTestId('file-delivery-row')
-    expect(row).toHaveTextContent('report.pdf')
+    expect(screen.getByTestId('file-delivery-row')).toHaveTextContent('report.pdf')
     expect(screen.getByTestId('file-delivery-meta')).toHaveTextContent('Quarterly report · 12.5 KB')
-    const link = screen.getByRole('link', { name: 'Download report.pdf' })
-    expect(link).toHaveAttribute('href', 'http://api.test/api/agents/test-agent/files/output/report.pdf')
   })
 
   it('falls back to the workspace-relative path when there is no description', () => {
@@ -53,10 +46,34 @@ describe('FileDeliveryRow', () => {
     expect(screen.queryByTestId('file-delivery-meta')).not.toBeInTheDocument()
   })
 
+  // The drawer can render these, so the row points at it instead of offering a
+  // download the user would have to open from disk.
+  it.each(['report.md', 'data.csv', 'chart.png', 'clip.mp4', 'report.pdf', 'notes.txt', 'app.ts'])(
+    'points %s at the preview drawer',
+    (name) => {
+      render(<FileDeliveryRow filePath={`/workspace/output/${name}`} agentSlug="test-agent" />)
+      expect(screen.getByTestId('file-delivery-row')).toHaveAttribute('data-file-action', 'preview')
+      expect(screen.queryByRole('link')).not.toBeInTheDocument()
+    }
+  )
+
+  // Nothing to show for these, so downloading is the only useful action.
+  it.each(['sheet.xlsx', 'bundle.zip', 'deck.pptx', 'Inter.ttf', 'part.stl'])(
+    'offers a download for %s',
+    (name) => {
+      render(<FileDeliveryRow filePath={`/workspace/output/${name}`} agentSlug="test-agent" />)
+      expect(screen.getByTestId('file-delivery-row')).toHaveAttribute('data-file-action', 'download')
+      expect(screen.getByRole('link', { name: `Download ${name}` })).toHaveAttribute(
+        'href',
+        `http://api.test/api/agents/test-agent/files/output/${name}`
+      )
+    }
+  )
+
   it('opens the file preview on click, but not from the download link', () => {
-    render(<FileDeliveryRow filePath="/workspace/output/report.pdf" agentSlug="test-agent" description="Report" />)
+    render(<FileDeliveryRow filePath="/workspace/output/sheet.xlsx" agentSlug="test-agent" description="Numbers" />)
     fireEvent.click(screen.getByTestId('file-delivery-row'))
-    expect(openFile).toHaveBeenCalledWith('/workspace/output/report.pdf', 'test-agent', 'Report')
+    expect(openFile).toHaveBeenCalledWith('/workspace/output/sheet.xlsx', 'test-agent', 'Numbers')
 
     openFile.mockClear()
     fireEvent.click(screen.getByRole('link'))
@@ -69,13 +86,12 @@ describe('FileDeliveryRow', () => {
     expect(openFile).toHaveBeenCalledTimes(1)
   })
 
-  it('renders folders without a download link and opens the folder browser', () => {
-    render(<FileDeliveryRow filePath="/workspace/uploads/my-project/" agentSlug="test-agent" />)
-    const row = screen.getByTestId('file-delivery-row')
-    expect(row).toHaveTextContent('my-project')
-    expect(screen.queryByRole('link')).not.toBeInTheDocument()
-    fireEvent.click(row)
-    expect(openFolder).toHaveBeenCalledWith('/workspace/uploads/my-project/', 'test-agent')
+  it('leaves Enter on the download link to the link', () => {
+    render(<FileDeliveryRow filePath="/workspace/output/sheet.xlsx" agentSlug="test-agent" />)
+    const link = screen.getByRole('link')
+    // The row's handler sees this event bubble up; it must not claim it, or the
+    // anchor's own activation is cancelled and the preview opens instead.
+    fireEvent.keyDown(link, { key: 'Enter', bubbles: true })
     expect(openFile).not.toHaveBeenCalled()
   })
 })

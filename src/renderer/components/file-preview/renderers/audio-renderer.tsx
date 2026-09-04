@@ -4,6 +4,7 @@ import { useFilePreview, type FileComment } from '@renderer/context/file-preview
 import { CommentOverlay } from '../comments/comment-overlay'
 import { formatMediaTime } from '../comments/format-media-time'
 import { createFallbackWaveform, createWaveformPeaks } from './audio-waveform'
+import { getPathName } from '@shared/lib/utils/workspace-path'
 
 interface AudioRendererProps {
   url: string
@@ -30,10 +31,6 @@ function validDuration(value: number): number {
   return Number.isFinite(value) && value > 0 ? value : 0
 }
 
-function getFilename(filePath: string): string {
-  return filePath.split('/').pop() || filePath
-}
-
 export function AudioRenderer({ url, filePath, commentsEnabled = true }: AudioRendererProps) {
   const audioRef = useRef<HTMLAudioElement>(null)
   const timelineRef = useRef<HTMLDivElement>(null)
@@ -49,7 +46,7 @@ export function AudioRenderer({ url, filePath, commentsEnabled = true }: AudioRe
   const { comments } = useFilePreview()
   const maxSeek = validDuration(duration)
   const playedRatio = maxSeek > 0 ? clamp(currentTime / maxSeek, 0, 1) : 0
-  const filename = getFilename(filePath)
+  const filename = getPathName(filePath)
 
   useEffect(() => {
     const controller = new AbortController()
