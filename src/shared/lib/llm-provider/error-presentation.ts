@@ -1,15 +1,28 @@
 import { z } from 'zod'
 
+export const providerErrorPlacementSchema = z.enum(['inline', 'composer'])
+
 export const providerErrorPresentationSchema = z.object({
   severity: z.enum(['error', 'warning']),
   /** Markdown. Providers that need a CTA put a link in the message. */
   message: z.string(),
   /** Lucide icon name, e.g. `info`, `circle-dollar-sign`. */
   icon: z.string(),
+  /** Where the renderer shows it. Unset = `inline` (a row in the chat stream). */
+  placement: providerErrorPlacementSchema.optional(),
+  /** Renderer component-registry key. Unset or unknown = the default card. */
+  component: z.string().optional(),
 })
 
 export type ProviderErrorPresentation = z.infer<typeof providerErrorPresentationSchema>
 export type ProviderErrorSeverity = ProviderErrorPresentation['severity']
+export type ProviderErrorPlacement = z.infer<typeof providerErrorPlacementSchema>
+
+export const DEFAULT_ERROR_PLACEMENT: ProviderErrorPlacement = 'inline'
+
+export function errorPlacement(presentation: ProviderErrorPresentation | null | undefined): ProviderErrorPlacement {
+  return presentation?.placement ?? DEFAULT_ERROR_PLACEMENT
+}
 
 export function extractErrorMessage(body: unknown): string {
   if (typeof body === 'string') {

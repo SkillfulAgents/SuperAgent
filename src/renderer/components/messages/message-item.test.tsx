@@ -477,6 +477,26 @@ describe('MessageItem', () => {
       expect(screen.getByRole('link', { name: /raise spend limit/i })).toBeInTheDocument()
     })
 
+    it('renders nothing in the stream for a provider error routed to the composer placement', () => {
+      const msg = createAssistantMessage({
+        content: { text: 'API Error: 402 insufficient balance' },
+        apiError: 'billing_error',
+        errorPresentation: { severity: 'error', message: '**Routed**', icon: 'info', placement: 'composer' },
+      })
+      const { container } = render(<MessageItem message={msg} />)
+      expect(container.innerHTML).toBe('')
+    })
+
+    it('still renders the inline card when placement is explicitly inline', () => {
+      const msg = createAssistantMessage({
+        content: { text: 'API Error: 429' },
+        apiError: 'rate_limit',
+        errorPresentation: { severity: 'error', message: '**Explicit inline**', icon: 'info', placement: 'inline' },
+      })
+      render(<MessageItem message={msg} />)
+      expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Explicit inline')
+    })
+
     it('falls back to the generic provider banner when no presentation is attached', () => {
       const msg = createAssistantMessage({
         content: {

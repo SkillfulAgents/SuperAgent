@@ -1,7 +1,7 @@
 import { cn } from '@shared/lib/utils/cn'
 import { useState, useCallback, useRef, useLayoutEffect, useMemo, memo, type ReactNode } from 'react'
 import { Check, Copy, Link2 } from 'lucide-react'
-import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
+import { resolveProviderError } from '@renderer/components/provider-error/provider-error-registry'
 import { ToolCallItem } from './tool-call-item'
 import { ThinkingBlockItem } from './thinking-block-item'
 import { SubAgentBlock } from './subagent-block'
@@ -366,20 +366,25 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
 
   // Detect assistant messages that failed due to an LLM provider error (from SDK metadata)
   const isProviderErrorMessage = isAssistant && !!message.apiError && PROVIDER_ERROR_CODES.has(message.apiError)
+  // Errors routed to another placement (e.g. composer) are rendered there, not in the stream.
+  const providerError = resolveProviderError(message.errorPresentation)
+  const showInlineError = isProviderErrorMessage && providerError.placement === 'inline'
+  const hasInlineText = hasText && !(isProviderErrorMessage && !showInlineError)
 
   // Don't render assistant messages that have no text, no tool calls, and no
   // thinking (and aren't streaming). These are transient empty entries from
   // partially-persisted JSONL that will be filled in on the next refetch.
-  if (isAssistant && !hasText && toolCalls.length === 0 && thinking.length === 0 && !isStreaming) {
+  if (isAssistant && !hasInlineText && toolCalls.length === 0 && thinking.length === 0 && !isStreaming) {
     return null
   }
 
   // Skip rendering the text bubble for:
   // - assistant messages with only tool calls (no text) unless streaming
+  // - assistant provider errors routed to another placement
   // - user messages that only had attached files (text was fully stripped)
   const showMessageBubble = isUser
     ? (hasText || attachedFiles.length === 0)
-    : (hasText || isStreaming)
+    : (hasInlineText || isStreaming)
 
   return (
     <div
@@ -440,8 +445,8 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
               )}
 
               {/* LLM provider error display */}
-              {hasText && !CustomUserRender && isProviderErrorMessage && (
-                <ProviderErrorCard message={text} presentation={message.errorPresentation} />
+              {hasText && !CustomUserRender && showInlineError && (
+                <providerError.Component message={text} presentation={message.errorPresentation} />
               )}
 
               {/* Text content */}

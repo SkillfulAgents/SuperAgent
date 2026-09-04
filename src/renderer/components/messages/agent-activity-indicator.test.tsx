@@ -138,6 +138,14 @@ describe('AgentActivityIndicator', () => {
     expect(screen.getByRole('link', { name: /raise spend limit/i })).toBeInTheDocument()
   })
 
+  it('renders nothing for a provider error routed to the composer placement', () => {
+    mockStreamState.error = 'API Error: 402 insufficient balance'
+    mockStreamState.apiErrorCode = 'billing_error'
+    mockStreamState.errorPresentation = { severity: 'error', message: '**Routed**', icon: 'info', placement: 'composer' }
+    const { container } = render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(container.innerHTML).toBe('')
+  })
+
   it('shows generic error alert when no apiErrorCode', () => {
     mockStreamState.error = 'The agent process was terminated unexpectedly.'
     mockStreamState.apiErrorCode = null
