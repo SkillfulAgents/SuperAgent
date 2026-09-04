@@ -260,16 +260,27 @@ export function applySessionActivityStatus(
     }
     agentPatch[agentFlag] = value
   }
+  // A session can only be working or blocked on input inside a running
+  // container, so a raise is also proof of the runtime state. Assert it with
+  // the same event: the activity label short-circuits to "sleeping" while the
+  // container reads 'stopped', so a session that visibly streams tokens would
+  // otherwise keep the header pill and agent row asleep until the separate
+  // agent_status_changed event lands (or is missed on a stalled global
+  // stream) or the next agents refetch. Never lowers — idle/error say nothing
+  // about whether the container is still up.
+  if (patch.isActive === true || patch.isAwaitingInput === true) {
+    agentPatch.status = 'running'
+  }
   if (Object.keys(agentPatch).length > 0) {
     // Identity-preserving on purpose: a no-op patch (e.g. session_active for
     // an already-working agent — the common case) must return the same agent
     // reference, or every event rebuilds the agents array and pays a full
     // deep-compare in structural sharing.
     updateMatchingAgents(queryClient, agentSlug, (agent) => {
-      const rollupChanged = SESSION_ROLLUP_FLAGS.some(([, agentFlag]) => (
-        agentPatch[agentFlag] !== undefined && (agent[agentFlag] ?? false) !== agentPatch[agentFlag]
+      const agentChanged = (Object.keys(agentPatch) as (keyof ApiAgent)[]).some((key) => (
+        (agent[key] ?? false) !== agentPatch[key]
       ))
-      return rollupChanged ? { ...agent, ...agentPatch } : agent
+      return agentChanged ? { ...agent, ...agentPatch } : agent
     })
   }
   return changed
