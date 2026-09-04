@@ -16,51 +16,53 @@ export function HomeExtras({ agentSlug, onOpenSettings, className }: HomeExtrasP
   const navigate = useNavigate()
   const { openFolder } = useFilePreview()
 
+  // Two cards, spaced by the column like any other pair of cards. Neither has
+  // vertical padding of its own: that would stack onto its first and last
+  // rows and make them read taller than the rest. The three per-agent picker
+  // rows are a standalone group at one height; the navigation rows are one
+  // uniform height too, flush with their card, which clips them to its
+  // rounded corners so the hover fill stays inside.
   return (
-    // Two sections. The per-agent preferences (pickers) are a labelled section
-    // group, the same shape as a group in the settings nav, with their original
-    // row padding; the navigation rows below are one uniform height and sit
-    // flush with the card, which clips them to its rounded corners so the
-    // hover fill stays inside.
-    <div className={cn("overflow-hidden rounded-xl border bg-background", className)}>
-      <div className="pb-2" data-testid="home-preferences-group">
-        <p className="px-4 pt-4 pb-1 text-xs font-medium text-muted-foreground">Preferences</p>
+    <>
+      <div className={cn("rounded-xl border bg-background", className)} data-testid="home-preferences-group">
         <div className="divide-y divide-border/50">
           <HomeDefaultModel agentSlug={agentSlug} />
           <HomeRetention agentSlug={agentSlug} />
         </div>
       </div>
-      <div className="divide-y divide-border/50 border-t border-border/50">
-        <ExtrasButton
-          label="Agent-to-agent connections"
-          onClick={() => {
-            void navigate({ to: '/agents/$slug/x-agent-permissions', params: { slug: agentSlug } })
-          }}
-          testId="home-x-agent-permissions-open-page"
-        />
-        <ExtrasButton label="System Prompt" onClick={() => onOpenSettings?.('system-prompt')} />
-        <ExtrasButton
-          label="Agent Directory"
-          onClick={() => openFolder('/workspace', agentSlug)}
-          hoverIcon={<PanelRightOpen className="h-4 w-4 text-muted-foreground" aria-hidden="true" />}
-          testId="home-agent-directory-open-browser"
-        />
-        <ExtrasButton
-          label="Secrets"
-          onClick={() => {
-            void navigate({ to: '/agents/$slug/secrets', params: { slug: agentSlug } })
-          }}
-          testId="home-secrets-open-page"
-        />
-        <ExtrasButton
-          label="API Logs"
-          onClick={() => {
-            void navigate({ to: '/agents/$slug/api-logs', params: { slug: agentSlug } })
-          }}
-          testId="home-api-logs-open-page"
-        />
+      <div className={cn("overflow-hidden rounded-xl border bg-background", className)}>
+        <div className="divide-y divide-border/50">
+          <ExtrasButton
+            label="Agent-to-agent connections"
+            onClick={() => {
+              void navigate({ to: '/agents/$slug/x-agent-permissions', params: { slug: agentSlug } })
+            }}
+            testId="home-x-agent-permissions-open-page"
+          />
+          <ExtrasButton label="System Prompt" onClick={() => onOpenSettings?.('system-prompt')} />
+          <ExtrasButton
+            label="Agent Directory"
+            onClick={() => openFolder('/workspace', agentSlug)}
+            hoverIcon={<PanelRightOpen className="h-4 w-4 text-muted-foreground" aria-hidden="true" />}
+            testId="home-agent-directory-open-browser"
+          />
+          <ExtrasButton
+            label="Secrets"
+            onClick={() => {
+              void navigate({ to: '/agents/$slug/secrets', params: { slug: agentSlug } })
+            }}
+            testId="home-secrets-open-page"
+          />
+          <ExtrasButton
+            label="API Logs"
+            onClick={() => {
+              void navigate({ to: '/agents/$slug/api-logs', params: { slug: agentSlug } })
+            }}
+            testId="home-api-logs-open-page"
+          />
+        </div>
       </div>
-    </div>
+    </>
   )
 }
 

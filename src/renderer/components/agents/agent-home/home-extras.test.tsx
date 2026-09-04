@@ -50,15 +50,14 @@ vi.mock('@renderer/context/user-context', () => ({
 }))
 
 describe('HomeExtras', () => {
-  it('groups the preference pickers under their own label, apart from the navigation rows', () => {
+  it('keeps the three pickers in a standalone group, apart from the navigation rows', () => {
     render(<HomeExtras agentSlug="test-agent" />)
 
     const group = within(screen.getByTestId('home-preferences-group'))
-    expect(group.getByText('Preferences')).toBeInTheDocument()
     expect(group.getByTestId('home-default-model-card')).toBeInTheDocument()
     expect(group.getByTestId('home-session-auto-delete-card')).toBeInTheDocument()
     expect(group.getByTestId('home-api-log-auto-delete-card')).toBeInTheDocument()
-    // The navigation rows are the card's other section.
+    // The navigation rows are their own card.
     expect(group.queryByTestId('home-secrets-open-page')).not.toBeInTheDocument()
     expect(screen.getByTestId('home-secrets-open-page')).toBeInTheDocument()
   })
