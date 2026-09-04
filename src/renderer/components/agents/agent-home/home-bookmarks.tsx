@@ -30,15 +30,11 @@ import {
 } from '@renderer/components/ui/alert-dialog'
 import { useBookmarks, useUpdateBookmarks, type Bookmark } from '@renderer/hooks/use-bookmarks'
 import { useFilePreview } from '@renderer/context/file-preview-context'
+import { getPathName } from '@shared/lib/utils/workspace-path'
 
 interface HomeBookmarksProps {
   agentSlug: string
   isOwner?: boolean
-}
-
-function getPathName(filePath: string): string {
-  const normalized = filePath.replace(/\/+$/, '')
-  return normalized.split('/').pop() || normalized
 }
 
 function faviconUrl(link: string): string | null {

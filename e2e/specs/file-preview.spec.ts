@@ -7,8 +7,8 @@ import { SessionPage } from '../pages/session.page'
 
 const e2eDataDir = path.resolve(process.cwd(), process.env.SUPERAGENT_DATA_DIR ?? '.e2e-data')
 
-function getFilePill(page: import('@playwright/test').Page, fileName: string) {
-  return page.getByTestId('file-pill').filter({ hasText: fileName })
+function getDeliveredFileRow(page: import('@playwright/test').Page, fileName: string) {
+  return page.getByTestId('file-delivery-row').filter({ hasText: fileName })
 }
 
 function markdown(page: import('@playwright/test').Page) {
@@ -52,7 +52,7 @@ test.describe('File Preview', () => {
     await appPage.waitForAgentsLoaded()
   })
 
-  test('file delivery shows pill and opens preview on click', async ({ page }) => {
+  test('file delivery shows a row and opens preview on click', async ({ page }) => {
     await agentPage.createAgent(`FilePreview ${Date.now()}`)
     const agentSlug = await getLatestAgentSlug(page)
     seedWorkspaceFile(agentSlug, 'output/report.md', '# Test Report\n\nThis is a test with **bold** text.')
@@ -60,7 +60,7 @@ test.describe('File Preview', () => {
     await sessionPage.sendMessage('deliver file')
     await sessionPage.waitForResponse(15000)
 
-    const filePill = getFilePill(page, 'report.md').first()
+    const filePill = getDeliveredFileRow(page, 'report.md').first()
     await expect(filePill).toBeVisible({ timeout: 10000 })
 
     await filePill.click()
@@ -214,7 +214,7 @@ test.describe('File Preview', () => {
     await sessionPage.sendMessage('deliver file')
     await sessionPage.waitForResponse(15000)
 
-    const filePill = getFilePill(page, 'report.md').first()
+    const filePill = getDeliveredFileRow(page, 'report.md').first()
     await expect(filePill).toBeVisible({ timeout: 10000 })
     await filePill.click()
 
@@ -236,7 +236,7 @@ test.describe('File Preview', () => {
     await sessionPage.sendMessage('deliver file')
     await sessionPage.waitForResponse(15000)
 
-    const firstPill = getFilePill(page, 'report.md').first()
+    const firstPill = getDeliveredFileRow(page, 'report.md').first()
     await expect(firstPill).toBeVisible({ timeout: 10000 })
     await firstPill.click()
 
@@ -247,7 +247,7 @@ test.describe('File Preview', () => {
     await sessionPage.sendMessage('deliver file')
     await sessionPage.waitForResponse(15000)
 
-    const secondPill = getFilePill(page, 'report.md').nth(1)
+    const secondPill = getDeliveredFileRow(page, 'report.md').nth(1)
     await expect(secondPill).toBeVisible({ timeout: 10000 })
     await secondPill.click()
 
@@ -266,7 +266,7 @@ test.describe('File Preview', () => {
     await sessionPage.sendMessage('deliver csv')
     await sessionPage.waitForResponse(15000)
 
-    const filePill = getFilePill(page, 'data.csv').first()
+    const filePill = getDeliveredFileRow(page, 'data.csv').first()
     await expect(filePill).toBeVisible({ timeout: 10000 })
     await filePill.click()
 
@@ -300,7 +300,7 @@ test.describe('File Preview', () => {
     await sessionPage.sendMessage('deliver csv')
     await sessionPage.waitForResponse(15000)
 
-    const filePill = getFilePill(page, 'data.csv').first()
+    const filePill = getDeliveredFileRow(page, 'data.csv').first()
     await expect(filePill).toBeVisible({ timeout: 10000 })
     await filePill.click()
 
@@ -352,7 +352,7 @@ test.describe('File Preview', () => {
     await sessionPage.sendMessage('deliver video')
     await sessionPage.waitForResponse(15000)
 
-    const filePill = getFilePill(page, 'clip.mp4').first()
+    const filePill = getDeliveredFileRow(page, 'clip.mp4').first()
     await expect(filePill).toBeVisible({ timeout: 10000 })
     await filePill.click()
 
@@ -391,7 +391,7 @@ test.describe('File Preview', () => {
     await sessionPage.sendMessage('deliver audio')
     await sessionPage.waitForResponse(15000)
 
-    const filePill = getFilePill(page, 'voice-note.mp3').first()
+    const filePill = getDeliveredFileRow(page, 'voice-note.mp3').first()
     await expect(filePill).toBeVisible({ timeout: 10000 })
     await filePill.click()
 
@@ -436,7 +436,7 @@ test.describe('File Preview', () => {
       await sessionPage.sendMessage('deliver file')
       await sessionPage.waitForResponse(15000)
 
-      const filePill = getFilePill(page, 'report.md').first()
+      const filePill = getDeliveredFileRow(page, 'report.md').first()
       await expect(filePill).toBeVisible({ timeout: 10000 })
       await filePill.click()
 
@@ -479,7 +479,7 @@ test.describe('File Preview', () => {
     // Deliver and open the markdown file → first tab.
     await sessionPage.sendMessage('deliver file')
     await sessionPage.waitForResponse(15000)
-    const reportPill = getFilePill(page, 'report.md').first()
+    const reportPill = getDeliveredFileRow(page, 'report.md').first()
     await expect(reportPill).toBeVisible({ timeout: 10000 })
     await reportPill.click()
     await expect(page.getByTestId('file-preview-header')).toBeVisible({ timeout: 5000 })
@@ -489,7 +489,7 @@ test.describe('File Preview', () => {
     // second tab, image renderer.
     await sessionPage.sendMessage('deliver image')
     await sessionPage.waitForResponse(15000)
-    const chartPill = getFilePill(page, 'chart.png').first()
+    const chartPill = getDeliveredFileRow(page, 'chart.png').first()
     await expect(chartPill).toBeVisible({ timeout: 10000 })
     await chartPill.click()
     await expect(page.locator('img[alt="chart.png"]')).toBeVisible({ timeout: 10000 })
@@ -521,7 +521,7 @@ test.describe('File Preview', () => {
 
     await sessionPage.sendMessage('deliver file')
     await sessionPage.waitForResponse(15000)
-    const filePill = getFilePill(page, 'report.md').first()
+    const filePill = getDeliveredFileRow(page, 'report.md').first()
     await expect(filePill).toBeVisible({ timeout: 10000 })
     await filePill.click()
     await expect(markdown(page).getByRole('heading', { name: 'Test Report' })).toBeVisible({ timeout: 10000 })

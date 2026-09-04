@@ -5,15 +5,12 @@ import { useFilePreview, type FileComment } from '@renderer/context/file-preview
 import { appendToSessionDraft, useDraftsStore } from '@renderer/context/drafts-context'
 import { focusSessionComposer } from '@renderer/components/messages/composer-focus'
 import { formatMediaTime } from './format-media-time'
+import { getPathName } from '@shared/lib/utils/workspace-path'
 
 interface CommentBarProps {
   comments: FileComment[]
   filePath: string
   sessionId: string
-}
-
-function getFilename(filePath: string): string {
-  return filePath.split('/').pop() || filePath
 }
 
 /** Cap long cell values so a single comment can't bloat the prompt. */
@@ -27,7 +24,7 @@ function escapeQuotes(value: string): string {
 }
 
 export function formatComments(filePath: string, comments: FileComment[]): string {
-  const filename = getFilename(filePath)
+  const filename = getPathName(filePath)
   const lines: string[] = [`File feedback on \`${filename}\`:\n`]
 
   comments.forEach((comment, i) => {

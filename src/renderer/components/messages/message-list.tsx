@@ -23,7 +23,9 @@ import { InformationalItem } from './informational-item'
 import { isSessionTimeGap, SessionTimeFlag } from './session-time-flag'
 import { MessageErrorBoundary } from './message-error-boundary'
 import { ArrowDown, ChevronRight, FileX2, Loader2, MessageSquarePlus, WifiOff } from 'lucide-react'
-import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
+import { FileDeliveryRow } from '@renderer/components/ui/file-delivery-row'
+import { deliverFileDef, getDeliveredFileSize } from '@shared/lib/tool-definitions/deliver-file'
+import { parseToolResult } from '@renderer/lib/parse-tool-result'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
 import { appendToSessionDraft, useDraft, useDraftsStore } from '@renderer/context/drafts-context'
@@ -114,11 +116,27 @@ function TurnSummaryRow({
   )
 }
 
-function DeliveredFiles({ files, agentSlug }: { files: { filePath: string }[]; agentSlug: string }) {
+interface DeliveredFile {
+  /** The deliver_file tool call's id: unique even when a turn delivers one path twice. */
+  id: string
+  filePath: string
+  description?: string
+  sizeBytes?: number
+}
+
+function DeliveredFiles({ files, agentSlug }: { files: DeliveredFile[]; agentSlug: string }) {
   return (
-    <div className="flex flex-wrap gap-1.5 ml-11 -mt-1 pb-1">
+    // max-w-[80%] matches the assistant column in MessageItem, so a row's right
+    // edge lines up with the text of the answer it belongs to.
+    <div className="flex max-w-[80%] flex-col gap-1.5 -mt-1 pb-1" data-testid="delivered-files">
       {files.map((file) => (
-        <FileDownloadPill key={file.filePath} filePath={file.filePath} agentSlug={agentSlug} />
+        <FileDeliveryRow
+          key={file.id}
+          filePath={file.filePath}
+          agentSlug={agentSlug}
+          description={file.description}
+          sizeBytes={file.sizeBytes}
+        />
       ))}
     </div>
   )
@@ -583,10 +601,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
 
   // Collect delivered files for each completed turn.
   const turnDeliveredFiles = useMemo(() => {
-    const filesMap = new Map<string, { filePath: string }[]>()
+    const filesMap = new Map<string, DeliveredFile[]>()
     if (!messages) return filesMap
 
-    let turnFiles: { filePath: string }[] = []
+    let turnFiles: DeliveredFile[] = []
     let lastAssistantMessageId: string | null = null
 
     for (const msg of messages) {
@@ -600,9 +618,14 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         lastAssistantMessageId = msg.id
         for (const tc of msg.toolCalls) {
           if (tc.name === 'mcp__user-input__deliver_file' && !tc.isError) {
-            const input = tc.input as { filePath?: string }
-            if (input.filePath) {
-              turnFiles.push({ filePath: input.filePath })
+            const { filePath, description } = deliverFileDef.parseInput(tc.input)
+            if (filePath) {
+              turnFiles.push({
+                id: tc.id,
+                filePath,
+                description,
+                sizeBytes: getDeliveredFileSize(parseToolResult(tc.result).text),
+              })
             }
           }
         }
@@ -1177,7 +1200,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                     />
                   </MessageErrorBoundary>
                   {turnDeliveredFiles.has(item.id) && item.id !== deferredElapsedMessageId && (
-                    <DeliveredFiles files={turnDeliveredFiles.get(item.id)!} agentSlug={agentSlug} />
+                    <MessageErrorBoundary kind="delivered files" raw={turnDeliveredFiles.get(item.id)} itemId={item.id}>
+                      <DeliveredFiles files={turnDeliveredFiles.get(item.id)!} agentSlug={agentSlug} />
+                    </MessageErrorBoundary>
                   )}
                 </>
               )
@@ -1348,7 +1373,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
 
         {/* Deferred delivered files — shown after streaming content */}
         {deferredElapsedMessageId && turnDeliveredFiles.has(deferredElapsedMessageId) && (
-          <DeliveredFiles files={turnDeliveredFiles.get(deferredElapsedMessageId)!} agentSlug={agentSlug} />
+          <MessageErrorBoundary kind="delivered files" raw={turnDeliveredFiles.get(deferredElapsedMessageId)} itemId={deferredElapsedMessageId}>
+            <DeliveredFiles files={turnDeliveredFiles.get(deferredElapsedMessageId)!} agentSlug={agentSlug} />
+          </MessageErrorBoundary>
         )}
 
         {/* Real-time compacting indicator. Above the queued ghosts: a message

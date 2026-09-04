@@ -8,7 +8,6 @@ import { StaleSessionNotice } from '@renderer/components/messages/stale-session-
 import { PendingWakeBanner } from '@renderer/components/messages/pending-wake-banner'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useScreenWakeLock } from '@renderer/hooks/use-screen-wake-lock'
-import { useFileDeliveryWatcher } from '@renderer/hooks/use-file-delivery-watcher'
 import { useStaleSession } from '@renderer/hooks/use-stale-session'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { DonutChart } from '@renderer/components/ui/donut-chart'
@@ -63,7 +62,6 @@ export function SessionChatColumn({
   const { isActive, browserActive, isWaitingBackground } = useMessageStream(sessionId, agentSlug)
   // Keep the phone awake (PWA only) while this session is actively working.
   useScreenWakeLock(isActive || isWaitingBackground)
-  useFileDeliveryWatcher(sessionId, agentSlug)
   const { items: pendingRequestItems, count: pendingRequestCount } = usePendingRequests({
     sessionId,
     agentSlug,

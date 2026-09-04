@@ -1,5 +1,6 @@
 import { FileTypeIcon } from './file-type-icon'
 import { useFilePreview } from '@renderer/context/file-preview-context'
+import { getPathName, isFolderPath } from '@shared/lib/utils/workspace-path'
 
 interface FileDownloadPillProps {
   filePath: string
@@ -7,23 +8,11 @@ interface FileDownloadPillProps {
   onClick?: (e: React.MouseEvent) => void
 }
 
-function getFilename(filePath: string): string {
-  return filePath.split('/').pop() || filePath
-}
-
-function isFolder(filePath: string): boolean {
-  return filePath.endsWith('/')
-}
-
-function getFolderName(filePath: string): string {
-  const trimmed = filePath.replace(/\/+$/, '')
-  return trimmed.split('/').pop() || filePath
-}
 
 export function FileDownloadPill({ filePath, agentSlug, onClick }: FileDownloadPillProps) {
   const filePreview = useFilePreview()
-  const folder = isFolder(filePath)
-  const displayName = folder ? getFolderName(filePath) : getFilename(filePath)
+  const folder = isFolderPath(filePath)
+  const displayName = getPathName(filePath)
 
   const className = "file-pill inline-flex items-center gap-1 px-2 py-0.5 rounded border text-xs text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer"
 

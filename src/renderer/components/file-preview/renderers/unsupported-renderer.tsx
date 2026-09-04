@@ -3,18 +3,15 @@ import { Button } from '@renderer/components/ui/button'
 import { FileTypeIcon } from '@renderer/components/ui/file-type-icon'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { getAgentFileApiPath } from '@renderer/lib/workspace-file-url'
+import { getPathName } from '@shared/lib/utils/workspace-path'
 
 interface UnsupportedRendererProps {
   filePath: string
   agentSlug: string
 }
 
-function getFilename(filePath: string): string {
-  return filePath.split('/').pop() || filePath
-}
-
 export function UnsupportedRenderer({ filePath, agentSlug }: UnsupportedRendererProps) {
-  const filename = getFilename(filePath)
+  const filename = getPathName(filePath)
   const baseUrl = getApiBaseUrl()
   const downloadUrl = `${baseUrl}${getAgentFileApiPath(agentSlug, filePath)}`
 

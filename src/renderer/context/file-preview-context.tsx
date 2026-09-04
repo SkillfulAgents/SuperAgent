@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useCallback, useEffect, useMemo, type ReactNode } from 'react'
+import { getPathName } from '@shared/lib/utils/workspace-path'
 import { useRouteLocation } from '@renderer/router/use-route-location'
 
 export interface FileTab {
@@ -94,9 +95,9 @@ function nextFileVersion(): number {
   return lastFileVersion
 }
 
+/** Tab and title label for a path. */
 function getDisplayName(filePath: string): string {
-  const normalized = filePath.replace(/\/+$/, '')
-  return normalized.split('/').pop() || normalized
+  return getPathName(filePath)
 }
 
 function normalizeFolderPath(folderPath: string): string {

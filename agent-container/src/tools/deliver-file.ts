@@ -50,11 +50,17 @@ Example usage:
       }
 
       const relativePath = path.relative('/workspace', fullPath)
+      // The trailing `Delivered: {...}` line is the renderer contract (read back
+      // by src/shared/lib/tool-definitions/deliver-file.ts): the tool already
+      // stat'd the file, so the size travels as data rather than as a number the
+      // renderer has to scrape out of the sentence above it. The prose is what
+      // the model reasons over; the JSON line is what the UI parses.
+      const delivered = JSON.stringify({ sizeBytes: stats.size })
       return {
         content: [
           {
             type: 'text' as const,
-            text: `File "${relativePath}" (${stats.size} bytes) has been delivered to the user. They can now download it from the chat.\n\nHint: If this is a file the user will access frequently (e.g. a report, dashboard, or reference doc), consider adding it to /workspace/bookmarks.json so it appears on their agent homepage.`,
+            text: `File "${relativePath}" (${stats.size} bytes) has been delivered to the user. They can now download it from the chat.\n\nHint: If this is a file the user will access frequently (e.g. a report, dashboard, or reference doc), consider adding it to /workspace/bookmarks.json so it appears on their agent homepage.\n\nDelivered: ${delivered}`,
           },
         ],
       }

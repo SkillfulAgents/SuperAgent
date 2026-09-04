@@ -1,47 +1,39 @@
-import { ArrowDownToLine, Download } from 'lucide-react'
-import { Button } from '@renderer/components/ui/button'
+import { ArrowDownToLine } from 'lucide-react'
 import { FileTypeIcon } from '@renderer/components/ui/file-type-icon'
+import { FileDeliveryRow } from '@renderer/components/ui/file-delivery-row'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
-import { useFilePreview } from '@renderer/context/file-preview-context'
+import { parseToolResult } from '@renderer/lib/parse-tool-result'
 import type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps, CollapsedContentProps } from './types'
-import { deliverFileDef, type DeliverFileInput } from '@shared/lib/tool-definitions/deliver-file'
-
-function getFilename(filePath: string): string {
-  return filePath.split('/').pop() || filePath
-}
+import { deliverFileDef, getDeliveredFileSize, type DeliverFileInput } from '@shared/lib/tool-definitions/deliver-file'
+import { getPathName } from '@shared/lib/utils/workspace-path'
 
 function ExpandedView({ input, result, isError, agentSlug }: ToolRendererProps) {
   const { filePath, description } = input as DeliverFileInput
-  const filePreview = useFilePreview()
-
-  const handlePreview = () => {
-    if (!filePath || !agentSlug) return
-    filePreview.openFile(filePath, agentSlug, description)
-  }
+  const deliverable = !!filePath && !isError && !!agentSlug
 
   return (
     <div className="space-y-2">
-      {description && (
-        <p className="text-xs text-muted-foreground">{description}</p>
+      {/* The same row the turn shows below the answer, so one delivery reads the
+          same way in both places instead of offering a different affordance in
+          each. It carries the description, so no separate blurb line here. */}
+      {deliverable && (
+        <FileDeliveryRow
+          filePath={filePath}
+          agentSlug={agentSlug}
+          description={description}
+          sizeBytes={getDeliveredFileSize(parseToolResult(result).text)}
+        />
       )}
-      {filePath && (
-        <div className="flex items-center gap-2">
-          <FileTypeIcon filename={getFilename(filePath)} size="lg" className="text-muted-foreground" />
-          <code className="bg-background px-1.5 py-0.5 rounded text-xs">
-            {getFilename(filePath)}
-          </code>
-          {!isError && agentSlug && (
-            <Button
-              onClick={handlePreview}
-              size="sm"
-              variant="outline"
-              className="h-7"
-            >
-              <Download className="h-3 w-3 mr-1" />
-              Preview
-            </Button>
-          )}
-        </div>
+      {filePath && !deliverable && (
+        <>
+          {description && <p className="text-xs text-muted-foreground">{description}</p>}
+          <div className="flex items-center gap-2">
+            <FileTypeIcon filename={getPathName(filePath)} size="lg" className="text-muted-foreground" />
+            <code className="bg-background px-1.5 py-0.5 rounded text-xs">
+              {getPathName(filePath)}
+            </code>
+          </div>
+        </>
       )}
       {result && (
         <div
@@ -60,7 +52,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
     if (partial.filePath) {
       return (
         <div className="text-xs text-muted-foreground">
-          Delivering: {getFilename(partial.filePath)}
+          Delivering: {getPathName(partial.filePath)}
         </div>
       )
     }
@@ -79,7 +71,7 @@ function CollapsedContent({ input, isError, agentSlug }: CollapsedContentProps) 
   if (isError) {
     return (
       <span className="inline-flex min-w-0 items-center gap-1 text-xs text-red-800 dark:text-red-200">
-        <FileTypeIcon filename={getFilename(filePath)} size="sm" />
+        <FileTypeIcon filename={getPathName(filePath)} size="sm" />
         <span className="truncate">delivery failed</span>
       </span>
     )
@@ -87,6 +79,8 @@ function CollapsedContent({ input, isError, agentSlug }: CollapsedContentProps) 
 
   if (!agentSlug) return null
 
+  // The collapsed row is a one-line summary beside the tool name, so it keeps
+  // the inline pill; the full row belongs to the expanded view.
   return (
     <FileDownloadPill
       filePath={filePath}
