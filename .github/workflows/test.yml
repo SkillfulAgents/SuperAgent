@@ -34,8 +34,16 @@ jobs:
       - name: Run lint
         run: npm run lint
 
+      # vitest.config.ts switches to CI reporters when GITHUB_ACTIONS is set:
+      # dot output, a GitHub annotation per failure, and the JSON report the
+      # next step turns into a run-page summary. A red run names the failing
+      # tests without expanding this step's log at all.
       - name: Run unit tests with coverage
         run: npx vitest run --coverage
+
+      - name: Unit test summary
+        if: always()
+        run: npx tsx scripts/summarize-vitest-failures.ts
 
       - name: Coverage summary
         if: always()
