@@ -17,11 +17,8 @@ export function resolveOrgBillingUrl(org: OrgLinkContext | null | undefined): st
   return resolveOrgLink(ORG_BILLING_LINK, org)
 }
 
-// "Add usage" hand-off: auto-open the top-up dialog and deep-link back when done.
-export function buildTopupHandoffUrl(
-  billingHref: string | null,
-  protocolScheme: string | null | undefined,
-): string | null {
+// "Add usage" opens the dashboard top-up dialog. No return deep link.
+export function buildTopupHandoffUrl(billingHref: string | null): string | null {
   if (!billingHref) return null
   let url: URL
   try {
@@ -30,9 +27,6 @@ export function buildTopupHandoffUrl(
     return null
   }
   url.searchParams.set('intent', 'topup')
-  if (protocolScheme) {
-    url.searchParams.set('return_app', `${protocolScheme}://billing-updated`)
-  }
   return url.toString()
 }
 

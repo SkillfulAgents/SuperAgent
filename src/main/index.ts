@@ -1226,17 +1226,6 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
     mainWindow?.focus()
   }
 
-  // Billing hand-back: the dashboard top-up flow deep-links here after a purchase
-  // so the renderer refetches billing (SUP-725). No payload.
-  if (url.startsWith(`${PROTOCOL_SCHEME}://billing-updated`)) {
-    showOrCreateMainWindow()
-    sendToMainWindowWhenReady((win) => {
-      win.webContents.send('billing-updated')
-      win.focus()
-    })
-    return
-  }
-
   if (url.startsWith(`${PROTOCOL_SCHEME}://platform-auth-callback`)) {
     try {
       const callbackUrl = new URL(url)

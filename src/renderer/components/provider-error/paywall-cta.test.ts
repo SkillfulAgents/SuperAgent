@@ -49,27 +49,14 @@ describe('resolveOrgBillingUrl', () => {
 })
 
 describe('buildTopupHandoffUrl', () => {
-  it('appends the intent and the return deep link', () => {
-    expect(buildTopupHandoffUrl(HREF, 'superagent')).toBe(
-      `${HREF}&intent=topup&return_app=superagent%3A%2F%2Fbilling-updated`,
-    )
-  })
-
-  it('uses the dev scheme when the app runs unpackaged', () => {
-    expect(buildTopupHandoffUrl(HREF, 'superagent-dev')).toContain(
-      'return_app=superagent-dev%3A%2F%2Fbilling-updated',
-    )
-  })
-
-  it('omits return_app when the protocol scheme is unknown', () => {
-    const url = buildTopupHandoffUrl(HREF, undefined)
-    expect(url).toContain('intent=topup')
-    expect(url).not.toContain('return_app')
+  it('appends intent=topup and no return deep link', () => {
+    expect(buildTopupHandoffUrl(HREF)).toBe(`${HREF}&intent=topup`)
+    expect(buildTopupHandoffUrl(HREF)).not.toContain('return_app')
   })
 
   it('returns null for a missing or unparseable billing href', () => {
-    expect(buildTopupHandoffUrl(null, 'superagent')).toBeNull()
-    expect(buildTopupHandoffUrl('not a url', 'superagent')).toBeNull()
+    expect(buildTopupHandoffUrl(null)).toBeNull()
+    expect(buildTopupHandoffUrl('not a url')).toBeNull()
   })
 })
 

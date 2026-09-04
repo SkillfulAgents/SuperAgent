@@ -8,6 +8,7 @@ import type { ParsedPlatformBillingInfo } from '@shared/lib/types/skillset-schem
 import type { BillingInfoResponse } from '@renderer/hooks/use-billing-info'
 
 import { PaywallCard } from './paywall-card'
+import { PAYWALL_RECHECK_INTERVAL_MS } from './use-paywall-billing'
 
 const platformAuth = {
   connected: true,
@@ -84,7 +85,6 @@ function renderCard(
   )
 }
 
-// Focus is the in-card refresh signal (the deep link is handled app-wide).
 const returnToWindow = () => act(() => { window.dispatchEvent(new Event('focus')) })
 
 describe('PaywallCard', () => {
@@ -93,7 +93,6 @@ describe('PaywallCard', () => {
     platformAuth.connected = true
     platformAuth.role = 'member'
     fetchBilling.mockResolvedValue(billing())
-    window.electronAPI = { desktopProtocol: 'superagent' } as unknown as typeof window.electronAPI
   })
 
   afterEach(() => {
@@ -158,18 +157,40 @@ describe('PaywallCard', () => {
     expect(screen.getByTestId('composer')).toBeInTheDocument()
   })
 
-  it('offers admins a top-up that hands off to the dashboard and back', async () => {
+  it('opens the platform on Add usage, then that button becomes Recheck', async () => {
     platformAuth.role = 'owner'
     renderCard()
     const button = await screen.findByRole('button', { name: 'Add usage' })
     expect(screen.getByText('You need more usage credit to continue')).toBeInTheDocument()
-    button.click()
+    act(() => { button.click() })
     expect(openExternalUrl).toHaveBeenCalledTimes(1)
     const url = new URL(openExternalUrl.mock.calls[0][0])
     expect(url.pathname).toBe('/dashboard/organizations/org_123')
     expect(url.searchParams.get('tab')).toBe('billing')
     expect(url.searchParams.get('intent')).toBe('topup')
-    expect(url.searchParams.get('return_app')).toBe('superagent://billing-updated')
+    expect(url.searchParams.has('return_app')).toBe(false)
+    const recheck = screen.getByRole('button', { name: 'Recheck' })
+    expect(screen.queryByRole('button', { name: 'Add usage' })).not.toBeInTheDocument()
+    fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
+    act(() => { recheck.click() })
+    await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
+    expect(screen.getByTestId('composer')).toBeInTheDocument()
+  })
+
+  it('rechecks automatically every 5s while the card is visible', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval'] })
+    try {
+      renderCard()
+      await screen.findByText('Workspace billing needs attention')
+      fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(PAYWALL_RECHECK_INTERVAL_MS)
+      })
+      await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
+      expect(screen.getByTestId('composer')).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('asks admins to add a card first when the org has no payment method', async () => {

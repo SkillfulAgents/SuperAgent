@@ -45,11 +45,25 @@ const CTA_LABELS: Record<PaywallCta['kind'], string> = {
 }
 
 function ctaHref(cta: PaywallCta): string | null {
-  if (cta.kind === 'topup') return buildTopupHandoffUrl(cta.href, window.electronAPI?.desktopProtocol)
+  if (cta.kind === 'topup') return buildTopupHandoffUrl(cta.href)
   return cta.href
 }
 
-function PaywallActions({ cta, loading, onDismiss }: { cta: PaywallCta | null; loading: boolean; onDismiss: () => void }) {
+function PaywallActions({
+  cta,
+  loading,
+  handedOff,
+  onDismiss,
+  onHandOff,
+  onRecheck,
+}: {
+  cta: PaywallCta | null
+  loading: boolean
+  handedOff: boolean
+  onDismiss: () => void
+  onHandOff: () => void
+  onRecheck: () => void
+}) {
   if (loading) {
     return (
       <div className="flex items-center gap-1.5 text-xs text-muted-foreground" data-testid="paywall-actions-loading">
@@ -64,18 +78,30 @@ function PaywallActions({ cta, loading, onDismiss }: { cta: PaywallCta | null; l
       <Button size="sm" variant="ghost" onClick={onDismiss}>
         Dismiss
       </Button>
-      {cta && (
+      {handedOff ? (
+        <Button
+          size="sm"
+          onClick={(event) => {
+            event.stopPropagation()
+            onRecheck()
+          }}
+        >
+          Recheck
+        </Button>
+      ) : cta ? (
         <Button
           size="sm"
           disabled={!href}
           onClick={(event) => {
             event.stopPropagation()
-            if (href) void openExternalUrl(href)
+            if (!href) return
+            void openExternalUrl(href)
+            onHandOff()
           }}
         >
           {CTA_LABELS[cta.kind]}
         </Button>
-      )}
+      ) : null}
     </div>
   )
 }
@@ -84,8 +110,9 @@ function PaywallActions({ cta, loading, onDismiss }: { cta: PaywallCta | null; l
 // role/billing-aware CTA. Fails open: the composer is withheld only while a fresh billing
 // snapshot positively denies access; otherwise the card sits above it. Dismiss always works.
 export function PaywallCard({ message, presentation, children, live = true }: ProviderErrorComponentProps) {
-  const billing = usePaywallBilling(extractSubscriptionRequired(message), live)
   const [dismissed, setDismissed] = useState(false)
+  const [handedOff, setHandedOff] = useState(false)
+  const billing = usePaywallBilling(extractSubscriptionRequired(message), live, !dismissed)
   if (billing.cleared || dismissed) return <>{children}</>
 
   const fallback = splitMessage(presentation?.message ?? message)
@@ -105,7 +132,14 @@ export function PaywallCard({ message, presentation, children, live = true }: Pr
             <p className="text-sm font-medium text-foreground">{heading}</p>
             {detail && <p className="mt-0.5 text-sm text-muted-foreground">{detail}</p>}
           </div>
-          <PaywallActions cta={billing.cta} loading={billing.loading} onDismiss={() => setDismissed(true)} />
+          <PaywallActions
+            cta={billing.cta}
+            loading={billing.loading}
+            handedOff={handedOff}
+            onDismiss={() => setDismissed(true)}
+            onHandOff={() => setHandedOff(true)}
+            onRecheck={billing.recheck}
+          />
         </div>
       </div>
       {!billing.blocked && children}

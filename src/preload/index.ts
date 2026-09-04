@@ -83,15 +83,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.removeAllListeners('platform-auth-callback')
   },
 
-  // Billing hand-back deep link (<scheme>://billing-updated) after a dashboard top-up; signal-only.
-  onBillingUpdated: (callback: () => void): (() => void) => {
-    const handler = () => callback()
-    ipcRenderer.on('billing-updated', handler)
-    return () => {
-      ipcRenderer.removeListener('billing-updated', handler)
-    }
-  },
-
   // Full screen state handling
   onFullScreenChange: (callback: (isFullScreen: boolean) => void): (() => void) => {
     const handler = (_event: unknown, isFullScreen: unknown) => callback(isFullScreen as boolean)
@@ -491,7 +482,6 @@ declare global {
       removeMcpOAuthCallback: () => void
       onPlatformAuthCallback: (callback: (params: { success: boolean; email?: string | null; error?: string | null }) => void) => () => void
       removePlatformAuthCallback: () => void
-      onBillingUpdated?: (callback: () => void) => () => void
       onFullScreenChange: (callback: (isFullScreen: boolean) => void) => () => void
       removeFullScreenChange: () => void
       getFullScreenState: () => Promise<boolean>

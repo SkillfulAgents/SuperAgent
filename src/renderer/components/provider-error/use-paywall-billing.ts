@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useQueryClient, type QueryClient } from '@tanstack/react-query'
 
 import { BILLING_QUERY_KEY, useBillingInfo } from '@renderer/hooks/use-billing-info'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { captureRendererException } from '@renderer/lib/error-reporting'
 
 import { resolveOrgBillingUrl, resolvePaywallCta, subscriptionRequiredFromBilling, type PaywallCta } from './paywall-cta'
+
+export const PAYWALL_RECHECK_INTERVAL_MS = 5000
 
 export interface PaywallBilling {
   cta: PaywallCta | null
@@ -14,10 +16,20 @@ export interface PaywallBilling {
   blocked: boolean
   /** A fresh snapshot allows access again (after this paywall appeared, if live): the card can go. */
   cleared: boolean
+  recheck: () => void
 }
 
-// Refetch billing when the window comes back (the user returns from the dashboard
-// without the deep link). Only runs while a paywall is on screen.
+function invalidateBillingSnapshot(queryClient: QueryClient, op: string): Promise<void> {
+  return queryClient
+    .invalidateQueries({ queryKey: BILLING_QUERY_KEY, refetchType: 'active' })
+    .then(() => undefined)
+    .catch((error: unknown) => {
+      console.warn('[Paywall] billing refresh failed:', error)
+      captureRendererException(error, { tags: { area: 'paywall', op } })
+    })
+}
+
+// Refetch when the window comes back (user returns from the dashboard).
 function useBillingRefreshOnReturn(): void {
   const queryClient = useQueryClient()
   useEffect(() => {
@@ -26,12 +38,7 @@ function useBillingRefreshOnReturn(): void {
       if (scheduled !== null) return
       scheduled = setTimeout(() => {
         scheduled = null
-        void queryClient
-          .invalidateQueries({ queryKey: BILLING_QUERY_KEY, refetchType: 'active' })
-          .catch((error: unknown) => {
-            console.warn('[Paywall] billing refresh failed:', error)
-            captureRendererException(error, { tags: { area: 'paywall', op: 'refresh-on-return' } })
-          })
+        void invalidateBillingSnapshot(queryClient, 'refresh-on-return')
       }, 50)
     }
     const onVisibilityChange = () => {
@@ -47,10 +54,25 @@ function useBillingRefreshOnReturn(): void {
   }, [queryClient])
 }
 
+function useBillingRecheckPoll(enabled: boolean): void {
+  const queryClient = useQueryClient()
+  useEffect(() => {
+    if (!enabled) return
+    const id = setInterval(() => {
+      void invalidateBillingSnapshot(queryClient, 'recheck-poll')
+    }, PAYWALL_RECHECK_INTERVAL_MS)
+    return () => clearInterval(id)
+  }, [enabled, queryClient])
+}
+
 // `flagFrom402` is the proxy's subscription_required flag when the 402 body kept it.
 // A live 402 ignores a leftover `allowed` snapshot from a previous recovery.
 // A persisted 402 (switch session after a top-up) trusts the current snapshot.
-export function usePaywallBilling(flagFrom402: boolean | undefined, live: boolean): PaywallBilling {
+export function usePaywallBilling(
+  flagFrom402: boolean | undefined,
+  live: boolean,
+  poll = true,
+): PaywallBilling {
   const { data: platformAuth } = usePlatformAuthStatus()
   const role = platformAuth?.role
   const billingQuery = useBillingInfo(Boolean(platformAuth?.connected))
@@ -59,7 +81,7 @@ export function usePaywallBilling(flagFrom402: boolean | undefined, live: boolea
   const [seenAt] = useState(() => Date.now())
   useEffect(() => {
     if (!live) return
-    void queryClient.invalidateQueries({ queryKey: BILLING_QUERY_KEY, refetchType: 'active' })
+    void invalidateBillingSnapshot(queryClient, 'refresh-on-mount')
   }, [live, queryClient])
   useBillingRefreshOnReturn()
 
@@ -70,7 +92,7 @@ export function usePaywallBilling(flagFrom402: boolean | undefined, live: boolea
     captureRendererException(billingError, { tags: { area: 'paywall', op: 'billing-info' } })
   }, [billingError])
 
-  return useMemo(() => {
+  const snapshot = useMemo(() => {
     const billingHref = resolveOrgBillingUrl(platformAuth)
     if (billingQuery.isLoading) {
       return { cta: null, loading: true, blocked: false, cleared: false }
@@ -101,4 +123,12 @@ export function usePaywallBilling(flagFrom402: boolean | undefined, live: boolea
     role,
     seenAt,
   ])
+
+  useBillingRecheckPoll(poll && !snapshot.cleared)
+
+  const recheck = useCallback(() => {
+    void invalidateBillingSnapshot(queryClient, 'recheck')
+  }, [queryClient])
+
+  return { ...snapshot, recheck }
 }
