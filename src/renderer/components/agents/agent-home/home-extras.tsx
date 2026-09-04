@@ -16,41 +16,53 @@ export function HomeExtras({ agentSlug, onOpenSettings, className }: HomeExtrasP
   const navigate = useNavigate()
   const { openFolder } = useFilePreview()
 
+  // Two cards, spaced by the column like any other pair of cards. Neither has
+  // vertical padding of its own: that would stack onto its first and last
+  // rows and make them read taller than the rest. The three per-agent picker
+  // rows are a standalone group at one height; the navigation rows are one
+  // uniform height too, flush with their card, which clips them to its
+  // rounded corners so the hover fill stays inside.
   return (
-    <div className={cn("rounded-xl border bg-background py-2", className)}>
-      <div className="divide-y divide-border/50">
-        <HomeDefaultModel agentSlug={agentSlug} />
-        <HomeRetention agentSlug={agentSlug} />
-        <ExtrasButton
-          label="Agent-to-agent connections"
-          onClick={() => {
-            void navigate({ to: '/agents/$slug/x-agent-permissions', params: { slug: agentSlug } })
-          }}
-          testId="home-x-agent-permissions-open-page"
-        />
-        <ExtrasButton label="System Prompt" onClick={() => onOpenSettings?.('system-prompt')} />
-        <ExtrasButton
-          label="Agent Directory"
-          onClick={() => openFolder('/workspace', agentSlug)}
-          hoverIcon={<PanelRightOpen className="h-4 w-4 text-muted-foreground" aria-hidden="true" />}
-          testId="home-agent-directory-open-browser"
-        />
-        <ExtrasButton
-          label="Secrets"
-          onClick={() => {
-            void navigate({ to: '/agents/$slug/secrets', params: { slug: agentSlug } })
-          }}
-          testId="home-secrets-open-page"
-        />
-        <ExtrasButton
-          label="API Logs"
-          onClick={() => {
-            void navigate({ to: '/agents/$slug/api-logs', params: { slug: agentSlug } })
-          }}
-          testId="home-api-logs-open-page"
-        />
+    <>
+      <div className={cn("rounded-xl border bg-background", className)} data-testid="home-preferences-group">
+        <div className="divide-y divide-border/50">
+          <HomeDefaultModel agentSlug={agentSlug} />
+          <HomeRetention agentSlug={agentSlug} />
+        </div>
       </div>
-    </div>
+      <div className={cn("overflow-hidden rounded-xl border bg-background", className)}>
+        <div className="divide-y divide-border/50">
+          <ExtrasButton
+            label="Agent-to-agent connections"
+            onClick={() => {
+              void navigate({ to: '/agents/$slug/x-agent-permissions', params: { slug: agentSlug } })
+            }}
+            testId="home-x-agent-permissions-open-page"
+          />
+          <ExtrasButton label="System Prompt" onClick={() => onOpenSettings?.('system-prompt')} />
+          <ExtrasButton
+            label="Agent Directory"
+            onClick={() => openFolder('/workspace', agentSlug)}
+            hoverIcon={<PanelRightOpen className="h-4 w-4 text-muted-foreground" aria-hidden="true" />}
+            testId="home-agent-directory-open-browser"
+          />
+          <ExtrasButton
+            label="Secrets"
+            onClick={() => {
+              void navigate({ to: '/agents/$slug/secrets', params: { slug: agentSlug } })
+            }}
+            testId="home-secrets-open-page"
+          />
+          <ExtrasButton
+            label="API Logs"
+            onClick={() => {
+              void navigate({ to: '/agents/$slug/api-logs', params: { slug: agentSlug } })
+            }}
+            testId="home-api-logs-open-page"
+          />
+        </div>
+      </div>
+    </>
   )
 }
 
@@ -60,7 +72,10 @@ function ExtrasButton({ label, onClick, hoverIcon, testId }: { label: string; on
       type="button"
       onClick={onClick}
       data-testid={testId}
-      className="group flex w-full items-center justify-between py-3 px-4 text-left hover:bg-muted/50 transition-colors"
+      // min-h-12: every navigation row is the same height, including the last
+      // one, which sits flush with the card's bottom edge. The focus ring is
+      // inset because the card clips its rows to the rounded corners.
+      className="group flex min-h-12 w-full items-center justify-between px-4 text-left outline-none transition-colors hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
     >
       <span className="text-sm font-medium text-muted-foreground">{label}</span>
       {hoverIcon ? (
