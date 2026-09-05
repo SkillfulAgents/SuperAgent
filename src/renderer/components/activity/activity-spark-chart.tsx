@@ -49,6 +49,92 @@ const TRACK_HEIGHT = HEIGHT - TRACK_INSET * 2
 const TRACK_BASELINE = HEIGHT - TRACK_INSET
 const TRACK_CLASS = 'fill-muted-foreground/10'
 
+/** Keeps a lone call in a tall series from rendering as a sub-pixel sliver. */
+const MIN_SEGMENT = 1.5
+
+/**
+ * Heights of a day's success and failure segments, in track units. A non-zero
+ * count never drops below MIN_SEGMENT; when both floors together exceed the
+ * track (the tallest day with a one-call minority), the larger segment gives
+ * up the excess so the stack still ends at the track's top edge.
+ */
+function stackedHeights(succeeded: number, failed: number, max: number) {
+  const floored = (count: number) => (count > 0 ? Math.max(MIN_SEGMENT, (count / max) * TRACK_HEIGHT) : 0)
+  let success = floored(succeeded)
+  let failure = floored(failed)
+  const excess = success + failure - TRACK_HEIGHT
+  if (excess > 0) {
+    if (success >= failure) success -= excess
+    else failure -= excess
+  }
+  return { success, failure }
+}
+
+/**
+ * A rect's rx rounds all four corners, so a stacked segment needs a path to
+ * keep the edge where it meets its neighbour square — otherwise the successes
+ * and failures of one day read as two separate bars with a pinch between them.
+ */
+function segmentPath(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  radius: number,
+  round: 'top' | 'bottom',
+): string {
+  // Only one side is rounded, so the radius may use the segment's full height.
+  const r = Math.min(radius, w / 2, h)
+  return round === 'top'
+    ? `M${x},${y + h} L${x},${y + r} Q${x},${y} ${x + r},${y} `
+      + `L${x + w - r},${y} Q${x + w},${y} ${x + w},${y + r} L${x + w},${y + h} Z`
+    : `M${x},${y} L${x},${y + h - r} Q${x},${y + h} ${x + r},${y + h} `
+      + `L${x + w - r},${y + h} Q${x + w},${y + h} ${x + w},${y + h - r} L${x + w},${y} Z`
+}
+
+/** A day's success or failure segment: fully rounded alone, squared where stacked. */
+function ActivitySegment({
+  testId,
+  x,
+  y,
+  width,
+  height,
+  radius,
+  round,
+  className,
+}: {
+  testId: string
+  x: number
+  y: number
+  width: number
+  height: number
+  radius: number
+  /** 'all' when this segment stands alone; otherwise the side to keep rounded. */
+  round: 'all' | 'top' | 'bottom'
+  className: string
+}) {
+  if (round === 'all' || height <= 0) {
+    return (
+      <rect
+        data-testid={testId}
+        x={x}
+        y={y}
+        width={width}
+        height={height}
+        rx={radius}
+        className={className}
+      />
+    )
+  }
+  return (
+    <path
+      data-testid={testId}
+      d={segmentPath(x, y, width, height, radius, round)}
+      className={className}
+    />
+  )
+}
+
 interface SparkTooltipRow {
   /** Tailwind background class for the legend swatch. */
   swatch: string
@@ -264,27 +350,37 @@ export function ActivitySparkChart({ label, data, className }: ActivitySparkChar
     >
       {data.map((point, index) => {
         const x = barX(index)
-        const successHeight = (point.succeeded / max) * TRACK_HEIGHT
-        const failureHeight = (point.failed / max) * TRACK_HEIGHT
-        const zeroHeight = point.succeeded === 0 && point.failed === 0 ? 1 : 0
+        const { success: successHeight, failure: failureHeight } = stackedHeights(point.succeeded, point.failed, max)
         return (
           <g key={point.date}>
             <rect
-              data-testid="activity-success-bar"
+              data-testid="activity-day-track"
+              aria-hidden="true"
               x={x}
-              y={TRACK_BASELINE - successHeight - zeroHeight}
+              y={TRACK_INSET}
               width={barWidth}
-              height={successHeight + zeroHeight}
+              height={TRACK_HEIGHT}
               rx={radius}
-              className={point.succeeded === 0 ? 'fill-muted' : 'fill-emerald-500'}
+              className={TRACK_CLASS}
             />
-            <rect
-              data-testid="activity-failure-bar"
+            <ActivitySegment
+              testId="activity-success-bar"
+              x={x}
+              y={TRACK_BASELINE - successHeight}
+              width={barWidth}
+              height={successHeight}
+              radius={radius}
+              round={failureHeight > 0 ? 'bottom' : 'all'}
+              className="fill-emerald-500"
+            />
+            <ActivitySegment
+              testId="activity-failure-bar"
               x={x}
               y={TRACK_BASELINE - successHeight - failureHeight}
               width={barWidth}
               height={failureHeight}
-              rx={radius}
+              radius={radius}
+              round={successHeight > 0 ? 'top' : 'all'}
               className="fill-red-500"
             />
           </g>

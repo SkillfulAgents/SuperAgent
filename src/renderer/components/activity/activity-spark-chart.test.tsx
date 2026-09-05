@@ -27,6 +27,88 @@ describe('activity spark charts', () => {
     expect(tip).toHaveTextContent('1 Failed')
   })
 
+  it('draws a track per day so an empty window still reads as 14 days', () => {
+    render(<ActivitySparkChart
+      label="GitHub activity"
+      data={Array.from({ length: 14 }, (_, i) => ({
+        date: `2026-07-${String(i + 1).padStart(2, '0')}`, succeeded: 0, failed: 0,
+      }))}
+    />)
+
+    expect(screen.getAllByTestId('activity-day-track')).toHaveLength(14)
+    // Nothing ran, so no segment has height.
+    for (const bar of screen.getAllByTestId('activity-success-bar')) {
+      expect(bar).toHaveAttribute('height', '0')
+    }
+  })
+
+  it('floors a lone call so it cannot render as a sub-pixel sliver', () => {
+    render(<ActivitySparkChart
+      label="GitHub activity"
+      data={[
+        { date: '2026-07-08', succeeded: 500, failed: 0 },
+        { date: '2026-07-09', succeeded: 1, failed: 0 },
+      ]}
+    />)
+
+    const [tall, lone] = screen.getAllByTestId('activity-success-bar')
+    expect(Number(tall.getAttribute('height'))).toBeGreaterThan(10)
+    // 1/500 of the track would be ~0.04px; the floor keeps it visible.
+    expect(Number(lone.getAttribute('height'))).toBeGreaterThanOrEqual(1.5)
+  })
+
+  it('keeps a floored minority segment from pushing the stack above the track', () => {
+    render(<ActivitySparkChart
+      label="GitHub activity"
+      data={[{ date: '2026-07-08', succeeded: 499, failed: 1 }]}
+    />)
+
+    const [ok] = screen.getAllByTestId('activity-success-bar')
+    const [fail] = screen.getAllByTestId('activity-failure-bar')
+    // The tallest day fills the track exactly, so a floored 1.5px failure cap
+    // would otherwise poke ~1.5px above it. Read every y in each path.
+    const ys = (el: Element) =>
+      [...el.getAttribute('d')!.matchAll(/[\d.]+,([\d.]+)/g)].map((m) => Number(m[1]))
+    const capTop = Math.min(...ys(fail))
+    const capBottom = Math.max(...ys(fail))
+    // Track spans y=1..19: the cap tops out at the track's edge, not above it.
+    expect(capTop).toBeCloseTo(1, 5)
+    expect(Math.max(...ys(ok))).toBeCloseTo(19, 5)
+    // The cap keeps its floor; the success segment gave up the excess.
+    expect(capBottom - capTop).toBeCloseTo(1.5, 5)
+    expect(Math.min(...ys(ok))).toBeCloseTo(capBottom, 5)
+  })
+
+  it('squares the edge where a day\'s success and failure segments meet', () => {
+    render(<ActivitySparkChart
+      label="GitHub activity"
+      data={[
+        { date: '2026-07-08', succeeded: 6, failed: 3 },
+        { date: '2026-07-09', succeeded: 6, failed: 0 },
+      ]}
+    />)
+
+    const [stackedOk, loneOk] = screen.getAllByTestId('activity-success-bar')
+    const [stackedFail] = screen.getAllByTestId('activity-failure-bar')
+
+    // Stacked: paths, so only the outer edge of each segment is rounded.
+    expect(stackedOk.tagName).toBe('path')
+    expect(stackedFail.tagName).toBe('path')
+    // A day with no failures keeps the plain fully-rounded rect.
+    expect(loneOk.tagName).toBe('rect')
+    expect(loneOk).toHaveAttribute('rx')
+
+    // Both paths begin at the join with a straight move, so the success
+    // segment's top and the failure segment's bottom are one flat line.
+    const startY = (el: Element) =>
+      Number(el.getAttribute('d')!.match(/^M[\d.]+,([\d.]+) /)![1])
+    expect(startY(stackedOk)).toBeCloseTo(startY(stackedFail), 5)
+
+    // And each keeps exactly one rounded end: two quadratic curves, not four.
+    expect(stackedOk.getAttribute('d')!.match(/Q/g)).toHaveLength(2)
+    expect(stackedFail.getAttribute('d')!.match(/Q/g)).toHaveLength(2)
+  })
+
   it('keeps an all-zero series visible and truthful', () => {
     render(<ActivitySparkChart
       label="Slack activity"
