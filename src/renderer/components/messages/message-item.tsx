@@ -25,7 +25,7 @@ import { createMarkdownUrlTransform } from '@renderer/lib/markdown-url-transform
 import type { EmbeddedImageAliases } from '@renderer/lib/parse-tool-result'
 import { rehypeStreamingWordReveal } from './streaming-word-reveal'
 import { rehypeSpokenWords } from '@renderer/lib/speech/spoken-words'
-import { useReadAloudSnapshot, useSpokenWordHighlight } from '@renderer/hooks/use-read-aloud'
+import { useIsBeingRead, useSpokenWordHighlight } from '@renderer/hooks/use-read-aloud'
 import { ReadAloudButton } from './read-aloud-button'
 
 // Re-export for use by other components
@@ -216,15 +216,30 @@ interface MarkdownBlockProps {
   text: string
   embeddedImageAliases?: EmbeddedImageAliases
   agentSlug?: string
+  /**
+   * Being read aloud: every prose word gets an indexed span for
+   * useSpokenWordHighlight to light up. A prop rather than a sibling
+   * component so toggling it re-renders the same tree in place — images and
+   * measured tables keep their DOM identity instead of remounting, which is
+   * what would let the scroller see a transient height change.
+   */
+  spoken?: boolean
 }
 
-export const MarkdownBlock = memo(function MarkdownBlock({ text, embeddedImageAliases, agentSlug }: MarkdownBlockProps) {
+const SPOKEN_REHYPE_PLUGINS: ReactMarkdownOptions['rehypePlugins'] = [rehypeSpokenWords]
+
+export const MarkdownBlock = memo(function MarkdownBlock({ text, embeddedImageAliases, agentSlug, spoken }: MarkdownBlockProps) {
   const urlTransform = useMemo(
     () => createMarkdownUrlTransform({ aliases: embeddedImageAliases, agentSlug }),
     [embeddedImageAliases, agentSlug]
   )
   return (
-    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={MARKDOWN_COMPONENTS} urlTransform={urlTransform}>
+    <ReactMarkdown
+      remarkPlugins={REMARK_PLUGINS}
+      rehypePlugins={spoken ? SPOKEN_REHYPE_PLUGINS : undefined}
+      components={MARKDOWN_COMPONENTS}
+      urlTransform={urlTransform}
+    >
       {text}
     </ReactMarkdown>
   )
@@ -262,27 +277,6 @@ const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({ text, embe
     <ReactMarkdown
       remarkPlugins={REMARK_PLUGINS}
       rehypePlugins={rehypePlugins}
-      components={MARKDOWN_COMPONENTS}
-      urlTransform={urlTransform}
-    >
-      {text}
-    </ReactMarkdown>
-  )
-})
-
-// Rendered in place of MarkdownBlock while the message is being read aloud:
-// every prose word gets an indexed span for useSpokenWordHighlight to light up.
-const SPOKEN_REHYPE_PLUGINS: ReactMarkdownOptions['rehypePlugins'] = [rehypeSpokenWords]
-
-const SpokenMarkdownBlock = memo(function SpokenMarkdownBlock({ text, embeddedImageAliases, agentSlug }: MarkdownBlockProps) {
-  const urlTransform = useMemo(
-    () => createMarkdownUrlTransform({ aliases: embeddedImageAliases, agentSlug }),
-    [embeddedImageAliases, agentSlug]
-  )
-  return (
-    <ReactMarkdown
-      remarkPlugins={REMARK_PLUGINS}
-      rehypePlugins={SPOKEN_REHYPE_PLUGINS}
       components={MARKDOWN_COMPONENTS}
       urlTransform={urlTransform}
     >
@@ -396,8 +390,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   // is the one being read its prose is rendered word-addressable and dimmed,
   // lighting up as playback reaches each word.
   const canReadAloud = isAssistant && !!hasText && !isStreaming && !isProviderErrorMessage && !CustomUserRender
-  const readAloud = useReadAloudSnapshot()
-  const isBeingRead = canReadAloud && readAloud.activeId === message.id
+  const isBeingRead = useIsBeingRead(message.id) && canReadAloud
   const proseRef = useRef<HTMLDivElement>(null)
   useSpokenWordHighlight(proseRef, isBeingRead)
 
@@ -500,17 +493,12 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                         />
                       )}
                     </>
-                  ) : isBeingRead ? (
-                    <SpokenMarkdownBlock
-                      text={text}
-                      embeddedImageAliases={embeddedImageAliases}
-                      agentSlug={agentSlug}
-                    />
                   ) : (
                     <MarkdownBlock
                       text={text}
                       embeddedImageAliases={embeddedImageAliases}
                       agentSlug={agentSlug}
+                      spoken={isBeingRead}
                     />
                   )}
                   {isStreaming && (

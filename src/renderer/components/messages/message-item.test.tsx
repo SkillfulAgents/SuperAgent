@@ -80,11 +80,7 @@ vi.mock('@renderer/hooks/use-voice-input', () => ({
 }))
 
 vi.mock('@renderer/hooks/use-read-aloud', () => ({
-  useReadAloudSnapshot: () => ({
-    activeId: readAloudState.activeId,
-    status: readAloudState.activeId ? 'speaking' : 'idle',
-    error: null,
-  }),
+  useIsBeingRead: (id: string) => readAloudState.activeId === id,
   useReadAloud: (id: string) => ({
     status: readAloudState.activeId === id ? 'speaking' : 'idle',
     isActive: readAloudState.activeId === id,
