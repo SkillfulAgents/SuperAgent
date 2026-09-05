@@ -149,6 +149,8 @@ const mockGetStoredPlatformMemberId = vi.fn(() => null as string | null)
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getStoredPlatformMemberId: () => mockGetStoredPlatformMemberId(),
   getPlatformAccessToken: () => mockGetPlatformAccessToken(),
+  // Read by PlatformLlmProvider when it resolves the billing link for a provider error.
+  getPlatformAuthStatus: () => ({ connected: false, orgId: null }),
 }))
 
 const mockGetAvailableTriggers = vi.fn<MockFn>(() => Promise.resolve([]))

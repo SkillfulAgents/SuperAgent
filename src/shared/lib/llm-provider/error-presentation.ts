@@ -12,6 +12,8 @@ export const providerErrorPresentationSchema = z.object({
   placement: providerErrorPlacementSchema.optional(),
   /** Renderer component-registry key. Unset or unknown = the default card. */
   component: z.string().optional(),
+  /** Final CTA URL for the component, resolved by the provider. Unset = no link to offer. */
+  href: z.string().optional(),
 })
 
 export type ProviderErrorPresentation = z.infer<typeof providerErrorPresentationSchema>
@@ -64,23 +66,4 @@ export function defaultParseErrorResponse(
     message: `**LLM Provider Error:** ${extractErrorMessage(body)}`,
     icon: 'info',
   }
-}
-
-const ORG_PLACEHOLDER_LINK = /\[([^\]]+)\]\(([^)]*\{orgId\}[^)]*)\)/g
-
-export function resolvePresentationMarkdown(
-  markdown: string,
-  org: { connected?: boolean; platformBaseUrl?: string | null; orgId?: string | null } | null | undefined,
-): string {
-  if (!markdown.includes('{orgId}')) return markdown
-  if (!org?.connected || !org.orgId || !org.platformBaseUrl) {
-    return markdown.replace(ORG_PLACEHOLDER_LINK, '$1')
-  }
-  const origin = org.platformBaseUrl.replace(/\/$/, '')
-  const orgId = org.orgId
-  return markdown.replace(ORG_PLACEHOLDER_LINK, (_match, label: string, href: string) => {
-    const path = href.replaceAll('{orgId}', orgId)
-    const url = /^https?:\/\//i.test(path) ? path : `${origin}${path}`
-    return `[${label}](${url})`
-  })
 }

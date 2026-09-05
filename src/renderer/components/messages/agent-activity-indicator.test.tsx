@@ -51,11 +51,8 @@ vi.mock('@shared/lib/utils', () => ({
   cn: (...args: unknown[]) => args.filter(Boolean).join(' '),
 }))
 
-const platformAuth = {
-  connected: false as boolean,
-  platformBaseUrl: 'https://platform.example.com' as string | null,
-  orgId: 'org_123' as string | null,
-}
+const platformAuth = { connected: false as boolean }
+const BILLING_URL = 'https://platform.example.com/dashboard/organizations/org_123?tab=billing'
 
 vi.mock('@renderer/hooks/use-platform-auth', () => ({
   usePlatformAuthStatus: () => ({ data: platformAuth }),
@@ -123,12 +120,11 @@ describe('AgentActivityIndicator', () => {
   })
 
   it('shows an orange spend-limit card for a platform spend cap', () => {
-    platformAuth.connected = true
     mockStreamState.error = 'API Error: Request rejected (429) · A spend cap for this workspace was reached. It resets within 30 days. Ask a workspace admin to raise it.'
     mockStreamState.apiErrorCode = 'rate_limit'
     // Presentation is authored server-side by PlatformLlmProvider.presentationForTurnError
     // and arrives on the session_error event.
-    mockStreamState.errorPresentation = parsePlatformErrorResponse(429, mockStreamState.error)
+    mockStreamState.errorPresentation = parsePlatformErrorResponse(429, mockStreamState.error, BILLING_URL)
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     const card = screen.getByTestId('provider-error-card')
     expect(card).toHaveTextContent('Spend Limit Reached')
