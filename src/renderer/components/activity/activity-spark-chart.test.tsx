@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { ActivitySparkChart, CronSparkChart } from './activity-spark-chart'
 
@@ -100,6 +100,55 @@ describe('activity spark charts', () => {
     expect(screen.getByTestId('spark-tooltip')).toHaveTextContent('Succeeded')
     fireEvent.mouseLeave(screen.getByRole('img'))
     expect(screen.queryByTestId('spark-tooltip')).not.toBeInTheDocument()
+  })
+
+  it('renders the hover card outside the chart, in viewport space, so overflow-hidden rows cannot clip it', () => {
+    const { container } = render(
+      <div style={{ overflow: 'hidden' }}>
+        <CronSparkChart
+          label="Nightly report schedule"
+          data={[{ scheduledAt: '2026-07-09T11:00:00.000Z', status: 'succeeded' }]}
+        />
+      </div>,
+    )
+    const svg = screen.getByRole('img')
+    // Mid-page chart: the card hangs above it, right edges aligned.
+    vi.spyOn(svg, 'getBoundingClientRect').mockReturnValue(
+      { top: 300, right: 900, bottom: 320, left: 824, width: 76, height: 20, x: 824, y: 300, toJSON: () => ({}) },
+    )
+    const bands = screen.getAllByTestId('spark-hit')
+    fireEvent.mouseEnter(bands[13])
+
+    const tip = screen.getByTestId('spark-tooltip')
+    expect(container).not.toContainElement(tip)
+    expect(document.body).toContainElement(tip)
+    expect(tip).toHaveClass('fixed')
+    expect(tip).toHaveStyle({ left: '900px', top: '294px', transform: 'translate(-100%, -100%)' })
+
+    // First row of a page: no room above, so the card flips underneath.
+    vi.spyOn(svg, 'getBoundingClientRect').mockReturnValue(
+      { top: 12, right: 900, bottom: 32, left: 824, width: 76, height: 20, x: 824, y: 12, toJSON: () => ({}) },
+    )
+    fireEvent.mouseEnter(bands[13])
+    expect(screen.getByTestId('spark-tooltip')).toHaveStyle({ top: '38px', transform: 'translateX(-100%)' })
+
+    // A scroll would strand the card where the chart used to be, so it dismisses.
+    fireEvent.scroll(window)
+    expect(screen.queryByTestId('spark-tooltip')).not.toBeInTheDocument()
+  })
+
+  it('keeps hit bands inside the viewBox without overlapping', () => {
+    render(<CronSparkChart label="Bands" data={[]} />)
+    const bands = screen.getAllByTestId('spark-hit')
+    const box = (el: HTMLElement) => {
+      const x = Number(el.getAttribute('x'))
+      return { x, right: x + Number(el.getAttribute('width')) }
+    }
+    expect(box(bands[0]).x).toBe(0)
+    expect(box(bands[13]).right).toBeCloseTo(76, 5)
+    for (let i = 1; i < bands.length; i++) {
+      expect(box(bands[i]).x).toBeCloseTo(box(bands[i - 1]).right, 5)
+    }
   })
 
   it('uses one fixed right-aligned slot grid when tasks have different history lengths', () => {

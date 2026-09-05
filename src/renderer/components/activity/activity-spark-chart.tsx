@@ -1,4 +1,5 @@
-import { Fragment, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import {
   DEFAULT_CRON_ACTIVITY_SLOTS,
   type CronActivityPoint,
@@ -70,17 +71,42 @@ interface SparkChartFrameProps {
   children: ReactNode
 }
 
-function SparkTooltipCard({ title, rows }: SparkTooltipContent) {
-  return (
+/** Viewport-space box of the hovered chart, from getBoundingClientRect. */
+interface SparkAnchor {
+  top: number
+  right: number
+  bottom: number
+}
+
+/** Gap between the card and the chart edge it hangs off. */
+const TOOLTIP_OFFSET = 6
+/**
+ * Room the card needs above the chart before it flips underneath: ~60px tall
+ * at two rows, plus the offset, plus a little slack.
+ */
+const TOOLTIP_FLIP_THRESHOLD = 72
+
+function SparkTooltipCard({ title, rows, anchor }: SparkTooltipContent & { anchor: SparkAnchor }) {
+  // Above the chart unless that would run off the top of the viewport (a chart
+  // in the first row of a page or a scroll container), then below it.
+  const above = anchor.top >= TOOLTIP_FLIP_THRESHOLD
+  const style = above
+    ? { left: anchor.right, top: anchor.top - TOOLTIP_OFFSET, transform: 'translate(-100%, -100%)' }
+    : { left: anchor.right, top: anchor.bottom + TOOLTIP_OFFSET, transform: 'translateX(-100%)' }
+  return createPortal(
     <span
       role="tooltip"
       data-testid="spark-tooltip"
+      // Portalled to <body> and placed in viewport space: the charts live in
+      // overflow-hidden containers (the home carousel, the settings connections
+      // list) that would clip a card positioned within the row.
       // Anchored to the chart, not the hovered column: the card is wider than
       // the whole 76px strip, so pointing it at a 4px bar would only push it
       // past the row's edge — the title says which column it is. Right-aligned
       // because these charts sit at the right of every row they appear in, so
       // the card can only ever grow inwards.
-      className="pointer-events-none absolute bottom-full right-0 z-50 mb-1.5 rounded-lg border bg-popover px-2.5 py-2 text-popover-foreground shadow-lg"
+      className="pointer-events-none fixed z-50 rounded-lg border bg-popover px-2.5 py-2 text-popover-foreground shadow-lg"
+      style={style}
     >
       <span className="mb-1.5 block whitespace-nowrap text-xs font-medium">{title}</span>
       <span className="grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1">
@@ -96,7 +122,8 @@ function SparkTooltipCard({ title, rows }: SparkTooltipContent) {
           </Fragment>
         ))}
       </span>
-    </span>
+    </span>,
+    document.body,
   )
 }
 
@@ -117,37 +144,56 @@ function SparkChartFrame({
   geometry,
   children,
 }: SparkChartFrameProps) {
-  const [hovered, setHovered] = useState<number | null>(null)
+  const [hover, setHover] = useState<{ index: number; anchor: SparkAnchor } | null>(null)
   const { width, gap, x } = geometry
-  const active = hovered !== null ? columns[hovered] : null
+  const active = hover ? columns[hover.index] : null
+
+  // The anchor is measured on enter, so a scroll while hovering would leave
+  // the card floating where the chart used to be. Dismiss instead; the next
+  // band the cursor crosses re-measures.
+  useEffect(() => {
+    if (!hover) return
+    const dismiss = () => setHover(null)
+    window.addEventListener('scroll', dismiss, { capture: true, passive: true })
+    return () => window.removeEventListener('scroll', dismiss, { capture: true })
+  }, [hover])
 
   return (
     // `flex`, not `inline-flex`: an inline-level wrapper sits in the parent's
     // line box, which adds descender space beneath it and pushes the chart off
     // centre against neighbouring text.
-    <span className={cn('relative flex', className)}>
-      {active ? <SparkTooltipCard {...active} /> : null}
+    <span className={cn('flex', className)}>
+      {active && hover ? <SparkTooltipCard {...active} anchor={hover.anchor} /> : null}
       <svg
         viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
         role="img"
         aria-label={accessibleLabel}
         className={cn(CHART_SIZE, 'overflow-visible')}
-        onMouseLeave={() => setHovered(null)}
+        onMouseLeave={() => setHover(null)}
       >
         {children}
-        {columns.map((_, index) => (
-          <rect
-            key={`hit-${index}`}
-            data-testid="spark-hit"
-            aria-hidden="true"
-            x={Math.max(0, x(index) - gap / 2)}
-            y={0}
-            width={width + gap}
-            height={HEIGHT}
-            fill="transparent"
-            onMouseEnter={() => setHovered(index)}
-          />
-        ))}
+        {columns.map((_, index) => {
+          // Bands meet halfway across each gap and stop at the chart edges, so
+          // no two overlap and none reaches past the viewBox.
+          const left = Math.max(0, x(index) - gap / 2)
+          const right = Math.min(WIDTH, x(index) + width + gap / 2)
+          return (
+            <rect
+              key={`hit-${index}`}
+              data-testid="spark-hit"
+              aria-hidden="true"
+              x={left}
+              y={0}
+              width={right - left}
+              height={HEIGHT}
+              fill="transparent"
+              onMouseEnter={(event) => {
+                const box = event.currentTarget.ownerSVGElement!.getBoundingClientRect()
+                setHover({ index, anchor: { top: box.top, right: box.right, bottom: box.bottom } })
+              }}
+            />
+          )
+        })}
       </svg>
     </span>
   )
