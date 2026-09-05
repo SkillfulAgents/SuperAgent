@@ -481,7 +481,10 @@ export function useWorkflowTree(
     queryFn: async ({ signal }) => {
       const res = await apiFetch(
         `/api/agents/${agentSlug}/sessions/${sessionId}/workflows/${runId}/tree`,
-        { signal }
+        // The route answers in milliseconds from local disk; a request that hangs
+        // (stalled connection, host busy) must fail fast so the poll below retries
+        // it instead of pinning the drawer on "Loading…".
+        { signal: AbortSignal.any([signal, AbortSignal.timeout(WORKFLOW_TREE_TIMEOUT_MS)]) }
       )
       if (!res.ok) throw new Error('Failed to fetch workflow tree')
       return res.json()
@@ -491,9 +494,15 @@ export function useWorkflowTree(
     // (the tree route 404s), and new agents/labels appear as the run progresses. Stops once
     // the workflow completes (SSE-driven refetch handles the final state).
     refetchInterval: opts?.active ? 2000 : false,
-    retry: opts?.active ? 5 : false,
+    // No built-in retries: the poll IS the retry. Query retries back off
+    // exponentially (1s, 2s, 4s, 8s, 16s) and the whole sequence renders as the
+    // initial "Loading…" state, so a launch-window 404 would hide behind a
+    // half-minute spinner instead of surfacing as "Starting workflow…" at once.
+    retry: false,
   })
 }
+
+const WORKFLOW_TREE_TIMEOUT_MS = 10_000
 
 /**
  * One workflow subagent's transcript (same shape as a regular subagent). Polls
