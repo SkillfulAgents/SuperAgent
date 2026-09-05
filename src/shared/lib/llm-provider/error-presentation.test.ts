@@ -59,10 +59,10 @@ describe('providerErrorPresentationSchema', () => {
   })
 
   it('accepts placement and component', () => {
-    expect(providerErrorPresentationSchema.parse({ ...base, placement: 'composer', component: 'paywall' })).toEqual({
+    expect(providerErrorPresentationSchema.parse({ ...base, placement: 'composer', component: 'platform-paywall' })).toEqual({
       ...base,
       placement: 'composer',
-      component: 'paywall',
+      component: 'platform-paywall',
     })
   })
 
@@ -165,7 +165,7 @@ describe('parsePlatformErrorResponse', () => {
       severity: 'error',
       icon: 'info',
       message: '**You need more usage credit to continue** Subscribe or top up to resume this answer.',
-      component: 'paywall',
+      component: 'platform-paywall',
       placement: 'composer',
       href: BILLING_URL,
     })
@@ -185,7 +185,7 @@ describe('parsePlatformErrorResponse', () => {
 
   it('recognizes a 402 the CLI flattened into an "API Error: 402" string', () => {
     const parsed = parsePlatformErrorResponse(undefined, 'API Error: 402 {"error":"insufficient_balance"}', null)
-    expect(parsed?.component).toBe('paywall')
+    expect(parsed?.component).toBe('platform-paywall')
   })
 
   it('does not route a non-402 status to the paywall because "402" appears elsewhere in the text', () => {

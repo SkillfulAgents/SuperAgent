@@ -5,7 +5,7 @@ import {
   isPlatformOrgAdmin,
   resolvePaywallCta,
   subscriptionRequiredFromBilling,
-} from './paywall-cta'
+} from './platform-paywall-cta'
 
 const HREF = 'https://platform.example.com/dashboard/organizations/org_123?tab=billing'
 

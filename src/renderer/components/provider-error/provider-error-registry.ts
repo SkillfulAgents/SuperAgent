@@ -5,10 +5,10 @@ import {
   type ProviderErrorPlacement,
   type ProviderErrorPresentation,
 } from '@shared/lib/llm-provider/error-presentation'
-import { PAYWALL_COMPONENT } from '@shared/lib/llm-provider/platform-error-presentation'
+import { PLATFORM_PAYWALL_COMPONENT } from '@shared/lib/llm-provider/platform-error-presentation'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
 
-import { PaywallCard } from './paywall-card'
+import { PlatformPaywallCard } from './platform-paywall-card'
 
 export interface ProviderErrorComponentProps {
   message: string
@@ -24,7 +24,7 @@ export const DEFAULT_ERROR_COMPONENT = 'default'
 // `errorPresentation.component` → component. Adding an error component = one row here.
 const REGISTRY: Record<string, ComponentType<ProviderErrorComponentProps>> = {
   [DEFAULT_ERROR_COMPONENT]: ProviderErrorCard,
-  [PAYWALL_COMPONENT]: PaywallCard,
+  [PLATFORM_PAYWALL_COMPONENT]: PlatformPaywallCard,
 }
 
 export interface ResolvedProviderError {

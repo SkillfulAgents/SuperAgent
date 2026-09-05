@@ -7,9 +7,9 @@ import { HomeEmptyClouds } from '@renderer/components/home/home-empty-clouds'
 import { Button } from '@renderer/components/ui/button'
 import { openExternalUrl } from '@renderer/lib/open-external'
 
-import { buildTopupHandoffUrl, type PaywallCta } from './paywall-cta'
+import { buildTopupHandoffUrl, type PaywallCta } from './platform-paywall-cta'
 import type { ProviderErrorComponentProps } from './provider-error-registry'
-import { usePaywallBilling } from './use-paywall-billing'
+import { usePlatformPaywallBilling } from './use-platform-paywall-billing'
 
 // The leading **bold** segment is the title, the rest the subtitle.
 function splitMessage(markdown: string): { title: string; body: string } {
@@ -109,10 +109,10 @@ function PaywallActions({
 // Platform 402. An invitation, not a failure: neutral card, title + muted subtitle, one
 // role/billing-aware CTA. Fails open: the composer is withheld only while a fresh billing
 // snapshot positively denies access; otherwise the card sits above it. Dismiss always works.
-export function PaywallCard({ message, presentation, children, live = true }: ProviderErrorComponentProps) {
+export function PlatformPaywallCard({ message, presentation, children, live = true }: ProviderErrorComponentProps) {
   const [dismissed, setDismissed] = useState(false)
   const [handedOff, setHandedOff] = useState(false)
-  const billing = usePaywallBilling(
+  const billing = usePlatformPaywallBilling(
     extractSubscriptionRequired(message),
     presentation?.href ?? null,
     live,

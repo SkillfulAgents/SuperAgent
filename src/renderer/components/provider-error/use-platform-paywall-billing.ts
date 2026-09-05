@@ -5,7 +5,7 @@ import { useBillingInfo } from '@renderer/hooks/use-billing-info'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { captureRendererException } from '@renderer/lib/error-reporting'
 
-import { resolvePaywallCta, subscriptionRequiredFromBilling, type PaywallCta } from './paywall-cta'
+import { resolvePaywallCta, subscriptionRequiredFromBilling, type PaywallCta } from './platform-paywall-cta'
 
 export const PAYWALL_RECHECK_INTERVAL_MS = 5000
 
@@ -44,7 +44,7 @@ function useBillingRecheckPoll(enabled: boolean): void {
 // `billingHref` is the provider-resolved CTA link (presentation.href).
 // A live 402 ignores a leftover `allowed` snapshot from a previous recovery.
 // A persisted 402 (switch session after a top-up) trusts the current snapshot.
-export function usePaywallBilling(
+export function usePlatformPaywallBilling(
   flagFrom402: boolean | undefined,
   billingHref: string | null,
   live: boolean,

@@ -8,8 +8,8 @@ import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-p
 import type { ParsedPlatformBillingInfo } from '@shared/lib/types/skillset-schema'
 import type { BillingInfoResponse } from '@renderer/hooks/use-billing-info'
 
-import { PaywallCard } from './paywall-card'
-import { PAYWALL_RECHECK_INTERVAL_MS } from './use-paywall-billing'
+import { PlatformPaywallCard } from './platform-paywall-card'
+import { PAYWALL_RECHECK_INTERVAL_MS } from './use-platform-paywall-billing'
 
 const platformAuth = {
   connected: true,
@@ -65,7 +65,7 @@ const PRESENTATION: ProviderErrorPresentation = {
   severity: 'error',
   icon: 'circle-dollar-sign',
   message: MESSAGE,
-  component: 'paywall',
+  component: 'platform-paywall',
   placement: 'composer',
   href: BILLING_URL,
 }
@@ -80,9 +80,9 @@ function renderCard(
   presentation = PRESENTATION,
 ) {
   return render(
-    <PaywallCard message={message} presentation={presentation} live={live}>
+    <PlatformPaywallCard message={message} presentation={presentation} live={live}>
       <div data-testid="composer">composer</div>
-    </PaywallCard>,
+    </PlatformPaywallCard>,
     { wrapper: Wrapper },
   )
 }
@@ -92,7 +92,7 @@ function clickRecheck(ctaName: string) {
   act(() => { screen.getByRole('button', { name: 'Recheck' }).click() })
 }
 
-describe('PaywallCard', () => {
+describe('PlatformPaywallCard', () => {
   beforeEach(() => {
     client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     platformAuth.connected = true

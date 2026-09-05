@@ -4,7 +4,9 @@ import {
   type ProviderErrorPresentation,
 } from './error-presentation'
 
-export const PAYWALL_COMPONENT = 'paywall'
+// Registry key for the platform-billing-aware paywall card. Platform-only: the card
+// reads the platform billing snapshot, so other providers must register their own key.
+export const PLATFORM_PAYWALL_COMPONENT = 'platform-paywall'
 
 // Dashboard billing page for the connected org; null without org context.
 export function orgBillingUrl(
@@ -134,7 +136,7 @@ export function parsePlatformErrorResponse(
       severity: 'error',
       icon: 'info',
       message: paywallMessage(extractSubscriptionRequired(body)),
-      component: PAYWALL_COMPONENT,
+      component: PLATFORM_PAYWALL_COMPONENT,
       placement: 'composer',
       ...(billingUrl && { href: billingUrl }),
     }
