@@ -6,8 +6,8 @@ import { useRef } from 'react'
 const apiFetch = vi.fn()
 vi.mock('@renderer/lib/api', () => ({ apiFetch: (...args: unknown[]) => apiFetch(...args) }))
 
-const createTtsAdapter = vi.fn(() => ({ fake: 'adapter' }))
-vi.mock('@renderer/lib/tts', () => ({ createTtsAdapter: (...args: unknown[]) => createTtsAdapter(...args) }))
+const createTtsAdapter = vi.fn((_provider: string) => ({ fake: 'adapter' }))
+vi.mock('@renderer/lib/tts', () => ({ createTtsAdapter: (provider: string) => createTtsAdapter(provider) }))
 
 interface FakePlayer {
   options: { adapter: unknown; token: string; voice: string; onStatus?: (s: string, e?: Error) => void }
