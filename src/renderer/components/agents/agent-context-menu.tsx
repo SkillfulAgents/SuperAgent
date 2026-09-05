@@ -39,7 +39,7 @@ import { apiFetch } from '@renderer/lib/api'
 import {
   Trash2,
   LogOut,
-  Move,
+  LayoutPanelTop,
   FolderInput,
   Pencil,
   Plus,
@@ -310,6 +310,7 @@ export function AgentContextMenu({
             action()
           }}
         >
+          {additionalOptions}
           {onArrange && (
             <ContextMenuItem
               onClick={() => {
@@ -317,11 +318,10 @@ export function AgentContextMenu({
               }}
               data-testid="arrange-agent-cards-item"
             >
-              <Move className="h-4 w-4 mr-2" />
+              <LayoutPanelTop className="h-4 w-4 mr-2" />
               Arrange
             </ContextMenuItem>
           )}
-          {additionalOptions}
           {(onArrange || additionalOptions) && <ContextMenuSeparator className="mx-1" />}
           {isOwner && (
             <ContextMenuItem onClick={handleRenameItem} data-testid="rename-agent-item">

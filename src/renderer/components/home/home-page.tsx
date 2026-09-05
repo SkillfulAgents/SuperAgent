@@ -36,7 +36,7 @@ import { DashboardCard } from './dashboard-card'
 import { HomeEmptyClouds } from './home-empty-clouds'
 import { PwaInstallBanner } from './pwa-install-banner'
 import { isElectron, getPlatform } from '@renderer/lib/env'
-import { Plus, Loader2, Search, Power, Square, Check, ArrowRight, LayoutGrid, Waypoints, MoreVertical, Move, Sparkle } from 'lucide-react'
+import { Plus, Loader2, Search, Power, Square, Check, ArrowRight, LayoutGrid, LayoutPanelTop, Minimize, Waypoints, MoreVertical, Sparkle, SquareMousePointer } from 'lucide-react'
 import { useSearch } from '@renderer/context/search-context'
 import { cn } from '@shared/lib/utils/cn'
 import type { ApiAgent } from '@shared/lib/types/api'
@@ -747,7 +747,7 @@ function HomeArrangeMenu({
           }}
           className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm transition-colors hover:bg-muted disabled:pointer-events-none disabled:opacity-50"
         >
-          <Move className="h-4 w-4" />
+          <LayoutPanelTop className="h-4 w-4" />
           Arrange
         </button>
       </PopoverContent>
@@ -1201,12 +1201,13 @@ export function HomePage() {
                       additionalOptions={
                         <>
                           <ContextMenuSwitchItem
-                            checked={size === 'W'}
+                            checked={size === 'S'}
                             onCheckedChange={() => {
                               onResize(size === 'W' ? 'S' : 'W')
                             }}
                           >
-                            Expanded
+                            <Minimize className="h-4 w-4 mr-2" />
+                            Compact View
                           </ContextMenuSwitchItem>
                           {agentsWithApp.has(agent.slug) && (
                             <ContextMenuSwitchItem
@@ -1215,6 +1216,7 @@ export function HomePage() {
                                 toggleAppCard(agent.slug)
                               }}
                             >
+                              <SquareMousePointer className="h-4 w-4 mr-2" />
                               Show app
                             </ContextMenuSwitchItem>
                           )}
