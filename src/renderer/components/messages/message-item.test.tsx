@@ -67,9 +67,35 @@ vi.mock('@renderer/hooks/use-platform-auth', () => ({
   usePlatformAuthStatus: () => ({ data: platformAuth }),
 }))
 
+// Read-aloud: the availability query and the playback store are replaced with
+// switches so these tests need neither a QueryClient nor an audio stack.
+const readAloudState = {
+  configured: false,
+  activeId: null as string | null,
+  toggle: vi.fn(),
+}
+
+vi.mock('@renderer/hooks/use-voice-input', () => ({
+  useIsTtsConfigured: () => readAloudState.configured,
+}))
+
+vi.mock('@renderer/hooks/use-read-aloud', () => ({
+  useIsBeingRead: (id: string) => readAloudState.activeId === id,
+  useReadAloud: (id: string) => ({
+    status: readAloudState.activeId === id ? 'speaking' : 'idle',
+    isActive: readAloudState.activeId === id,
+    toggle: readAloudState.toggle,
+    error: null,
+  }),
+  useSpokenWordHighlight: () => {},
+}))
+
 describe('MessageItem', () => {
   beforeEach(() => {
     platformAuth.connected = false
+    readAloudState.configured = false
+    readAloudState.activeId = null
+    readAloudState.toggle.mockReset()
   })
 
   describe('user messages', () => {
@@ -216,6 +242,61 @@ describe('MessageItem', () => {
       const { container } = render(<MessageItem message={msg} isStreaming />)
       const cursor = container.querySelector('.animate-pulse')
       expect(cursor).toBeTruthy()
+    })
+  })
+
+  describe('read aloud', () => {
+    it('offers a speaker button under a settled assistant reply when speech is configured', () => {
+      readAloudState.configured = true
+      const msg = createAssistantMessage({ content: { text: 'Hello **there**.' } })
+      render(<MessageItem message={msg} />)
+      const button = screen.getByTestId('read-aloud-button')
+      expect(button).toHaveAttribute('aria-label', 'Read aloud')
+      expect(button).toHaveAttribute('data-status', 'idle')
+      button.click()
+      expect(readAloudState.toggle).toHaveBeenCalledTimes(1)
+    })
+
+    it('shows nothing when the voice provider cannot speak', () => {
+      const msg = createAssistantMessage({ content: { text: 'Hello there.' } })
+      render(<MessageItem message={msg} />)
+      expect(screen.queryByTestId('read-aloud-button')).toBeNull()
+    })
+
+    it('never offers it on user messages, streaming text, or provider errors', () => {
+      readAloudState.configured = true
+      const { unmount } = render(<MessageItem message={createUserMessage({ content: { text: 'hi' } })} />)
+      expect(screen.queryByTestId('read-aloud-button')).toBeNull()
+      unmount()
+
+      const streaming = render(<MessageItem message={createAssistantMessage({ content: { text: 'partial' } })} isStreaming />)
+      expect(screen.queryByTestId('read-aloud-button')).toBeNull()
+      streaming.unmount()
+
+      render(<MessageItem message={createAssistantMessage({ content: { text: 'boom' }, apiError: 'rate_limit' })} />)
+      expect(screen.queryByTestId('read-aloud-button')).toBeNull()
+    })
+
+    it('renders the prose word-addressable and dimmed while this message is being read', () => {
+      readAloudState.configured = true
+      const msg = createAssistantMessage({ content: { text: 'Hello **bright** world' } })
+      readAloudState.activeId = msg.id
+      const { container } = render(<MessageItem message={msg} />)
+      const prose = container.querySelector('.read-aloud-prose')
+      expect(prose).not.toBeNull()
+      const words = Array.from(prose!.querySelectorAll<HTMLElement>('[data-spoken-word]'))
+      expect(words.map((w) => w.textContent)).toEqual(['Hello', 'bright', 'world'])
+      expect(words.map((w) => w.dataset.spokenWord)).toEqual(['0', '1', '2'])
+      expect(screen.getByTestId('read-aloud-button')).toHaveAttribute('aria-label', 'Stop reading')
+    })
+
+    it('leaves other messages untouched while one is being read', () => {
+      readAloudState.configured = true
+      readAloudState.activeId = 'some-other-message'
+      const msg = createAssistantMessage({ content: { text: 'Hello world' } })
+      const { container } = render(<MessageItem message={msg} />)
+      expect(container.querySelector('.read-aloud-prose')).toBeNull()
+      expect(container.querySelector('[data-spoken-word]')).toBeNull()
     })
   })
 

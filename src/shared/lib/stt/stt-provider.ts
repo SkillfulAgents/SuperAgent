@@ -69,6 +69,30 @@ export abstract class BaseSttProvider {
     return { provider: this.id, token }
   }
 
+  /** Whether this provider supports streaming text-to-speech. */
+  supportsTts(): boolean {
+    return false
+  }
+
+  /** Mint a token for a text-to-speech session. Override in providers that support it. */
+  async mintTtsToken(apiKey: string): Promise<string> {
+    void apiKey
+    throw new Error(`Text-to-speech not supported by ${this.name}`)
+  }
+
+  /** Convenience: resolve the effective key and mint a text-to-speech token. */
+  async getTtsToken(): Promise<{ provider: SttProvider; token: string }> {
+    if (!this.supportsTts()) {
+      throw new Error(`Text-to-speech not supported by ${this.name}`)
+    }
+    const apiKey = this.getEffectiveApiKey()
+    if (!apiKey) {
+      throw new Error(`No API key configured for ${this.name}. Add one in Settings > Voice.`)
+    }
+    const token = await this.mintTtsToken(apiKey)
+    return { provider: this.id, token }
+  }
+
   /** Whether this provider supports batch audio file transcription. */
   supportsTranscription(): boolean {
     return false
