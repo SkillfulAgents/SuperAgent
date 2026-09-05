@@ -108,14 +108,23 @@ class ReadAloudController {
 
 export const readAloud = new ReadAloudController()
 
-export function useReadAloudSnapshot(): ReadAloudSnapshot {
-  return useSyncExternalStore(readAloud.subscribe, readAloud.getSnapshot, readAloud.getSnapshot)
+/**
+ * Whether `id` is the message being read. Selects a boolean so the many
+ * subscribed message rows re-render only when their own answer changes,
+ * not on every store update.
+ */
+export function useIsBeingRead(id: string): boolean {
+  const isActive = useCallback(() => readAloud.getSnapshot().activeId === id, [id])
+  return useSyncExternalStore(readAloud.subscribe, isActive, isActive)
 }
 
 /** Play/stop control for one message. */
 export function useReadAloud(id: string, markdown: string) {
-  const snapshot = useReadAloudSnapshot()
-  const isActive = snapshot.activeId === id
+  const isActive = useIsBeingRead(id)
+  // Only the active message's control follows the full snapshot; idle ones
+  // share the stable IDLE object and never re-render on store updates.
+  const select = useCallback(() => (isActive ? readAloud.getSnapshot() : IDLE), [isActive])
+  const snapshot = useSyncExternalStore(readAloud.subscribe, select, select)
   const status: ReadAloudStatus = isActive ? snapshot.status : 'idle'
 
   const toggle = useCallback(() => {
