@@ -488,6 +488,27 @@ describe('containerManager.ensureRunning — mount volumes', () => {
     expect(typeof opts.additionalVolumes[0]).toBe('string')
   })
 
+  it('tells the agent about mounted folders through SUPERAGENT_MOUNTS, healthy ones only', async () => {
+    mockGetMountsWithHealth.mockReturnValue([
+      { id: 'm1', hostPath: '/host/ok', containerPath: '/mounts/ok', folderName: 'ok', addedAt: '2025-01-01', health: 'ok' },
+      { id: 'm2', hostPath: '/host/gone', containerPath: '/mounts/gone', folderName: 'gone', addedAt: '2025-01-01', health: 'missing' },
+    ])
+
+    await containerManager.ensureRunning('test-agent')
+
+    const opts = mockStart.mock.calls[0][0]
+    expect(opts.envVars.SUPERAGENT_MOUNTS).toBe(JSON.stringify(['/mounts/ok']))
+  })
+
+  it('sets no SUPERAGENT_MOUNTS when nothing is mounted', async () => {
+    mockGetMountsWithHealth.mockReturnValue([])
+
+    await containerManager.ensureRunning('test-agent')
+
+    const opts = mockStart.mock.calls[0][0]
+    expect(opts.envVars).not.toHaveProperty('SUPERAGENT_MOUNTS')
+  })
+
   it('skips missing mounts and broadcasts warning', async () => {
     mockGetMountsWithHealth.mockReturnValue([
       { id: 'm1', hostPath: '/host/ok', containerPath: '/mounts/ok', folderName: 'ok', addedAt: '2025-01-01', health: 'ok' },

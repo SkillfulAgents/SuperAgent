@@ -710,6 +710,12 @@ class ContainerManager {
         client.buildVolumeFlag(m.hostPath, m.containerPath)
       )
 
+      // The prompt lists the mounted folders. A mount the runtime drops at run
+      // time (below) is still listed; the warning banner covers that case.
+      if (healthyMounts.length > 0) {
+        envVars['SUPERAGENT_MOUNTS'] = JSON.stringify(healthyMounts.map((m) => m.containerPath))
+      }
+
       // Start container (user secrets are in .env file in workspace).
       // If a mount turns out to be inaccessible to the container runtime at run
       // time (e.g. a cloud-synced folder the Lima VM helper is denied — passes

@@ -308,7 +308,20 @@ export interface SystemPromptVars {
   remoteMcps: RemoteMcpView[];
   hasEnvVars: boolean;
   envVars: string[];
+  hasMounts: boolean;
+  mountPathsJoined: string;
   userInstructions: string;
+}
+
+const mountsEnvSchema = z.array(z.string().min(1));
+
+function parseMountPaths(raw: string | undefined): string[] {
+  if (!raw) return [];
+  try {
+    return mountsEnvSchema.parse(JSON.parse(raw));
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -336,6 +349,7 @@ export function buildSystemPromptVars(
   const remoteMcps = remoteMcpViews();
   const envVars = agentEnvVars(availableEnvVars);
   const userInstructions = userSystemPrompt?.trim() || '';
+  const mountPaths = parseMountPaths(process.env.SUPERAGENT_MOUNTS);
   return {
     CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR || PROMPT_ENV_DEFAULTS.CLAUDE_CONFIG_DIR,
     webSearchToolName: webSearchProvider ? 'mcp__web__web_search' : 'WebSearch',
@@ -357,6 +371,10 @@ export function buildSystemPromptVars(
     remoteMcps,
     hasEnvVars: envVars.length > 0,
     envVars,
+    hasMounts: mountPaths.length > 0,
+    // Each path is rendered as a JSON string literal. A folder name is user
+    // bytes, and a raw newline or `#` in it would read as prompt structure.
+    mountPathsJoined: mountPaths.map((p) => JSON.stringify(p)).join(', '),
     userInstructions,
   };
 }

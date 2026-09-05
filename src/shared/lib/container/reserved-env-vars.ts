@@ -30,6 +30,7 @@ export const RESERVED_ENV_VAR_KEYS: ReadonlySet<string> = new Set([
   // Account + MCP metadata
   'CONNECTED_ACCOUNTS',
   'REMOTE_MCPS',
+  'SUPERAGENT_MOUNTS',
   // Host browser
   'AGENT_BROWSER_USE_HOST',
   'HOST_APP_URL',
