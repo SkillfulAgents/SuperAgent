@@ -4,11 +4,13 @@ export type { LlmProviderId } from './provider-types'
 export type { ModelPurpose, ProviderDefaultModelOption } from './base-llm-provider'
 export {
   defaultParseErrorResponse,
+  errorPlacement,
   extractErrorMessage,
   inferErrorStatus,
   resolvePresentationMarkdown,
 } from './error-presentation'
 export type {
+  ProviderErrorPlacement,
   ProviderErrorPresentation,
   ProviderErrorSeverity,
 } from './error-presentation'

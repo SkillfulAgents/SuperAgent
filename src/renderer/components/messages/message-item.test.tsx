@@ -527,6 +527,46 @@ describe('MessageItem', () => {
       expect(screen.getByRole('link', { name: /raise spend limit/i })).toBeInTheDocument()
     })
 
+    it('renders the provider card for a generic SDK code when a presentation is attached', () => {
+      const msg = createAssistantMessage({
+        content: { text: 'API Error: 402' },
+        apiError: 'unknown',
+        errorPresentation: { severity: 'error', message: '**Attached**', icon: 'info' },
+      })
+      render(<MessageItem message={msg} />)
+      expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Attached')
+    })
+
+    it('renders nothing in the stream while its composer-routed error is shown by the placement', () => {
+      const msg = createAssistantMessage({
+        content: { text: 'API Error: 402 insufficient balance' },
+        apiError: 'billing_error',
+        errorPresentation: { severity: 'error', message: '**Routed**', icon: 'info', placement: 'composer' },
+      })
+      const { container } = render(<MessageItem message={msg} suppressInlineError />)
+      expect(container.innerHTML).toBe('')
+    })
+
+    it('keeps a composer-routed error in the transcript as the default card once it is no longer current', () => {
+      const msg = createAssistantMessage({
+        content: { text: 'API Error: 402 insufficient balance' },
+        apiError: 'billing_error',
+        errorPresentation: { severity: 'error', message: '**Routed**', icon: 'info', placement: 'composer' },
+      })
+      render(<MessageItem message={msg} />)
+      expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Routed')
+    })
+
+    it('still renders the inline card when placement is explicitly inline', () => {
+      const msg = createAssistantMessage({
+        content: { text: 'API Error: 429' },
+        apiError: 'rate_limit',
+        errorPresentation: { severity: 'error', message: '**Explicit inline**', icon: 'info', placement: 'inline' },
+      })
+      render(<MessageItem message={msg} />)
+      expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Explicit inline')
+    })
+
     it('falls back to the generic provider banner when no presentation is attached', () => {
       const msg = createAssistantMessage({
         content: {

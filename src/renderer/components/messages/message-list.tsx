@@ -13,6 +13,7 @@ import {
 import { isTurnStartingUserMessage, type PendingMessage } from './pending-message'
 import { classifyUserMessage, classifyUserText } from './user-message-kinds'
 import { MessageItem } from './message-item'
+import { currentRoutedProviderError } from '@renderer/components/provider-error/provider-error-placement'
 import { ToolCallItem, StreamingToolCallItem } from './tool-call-item'
 import { ThinkingBlockItem } from './thinking-block-item'
 import { SubAgentBlock } from './subagent-block'
@@ -254,7 +255,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     isCompacting,
     activeSubagents,
     completedSubagents,
+    error: streamError,
     apiErrorCode,
+    errorPresentation,
     typingUser,
     peerUserMessages,
     discardedCommandUuids,
@@ -488,6 +491,12 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       boundaryCountRef.current = boundaryCount
     }
   }, [isCompacting, boundaryCount, sessionId])
+
+  // The one row (streaming or persisted) whose provider error a ProviderErrorPlacement shows right now.
+  const currentRoutedError = useMemo(
+    () => currentRoutedProviderError({ isActive, error: streamError, apiErrorCode, errorPresentation }, messages),
+    [isActive, streamError, apiErrorCode, errorPresentation, messages],
+  )
 
   // Check if streaming message is already in persisted messages (prevents double-render)
   const isStreamingMessagePersisted = useMemo(() => {
@@ -1197,6 +1206,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                           : undefined
                       }
                       embeddedImageAliases={embeddedImageAliases}
+                      suppressInlineError={item.id === currentRoutedError?.messageId}
                     />
                   </MessageErrorBoundary>
                   {turnDeliveredFiles.has(item.id) && item.id !== deferredElapsedMessageId && (
@@ -1311,8 +1321,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                 toolCalls: [],
                 createdAt: new Date(),
                 ...(apiErrorCode && { apiError: apiErrorCode }),
+                ...(errorPresentation && { errorPresentation }),
               }}
               isStreaming={isStreaming}
+              suppressInlineError={currentRoutedError?.live === true}
               agentSlug={agentSlug}
               sessionId={sessionId}
               embeddedImageAliases={embeddedImageAliases}

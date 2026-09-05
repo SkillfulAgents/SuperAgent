@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, type ReactNode } from 'react'
 import type { Components } from 'react-markdown'
 import ReactMarkdown from 'react-markdown'
 import { CircleDollarSign, Info, TriangleAlert, type LucideIcon } from 'lucide-react'
@@ -85,15 +85,18 @@ export function ProviderErrorView({
 }
 
 // `presentation` is authored server-side by the active LLM provider's
-// parseErrorResponse. Without one (older server, missed event) the card falls
+// presentationForTurnError. Without one (older server, missed event) the card falls
 // back to the provider-agnostic default banner built from the raw message.
 export function ProviderErrorCard({
   message,
   presentation,
+  children,
   'data-testid': testId,
 }: {
   message: string
   presentation?: ProviderErrorPresentation
+  /** Displaced content (see ProviderErrorComponentProps). The default card never withholds it. */
+  children?: ReactNode
   'data-testid'?: string
 }) {
   const base = useMemo(
@@ -102,10 +105,13 @@ export function ProviderErrorCard({
   )
   const resolved = useResolvedErrorPresentation(base)
   return (
-    <ProviderErrorView
-      presentation={resolved}
-      rawMessage={message}
-      data-testid={testId}
-    />
+    <>
+      <ProviderErrorView
+        presentation={resolved}
+        rawMessage={message}
+        data-testid={testId}
+      />
+      {children}
+    </>
   )
 }
