@@ -6,7 +6,6 @@ import { MessageInput } from './message-input'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { useDraft } from '@renderer/context/drafts-context'
 import { useEffect } from 'react'
-import { setMarkdownComposerSelection } from './markdown-composer-editor'
 import { pendingAttachmentDropKey, type PendingAttachmentDrop } from '@renderer/lib/pending-attachment-drop'
 import type { DataTransferResult } from '@renderer/lib/file-utils'
 
@@ -36,6 +35,7 @@ vi.mock('@renderer/hooks/use-messages', () => ({
 
 vi.mock('@renderer/hooks/use-secrets', () => ({
   useCreateSecret: () => mockCreateSecret,
+  useAgentSecrets: () => ({ data: [] }),
 }))
 
 const mockStreamState = {
@@ -341,8 +341,7 @@ describe('MessageInput', () => {
     )
     expect(screen.queryByText('Is this a Key?')).not.toBeInTheDocument()
 
-    // Continuing to edit must keep the secured display byte-for-byte stable so
-    // submission can still replace it with the non-secret environment marker.
+    // Continuing to edit must keep the chip so submit still rewrites the marker.
     await user.type(input, ' for deployment')
     await user.click(screen.getByTestId('send-button'))
 
@@ -354,33 +353,6 @@ describe('MessageInput', () => {
     expect(mockSendMessage.mutateAsync).not.toHaveBeenCalledWith(
       expect.objectContaining({ content: expect.stringContaining(key) })
     )
-  })
-
-  it.each([
-    { pressedKey: '{Backspace}', caretEdge: 'end' as const },
-    { pressedKey: '{Delete}', caretEdge: 'start' as const },
-  ])('removes a secured pill atomically with $pressedKey', async ({ pressedKey, caretEdge }) => {
-    const user = userEvent.setup()
-    const key = ['gh', 'p_Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z'].join('')
-    const pill = '[GitHub Token | *********]'
-    renderWithProviders(
-      <MessageInput sessionId="s-1" agentSlug="agent-1" />
-    )
-
-    const input = screen.getByTestId('message-input') as HTMLDivElement
-    await user.type(input, `Before ${key} after`)
-    await user.click(screen.getByRole('button', { name: 'Send securely to the agent' }))
-    await user.type(screen.getByLabelText('Key name'), 'GitHub Token')
-    await user.click(screen.getByRole('button', { name: 'Save securely' }))
-
-    await waitFor(() => expect(input.textContent).toBe(`Before ${pill} after`))
-    const pillStart = (input.textContent ?? '').indexOf(pill)
-    const caret = 1 + (caretEdge === 'end' ? pillStart + pill.length : pillStart)
-    expect(setMarkdownComposerSelection(input, caret)).toBe(true)
-    await user.keyboard(pressedKey)
-
-    expect(input.textContent).toBe('Before  after')
-    expect(screen.queryByTestId('secured-secret')).not.toBeInTheDocument()
   })
 
   it('dismisses a key suggestion without changing the draft', async () => {

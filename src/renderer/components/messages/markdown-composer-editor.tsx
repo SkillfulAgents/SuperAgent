@@ -17,7 +17,7 @@ import {
   defaultMarkdownSerializer,
   schema as commonmarkSchema,
 } from 'prosemirror-markdown'
-import { Fragment, Schema, Slice, type MarkType, type Node as ProseMirrorNode } from 'prosemirror-model'
+import { Fragment, Schema, Slice, type MarkType, type Node as ProseMirrorNode, type NodeSpec } from 'prosemirror-model'
 import {
   liftListItem,
   sinkListItem,
@@ -27,7 +27,14 @@ import { AllSelection, EditorState, Plugin, PluginKey, TextSelection, type Comma
 import { Decoration, DecorationSet, EditorView } from 'prosemirror-view'
 import 'prosemirror-view/style/prosemirror.css'
 import { cn } from '@shared/lib/utils'
-import type { PotentialSecret, SecuredSecret } from '@renderer/lib/secret-detection'
+import type { PotentialSecret } from '@renderer/lib/secret-detection'
+import {
+  CHIP_MARKER,
+  CHIP_MARKER_STICKY,
+  COMPOSER_CHIP_KINDS,
+  getChipKind,
+  isBackedSecretChip,
+} from './composer-chips'
 
 export interface MarkdownComposerEditorProps {
   value: string
@@ -41,21 +48,69 @@ export interface MarkdownComposerEditorProps {
   enterKeyHint?: 'enter' | 'done' | 'go' | 'next' | 'previous' | 'search' | 'send'
   className?: string
   potentialSecrets?: PotentialSecret[]
-  securedSecrets?: SecuredSecret[]
-  onRemoveSecuredSecrets?: (secrets: SecuredSecret[]) => void
+  knownSecretEnvVars?: readonly string[]
   onEditorElement?: (element: HTMLDivElement | null) => void
 }
 
 const CARET_SENTINEL = '\u2063'
+let knownSecretEnvVarsForParse: ReadonlySet<string> = new Set()
 
-const markdownSchema = new Schema({
-  nodes: commonmarkSchema.spec.nodes.addBefore('hard_break', 'soft_break', {
+function chipNodeSpecs(): Record<string, NodeSpec> {
+  return Object.fromEntries(COMPOSER_CHIP_KINDS.map((kind) => [kind.kind, {
+    inline: true,
+    group: 'inline',
+    atom: true,
+    selectable: false,
+    attrs: { raw: { default: '' } },
+    parseDOM: [{
+      tag: `span[data-chip-kind="${kind.kind}"]`,
+      getAttrs: (dom) => {
+        const raw = (dom as HTMLElement).getAttribute('data-raw') ?? ''
+        const chip = kind.composer.parse(raw)
+        if (!chip || !isBackedSecretChip(chip, knownSecretEnvVarsForParse)) return false
+        return { raw }
+      },
+    }],
+    toDOM: (node) => {
+      const chip = kind.composer.parse(String(node.attrs.raw ?? ''))
+      if (!chip) return ['span', { 'data-chip-kind': kind.kind }]
+      const spec = kind.composer.render(chip)
+      if (!Array.isArray(spec) || spec.length < 2 || typeof spec[1] !== 'object' || spec[1] === null || Array.isArray(spec[1])) return spec
+      return [spec[0], {
+        ...(spec[1] as Record<string, unknown>),
+        'data-chip-kind': kind.kind,
+        'data-raw': node.attrs.raw,
+      }, ...spec.slice(2)]
+    },
+    leafText: (node) => String(node.attrs.raw ?? ''),
+  }]))
+}
+
+function withChipNodes(nodes: typeof commonmarkSchema.spec.nodes) {
+  let next = nodes.addBefore('hard_break', 'soft_break', {
     inline: true,
     group: 'inline',
     selectable: false,
     parseDOM: [{ tag: 'br[data-soft-break]' }],
     toDOM: () => ['br', { 'data-soft-break': 'true' }] as const,
-  }),
+  })
+  const chipNames: string[] = []
+  for (const [name, spec] of Object.entries(chipNodeSpecs())) {
+    chipNames.push(name)
+    next = next.addBefore('hard_break', name, spec)
+  }
+  const codeBlock = next.get('code_block')
+  if (codeBlock && chipNames.length > 0) {
+    next = next.update('code_block', {
+      ...codeBlock,
+      content: `(text | ${chipNames.join(' | ')})*`,
+    })
+  }
+  return next
+}
+
+const markdownSchema = new Schema({
+  nodes: withChipNodes(commonmarkSchema.spec.nodes),
   marks: commonmarkSchema.spec.marks.addBefore('link', 'strike', {
     parseDOM: [{ tag: 's' }, { tag: 'del' }, { style: 'text-decoration=line-through' }],
     toDOM: () => ['s', 0] as const,
@@ -67,8 +122,40 @@ const markdownTokenizer = new MarkdownIt('commonmark', {
   linkify: true,
 }).enable('strikethrough')
 
+markdownTokenizer.inline.ruler.before('escape', 'composer_chip', (state, silent) => {
+  if (state.src.charCodeAt(state.pos) !== 0x5b) return false
+  CHIP_MARKER_STICKY.lastIndex = state.pos
+  const match = CHIP_MARKER_STICKY.exec(state.src)
+  if (!match) return false
+  const kind = getChipKind(match[1])
+  if (!kind) return false
+  const chip = kind.composer.parse(match[0])
+  if (!chip || !isBackedSecretChip(chip, knownSecretEnvVarsForParse)) return false
+  if (!silent) {
+    const token = state.push(kind.kind, '', 0)
+    token.attrSet('raw', match[0])
+  }
+  state.pos += match[0].length
+  return true
+})
+
+const chipParserTokens = Object.fromEntries(COMPOSER_CHIP_KINDS.map((kind) => [kind.kind, {
+  node: kind.kind,
+  getAttrs: (token: { attrGet: (name: string) => string | null }) => ({
+    raw: token.attrGet('raw') ?? '',
+  }),
+}]))
+
+const chipSerializerNodes = Object.fromEntries(COMPOSER_CHIP_KINDS.map((kind) => [kind.kind, (
+  state: { write: (text: string) => void },
+  node: ProseMirrorNode,
+) => {
+  state.write(String(node.attrs.raw ?? ''))
+}]))
+
 const markdownParser = new MarkdownParser(markdownSchema, markdownTokenizer, {
   ...defaultMarkdownParser.tokens,
+  ...chipParserTokens,
   softbreak: { node: 'soft_break' },
   s: { mark: 'strike' },
 })
@@ -76,6 +163,7 @@ const markdownParser = new MarkdownParser(markdownSchema, markdownTokenizer, {
 const markdownSerializer = new MarkdownSerializer(
   {
     ...defaultMarkdownSerializer.nodes,
+    ...chipSerializerNodes,
     soft_break: (state) => state.write('\n'),
   },
   {
@@ -89,53 +177,103 @@ const markdownSerializer = new MarkdownSerializer(
   }
 )
 
-function serializeLiteralMarkdown(value: string): string {
-  const paragraph = markdownSchema.nodes.paragraph.create(
-    null,
-    value ? markdownSchema.text(value) : undefined
-  )
-  return markdownSerializer.serialize(markdownSchema.nodes.doc.create(null, paragraph))
-}
-
-export function serializeComposerMarkdown(
-  doc: ProseMirrorNode,
-  securedSecrets: SecuredSecret[] = []
-): string {
-  let markdown = markdownSerializer
-    .serialize(doc, { tightLists: true })
-    .replaceAll(CARET_SENTINEL, '')
-  // Secured displays are editor placeholders, not user-authored Markdown. Keep
-  // them byte-for-byte stable so replaceSecuredSecrets can identify them even
-  // after the user continues editing elsewhere in the document.
-  for (const secret of securedSecrets) {
-    const escapedDisplay = serializeLiteralMarkdown(secret.displayText)
-    markdown = markdown.replace(escapedDisplay, () => secret.displayText)
+function flattenCodeChipsForSerialize(node: ProseMirrorNode): ProseMirrorNode {
+  if (node.isAtom && node.marks.some((mark) => mark.type.name === 'code')) {
+    const raw = String(node.attrs.raw ?? '')
+    return raw ? markdownSchema.text(raw, node.marks) : node
   }
-  return markdown
+  if (!node.content.size) return node
+  const children: ProseMirrorNode[] = []
+  node.forEach((child) => {
+    const next = flattenCodeChipsForSerialize(child)
+    const prev = children.at(-1)
+    if (prev?.isText && next.isText && prev.sameMarkup(next)) {
+      children[children.length - 1] = markdownSchema.text(`${prev.text}${next.text}`, prev.marks)
+    } else {
+      children.push(next)
+    }
+  })
+  return node.copy(Fragment.from(children))
 }
 
-function parseComposerMarkdown(value: string): ProseMirrorNode {
-  if (!/[ \t\n]$/.test(value)) return markdownParser.parse(value)
+export function serializeComposerMarkdown(doc: ProseMirrorNode): string {
+  return markdownSerializer
+    .serialize(flattenCodeChipsForSerialize(doc), { tightLists: true })
+    .replaceAll(CARET_SENTINEL, '')
+}
 
-  // Markdown parsers intentionally trim end-of-block whitespace. In a
-  // composer, however, a trailing space is active editing state (notably after
-  // inserting `/command `). A temporary non-whitespace sentinel lets the
-  // parser retain those spaces; deleting it from the document keeps the model
-  // and serializer faithful without special-casing subsequent keystrokes.
-  const doc = markdownParser.parse(`${value}${CARET_SENTINEL}`)
-  // A trailing soft break needs an invisible inline anchor after it so the DOM
-  // has a stable caret position. It is removed as soon as real text follows
-  // and is never included in the serialized Markdown.
-  if (value.endsWith('\n')) return doc
-  let sentinelPosition: number | null = null
+// markdown-it never runs inline rules inside backticks or fences.
+function leftoverChipReplacements(doc: ProseMirrorNode): { from: number; to: number; node: ProseMirrorNode }[] {
+  const replacements: { from: number; to: number; node: ProseMirrorNode }[] = []
   doc.descendants((node, pos) => {
     if (!node.isText || !node.text) return
-    const index = node.text.lastIndexOf(CARET_SENTINEL)
-    if (index !== -1) sentinelPosition = pos + index
+    for (const match of node.text.matchAll(CHIP_MARKER)) {
+      if (match.index === undefined) continue
+      const kind = getChipKind(match[1])
+      if (!kind) continue
+      const chip = kind.composer.parse(match[0])
+      if (!chip || !isBackedSecretChip(chip, knownSecretEnvVarsForParse)) continue
+      const type = markdownSchema.nodes[kind.kind]
+      if (!type) continue
+      const from = pos + match.index
+      const $pos = doc.resolve(from)
+      if (!$pos.parent.canReplaceWith($pos.index(), $pos.index(), type)) continue
+      replacements.push({
+        from,
+        to: from + match[0].length,
+        node: type.create({ raw: match[0] }, null, node.marks),
+      })
+    }
   })
-  if (sentinelPosition === null) return doc
-  const state = EditorState.create({ schema: markdownSchema, doc })
-  return state.apply(state.tr.delete(sentinelPosition, sentinelPosition + CARET_SENTINEL.length)).doc
+  return replacements
+}
+
+function applyChipLifts(
+  tr: Transaction,
+  replacements = leftoverChipReplacements(tr.doc)
+): Transaction {
+  for (const { from, to, node } of replacements.reverse()) {
+    tr = tr.replaceWith(from, to, node)
+  }
+  return tr
+}
+
+function liftLeftoverChipMarkers(doc: ProseMirrorNode): ProseMirrorNode {
+  const replacements = leftoverChipReplacements(doc)
+  if (replacements.length === 0) return doc
+  return applyChipLifts(EditorState.create({ schema: markdownSchema, doc }).tr, replacements).doc
+}
+
+function parseComposerMarkdown(value: string, knownSecretEnvVars: ReadonlySet<string>): ProseMirrorNode {
+  const previousKnown = knownSecretEnvVarsForParse
+  knownSecretEnvVarsForParse = knownSecretEnvVars
+  try {
+    if (!/[ \t\n]$/.test(value)) return liftLeftoverChipMarkers(markdownParser.parse(value))
+
+    // Markdown parsers intentionally trim end-of-block whitespace. In a
+    // composer, however, a trailing space is active editing state (notably after
+    // inserting `/command `). A temporary non-whitespace sentinel lets the
+    // parser retain those spaces; deleting it from the document keeps the model
+    // and serializer faithful without special-casing subsequent keystrokes.
+    const doc = markdownParser.parse(`${value}${CARET_SENTINEL}`)
+    // A trailing soft break needs an invisible inline anchor after it so the DOM
+    // has a stable caret position. It is removed as soon as real text follows
+    // and is never included in the serialized Markdown.
+    if (value.endsWith('\n')) return liftLeftoverChipMarkers(doc)
+    let sentinelPosition: number | null = null
+    doc.descendants((node, pos) => {
+      if (!node.isText || !node.text) return
+      const index = node.text.lastIndexOf(CARET_SENTINEL)
+      if (index !== -1) sentinelPosition = pos + index
+    })
+    if (sentinelPosition === null) return liftLeftoverChipMarkers(doc)
+    const state = EditorState.create({ schema: markdownSchema, doc })
+    return liftLeftoverChipMarkers(
+      state.apply(state.tr.delete(sentinelPosition, sentinelPosition + CARET_SENTINEL.length)).doc
+    )
+  } finally {
+    knownSecretEnvVarsForParse = previousKnown
+  }
 }
 
 function delimitedMarkInputRule(
@@ -279,8 +417,8 @@ function blockAfterSoftBreakInputRule(
   })
 }
 
-function markdownClipboardSlice(text: string): Slice {
-  const doc = parseComposerMarkdown(text.replace(/\r\n?/g, '\n'))
+function markdownClipboardSlice(text: string, knownSecretEnvVars: ReadonlySet<string>): Slice {
+  const doc = parseComposerMarkdown(text.replace(/\r\n?/g, '\n'), knownSecretEnvVars)
   const onlyChild = doc.childCount === 1 ? doc.firstChild : null
   // A single ordinary paragraph should paste inline at the caret. Markdown
   // blocks (headings, lists, quotes, multiple paragraphs) retain their block
@@ -450,61 +588,31 @@ function buildKeymap() {
   })
 }
 
-interface SecretMatch {
-  kind: 'potential' | 'secured'
-  from: number
-  to: number
-  id: string
-  secret?: SecuredSecret
-}
-
-function findSecretMatches(
+function findPotentialSecretRanges(
   doc: ProseMirrorNode,
-  potentialSecrets: PotentialSecret[],
-  securedSecrets: SecuredSecret[]
-): SecretMatch[] {
-  const matches: SecretMatch[] = []
+  potentialSecrets: PotentialSecret[]
+): Array<{ from: number; to: number; id: string }> {
+  const matches: Array<{ from: number; to: number; id: string }> = []
   const occupied: Array<{ from: number; to: number }> = []
 
-  const findText = (
-    needle: string,
-    create: (from: number, to: number) => SecretMatch
-  ) => {
-    if (!needle) return
+  for (const candidate of potentialSecrets) {
+    if (!candidate.value) continue
     doc.descendants((node, pos) => {
       if (!node.isText || !node.text) return
       let fromIndex = 0
-      let index = node.text.indexOf(needle, fromIndex)
+      let index = node.text.indexOf(candidate.value, fromIndex)
       while (index !== -1) {
         const from = pos + index
-        const to = from + needle.length
+        const to = from + candidate.value.length
         if (!occupied.some((range) => from < range.to && to > range.from)) {
-          matches.push(create(from, to))
+          matches.push({ from, to, id: candidate.id })
           occupied.push({ from, to })
           return
         }
-        fromIndex = index + needle.length
-        index = node.text.indexOf(needle, fromIndex)
+        fromIndex = index + candidate.value.length
+        index = node.text.indexOf(candidate.value, fromIndex)
       }
     })
-  }
-
-  for (const candidate of potentialSecrets) {
-    findText(candidate.value, (from, to) => ({
-      kind: 'potential',
-      from,
-      to,
-      id: candidate.id,
-    }))
-  }
-  for (const secret of securedSecrets) {
-    findText(secret.displayText, (from, to) => ({
-      kind: 'secured',
-      from,
-      to,
-      id: secret.id,
-      secret,
-    }))
   }
 
   return matches.sort((a, b) => a.from - b.from)
@@ -512,15 +620,12 @@ function findSecretMatches(
 
 function buildSecretDecorations(
   doc: ProseMirrorNode,
-  potentialSecrets: PotentialSecret[],
-  securedSecrets: SecuredSecret[]
+  potentialSecrets: PotentialSecret[]
 ): DecorationSet {
-  const decorations = findSecretMatches(doc, potentialSecrets, securedSecrets).map((match) =>
+  const decorations = findPotentialSecretRanges(doc, potentialSecrets).map((match) =>
     Decoration.inline(match.from, match.to, {
-      'data-testid': match.kind === 'potential' ? 'potential-secret' : 'secured-secret',
-      class: match.kind === 'potential'
-        ? 'rounded-[3px] outline outline-1 outline-dotted outline-amber-500/90'
-        : 'rounded-[3px] bg-amber-500/10 outline outline-1 outline-amber-500/70',
+      'data-testid': 'potential-secret',
+      class: 'rounded-[3px] outline outline-1 outline-dotted outline-amber-500/90',
     })
   )
   return DecorationSet.create(doc, decorations)
@@ -560,19 +665,15 @@ export function selectAllMarkdownComposer(element: HTMLElement): boolean {
 }
 
 function buildSecretDecorationsPlugin(
-  getSecrets: () => { potential: PotentialSecret[]; secured: SecuredSecret[] }
+  getPotentialSecrets: () => PotentialSecret[]
 ): Plugin<DecorationSet> {
   return new Plugin({
     key: secretDecorationsKey,
     state: {
-      init: (_config, state) => {
-        const { potential, secured } = getSecrets()
-        return buildSecretDecorations(state.doc, potential, secured)
-      },
+      init: (_config, state) => buildSecretDecorations(state.doc, getPotentialSecrets()),
       apply: (tr, previous) => {
         if (tr.docChanged || tr.getMeta(secretDecorationsMeta)) {
-          const { potential, secured } = getSecrets()
-          return buildSecretDecorations(tr.doc, potential, secured)
+          return buildSecretDecorations(tr.doc, getPotentialSecrets())
         }
         return previous.map(tr.mapping, tr.doc)
       },
@@ -615,8 +716,7 @@ export function MarkdownComposerEditor({
   enterKeyHint,
   className,
   potentialSecrets = [],
-  securedSecrets = [],
-  onRemoveSecuredSecrets,
+  knownSecretEnvVars = [],
   onEditorElement,
 }: MarkdownComposerEditorProps) {
   const managedClassName = cn(
@@ -633,10 +733,10 @@ export function MarkdownComposerEditor({
     placeholder,
     disabled,
     potentialSecrets,
-    securedSecrets,
-    onRemoveSecuredSecrets,
+    knownSecretEnvVars,
   })
   const lastMarkdownRef = useRef(value)
+  const lastKnownSecretEnvVarsRef = useRef('')
 
   latestRef.current = {
     onChange,
@@ -645,18 +745,18 @@ export function MarkdownComposerEditor({
     placeholder,
     disabled,
     potentialSecrets,
-    securedSecrets,
-    onRemoveSecuredSecrets,
+    knownSecretEnvVars,
   }
 
   useLayoutEffect(() => {
     if (!hostRef.current) return
 
-    const secretPlugin = buildSecretDecorationsPlugin(() => ({
-      potential: latestRef.current.potentialSecrets,
-      secured: latestRef.current.securedSecrets,
-    }))
-    const initialDoc = parseComposerMarkdown(lastMarkdownRef.current)
+    const secretPlugin = buildSecretDecorationsPlugin(() => latestRef.current.potentialSecrets)
+    lastKnownSecretEnvVarsRef.current = [...latestRef.current.knownSecretEnvVars].sort().join('\0')
+    const initialDoc = parseComposerMarkdown(
+      lastMarkdownRef.current,
+      new Set(latestRef.current.knownSecretEnvVars)
+    )
     const state = EditorState.create({
       schema: markdownSchema,
       doc: initialDoc,
@@ -700,38 +800,6 @@ export function MarkdownComposerEditor({
             event.stopPropagation()
           }
 
-          if ((event.key === 'Backspace' || event.key === 'Delete') && latestRef.current.onRemoveSecuredSecrets) {
-            const { from, to, empty } = editorView.state.selection
-            const matches = findSecretMatches(
-              editorView.state.doc,
-              latestRef.current.potentialSecrets,
-              latestRef.current.securedSecrets
-            ).filter((match) => match.kind === 'secured' && match.secret)
-            const affected = matches.filter((match) => {
-              if (!empty) return match.from < to && match.to > from
-              return event.key === 'Backspace'
-                ? match.from < from && match.to >= from
-                : match.from <= from && match.to > from
-            })
-
-            if (affected.length > 0) {
-              event.preventDefault()
-              const tr = editorView.state.tr
-              if (empty) {
-                for (const match of [...affected].sort((a, b) => b.from - a.from)) {
-                  tr.delete(match.from, match.to)
-                }
-              } else {
-                tr.deleteSelection()
-              }
-              editorView.dispatch(tr.scrollIntoView())
-              latestRef.current.onRemoveSecuredSecrets(
-                affected.flatMap((match) => match.secret ? [match.secret] : [])
-              )
-              return true
-            }
-          }
-
           const isUnmodifiedEnter = event.key === 'Enter'
             && !event.shiftKey
             && !event.metaKey
@@ -764,10 +832,7 @@ export function MarkdownComposerEditor({
         view.updateState(nextState)
         setEditorA11yState(view, latestRef.current.placeholder, latestRef.current.disabled)
         if (!tr.docChanged) return
-        const markdown = serializeComposerMarkdown(
-          nextState.doc,
-          latestRef.current.securedSecrets
-        )
+        const markdown = serializeComposerMarkdown(nextState.doc)
         lastMarkdownRef.current = markdown
         if (markdown !== latestRef.current.value) latestRef.current.onChange(markdown)
       },
@@ -785,10 +850,14 @@ export function MarkdownComposerEditor({
         event.preventDefault()
         editorView.dispatch(
           editorView.state.tr
-            .replaceSelection(markdownClipboardSlice(text))
+            .replaceSelection(markdownClipboardSlice(text, new Set(latestRef.current.knownSecretEnvVars)))
             .scrollIntoView()
         )
         return true
+      },
+      transformPastedHTML: (html) => {
+        knownSecretEnvVarsForParse = new Set(latestRef.current.knownSecretEnvVars)
+        return html
       },
     })
 
@@ -811,16 +880,34 @@ export function MarkdownComposerEditor({
 
   useLayoutEffect(() => {
     const view = viewRef.current
-    if (!view || value === lastMarkdownRef.current) return
-    const nextDoc = parseComposerMarkdown(value)
+    if (!view) return
+    const knownKey = [...knownSecretEnvVars].sort().join('\0')
+    const knownChanged = knownKey !== lastKnownSecretEnvVarsRef.current
+    const valueUnchanged = value === lastMarkdownRef.current
+    if (valueUnchanged && !knownChanged) return
+    if (knownChanged && valueUnchanged) {
+      lastKnownSecretEnvVarsRef.current = knownKey
+      const previousKnown = knownSecretEnvVarsForParse
+      knownSecretEnvVarsForParse = new Set(knownSecretEnvVars)
+      try {
+        const tr = applyChipLifts(view.state.tr.setMeta('addToHistory', false))
+        if (tr.docChanged) view.dispatch(tr)
+      } finally {
+        knownSecretEnvVarsForParse = previousKnown
+      }
+      setEditorA11yState(view, placeholder, disabled)
+      return
+    }
+    const nextDoc = parseComposerMarkdown(value, new Set(knownSecretEnvVars))
     const tr = view.state.tr
       .replaceWith(0, view.state.doc.content.size, nextDoc.content)
       .setMeta('addToHistory', false)
     tr.setSelection(TextSelection.atEnd(tr.doc))
     view.updateState(view.state.apply(tr))
+    lastKnownSecretEnvVarsRef.current = knownKey
     lastMarkdownRef.current = value
     setEditorA11yState(view, placeholder, disabled)
-  }, [disabled, placeholder, value])
+  }, [disabled, placeholder, value, knownSecretEnvVars])
 
   useEffect(() => {
     const view = viewRef.current
@@ -841,7 +928,7 @@ export function MarkdownComposerEditor({
     const view = viewRef.current
     if (!view) return
     view.dispatch(view.state.tr.setMeta(secretDecorationsMeta, true).setMeta('addToHistory', false))
-  }, [potentialSecrets, securedSecrets])
+  }, [potentialSecrets])
 
   return <div ref={hostRef} className="contents" />
 }

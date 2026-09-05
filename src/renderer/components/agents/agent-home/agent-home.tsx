@@ -227,7 +227,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     keepMessageUntilComplete: true,
     draftKey: `agent:${agent.slug}`,
     initialAttachments: carryover?.attachments,
-    initialSecuredSecrets: carryover?.securedSecrets,
   })
 
   const warmStartEnabled = useWarmStartOnTypeEnabled()
@@ -458,10 +457,9 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                   secureSecrets={{
                     agentSlug: agent.slug,
                     potentialSecrets: composer.potentialSecrets,
-                    securedSecrets: composer.securedSecrets,
+                    knownSecretEnvVars: composer.knownSecretEnvVars,
                     onDismiss: composer.dismissPotentialSecret,
                     onSecure: composer.securePotentialSecret,
-                    onRemove: composer.removeSecuredSecrets,
                   }}
                   textareaClassName={`transition-[min-height] duration-300 ease-in-out ${isExpanded ? 'min-h-[50vh] max-h-[50vh]' : 'min-h-[60px] max-h-[120px]'}`}
                   leftActions={(

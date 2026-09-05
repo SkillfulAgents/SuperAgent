@@ -5,6 +5,7 @@ import { createElement } from 'react'
 import type { Attachment } from '@renderer/components/messages/attachment-preview'
 import type { FolderGroup } from '@renderer/lib/file-utils'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { formatChipMarker } from '@renderer/components/messages/chip-marker'
 import { DraftsProvider, useDraft } from '@renderer/context/drafts-context'
 
 // --- Mocks ---
@@ -79,6 +80,11 @@ const mockQueue = {
 }
 vi.mock('./use-upload-queue', () => ({ useUploadQueue: () => mockQueue }))
 
+let mockSavedSecrets: Array<{ envVar: string }> = []
+vi.mock('./use-secrets', () => ({
+  useAgentSecrets: () => ({ data: mockSavedSecrets }),
+}))
+
 vi.mock('@renderer/lib/file-utils', () => ({
   zipFolderFiles: vi.fn().mockResolvedValue(new Blob(['zipped'])),
 }))
@@ -127,6 +133,7 @@ describe('useMessageComposer', () => {
     capturedOnAttachmentsAdded = undefined
     capturedTranscriptUpdate = undefined
     mockQueue.retryAndWait.mockResolvedValue({ ok: true })
+    mockSavedSecrets = []
   })
 
   // --- Basic state ---
@@ -189,9 +196,10 @@ describe('useMessageComposer', () => {
       envVar: 'GITHUB_TOKEN',
     }))
 
-    expect(result.current.message).toBe('Use [GitHub Token | *********] please')
-    expect(result.current.securedSecrets).toHaveLength(1)
-    expect(JSON.stringify(result.current.securedSecrets)).not.toContain(key)
+    expect(result.current.message).toBe(
+      `Use ${formatChipMarker('secret', 'GITHUB_TOKEN', 'GitHub Token')} please`
+    )
+    expect(result.current.message).not.toContain(key)
 
     await act(async () => {
       await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
@@ -199,6 +207,33 @@ describe('useMessageComposer', () => {
 
     expect(opts.onSubmit).toHaveBeenCalledWith('Use [Key saved to .env - GITHUB_TOKEN] please')
     expect(opts.onSubmit).not.toHaveBeenCalledWith(expect.stringContaining(key))
+  })
+
+  it('does not rewrite a pasted secret marker the agent does not have', async () => {
+    const opts = defaultOptions()
+    const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+    const marker = formatChipMarker('secret', 'MISSING', 'Nope')
+
+    act(() => result.current.setMessage(`Use ${marker}`))
+    await act(async () => {
+      await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
+    })
+
+    expect(opts.onSubmit).toHaveBeenCalledWith(`Use ${marker}`)
+  })
+
+  it('rewrites a pasted secret marker the agent already has', async () => {
+    mockSavedSecrets = [{ envVar: 'GITHUB_TOKEN' }]
+    const opts = defaultOptions()
+    const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+    const marker = formatChipMarker('secret', 'GITHUB_TOKEN', 'GitHub Token')
+
+    act(() => result.current.setMessage(`Use ${marker}`))
+    await act(async () => {
+      await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
+    })
+
+    expect(opts.onSubmit).toHaveBeenCalledWith('Use [Key saved to .env - GITHUB_TOKEN]')
   })
 
   // --- canSubmit ---
