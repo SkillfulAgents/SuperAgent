@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest'
 import {
   buildTopupHandoffUrl,
   isPlatformOrgAdmin,
-  resolveOrgBillingUrl,
   resolvePaywallCta,
   subscriptionRequiredFromBilling,
 } from './paywall-cta'
@@ -20,31 +19,6 @@ describe('isPlatformOrgAdmin', () => {
     expect(isPlatformOrgAdmin('member')).toBe(false)
     expect(isPlatformOrgAdmin(null)).toBe(false)
     expect(isPlatformOrgAdmin(undefined)).toBe(false)
-  })
-})
-
-describe('resolveOrgBillingUrl', () => {
-  it('builds the billing URL from a connected org', () => {
-    expect(resolveOrgBillingUrl({
-      connected: true,
-      platformBaseUrl: 'https://platform.example.com',
-      orgId: 'org_123',
-    })).toBe(HREF)
-  })
-
-  it('strips a trailing slash from the platform base URL', () => {
-    expect(resolveOrgBillingUrl({
-      connected: true,
-      platformBaseUrl: 'https://platform.example.com/',
-      orgId: 'org_123',
-    })).toBe(HREF)
-  })
-
-  it('returns null when disconnected or org context is missing', () => {
-    expect(resolveOrgBillingUrl(null)).toBeNull()
-    expect(resolveOrgBillingUrl({ connected: false, platformBaseUrl: 'https://p.example.com', orgId: 'org_123' })).toBeNull()
-    expect(resolveOrgBillingUrl({ connected: true, platformBaseUrl: null, orgId: 'org_123' })).toBeNull()
-    expect(resolveOrgBillingUrl({ connected: true, platformBaseUrl: 'https://p.example.com', orgId: null })).toBeNull()
   })
 })
 

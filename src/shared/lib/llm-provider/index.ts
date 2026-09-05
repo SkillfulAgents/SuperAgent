@@ -7,7 +7,6 @@ export {
   errorPlacement,
   extractErrorMessage,
   inferErrorStatus,
-  resolvePresentationMarkdown,
 } from './error-presentation'
 export type {
   ProviderErrorPlacement,

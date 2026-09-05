@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 import type { ParsedPlatformBillingInfo } from '@shared/lib/types/skillset-schema'
 import type { BillingInfoResponse } from '@renderer/hooks/use-billing-info'
 
@@ -12,8 +13,6 @@ import { PAYWALL_RECHECK_INTERVAL_MS } from './use-paywall-billing'
 
 const platformAuth = {
   connected: true,
-  platformBaseUrl: 'https://platform.example.com',
-  orgId: 'org_123',
   role: 'member' as string | null,
 }
 vi.mock('@renderer/hooks/use-platform-auth', () => ({
@@ -61,12 +60,14 @@ function billing(overrides: Partial<ParsedPlatformBillingInfo> = {}): BillingInf
 }
 
 const MESSAGE = '**You need more usage credit to continue** Subscribe or top up.'
-const PRESENTATION = {
-  severity: 'error' as const,
+const BILLING_URL = 'https://platform.example.com/dashboard/organizations/org_123?tab=billing'
+const PRESENTATION: ProviderErrorPresentation = {
+  severity: 'error',
   icon: 'circle-dollar-sign',
   message: MESSAGE,
   component: 'paywall',
-  placement: 'composer' as const,
+  placement: 'composer',
+  href: BILLING_URL,
 }
 
 let client: QueryClient
@@ -76,9 +77,10 @@ function Wrapper({ children }: { children: ReactNode }) {
 function renderCard(
   message = 'API Error: 402 {"error":"insufficient_balance"}',
   live = true,
+  presentation = PRESENTATION,
 ) {
   return render(
-    <PaywallCard message={message} presentation={PRESENTATION} live={live}>
+    <PaywallCard message={message} presentation={presentation} live={live}>
       <div data-testid="composer">composer</div>
     </PaywallCard>,
     { wrapper: Wrapper },
@@ -178,6 +180,15 @@ describe('PaywallCard', () => {
     act(() => { recheck.click() })
     await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
     expect(screen.getByTestId('composer')).toBeInTheDocument()
+  })
+
+  it('disables the CTA when the provider attached no href', async () => {
+    platformAuth.role = 'owner'
+    renderCard(undefined, true, { ...PRESENTATION, href: undefined })
+    const button = await screen.findByRole('button', { name: 'Add usage' })
+    expect(button).toBeDisabled()
+    act(() => { button.click() })
+    expect(openExternalUrl).not.toHaveBeenCalled()
   })
 
   it('rechecks automatically every 5s while the card is visible', async () => {

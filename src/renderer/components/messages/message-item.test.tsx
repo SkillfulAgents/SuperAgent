@@ -48,11 +48,8 @@ vi.mock('@renderer/components/ui/tooltip', () => ({
   TooltipContent: ({ children }: { children: React.ReactNode }) => <span data-testid="tooltip-content">{children}</span>,
 }))
 
-const platformAuth = {
-  connected: false as boolean,
-  platformBaseUrl: 'https://platform.example.com' as string | null,
-  orgId: 'org_123' as string | null,
-}
+const platformAuth = { connected: false as boolean }
+const BILLING_URL = 'https://platform.example.com/dashboard/organizations/org_123?tab=billing'
 
 vi.mock('@renderer/hooks/use-platform-auth', () => ({
   usePlatformAuthStatus: () => ({ data: platformAuth }),
@@ -459,13 +456,12 @@ describe('MessageItem', () => {
     })
 
     it('renders an orange spend-limit card from a server-attached presentation', () => {
-      platformAuth.connected = true
       const spendCap =
         'API Error: Request rejected (429) · A spend cap for this workspace was reached. It resets within 30 days. Ask a workspace admin to raise it.'
       const msg = createAssistantMessage({
         content: { text: spendCap },
         apiError: 'rate_limit',
-        errorPresentation: parsePlatformErrorResponse(429, spendCap)!,
+        errorPresentation: parsePlatformErrorResponse(429, spendCap, BILLING_URL)!,
       })
       render(<MessageItem message={msg} />)
       const card = screen.getByTestId('provider-error-card')

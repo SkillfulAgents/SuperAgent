@@ -112,7 +112,12 @@ function PaywallActions({
 export function PaywallCard({ message, presentation, children, live = true }: ProviderErrorComponentProps) {
   const [dismissed, setDismissed] = useState(false)
   const [handedOff, setHandedOff] = useState(false)
-  const billing = usePaywallBilling(extractSubscriptionRequired(message), live, !dismissed)
+  const billing = usePaywallBilling(
+    extractSubscriptionRequired(message),
+    presentation?.href ?? null,
+    live,
+    !dismissed,
+  )
   if (billing.cleared || dismissed) return <>{children}</>
 
   const fallback = splitMessage(presentation?.message ?? message)

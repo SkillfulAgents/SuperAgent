@@ -1,6 +1,3 @@
-import { resolveOrgLink, type OrgLinkContext } from '@shared/lib/llm-provider/error-presentation'
-import { ORG_BILLING_LINK } from '@shared/lib/llm-provider/platform-error-presentation'
-
 export type PaywallCta =
   | { kind: 'subscribe'; href: string | null }
   | { kind: 'ask_admin'; href: string | null }
@@ -11,10 +8,6 @@ export type PaywallCta =
 
 export function isPlatformOrgAdmin(role: string | null | undefined): boolean {
   return role === 'owner' || role === 'admin'
-}
-
-export function resolveOrgBillingUrl(org: OrgLinkContext | null | undefined): string | null {
-  return resolveOrgLink(ORG_BILLING_LINK, org)
 }
 
 // "Add usage" opens the dashboard top-up dialog. No return deep link.

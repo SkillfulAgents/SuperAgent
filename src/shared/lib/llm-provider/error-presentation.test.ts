@@ -6,11 +6,10 @@ import {
   extractErrorMessage,
   inferErrorStatus,
   providerErrorPresentationSchema,
-  resolveOrgLink,
-  resolvePresentationMarkdown,
 } from './error-presentation'
-import { extractSubscriptionRequired, parsePlatformErrorResponse } from './platform-error-presentation'
+import { extractSubscriptionRequired, orgBillingUrl, parsePlatformErrorResponse } from './platform-error-presentation'
 
+const BILLING_URL = 'https://platform.example.com/dashboard/organizations/org_123?tab=billing'
 const SPEND_CAP =
   'API Error: Request rejected (429) · A spend cap for this workspace was reached. It resets within 30 days. Ask a workspace admin to raise it.'
 const STREAM_PREFIXED_SPEND_CAP =
@@ -71,6 +70,11 @@ describe('providerErrorPresentationSchema', () => {
     expect(providerErrorPresentationSchema.safeParse({ ...base, component: 'not-registered' }).success).toBe(true)
   })
 
+  it('accepts an optional href', () => {
+    expect(providerErrorPresentationSchema.parse({ ...base, href: BILLING_URL }).href).toBe(BILLING_URL)
+    expect(providerErrorPresentationSchema.parse(base).href).toBeUndefined()
+  })
+
   it('rejects an unknown placement', () => {
     expect(providerErrorPresentationSchema.safeParse({ ...base, placement: 'sidebar' }).success).toBe(false)
   })
@@ -105,18 +109,37 @@ describe('defaultParseErrorResponse', () => {
   })
 })
 
+describe('orgBillingUrl', () => {
+  it('builds the billing page from the platform origin and org id, without a double slash', () => {
+    expect(orgBillingUrl('https://platform.example.com', 'org_123')).toBe(BILLING_URL)
+    expect(orgBillingUrl('https://platform.example.com/', 'org_123')).toBe(BILLING_URL)
+  })
+
+  it('is null without a platform origin or org id', () => {
+    expect(orgBillingUrl('', 'org_123')).toBeNull()
+    expect(orgBillingUrl(null, 'org_123')).toBeNull()
+    expect(orgBillingUrl('https://platform.example.com', null)).toBeNull()
+  })
+})
+
 describe('parsePlatformErrorResponse', () => {
-  it('returns a warning markdown message with an admin link', () => {
-    expect(parsePlatformErrorResponse(429, SPEND_CAP)).toEqual({
+  it('returns a warning markdown message with a resolved admin link', () => {
+    expect(parsePlatformErrorResponse(429, SPEND_CAP, BILLING_URL)).toEqual({
       severity: 'warning',
       icon: 'circle-dollar-sign',
       message:
-        '**Spend Limit Reached:** A spend cap for this workspace was reached. It resets within 30 days. [Raise spend limit in the admin dashboard](/dashboard/organizations/{orgId}?tab=billing)',
+        `**Spend Limit Reached:** A spend cap for this workspace was reached. It resets within 30 days. [Raise spend limit in the admin dashboard](${BILLING_URL})`,
     })
   })
 
+  it('renders the admin link label as plain text without a billing URL', () => {
+    expect(parsePlatformErrorResponse(429, SPEND_CAP, null)?.message).toBe(
+      '**Spend Limit Reached:** A spend cap for this workspace was reached. It resets within 30 days. Raise spend limit in the admin dashboard',
+    )
+  })
+
   it('finds a spend cap after streamed assistant text', () => {
-    const parsed = parsePlatformErrorResponse(undefined, STREAM_PREFIXED_SPEND_CAP)
+    const parsed = parsePlatformErrorResponse(undefined, STREAM_PREFIXED_SPEND_CAP, null)
     expect(parsed?.severity).toBe('warning')
     expect(parsed?.message).toContain('**Spend Limit Reached:**')
   })
@@ -128,41 +151,46 @@ describe('parsePlatformErrorResponse', () => {
         type: 'rate_limit_error',
         message: 'A spend cap for this workspace was reached. It resets within 30 days.',
       },
-    })
+    }, null)
     expect(parsed?.severity).toBe('warning')
     expect(parsed?.icon).toBe('circle-dollar-sign')
   })
 
   it('returns null for a generic rate-limit 429 — the base provider applies the default', () => {
-    expect(parsePlatformErrorResponse(429, RATE_LIMIT)).toBeNull()
+    expect(parsePlatformErrorResponse(429, RATE_LIMIT, BILLING_URL)).toBeNull()
   })
 
-  it('routes a 402 to the paywall component above the composer', () => {
-    expect(parsePlatformErrorResponse(402, BILLING_402)).toEqual({
+  it('routes a 402 to the paywall component above the composer with the billing href', () => {
+    expect(parsePlatformErrorResponse(402, BILLING_402, BILLING_URL)).toEqual({
       severity: 'error',
       icon: 'info',
       message: '**You need more usage credit to continue** Subscribe or top up to resume this answer.',
       component: 'paywall',
       placement: 'composer',
+      href: BILLING_URL,
     })
   })
 
+  it('omits href from the paywall presentation without a billing URL', () => {
+    expect(parsePlatformErrorResponse(402, BILLING_402, null)).not.toHaveProperty('href')
+  })
+
   it('tailors the 402 copy to the subscription_required flag when the body kept it', () => {
-    const needsPlan = parsePlatformErrorResponse(402, '{"error":"insufficient_balance","subscription_required":true}')
+    const needsPlan = parsePlatformErrorResponse(402, '{"error":"insufficient_balance","subscription_required":true}', null)
     expect(needsPlan?.message).toContain('Subscribe')
     expect(needsPlan?.message).not.toContain('top up')
-    const needsCredit = parsePlatformErrorResponse(402, '{"error":"insufficient_balance","subscription_required":false}')
+    const needsCredit = parsePlatformErrorResponse(402, '{"error":"insufficient_balance","subscription_required":false}', null)
     expect(needsCredit?.message).toContain('Add usage credit')
   })
 
   it('recognizes a 402 the CLI flattened into an "API Error: 402" string', () => {
-    const parsed = parsePlatformErrorResponse(undefined, 'API Error: 402 {"error":"insufficient_balance"}')
+    const parsed = parsePlatformErrorResponse(undefined, 'API Error: 402 {"error":"insufficient_balance"}', null)
     expect(parsed?.component).toBe('paywall')
   })
 
   it('does not route a non-402 status to the paywall because "402" appears elsewhere in the text', () => {
-    expect(parsePlatformErrorResponse(undefined, 'Request rejected (500) · upstream id 402-abc')).toBeNull()
-    expect(parsePlatformErrorResponse(500, 'upstream id 402')).toBeNull()
+    expect(parsePlatformErrorResponse(undefined, 'Request rejected (500) · upstream id 402-abc', null)).toBeNull()
+    expect(parsePlatformErrorResponse(500, 'upstream id 402', null)).toBeNull()
   })
 })
 
@@ -175,51 +203,5 @@ describe('extractSubscriptionRequired', () => {
   it('is undefined when the body dropped the flag', () => {
     expect(extractSubscriptionRequired('API Error: 402 {"error":"insufficient_balance"}')).toBeUndefined()
     expect(extractSubscriptionRequired('Payment required')).toBeUndefined()
-  })
-})
-
-describe('resolveOrgLink', () => {
-  const org = { connected: true, platformBaseUrl: 'https://platform.example.com/', orgId: 'org_123' }
-
-  it('fills orgId and prefixes the origin without a double slash', () => {
-    expect(resolveOrgLink('/dashboard/organizations/{orgId}?tab=billing', org)).toBe(
-      'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
-    )
-  })
-
-  it('leaves an absolute URL on its own host', () => {
-    expect(resolveOrgLink('https://docs.example.com/{orgId}', org)).toBe('https://docs.example.com/org_123')
-  })
-
-  it('is null without a connected org', () => {
-    expect(resolveOrgLink('/x/{orgId}', null)).toBeNull()
-    expect(resolveOrgLink('/x/{orgId}', { ...org, connected: false })).toBeNull()
-    expect(resolveOrgLink('/x/{orgId}', { ...org, orgId: null })).toBeNull()
-    expect(resolveOrgLink('/x/{orgId}', { ...org, platformBaseUrl: null })).toBeNull()
-  })
-})
-
-describe('resolvePresentationMarkdown', () => {
-  const org = {
-    connected: true,
-    platformBaseUrl: 'https://platform.example.com',
-    orgId: 'org_123',
-  }
-  const markdown =
-    '**Spend Limit Reached:** A spend cap. [Raise spend limit](/dashboard/organizations/{orgId}?tab=billing)'
-
-  it('fills orgId and prefixes the platform origin', () => {
-    expect(resolvePresentationMarkdown(markdown, org)).toBe(
-      '**Spend Limit Reached:** A spend cap. [Raise spend limit](https://platform.example.com/dashboard/organizations/org_123?tab=billing)',
-    )
-  })
-
-  it('strips the link when org context is missing', () => {
-    expect(
-      resolvePresentationMarkdown(markdown, { connected: false, platformBaseUrl: org.platformBaseUrl, orgId: org.orgId }),
-    ).toBe('**Spend Limit Reached:** A spend cap. Raise spend limit')
-    expect(
-      resolvePresentationMarkdown(markdown, { connected: true, platformBaseUrl: org.platformBaseUrl, orgId: null }),
-    ).toBe('**Spend Limit Reached:** A spend cap. Raise spend limit')
   })
 })

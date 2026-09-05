@@ -6,7 +6,6 @@ import { CircleDollarSign, Info, TriangleAlert, type LucideIcon } from 'lucide-r
 import { defaultParseErrorResponse, type ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 
 import { RequestError } from '@renderer/components/messages/request-error'
-import { useResolvedErrorPresentation } from '@renderer/hooks/use-provider-error-presentation'
 import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
 import { openExternalUrl } from '@renderer/lib/open-external'
 
@@ -99,11 +98,10 @@ export function ProviderErrorCard({
   children?: ReactNode
   'data-testid'?: string
 }) {
-  const base = useMemo(
+  const resolved = useMemo(
     () => presentation ?? defaultParseErrorResponse(undefined, message),
     [presentation, message],
   )
-  const resolved = useResolvedErrorPresentation(base)
   return (
     <>
       <ProviderErrorView

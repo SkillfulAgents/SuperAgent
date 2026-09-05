@@ -5,7 +5,7 @@ import { useBillingInfo } from '@renderer/hooks/use-billing-info'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { captureRendererException } from '@renderer/lib/error-reporting'
 
-import { resolveOrgBillingUrl, resolvePaywallCta, subscriptionRequiredFromBilling, type PaywallCta } from './paywall-cta'
+import { resolvePaywallCta, subscriptionRequiredFromBilling, type PaywallCta } from './paywall-cta'
 
 export const PAYWALL_RECHECK_INTERVAL_MS = 5000
 
@@ -40,11 +40,13 @@ function useBillingRecheckPoll(enabled: boolean): void {
   }, [enabled, queryClient])
 }
 
-// `flagFrom402` is the proxy's subscription_required flag when the 402 body kept it.
+// `flagFrom402` is the proxy's subscription_required flag when the 402 body kept it;
+// `billingHref` is the provider-resolved CTA link (presentation.href).
 // A live 402 ignores a leftover `allowed` snapshot from a previous recovery.
 // A persisted 402 (switch session after a top-up) trusts the current snapshot.
 export function usePaywallBilling(
   flagFrom402: boolean | undefined,
+  billingHref: string | null,
   live: boolean,
   poll = true,
 ): PaywallBilling {
@@ -67,7 +69,6 @@ export function usePaywallBilling(
   }, [billingError])
 
   const snapshot = useMemo(() => {
-    const billingHref = resolveOrgBillingUrl(platformAuth)
     if (billingQuery.isLoading) {
       return { cta: null, loading: true, blocked: false, cleared: false }
     }
@@ -87,13 +88,13 @@ export function usePaywallBilling(
       cleared: allowed === true && (!live || billingQuery.dataUpdatedAt > seenAt),
     }
   }, [
+    billingHref,
     billingQuery.data?.billing,
     billingQuery.data?.stale,
     billingQuery.dataUpdatedAt,
     billingQuery.isLoading,
     flagFrom402,
     live,
-    platformAuth,
     role,
     seenAt,
   ])

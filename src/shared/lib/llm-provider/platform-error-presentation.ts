@@ -4,9 +4,20 @@ import {
   type ProviderErrorPresentation,
 } from './error-presentation'
 
-export const ORG_BILLING_LINK = '/dashboard/organizations/{orgId}?tab=billing'
-
 export const PAYWALL_COMPONENT = 'paywall'
+
+// Dashboard billing page for the connected org; null without org context.
+export function orgBillingUrl(
+  platformBaseUrl: string | null | undefined,
+  orgId: string | null | undefined,
+): string | null {
+  if (!platformBaseUrl || !orgId) return null
+  return `${platformBaseUrl.replace(/\/+$/, '')}/dashboard/organizations/${orgId}?tab=billing`
+}
+
+function markdownLink(label: string, url: string | null): string {
+  return url ? `[${label}](${url})` : label
+}
 
 function isSpendCap(status: number | undefined, raw: string): boolean {
   if (!/spend cap/i.test(raw)) return false
@@ -101,10 +112,11 @@ function paywallMessage(subscriptionRequired: boolean | undefined): string {
 }
 
 // Null = not a platform-specific error class; the base provider applies the
-// generic banner.
+// generic banner. `billingUrl` is the org's resolved billing page, or null without org context.
 export function parsePlatformErrorResponse(
   status: number | undefined,
   body: unknown,
+  billingUrl: string | null,
 ): ProviderErrorPresentation | null {
   const raw = extractErrorMessage(body)
   const inferred = status ?? inferErrorStatus(raw)
@@ -112,7 +124,7 @@ export function parsePlatformErrorResponse(
   if (isSpendCap(inferred, raw)) {
     return {
       severity: 'warning',
-      message: `**Spend Limit Reached:** ${spendCapSentence(raw)} [Raise spend limit in the admin dashboard](${ORG_BILLING_LINK})`,
+      message: `**Spend Limit Reached:** ${spendCapSentence(raw)} ${markdownLink('Raise spend limit in the admin dashboard', billingUrl)}`,
       icon: 'circle-dollar-sign',
     }
   }
@@ -124,6 +136,7 @@ export function parsePlatformErrorResponse(
       message: paywallMessage(extractSubscriptionRequired(body)),
       component: PAYWALL_COMPONENT,
       placement: 'composer',
+      ...(billingUrl && { href: billingUrl }),
     }
   }
 
