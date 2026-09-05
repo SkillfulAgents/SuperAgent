@@ -7,7 +7,7 @@ import {
   type VoiceAgentEvent,
   type SttProvider,
 } from '@renderer/lib/voice-agent'
-import { acquireMicStream, float32ToInt16 } from '@renderer/lib/stt'
+import { acquireMicStream, float32ToInt16, pcm16ToFloat32 } from '@renderer/lib/stt'
 
 export type VoiceAgentState = 'idle' | 'connecting' | 'active' | 'error'
 export type SpeakingState = 'none' | 'user' | 'agent'
@@ -338,16 +338,6 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
     isActive: state === 'active',
     isConnecting: state === 'connecting',
   }
-}
-
-/** Convert Int16 PCM audio buffer to Float32 samples for Web Audio playback */
-function pcm16ToFloat32(buffer: ArrayBuffer): Float32Array {
-  const int16 = new Int16Array(buffer)
-  const float32 = new Float32Array(int16.length)
-  for (let i = 0; i < int16.length; i++) {
-    float32[i] = int16[i] / 0x8000
-  }
-  return float32
 }
 
 /** Build an AnalyserNode for visualizing agent audio playback and wire it to the context destination. */

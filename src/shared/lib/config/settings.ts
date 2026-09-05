@@ -3,6 +3,7 @@ import path from 'path'
 import os from 'os'
 import { getDataDir } from './data-dir'
 import { isRunningInKubernetes } from '@shared/lib/container/runtime-env'
+import type { TtsVoice } from '../stt/tts-voices'
 import { getDefaultAgentImage, AGENT_IMAGE_REGISTRY } from './version'
 import {
   writeFileAtomicSync,
@@ -70,6 +71,8 @@ export type SttProvider = 'deepgram' | 'openai' | 'platform'
 
 export interface VoiceSettings {
   sttProvider?: SttProvider
+  /** Text-to-speech voice for reading agent replies aloud (see stt/tts-voices). */
+  ttsVoice?: TtsVoice
 }
 
 export interface NotificationSettings {
