@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
+import { timestampedUploadNamePattern } from '../helpers/upload-filename'
 import * as path from 'path'
 import * as fs from 'fs'
 import * as os from 'os'
@@ -130,7 +131,9 @@ test.describe('Composer failure recovery', () => {
 
     await sessionPage.waitForUserMessageCount(2, 15000)
     await sessionPage.expectUserMessage(text, 1)
-    await expect(page.getByTestId('file-pill').filter({ hasText: 'guarded.txt' }).first()).toBeVisible({ timeout: 5000 })
+    await expect(
+      page.getByTestId('file-pill').filter({ hasText: timestampedUploadNamePattern('guarded.txt') }).first(),
+    ).toBeVisible({ timeout: 5000 })
     await expect(sessionPage.getMessageInput()).toHaveText('')
   })
 
