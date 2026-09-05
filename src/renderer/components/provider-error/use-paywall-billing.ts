@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQueryClient, type QueryClient } from '@tanstack/react-query'
 
-import { BILLING_QUERY_KEY, useBillingInfo } from '@renderer/hooks/use-billing-info'
+import { useBillingInfo } from '@renderer/hooks/use-billing-info'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { captureRendererException } from '@renderer/lib/error-reporting'
 
@@ -21,7 +21,7 @@ export interface PaywallBilling {
 
 function invalidateBillingSnapshot(queryClient: QueryClient, op: string): Promise<void> {
   return queryClient
-    .invalidateQueries({ queryKey: BILLING_QUERY_KEY, refetchType: 'active' })
+    .invalidateQueries({ queryKey: ['platform-billing'], refetchType: 'active' })
     .then(() => undefined)
     .catch((error: unknown) => {
       console.warn('[Paywall] billing refresh failed:', error)
