@@ -1,24 +1,25 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it back within the 3-minute wait window.",
+  "reason": "Verified that the agent can execute browser tools, navigate to a URL, retrieve the page title, and report the result correctly.",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully showing the Gamut app with two agents in the sidebar including \"QA-20260905-024737-wjir\"",
-    "Clicked on \"QA-20260905-024737-wjir\" agent in the sidebar — Agent page opened and chat interface loaded with message input field",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Message was successfully entered in the textbox",
-    "Clicked the Send message button — Message was sent and agent status changed to \"working\"",
-    "Waited for response — Agent processing completed in 8 seconds with 4 tool calls using 163,682 tokens",
-    "Verified response mentions \"Example Domain\" and took screenshot — Agent response states: \"The page title is \"Example Domain\" — the page just has that heading, a short paragraph, and a \"Learn more\" link. Browser closed.\" This confirms the agent successfully navigated to example.com, retrieved the correct page title, and closed the browser session."
+    "Step 1 - Navigated to http://localhost:47891 — Page loaded successfully showing Gamut app with two agents in sidebar.",
+    "Step 2 - Clicked on \"QA-20260905-172543-f1jf\" agent in the sidebar — Agent page opened showing the agent configuration and chat interface.",
+    "Step 3 - Clicked on the chat input textbox — Textbox became active and focused.",
+    "Step 3 - Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully typed into the input field.",
+    "Step 3 - Clicked the \"Send message\" button — Message was sent successfully, session was created, and agent status changed to \"working\".",
+    "Step 4 - Waited up to 3 minutes for agent response — Agent completed work in 14 seconds, showing it executed 6 tool calls (ToolSearch, Open Browser, Browser Get State, etc.).",
+    "Step 5 - Verified the response mentions \"Example Domain\" — Agent's response clearly states: \"The page title is \"Example Domain\". Browser closed.\" ✅"
   ],
   "bugs": [],
-  "durationMs": 76368,
-  "sessionId": "b621eb5a-c412-4976-8734-b3ef866d6470",
+  "durationMs": 92383,
+  "sessionId": "bedb1343-9894-442c-8831-e5b067497181",
   "cost": {
-    "inputTokens": 320,
-    "outputTokens": 8843,
-    "cacheCreationTokens": 67035,
-    "cacheReadTokens": 875123,
+    "inputTokens": 410,
+    "outputTokens": 13990,
+    "cacheCreationTokens": 84520,
+    "cacheReadTokens": 1249760,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.215841
+    "totalCostUsd": 0.300986
   }
 }
