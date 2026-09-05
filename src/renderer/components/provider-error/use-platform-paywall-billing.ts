@@ -29,26 +29,74 @@ function invalidateBillingSnapshot(queryClient: QueryClient, op: string): Promis
     })
 }
 
-function useBillingRecheckPoll(enabled: boolean): void {
+// Refresh the snapshot while the card is up, without touching anything outside this hook:
+// - on return to the window (focus, or the tab becoming visible), coalesced, since that is
+//   when the user comes back from the dashboard;
+// - a bounded poll, only while a fresh snapshot denies access. That verdict proves the
+//   proxy emits `access`, so the answer can flip; without it polling can never clear the
+//   card. The poll pauses while the document is hidden.
+function useBillingRefresh(active: boolean, blocked: boolean): void {
   const queryClient = useQueryClient()
+
   useEffect(() => {
-    if (!enabled) return
-    const id = setInterval(() => {
-      void invalidateBillingSnapshot(queryClient, 'recheck-poll')
-    }, PAYWALL_RECHECK_INTERVAL_MS)
-    return () => clearInterval(id)
-  }, [enabled, queryClient])
+    if (!active) return
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const onReturn = () => {
+      if (timer !== null) return
+      timer = setTimeout(() => {
+        timer = null
+        void invalidateBillingSnapshot(queryClient, 'refresh-on-return')
+      }, 50)
+    }
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') onReturn()
+    }
+    window.addEventListener('focus', onReturn)
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => {
+      if (timer !== null) clearTimeout(timer)
+      window.removeEventListener('focus', onReturn)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
+  }, [active, queryClient])
+
+  useEffect(() => {
+    if (!active || !blocked) return
+    let id: ReturnType<typeof setInterval> | null = null
+    const start = () => {
+      if (id !== null) return
+      id = setInterval(() => {
+        void invalidateBillingSnapshot(queryClient, 'recheck-poll')
+      }, PAYWALL_RECHECK_INTERVAL_MS)
+    }
+    const stop = () => {
+      if (id === null) return
+      clearInterval(id)
+      id = null
+    }
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') stop()
+      else start()
+    }
+    if (document.visibilityState !== 'hidden') start()
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => {
+      stop()
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
+  }, [active, blocked, queryClient])
 }
 
 // `flagFrom402` is the proxy's subscription_required flag when the 402 body kept it;
 // `billingHref` is the provider-resolved CTA link (presentation.href).
 // A live 402 ignores a leftover `allowed` snapshot from a previous recovery.
 // A persisted 402 (switch session after a top-up) trusts the current snapshot.
+// `active` is false once the card is dismissed: no refresh signals after that.
 export function usePlatformPaywallBilling(
   flagFrom402: boolean | undefined,
   billingHref: string | null,
   live: boolean,
-  poll = true,
+  active = true,
 ): PaywallBilling {
   const { data: platformAuth } = usePlatformAuthStatus()
   const role = platformAuth?.role
@@ -99,7 +147,7 @@ export function usePlatformPaywallBilling(
     seenAt,
   ])
 
-  useBillingRecheckPoll(poll && !snapshot.cleared)
+  useBillingRefresh(active && !snapshot.cleared, snapshot.blocked)
 
   const recheck = useCallback(() => {
     void invalidateBillingSnapshot(queryClient, 'recheck')

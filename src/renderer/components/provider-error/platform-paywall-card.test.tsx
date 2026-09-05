@@ -191,7 +191,7 @@ describe('PlatformPaywallCard', () => {
     expect(openExternalUrl).not.toHaveBeenCalled()
   })
 
-  it('rechecks automatically every 5s while the card is visible', async () => {
+  it('rechecks automatically every 5s while a fresh snapshot denies access', async () => {
     vi.useFakeTimers({ toFake: ['setInterval'] })
     try {
       renderCard()
@@ -205,6 +205,78 @@ describe('PlatformPaywallCard', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('does not poll when the snapshot carries no access verdict (nothing can flip)', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval'] })
+    try {
+      fetchBilling.mockResolvedValue(billing({ access: undefined }))
+      renderCard()
+      await screen.findByText('Workspace billing needs attention')
+      const before = fetchBilling.mock.calls.length
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(PAYWALL_RECHECK_INTERVAL_MS * 3)
+      })
+      expect(fetchBilling.mock.calls.length).toBe(before)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('pauses the poll while the document is hidden and resumes when it is visible again', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    let visibility: DocumentVisibilityState = 'visible'
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visibility })
+    try {
+      renderCard()
+      await screen.findByText('Workspace billing needs attention')
+      visibility = 'hidden'
+      act(() => { document.dispatchEvent(new Event('visibilitychange')) })
+      const before = fetchBilling.mock.calls.length
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(PAYWALL_RECHECK_INTERVAL_MS * 3)
+      })
+      expect(fetchBilling.mock.calls.length).toBe(before)
+
+      visibility = 'visible'
+      act(() => { document.dispatchEvent(new Event('visibilitychange')) })
+      // Becoming visible refetches once on return (50ms coalesce, real timer); the poll then
+      // resumes on top of that. waitFor is avoided: its polling uses the faked setInterval.
+      await act(async () => { await new Promise((r) => setTimeout(r, 80)) })
+      expect(fetchBilling.mock.calls.length).toBe(before + 1)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(PAYWALL_RECHECK_INTERVAL_MS)
+      })
+      await act(async () => { await new Promise((r) => setTimeout(r, 20)) })
+      expect(fetchBilling.mock.calls.length).toBe(before + 2)
+    } finally {
+      vi.useRealTimers()
+      delete (document as { visibilityState?: unknown }).visibilityState
+    }
+  })
+
+  it('refetches once on window focus, coalesced with the visibility signal', async () => {
+    fetchBilling.mockResolvedValue(billing({ access: undefined }))
+    renderCard()
+    await screen.findByText('Workspace billing needs attention')
+    const before = fetchBilling.mock.calls.length
+    act(() => {
+      window.dispatchEvent(new Event('focus'))
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    await waitFor(() => expect(fetchBilling.mock.calls.length).toBe(before + 1))
+    await act(async () => {})
+    expect(fetchBilling.mock.calls.length).toBe(before + 1)
+  })
+
+  it('stops listening for refresh signals once dismissed', async () => {
+    renderCard()
+    await screen.findByText('Workspace billing needs attention')
+    act(() => { screen.getByRole('button', { name: 'Dismiss' }).click() })
+    const before = fetchBilling.mock.calls.length
+    act(() => { window.dispatchEvent(new Event('focus')) })
+    await act(async () => { await new Promise((r) => setTimeout(r, 80)) })
+    expect(fetchBilling.mock.calls.length).toBe(before)
   })
 
   it('asks admins to add a card first when the org has no payment method', async () => {
