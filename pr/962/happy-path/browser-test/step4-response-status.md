@@ -1,0 +1,132 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e8]:
+        - generic [ref=e9]: Gamut
+        - button "Search" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+      - generic [ref=e15]:
+        - list [ref=e18]:
+          - listitem [ref=e19]:
+            - link "Home" [ref=e20] [cursor=pointer]:
+              - /url: /
+              - img [ref=e21]
+              - generic [ref=e26]: Home
+          - listitem [ref=e27]:
+            - link "Notifications" [ref=e28] [cursor=pointer]:
+              - /url: /notifications
+              - img [ref=e29]
+              - generic [ref=e32]: Notifications
+          - listitem [ref=e157]:
+            - link "Discover New Agents New" [ref=e158] [cursor=pointer]:
+              - /url: /explore
+              - img [ref=e159]
+              - generic [ref=e162]: Discover New Agents
+              - generic [ref=e163]: New
+          - listitem [ref=e33]:
+            - button "New Agent" [ref=e34] [cursor=pointer]:
+              - img [ref=e35]
+              - generic [ref=e36]: New Agent
+        - list [ref=e39]:
+          - listitem [ref=e40]:
+            - button "Your Agents 2" [ref=e41] [cursor=pointer]:
+              - button "Your Agents 2" [expanded] [ref=e42]:
+                - generic [ref=e43]: Your Agents
+                - generic [ref=e45]: "2"
+            - button "New folder" [ref=e46] [cursor=pointer]:
+              - img [ref=e47]
+            - list [ref=e50]:
+              - button "QA-20260905-001040-oo39 idle Collapse Browser Page Title Retrieval Task" [ref=e550] [cursor=pointer]:
+                - generic [ref=e52]:
+                  - link "QA-20260905-001040-oo39 idle" [ref=e551]:
+                    - /url: /agents/qa-20260905-001040-oo39-aefwc8077e
+                    - generic [ref=e55]: QA-20260905-001040-oo39
+                    - img "idle" [ref=e552]:
+                      - img [ref=e553]
+                  - button "Collapse" [expanded] [ref=e356]:
+                    - img [ref=e357]
+                - list [ref=e360]:
+                  - listitem [ref=e361]:
+                    - link "Browser Page Title Retrieval Task" [ref=e562]:
+                      - /url: /agents/aefwc8077e/sessions/6ea417d0-66f1-4e6f-a16e-e28cd1fb5015
+                      - generic [ref=e364]: Browser Page Title Retrieval Task
+              - button "QA-20260905-001039-icpf idle" [ref=e66] [cursor=pointer]:
+                - link "QA-20260905-001039-icpf idle" [ref=e68]:
+                  - /url: /agents/qa-20260905-001039-icpf-bkxo1ozl4m
+                  - generic [ref=e70]: QA-20260905-001039-icpf
+                  - img "idle" [ref=e71]:
+                    - img [ref=e72]
+          - status [ref=e164]
+      - generic [ref=e82]:
+        - button "Settings" [ref=e83] [cursor=pointer]:
+          - img [ref=e84]
+          - generic [ref=e87]: Settings
+        - button "0.5.17" [ref=e88] [cursor=pointer]:
+          - generic [ref=e89]: 0.5.17
+      - button "Toggle Sidebar" [ref=e90]
+    - main [ref=e91]:
+      - generic [ref=e169]:
+        - generic [ref=e170]:
+          - button "Toggle Sidebar" [ref=e171] [cursor=pointer]:
+            - img
+            - generic [ref=e172]: Toggle Sidebar
+          - generic [ref=e175]:
+            - link "QA-20260905-001040-oo39" [ref=e371]:
+              - /url: /agents/qa-20260905-001040-oo39-aefwc8077e
+            - text: /Browser Page Title Retrieval Task
+          - generic [ref=e176]:
+            - generic [ref=e177]:
+              - img [ref=e563]
+              - generic [ref=e187]: idle
+            - button "Stop Agent" [ref=e189] [cursor=pointer]:
+              - img
+        - generic [ref=e378]:
+          - region "Messages" [ref=e380]:
+            - log [ref=e382]:
+              - time [ref=e384]: Today at 12:11 AM
+              - paragraph [ref=e389]:
+                - text: Open a browser and go to
+                - link "https://example.com" [ref=e390] [cursor=pointer]:
+                  - /url: https://example.com
+                - text: . Tell me the page title.
+              - button "Expand completed turn work" [ref=e573] [cursor=pointer]:
+                - generic [ref=e574]: Worked for 9s
+                - generic [ref=e575]: ·
+                - generic [ref=e576]: 4 tool calls
+                - generic [ref=e577]: ·
+                - generic [ref=e578]: 163,676 tokens
+                - img [ref=e579]
+              - paragraph [ref=e585]:
+                - text: The page title is
+                - strong [ref=e586]: "\"Example Domain\""
+                - text: — a placeholder page reserved for use in documentation examples. Browser is closed.
+          - generic [ref=e393]:
+            - generic [ref=e401]:
+              - textbox "Type a message..." [ref=e587]:
+                - text: Type a message...
+                - paragraph [ref=e405]
+              - generic [ref=e406]:
+                - generic [ref=e407]:
+                  - button "Add files" [ref=e408] [cursor=pointer]:
+                    - img
+                  - 'button "Model and effort: Opus 5 · Medium. Click to change." [ref=e588] [cursor=pointer]':
+                    - generic [ref=e589]:
+                      - text: Opus 5
+                      - generic [ref=e590]: · Medium
+                    - img
+                - generic [ref=e409]:
+                  - button "Set up voice input" [ref=e410] [cursor=pointer]:
+                    - img
+                  - button "Send message" [disabled]:
+                    - img
+            - generic [ref=e414]:
+              - generic [ref=e480]:
+                - generic [ref=e481]: Context Usage
+                - img [ref=e483]
+              - generic [ref=e415]:
+                - generic [ref=e416]: ↵
+                - generic [ref=e417]: Send
+                - generic [ref=e418]: ·
+                - generic [ref=e419]: ⇧↵
+                - generic [ref=e420]: New line
+  - region "Notifications alt+T"
