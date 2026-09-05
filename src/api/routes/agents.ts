@@ -191,7 +191,7 @@ import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-pr
 import { getActiveLlmProvider, resolveActiveProviderModel } from '@shared/lib/llm-provider'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
-import { isPathWithinDir, isRealPathWithinDir, sanitizeUploadFilename } from '@shared/lib/utils/path-safety'
+import { isPathWithinDir, isRealPathWithinDir, sanitizeUploadFilename, withUploadTimestamp } from '@shared/lib/utils/path-safety'
 import { AGENT_PACKAGE_EXTENSION, SKILL_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
 import { readAgentPreferences, updateAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { agentPreferencesUpdateSchema } from '@shared/lib/types/agent-preferences'
@@ -5934,7 +5934,7 @@ function resolveUploadDestPath(agentSlug: string, filename: string, relativePath
     // Single-file upload: collapse the untrusted name to a safe basename
     // (shared with the chat-attachment write path). isPathWithinDir below is
     // the defense-in-depth backstop.
-    uploadPath = `uploads/${Date.now()}-${sanitizeUploadFilename(filename)}`
+    uploadPath = `uploads/${withUploadTimestamp(sanitizeUploadFilename(filename))}`
   }
 
   const workspaceDir = getAgentWorkspaceDir(agentSlug)

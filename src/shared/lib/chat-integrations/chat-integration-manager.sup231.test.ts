@@ -67,7 +67,7 @@ describe('SUP-231 writeToWorkspace path containment', () => {
 
     // The (sanitized) file must land strictly under uploads.
     const inUploads = fs.existsSync(uploadsDir)
-      ? fs.readdirSync(uploadsDir).filter((f) => f.endsWith('oauth-token.txt'))
+      ? fs.readdirSync(uploadsDir).filter((f) => /^oauth-token-\d{13}\.txt$/.test(f))
       : []
     expect(inUploads.length).toBe(1)
   })
@@ -88,14 +88,14 @@ describe('SUP-231 writeToWorkspace path containment', () => {
     expect(path.isAbsolute(rel)).toBe(false)
   })
 
-  it('writes a normal filename to uploads/<digits>-<name> and returns the workspace path', async () => {
+  it('writes a normal filename to uploads/<name>-<digits>.<ext> and returns the workspace path', async () => {
     const { uploadsDir } = workspacePaths()
     const result = await writeToWorkspace('report.pdf', Buffer.from('pdf-bytes'))
 
-    expect(result).toMatch(/^\/workspace\/uploads\/\d+-report\.pdf$/)
+    expect(result).toMatch(/^\/workspace\/uploads\/report-\d{13}\.pdf$/)
     const files = fs.readdirSync(uploadsDir)
     expect(files).toHaveLength(1)
-    expect(files[0]).toMatch(/^\d+-report\.pdf$/)
+    expect(files[0]).toMatch(/^report-\d{13}\.pdf$/)
     const written = fs.readFileSync(path.join(uploadsDir, files[0]), 'utf8')
     expect(written).toBe('pdf-bytes')
   })

@@ -40,7 +40,7 @@ import {
   resolveActiveSession,
   getLastDisplayName,
 } from '@shared/lib/services/chat-integration-session-service'
-import { assertPathWithinDir, isPathWithinDir, sanitizeUploadFilename } from '@shared/lib/utils/path-safety'
+import { assertPathWithinDir, isPathWithinDir, sanitizeUploadFilename, withUploadTimestamp } from '@shared/lib/utils/path-safety'
 import { isHostOrSubdomain, tryParseUrl } from '@shared/lib/utils/url-safety'
 import type { ContainerClient } from '@shared/lib/container/types'
 import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
@@ -1540,7 +1540,7 @@ class ChatIntegrationManager {
     // External attachment names are attacker-controlled — sanitize to a safe
     // basename so `../` segments cannot escape the uploads directory (SUP-231).
     const safeName = sanitizeUploadFilename(filename)
-    const uploadName = `${Date.now()}-${safeName}`
+    const uploadName = withUploadTimestamp(safeName)
     const workspaceDir = getAgentWorkspaceDir(agentSlug)
     const uploadsDir = path.resolve(workspaceDir, 'uploads')
     const fullPath = path.resolve(uploadsDir, uploadName)

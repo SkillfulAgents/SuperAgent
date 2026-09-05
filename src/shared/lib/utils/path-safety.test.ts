@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'fs'
 import * as os from 'os'
 import path from 'path'
-import { isPathWithinDir, assertPathWithinDir, isRealPathWithinDir, sanitizeUploadFilename } from './path-safety'
+import { isPathWithinDir, assertPathWithinDir, isRealPathWithinDir, sanitizeUploadFilename, withUploadTimestamp } from './path-safety'
 
 // ---------------------------------------------------------------------------
 // Path containment guard (SUP-200 generalization). The motivating bug: a bare
@@ -187,5 +187,27 @@ describe('isRealPathWithinDir', () => {
     const link = path.join(base, 'alias.jsonl')
     fs.symlinkSync(real, link)
     expect(isRealPathWithinDir(base, link)).toBe(true)
+  })
+})
+
+describe('withUploadTimestamp', () => {
+  const NOW = 1788459888315
+
+  it('puts the timestamp between the stem and the extension', () => {
+    expect(withUploadTimestamp('report.pdf', NOW)).toBe('report-1788459888315.pdf')
+    expect(withUploadTimestamp('archive.tar.gz', NOW)).toBe('archive.tar-1788459888315.gz')
+  })
+
+  it('appends the timestamp when there is no extension', () => {
+    expect(withUploadTimestamp('README', NOW)).toBe('README-1788459888315')
+    expect(withUploadTimestamp('.env', NOW)).toBe('.env-1788459888315')
+  })
+
+  it('defaults to the current time', () => {
+    const before = Date.now()
+    const name = withUploadTimestamp('a.txt')
+    const stamp = Number(name.match(/^a-(\d+)\.txt$/)?.[1])
+    expect(stamp).toBeGreaterThanOrEqual(before)
+    expect(stamp).toBeLessThanOrEqual(Date.now())
   })
 })

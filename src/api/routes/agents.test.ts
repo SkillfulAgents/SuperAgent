@@ -3492,7 +3492,7 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
     const res = await postFormData(app, '/api/agents/test-agent/upload-file', formData)
     expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.path).toMatch(/\/workspace\/uploads\/\d+-test\.txt/)
+    expect(body.path).toMatch(/\/workspace\/uploads\/test-\d{13}\.txt/)
     expect(body.success).toBe(true)
   })
 
