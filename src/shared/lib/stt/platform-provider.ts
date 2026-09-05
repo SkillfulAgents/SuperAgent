@@ -58,6 +58,15 @@ export class PlatformSttProvider extends BaseSttProvider {
     return this.mintEphemeralToken(platformToken)
   }
 
+  override supportsTts(): boolean {
+    return true
+  }
+
+  override async mintTtsToken(platformToken: string): Promise<string> {
+    // Same Deepgram token works for the speak endpoint too
+    return this.mintEphemeralToken(platformToken)
+  }
+
   override supportsTranscription(): boolean {
     return true
   }

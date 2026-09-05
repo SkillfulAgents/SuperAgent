@@ -20,19 +20,22 @@ interface SttCredentials {
 interface SttConfiguredStatus {
   configured: boolean
   supportsVoiceAgent: boolean
+  supportsTts: boolean
 }
+
+const NOT_CONFIGURED: SttConfiguredStatus = { configured: false, supportsVoiceAgent: false, supportsTts: false }
 
 function useSttConfiguredStatus(): SttConfiguredStatus {
   const { data } = useQuery<SttConfiguredStatus>({
     queryKey: ['stt-configured'],
     queryFn: async () => {
       const res = await apiFetch('/api/stt/configured')
-      if (!res.ok) return { configured: false, supportsVoiceAgent: false }
+      if (!res.ok) return NOT_CONFIGURED
       return res.json() as Promise<SttConfiguredStatus>
     },
     staleTime: 60_000,
   })
-  return data ?? { configured: false, supportsVoiceAgent: false }
+  return data ?? NOT_CONFIGURED
 }
 
 /** Hook to check whether voice input is fully configured (provider + API key). */
@@ -46,6 +49,14 @@ export function useIsVoiceConfigured(): boolean {
  */
 export function useIsVoiceAgentConfigured(): boolean {
   return useSttConfiguredStatus().supportsVoiceAgent
+}
+
+/**
+ * Hook to check whether the configured voice provider can read text aloud.
+ * Returns false if voice is not configured at all.
+ */
+export function useIsTtsConfigured(): boolean {
+  return useSttConfiguredStatus().supportsTts
 }
 
 export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {

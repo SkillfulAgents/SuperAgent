@@ -12,11 +12,13 @@ import { Button } from '@renderer/components/ui/button'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { apiFetch } from '@renderer/lib/api'
-import { AlertTriangle, Eye, EyeOff, Check, Loader2, ExternalLink } from 'lucide-react'
+import { AlertTriangle, Eye, EyeOff, Check, Loader2, ExternalLink, Square, Volume2 } from 'lucide-react'
 import { useVoiceInput } from '@renderer/hooks/use-voice-input'
+import { useReadAloud } from '@renderer/hooks/use-read-aloud'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import type { ApiKeyStatus, SttProvider } from '@shared/lib/config/settings'
+import { DEFAULT_TTS_VOICE, TTS_VOICES, isTtsVoice, type TtsVoice } from '@shared/lib/stt/tts-voices'
 
 const STT_PROVIDERS = [
   {
@@ -282,6 +284,78 @@ function VoiceTest() {
 
 const VALID_PROVIDERS = new Set(STT_PROVIDERS.map(p => p.value))
 
+/** Providers that can also read replies aloud (Deepgram Aura, directly or via the platform). */
+const TTS_PROVIDERS = new Set<SttProvider>(['deepgram', 'platform'])
+
+const VOICE_PREVIEW_ID = 'settings-voice-preview'
+const VOICE_PREVIEW_TEXT = 'Hi! This is how your agent will sound when it reads a reply out loud.'
+
+function VoicePreviewButton() {
+  const { status, toggle, error } = useReadAloud(VOICE_PREVIEW_ID, VOICE_PREVIEW_TEXT)
+  const busy = status === 'connecting'
+  return (
+    <div className="space-y-2">
+      <Button size="sm" variant="outline" onClick={toggle} disabled={busy} data-testid="voice-preview-button">
+        {busy ? (
+          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+        ) : status === 'speaking' ? (
+          <Square className="h-4 w-4 mr-2 fill-current" />
+        ) : (
+          <Volume2 className="h-4 w-4 mr-2" />
+        )}
+        {status === 'speaking' ? 'Stop' : 'Preview voice'}
+      </Button>
+      {error && (
+        <Alert variant="destructive">
+          <AlertTriangle className="h-4 w-4" />
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+    </div>
+  )
+}
+
+function TtsVoiceSection({ disabled }: { disabled: boolean }) {
+  const { data: settings } = useSettings()
+  const updateSettings = useUpdateSettings()
+  const rawVoice = settings?.voice?.ttsVoice
+  const voice: TtsVoice = isTtsVoice(rawVoice) ? rawVoice : DEFAULT_TTS_VOICE
+  const selected = TTS_VOICES.find(v => v.id === voice)
+
+  return (
+    <div className="pt-4 border-t space-y-4">
+      <h3 className="text-sm font-medium">Text-to-Speech</h3>
+      <div className="space-y-2">
+        <Label htmlFor="tts-voice">Voice</Label>
+        <Select
+          value={voice}
+          onValueChange={(value) => {
+            if (isTtsVoice(value)) updateSettings.mutate({ voice: { ttsVoice: value } })
+          }}
+          disabled={disabled}
+        >
+          <SelectTrigger id="tts-voice">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {TTS_VOICES.map((v) => (
+              <SelectItem key={v.id} value={v.id}>
+                {v.label}
+                <span className="text-muted-foreground ml-2">({v.description})</span>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">
+          {selected ? `${selected.label}: ${selected.description}. ` : ''}
+          Used by the speaker button under agent replies.
+        </p>
+      </div>
+      <VoicePreviewButton />
+    </div>
+  )
+}
+
 export function VoiceTab() {
   const { data: settings, isLoading } = useSettings()
   const updateSettings = useUpdateSettings()
@@ -364,6 +438,10 @@ export function VoiceTab() {
           <h3 className="text-sm font-medium">API Key</h3>
           <SttApiKeyInput key={selectedProvider} provider={selectedProvider} disabled={isLoading} />
         </div>
+      )}
+
+      {hasKeyConfigured && selectedProvider && TTS_PROVIDERS.has(selectedProvider) && (
+        <TtsVoiceSection disabled={isLoading} />
       )}
 
       {hasKeyConfigured && selectedProvider && (

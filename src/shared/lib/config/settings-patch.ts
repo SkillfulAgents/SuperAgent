@@ -18,6 +18,7 @@ import { assessVmMemory } from '../container/vm-memory'
 import { customEnvVarsSchema } from '../container/reserved-env-vars'
 import { modelCatalogSettingsSchema } from '../llm-provider/model-catalog-schema'
 import { LLM_PROVIDER_IDS, type LlmProviderId } from '../llm-provider/provider-types'
+import { ttsVoiceSchema } from '../stt/tts-voices'
 import { WEB_PROVIDER_IDS } from '../web-provider/types'
 
 const notificationSettingsSchema = z.object({
@@ -170,6 +171,7 @@ const authSettingsPatchSchema = z.object({
 
 const voiceSettingsPatchSchema = z.object({
   sttProvider: z.enum(['deepgram', 'openai', 'platform']),
+  ttsVoice: ttsVoiceSchema,
 }).partial().strict()
 
 const computerUseGrantSchema = z.object({
