@@ -131,3 +131,17 @@ export function sanitizeUploadFilename(filename: string): string {
   if (base === '' || base === '.' || base === '..') return 'file'
   return base
 }
+
+/**
+ * Storage name for an uploaded file: the (already sanitized) name with a
+ * millisecond timestamp between the stem and the extension —
+ * `report.pdf` → `report-1788459888315.pdf` — so repeat uploads never collide
+ * while the name stays readable and sorts by its original stem. Dotless
+ * names get the suffix at the end. Pair with `sanitizeUploadFilename`.
+ */
+export function withUploadTimestamp(safeName: string, now: number = Date.now()): string {
+  const dot = safeName.lastIndexOf('.')
+  // A leading dot is not an extension separator.
+  if (dot <= 0) return `${safeName}-${now}`
+  return `${safeName.slice(0, dot)}-${now}${safeName.slice(dot)}`
+}
