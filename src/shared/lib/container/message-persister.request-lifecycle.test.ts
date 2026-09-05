@@ -162,6 +162,7 @@ vi.mock('./container-manager', () => ({
 import { messagePersister } from './message-persister'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { createScheduledTask, createSessionWake } from '@shared/lib/services/scheduled-task-service'
 
 function createMockClient(): ContainerClient & {
   _messageCallback: ((message: StreamMessage) => void) | null
@@ -1811,6 +1812,235 @@ describe('pending user-input request lifecycle (characterization)', () => {
         reason: 'Recovered then streamed',
       })
       expect(triggerSpy.mock.calls.filter(([, , w]) => w === 'secret')).toHaveLength(1)
+    })
+  })
+
+  // ==========================================================================
+  // Host-executed tool dispatch: one entry point for every road, first
+  // delivery wins (SUP-534: a road forgot a family; SUP-536: the review card
+  // was missing on one road). The automated tools have no card — the only
+  // observable is the answer the host pushes back into the container.
+  // ==========================================================================
+
+  describe('host-executed tool dispatch (every road)', () => {
+    const resolvePushesFor = (toolUseId: string) =>
+      mockContainerClientFetch.mock.calls.filter(([path]) => path === `/inputs/${toolUseId}/resolve`)
+    const rejectPushesFor = (toolUseId: string) =>
+      mockContainerClientFetch.mock.calls.filter(([path]) => path === `/inputs/${toolUseId}/reject`)
+
+    function sendMainCompleteAssistantToolUse(
+      toolName: string,
+      toolId: string,
+      input: Record<string, unknown>,
+    ) {
+      mockClient._sendMessage({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', id: toolId, name: toolName, input }] },
+      })
+    }
+
+    function sendSidechainToolUse(
+      toolName: string,
+      toolId: string,
+      input: Record<string, unknown>,
+      parentToolId: string,
+      via: 'stream' | 'complete',
+    ) {
+      if (via === 'complete') {
+        mockClient._sendMessage({
+          type: 'assistant',
+          parent_tool_use_id: parentToolId,
+          message: { content: [{ type: 'tool_use', id: toolId, name: toolName, input }] },
+        })
+        return
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const send = (event: any) =>
+        mockClient._sendMessage({ type: 'stream_event', parent_tool_use_id: parentToolId, event })
+      send({ type: 'content_block_start', content_block: { type: 'tool_use', id: toolId, name: toolName } })
+      send({
+        type: 'content_block_delta',
+        delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
+      })
+      send({ type: 'content_block_stop' })
+    }
+
+    type Sender = (toolName: string, toolId: string, input: Record<string, unknown>) => void
+    const ROADS: Array<[string, Sender]> = [
+      ['main stream', (n, id, i) => simulateToolUse(n, id, i)],
+      ['main complete-assistant', (n, id, i) => sendMainCompleteAssistantToolUse(n, id, i)],
+      ['subagent stream', (n, id, i) => sendSidechainToolUse(n, id, i, 'parent-road-1', 'stream')],
+      ['subagent complete-assistant', (n, id, i) => sendSidechainToolUse(n, id, i, 'parent-road-2', 'complete')],
+    ]
+    const roadSlug = (road: string) => road.replace(/[^a-z]+/g, '-')
+
+    // Read-only automated tools: a mocked empty store answers instantly.
+    const AUTOMATED_READS = [
+      { label: 'list_triggers', toolName: 'mcp__user-input__list_triggers', input: {} },
+      { label: 'list_scheduled_tasks', toolName: 'mcp__user-input__list_scheduled_tasks', input: {} },
+    ]
+
+    describe.each(AUTOMATED_READS)('$label', ({ label, toolName, input }) => {
+      it.each(ROADS)('%s: the host pushes an answer to the container', async (road, send) => {
+        const toolId = `${label}-${roadSlug(road)}`
+        send(toolName, toolId, input)
+
+        await vi.waitFor(() => {
+          expect(resolvePushesFor(toolId).length).toBeGreaterThan(0)
+        })
+      })
+    })
+
+    const SCHEDULE_TASK = 'mcp__user-input__schedule_task'
+    const scheduleInput = (name: string) => ({
+      scheduleType: 'cron',
+      scheduleExpression: '0 9 * * *',
+      prompt: 'ping',
+      name,
+    })
+
+    // Wait on a monotonic condition, then assert the counts: `waitFor` on
+    // `toBe(1)` would pass on the poll where a doubled count transits 1.
+    async function expectScheduledOnce(toolId: string) {
+      await vi.waitFor(() => {
+        expect(createScheduledTask).toHaveBeenCalled()
+      })
+      expect(createScheduledTask).toHaveBeenCalledTimes(1)
+      expect(resolvePushesFor(toolId)).toHaveLength(1)
+    }
+
+    it('subagent stream + complete-assistant double delivery: the mutation runs once', async () => {
+      const toolId = 'side-dedupe-1'
+      const input = scheduleInput('dedupe-check')
+      sendSidechainToolUse(SCHEDULE_TASK, toolId, input, 'parent-dedupe', 'stream')
+      sendSidechainToolUse(SCHEDULE_TASK, toolId, input, 'parent-dedupe', 'complete')
+
+      await expectScheduledOnce(toolId)
+    })
+
+    it('main stream + complete-assistant double delivery: the mutation runs once', async () => {
+      const toolId = 'main-dedupe-1'
+      const input = scheduleInput('main-dedupe-check')
+      simulateToolUse(SCHEDULE_TASK, toolId, input)
+      sendMainCompleteAssistantToolUse(SCHEDULE_TASK, toolId, input)
+
+      await expectScheduledOnce(toolId)
+    })
+
+    it('a mid-turn transport reattach between the two deliveries: the mutation still runs once', async () => {
+      const toolId = 'side-reattach-1'
+      const input = scheduleInput('reattach-check')
+      sendSidechainToolUse(SCHEDULE_TASK, toolId, input, 'parent-reattach', 'stream')
+      await vi.waitFor(() => {
+        expect(createScheduledTask).toHaveBeenCalled()
+      })
+
+      // A WebSocket drop mid-turn detaches the transport and the recovery
+      // orchestrator resubscribes, which rebuilds the streaming state.
+      mockClient = createMockClient()
+      await messagePersister.subscribeToSession(AGENT_SLUG, SESSION_ID, mockClient, SESSION_ID)
+      sendSidechainToolUse(SCHEDULE_TASK, toolId, input, 'parent-reattach', 'complete')
+
+      await vi.waitFor(() => {
+        expect(resolvePushesFor(toolId)).toHaveLength(1)
+      })
+      expect(createScheduledTask).toHaveBeenCalledTimes(1)
+    })
+
+    it('a replayed catch-up frame never dispatches', async () => {
+      mockClient._sendMessage({
+        type: 'assistant',
+        replayed: true,
+        message: {
+          content: [{ type: 'tool_use', id: 'replayed-1', name: SCHEDULE_TASK, input: scheduleInput('replayed') }],
+        },
+      })
+
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(createScheduledTask).not.toHaveBeenCalled()
+    })
+
+    it('a granted host script delivered on both subagent roads executes once', async () => {
+      mockCheckPermission.mockReturnValue('granted')
+      const fetchMock = vi.fn(() => Promise.resolve({ ok: true } as Response))
+      vi.stubGlobal('fetch', fetchMock)
+      try {
+        const toolId = 'side-script-once'
+        const input = { script: 'sw_vers', explanation: 'Version', scriptType: 'shell' }
+        sendSidechainToolUse('mcp__user-input__request_script_run', toolId, input, 'parent-script', 'stream')
+        sendSidechainToolUse('mcp__user-input__request_script_run', toolId, input, 'parent-script', 'complete')
+
+        await vi.waitFor(() => {
+          expect(fetchMock).toHaveBeenCalled()
+        })
+        expect(fetchMock).toHaveBeenCalledTimes(1)
+      } finally {
+        vi.unstubAllGlobals()
+      }
+    })
+
+    it('a nested launch on the subagent complete-assistant road gets its review card (SUP-536)', async () => {
+      mockAgentCapabilities.workflows = 'review'
+      vi.mocked(mockClient.fetch).mockResolvedValue({
+        ok: true,
+        json: async () => ({ grants: [] }),
+      } as unknown as Response)
+
+      sendSidechainToolUse(
+        'Workflow',
+        'side-wf-review-1',
+        { script: 'export const meta = {}' },
+        'parent-wf',
+        'complete',
+      )
+
+      await vi.waitFor(() => {
+        expect(cardsFor('capability_review')).toHaveLength(1)
+      })
+    })
+
+    describe('schedule_resume is main-thread only', () => {
+      const TOOL = 'mcp__user-input__schedule_resume'
+      const input = { wakeTime: 'tomorrow 9am', note: 'check inbox' }
+
+      it('main stream (control): creates the wake', async () => {
+        const toolId = 'resume-main'
+        simulateToolUse(TOOL, toolId, input)
+
+        await vi.waitFor(() => {
+          expect(resolvePushesFor(toolId)).toHaveLength(1)
+        })
+        expect(createSessionWake).toHaveBeenCalledTimes(1)
+      })
+
+      // A wake resumes the main thread and a session holds one pending wake,
+      // so a subagent's call would replace the main agent's wake and never
+      // resume the subagent. The host rejects it instead of creating the wake.
+      it.each([
+        ['subagent stream', 'stream' as const],
+        ['subagent complete-assistant', 'complete' as const],
+      ])('%s: rejects without creating a wake', async (road, via) => {
+        const toolId = `resume-${roadSlug(road)}`
+        sendSidechainToolUse(TOOL, toolId, input, 'parent-resume', via)
+
+        await vi.waitFor(() => {
+          expect(rejectPushesFor(toolId)).toHaveLength(1)
+        })
+        expect(resolvePushesFor(toolId)).toHaveLength(0)
+        expect(createSessionWake).not.toHaveBeenCalled()
+      })
+    })
+
+    it('transcript recovery re-dispatches an unanswered automated tool, once', async () => {
+      const unresolved = [
+        { toolUseId: 'rec-sched-1', toolName: SCHEDULE_TASK, input: scheduleInput('recovered') },
+      ]
+      messagePersister.recoverSessionAwaitingInput(AGENT_SLUG, SESSION_ID, unresolved)
+      // The transcript is rescanned on every fetch; a second pass must not
+      // double the mutation while the first handler is still in flight.
+      messagePersister.recoverSessionAwaitingInput(AGENT_SLUG, SESSION_ID, unresolved)
+
+      await expectScheduledOnce('rec-sched-1')
     })
   })
 })

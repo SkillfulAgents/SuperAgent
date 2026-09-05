@@ -93,6 +93,14 @@ import { SubagentCapture } from './subagent-capture'
 import * as fs from 'fs'
 import * as path from 'path'
 import { randomUUID } from 'crypto'
+import {
+  AUTOMATED_TOOL_NAMES,
+  MAIN_THREAD_ONLY_TOOL_NAMES,
+  MAIN_THREAD_ONLY_TOOL_MESSAGE,
+  USER_INPUT_TOOL_PREFIX,
+  userInputToolName,
+  type AutomatedInputType,
+} from './automated-tools'
 // Per-subagent streaming state (supports multiple concurrent background agents)
 interface SubagentStreamingState {
   agentId: string | null
@@ -257,6 +265,13 @@ interface StreamingState {
   // this changes every id we hold is unretirable and must be dropped.
   processInstanceId: string | null
   pendingDeliverFiles: Map<string, { filePath: string; description?: string }> // deliver_file tool calls awaiting their tool_result, keyed by tool_use ID
+  // First-delivery-wins for every tool_use family the host executes itself
+  // (automated scheduler/trigger/webhook handlers, host scripts, desktop
+  // commands, launch reviews): stream stop and complete-assistant can both
+  // carry the same tool_use, and a transport reattach can redeliver it. An
+  // id is dropped when its tool_result lands — every redelivery precedes
+  // execution — so the set holds at most one turn's open tool calls.
+  dispatchedToolUseIds: Set<string>
   // True when the runtime publishes session_state_changed events — then IT is
   // the idle authority: a 'result' alone does not end the session (queued
   // messages or background work may keep the runtime non-idle, and it knows —
@@ -307,6 +322,18 @@ const SECRET_BEARING_TOOL_NAMES = new Set([
 // (proxy caps at 2KB); cap harder here — this text lands in the agent's
 // context and 50 events × 2KB would crowd out the actual work.
 const INSPECT_BODY_PREVIEW_CHARS = 200
+
+// Subagent/workflow launches that pause in the container under a 'review'
+// capability policy and need the host's approval card.
+const CAPABILITY_REVIEW_TOOL_NAMES: ReadonlySet<string> = new Set(['Task', 'Agent', 'Workflow'])
+
+type AutomatedToolHandler = (
+  p: MessagePersister,
+  sessionId: string,
+  toolUseId: string,
+  input: string,
+  agentSlug: string,
+) => void
 
 export function formatWebhookEventLine(event: WebhookEndpointEvent): string {
   const filterNote = event.filter
@@ -529,6 +556,7 @@ class MessagePersister {
     const priorIsAwaitingInput = prior?.isAwaitingInput ?? false
     const priorBackgroundTasks = prior?.activeBackgroundTasks ?? new Map()
     const priorSettledInputRequests = prior?.settledInputRequests ?? new Map()
+    const priorDispatchedAutomatedToolUseIds = prior?.dispatchedToolUseIds ?? new Set()
 
     // Detach only the transport if already subscribed. NOT unsubscribeFromSession:
     // that is a full teardown — it drops the session's registry entries, which
@@ -578,6 +606,9 @@ class MessagePersister {
       // decides whether both are still valid.
       processInstanceId: prior?.processInstanceId ?? null,
       pendingDeliverFiles: new Map(),
+      // Survive transport reattach so a stream-stop that already ran a mutating
+      // automated handler is not re-run when complete-assistant arrives after.
+      dispatchedToolUseIds: priorDispatchedAutomatedToolUseIds,
       stateEventsAuthority: prior?.stateEventsAuthority ?? false,
       lastResultSubtype: null,
       lastResultCleanSuccess: false,
@@ -1353,6 +1384,7 @@ class MessagePersister {
         bgTasksSnapshot: null,
         processInstanceId: null,
         pendingDeliverFiles: new Map(),
+        dispatchedToolUseIds: new Set(),
         stateEventsAuthority: false,
         lastResultSubtype: null,
       lastResultCleanSuccess: false,
@@ -1545,15 +1577,94 @@ class MessagePersister {
       this.handleBrowserInputRequestTool(sessionId, toolUseId, toolInput, agentSlug, parentToolUseId)
     }
 
-    // Only tools with 'request_' prefix actually block waiting for user response
-    // (schedule_task, deliver_file, search_* resolve immediately and don't block).
-    // computer-use AND request_script_run sync awaiting in their own handlers.
-    // The handler above already broadcast the request event, which registered
-    // it — the sync just picks the new entry up.
+    // Only the request_* tools block on a human; the automated tools resolve
+    // host-side within milliseconds and computer-use / request_script_run sync
+    // awaiting in their own handlers. The handler above already broadcast the
+    // request event, which registered it — the sync just picks the new entry up.
     if (isBlockingUserInputToolName(toolName)) {
       this.syncSessionAwaiting(agentSlug, sessionId)
     }
   }
+
+  // The one entry point for a finished tool_use. Every road that surfaces one
+  // — main stream stop, main complete-assistant, sidechain stream stop,
+  // sidechain complete-assistant, transcript recovery — calls this once, so a
+  // family the host executes is never missed on one road (SUP-534, SUP-536).
+  // Stream stop and complete-assistant can both carry the same tool_use and a
+  // transport reattach can redeliver it: everything past the blocking
+  // dispatch is first-delivery-wins on state.dispatchedToolUseIds, so a
+  // scheduler mutation, host script or desktop command runs once. Blocking
+  // user-input tools sit outside that gate — their registry dedupes, and a
+  // recovered stub must be upgraded by the real delivery.
+  private dispatchToolUse(
+    state: StreamingState,
+    toolName: string,
+    toolUseId: string,
+    toolInput: string,
+    parentToolId?: string,
+  ): void {
+    const { agentSlug, sessionId } = state
+    this.dispatchBlockingUserInputTool(sessionId, toolName, toolUseId, toolInput, agentSlug, parentToolId)
+
+    if (state.dispatchedToolUseIds.has(toolUseId)) return
+    state.dispatchedToolUseIds.add(toolUseId)
+
+    if (toolName === 'AskUserQuestion') {
+      trackServerEvent('agent_requested_input', { agentSlug })
+    } else if (toolName.startsWith(USER_INPUT_TOOL_PREFIX)) {
+      trackServerEvent(`agent_${toolName.slice(USER_INPUT_TOOL_PREFIX.length)}`, { agentSlug })
+    }
+
+    const automated = MessagePersister.AUTOMATED_TOOL_HANDLERS.get(toolName)
+    if (automated) {
+      // A wake resumes the main thread, never the subagent that asked for it,
+      // and would replace the main agent's own pending wake. The container's
+      // PreToolUse hook denies this first; this is the backstop for a call
+      // that reaches the host anyway.
+      if (parentToolId && MAIN_THREAD_ONLY_TOOL_NAMES.has(toolName)) {
+        this.rejectContainerInput(agentSlug, toolUseId, MAIN_THREAD_ONLY_TOOL_MESSAGE).catch(console.error)
+      } else {
+        automated(this, sessionId, toolUseId, toolInput, agentSlug)
+      }
+      return
+    }
+
+    if (toolName === 'mcp__user-input__request_script_run') {
+      this.handleScriptRunRequestTool(sessionId, toolUseId, toolInput, agentSlug, parentToolId)
+    } else if (toolName.startsWith('mcp__computer-use__')) {
+      void this.handleComputerUseRequestTool(sessionId, toolUseId, toolName, toolInput, agentSlug, parentToolId)
+    } else if (CAPABILITY_REVIEW_TOOL_NAMES.has(toolName)) {
+      // The launch pauses in the container under a 'review' policy — surface
+      // the approval card. The handler checks the policy and session grants
+      // itself (no-op under allow/block/granted). A nested launch from inside
+      // a subagent pauses the same way and needs the same card.
+      void this.handleCapabilityReviewTool(sessionId, toolUseId, toolName, toolInput, agentSlug)
+    }
+  }
+
+  // Automated blocking tool → its handler, keyed by the container's
+  // AUTOMATED_INPUT_TYPES (the same list picks its 10-minute pending-input TTL
+  // over the 24-hour human one). `satisfies` makes a type missing here, or a
+  // handler for a type the container no longer declares, a typecheck error.
+  private static readonly AUTOMATED_TOOL_HANDLERS: ReadonlyMap<string, AutomatedToolHandler> = new Map(
+    Object.entries({
+      schedule_task: (p, ...a) => p.handleScheduleTaskTool(...a),
+      schedule_resume: (p, ...a) => p.handleScheduleResumeTool(...a),
+      list_scheduled_tasks: (p, ...a) => p.handleListScheduledTasksTool(...a),
+      cancel_scheduled_task: (p, ...a) => p.handleCancelScheduledTaskTool(...a),
+      pause_scheduled_task: (p, ...a) => p.handlePauseResumeScheduledTaskTool('pause', ...a),
+      resume_scheduled_task: (p, ...a) => p.handlePauseResumeScheduledTaskTool('resume', ...a),
+      get_available_triggers: (p, ...a) => p.handleGetAvailableTriggersTool(...a),
+      setup_trigger: (p, ...a) => p.handleSetupTriggerTool(...a),
+      list_triggers: (p, ...a) => p.handleListTriggersTool(...a),
+      cancel_trigger: (p, ...a) => p.handleCancelTriggerTool(...a),
+      create_webhook_endpoint: (p, ...a) => p.handleCreateWebhookEndpointTool(...a),
+      update_webhook_endpoint: (p, ...a) => p.handleUpdateWebhookEndpointTool(...a),
+      inspect_webhook_events: (p, ...a) => p.handleInspectWebhookEventsTool(...a),
+    } satisfies Record<AutomatedInputType, AutomatedToolHandler>).map(
+      ([type, handler]) => [userInputToolName(type), handler],
+    ),
+  )
 
   // Blocking user-input tool name → the request kind its handler registers.
   // Recovery synthesizes registry envelopes of that kind when the original
@@ -1576,17 +1687,27 @@ class MessagePersister {
   // the card from the transcript that triggered this recovery in the first
   // place. Resolution needs no special path — their tool_result (or the next
   // turn boundary) clears them like any other stream-store entry.
+  //
+  // Automated tools (schedule/trigger/webhook) recover differently: the host
+  // answers those itself, so a missed delivery leaves the container parked on
+  // a request nobody will answer until its TTL. Re-dispatch them from the
+  // transcript's input; dispatchToolUse is first-delivery-wins, so a handler
+  // already in flight is not doubled.
   recoverSessionAwaitingInput(
     agentSlug: string,
     sessionId: string,
-    unresolved: Array<{ toolUseId: string; toolName: string }>,
+    unresolved: Array<{ toolUseId: string; toolName: string; input?: Record<string, unknown> }>,
   ): void {
     const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
     if (!state?.isActive) return
     if (agentSlug && !state.agentSlug) {
       state.agentSlug = agentSlug
     }
-    for (const { toolUseId, toolName } of unresolved) {
+    for (const { toolUseId, toolName, input } of unresolved) {
+      if (AUTOMATED_TOOL_NAMES.has(toolName)) {
+        this.dispatchToolUse(state, toolName, toolUseId, JSON.stringify(input ?? {}))
+        continue
+      }
       const kind = MessagePersister.REQUEST_KIND_BY_TOOL_NAME[toolName]
       if (!kind || userInputRequestManager.getOpenRequest(toolUseId)) continue
       this.registerStreamRequest(
@@ -1873,7 +1994,9 @@ class MessagePersister {
         // Resumed CLI processes can replay already-persisted frames. The
         // renderer deduplicates those by transcript UUID before merging, so
         // ignore a duplicate even if it arrives after a newer message group.
-        if (!assistantEntryUuid || !state.assistantEntryUuids.has(assistantEntryUuid)) {
+        const isReplayedEntry =
+          !!assistantEntryUuid && state.assistantEntryUuids.has(assistantEntryUuid)
+        if (!isReplayedEntry) {
           if (assistantMessageId && assistantMessageId === state.lastAssistantMessageId) {
             state.lastAssistantText += assistantText
           } else if (assistantMessageId && state.assistantMessageIds.has(assistantMessageId)) {
@@ -1887,6 +2010,20 @@ class MessagePersister {
           }
           if (assistantMessageId) state.assistantMessageIds.add(assistantMessageId)
           if (assistantEntryUuid) state.assistantEntryUuids.add(assistantEntryUuid)
+        }
+
+        // The complete frame is the fallback carrier for a tool_use whose
+        // stream events were lost (a WebSocket drop mid-block leaves nothing
+        // for content_block_stop to dispatch, and the container's late-join
+        // catch-up replays only terminal frames). dispatchToolUse dedupes
+        // against the stream-stop delivery; the uuid check above keeps a
+        // resumed process's replay of a persisted frame from re-running
+        // anything.
+        if (!content.replayed && !isReplayedEntry && Array.isArray(content.message?.content)) {
+          for (const block of content.message.content) {
+            if (block?.type !== 'tool_use' || typeof block.id !== 'string' || typeof block.name !== 'string') continue
+            this.dispatchToolUse(state, block.name, block.id, JSON.stringify(block.input || {}))
+          }
         }
 
         // Complete assistant message - JSONL is the source of truth
@@ -2839,28 +2976,7 @@ class MessagePersister {
 
           for (const block of messageContent) {
             if (block.type !== 'tool_use') continue
-            const input = JSON.stringify(block.input || {})
-            this.dispatchBlockingUserInputTool(
-              sessionId,
-              block.name,
-              block.id,
-              input,
-              state.agentSlug,
-              parentToolId,
-            )
-            if (block.name === 'mcp__user-input__request_script_run') {
-              this.handleScriptRunRequestTool(sessionId, block.id, input, state.agentSlug, parentToolId)
-            }
-            if (block.name.startsWith('mcp__computer-use__')) {
-              this.handleComputerUseRequestTool(
-                sessionId,
-                block.id,
-                block.name,
-                input,
-                state.agentSlug,
-                parentToolId,
-              )
-            }
+            this.dispatchToolUse(state, block.name, block.id, JSON.stringify(block.input || {}), parentToolId)
           }
         }
       }
@@ -3215,47 +3331,13 @@ class MessagePersister {
 
       case 'content_block_stop':
         if (sub.currentToolUse) {
-          this.dispatchBlockingUserInputTool(
-            sessionId,
+          this.dispatchToolUse(
+            state,
             sub.currentToolUse.name,
             sub.currentToolUse.id,
             sub.currentToolInput,
-            state.agentSlug,
             parentToolId,
           )
-
-          if (sub.currentToolUse.name === 'mcp__user-input__request_script_run') {
-            this.handleScriptRunRequestTool(
-              sessionId,
-              sub.currentToolUse.id,
-              sub.currentToolInput,
-              state.agentSlug,
-              parentToolId
-            )
-          }
-
-          if (sub.currentToolUse.name.startsWith('mcp__computer-use__')) {
-            this.handleComputerUseRequestTool(
-              sessionId,
-              sub.currentToolUse.id,
-              sub.currentToolUse.name,
-              sub.currentToolInput,
-              state.agentSlug,
-              parentToolId,
-            )
-          }
-
-          // A nested launch from inside a subagent pauses in canUseTool too —
-          // it needs the same approval card as a top-level one.
-          if (['Task', 'Agent', 'Workflow'].includes(sub.currentToolUse.name)) {
-            void this.handleCapabilityReviewTool(
-              sessionId,
-              sub.currentToolUse.id,
-              sub.currentToolUse.name,
-              sub.currentToolInput,
-              state.agentSlug
-            )
-          }
 
           this.broadcastToSSE(agentSlug, sessionId, {
             type: 'subagent_tool_use_ready',
@@ -3381,152 +3463,12 @@ class MessagePersister {
         }
         // Tool use block finished streaming
         if (state.currentToolUse) {
-          // Track agent-emitted user request blocks
-          if (state.currentToolUse.name === 'AskUserQuestion') {
-            trackServerEvent('agent_requested_input', { agentSlug: state.agentSlug })
-          } else if (state.currentToolUse.name.startsWith('mcp__user-input__')) {
-            const action = state.currentToolUse.name.replace('mcp__user-input__', '')
-            trackServerEvent(`agent_${action}`, { agentSlug: state.agentSlug })
-          }
-
-          this.dispatchBlockingUserInputTool(
-            sessionId,
+          this.dispatchToolUse(
+            state,
             state.currentToolUse.name,
             state.currentToolUse.id,
             state.currentToolInput,
-            state.agentSlug,
           )
-
-          // Check if this is a schedule task tool
-          if (state.currentToolUse.name === 'mcp__user-input__schedule_task') {
-            this.handleScheduleTaskTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          // Schedule resume (session wake) tool - blocking
-          if (state.currentToolUse.name === 'mcp__user-input__schedule_resume') {
-            this.handleScheduleResumeTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          // List scheduled tasks tool - blocking
-          if (state.currentToolUse.name === 'mcp__user-input__list_scheduled_tasks') {
-            this.handleListScheduledTasksTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          // Cancel scheduled task tool - blocking
-          if (state.currentToolUse.name === 'mcp__user-input__cancel_scheduled_task') {
-            this.handleCancelScheduledTaskTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          // Pause scheduled task tool - blocking
-          if (state.currentToolUse.name === 'mcp__user-input__pause_scheduled_task') {
-            this.handlePauseResumeScheduledTaskTool(
-              'pause',
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          // Resume scheduled task tool - blocking
-          if (state.currentToolUse.name === 'mcp__user-input__resume_scheduled_task') {
-            this.handlePauseResumeScheduledTaskTool(
-              'resume',
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          // Webhook trigger tools
-          if (state.currentToolUse.name === 'mcp__user-input__get_available_triggers') {
-            this.handleGetAvailableTriggersTool(
-              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
-            )
-          }
-          if (state.currentToolUse.name === 'mcp__user-input__setup_trigger') {
-            this.handleSetupTriggerTool(
-              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
-            )
-          }
-          if (state.currentToolUse.name === 'mcp__user-input__list_triggers') {
-            this.handleListTriggersTool(
-              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
-            )
-          }
-          if (state.currentToolUse.name === 'mcp__user-input__cancel_trigger') {
-            this.handleCancelTriggerTool(
-              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
-            )
-          }
-          if (state.currentToolUse.name === 'mcp__user-input__create_webhook_endpoint') {
-            this.handleCreateWebhookEndpointTool(
-              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
-            )
-          }
-          if (state.currentToolUse.name === 'mcp__user-input__update_webhook_endpoint') {
-            this.handleUpdateWebhookEndpointTool(
-              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
-            )
-          }
-          if (state.currentToolUse.name === 'mcp__user-input__inspect_webhook_events') {
-            this.handleInspectWebhookEventsTool(
-              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
-            )
-          }
-
-          if (state.currentToolUse.name === 'mcp__user-input__request_script_run') {
-            this.handleScriptRunRequestTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          if (state.currentToolUse.name.startsWith('mcp__computer-use__')) {
-            this.handleComputerUseRequestTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolUse.name,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
-
-          // Subagent/workflow launches pause in the container under a 'review'
-          // policy — surface the approval card. The handler itself checks the
-          // policy and session grants (no-op under allow/block/granted).
-          if (['Task', 'Agent', 'Workflow'].includes(state.currentToolUse.name)) {
-            void this.handleCapabilityReviewTool(
-              sessionId,
-              state.currentToolUse.id,
-              state.currentToolUse.name,
-              state.currentToolInput,
-              state.agentSlug
-            )
-          }
 
           // Track deliver_file tool calls so the matching tool_result can be
           // correlated. We deliver the file to chat clients off the tool RESULT
@@ -5411,6 +5353,7 @@ ${continuation}`
     if (!Array.isArray(blocks)) return
     for (const block of blocks) {
       if (block.type !== 'tool_result' || !block.tool_use_id) continue
+      state.dispatchedToolUseIds.delete(block.tool_use_id)
       const settled = userInputRequestManager.resolveIfInStore(
         block.tool_use_id,
         'stream',
@@ -5440,6 +5383,7 @@ ${continuation}`
       const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
       for (const block of messageContent) {
         if (block.type === 'tool_result' && block.tool_use_id) {
+          state?.dispatchedToolUseIds.delete(block.tool_use_id)
           // A resolved user-input request must not be replayed to a client that
           // reconnects later (e.g. answer one of several parallel requests, then
           // refresh) — its tool_result is in, so drop it from the replay store.

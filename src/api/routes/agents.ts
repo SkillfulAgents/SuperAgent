@@ -47,6 +47,7 @@ import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
 import { parseByteRange } from '@shared/lib/utils/http-range'
 import { messagePersister } from '@shared/lib/container/message-persister'
+import { isAutomatedToolName } from '@shared/lib/container/automated-tools'
 import { repairLegacySlashCommands } from '@shared/lib/container/slash-commands'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { credentialBroker } from '../credentials/credential-broker'
@@ -795,21 +796,26 @@ async function enrichAgentsWithSummary(
   )
 }
 
-// Unresolved blocking user-input tool calls in the current (trailing) turn —
-// the recovery input for messagePersister.recoverSessionAwaitingInput when the
-// one-shot request stream event was missed.
+// Unresolved host-answered tool calls in the current (trailing) turn — the
+// recovery input for messagePersister.recoverSessionAwaitingInput when the
+// one-shot delivery was missed: blocking user-input tools get their card
+// re-registered, automated tools get re-dispatched from the persisted input.
 function getUnresolvedBlockingInputRequests(
   items: TransformedItem[],
-): Array<{ toolUseId: string; toolName: string }> {
-  const unresolved: Array<{ toolUseId: string; toolName: string }> = []
+): Array<{ toolUseId: string; toolName: string; input?: Record<string, unknown> }> {
+  const unresolved: Array<{ toolUseId: string; toolName: string; input?: Record<string, unknown> }> = []
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i]
     if (item.type === 'user' && !item.queued) break
     if (item.type !== 'assistant') continue
 
     for (const toolCall of item.toolCalls) {
-      if (toolCall.result === undefined && isBlockingUserInputToolName(toolCall.name)) {
+      if (toolCall.result !== undefined) continue
+      if (isBlockingUserInputToolName(toolCall.name)) {
         unresolved.push({ toolUseId: toolCall.id, toolName: toolCall.name })
+      } else if (isAutomatedToolName(toolCall.name)) {
+        // Re-dispatch needs the persisted input; a card re-registration does not.
+        unresolved.push({ toolUseId: toolCall.id, toolName: toolCall.name, input: toolCall.input })
       }
     }
   }

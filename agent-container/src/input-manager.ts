@@ -1,3 +1,5 @@
+import { AUTOMATED_INPUT_TYPES as AUTOMATED_INPUT_TYPE_LIST } from './automated-input-types'
+
 /**
  * Input Manager - Manages pending user input requests
  *
@@ -32,21 +34,7 @@ type EarlyResult =
 // Input types the HOST answers programmatically (message-persister handlers
 // hitting the DB/scheduler) — normally within milliseconds. An entry this old
 // means the host handler died mid-request; nobody is coming back for it.
-const AUTOMATED_INPUT_TYPES: ReadonlySet<string> = new Set([
-  'schedule_task',
-  'schedule_resume',
-  'list_scheduled_tasks',
-  'cancel_scheduled_task',
-  'pause_scheduled_task',
-  'resume_scheduled_task',
-  'create_webhook_endpoint',
-  'update_webhook_endpoint',
-  'inspect_webhook_events',
-  'list_triggers',
-  'get_available_triggers',
-  'setup_trigger',
-  'cancel_trigger',
-])
+const AUTOMATED_INPUT_TYPES: ReadonlySet<string> = new Set(AUTOMATED_INPUT_TYPE_LIST)
 export const AUTOMATED_INPUT_TTL_MS = 10 * 60 * 1000
 
 // Everything else waits on a human decision (secrets, questions, script/file

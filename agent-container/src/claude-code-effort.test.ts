@@ -101,8 +101,9 @@ vi.mock('./file-hooks', () => ({
   resolveToolFilePath: () => '',
 }))
 
+const { setCurrentToolUseId } = vi.hoisted(() => ({ setCurrentToolUseId: vi.fn() }))
 vi.mock('./input-manager', () => ({
-  inputManager: {},
+  inputManager: { setCurrentToolUseId },
   HUMAN_INPUT_TTL_MS: 24 * 60 * 60 * 1000,
 }))
 
@@ -559,5 +560,76 @@ describe('ClaudeCodeProcess dashboard browser tools', () => {
     expect(tools).toContain('mcp__browser__browser_get_state')
     expect(tools).toContain('mcp__browser__browser_click')
     expect(tools).toContain('mcp__browser__browser_close')
+  })
+})
+
+// The gate must be a PreToolUse hook: under permissionMode 'bypassPermissions'
+// the SDK never consults canUseTool for regular tool calls, so a canUseTool
+// deny would be dead code.
+describe('ClaudeCodeProcess main-thread-only tools', () => {
+  type HookOutput = {
+    hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string }
+  }
+  type Hook = (input: Record<string, unknown>, toolUseId: string | undefined, opts: { signal: AbortSignal }) => Promise<HookOutput>
+  type Matcher = { matcher?: string; hooks: Hook[] }
+
+  beforeEach(() => {
+    calls.length = 0
+  })
+
+  const TOOL = 'mcp__user-input__schedule_resume'
+
+  // The PreToolUse matchers whose pattern selects the tool, in registration order.
+  async function preToolUseHooksFor(sessionId: string, toolName: string): Promise<Hook[]> {
+    const process = new ClaudeCodeProcess({ sessionId, workingDirectory: '/tmp' })
+    await process.start()
+    const matchers = (calls[0].options.hooks as { PreToolUse: Matcher[] }).PreToolUse
+    return matchers
+      .filter((m) => m.matcher !== undefined && new RegExp(m.matcher).test(toolName))
+      .flatMap((m) => m.hooks)
+  }
+
+  async function runHooks(hooks: Hook[], input: Record<string, unknown>): Promise<HookOutput[]> {
+    const results: HookOutput[] = []
+    for (const hook of hooks) {
+      results.push(await hook(input, 'tu-1', { signal: new AbortController().signal }))
+    }
+    return results
+  }
+
+  const hookInput = (agentId?: string) => ({
+    hook_event_name: 'PreToolUse',
+    session_id: 's',
+    transcript_path: '/tmp/t.jsonl',
+    cwd: '/tmp',
+    tool_name: TOOL,
+    tool_input: { wakeTime: 'tomorrow 9am', note: 'check inbox' },
+    tool_use_id: 'tu-1',
+    ...(agentId ? { agent_id: agentId, agent_type: 'general-purpose' } : {}),
+  })
+
+  it('denies schedule_resume from a subagent with a reason', async () => {
+    const hooks = await preToolUseHooksFor('test-main-only-1', TOOL)
+    const denies = (await runHooks(hooks, hookInput('agent-abc')))
+      .map((r) => r.hookSpecificOutput)
+      .filter((o) => o?.permissionDecision === 'deny')
+
+    expect(denies).toHaveLength(1)
+    expect(denies[0]?.permissionDecisionReason).toMatch(/main session/)
+  })
+
+  it('allows schedule_resume from the main thread', async () => {
+    const hooks = await preToolUseHooksFor('test-main-only-2', TOOL)
+    const results = await runHooks(hooks, hookInput())
+
+    expect(results.some((r) => r.hookSpecificOutput?.permissionDecision === 'deny')).toBe(false)
+  })
+
+  it('does not gate other user-input tools from a subagent', async () => {
+    const other = 'mcp__user-input__list_triggers'
+    const hooks = await preToolUseHooksFor('test-main-only-3', other)
+    const results = await runHooks(hooks, { ...hookInput('agent-abc'), tool_name: other, tool_input: {} })
+
+    expect(results.some((r) => r.hookSpecificOutput?.permissionDecision === 'deny')).toBe(false)
   })
 })

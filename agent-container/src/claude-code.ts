@@ -52,6 +52,11 @@ function mcpToolNames(
     .map(t => `mcp__${serverName}__${t.name}`)
 }
 import { inputManager } from './input-manager';
+import {
+  MAIN_THREAD_ONLY_INPUT_TYPES,
+  MAIN_THREAD_ONLY_TOOL_MESSAGE,
+  userInputToolName,
+} from './automated-input-types';
 import { sanitizeMcpName } from './sanitize-mcp-name';
 import { withAgentAttributionHeaders, withSpeedHeader } from './attribution-headers';
 import { renderPrompt } from './render-prompt';
@@ -477,6 +482,12 @@ export interface ClaudeCodeProcessOptions {
   capabilityPolicies?: AgentCapabilityPolicies;
   sessionCapabilityGrants?: Capability[];
 }
+
+// Denied inside subagents by the PreToolUse hook below; see
+// automated-input-types for why.
+const MAIN_THREAD_ONLY_TOOLS: ReadonlySet<string> = new Set(
+  MAIN_THREAD_ONLY_INPUT_TYPES.map((type) => userInputToolName(type)),
+);
 
 export class ClaudeCodeProcess extends EventEmitter {
   private queryInstance: Query | null = null;
@@ -1124,6 +1135,30 @@ export class ClaudeCodeProcess extends EventEmitter {
       },
       hooks: {
         PreToolUse: [
+          {
+            // Built-in subagents (general-purpose, Explore, ...) inherit every
+            // parent tool; the custom agents above allowlist theirs. Deny the
+            // main-thread-only tools when the hook fires inside a subagent
+            // (agent_id is set only there). A hook, not canUseTool: under
+            // bypassPermissions the SDK auto-approves before consulting the
+            // callback — see createCapabilityGateHook.
+            matcher: `^(${[...MAIN_THREAD_ONLY_TOOLS].join('|')})$`,
+            hooks: [
+              async (input) => {
+                const agentId = (input as { agent_id?: string }).agent_id;
+                if (!agentId) return {};
+                const toolName = (input as { tool_name?: string }).tool_name;
+                console.log(`[PreToolUse] Denied ${toolName} from subagent ${agentId}`);
+                return {
+                  hookSpecificOutput: {
+                    hookEventName: 'PreToolUse' as const,
+                    permissionDecision: 'deny' as const,
+                    permissionDecisionReason: MAIN_THREAD_ONLY_TOOL_MESSAGE,
+                  },
+                };
+              },
+            ],
+          },
           {
             matcher: 'mcp__user-input__.*',
             hooks: [

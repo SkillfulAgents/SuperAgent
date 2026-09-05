@@ -35,6 +35,7 @@ How it works: after this tool succeeds, END YOUR TURN. The session goes idle (it
 wakeTime accepts natural language: "tomorrow 9am", "in 72 hours", "next monday 8am", "2027-03-15 14:00".
 
 Constraints:
+- Main session only. A wake resumes the main conversation, so subagents cannot call this — a subagent should finish its task and report back, and the main agent pauses the session.
 - A session holds at most ONE pending wake — scheduling a new one replaces the previous one.
 - One-shot only (no recurring wakes). For recurring checks, re-schedule on each wake, or use schedule_task if the work doesn't need this conversation's context.
 
