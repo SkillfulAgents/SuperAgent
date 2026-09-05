@@ -57,6 +57,36 @@ describe('activity spark charts', () => {
     expect(Number(lone.getAttribute('height'))).toBeGreaterThanOrEqual(1.5)
   })
 
+  it('squares the edge where a day\'s success and failure segments meet', () => {
+    render(<ActivitySparkChart
+      label="GitHub activity"
+      data={[
+        { date: '2026-07-08', succeeded: 6, failed: 3 },
+        { date: '2026-07-09', succeeded: 6, failed: 0 },
+      ]}
+    />)
+
+    const [stackedOk, loneOk] = screen.getAllByTestId('activity-success-bar')
+    const [stackedFail] = screen.getAllByTestId('activity-failure-bar')
+
+    // Stacked: paths, so only the outer edge of each segment is rounded.
+    expect(stackedOk.tagName).toBe('path')
+    expect(stackedFail.tagName).toBe('path')
+    // A day with no failures keeps the plain fully-rounded rect.
+    expect(loneOk.tagName).toBe('rect')
+    expect(loneOk).toHaveAttribute('rx')
+
+    // Both paths begin at the join with a straight move, so the success
+    // segment's top and the failure segment's bottom are one flat line.
+    const startY = (el: Element) =>
+      Number(el.getAttribute('d')!.match(/^M[\d.]+,([\d.]+) /)![1])
+    expect(startY(stackedOk)).toBeCloseTo(startY(stackedFail), 5)
+
+    // And each keeps exactly one rounded end: two quadratic curves, not four.
+    expect(stackedOk.getAttribute('d')!.match(/Q/g)).toHaveLength(2)
+    expect(stackedFail.getAttribute('d')!.match(/Q/g)).toHaveLength(2)
+  })
+
   it('keeps an all-zero series visible and truthful', () => {
     render(<ActivitySparkChart
       label="Slack activity"

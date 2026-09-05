@@ -52,6 +52,71 @@ const TRACK_CLASS = 'fill-muted-foreground/10'
 /** Keeps a lone call in a tall series from rendering as a sub-pixel sliver. */
 const MIN_SEGMENT = 1.5
 
+/**
+ * A rect's rx rounds all four corners, so a stacked segment needs a path to
+ * keep the edge where it meets its neighbour square — otherwise the successes
+ * and failures of one day read as two separate bars with a pinch between them.
+ */
+function segmentPath(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  radius: number,
+  round: 'top' | 'bottom',
+): string {
+  // Only one side is rounded, so the radius may use the segment's full height.
+  const r = Math.min(radius, w / 2, h)
+  return round === 'top'
+    ? `M${x},${y + h} L${x},${y + r} Q${x},${y} ${x + r},${y} `
+      + `L${x + w - r},${y} Q${x + w},${y} ${x + w},${y + r} L${x + w},${y + h} Z`
+    : `M${x},${y} L${x},${y + h - r} Q${x},${y + h} ${x + r},${y + h} `
+      + `L${x + w - r},${y + h} Q${x + w},${y + h} ${x + w},${y + h - r} L${x + w},${y} Z`
+}
+
+/** A day's success or failure segment: fully rounded alone, squared where stacked. */
+function ActivitySegment({
+  testId,
+  x,
+  y,
+  width,
+  height,
+  radius,
+  round,
+  className,
+}: {
+  testId: string
+  x: number
+  y: number
+  width: number
+  height: number
+  radius: number
+  /** 'all' when this segment stands alone; otherwise the side to keep rounded. */
+  round: 'all' | 'top' | 'bottom'
+  className: string
+}) {
+  if (round === 'all' || height <= 0) {
+    return (
+      <rect
+        data-testid={testId}
+        x={x}
+        y={y}
+        width={width}
+        height={height}
+        rx={radius}
+        className={className}
+      />
+    )
+  }
+  return (
+    <path
+      data-testid={testId}
+      d={segmentPath(x, y, width, height, radius, round)}
+      className={className}
+    />
+  )
+}
+
 interface SparkTooltipRow {
   /** Tailwind background class for the legend swatch. */
   swatch: string
@@ -285,22 +350,24 @@ export function ActivitySparkChart({ label, data, className }: ActivitySparkChar
               rx={radius}
               className={TRACK_CLASS}
             />
-            <rect
-              data-testid="activity-success-bar"
+            <ActivitySegment
+              testId="activity-success-bar"
               x={x}
               y={TRACK_BASELINE - successHeight}
               width={barWidth}
               height={successHeight}
-              rx={radius}
+              radius={radius}
+              round={failureHeight > 0 ? 'bottom' : 'all'}
               className="fill-emerald-500"
             />
-            <rect
-              data-testid="activity-failure-bar"
+            <ActivitySegment
+              testId="activity-failure-bar"
               x={x}
               y={TRACK_BASELINE - successHeight - failureHeight}
               width={barWidth}
               height={failureHeight}
-              rx={radius}
+              radius={radius}
+              round={successHeight > 0 ? 'top' : 'all'}
               className="fill-red-500"
             />
           </g>
