@@ -53,6 +53,24 @@ const TRACK_CLASS = 'fill-muted-foreground/10'
 const MIN_SEGMENT = 1.5
 
 /**
+ * Heights of a day's success and failure segments, in track units. A non-zero
+ * count never drops below MIN_SEGMENT; when both floors together exceed the
+ * track (the tallest day with a one-call minority), the larger segment gives
+ * up the excess so the stack still ends at the track's top edge.
+ */
+function stackedHeights(succeeded: number, failed: number, max: number) {
+  const floored = (count: number) => (count > 0 ? Math.max(MIN_SEGMENT, (count / max) * TRACK_HEIGHT) : 0)
+  let success = floored(succeeded)
+  let failure = floored(failed)
+  const excess = success + failure - TRACK_HEIGHT
+  if (excess > 0) {
+    if (success >= failure) success -= excess
+    else failure -= excess
+  }
+  return { success, failure }
+}
+
+/**
  * A rect's rx rounds all four corners, so a stacked segment needs a path to
  * keep the edge where it meets its neighbour square — otherwise the successes
  * and failures of one day read as two separate bars with a pinch between them.
@@ -332,12 +350,7 @@ export function ActivitySparkChart({ label, data, className }: ActivitySparkChar
     >
       {data.map((point, index) => {
         const x = barX(index)
-        const successHeight = point.succeeded > 0
-          ? Math.max(MIN_SEGMENT, (point.succeeded / max) * TRACK_HEIGHT)
-          : 0
-        const failureHeight = point.failed > 0
-          ? Math.max(MIN_SEGMENT, (point.failed / max) * TRACK_HEIGHT)
-          : 0
+        const { success: successHeight, failure: failureHeight } = stackedHeights(point.succeeded, point.failed, max)
         return (
           <g key={point.date}>
             <rect

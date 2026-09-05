@@ -57,6 +57,28 @@ describe('activity spark charts', () => {
     expect(Number(lone.getAttribute('height'))).toBeGreaterThanOrEqual(1.5)
   })
 
+  it('keeps a floored minority segment from pushing the stack above the track', () => {
+    render(<ActivitySparkChart
+      label="GitHub activity"
+      data={[{ date: '2026-07-08', succeeded: 499, failed: 1 }]}
+    />)
+
+    const [ok] = screen.getAllByTestId('activity-success-bar')
+    const [fail] = screen.getAllByTestId('activity-failure-bar')
+    // The tallest day fills the track exactly, so a floored 1.5px failure cap
+    // would otherwise poke ~1.5px above it. Read every y in each path.
+    const ys = (el: Element) =>
+      [...el.getAttribute('d')!.matchAll(/[\d.]+,([\d.]+)/g)].map((m) => Number(m[1]))
+    const capTop = Math.min(...ys(fail))
+    const capBottom = Math.max(...ys(fail))
+    // Track spans y=1..19: the cap tops out at the track's edge, not above it.
+    expect(capTop).toBeCloseTo(1, 5)
+    expect(Math.max(...ys(ok))).toBeCloseTo(19, 5)
+    // The cap keeps its floor; the success segment gave up the excess.
+    expect(capBottom - capTop).toBeCloseTo(1.5, 5)
+    expect(Math.min(...ys(ok))).toBeCloseTo(capBottom, 5)
+  })
+
   it('squares the edge where a day\'s success and failure segments meet', () => {
     render(<ActivitySparkChart
       label="GitHub activity"
