@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { ActivitySparkChart, CronSparkChart } from './activity-spark-chart'
 
 describe('activity spark charts', () => {
@@ -19,7 +19,12 @@ describe('activity spark charts', () => {
     })).toBeInTheDocument()
     expect(screen.getAllByTestId('activity-success-bar')).toHaveLength(3)
     expect(screen.getAllByTestId('activity-failure-bar')).toHaveLength(3)
-    expect(screen.getByText('Jul 8: 3 succeeded, 1 failed')).toBeInTheDocument()
+    expect(screen.queryByTestId('spark-tooltip')).not.toBeInTheDocument()
+    fireEvent.mouseEnter(screen.getAllByTestId('spark-hit')[1])
+    const tip = screen.getByTestId('spark-tooltip')
+    expect(tip).toHaveTextContent('Jul 8')
+    expect(tip).toHaveTextContent('3 Succeeded')
+    expect(tip).toHaveTextContent('1 Failed')
   })
 
   it('keeps an all-zero series visible and truthful', () => {
@@ -71,6 +76,81 @@ describe('activity spark charts', () => {
     expect(runningSlot).toHaveClass('fill-emerald-500', 'animate-pulse')
   })
 
+  it('shows a run detail on column hover and nothing on pre-history slots', () => {
+    render(<CronSparkChart
+      label="Nightly report schedule"
+      data={[
+        { scheduledAt: '2026-07-09T11:00:00.000Z', status: 'succeeded' },
+        { scheduledAt: '2026-07-09T12:00:00.000Z', status: 'failed' },
+      ]}
+    />)
+
+    const bands = screen.getAllByTestId('spark-hit')
+    expect(bands).toHaveLength(14)
+
+    // Newest run is the last band.
+    fireEvent.mouseEnter(bands[13])
+    expect(screen.getByTestId('spark-tooltip')).toHaveTextContent('Failed')
+
+    // Hovering an empty pre-creation slot clears it rather than showing a blank.
+    fireEvent.mouseEnter(bands[0])
+    expect(screen.queryByTestId('spark-tooltip')).not.toBeInTheDocument()
+
+    fireEvent.mouseEnter(bands[12])
+    expect(screen.getByTestId('spark-tooltip')).toHaveTextContent('Succeeded')
+    fireEvent.mouseLeave(screen.getByRole('img'))
+    expect(screen.queryByTestId('spark-tooltip')).not.toBeInTheDocument()
+  })
+
+  it('renders the hover card outside the chart, in viewport space, so overflow-hidden rows cannot clip it', () => {
+    const { container } = render(
+      <div style={{ overflow: 'hidden' }}>
+        <CronSparkChart
+          label="Nightly report schedule"
+          data={[{ scheduledAt: '2026-07-09T11:00:00.000Z', status: 'succeeded' }]}
+        />
+      </div>,
+    )
+    const svg = screen.getByRole('img')
+    // Mid-page chart: the card hangs above it, right edges aligned.
+    vi.spyOn(svg, 'getBoundingClientRect').mockReturnValue(
+      { top: 300, right: 900, bottom: 320, left: 824, width: 76, height: 20, x: 824, y: 300, toJSON: () => ({}) },
+    )
+    const bands = screen.getAllByTestId('spark-hit')
+    fireEvent.mouseEnter(bands[13])
+
+    const tip = screen.getByTestId('spark-tooltip')
+    expect(container).not.toContainElement(tip)
+    expect(document.body).toContainElement(tip)
+    expect(tip).toHaveClass('fixed')
+    expect(tip).toHaveStyle({ left: '900px', top: '294px', transform: 'translate(-100%, -100%)' })
+
+    // First row of a page: no room above, so the card flips underneath.
+    vi.spyOn(svg, 'getBoundingClientRect').mockReturnValue(
+      { top: 12, right: 900, bottom: 32, left: 824, width: 76, height: 20, x: 824, y: 12, toJSON: () => ({}) },
+    )
+    fireEvent.mouseEnter(bands[13])
+    expect(screen.getByTestId('spark-tooltip')).toHaveStyle({ top: '38px', transform: 'translateX(-100%)' })
+
+    // A scroll would strand the card where the chart used to be, so it dismisses.
+    fireEvent.scroll(window)
+    expect(screen.queryByTestId('spark-tooltip')).not.toBeInTheDocument()
+  })
+
+  it('keeps hit bands inside the viewBox without overlapping', () => {
+    render(<CronSparkChart label="Bands" data={[]} />)
+    const bands = screen.getAllByTestId('spark-hit')
+    const box = (el: HTMLElement) => {
+      const x = Number(el.getAttribute('x'))
+      return { x, right: x + Number(el.getAttribute('width')) }
+    }
+    expect(box(bands[0]).x).toBe(0)
+    expect(box(bands[13]).right).toBeCloseTo(76, 5)
+    for (let i = 1; i < bands.length; i++) {
+      expect(box(bands[i]).x).toBeCloseTo(box(bands[i - 1]).right, 5)
+    }
+  })
+
   it('uses one fixed right-aligned slot grid when tasks have different history lengths', () => {
     const { container: longer } = render(<CronSparkChart
       label="Longer history"
@@ -112,13 +192,14 @@ describe('activity spark charts', () => {
     />)
 
     const noHistorySlots = screen.getAllByTestId('cron-slot-no-history')
-    expect(noHistorySlots).toHaveLength(15)
-    expect(noHistorySlots[0]).toHaveClass('fill-none', 'stroke-muted-foreground/20')
-    expect(noHistorySlots[0]).toHaveAttribute('x', '0.5')
-    expect(noHistorySlots[0]).toHaveAttribute('y', '4.5')
-    expect(noHistorySlots[0]).toHaveAttribute('width', '3')
-    expect(noHistorySlots[0]).toHaveAttribute('height', '17')
-    expect(document.querySelectorAll('rect')).toHaveLength(18)
+    expect(noHistorySlots).toHaveLength(11)
+    expect(noHistorySlots[0]).toHaveClass('fill-muted-foreground/10')
+    expect(noHistorySlots[0]).toHaveAttribute('x', '0')
+    // Every slot draws a track; the three with history draw a status bar on top.
+    expect(screen.getAllByTestId('cron-slot-track')).toHaveLength(3)
+    expect(document.querySelectorAll('rect[data-status]')).toHaveLength(3)
+    // 14 tracks + 3 status bars + 14 hit bands.
+    expect(document.querySelectorAll('rect')).toHaveLength(31)
     expect(screen.getByRole('img', {
       name: 'New schedule: 3 planned runs, 1 ran, 1 skipped, and 1 failed.',
     })).toBeInTheDocument()
