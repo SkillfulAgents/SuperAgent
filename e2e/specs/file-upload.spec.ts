@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
+import { timestampedUploadNamePattern } from '../helpers/upload-filename'
 import * as path from 'path'
 import * as fs from 'fs'
 import * as os from 'os'
@@ -11,7 +12,7 @@ function attachmentPreview(page: import('@playwright/test').Page, fileName: stri
 }
 
 function filePill(page: import('@playwright/test').Page, fileName: string) {
-  return page.getByTestId('file-pill').filter({ hasText: fileName })
+  return page.getByTestId('file-pill').filter({ hasText: timestampedUploadNamePattern(fileName) })
 }
 
 test.describe('File & Folder Upload', () => {
@@ -144,6 +145,6 @@ test.describe('File & Folder Upload', () => {
     await pill.click()
     const tabBar = page.getByTestId('file-tab-bar')
     await expect(tabBar).toBeVisible({ timeout: 5000 })
-    await expect(tabBar).toContainText('report.pdf')
+    await expect(tabBar).toContainText(timestampedUploadNamePattern('report.pdf'))
   })
 })
