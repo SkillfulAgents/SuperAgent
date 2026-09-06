@@ -76,7 +76,8 @@ export class DeepgramTtsAdapter implements TtsAdapter {
         sample_rate: String(DEEPGRAM_SAMPLE_RATE),
       })
       if (speed !== undefined && speed !== 1) params.set('speed', String(speed))
-      const ws = new WebSocket(`wss://api.deepgram.com/v1/speak?${params.toString()}`, ['bearer', token])
+      const url = `wss://api.deepgram.com/v1/speak?${params.toString()}`
+      const ws = new WebSocket(url, ['bearer', token])
       ws.binaryType = 'arraybuffer'
       this.ws = ws
 
