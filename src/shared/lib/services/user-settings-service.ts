@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { userSettings } from '@shared/lib/db/schema'
 import { getSettings } from '@shared/lib/config/settings'
+import { ttsSpeedSchema, ttsVoiceSchema } from '@shared/lib/stt/tts-voices'
 
 // ─── Schema ──────────────────────────────────────────────────────────────────
 
@@ -77,6 +78,29 @@ export const agentFolderSettingsWriteSchema = z.object({
   collapsedAgentFolders: z.array(z.string()).optional(),
 })
 
+/**
+ * Read-aloud preferences. Each field falls back alone: a voice that later
+ * leaves the catalogue must not take the user's speed (or the rest of their
+ * settings) with it. The API validates writes strictly instead.
+ */
+const userVoiceSettingsSchema = z
+  .object({
+    ttsVoice: ttsVoiceSchema.optional().catch(undefined),
+    ttsSpeed: ttsSpeedSchema.optional().catch(undefined),
+  })
+  .optional()
+  .catch(undefined)
+
+export const userVoiceSettingsWriteSchema = z.object({
+  voice: z
+    .object({
+      ttsVoice: ttsVoiceSchema.optional(),
+      ttsSpeed: ttsSpeedSchema.optional(),
+    })
+    .strict()
+    .optional(),
+})
+
 export const userSettingsSchema = z.object({
   theme: z.enum(['system', 'light', 'dark']).default('system'),
   notifications: notificationSettingsSchema.default({
@@ -148,6 +172,7 @@ export const userSettingsSchema = z.object({
   defaultApiPolicy: z.enum(['allow', 'review', 'block']).default('review'),
   defaultMcpPolicy: z.enum(['allow', 'review', 'block']).default('review'),
   keepAwakeEnabled: z.boolean().default(false),
+  voice: userVoiceSettingsSchema,
   onboardingProgress: z.object({
     path: z.enum(['manual', 'platform']),
     stepId: z.string(),
@@ -244,13 +269,14 @@ export function updateUserSettings(
 ): UserSettingsData {
   const current = getUserSettings(userId)
 
-  // Deep merge notifications if provided
+  // Deep merge the nested groups if provided
   const merged = {
     ...current,
     ...partial,
     notifications: partial.notifications
       ? { ...current.notifications, ...partial.notifications }
       : current.notifications,
+    voice: partial.voice ? { ...current.voice, ...partial.voice } : current.voice,
   }
 
   const validated = userSettingsSchema.parse(merged)

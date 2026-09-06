@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react'
+import { cn } from '@shared/lib/utils/cn'
 import {
   Select,
   SelectContent,
@@ -11,14 +12,23 @@ import { Label } from '@renderer/components/ui/label'
 import { Button } from '@renderer/components/ui/button'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
+import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
+import { useUser } from '@renderer/context/user-context'
 import { apiFetch } from '@renderer/lib/api'
 import { AlertTriangle, Eye, EyeOff, Check, Loader2, ExternalLink, Square, Volume2 } from 'lucide-react'
-import { useVoiceInput } from '@renderer/hooks/use-voice-input'
+import { useIsTtsConfigured, useVoiceInput } from '@renderer/hooks/use-voice-input'
 import { useReadAloud } from '@renderer/hooks/use-read-aloud'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import type { ApiKeyStatus, SttProvider } from '@shared/lib/config/settings'
-import { DEFAULT_TTS_VOICE, TTS_VOICES, isTtsVoice, type TtsVoice } from '@shared/lib/stt/tts-voices'
+import {
+  DEFAULT_TTS_VOICE,
+  TTS_SPEEDS,
+  TTS_VOICES,
+  isTtsVoice,
+  resolveTtsPreferences,
+  type TtsVoice,
+} from '@shared/lib/stt/tts-voices'
 
 const STT_PROVIDERS = [
   {
@@ -284,9 +294,6 @@ function VoiceTest() {
 
 const VALID_PROVIDERS = new Set(STT_PROVIDERS.map(p => p.value))
 
-/** Providers that can also read replies aloud (Deepgram Aura, directly or via the platform). */
-const TTS_PROVIDERS = new Set<SttProvider>(['deepgram', 'platform'])
-
 const VOICE_PREVIEW_ID = 'settings-voice-preview'
 const VOICE_PREVIEW_TEXT = 'Hi! This is how your agent will sound when it reads a reply out loud.'
 
@@ -315,43 +322,101 @@ function VoicePreviewButton() {
   )
 }
 
-function TtsVoiceSection({ disabled }: { disabled: boolean }) {
+function VoicePicker({ id, value, onChange, disabled }: {
+  id: string
+  value: TtsVoice
+  onChange: (voice: TtsVoice) => void
+  disabled: boolean
+}) {
+  return (
+    <Select value={value} onValueChange={(v) => { if (isTtsVoice(v)) onChange(v) }} disabled={disabled}>
+      <SelectTrigger id={id}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {TTS_VOICES.map((v) => (
+          <SelectItem key={v.id} value={v.id}>
+            {v.label}
+            <span className="text-muted-foreground ml-2">({v.description})</span>
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  )
+}
+
+/**
+ * The reader's own voice and pace. Per user: stored in user settings, read
+ * by the token endpoint, so everyone in a shared deployment hears their own
+ * pick. Falls back to the deployment default voice until they choose.
+ */
+function PersonalVoiceSection({ heading }: { heading: string }) {
   const { data: settings } = useSettings()
-  const updateSettings = useUpdateSettings()
-  const rawVoice = settings?.voice?.ttsVoice
-  const voice: TtsVoice = isTtsVoice(rawVoice) ? rawVoice : DEFAULT_TTS_VOICE
-  const selected = TTS_VOICES.find(v => v.id === voice)
+  const { data: userSettings, isLoading } = useUserSettings()
+  const updateUserSettings = useUpdateUserSettings()
+  const { voice, speed } = resolveTtsPreferences(userSettings?.voice, settings?.voice)
+  const speedOption = TTS_SPEEDS.find((s) => s.value === speed)
 
   return (
-    <div className="pt-4 border-t space-y-4">
-      <h3 className="text-sm font-medium">Text-to-Speech</h3>
+    <div className="space-y-4" data-testid="personal-voice-section">
+      <h3 className="text-sm font-medium">{heading}</h3>
       <div className="space-y-2">
         <Label htmlFor="tts-voice">Voice</Label>
-        <Select
+        <VoicePicker
+          id="tts-voice"
           value={voice}
-          onValueChange={(value) => {
-            if (isTtsVoice(value)) updateSettings.mutate({ voice: { ttsVoice: value } })
-          }}
-          disabled={disabled}
+          disabled={isLoading}
+          onChange={(ttsVoice) => updateUserSettings.mutate({ voice: { ttsVoice } })}
+        />
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="tts-speed">Speed</Label>
+        <Select
+          value={String(speed)}
+          onValueChange={(v) => updateUserSettings.mutate({ voice: { ttsSpeed: Number(v) } })}
+          disabled={isLoading}
         >
-          <SelectTrigger id="tts-voice">
-            <SelectValue />
+          <SelectTrigger id="tts-speed">
+            {/* A stored speed off the preset list still needs a readable trigger. */}
+            <SelectValue>{speedOption?.label ?? `${speed}×`}</SelectValue>
           </SelectTrigger>
           <SelectContent>
-            {TTS_VOICES.map((v) => (
-              <SelectItem key={v.id} value={v.id}>
-                {v.label}
-                <span className="text-muted-foreground ml-2">({v.description})</span>
-              </SelectItem>
+            {TTS_SPEEDS.map((s) => (
+              <SelectItem key={s.value} value={String(s.value)}>{s.label}</SelectItem>
             ))}
           </SelectContent>
         </Select>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Used by the speaker button under agent replies. Only you hear these choices.
+      </p>
+      <VoicePreviewButton />
+    </div>
+  )
+}
+
+/** Admin, shared deployments only: what people hear until they pick their own voice. */
+function DefaultVoiceSection({ disabled }: { disabled: boolean }) {
+  const { data: settings } = useSettings()
+  const updateSettings = useUpdateSettings()
+  const raw = settings?.voice?.ttsVoice
+  const voice: TtsVoice = isTtsVoice(raw) ? raw : DEFAULT_TTS_VOICE
+
+  return (
+    <div className="pt-4 border-t space-y-4" data-testid="default-voice-section">
+      <h3 className="text-sm font-medium">Default Voice</h3>
+      <div className="space-y-2">
+        <Label htmlFor="tts-default-voice">Voice</Label>
+        <VoicePicker
+          id="tts-default-voice"
+          value={voice}
+          disabled={disabled}
+          onChange={(ttsVoice) => updateSettings.mutate({ voice: { ttsVoice } })}
+        />
         <p className="text-xs text-muted-foreground">
-          {selected ? `${selected.label}: ${selected.description}. ` : ''}
-          Used by the speaker button under agent replies.
+          What everyone hears until they pick their own voice above.
         </p>
       </div>
-      <VoicePreviewButton />
     </div>
   )
 }
@@ -360,6 +425,11 @@ export function VoiceTab() {
   const { data: settings, isLoading } = useSettings()
   const updateSettings = useUpdateSettings()
   const { data: platformAuth } = usePlatformAuthStatus()
+  const { isAuthMode, isAdmin } = useUser()
+  // Provider and key are deployment-wide, so admins only. The personal
+  // section is everyone's — it is the whole tab for members.
+  const showAdminFeatures = !isAuthMode || isAdmin
+  const ttsAvailable = useIsTtsConfigured()
   const isPlatformConnected = platformAuth?.connected ?? false
   const rawProvider = settings?.voice?.sttProvider
   const selectedProvider = rawProvider && VALID_PROVIDERS.has(rawProvider) ? rawProvider : undefined
@@ -373,85 +443,95 @@ export function VoiceTab() {
 
   return (
     <div className="space-y-6">
-      <div className="space-y-4">
-        <h3 className="text-sm font-medium">Speech-to-Text Provider</h3>
-        <div className="space-y-2">
-          <Label htmlFor="stt-provider">Provider</Label>
-          <Select
-            value={selectedProvider ?? ''}
-            onValueChange={(value) => {
-              if (value === 'platform' && !isPlatformConnected) return
-              updateSettings.mutate({ voice: { sttProvider: value as SttProvider } })
-            }}
-            disabled={isLoading}
-          >
-            <SelectTrigger id="stt-provider">
-              <SelectValue placeholder="Select a provider" />
-            </SelectTrigger>
-            <SelectContent>
-              {STT_PROVIDERS.map((provider) => (
-                <SelectItem
-                  key={provider.value}
-                  value={provider.value}
-                  disabled={'platformOnly' in provider && provider.platformOnly && !isPlatformConnected}
-                >
-                  {provider.label}
-                  {'platformOnly' in provider && provider.platformOnly && !isPlatformConnected
-                    ? <span className="text-muted-foreground ml-2">(requires platform login)</span>
-                    : <span className="text-muted-foreground ml-2">({provider.model})</span>
-                  }
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <p className="text-xs text-muted-foreground">
-            Choose which service to use for voice-to-text transcription.
-          </p>
-          {selectedProvider && (() => {
-            const info = STT_PROVIDERS.find(p => p.value === selectedProvider)
-            if (!info) return null
-            return (
-              <p className="text-xs text-muted-foreground">
-                {info.note}
-                {info.docsUrl && (
-                  <>
-                    {' '}
-                    <a
-                      href={info.docsUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-primary hover:underline inline-flex items-center gap-0.5"
+      {ttsAvailable && <PersonalVoiceSection heading={isAuthMode ? 'Your Voice' : 'Text-to-Speech'} />}
+
+      {!ttsAvailable && !showAdminFeatures && (
+        <p className="text-sm text-muted-foreground" data-testid="voice-unavailable-note">
+          Text-to-speech isn&apos;t set up for this workspace yet. Ask an admin to configure a voice provider.
+        </p>
+      )}
+
+      {showAdminFeatures && (
+        <>
+          <div className={cn('space-y-4', ttsAvailable && 'pt-4 border-t')}>
+            <h3 className="text-sm font-medium">Speech-to-Text Provider</h3>
+            <div className="space-y-2">
+              <Label htmlFor="stt-provider">Provider</Label>
+              <Select
+                value={selectedProvider ?? ''}
+                onValueChange={(value) => {
+                  if (value === 'platform' && !isPlatformConnected) return
+                  updateSettings.mutate({ voice: { sttProvider: value as SttProvider } })
+                }}
+                disabled={isLoading}
+              >
+                <SelectTrigger id="stt-provider">
+                  <SelectValue placeholder="Select a provider" />
+                </SelectTrigger>
+                <SelectContent>
+                  {STT_PROVIDERS.map((provider) => (
+                    <SelectItem
+                      key={provider.value}
+                      value={provider.value}
+                      disabled={'platformOnly' in provider && provider.platformOnly && !isPlatformConnected}
                     >
-                      View details
-                      <ExternalLink className="h-3 w-3" />
-                    </a>
-                  </>
-                )}
+                      {provider.label}
+                      {'platformOnly' in provider && provider.platformOnly && !isPlatformConnected
+                        ? <span className="text-muted-foreground ml-2">(requires platform login)</span>
+                        : <span className="text-muted-foreground ml-2">({provider.model})</span>
+                      }
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Choose which service to use for voice-to-text transcription.
               </p>
-            )
-          })()}
-        </div>
-      </div>
+              {selectedProvider && (() => {
+                const info = STT_PROVIDERS.find(p => p.value === selectedProvider)
+                if (!info) return null
+                return (
+                  <p className="text-xs text-muted-foreground">
+                    {info.note}
+                    {info.docsUrl && (
+                      <>
+                        {' '}
+                        <a
+                          href={info.docsUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-primary hover:underline inline-flex items-center gap-0.5"
+                        >
+                          View details
+                          <ExternalLink className="h-3 w-3" />
+                        </a>
+                      </>
+                    )}
+                  </p>
+                )
+              })()}
+            </div>
+          </div>
 
-      {selectedProvider && isApiKeyProvider(selectedProvider) && (
-        <div className="pt-4 border-t space-y-4">
-          <h3 className="text-sm font-medium">API Key</h3>
-          <SttApiKeyInput key={selectedProvider} provider={selectedProvider} disabled={isLoading} />
-        </div>
-      )}
+          {selectedProvider && isApiKeyProvider(selectedProvider) && (
+            <div className="pt-4 border-t space-y-4">
+              <h3 className="text-sm font-medium">API Key</h3>
+              <SttApiKeyInput key={selectedProvider} provider={selectedProvider} disabled={isLoading} />
+            </div>
+          )}
 
-      {hasKeyConfigured && selectedProvider && TTS_PROVIDERS.has(selectedProvider) && (
-        <TtsVoiceSection disabled={isLoading} />
-      )}
+          {ttsAvailable && isAuthMode && <DefaultVoiceSection disabled={isLoading} />}
 
-      {hasKeyConfigured && selectedProvider && (
-        <div className="pt-4 border-t space-y-4">
-          <h3 className="text-sm font-medium">Test</h3>
-          <p className="text-xs text-muted-foreground">
-            Verify your microphone and STT provider are working correctly.
-          </p>
-          <VoiceTest />
-        </div>
+          {hasKeyConfigured && selectedProvider && (
+            <div className="pt-4 border-t space-y-4">
+              <h3 className="text-sm font-medium">Test</h3>
+              <p className="text-xs text-muted-foreground">
+                Verify your microphone and STT provider are working correctly.
+              </p>
+              <VoiceTest />
+            </div>
+          )}
+        </>
       )}
     </div>
   )

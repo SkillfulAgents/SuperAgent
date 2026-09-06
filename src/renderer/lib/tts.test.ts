@@ -21,13 +21,13 @@ describe('DeepgramTtsAdapter', () => {
     vi.unstubAllGlobals()
   })
 
-  function connect() {
+  function connect(voiceOptions: { speed?: number } = {}) {
     const adapter = new DeepgramTtsAdapter()
     const audio: ArrayBuffer[] = []
     const events: TtsEvent[] = []
     adapter.onAudio((chunk) => audio.push(chunk))
     adapter.onEvent((e) => events.push(e))
-    const connected = adapter.connect('jwt-token', 'aura-2-thalia-en')
+    const connected = adapter.connect('jwt-token', { voice: 'aura-2-thalia-en', ...voiceOptions })
     const ws = MockWebSocket.instances[0] as BinaryMockWebSocket
     return { adapter, ws, audio, events, connected }
   }
@@ -39,9 +39,18 @@ describe('DeepgramTtsAdapter', () => {
     expect(url.searchParams.get('model')).toBe('aura-2-thalia-en')
     expect(url.searchParams.get('encoding')).toBe('linear16')
     expect(url.searchParams.get('sample_rate')).toBe('24000')
+    expect(url.searchParams.has('speed')).toBe(false)
     expect(ws.protocols).toEqual(['bearer', 'jwt-token'])
     expect(ws.binaryType).toBe('arraybuffer')
     expect(adapter.sampleRate).toBe(24000)
+  })
+
+  it('passes a non-default speaking rate as the speed parameter', () => {
+    const { ws } = connect({ speed: 1.2 })
+    expect(new URL(ws.url).searchParams.get('speed')).toBe('1.2')
+    MockWebSocket.instances = []
+    const normal = connect({ speed: 1 })
+    expect(new URL(normal.ws.url).searchParams.has('speed')).toBe(false)
   })
 
   it('buffers text queued before the socket opens and sends it in order on open', async () => {

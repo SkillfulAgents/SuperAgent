@@ -138,9 +138,11 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
           // describe your laptop and govern someone else's.
           ...(canUseHostFeatures() ? [{ id: 'computer-use', label: 'Computer Use', icon: <Mouse className="h-4 w-4" />, render: () => deferredTab(<ComputerUseTab />) }] : []),
           { id: 'capabilities', label: 'Subagents', icon: <Workflow className="h-4 w-4" />, render: () => deferredTab(<CapabilitiesTab />) },
-          { id: 'voice', label: 'Voice', icon: <Mic className="h-4 w-4" />, render: () => deferredTab(<VoiceTab />) },
         ]
       : []),
+    // Everyone: the tab carries each person's own read-aloud voice; the
+    // provider and key sections inside it are admin-gated.
+    { id: 'voice', label: 'Voice', icon: <Mic className="h-4 w-4" />, render: () => deferredTab(<VoiceTab />) },
   ]
 
   // The plumbing agents run on — providers and runtime, mostly set-once.

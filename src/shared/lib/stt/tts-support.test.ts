@@ -14,7 +14,7 @@ vi.mock('@shared/lib/platform-auth/config', () => ({
 }))
 
 import { getSttProvider } from './index'
-import { DEFAULT_TTS_VOICE, TTS_VOICES, isTtsVoice, ttsVoiceSchema } from './tts-voices'
+import { DEFAULT_TTS_VOICE, TTS_VOICES, isTtsVoice, resolveTtsPreferences, ttsVoiceSchema } from './tts-voices'
 
 describe('text-to-speech provider support', () => {
   beforeEach(() => {
@@ -40,6 +40,21 @@ describe('text-to-speech provider support', () => {
 
   it('refuses to mint for a provider without speech', async () => {
     await expect(getSttProvider('openai').getTtsToken()).rejects.toThrow('Text-to-speech not supported by OpenAI')
+  })
+})
+
+describe('resolveTtsPreferences', () => {
+  it('prefers the user, then the deployment default, then the built-in default', () => {
+    expect(resolveTtsPreferences({ ttsVoice: 'aura-2-luna-en', ttsSpeed: 1.2 }, { ttsVoice: 'aura-2-zeus-en' }))
+      .toEqual({ voice: 'aura-2-luna-en', speed: 1.2 })
+    expect(resolveTtsPreferences({ ttsSpeed: 0.9 }, { ttsVoice: 'aura-2-zeus-en' }))
+      .toEqual({ voice: 'aura-2-zeus-en', speed: 0.9 })
+    expect(resolveTtsPreferences(undefined, undefined)).toEqual({ voice: DEFAULT_TTS_VOICE, speed: 1 })
+  })
+
+  it('ignores values outside the catalogue or the speed range', () => {
+    expect(resolveTtsPreferences({ ttsVoice: 'aura-asteria-en', ttsSpeed: 3 }, { ttsVoice: 'nope' }))
+      .toEqual({ voice: DEFAULT_TTS_VOICE, speed: 1 })
   })
 })
 

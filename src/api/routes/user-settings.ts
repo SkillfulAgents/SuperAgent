@@ -5,6 +5,7 @@ import {
   agentFolderSettingsWriteSchema,
   getUserSettings,
   updateUserSettings,
+  userVoiceSettingsWriteSchema,
 } from '@shared/lib/services/user-settings-service'
 
 const userSettingsRouter = new Hono()
@@ -28,6 +29,11 @@ userSettingsRouter.put('/', async (c) => {
   const folderFields = agentFolderSettingsWriteSchema.safeParse(body)
   if (!folderFields.success) {
     return c.json({ error: 'Invalid agent folder settings' }, 400)
+  }
+  // Same for the voice fields: the stored schema drops what it cannot parse.
+  const voiceFields = userVoiceSettingsWriteSchema.safeParse(body)
+  if (!voiceFields.success) {
+    return c.json({ error: 'Invalid voice settings' }, 400)
   }
   const updated = updateUserSettings(userId, body)
   return c.json(updated)

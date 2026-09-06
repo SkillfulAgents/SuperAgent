@@ -72,7 +72,7 @@ function setup() {
   const player = new SpeechPlayer({
     adapter,
     token: 't',
-    voice: 'v',
+    voice: { voice: 'v' },
     onStatus: (s, e) => { statuses.push(s); errors.push(e) },
     createAudioContext: () => ctx as unknown as AudioContext,
   })

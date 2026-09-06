@@ -12,6 +12,13 @@ export type TtsEvent =
   | { type: 'cleared'; sequenceId: number }
   | { type: 'error'; error: Error }
 
+export interface TtsVoiceOptions {
+  /** Provider voice id (Deepgram: the `model` query parameter). */
+  voice: string
+  /** Speaking-rate multiplier; 1 is the provider's natural pace. */
+  speed?: number
+}
+
 export type TtsAudioCallback = (chunk: ArrayBuffer) => void
 export type TtsEventCallback = (event: TtsEvent) => void
 
@@ -25,7 +32,7 @@ export type TtsEventCallback = (event: TtsEvent) => void
 export interface TtsAdapter {
   /** Sample rate of the returned int16 mono PCM. */
   readonly sampleRate: number
-  connect(token: string, voice: string): Promise<void>
+  connect(token: string, options: TtsVoiceOptions): Promise<void>
   /** Queue text for synthesis. May be called repeatedly with partial text. */
   speak(text: string): void
   /**
@@ -59,13 +66,14 @@ export class DeepgramTtsAdapter implements TtsAdapter {
   private audioCb: TtsAudioCallback | null = null
   private eventCb: TtsEventCallback | null = null
 
-  connect(token: string, voice: string): Promise<void> {
+  connect(token: string, { voice, speed }: TtsVoiceOptions): Promise<void> {
     return new Promise((resolve, reject) => {
       const params = new URLSearchParams({
         model: voice,
         encoding: 'linear16',
         sample_rate: String(DEEPGRAM_SAMPLE_RATE),
       })
+      if (speed !== undefined && speed !== 1) params.set('speed', String(speed))
       const ws = new WebSocket(`wss://api.deepgram.com/v1/speak?${params.toString()}`, ['bearer', token])
       ws.binaryType = 'arraybuffer'
       this.ws = ws

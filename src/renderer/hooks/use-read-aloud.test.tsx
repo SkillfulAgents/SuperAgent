@@ -10,7 +10,7 @@ const createTtsAdapter = vi.fn((_provider: string) => ({ fake: 'adapter' }))
 vi.mock('@renderer/lib/tts', () => ({ createTtsAdapter: (provider: string) => createTtsAdapter(provider) }))
 
 interface FakePlayer {
-  options: { adapter: unknown; token: string; voice: string; onStatus?: (s: string, e?: Error) => void }
+  options: { adapter: unknown; token: string; voice: { voice: string; speed?: number }; onStatus?: (s: string, e?: Error) => void }
   start: ReturnType<typeof vi.fn>
   append: ReturnType<typeof vi.fn>
   end: ReturnType<typeof vi.fn>
@@ -46,7 +46,7 @@ describe('readAloud controller', () => {
   })
 
   it('fetches credentials, then speaks the message through a player', async () => {
-    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', token: 'jwt', voice: 'aura-2-luna-en' }))
+    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', token: 'jwt', voice: 'aura-2-luna-en', speed: 1.2 }))
     const speaking = readAloud.speak('m1', 'Hello **world**. Bye.')
     expect(readAloud.getSnapshot()).toEqual({ activeId: 'm1', status: 'connecting', error: null })
     await speaking
@@ -54,7 +54,7 @@ describe('readAloud controller', () => {
     expect(apiFetch).toHaveBeenCalledWith('/api/stt/tts-token')
     expect(createTtsAdapter).toHaveBeenCalledWith('deepgram')
     const player = players[0]
-    expect(player.options).toMatchObject({ token: 'jwt', voice: 'aura-2-luna-en' })
+    expect(player.options).toMatchObject({ token: 'jwt', voice: { voice: 'aura-2-luna-en', speed: 1.2 } })
     expect(player.start).toHaveBeenCalledTimes(1)
     expect(player.append.mock.calls[0][0].map((w: { text: string }) => w.text)).toEqual(['Hello', 'world.', 'Bye.'])
     expect(player.end).toHaveBeenCalledTimes(1)

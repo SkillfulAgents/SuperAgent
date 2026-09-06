@@ -29,3 +29,45 @@ export const ttsVoiceSchema = z.enum(voiceIds)
 export function isTtsVoice(value: unknown): value is TtsVoice {
   return ttsVoiceSchema.safeParse(value).success
 }
+
+/**
+ * Speaking-rate multipliers offered in settings. Deepgram accepts 0.7–1.5;
+ * the schema allows that whole range so a stored value never has to match
+ * the presets exactly.
+ */
+export const TTS_SPEEDS = [
+  { value: 0.8, label: '0.8×' },
+  { value: 0.9, label: '0.9×' },
+  { value: 1, label: 'Normal' },
+  { value: 1.1, label: '1.1×' },
+  { value: 1.2, label: '1.2×' },
+  { value: 1.3, label: '1.3×' },
+  { value: 1.5, label: '1.5×' },
+] as const
+
+export const DEFAULT_TTS_SPEED = 1
+
+export const ttsSpeedSchema = z.number().min(0.7).max(1.5)
+
+export interface TtsPreferences {
+  voice: TtsVoice
+  speed: number
+}
+
+/**
+ * The voice and speed a request should use: the user's own choices, then
+ * the deployment's default voice, then the built-in default. Invalid stored
+ * values (a voice removed from the catalogue) fall through the same way.
+ */
+export function resolveTtsPreferences(
+  user: { ttsVoice?: unknown; ttsSpeed?: unknown } | undefined,
+  deployment: { ttsVoice?: unknown } | undefined,
+): TtsPreferences {
+  const voice = isTtsVoice(user?.ttsVoice)
+    ? user.ttsVoice
+    : isTtsVoice(deployment?.ttsVoice)
+      ? deployment.ttsVoice
+      : DEFAULT_TTS_VOICE
+  const speed = ttsSpeedSchema.safeParse(user?.ttsSpeed)
+  return { voice, speed: speed.success ? speed.data : DEFAULT_TTS_SPEED }
+}

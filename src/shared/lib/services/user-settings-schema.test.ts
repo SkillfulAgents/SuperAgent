@@ -1,5 +1,26 @@
 import { describe, it, expect } from 'vitest'
-import { agentFolderSettingsWriteSchema, userSettingsSchema } from './user-settings-service'
+import { agentFolderSettingsWriteSchema, userSettingsSchema, userVoiceSettingsWriteSchema } from './user-settings-service'
+
+describe('userSettingsSchema voice', () => {
+  it('defaults to undefined and stores a valid voice and speed', () => {
+    expect(userSettingsSchema.parse({}).voice).toBeUndefined()
+    expect(userSettingsSchema.parse({ voice: { ttsVoice: 'aura-2-luna-en', ttsSpeed: 1.2 } }).voice)
+      .toEqual({ ttsVoice: 'aura-2-luna-en', ttsSpeed: 1.2 })
+  })
+
+  it('drops a voice that left the catalogue without taking the speed with it', () => {
+    const parsed = userSettingsSchema.parse({ voice: { ttsVoice: 'aura-retired-en', ttsSpeed: 1.1 } })
+    expect(parsed.voice).toEqual({ ttsVoice: undefined, ttsSpeed: 1.1 })
+    expect(parsed.theme).toBe('system')
+  })
+
+  it('the write schema rejects what the stored schema would silently drop', () => {
+    expect(userVoiceSettingsWriteSchema.safeParse({ voice: { ttsVoice: 'aura-retired-en' } }).success).toBe(false)
+    expect(userVoiceSettingsWriteSchema.safeParse({ voice: { ttsSpeed: 2 } }).success).toBe(false)
+    expect(userVoiceSettingsWriteSchema.safeParse({ voice: { ttsSpeed: 0.9 } }).success).toBe(true)
+    expect(userVoiceSettingsWriteSchema.safeParse({ theme: 'dark' }).success).toBe(true)
+  })
+})
 
 describe('userSettingsSchema agentOrder', () => {
   it('defaults to undefined when not provided', () => {

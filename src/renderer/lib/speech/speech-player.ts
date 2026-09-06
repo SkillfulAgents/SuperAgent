@@ -1,5 +1,5 @@
 import { pcm16ToFloat32 } from '@renderer/lib/stt'
-import type { TtsAdapter, TtsEvent } from '@renderer/lib/tts'
+import type { TtsAdapter, TtsEvent, TtsVoiceOptions } from '@renderer/lib/tts'
 import { SpeechSegmenter, type SpeechSegment } from './speech-segmenter'
 import type { SpokenWord } from './spoken-words'
 
@@ -8,7 +8,7 @@ export type SpeechPlayerStatus = 'connecting' | 'speaking' | 'done' | 'stopped' 
 export interface SpeechPlayerOptions {
   adapter: TtsAdapter
   token: string
-  voice: string
+  voice: TtsVoiceOptions
   onStatus?: (status: SpeechPlayerStatus, error?: Error) => void
   /** Injectable for tests; defaults to `new AudioContext({ sampleRate })`. */
   createAudioContext?: (sampleRate: number) => AudioContext
@@ -41,7 +41,7 @@ const DONE_GRACE_MS = 80
 export class SpeechPlayer {
   private readonly adapter: TtsAdapter
   private readonly token: string
-  private readonly voice: string
+  private readonly voice: TtsVoiceOptions
   private readonly onStatus?: SpeechPlayerOptions['onStatus']
   private readonly createAudioContext: (sampleRate: number) => AudioContext
 

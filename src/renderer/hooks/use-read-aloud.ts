@@ -18,6 +18,7 @@ interface TtsCredentials {
   provider: SttProvider
   token: string
   voice: string
+  speed: number
 }
 
 const IDLE: ReadAloudSnapshot = { activeId: null, status: 'idle', error: null }
@@ -68,7 +69,7 @@ class ReadAloudController {
     const player = new SpeechPlayer({
       adapter: createTtsAdapter(credentials.provider),
       token: credentials.token,
-      voice: credentials.voice,
+      voice: { voice: credentials.voice, speed: credentials.speed },
       onStatus: (status, error) => {
         if (this.player !== player) return
         if (status === 'speaking') this.update({ activeId: id, status: 'speaking', error: null })

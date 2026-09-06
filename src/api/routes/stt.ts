@@ -2,7 +2,9 @@ import { Hono } from 'hono'
 import { Authenticated } from '../middleware/auth'
 import { getVoiceSettings, type SttProvider } from '@shared/lib/config/settings'
 import { getSttProvider } from '@shared/lib/stt'
-import { DEFAULT_TTS_VOICE } from '@shared/lib/stt/tts-voices'
+import { resolveTtsPreferences } from '@shared/lib/stt/tts-voices'
+import { getCurrentUserId } from '@shared/lib/auth/config'
+import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { getVoiceAgentPrompt, type VoiceAgentPromptName } from '@shared/prompts/voice-agent'
 
 const stt = new Hono()
@@ -90,7 +92,8 @@ stt.get('/voice-agent-token', async (c) => {
 })
 
 // GET /api/stt/tts-token - Credentials for a client-side text-to-speech session,
-// plus the voice to speak with (so the client needs no settings round-trip).
+// plus the voice and speed to speak with: the caller's own preferences, then
+// the deployment default (so the client needs no settings round-trip).
 stt.get('/tts-token', async (c) => {
   try {
     const voiceSettings = getVoiceSettings()
@@ -105,7 +108,8 @@ stt.get('/tts-token', async (c) => {
     }
 
     const result = await sttProvider.getTtsToken()
-    return c.json({ ...result, voice: voiceSettings.ttsVoice ?? DEFAULT_TTS_VOICE })
+    const preferences = resolveTtsPreferences(getUserSettings(getCurrentUserId(c)).voice, voiceSettings)
+    return c.json({ ...result, ...preferences })
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Failed to get text-to-speech credentials'
     console.error('Failed to get text-to-speech credentials:', error)
