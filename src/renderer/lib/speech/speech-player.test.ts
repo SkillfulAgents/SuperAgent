@@ -224,7 +224,7 @@ describe('SpeechPlayer', () => {
     const ctx = new FakeAudioContext()
     const player = new SpeechPlayer({ adapter, token: 't', voice: { voice: 'v' }, firstWordIndex: 10, createAudioContext: () => ctx as unknown as AudioContext })
     player.start()
-    expect(player.getWordCursor()).toBe(9) // everything before the restart point stays lit
+    expect(player.getWordCursor()).toBe(10) // the word the restart took over stays lit
     player.append(words('One two three four.'))
     player.end()
     adapter.pushAudio(1)
@@ -235,6 +235,49 @@ describe('SpeechPlayer', () => {
     vi.advanceTimersByTime(2000)
     expect(player.status).toBe('done')
     expect(player.getWordCursor()).toBe(14)
+  })
+
+  it('hands the synthesizer only a couple of segments ahead of playback', () => {
+    const { adapter, ctx, player } = setup()
+    player.start()
+    player.append(words('One two three. Four five six. Seven eight nine. Ten eleven twelve.'))
+    player.end()
+    // Two in flight; the third waits for a flush.
+    expect(adapter.sent.filter((s) => s.startsWith('speak:'))).toHaveLength(2)
+    adapter.pushAudio(1)
+    adapter.pushFlushed()
+    expect(adapter.sent.filter((s) => s.startsWith('speak:'))).toHaveLength(3)
+    // Enough audio buffered (12s > AHEAD): the fourth waits for the buffer to run down.
+    adapter.pushAudio(12)
+    adapter.pushFlushed()
+    expect(adapter.sent.filter((s) => s.startsWith('speak:'))).toHaveLength(3)
+    ctx.currentTime = 4
+    vi.advanceTimersByTime(3500)
+    expect(adapter.sent.filter((s) => s.startsWith('speak:'))).toHaveLength(4)
+    expect(player.status).toBe('speaking')
+  })
+
+  it('a connection the server closes before the reply is in is an error, not a stall', () => {
+    const { adapter, player, statuses, errors } = setup()
+    player.start()
+    player.append(words('One two three. Four five six.'))
+    player.end()
+    adapter.pushAudio(1)
+    adapter.pushFlushed()
+    adapter.eventCb?.({ type: 'closed' })
+    expect(statuses).toEqual(['speaking', 'error'])
+    expect(errors[1]?.message).toMatch(/closed before the reply finished/)
+  })
+
+  it('a refused audio-context resume is an error', async () => {
+    const { ctx, player, statuses, errors } = setup()
+    ctx.state = 'suspended'
+    ctx.resume.mockRejectedValueOnce(new Error('NotAllowedError'))
+    player.start()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(statuses).toEqual(['error'])
+    expect(errors[0]?.message).toMatch(/blocked by the browser/)
   })
 
   it('finishes immediately when there is nothing to say', () => {

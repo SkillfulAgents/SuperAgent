@@ -33,6 +33,14 @@ interface ScheduledSegment extends SpeechSegment {
 const LEAD_S = 0.05
 /** Slack after the last scheduled sample before declaring playback done. */
 const DONE_GRACE_MS = 80
+/**
+ * How far ahead of playback to keep audio scheduled. Segments are sent only
+ * as this runs down (plus a couple in flight so the synthesizer's latency is
+ * hidden), so a stop or a speed change early in a long reply wastes at most
+ * this much synthesis rather than the whole message.
+ */
+const AHEAD_S = 10
+const MAX_IN_FLIGHT = 2
 
 /**
  * Speaks a stream of words through a TtsAdapter and plays the audio as it
@@ -57,6 +65,9 @@ export class SpeechPlayer {
   private readonly segments: ScheduledSegment[] = []
   /** Index of the segment whose audio is currently arriving. */
   private receiving = 0
+  /** Segments [0, sent) have been handed to the synthesizer. */
+  private sent = 0
+  private pumpTimer: ReturnType<typeof setTimeout> | null = null
   private nextTime = 0
   /** A dangling byte from a chunk that split an int16 sample. */
   private carry: Uint8Array | null = null
@@ -65,7 +76,7 @@ export class SpeechPlayer {
   private _status: SpeechPlayerStatus = 'connecting'
   private wordCount = 0
   /** High-water mark of the cursor, so it never reads backwards. */
-  private cursorHigh = -Infinity
+  private cursorHigh: number
 
   constructor(options: SpeechPlayerOptions) {
     this.adapter = options.adapter
@@ -73,6 +84,9 @@ export class SpeechPlayer {
     this.voice = options.voice
     this.onStatus = options.onStatus
     this.firstWordIndex = options.firstWordIndex ?? 0
+    // A fresh read has said nothing yet; a restart mid-reply took over the
+    // word that was being spoken, which stays lit while its audio is refetched.
+    this.cursorHigh = this.firstWordIndex > 0 ? this.firstWordIndex : -1
     this.segmenter = new SpeechSegmenter(this.firstWordIndex)
     this.createAudioContext = options.createAudioContext ?? ((sampleRate) => new AudioContext({ sampleRate }))
   }
@@ -93,9 +107,13 @@ export class SpeechPlayer {
   start(): void {
     const ctx = this.createAudioContext(this.adapter.sampleRate)
     this.ctx = ctx
-    // Created outside a synchronous user-gesture handler (after the token
-    // round-trip) the context may start suspended.
-    if (ctx.state === 'suspended') void ctx.resume()
+    // A context created outside a user gesture may start suspended. A
+    // refused resume is an error, not minutes of silent "speaking".
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => {
+        this.fail(new Error('Audio playback was blocked by the browser. Tap the speaker to try again.'))
+      })
+    }
     this.adapter.onAudio((chunk) => this.handleAudio(chunk))
     this.adapter.onEvent((event) => this.handleEvent(event))
     this.adapter.connect(this.token, this.voice).catch((err: unknown) => {
@@ -147,15 +165,17 @@ export class SpeechPlayer {
     if (this._status !== 'paused' || !this.ctx) return
     void this.ctx.resume()
     this.setStatus('speaking')
+    this.pump()
     this.maybeFinish()
   }
 
   /**
    * Fractional index of the word being spoken: words at or below it have been
-   * (or are being) said. -1 before any audio has played, `totalWords` once done.
-   * Never moves backwards: a segment's known end grows as its audio arrives,
-   * which would otherwise pull an interpolated position back (visible when
-   * paused early in a segment).
+   * (or are being) said. -1 before any audio has played (`firstWordIndex`
+   * for a restart), `firstWordIndex + totalWords` once done. Never moves
+   * backwards: a segment's known end grows as its audio arrives, which would
+   * otherwise pull an interpolated position back (visible when paused early
+   * in a segment).
    */
   getWordCursor(): number {
     if (this._status === 'done') return this.firstWordIndex + this.wordCount
@@ -194,8 +214,38 @@ export class SpeechPlayer {
   private enqueue(segments: SpeechSegment[]): void {
     for (const segment of segments) {
       this.segments.push({ ...segment, startTime: null, endTime: null, flushed: false })
+    }
+    this.pump()
+  }
+
+  /** Seconds of audio scheduled beyond the playhead. */
+  private bufferedAhead(): number {
+    return this.ctx ? Math.max(0, this.nextTime - this.ctx.currentTime) : 0
+  }
+
+  /**
+   * Hand the synthesizer the next segments while the scheduled audio is
+   * short of AHEAD_S, then come back when it runs down that far. Nothing is
+   * sent while paused (the clock is frozen); resume() calls back in.
+   */
+  private pump(): void {
+    if (this.pumpTimer) {
+      clearTimeout(this.pumpTimer)
+      this.pumpTimer = null
+    }
+    if (this.isTerminal || this._status === 'paused') return
+    while (
+      this.sent < this.segments.length &&
+      this.sent - this.receiving < MAX_IN_FLIGHT &&
+      this.bufferedAhead() < AHEAD_S
+    ) {
+      const segment = this.segments[this.sent++]
       this.adapter.speak(segment.text)
       this.adapter.flush()
+    }
+    if (this.sent < this.segments.length && this.sent - this.receiving < MAX_IN_FLIGHT) {
+      const delayMs = Math.max(100, (this.bufferedAhead() - AHEAD_S) * 1000)
+      this.pumpTimer = setTimeout(() => this.pump(), delayMs)
     }
   }
 
@@ -243,9 +293,17 @@ export class SpeechPlayer {
         const segment = this.segments[this.receiving]
         if (segment) segment.flushed = true
         this.receiving++
+        this.pump()
         this.maybeFinish()
         break
       }
+      case 'closed':
+        // The socket is closed on our side only once every segment is in;
+        // any earlier close means the rest of the reply will never arrive.
+        if (this.receiving < this.segments.length || !this.ended) {
+          this.fail(new Error('Text-to-speech connection closed before the reply finished'))
+        }
+        break
       case 'error':
         this.fail(event.error)
         break
@@ -284,6 +342,10 @@ export class SpeechPlayer {
     if (this.doneTimer) {
       clearTimeout(this.doneTimer)
       this.doneTimer = null
+    }
+    if (this.pumpTimer) {
+      clearTimeout(this.pumpTimer)
+      this.pumpTimer = null
     }
     this.adapter.close()
     if (this.ctx) {

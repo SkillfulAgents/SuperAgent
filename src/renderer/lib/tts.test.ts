@@ -100,6 +100,14 @@ describe('DeepgramTtsAdapter', () => {
     expect(events[1]).toMatchObject({ type: 'error', error: expect.objectContaining({ message: 'Deepgram speak connection closed: 1011 boom' }) })
   })
 
+  it('a normal close the server initiates is reported as closed', async () => {
+    const { ws, events, connected } = connect()
+    ws.simulateOpen()
+    await connected
+    ws.simulateClose(1000)
+    expect(events).toEqual([{ type: 'closed' }])
+  })
+
   it('a normal close after close() is silent', async () => {
     const { adapter, ws, events, connected } = connect()
     ws.simulateOpen()

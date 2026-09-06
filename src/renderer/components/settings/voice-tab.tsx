@@ -16,16 +16,16 @@ import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user
 import { useUser } from '@renderer/context/user-context'
 import { apiFetch } from '@renderer/lib/api'
 import { AlertTriangle, Eye, EyeOff, Check, Loader2, ExternalLink, Square, Volume2 } from 'lucide-react'
-import { useIsTtsConfigured, useVoiceInput } from '@renderer/hooks/use-voice-input'
+import { useIsTtsConfigured, useTtsDefaultVoice, useVoiceInput } from '@renderer/hooks/use-voice-input'
 import { useReadAloud } from '@renderer/hooks/use-read-aloud'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import type { ApiKeyStatus, SttProvider } from '@shared/lib/config/settings'
 import {
-  DEFAULT_TTS_VOICE,
   TTS_SPEEDS,
   TTS_VOICES,
   isTtsVoice,
+  resolveDeploymentTtsVoice,
   resolveTtsPreferences,
   type TtsVoice,
 } from '@shared/lib/stt/tts-voices'
@@ -322,18 +322,38 @@ function VoicePreviewButton() {
   )
 }
 
-function VoicePicker({ id, value, onChange, disabled }: {
+/** Picker value meaning "no personal pick: follow the workspace default". */
+const WORKSPACE_DEFAULT = 'workspace-default'
+
+function voiceLabel(voice: TtsVoice): string {
+  return TTS_VOICES.find((v) => v.id === voice)?.label ?? voice
+}
+
+function VoicePicker({ id, value, onChange, disabled, workspaceDefault }: {
   id: string
-  value: TtsVoice
-  onChange: (voice: TtsVoice) => void
+  /** A voice, or null for "follow the workspace default" (only when one is offered). */
+  value: TtsVoice | null
+  onChange: (voice: TtsVoice | null) => void
   disabled: boolean
+  /** Offer following the workspace default, labelled with this voice. */
+  workspaceDefault?: TtsVoice
 }) {
   return (
-    <Select value={value} onValueChange={(v) => { if (isTtsVoice(v)) onChange(v) }} disabled={disabled}>
+    <Select
+      value={value ?? WORKSPACE_DEFAULT}
+      onValueChange={(v) => {
+        if (v === WORKSPACE_DEFAULT) onChange(null)
+        else if (isTtsVoice(v)) onChange(v)
+      }}
+      disabled={disabled}
+    >
       <SelectTrigger id={id}>
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
+        {workspaceDefault && (
+          <SelectItem value={WORKSPACE_DEFAULT}>Workspace Default ({voiceLabel(workspaceDefault)})</SelectItem>
+        )}
         {TTS_VOICES.map((v) => (
           <SelectItem key={v.id} value={v.id}>
             {v.label}
@@ -348,13 +368,18 @@ function VoicePicker({ id, value, onChange, disabled }: {
 /**
  * The reader's own voice and pace. Per user: stored in user settings, read
  * by the token endpoint, so everyone in a shared deployment hears their own
- * pick. Falls back to the deployment default voice until they choose.
+ * pick. In a shared deployment the picker also offers following the
+ * workspace default, which is what everyone gets until they choose.
+ *
+ * Reads no deployment settings: that endpoint is admin-only, and this
+ * section is a member's whole tab.
  */
-function PersonalVoiceSection({ heading }: { heading: string }) {
-  const { data: settings } = useSettings()
+function PersonalVoiceSection({ heading, offerWorkspaceDefault }: { heading: string; offerWorkspaceDefault: boolean }) {
+  const workspaceDefault = useTtsDefaultVoice()
   const { data: userSettings, isLoading } = useUserSettings()
   const updateUserSettings = useUpdateUserSettings()
-  const { voice, speed } = resolveTtsPreferences(userSettings?.voice, settings?.voice)
+  const { speed } = resolveTtsPreferences(userSettings?.voice, { ttsVoice: workspaceDefault })
+  const ownVoice = isTtsVoice(userSettings?.voice?.ttsVoice) ? userSettings.voice.ttsVoice : null
   const speedOption = TTS_SPEEDS.find((s) => s.value === speed)
 
   return (
@@ -364,8 +389,9 @@ function PersonalVoiceSection({ heading }: { heading: string }) {
         <Label htmlFor="tts-voice">Voice</Label>
         <VoicePicker
           id="tts-voice"
-          value={voice}
+          value={offerWorkspaceDefault ? ownVoice : (ownVoice ?? workspaceDefault)}
           disabled={isLoading}
+          workspaceDefault={offerWorkspaceDefault ? workspaceDefault : undefined}
           onChange={(ttsVoice) => updateUserSettings.mutate({ voice: { ttsVoice } })}
         />
       </div>
@@ -399,8 +425,7 @@ function PersonalVoiceSection({ heading }: { heading: string }) {
 function DefaultVoiceSection({ disabled }: { disabled: boolean }) {
   const { data: settings } = useSettings()
   const updateSettings = useUpdateSettings()
-  const raw = settings?.voice?.ttsVoice
-  const voice: TtsVoice = isTtsVoice(raw) ? raw : DEFAULT_TTS_VOICE
+  const voice = resolveDeploymentTtsVoice(settings?.voice)
 
   return (
     <div className="pt-4 border-t space-y-4" data-testid="default-voice-section">
@@ -411,7 +436,7 @@ function DefaultVoiceSection({ disabled }: { disabled: boolean }) {
           id="tts-default-voice"
           value={voice}
           disabled={disabled}
-          onChange={(ttsVoice) => updateSettings.mutate({ voice: { ttsVoice } })}
+          onChange={(ttsVoice) => { if (ttsVoice) updateSettings.mutate({ voice: { ttsVoice } }) }}
         />
         <p className="text-xs text-muted-foreground">
           What everyone hears until they pick their own voice above.
@@ -422,13 +447,14 @@ function DefaultVoiceSection({ disabled }: { disabled: boolean }) {
 }
 
 export function VoiceTab() {
-  const { data: settings, isLoading } = useSettings()
-  const updateSettings = useUpdateSettings()
-  const { data: platformAuth } = usePlatformAuthStatus()
   const { isAuthMode, isAdmin } = useUser()
   // Provider and key are deployment-wide, so admins only. The personal
-  // section is everyone's — it is the whole tab for members.
+  // section is everyone's — it is the whole tab for members. The settings
+  // endpoint is admin-only too, so members must not even ask for it.
   const showAdminFeatures = !isAuthMode || isAdmin
+  const { data: settings, isLoading } = useSettings({ enabled: showAdminFeatures })
+  const updateSettings = useUpdateSettings()
+  const { data: platformAuth } = usePlatformAuthStatus()
   const ttsAvailable = useIsTtsConfigured()
   const isPlatformConnected = platformAuth?.connected ?? false
   const rawProvider = settings?.voice?.sttProvider
@@ -443,7 +469,9 @@ export function VoiceTab() {
 
   return (
     <div className="space-y-6">
-      {ttsAvailable && <PersonalVoiceSection heading={isAuthMode ? 'Your Voice' : 'Text-to-Speech'} />}
+      {ttsAvailable && (
+        <PersonalVoiceSection heading={isAuthMode ? 'Your Voice' : 'Text-to-Speech'} offerWorkspaceDefault={isAuthMode} />
+      )}
 
       {!ttsAvailable && !showAdminFeatures && (
         <p className="text-sm text-muted-foreground" data-testid="voice-unavailable-note">

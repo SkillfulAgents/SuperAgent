@@ -70,6 +70,7 @@ const readAloudState = {
   configured: false,
   activeId: null as string | null,
   status: 'speaking' as 'speaking' | 'paused' | 'connecting',
+  error: null as string | null,
   toggle: vi.fn(),
   pause: vi.fn(),
   resume: vi.fn(),
@@ -87,7 +88,7 @@ vi.mock('@renderer/hooks/use-read-aloud', () => ({
     toggle: readAloudState.toggle,
     pause: readAloudState.pause,
     resume: readAloudState.resume,
-    error: null,
+    error: readAloudState.error,
   }),
   useSpokenWordHighlight: () => {},
   readAloud: { restart: vi.fn() },
@@ -105,6 +106,7 @@ describe('MessageItem', () => {
     readAloudState.configured = false
     readAloudState.activeId = null
     readAloudState.status = 'speaking'
+    readAloudState.error = null
     readAloudState.toggle.mockReset()
     readAloudState.pause.mockReset()
     readAloudState.resume.mockReset()
@@ -331,6 +333,21 @@ describe('MessageItem', () => {
       expect(resume).not.toHaveClass('hidden')
       resume.click()
       expect(readAloudState.resume).toHaveBeenCalledTimes(1)
+    })
+
+    it('shows what went wrong next to the speaker button', () => {
+      readAloudState.configured = true
+      const msg = createAssistantMessage({ content: { text: 'Hello there world' } })
+      const quiet = render(<MessageItem message={msg} />)
+      expect(screen.getByTestId('read-aloud-error')).toHaveClass('hidden')
+      quiet.unmount()
+
+      readAloudState.error = 'Deepgram key revoked'
+      render(<MessageItem message={msg} />)
+      const error = screen.getByTestId('read-aloud-error')
+      expect(error).not.toHaveClass('hidden')
+      expect(error).toHaveTextContent('Deepgram key revoked')
+      expect(screen.getByTestId('read-aloud-button')).not.toHaveClass('hidden')
     })
 
     it('keeps every control mounted while idle, only the speaker visible', () => {

@@ -107,9 +107,16 @@ export function ReadAloudControls({ messageId, markdown, className }: ReadAloudC
   return (
     <TooltipProvider>
       <div className={cn('flex items-center gap-0.5', className)} data-testid="read-aloud-controls" data-status={status}>
-        <IconButton label={error ?? 'Read aloud'} onClick={toggle} testId="read-aloud-button" status={status} shown={!active}>
+        <IconButton label="Read aloud" onClick={toggle} testId="read-aloud-button" status={status} shown={!active}>
           <Volume2 className={ICON} />
         </IconButton>
+        <span
+          role="alert"
+          data-testid="read-aloud-error"
+          className={cn('text-xs text-destructive', !(error && !active) && 'hidden')}
+        >
+          {error}
+        </span>
         <span className={cn(ICON_BUTTON, status !== 'connecting' && 'hidden')} aria-label="Connecting" data-testid="read-aloud-connecting">
           <Loader2 className={cn(ICON, 'animate-spin')} />
         </span>

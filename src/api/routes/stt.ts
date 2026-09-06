@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { Authenticated } from '../middleware/auth'
 import { getVoiceSettings, type SttProvider } from '@shared/lib/config/settings'
 import { getSttProvider } from '@shared/lib/stt'
-import { resolveTtsPreferences } from '@shared/lib/stt/tts-voices'
+import { resolveTtsPreferences, resolveDeploymentTtsVoice } from '@shared/lib/stt/tts-voices'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { getVoiceAgentPrompt, type VoiceAgentPromptName } from '@shared/prompts/voice-agent'
@@ -11,11 +11,14 @@ const stt = new Hono()
 
 stt.use('*', Authenticated())
 
-// GET /api/stt/configured - Check if voice input is configured (available to all authenticated users)
+// GET /api/stt/configured - Check if voice input is configured (available to all authenticated users).
+// Also carries the deployment's default read-aloud voice: the settings
+// endpoint is admin-only, and members need it to label "Workspace Default".
 stt.get('/configured', (c) => {
   const voiceSettings = getVoiceSettings()
   const provider = voiceSettings.sttProvider
-  if (!provider) return c.json({ configured: false, supportsVoiceAgent: false, supportsTts: false })
+  const defaultVoice = resolveDeploymentTtsVoice(voiceSettings)
+  if (!provider) return c.json({ configured: false, supportsVoiceAgent: false, supportsTts: false, defaultVoice })
   const sttProvider = getSttProvider(provider)
   const status = sttProvider.getApiKeyStatus()
   const configured = status.isConfigured
@@ -23,6 +26,7 @@ stt.get('/configured', (c) => {
     configured,
     supportsVoiceAgent: configured && sttProvider.supportsVoiceAgent(),
     supportsTts: configured && sttProvider.supportsTts(),
+    defaultVoice,
   })
 })
 

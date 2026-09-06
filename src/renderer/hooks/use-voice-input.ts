@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { acquireMicStream, createSttAdapter, startAudioCapture, type SttAdapter, type SttProvider, type AudioCaptureHandle } from '@renderer/lib/stt'
+import { DEFAULT_TTS_VOICE, isTtsVoice, type TtsVoice } from '@shared/lib/stt/tts-voices'
 
 // 'finalizing': mic released, but we're flushing buffered audio and awaiting the
 // server's trailing transcripts before the final text is ready.
@@ -21,6 +22,8 @@ interface SttConfiguredStatus {
   configured: boolean
   supportsVoiceAgent: boolean
   supportsTts: boolean
+  /** The deployment's default read-aloud voice (for anyone without their own pick). */
+  defaultVoice?: string
 }
 
 const NOT_CONFIGURED: SttConfiguredStatus = { configured: false, supportsVoiceAgent: false, supportsTts: false }
@@ -57,6 +60,15 @@ export function useIsVoiceAgentConfigured(): boolean {
  */
 export function useIsTtsConfigured(): boolean {
   return useSttConfiguredStatus().supportsTts
+}
+
+/**
+ * The deployment's default read-aloud voice. Served to every user (the
+ * settings endpoint itself is admin-only in auth mode).
+ */
+export function useTtsDefaultVoice(): TtsVoice {
+  const raw = useSttConfiguredStatus().defaultVoice
+  return isTtsVoice(raw) ? raw : DEFAULT_TTS_VOICE
 }
 
 export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {

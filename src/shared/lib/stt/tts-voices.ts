@@ -49,6 +49,11 @@ export const DEFAULT_TTS_SPEED = 1
 
 export const ttsSpeedSchema = z.number().min(0.7).max(1.5)
 
+/** The voice a deployment reads with for anyone who hasn't picked their own. */
+export function resolveDeploymentTtsVoice(deployment: { ttsVoice?: unknown } | undefined): TtsVoice {
+  return isTtsVoice(deployment?.ttsVoice) ? deployment.ttsVoice : DEFAULT_TTS_VOICE
+}
+
 export interface TtsPreferences {
   voice: TtsVoice
   speed: number
@@ -63,11 +68,7 @@ export function resolveTtsPreferences(
   user: { ttsVoice?: unknown; ttsSpeed?: unknown } | undefined,
   deployment: { ttsVoice?: unknown } | undefined,
 ): TtsPreferences {
-  const voice = isTtsVoice(user?.ttsVoice)
-    ? user.ttsVoice
-    : isTtsVoice(deployment?.ttsVoice)
-      ? deployment.ttsVoice
-      : DEFAULT_TTS_VOICE
+  const voice = isTtsVoice(user?.ttsVoice) ? user.ttsVoice : resolveDeploymentTtsVoice(deployment)
   const speed = ttsSpeedSchema.safeParse(user?.ttsSpeed)
   return { voice, speed: speed.success ? speed.data : DEFAULT_TTS_SPEED }
 }

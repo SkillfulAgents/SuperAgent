@@ -10,6 +10,8 @@ export type TtsEvent =
   | { type: 'flushed'; sequenceId: number }
   /** The server dropped its queued text/audio in response to clear(). */
   | { type: 'cleared'; sequenceId: number }
+  /** The server closed the connection cleanly, unasked. Nothing more will arrive. */
+  | { type: 'closed' }
   | { type: 'error'; error: Error }
 
 export interface TtsVoiceOptions {
@@ -115,7 +117,9 @@ export class DeepgramTtsAdapter implements TtsAdapter {
       ws.onclose = (event) => {
         if (this.closed) return
         this.closed = true
-        if (event.code !== 1000 && event.code !== 1005) {
+        if (event.code === 1000 || event.code === 1005) {
+          this.eventCb?.({ type: 'closed' })
+        } else {
           this.eventCb?.({
             type: 'error',
             error: new Error(`Deepgram speak connection closed: ${event.code} ${event.reason}`),

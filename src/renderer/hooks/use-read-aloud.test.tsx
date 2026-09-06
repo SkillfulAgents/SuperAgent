@@ -11,6 +11,7 @@ vi.mock('@renderer/lib/tts', () => ({ createTtsAdapter: (provider: string) => cr
 
 interface FakePlayer {
   options: { adapter: unknown; token: string; voice: { voice: string; speed?: number }; firstWordIndex?: number; onStatus?: (s: string, e?: Error) => void }
+  status: string
   start: ReturnType<typeof vi.fn>
   append: ReturnType<typeof vi.fn>
   end: ReturnType<typeof vi.fn>
@@ -22,6 +23,7 @@ interface FakePlayer {
 const players: FakePlayer[] = []
 vi.mock('@renderer/lib/speech/speech-player', () => ({
   SpeechPlayer: class {
+    status = 'speaking'
     start = vi.fn()
     append = vi.fn()
     end = vi.fn()
@@ -52,7 +54,7 @@ describe('readAloud controller', () => {
   it('fetches credentials, then speaks the message through a player', async () => {
     apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', token: 'jwt', voice: 'aura-2-luna-en', speed: 1.2 }))
     const speaking = readAloud.speak('m1', 'Hello **world**. Bye.')
-    expect(readAloud.getSnapshot()).toEqual({ activeId: 'm1', status: 'connecting', error: null })
+    expect(readAloud.getSnapshot()).toEqual({ activeId: 'm1', status: 'connecting', error: null, errorId: null })
     await speaking
 
     expect(apiFetch).toHaveBeenCalledWith('/api/stt/tts-token')
@@ -65,9 +67,9 @@ describe('readAloud controller', () => {
     expect(readAloud.getPlayer()).toBe(player)
 
     player.options.onStatus?.('speaking')
-    expect(readAloud.getSnapshot()).toEqual({ activeId: 'm1', status: 'speaking', error: null })
+    expect(readAloud.getSnapshot()).toEqual({ activeId: 'm1', status: 'speaking', error: null, errorId: null })
     player.options.onStatus?.('done')
-    expect(readAloud.getSnapshot()).toEqual({ activeId: null, status: 'idle', error: null })
+    expect(readAloud.getSnapshot()).toEqual({ activeId: null, status: 'idle', error: null, errorId: null })
     expect(readAloud.getPlayer()).toBeNull()
   })
 
@@ -108,7 +110,7 @@ describe('readAloud controller', () => {
     readAloud.pause()
     expect(players[0].pause).toHaveBeenCalledTimes(1)
     players[0].options.onStatus?.('paused')
-    expect(readAloud.getSnapshot()).toEqual({ activeId: 'm1', status: 'paused', error: null })
+    expect(readAloud.getSnapshot()).toEqual({ activeId: 'm1', status: 'paused', error: null, errorId: null })
     readAloud.resume()
     expect(players[0].resume).toHaveBeenCalledTimes(1)
     players[0].options.onStatus?.('speaking')
@@ -134,17 +136,42 @@ describe('readAloud controller', () => {
     expect(players).toHaveLength(2)
   })
 
+  it('restart() after playback finished does nothing (no replay from the top)', async () => {
+    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', token: 'jwt', voice: 'v', speed: 1 }))
+    await readAloud.speak('m1', 'One two three.')
+    players[0].options.onStatus?.('done')
+    readAloud.restart()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(players).toHaveLength(1)
+    expect(readAloud.getSnapshot().activeId).toBeNull()
+  })
+
+  it('restart() while paused carries on paused at the new speed', async () => {
+    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', token: 'jwt', voice: 'v', speed: 1 }))
+    await readAloud.speak('m1', 'One two three. Four five six.')
+    players[0].status = 'paused'
+    players[0].getWordCursor.mockReturnValue(2)
+    readAloud.restart()
+    await new Promise((r) => setTimeout(r, 0))
+    const next = players[1]
+    expect(next.options.firstWordIndex).toBe(2)
+    next.options.onStatus?.('speaking')
+    expect(next.pause).toHaveBeenCalledTimes(1)
+    next.options.onStatus?.('paused')
+    expect(readAloud.getSnapshot().status).toBe('paused')
+  })
+
   it('surfaces credential and playback failures', async () => {
     apiFetch.mockResolvedValue(tokenResponse({ error: 'No voice provider configured' }, false))
     await readAloud.speak('m1', 'Hello.')
-    expect(readAloud.getSnapshot()).toEqual({ activeId: null, status: 'idle', error: 'No voice provider configured' })
+    expect(readAloud.getSnapshot()).toEqual({ activeId: null, status: 'idle', error: 'No voice provider configured', errorId: 'm1' })
 
     apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', token: 'jwt', voice: 'v' }))
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     await readAloud.speak('m2', 'Hello.')
     expect(readAloud.getSnapshot().error).toBeNull() // cleared on the next play
     players[0].options.onStatus?.('error', new Error('socket died'))
-    expect(readAloud.getSnapshot()).toEqual({ activeId: null, status: 'idle', error: 'socket died' })
+    expect(readAloud.getSnapshot()).toEqual({ activeId: null, status: 'idle', error: 'socket died', errorId: 'm2' })
     errorSpy.mockRestore()
   })
 })
@@ -173,6 +200,20 @@ describe('useReadAloud', () => {
     act(() => { result.current.toggle() })
     expect(players[0].stop).toHaveBeenCalled()
     expect(result.current.status).toBe('idle')
+  })
+
+  it('shows a failure on the message it happened to, even though it is idle again', async () => {
+    apiFetch.mockResolvedValue(tokenResponse({ error: 'Deepgram key revoked' }, false))
+    const { result } = renderHook(() => useReadAloud('m1', 'Hello.'))
+    const other = renderHook(() => useReadAloud('m2', 'Other.'))
+    await act(async () => { result.current.toggle() })
+    expect(result.current.status).toBe('idle')
+    expect(result.current.error).toBe('Deepgram key revoked')
+    expect(other.result.current.error).toBeNull()
+    // the next play clears it
+    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', token: 'jwt', voice: 'v' }))
+    await act(async () => { result.current.toggle() })
+    expect(result.current.error).toBeNull()
   })
 })
 

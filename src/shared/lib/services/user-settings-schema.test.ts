@@ -20,6 +20,11 @@ describe('userSettingsSchema voice', () => {
     expect(userVoiceSettingsWriteSchema.safeParse({ voice: { ttsSpeed: 0.9 } }).success).toBe(true)
     expect(userVoiceSettingsWriteSchema.safeParse({ theme: 'dark' }).success).toBe(true)
   })
+
+  it('a null voice write unsets the personal pick (back to the deployment default)', () => {
+    expect(userVoiceSettingsWriteSchema.safeParse({ voice: { ttsVoice: null } }).success).toBe(true)
+    expect(userVoiceSettingsWriteSchema.safeParse({ voice: { ttsSpeed: null } }).success).toBe(false)
+  })
 })
 
 describe('userSettingsSchema agentOrder', () => {

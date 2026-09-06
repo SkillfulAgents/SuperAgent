@@ -91,15 +91,17 @@ const userVoiceSettingsSchema = z
   .optional()
   .catch(undefined)
 
+/** A write: `ttsVoice: null` goes back to following the deployment default. */
 export const userVoiceSettingsWriteSchema = z.object({
   voice: z
     .object({
-      ttsVoice: ttsVoiceSchema.optional(),
+      ttsVoice: ttsVoiceSchema.nullable().optional(),
       ttsSpeed: ttsSpeedSchema.optional(),
     })
     .strict()
     .optional(),
 })
+export type UserVoiceSettingsWrite = NonNullable<z.infer<typeof userVoiceSettingsWriteSchema>['voice']>
 
 export const userSettingsSchema = z.object({
   theme: z.enum(['system', 'light', 'dark']).default('system'),
@@ -180,6 +182,8 @@ export const userSettingsSchema = z.object({
 })
 
 export type UserSettingsData = z.infer<typeof userSettingsSchema>
+/** What a write may carry: the stored shape, except the voice may be unset with null. */
+export type UserSettingsWrite = Omit<Partial<UserSettingsData>, 'voice'> & { voice?: Partial<UserVoiceSettingsWrite> }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -263,9 +267,21 @@ export function getUserSettings(userId: string): UserSettingsData {
 /**
  * Update user settings with a partial update. Merges with existing, validates, and upserts.
  */
+/** Merge a voice write; a null voice means "unset", not "store null". */
+function mergeVoice(
+  current: UserSettingsData['voice'],
+  patch: Partial<UserVoiceSettingsWrite>,
+): UserSettingsData['voice'] {
+  const { ttsVoice, ...rest } = patch
+  const merged = { ...current, ...rest }
+  if (ttsVoice === null) delete merged.ttsVoice
+  else if (ttsVoice !== undefined) merged.ttsVoice = ttsVoice
+  return merged
+}
+
 export function updateUserSettings(
   userId: string,
-  partial: Partial<UserSettingsData>
+  partial: UserSettingsWrite
 ): UserSettingsData {
   const current = getUserSettings(userId)
 
@@ -276,7 +292,7 @@ export function updateUserSettings(
     notifications: partial.notifications
       ? { ...current.notifications, ...partial.notifications }
       : current.notifications,
-    voice: partial.voice ? { ...current.voice, ...partial.voice } : current.voice,
+    voice: partial.voice ? mergeVoice(current.voice, partial.voice) : current.voice,
   }
 
   const validated = userSettingsSchema.parse(merged)

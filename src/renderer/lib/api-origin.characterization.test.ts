@@ -110,6 +110,8 @@ const PINNED_CALL_SITES: Record<string, string> = {
     'third-party Deepgram voice-agent socket — must NOT follow the API origin',
   'lib/voice-agent-openai.ts::OpenAIVoiceAgentAdapter.connect::WebSocket(url)':
     'third-party OpenAI realtime socket — must NOT follow the API origin',
+  'lib/tts.ts::DeepgramTtsAdapter.connect::WebSocket(`wss://api.deepgram.com/v1/speak?${params.toString()}`)':
+    'third-party Deepgram text-to-speech socket — must NOT follow the API origin',
 }
 
 /**
@@ -119,6 +121,7 @@ const PINNED_CALL_SITES: Record<string, string> = {
  */
 const EXTERNAL_ENDPOINT_MODULES = [
   'lib/stt.ts',
+  'lib/tts.ts',
   'lib/voice-agent-deepgram.ts',
   'lib/voice-agent-openai.ts',
 ]
