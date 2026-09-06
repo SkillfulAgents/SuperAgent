@@ -291,23 +291,23 @@ describe('MessageItem', () => {
       expect(screen.queryByTestId('read-aloud-button')).toBeNull()
     })
 
-    it('renders readable replies word-addressable up front, and dims only the one being read', () => {
+    it('renders the word spans and dims the prose only for the reply being read', () => {
       readAloudState.configured = true
       const msg = createAssistantMessage({ content: { text: 'Hello **bright** world' } })
-      // Idle: spans are already there (so play never changes the DOM shape), no dimming.
+      // Idle: plain prose, nothing addressable, no dimming.
       const idle = render(<MessageItem message={msg} />)
-      const idleWords = Array.from(idle.container.querySelectorAll<HTMLElement>('[data-spoken-word]'))
-      expect(idleWords.map((w) => w.textContent)).toEqual(['Hello', 'bright', 'world'])
-      expect(idleWords.map((w) => w.dataset.spokenWord)).toEqual(['0', '1', '2'])
+      expect(idle.container.querySelector('[data-spoken-word]')).toBeNull()
       expect(idle.container.querySelector('.read-aloud-prose')).toBeNull()
       idle.unmount()
 
       readAloudState.activeId = msg.id
       const { container } = render(<MessageItem message={msg} />)
       expect(container.querySelector('.read-aloud-prose')).not.toBeNull()
-      expect(container.querySelectorAll('[data-spoken-word]')).toHaveLength(3)
-      expect(screen.getByTestId('read-aloud-button')).toHaveClass('hidden')
-      expect(screen.getByTestId('read-aloud-stop')).not.toHaveClass('hidden')
+      const words = Array.from(container.querySelectorAll<HTMLElement>('[data-spoken-word]'))
+      expect(words.map((w) => w.textContent)).toEqual(['Hello', 'bright', 'world'])
+      expect(words.map((w) => w.dataset.spokenWord)).toEqual(['0', '1', '2'])
+      expect(screen.queryByTestId('read-aloud-button')).toBeNull()
+      expect(screen.getByTestId('read-aloud-stop')).toBeInTheDocument()
     })
 
     it('while reading, offers pause, stop, and the speed picker; paused offers resume', () => {
@@ -315,23 +315,18 @@ describe('MessageItem', () => {
       const msg = createAssistantMessage({ content: { text: 'Hello there world' } })
       readAloudState.activeId = msg.id
       const speaking = render(<MessageItem message={msg} />)
-      const pause = screen.getByTestId('read-aloud-pause')
-      expect(pause).not.toHaveClass('hidden')
-      expect(screen.getByTestId('read-aloud-resume')).toHaveClass('hidden')
-      pause.click()
+      expect(screen.queryByTestId('read-aloud-resume')).toBeNull()
+      screen.getByTestId('read-aloud-pause').click()
       expect(readAloudState.pause).toHaveBeenCalledTimes(1)
       expect(screen.getByTestId('read-aloud-speed')).toHaveTextContent('1.2×')
-      expect(screen.getByTestId('read-aloud-speed')).not.toHaveClass('hidden')
       screen.getByTestId('read-aloud-stop').click()
       expect(readAloudState.toggle).toHaveBeenCalledTimes(1)
       speaking.unmount()
 
       readAloudState.status = 'paused'
       render(<MessageItem message={msg} />)
-      expect(screen.getByTestId('read-aloud-pause')).toHaveClass('hidden')
-      const resume = screen.getByTestId('read-aloud-resume')
-      expect(resume).not.toHaveClass('hidden')
-      resume.click()
+      expect(screen.queryByTestId('read-aloud-pause')).toBeNull()
+      screen.getByTestId('read-aloud-resume').click()
       expect(readAloudState.resume).toHaveBeenCalledTimes(1)
     })
 
@@ -339,33 +334,31 @@ describe('MessageItem', () => {
       readAloudState.configured = true
       const msg = createAssistantMessage({ content: { text: 'Hello there world' } })
       const quiet = render(<MessageItem message={msg} />)
-      expect(screen.getByTestId('read-aloud-error')).toHaveClass('hidden')
+      expect(screen.queryByTestId('read-aloud-error')).toBeNull()
       quiet.unmount()
 
       readAloudState.error = 'Deepgram key revoked'
       render(<MessageItem message={msg} />)
-      const error = screen.getByTestId('read-aloud-error')
-      expect(error).not.toHaveClass('hidden')
-      expect(error).toHaveTextContent('Deepgram key revoked')
-      expect(screen.getByTestId('read-aloud-button')).not.toHaveClass('hidden')
+      expect(screen.getByTestId('read-aloud-error')).toHaveTextContent('Deepgram key revoked')
+      expect(screen.getByTestId('read-aloud-button')).toBeInTheDocument()
     })
 
-    it('keeps every control mounted while idle, only the speaker visible', () => {
+    it('mounts only the speaker while idle', () => {
       readAloudState.configured = true
       render(<MessageItem message={createAssistantMessage({ content: { text: 'Hello there world' } })} />)
-      expect(screen.getByTestId('read-aloud-button')).not.toHaveClass('hidden')
+      expect(screen.getByTestId('read-aloud-button')).toBeInTheDocument()
       for (const id of ['read-aloud-pause', 'read-aloud-resume', 'read-aloud-stop', 'read-aloud-speed']) {
-        expect(screen.getByTestId(id)).toHaveClass('hidden')
+        expect(screen.queryByTestId(id)).toBeNull()
       }
     })
 
-    it('leaves other messages undimmed while one is being read', () => {
+    it('leaves other messages plain while one is being read', () => {
       readAloudState.configured = true
       readAloudState.activeId = 'some-other-message'
       const msg = createAssistantMessage({ content: { text: 'Hello world' } })
       const { container } = render(<MessageItem message={msg} />)
       expect(container.querySelector('.read-aloud-prose')).toBeNull()
-      expect(container.querySelectorAll('[data-spoken-word]')).toHaveLength(2)
+      expect(container.querySelector('[data-spoken-word]')).toBeNull()
     })
 
     it('adds no spans when speech is not configured', () => {
