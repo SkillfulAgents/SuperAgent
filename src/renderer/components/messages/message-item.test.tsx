@@ -274,25 +274,36 @@ describe('MessageItem', () => {
       expect(screen.queryByTestId('read-aloud-button')).toBeNull()
     })
 
-    it('renders the prose word-addressable and dimmed while this message is being read', () => {
+    it('renders readable replies word-addressable up front, and dims only the one being read', () => {
       readAloudState.configured = true
       const msg = createAssistantMessage({ content: { text: 'Hello **bright** world' } })
+      // Idle: spans are already there (so play never changes the DOM shape), no dimming.
+      const idle = render(<MessageItem message={msg} />)
+      const idleWords = Array.from(idle.container.querySelectorAll<HTMLElement>('[data-spoken-word]'))
+      expect(idleWords.map((w) => w.textContent)).toEqual(['Hello', 'bright', 'world'])
+      expect(idleWords.map((w) => w.dataset.spokenWord)).toEqual(['0', '1', '2'])
+      expect(idle.container.querySelector('.read-aloud-prose')).toBeNull()
+      idle.unmount()
+
       readAloudState.activeId = msg.id
       const { container } = render(<MessageItem message={msg} />)
-      const prose = container.querySelector('.read-aloud-prose')
-      expect(prose).not.toBeNull()
-      const words = Array.from(prose!.querySelectorAll<HTMLElement>('[data-spoken-word]'))
-      expect(words.map((w) => w.textContent)).toEqual(['Hello', 'bright', 'world'])
-      expect(words.map((w) => w.dataset.spokenWord)).toEqual(['0', '1', '2'])
+      expect(container.querySelector('.read-aloud-prose')).not.toBeNull()
+      expect(container.querySelectorAll('[data-spoken-word]')).toHaveLength(3)
       expect(screen.getByTestId('read-aloud-button')).toHaveAttribute('aria-label', 'Stop reading')
     })
 
-    it('leaves other messages untouched while one is being read', () => {
+    it('leaves other messages undimmed while one is being read', () => {
       readAloudState.configured = true
       readAloudState.activeId = 'some-other-message'
       const msg = createAssistantMessage({ content: { text: 'Hello world' } })
       const { container } = render(<MessageItem message={msg} />)
       expect(container.querySelector('.read-aloud-prose')).toBeNull()
+      expect(container.querySelectorAll('[data-spoken-word]')).toHaveLength(2)
+    })
+
+    it('adds no spans when speech is not configured', () => {
+      const msg = createAssistantMessage({ content: { text: 'Hello world' } })
+      const { container } = render(<MessageItem message={msg} />)
       expect(container.querySelector('[data-spoken-word]')).toBeNull()
     })
   })

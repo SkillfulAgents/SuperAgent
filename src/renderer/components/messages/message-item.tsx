@@ -27,6 +27,7 @@ import type { EmbeddedImageAliases } from '@renderer/lib/parse-tool-result'
 import { rehypeStreamingWordReveal } from './streaming-word-reveal'
 import { rehypeSpokenWords } from '@renderer/lib/speech/spoken-words'
 import { useIsBeingRead, useSpokenWordHighlight } from '@renderer/hooks/use-read-aloud'
+import { useIsTtsConfigured } from '@renderer/hooks/use-voice-input'
 import { ReadAloudButton } from './read-aloud-button'
 
 // Re-export for use by other components
@@ -217,13 +218,7 @@ interface MarkdownBlockProps {
   text: string
   embeddedImageAliases?: EmbeddedImageAliases
   agentSlug?: string
-  /**
-   * Being read aloud: every prose word gets an indexed span for
-   * useSpokenWordHighlight to light up. A prop rather than a sibling
-   * component so toggling it re-renders the same tree in place — images and
-   * measured tables keep their DOM identity instead of remounting, which is
-   * what would let the scroller see a transient height change.
-   */
+  /** Wrap every prose word in an indexed span for useSpokenWordHighlight. */
   spoken?: boolean
 }
 
@@ -397,10 +392,17 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   const hasInlineText = hasText && !(isProviderErrorMessage && !showInlineError)
 
   // Read-aloud: a settled assistant reply gets a speaker button, and while it
-  // is the one being read its prose is rendered word-addressable and dimmed,
-  // lighting up as playback reaches each word.
+  // is the one being read its prose is dimmed and lights up as playback
+  // reaches each word. The word spans the highlight addresses are rendered
+  // for every readable reply up front, not on play: re-rendering a reply's
+  // Markdown with the spans (React edits the kept text nodes in place before
+  // inserting) makes WebKit re-clamp the scroll container when the reply
+  // sits at the live edge, throwing the viewport up by a message's worth.
+  // With the structure fixed, play and stop change only classes and
+  // attributes, which never do.
   const canReadAloud = isAssistant && !!hasText && !isStreaming && !isProviderErrorMessage && !CustomUserRender
-  const isBeingRead = useIsBeingRead(message.id) && canReadAloud
+  const spoken = useIsTtsConfigured() && canReadAloud
+  const isBeingRead = useIsBeingRead(message.id) && spoken
   const proseRef = useRef<HTMLDivElement>(null)
   useSpokenWordHighlight(proseRef, isBeingRead)
 
@@ -509,7 +511,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                       text={text}
                       embeddedImageAliases={embeddedImageAliases}
                       agentSlug={agentSlug}
-                      spoken={isBeingRead}
+                      spoken={spoken}
                     />
                   )}
                   {isStreaming && (
