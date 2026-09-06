@@ -16,6 +16,7 @@ import { searchRemoteMcpServicesTool } from './tools/search-remote-mcp-services'
 import {
   scheduleTaskTool,
   listScheduledTasksTool,
+  updateScheduledTaskTool,
   cancelScheduledTaskTool,
   pauseScheduledTaskTool,
   resumeScheduledTaskTool,
@@ -24,6 +25,7 @@ import { scheduleResumeTool } from './tools/schedule-resume'
 import {
   getAvailableTriggersTool,
   listTriggersTool,
+  updateTriggerTool,
   setupTriggerTool,
   cancelTriggerTool,
   createWebhookEndpointTool,
@@ -79,13 +81,14 @@ export function createUserInputMcpServer(getProcess: () => RemoteMcpInjectionTar
     tools: [
       requestSecretTool, requestConnectedAccountTool, searchConnectedAccountServicesTool,
       createRequestRemoteMcpTool(getProcess), searchRemoteMcpServicesTool,
-      scheduleTaskTool, scheduleResumeTool, listScheduledTasksTool, cancelScheduledTaskTool,
+      scheduleTaskTool, scheduleResumeTool, listScheduledTasksTool, updateScheduledTaskTool,
+      cancelScheduledTaskTool,
       pauseScheduledTaskTool, resumeScheduledTaskTool,
       deliverFileTool, deliverSessionTool, requestFileTool, requestBrowserInputTool,
       ...(includeScriptRun ? [requestScriptRunTool] : []),
       ...(includeComposioTriggers ? [getAvailableTriggersTool, setupTriggerTool] : []),
       ...(includeComposioTriggers || includeWebhookEndpoints
-        ? [listTriggersTool, cancelTriggerTool]
+        ? [listTriggersTool, updateTriggerTool, cancelTriggerTool]
         : []),
       ...(includeWebhookEndpoints
         ? [createWebhookEndpointTool, updateWebhookEndpointTool, inspectWebhookEventsTool]

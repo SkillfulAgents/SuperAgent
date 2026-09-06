@@ -5,6 +5,7 @@
  * endpoints (dedicated public URLs for services Composio has no trigger for).
  * - get_available_triggers: blocking — returns available trigger types
  * - list_triggers: blocking — returns active triggers/endpoints for this agent
+ * - update_trigger: blocking — updates a trigger prompt without replacing it
  * - setup_trigger: blocking — message persister handles dual-write, resolves with result
  * - cancel_trigger: blocking — message persister handles dual-delete, resolves with result
  * - create_webhook_endpoint: blocking — mints a public webhook URL on the platform
@@ -109,7 +110,7 @@ Call this before setup_trigger to discover what triggers are available for a giv
 
 export const listTriggersTool = tool(
   'list_triggers',
-  `List all active webhook triggers and custom webhook endpoints for this agent. Returns trigger IDs, types, connected accounts / public URLs, and prompts.`,
+  `List all active webhook triggers and custom webhook endpoints for this agent. Returns trigger IDs, types, connected accounts / public URLs, and prompts. Use update_trigger with a returned ID to edit its prompt without losing firing history.`,
   {},
   async () => {
     console.log('[list_triggers] Fetching active triggers')
@@ -135,6 +136,46 @@ export const listTriggersTool = tool(
       const msg = error instanceof Error ? error.message : 'Unknown error'
       return {
         content: [{ type: 'text' as const, text: `Failed to list triggers: ${msg}` }],
+        isError: true,
+      }
+    }
+  },
+)
+
+export const updateTriggerTool = tool(
+  'update_trigger',
+  `Update the prompt of an existing connected-account trigger or custom webhook endpoint in place, preserving its ID and firing history.
+
+Use list_triggers first to find the trigger ID. The new prompt will be used for future deliveries; prior sessions remain linked to this trigger.`,
+  {
+    trigger_id: z.string().trim().min(1).describe('The trigger ID from list_triggers'),
+    prompt: z
+      .string()
+      .trim()
+      .min(1)
+      .describe('New self-contained prompt to execute when the trigger fires'),
+  },
+  async (args) => {
+    console.log(`[update_trigger] Updating trigger ${args.trigger_id}`)
+    const toolUseId = inputManager.consumeCurrentToolUseId()
+    if (!toolUseId) {
+      return {
+        content: [{ type: 'text' as const, text: 'Unable to process request — no tool use ID available.' }],
+        isError: true,
+      }
+    }
+
+    try {
+      const result = await inputManager.createPendingWithType<string>(
+        toolUseId,
+        'update_trigger',
+        args,
+      )
+      return { content: [{ type: 'text' as const, text: result }] }
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : 'Unknown error'
+      return {
+        content: [{ type: 'text' as const, text: `Failed to update trigger: ${msg}` }],
         isError: true,
       }
     }

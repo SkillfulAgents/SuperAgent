@@ -27,6 +27,10 @@ Use this mechanism when `mcp__user-input__get_available_triggers` and
    name, and a self-contained prompt.
 5. Use `mcp__user-input__list_triggers` to verify the subscription.
 
+Use `mcp__user-input__update_trigger` to change the event-handling prompt
+without replacing the trigger or losing its firing history. It works for both
+connected-account triggers and custom webhook endpoints.
+
 Prefer a connected-account trigger over a custom endpoint when the broker
 supports the desired event. Brokered events already have an authenticated
 source and usually require less third-party setup.
