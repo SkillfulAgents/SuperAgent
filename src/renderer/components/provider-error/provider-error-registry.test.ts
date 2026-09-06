@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
 
+import { PlatformPaywallCard } from './platform-paywall-card'
 import { resolveProviderError } from './provider-error-registry'
 
 const base = { severity: 'error' as const, message: 'x', icon: 'info' }
@@ -19,6 +20,10 @@ describe('resolveProviderError', () => {
 
   it('falls back to the default component for an unregistered key', () => {
     expect(resolveProviderError({ ...base, component: 'not-registered' }).Component).toBe(ProviderErrorCard)
+  })
+
+  it('resolves the platform-paywall key to PlatformPaywallCard', () => {
+    expect(resolveProviderError({ ...base, component: 'platform-paywall' }).Component).toBe(PlatformPaywallCard)
   })
 
   it('passes placement through', () => {

@@ -3,14 +3,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 // Stub everything with side effects: attribution pulls in the DB, auth-service
 // reads settings storage, config resolves the proxy URL from the environment.
 const currentAttribution = vi.fn()
+const platformAuthStatus = vi.fn()
 vi.mock('@shared/lib/platform-attribution', () => ({
   attribution: { current: () => currentAttribution() },
 }))
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getPlatformAccessToken: () => 'platform-token',
+  getPlatformAuthStatus: () => platformAuthStatus(),
 }))
 vi.mock('@shared/lib/platform-auth/config', () => ({
   getPlatformProxyBaseUrl: () => 'https://proxy.example/v1',
+  getPlatformBaseUrl: () => 'https://platform.example.com',
 }))
 vi.mock('../config/settings', () => ({
   getSettings: () => ({}),
@@ -23,6 +26,7 @@ const provider = new PlatformLlmProvider()
 
 beforeEach(() => {
   currentAttribution.mockReturnValue(null)
+  platformAuthStatus.mockReturnValue({ connected: true, orgId: 'org_123' })
 })
 
 describe('PlatformLlmProvider — tool search', () => {
@@ -63,7 +67,7 @@ describe('presentationForTurnError', () => {
   const SPEND_CAP = 'A spend cap for this workspace was reached. It resets within 30 days.'
   const INSUFFICIENT = 'API Error: 402 insufficient balance — top up to continue.'
 
-  it('returns warning markdown for a workspace spend cap', () => {
+  it('returns warning markdown for a workspace spend cap, linking the connected org billing page', () => {
     const parsed = provider.presentationForTurnError(
       429,
       'A spend cap for this workspace was reached. It resets within 30 days. Ask a workspace admin to raise it.',
@@ -73,8 +77,20 @@ describe('presentationForTurnError', () => {
       severity: 'warning',
       icon: 'circle-dollar-sign',
       message:
-        '**Spend Limit Reached:** A spend cap for this workspace was reached. It resets within 30 days. [Raise spend limit in the admin dashboard](/dashboard/organizations/{orgId}?tab=billing)',
+        '**Spend Limit Reached:** A spend cap for this workspace was reached. It resets within 30 days. [Raise spend limit in the admin dashboard](https://platform.example.com/dashboard/organizations/org_123?tab=billing)',
     })
+  })
+
+  it('drops the billing link and paywall href when the platform is disconnected', () => {
+    platformAuthStatus.mockReturnValue({ connected: false, orgId: null })
+    expect(provider.presentationForTurnError(429, SPEND_CAP, 'rate_limit')?.message).not.toContain('](')
+    expect(provider.presentationForTurnError(402, INSUFFICIENT, 'unknown')).not.toHaveProperty('href')
+  })
+
+  it('attaches the org billing page as the paywall href', () => {
+    expect(provider.presentationForTurnError(402, INSUFFICIENT, 'unknown')?.href).toBe(
+      'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
+    )
   })
 
   it('falls back to the generic banner for a non-spend 429', () => {
