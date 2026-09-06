@@ -4,11 +4,12 @@ vi.mock('@anthropic-ai/sdk', () => ({ default: class {} }))
 
 import { AnthropicLlmProvider } from './anthropic-provider'
 
-describe('parseErrorResponse', () => {
+describe('presentationForTurnError', () => {
   it('does not special-case a platform spend-cap body', () => {
-    const parsed = new AnthropicLlmProvider().parseErrorResponse(
+    const parsed = new AnthropicLlmProvider().presentationForTurnError(
       429,
       'A spend cap for this workspace was reached. It resets within 30 days.',
+      'rate_limit',
     )
     expect(parsed).toEqual({
       severity: 'error',

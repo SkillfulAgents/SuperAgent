@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest'
 
 import {
   defaultParseErrorResponse,
+  errorPlacement,
   extractErrorMessage,
   inferErrorStatus,
+  providerErrorPresentationSchema,
   resolvePresentationMarkdown,
 } from './error-presentation'
 import { parsePlatformErrorResponse } from './platform-error-presentation'
@@ -44,6 +46,44 @@ describe('inferErrorStatus', () => {
 
   it('returns undefined when no status is present', () => {
     expect(inferErrorStatus('Invalid API key')).toBeUndefined()
+  })
+})
+
+describe('providerErrorPresentationSchema', () => {
+  const base = { severity: 'error', message: 'x', icon: 'info' }
+
+  it('accepts the three original keys with placement and component unset', () => {
+    const parsed = providerErrorPresentationSchema.parse(base)
+    expect(parsed.placement).toBeUndefined()
+    expect(parsed.component).toBeUndefined()
+  })
+
+  it('accepts placement and component', () => {
+    expect(providerErrorPresentationSchema.parse({ ...base, placement: 'composer', component: 'paywall' })).toEqual({
+      ...base,
+      placement: 'composer',
+      component: 'paywall',
+    })
+  })
+
+  it('accepts a component key the renderer has never heard of', () => {
+    expect(providerErrorPresentationSchema.safeParse({ ...base, component: 'not-registered' }).success).toBe(true)
+  })
+
+  it('rejects an unknown placement', () => {
+    expect(providerErrorPresentationSchema.safeParse({ ...base, placement: 'sidebar' }).success).toBe(false)
+  })
+})
+
+describe('errorPlacement', () => {
+  it('defaults to inline when the presentation is missing or has no placement', () => {
+    expect(errorPlacement(undefined)).toBe('inline')
+    expect(errorPlacement(null)).toBe('inline')
+    expect(errorPlacement({ severity: 'error', message: 'x', icon: 'info' })).toBe('inline')
+  })
+
+  it('returns the placement when set', () => {
+    expect(errorPlacement({ severity: 'error', message: 'x', icon: 'info', placement: 'composer' })).toBe('composer')
   })
 })
 

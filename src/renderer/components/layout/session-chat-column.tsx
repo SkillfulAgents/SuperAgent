@@ -6,6 +6,7 @@ import { PendingRequestErrorBoundary } from '@renderer/components/messages/pendi
 import { usePendingRequests } from '@renderer/components/messages/use-pending-requests'
 import { StaleSessionNotice } from '@renderer/components/messages/stale-session-notice'
 import { PendingWakeBanner } from '@renderer/components/messages/pending-wake-banner'
+import { ProviderErrorPlacement } from '@renderer/components/provider-error/provider-error-placement'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useScreenWakeLock } from '@renderer/hooks/use-screen-wake-lock'
 import { useStaleSession } from '@renderer/hooks/use-stale-session'
@@ -112,7 +113,7 @@ export function SessionChatColumn({
             </PendingRequestStack>
           </div>
         ) : (
-          <>
+          <ProviderErrorPlacement placement="composer" sessionId={sessionId} agentSlug={agentSlug}>
             {pendingWakeAt && pendingWakeTaskId && !isActive && (
               <PendingWakeBanner
                 sessionId={sessionId}
@@ -189,7 +190,7 @@ export function SessionChatColumn({
                 <span>New line</span>
               </span>
             </div>
-          </>
+          </ProviderErrorPlacement>
         )
       }
     />

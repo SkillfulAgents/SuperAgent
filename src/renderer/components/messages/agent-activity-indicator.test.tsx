@@ -126,7 +126,7 @@ describe('AgentActivityIndicator', () => {
     platformAuth.connected = true
     mockStreamState.error = 'API Error: Request rejected (429) · A spend cap for this workspace was reached. It resets within 30 days. Ask a workspace admin to raise it.'
     mockStreamState.apiErrorCode = 'rate_limit'
-    // Presentation is authored server-side by PlatformLlmProvider.parseErrorResponse
+    // Presentation is authored server-side by PlatformLlmProvider.presentationForTurnError
     // and arrives on the session_error event.
     mockStreamState.errorPresentation = parsePlatformErrorResponse(429, mockStreamState.error)
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
@@ -136,6 +136,22 @@ describe('AgentActivityIndicator', () => {
     expect(card).toHaveAttribute('data-severity', 'warning')
     expect(card).toHaveClass('bg-orange-50', 'dark:bg-orange-950')
     expect(screen.getByRole('link', { name: /raise spend limit/i })).toBeInTheDocument()
+  })
+
+  it('shows the provider card for a generic SDK code when a presentation is attached', () => {
+    mockStreamState.error = 'API Error: 402'
+    mockStreamState.apiErrorCode = 'unknown'
+    mockStreamState.errorPresentation = { severity: 'error', message: '**Attached**', icon: 'info' }
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Attached')
+  })
+
+  it('renders nothing for a provider error routed to the composer placement', () => {
+    mockStreamState.error = 'API Error: 402 insufficient balance'
+    mockStreamState.apiErrorCode = 'billing_error'
+    mockStreamState.errorPresentation = { severity: 'error', message: '**Routed**', icon: 'info', placement: 'composer' }
+    const { container } = render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(container.innerHTML).toBe('')
   })
 
   it('shows generic error alert when no apiErrorCode', () => {
