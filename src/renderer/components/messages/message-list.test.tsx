@@ -3255,6 +3255,190 @@ describe('MessageList', () => {
       expect(geometry.scrollTop).toBe(150)
     })
 
+    it('puts the viewport back when a transcript commit moves it, before any scroll event', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
+      // A long transcript: the reply under the click is thousands of px tall.
+      geometry.setNaturalScrollHeight(4000)
+      geometry.setScrollTop(3400)
+      fireEvent.scroll(el) // baseline at the live edge
+
+      // The engine goes quiet: no writes for longer than any rollback window.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 600))
+      })
+
+      // A commit lands in the transcript (a reply re-rendered on a click) and
+      // WebKit moves the viewport to that reply's top during the commit: by
+      // the time the MutationObserver runs, scrollTop has moved and the
+      // geometry is back to what it was. No input anywhere. The observer
+      // must put it back right there, and following must survive.
+      geometry.setScrollTop(1100)
+      await act(async () => {
+        contentWrapper.appendChild(document.createElement('span'))
+        await Promise.resolve() // MutationObserver delivery
+      })
+      expect(geometry.scrollTop).toBe(3399)
+      fireEvent.scroll(el) // the browser's echo of the write
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 40))
+      })
+      expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
+      expect(geometry.scrollTop).toBe(3399)
+    })
+
+    it('leaves an outside scroll alone even while the transcript is churning', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 600))
+      })
+
+      // A commit that moves nothing (a working indicator ticking), then a
+      // programmatic scroll from outside in its own task — a test's
+      // scrollIntoView, find-in-page. The commit is no reason to eat it:
+      // following releases and nothing yanks the reader back.
+      await act(async () => {
+        contentWrapper.appendChild(document.createElement('span'))
+        await Promise.resolve()
+      })
+      expect(geometry.scrollTop).toBe(700)
+      geometry.setScrollTop(150)
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 250))
+      })
+      expect(screen.getByText('Scroll to bottom')).toBeInTheDocument()
+      expect(geometry.scrollTop).toBe(150)
+    })
+
+    it('does not fight a held drag when a commit lands under it', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
+      fireEvent.scroll(el)
+
+      // The reader is dragging (press + motion) and has pulled the viewport
+      // up when a commit lands. The observer sees an upward displacement
+      // with stable geometry — and a held pointer behind it. Hands off.
+      fireEvent.pointerDown(el, { button: 0, clientX: 10, clientY: 10 })
+      fireEvent(window, new MouseEvent('pointermove', { clientX: 10, clientY: 60 }))
+      geometry.setScrollTop(400)
+      await act(async () => {
+        contentWrapper.appendChild(document.createElement('span'))
+        await Promise.resolve()
+      })
+      expect(geometry.scrollTop).toBe(400)
+    })
+
+    it('does not let a bare click on the transcript turn a rollback into an escape', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
+      fireEvent.scroll(el) // 699 joins the trail
+
+      geometry.setNaturalScrollHeight(1500)
+      await act(async () => {
+        fireContentResize(contentWrapper, 1500)
+      })
+      await waitFor(() => expect(geometry.scrollTop).toBe(899))
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 600))
+      })
+
+      // Press + release on the content, no motion: a click on a button under
+      // a reply. It cannot scroll anything, so it is not input evidence — the
+      // compositor rollback that follows (an on-trail, size-stable upward
+      // landing) is still the engine's own motion coming back.
+      fireEvent.pointerDown(el, { button: 0, clientX: 10, clientY: 10 })
+      fireEvent(window, new MouseEvent('pointerup', { clientX: 10, clientY: 10 }))
+      geometry.setScrollTop(699)
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 250))
+      })
+      expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
+      expect(geometry.scrollTop).toBe(899)
+    })
+
+    it('still honors the same upward landing as an escape under a content drag', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
+      fireEvent.scroll(el)
+
+      geometry.setNaturalScrollHeight(1500)
+      await act(async () => {
+        fireContentResize(contentWrapper, 1500)
+      })
+      await waitFor(() => expect(geometry.scrollTop).toBe(899))
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 600))
+      })
+
+      // The press travels: a drag. The upward landing under it is the reader's.
+      fireEvent.pointerDown(el, { button: 0, clientX: 10, clientY: 10 })
+      fireEvent(window, new MouseEvent('pointermove', { clientX: 10, clientY: 60 }))
+      geometry.setScrollTop(699)
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 250))
+      })
+      expect(screen.getByText('Scroll to bottom')).toBeInTheDocument()
+      expect(geometry.scrollTop).toBe(699)
+    })
+
+    it('keeps a scrollbar gutter press as input evidence past its release', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
+      Object.defineProperty(el, 'clientWidth', { configurable: true, get: () => 800 })
+      fireEvent.scroll(el)
+
+      geometry.setNaturalScrollHeight(1500)
+      await act(async () => {
+        fireContentResize(contentWrapper, 1500)
+      })
+      await waitFor(() => expect(geometry.scrollTop).toBe(899))
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 600))
+      })
+
+      // A track click pages the viewport with no pointer motion, and the
+      // scroll event can trail the release. The gutter press itself is the
+      // evidence that makes the on-trail upward landing the reader's.
+      fireEvent.pointerDown(el, { button: 0, clientX: 810, clientY: 10 })
+      fireEvent(window, new MouseEvent('pointerup', { clientX: 810, clientY: 10 }))
+      geometry.setScrollTop(699)
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 250))
+      })
+      expect(screen.getByText('Scroll to bottom')).toBeInTheDocument()
+      expect(geometry.scrollTop).toBe(699)
+    })
+
     it('ignores a bounce-back settling inside the live-edge band after a downward wheel', async () => {
       installFakeResizeObserver()
       mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
