@@ -544,6 +544,7 @@ export function GlobalNotificationHandler() {
           }
 
           case 'webhook_trigger_created':
+          case 'webhook_trigger_updated':
           case 'webhook_trigger_cancelled': {
             const agentSlug = data.agentSlug as string | undefined
             if (agentSlug) {

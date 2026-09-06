@@ -55,6 +55,11 @@ export interface UpdateNextExecutionParams {
   sessionId: string
 }
 
+export interface ScheduledTaskPatch {
+  scheduleExpression?: string
+  prompt?: string
+}
+
 // ============================================================================
 // Create Operations
 // ============================================================================
@@ -540,6 +545,36 @@ export async function updateTaskTimezone(taskId: string, timezone: string): Prom
 // Delete Operations
 // ============================================================================
 
+/** Update a pending/paused task in place, preserving its execution history. */
+export async function patchScheduledTask(
+  taskId: string,
+  patch: ScheduledTaskPatch,
+): Promise<boolean> {
+  const task = await getScheduledTask(taskId)
+  if (!task || (task.status !== 'pending' && task.status !== 'paused')) return false
+
+  const updates: { scheduleExpression?: string; nextExecutionAt?: Date; prompt?: string } = {}
+  if (patch.prompt !== undefined) updates.prompt = patch.prompt
+  if (patch.scheduleExpression !== undefined) {
+    updates.scheduleExpression = patch.scheduleExpression
+    const timezone = task.timezone || undefined
+    updates.nextExecutionAt = task.scheduleType === 'at'
+      ? parseAtSyntax(patch.scheduleExpression, timezone)
+      : getNextCronTime(patch.scheduleExpression, timezone)
+  }
+  if (Object.keys(updates).length === 0) return false
+
+  const result = await db
+    .update(scheduledTasks)
+    .set(updates)
+    .where(and(
+      eq(scheduledTasks.id, taskId),
+      inArray(scheduledTasks.status, ['pending', 'paused']),
+    ))
+
+  return (result.changes ?? 0) > 0
+}
+
 /**
  * Update a scheduled task's prompt (the instructions executed when the task runs).
  * Allowed for pending or paused tasks.
@@ -548,15 +583,7 @@ export async function updateTaskPrompt(
   taskId: string,
   prompt: string,
 ): Promise<boolean> {
-  const task = await getScheduledTask(taskId)
-  if (!task || (task.status !== 'pending' && task.status !== 'paused')) return false
-
-  const result = await db
-    .update(scheduledTasks)
-    .set({ prompt })
-    .where(eq(scheduledTasks.id, taskId))
-
-  return (result.changes ?? 0) > 0
+  return patchScheduledTask(taskId, { prompt })
 }
 
 /**
@@ -593,15 +620,7 @@ export async function updateScheduleExpression(
   )
     return false
 
-  const tz = task.timezone || undefined
-  const nextExecutionAt = getNextCronTime(scheduleExpression, tz)
-
-  const result = await db
-    .update(scheduledTasks)
-    .set({ scheduleExpression, nextExecutionAt })
-    .where(eq(scheduledTasks.id, taskId))
-
-  return (result.changes ?? 0) > 0
+  return patchScheduledTask(taskId, { scheduleExpression })
 }
 
 /**
