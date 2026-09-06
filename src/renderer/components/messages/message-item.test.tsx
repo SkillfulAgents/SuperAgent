@@ -69,7 +69,10 @@ vi.mock('@renderer/hooks/use-platform-auth', () => ({
 const readAloudState = {
   configured: false,
   activeId: null as string | null,
+  status: 'speaking' as 'speaking' | 'paused' | 'connecting',
   toggle: vi.fn(),
+  pause: vi.fn(),
+  resume: vi.fn(),
 }
 
 vi.mock('@renderer/hooks/use-voice-input', () => ({
@@ -79,12 +82,21 @@ vi.mock('@renderer/hooks/use-voice-input', () => ({
 vi.mock('@renderer/hooks/use-read-aloud', () => ({
   useIsBeingRead: (id: string) => readAloudState.activeId === id,
   useReadAloud: (id: string) => ({
-    status: readAloudState.activeId === id ? 'speaking' : 'idle',
+    status: readAloudState.activeId === id ? readAloudState.status : 'idle',
     isActive: readAloudState.activeId === id,
     toggle: readAloudState.toggle,
+    pause: readAloudState.pause,
+    resume: readAloudState.resume,
     error: null,
   }),
   useSpokenWordHighlight: () => {},
+  readAloud: { restart: vi.fn() },
+}))
+
+// The speed picker inside the controls reads user settings (react-query).
+vi.mock('@renderer/hooks/use-user-settings', () => ({
+  useUserSettings: () => ({ data: { voice: { ttsSpeed: 1.2 } } }),
+  useUpdateUserSettings: () => ({ mutate: vi.fn() }),
 }))
 
 describe('MessageItem', () => {
@@ -92,7 +104,10 @@ describe('MessageItem', () => {
     platformAuth.connected = false
     readAloudState.configured = false
     readAloudState.activeId = null
+    readAloudState.status = 'speaking'
     readAloudState.toggle.mockReset()
+    readAloudState.pause.mockReset()
+    readAloudState.resume.mockReset()
   })
 
   describe('user messages', () => {
@@ -289,7 +304,42 @@ describe('MessageItem', () => {
       const { container } = render(<MessageItem message={msg} />)
       expect(container.querySelector('.read-aloud-prose')).not.toBeNull()
       expect(container.querySelectorAll('[data-spoken-word]')).toHaveLength(3)
-      expect(screen.getByTestId('read-aloud-button')).toHaveAttribute('aria-label', 'Stop reading')
+      expect(screen.getByTestId('read-aloud-button')).toHaveClass('hidden')
+      expect(screen.getByTestId('read-aloud-stop')).not.toHaveClass('hidden')
+    })
+
+    it('while reading, offers pause, stop, and the speed picker; paused offers resume', () => {
+      readAloudState.configured = true
+      const msg = createAssistantMessage({ content: { text: 'Hello there world' } })
+      readAloudState.activeId = msg.id
+      const speaking = render(<MessageItem message={msg} />)
+      const pause = screen.getByTestId('read-aloud-pause')
+      expect(pause).not.toHaveClass('hidden')
+      expect(screen.getByTestId('read-aloud-resume')).toHaveClass('hidden')
+      pause.click()
+      expect(readAloudState.pause).toHaveBeenCalledTimes(1)
+      expect(screen.getByTestId('read-aloud-speed')).toHaveTextContent('1.2×')
+      expect(screen.getByTestId('read-aloud-speed')).not.toHaveClass('hidden')
+      screen.getByTestId('read-aloud-stop').click()
+      expect(readAloudState.toggle).toHaveBeenCalledTimes(1)
+      speaking.unmount()
+
+      readAloudState.status = 'paused'
+      render(<MessageItem message={msg} />)
+      expect(screen.getByTestId('read-aloud-pause')).toHaveClass('hidden')
+      const resume = screen.getByTestId('read-aloud-resume')
+      expect(resume).not.toHaveClass('hidden')
+      resume.click()
+      expect(readAloudState.resume).toHaveBeenCalledTimes(1)
+    })
+
+    it('keeps every control mounted while idle, only the speaker visible', () => {
+      readAloudState.configured = true
+      render(<MessageItem message={createAssistantMessage({ content: { text: 'Hello there world' } })} />)
+      expect(screen.getByTestId('read-aloud-button')).not.toHaveClass('hidden')
+      for (const id of ['read-aloud-pause', 'read-aloud-resume', 'read-aloud-stop', 'read-aloud-speed']) {
+        expect(screen.getByTestId(id)).toHaveClass('hidden')
+      }
     })
 
     it('leaves other messages undimmed while one is being read', () => {

@@ -40,8 +40,14 @@ function endsSentence(word: string): boolean {
  */
 export class SpeechSegmenter {
   private pending: SpokenWord[] = []
-  private pendingStart = 0
-  private nextWord = 0
+  private pendingStart: number
+  private nextWord: number
+
+  /** `firstWordIndex`: index the first pushed word gets, for resuming mid-message. */
+  constructor(firstWordIndex = 0) {
+    this.pendingStart = firstWordIndex
+    this.nextWord = firstWordIndex
+  }
 
   /** Feed words; returns whichever segments became complete. */
   push(words: readonly SpokenWord[]): SpeechSegment[] {

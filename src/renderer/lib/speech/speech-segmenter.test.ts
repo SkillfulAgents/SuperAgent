@@ -71,6 +71,13 @@ describe('SpeechSegmenter', () => {
     expect(out.map((x) => x.wordEnd - x.wordStart)).toEqual([80, 20])
   })
 
+  it('numbers words from a given offset', () => {
+    const s = new SpeechSegmenter(7)
+    expect(s.push(words('One two three.'))).toEqual([{ text: 'One two three.', wordStart: 7, wordEnd: 10 }])
+    expect(s.push(words('and more'))).toEqual([])
+    expect(s.end()).toEqual([{ text: 'and more', wordStart: 10, wordEnd: 12 }])
+  })
+
   it('accepts closing quotes and brackets after the terminal punctuation', () => {
     const s = new SpeechSegmenter()
     const out = s.push(words('He said "go now." Then he left.'))

@@ -28,7 +28,7 @@ import { rehypeStreamingWordReveal } from './streaming-word-reveal'
 import { rehypeSpokenWords } from '@renderer/lib/speech/spoken-words'
 import { useIsBeingRead, useSpokenWordHighlight } from '@renderer/hooks/use-read-aloud'
 import { useIsTtsConfigured } from '@renderer/hooks/use-voice-input'
-import { ReadAloudButton } from './read-aloud-button'
+import { ReadAloudControls } from './read-aloud-controls'
 
 // Re-export for use by other components
 export type { ApiToolCall }
@@ -528,7 +528,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
           </MessageContextMenu>
         )}
 
-        {/* Read-aloud control: revealed on hover, pinned while reading */}
+        {/* Read-aloud controls: revealed on hover, pinned while reading */}
         {canReadAloud && (
           <div
             className={cn(
@@ -537,7 +537,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
               isBeingRead && 'opacity-100',
             )}
           >
-            <ReadAloudButton messageId={message.id} markdown={text} />
+            <ReadAloudControls messageId={message.id} markdown={text} />
           </div>
         )}
 

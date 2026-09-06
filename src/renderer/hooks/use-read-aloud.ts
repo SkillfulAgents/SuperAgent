@@ -4,7 +4,7 @@ import { createTtsAdapter, type SttProvider } from '@renderer/lib/tts'
 import { SpeechPlayer } from '@renderer/lib/speech/speech-player'
 import { markdownToSpokenWords } from '@renderer/lib/speech/spoken-words'
 
-export type ReadAloudStatus = 'idle' | 'connecting' | 'speaking'
+export type ReadAloudStatus = 'idle' | 'connecting' | 'speaking' | 'paused'
 
 export interface ReadAloudSnapshot {
   /** Id of the message being read (or about to be), or null when silent. */
@@ -32,6 +32,8 @@ class ReadAloudController {
   private snapshot: ReadAloudSnapshot = IDLE
   private readonly listeners = new Set<() => void>()
   private player: SpeechPlayer | null = null
+  /** What is playing, so a restart (speed change) can pick it back up. */
+  private current: { id: string; markdown: string } | null = null
   // Bumped by every speak()/stop() so a token round-trip that resolves after
   // the user moved on doesn't start a stale player.
   private generation = 0
@@ -48,9 +50,14 @@ class ReadAloudController {
     return this.player
   }
 
-  async speak(id: string, markdown: string): Promise<void> {
+  /**
+   * Read `markdown` aloud as message `id`, from word `fromWord` (a restart
+   * mid-reply keeps the words before it lit).
+   */
+  async speak(id: string, markdown: string, fromWord = 0): Promise<void> {
     this.stop()
     const generation = ++this.generation
+    this.current = { id, markdown }
     this.update({ activeId: id, status: 'connecting', error: null })
 
     let credentials: TtsCredentials
@@ -70,9 +77,10 @@ class ReadAloudController {
       adapter: createTtsAdapter(credentials.provider),
       token: credentials.token,
       voice: { voice: credentials.voice, speed: credentials.speed },
+      firstWordIndex: fromWord,
       onStatus: (status, error) => {
         if (this.player !== player) return
-        if (status === 'speaking') this.update({ activeId: id, status: 'speaking', error: null })
+        if (status === 'speaking' || status === 'paused') this.update({ activeId: id, status, error: null })
         else if (status === 'done' || status === 'stopped') this.settle(player, null)
         else if (status === 'error') {
           console.error('Text-to-speech error:', error)
@@ -82,18 +90,39 @@ class ReadAloudController {
     })
     this.player = player
     player.start()
-    player.append(markdownToSpokenWords(markdown))
+    player.append(markdownToSpokenWords(markdown).slice(fromWord))
     player.end()
   }
 
   stop(): void {
     this.generation++
+    this.current = null
     const player = this.player
     if (player) {
       this.player = null
       player.stop()
     }
     if (this.snapshot.activeId !== null) this.update({ ...IDLE, error: this.snapshot.error })
+  }
+
+  pause(): void {
+    this.player?.pause()
+  }
+
+  resume(): void {
+    this.player?.resume()
+  }
+
+  /**
+   * Start the current message over from the word being spoken, with fresh
+   * credentials — the way a changed voice or speed takes effect, since both
+   * are fixed for the life of a synthesizer connection.
+   */
+  restart(): void {
+    const current = this.current
+    if (!current) return
+    const fromWord = Math.max(0, Math.floor(this.player?.getWordCursor() ?? 0))
+    void this.speak(current.id, current.markdown, fromWord)
   }
 
   private settle(player: SpeechPlayer, error: string | null): void {
@@ -132,8 +161,10 @@ export function useReadAloud(id: string, markdown: string) {
     if (isActive) readAloud.stop()
     else void readAloud.speak(id, markdown)
   }, [isActive, id, markdown])
+  const pause = useCallback(() => readAloud.pause(), [])
+  const resume = useCallback(() => readAloud.resume(), [])
 
-  return { status, isActive, toggle, error: isActive ? snapshot.error : null }
+  return { status, isActive, toggle, pause, resume, error: isActive ? snapshot.error : null }
 }
 
 /**

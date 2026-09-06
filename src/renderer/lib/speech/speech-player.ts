@@ -3,13 +3,19 @@ import type { TtsAdapter, TtsEvent, TtsVoiceOptions } from '@renderer/lib/tts'
 import { SpeechSegmenter, type SpeechSegment } from './speech-segmenter'
 import type { SpokenWord } from './spoken-words'
 
-export type SpeechPlayerStatus = 'connecting' | 'speaking' | 'done' | 'stopped' | 'error'
+export type SpeechPlayerStatus = 'connecting' | 'speaking' | 'paused' | 'done' | 'stopped' | 'error'
 
 export interface SpeechPlayerOptions {
   adapter: TtsAdapter
   token: string
   voice: TtsVoiceOptions
   onStatus?: (status: SpeechPlayerStatus, error?: Error) => void
+  /**
+   * Index of the first appended word within the whole message. Lets a
+   * restart (a speed change mid-reply) pick up where the last player left
+   * off while the cursor keeps addressing the message's spans.
+   */
+  firstWordIndex?: number
   /** Injectable for tests; defaults to `new AudioContext({ sampleRate })`. */
   createAudioContext?: (sampleRate: number) => AudioContext
 }
@@ -46,7 +52,8 @@ export class SpeechPlayer {
   private readonly createAudioContext: (sampleRate: number) => AudioContext
 
   private ctx: AudioContext | null = null
-  private readonly segmenter = new SpeechSegmenter()
+  private readonly firstWordIndex: number
+  private readonly segmenter: SpeechSegmenter
   private readonly segments: ScheduledSegment[] = []
   /** Index of the segment whose audio is currently arriving. */
   private receiving = 0
@@ -57,12 +64,16 @@ export class SpeechPlayer {
   private doneTimer: ReturnType<typeof setTimeout> | null = null
   private _status: SpeechPlayerStatus = 'connecting'
   private wordCount = 0
+  /** High-water mark of the cursor, so it never reads backwards. */
+  private cursorHigh = -Infinity
 
   constructor(options: SpeechPlayerOptions) {
     this.adapter = options.adapter
     this.token = options.token
     this.voice = options.voice
     this.onStatus = options.onStatus
+    this.firstWordIndex = options.firstWordIndex ?? 0
+    this.segmenter = new SpeechSegmenter(this.firstWordIndex)
     this.createAudioContext = options.createAudioContext ?? ((sampleRate) => new AudioContext({ sampleRate }))
   }
 
@@ -117,15 +128,46 @@ export class SpeechPlayer {
   }
 
   /**
+   * Hold playback where it is. Suspending the context freezes its clock, so
+   * the word cursor holds too and audio already scheduled waits in place;
+   * the synthesizer keeps delivering in the background.
+   */
+  pause(): void {
+    if (this._status !== 'speaking' || !this.ctx) return
+    // The done timer counts wall-clock time against a frozen audio clock.
+    if (this.doneTimer) {
+      clearTimeout(this.doneTimer)
+      this.doneTimer = null
+    }
+    void this.ctx.suspend()
+    this.setStatus('paused')
+  }
+
+  resume(): void {
+    if (this._status !== 'paused' || !this.ctx) return
+    void this.ctx.resume()
+    this.setStatus('speaking')
+    this.maybeFinish()
+  }
+
+  /**
    * Fractional index of the word being spoken: words at or below it have been
    * (or are being) said. -1 before any audio has played, `totalWords` once done.
+   * Never moves backwards: a segment's known end grows as its audio arrives,
+   * which would otherwise pull an interpolated position back (visible when
+   * paused early in a segment).
    */
   getWordCursor(): number {
-    if (this._status === 'done') return this.wordCount
+    if (this._status === 'done') return this.firstWordIndex + this.wordCount
+    this.cursorHigh = Math.max(this.cursorHigh, this.rawWordCursor())
+    return this.cursorHigh
+  }
+
+  private rawWordCursor(): number {
     const ctx = this.ctx
-    if (!ctx) return -1
+    if (!ctx) return this.firstWordIndex - 1
     const now = ctx.currentTime
-    let cursor = -1
+    let cursor = this.firstWordIndex - 1
     for (const segment of this.segments) {
       if (segment.startTime === null) {
         // Flushed but produced no audio (punctuation-only text): counts as said.
@@ -217,6 +259,9 @@ export class SpeechPlayer {
     if (!this.ended || this.receiving < this.segments.length) return
     // The socket has nothing left to deliver.
     this.adapter.close()
+    // Paused: the audio clock is frozen, so a wall-clock timer would fire
+    // early. resume() calls back in here.
+    if (this._status === 'paused') return
     const ctx = this.ctx
     const remainingMs = ctx ? Math.max(0, (this.nextTime - ctx.currentTime) * 1000) : 0
     if (this.doneTimer) clearTimeout(this.doneTimer)

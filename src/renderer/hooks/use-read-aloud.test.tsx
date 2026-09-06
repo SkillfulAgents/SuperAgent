@@ -10,11 +10,13 @@ const createTtsAdapter = vi.fn((_provider: string) => ({ fake: 'adapter' }))
 vi.mock('@renderer/lib/tts', () => ({ createTtsAdapter: (provider: string) => createTtsAdapter(provider) }))
 
 interface FakePlayer {
-  options: { adapter: unknown; token: string; voice: { voice: string; speed?: number }; onStatus?: (s: string, e?: Error) => void }
+  options: { adapter: unknown; token: string; voice: { voice: string; speed?: number }; firstWordIndex?: number; onStatus?: (s: string, e?: Error) => void }
   start: ReturnType<typeof vi.fn>
   append: ReturnType<typeof vi.fn>
   end: ReturnType<typeof vi.fn>
   stop: ReturnType<typeof vi.fn>
+  pause: ReturnType<typeof vi.fn>
+  resume: ReturnType<typeof vi.fn>
   getWordCursor: ReturnType<typeof vi.fn>
 }
 const players: FakePlayer[] = []
@@ -24,6 +26,8 @@ vi.mock('@renderer/lib/speech/speech-player', () => ({
     append = vi.fn()
     end = vi.fn()
     stop = vi.fn()
+    pause = vi.fn()
+    resume = vi.fn()
     getWordCursor = vi.fn(() => -1)
     constructor(public options: FakePlayer['options']) {
       players.push(this as unknown as FakePlayer)
@@ -96,6 +100,38 @@ describe('readAloud controller', () => {
     await speaking
     expect(players).toHaveLength(0)
     expect(readAloud.getSnapshot().activeId).toBeNull()
+  })
+
+  it('pause and resume go to the player, and its paused status shows in the snapshot', async () => {
+    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', token: 'jwt', voice: 'v', speed: 1 }))
+    await readAloud.speak('m1', 'Hello there.')
+    readAloud.pause()
+    expect(players[0].pause).toHaveBeenCalledTimes(1)
+    players[0].options.onStatus?.('paused')
+    expect(readAloud.getSnapshot()).toEqual({ activeId: 'm1', status: 'paused', error: null })
+    readAloud.resume()
+    expect(players[0].resume).toHaveBeenCalledTimes(1)
+    players[0].options.onStatus?.('speaking')
+    expect(readAloud.getSnapshot().status).toBe('speaking')
+  })
+
+  it('restart() re-fetches credentials and resumes from the word being spoken', async () => {
+    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', token: 'jwt', voice: 'v', speed: 1 }))
+    await readAloud.speak('m1', 'One two three. Four five six.')
+    players[0].getWordCursor.mockReturnValue(3.6)
+    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', token: 'jwt2', voice: 'v', speed: 1.3 }))
+    readAloud.restart()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(players[0].stop).toHaveBeenCalledTimes(1)
+    const next = players[1]
+    expect(next.options).toMatchObject({ token: 'jwt2', voice: { voice: 'v', speed: 1.3 }, firstWordIndex: 3 })
+    expect(next.append.mock.calls[0][0].map((w: { text: string }) => w.text)).toEqual(['Four', 'five', 'six.'])
+    expect(readAloud.getSnapshot().activeId).toBe('m1')
+    // nothing to restart once stopped
+    readAloud.stop()
+    readAloud.restart()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(players).toHaveLength(2)
   })
 
   it('surfaces credential and playback failures', async () => {

@@ -40,6 +40,7 @@ class FakeAudioContext {
   scheduled: { at: number; duration: number }[] = []
   closed = false
   resume = vi.fn(async () => { this.state = 'running' })
+  suspend = vi.fn(async () => { this.state = 'suspended' })
   close = vi.fn(async () => { this.closed = true })
   createBuffer(_channels: number, length: number, sampleRate: number) {
     return {
@@ -164,6 +165,76 @@ describe('SpeechPlayer', () => {
     expect(statuses).toEqual(['speaking', 'done'])
     expect(player.getWordCursor()).toBe(3)
     expect(ctx.closed).toBe(true)
+  })
+
+  it('pause() freezes the cursor and defers finishing until resume()', () => {
+    const { adapter, ctx, player, statuses } = setup()
+    player.start()
+    player.append(words('One two three four.'))
+    player.end()
+    adapter.pushAudio(1)
+    ctx.currentTime = 0.55
+    expect(player.getWordCursor()).toBeCloseTo(2)
+
+    player.pause()
+    expect(ctx.state).toBe('suspended')
+    expect(player.status).toBe('paused')
+    // All audio arrives while paused: no done timer may be armed against the frozen clock.
+    adapter.pushFlushed()
+    vi.advanceTimersByTime(5000)
+    expect(player.status).toBe('paused')
+    expect(player.getWordCursor()).toBeCloseTo(2)
+
+    player.resume()
+    expect(ctx.state).toBe('running')
+    expect(player.status).toBe('speaking')
+    ctx.currentTime = 1.05
+    vi.advanceTimersByTime(1000)
+    expect(statuses).toEqual(['speaking', 'paused', 'speaking', 'done'])
+  })
+
+  it('never reads backwards while a segment\'s audio is still arriving', () => {
+    const { adapter, ctx, player } = setup()
+    player.start()
+    player.append(words('One two three four five six seven eight.'))
+    player.end()
+    adapter.pushAudio(1) // 8 words, 1s known so far
+    ctx.currentTime = 0.55
+    expect(player.getWordCursor()).toBeCloseTo(4)
+    adapter.pushAudio(1) // the segment turns out to be 2s: raw position would drop to ~2
+    expect(player.getWordCursor()).toBeCloseTo(4)
+    ctx.currentTime = 1.55
+    expect(player.getWordCursor()).toBeCloseTo(6)
+  })
+
+  it('pause() is a no-op unless speaking; resume() unless paused', () => {
+    const { adapter, player, statuses } = setup()
+    player.start()
+    player.pause()
+    player.resume()
+    expect(statuses).toEqual([])
+    player.append(words('Hi there friend.'))
+    adapter.pushAudio(1)
+    player.resume()
+    expect(player.status).toBe('speaking')
+  })
+
+  it('a first-word offset shifts the cursor onto the whole message', () => {
+    const adapter = new FakeAdapter()
+    const ctx = new FakeAudioContext()
+    const player = new SpeechPlayer({ adapter, token: 't', voice: { voice: 'v' }, firstWordIndex: 10, createAudioContext: () => ctx as unknown as AudioContext })
+    player.start()
+    expect(player.getWordCursor()).toBe(9) // everything before the restart point stays lit
+    player.append(words('One two three four.'))
+    player.end()
+    adapter.pushAudio(1)
+    adapter.pushFlushed()
+    ctx.currentTime = 0.55
+    expect(player.getWordCursor()).toBeCloseTo(12)
+    ctx.currentTime = 1.05
+    vi.advanceTimersByTime(2000)
+    expect(player.status).toBe('done')
+    expect(player.getWordCursor()).toBe(14)
   })
 
   it('finishes immediately when there is nothing to say', () => {
