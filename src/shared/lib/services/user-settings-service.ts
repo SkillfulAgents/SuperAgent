@@ -3,7 +3,7 @@ import { eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { userSettings } from '@shared/lib/db/schema'
 import { getSettings } from '@shared/lib/config/settings'
-import { ttsSpeedSchema } from '@shared/lib/stt/tts-preferences'
+import { ttsSpeedSchema } from '@shared/lib/voice/tts-preferences'
 
 // ─── Schema ──────────────────────────────────────────────────────────────────
 

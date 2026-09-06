@@ -1,11 +1,11 @@
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
-import { BaseSttProvider } from './stt-provider'
+import { BaseVoiceProvider } from './voice-provider'
 import { DEEPGRAM_TTS_VOICES } from './deepgram-voices'
 import type { TtsVoiceInfo } from './tts-preferences'
 import type { ApiKeyStatus } from '../config/settings'
 
-export class PlatformSttProvider extends BaseSttProvider {
+export class PlatformVoiceProvider extends BaseVoiceProvider {
   readonly id = 'platform' as const
   readonly name = 'Platform'
   // Not used — getApiKeyStatus/getEffectiveApiKey are both overridden to

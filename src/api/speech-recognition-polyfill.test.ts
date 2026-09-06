@@ -123,7 +123,7 @@ describe('SpeechRecognition polyfill', () => {
   describe('start() — token fetch', () => {
     beforeEach(() => installPolyfill())
 
-    it('fetches /api/stt/token on start', async () => {
+    it('fetches /api/voice/token on start', async () => {
       const fetchSpy = vi.fn().mockResolvedValue({
         ok: true,
         json: () => Promise.resolve({ provider: 'deepgram', token: 'test-token' }),
@@ -135,14 +135,14 @@ describe('SpeechRecognition polyfill', () => {
       r.start()
 
       await vi.waitFor(() => {
-        expect(fetchSpy).toHaveBeenCalledWith('/api/stt/token')
+        expect(fetchSpy).toHaveBeenCalledWith('/api/voice/token')
       })
     })
 
     it('fires error event when token fetch returns non-ok', async () => {
       vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
         ok: false,
-        json: () => Promise.resolve({ error: 'No STT provider configured' }),
+        json: () => Promise.resolve({ error: 'No voice provider configured' }),
       }))
 
       const SR = getSpeechRecognition()

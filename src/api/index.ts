@@ -1,4 +1,4 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { cors } from 'hono/cors'
 import agents from './routes/agents'
 import xAgent from './routes/x-agent'
@@ -28,7 +28,7 @@ import homeCardHealth from './routes/home-card-health'
 import policies from './routes/policies'
 import runtimeStatusRouter from './routes/runtime-status'
 import firewallRouter from './routes/firewall'
-import sttRouter from './routes/stt'
+import voiceRouter from './routes/voice'
 import llmRouter from './routes/llm'
 import faviconRouter from './routes/favicon'
 import { getPolyfillJs } from './speech-recognition-polyfill'
@@ -192,13 +192,16 @@ if (isAuthMode()) {
   })
 }
 
-// Public static assets (no auth)
-app.get('/api/stt/speech-recognition-polyfill.js', (c) => {
+// Public static assets (no auth). The polyfill is also served at its old
+// /api/stt path: dashboards and pages that embedded the URL keep working.
+const servePolyfill = (c: Context) => {
   return c.body(getPolyfillJs(), 200, {
     'Content-Type': 'application/javascript; charset=utf-8',
     'Cache-Control': 'public, max-age=3600',
   })
-})
+}
+app.get('/api/voice/speech-recognition-polyfill.js', servePolyfill)
+app.get('/api/stt/speech-recognition-polyfill.js', servePolyfill)
 app.get('/api/llm/anthropic-polyfill.js', (c) => {
   return c.body(getLlmPolyfillJs(), 200, {
     'Content-Type': 'application/javascript; charset=utf-8',
@@ -252,7 +255,11 @@ if (isAuthMode()) {
   // Platform "Open Cloud Agents" link can target a stable deployment path.
   app.route('/auth', platformSsoStart)
 }
-app.route('/api/stt', sttRouter)
+app.route('/api/voice', voiceRouter)
+// Legacy prefix: the polyfill is cached for an hour in browsers and fetches
+// its token from the prefix it was built with, and third-party dashboards
+// may have the old paths baked in. Same router, same handlers.
+app.route('/api/stt', voiceRouter)
 app.route('/api/llm', llmRouter)
 app.route('/api/favicon', faviconRouter)
 app.route('/api/debug', debugRouter)

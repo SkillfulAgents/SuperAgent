@@ -12,6 +12,7 @@ import app from './index'
  */
 describe('public API bundles stay CDN-cacheable', () => {
   it.each([
+    ['/api/voice/speech-recognition-polyfill.js', 'public, max-age=3600'],
     ['/api/stt/speech-recognition-polyfill.js', 'public, max-age=3600'],
     ['/api/llm/anthropic-polyfill.js', 'public, max-age=3600'],
     ['/api/llm/anthropic-sdk.js', 'public, max-age=86400'],

@@ -161,7 +161,7 @@ describe('createSttAdapter', () => {
   })
 
   it('throws for unknown provider', () => {
-    expect(() => createSttAdapter('unknown' as any)).toThrow('Unknown STT provider: unknown')
+    expect(() => createSttAdapter('unknown' as any)).toThrow('Unknown voice provider: unknown')
   })
 })
 

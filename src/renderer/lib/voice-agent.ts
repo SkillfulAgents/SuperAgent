@@ -1,8 +1,8 @@
-import type { SttProvider } from '@shared/lib/config/settings'
+import type { VoiceProvider } from '@shared/lib/config/settings'
 import { DeepgramVoiceAgentAdapter } from './voice-agent-deepgram'
 import { OpenAIVoiceAgentAdapter } from './voice-agent-openai'
 
-export type { SttProvider }
+export type { VoiceProvider }
 
 // --- Types ---
 
@@ -64,7 +64,7 @@ export interface VoiceAgentAdapter {
 
 // --- Factory ---
 
-export function createVoiceAgentAdapter(provider: SttProvider): VoiceAgentAdapter {
+export function createVoiceAgentAdapter(provider: VoiceProvider): VoiceAgentAdapter {
   switch (provider) {
     case 'deepgram':
     case 'platform':

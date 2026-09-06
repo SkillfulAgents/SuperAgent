@@ -1,8 +1,8 @@
-import { getSettings, type ApiKeySettings, type ApiKeyStatus, type SttProvider } from '../config/settings'
+import { getSettings, type ApiKeySettings, type ApiKeyStatus, type VoiceProvider } from '../config/settings'
 import type { TtsVoiceInfo } from './tts-preferences'
 
-export abstract class BaseSttProvider {
-  abstract readonly id: SttProvider
+export abstract class BaseVoiceProvider {
+  abstract readonly id: VoiceProvider
   abstract readonly name: string
 
   /** Which field in ApiKeySettings stores this provider's key. */
@@ -37,7 +37,7 @@ export abstract class BaseSttProvider {
   abstract mintEphemeralToken(apiKey: string): Promise<string>
 
   /** Convenience: resolve the effective key and mint an ephemeral token. */
-  async getEphemeralToken(): Promise<{ provider: SttProvider; token: string }> {
+  async getEphemeralToken(): Promise<{ provider: VoiceProvider; token: string }> {
     const apiKey = this.getEffectiveApiKey()
     if (!apiKey) {
       throw new Error(`No API key configured for ${this.name}. Add one in Settings > Voice.`)
@@ -58,7 +58,7 @@ export abstract class BaseSttProvider {
   }
 
   /** Convenience: resolve the effective key and mint a Voice Agent token. */
-  async getVoiceAgentToken(): Promise<{ provider: SttProvider; token: string }> {
+  async getVoiceAgentToken(): Promise<{ provider: VoiceProvider; token: string }> {
     if (!this.supportsVoiceAgent()) {
       throw new Error(`Voice Agent not supported by ${this.name}`)
     }
@@ -110,7 +110,7 @@ export abstract class BaseSttProvider {
   }
 
   /** Convenience: resolve the effective key and mint a text-to-speech token. */
-  async getTtsToken(): Promise<{ provider: SttProvider; token: string }> {
+  async getTtsToken(): Promise<{ provider: VoiceProvider; token: string }> {
     if (!this.supportsTts()) {
       throw new Error(`Text-to-speech not supported by ${this.name}`)
     }

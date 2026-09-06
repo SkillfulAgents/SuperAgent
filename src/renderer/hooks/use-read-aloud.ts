@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useSyncExternalStore, type RefObject } from 'react'
 import { apiFetch } from '@renderer/lib/api'
-import { createTtsAdapter, type SttProvider } from '@renderer/lib/tts'
+import { createTtsAdapter, type VoiceProvider } from '@renderer/lib/tts'
 import { SpeechPlayer } from '@renderer/lib/speech/speech-player'
 import { markdownToSpokenWords } from '@renderer/lib/speech/spoken-words'
 
@@ -17,7 +17,7 @@ export interface ReadAloudSnapshot {
 }
 
 interface TtsCredentials {
-  provider: SttProvider
+  provider: VoiceProvider
   token: string
   voice: string
   speed: number
@@ -77,7 +77,7 @@ class ReadAloudController {
 
     let credentials: TtsCredentials
     try {
-      const res = await apiFetch('/api/stt/tts-token')
+      const res = await apiFetch('/api/voice/tts-token')
       const data: TtsCredentials | { error: string } = await res.json()
       if (!res.ok) throw new Error(('error' in data ? data.error : null) || 'Failed to get text-to-speech credentials')
       credentials = data as TtsCredentials

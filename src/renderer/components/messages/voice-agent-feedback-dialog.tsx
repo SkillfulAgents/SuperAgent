@@ -55,7 +55,7 @@ export function VoiceAgentFeedbackDialog({
     let cancelled = false
     async function loadConfig() {
       try {
-        const res = await apiFetch('/api/stt/voice-agent-prompt?name=improve-agent')
+        const res = await apiFetch('/api/voice/voice-agent-prompt?name=improve-agent')
         if (!res.ok) throw new Error('Failed to load voice agent prompt')
         if (cancelled) return
         const { prompt } = await res.json() as { prompt: string }
