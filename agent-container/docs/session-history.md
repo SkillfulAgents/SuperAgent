@@ -44,6 +44,25 @@ carry forward; the transcript is what was actually said. When memory is thin or
 the user is asking about specifics — a decision, a number, a file you touched —
 go to the transcript.
 
+## The Current Session Is Not a Past Session
+
+The conversation you are having right now is also a transcript in that
+directory, and it is usually the most recently active one. It is not prior
+work: nothing in it happened before this conversation, and you already have
+it in context. The container exports its id to every tool call as
+`GAMUT_SESSION_ID`, and both helpers use that to keep you out of it:
+
+- `list-sessions.py` leaves it out and says so in a `Not listed:` line
+  (`--include-current` shows it, flagged `THIS IS YOUR CURRENT SESSION`).
+- `read-session.py latest` means the latest *other* session, and naming the
+  current session by id is an error. `--allow-current` overrides that for the
+  one legitimate case — recovering your own earlier turns after the context
+  was compacted.
+
+A `--grep` for the topic you are working on right now can therefore come back
+empty. That is the correct answer, not a broken directory: there is no earlier
+conversation about it.
+
 ## The Two Helpers
 
 Both are plain stdlib Python, installed read-only in the image, and safe to run

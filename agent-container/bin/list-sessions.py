@@ -10,6 +10,9 @@ message, which is what the Gamut UI falls back to.
 Times come from the transcripts themselves, not from file mtimes, which a
 container restart rewrites.
 
+The session this command runs in ($GAMUT_SESSION_ID) is left out — it is the
+current conversation, not a past one — and a trailing line says so.
+
 Examples:
     python3 /opt/gamut/bin/list-sessions.py
     python3 /opt/gamut/bin/list-sessions.py --since 7d
@@ -28,6 +31,13 @@ import re
 import sys
 
 DEFAULT_CONFIG_DIR = os.environ.get("CLAUDE_CONFIG_DIR", "/workspace/.claude")
+
+# The session this command is running inside — the container exports it to
+# every tool call. Its transcript is the conversation the agent is having right
+# now, so listing it as a "past session" invites the agent to read its own
+# in-progress work back as prior art (seen live: a --grep for the current
+# topic ranked the current session first, and the agent read it).
+CURRENT_SESSION_ID = os.environ.get("GAMUT_SESSION_ID") or None
 
 # User entries the CLI writes for its own bookkeeping — never something the
 # user typed, so they must not become a session's headline.
@@ -90,6 +100,24 @@ def clean_text(text):
     return " ".join(text.split())
 
 
+def user_typed_text(content):
+    """What the user typed in a `user` entry, or None.
+
+    The CLI records a typed message either as a plain string or — the form the
+    container's own session start produces — as a list of `text` blocks. A list
+    holding any `tool_result` is a tool round-trip, not the user speaking.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        if any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
+            return None
+        parts = [b.get("text", "") for b in content
+                 if isinstance(b, dict) and b.get("type") == "text"]
+        return "\n".join(parts) if parts else None
+    return None
+
+
 TIMESTAMP_RE = re.compile(r'"timestamp":"(\d{4}-\d\d-\d\dT[\d:.]+Z?)"')
 TAIL_BYTES = 256 * 1024
 
@@ -127,9 +155,10 @@ def session_times(path, size):
 def first_user_message(path, max_lines=400):
     """First user-typed message in a transcript, or None.
 
-    Reads only until one is found. Mirrors the host's session-naming rule
-    (first `user` entry whose content is a plain string), plus `queued_command`
-    attachments, which is how the CLI records a message sent mid-turn.
+    Reads only until one is found: the first `user` entry the user actually
+    typed (a plain string, or the text-block list the container's own session
+    start produces), plus `queued_command` attachments, which is how the CLI
+    records a message sent mid-turn.
     """
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as handle:
@@ -145,7 +174,7 @@ def first_user_message(path, max_lines=400):
 
                 content = None
                 if entry.get("type") == "user":
-                    content = entry.get("message", {}).get("content")
+                    content = user_typed_text(entry.get("message", {}).get("content"))
                 elif entry.get("type") == "attachment":
                     attachment = entry.get("attachment") or {}
                     if (
@@ -206,7 +235,7 @@ def spoken_texts(entry):
     """
     kind = entry.get("type")
     if kind == "user":
-        content = entry.get("message", {}).get("content")
+        content = user_typed_text(entry.get("message", {}).get("content"))
         if isinstance(content, str):
             text = clean_text(content)
             if text and not text.startswith(NOISE_PREFIXES):
@@ -291,6 +320,10 @@ def main():
                         help="reverse the order so the oldest session comes first")
     parser.add_argument("--json", action="store_true",
                         help="emit JSON instead of a table")
+    parser.add_argument("--include-current", action="store_true",
+                        help="also list the session this command is running in "
+                             "(hidden by default — it is the current conversation, "
+                             "not a past one)")
     parser.add_argument("--dir", metavar="DIR",
                         help="transcript directory (default: $CLAUDE_CONFIG_DIR/projects/-workspace)")
     args = parser.parse_args()
@@ -304,8 +337,12 @@ def main():
     metadata = load_metadata(directory)
 
     rows = []
+    hid_current = False
     for name in os.listdir(directory):
         if not name.endswith(".jsonl"):
+            continue
+        if name == f"{CURRENT_SESSION_ID}.jsonl" and not args.include_current:
+            hid_current = True
             continue
         path = os.path.join(directory, name)
         try:
@@ -329,6 +366,7 @@ def main():
         meta = metadata.get(session_id) or {}
         rows.append({
             "session_id": session_id,
+            "current": session_id == CURRENT_SESSION_ID,
             "started": started,
             "last_activity": last_activity,
             "bytes": stat.st_size,
@@ -354,14 +392,27 @@ def main():
         sys.stdout.write("\n")
         return
 
+    # Printed even when nothing matched: a --grep for the topic of the current
+    # conversation naturally finds no *other* session, and without this line
+    # the empty result reads as "the transcript directory is broken".
+    current_note = (
+        f"Not listed: {CURRENT_SESSION_ID} — that is THIS session, the conversation "
+        "you are in right now, not a past one (--include-current to show it anyway)."
+        if hid_current else None
+    )
+
     if not rows:
         print("No matching sessions.")
+        if current_note:
+            print(current_note)
         return
 
     for row in rows:
         headline = row["name"] or row["first_user_message"] or "(no user message)"
         if len(headline) > 100:
             headline = headline[:99] + "…"
+        if row["current"]:
+            headline = f"[THIS IS YOUR CURRENT SESSION — not a past one] {headline}"
         star = "★ " if row["starred"] else ""
         stamp = row[key].replace("T", " ").replace("+00:00", "")[:19]
         hits = f"  {row['matches']:>4} hits" if pattern else ""
@@ -370,6 +421,8 @@ def main():
     ranked = ", best match first" if pattern and args.sort == "activity" else ""
     print(f"\n{len(rows)} session(s); times are UTC {label}{ranked}. Read one: "
           f"python3 /opt/gamut/bin/read-session.py <session-id>")
+    if current_note:
+        print(current_note)
     print("If the user is trying to get back to one of these, also surface it "
           "with mcp__user-input__deliver_session (session_id only — omit "
           "agent_slug for your own sessions).")
