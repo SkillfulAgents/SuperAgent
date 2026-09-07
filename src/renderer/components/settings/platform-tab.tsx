@@ -531,6 +531,16 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
     )
   }
 
+  // Auth-mode users manage their own profile here; an unconfigured platform
+  // connection is deployment-wide and has no action they can take in this tab.
+  if (isAuthMode && !isConnected) {
+    return (
+      <div className="space-y-6">
+        <ProfileSection />
+      </div>
+    )
+  }
+
   const valueClass = 'text-xs text-muted-foreground truncate max-w-[260px]'
 
   return (
