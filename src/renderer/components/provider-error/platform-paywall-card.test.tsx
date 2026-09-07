@@ -443,6 +443,24 @@ describe('PlatformPaywallCard', () => {
       expect(screen.getByTestId('composer')).toBeInTheDocument()
     })
 
+    it('embeds the same top-up panel when the org has no card yet (it offers add-card)', async () => {
+      fetchBilling.mockResolvedValue(billing({ hasPaymentMethod: false }))
+      renderCard()
+      await screen.findByTestId('billing-embed-frame')
+      expect(JSON.parse(String(fetchEmbed.mock.calls[0][0]?.body))).toEqual({ view: 'topup' })
+      expect(screen.queryByRole('button', { name: 'Add credit card' })).not.toBeInTheDocument()
+    })
+
+    it('keeps a one-click hand-off button for anything that is not a top-up (past-due payment)', async () => {
+      fetchBilling.mockResolvedValue(billing({ subscription: { status: 'active', paymentStatus: 'past_due' } }))
+      renderCard()
+      const button = await screen.findByRole('button', { name: 'Fix payment' })
+      expect(screen.queryByTestId('billing-embed-body')).not.toBeInTheDocument()
+      act(() => { button.click() })
+      expect(openExternalUrl).toHaveBeenCalledTimes(1)
+      expect(fetchEmbed).not.toHaveBeenCalled()
+    })
+
     it('still sends members to the browser (the embed would only show them no access)', async () => {
       platformAuth.role = 'member'
       renderCard()

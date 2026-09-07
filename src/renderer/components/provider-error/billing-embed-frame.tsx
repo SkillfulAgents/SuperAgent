@@ -10,11 +10,10 @@ import { openExternalUrl } from '@renderer/lib/open-external'
 export const BILLING_EMBED_MESSAGE_TYPE = 'gamut-billing-embed'
 type BillingEmbedEvent = 'ready' | 'billing-updated' | 'session-expired' | 'resize'
 
-const FRAME_MIN_HEIGHT = 120
+const FRAME_MIN_HEIGHT = 64
 const FRAME_MAX_HEIGHT = 640
-// Until the page reports its height: roomy enough for the top-up panel.
-const FRAME_DEFAULT_HEIGHT = 380
-const FULL_VIEW_HEIGHT = 560
+// Until the page reports its height: about the size of the top-up panel.
+const FRAME_DEFAULT_HEIGHT = 200
 
 interface EmbedMessage {
   event: BillingEmbedEvent
@@ -42,8 +41,8 @@ function clampHeight(height: number): number {
 
 export interface BillingEmbedFrameProps {
   intent?: 'topup'
-  /** `topup`: chrome-less top-up panel that reports its height; absent: full billing tab. */
-  view?: BillingEmbedView
+  /** Which chrome-less platform panel to load; it reports its height back. */
+  view: BillingEmbedView
   /** External billing URL for the fallback button. */
   fallbackHref: string | null
   /** Fired on every `billing-updated` from the platform page. */
@@ -58,7 +57,7 @@ export function BillingEmbedFrame({ intent, view, fallbackHref, onBillingUpdated
   const session = useBillingEmbedSession()
   const [frameReady, setFrameReady] = useState(false)
   const [expired, setExpired] = useState(false)
-  const [height, setHeight] = useState(view ? FRAME_DEFAULT_HEIGHT : FULL_VIEW_HEIGHT)
+  const [height, setHeight] = useState(FRAME_DEFAULT_HEIGHT)
   const requested = useRef(false)
   const { mutate } = session
 
@@ -78,13 +77,11 @@ export function BillingEmbedFrame({ intent, view, fallbackHref, onBillingUpdated
       if (message.event === 'ready') setFrameReady(true)
       else if (message.event === 'billing-updated') onBillingUpdated()
       else if (message.event === 'session-expired') setExpired(true)
-      else if (message.event === 'resize' && message.height !== undefined && view) {
-        setHeight(clampHeight(message.height))
-      }
+      else if (message.event === 'resize' && message.height !== undefined) setHeight(clampHeight(message.height))
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [platformOrigin, onBillingUpdated, view])
+  }, [platformOrigin, onBillingUpdated])
 
   const sessionError = session.error
   useEffect(() => {

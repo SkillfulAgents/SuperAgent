@@ -53,13 +53,8 @@ function ctaHref(cta: PaywallCta): string | null {
   return cta.href
 }
 
-// Members are sent to ask an admin; the embed would only show them "no access".
-function canEmbed(cta: PaywallCta): boolean {
-  return cta.kind !== 'ask_admin'
-}
-
-// Top-up (and add-card, its no-card twin) get the compact panel; anything that
-// needs the plan or payment status gets the full billing tab.
+// Only top-up (and add-card, its no-card twin) get the inline panel. Everything
+// else (subscribe, fix payment, ask admin) stays a one-click hand-off button.
 function embedView(cta: PaywallCta): BillingEmbedView | undefined {
   return cta.kind === 'topup' || cta.kind === 'add_card' ? 'topup' : undefined
 }
@@ -140,7 +135,8 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
   // Electron keeps the system-browser hand-off. Web on a cloud workspace (the
   // only place the platform will frame its billing page) embeds it in-app.
   const inApp = !isElectron() && platformAuth?.platformControlled === true
-  const embedded = inApp && billing.cta !== null && canEmbed(billing.cta)
+  const view = billing.cta ? embedView(billing.cta) : undefined
+  const embedded = inApp && view !== undefined
   if (billing.cleared || dismissed) return <>{children}</>
 
   const fallback = splitMessage(presentation?.message ?? message)
@@ -150,7 +146,9 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
   return (
     <>
       <div className={cn('relative px-4', billing.blocked ? 'pb-5' : 'pb-2')}>
-        <HomeEmptyClouds masked={false} fill={0.6} />
+        {/* The inline panel makes the card tall enough to cover a centred glow; sit it
+            under the bottom edge so the colour spills out around the card again. */}
+        <HomeEmptyClouds masked={false} fill={embedded ? 1 : 0.6} center={embedded ? { x: '50%', y: '85%' } : undefined} />
         <div
           data-testid="paywall-card"
           data-blocked={billing.blocked}
@@ -175,7 +173,7 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
           {embedded && billing.cta && (
             <BillingEmbedFrame
               intent={billing.cta.kind === 'topup' ? 'topup' : undefined}
-              view={embedView(billing.cta)}
+              view={view}
               fallbackHref={ctaHref(billing.cta)}
               onBillingUpdated={billing.recheck}
             />
