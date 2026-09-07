@@ -1,0 +1,17 @@
+{
+  "storyId": "browser-test",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: s successful response.\n\n**No bugs found.** The browser-use feature is working correctly. The agent successfully:\n- Opened a browser session\n- Navigated to https://example.com\n- Retrieved the correct page title: \"Example Domain\"\n- Closed the browser session\n- Returned the expected result to the user\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 433408,
+  "sessionId": "f236b3a1-0da3-4094-8230-64de4482ddec",
+  "cost": {
+    "inputTokens": 350,
+    "outputTokens": 13428,
+    "cacheCreationTokens": 73381,
+    "cacheReadTokens": 988226,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.258039
+  }
+}
