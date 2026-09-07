@@ -27,7 +27,6 @@ import type { EmbeddedImageAliases } from '@renderer/lib/parse-tool-result'
 import { rehypeStreamingWordReveal } from './streaming-word-reveal'
 import { rehypeSpokenWords } from '@renderer/lib/speech/spoken-words'
 import { useIsBeingRead, useSpokenWordHighlight } from '@renderer/hooks/use-read-aloud'
-import { useIsTtsConfigured } from '@renderer/hooks/use-voice-input'
 import { ReadAloudControls } from './read-aloud-controls'
 
 // Re-export for use by other components
@@ -393,16 +392,13 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
 
   // Read-aloud: a settled assistant reply gets a speaker button, and while it
   // is the one being read its prose is dimmed and lights up as playback
-  // reaches each word. The word spans the highlight addresses are rendered
-  // for every readable reply up front, not on play: re-rendering a reply's
-  // Markdown with the spans (React edits the kept text nodes in place before
-  // inserting) makes WebKit re-clamp the scroll container when the reply
-  // sits at the live edge, throwing the viewport up by a message's worth.
-  // With the structure fixed, play and stop change only classes and
-  // attributes, which never do.
+  // reaches each word. The word spans the highlight addresses exist only for
+  // that one reply, for as long as it is being read; every other reply is
+  // plain prose. (Re-rendering the reply at the live edge makes WebKit move
+  // the viewport; the follow engine attributes that move to the commit and
+  // puts it straight back — see COMMIT_ROLLBACK_WINDOW_MS.)
   const canReadAloud = isAssistant && !!hasText && !isStreaming && !isProviderErrorMessage && !CustomUserRender
-  const spoken = useIsTtsConfigured() && canReadAloud
-  const isBeingRead = useIsBeingRead(message.id) && spoken
+  const isBeingRead = useIsBeingRead(message.id) && canReadAloud
   const proseRef = useRef<HTMLDivElement>(null)
   useSpokenWordHighlight(proseRef, isBeingRead)
 
@@ -511,7 +507,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                       text={text}
                       embeddedImageAliases={embeddedImageAliases}
                       agentSlug={agentSlug}
-                      spoken={spoken}
+                      spoken={isBeingRead}
                     />
                   )}
                   {isStreaming && (
