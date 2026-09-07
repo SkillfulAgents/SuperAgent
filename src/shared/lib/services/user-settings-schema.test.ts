@@ -1,5 +1,37 @@
 import { describe, it, expect } from 'vitest'
-import { agentFolderSettingsWriteSchema, userSettingsSchema } from './user-settings-service'
+import { agentFolderSettingsWriteSchema, userSettingsSchema, userVoiceSettingsWriteSchema } from './user-settings-service'
+
+describe('userSettingsSchema voice', () => {
+  it('defaults to undefined and stores a valid voice and speed', () => {
+    expect(userSettingsSchema.parse({}).voice).toBeUndefined()
+    expect(userSettingsSchema.parse({ voice: { ttsVoice: 'aura-2-luna-en', ttsSpeed: 1.2 } }).voice)
+      .toEqual({ ttsVoice: 'aura-2-luna-en', ttsSpeed: 1.2 })
+  })
+
+  it('keeps a voice id as stored: which ids exist is the provider\'s business, not the schema\'s', () => {
+    expect(userSettingsSchema.parse({ voice: { ttsVoice: 'aura-retired-en', ttsSpeed: 1.1 } }).voice)
+      .toEqual({ ttsVoice: 'aura-retired-en', ttsSpeed: 1.1 })
+  })
+
+  it('drops a malformed field without taking the speed or the rest of the document with it', () => {
+    const parsed = userSettingsSchema.parse({ voice: { ttsVoice: 42, ttsSpeed: 1.1 } })
+    expect(parsed.voice).toEqual({ ttsVoice: undefined, ttsSpeed: 1.1 })
+    expect(parsed.theme).toBe('system')
+  })
+
+  it('the write schema rejects what the stored schema would silently drop', () => {
+    expect(userVoiceSettingsWriteSchema.safeParse({ voice: { ttsVoice: 42 } }).success).toBe(false)
+    expect(userVoiceSettingsWriteSchema.safeParse({ voice: { ttsVoice: '' } }).success).toBe(false)
+    expect(userVoiceSettingsWriteSchema.safeParse({ voice: { ttsSpeed: 2 } }).success).toBe(false)
+    expect(userVoiceSettingsWriteSchema.safeParse({ voice: { ttsSpeed: 0.9 } }).success).toBe(true)
+    expect(userVoiceSettingsWriteSchema.safeParse({ theme: 'dark' }).success).toBe(true)
+  })
+
+  it('a null voice write unsets the personal pick (back to the deployment default)', () => {
+    expect(userVoiceSettingsWriteSchema.safeParse({ voice: { ttsVoice: null } }).success).toBe(true)
+    expect(userVoiceSettingsWriteSchema.safeParse({ voice: { ttsSpeed: null } }).success).toBe(false)
+  })
+})
 
 describe('userSettingsSchema agentOrder', () => {
   it('defaults to undefined when not provided', () => {

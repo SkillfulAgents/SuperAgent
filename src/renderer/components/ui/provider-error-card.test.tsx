@@ -1,29 +1,14 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 
 import { parsePlatformErrorResponse } from '@shared/lib/llm-provider/platform-error-presentation'
-import { resolvePresentationMarkdown } from '@shared/lib/llm-provider/error-presentation'
 
 import { ProviderErrorCard, ProviderErrorView } from './provider-error-card'
 
-const platformAuth = {
-  connected: true as boolean,
-  platformBaseUrl: 'https://platform.example.com' as string | null,
-  orgId: 'org_123' as string | null,
-}
-
-vi.mock('@renderer/hooks/use-platform-auth', () => ({
-  usePlatformAuthStatus: () => ({ data: platformAuth }),
-}))
-
+const BILLING_URL = 'https://platform.example.com/dashboard/organizations/org_123?tab=billing'
 const SPEND_CAP =
   'API Error: Request rejected (429) · A spend cap for this workspace was reached. It resets within 30 days. Ask a workspace admin to raise it.'
-
-beforeEach(() => {
-  platformAuth.connected = true
-  platformAuth.orgId = 'org_123'
-})
 
 describe('ProviderErrorView', () => {
   it('renders spend-cap markdown as a warning with a raise link', async () => {
@@ -32,15 +17,7 @@ describe('ProviderErrorView', () => {
       openExternal,
     }
 
-    const parsed = parsePlatformErrorResponse(429, SPEND_CAP)!
-    render(
-      <ProviderErrorView
-        presentation={{
-          ...parsed,
-          message: resolvePresentationMarkdown(parsed.message, platformAuth),
-        }}
-      />,
-    )
+    render(<ProviderErrorView presentation={parsePlatformErrorResponse(429, SPEND_CAP, BILLING_URL)!} />)
 
     const card = screen.getByTestId('provider-error-card')
     expect(card).toHaveTextContent('Spend Limit Reached')
@@ -50,56 +27,41 @@ describe('ProviderErrorView', () => {
     expect(card).toHaveClass('bg-orange-50', 'dark:bg-orange-950')
 
     fireEvent.click(screen.getByRole('link', { name: /raise spend limit/i }))
-    expect(openExternal).toHaveBeenCalledWith(
-      'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
-    )
+    expect(openExternal).toHaveBeenCalledWith(BILLING_URL)
   })
 
-  it('renders insufficient-balance markdown with a billing link', async () => {
-    const openExternal = vi.fn().mockResolvedValue(undefined)
-    ;(window as unknown as { electronAPI?: { openExternal: typeof openExternal } }).electronAPI = {
-      openExternal,
-    }
-
-    const parsed = parsePlatformErrorResponse(
-      402,
-      'API Error: 402 Workspace has insufficient balance. Top up to continue.',
-    )!
+  it('renders the paywall copy as a plain card when a 402 falls back to the inline card', () => {
     render(
       <ProviderErrorView
-        presentation={{
-          ...parsed,
-          message: resolvePresentationMarkdown(parsed.message, platformAuth),
-        }}
+        presentation={parsePlatformErrorResponse(
+          402,
+          'API Error: 402 Workspace has insufficient balance. Top up to continue.',
+          BILLING_URL,
+        )!}
       />,
     )
 
     const card = screen.getByTestId('provider-error-card')
-    expect(card).toHaveTextContent('Insufficient Balance')
+    expect(card).toHaveTextContent('You need more usage credit to continue')
     expect(card).toHaveAttribute('data-severity', 'error')
     expect(card).toHaveClass('bg-red-50', 'dark:bg-red-950')
-
-    fireEvent.click(screen.getByRole('link', { name: /go to billing/i }))
-    expect(openExternal).toHaveBeenCalledWith(
-      'https://platform.example.com/dashboard/organizations/org_123?tab=billing',
-    )
+    expect(screen.queryByRole('link')).not.toBeInTheDocument()
   })
 })
 
 describe('ProviderErrorCard', () => {
-  it('renders a server-attached platform spend-cap presentation with a resolved link', () => {
+  it('renders a server-attached platform spend-cap presentation with its link', () => {
     render(
-      <ProviderErrorCard message={SPEND_CAP} presentation={parsePlatformErrorResponse(429, SPEND_CAP)!} />,
+      <ProviderErrorCard message={SPEND_CAP} presentation={parsePlatformErrorResponse(429, SPEND_CAP, BILLING_URL)!} />,
     )
     const card = screen.getByTestId('provider-error-card')
     expect(card).toHaveTextContent('Spend Limit Reached')
     expect(screen.getByRole('link', { name: /raise spend limit/i })).toBeInTheDocument()
   })
 
-  it('omits the link when org context is missing', () => {
-    platformAuth.connected = false
+  it('renders plain text when the provider attached no link', () => {
     render(
-      <ProviderErrorCard message={SPEND_CAP} presentation={parsePlatformErrorResponse(429, SPEND_CAP)!} />,
+      <ProviderErrorCard message={SPEND_CAP} presentation={parsePlatformErrorResponse(429, SPEND_CAP, null)!} />,
     )
     expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Spend Limit Reached')
     expect(screen.queryByRole('link', { name: /raise spend limit/i })).not.toBeInTheDocument()

@@ -272,6 +272,24 @@ describe('cloud proxy forwarding', () => {
     expect(res.headers.get('content-length')).toBeNull()
   })
 
+  // The drawer reads a workspace file's size from the Content-Length of a HEAD.
+  // A HEAD has no body to re-frame, so the header describes the resource rather
+  // than the transfer — stripping it left every file in a cloud workspace with
+  // no size beside its name.
+  it('keeps Content-Length on a HEAD, where it describes the file', async () => {
+    mockFetch.mockResolvedValue(new Response(null, { headers: { 'content-length': '5242880' } }))
+    const res = await call('/api/agents/a/files/out/render.mp4', { method: 'HEAD' })
+    expect(res.headers.get('content-length')).toBe('5242880')
+  })
+
+  it('still drops Content-Length on a HEAD the upstream declared encoded', async () => {
+    mockFetch.mockResolvedValue(
+      new Response(null, { headers: { 'content-encoding': 'gzip', 'content-length': '999' } }),
+    )
+    const res = await call('/api/agents/a/files/out/render.mp4', { method: 'HEAD' })
+    expect(res.headers.get('content-length')).toBeNull()
+  })
+
   it('passes the upstream status through', async () => {
     mockFetch.mockResolvedValue(new Response('nope', { status: 403 }))
     const res = await call('/api/agents')

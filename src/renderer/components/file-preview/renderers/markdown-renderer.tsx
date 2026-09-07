@@ -10,10 +10,11 @@ import { useFileContent } from './use-file-content'
 interface MarkdownRendererProps {
   url: string
   filePath: string
+  agentSlug: string
   commentsEnabled?: boolean
 }
 
-export function MarkdownRenderer({ url, filePath, commentsEnabled = true }: MarkdownRendererProps) {
+export function MarkdownRenderer({ url, filePath, agentSlug, commentsEnabled = true }: MarkdownRendererProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const { selection, clearSelection } = useTextSelection(containerRef, commentsEnabled)
 
@@ -92,6 +93,7 @@ export function MarkdownRenderer({ url, filePath, commentsEnabled = true }: Mark
         <CommentOverlay
           selection={selection}
           filePath={filePath}
+          agentSlug={agentSlug}
           onClose={clearSelection}
         />
       )}

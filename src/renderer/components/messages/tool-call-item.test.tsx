@@ -349,7 +349,7 @@ describe('ToolCallItem result documents', () => {
     const frame = await screen.findByTitle('report.pdf')
     expect(frame.tagName).toBe('IFRAME')
     expect(frame).toHaveAttribute('src', 'blob:pdf-1')
-    expect(container.querySelector('[data-testid="tool-result-document"]')).toHaveTextContent('195 KB')
+    expect(container.querySelector('[data-testid="tool-result-document"]')).toHaveTextContent('195.3 KB')
   })
 
   it('offers a retry when the PDF cannot be fetched', async () => {

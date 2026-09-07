@@ -85,7 +85,7 @@ const PRIMITIVE_CONSTRUCTORS = new Set(['EventSource', 'WebSocket'])
  */
 const PINNED_CALL_SITES: Record<string, string> = {
   'components/file-preview/renderers/use-file-content.ts::useFileContent::fetch(url)':
-    'prebuilt `url` prop; composed by file-preview-tray-content.tsx from getApiBaseUrl()',
+    'prebuilt `url` prop; composed by lib/workspace-file-url.ts from getApiBaseUrl()',
   'components/file-preview/renderers/audio-renderer.tsx::AudioRenderer.decodeWaveform::fetch(url)':
     'prebuilt `url` prop; same origin as use-file-content.ts above',
   'components/file-preview/copy-file-button.tsx::fetchText::fetch(url)':
@@ -110,6 +110,8 @@ const PINNED_CALL_SITES: Record<string, string> = {
     'third-party Deepgram voice-agent socket — must NOT follow the API origin',
   'lib/voice-agent-openai.ts::OpenAIVoiceAgentAdapter.connect::WebSocket(url)':
     'third-party OpenAI realtime socket — must NOT follow the API origin',
+  'lib/tts.ts::DeepgramTtsAdapter.connect::WebSocket(url)':
+    'third-party Deepgram text-to-speech socket — must NOT follow the API origin',
 }
 
 /**
@@ -119,6 +121,7 @@ const PINNED_CALL_SITES: Record<string, string> = {
  */
 const EXTERNAL_ENDPOINT_MODULES = [
   'lib/stt.ts',
+  'lib/tts.ts',
   'lib/voice-agent-deepgram.ts',
   'lib/voice-agent-openai.ts',
 ]
@@ -136,8 +139,6 @@ const DIRECT_BASE_URL_CONSUMERS: Record<string, string> = {
   'lib/auth-client.ts':
     "better-auth composes its own request URLs from a baseURL it is constructed with — it never sees apiFetch. Read lazily so cloud mode's prefix is known by then.",
   'lib/env.ts': 'defines it; openDashboardExternal() builds a window.open() URL',
-  'lib/markdown-url-transform.ts':
-    '<img src> — file:///workspace Markdown images resolved to the authenticated workspace file route',
   'lib/parse-tool-result.ts':
     '<img src> — media-ref images in tool results, resolved to a URL here so every result renderer gets one without threading the session identity down to it',
   'lib/upload.ts':
@@ -145,8 +146,8 @@ const DIRECT_BASE_URL_CONSUMERS: Record<string, string> = {
   'components/ui/model-icon.tsx': '<img src> — model icon asset',
   'components/home/dashboard-card.tsx': '<img src> — dashboard screenshot',
   'components/dashboards/dashboard-view.tsx': '<iframe src> — embedded dashboard',
-  'components/file-preview/file-preview-tray-content.tsx': 'file URL passed to previewers/<img>',
-  'components/file-preview/renderers/unsupported-renderer.tsx': 'download link href',
+  'lib/workspace-file-url.ts':
+    'getAgentFileUrl() — the one place a workspace-file URL is composed. Every file surface reaches it through describeWorkspaceFile() in lib/workspace-file.ts rather than directly: the preview tray\'s previewers, the unsupported renderer\'s and delivered-file row\'s download links, a sent message\'s image chip, and file:///workspace Markdown images resolved to the authenticated route. None of those can carry a request header, and building the URL once here is what keeps their encoding and cache-busting from drifting apart',
   'components/messages/message-input.tsx': 'fire-and-forget typing ping (deliberately not awaited)',
   'components/notifications/global-notification-handler.tsx':
     'EventSource — global notification stream',

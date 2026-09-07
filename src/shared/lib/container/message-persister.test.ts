@@ -8,6 +8,7 @@ const mockGetScheduledTask = vi.fn<SchedMockFn>(() => Promise.resolve(null))
 const mockCancelScheduledTask = vi.fn<SchedMockFn>(() => Promise.resolve(true))
 const mockPauseScheduledTask = vi.fn<SchedMockFn>(() => Promise.resolve(true))
 const mockResumeScheduledTask = vi.fn<SchedMockFn>(() => Promise.resolve(true))
+const mockPatchScheduledTask = vi.fn<SchedMockFn>(() => Promise.resolve(true))
 const mockCreateScheduledTask = vi.fn<SchedMockFn>(() => Promise.resolve('task_new_id'))
 const mockCreateSessionWake = vi.fn<SchedMockFn>(() =>
   Promise.resolve({ taskId: 'wake_new_id', replaced: null })
@@ -22,6 +23,7 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   cancelScheduledTask: (...args: unknown[]) => mockCancelScheduledTask(...args),
   pauseScheduledTask: (...args: unknown[]) => mockPauseScheduledTask(...args),
   resumeScheduledTask: (...args: unknown[]) => mockResumeScheduledTask(...args),
+  patchScheduledTask: (...args: unknown[]) => mockPatchScheduledTask(...args),
 }))
 vi.mock('@shared/lib/services/session-service', () => ({
   updateSessionMetadata: vi.fn(() => Promise.resolve()),
@@ -118,6 +120,7 @@ const mockListActiveWebhookTriggers = vi.fn<MockFn>(() => Promise.resolve([]))
 const mockCancelWebhookTriggerWithCleanup = vi.fn<MockFn>(() => Promise.resolve(true))
 const mockGetWebhookTrigger = vi.fn<MockFn>(() => Promise.resolve(null))
 const mockUpdateWebhookTriggerName = vi.fn<MockFn>(() => Promise.resolve())
+const mockUpdateWebhookTriggerPrompt = vi.fn<MockFn>(() => Promise.resolve(true))
 const mockResolvePlatformMemberForCandidates = vi.fn<MockFn>(() => null)
 vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   createWebhookTrigger: (...args: unknown[]) => mockCreateWebhookTrigger(...args),
@@ -125,6 +128,7 @@ vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   cancelWebhookTriggerWithCleanup: (...args: unknown[]) => mockCancelWebhookTriggerWithCleanup(...args),
   getWebhookTrigger: (...args: unknown[]) => mockGetWebhookTrigger(...args),
   updateWebhookTriggerName: (...args: unknown[]) => mockUpdateWebhookTriggerName(...args),
+  updateWebhookTriggerPrompt: (...args: unknown[]) => mockUpdateWebhookTriggerPrompt(...args),
   resolvePlatformMemberForCandidates: (...args: unknown[]) => mockResolvePlatformMemberForCandidates(...args),
 }))
 
@@ -149,6 +153,8 @@ const mockGetStoredPlatformMemberId = vi.fn(() => null as string | null)
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getStoredPlatformMemberId: () => mockGetStoredPlatformMemberId(),
   getPlatformAccessToken: () => mockGetPlatformAccessToken(),
+  // Read by PlatformLlmProvider when it resolves the billing link for a provider error.
+  getPlatformAuthStatus: () => ({ connected: false, orgId: null }),
 }))
 
 const mockGetAvailableTriggers = vi.fn<MockFn>(() => Promise.resolve([]))
@@ -5263,6 +5269,8 @@ describe('MessagePersister', () => {
       mockEnableComposioTrigger.mockClear()
       mockDeleteComposioTrigger.mockClear()
       mockListActiveWebhookTriggers.mockClear()
+      mockGetWebhookTrigger.mockClear()
+      mockUpdateWebhookTriggerPrompt.mockClear()
       mockDbSelect.mockClear()
 
       mockIsPlatformComposioActive.mockReturnValue(true)
@@ -5272,6 +5280,8 @@ describe('MessagePersister', () => {
       mockContainerClientFetch.mockResolvedValue({ ok: true })
       mockCreateWebhookTrigger.mockResolvedValue('trigger_new_id')
       mockCancelWebhookTriggerWithCleanup.mockResolvedValue(true)
+      mockGetWebhookTrigger.mockResolvedValue(null)
+      mockUpdateWebhookTriggerPrompt.mockResolvedValue(true)
       mockGetAvailableTriggers.mockResolvedValue([
         { slug: 'GMAIL_NEW_EMAIL', name: 'New Email', description: 'Fires on new email', type: 'webhook' },
         { slug: 'SLACK_NEW_MESSAGE', name: 'New Message', description: 'Fires on new Slack message', type: 'webhook' },
@@ -5566,6 +5576,62 @@ describe('MessagePersister', () => {
         expect(resolveCall).toBeDefined()
         const body = JSON.parse(resolveCall![1].body)
         expect(body.value).toContain('No active webhook triggers')
+      })
+    })
+
+    describe('update_trigger', () => {
+      it('updates the prompt in place and broadcasts the change', async () => {
+        const { events: globalEvents, cleanup } = collectGlobalEvents()
+        sseEvents.length = 0
+        mockGetWebhookTrigger.mockResolvedValue({
+          id: 'trigger_existing',
+          agentSlug: AGENT_SLUG,
+          status: 'active',
+          fireCount: 4,
+          lastSessionId: 'previous-session',
+        })
+
+        simulateToolUse('mcp__user-input__update_trigger', 'tool-trigger-update-1', {
+          trigger_id: 'trigger_existing',
+          prompt: 'Handle future emails differently',
+        })
+
+        const resolveCall = await flushHandlers('/inputs/tool-trigger-update-1/resolve')
+        expect(mockUpdateWebhookTriggerPrompt).toHaveBeenCalledWith(
+          'trigger_existing',
+          'Handle future emails differently',
+        )
+        expect(JSON.parse(resolveCall[1].body).value).toContain('firing history were preserved')
+        expect(sseEvents.filter((e) => e.type === 'webhook_trigger_updated')).toHaveLength(1)
+        expect(globalEvents.filter((e) => e.type === 'webhook_trigger_updated')).toHaveLength(1)
+        cleanup()
+      })
+
+      it('does not update a trigger owned by another agent', async () => {
+        mockGetWebhookTrigger.mockResolvedValue({
+          id: 'trigger_foreign',
+          agentSlug: 'other-agent',
+          status: 'active',
+        })
+
+        simulateToolUse('mcp__user-input__update_trigger', 'tool-trigger-update-foreign', {
+          trigger_id: 'trigger_foreign',
+          prompt: 'Take over this trigger',
+        })
+
+        await flushHandlers('/inputs/tool-trigger-update-foreign/reject')
+        expect(mockUpdateWebhookTriggerPrompt).not.toHaveBeenCalled()
+      })
+
+      it('rejects an empty prompt at the host validation boundary', async () => {
+        simulateToolUse('mcp__user-input__update_trigger', 'tool-trigger-update-empty', {
+          trigger_id: 'trigger_existing',
+          prompt: '   ',
+        })
+
+        await flushHandlers('/inputs/tool-trigger-update-empty/reject')
+        expect(mockGetWebhookTrigger).not.toHaveBeenCalled()
+        expect(mockUpdateWebhookTriggerPrompt).not.toHaveBeenCalled()
       })
     })
 
@@ -6200,6 +6266,7 @@ describe('MessagePersister', () => {
       mockCancelScheduledTask.mockClear()
       mockPauseScheduledTask.mockClear()
       mockResumeScheduledTask.mockClear()
+      mockPatchScheduledTask.mockClear()
       mockCreateScheduledTask.mockReset()
 
       mockContainerClientFetch.mockResolvedValue({ ok: true })
@@ -6208,6 +6275,7 @@ describe('MessagePersister', () => {
       mockCancelScheduledTask.mockResolvedValue(true)
       mockPauseScheduledTask.mockResolvedValue(true)
       mockResumeScheduledTask.mockResolvedValue(true)
+      mockPatchScheduledTask.mockResolvedValue(true)
       mockCreateScheduledTask.mockResolvedValue('task_new_id')
     })
 
@@ -6480,6 +6548,82 @@ describe('MessagePersister', () => {
         expect(resolveCall).toBeDefined()
         const body = JSON.parse(resolveCall![1].body)
         expect(body.value).toContain('No scheduled tasks')
+      })
+    })
+
+    describe('update_scheduled_task', () => {
+      it('updates schedule and prompt in one mutation and preserves the task ID', async () => {
+        const { events: globalEvents, cleanup: globalCleanup } = collectGlobalEvents()
+        sseEvents.length = 0
+        mockGetScheduledTask.mockResolvedValue({
+          id: 'task_existing',
+          agentSlug: AGENT_SLUG,
+          scheduleType: 'cron',
+          scheduleExpression: '0 18 * * *',
+          timezone: 'UTC',
+          nextExecutionAt: new Date('2026-06-04T18:00:00Z'),
+        })
+
+        simulateToolUse('mcp__user-input__update_scheduled_task', 'tool-sched-update-1', {
+          task_id: 'task_existing',
+          schedule_expression: '0 18 * * *',
+          prompt: 'Send the revised report',
+        })
+
+        await flushHandlers()
+        expect(mockPatchScheduledTask).toHaveBeenCalledWith('task_existing', {
+          scheduleExpression: '0 18 * * *',
+          prompt: 'Send the revised report',
+        })
+        const resolveCall = mockContainerClientFetch.mock.calls.find(
+          (call) => call[0] === '/inputs/tool-sched-update-1/resolve',
+        )
+        expect(resolveCall).toBeDefined()
+        expect(JSON.parse(resolveCall![1].body).value).toContain('execution history were preserved')
+        expect(sseEvents.filter((event) => event.type === 'scheduled_task_updated')).toHaveLength(1)
+        expect(globalEvents.filter((event) => event.type === 'scheduled_task_updated')).toHaveLength(1)
+        globalCleanup()
+      })
+
+      it('rejects an expression that does not match the existing schedule type', async () => {
+        mockGetScheduledTask.mockResolvedValue({
+          id: 'task_existing',
+          agentSlug: AGENT_SLUG,
+          scheduleType: 'cron',
+          timezone: 'UTC',
+        })
+
+        simulateToolUse('mcp__user-input__update_scheduled_task', 'tool-sched-update-invalid', {
+          task_id: 'task_existing',
+          schedule_expression: 'at tomorrow 9am',
+        })
+
+        await flushHandlers()
+        expect(mockPatchScheduledTask).not.toHaveBeenCalled()
+        expect(mockContainerClientFetch).toHaveBeenCalledWith(
+          '/inputs/tool-sched-update-invalid/reject',
+          expect.objectContaining({ body: expect.stringContaining('Invalid cron schedule expression') }),
+        )
+      })
+
+      it('does not update a task owned by another agent', async () => {
+        mockGetScheduledTask.mockResolvedValue({
+          id: 'task_foreign',
+          agentSlug: 'other-agent',
+          scheduleType: 'cron',
+        })
+
+        simulateToolUse('mcp__user-input__update_scheduled_task', 'tool-sched-update-foreign', {
+          task_id: 'task_foreign',
+          prompt: 'Take over this task',
+        })
+
+        await flushHandlers()
+        expect(mockPatchScheduledTask).not.toHaveBeenCalled()
+        expect(mockContainerClientFetch).toHaveBeenCalledWith(
+          '/inputs/tool-sched-update-foreign/reject',
+          expect.objectContaining({ body: expect.stringContaining('not found') }),
+        )
       })
     })
 

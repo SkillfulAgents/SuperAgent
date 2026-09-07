@@ -66,10 +66,12 @@ export interface ApiKeySettings {
   exaApiKey?: string
 }
 
-export type SttProvider = 'deepgram' | 'openai' | 'platform'
+export type VoiceProvider = 'deepgram' | 'openai' | 'platform'
 
 export interface VoiceSettings {
-  sttProvider?: SttProvider
+  sttProvider?: VoiceProvider
+  /** Text-to-speech voice for reading agent replies aloud: an id from the provider's own catalogue. */
+  ttsVoice?: string
 }
 
 export interface NotificationSettings {

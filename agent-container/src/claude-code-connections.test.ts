@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 type MockQueryCall = { options: Record<string, unknown> }
 type MockMcpStatus = { name: string; status: string }
+type MockSetServersResult = { added: string[]; removed: string[]; errors: Record<string, string> }
 const calls: MockQueryCall[] = []
 
 // Per-test override for the mcpServerStatus() control request. Left null, every
@@ -9,6 +10,17 @@ const calls: MockQueryCall[] = []
 // tests that are not about the handshake gate never wait on it.
 let mcpServerStatusImpl: (() => Promise<MockMcpStatus[]>) | null = null
 let mcpServerStatusCalls = 0
+
+// Per-test override for the setMcpServers() control request. Left null, the
+// call succeeds and reports every named server as added. The SDK 0.3.257
+// behaviour this mirrors: the map is a full replace, already-registered SDK
+// servers are left alone, and the result names added/removed/errored servers.
+let setMcpServersImpl: ((servers: Record<string, unknown>) => Promise<MockSetServersResult>) | null = null
+const setMcpServersCalls: Array<Record<string, unknown>> = []
+
+const UNSUPPORTED = async () => {
+  throw new Error('control request not supported')
+}
 
 function allConnected(): MockMcpStatus[] {
   const servers = (calls[calls.length - 1]?.options.mcpServers ?? {}) as Record<string, unknown>
@@ -31,6 +43,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
       interrupt: () => Promise<void>
       setModel: () => Promise<void>
       mcpServerStatus: () => Promise<MockMcpStatus[]>
+      setMcpServers: (servers: Record<string, unknown>) => Promise<MockSetServersResult>
     } = {
       [Symbol.asyncIterator]() {
         return this
@@ -60,6 +73,13 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         mcpServerStatusCalls++
         return (mcpServerStatusImpl ?? (async () => allConnected()))()
       },
+      setMcpServers(servers) {
+        setMcpServersCalls.push(servers)
+        return (
+          setMcpServersImpl ??
+          (async (s: Record<string, unknown>) => ({ added: Object.keys(s), removed: [], errors: {} }))
+        )(servers)
+      },
     }
     return iterator
   }
@@ -73,12 +93,12 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
 })
 
 vi.mock('./mcp-server', () => ({
-  createUserInputMcpServer: () => ({}),
-  createBrowserMcpServer: () => ({}),
-  createComputerUseMcpServer: () => ({}),
-  createDashboardsMcpServer: () => ({}),
-  createAgentsMcpServer: () => ({}),
-  createChatMcpServer: () => ({}),
+  createUserInputMcpServer: () => ({ type: 'sdk', name: 'user-input' }),
+  createBrowserMcpServer: () => ({ type: 'sdk', name: 'browser' }),
+  createComputerUseMcpServer: () => ({ type: 'sdk', name: 'computer-use' }),
+  createDashboardsMcpServer: () => ({ type: 'sdk', name: 'dashboards' }),
+  createAgentsMcpServer: () => ({ type: 'sdk', name: 'agents' }),
+  createChatMcpServer: () => ({ type: 'sdk', name: 'chat' }),
 }))
 
 vi.mock('./tools/browser', () => ({
@@ -101,13 +121,38 @@ vi.mock('./input-manager', () => ({
 
 import { ClaudeCodeProcess } from './claude-code'
 
-describe('ClaudeCodeProcess runtime connection handling', () => {
+const CALENDAR = JSON.stringify([
+  {
+    id: 'mcp-calendar',
+    name: 'Team Calendar',
+    proxyUrl: 'http://host.test/api/mcp-proxy/test-agent/mcp-calendar',
+    tools: [{ name: 'list_events' }],
+  },
+])
+
+const AUTH_REQUIRED_CALENDAR = JSON.stringify([
+  {
+    id: 'mcp-calendar',
+    name: 'Team Calendar',
+    status: 'auth_required',
+    proxyUrl: 'http://host.test/api/mcp-proxy/test-agent/mcp-calendar',
+    tools: [{ name: 'list_events' }],
+  },
+])
+
+// The in-process servers every query carries. A dynamic set that omits any of
+// them would make the SDK disconnect it — the user-input server in particular
+// is the one the request_remote_mcp tool itself runs inside.
+const SDK_SERVER_NAMES = ['user-input', 'browser', 'dashboards', 'agents', 'chat']
+
+function useRuntimeEnv() {
   let originalRemoteMcps: string | undefined
   let originalConnectedAccounts: string | undefined
-  let claudeProcess: ClaudeCodeProcess | undefined
 
   beforeEach(() => {
     calls.length = 0
+    setMcpServersCalls.length = 0
+    setMcpServersImpl = null
     mcpServerStatusImpl = null
     mcpServerStatusCalls = 0
     originalRemoteMcps = process.env.REMOTE_MCPS
@@ -116,118 +161,223 @@ describe('ClaudeCodeProcess runtime connection handling', () => {
     delete process.env.CONNECTED_ACCOUNTS
   })
 
+  afterEach(() => {
+    if (originalRemoteMcps === undefined) delete process.env.REMOTE_MCPS
+    else process.env.REMOTE_MCPS = originalRemoteMcps
+    if (originalConnectedAccounts === undefined) delete process.env.CONNECTED_ACCOUNTS
+    else process.env.CONNECTED_ACCOUNTS = originalConnectedAccounts
+  })
+}
+
+describe('ClaudeCodeProcess runtime connection handling', () => {
+  let claudeProcess: ClaudeCodeProcess | undefined
+  useRuntimeEnv()
+
+  async function startProcess(sessionId: string): Promise<ClaudeCodeProcess> {
+    claudeProcess = new ClaudeCodeProcess({ sessionId, workingDirectory: '/tmp' })
+    await claudeProcess.start()
+    return claudeProcess
+  }
+
   afterEach(async () => {
     await claudeProcess?.stop()
-    if (originalRemoteMcps === undefined) {
-      delete process.env.REMOTE_MCPS
-    } else {
-      process.env.REMOTE_MCPS = originalRemoteMcps
-    }
-    if (originalConnectedAccounts === undefined) {
-      delete process.env.CONNECTED_ACCOUNTS
-    } else {
-      process.env.CONNECTED_ACCOUNTS = originalConnectedAccounts
-    }
+    claudeProcess = undefined
   })
 
-  it('rebuilds a live query when Agent Settings changes MCPs or connected accounts', async () => {
-    claudeProcess = new ClaudeCodeProcess({
-      sessionId: 'test-runtime-connection-refresh',
-      workingDirectory: '/tmp',
-    })
-
-    await claudeProcess.start()
+  it('applies a remote MCP change to the live query in place, without a re-query', async () => {
+    const claude = await startProcess('test-runtime-mcp-hot-apply')
     expect(calls).toHaveLength(1)
     expect(calls[0].options.mcpServers).not.toHaveProperty('team_calendar')
 
-    process.env.REMOTE_MCPS = JSON.stringify([
-      {
-        id: 'mcp-calendar',
-        name: 'Team Calendar',
-        proxyUrl: 'http://host.test/api/mcp-proxy/test-agent/mcp-calendar',
-        tools: [{ name: 'list_events' }],
-      },
-    ])
+    process.env.REMOTE_MCPS = CALENDAR
+    await claude.sendMessage('List today’s events')
 
-    await claudeProcess.sendMessage('List today’s events')
-
-    expect(calls).toHaveLength(2)
-    expect(calls[1].options.mcpServers).toMatchObject({
+    // Same query, one dynamic set carrying the FULL map: every in-process
+    // server plus the new remote one.
+    expect(calls).toHaveLength(1)
+    expect(setMcpServersCalls).toHaveLength(1)
+    for (const name of SDK_SERVER_NAMES) expect(setMcpServersCalls[0]).toHaveProperty(name)
+    expect(setMcpServersCalls[0]).toMatchObject({
       team_calendar: {
         type: 'http',
         url: 'http://host.test/api/mcp-proxy/test-agent/mcp-calendar',
       },
     })
+    // setMcpServers() only returns once the server has settled, so the
+    // handshake gate (a re-query concern) never polls.
+    expect(mcpServerStatusCalls).toBe(0)
+
+    // The live query now matches the projection: an unchanged follow-up
+    // neither re-applies nor re-queries.
+    await claude.sendMessage('And tomorrow’s?')
+    expect(calls).toHaveLength(1)
+    expect(setMcpServersCalls).toHaveLength(1)
+
+    // Removing the server is the same replace, minus the entry.
+    process.env.REMOTE_MCPS = '[]'
+    await claude.sendMessage('Continue without the calendar')
+    expect(calls).toHaveLength(1)
+    expect(setMcpServersCalls).toHaveLength(2)
+    expect(setMcpServersCalls[1]).not.toHaveProperty('team_calendar')
+    for (const name of SDK_SERVER_NAMES) expect(setMcpServersCalls[1]).toHaveProperty(name)
+  })
+
+  it('carries the refreshed prompt and tool patterns into the next query creation', async () => {
+    const claude = await startProcess('test-runtime-mcp-prompt-refresh')
+
+    process.env.REMOTE_MCPS = CALENDAR
+    await claude.sendMessage('List today’s events')
+    expect(calls).toHaveLength(1)
+
+    // The live query keeps its prompt; an unrelated re-query (effort change)
+    // must be built from the refreshed projection, not the boot-time one.
+    await claude.sendMessage('Now think harder', undefined, { effort: 'max' })
+    expect(calls).toHaveLength(2)
+    expect(calls[1].options.mcpServers).toHaveProperty('team_calendar')
     expect(calls[1].options.allowedTools).toContain('mcp__team_calendar__*')
     expect(calls[1].options.systemPrompt).toContain('Team Calendar')
     expect(calls[1].options.systemPrompt).toContain('list_events')
+    // The rebuild re-read the env itself — no dynamic set on top of it.
+    expect(setMcpServersCalls).toHaveLength(1)
+  })
 
-    process.env.REMOTE_MCPS = '[]'
-    await claudeProcess.sendMessage('Continue without the calendar')
+  it('rides a pending remote MCP change along with a re-query instead of applying it twice', async () => {
+    const claude = await startProcess('test-runtime-mcp-with-requery')
 
-    expect(calls).toHaveLength(3)
-    expect(calls[2].options.mcpServers).not.toHaveProperty('team_calendar')
-    expect(calls[2].options.allowedTools).not.toContain('mcp__team_calendar__*')
-    expect(calls[2].options.systemPrompt).not.toContain('Team Calendar')
+    process.env.REMOTE_MCPS = CALENDAR
+    await claude.sendMessage('List today’s events', undefined, { effort: 'max' })
+
+    expect(calls).toHaveLength(2)
+    expect(calls[1].options.mcpServers).toHaveProperty('team_calendar')
+    expect(setMcpServersCalls).toHaveLength(0)
+    // A rebuilt query races its own handshake, so this path still gates.
+    expect(mcpServerStatusCalls).toBe(1)
+  })
+
+  it('falls back to a re-query when the CLI has no dynamic MCP support', async () => {
+    const claude = await startProcess('test-runtime-mcp-fallback')
+    setMcpServersImpl = UNSUPPORTED
+
+    process.env.REMOTE_MCPS = CALENDAR
+    await claude.sendMessage('List today’s events')
+
+    expect(setMcpServersCalls).toHaveLength(1)
+    expect(calls).toHaveLength(2)
+    expect(calls[1].options.mcpServers).toMatchObject({
+      team_calendar: { type: 'http' },
+    })
+    expect(calls[1].options.systemPrompt).toContain('Team Calendar')
+    expect(mcpServerStatusCalls).toBe(1)
+  })
+
+  it('rebuilds a live query when Agent Settings changes connected accounts', async () => {
+    const claude = await startProcess('test-runtime-connection-refresh')
+    expect(calls).toHaveLength(1)
 
     process.env.CONNECTED_ACCOUNTS = JSON.stringify({
       gmail: [{ name: 'Work Gmail', id: 'account-gmail', status: 'expired' }],
     })
-    await claudeProcess.sendMessage('Check the connected Gmail account')
+    await claude.sendMessage('Check the connected Gmail account')
 
-    expect(calls).toHaveLength(4)
-    expect(calls[3].options.systemPrompt).toContain('Work Gmail')
-    expect(calls[3].options.systemPrompt).toContain('account-gmail')
-    expect(calls[3].options.systemPrompt).toContain('status: `expired`')
-    expect(calls[3].options.systemPrompt).toContain('Make the intended proxy call')
-    expect(calls[3].options.systemPrompt).toContain('Do NOT report them as missing')
+    // Connected accounts reach the model through the prompt alone, and the
+    // prompt is baked at query creation — so this one is still a re-query.
+    expect(calls).toHaveLength(2)
+    expect(setMcpServersCalls).toHaveLength(0)
+    expect(calls[1].options.systemPrompt).toContain('Work Gmail')
+    expect(calls[1].options.systemPrompt).toContain('account-gmail')
+    expect(calls[1].options.systemPrompt).toContain('status: `expired`')
+    expect(calls[1].options.systemPrompt).toContain('Make the intended proxy call')
+    expect(calls[1].options.systemPrompt).toContain('Do NOT report them as missing')
 
     process.env.CONNECTED_ACCOUNTS = '{}'
-    await claudeProcess.sendMessage('Continue without Gmail')
+    await claude.sendMessage('Continue without Gmail')
 
-    expect(calls).toHaveLength(5)
-    expect(calls[4].options.systemPrompt).not.toContain('Work Gmail')
+    expect(calls).toHaveLength(3)
+    expect(calls[2].options.systemPrompt).not.toContain('Work Gmail')
   })
 
   it('treats unset and serialized empty projections as equivalent', async () => {
-    claudeProcess = new ClaudeCodeProcess({
-      sessionId: 'test-empty-runtime-connections',
-      workingDirectory: '/tmp',
-    })
-
-    await claudeProcess.start()
+    const claude = await startProcess('test-empty-runtime-connections')
     process.env.REMOTE_MCPS = '[]'
     process.env.CONNECTED_ACCOUNTS = '{}'
 
-    await claudeProcess.sendMessage('Continue without connections')
+    await claude.sendMessage('Continue without connections')
 
     expect(calls).toHaveLength(1)
+    expect(setMcpServersCalls).toHaveLength(0)
+  })
+})
+
+describe('ClaudeCodeProcess.addRemoteMcpServer', () => {
+  let claudeProcess: ClaudeCodeProcess | undefined
+  useRuntimeEnv()
+
+  async function startProcess(sessionId: string): Promise<ClaudeCodeProcess> {
+    claudeProcess = new ClaudeCodeProcess({ sessionId, workingDirectory: '/tmp' })
+    await claudeProcess.start()
+    return claudeProcess
+  }
+
+  afterEach(async () => {
+    await claudeProcess?.stop()
+    claudeProcess = undefined
+  })
+
+  it('hot-adds the approved server to the live query and resolves once it is connected', async () => {
+    const claude = await startProcess('test-add-mcp-hot')
+    // The host writes the projection before resolving the approval.
+    process.env.REMOTE_MCPS = CALENDAR
+
+    await claude.addRemoteMcpServer('Team Calendar')
+
+    // No interrupt, no re-query: the tool result lands in the same turn.
+    expect(calls).toHaveLength(1)
+    expect(setMcpServersCalls).toHaveLength(1)
+    expect(setMcpServersCalls[0]).toHaveProperty('team_calendar')
+    for (const name of SDK_SERVER_NAMES) expect(setMcpServersCalls[0]).toHaveProperty(name)
+
+    // The live query is in sync with the projection, so the user's next
+    // message does not re-apply the change or restart anything.
+    await claude.sendMessage('Great, list today’s events')
+    expect(calls).toHaveLength(1)
+    expect(setMcpServersCalls).toHaveLength(1)
+  })
+
+  it('rejects when the server registered but failed to connect', async () => {
+    const claude = await startProcess('test-add-mcp-connect-error')
+    process.env.REMOTE_MCPS = CALENDAR
+    setMcpServersImpl = async () => ({
+      added: [],
+      removed: [],
+      errors: { team_calendar: 'fetch failed: ECONNREFUSED' },
+    })
+
+    await expect(claude.addRemoteMcpServer('Team Calendar')).rejects.toThrow(
+      /team_calendar.*failed to connect.*ECONNREFUSED/,
+    )
+    expect(calls).toHaveLength(1)
+  })
+
+  it('falls back to interrupt + continuation when the CLI rejects the dynamic set', async () => {
+    const claude = await startProcess('test-add-mcp-fallback')
+    process.env.REMOTE_MCPS = CALENDAR
+    setMcpServersImpl = UNSUPPORTED
+    const sendSpy = vi.spyOn(claude, 'sendMessage')
+
+    await claude.addRemoteMcpServer('Team Calendar')
+    // The legacy path is deferred so the tool result reaches the CLI first.
+    await vi.waitFor(() => expect(calls).toHaveLength(2))
+
+    expect(calls[1].options.mcpServers).toHaveProperty('team_calendar')
+    expect(sendSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/^\[SYSTEM\] The remote MCP server "Team Calendar" has been fully registered/),
+    )
   })
 })
 
 describe('ClaudeCodeProcess remote MCP handshake gate', () => {
-  let originalRemoteMcps: string | undefined
-  let originalConnectedAccounts: string | undefined
   let claudeProcess: ClaudeCodeProcess | undefined
-
-  const CALENDAR = JSON.stringify([
-    {
-      id: 'mcp-calendar',
-      name: 'Team Calendar',
-      proxyUrl: 'http://host.test/api/mcp-proxy/test-agent/mcp-calendar',
-      tools: [{ name: 'list_events' }],
-    },
-  ])
-
-  const AUTH_REQUIRED_CALENDAR = JSON.stringify([
-    {
-      id: 'mcp-calendar',
-      name: 'Team Calendar',
-      status: 'auth_required',
-      proxyUrl: 'http://host.test/api/mcp-proxy/test-agent/mcp-calendar',
-      tools: [{ name: 'list_events' }],
-    },
-  ])
+  useRuntimeEnv()
 
   async function startProcess(sessionId: string): Promise<ClaudeCodeProcess> {
     claudeProcess = new ClaudeCodeProcess({ sessionId, workingDirectory: '/tmp' })
@@ -236,22 +386,16 @@ describe('ClaudeCodeProcess remote MCP handshake gate', () => {
   }
 
   beforeEach(() => {
-    calls.length = 0
-    mcpServerStatusImpl = null
-    mcpServerStatusCalls = 0
-    originalRemoteMcps = process.env.REMOTE_MCPS
-    originalConnectedAccounts = process.env.CONNECTED_ACCOUNTS
-    delete process.env.REMOTE_MCPS
-    delete process.env.CONNECTED_ACCOUNTS
+    // The gate only guards a REBUILT query (cold restart or re-query), whose
+    // handshake runs concurrently with the first turn. With dynamic MCP
+    // support the live-query path never rebuilds, so these cases pin the
+    // CLI down to the fallback to exercise it.
+    setMcpServersImpl = UNSUPPORTED
   })
 
   afterEach(async () => {
     await claudeProcess?.stop()
     claudeProcess = undefined
-    if (originalRemoteMcps === undefined) delete process.env.REMOTE_MCPS
-    else process.env.REMOTE_MCPS = originalRemoteMcps
-    if (originalConnectedAccounts === undefined) delete process.env.CONNECTED_ACCOUNTS
-    else process.env.CONNECTED_ACCOUNTS = originalConnectedAccounts
   })
 
   it('holds the message until a newly connected server finishes its handshake', async () => {

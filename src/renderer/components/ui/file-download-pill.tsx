@@ -1,67 +1,47 @@
-import { FolderIcon } from 'lucide-react'
 import { FileTypeIcon } from './file-type-icon'
 import { useFilePreview } from '@renderer/context/file-preview-context'
+import { openableProps } from '@renderer/lib/openable'
+import { describeWorkspaceFile } from '@renderer/lib/workspace-file'
 
 interface FileDownloadPillProps {
   filePath: string
   agentSlug: string
-  onClick?: (e: React.MouseEvent) => void
 }
 
-function getFilename(filePath: string): string {
-  return filePath.split('/').pop() || filePath
-}
+const PILL_CLASS = 'file-pill inline-flex items-center gap-1 px-2 py-0.5 rounded border text-xs text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer'
 
-function isFolder(filePath: string): boolean {
-  return filePath.endsWith('/')
-}
+export function FileDownloadPill({ filePath, agentSlug }: FileDownloadPillProps) {
+  const { openFile } = useFilePreview()
+  const file = describeWorkspaceFile(filePath, agentSlug)
 
-function getFolderName(filePath: string): string {
-  const trimmed = filePath.replace(/\/+$/, '')
-  return trimmed.split('/').pop() || filePath
-}
+  const identity = {
+    className: PILL_CLASS,
+    'data-testid': 'file-pill',
+    'data-file-name': file.name,
+    'data-file-path': file.path,
+  }
 
-export function FileDownloadPill({ filePath, agentSlug, onClick }: FileDownloadPillProps) {
-  const filePreview = useFilePreview()
-  const folder = isFolder(filePath)
-  const displayName = folder ? getFolderName(filePath) : getFilename(filePath)
-
-  const className = "file-pill inline-flex items-center gap-1 px-2 py-0.5 rounded border text-xs text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer"
-
-  if (folder) {
+  // A delivered folder is named here, not opened: this pill is the one-line
+  // summary beside a collapsed tool call, and the folder browser wants the
+  // whole drawer.
+  if (file.isFolder) {
     return (
-      <span
-        className={className}
-        data-testid="file-pill"
-        data-file-name={displayName}
-        data-file-path={filePath}
-      >
-        <FolderIcon className="h-3.5 w-3.5 shrink-0" />
-        {displayName}
+      <span {...identity}>
+        <FileTypeIcon filename={file.name} size="sm" folder />
+        {file.name}
       </span>
     )
   }
 
-  const handleClick = (e: React.MouseEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    onClick?.(e)
-    filePreview.openFile(filePath, agentSlug)
-  }
-
   return (
     <span
-      role="button"
-      tabIndex={0}
-      onClick={handleClick}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleClick(e as unknown as React.MouseEvent) } }}
-      className={className}
-      data-testid="file-pill"
-      data-file-name={displayName}
-      data-file-path={filePath}
+      {...identity}
+      // The pill sits inside a collapsed tool row that expands on click, so
+      // opening the file must not also expand the call.
+      {...openableProps(() => openFile(file.path, file.agentSlug), { stopPropagation: true })}
     >
-      <FileTypeIcon filename={displayName} size={14} />
-      {displayName}
+      <FileTypeIcon filename={file.name} size="sm" />
+      {file.name}
     </span>
   )
 }

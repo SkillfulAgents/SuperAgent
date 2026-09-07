@@ -91,11 +91,11 @@ test.describe('home card arrangement', () => {
     await expect(widget.getByRole('button', { name: `Options for ${agent.name}` })).toHaveCount(0)
     await widget.getByRole('link', { name: `Open ${agent.name}` }).focus()
     await page.keyboard.press('Shift+F10')
-    await expect(page.getByRole('menuitemcheckbox', { name: 'Expanded' })).toBeVisible()
+    await expect(page.getByRole('menuitemcheckbox', { name: 'Compact View' })).toBeVisible()
     await page.keyboard.press('Escape')
     // Wait out the Radix menu teardown: it holds pointer-events:none on <body>
     // slightly past close, which would swallow the pointerdown of the drag.
-    await expect(page.getByRole('menuitemcheckbox', { name: 'Expanded' })).not.toBeVisible()
+    await expect(page.getByRole('menuitemcheckbox', { name: 'Compact View' })).not.toBeVisible()
     await page.waitForFunction(() => document.body.style.pointerEvents !== 'none')
 
     // Outside Arrange mode, desktop still supports direct pointer reordering.
@@ -123,9 +123,9 @@ test.describe('home card arrangement', () => {
     // through its overlay to the unified agent context menu.
     await widget.click({ button: 'right', position: { x: 30, y: 30 } })
     await expect(page.getByTestId('move-agent-to-folder-trigger')).toBeVisible()
-    const expanded = page.getByRole('menuitemcheckbox', { name: 'Expanded' })
-    await expect(expanded).toBeVisible()
-    await expanded.click()
+    const compactView = page.getByRole('menuitemcheckbox', { name: 'Compact View' })
+    await expect(compactView).toBeVisible()
+    await compactView.click()
     // Changing the card size remounts its context-menu trigger, so reopen the
     // unified menu on the newly rendered card before toggling the app row.
     await widget.click({ button: 'right', position: { x: 30, y: 30 } })

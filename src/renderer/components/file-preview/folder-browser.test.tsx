@@ -80,7 +80,7 @@ describe('FolderBrowser', () => {
 
     await user.click(screen.getByRole('button', { name: '2026' }))
 
-    expect(mocks.toggleFolder).toHaveBeenCalledWith('/workspace/reports', '/workspace/reports/2026')
+    expect(mocks.toggleFolder).toHaveBeenCalledWith('/workspace/reports', 'test-agent', '/workspace/reports/2026')
   })
 
   it('renders expanded descendants and opens a file in a separate preview tab', async () => {
@@ -95,6 +95,7 @@ describe('FolderBrowser', () => {
 
     expect(mocks.selectFolderEntry).toHaveBeenCalledWith(
       '/workspace/reports',
+      'test-agent',
       '/workspace/reports/2026/july.md',
     )
     expect(mocks.openFile).toHaveBeenCalledWith('/workspace/reports/2026/july.md', 'test-agent')
@@ -125,7 +126,7 @@ describe('FolderBrowser', () => {
       target: { value: 'july' },
     })
 
-    expect(mocks.setFolderQuery).toHaveBeenCalledWith('/workspace/reports', 'july')
+    expect(mocks.setFolderQuery).toHaveBeenCalledWith('/workspace/reports', 'test-agent', 'july')
   })
 
   it('creates one bookmark observer and updater for the whole tree', () => {

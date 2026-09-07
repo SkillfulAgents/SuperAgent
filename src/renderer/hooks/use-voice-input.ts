@@ -2,7 +2,8 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
-import { acquireMicStream, createSttAdapter, startAudioCapture, type SttAdapter, type SttProvider, type AudioCaptureHandle } from '@renderer/lib/stt'
+import { acquireMicStream, createSttAdapter, startAudioCapture, type SttAdapter, type VoiceProvider, type AudioCaptureHandle } from '@renderer/lib/stt'
+import type { TtsVoiceInfo } from '@shared/lib/voice/tts-preferences'
 
 // 'finalizing': mic released, but we're flushing buffered audio and awaiting the
 // server's trailing transcripts before the final text is ready.
@@ -13,31 +14,38 @@ interface UseVoiceInputOptions {
 }
 
 interface SttCredentials {
-  provider: SttProvider
+  provider: VoiceProvider
   token: string
 }
 
-interface SttConfiguredStatus {
+interface VoiceConfiguredStatus {
   configured: boolean
   supportsVoiceAgent: boolean
+  supportsTts: boolean
+  /** Read-aloud voices the configured provider offers; empty when it cannot speak. */
+  voices: TtsVoiceInfo[]
+  /** The deployment's default among them (for anyone without their own pick). */
+  defaultVoice?: string
 }
 
-function useSttConfiguredStatus(): SttConfiguredStatus {
-  const { data } = useQuery<SttConfiguredStatus>({
-    queryKey: ['stt-configured'],
+const NOT_CONFIGURED: VoiceConfiguredStatus = { configured: false, supportsVoiceAgent: false, supportsTts: false, voices: [] }
+
+function useVoiceConfiguredStatus(): VoiceConfiguredStatus {
+  const { data } = useQuery<VoiceConfiguredStatus>({
+    queryKey: ['voice-configured'],
     queryFn: async () => {
-      const res = await apiFetch('/api/stt/configured')
-      if (!res.ok) return { configured: false, supportsVoiceAgent: false }
-      return res.json() as Promise<SttConfiguredStatus>
+      const res = await apiFetch('/api/voice/configured')
+      if (!res.ok) return NOT_CONFIGURED
+      return res.json() as Promise<VoiceConfiguredStatus>
     },
     staleTime: 60_000,
   })
-  return data ?? { configured: false, supportsVoiceAgent: false }
+  return data ?? NOT_CONFIGURED
 }
 
 /** Hook to check whether voice input is fully configured (provider + API key). */
 export function useIsVoiceConfigured(): boolean {
-  return useSttConfiguredStatus().configured
+  return useVoiceConfiguredStatus().configured
 }
 
 /**
@@ -45,7 +53,25 @@ export function useIsVoiceConfigured(): boolean {
  * sessions. Returns false if STT is not configured at all.
  */
 export function useIsVoiceAgentConfigured(): boolean {
-  return useSttConfiguredStatus().supportsVoiceAgent
+  return useVoiceConfiguredStatus().supportsVoiceAgent
+}
+
+/**
+ * Hook to check whether the configured voice provider can read text aloud.
+ * Returns false if voice is not configured at all.
+ */
+export function useIsTtsConfigured(): boolean {
+  return useVoiceConfiguredStatus().supportsTts
+}
+
+/**
+ * The read-aloud voices the configured provider offers, and the deployment's
+ * default among them. Served to every user (the settings endpoint itself is
+ * admin-only in auth mode).
+ */
+export function useTtsVoices(): { voices: TtsVoiceInfo[]; defaultVoice: string | undefined } {
+  const { voices, defaultVoice } = useVoiceConfiguredStatus()
+  return { voices, defaultVoice }
 }
 
 export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {
@@ -164,7 +190,7 @@ export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {
 
     try {
       // 1. Get API key from backend
-      const credRes = await apiFetch('/api/stt/token')
+      const credRes = await apiFetch('/api/voice/token')
       const credData: SttCredentials | { error: string } = await credRes.json()
       if (!credRes.ok) {
         throw new Error(('error' in credData ? credData.error : null) || 'Failed to get STT credentials')

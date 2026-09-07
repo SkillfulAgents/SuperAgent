@@ -9,6 +9,8 @@ import { parseToolResult } from '@renderer/lib/parse-tool-result'
 import type { ApiToolCall, ApiMessage } from '@shared/lib/types/api'
 import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
+import { formatModelSlug } from '@renderer/lib/model-label'
+import { modelSlugFromAgentType } from '@shared/lib/workflows/workflow-schemas'
 
 const SUBAGENT_LABEL_CLASS =
   'font-sans font-normal shrink-0 text-sm text-foreground/65 group-hover:text-foreground leading-none transition-colors'
@@ -31,24 +33,8 @@ function formatTokens(tokens: number): string {
 }
 
 export function displaySubagentType(subagentType: string): string {
-  const modelType = /^model-(.+)-[a-z0-9]{7}$/.exec(subagentType)
-  if (!modelType) return subagentType
-
-  const parts = modelType[1]
-    .split('-')
-    .map((part) => {
-      if (!/^[a-z]+$/.test(part)) return part
-      return part.length <= 4
-        ? part.toUpperCase()
-        : `${part[0].toUpperCase()}${part.slice(1)}`
-    })
-
-  return parts.reduce((label, part, index) => {
-    const separator = index > 0 && /^\d+$/.test(part) && /^\d+$/.test(parts[index - 1])
-      ? '.'
-      : index > 0 ? ' ' : ''
-    return `${label}${separator}${part}`
-  }, '')
+  const slug = modelSlugFromAgentType(subagentType)
+  return slug ? formatModelSlug(slug) : subagentType
 }
 
 export function SubAgentBlock({

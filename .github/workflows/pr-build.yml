@@ -37,11 +37,48 @@ jobs:
           echo "$APPLE_API_KEY_BASE64" | base64 --decode > /tmp/AuthKey.p8
           echo "APPLE_API_KEY=/tmp/AuthKey.p8" >> $GITHUB_ENV
 
+      # electron-builder's temporary-keychain path passes the .p12 import password
+      # to `security set-key-partition-list -k`, which needs the *keychain* password.
+      # Older macOS builds tolerated the mismatch; the macOS 26.6 runner image
+      # (20260831+) rejects it and the build dies before signing. Upstream fix
+      # (electron-userland/electron-builder#10066, PR #10101) is not released on
+      # 26.x yet, so build the keychain here and hand it over via CSC_KEYCHAIN.
+      # electron-builder only honours CSC_KEYCHAIN when CSC_LINK is unset, so
+      # CSC_LINK/CSC_KEY_PASSWORD must NOT be passed to the build step.
+      - name: Set up signing keychain
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+          CERT="$RUNNER_TEMP/signing.p12"
+          case "$CSC_LINK" in
+            https://*) curl -fsSL "$CSC_LINK" -o "$CERT" ;;
+            *) printf '%s' "$CSC_LINK" | sed -E 's/^data:[^,]*;base64,//' | base64 --decode > "$CERT" ;;
+          esac
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          # No auto-lock timeout: notarization can run for a long time.
+          security set-keychain-settings "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT" -k "$KEYCHAIN" -P "$CSC_KEY_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/productbuild
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          rm -f "$CERT"
+          # Put the new keychain (plus electron-builder's bundled Apple root/
+          # intermediate certs, which its own keychain path also adds) on the
+          # search list so codesign can build the certificate chain.
+          security list-keychains -d user -s "$KEYCHAIN" \
+            "$PWD/node_modules/app-builder-lib/certs/root_certs.keychain" \
+            $(security list-keychains -d user | tr -d '"')
+          security find-identity -v -p codesigning "$KEYCHAIN"
+          echo "CSC_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
       - name: Build and sign macOS app
         env:
           CSC_FOR_PULL_REQUEST: true
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -64,6 +101,12 @@ jobs:
           name: Superagent-macOS-ZIP
           path: release/*.zip
           retention-days: 14
+
+      - name: Remove signing keychain
+        if: always()
+        run: |
+          # create-keychain writes <name>-db on modern macOS, so don't test the path.
+          [ -z "${CSC_KEYCHAIN:-}" ] || security delete-keychain "$CSC_KEYCHAIN" || true
 
   build-win:
     runs-on: windows-latest

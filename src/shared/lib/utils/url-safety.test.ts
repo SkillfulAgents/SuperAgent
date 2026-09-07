@@ -22,6 +22,52 @@ describe('validateMcpDiscoveryUrl localhost policy', () => {
     await expect(validateMcpDiscoveryUrl('http://127.0.0.1:8899')).resolves.toBeInstanceOf(URL)
   })
 
+  describe('outside Electron', () => {
+    const saved: Record<string, string | undefined> = {}
+    const KEYS = ['E2E_MOCK', 'SUPERAGENT_UNSAFE_ALLOW_LOOPBACK_MCP'] as const
+
+    afterEach(() => {
+      for (const key of KEYS) {
+        if (saved[key] === undefined) delete process.env[key]
+        else process.env[key] = saved[key]
+      }
+    })
+
+    function setEnv(values: Partial<Record<(typeof KEYS)[number], string>>) {
+      for (const key of KEYS) {
+        saved[key] = process.env[key]
+        if (values[key] === undefined) delete process.env[key]
+        else process.env[key] = values[key]
+      }
+    }
+
+    it('rejects loopback by default', async () => {
+      setEnv({})
+      await expect(validateMcpDiscoveryUrl('http://127.0.0.1:8899')).rejects.toThrow(/private or loopback/)
+    })
+
+    it('allows loopback for a mock E2E run or an opted-in live harness', async () => {
+      setEnv({ E2E_MOCK: 'true' })
+      await expect(validateMcpDiscoveryUrl('http://127.0.0.1:8899')).resolves.toBeInstanceOf(URL)
+      setEnv({ SUPERAGENT_UNSAFE_ALLOW_LOOPBACK_MCP: '1' })
+      await expect(validateMcpDiscoveryUrl('http://localhost:8899')).resolves.toBeInstanceOf(URL)
+    })
+
+    it('reads both switches by exact value, never by presence', async () => {
+      // A string env var is truthy even when it says "no": the switches must
+      // not open up for E2E_MOCK=false or ...=0.
+      setEnv({ E2E_MOCK: 'false' })
+      await expect(validateMcpDiscoveryUrl('http://127.0.0.1:8899')).rejects.toThrow(/private or loopback/)
+      setEnv({ SUPERAGENT_UNSAFE_ALLOW_LOOPBACK_MCP: '0' })
+      await expect(validateMcpDiscoveryUrl('http://127.0.0.1:8899')).rejects.toThrow(/private or loopback/)
+    })
+
+    it('never widens the exception past loopback', async () => {
+      setEnv({ SUPERAGENT_UNSAFE_ALLOW_LOOPBACK_MCP: '1' })
+      await expect(validateMcpDiscoveryUrl('http://192.168.0.10:8899')).rejects.toThrow(/private or loopback/)
+    })
+  })
+
   it('rejects loopback when the caller explicitly disallows it, even on Electron', async () => {
     // The default exception exists for user-configured local targets. A caller
     // following a remotely supplied URL opts out, and that must win.

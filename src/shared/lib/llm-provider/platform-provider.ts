@@ -1,14 +1,14 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { BaseLlmProvider, type AgentIdentity } from './base-llm-provider'
-import { parsePlatformErrorResponse } from './platform-error-presentation'
+import { orgBillingUrl, parsePlatformErrorResponse } from './platform-error-presentation'
 import type { ProviderErrorPresentation } from './error-presentation'
 import { rewriteLoopbackForContainer } from './container-url'
 import type { ModelDefinition } from './model-catalog-schema'
 import { PLATFORM_CATALOG, PLATFORM_DEFAULT_MODEL_OPTIONS } from './builtin-catalogs'
 import { PLATFORM_CATALOG_DEFAULT_MODELS } from './model-catalog-defaults'
 import { attribution } from '@shared/lib/platform-attribution'
-import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
-import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
+import { getPlatformAccessToken, getPlatformAuthStatus } from '@shared/lib/services/platform-auth-service'
+import { getPlatformBaseUrl, getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import type { ApiKeyStatus } from '../config/settings'
 
 // Display names are user-controlled free text headed for an HTTP header via
@@ -93,7 +93,9 @@ export class PlatformLlmProvider extends BaseLlmProvider {
     status: number | undefined,
     body: unknown,
   ): ProviderErrorPresentation | null {
-    return parsePlatformErrorResponse(status, body)
+    const auth = getPlatformAuthStatus()
+    const billingUrl = auth.connected ? orgBillingUrl(getPlatformBaseUrl(), auth.orgId) : null
+    return parsePlatformErrorResponse(status, body, billingUrl)
   }
 
   async validateKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {

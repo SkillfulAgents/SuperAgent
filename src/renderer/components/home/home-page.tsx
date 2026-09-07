@@ -31,7 +31,7 @@ import { DashboardCard } from './dashboard-card'
 import { HomeEmptyClouds } from './home-empty-clouds'
 import { PwaInstallBanner } from './pwa-install-banner'
 import { isElectron, getPlatform } from '@renderer/lib/env'
-import { Plus, Loader2, Search, Power, Square, Check, ArrowRight, ChevronUp, ChevronDown, LayoutGrid, Waypoints, MoreVertical, Move, Sparkle } from 'lucide-react'
+import { Plus, Loader2, Search, Power, Square, Check, ArrowRight, ChevronUp, ChevronDown, LayoutGrid, LayoutPanelTop, Minimize, Waypoints, MoreVertical, Sparkle, SquareMousePointer } from 'lucide-react'
 import { useSearch } from '@renderer/context/search-context'
 import { cn } from '@shared/lib/utils/cn'
 import type { ApiAgent } from '@shared/lib/types/api'
@@ -116,7 +116,7 @@ function AgentCardPowerButton({ agent }: { agent: ApiAgent }) {
     // Frosted status chip with a white-bordered stop/power button inside. It's a
     // flex item in the card's control row (see AgentCard), so the kebab aligns
     // with it natively.
-    <div className="flex items-center gap-1.5 rounded-md border border-border/50 bg-white/10 py-0.5 pl-1.5 pr-1 text-xs backdrop-blur-sm">
+    <div className="flex items-center gap-1.5 rounded-md border border-border/50 bg-white/10 py-0.5 pl-1.5 pr-0.5 text-xs backdrop-blur-sm">
       <span className="leading-none text-muted-foreground">{label}</span>
       <button
         type="button"
@@ -318,9 +318,12 @@ function AgentCardSessions({
                 </span>
               </button>
               {st === 'unread' || st === 'awaiting' ? (
-                <>
-                  <span className="shrink-0 text-muted-foreground tabular-nums">{right}</span>
-                  <span className="flex shrink-0 items-center gap-0.5 opacity-60 transition-opacity group-hover/row:opacity-100 group-focus-within/row:opacity-100">
+                /* Time stamp sits flush right; the action buttons are collapsed
+                   to zero width until the row is hovered/focused, then expand
+                   and slide in from the right, nudging the stamp left. */
+                <span className="flex shrink-0 items-center">
+                  <span className="text-muted-foreground tabular-nums">{right}</span>
+                  <span className="flex max-w-0 translate-x-1 items-center gap-0.5 overflow-hidden opacity-0 transition-all duration-200 ease-out group-hover/row:max-w-16 group-hover/row:translate-x-0 group-hover/row:pl-1.5 group-hover/row:opacity-100 group-focus-within/row:max-w-16 group-focus-within/row:translate-x-0 group-focus-within/row:pl-1.5 group-focus-within/row:opacity-100">
                     {st === 'unread' && (
                       <button
                         type="button"
@@ -348,7 +351,7 @@ function AgentCardSessions({
                       <ArrowRight className="h-3.5 w-3.5" />
                     </button>
                   </span>
-                </>
+                </span>
               ) : (
                 <span className="shrink-0 text-muted-foreground tabular-nums">{right}</span>
               )}
@@ -431,9 +434,9 @@ function AgentHealthCarousel({
   const renderSlide = (s: HealthSlide) => {
     const chart: ReactNode =
       s.kind === 'cron' ? (
-        <CronSparkChart label={s.name} data={health?.cronByTaskId[s.id] ?? []} className="h-5 w-24" />
+        <CronSparkChart label={s.name} data={health?.cronByTaskId[s.id] ?? []} />
       ) : (
-        <ActivitySparkChart label={s.name} data={health?.webhookByTriggerId[s.id] ?? []} className="h-5 w-24" />
+        <ActivitySparkChart label={s.name} data={health?.webhookByTriggerId[s.id] ?? []} />
       )
     return (
       <button
@@ -667,8 +670,9 @@ function AgentCard({
         ) : (
           /* Wide: same glance-tile footing as Small — halftone fills the card,
              title in the bottom-left corner — with the notifications + health
-             carousel overlaid on top. The content reserves bottom space (pb-11)
-             so it clears the title pill. */
+             carousel overlaid on top. The content reserves top space (pt-5) so
+             it clears the status chip and bottom space (pb-11) so it clears
+             the title pill. */
           <>
             <div className="absolute inset-0">
               <AgentCardMatrix
@@ -679,7 +683,7 @@ function AgentCard({
                 className="h-full"
               />
             </div>
-            <div className="pointer-events-none relative z-30 flex min-h-0 flex-1 flex-col gap-1.5 pb-11">
+            <div className="pointer-events-none relative z-30 flex min-h-0 flex-1 flex-col gap-1.5 pt-5 pb-11">
               {/* Notifications sit directly above the cron/webhook carousel
                   (bottom-aligned); any slack opens up above them. Scrolls when
                   the list overflows. */}
@@ -744,7 +748,7 @@ function HomeArrangeMenu({
           }}
           className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm transition-colors hover:bg-muted disabled:pointer-events-none disabled:opacity-50"
         >
-          <Move className="h-4 w-4" />
+          <LayoutPanelTop className="h-4 w-4" />
           Arrange
         </button>
       </PopoverContent>
@@ -1198,12 +1202,13 @@ export function HomePage() {
                       additionalOptions={
                         <>
                           <ContextMenuSwitchItem
-                            checked={size === 'W'}
+                            checked={size === 'S'}
                             onCheckedChange={() => {
                               onResize(size === 'W' ? 'S' : 'W')
                             }}
                           >
-                            Expanded
+                            <Minimize className="h-4 w-4 mr-2" />
+                            Compact View
                           </ContextMenuSwitchItem>
                           {agentsWithApp.has(agent.slug) && (
                             <ContextMenuSwitchItem
@@ -1212,6 +1217,7 @@ export function HomePage() {
                                 toggleAppCard(agent.slug)
                               }}
                             >
+                              <SquareMousePointer className="h-4 w-4 mr-2" />
                               Show app
                             </ContextMenuSwitchItem>
                           )}

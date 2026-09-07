@@ -5,17 +5,19 @@ import { isPathWithinDir } from '../utils/path-safety'
 import { streamJsonlFile } from '../utils/file-storage'
 import { parseWorkflowScript } from './workflow-script-parser'
 import {
+  AgentMetaSchema,
   JournalLineSchema,
   WorkflowTreeSchema,
   displayAgentResult,
+  modelSlugFromAgentType,
   type ParsedScript,
   type WorkflowAgentNode,
   type WorkflowTree,
 } from './workflow-schemas'
 
 // The join produces the structural fields; per-agent transcript stats (prompt,
-// toolCount, tokens, durationMs) are layered on afterwards from readAgentStats.
-type JoinedAgent = Omit<WorkflowAgentNode, 'prompt' | 'toolCount' | 'tokens' | 'durationMs'>
+// toolCount, tokens, durationMs, model) are layered on afterwards from readAgentStats.
+type JoinedAgent = Omit<WorkflowAgentNode, 'prompt' | 'toolCount' | 'tokens' | 'durationMs' | 'model'>
 
 /**
  * How many agent transcripts readAgentStats has open concurrently. Peak memory
@@ -92,7 +94,13 @@ export async function buildWorkflowTree(opts: {
   await Promise.all(
     startedOrder.map((agentId) =>
       statsLimit(async () => {
-        stats.set(agentId, await readAgentStats(path.join(runDir, `agent-${agentId}.jsonl`)))
+        const s = await readAgentStats(path.join(runDir, `agent-${agentId}.jsonl`))
+        // The transcript names the model only once the first assistant turn lands;
+        // the meta.json sidecar is written at spawn, so it fills the gap.
+        if (s.model === null) {
+          s.model = await readAgentMetaModel(path.join(runDir, `agent-${agentId}.meta.json`))
+        }
+        stats.set(agentId, s)
       })
     )
   )
@@ -112,6 +120,7 @@ export async function buildWorkflowTree(opts: {
       toolCount: s?.toolCount ?? 0,
       tokens: s?.tokens ?? 0,
       durationMs: s && s.firstTs != null && s.lastTs != null ? Math.max(0, s.lastTs - s.firstTs) : null,
+      model: s?.model ?? null,
     }
   })
 
@@ -202,12 +211,52 @@ function resolveLabel(
   if (!label.includes('${')) return label
   let unresolved = false
   label = label.replace(/\$\{([^}]*)\}/g, (_m, expr: string) => {
-    const i = call.holeExprs.indexOf(expr.trim())
+    const e = expr.trim()
+    const i = call.holeExprs.indexOf(e)
     if (i >= 0 && i < captures.length) return captures[i]
+    const viaJson = resolveFromJsonHole(e, call.holeExprs, captures)
+    if (viaJson !== null) return viaJson
     unresolved = true
     return ''
   })
   return unresolved ? fallback : label
+}
+
+/**
+ * A label hole like `${c.slug}` whose variable never appears bare in the prompt
+ * but IS embedded whole as `${JSON.stringify(c, ...)}` (the common "here's the
+ * record" fan-out shape): parse that capture and read the property path off it.
+ * Returns null when the shape doesn't apply or the capture isn't valid JSON.
+ */
+function resolveFromJsonHole(labelExpr: string, holeExprs: string[], captures: string[]): string | null {
+  const pathMatch = /^([A-Za-z_$][\w$]*)((?:\.[A-Za-z_$][\w$]*)+)$/.exec(labelExpr)
+  if (!pathMatch) return null
+  const root = pathMatch[1]
+  const props = pathMatch[2].slice(1).split('.')
+  const rootRe = new RegExp(`^JSON\\.stringify\\(\\s*${root.replace(/\$/g, '\\$')}\\s*[,)]`)
+  const i = holeExprs.findIndex((h) => rootRe.test(h))
+  if (i < 0 || i >= captures.length) return null
+  let value: unknown
+  try {
+    value = JSON.parse(captures[i])
+  } catch {
+    return null
+  }
+  for (const p of props) {
+    if (value === null || typeof value !== 'object') return null
+    value = (value as Record<string, unknown>)[p]
+  }
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? String(value) : null
+}
+
+/** The model slug from an agent's spawn-time meta.json, or null if absent/unparsable. */
+async function readAgentMetaModel(metaPath: string): Promise<string | null> {
+  try {
+    const parsed = AgentMetaSchema.safeParse(JSON.parse(await fs.readFile(metaPath, 'utf8')))
+    return parsed.success ? modelSlugFromAgentType(parsed.data.agentType) : null
+  } catch {
+    return null
+  }
 }
 
 async function loadScript(
@@ -333,6 +382,8 @@ interface AgentStats {
   /** Error text when the transcript's FINAL entry is a synthetic error frame
    *  (`error` + `errorDetails` fields) — the durable marker of a dead agent. */
   trailingError: string | null
+  /** Model id from the first assistant turn (`message.model`), or null before one lands. */
+  model: string | null
 }
 
 function messageText(content: unknown): string {
@@ -359,6 +410,7 @@ async function readAgentStats(filePath: string): Promise<AgentStats> {
     firstTs: null,
     lastTs: null,
     trailingError: null,
+    model: null,
   }
   let firstPrompt = ''
   let toolCount = 0
@@ -366,6 +418,7 @@ async function readAgentStats(filePath: string): Promise<AgentStats> {
   let firstTs: number | null = null
   let lastTs: number | null = null
   let trailingError: string | null = null
+  let model: string | null = null
   try {
     // Streamed, not read whole: a single agent transcript can be tens of MB and
     // a wide run holds AGENT_STATS_CONCURRENCY of them open at once.
@@ -374,7 +427,7 @@ async function readAgentStats(filePath: string): Promise<AgentStats> {
       timestamp?: string
       error?: unknown
       errorDetails?: unknown
-      message?: { content?: unknown; usage?: { output_tokens?: number } }
+      message?: { content?: unknown; usage?: { output_tokens?: number }; model?: unknown }
     }>(filePath)
     for await (const entry of lines) {
       // Track the error marker of the LAST entry only: a mid-transcript error the
@@ -401,10 +454,13 @@ async function readAgentStats(filePath: string): Promise<AgentStats> {
           toolCount += content.filter((b) => (b as { type?: string })?.type === 'tool_use').length
         }
         tokens += entry.message?.usage?.output_tokens ?? 0
+        if (model === null && typeof entry.message?.model === 'string' && entry.message.model) {
+          model = entry.message.model
+        }
       }
     }
   } catch {
     return empty
   }
-  return { firstPrompt, toolCount, tokens, firstTs, lastTs, trailingError }
+  return { firstPrompt, toolCount, tokens, firstTs, lastTs, trailingError, model }
 }

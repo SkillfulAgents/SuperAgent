@@ -40,7 +40,7 @@ import {
   resolveActiveSession,
   getLastDisplayName,
 } from '@shared/lib/services/chat-integration-session-service'
-import { assertPathWithinDir, isPathWithinDir, sanitizeUploadFilename } from '@shared/lib/utils/path-safety'
+import { assertPathWithinDir, isPathWithinDir, sanitizeUploadFilename, withUploadTimestamp } from '@shared/lib/utils/path-safety'
 import { isHostOrSubdomain, tryParseUrl } from '@shared/lib/utils/url-safety'
 import type { ContainerClient } from '@shared/lib/container/types'
 import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
@@ -1540,7 +1540,7 @@ class ChatIntegrationManager {
     // External attachment names are attacker-controlled — sanitize to a safe
     // basename so `../` segments cannot escape the uploads directory (SUP-231).
     const safeName = sanitizeUploadFilename(filename)
-    const uploadName = `${Date.now()}-${safeName}`
+    const uploadName = withUploadTimestamp(safeName)
     const workspaceDir = getAgentWorkspaceDir(agentSlug)
     const uploadsDir = path.resolve(workspaceDir, 'uploads')
     const fullPath = path.resolve(uploadsDir, uploadName)
@@ -1567,8 +1567,8 @@ class ChatIntegrationManager {
   /** Try to transcribe an audio buffer using the configured STT provider. Returns null on failure. */
   private async tryTranscribeAudio(audioBuffer: Buffer, mimeType: string): Promise<string | null> {
     try {
-      const { getConfiguredSttProvider } = await import('@shared/lib/stt')
-      const provider = getConfiguredSttProvider()
+      const { getConfiguredVoiceProvider } = await import('@shared/lib/voice')
+      const provider = getConfiguredVoiceProvider()
       if (!provider || !provider.supportsTranscription()) return null
       const transcript = await provider.transcribe(audioBuffer, mimeType)
       return transcript || null

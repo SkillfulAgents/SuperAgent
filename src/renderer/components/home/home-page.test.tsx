@@ -456,7 +456,7 @@ describe('HomePage AgentCard', () => {
     renderWithProviders(<HomePage />)
 
     expect(screen.queryByRole('button', { name: 'Options for Test Agent' })).not.toBeInTheDocument()
-    expect(screen.getByRole('switch', { name: 'Expanded' })).toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: 'Compact View' })).toBeInTheDocument()
     expect(document.querySelector('button button')).toBeNull()
     const contextMenuEvent = vi.fn()
     screen.getByTestId('agent-context-trigger').addEventListener('contextmenu', contextMenuEvent)
@@ -489,7 +489,7 @@ describe('HomePage AgentCard', () => {
     })
     renderWithProviders(<HomePage />)
 
-    screen.getByRole('switch', { name: 'Expanded' }).click()
+    screen.getByRole('switch', { name: 'Compact View' }).click()
 
     const layoutCall = mockUpdateSettingsMutate.mock.calls.find(
       ([data]) => data && typeof data === 'object' && 'homeGridLayout' in data
@@ -512,7 +512,7 @@ describe('HomePage AgentCard', () => {
     })
     renderWithProviders(<HomePage />)
 
-    screen.getByRole('switch', { name: 'Expanded' }).click()
+    screen.getByRole('switch', { name: 'Compact View' }).click()
 
     const layoutCall = mockUpdateSettingsMutate.mock.calls.find(
       ([data]) => data && typeof data === 'object' && 'homeGridLayout' in data
@@ -533,9 +533,10 @@ describe('HomePage AgentCard', () => {
     })
     renderWithProviders(<HomePage />)
 
-    screen.getByRole('switch', { name: 'Expanded' }).click()
+    screen.getByRole('switch', { name: 'Compact View' }).click()
 
-    expect(screen.getByRole('switch', { name: 'Expanded' })).toHaveAttribute('aria-checked', 'true')
+    // Save failed, so the card is still Wide: Compact stays off.
+    expect(screen.getByRole('switch', { name: 'Compact View' })).toHaveAttribute('aria-checked', 'false')
     expect(mockToastError).toHaveBeenCalledWith('Failed to save the home layout', {
       description: 'offline',
     })
@@ -680,10 +681,11 @@ describe('HomePage AgentCard', () => {
     mockAgentsData.mockReturnValue({ data: [makeAgent()], isLoading: false })
     renderWithProviders(<HomePage />)
 
-    // With no mobile map yet, the phone inherits the desktop card size.
-    const expanded = screen.getByRole('switch', { name: 'Expanded' })
-    expect(expanded).toHaveAttribute('aria-checked', 'true')
-    expanded.click()
+    // With no mobile map yet, the phone inherits the desktop card size (Wide,
+    // so Compact is off).
+    const compact = screen.getByRole('switch', { name: 'Compact View' })
+    expect(compact).toHaveAttribute('aria-checked', 'false')
+    compact.click()
 
     expect(mockUpdateSettingsMutate).toHaveBeenCalledWith(
       {

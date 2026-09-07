@@ -18,6 +18,12 @@ const configuredWorkers = process.env.PLAYWRIGHT_WORKERS
 
 const webTestIgnore = [
   '**/auth/**',
+  // Real-container probes with their own config (playwright.live-mcp.config.ts).
+  '**/live/**',
+  // Recorded walkthroughs, not regression tests — they throttle the network and
+  // sit still on purpose. Run them with playwright.demo.config.ts (see the
+  // pr-demo-video skill).
+  '**/*.demo.spec.ts',
   '**/getting-started-wizard.spec.ts',
   // Mutates the global provider API key — quarantined to the wizard config.
   '**/provider-api-key.spec.ts',
@@ -68,7 +74,10 @@ function buildWebServerCommand() {
 
 export default defineConfig({
   testDir: './e2e',
-  testIgnore: ['**/auth/**'],  // Auth tests use separate config (playwright.auth.config.ts)
+  // Auth tests use a separate config (playwright.auth.config.ts); e2e/live
+  // holds probes against the REAL container (playwright.live-mcp.config.ts
+  // and the .mjs harnesses), which the mock host cannot satisfy.
+  testIgnore: ['**/auth/**', '**/live/**'],
   outputDir: playwrightOutputDir,
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
@@ -93,7 +102,7 @@ export default defineConfig({
     // explicitly with --project=web-webkit (needs `npx playwright install webkit`).
     {
       name: 'web-webkit',
-      testMatch: ['**/safari-follow.spec.ts', '**/thinking-collapse-reading-line.spec.ts'],
+      testMatch: ['**/safari-follow.spec.ts', '**/thinking-collapse-reading-line.spec.ts', '**/read-aloud-follow.spec.ts'],
       use: { ...devices['Desktop Safari'] },
     },
     // Home connections graph — canvas mouse gestures (hover-fade, edge draw,

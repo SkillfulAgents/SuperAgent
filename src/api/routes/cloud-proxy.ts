@@ -80,17 +80,20 @@ const FORWARDED_REQUEST_HEADERS = [
  * - `set-cookie` / `set-auth-token`: session credentials for the *deployment's*
  *   origin. Landing them on a loopback origin gives the renderer a second,
  *   unmanaged copy of the credential this proxy exists to hold on its behalf.
- * - `content-encoding` / `content-length` / hop-by-hop: we re-frame the body, so
- *   the upstream's framing metadata describes something that no longer exists.
+ * - `content-encoding` / hop-by-hop: we re-frame the body, so the upstream's
+ *   framing metadata describes something that no longer exists.
  * - `access-control-*`: the local server's own CORS middleware answers for this
  *   origin. Two sets of CORS headers is not permissive, it is a rejected
  *   response.
+ *
+ * `content-length` belongs to that first group for the same reason but is not
+ * listed here, because a HEAD is the one case where it does not: see
+ * `buildClientHeaders`.
  */
 const STRIPPED_RESPONSE_HEADERS = new Set([
   'set-cookie',
   'set-auth-token',
   'content-encoding',
-  'content-length',
   'transfer-encoding',
   'connection',
   'keep-alive',
@@ -180,10 +183,27 @@ function buildUpstreamHeaders(request: Request, token: string): Headers {
   return headers
 }
 
-function buildClientHeaders(upstream: { headers: Headers }): Headers {
+/**
+ * `keepContentLength` is for a HEAD, and only a HEAD.
+ *
+ * Content-Length is normally dropped because we hand the caller a re-framed
+ * body: `fetch` may have decoded a `content-encoding` out from under it, and
+ * Node writes its own framing for what we return either way, so the upstream's
+ * number describes bytes that no longer exist.
+ *
+ * A HEAD has no body to re-frame. Its Content-Length describes the *resource*,
+ * and for a workspace file it is the entire answer — the renderer's file-size
+ * hook asks for nothing else, so stripping it is why a cloud workspace showed
+ * every file with no size beside its name. It is still dropped when the
+ * upstream declared a `content-encoding`, where the number counts compressed
+ * bytes rather than the resource.
+ */
+function buildClientHeaders(upstream: { headers: Headers }, keepContentLength = false): Headers {
+  const preserveLength = keepContentLength && !upstream.headers.has('content-encoding')
   const headers = new Headers()
   upstream.headers.forEach((value, name) => {
     const lower = name.toLowerCase()
+    if (lower === 'content-length' && !preserveLength) return
     if (STRIPPED_RESPONSE_HEADERS.has(lower)) return
     if (lower.startsWith('access-control-')) return
     headers.set(name, value)
@@ -213,6 +233,8 @@ function canUsePrefetch(request: Request): boolean {
 }
 
 function fromPrefetch(prefetched: PrefetchedResponse): Response {
+  // Only a GET is ever prefetched (see canUsePrefetch), so there is never a
+  // HEAD's Content-Length to preserve here.
   return new Response(prefetched.body, {
     status: prefetched.status,
     headers: buildClientHeaders({ headers: new Headers(prefetched.headers) }),
@@ -324,7 +346,7 @@ async function forwardRequest(
       } catch (error) {
         return upstreamFailure(request, error)
       }
-      return toClientResponse(upstream)
+      return toClientResponse(upstream, request.method)
     }
     return new Response(rejectionBody, {
       status: 401,
@@ -332,14 +354,14 @@ async function forwardRequest(
     })
   }
 
-  return toClientResponse(upstream)
+  return toClientResponse(upstream, request.method)
 }
 
-function toClientResponse(upstream: Response): Response {
+function toClientResponse(upstream: Response, method: string): Response {
   return new Response(upstream.body, {
     status: upstream.status,
     statusText: upstream.statusText,
-    headers: buildClientHeaders(upstream),
+    headers: buildClientHeaders(upstream, method === 'HEAD'),
   })
 }
 

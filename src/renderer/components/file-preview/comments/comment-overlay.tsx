@@ -8,12 +8,13 @@ import { formatMediaTime } from './format-media-time'
 interface CommentOverlayProps {
   selection: TextSelectionInfo
   filePath: string
+  agentSlug: string
   onClose: () => void
   /** Skip the intermediate "Comment" button and open the editor immediately. */
   autoEdit?: boolean
 }
 
-export function CommentOverlay({ selection, filePath, onClose, autoEdit = false }: CommentOverlayProps) {
+export function CommentOverlay({ selection, filePath, agentSlug, onClose, autoEdit = false }: CommentOverlayProps) {
   const [isEditing, setIsEditing] = useState(autoEdit)
   const [commentText, setCommentText] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -29,6 +30,7 @@ export function CommentOverlay({ selection, filePath, onClose, autoEdit = false 
     if (!commentText.trim()) return
     addComment({
       filePath,
+      agentSlug,
       text: commentText.trim(),
       selectedText: selection.text || undefined,
       x: selection.x,

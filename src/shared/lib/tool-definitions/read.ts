@@ -1,3 +1,5 @@
+import { toWorkspaceRelativePath } from '@shared/lib/utils/workspace-path'
+
 export interface ReadInput {
   file_path?: string
   offset?: number
@@ -9,10 +11,7 @@ function parseInput(input: unknown): ReadInput {
 }
 
 export function getDisplayPath(filePath: string): string {
-  if (filePath.startsWith('/workspace/')) {
-    return filePath.replace('/workspace/', '')
-  }
-  return filePath
+  return toWorkspaceRelativePath(filePath)
 }
 
 function getSummary(input: unknown): string | null {

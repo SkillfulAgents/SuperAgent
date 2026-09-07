@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, type ReactNode } from 'react'
 import type { Components } from 'react-markdown'
 import ReactMarkdown from 'react-markdown'
 import { CircleDollarSign, Info, TriangleAlert, type LucideIcon } from 'lucide-react'
@@ -6,7 +6,6 @@ import { CircleDollarSign, Info, TriangleAlert, type LucideIcon } from 'lucide-r
 import { defaultParseErrorResponse, type ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 
 import { RequestError } from '@renderer/components/messages/request-error'
-import { useResolvedErrorPresentation } from '@renderer/hooks/use-provider-error-presentation'
 import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
 import { openExternalUrl } from '@renderer/lib/open-external'
 
@@ -85,27 +84,32 @@ export function ProviderErrorView({
 }
 
 // `presentation` is authored server-side by the active LLM provider's
-// parseErrorResponse. Without one (older server, missed event) the card falls
+// presentationForTurnError. Without one (older server, missed event) the card falls
 // back to the provider-agnostic default banner built from the raw message.
 export function ProviderErrorCard({
   message,
   presentation,
+  children,
   'data-testid': testId,
 }: {
   message: string
   presentation?: ProviderErrorPresentation
+  /** Displaced content (see ProviderErrorComponentProps). The default card never withholds it. */
+  children?: ReactNode
   'data-testid'?: string
 }) {
-  const base = useMemo(
+  const resolved = useMemo(
     () => presentation ?? defaultParseErrorResponse(undefined, message),
     [presentation, message],
   )
-  const resolved = useResolvedErrorPresentation(base)
   return (
-    <ProviderErrorView
-      presentation={resolved}
-      rawMessage={message}
-      data-testid={testId}
-    />
+    <>
+      <ProviderErrorView
+        presentation={resolved}
+        rawMessage={message}
+        data-testid={testId}
+      />
+      {children}
+    </>
   )
 }

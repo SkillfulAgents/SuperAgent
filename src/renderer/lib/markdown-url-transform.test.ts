@@ -75,5 +75,23 @@ describe('markdownUrlTransform (SUP-238)', () => {
     expect(transform('file:///workspace/../secrets.png', 'src', node)).toBe('')
     expect(transform('file:///workspace/report.txt', 'src', node)).toBe('')
     expect(transform('file:///etc/passwd.png', 'src', node)).toBe('')
+    // a sibling directory, not the workspace
+    expect(transform('file:///workspaceX/chart.png', 'src', node)).toBe('')
+  })
+
+  // This used to carry its own extension list, and it had drifted from the one
+  // the drawer reads: an .svg the drawer previews was refused inline, and an
+  // .avif it did not preview was allowed. Both now ask the same table.
+  it('inlines exactly the images a renderer here can draw', () => {
+    const transform = createMarkdownUrlTransform({ agentSlug: 'a' })
+    for (const ext of ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif']) {
+      expect(transform(`file:///workspace/chart.${ext}`, 'src', node)).toBe(
+        `/api/agents/a/files/chart.${ext}?inline=true`,
+      )
+    }
+    // image/* to a browser, undisplayable to every renderer here
+    for (const ext of ['tiff', 'heic', 'psd']) {
+      expect(transform(`file:///workspace/chart.${ext}`, 'src', node)).toBe('')
+    }
   })
 })

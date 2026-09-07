@@ -6,6 +6,7 @@ import { useMessageStream, type WorkflowAgentLive } from '@renderer/hooks/use-me
 import { useWorkflowTree, useWorkflowAgentMessages } from '@renderer/hooks/use-messages'
 import { StatusIndicator } from '@renderer/components/messages/tool-call-item'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
+import { formatModelId } from '@renderer/lib/model-label'
 import { WorkflowAgentTranscript } from './workflow-agent-transcript'
 import type { WorkflowAgentNode } from '@shared/lib/workflows/workflow-schemas'
 
@@ -77,12 +78,30 @@ export function overlayLiveStatus(
       ...a,
       status,
       result: a.result ?? live.result ?? null,
+      // The wire label is the one the script actually passed to agent(); the disk
+      // label is a heuristic re-join of prompt ↔ call site that degrades to "agent N"
+      // when a label variable can't be recovered from the prompt text. Prefer the
+      // wire while it's flowing; disk covers reloads of finished runs.
+      label: live.label ?? a.label,
       // Live tokens/tools are fresher than the ~2s disk poll; fall back to disk on reload.
       tokens: live.tokens ?? a.tokens,
       toolCount: live.toolCount ?? a.toolCount,
       lastTool: live.lastTool ?? null,
     }
   })
+}
+
+/**
+ * Distinct model labels across a phase's agents, in first-seen order — the
+ * phase header shows "Haiku 4.5" for a uniform fan-out, or "Haiku 4.5 · Sonnet 5"
+ * when a phase mixes models (e.g. a cheap pass plus a critic).
+ */
+export function phaseModels(agents: Pick<WorkflowAgentNode, 'model'>[]): string[] {
+  const seen = new Set<string>()
+  for (const a of agents) {
+    if (a.model) seen.add(formatModelId(a.model))
+  }
+  return [...seen]
 }
 
 export type ProgressSegment = 'done' | 'running' | 'failed' | 'pending'
@@ -173,7 +192,9 @@ export function WorkflowTrayContent({ agentSlug, sessionId, onClose }: WorkflowT
     : ''
   const refetchTree = treeQuery.refetch
   useEffect(() => {
-    if (selectedRunId && liveSignal) refetchTree()
+    // Don't cancel a request already in flight: a wide fan-out transitions every
+    // few seconds, and restarting the fetch on each one could starve a slow host.
+    if (selectedRunId && liveSignal) refetchTree({ cancelRefetch: false })
   }, [liveSignal, selectedRunId, refetchTree])
 
   const groups = useMemo<PhaseGroup[]>(() => {
@@ -200,7 +221,9 @@ export function WorkflowTrayContent({ agentSlug, sessionId, onClose }: WorkflowT
     return ordered
   }, [agents, treeQuery.data])
 
-  const name = openWorkflows.find((w) => w.runId === selectedRunId)?.name ?? treeQuery.data?.name ?? 'Workflow'
+  // The script's own meta.name is authoritative; the name the drawer was opened with is
+  // whatever the launching card had (for a scriptPath run, only a generic fallback).
+  const name = treeQuery.data?.name ?? openWorkflows.find((w) => w.runId === selectedRunId)?.name ?? 'Workflow'
   // Prefer the live wire usage (cumulative, accurate); fall back to the disk rollup.
   const totals = liveRun?.usage
     ? { durationMs: liveRun.usage.durationMs, toolCount: liveRun.usage.toolUses, tokens: liveRun.usage.totalTokens }
@@ -274,6 +297,11 @@ export function WorkflowTrayContent({ agentSlug, sessionId, onClose }: WorkflowT
                 {group.detail && (
                   <span className="text-[11px] text-muted-foreground truncate">{group.detail}</span>
                 )}
+                {phaseModels(group.agents).length > 0 && (
+                  <span className="ml-auto shrink-0 text-[10px] text-muted-foreground/70 whitespace-nowrap">
+                    {phaseModels(group.agents).join(' · ')}
+                  </span>
+                )}
               </div>
             )}
             {group.agents.map((a) => (
@@ -323,6 +351,8 @@ function WorkflowAgentRow({
     <div className="border border-border/70 rounded-md overflow-hidden">
       <button
         onClick={onToggle}
+        data-testid="workflow-agent-row"
+        data-agent-label={agent.label}
         className={cn(
           'flex w-full items-center gap-2 px-2 py-1.5 group hover:bg-muted/50 transition-colors',
           expanded && 'bg-muted/50'
@@ -333,6 +363,14 @@ function WorkflowAgentRow({
         </span>
         {/* shrink-0 + cap: a long result/tool string must truncate itself, not crush the label to zero width */}
         <span className="text-xs text-foreground/80 truncate shrink-0 max-w-[70%]">{agent.label}</span>
+        {agent.model && (
+          <span
+            className="shrink-0 rounded px-1 py-px text-[10px] leading-tight bg-muted text-muted-foreground/80"
+            title={agent.model}
+          >
+            {formatModelId(agent.model)}
+          </span>
+        )}
         {/* While running, show the current tool (live from the wire). */}
         {isRunning && agent.lastTool && (
           <>
@@ -364,6 +402,13 @@ function WorkflowAgentRow({
             </div>
           )}
           <StatsLine durationMs={agent.durationMs} toolCount={agent.toolCount} tokens={agent.tokens} />
+          {agent.model && (
+            <div className="text-[11px] text-muted-foreground break-words">
+              <span className="font-medium text-foreground/70">Model: </span>
+              {formatModelId(agent.model)}
+              <span className="text-muted-foreground/60"> ({agent.model})</span>
+            </div>
+          )}
           {(agent.status === 'done' || agent.status === 'failed') && agent.result && (
             <div className="text-[11px] break-words">
               <span className="font-medium text-foreground/70">

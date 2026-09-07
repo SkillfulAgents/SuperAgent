@@ -96,9 +96,15 @@ function toolResult(uuid: string, text: string): string {
   });
 }
 
-function run(script: string, args: string[]): string {
+function run(script: string, args: string[], currentSessionId?: string): string {
+  // The container exports GAMUT_SESSION_ID to every tool call; the scripts
+  // read it to tell the current conversation apart from past ones. Stripped
+  // by default so a developer's own shell can never leak one into the tests.
+  const env = { ...process.env };
+  delete env.GAMUT_SESSION_ID;
   return execFileSync(PYTHON, [script, ...args, '--dir', sessionsDir], {
     encoding: 'utf-8',
+    env: currentSessionId ? { ...env, GAMUT_SESSION_ID: currentSessionId } : env,
   });
 }
 
@@ -171,6 +177,39 @@ describeWithPython('session-history helper scripts', () => {
       );
 
       expect(run(LIST, [])).toContain('what did we decide about pricing?');
+    });
+
+    it('reads a user message recorded as text blocks (how the container starts a session)', () => {
+      // Caught live: every session the container itself starts stores the
+      // first message as [{type:'text'}], not a string — the headline read
+      // "(no user message)" and --grep could not see anything the user typed.
+      writeSession(
+        '99990000-blocks',
+        line({
+          type: 'user',
+          uuid: 'u1',
+          timestamp: '2026-08-20T10:00:00.000Z',
+          isSidechain: false,
+          message: { role: 'user', content: [{ type: 'text', text: 'Analyze the paywall funnel' }] },
+        }) +
+          assistantToolUse('a1', 'Bash', { command: 'ls' }) +
+          line({
+            type: 'user',
+            uuid: 'u2',
+            timestamp: '2026-08-20T10:00:05.000Z',
+            isSidechain: false,
+            message: {
+              role: 'user',
+              content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'paywall paywall paywall' }],
+            },
+          }) +
+          assistantText('a2', 'Done.')
+      );
+
+      expect(run(LIST, [])).toContain('Analyze the paywall funnel');
+      // One hit: the typed message. The tool_result mentioning it three times is not spoken.
+      expect(run(LIST, ['--grep', 'paywall'])).toMatch(/99990000-blocks.*\s1 hits/);
+      expect(run(LIST, ['--grep', 'funnel'])).toContain('99990000-blocks');
     });
 
     it('reads a mid-turn message from a queued_command attachment', () => {
@@ -305,6 +344,36 @@ describeWithPython('session-history helper scripts', () => {
       }
     });
 
+    it('hides the current session by default and says so, even when nothing else matches', () => {
+      // Caught live: a --grep for the topic of the conversation in progress
+      // ranked the current session first and the agent read it as prior work.
+      writeSession('cccc0000-past', sessionAt('2026-08-01T10:00:00.000Z', 'old paywall talk'));
+      writeSession('dddd0000-now', sessionAt('2026-09-06T17:00:00.000Z', 'current paywall analysis'));
+
+      const out = run(LIST, ['--grep', 'paywall'], 'dddd0000-now');
+      expect(out).not.toMatch(/^.*dddd0000-now.*analysis/m);
+      expect(out).toContain('cccc0000-past');
+      expect(out).toContain('Not listed: dddd0000-now — that is THIS session');
+
+      // Only the current session matches: the note must still explain the
+      // empty result rather than leaving it looking like a broken directory.
+      const none = run(LIST, ['--grep', 'analysis'], 'dddd0000-now');
+      expect(none).toContain('No matching sessions.');
+      expect(none).toContain('Not listed: dddd0000-now');
+
+      const included = run(LIST, ['--grep', 'paywall', '--include-current'], 'dddd0000-now');
+      expect(included).toMatch(/dddd0000-now.*\[THIS IS YOUR CURRENT SESSION/);
+      expect(included).not.toContain('Not listed:');
+
+      const json = JSON.parse(run(LIST, ['--json', '--include-current'], 'dddd0000-now'));
+      expect(json.map((r: { session_id: string; current: boolean }) => [r.session_id, r.current]))
+        .toEqual([['dddd0000-now', true], ['cccc0000-past', false]]);
+      expect(JSON.parse(run(LIST, ['--json'], 'dddd0000-now'))).toHaveLength(1);
+
+      // No GAMUT_SESSION_ID (a developer running the script by hand): nothing hidden.
+      expect(run(LIST, [])).toContain('dddd0000-now');
+    });
+
     it('emits machine-readable rows under --json', () => {
       writeSession('88888888-8888', userText('u1', 'hello there'));
 
@@ -419,6 +488,29 @@ describeWithPython('session-history helper scripts', () => {
       writeSession('cccc1111-2222', userText('u1', 'machine readable'));
 
       expect(() => JSON.parse(run(LIST, ['--json']))).not.toThrow();
+    });
+
+    it('refuses to read the current session, and `latest` skips it', () => {
+      const sameMtime = Date.UTC(2026, 8, 1, 12, 0, 0);
+      writeSession('77770000-past', sessionAt('2026-08-20T10:00:00.000Z', 'older session'), sameMtime);
+      writeSession('88880000-now', sessionAt('2026-09-06T17:00:00.000Z', 'the conversation in progress'), sameMtime);
+
+      // The current session is (nearly always) the most recently active one,
+      // so `latest` has to mean "latest OTHER session".
+      expect(run(READ, ['latest'], '88880000-now')).toContain('older session');
+      expect(() => run(READ, ['latest-1'], '88880000-now')).toThrow(/not counting the current session/);
+
+      expect(() => run(READ, ['88880000-now'], '88880000-now')).toThrow(/THIS session/);
+      expect(() => run(READ, ['8888'], '88880000-now')).toThrow(/THIS session/);
+
+      // Explicit opt-in (e.g. after compaction) still works, minus the card hint.
+      const own = run(READ, ['8888', '--allow-current'], '88880000-now');
+      expect(own).toContain('the conversation in progress');
+      expect(own).toContain('THIS session');
+      expect(own).not.toContain('deliver_session');
+
+      // Without GAMUT_SESSION_ID nothing changes.
+      expect(run(READ, ['latest'])).toContain('the conversation in progress');
     });
 
     it('fails loudly on an ambiguous or unknown session id', () => {

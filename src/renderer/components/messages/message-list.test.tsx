@@ -9,6 +9,7 @@ import { TranscriptNotFoundError } from '@renderer/hooks/use-messages'
 import { useDraft } from '@renderer/context/drafts-context'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { createUserMessage, createAssistantMessage, createToolCall, createCompactBoundary } from '@renderer/test/factories'
+import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 import type { ApiMessageOrBoundary } from '@shared/lib/types/api'
 
 // Mock useMessages
@@ -68,6 +69,9 @@ const mockStreamState = {
   peerUserMessages: [] as Array<{ uuid: string; receivedAt: number; content: string; sender: { id: string; name?: string; email?: string }; queued?: boolean }>,
   discardedCommandUuids: [] as string[],
   thinkingBlocks: [] as Array<{ id: number; persistedId?: string; text: string; startedAt: number; endedAt: number | null }>,
+  error: null as string | null,
+  apiErrorCode: null as string | null,
+  errorPresentation: null as ProviderErrorPresentation | null,
 }
 
 const mockClearCompacting = vi.fn()
@@ -81,6 +85,10 @@ vi.mock('@renderer/hooks/use-message-stream', () => ({
   removePeerUserMessage: (...args: unknown[]) => mockRemovePeerUserMessage(...args),
   clearPeerUserMessages: (...args: unknown[]) => mockClearPeerUserMessages(...args),
   consumeDiscardedCommand: (...args: unknown[]) => mockConsumeDiscardedCommand(...args),
+}))
+
+vi.mock('@renderer/hooks/use-platform-auth', () => ({
+  usePlatformAuthStatus: () => ({ data: { connected: false, platformBaseUrl: null, orgId: null } }),
 }))
 
 // Mock useUser — default no user, override per test
@@ -178,6 +186,9 @@ describe('MessageList', () => {
       peerUserMessages: [],
       discardedCommandUuids: [],
       thinkingBlocks: [],
+      error: null,
+      apiErrorCode: null,
+      errorPresentation: null,
     })
   })
 
@@ -2109,6 +2120,74 @@ describe('MessageList', () => {
     expect(screen.getByText('deferred.csv')).toBeInTheDocument()
   })
 
+  describe('provider error routed to the composer', () => {
+    const routed: ProviderErrorPresentation = { severity: 'error', message: '**Routed 402**', icon: 'info', placement: 'composer' }
+    const routedError = () =>
+      createAssistantMessage({ content: { text: 'API Error: 402 insufficient balance' }, apiError: 'billing_error', errorPresentation: routed })
+
+    it('skips the inline card only while the row is the current error', () => {
+      mockMessagesData.data = [createUserMessage({ content: { text: 'summarize' } }), routedError()]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.queryByTestId('provider-error-card')).not.toBeInTheDocument()
+    })
+
+    it('keeps the routed row in the transcript once a normal reply follows', () => {
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'summarize' } }),
+        routedError(),
+        createUserMessage({ content: { text: 'try again' } }),
+        createAssistantMessage({ content: { text: 'Here you go' } }),
+      ]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Routed 402')
+      expect(screen.getByText('Here you go')).toBeInTheDocument()
+    })
+
+    it('keeps an older routed row while a newer one is current', () => {
+      mockMessagesData.data = [createUserMessage(), routedError(), createUserMessage(), routedError()]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getAllByTestId('provider-error-card')).toHaveLength(1)
+    })
+
+    it('renders neither raw text nor a card for the streaming row while the live error is routed', () => {
+      mockMessagesData.data = [createUserMessage({ content: { text: 'summarize' } })]
+      Object.assign(mockStreamState, {
+        streamingMessage: 'API Error: 402 {"error":"insufficient_balance"}',
+        error: 'API Error: 402 {"error":"insufficient_balance"}',
+        apiErrorCode: 'unknown',
+        errorPresentation: routed,
+      })
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.queryByText(/API Error: 402/)).not.toBeInTheDocument()
+      expect(screen.queryByTestId('provider-error-card')).not.toBeInTheDocument()
+    })
+
+    it('renders no card while the live error and its persisted row coexist', () => {
+      mockMessagesData.data = [createUserMessage({ content: { text: 'summarize' } }), routedError()]
+      Object.assign(mockStreamState, {
+        streamingMessage: 'API Error: 402 insufficient balance',
+        error: 'API Error: 402 insufficient balance',
+        apiErrorCode: 'billing_error',
+        errorPresentation: routed,
+      })
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.queryByTestId('provider-error-card')).not.toBeInTheDocument()
+      expect(screen.queryByText(/API Error: 402/)).not.toBeInTheDocument()
+    })
+
+    it('still renders the streaming row inline when the live error is not routed away', () => {
+      mockMessagesData.data = [createUserMessage()]
+      Object.assign(mockStreamState, {
+        streamingMessage: 'API Error: 429 rate limited',
+        error: 'API Error: 429 rate limited',
+        apiErrorCode: 'rate_limit',
+        errorPresentation: { severity: 'error', message: '**Inline 429**', icon: 'info' },
+      })
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Inline 429')
+    })
+  })
+
   describe('peer user message (SSE)', () => {
     it('renders peer user message from another user', () => {
       mockCurrentUser = { id: 'me', name: 'Me', email: 'me@test.com' }
@@ -3174,6 +3253,190 @@ describe('MessageList', () => {
       })
       expect(screen.getByText('Scroll to bottom')).toBeInTheDocument()
       expect(geometry.scrollTop).toBe(150)
+    })
+
+    it('puts the viewport back when a transcript commit moves it, before any scroll event', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
+      // A long transcript: the reply under the click is thousands of px tall.
+      geometry.setNaturalScrollHeight(4000)
+      geometry.setScrollTop(3400)
+      fireEvent.scroll(el) // baseline at the live edge
+
+      // The engine goes quiet: no writes for longer than any rollback window.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 600))
+      })
+
+      // A commit lands in the transcript (a reply re-rendered on a click) and
+      // WebKit moves the viewport to that reply's top during the commit: by
+      // the time the MutationObserver runs, scrollTop has moved and the
+      // geometry is back to what it was. No input anywhere. The observer
+      // must put it back right there, and following must survive.
+      geometry.setScrollTop(1100)
+      await act(async () => {
+        contentWrapper.appendChild(document.createElement('span'))
+        await Promise.resolve() // MutationObserver delivery
+      })
+      expect(geometry.scrollTop).toBe(3399)
+      fireEvent.scroll(el) // the browser's echo of the write
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 40))
+      })
+      expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
+      expect(geometry.scrollTop).toBe(3399)
+    })
+
+    it('leaves an outside scroll alone even while the transcript is churning', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 600))
+      })
+
+      // A commit that moves nothing (a working indicator ticking), then a
+      // programmatic scroll from outside in its own task — a test's
+      // scrollIntoView, find-in-page. The commit is no reason to eat it:
+      // following releases and nothing yanks the reader back.
+      await act(async () => {
+        contentWrapper.appendChild(document.createElement('span'))
+        await Promise.resolve()
+      })
+      expect(geometry.scrollTop).toBe(700)
+      geometry.setScrollTop(150)
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 250))
+      })
+      expect(screen.getByText('Scroll to bottom')).toBeInTheDocument()
+      expect(geometry.scrollTop).toBe(150)
+    })
+
+    it('does not fight a held drag when a commit lands under it', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
+      fireEvent.scroll(el)
+
+      // The reader is dragging (press + motion) and has pulled the viewport
+      // up when a commit lands. The observer sees an upward displacement
+      // with stable geometry — and a held pointer behind it. Hands off.
+      fireEvent.pointerDown(el, { button: 0, clientX: 10, clientY: 10 })
+      fireEvent(window, new MouseEvent('pointermove', { clientX: 10, clientY: 60 }))
+      geometry.setScrollTop(400)
+      await act(async () => {
+        contentWrapper.appendChild(document.createElement('span'))
+        await Promise.resolve()
+      })
+      expect(geometry.scrollTop).toBe(400)
+    })
+
+    it('does not let a bare click on the transcript turn a rollback into an escape', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
+      fireEvent.scroll(el) // 699 joins the trail
+
+      geometry.setNaturalScrollHeight(1500)
+      await act(async () => {
+        fireContentResize(contentWrapper, 1500)
+      })
+      await waitFor(() => expect(geometry.scrollTop).toBe(899))
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 600))
+      })
+
+      // Press + release on the content, no motion: a click on a button under
+      // a reply. It cannot scroll anything, so it is not input evidence — the
+      // compositor rollback that follows (an on-trail, size-stable upward
+      // landing) is still the engine's own motion coming back.
+      fireEvent.pointerDown(el, { button: 0, clientX: 10, clientY: 10 })
+      fireEvent(window, new MouseEvent('pointerup', { clientX: 10, clientY: 10 }))
+      geometry.setScrollTop(699)
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 250))
+      })
+      expect(screen.queryByText('Scroll to bottom')).not.toBeInTheDocument()
+      expect(geometry.scrollTop).toBe(899)
+    })
+
+    it('still honors the same upward landing as an escape under a content drag', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
+      fireEvent.scroll(el)
+
+      geometry.setNaturalScrollHeight(1500)
+      await act(async () => {
+        fireContentResize(contentWrapper, 1500)
+      })
+      await waitFor(() => expect(geometry.scrollTop).toBe(899))
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 600))
+      })
+
+      // The press travels: a drag. The upward landing under it is the reader's.
+      fireEvent.pointerDown(el, { button: 0, clientX: 10, clientY: 10 })
+      fireEvent(window, new MouseEvent('pointermove', { clientX: 10, clientY: 60 }))
+      geometry.setScrollTop(699)
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 250))
+      })
+      expect(screen.getByText('Scroll to bottom')).toBeInTheDocument()
+      expect(geometry.scrollTop).toBe(699)
+    })
+
+    it('keeps a scrollbar gutter press as input evidence past its release', async () => {
+      installFakeResizeObserver()
+      mockMessagesData.data = [createAssistantMessage({ content: { text: 'Previous response' } })]
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      const geometry = mockTurnGeometry(el)
+      const contentWrapper = screen.getByTestId('turn-anchor-spacer').parentElement!
+      Object.defineProperty(el, 'clientWidth', { configurable: true, get: () => 800 })
+      fireEvent.scroll(el)
+
+      geometry.setNaturalScrollHeight(1500)
+      await act(async () => {
+        fireContentResize(contentWrapper, 1500)
+      })
+      await waitFor(() => expect(geometry.scrollTop).toBe(899))
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 600))
+      })
+
+      // A track click pages the viewport with no pointer motion, and the
+      // scroll event can trail the release. The gutter press itself is the
+      // evidence that makes the on-trail upward landing the reader's.
+      fireEvent.pointerDown(el, { button: 0, clientX: 810, clientY: 10 })
+      fireEvent(window, new MouseEvent('pointerup', { clientX: 810, clientY: 10 }))
+      geometry.setScrollTop(699)
+      fireEvent.scroll(el)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 250))
+      })
+      expect(screen.getByText('Scroll to bottom')).toBeInTheDocument()
+      expect(geometry.scrollTop).toBe(699)
     })
 
     it('ignores a bounce-back settling inside the live-edge band after a downward wheel', async () => {

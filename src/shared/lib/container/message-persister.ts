@@ -29,6 +29,7 @@ import {
   cancelScheduledTask,
   pauseScheduledTask,
   resumeScheduledTask,
+  patchScheduledTask,
   type ScheduledTask,
 } from '@shared/lib/services/scheduled-task-service'
 import {
@@ -38,7 +39,14 @@ import {
   getWebhookTrigger,
   resolvePlatformMemberForCandidates,
   updateWebhookTriggerName,
+  updateWebhookTriggerPrompt,
 } from '@shared/lib/services/webhook-trigger-service'
+import {
+  updateScheduledTaskInputSchema,
+  updateWebhookTriggerInputSchema,
+  type ScheduledTaskUpdateInput,
+  type WebhookTriggerUpdateInput,
+} from '@shared/lib/services/automation-update-schema'
 import {
   createPlatformWebhookEndpoint,
   updatePlatformWebhookEndpoint,
@@ -81,7 +89,6 @@ import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { VALID_SCRIPT_TYPES, getAgentCapabilitySettings } from '@shared/lib/config/settings'
 import { sessionCapabilityGrantsResponseSchema } from '@shared/lib/config/capability-policy-schema'
 import { getActiveLlmProvider, getModelContextWindow } from '@shared/lib/llm-provider'
-import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { resolveAppFromWindowRef } from '@shared/lib/computer-use/executor'
 import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp, type ComputerUsePermissionLevel } from '@shared/lib/computer-use/types'
@@ -2491,10 +2498,11 @@ class MessagePersister {
           // The active provider owns the copy for its own upstream errors
           // (severity, icon, markdown message + CTA link). Sent alongside the
           // raw error so the UI never re-derives provider-specific copy.
-          const errorPresentation =
-            apiErrorCode && PROVIDER_ERROR_CODES.has(apiErrorCode)
-              ? getActiveLlmProvider().parseErrorResponse(apiErrorStatus ?? undefined, errorMessage)
-              : null
+          const errorPresentation = getActiveLlmProvider().presentationForTurnError(
+            apiErrorStatus ?? undefined,
+            errorMessage,
+            apiErrorCode,
+          )
           console.error(
             `[MessagePersister] Session ${sessionId} error:`,
             errorMessage,
@@ -3427,6 +3435,15 @@ class MessagePersister {
             )
           }
 
+          if (state.currentToolUse.name === 'mcp__user-input__update_scheduled_task') {
+            this.handleUpdateScheduledTaskTool(
+              sessionId,
+              state.currentToolUse.id,
+              state.currentToolInput,
+              state.agentSlug
+            )
+          }
+
           // Cancel scheduled task tool - blocking
           if (state.currentToolUse.name === 'mcp__user-input__cancel_scheduled_task') {
             this.handleCancelScheduledTaskTool(
@@ -3472,6 +3489,11 @@ class MessagePersister {
           }
           if (state.currentToolUse.name === 'mcp__user-input__list_triggers') {
             this.handleListTriggersTool(
+              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
+            )
+          }
+          if (state.currentToolUse.name === 'mcp__user-input__update_trigger') {
+            this.handleUpdateTriggerTool(
               sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
             )
           }
@@ -3992,6 +4014,98 @@ ${continuation}`
         if (agentSlug) {
           await this.rejectContainerInput(agentSlug, toolUseId, String(error)).catch(console.error)
         }
+      }
+    })()
+  }
+
+  // Handle update_scheduled_task - blocking: patch one row so timing and prompt
+  // change atomically without replacing its ID or execution history.
+  private handleUpdateScheduledTaskTool(
+    sessionId: string,
+    toolUseId: string,
+    toolInput: string,
+    agentSlug: string
+  ): void {
+    ;(async () => {
+      try {
+        let input: ScheduledTaskUpdateInput
+        try {
+          input = updateScheduledTaskInputSchema.parse(JSON.parse(toolInput))
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Invalid tool input'
+          await this.rejectContainerInput(agentSlug, toolUseId, `Invalid tool input: ${message}`)
+          return
+        }
+
+        const task = await getScheduledTask(input.task_id)
+        if (!task || task.agentSlug !== agentSlug) {
+          await this.rejectContainerInput(agentSlug, toolUseId, `Scheduled task ${input.task_id} not found`)
+          return
+        }
+
+        if (input.schedule_expression !== undefined) {
+          const parsed = validateScheduleExpression(
+            task.scheduleType,
+            input.schedule_expression,
+            task.timezone || undefined,
+          )
+          if (!parsed.valid) {
+            await this.rejectContainerInput(
+              agentSlug,
+              toolUseId,
+              `Invalid ${task.scheduleType} schedule expression: ${parsed.error ?? input.schedule_expression}`,
+            )
+            return
+          }
+        }
+
+        const updated = await patchScheduledTask(input.task_id, {
+          ...(input.schedule_expression !== undefined
+            ? { scheduleExpression: input.schedule_expression }
+            : {}),
+          ...(input.prompt !== undefined ? { prompt: input.prompt } : {}),
+        })
+        if (!updated) {
+          await this.rejectContainerInput(
+            agentSlug,
+            toolUseId,
+            `Scheduled task ${input.task_id} could not be updated — only pending or paused tasks are editable`,
+          )
+          return
+        }
+
+        const refreshed = await getScheduledTask(input.task_id)
+        this.broadcastToSSE(agentSlug, sessionId, {
+          type: 'scheduled_task_updated',
+          toolUseId,
+          taskId: input.task_id,
+          agentSlug,
+        })
+        this.broadcastGlobal({
+          type: 'scheduled_task_updated',
+          taskId: input.task_id,
+          agentSlug,
+        })
+
+        const changed = [
+          input.schedule_expression !== undefined ? 'schedule' : null,
+          input.prompt !== undefined ? 'prompt' : null,
+        ].filter(Boolean).join(' and ')
+        let result = `Updated the ${changed} for scheduled task ${input.task_id}. Its ID and execution history were preserved.`
+        if (refreshed && input.schedule_expression !== undefined) {
+          result += `\n\nSchedule: ${refreshed.scheduleExpression}\nNext run: ${refreshed.nextExecutionAt.toISOString()}`
+          const warning = getFrequencyWarning(
+            refreshed.scheduleType,
+            refreshed.scheduleExpression,
+            refreshed.timezone || undefined,
+          )
+          if (warning) result += `\n\n${warning}`
+        }
+        await this.resolveContainerInput(agentSlug, toolUseId, result)
+      } catch (error) {
+        console.error('[MessagePersister] Error handling update_scheduled_task:', error)
+        const msg = error instanceof Error ? error.message : String(error)
+        await this.rejectContainerInput(agentSlug, toolUseId, `Failed to update scheduled task: ${msg}`).catch(console.error)
       }
     })()
   }
@@ -4738,6 +4852,65 @@ ${continuation}`
         if (agentSlug) {
           await this.rejectContainerInput(agentSlug, toolUseId, String(error)).catch(console.error)
         }
+      }
+    })()
+  }
+
+  // Handle update_trigger - blocking: update the local prompt for either a
+  // Composio trigger or custom endpoint while retaining its identity/history.
+  private handleUpdateTriggerTool(
+    sessionId: string,
+    toolUseId: string,
+    toolInput: string,
+    agentSlug: string
+  ): void {
+    ;(async () => {
+      try {
+        let input: WebhookTriggerUpdateInput
+        try {
+          input = updateWebhookTriggerInputSchema.parse(JSON.parse(toolInput))
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Invalid tool input'
+          await this.rejectContainerInput(agentSlug, toolUseId, `Invalid tool input: ${message}`)
+          return
+        }
+
+        const trigger = await getWebhookTrigger(input.trigger_id)
+        if (!trigger || trigger.agentSlug !== agentSlug) {
+          await this.rejectContainerInput(agentSlug, toolUseId, `Trigger ${input.trigger_id} not found`)
+          return
+        }
+
+        const updated = await updateWebhookTriggerPrompt(input.trigger_id, input.prompt)
+        if (!updated) {
+          await this.rejectContainerInput(
+            agentSlug,
+            toolUseId,
+            `Trigger ${input.trigger_id} could not be updated — cancelled triggers are not editable`,
+          )
+          return
+        }
+
+        this.broadcastToSSE(agentSlug, sessionId, {
+          type: 'webhook_trigger_updated',
+          toolUseId,
+          triggerId: input.trigger_id,
+          agentSlug,
+        })
+        this.broadcastGlobal({
+          type: 'webhook_trigger_updated',
+          triggerId: input.trigger_id,
+          agentSlug,
+        })
+        await this.resolveContainerInput(
+          agentSlug,
+          toolUseId,
+          `Updated the prompt for trigger ${input.trigger_id}. Its ID and firing history were preserved.`,
+        )
+      } catch (error) {
+        console.error('[MessagePersister] Error handling update_trigger:', error)
+        const msg = error instanceof Error ? error.message : String(error)
+        await this.rejectContainerInput(agentSlug, toolUseId, `Failed to update trigger: ${msg}`).catch(console.error)
       }
     })()
   }

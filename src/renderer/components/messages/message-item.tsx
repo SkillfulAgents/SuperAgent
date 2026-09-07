@@ -1,6 +1,7 @@
 import { cn } from '@shared/lib/utils/cn'
 import { useState, useCallback, useRef, useLayoutEffect, useMemo, memo, type ReactNode } from 'react'
 import { Check, Copy, Link2 } from 'lucide-react'
+import { resolveProviderError } from '@renderer/components/provider-error/provider-error-registry'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
 import { ToolCallItem } from './tool-call-item'
 import { ThinkingBlockItem } from './thinking-block-item'
@@ -10,19 +11,23 @@ import { WorkflowResultCard } from './workflow-result-card'
 import { parseTaskNotifications } from '@shared/lib/utils/task-notifications'
 import { MessageContextMenu } from './message-context-menu'
 import { MessageErrorBoundary } from './message-error-boundary'
-import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { parseUserMessageParts } from '@shared/lib/utils/user-message-parts'
 import { classifyUserText } from './user-message-kinds'
+import { SentAttachmentChip, imageSizeForCount } from './sent-attachment-chip'
+import { isPreviewableImage } from '@renderer/lib/file-types'
 import ReactMarkdown, { type Components, type Options as ReactMarkdownOptions } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { splitStreamingMarkdown } from './split-streaming-markdown'
-import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
+import { isProviderFacingError } from '@shared/lib/types/api'
 import type { ApiMessage, ApiToolCall } from '@shared/lib/types/api'
 import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { createMarkdownUrlTransform } from '@renderer/lib/markdown-url-transform'
 import type { EmbeddedImageAliases } from '@renderer/lib/parse-tool-result'
 import { rehypeStreamingWordReveal } from './streaming-word-reveal'
+import { rehypeSpokenWords } from '@renderer/lib/speech/spoken-words'
+import { useIsBeingRead, useSpokenWordHighlight } from '@renderer/hooks/use-read-aloud'
+import { ReadAloudControls } from './read-aloud-controls'
 
 // Re-export for use by other components
 export type { ApiToolCall }
@@ -212,15 +217,24 @@ interface MarkdownBlockProps {
   text: string
   embeddedImageAliases?: EmbeddedImageAliases
   agentSlug?: string
+  /** Wrap every prose word in an indexed span for useSpokenWordHighlight. */
+  spoken?: boolean
 }
 
-export const MarkdownBlock = memo(function MarkdownBlock({ text, embeddedImageAliases, agentSlug }: MarkdownBlockProps) {
+const SPOKEN_REHYPE_PLUGINS: ReactMarkdownOptions['rehypePlugins'] = [rehypeSpokenWords]
+
+export const MarkdownBlock = memo(function MarkdownBlock({ text, embeddedImageAliases, agentSlug, spoken }: MarkdownBlockProps) {
   const urlTransform = useMemo(
     () => createMarkdownUrlTransform({ aliases: embeddedImageAliases, agentSlug }),
     [embeddedImageAliases, agentSlug]
   )
   return (
-    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={MARKDOWN_COMPONENTS} urlTransform={urlTransform}>
+    <ReactMarkdown
+      remarkPlugins={REMARK_PLUGINS}
+      rehypePlugins={spoken ? SPOKEN_REHYPE_PLUGINS : undefined}
+      components={MARKDOWN_COMPONENTS}
+      urlTransform={urlTransform}
+    >
       {text}
     </ReactMarkdown>
   )
@@ -291,6 +305,9 @@ interface MessageItemProps {
   revealedToolCallIds?: ReadonlySet<string>
   /** Container-local image paths verified against image-bearing tool results. */
   embeddedImageAliases?: EmbeddedImageAliases
+  /** This row's provider error is the session's current one and a `ProviderErrorPlacement`
+   *  renders it elsewhere (e.g. composer). Skip the inline card so it does not show twice. */
+  suppressInlineError?: boolean
 }
 
 function resolveSubagentRun(
@@ -315,7 +332,7 @@ function resolveSubagentRun(
   }
 }
 
-function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall, readOnly, workDetailClassName, revealedToolCallIds, embeddedImageAliases }: MessageItemProps) {
+function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall, readOnly, workDetailClassName, revealedToolCallIds, embeddedImageAliases, suppressInlineError }: MessageItemProps) {
   useRenderTracker('MessageItem')
   const isUser = message.type === 'user'
   const isAssistant = message.type === 'assistant'
@@ -365,26 +382,45 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   const streamingSplit = isStreaming && text ? splitStreamingMarkdown(text) : null
 
   // Detect assistant messages that failed due to an LLM provider error (from SDK metadata)
-  const isProviderErrorMessage = isAssistant && !!message.apiError && PROVIDER_ERROR_CODES.has(message.apiError)
+  const isProviderErrorMessage = isAssistant && !!message.apiError && isProviderFacingError(message.apiError, message.errorPresentation)
+  // Only the session's current error is skipped here (its placement renders it). Older rows
+  // routed elsewhere stay in the transcript as the default inline card.
+  const showInlineError = isProviderErrorMessage && !suppressInlineError
+  const providerError = resolveProviderError(message.errorPresentation)
+  const InlineErrorComponent = providerError.placement === 'inline' ? providerError.Component : ProviderErrorCard
+  const hasInlineText = hasText && !(isProviderErrorMessage && !showInlineError)
+
+  // Read-aloud: a settled assistant reply gets a speaker button, and while it
+  // is the one being read its prose is dimmed and lights up as playback
+  // reaches each word. The word spans the highlight addresses exist only for
+  // that one reply, for as long as it is being read; every other reply is
+  // plain prose. (Re-rendering the reply at the live edge makes WebKit move
+  // the viewport; the follow engine attributes that move to the commit and
+  // puts it straight back — see COMMIT_ROLLBACK_WINDOW_MS.)
+  const canReadAloud = isAssistant && !!hasText && !isStreaming && !isProviderErrorMessage && !CustomUserRender
+  const isBeingRead = useIsBeingRead(message.id) && canReadAloud
+  const proseRef = useRef<HTMLDivElement>(null)
+  useSpokenWordHighlight(proseRef, isBeingRead)
 
   // Don't render assistant messages that have no text, no tool calls, and no
   // thinking (and aren't streaming). These are transient empty entries from
   // partially-persisted JSONL that will be filled in on the next refetch.
-  if (isAssistant && !hasText && toolCalls.length === 0 && thinking.length === 0 && !isStreaming) {
+  if (isAssistant && !hasInlineText && toolCalls.length === 0 && thinking.length === 0 && !isStreaming) {
     return null
   }
 
   // Skip rendering the text bubble for:
   // - assistant messages with only tool calls (no text) unless streaming
+  // - assistant provider errors routed to another placement
   // - user messages that only had attached files (text was fully stripped)
   const showMessageBubble = isUser
     ? (hasText || attachedFiles.length === 0)
-    : (hasText || isStreaming)
+    : (hasInlineText || isStreaming)
 
   return (
     <div
       className={cn(
-        'flex gap-3',
+        'group/message flex gap-3',
         isUser && 'flex-row-reverse !my-6'
       )}
       data-testid={isUser ? 'message-user' : isAssistant ? 'message-assistant' : undefined}
@@ -440,13 +476,13 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
               )}
 
               {/* LLM provider error display */}
-              {hasText && !CustomUserRender && isProviderErrorMessage && (
-                <ProviderErrorCard message={text} presentation={message.errorPresentation} />
+              {hasText && !CustomUserRender && showInlineError && (
+                <InlineErrorComponent message={text} presentation={message.errorPresentation} />
               )}
 
               {/* Text content */}
               {hasText && !CustomUserRender && !isProviderErrorMessage && (
-                <div dir="auto" className={PROSE_CLASS}>
+                <div ref={proseRef} dir="auto" className={cn(PROSE_CLASS, isBeingRead && 'read-aloud-prose')}>
                   {streamingSplit ? (
                     <>
                       {streamingSplit.settled.map((block, i) => (
@@ -471,6 +507,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                       text={text}
                       embeddedImageAliases={embeddedImageAliases}
                       agentSlug={agentSlug}
+                      spoken={isBeingRead}
                     />
                   )}
                   {isStreaming && (
@@ -487,14 +524,61 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
           </MessageContextMenu>
         )}
 
-        {/* Attached file chips for user messages */}
-        {isUser && attachedFiles.length > 0 && agentSlug && (
-          <div className="flex flex-wrap gap-1.5 justify-end">
-            {attachedFiles.map((filePath, idx) => (
-              <FileDownloadPill key={idx} filePath={filePath} agentSlug={agentSlug} />
-            ))}
+        {/* Read-aloud controls: revealed on hover, pinned while reading */}
+        {canReadAloud && (
+          <div
+            className={cn(
+              'flex items-center -mt-1 transition-opacity',
+              'opacity-0 group-hover/message:opacity-100 focus-within:opacity-100 touch:opacity-100',
+              isBeingRead && 'opacity-100',
+            )}
+          >
+            <ReadAloudControls messageId={message.id} markdown={text} />
           </div>
         )}
+
+        {/* Attached file chips for user messages */}
+        {isUser && attachedFiles.length > 0 && agentSlug && (() => {
+          // Files and images are laid out separately so a tall picture never
+          // stretches the chips sharing its row. Chips sit right under the
+          // text; images trail below: stacked at native aspect for up to three,
+          // a 3-column grid of squares beyond that.
+          const fileAttachments = attachedFiles.filter((f) => !isPreviewableImage(f))
+          const imageAttachments = attachedFiles.filter(isPreviewableImage)
+          return (
+            <>
+              {fileAttachments.length > 0 && (
+                <div className="flex flex-wrap items-start justify-end gap-2" data-testid="sent-files">
+                  {/* Keyed by position as well as path: attaching the same file
+                      twice is legal, and two chips sharing a key drop one. */}
+                  {fileAttachments.map((filePath, index) => (
+                    <SentAttachmentChip key={`${filePath}#${index}`} filePath={filePath} agentSlug={agentSlug} />
+                  ))}
+                </div>
+              )}
+              {imageAttachments.length > 0 && (() => {
+                const imageSize = imageSizeForCount(imageAttachments.length)
+                return (
+                  <div
+                    className={cn(
+                      imageSize === 'grid'
+                        // more than three: a 3-column grid of squares, right-aligned and bounded
+                        ? 'ml-auto grid w-full max-w-md grid-cols-3 gap-2'
+                        // up to three: stacked, each at native aspect
+                        : 'flex flex-col items-end gap-2',
+                    )}
+                    data-testid="sent-images"
+                    data-image-layout={imageSize}
+                  >
+                    {imageAttachments.map((filePath, index) => (
+                      <SentAttachmentChip key={`${filePath}#${index}`} filePath={filePath} agentSlug={agentSlug} imageSize={imageSize} />
+                    ))}
+                  </div>
+                )
+              })()}
+            </>
+          )
+        })()}
 
         {/* Mounted folder pills for user messages */}
         {isUser && mountedFolders.length > 0 && (

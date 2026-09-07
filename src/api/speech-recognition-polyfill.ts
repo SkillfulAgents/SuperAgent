@@ -11,7 +11,7 @@ export function getPolyfillJs(): string {
 // ---------------------------------------------------------------------------
 // Self-contained vanilla JS polyfill for the W3C SpeechRecognition API.
 // Runs inside dashboard iframes. Routes audio through the app's configured
-// STT provider (Deepgram / OpenAI / Platform) via /api/stt/token.
+// STT provider (Deepgram / OpenAI / Platform) via /api/voice/token.
 // ---------------------------------------------------------------------------
 
 const POLYFILL_SOURCE = /* js */ `(function () {
@@ -298,7 +298,7 @@ ${API_PREFIX_SNIPPET}
 
       // Absolute intentionally — reaches the Superagent API that served this
       // document, not the dashboard's own server
-      fetch(apiPrefix + "/api/stt/token")
+      fetch(apiPrefix + "/api/voice/token")
         .then(function (res) {
           if (!res.ok) {
             return res.json().catch(function () { return {}; }).then(function (body) {

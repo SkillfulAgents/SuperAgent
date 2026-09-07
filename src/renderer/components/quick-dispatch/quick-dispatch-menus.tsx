@@ -202,7 +202,7 @@ export function AttachMenu({
               ) : f.thumbnail ? (
                 <img src={f.thumbnail} alt="" className="h-5 w-5 shrink-0 rounded-sm object-cover" />
               ) : (
-                <FileTypeIcon filename={f.name} size={14} />
+                <FileTypeIcon filename={f.name} size="sm" className="text-muted-foreground" />
               )}
               <span className="truncate text-xs">{f.name}</span>
             </button>

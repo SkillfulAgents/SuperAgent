@@ -6,7 +6,7 @@ import { AppPage } from '../pages/app.page'
 // ---------------------------------------------------------------------------
 
 type DefaultApiPolicy = 'allow' | 'review' | 'block'
-type SttProvider = 'deepgram' | 'openai' | 'platform'
+type VoiceProvider = 'deepgram' | 'openai' | 'platform'
 
 interface GlobalSettingsSnapshot {
   app: {
@@ -17,7 +17,7 @@ interface GlobalSettingsSnapshot {
   customEnvVars: Record<string, string>
   shareAnalytics: boolean
   voice?: {
-    sttProvider?: SttProvider
+    sttProvider?: VoiceProvider
   }
 }
 

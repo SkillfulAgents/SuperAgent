@@ -191,7 +191,7 @@ import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-pr
 import { getActiveLlmProvider, resolveActiveProviderModel } from '@shared/lib/llm-provider'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
-import { isPathWithinDir, isRealPathWithinDir, sanitizeUploadFilename } from '@shared/lib/utils/path-safety'
+import { isPathWithinDir, isRealPathWithinDir, sanitizeUploadFilename, withUploadTimestamp } from '@shared/lib/utils/path-safety'
 import { AGENT_PACKAGE_EXTENSION, SKILL_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
 import { readAgentPreferences, updateAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { agentPreferencesUpdateSchema } from '@shared/lib/types/agent-preferences'
@@ -206,7 +206,7 @@ import { Readable, pipeline } from 'stream'
 import { pipeline as streamPipeline } from 'stream/promises'
 import pLimit from 'p-limit'
 import * as path from 'path'
-import { PROVIDER_ERROR_CODES, type ApiAgent } from '@shared/lib/types/api'
+import type { ApiAgent } from '@shared/lib/types/api'
 import type { SessionInfo, SessionMetadataMap } from '@shared/lib/types/agent'
 import { toPublicChatIntegration } from '@shared/lib/chat-integrations/public'
 import { toPublicWebhookTrigger } from '@shared/lib/webhook-triggers/public'
@@ -215,6 +215,7 @@ import {
   toAgentRemoteMcpDto,
 } from '@shared/lib/agent-connections/public'
 import { createSecretRequestSchema, updateSecretRequestSchema } from './secrets-schema'
+import type { Bookmark } from '@shared/lib/utils/bookmarks'
 
 const WorkspaceBookmarkSchema = z.object({
   name: z.string().min(1),
@@ -244,6 +245,14 @@ const WorkspaceBookmarkSchema = z.object({
 
 const WorkspaceBookmarksSchema = z.array(WorkspaceBookmarkSchema)
 type WorkspaceBookmark = z.infer<typeof WorkspaceBookmarkSchema>
+
+// The renderer's Bookmark is this shape with "exactly one of link/file/folder"
+// expressed in the type system rather than in the superRefine above, so the two
+// cannot be one declaration — but everything the renderer can construct has to
+// be something this schema accepts. If that stops holding this stops compiling,
+// which is what keeps the two definitions in step.
+type AssertAssignable<A extends B, B> = A
+type _RendererBookmarkIsWritable = AssertAssignable<Bookmark, WorkspaceBookmark>
 
 const WorkspaceFolderFileSchema = z.object({
   root: z.string().min(1),
@@ -2191,8 +2200,9 @@ const messagesListQuerySchema = z
 function attachProviderErrorPresentations(transformed: TransformedItem[]): void {
   for (const item of transformed) {
     // Holes serialize as null (JSON.stringify / streamJsonArrayResponse); skip so this walk does not 500.
-    if (!item || item.type !== 'assistant' || !item.apiError || !PROVIDER_ERROR_CODES.has(item.apiError)) continue
-    item.errorPresentation = getActiveLlmProvider().parseErrorResponse(undefined, item.content.text)
+    if (!item || item.type !== 'assistant' || !item.apiError) continue
+    item.errorPresentation =
+      getActiveLlmProvider().presentationForTurnError(undefined, item.content.text, item.apiError) ?? undefined
   }
 }
 
@@ -5925,7 +5935,7 @@ function resolveUploadDestPath(agentSlug: string, filename: string, relativePath
     // Single-file upload: collapse the untrusted name to a safe basename
     // (shared with the chat-attachment write path). isPathWithinDir below is
     // the defense-in-depth backstop.
-    uploadPath = `uploads/${Date.now()}-${sanitizeUploadFilename(filename)}`
+    uploadPath = `uploads/${withUploadTimestamp(sanitizeUploadFilename(filename))}`
   }
 
   const workspaceDir = getAgentWorkspaceDir(agentSlug)
@@ -6522,12 +6532,22 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
 
     // Advertise range support so media players (e.g. <video>) can seek. When the
     // client requests a byte range, serve just that slice as 206 Partial
-    // Content; otherwise stream the whole file. Only the stream we actually
-    // return is opened, so we never leak a dangling read descriptor.
+    // Content; otherwise stream the whole file.
     c.header('Accept-Ranges', 'bytes')
     const size = stat.size
     const rangeHeader = c.req.header('range')
     const parsedRange = rangeHeader ? parseByteRange(rangeHeader, size) : null
+
+    // Hono has no HEAD routing: its dispatcher answers a HEAD by running the
+    // GET handler and dropping the body (`new Response(null, await dispatch(…,
+    // 'GET'))`). A stream opened below would therefore be constructed, never
+    // read and never closed — Node's stream only closes its descriptor once the
+    // consumer drains or destroys it, so every HEAD of a file past the 64KB
+    // high-water mark leaks one fd for the life of the process. The headers are
+    // the entire answer to a HEAD anyway; return before opening anything.
+    // (`c.req.method` is the real method — the dispatcher overrides its routing
+    // key, not the request.)
+    const bodyless = c.req.method === 'HEAD'
 
     if (rangeHeader && !parsedRange) {
       // Unsatisfiable range → 416 with the valid extent so the client can retry.
@@ -6537,14 +6557,16 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
 
     if (parsedRange) {
       const { start, end } = parsedRange
-      const chunk = Readable.toWeb(fs.createReadStream(canonicalFile, { start, end })) as ReadableStream
       c.header('Content-Range', `bytes ${start}-${end}/${size}`)
       c.header('Content-Length', (end - start + 1).toString())
+      if (bodyless) return c.body(null, 206)
+      const chunk = Readable.toWeb(fs.createReadStream(canonicalFile, { start, end })) as ReadableStream
       return c.body(chunk, 206)
     }
 
-    const webStream = Readable.toWeb(fs.createReadStream(canonicalFile)) as ReadableStream
     c.header('Content-Length', size.toString())
+    if (bodyless) return c.body(null)
+    const webStream = Readable.toWeb(fs.createReadStream(canonicalFile)) as ReadableStream
     return c.body(webStream)
   } catch (error) {
     console.error('Failed to download file:', error)

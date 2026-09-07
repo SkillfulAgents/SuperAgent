@@ -5,9 +5,9 @@ import {
   type VoiceAgentAdapter,
   type VoiceAgentConfig,
   type VoiceAgentEvent,
-  type SttProvider,
+  type VoiceProvider,
 } from '@renderer/lib/voice-agent'
-import { acquireMicStream, float32ToInt16 } from '@renderer/lib/stt'
+import { acquireMicStream, float32ToInt16, pcm16ToFloat32 } from '@renderer/lib/stt'
 
 export type VoiceAgentState = 'idle' | 'connecting' | 'active' | 'error'
 export type SpeakingState = 'none' | 'user' | 'agent'
@@ -18,7 +18,7 @@ export interface VoiceAgentTranscriptEntry {
 }
 
 interface VoiceAgentCredentials {
-  provider: SttProvider
+  provider: VoiceProvider
   token: string
 }
 
@@ -224,7 +224,7 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
 
     try {
       // 1. Get Voice Agent token
-      const credRes = await apiFetch('/api/stt/voice-agent-token')
+      const credRes = await apiFetch('/api/voice/voice-agent-token')
       const credData: VoiceAgentCredentials | { error: string } = await credRes.json()
       if (!credRes.ok) {
         throw new Error(('error' in credData ? credData.error : null) || 'Failed to get Voice Agent credentials')
@@ -338,16 +338,6 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
     isActive: state === 'active',
     isConnecting: state === 'connecting',
   }
-}
-
-/** Convert Int16 PCM audio buffer to Float32 samples for Web Audio playback */
-function pcm16ToFloat32(buffer: ArrayBuffer): Float32Array {
-  const int16 = new Int16Array(buffer)
-  const float32 = new Float32Array(int16.length)
-  for (let i = 0; i < int16.length; i++) {
-    float32[i] = int16[i] / 0x8000
-  }
-  return float32
 }
 
 /** Build an AnalyserNode for visualizing agent audio playback and wire it to the context destination. */

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { toast } from 'sonner'
+import { TooltipProvider } from '@renderer/components/ui/tooltip'
 import { CopyFileButton } from './copy-file-button'
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
@@ -15,7 +16,10 @@ let writeText: ReturnType<typeof vi.fn>
 function renderButton() {
   return render(
     <QueryClientProvider client={queryClient}>
-      <CopyFileButton fileUrl={FILE_URL} displayName="notes.md" />
+      {/* The button shares the action row's provider rather than carrying one. */}
+      <TooltipProvider>
+        <CopyFileButton fileUrl={FILE_URL} displayName="notes.md" />
+      </TooltipProvider>
     </QueryClientProvider>,
   )
 }

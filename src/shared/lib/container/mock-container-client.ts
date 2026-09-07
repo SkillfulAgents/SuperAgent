@@ -2033,32 +2033,40 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     ['deliver file', new ToolUseScenario(
       'mcp__user-input__deliver_file',
       { filePath: '/workspace/output/report.md', description: 'Generated report' },
-      'File delivered successfully (size: 150 bytes)',
+      'File "output/report.md" (150 bytes) has been delivered to the user. They can now download it from the chat.\n\nDelivered: {"sizeBytes":150}',
       'I\'ve delivered the report for your review.'
     )],
     ['deliver image', new ToolUseScenario(
       'mcp__user-input__deliver_file',
       { filePath: '/workspace/output/chart.png', description: 'Sales chart' },
-      'File delivered successfully (size: 2048 bytes)',
+      'File "output/chart.png" (2048 bytes) has been delivered to the user. They can now download it from the chat.\n\nDelivered: {"sizeBytes":2048}',
       'Here is the sales chart.'
     )],
     ['deliver csv', new ToolUseScenario(
       'mcp__user-input__deliver_file',
       { filePath: '/workspace/output/data.csv', description: 'Contacts export' },
-      'File delivered successfully (size: 256 bytes)',
+      'File "output/data.csv" (256 bytes) has been delivered to the user. They can now download it from the chat.\n\nDelivered: {"sizeBytes":256}',
       'Here is the contacts export.'
     )],
     ['deliver video', new ToolUseScenario(
       'mcp__user-input__deliver_file',
       { filePath: '/workspace/output/clip.mp4', description: 'Demo clip' },
-      'File delivered successfully (size: 4096 bytes)',
+      'File "output/clip.mp4" (4096 bytes) has been delivered to the user. They can now download it from the chat.\n\nDelivered: {"sizeBytes":4096}',
       'Here is the demo clip.'
     )],
     ['deliver audio', new ToolUseScenario(
       'mcp__user-input__deliver_file',
       { filePath: '/workspace/output/voice-note.mp3', description: 'Voice note' },
-      'File delivered successfully (size: 4096 bytes)',
+      'File "output/voice-note.mp3" (4096 bytes) has been delivered to the user. They can now download it from the chat.\n\nDelivered: {"sizeBytes":4096}',
       'Here is the voice note.'
+    )],
+    // A file the drawer cannot render, so its row offers a download instead of
+    // pointing at the preview. The other deliver scenarios are all previewable.
+    ['deliver archive', new ToolUseScenario(
+      'mcp__user-input__deliver_file',
+      { filePath: '/workspace/output/bundle.zip', description: 'Project archive' },
+      'File "output/bundle.zip" (8192 bytes) has been delivered to the user. They can now download it from the chat.\n\nDelivered: {"sizeBytes":8192}',
+      'Here is the project archive.'
     )],
     // API error scenarios
     ['auth error', new ApiErrorScenario('authentication_failed', 'Invalid API key')],

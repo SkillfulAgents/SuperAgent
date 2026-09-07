@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { userSettings } from '@shared/lib/db/schema'
 import { getSettings } from '@shared/lib/config/settings'
+import { ttsSpeedSchema } from '@shared/lib/voice/tts-preferences'
 
 // ─── Schema ──────────────────────────────────────────────────────────────────
 
@@ -77,6 +78,33 @@ export const agentFolderSettingsWriteSchema = z.object({
   collapsedAgentFolders: z.array(z.string()).optional(),
 })
 
+/**
+ * Read-aloud preferences. Each field falls back alone: a malformed value
+ * must not take the user's other settings with it. The voice is a provider
+ * voice id, kept as stored: which ids are valid is the configured provider's
+ * business, so the token endpoint asks it and falls back from there. The
+ * API validates writes strictly instead.
+ */
+const userVoiceSettingsSchema = z
+  .object({
+    ttsVoice: z.string().min(1).optional().catch(undefined),
+    ttsSpeed: ttsSpeedSchema.optional().catch(undefined),
+  })
+  .optional()
+  .catch(undefined)
+
+/** A write: `ttsVoice: null` goes back to following the deployment default. */
+export const userVoiceSettingsWriteSchema = z.object({
+  voice: z
+    .object({
+      ttsVoice: z.string().min(1).nullable().optional(),
+      ttsSpeed: ttsSpeedSchema.optional(),
+    })
+    .strict()
+    .optional(),
+})
+export type UserVoiceSettingsWrite = NonNullable<z.infer<typeof userVoiceSettingsWriteSchema>['voice']>
+
 export const userSettingsSchema = z.object({
   theme: z.enum(['system', 'light', 'dark']).default('system'),
   notifications: notificationSettingsSchema.default({
@@ -148,6 +176,7 @@ export const userSettingsSchema = z.object({
   defaultApiPolicy: z.enum(['allow', 'review', 'block']).default('review'),
   defaultMcpPolicy: z.enum(['allow', 'review', 'block']).default('review'),
   keepAwakeEnabled: z.boolean().default(false),
+  voice: userVoiceSettingsSchema,
   onboardingProgress: z.object({
     path: z.enum(['manual', 'platform']),
     stepId: z.string(),
@@ -155,6 +184,8 @@ export const userSettingsSchema = z.object({
 })
 
 export type UserSettingsData = z.infer<typeof userSettingsSchema>
+/** What a write may carry: the stored shape, except the voice may be unset with null. */
+export type UserSettingsWrite = Omit<Partial<UserSettingsData>, 'voice'> & { voice?: Partial<UserVoiceSettingsWrite> }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -238,19 +269,32 @@ export function getUserSettings(userId: string): UserSettingsData {
 /**
  * Update user settings with a partial update. Merges with existing, validates, and upserts.
  */
+/** Merge a voice write; a null voice means "unset", not "store null". */
+function mergeVoice(
+  current: UserSettingsData['voice'],
+  patch: Partial<UserVoiceSettingsWrite>,
+): UserSettingsData['voice'] {
+  const { ttsVoice, ...rest } = patch
+  const merged = { ...current, ...rest }
+  if (ttsVoice === null) delete merged.ttsVoice
+  else if (ttsVoice !== undefined) merged.ttsVoice = ttsVoice
+  return merged
+}
+
 export function updateUserSettings(
   userId: string,
-  partial: Partial<UserSettingsData>
+  partial: UserSettingsWrite
 ): UserSettingsData {
   const current = getUserSettings(userId)
 
-  // Deep merge notifications if provided
+  // Deep merge the nested groups if provided
   const merged = {
     ...current,
     ...partial,
     notifications: partial.notifications
       ? { ...current.notifications, ...partial.notifications }
       : current.notifications,
+    voice: partial.voice ? mergeVoice(current.voice, partial.voice) : current.voice,
   }
 
   const validated = userSettingsSchema.parse(merged)

@@ -1,7 +1,7 @@
 // --- Types ---
 
-import type { SttProvider } from '@shared/lib/config/settings'
-export type { SttProvider }
+import type { VoiceProvider } from '@shared/lib/config/settings'
+export type { VoiceProvider }
 
 const CONNECT_TIMEOUT_MS = 10_000
 
@@ -392,7 +392,7 @@ class OpenaiAdapter extends WebSocketSttAdapter {
 
 // --- Factory ---
 
-export function createSttAdapter(provider: SttProvider): SttAdapter {
+export function createSttAdapter(provider: VoiceProvider): SttAdapter {
   switch (provider) {
     case 'deepgram':
     case 'platform':
@@ -400,7 +400,7 @@ export function createSttAdapter(provider: SttProvider): SttAdapter {
     case 'openai':
       return new OpenaiAdapter()
     default:
-      throw new Error(`Unknown STT provider: ${provider}`)
+      throw new Error(`Unknown voice provider: ${provider}`)
   }
 }
 
@@ -414,6 +414,16 @@ export function float32ToInt16(float32: Float32Array): Int16Array {
     int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF
   }
   return int16
+}
+
+/** Convert Int16 PCM audio to Float32 samples [-1, 1] for Web Audio playback */
+export function pcm16ToFloat32(buffer: ArrayBuffer): Float32Array {
+  const int16 = new Int16Array(buffer)
+  const float32 = new Float32Array(int16.length)
+  for (let i = 0; i < int16.length; i++) {
+    float32[i] = int16[i] / 0x8000
+  }
+  return float32
 }
 
 export interface AudioCaptureHandle {

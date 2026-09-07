@@ -80,7 +80,7 @@ export function AgentCreationAids({
   const startVoiceAgent = useCallback(async () => {
     onAidOpened?.()
     try {
-      const res = await apiFetch('/api/stt/voice-agent-prompt?name=create-agent')
+      const res = await apiFetch('/api/voice/voice-agent-prompt?name=create-agent')
       if (!res.ok) throw new Error('Failed to load voice agent prompt')
       const { prompt } = (await res.json()) as { prompt: string }
       setVoiceAgentConfig({

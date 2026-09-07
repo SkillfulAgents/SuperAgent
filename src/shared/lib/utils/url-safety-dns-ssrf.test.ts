@@ -57,7 +57,7 @@ describe('validateMcpDiscoveryUrl DNS resolve (SSRF)', () => {
   })
 
   it('allows localhost under E2E_MOCK even when DNS returns loopback', async () => {
-    process.env.E2E_MOCK = '1'
+    process.env.E2E_MOCK = 'true'
     lookupMock.mockResolvedValue({ address: '127.0.0.1', family: 4 })
 
     const parsed = await validateMcpDiscoveryUrl('http://localhost:3100/mcp')

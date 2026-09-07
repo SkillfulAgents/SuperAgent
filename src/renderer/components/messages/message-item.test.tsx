@@ -35,6 +35,15 @@ vi.mock('./tool-call-item', () => ({
   ),
 }))
 
+// Stub the chip: these cover how the message lays attachments out, not how a
+// single chip draws itself (sent-attachment-chip.test.tsx does that).
+vi.mock('./sent-attachment-chip', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./sent-attachment-chip')>()),
+  SentAttachmentChip: ({ filePath }: { filePath: string }) => (
+    <div data-testid="file-pill" data-file-path={filePath} />
+  ),
+}))
+
 // Mock MessageContextMenu to just render children
 vi.mock('./message-context-menu', () => ({
   MessageContextMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -48,19 +57,59 @@ vi.mock('@renderer/components/ui/tooltip', () => ({
   TooltipContent: ({ children }: { children: React.ReactNode }) => <span data-testid="tooltip-content">{children}</span>,
 }))
 
-const platformAuth = {
-  connected: false as boolean,
-  platformBaseUrl: 'https://platform.example.com' as string | null,
-  orgId: 'org_123' as string | null,
-}
+const platformAuth = { connected: false as boolean }
+const BILLING_URL = 'https://platform.example.com/dashboard/organizations/org_123?tab=billing'
 
 vi.mock('@renderer/hooks/use-platform-auth', () => ({
   usePlatformAuthStatus: () => ({ data: platformAuth }),
 }))
 
+// Read-aloud: the availability query and the playback store are replaced with
+// switches so these tests need neither a QueryClient nor an audio stack.
+const readAloudState = {
+  configured: false,
+  activeId: null as string | null,
+  status: 'speaking' as 'speaking' | 'paused' | 'connecting',
+  error: null as string | null,
+  toggle: vi.fn(),
+  pause: vi.fn(),
+  resume: vi.fn(),
+}
+
+vi.mock('@renderer/hooks/use-voice-input', () => ({
+  useIsTtsConfigured: () => readAloudState.configured,
+}))
+
+vi.mock('@renderer/hooks/use-read-aloud', () => ({
+  useIsBeingRead: (id: string) => readAloudState.activeId === id,
+  useReadAloud: (id: string) => ({
+    status: readAloudState.activeId === id ? readAloudState.status : 'idle',
+    isActive: readAloudState.activeId === id,
+    toggle: readAloudState.toggle,
+    pause: readAloudState.pause,
+    resume: readAloudState.resume,
+    error: readAloudState.error,
+  }),
+  useSpokenWordHighlight: () => {},
+  readAloud: { restart: vi.fn() },
+}))
+
+// The speed picker inside the controls reads user settings (react-query).
+vi.mock('@renderer/hooks/use-user-settings', () => ({
+  useUserSettings: () => ({ data: { voice: { ttsSpeed: 1.2 } } }),
+  useUpdateUserSettings: () => ({ mutate: vi.fn() }),
+}))
+
 describe('MessageItem', () => {
   beforeEach(() => {
     platformAuth.connected = false
+    readAloudState.configured = false
+    readAloudState.activeId = null
+    readAloudState.status = 'speaking'
+    readAloudState.error = null
+    readAloudState.toggle.mockReset()
+    readAloudState.pause.mockReset()
+    readAloudState.resume.mockReset()
   })
 
   describe('user messages', () => {
@@ -74,6 +123,47 @@ describe('MessageItem', () => {
       const msg = createUserMessage({ content: { text: 'Hello world' } })
       render(<MessageItem message={msg} />)
       expect(screen.getByText('Hello world')).toBeInTheDocument()
+    })
+  })
+
+  describe('attachments on a sent message', () => {
+    const withFiles = (...paths: string[]) =>
+      createUserMessage({ content: { text: `look\n\n[Attached files:]\n${paths.map((p) => `- ${p}`).join('\n')}` } })
+
+    it('splits pictures from files so a tall image never stretches the chips', () => {
+      render(<MessageItem message={withFiles('/workspace/uploads/1-a.png', '/workspace/uploads/1-b.pdf')} agentSlug="a1" />)
+      const files = screen.getByTestId('sent-files').querySelectorAll('[data-file-pill], [data-testid="file-pill"]')
+      const images = screen.getByTestId('sent-images').querySelectorAll('[data-testid="file-pill"]')
+      expect([...files].map((el) => el.getAttribute('data-file-path'))).toEqual(['/workspace/uploads/1-b.pdf'])
+      expect([...images].map((el) => el.getAttribute('data-file-path'))).toEqual(['/workspace/uploads/1-a.png'])
+    })
+
+    it('lays four or more images out as a grid', () => {
+      const paths = ['a', 'b', 'c', 'd'].map((n) => `/workspace/uploads/1-${n}.png`)
+      render(<MessageItem message={withFiles(...paths)} agentSlug="a1" />)
+      expect(screen.getByTestId('sent-images')).toHaveAttribute('data-image-layout', 'grid')
+      expect(screen.getAllByTestId('file-pill')).toHaveLength(4)
+    })
+
+    // Attaching the same file twice is legal, and a key of the path alone
+    // collides. React still paints both on a first render, so the defect shows
+    // as its duplicate-key warning — and as reconciliation reusing the wrong
+    // chip once the list changes.
+    it.each([
+      ['files', '/workspace/uploads/1-a.pdf'],
+      ['pictures', '/workspace/uploads/1-a.png'],
+    ])('keys repeated %s apart', (_kind, filePath) => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        render(<MessageItem message={withFiles(filePath, filePath)} agentSlug="a1" />)
+        expect(screen.getAllByTestId('file-pill')).toHaveLength(2)
+        const warnings = consoleError.mock.calls
+          .map((args) => args.join(' '))
+          .filter((message) => message.includes('same key'))
+        expect(warnings).toEqual([])
+      } finally {
+        consoleError.mockRestore()
+      }
     })
   })
 
@@ -166,6 +256,115 @@ describe('MessageItem', () => {
       const { container } = render(<MessageItem message={msg} isStreaming />)
       const cursor = container.querySelector('.animate-pulse')
       expect(cursor).toBeTruthy()
+    })
+  })
+
+  describe('read aloud', () => {
+    it('offers a speaker button under a settled assistant reply when speech is configured', () => {
+      readAloudState.configured = true
+      const msg = createAssistantMessage({ content: { text: 'Hello **there**.' } })
+      render(<MessageItem message={msg} />)
+      const button = screen.getByTestId('read-aloud-button')
+      expect(button).toHaveAttribute('aria-label', 'Read aloud')
+      expect(button).toHaveAttribute('data-status', 'idle')
+      button.click()
+      expect(readAloudState.toggle).toHaveBeenCalledTimes(1)
+    })
+
+    it('shows nothing when the voice provider cannot speak', () => {
+      const msg = createAssistantMessage({ content: { text: 'Hello there.' } })
+      render(<MessageItem message={msg} />)
+      expect(screen.queryByTestId('read-aloud-button')).toBeNull()
+    })
+
+    it('never offers it on user messages, streaming text, or provider errors', () => {
+      readAloudState.configured = true
+      const { unmount } = render(<MessageItem message={createUserMessage({ content: { text: 'hi' } })} />)
+      expect(screen.queryByTestId('read-aloud-button')).toBeNull()
+      unmount()
+
+      const streaming = render(<MessageItem message={createAssistantMessage({ content: { text: 'partial' } })} isStreaming />)
+      expect(screen.queryByTestId('read-aloud-button')).toBeNull()
+      streaming.unmount()
+
+      render(<MessageItem message={createAssistantMessage({ content: { text: 'boom' }, apiError: 'rate_limit' })} />)
+      expect(screen.queryByTestId('read-aloud-button')).toBeNull()
+    })
+
+    it('renders the word spans and dims the prose only for the reply being read', () => {
+      readAloudState.configured = true
+      const msg = createAssistantMessage({ content: { text: 'Hello **bright** world' } })
+      // Idle: plain prose, nothing addressable, no dimming.
+      const idle = render(<MessageItem message={msg} />)
+      expect(idle.container.querySelector('[data-spoken-word]')).toBeNull()
+      expect(idle.container.querySelector('.read-aloud-prose')).toBeNull()
+      idle.unmount()
+
+      readAloudState.activeId = msg.id
+      const { container } = render(<MessageItem message={msg} />)
+      expect(container.querySelector('.read-aloud-prose')).not.toBeNull()
+      const words = Array.from(container.querySelectorAll<HTMLElement>('[data-spoken-word]'))
+      expect(words.map((w) => w.textContent)).toEqual(['Hello', 'bright', 'world'])
+      expect(words.map((w) => w.dataset.spokenWord)).toEqual(['0', '1', '2'])
+      expect(screen.queryByTestId('read-aloud-button')).toBeNull()
+      expect(screen.getByTestId('read-aloud-stop')).toBeInTheDocument()
+    })
+
+    it('while reading, offers pause, stop, and the speed picker; paused offers resume', () => {
+      readAloudState.configured = true
+      const msg = createAssistantMessage({ content: { text: 'Hello there world' } })
+      readAloudState.activeId = msg.id
+      const speaking = render(<MessageItem message={msg} />)
+      expect(screen.queryByTestId('read-aloud-resume')).toBeNull()
+      screen.getByTestId('read-aloud-pause').click()
+      expect(readAloudState.pause).toHaveBeenCalledTimes(1)
+      expect(screen.getByTestId('read-aloud-speed')).toHaveTextContent('1.2×')
+      screen.getByTestId('read-aloud-stop').click()
+      expect(readAloudState.toggle).toHaveBeenCalledTimes(1)
+      speaking.unmount()
+
+      readAloudState.status = 'paused'
+      render(<MessageItem message={msg} />)
+      expect(screen.queryByTestId('read-aloud-pause')).toBeNull()
+      screen.getByTestId('read-aloud-resume').click()
+      expect(readAloudState.resume).toHaveBeenCalledTimes(1)
+    })
+
+    it('shows what went wrong next to the speaker button', () => {
+      readAloudState.configured = true
+      const msg = createAssistantMessage({ content: { text: 'Hello there world' } })
+      const quiet = render(<MessageItem message={msg} />)
+      expect(screen.queryByTestId('read-aloud-error')).toBeNull()
+      quiet.unmount()
+
+      readAloudState.error = 'Deepgram key revoked'
+      render(<MessageItem message={msg} />)
+      expect(screen.getByTestId('read-aloud-error')).toHaveTextContent('Deepgram key revoked')
+      expect(screen.getByTestId('read-aloud-button')).toBeInTheDocument()
+    })
+
+    it('mounts only the speaker while idle', () => {
+      readAloudState.configured = true
+      render(<MessageItem message={createAssistantMessage({ content: { text: 'Hello there world' } })} />)
+      expect(screen.getByTestId('read-aloud-button')).toBeInTheDocument()
+      for (const id of ['read-aloud-pause', 'read-aloud-resume', 'read-aloud-stop', 'read-aloud-speed']) {
+        expect(screen.queryByTestId(id)).toBeNull()
+      }
+    })
+
+    it('leaves other messages plain while one is being read', () => {
+      readAloudState.configured = true
+      readAloudState.activeId = 'some-other-message'
+      const msg = createAssistantMessage({ content: { text: 'Hello world' } })
+      const { container } = render(<MessageItem message={msg} />)
+      expect(container.querySelector('.read-aloud-prose')).toBeNull()
+      expect(container.querySelector('[data-spoken-word]')).toBeNull()
+    })
+
+    it('adds no spans when speech is not configured', () => {
+      const msg = createAssistantMessage({ content: { text: 'Hello world' } })
+      const { container } = render(<MessageItem message={msg} />)
+      expect(container.querySelector('[data-spoken-word]')).toBeNull()
     })
   })
 
@@ -459,13 +658,12 @@ describe('MessageItem', () => {
     })
 
     it('renders an orange spend-limit card from a server-attached presentation', () => {
-      platformAuth.connected = true
       const spendCap =
         'API Error: Request rejected (429) · A spend cap for this workspace was reached. It resets within 30 days. Ask a workspace admin to raise it.'
       const msg = createAssistantMessage({
         content: { text: spendCap },
         apiError: 'rate_limit',
-        errorPresentation: parsePlatformErrorResponse(429, spendCap)!,
+        errorPresentation: parsePlatformErrorResponse(429, spendCap, BILLING_URL)!,
       })
       render(<MessageItem message={msg} />)
       const card = screen.getByTestId('provider-error-card')
@@ -475,6 +673,46 @@ describe('MessageItem', () => {
       expect(card).toHaveAttribute('data-severity', 'warning')
       expect(card).toHaveClass('bg-orange-50', 'dark:bg-orange-950')
       expect(screen.getByRole('link', { name: /raise spend limit/i })).toBeInTheDocument()
+    })
+
+    it('renders the provider card for a generic SDK code when a presentation is attached', () => {
+      const msg = createAssistantMessage({
+        content: { text: 'API Error: 402' },
+        apiError: 'unknown',
+        errorPresentation: { severity: 'error', message: '**Attached**', icon: 'info' },
+      })
+      render(<MessageItem message={msg} />)
+      expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Attached')
+    })
+
+    it('renders nothing in the stream while its composer-routed error is shown by the placement', () => {
+      const msg = createAssistantMessage({
+        content: { text: 'API Error: 402 insufficient balance' },
+        apiError: 'billing_error',
+        errorPresentation: { severity: 'error', message: '**Routed**', icon: 'info', placement: 'composer' },
+      })
+      const { container } = render(<MessageItem message={msg} suppressInlineError />)
+      expect(container.innerHTML).toBe('')
+    })
+
+    it('keeps a composer-routed error in the transcript as the default card once it is no longer current', () => {
+      const msg = createAssistantMessage({
+        content: { text: 'API Error: 402 insufficient balance' },
+        apiError: 'billing_error',
+        errorPresentation: { severity: 'error', message: '**Routed**', icon: 'info', placement: 'composer' },
+      })
+      render(<MessageItem message={msg} />)
+      expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Routed')
+    })
+
+    it('still renders the inline card when placement is explicitly inline', () => {
+      const msg = createAssistantMessage({
+        content: { text: 'API Error: 429' },
+        apiError: 'rate_limit',
+        errorPresentation: { severity: 'error', message: '**Explicit inline**', icon: 'info', placement: 'inline' },
+      })
+      render(<MessageItem message={msg} />)
+      expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Explicit inline')
     })
 
     it('falls back to the generic provider banner when no presentation is attached', () => {

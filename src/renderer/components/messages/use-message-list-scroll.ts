@@ -39,10 +39,14 @@ const TURN_ANCHOR_TOP = 100
 //     touch momentum) classifies a scroll event as the user's only when the
 //     geometry was stable AND some input recently touched the scroller: our
 //     own writes always update the baseline in the same statement, a browser
-//     clamp only ever fires in a frame where scrollHeight or clientHeight
+//     clamp normally fires in a frame where scrollHeight or clientHeight
 //     changed, and WebKit's async scrolling can roll a write back with no
 //     input at all — upward + stable + fresh input is the reader leaving;
 //     upward + stable + no input is the engine, and following converges back.
+//     WebKit can also move the viewport off one of OUR OWN DOM commits with
+//     the geometry already back in place by the time the event fires; that
+//     one is caught and undone at the commit itself, before it paints (see
+//     the MutationObserver below).
 //   - FOLLOWING is convergent: while engaged, every content or viewport
 //     resize re-pins the live edge with a single instant write. A missed or
 //     misread event can cost one frame, never a dead latch.
@@ -265,8 +269,18 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
   const pointerDownPosRef = useRef<{ x: number; y: number } | null>(null)
   const pointerOnScrollbarRef = useRef(false)
   // Any input that reached the scroller — wheel (either direction), scroll
-  // key, pointer press, touch. The backstop's release requires this to be
-  // fresh; see INPUT_EVIDENCE_WINDOW_MS.
+  // key, scrollbar press, content drag, touch. The backstop's release
+  // requires this to be fresh; see INPUT_EVIDENCE_WINDOW_MS. A bare click on
+  // the content (press + release, no motion) is deliberately NOT evidence:
+  // it cannot scroll, but it can change the transcript (a toggle, a button
+  // under a reply), and WebKit re-clamps the scroller mid-commit when the
+  // changed row sits at the live edge — a size-stable upward scroll event a
+  // few ms after the release. With the click counted as input, that clamp
+  // read as the reader escaping and killed following (reproduced with the
+  // read-aloud speaker button, WebKit only). The held press itself still
+  // counts while it lasts: a thumb drag on an overlay scrollbar and a
+  // selection autoscroll deliver scroll events under a held button with no
+  // pointer motion of their own.
   const lastInputAtRef = useRef(0)
   const touchActiveRef = useRef(false)
   const touchSettleTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -880,6 +894,50 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
     return () => observer.disconnect()
   }, [pinToLiveEdge, isLoading, error])
 
+  // WebKit moves the viewport off our OWN DOM commits. Re-rendering the reply
+  // at the live edge (its speaker button swapped for the playback strip, its
+  // prose words wrapped in spans) has been recorded landing the scroller on
+  // that reply's TOP — 143px up for a short reply, 2280px for a long one —
+  // with scrollHeight and clientHeight unchanged, no input anywhere, no JS
+  // scroll call or focus change behind it (traced), and the engine quiet.
+  // Chromium never moves. By the time the scroll event fires that is the
+  // exact shape of an outside programmatic jump, and classifying it there
+  // (a "commit happened recently" window) also swallowed genuine outside
+  // scrolls racing transcript churn — a test's scrollIntoView on a request
+  // card while the working indicator ticked. So it is caught where it can
+  // be told apart: the MutationObserver microtask runs right after the
+  // mutating task, before anything else can scroll, and at that point the
+  // move is already visible (traced: scrollTop had moved, scrollHeight had
+  // not). A size-stable upward displacement seen there, while following
+  // with no input behind it, is the browser's reaction to our render: put
+  // the viewport straight back before it paints. Attributes are left out on
+  // purpose — a class flip that changes layout does so with a size change
+  // the pin already covers, and the ones that don't (a word lighting up as
+  // it is read) would only churn the callback.
+  useEffect(() => {
+    const content = contentRef.current
+    if (!content || typeof MutationObserver === 'undefined') return
+    const observer = new MutationObserver(() => {
+      const el = scrollRef.current
+      const baseline = baselineRef.current
+      if (!el || !baseline || !followingRef.current || glideRef.current) return
+      if (
+        pointerDownRef.current ||
+        touchActiveRef.current ||
+        performance.now() - lastInputAtRef.current < INPUT_EVIDENCE_WINDOW_MS
+      ) {
+        return
+      }
+      const sizeStable =
+        baseline.scrollHeight === el.scrollHeight && baseline.clientHeight === el.clientHeight
+      if (!sizeStable || el.scrollTop >= baseline.scrollTop - 1) return
+      writeScrollTop(el, Math.min(baseline.scrollTop, liveEdgeTarget(el)))
+      rememberPosition()
+    })
+    observer.observe(content, { subtree: true, childList: true, characterData: true })
+    return () => observer.disconnect()
+  }, [isLoading, error, writeScrollTop, rememberPosition])
+
   // Markdown, images, and expanded tool cards can change height without a
   // message-state update — and the spacer math depends on the viewport's
   // clientHeight, so window resizes matter too. Feed both through the same
@@ -963,21 +1021,24 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
   // Scrollbar interactions emit no wheel/key events — track the held pointer.
   // A press in the scrollbar gutter suspends pinning outright (track clicks
   // page without any pointer motion); a content press only counts once it
-  // actually drags. A motionless press — or one whose release was swallowed
-  // by a native context menu or a focus change — must never own the viewport
-  // indefinitely.
+  // actually drags, and only a gutter press or a drag leaves input evidence
+  // behind (see lastInputAtRef: a bare click must not). A motionless press —
+  // or one whose release was swallowed by a native context menu or a focus
+  // change — must never own the viewport indefinitely.
   const handlePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return
     const el = scrollRef.current
     pointerDownRef.current = true
     pointerDragRef.current = false
     pointerDownPosRef.current = { x: event.clientX, y: event.clientY }
-    lastInputAtRef.current = performance.now()
     pointerOnScrollbarRef.current =
       !!el &&
       el.clientWidth > 0 &&
       event.clientX >= el.getBoundingClientRect().left + el.clientWidth
-    if (pointerOnScrollbarRef.current) cancelGlide()
+    if (pointerOnScrollbarRef.current) {
+      lastInputAtRef.current = performance.now()
+      cancelGlide()
+    }
   }, [cancelGlide])
   useEffect(() => {
     const release = () => {
@@ -999,6 +1060,7 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
         return
       }
       pointerDragRef.current = true
+      lastInputAtRef.current = performance.now()
       glideRef.current?.cancel()
     }
     window.addEventListener('pointerup', release)
