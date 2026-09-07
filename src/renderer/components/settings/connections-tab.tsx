@@ -1,6 +1,6 @@
 import { useMemo, useEffect, useCallback } from 'react'
 import { useNavigate, useSearch } from '@tanstack/react-router'
-import { ChevronRight, Loader2, Zap } from 'lucide-react'
+import { Loader2, Zap } from 'lucide-react'
 import { PolicyDecisionDropdown } from '@renderer/components/ui/policy-decision-toggle'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import {
@@ -8,7 +8,7 @@ import {
   useTriggerCountsPerAccount,
 } from '@renderer/hooks/use-connected-accounts'
 import { useRemoteMcps } from '@renderer/hooks/use-remote-mcps'
-import { IntegrationList } from '@renderer/components/connections/integration-row'
+import { IntegrationList, RowHoverChevron } from '@renderer/components/connections/integration-row'
 import { NewIntegrationButton } from '@renderer/components/connections/connections-list'
 import { FeaturedServicesStack } from '@renderer/components/connections/featured-services-stack'
 import { ConnectionRow } from '@renderer/components/connections/connection-row'
@@ -141,12 +141,7 @@ export function ConnectionsTab() {
             ) : activityPending ? (
               <ActivitySparkChartSkeleton />
             ) : null}
-            <span
-              aria-hidden="true"
-              className="flex justify-center overflow-hidden w-0 opacity-0 transition-all duration-200 ease-out group-hover:w-4 group-hover:opacity-100 group-focus-visible:w-4 group-focus-visible:opacity-100"
-            >
-              <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-            </span>
+            <RowHoverChevron />
           </>
         }
       />

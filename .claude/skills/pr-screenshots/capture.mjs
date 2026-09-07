@@ -39,6 +39,8 @@
  *   { "clickTestId": "wizard-next" }     [data-testid=...]
  *   { "clickSelector": "css" }
  *   { "hover": "Visible text" }
+ *   { "hoverSelector": "css" }
+ *   { "contextMenuSelector": "css" }    right-click (opens a context menu)
  *   { "fill": { "selector": "css", "value": "text" } }
  *   { "type": "text" }                    keyboard.type into the focused element
  *   { "press": "Enter" }
@@ -145,6 +147,8 @@ async function runStep(page, step) {
   if ('clickTestId' in step) return page.locator(`[data-testid="${step.clickTestId}"]`).first().click()
   if ('clickSelector' in step) return page.locator(step.clickSelector).first().click()
   if ('hover' in step) return byText(page, step.hover).hover()
+  if ('hoverSelector' in step) return page.locator(step.hoverSelector).first().hover()
+  if ('contextMenuSelector' in step) return page.locator(step.contextMenuSelector).first().click({ button: 'right' })
   if ('fill' in step) return page.locator(step.fill.selector).first().fill(step.fill.value)
   if ('type' in step) return page.keyboard.type(step.type, { delay: 20 })
   if ('press' in step) return page.keyboard.press(step.press)
