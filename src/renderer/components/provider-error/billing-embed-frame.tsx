@@ -12,8 +12,8 @@ type BillingEmbedEvent = 'ready' | 'billing-updated' | 'session-expired' | 'resi
 
 const FRAME_MIN_HEIGHT = 64
 const FRAME_MAX_HEIGHT = 640
-// Until the page reports its height: about the size of the top-up panel.
-const FRAME_DEFAULT_HEIGHT = 200
+// Until the page reports its height: the size of the top-up panel with a card on file.
+const FRAME_DEFAULT_HEIGHT = 300
 
 interface EmbedMessage {
   event: BillingEmbedEvent

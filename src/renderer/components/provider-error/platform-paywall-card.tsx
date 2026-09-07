@@ -158,7 +158,10 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
           data-testid="paywall-card"
           data-blocked={billing.blocked}
           data-embedded={embedded}
-          className="relative flex flex-col gap-3 rounded-xl border bg-card px-5 py-4 shadow-sm"
+          className={cn(
+            'relative flex flex-col gap-3 rounded-xl border bg-card px-5 py-4 shadow-sm',
+            embedded && 'gap-5 pb-6',
+          )}
         >
           <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
             <div className="min-w-0 flex-1 basis-60">
