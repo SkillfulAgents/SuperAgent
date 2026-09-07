@@ -1,17 +1,23 @@
 {
   "storyId": "browser-test",
-  "passed": false,
-  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: s successful response.\n\n**No bugs found.** The browser-use feature is working correctly. The agent successfully:\n- Opened a browser session\n- Navigated to https://example.com\n- Retrieved the correct page title: \"Example Domain\"\n- Closed the browser session\n- Returned the expected result to the user\n",
-  "steps": [],
+  "passed": true,
+  "reason": "Browser use feature test - Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and returned the result in chat.",
+  "steps": [
+    "Step 1 - Navigated to http://localhost:47891 - The Gamut application loaded successfully with the home page showing \"Your Agents\" and the agent \"QA-20260907-175216-5c7j\" visible in the sidebar.",
+    "Step 2 - Clicked on the \"QA-20260907-175216-5c7j\" agent in the sidebar - Successfully opened the agent page at /agents/qa-20260907-175216-5c7j-5tveo4eh8l with the chat interface ready for input.",
+    "Step 3 - Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message was successfully typed into the chat input field and sent by clicking the Send button, creating a new session.",
+    "Step 4 - Waited for response (up to 3 minutes) - Agent completed processing in approximately 10 seconds, well within the 3-minute timeout. The status changed from \"working\" to \"idle\" after completing 4 tool calls and using 164,209 tokens.",
+    "Step 5 - Verified response mentions \"Example Domain\" and took screenshot - The agent's response clearly states: \"The page title is \"Example Domain\" — it's the standard IANA placeholder page, with a short note that the domain is for use in documentation examples and a \"Learn more\" link. Browser is closed.\" This confirms the page title \"Example Domain\" was successfully retrieved. Final screenshot (05-full-conversation.png) shows the complete successful interaction."
+  ],
   "bugs": [],
-  "durationMs": 433408,
-  "sessionId": "f236b3a1-0da3-4094-8230-64de4482ddec",
+  "durationMs": 92828,
+  "sessionId": "22bc424a-94ea-4f0e-84c8-b47f98142646",
   "cost": {
-    "inputTokens": 350,
-    "outputTokens": 13428,
-    "cacheCreationTokens": 73381,
-    "cacheReadTokens": 988226,
+    "inputTokens": 440,
+    "outputTokens": 12487,
+    "cacheCreationTokens": 87104,
+    "cacheReadTokens": 1356937,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.258039
+    "totalCostUsd": 0.307449
   }
 }
