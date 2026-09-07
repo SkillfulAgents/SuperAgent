@@ -80,7 +80,7 @@ const mockQueue = {
 }
 vi.mock('./use-upload-queue', () => ({ useUploadQueue: () => mockQueue }))
 
-let mockSavedSecrets: Array<{ envVar: string }> = []
+let mockSavedSecrets: Array<{ envVar: string; key: string }> = []
 vi.mock('./use-secrets', () => ({
   useAgentSecrets: () => ({ data: mockSavedSecrets }),
 }))
@@ -191,6 +191,7 @@ describe('useMessageComposer', () => {
     const key = ['gh', 'p_Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z'].join('')
 
     act(() => result.current.setMessage(`Use ${key} please`))
+    mockSavedSecrets = [{ envVar: 'GITHUB_TOKEN', key: 'GitHub Token' }]
     act(() => result.current.securePotentialSecret(result.current.potentialSecrets[0], {
       key: 'GitHub Token',
       envVar: 'GITHUB_TOKEN',
@@ -222,8 +223,24 @@ describe('useMessageComposer', () => {
     expect(opts.onSubmit).toHaveBeenCalledWith(`Use ${marker}`)
   })
 
+  it('stops trusting a key secured in this composer after a refreshed list removes it', async () => {
+    const opts = defaultOptions()
+    const { result, rerender } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+    const key = 'sk-proj-Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z'
+    act(() => result.current.setMessage(key))
+    const saved = { envVar: 'API_KEY', key: 'My Key' }
+    mockSavedSecrets = [saved]
+    act(() => result.current.securePotentialSecret(result.current.potentialSecrets[0], saved))
+    mockSavedSecrets = []
+    rerender()
+    await act(async () => {
+      await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
+    })
+    expect(opts.onSubmit).toHaveBeenCalledWith('[[secret:API_KEY|My%20Key]]')
+  })
+
   it('rewrites a pasted secret marker the agent already has', async () => {
-    mockSavedSecrets = [{ envVar: 'GITHUB_TOKEN' }]
+    mockSavedSecrets = [{ envVar: 'GITHUB_TOKEN', key: 'GitHub Token' }]
     const opts = defaultOptions()
     const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
     const marker = formatChipMarker('secret', 'GITHUB_TOKEN', 'GitHub Token')

@@ -1,4 +1,5 @@
 import type { DOMOutputSpec } from 'prosemirror-model'
+import { isKnownSecret } from '@renderer/lib/secret-detection'
 import { CHIP_MARKER } from './chip-marker'
 import { secretChip } from './secret-chip'
 
@@ -36,19 +37,18 @@ export function getChipKind(name: string) {
   return chipKindsByName.get(name)
 }
 
-export function isBackedSecretChip(chip: Chip, knownSecretEnvVars: ReadonlySet<string>): boolean {
-  return chip.kind !== 'secret' || knownSecretEnvVars.has(chip.payload.envVar)
+export function isBackedSecretChip(chip: Chip, knownSecrets: ReadonlyMap<string, string>): boolean {
+  return chip.kind !== 'secret' || isKnownSecret(chip.payload, knownSecrets)
 }
 
-export function rewriteChipsForSend(text: string, knownSecretEnvVars: Iterable<string>): string {
-  const known = knownSecretEnvVars instanceof Set ? knownSecretEnvVars : new Set(knownSecretEnvVars)
+export function rewriteChipsForSend(text: string, knownSecrets: ReadonlyMap<string, string>): string {
   return text.replace(
     CHIP_MARKER,
     (raw, kindName: string) => {
       const kind = getChipKind(kindName)
       if (!kind) return raw
       const chip = kind.composer.parse(raw)
-      if (!chip || !isBackedSecretChip(chip, known)) return raw
+      if (!chip || !isBackedSecretChip(chip, knownSecrets)) return raw
       return kind.transcript?.raw?.(chip) ?? raw
     }
   )

@@ -21,6 +21,7 @@ const mockInterruptSession = {
   isPending: false,
 }
 
+let mockSavedSecrets: Array<{ key: string; envVar: string }> = []
 const mockCreateSecret = {
   mutateAsync: vi.fn(),
   isPending: false,
@@ -35,7 +36,7 @@ vi.mock('@renderer/hooks/use-messages', () => ({
 
 vi.mock('@renderer/hooks/use-secrets', () => ({
   useCreateSecret: () => mockCreateSecret,
-  useAgentSecrets: () => ({ data: [] }),
+  useAgentSecrets: () => ({ data: mockSavedSecrets }),
 }))
 
 const mockStreamState = {
@@ -101,11 +102,15 @@ describe('MessageInput', () => {
     mockRuntimeStatus.data.runtimeReadiness.status = 'READY'
     mockRuntimeStatus.isPending = false
     mockCreateSecret.isPending = false
-    mockCreateSecret.mutateAsync.mockResolvedValue({
-      id: 'GITHUB_TOKEN',
-      key: 'GitHub Token',
-      envVar: 'GITHUB_TOKEN',
-      hasValue: true,
+    mockSavedSecrets = []
+    mockCreateSecret.mutateAsync.mockImplementation(async () => {
+      mockSavedSecrets = [{ key: 'GitHub Token', envVar: 'GITHUB_TOKEN' }]
+      return {
+        id: 'GITHUB_TOKEN',
+        key: 'GitHub Token',
+        envVar: 'GITHUB_TOKEN',
+        hasValue: true,
+      }
     })
   })
 

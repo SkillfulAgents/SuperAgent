@@ -36,13 +36,18 @@ describe('findPotentialSecrets', () => {
 
   it('does not treat an ordinary key name with a digit as a credential', () => {
     expect(findPotentialSecrets(
-      formatChipMarker('secret', 'OPENAI_KEY', 'my_openai_key_2024_prod')
+      formatChipMarker('secret', 'OPENAI_KEY', 'my_openai_key_2024_prod'),
+      new Map([['OPENAI_KEY', 'my_openai_key_2024_prod']])
     )).toEqual([])
   })
 
-  it('flags a credential pasted as a fake chip label', () => {
-    const key = ['sk-', 'proj-Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z'].join('')
-    expect(findPotentialSecrets(`[[secret:A|${key}]]`).map((candidate) => candidate.value)).toEqual([key])
+  it.each(['sk-proj-Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z', 'Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4zQwErTyUi'])('flags an unsaved credential inside a marker: %s', (key) => {
+    expect(findPotentialSecrets(`[[secret:A|${key}]]`, new Map([['A', 'Saved name']])).map((candidate) => candidate.value)).toEqual([key])
+  })
+
+  it('accepts a saved name with a credential prefix', () => {
+    const key = 'sk-openai-production-key'
+    expect(findPotentialSecrets(formatChipMarker('secret', 'SK_OPENAI_PRODUCTION_KEY', key), new Map([['SK_OPENAI_PRODUCTION_KEY', key]]))).toEqual([])
   })
 
   it('still flags a credential that sits next to a chip', () => {

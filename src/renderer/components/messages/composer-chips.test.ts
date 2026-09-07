@@ -16,7 +16,7 @@ describe('composer chips', () => {
   it('rewrites every secret marker on send and leaves unknown markers alone', () => {
     const secret = formatChipMarker('secret', 'GITHUB_TOKEN', 'GitHub Token')
     const other = formatChipMarker('foo', 'bar', 'baz')
-    const known = new Set(['GITHUB_TOKEN'])
+    const known = new Map([['GITHUB_TOKEN', 'GitHub Token']])
 
     expect(rewriteChipsForSend(`${secret} ${other} ${secret}`, known)).toBe(
       '[Key saved to .env - GITHUB_TOKEN] [[foo:bar|baz]] [Key saved to .env - GITHUB_TOKEN]'
@@ -25,7 +25,7 @@ describe('composer chips', () => {
 
   it('leaves a secret marker alone when the agent does not have that key', () => {
     const secret = formatChipMarker('secret', 'MISSING', 'Nope')
-    expect(rewriteChipsForSend(secret, new Set())).toBe(secret)
+    expect(rewriteChipsForSend(secret, new Map())).toBe(secret)
   })
 
   it('replaces a lone surrogate in the label instead of throwing', () => {
@@ -46,13 +46,13 @@ describe('composer chips', () => {
   it('leaves a marker with a malformed label as text', () => {
     const raw = '[[secret:X|%E0]]'
     expect(parseChipMarker(raw)).toBeNull()
-    expect(rewriteChipsForSend(raw, new Set(['X']))).toBe(raw)
+    expect(rewriteChipsForSend(raw, new Map([['X', 'X']]))).toBe(raw)
   })
 
   it('refuses a secret marker whose name is not an env var', () => {
     const raw = '[[secret:FOO\nBAR|x]]'
     expect(secretChip.composer.parse(raw)).toBeNull()
-    expect(rewriteChipsForSend(raw, new Set(['FOO\nBAR']))).toBe(raw)
+    expect(rewriteChipsForSend(raw, new Map([['FOO\nBAR', 'x']]))).toBe(raw)
   })
 
   it('accepts an ordinary key name that contains a digit', () => {
@@ -61,7 +61,7 @@ describe('composer chips', () => {
       payload: { key: 'my_openai_key_2024_prod', envVar: 'OPENAI_KEY' },
     }
     expect(secretChip.composer.parse(secretChip.composer.raw(chip))).toEqual(chip)
-    expect(rewriteChipsForSend(secretChip.composer.raw(chip), new Set(['OPENAI_KEY']))).toBe(
+    expect(rewriteChipsForSend(secretChip.composer.raw(chip), new Map([['OPENAI_KEY', 'my_openai_key_2024_prod']]))).toBe(
       '[Key saved to .env - OPENAI_KEY]'
     )
   })
@@ -69,7 +69,6 @@ describe('composer chips', () => {
   it('refuses a secret marker whose label is a raw credential', () => {
     const key = ['sk-', 'proj-Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z'].join('')
     const raw = `[[secret:A|${key}]]`
-    expect(secretChip.composer.parse(raw)).toBeNull()
-    expect(rewriteChipsForSend(raw, new Set(['A']))).toBe(raw)
+    expect(rewriteChipsForSend(raw, new Map([['A', 'A']]))).toBe(raw)
   })
 })

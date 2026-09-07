@@ -45,13 +45,11 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   const [draft, setDraft] = useDraft<string>(draftKey)
   const [message, setMessage] = useState(draft ?? '')
   const [dismissedSecretValues, setDismissedSecretValues] = useState<Set<string>>(() => new Set())
-  const [justSecuredEnvVars, setJustSecuredEnvVars] = useState<string[]>([])
   const { data: savedSecrets } = useAgentSecrets(agentSlug)
-  const knownSecretEnvVars = useMemo(() => {
-    const next = new Set(justSecuredEnvVars)
-    for (const secret of savedSecrets ?? []) next.add(secret.envVar)
-    return [...next]
-  }, [justSecuredEnvVars, savedSecrets])
+  const knownSecrets = useMemo(
+    () => new Map((savedSecrets ?? []).map((secret) => [secret.envVar, secret.key.toWellFormed()])),
+    [savedSecrets]
+  )
   const [isUploading, setIsUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const addMountMutation = useAddMount()
@@ -88,8 +86,8 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   }, [message])
 
   const potentialSecrets = useMemo(
-    () => findPotentialSecrets(message).filter((candidate) => !dismissedSecretValues.has(candidate.value)),
-    [message, dismissedSecretValues]
+    () => findPotentialSecrets(message, knownSecrets).filter((candidate) => !dismissedSecretValues.has(candidate.value)),
+    [message, dismissedSecretValues, knownSecrets]
   )
 
   const dismissPotentialSecret = useCallback((candidate: PotentialSecret) => {
@@ -104,9 +102,6 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     candidate: PotentialSecret,
     savedSecret: { key: string; envVar: string }
   ) => {
-    setJustSecuredEnvVars((current) => (
-      current.includes(savedSecret.envVar) ? current : [...current, savedSecret.envVar]
-    ))
     setMessage((current) => {
       if (current.slice(candidate.start, candidate.end) !== candidate.value) return current
       const marker = secretChip.composer.raw({
@@ -312,7 +307,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     }
 
     const editableContent = content
-    const submittedContent = rewriteChipsForSend(content, knownSecretEnvVars)
+    const submittedContent = rewriteChipsForSend(content, knownSecrets)
 
     try {
       await onSubmit(submittedContent)
@@ -339,7 +334,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     message,
     setMessage,
     potentialSecrets,
-    knownSecretEnvVars,
+    knownSecrets,
     dismissPotentialSecret,
     securePotentialSecret,
 

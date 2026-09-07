@@ -444,7 +444,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                   secureSecrets={{
                     agentSlug: agent.slug,
                     potentialSecrets: composer.potentialSecrets,
-                    knownSecretEnvVars: composer.knownSecretEnvVars,
+                    knownSecrets: composer.knownSecrets,
                     onDismiss: composer.dismissPotentialSecret,
                     onSecure: composer.securePotentialSecret,
                   }}

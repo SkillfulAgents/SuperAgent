@@ -33,8 +33,7 @@ function overlaps(start: number, end: number, ranges: Array<{ start: number; end
 }
 
 function secretTokensIn(
-  text: string,
-  test: (value: string, precedingText: string) => boolean = looksLikeSecret
+  text: string
 ): Array<{ value: string; start: number }> {
   const tokens: Array<{ value: string; start: number }> = []
   for (const match of text.matchAll(TOKEN_PATTERN)) {
@@ -47,15 +46,11 @@ function secretTokensIn(
       start += assignment[1].length + 1
       value = assignment[2]
     }
-    if (test(value, text.slice(Math.max(0, start - 3), start))) {
+    if (looksLikeSecret(value, text.slice(Math.max(0, start - 3), start))) {
       tokens.push({ value, start })
     }
   }
   return tokens
-}
-
-function isCredentialShape(value: string): boolean {
-  return KNOWN_SECRET_PREFIX.test(value) || HEX_SECRET.test(value)
 }
 
 function looksLikeSecret(value: string, precedingText: string): boolean {
@@ -85,18 +80,23 @@ export function parseSecretMarker(raw: string): { envVar: string; key: string } 
   const parts = parseChipMarker(raw)
   if (!parts || parts.kind !== 'secret') return null
   if (!/^[A-Z0-9_]+$/.test(parts.referent)) return null
-  if (/[\r\n]/.test(parts.label) || secretTokensIn(parts.label, isCredentialShape).length > 0) return null
+  if (/[\r\n]/.test(parts.label)) return null
   return { envVar: parts.referent, key: parts.label }
+}
+
+export function isKnownSecret(secret: Record<string, string>, knownSecrets: ReadonlyMap<string, string>): boolean {
+  return knownSecrets.get(secret.envVar) === secret.key
 }
 
 /**
  * Find contiguous, high-entropy words that are likely API keys or tokens.
  * Offsets are UTF-16 string offsets, matching textarea selection/range APIs.
  */
-export function findPotentialSecrets(text: string): PotentialSecret[] {
+export function findPotentialSecrets(text: string, knownSecrets: ReadonlyMap<string, string> = new Map()): PotentialSecret[] {
   const protectedRanges: Array<{ start: number; end: number }> = []
   for (const match of text.matchAll(CHIP_MARKER)) {
-    if (match.index === undefined || !parseSecretMarker(match[0])) continue
+    const secret = parseSecretMarker(match[0])
+    if (!secret || !isKnownSecret(secret, knownSecrets)) continue
     protectedRanges.push({ start: match.index, end: match.index + match[0].length })
   }
 

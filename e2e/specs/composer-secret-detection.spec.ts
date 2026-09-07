@@ -26,8 +26,8 @@ test.describe('composer secret detection', () => {
   test('saves a detected key, paints a masked pill, and starts the session with only the .env placeholder', async ({ page }, testInfo) => {
     const tag = `W${testInfo.workerIndex}T${Date.now()}`
     const rawKey = ['sk-', `proj-${tag}-Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z`].join('')
-    const keyName = `Deploy Key ${tag}`
-    const envVar = `DEPLOY_KEY_${tag.toUpperCase()}`
+    const keyName = 'sk-openai-production-key'
+    const envVar = 'SK_OPENAI_PRODUCTION_KEY'
     const input = page.locator('[data-testid="home-message-input"]')
 
     await input.fill('Use this credential:')
@@ -75,7 +75,7 @@ test.describe('composer secret detection', () => {
     await expect(input).toHaveText(rawKey)
   })
 
-  test('pastes a secret marker as a pill and starts the session with only the .env placeholder', async ({ page }, testInfo) => {
+  test('preserves headings and links containing pasted chips through submit', async ({ page }, testInfo) => {
     const tag = `W${testInfo.workerIndex}T${Date.now()}`
     const envVar = `PASTE_KEY_${tag.toUpperCase()}`
     const keyName = `Paste Key ${tag}`
@@ -89,7 +89,7 @@ test.describe('composer secret detection', () => {
     await page.reload()
     const input = page.locator('[data-testid="home-message-input"]')
 
-    await input.fill('Use ')
+    await input.fill('')
     await input.evaluate((element, text) => {
       const clipboardData = new DataTransfer()
       clipboardData.setData('text/plain', text)
@@ -98,14 +98,17 @@ test.describe('composer secret detection', () => {
         cancelable: true,
         clipboardData,
       }))
-    }, marker)
+    }, `## Deploy ${marker}\n\n[see ${marker}](https://x.com)`)
 
-    await expect(page.locator('[data-testid="secured-secret"]')).toHaveText(`[${keyName} | *********]`)
+    await expect(input.locator('h2 [data-testid="secured-secret"]')).toHaveText(`[${keyName} | *********]`)
+    await expect(input.locator('a [data-testid="secured-secret"]')).toHaveText(`[${keyName} | *********]`)
+    await expect(input.locator('a')).toHaveAttribute('href', 'https://x.com')
+    await input.screenshot({ path: testInfo.outputPath('heading-link-chips.png') })
 
     await page.locator('[data-testid="home-send-button"]').click()
     await expect(page.locator('[data-testid="message-list"]')).toBeVisible({ timeout: 15_000 })
 
-    const expectedMessage = `Use [Key saved to .env - ${envVar}]`
+    const expectedMessage = `## Deploy [Key saved to .env - ${envVar}]\n\n[see [Key saved to .env - ${envVar}]](https://x.com)`
     const record = await recorder.waitFor((candidate) => candidate.type === 'createSession' && candidate.initialMessage === expectedMessage
     )
     expect(record.initialMessage).not.toContain('[[secret:')
