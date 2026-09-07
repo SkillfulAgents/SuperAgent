@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef } from 'react'
 import MarkdownIt from 'markdown-it'
+import type Token from 'markdown-it/lib/token.mjs'
 import { baseKeymap, chainCommands, exitCode, newlineInCode, toggleMark } from 'prosemirror-commands'
 import { history, redo, undo } from 'prosemirror-history'
 import {
@@ -34,7 +35,7 @@ import {
   CHIP_MARKER_STICKY,
   COMPOSER_CHIP_KINDS,
   getChipKind,
-  isBackedSecretChip,
+  isBackedChip,
 } from './composer-chips'
 
 export interface MarkdownComposerEditorProps {
@@ -136,9 +137,13 @@ markdownTokenizer.inline.ruler.before('escape', 'composer_chip', (state, silent)
   const kind = getChipKind(match[1])
   if (!kind) return false
   const chip = kind.composer.parse(match[0])
-  if (!chip || !isBackedSecretChip(chip, knownSecretsForParse)) return false
-  const token = state.push(kind.kind, '', 0)
-  token.attrSet('raw', match[0])
+  if (!chip) return false
+  if (isBackedChip(chip, knownSecretsForParse)) {
+    state.push(kind.kind, '', 0).attrSet('raw', match[0])
+  } else {
+    // A missing key makes this literal text, not Markdown link syntax.
+    state.push('text', '', 0).content = match[0]
+  }
   state.pos += match[0].length
   return true
 })
@@ -157,9 +162,41 @@ const chipSerializerNodes = Object.fromEntries(COMPOSER_CHIP_KINDS.map((kind) =>
   state.write(String(node.attrs.raw ?? ''))
 }]))
 
+function imageAltText(tokens: readonly Token[]): string {
+  return tokens.map((token) => {
+    if (getChipKind(token.type)) return token.attrGet('raw') ?? ''
+    if (token.type === 'image') return imageAltText(token.children ?? [])
+    if (token.type === 'softbreak' || token.type === 'hardbreak') return '\n'
+    return token.content
+  }).join('')
+}
+
+function escapeImageAlt(alt: string, escape: (text: string) => string): string {
+  let result = ''
+  let end = 0
+  for (const match of alt.matchAll(CHIP_MARKER)) {
+    if (!getChipKind(match[1])?.composer.parse(match[0])) continue
+    result += escape(alt.slice(end, match.index)) + match[0]
+    end = match.index + match[0].length
+  }
+  return result + escape(alt.slice(end))
+}
+
+function escapeMetadataChipMarkers(text: string): string {
+  return text.replace(CHIP_MARKER, (marker) => marker.replaceAll('[', '\\[').replaceAll(']', '\\]'))
+}
+
 const markdownParser = new MarkdownParser(markdownSchema, markdownTokenizer, {
   ...defaultMarkdownParser.tokens,
   ...chipParserTokens,
+  image: {
+    node: 'image',
+    getAttrs: (token) => ({
+      src: token.attrGet('src'),
+      title: token.attrGet('title') || null,
+      alt: imageAltText(token.children ?? []) || null,
+    }),
+  },
   softbreak: { node: 'soft_break' },
   s: { mark: 'strike' },
 })
@@ -168,10 +205,31 @@ const markdownSerializer = new MarkdownSerializer(
   {
     ...defaultMarkdownSerializer.nodes,
     ...chipSerializerNodes,
+    image: (state, node) => {
+      // Keep references raw, as chip nodes do. Send still validates backing.
+      const alt = escapeImageAlt(node.attrs.alt || '', (text) => state.esc(text))
+      const target = `(${node.attrs.src.replace(/[()]/g, '\\$&')}${
+        node.attrs.title ? ` "${node.attrs.title.replace(/"/g, '\\"')}"` : ''
+      })`
+      state.write(`![${alt}]${escapeMetadataChipMarkers(target)}`)
+    },
     soft_break: (state) => state.write('\n'),
   },
   {
     ...defaultMarkdownSerializer.marks,
+    link: {
+      ...defaultMarkdownSerializer.marks.link,
+      open: (state, mark, parent, index) => {
+        // Autolinks write URL text unescaped. Use a regular link for markers.
+        if (escapeMetadataChipMarkers(mark.attrs.href) !== mark.attrs.href) return '['
+        const open = defaultMarkdownSerializer.marks.link.open
+        return typeof open === 'function' ? open(state, mark, parent, index) : open
+      },
+      close: (state, mark, parent, index) => {
+        const close = defaultMarkdownSerializer.marks.link.close
+        return escapeMetadataChipMarkers(typeof close === 'function' ? close(state, mark, parent, index) : close)
+      },
+    },
     strike: {
       open: '~~',
       close: '~~',
@@ -198,8 +256,13 @@ function flattenCodeChipsForSerialize(node: ProseMirrorNode): ProseMirrorNode {
 }
 
 export function serializeComposerMarkdown(doc: ProseMirrorNode): string {
+  let hasCodeChip = false
+  doc.descendants((node) => {
+    if (getChipKind(node.type.name) && node.marks.some((mark) => mark.type.name === 'code')) hasCodeChip = true
+    return !hasCodeChip
+  })
   return markdownSerializer
-    .serialize(flattenCodeChipsForSerialize(doc), { tightLists: true })
+    .serialize(hasCodeChip ? flattenCodeChipsForSerialize(doc) : doc, { tightLists: true })
     .replaceAll(CARET_SENTINEL, '')
 }
 
@@ -213,7 +276,7 @@ function leftoverChipReplacements(doc: ProseMirrorNode): { from: number; to: num
       const kind = getChipKind(match[1])
       if (!kind) continue
       const chip = kind.composer.parse(match[0])
-      if (!chip || !isBackedSecretChip(chip, knownSecretsForParse)) continue
+      if (!chip || !isBackedChip(chip, knownSecretsForParse)) continue
       const type = markdownSchema.nodes[kind.kind]
       if (!type) continue
       const from = pos + match.index
@@ -236,7 +299,7 @@ function demoteUnbackedChips(tr: Transaction, knownSecrets: ReadonlyMap<string, 
     if (!kind) return
     const raw = String(node.attrs.raw)
     const chip = kind.composer.parse(raw)
-    if (!chip || !isBackedSecretChip(chip, knownSecrets)) {
+    if (!chip || !isBackedChip(chip, knownSecrets)) {
       replacements.push({ from: pos, to: pos + node.nodeSize, node: markdownSchema.text(raw, node.marks) })
     }
   })
@@ -253,10 +316,10 @@ function applyChipLifts(
   return tr
 }
 
-function liftLeftoverChipMarkers(doc: ProseMirrorNode): { doc: ProseMirrorNode; lifted: boolean } {
+function liftLeftoverChipMarkers(doc: ProseMirrorNode): ProseMirrorNode {
   const replacements = leftoverChipReplacements(doc)
-  if (replacements.length === 0) return { doc, lifted: false }
-  return { doc: applyChipLifts(EditorState.create({ schema: markdownSchema, doc }).tr, replacements).doc, lifted: true }
+  if (replacements.length === 0) return doc
+  return applyChipLifts(EditorState.create({ schema: markdownSchema, doc }).tr, replacements).doc
 }
 
 function parseComposerMarkdown(value: string, knownSecrets: ReadonlyMap<string, string>) {
@@ -291,19 +354,39 @@ function parseComposerMarkdown(value: string, knownSecrets: ReadonlyMap<string, 
   }
 }
 
+function markdownLinkTargets(value: string): string {
+  const targets: Array<Array<string | null>> = []
+  function visit(tokens: Token[]) {
+    for (const token of tokens) {
+      if (token.type === 'link_open' || token.type === 'image') {
+        targets.push([token.type, token.attrGet(token.type === 'image' ? 'src' : 'href'), token.attrGet('title')])
+      }
+      if (token.children) visit(token.children)
+    }
+  }
+  visit(markdownTokenizer.parse(value, {}))
+  return JSON.stringify(targets)
+}
+
 function restoreEscapedChipMarkers(value: string, doc: ProseMirrorNode, knownSecrets: ReadonlyMap<string, string>): string {
   // Look ahead so an unmatched opening pair cannot consume a later marker.
   const matches = Array.from(value.matchAll(/(?=(\\\[\\\[[^\n]*?\\\]\\\]))/g))
+  if (matches.length === 0) return value
+  const linkTargets = markdownLinkTargets(value)
   for (const match of matches.reverse()) {
     const escaped = match[1]
     const raw = markdownTokenizer.utils.unescapeAll(escaped)
     const marker = CHIP_MARKER_ANCHORED.exec(raw)
     const chip = marker && getChipKind(marker[1])?.composer.parse(raw)
-    if (!chip || !isBackedSecretChip(chip, knownSecrets)) continue
+    if (!chip || !isBackedChip(chip, knownSecrets)) continue
+    // A display reference can change without changing any URL or title.
+    // Parsed-doc equality alone misses source escapes inside destinations.
+    // In CommonMark, a comma cannot create indentation, email autolinks, or schemes.
+    const withoutReference = value.slice(0, match.index) + ',' + value.slice(match.index + escaped.length)
+    if (markdownLinkTargets(withoutReference) !== linkTargets) continue
     const candidate = value.slice(0, match.index) + raw + value.slice(match.index + escaped.length)
-    // Only restore source escapes that already painted as a chip. Escapes in
-    // code or link destinations must retain their original meaning.
-    if (parseComposerMarkdown(candidate, knownSecrets).doc.eq(doc)) value = candidate
+    // Keep the editor document identical, including literal escapes in code.
+    if (parseComposerMarkdown(candidate, knownSecrets).eq(doc)) value = candidate
   }
   return value
 }
@@ -450,7 +533,7 @@ function blockAfterSoftBreakInputRule(
 }
 
 function markdownClipboardSlice(text: string, knownSecrets: ReadonlyMap<string, string>): Slice {
-  const { doc } = parseComposerMarkdown(text.replace(/\r\n?/g, '\n'), knownSecrets)
+  const doc = parseComposerMarkdown(text.replace(/\r\n?/g, '\n'), knownSecrets)
   const onlyChild = doc.childCount === 1 ? doc.firstChild : null
   // A single ordinary paragraph should paste inline at the caret. Markdown
   // blocks (headings, lists, quotes, multiple paragraphs) retain their block
@@ -801,8 +884,8 @@ export function MarkdownComposerEditor({
     )
     const state = EditorState.create({
       schema: markdownSchema,
-      doc: initial.doc,
-      selection: TextSelection.atEnd(initial.doc),
+      doc: initial,
+      selection: TextSelection.atEnd(initial),
       plugins: [
         buildInputRules(),
         buildKeymap(),
@@ -900,11 +983,9 @@ export function MarkdownComposerEditor({
       },
     })
 
-    if (initial.lifted) {
-      const markdown = restoreEscapedChipMarkers(lastMarkdownRef.current, initial.doc, latestRef.current.knownSecrets)
-      lastMarkdownRef.current = markdown
-      if (markdown !== latestRef.current.value) latestRef.current.onChange(markdown)
-    }
+    const markdown = restoreEscapedChipMarkers(lastMarkdownRef.current, initial, latestRef.current.knownSecrets)
+    lastMarkdownRef.current = markdown
+    if (markdown !== latestRef.current.value) latestRef.current.onChange(markdown)
     viewRef.current = view
     editorViews.set(view.dom, view)
     setEditorA11yState(view, latestRef.current.placeholder, latestRef.current.disabled)
@@ -936,9 +1017,9 @@ export function MarkdownComposerEditor({
         const tr = applyChipLifts(demoteUnbackedChips(view.state.tr.setMeta('addToHistory', false), knownSecrets))
         if (tr.docChanged) {
           view.updateState(view.state.apply(tr))
-          lastMarkdownRef.current = restoreEscapedChipMarkers(value, tr.doc, knownSecrets)
-          if (lastMarkdownRef.current !== value) onChange(lastMarkdownRef.current)
         }
+        lastMarkdownRef.current = restoreEscapedChipMarkers(value, parseComposerMarkdown(value, knownSecrets), knownSecrets)
+        if (lastMarkdownRef.current !== value) onChange(lastMarkdownRef.current)
       } finally {
         knownSecretsForParse = previousKnown
       }
@@ -947,12 +1028,12 @@ export function MarkdownComposerEditor({
     }
     const next = parseComposerMarkdown(value, knownSecrets)
     const tr = view.state.tr
-      .replaceWith(0, view.state.doc.content.size, next.doc.content)
+      .replaceWith(0, view.state.doc.content.size, next.content)
       .setMeta('addToHistory', false)
     tr.setSelection(TextSelection.atEnd(tr.doc))
     view.updateState(view.state.apply(tr))
     lastKnownSecretsRef.current = knownSecrets
-    lastMarkdownRef.current = next.lifted ? restoreEscapedChipMarkers(value, next.doc, knownSecrets) : value
+    lastMarkdownRef.current = restoreEscapedChipMarkers(value, next, knownSecrets)
     if (lastMarkdownRef.current !== value) onChange(lastMarkdownRef.current)
     setEditorA11yState(view, placeholder, disabled)
   }, [disabled, placeholder, value, knownSecrets, onChange])

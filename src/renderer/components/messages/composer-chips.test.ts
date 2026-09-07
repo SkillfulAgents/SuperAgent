@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { formatChipMarker, parseChipMarker } from './chip-marker'
+import { formatChipMarker, parseChipMarker } from '@renderer/lib/chip-marker'
 import { rewriteChipsForSend } from './composer-chips'
-import { secretChip } from './secret-chip'
+import { secretChip } from '@renderer/lib/secret-chip'
 
 describe('composer chips', () => {
   it('round-trips a secret through composer.raw and composer.parse', () => {

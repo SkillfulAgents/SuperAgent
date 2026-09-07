@@ -1,4 +1,4 @@
-import { CHIP_MARKER, parseChipMarker } from '@renderer/components/messages/chip-marker'
+import { CHIP_MARKER, parseChipMarker } from './chip-marker'
 
 const MIN_SECRET_LENGTH = 20
 const MASK = '*********'
@@ -85,7 +85,8 @@ export function parseSecretMarker(raw: string): { envVar: string; key: string } 
 }
 
 export function isKnownSecret(secret: Record<string, string>, knownSecrets: ReadonlyMap<string, string>): boolean {
-  return knownSecrets.get(secret.envVar) === secret.key
+  return knownSecrets.has(secret.envVar)
+    && (knownSecrets.get(secret.envVar) === secret.key || secretTokensIn(secret.key).length === 0)
 }
 
 /**

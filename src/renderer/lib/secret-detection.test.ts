@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatChipMarker } from '@renderer/components/messages/chip-marker'
+import { formatChipMarker } from './chip-marker'
 import { findPotentialSecrets } from './secret-detection'
 
 describe('findPotentialSecrets', () => {

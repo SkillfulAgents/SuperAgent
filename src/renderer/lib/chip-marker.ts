@@ -1,5 +1,5 @@
 /** `[[kind:referent|label]]` — one grammar, kind name in the first capture. */
-const CHIP_MARKER_BODY = String.raw`\[\[([a-z][a-z0-9_]*):([^|\]]+)\|([^\]]+)\]\]`
+const CHIP_MARKER_BODY = String.raw`\[\[([a-z][a-z0-9_]*):([^|\[\]]+)\|([^\[\]]+)\]\]`
 
 export const CHIP_MARKER = new RegExp(CHIP_MARKER_BODY, 'g')
 export const CHIP_MARKER_ANCHORED = new RegExp(`^${CHIP_MARKER_BODY}$`)

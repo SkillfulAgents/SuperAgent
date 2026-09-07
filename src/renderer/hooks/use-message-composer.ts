@@ -12,7 +12,7 @@ import { attachmentStatus, type Attachment, type MountAttachment } from '@render
 import type { UploadProgress } from '@renderer/lib/upload'
 import { usePendingAttachmentDrop } from '@renderer/lib/pending-attachment-drop'
 import { rewriteChipsForSend } from '@renderer/components/messages/composer-chips'
-import { secretChip } from '@renderer/components/messages/secret-chip'
+import { secretChip } from '@renderer/lib/secret-chip'
 import {
   findPotentialSecrets,
   type PotentialSecret,

@@ -1,7 +1,6 @@
 import type { DOMOutputSpec } from 'prosemirror-model'
-import { isKnownSecret } from '@renderer/lib/secret-detection'
-import { CHIP_MARKER } from './chip-marker'
-import { secretChip } from './secret-chip'
+import { CHIP_MARKER } from '@renderer/lib/chip-marker'
+import { secretChip } from '@renderer/lib/secret-chip'
 
 export {
   CHIP_MARKER,
@@ -9,8 +8,8 @@ export {
   CHIP_MARKER_STICKY,
   formatChipMarker,
   parseChipMarker,
-} from './chip-marker'
-export { secretChip } from './secret-chip'
+} from '@renderer/lib/chip-marker'
+export { secretChip } from '@renderer/lib/secret-chip'
 
 export interface Chip<P extends Record<string, string> = Record<string, string>> {
   kind: string
@@ -27,6 +26,7 @@ export interface ComposerChipKind<P extends Record<string, string> = Record<stri
   kind: string
   composer: ChipSurface<P, DOMOutputSpec>
   transcript?: Partial<ChipSurface<P, unknown>>
+  isBacked?: (chip: Chip<P>, knownSecrets: ReadonlyMap<string, string>) => boolean
 }
 
 export const COMPOSER_CHIP_KINDS: readonly ComposerChipKind<Record<string, string>>[] = [secretChip]
@@ -37,8 +37,8 @@ export function getChipKind(name: string) {
   return chipKindsByName.get(name)
 }
 
-export function isBackedSecretChip(chip: Chip, knownSecrets: ReadonlyMap<string, string>): boolean {
-  return chip.kind !== 'secret' || isKnownSecret(chip.payload, knownSecrets)
+export function isBackedChip(chip: Chip, knownSecrets: ReadonlyMap<string, string>): boolean {
+  return getChipKind(chip.kind)?.isBacked?.(chip, knownSecrets) ?? true
 }
 
 export function rewriteChipsForSend(text: string, knownSecrets: ReadonlyMap<string, string>): string {
@@ -48,7 +48,7 @@ export function rewriteChipsForSend(text: string, knownSecrets: ReadonlyMap<stri
       const kind = getChipKind(kindName)
       if (!kind) return raw
       const chip = kind.composer.parse(raw)
-      if (!chip || !isBackedSecretChip(chip, knownSecrets)) return raw
+      if (!chip || !isBackedChip(chip, knownSecrets)) return raw
       return kind.transcript?.raw?.(chip) ?? raw
     }
   )

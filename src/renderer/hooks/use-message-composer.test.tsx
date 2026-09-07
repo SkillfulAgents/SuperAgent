@@ -5,7 +5,7 @@ import { createElement } from 'react'
 import type { Attachment } from '@renderer/components/messages/attachment-preview'
 import type { FolderGroup } from '@renderer/lib/file-utils'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { formatChipMarker } from '@renderer/components/messages/chip-marker'
+import { formatChipMarker } from '@renderer/lib/chip-marker'
 import { DraftsProvider, useDraft } from '@renderer/context/drafts-context'
 
 // --- Mocks ---

@@ -1,9 +1,10 @@
-import { parseSecretMarker, secretDisplayText } from '@renderer/lib/secret-detection'
+import { isKnownSecret, parseSecretMarker, secretDisplayText } from './secret-detection'
 import { formatChipMarker } from './chip-marker'
-import type { ComposerChipKind } from './composer-chips'
+import type { ComposerChipKind } from '@renderer/components/messages/composer-chips'
 
 export const secretChip: ComposerChipKind = {
   kind: 'secret',
+  isBacked: (chip, knownSecrets) => isKnownSecret(chip.payload, knownSecrets),
   composer: {
     raw: (chip) => formatChipMarker('secret', chip.payload.envVar, chip.payload.key),
     parse: (raw) => {
