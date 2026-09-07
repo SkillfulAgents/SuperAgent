@@ -219,6 +219,15 @@ describe('getProviderCatalog', () => {
       supportsWebFetch: false,
       pricing: { inputPerMtok: 5, outputPerMtok: 30 },
     })
+    // Astra is selectable but not the family default: the bare `gpt` alias stays on Sol.
+    expect(catalog.find((m) => m.id === 'gpt-6-astra')).toMatchObject({
+      family: 'gpt',
+      supportsWebSearch: true,
+      supportsWebFetch: false,
+      pricing: { inputPerMtok: 10, outputPerMtok: 50 },
+      contextWindow: 1_050_000,
+    })
+    expect(catalog.find((m) => m.id === 'gpt-6-astra')!.isLatest).toBeFalsy()
     const gptLatest = catalog.filter((m) => m.family === 'gpt' && m.isLatest)
     expect(gptLatest.map((m) => m.id)).toEqual(['gpt-5.6-sol'])
     // Grok rides the same Responses wire (xai-responses upstream); bare id only.

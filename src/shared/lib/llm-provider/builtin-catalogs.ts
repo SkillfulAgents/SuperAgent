@@ -609,6 +609,22 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     promptHints: GPT_TOOL_USE_PROMPT_HINTS,
   },
   {
+    // Not isLatest: the bare `gpt` alias stays on Sol so alias users don't jump 2x in price.
+    id: 'gpt-6-astra',
+    label: 'GPT-6 Astra',
+    blurb: 'OpenAI frontier, served via Platform',
+    family: 'gpt',
+    icon: 'openai',
+    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
+    ...PLATFORM_RESPONSES_WEB,
+    pricing: { inputPerMtok: 10, outputPerMtok: 50, speedMultipliers: GPT_SPEED_MULTIPLIERS },
+    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-6-astra).
+    contextWindow: 1_050_000,
+    longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
+    promptHints: GPT_TOOL_USE_PROMPT_HINTS,
+  },
+  {
     // Bare id matches the platform proxy's grok-* → xai-responses route.
     id: 'grok-4.6',
     label: 'Grok 4.6',
