@@ -363,23 +363,19 @@ describe('PlatformPaywallCard', () => {
       platformAuth.platformControlled = true
     })
 
-    it('opens the platform billing page in a dialog instead of the browser', async () => {
+    it('renders the platform billing page inline in place of the CTA button', async () => {
       renderCard()
-      const button = await screen.findByRole('button', { name: 'Add usage' })
-      act(() => { button.click() })
-      expect(openExternalUrl).not.toHaveBeenCalled()
       const frame = await screen.findByTestId('billing-embed-frame')
       expect(frame).toHaveAttribute('src', EMBED_SESSION.embedUrl)
       expect(JSON.parse(String(fetchEmbed.mock.calls[0][0]?.body))).toEqual({ intent: 'topup' })
-      // The CTA stays put (no hand-off state); the dialog owns the flow now.
-      expect(screen.getByRole('button', { name: 'Add usage', hidden: true })).toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: 'Recheck', hidden: true })).not.toBeInTheDocument()
+      expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-embedded', 'true')
+      expect(screen.queryByRole('button', { name: 'Add usage' })).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument()
+      expect(openExternalUrl).not.toHaveBeenCalled()
     })
 
     it('hides the loading overlay once the platform page reports ready', async () => {
       renderCard()
-      const cta = await screen.findByRole('button', { name: 'Add usage' })
-      act(() => { cta.click() })
       await screen.findByTestId('billing-embed-frame')
       expect(screen.getByTestId('billing-embed-loading')).toBeInTheDocument()
       postEmbedMessage(PLATFORM_ORIGIN, 'ready')
@@ -388,8 +384,6 @@ describe('PlatformPaywallCard', () => {
 
     it('rechecks billing on billing-updated from the platform origin and clears the card', async () => {
       renderCard()
-      const cta = await screen.findByRole('button', { name: 'Add usage' })
-      act(() => { cta.click() })
       await screen.findByTestId('billing-embed-frame')
       fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
       postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated')
@@ -399,8 +393,6 @@ describe('PlatformPaywallCard', () => {
 
     it('ignores billing-updated from any other origin', async () => {
       renderCard()
-      const cta = await screen.findByRole('button', { name: 'Add usage' })
-      act(() => { cta.click() })
       await screen.findByTestId('billing-embed-frame')
       const before = fetchBilling.mock.calls.length
       fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
@@ -413,8 +405,6 @@ describe('PlatformPaywallCard', () => {
     it('falls back to opening billing externally when the embed session cannot be minted', async () => {
       fetchEmbed.mockResolvedValue({ ok: false, body: { error: 'Only admins.', code: 'forbidden' } })
       renderCard()
-      const cta = await screen.findByRole('button', { name: 'Add usage' })
-      act(() => { cta.click() })
       const fallback = await screen.findByRole('button', { name: 'Open billing in a new tab' })
       expect(screen.getByText('Only admins.')).toBeInTheDocument()
       act(() => { fallback.click() })
@@ -424,18 +414,25 @@ describe('PlatformPaywallCard', () => {
 
     it('offers the external link when the platform reports the session expired', async () => {
       renderCard()
-      const cta = await screen.findByRole('button', { name: 'Add usage' })
-      act(() => { cta.click() })
       await screen.findByTestId('billing-embed-frame')
       postEmbedMessage(PLATFORM_ORIGIN, 'session-expired')
       expect(screen.getByText('This billing session has expired.')).toBeInTheDocument()
       expect(screen.getByRole('button', { name: 'Open billing in a new tab' })).toBeInTheDocument()
     })
 
+    it('dismiss removes the inline billing page and hands the composer back', async () => {
+      renderCard()
+      await screen.findByTestId('billing-embed-frame')
+      act(() => { screen.getByRole('button', { name: 'Dismiss' }).click() })
+      expect(screen.queryByTestId('billing-embed-frame')).not.toBeInTheDocument()
+      expect(screen.getByTestId('composer')).toBeInTheDocument()
+    })
+
     it('still sends members to the browser (the embed would only show them no access)', async () => {
       platformAuth.role = 'member'
       renderCard()
       const button = await screen.findByRole('button', { name: 'Go to billing' })
+      expect(screen.queryByTestId('billing-embed-body')).not.toBeInTheDocument()
       act(() => { button.click() })
       expect(openExternalUrl).toHaveBeenCalledTimes(1)
       expect(fetchEmbed).not.toHaveBeenCalled()
@@ -445,6 +442,7 @@ describe('PlatformPaywallCard', () => {
       ;(window as { electronAPI?: unknown }).electronAPI = {}
       renderCard()
       const button = await screen.findByRole('button', { name: 'Add usage' })
+      expect(screen.queryByTestId('billing-embed-body')).not.toBeInTheDocument()
       act(() => { button.click() })
       expect(openExternalUrl).toHaveBeenCalledTimes(1)
       expect(fetchEmbed).not.toHaveBeenCalled()
@@ -455,6 +453,7 @@ describe('PlatformPaywallCard', () => {
       platformAuth.platformControlled = false
       renderCard()
       const button = await screen.findByRole('button', { name: 'Add usage' })
+      expect(screen.queryByTestId('billing-embed-body')).not.toBeInTheDocument()
       act(() => { button.click() })
       expect(openExternalUrl).toHaveBeenCalledTimes(1)
       expect(fetchEmbed).not.toHaveBeenCalled()

@@ -9,7 +9,7 @@ import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { isElectron } from '@renderer/lib/env'
 import { openExternalUrl } from '@renderer/lib/open-external'
 
-import { BillingEmbedDialog } from './billing-embed-dialog'
+import { BillingEmbedFrame } from './billing-embed-frame'
 import { buildTopupHandoffUrl, type PaywallCta } from './platform-paywall-cta'
 import type { ProviderErrorComponentProps } from './provider-error-registry'
 import { usePlatformPaywallBilling } from './use-platform-paywall-billing'
@@ -61,20 +61,18 @@ function PaywallActions({
   cta,
   loading,
   handedOff,
-  inApp,
+  embedded,
   onDismiss,
   onHandOff,
-  onOpenEmbed,
   onRecheck,
 }: {
   cta: PaywallCta | null
   loading: boolean
   handedOff: boolean
-  /** Web on a cloud workspace: billing opens inside the app instead of a new tab. */
-  inApp: boolean
+  /** The billing page is rendered inline below; it carries the CTA itself. */
+  embedded: boolean
   onDismiss: () => void
   onHandOff: () => void
-  onOpenEmbed: () => void
   onRecheck: () => void
 }) {
   if (loading) {
@@ -101,17 +99,7 @@ function PaywallActions({
         >
           Recheck
         </Button>
-      ) : cta && inApp && canEmbed(cta) ? (
-        <Button
-          size="sm"
-          onClick={(event) => {
-            event.stopPropagation()
-            onOpenEmbed()
-          }}
-        >
-          {CTA_LABELS[cta.kind]}
-        </Button>
-      ) : cta ? (
+      ) : cta && !embedded ? (
         <Button
           size="sm"
           disabled={!href}
@@ -135,7 +123,6 @@ function PaywallActions({
 export function PlatformPaywallCard({ message, presentation, children, live = true }: ProviderErrorComponentProps) {
   const [dismissed, setDismissed] = useState(false)
   const [handedOff, setHandedOff] = useState(false)
-  const [embedOpen, setEmbedOpen] = useState(false)
   const { data: platformAuth } = usePlatformAuthStatus()
   const billing = usePlatformPaywallBilling(
     extractSubscriptionRequired(message),
@@ -146,6 +133,7 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
   // Electron keeps the system-browser hand-off. Web on a cloud workspace (the
   // only place the platform will frame its billing page) embeds it in-app.
   const inApp = !isElectron() && platformAuth?.platformControlled === true
+  const embedded = inApp && billing.cta !== null && canEmbed(billing.cta)
   if (billing.cleared || dismissed) return <>{children}</>
 
   const fallback = splitMessage(presentation?.message ?? message)
@@ -159,33 +147,33 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
         <div
           data-testid="paywall-card"
           data-blocked={billing.blocked}
-          className="relative flex flex-wrap items-center gap-x-6 gap-y-3 rounded-xl border bg-card px-5 py-4 shadow-sm"
+          data-embedded={embedded}
+          className="relative flex flex-col gap-3 rounded-xl border bg-card px-5 py-4 shadow-sm"
         >
-          <div className="min-w-0 flex-1 basis-60">
-            <p className="text-sm font-medium text-foreground">{heading}</p>
-            {detail && <p className="mt-0.5 text-sm text-muted-foreground">{detail}</p>}
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+            <div className="min-w-0 flex-1 basis-60">
+              <p className="text-sm font-medium text-foreground">{heading}</p>
+              {detail && <p className="mt-0.5 text-sm text-muted-foreground">{detail}</p>}
+            </div>
+            <PaywallActions
+              cta={billing.cta}
+              loading={billing.loading}
+              handedOff={handedOff}
+              embedded={embedded}
+              onDismiss={() => setDismissed(true)}
+              onHandOff={() => setHandedOff(true)}
+              onRecheck={billing.recheck}
+            />
           </div>
-          <PaywallActions
-            cta={billing.cta}
-            loading={billing.loading}
-            handedOff={handedOff}
-            inApp={inApp}
-            onDismiss={() => setDismissed(true)}
-            onHandOff={() => setHandedOff(true)}
-            onOpenEmbed={() => setEmbedOpen(true)}
-            onRecheck={billing.recheck}
-          />
+          {embedded && billing.cta && (
+            <BillingEmbedFrame
+              intent={billing.cta.kind === 'topup' ? 'topup' : undefined}
+              fallbackHref={ctaHref(billing.cta)}
+              onBillingUpdated={billing.recheck}
+            />
+          )}
         </div>
       </div>
-      {inApp && (
-        <BillingEmbedDialog
-          open={embedOpen}
-          onOpenChange={setEmbedOpen}
-          intent={billing.cta?.kind === 'topup' ? 'topup' : undefined}
-          fallbackHref={billing.cta ? ctaHref(billing.cta) : null}
-          onBillingUpdated={billing.recheck}
-        />
-      )}
       {!billing.blocked && children}
     </>
   )
