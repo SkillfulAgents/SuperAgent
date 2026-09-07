@@ -14,7 +14,8 @@ vi.mock('@shared/lib/platform-auth/config', () => ({
 }))
 
 import { getSttProvider } from './index'
-import { DEFAULT_TTS_VOICE, TTS_VOICES, isTtsVoice, resolveTtsPreferences, ttsVoiceSchema } from './tts-voices'
+import { DEEPGRAM_TTS_VOICES } from './deepgram-voices'
+import { resolveTtsSpeed } from './tts-preferences'
 
 describe('text-to-speech provider support', () => {
   beforeEach(() => {
@@ -43,27 +44,35 @@ describe('text-to-speech provider support', () => {
   })
 })
 
-describe('resolveTtsPreferences', () => {
-  it('prefers the user, then the deployment default, then the built-in default', () => {
-    expect(resolveTtsPreferences({ ttsVoice: 'aura-2-luna-en', ttsSpeed: 1.2 }, { ttsVoice: 'aura-2-zeus-en' }))
-      .toEqual({ voice: 'aura-2-luna-en', speed: 1.2 })
-    expect(resolveTtsPreferences({ ttsSpeed: 0.9 }, { ttsVoice: 'aura-2-zeus-en' }))
-      .toEqual({ voice: 'aura-2-zeus-en', speed: 0.9 })
-    expect(resolveTtsPreferences(undefined, undefined)).toEqual({ voice: DEFAULT_TTS_VOICE, speed: 1 })
+describe('provider voice catalogue', () => {
+  it('Deepgram and platform offer the same Aura voices; OpenAI offers none', () => {
+    expect(getSttProvider('deepgram').getTtsVoices()).toBe(DEEPGRAM_TTS_VOICES)
+    expect(getSttProvider('platform').getTtsVoices()).toBe(DEEPGRAM_TTS_VOICES)
+    expect(getSttProvider('openai').getTtsVoices()).toEqual([])
+    expect(getSttProvider('openai').getDefaultTtsVoice()).toBeUndefined()
   })
 
-  it('ignores values outside the catalogue or the speed range', () => {
-    expect(resolveTtsPreferences({ ttsVoice: 'aura-asteria-en', ttsSpeed: 3 }, { ttsVoice: 'nope' }))
-      .toEqual({ voice: DEFAULT_TTS_VOICE, speed: 1 })
+  it('the default is the first voice and every id in the catalogue is recognised', () => {
+    const deepgram = getSttProvider('deepgram')
+    expect(deepgram.getDefaultTtsVoice()).toBe(DEEPGRAM_TTS_VOICES[0].id)
+    for (const v of DEEPGRAM_TTS_VOICES) expect(deepgram.hasTtsVoice(v.id)).toBe(true)
+    expect(deepgram.hasTtsVoice('aura-asteria-en')).toBe(false)
+    expect(deepgram.hasTtsVoice(undefined)).toBe(false)
+  })
+
+  it('resolves the first pick the provider offers, then the default', () => {
+    const deepgram = getSttProvider('deepgram')
+    expect(deepgram.resolveTtsVoice('aura-2-luna-en', 'aura-2-zeus-en')).toBe('aura-2-luna-en')
+    expect(deepgram.resolveTtsVoice(undefined, 'aura-2-zeus-en')).toBe('aura-2-zeus-en')
+    expect(deepgram.resolveTtsVoice('aura-asteria-en', 'nope')).toBe(DEEPGRAM_TTS_VOICES[0].id)
+    expect(deepgram.resolveTtsVoice()).toBe(DEEPGRAM_TTS_VOICES[0].id)
   })
 })
 
-describe('tts voices', () => {
-  it('the default is in the catalogue and the schema accepts exactly the catalogue', () => {
-    expect(TTS_VOICES.some((v) => v.id === DEFAULT_TTS_VOICE)).toBe(true)
-    for (const v of TTS_VOICES) expect(ttsVoiceSchema.safeParse(v.id).success).toBe(true)
-    expect(isTtsVoice('aura-2-thalia-en')).toBe(true)
-    expect(isTtsVoice('aura-asteria-en')).toBe(false)
-    expect(isTtsVoice(undefined)).toBe(false)
+describe('resolveTtsSpeed', () => {
+  it('keeps a speed in range and falls back to normal otherwise', () => {
+    expect(resolveTtsSpeed(1.2)).toBe(1.2)
+    expect(resolveTtsSpeed(3)).toBe(1)
+    expect(resolveTtsSpeed(undefined)).toBe(1)
   })
 })

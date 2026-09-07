@@ -3,7 +3,7 @@ import { eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { userSettings } from '@shared/lib/db/schema'
 import { getSettings } from '@shared/lib/config/settings'
-import { ttsSpeedSchema, ttsVoiceSchema } from '@shared/lib/stt/tts-voices'
+import { ttsSpeedSchema } from '@shared/lib/stt/tts-preferences'
 
 // ─── Schema ──────────────────────────────────────────────────────────────────
 
@@ -79,13 +79,15 @@ export const agentFolderSettingsWriteSchema = z.object({
 })
 
 /**
- * Read-aloud preferences. Each field falls back alone: a voice that later
- * leaves the catalogue must not take the user's speed (or the rest of their
- * settings) with it. The API validates writes strictly instead.
+ * Read-aloud preferences. Each field falls back alone: a malformed value
+ * must not take the user's other settings with it. The voice is a provider
+ * voice id, kept as stored: which ids are valid is the configured provider's
+ * business, so the token endpoint asks it and falls back from there. The
+ * API validates writes strictly instead.
  */
 const userVoiceSettingsSchema = z
   .object({
-    ttsVoice: ttsVoiceSchema.optional().catch(undefined),
+    ttsVoice: z.string().min(1).optional().catch(undefined),
     ttsSpeed: ttsSpeedSchema.optional().catch(undefined),
   })
   .optional()
@@ -95,7 +97,7 @@ const userVoiceSettingsSchema = z
 export const userVoiceSettingsWriteSchema = z.object({
   voice: z
     .object({
-      ttsVoice: ttsVoiceSchema.nullable().optional(),
+      ttsVoice: z.string().min(1).nullable().optional(),
       ttsSpeed: ttsSpeedSchema.optional(),
     })
     .strict()

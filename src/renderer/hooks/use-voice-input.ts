@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { acquireMicStream, createSttAdapter, startAudioCapture, type SttAdapter, type SttProvider, type AudioCaptureHandle } from '@renderer/lib/stt'
-import { DEFAULT_TTS_VOICE, isTtsVoice, type TtsVoice } from '@shared/lib/stt/tts-voices'
+import type { TtsVoiceInfo } from '@shared/lib/stt/tts-preferences'
 
 // 'finalizing': mic released, but we're flushing buffered audio and awaiting the
 // server's trailing transcripts before the final text is ready.
@@ -22,11 +22,13 @@ interface SttConfiguredStatus {
   configured: boolean
   supportsVoiceAgent: boolean
   supportsTts: boolean
-  /** The deployment's default read-aloud voice (for anyone without their own pick). */
+  /** Read-aloud voices the configured provider offers; empty when it cannot speak. */
+  voices: TtsVoiceInfo[]
+  /** The deployment's default among them (for anyone without their own pick). */
   defaultVoice?: string
 }
 
-const NOT_CONFIGURED: SttConfiguredStatus = { configured: false, supportsVoiceAgent: false, supportsTts: false }
+const NOT_CONFIGURED: SttConfiguredStatus = { configured: false, supportsVoiceAgent: false, supportsTts: false, voices: [] }
 
 function useSttConfiguredStatus(): SttConfiguredStatus {
   const { data } = useQuery<SttConfiguredStatus>({
@@ -63,12 +65,13 @@ export function useIsTtsConfigured(): boolean {
 }
 
 /**
- * The deployment's default read-aloud voice. Served to every user (the
- * settings endpoint itself is admin-only in auth mode).
+ * The read-aloud voices the configured provider offers, and the deployment's
+ * default among them. Served to every user (the settings endpoint itself is
+ * admin-only in auth mode).
  */
-export function useTtsDefaultVoice(): TtsVoice {
-  const raw = useSttConfiguredStatus().defaultVoice
-  return isTtsVoice(raw) ? raw : DEFAULT_TTS_VOICE
+export function useTtsVoices(): { voices: TtsVoiceInfo[]; defaultVoice: string | undefined } {
+  const { voices, defaultVoice } = useSttConfiguredStatus()
+  return { voices, defaultVoice }
 }
 
 export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {

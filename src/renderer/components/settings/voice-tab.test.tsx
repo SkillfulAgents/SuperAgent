@@ -12,6 +12,11 @@ const state = {
   defaultVoice: undefined as string | undefined,
   userVoice: undefined as { ttsVoice?: string; ttsSpeed?: number } | undefined,
 }
+const VOICES = [
+  { id: 'aura-2-thalia-en', label: 'Thalia', description: 'Clear' },
+  { id: 'aura-2-luna-en', label: 'Luna', description: 'Friendly' },
+  { id: 'aura-2-zeus-en', label: 'Zeus', description: 'Deep' },
+]
 const updateSettings = vi.fn()
 const updateUserSettings = vi.fn()
 const useSettingsCalls: ({ enabled?: boolean } | undefined)[] = []
@@ -40,8 +45,9 @@ vi.mock('@renderer/hooks/use-user-settings', () => ({
 }))
 vi.mock('@renderer/hooks/use-voice-input', () => ({
   useIsTtsConfigured: () => state.ttsConfigured,
-  // What the member-readable endpoint reports as the deployment default.
-  useTtsDefaultVoice: () => state.defaultVoice ?? 'aura-2-thalia-en',
+  // What the member-readable endpoint reports: the provider's voices and the
+  // deployment default among them.
+  useTtsVoices: () => ({ voices: VOICES, defaultVoice: state.defaultVoice ?? 'aura-2-thalia-en' }),
   useVoiceInput: () => ({ state: 'idle', isRecording: false, isConnecting: false, isFinalizing: false, error: null, clearError: vi.fn(), isSupported: false, analyserRef: { current: null }, startRecording: vi.fn(), stopRecording: vi.fn() }),
 }))
 vi.mock('@renderer/hooks/use-read-aloud', () => ({
@@ -145,6 +151,15 @@ describe('VoiceTab', () => {
     state.userVoice = { ttsSpeed: 1.05 }
     renderWithProviders(<VoiceTab />)
     expect(screen.getByLabelText('Speed')).toHaveTextContent('1.05×')
+  })
+
+  it('a stored pick the provider no longer offers reads as no pick', () => {
+    state.isAuthMode = true
+    state.isAdmin = false
+    state.defaultVoice = 'aura-2-zeus-en'
+    state.userVoice = { ttsVoice: 'aura-retired-en' }
+    renderWithProviders(<VoiceTab />)
+    expect(screen.getByLabelText('Voice', { selector: '#tts-voice' })).toHaveTextContent('Workspace Default (Zeus)')
   })
 
   it('writes the personal pick to user settings, not the deployment settings', () => {

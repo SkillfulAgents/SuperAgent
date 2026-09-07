@@ -1,4 +1,6 @@
 import { BaseSttProvider } from './stt-provider'
+import { DEEPGRAM_TTS_VOICES } from './deepgram-voices'
+import type { TtsVoiceInfo } from './tts-preferences'
 
 export class DeepgramSttProvider extends BaseSttProvider {
   readonly id = 'deepgram' as const
@@ -53,8 +55,8 @@ export class DeepgramSttProvider extends BaseSttProvider {
     return this.mintEphemeralToken(apiKey)
   }
 
-  override supportsTts(): boolean {
-    return true
+  override getTtsVoices(): readonly TtsVoiceInfo[] {
+    return DEEPGRAM_TTS_VOICES
   }
 
   override async mintTtsToken(apiKey: string): Promise<string> {

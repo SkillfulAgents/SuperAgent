@@ -4,7 +4,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useIsTtsConfigured } from '@renderer/hooks/use-voice-input'
 import { readAloud, useReadAloud, type ReadAloudStatus } from '@renderer/hooks/use-read-aloud'
 import { useUpdateUserSettings, useUserSettings } from '@renderer/hooks/use-user-settings'
-import { DEFAULT_TTS_SPEED, TTS_SPEEDS, ttsSpeedSchema } from '@shared/lib/stt/tts-voices'
+import { DEFAULT_TTS_SPEED, TTS_SPEEDS, ttsSpeedSchema } from '@shared/lib/stt/tts-preferences'
 import { cn } from '@shared/lib/utils/cn'
 
 interface ReadAloudControlsProps {

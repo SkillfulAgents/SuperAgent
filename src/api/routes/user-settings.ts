@@ -7,6 +7,7 @@ import {
   updateUserSettings,
   userVoiceSettingsWriteSchema,
 } from '@shared/lib/services/user-settings-service'
+import { getConfiguredSttProvider } from '@shared/lib/stt'
 
 const userSettingsRouter = new Hono()
 
@@ -34,6 +35,11 @@ userSettingsRouter.put('/', async (c) => {
   const voiceFields = userVoiceSettingsWriteSchema.safeParse(body)
   if (!voiceFields.success) {
     return c.json({ error: 'Invalid voice settings' }, 400)
+  }
+  // Which voice ids exist is the configured provider's business.
+  const ttsVoice = voiceFields.data.voice?.ttsVoice
+  if (ttsVoice && !getConfiguredSttProvider()?.hasTtsVoice(ttsVoice)) {
+    return c.json({ error: 'Unknown text-to-speech voice' }, 400)
   }
   const updated = updateUserSettings(userId, body)
   return c.json(updated)

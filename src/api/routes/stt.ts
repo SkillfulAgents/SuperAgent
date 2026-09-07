@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { Authenticated } from '../middleware/auth'
 import { getVoiceSettings, type SttProvider } from '@shared/lib/config/settings'
 import { getSttProvider } from '@shared/lib/stt'
-import { resolveTtsPreferences, resolveDeploymentTtsVoice } from '@shared/lib/stt/tts-voices'
+import { resolveTtsSpeed } from '@shared/lib/stt/tts-preferences'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { getVoiceAgentPrompt, type VoiceAgentPromptName } from '@shared/prompts/voice-agent'
@@ -12,21 +12,23 @@ const stt = new Hono()
 stt.use('*', Authenticated())
 
 // GET /api/stt/configured - Check if voice input is configured (available to all authenticated users).
-// Also carries the deployment's default read-aloud voice: the settings
-// endpoint is admin-only, and members need it to label "Workspace Default".
+// Also carries the provider's read-aloud voices and the deployment's default
+// among them: the settings endpoint is admin-only, and members need both to
+// fill their voice picker and label "Workspace Default".
 stt.get('/configured', (c) => {
   const voiceSettings = getVoiceSettings()
   const provider = voiceSettings.sttProvider
-  const defaultVoice = resolveDeploymentTtsVoice(voiceSettings)
-  if (!provider) return c.json({ configured: false, supportsVoiceAgent: false, supportsTts: false, defaultVoice })
+  if (!provider) return c.json({ configured: false, supportsVoiceAgent: false, supportsTts: false, voices: [] })
   const sttProvider = getSttProvider(provider)
   const status = sttProvider.getApiKeyStatus()
   const configured = status.isConfigured
+  const supportsTts = configured && sttProvider.supportsTts()
   return c.json({
     configured,
     supportsVoiceAgent: configured && sttProvider.supportsVoiceAgent(),
-    supportsTts: configured && sttProvider.supportsTts(),
-    defaultVoice,
+    supportsTts,
+    voices: supportsTts ? sttProvider.getTtsVoices() : [],
+    defaultVoice: supportsTts ? sttProvider.resolveTtsVoice(voiceSettings.ttsVoice) : undefined,
   })
 })
 
@@ -112,8 +114,12 @@ stt.get('/tts-token', async (c) => {
     }
 
     const result = await sttProvider.getTtsToken()
-    const preferences = resolveTtsPreferences(getUserSettings(getCurrentUserId(c)).voice, voiceSettings)
-    return c.json({ ...result, ...preferences })
+    const own = getUserSettings(getCurrentUserId(c)).voice
+    return c.json({
+      ...result,
+      voice: sttProvider.resolveTtsVoice(own?.ttsVoice, voiceSettings.ttsVoice),
+      speed: resolveTtsSpeed(own?.ttsSpeed),
+    })
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Failed to get text-to-speech credentials'
     console.error('Failed to get text-to-speech credentials:', error)

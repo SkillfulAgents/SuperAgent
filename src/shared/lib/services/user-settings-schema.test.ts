@@ -8,14 +8,20 @@ describe('userSettingsSchema voice', () => {
       .toEqual({ ttsVoice: 'aura-2-luna-en', ttsSpeed: 1.2 })
   })
 
-  it('drops a voice that left the catalogue without taking the speed with it', () => {
-    const parsed = userSettingsSchema.parse({ voice: { ttsVoice: 'aura-retired-en', ttsSpeed: 1.1 } })
+  it('keeps a voice id as stored: which ids exist is the provider\'s business, not the schema\'s', () => {
+    expect(userSettingsSchema.parse({ voice: { ttsVoice: 'aura-retired-en', ttsSpeed: 1.1 } }).voice)
+      .toEqual({ ttsVoice: 'aura-retired-en', ttsSpeed: 1.1 })
+  })
+
+  it('drops a malformed field without taking the speed or the rest of the document with it', () => {
+    const parsed = userSettingsSchema.parse({ voice: { ttsVoice: 42, ttsSpeed: 1.1 } })
     expect(parsed.voice).toEqual({ ttsVoice: undefined, ttsSpeed: 1.1 })
     expect(parsed.theme).toBe('system')
   })
 
   it('the write schema rejects what the stored schema would silently drop', () => {
-    expect(userVoiceSettingsWriteSchema.safeParse({ voice: { ttsVoice: 'aura-retired-en' } }).success).toBe(false)
+    expect(userVoiceSettingsWriteSchema.safeParse({ voice: { ttsVoice: 42 } }).success).toBe(false)
+    expect(userVoiceSettingsWriteSchema.safeParse({ voice: { ttsVoice: '' } }).success).toBe(false)
     expect(userVoiceSettingsWriteSchema.safeParse({ voice: { ttsSpeed: 2 } }).success).toBe(false)
     expect(userVoiceSettingsWriteSchema.safeParse({ voice: { ttsSpeed: 0.9 } }).success).toBe(true)
     expect(userVoiceSettingsWriteSchema.safeParse({ theme: 'dark' }).success).toBe(true)

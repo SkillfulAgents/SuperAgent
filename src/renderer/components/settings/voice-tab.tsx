@@ -16,19 +16,12 @@ import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user
 import { useUser } from '@renderer/context/user-context'
 import { apiFetch } from '@renderer/lib/api'
 import { AlertTriangle, Eye, EyeOff, Check, Loader2, ExternalLink, Square, Volume2 } from 'lucide-react'
-import { useIsTtsConfigured, useTtsDefaultVoice, useVoiceInput } from '@renderer/hooks/use-voice-input'
+import { useIsTtsConfigured, useTtsVoices, useVoiceInput } from '@renderer/hooks/use-voice-input'
 import { useReadAloud } from '@renderer/hooks/use-read-aloud'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import type { ApiKeyStatus, SttProvider } from '@shared/lib/config/settings'
-import {
-  TTS_SPEEDS,
-  TTS_VOICES,
-  isTtsVoice,
-  resolveDeploymentTtsVoice,
-  resolveTtsPreferences,
-  type TtsVoice,
-} from '@shared/lib/stt/tts-voices'
+import { TTS_SPEEDS, resolveTtsSpeed, type TtsVoiceInfo } from '@shared/lib/stt/tts-preferences'
 
 const STT_PROVIDERS = [
   {
@@ -325,25 +318,31 @@ function VoicePreviewButton() {
 /** Picker value meaning "no personal pick: follow the workspace default". */
 const WORKSPACE_DEFAULT = 'workspace-default'
 
-function voiceLabel(voice: TtsVoice): string {
-  return TTS_VOICES.find((v) => v.id === voice)?.label ?? voice
+function voiceLabel(voices: readonly TtsVoiceInfo[], voice: string): string {
+  return voices.find((v) => v.id === voice)?.label ?? voice
 }
 
-function VoicePicker({ id, value, onChange, disabled, workspaceDefault }: {
+/**
+ * The voice ids are the provider's own, so the list comes from the configured
+ * provider (via the member-readable status endpoint), not from a shared
+ * constant.
+ */
+function VoicePicker({ id, voices, value, onChange, disabled, workspaceDefault }: {
   id: string
+  voices: readonly TtsVoiceInfo[]
   /** A voice, or null for "follow the workspace default" (only when one is offered). */
-  value: TtsVoice | null
-  onChange: (voice: TtsVoice | null) => void
+  value: string | null
+  onChange: (voice: string | null) => void
   disabled: boolean
   /** Offer following the workspace default, labelled with this voice. */
-  workspaceDefault?: TtsVoice
+  workspaceDefault?: string
 }) {
   return (
     <Select
       value={value ?? WORKSPACE_DEFAULT}
       onValueChange={(v) => {
         if (v === WORKSPACE_DEFAULT) onChange(null)
-        else if (isTtsVoice(v)) onChange(v)
+        else if (voices.some((voice) => voice.id === v)) onChange(v)
       }}
       disabled={disabled}
     >
@@ -352,9 +351,9 @@ function VoicePicker({ id, value, onChange, disabled, workspaceDefault }: {
       </SelectTrigger>
       <SelectContent>
         {workspaceDefault && (
-          <SelectItem value={WORKSPACE_DEFAULT}>Workspace Default ({voiceLabel(workspaceDefault)})</SelectItem>
+          <SelectItem value={WORKSPACE_DEFAULT}>Workspace Default ({voiceLabel(voices, workspaceDefault)})</SelectItem>
         )}
-        {TTS_VOICES.map((v) => (
+        {voices.map((v) => (
           <SelectItem key={v.id} value={v.id}>
             {v.label}
             <span className="text-muted-foreground ml-2">({v.description})</span>
@@ -375,11 +374,13 @@ function VoicePicker({ id, value, onChange, disabled, workspaceDefault }: {
  * section is a member's whole tab.
  */
 function PersonalVoiceSection({ heading, offerWorkspaceDefault }: { heading: string; offerWorkspaceDefault: boolean }) {
-  const workspaceDefault = useTtsDefaultVoice()
+  const { voices, defaultVoice: workspaceDefault } = useTtsVoices()
   const { data: userSettings, isLoading } = useUserSettings()
   const updateUserSettings = useUpdateUserSettings()
-  const { speed } = resolveTtsPreferences(userSettings?.voice, { ttsVoice: workspaceDefault })
-  const ownVoice = isTtsVoice(userSettings?.voice?.ttsVoice) ? userSettings.voice.ttsVoice : null
+  const speed = resolveTtsSpeed(userSettings?.voice?.ttsSpeed)
+  // A stored pick the current provider does not offer reads as no pick.
+  const stored = userSettings?.voice?.ttsVoice
+  const ownVoice = stored && voices.some((v) => v.id === stored) ? stored : null
   const speedOption = TTS_SPEEDS.find((s) => s.value === speed)
 
   return (
@@ -389,7 +390,8 @@ function PersonalVoiceSection({ heading, offerWorkspaceDefault }: { heading: str
         <Label htmlFor="tts-voice">Voice</Label>
         <VoicePicker
           id="tts-voice"
-          value={offerWorkspaceDefault ? ownVoice : (ownVoice ?? workspaceDefault)}
+          voices={voices}
+          value={offerWorkspaceDefault ? ownVoice : (ownVoice ?? workspaceDefault ?? null)}
           disabled={isLoading}
           workspaceDefault={offerWorkspaceDefault ? workspaceDefault : undefined}
           onChange={(ttsVoice) => updateUserSettings.mutate({ voice: { ttsVoice } })}
@@ -421,11 +423,15 @@ function PersonalVoiceSection({ heading, offerWorkspaceDefault }: { heading: str
   )
 }
 
-/** Admin, shared deployments only: what people hear until they pick their own voice. */
+/**
+ * Admin, shared deployments only: what people hear until they pick their own
+ * voice. The status endpoint already resolves the stored default against the
+ * provider's catalogue (and a settings save invalidates it), so it is read
+ * from there rather than re-derived from the raw setting.
+ */
 function DefaultVoiceSection({ disabled }: { disabled: boolean }) {
-  const { data: settings } = useSettings()
+  const { voices, defaultVoice } = useTtsVoices()
   const updateSettings = useUpdateSettings()
-  const voice = resolveDeploymentTtsVoice(settings?.voice)
 
   return (
     <div className="pt-4 border-t space-y-4" data-testid="default-voice-section">
@@ -434,7 +440,8 @@ function DefaultVoiceSection({ disabled }: { disabled: boolean }) {
         <Label htmlFor="tts-default-voice">Voice</Label>
         <VoicePicker
           id="tts-default-voice"
-          value={voice}
+          voices={voices}
+          value={defaultVoice ?? null}
           disabled={disabled}
           onChange={(ttsVoice) => { if (ttsVoice) updateSettings.mutate({ voice: { ttsVoice } }) }}
         />
