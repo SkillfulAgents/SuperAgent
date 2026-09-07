@@ -188,3 +188,9 @@ export class AgentPage {
     await expect(statusElement).toHaveAttribute('data-status', status, { timeout })
   }
 }
+
+export function getCurrentAgentSlug(page: Page) {
+  const match = page.url().match(/\/agents\/([^/?#]+)/)
+  expect(match).toBeTruthy()
+  return match![1]
+}

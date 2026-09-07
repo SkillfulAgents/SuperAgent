@@ -3,36 +3,30 @@ import { useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import MarkdownIt from 'markdown-it'
 import {
   MarkdownComposerEditor,
-  selectAllMarkdownComposer,
   setMarkdownComposerSelection,
 } from './markdown-composer-editor'
-import { findPotentialSecrets, type SecuredSecret } from '@renderer/lib/secret-detection'
+import { formatChipMarker } from '@renderer/lib/chip-marker'
+import { rewriteChipsForSend } from './composer-chips'
+import { findPotentialSecrets } from '@renderer/lib/secret-detection'
 
-function ControlledEditor({ initialValue = '' }: { initialValue?: string }) {
-  const [value, setValue] = useState(initialValue)
-  return (
-    <>
-      <MarkdownComposerEditor
-        value={value}
-        onChange={setValue}
-        placeholder="Write a message"
-        dataTestId="markdown-editor"
-      />
-      <output data-testid="markdown-value">{value}</output>
-    </>
-  )
+function paste(editor: HTMLElement, content: string, mimeType = 'text/plain') {
+  fireEvent.paste(editor, {
+    clipboardData: {
+      getData: (type: string) => type === mimeType ? content : '',
+      types: [mimeType], items: [],
+    },
+  })
 }
 
-function SecuredEditorHarness({
-  initialValue,
-  secrets,
-  onRemove,
+function ControlledEditor({
+  initialValue = '',
+  knownSecrets,
 }: {
-  initialValue: string
-  secrets: SecuredSecret[]
-  onRemove: (secrets: SecuredSecret[]) => void
+  initialValue?: string
+  knownSecrets?: ReadonlyMap<string, string>
 }) {
   const [value, setValue] = useState(initialValue)
   return (
@@ -42,8 +36,7 @@ function SecuredEditorHarness({
         onChange={setValue}
         placeholder="Write a message"
         dataTestId="markdown-editor"
-        securedSecrets={secrets}
-        onRemoveSecuredSecrets={onRemove}
+        knownSecrets={knownSecrets}
       />
       <output data-testid="markdown-value">{value}</output>
     </>
@@ -51,6 +44,213 @@ function SecuredEditorHarness({
 }
 
 describe('MarkdownComposerEditor', () => {
+  it('sends the painted inner marker from a malformed nested draft', async () => {
+    const known = new Map([['B', 'B']])
+    render(<ControlledEditor initialValue="[[secret:A|x[[secret:B|B]]" knownSecrets={known} />)
+    expect(screen.getByTestId('secured-secret')).toBeInTheDocument()
+    expect(rewriteChipsForSend(screen.getByTestId('markdown-value').textContent ?? '', known)).toBe('[[secret:A|x[Key saved to .env - B]')
+    await userEvent.setup().type(screen.getByTestId('markdown-editor'), 'x')
+    expect(rewriteChipsForSend(screen.getByTestId('markdown-value').textContent ?? '', known)).toContain('[Key saved to .env - B]')
+  })
+
+  it('preserves a chip reference and formatted text in image alt text after editing', async () => {
+    const marker = formatChipMarker('secret', 'B', 'B')
+    const known = new Map([['B', 'B']])
+    const { unmount } = render(<ControlledEditor initialValue={`![before \\* *emphasis* ${marker}(next) after](/favicon.ico)`} knownSecrets={known} />)
+    const editor = screen.getByTestId('markdown-editor')
+    expect(editor.querySelector('img')).toHaveAttribute('alt', `before * emphasis ${marker}(next) after`)
+    expect(rewriteChipsForSend(screen.getByTestId('markdown-value').textContent ?? '', known)).toContain('[Key saved to .env - B]')
+    await userEvent.setup().type(editor, 'x')
+    expect(screen.getByTestId('markdown-value').textContent).toContain(`before \\* emphasis ${marker}(next) after`)
+    expect(rewriteChipsForSend(screen.getByTestId('markdown-value').textContent ?? '', known)).toContain('![before \\* emphasis [Key saved to .env - B](next) after](/favicon.ico)')
+    const draft = screen.getByTestId('markdown-value').textContent ?? ''
+    unmount()
+    render(<ControlledEditor initialValue={draft} />)
+    expect(screen.getByTestId('markdown-editor').querySelector('img')).toHaveAttribute('alt', `before * emphasis ${marker}(next) after`)
+    expect(rewriteChipsForSend(screen.getByTestId('markdown-value').textContent ?? '', new Map())).toContain(marker)
+  })
+
+  it('restores escaped image references when keys arrive and on mount', () => {
+    const initialValue = '![alt \\[\\[secret:B|B\\]\\]](/favicon.ico)'
+    const known = new Map([['B', 'B']])
+    const { rerender, unmount } = render(<ControlledEditor initialValue={initialValue} />)
+    rerender(<ControlledEditor initialValue={initialValue} knownSecrets={known} />)
+    expect(rewriteChipsForSend(screen.getByTestId('markdown-value').textContent ?? '', known)).toBe('![alt [Key saved to .env - B]](/favicon.ico)')
+    unmount()
+    render(<ControlledEditor initialValue={initialValue} knownSecrets={known} />)
+    expect(rewriteChipsForSend(screen.getByTestId('markdown-value').textContent ?? '', known)).toBe('![alt [Key saved to .env - B]](/favicon.ico)')
+  })
+
+  it('restores visible references without changing link and image targets or titles', async () => {
+    const escaped = '\\[\\[secret:B|B\\]\\]'
+    const destination = `https://example.com/${escaped} "${escaped}"`
+    const initialValue = `[${escaped}](${destination}) ![${escaped}](${destination}) ${escaped}`
+    const known = new Map([['B', 'B']])
+    render(<ControlledEditor initialValue={initialValue} knownSecrets={known} />)
+    const reference = '[Key saved to .env - B]'
+    expect(rewriteChipsForSend(screen.getByTestId('markdown-value').textContent ?? '', known)).toBe(`[${reference}](${destination}) ![${reference}](${destination}) ${reference}`)
+    await userEvent.setup().type(screen.getByTestId('markdown-editor'), 'x')
+    const sent = rewriteChipsForSend(screen.getByTestId('markdown-value').textContent ?? '', known)
+    const tokens = new MarkdownIt('commonmark').parse(sent, {}).flatMap((token) => token.children ?? [])
+    const targets = tokens.filter((token) => token.type === 'link_open' || token.type === 'image')
+    expect(targets).toHaveLength(2)
+    for (const token of targets) {
+      expect(token.attrGet(token.type === 'image' ? 'src' : 'href')).toBe('https://example.com/%5B%5Bsecret:B%7CB%5D%5D')
+      expect(token.attrGet('title')).toBe('[[secret:B|B]]')
+    }
+    expect(sent.match(/Key saved to .env - B/g)).toHaveLength(3)
+  })
+
+  it('restores references beside a tab-separated link and email-like text when keys arrive', () => {
+    const initialValue = '\\[\\[secret:B|B\\]\\]\t[docs](https://x.com)\n\n<\\[\\[secret:B|B\\]\\]@example.com>'
+    const known = new Map([['B', 'B']])
+    const { rerender } = render(<ControlledEditor initialValue={initialValue} />)
+    rerender(<ControlledEditor initialValue={initialValue} knownSecrets={known} />)
+    expect(screen.getAllByTestId('secured-secret')).toHaveLength(2)
+    expect(rewriteChipsForSend(screen.getByTestId('markdown-value').textContent ?? '', known)).toBe('[Key saved to .env - B]\t[docs](https://x.com)\n\n<[Key saved to .env - B]@example.com>')
+  })
+
+  it('preserves raw link and image destinations from HTML-only paste through send', () => {
+    const href = 'https://example.com/[[secret:B|B]]'
+    const known = new Map([['B', 'B']])
+    const { rerender } = render(<ControlledEditor knownSecrets={known} />)
+    paste(screen.getByTestId('markdown-editor'), `<a href="https://example.com/">https://example.com/</a> <a href="${href}">${href}</a><img src="${href}" alt="image">`, 'text/html')
+    const sent = rewriteChipsForSend(screen.getByTestId('markdown-value').textContent ?? '', known)
+    expect(sent).not.toContain('Key saved to .env')
+    expect(sent).toContain('<https://example.com/>')
+    const tokens = new MarkdownIt('commonmark').parse(sent, {}).flatMap((token) => token.children ?? [])
+    const targets = tokens.filter((token) => token.type === 'link_open' || token.type === 'image')
+    expect(targets.map((token) => token.attrGet(token.type === 'image' ? 'src' : 'href'))).toEqual([
+      'https://example.com/',
+      'https://example.com/%5B%5Bsecret:B%7CB%5D%5D',
+      'https://example.com/%5B%5Bsecret:B%7CB%5D%5D',
+    ])
+    const changedKeys = new Map([...known, ['C', 'C']])
+    rerender(<ControlledEditor knownSecrets={changedKeys} />)
+    expect(screen.getByTestId('secured-secret')).toBeInTheDocument()
+    expect(rewriteChipsForSend(screen.getByTestId('markdown-value').textContent ?? '', changedKeys)).toBe(
+      sent.replace('\\[\\[secret:B|B\\]\\]', '[Key saved to .env - B]')
+    )
+  })
+
+  it('keeps a harmless old label backed after a case-only key rename', async () => {
+    const marker = formatChipMarker('secret', 'API_KEY', 'API Key')
+    const { rerender } = render(<ControlledEditor initialValue={marker} knownSecrets={new Map([['API_KEY', 'API Key']])} />)
+    const renamed = new Map([['API_KEY', 'API key']])
+    rerender(<ControlledEditor initialValue={marker} knownSecrets={renamed} />)
+    expect(screen.getByTestId('secured-secret')).toBeInTheDocument()
+    expect(rewriteChipsForSend(screen.getByTestId('markdown-value').textContent ?? '', renamed)).toBe('[Key saved to .env - API_KEY]')
+    await userEvent.setup().type(screen.getByTestId('markdown-editor'), 'x')
+    expect(rewriteChipsForSend(screen.getByTestId('markdown-value').textContent ?? '', renamed)).toContain('[Key saved to .env - API_KEY]')
+  })
+
+  it('preserves headings and links containing chips through editing', async () => {
+    const user = userEvent.setup()
+    const marker = formatChipMarker('secret', 'API_KEY', 'My Key')
+    render(<ControlledEditor initialValue={`## Deploy ${marker}\n\n[see ${marker}](https://x.com)`} knownSecrets={new Map([['API_KEY', 'My Key']])} />)
+    const editor = screen.getByTestId('markdown-editor')
+    expect(editor.querySelector('h2 [data-testid="secured-secret"]')).toBeInTheDocument()
+    expect(editor.querySelector('a [data-testid="secured-secret"]')).toBeInTheDocument()
+    expect(editor.querySelector('a')).toHaveAttribute('href', 'https://x.com')
+    await user.type(editor, 'x')
+    expect(screen.getByTestId('markdown-value').textContent).toContain(`## Deploy ${marker}`)
+    expect(editor.querySelector('a')).toHaveAttribute('href', 'https://x.com')
+  })
+
+  it('synchronizes a restored escaped chip before sending without another keystroke', () => {
+    const known = new Map([['API_KEY', 'My Key']])
+    const escaped = '\\[\\[secret:API_KEY|My%20Key\\]\\]'
+    render(<ControlledEditor initialValue={`- _Use_ ${escaped}\n\n\`${escaped}\``} knownSecrets={known} />)
+    expect(screen.getByTestId('secured-secret')).toBeInTheDocument()
+    expect(rewriteChipsForSend(screen.getByTestId('markdown-value').textContent ?? '', known)).toBe(`- _Use_ [Key saved to .env - API_KEY]\n\n\`${escaped}\``)
+  })
+
+  it('preserves draft formatting when saved keys arrive or disappear', () => {
+    const escaped = '\\[\\[secret:API_KEY|My%20Key\\]\\]'
+    const initialValue = `- _Use_ ${escaped}`
+    const { rerender } = render(<ControlledEditor initialValue={initialValue} />)
+    rerender(<ControlledEditor initialValue={initialValue} knownSecrets={new Map([['API_KEY', 'My Key']])} />)
+    expect(screen.getByTestId('secured-secret')).toBeInTheDocument()
+    expect(screen.getByTestId('markdown-value').textContent).toBe('- _Use_ [[secret:API_KEY|My%20Key]]')
+    rerender(<ControlledEditor initialValue={initialValue} knownSecrets={new Map()} />)
+    expect(screen.queryByTestId('secured-secret')).not.toBeInTheDocument()
+    expect(screen.getByTestId('markdown-value').textContent).toBe('- _Use_ [[secret:API_KEY|My%20Key]]')
+  })
+
+  it('restores a saved marker after unmatched escaped opening brackets', () => {
+    const known = new Map([['API_KEY', 'My Key']])
+    render(<ControlledEditor initialValue={'Literal \\[\\[ then \\[\\[secret:API_KEY|My%20Key\\]\\]'} knownSecrets={known} />)
+    expect(screen.getByTestId('secured-secret')).toBeInTheDocument()
+    expect(rewriteChipsForSend(screen.getByTestId('markdown-value').textContent ?? '', known)).toBe('Literal \\[\\[ then [Key saved to .env - API_KEY]')
+  })
+
+  it('keeps redo and undo atomic after a pasted chip loses its backing key', () => {
+    const marker = formatChipMarker('secret', 'API_KEY', 'My Key')
+    const { rerender } = render(<ControlledEditor knownSecrets={new Map([['API_KEY', 'My Key']])} />)
+    const editor = screen.getByTestId('markdown-editor')
+    paste(editor, marker)
+    fireEvent.keyDown(editor, { key: 'z', keyCode: 90, ctrlKey: true })
+    expect(editor.textContent).toBe('')
+    rerender(<ControlledEditor knownSecrets={new Map()} />)
+    fireEvent.keyDown(editor, { key: 'z', keyCode: 90, ctrlKey: true, shiftKey: true })
+    expect(editor.textContent).toBe(marker)
+    expect(screen.queryByTestId('secured-secret')).not.toBeInTheDocument()
+    fireEvent.keyDown(editor, { key: 'z', keyCode: 90, ctrlKey: true })
+    expect(editor.textContent).toBe('')
+  })
+
+  it('closes a heading before inserting a soft break', async () => {
+    const user = userEvent.setup()
+    render(<ControlledEditor initialValue="## Deploy" />)
+    const editor = screen.getByTestId('markdown-editor')
+    await user.click(editor)
+    await user.keyboard('{Shift>}{Enter}{/Shift}next')
+    expect(editor.querySelector('h2')).toHaveTextContent(/^Deploy$/)
+    expect(editor.querySelector('p')).toHaveTextContent('next')
+  })
+
+  it('demotes chips when keys disappear and keeps the reference for later recovery', async () => {
+    const user = userEvent.setup()
+    const marker = formatChipMarker('secret', 'API_KEY', 'My Key')
+    const known = new Map([['API_KEY', 'My Key']])
+    const { rerender } = render(<ControlledEditor initialValue={marker} knownSecrets={known} />)
+    rerender(<ControlledEditor initialValue={marker} knownSecrets={new Map()} />)
+    expect(screen.queryByTestId('secured-secret')).not.toBeInTheDocument()
+    expect(screen.getByTestId('markdown-editor')).toHaveTextContent(marker)
+    await user.type(screen.getByTestId('markdown-editor'), 'x')
+    fireEvent.keyDown(screen.getByTestId('markdown-editor'), { key: 'z', keyCode: 90, ctrlKey: true })
+    expect(screen.queryByTestId('secured-secret')).not.toBeInTheDocument()
+    rerender(<ControlledEditor initialValue={marker} knownSecrets={known} />)
+    expect(screen.getByTestId('secured-secret')).toBeInTheDocument()
+    expect(rewriteChipsForSend(screen.getByTestId('markdown-value').textContent ?? '', known)).toContain('[Key saved to .env - API_KEY]')
+  })
+
+  it('retains raw references from an HTML chip belonging to another agent', () => {
+    const marker = formatChipMarker('secret', 'API_KEY', 'My Key')
+    const { rerender } = render(<ControlledEditor />)
+    paste(screen.getByTestId('markdown-editor'), `<span data-chip-kind="secret" data-raw="${marker}">[My Key | *********]</span>`, 'text/html')
+    expect(screen.queryByTestId('secured-secret')).not.toBeInTheDocument()
+    expect(screen.getByTestId('markdown-editor')).toHaveTextContent(marker)
+    rerender(<ControlledEditor knownSecrets={new Map([['API_KEY', 'My Key']])} />)
+    expect(screen.getByTestId('secured-secret')).toBeInTheDocument()
+  })
+
+  it('demotes an unbacked chip re-read from native DOM changes', async () => {
+    const marker = formatChipMarker('secret', 'API_KEY', 'My Key')
+    render(<ControlledEditor />)
+    const editor = screen.getByTestId('markdown-editor')
+    const span = document.createElement('span')
+    span.dataset.chipKind = 'secret'
+    span.dataset.raw = marker
+    span.textContent = '[My Key | *********]'
+    editor.querySelector('p')!.replaceChildren(span)
+    await vi.waitFor(() => {
+      expect(editor).toHaveTextContent(marker)
+      expect(editor.querySelector('[data-chip-kind]')).toBeNull()
+    })
+    expect(screen.getByTestId('markdown-value').textContent).toContain('API_KEY')
+  })
+
   it('renders Markdown blocks and inline marks from its controlled value', () => {
     render(<ControlledEditor initialValue={'# Heading\n\n> [docs](https://example.com) with *emphasis* and `code`\n\n**bold** and ~~gone~~\n\n- one\n- two'} />)
 
@@ -281,14 +481,7 @@ describe('MarkdownComposerEditor', () => {
     render(<ControlledEditor />)
     const editor = screen.getByTestId('markdown-editor')
 
-    fireEvent.paste(editor, {
-      clipboardData: {
-        getData: (type: string) => type === 'text/plain'
-          ? '## Hello\n\n- list item\n- another list item\n\n1. OOL\n2. No listd'
-          : '',
-        items: [],
-      },
-    })
+    paste(editor, '## Hello\n\n- list item\n- another list item\n\n1. OOL\n2. No listd')
 
     expect(editor.querySelector('h2')).toHaveTextContent('Hello')
     expect(editor.querySelectorAll('ul li')).toHaveLength(2)
@@ -344,53 +537,127 @@ describe('MarkdownComposerEditor', () => {
     expect(editor).toHaveTextContent('[unsafe](javascript:alert(1))')
   })
 
-  it('deletes the complete selection when it contains a secured pill', async () => {
+  it('lifts a secret marker to a pill and serializes the same marker', async () => {
     const user = userEvent.setup()
-    const secret: SecuredSecret = {
-      id: 'first',
-      key: 'Token',
-      envVar: 'TOKEN_ONE',
-      displayText: '[Token | *********]',
-    }
-    const onRemove = vi.fn()
-    render(
-      <SecuredEditorHarness
-        initialValue={`Before ${secret.displayText} after`}
-        secrets={[secret]}
-        onRemove={onRemove}
-      />
-    )
+    const marker = formatChipMarker('secret', 'GITHUB_TOKEN', 'GitHub Token')
+    render(<ControlledEditor initialValue={`Use ${marker}`} knownSecrets={new Map([['GITHUB_TOKEN', 'GitHub Token']])} />)
     const editor = screen.getByTestId('markdown-editor')
 
-    expect(selectAllMarkdownComposer(editor)).toBe(true)
-    await user.keyboard('{Backspace}')
-
-    expect(screen.getByTestId('markdown-value').textContent).toBe('')
-    expect(onRemove).toHaveBeenCalledWith([secret])
+    expect(screen.getByTestId('secured-secret')).toHaveTextContent('[GitHub Token | *********]')
+    expect(setMarkdownComposerSelection(editor, 1)).toBe(true)
+    await user.keyboard('x')
+    expect(screen.getByTestId('markdown-value').textContent).toBe(`xUse ${marker}`)
   })
 
-  it('deletes the selected occurrence when secured pills have identical labels', async () => {
-    const user = userEvent.setup()
-    const displayText = '[Token | *********]'
-    const first: SecuredSecret = { id: 'first', key: 'Token', envVar: 'TOKEN_ONE', displayText }
-    const second: SecuredSecret = { id: 'second', key: 'Token', envVar: 'TOKEN_TWO', displayText }
-    const value = `A ${displayText} B ${displayText} C`
-    const onRemove = vi.fn()
-    render(
-      <SecuredEditorHarness
-        initialValue={value}
-        secrets={[first, second]}
-        onRemove={onRemove}
-      />
-    )
+  it.each([
+    { context: 'inline code', open: '`', close: '`', selector: 'p code' },
+    { context: 'a fenced block', open: '```\n', close: '\n```', selector: 'pre code' },
+  ])('lifts a secret marker inside $context and preserves it after editing and reload', async ({ open, close, selector }) => {
+    const marker = formatChipMarker('secret', 'API_KEY', 'My Key')
+    const known = new Map([['API_KEY', 'My Key']])
+    const wrap = (text: string) => open + text + close
+    const { unmount } = render(<ControlledEditor initialValue={wrap(marker)} knownSecrets={known} />)
     const editor = screen.getByTestId('markdown-editor')
-    const secondPillEnd = 1 + value.lastIndexOf(displayText) + displayText.length
+    const chipSelector = `${selector} [data-testid="secured-secret"]`
 
-    expect(setMarkdownComposerSelection(editor, secondPillEnd)).toBe(true)
-    await user.keyboard('{Backspace}')
+    expect(editor.querySelector(chipSelector)).toHaveTextContent('[My Key | *********]')
+    expect(setMarkdownComposerSelection(editor, 2)).toBe(true)
+    await userEvent.setup().keyboard('x')
+    expect(editor.querySelector(chipSelector)).toBeInTheDocument()
+    const draft = screen.getByTestId('markdown-value').textContent ?? ''
+    expect(draft).toBe(wrap(`${marker}x`))
 
-    expect(screen.getByTestId('markdown-value').textContent).toBe(`A ${displayText} B  C`)
-    expect(onRemove).toHaveBeenCalledWith([second])
+    unmount()
+    render(<ControlledEditor initialValue={draft} knownSecrets={known} />)
+    expect(screen.getByTestId('markdown-editor').querySelector(chipSelector)).toBeInTheDocument()
+    expect(screen.getByTestId('markdown-value').textContent).toBe(draft)
+  })
+
+  it('leaves unknown and incomplete markers as text', async () => {
+    const user = userEvent.setup()
+    const unknown = formatChipMarker('foo', 'bar', 'baz')
+    const incomplete = '[[secret:GITHUB_TOKEN'
+    render(<ControlledEditor initialValue={`See ${unknown} ${incomplete}`} />)
+    const editor = screen.getByTestId('markdown-editor')
+
+    expect(screen.queryByTestId('secured-secret')).not.toBeInTheDocument()
+    await user.click(editor)
+    await user.type(editor, ' ')
+    expect(screen.getByTestId('markdown-value').textContent).toBe(
+      'See \\[\\[foo:bar|baz\\]\\] \\[\\[secret:GITHUB_TOKEN '
+    )
+  })
+
+  it('unescapes a marker in the draft once the agent keys arrive', async () => {
+    const user = userEvent.setup()
+    const marker = formatChipMarker('secret', 'API_KEY', 'My Key')
+    const { rerender } = render(<ControlledEditor initialValue={`Use ${marker}`} />)
+    const editor = screen.getByTestId('markdown-editor')
+    expect(setMarkdownComposerSelection(editor, 1)).toBe(true)
+    await user.keyboard('x')
+    expect(screen.getByTestId('markdown-value').textContent).toBe('xUse \\[\\[secret:API_KEY|My%20Key\\]\\]')
+    rerender(<ControlledEditor initialValue={`Use ${marker}`} knownSecrets={new Map([['API_KEY', 'My Key']])} />)
+    expect(screen.getByTestId('secured-secret')).toBeInTheDocument()
+    expect(screen.getByTestId('markdown-value').textContent).toBe(`xUse ${marker}`)
+    editor.focus()
+    await user.keyboard('y')
+    expect(screen.getByTestId('markdown-value').textContent).toBe(`xyUse ${marker}`)
+    expect(screen.getByTestId('secured-secret')).toBeInTheDocument()
+  })
+
+  it('leaves a well-formed secret marker as text when the agent does not have that key', () => {
+    const marker = formatChipMarker('secret', 'MISSING', 'Nope')
+    render(<ControlledEditor initialValue={`Use ${marker}`} />)
+
+    expect(screen.queryByTestId('secured-secret')).not.toBeInTheDocument()
+    expect(screen.getByTestId('markdown-value').textContent).toBe(`Use ${marker}`)
+  })
+
+  it('pastes a secret marker as a live chip', () => {
+    const marker = formatChipMarker('secret', 'GITHUB_TOKEN', 'GitHub Token')
+    render(<ControlledEditor knownSecrets={new Map([['GITHUB_TOKEN', 'GitHub Token']])} />)
+    const editor = screen.getByTestId('markdown-editor')
+
+    paste(editor, marker)
+
+    expect(screen.getByTestId('secured-secret')).toBeInTheDocument()
+    expect(screen.getByTestId('markdown-value').textContent).toBe(marker)
+  })
+
+  it('rejects an HTML-only paste whose chip payload is not a marker', () => {
+    render(<ControlledEditor knownSecrets={new Map([['GITHUB_TOKEN', 'GitHub Token']])} />)
+    const editor = screen.getByTestId('markdown-editor')
+
+    paste(editor, '<span data-chip-kind="secret" data-raw="nope">x</span>', 'text/html')
+
+    expect(screen.queryByTestId('secured-secret')).not.toBeInTheDocument()
+    expect(editor.textContent).not.toContain('[undefined')
+  })
+
+  it('pastes an HTML chip when the marker parses and the agent has that key', () => {
+    const marker = formatChipMarker('secret', 'GITHUB_TOKEN', 'GitHub Token')
+    render(<ControlledEditor knownSecrets={new Map([['GITHUB_TOKEN', 'GitHub Token']])} />)
+    const editor = screen.getByTestId('markdown-editor')
+
+    paste(editor, `<span data-chip-kind="secret" data-raw="${marker}">x</span>`, 'text/html')
+
+    expect(screen.getByTestId('secured-secret')).toHaveTextContent('[GitHub Token | *********]')
+  })
+
+  it.each([
+    { key: 'Backspace', keyCode: 8, offset: 1 },
+    { key: 'Delete', keyCode: 46, offset: 0 },
+  ])('removes a secret pill atomically with $key', ({ keyCode, offset }) => {
+    const marker = formatChipMarker('secret', 'TOKEN_ONE', 'Token')
+    const before = 'Before '
+    render(<ControlledEditor initialValue={`${before}${marker} after`} knownSecrets={new Map([['TOKEN_ONE', 'Token']])} />)
+    const editor = screen.getByTestId('markdown-editor')
+    // Paragraph starts at 1; Backspace starts after the atom, Delete before it.
+    expect(setMarkdownComposerSelection(editor, 1 + before.length + offset)).toBe(true)
+    fireEvent.keyDown(editor, { keyCode })
+
+    expect(screen.queryByTestId('secured-secret')).not.toBeInTheDocument()
+    expect(screen.getByTestId('markdown-value').textContent).toBe('Before  after')
   })
 
   it('keeps a Shift+Enter line break in the Markdown source', async () => {

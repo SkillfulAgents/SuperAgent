@@ -48,7 +48,11 @@ export function useCreateSecret() {
       }
       return res.json() as Promise<ApiSecretDisplay>
     },
-    onSuccess: (_, variables) => {
+    onSuccess: (saved, variables) => {
+      queryClient.setQueryData<ApiSecretDisplay[]>(['agent-secrets', variables.agentSlug], (previous = []) => [
+        ...previous.filter((secret) => secret.envVar !== saved.envVar),
+        saved,
+      ])
       track('secret_added', { location: variables.location ?? 'settings' })
       queryClient.invalidateQueries({
         queryKey: ['agent-secrets', variables.agentSlug],

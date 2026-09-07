@@ -1,6 +1,6 @@
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
-import { AgentPage } from '../pages/agent.page'
+import { AgentPage, getCurrentAgentSlug } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
 import { createAgentWithTelegramIntegration } from '../helpers/chat-integrations'
 
@@ -17,12 +17,6 @@ function getDailyIssueSummaryTaskRow(appPage: AppPage) {
     .filter({ hasText: 'Daily Issue Summary' })
     .filter({ hasText: /cron/i })
     .first()
-}
-
-function getCurrentAgentSlug(page: Page) {
-  const match = page.url().match(/\/agents\/([^/?#]+)/)
-  expect(match).toBeTruthy()
-  return match![1]
 }
 
 async function waitForDailyIssueSummaryTask(request: APIRequestContext, agentSlug: string) {
