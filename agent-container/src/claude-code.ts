@@ -916,6 +916,12 @@ export class ClaudeCodeProcess extends EventEmitter {
       cwd: this.workingDirectory,
       abortController: this.abortController!,
       resume: this.claudeSessionId || undefined,
+      // A fresh session runs under the id we already hold (tempSessionId /
+      // the prewarm uuid) instead of one the CLI mints at init. That is what
+      // lets GAMUT_SESSION_ID below be correct from the first tool call: the
+      // env is fixed when the query is created, before init reports an id.
+      // Mutually exclusive with `resume` per the SDK contract.
+      ...(!this.claudeSessionId && { sessionId: this.sessionId }),
       permissionMode: 'bypassPermissions',
       includePartialMessages: true,
       agentProgressSummaries: true,
@@ -956,6 +962,12 @@ export class ClaudeCodeProcess extends EventEmitter {
         // server.ts announces this capability on WebSocket connect — keep the two
         // in sync. See message-persister.ts.
         CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1',
+        // The id of the session this process IS, inherited by every Bash
+        // child. /opt/gamut/bin/list-sessions.py and read-session.py use it
+        // to keep the agent from "finding" the conversation it is currently
+        // in and reading it back as prior work (seen live). Pinned after the
+        // customEnvVars spread so an agent-set value cannot mask it.
+        GAMUT_SESSION_ID: this.claudeSessionId || this.sessionId,
         // CLI 2.1.212+ moves MCP tool calls that run >2min to a background
         // task. Our blocking user-input tools (request_user_input et al.)
         // legitimately block far longer than that waiting on a human, and

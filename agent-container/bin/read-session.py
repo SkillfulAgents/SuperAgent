@@ -24,6 +24,11 @@ import re
 
 DEFAULT_CONFIG_DIR = os.environ.get("CLAUDE_CONFIG_DIR", "/workspace/.claude")
 
+# The session this command is running inside (exported by the container to
+# every tool call). Reading it is reading the conversation the agent is
+# already having — see resolve_session().
+CURRENT_SESSION_ID = os.environ.get("GAMUT_SESSION_ID") or None
+
 NOISE_PREFIXES = (
     "<command-name>",
     "<command-message>",
@@ -79,34 +84,54 @@ def last_activity(path):
         return ""
 
 
-def resolve_session(directory, wanted):
-    """Map `latest`, `latest-2`, a full id, or an id prefix to a transcript path."""
+def resolve_session(directory, wanted, allow_current=False):
+    """Map `latest`, `latest-2`, a full id, or an id prefix to a transcript path.
+
+    The current session is not a past one. `latest` skips it — it is almost
+    always the most recently active transcript, so without this `latest`
+    would hand the agent its own in-progress conversation — and naming it
+    outright is an error unless the caller opts in with --allow-current.
+    """
     try:
         names = [n for n in os.listdir(directory) if n.endswith(".jsonl")]
     except OSError:
         raise SystemExit(f"No transcript directory at {directory}")
     if not names:
         raise SystemExit(f"No transcripts in {directory}")
+    current_name = f"{CURRENT_SESSION_ID}.jsonl" if CURRENT_SESSION_ID else None
 
     match = re.fullmatch(r"latest(?:-(\d+))?", wanted)
     if match:
         offset = int(match.group(1) or 0)
+        candidates = names if allow_current else [n for n in names if n != current_name]
         by_recency = sorted(
-            names, key=lambda n: last_activity(os.path.join(directory, n)), reverse=True
+            candidates, key=lambda n: last_activity(os.path.join(directory, n)), reverse=True
         )
         if offset >= len(by_recency):
-            raise SystemExit(f"Only {len(by_recency)} session(s) exist; no {wanted}")
+            skipped = " (not counting the current session)" if len(candidates) < len(names) else ""
+            raise SystemExit(f"Only {len(by_recency)} session(s) exist{skipped}; no {wanted}")
         return os.path.join(directory, by_recency[offset])
 
     exact = f"{wanted}.jsonl"
     if exact in names:
-        return os.path.join(directory, exact)
-    prefixed = [n for n in names if n.startswith(wanted)]
-    if len(prefixed) == 1:
-        return os.path.join(directory, prefixed[0])
-    if not prefixed:
-        raise SystemExit(f"No session matching {wanted!r} in {directory}")
-    raise SystemExit(f"{wanted!r} matches {len(prefixed)} sessions; use a longer prefix")
+        chosen = exact
+    else:
+        prefixed = [n for n in names if n.startswith(wanted)]
+        if not prefixed:
+            raise SystemExit(f"No session matching {wanted!r} in {directory}")
+        if len(prefixed) > 1:
+            raise SystemExit(f"{wanted!r} matches {len(prefixed)} sessions; use a longer prefix")
+        chosen = prefixed[0]
+
+    if chosen == current_name and not allow_current:
+        raise SystemExit(
+            f"{CURRENT_SESSION_ID} is THIS session — the conversation you are in right "
+            "now, not a past one. Its transcript is what you already have in context; "
+            "nothing in it happened before this conversation. Use list-sessions.py to "
+            "find an earlier session. If you genuinely need your own earlier turns "
+            "(for example after the context was compacted), re-run with --allow-current."
+        )
+    return os.path.join(directory, chosen)
 
 
 def compile_pattern(spec):
@@ -240,11 +265,15 @@ def main():
                         help="truncate each tool/thinking block to this many chars (--full)")
     parser.add_argument("--sidechains", action="store_true",
                         help="include subagent (sidechain) turns")
+    parser.add_argument("--allow-current", action="store_true",
+                        help="permit reading the session this command is running in "
+                             "(refused by default — it is the current conversation, "
+                             "not a past one; `latest` skips it)")
     parser.add_argument("--dir", metavar="DIR",
                         help="transcript directory (default: $CLAUDE_CONFIG_DIR/projects/-workspace)")
     args = parser.parse_args()
 
-    path = resolve_session(sessions_dir(args.dir), args.session)
+    path = resolve_session(sessions_dir(args.dir), args.session, args.allow_current)
     pattern = compile_pattern(args.grep) if args.grep else None
 
     lines = []
@@ -269,7 +298,8 @@ def main():
         lines.append(COLLAPSED)
 
     session_id = os.path.basename(path)[: -len(".jsonl")]
-    print(f"── {session_id} ──")
+    is_current = session_id == CURRENT_SESSION_ID
+    print(f"── {session_id}{' (THIS session — the current conversation)' if is_current else ''} ──")
     if not lines:
         print("(no matching turns)")
         return
@@ -277,6 +307,10 @@ def main():
         lines = lines[-args.limit:]
     for line in lines:
         print(line)
+    if is_current:
+        # No card hint: the user is already in this conversation.
+        print(f"\n── end of {session_id} (the current conversation) ──")
+        return
     # The agent is holding the id right here, which is the moment the hint is
     # actionable — the user who asked "which session was that?" wants the card,
     # not the id pasted into chat.
