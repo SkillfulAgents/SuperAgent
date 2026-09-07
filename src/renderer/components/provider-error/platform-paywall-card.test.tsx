@@ -13,6 +13,7 @@ import { PAYWALL_RECHECK_INTERVAL_MS } from './use-platform-paywall-billing'
 
 const platformAuth = {
   connected: true,
+  orgId: 'org_123' as string | null,
   role: 'member' as string | null,
   platformControlled: undefined as boolean | undefined,
 }
@@ -417,7 +418,32 @@ describe('PlatformPaywallCard', () => {
       expect(screen.getByTestId('paywall-card')).toBeInTheDocument()
     })
 
-    it('falls back to opening billing externally when the embed session cannot be minted', async () => {
+    it('ignores messages about another org even from the platform origin', async () => {
+      renderCard()
+      await screen.findByTestId('billing-embed-frame')
+      const before = fetchBilling.mock.calls.length
+      fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
+      postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated', { orgId: 'org_other' })
+      postEmbedMessage(PLATFORM_ORIGIN, 'ready', { orgId: 'org_other' })
+      await act(async () => {})
+      expect(fetchBilling.mock.calls.length).toBe(before)
+      expect(screen.getByTestId('billing-embed-loading')).toBeInTheDocument()
+    })
+
+    it('remounts the frame with the panel that matches the CTA after a recheck flips it', async () => {
+      fetchBilling.mockResolvedValue(billing({ subscription: { status: 'active', paymentStatus: 'past_due', currentPeriodEnd: null } }))
+      renderCard()
+      await screen.findByTestId('billing-embed-frame')
+      expect(JSON.parse(String(fetchEmbed.mock.calls[0][0]?.body))).toEqual({ view: 'payment' })
+
+      fetchBilling.mockResolvedValue(billing())
+      postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated')
+      await waitFor(() => expect(fetchEmbed).toHaveBeenCalledTimes(2))
+      expect(JSON.parse(String(fetchEmbed.mock.calls[1][0]?.body))).toEqual({ intent: 'topup', view: 'topup' })
+      expect(screen.getByText('Add usage credit to resume this answer.')).toBeInTheDocument()
+    })
+
+    it('falls back to opening billing externally when the embed session cannot be minted, then offers a recheck', async () => {
       fetchEmbed.mockResolvedValue({ ok: false, body: { error: 'Only admins.', code: 'forbidden' } })
       renderCard()
       const fallback = await screen.findByRole('button', { name: 'Open billing in a new tab' })
@@ -425,6 +451,14 @@ describe('PlatformPaywallCard', () => {
       act(() => { fallback.click() })
       expect(openExternalUrl).toHaveBeenCalledTimes(1)
       expect(new URL(openExternalUrl.mock.calls[0][0]).searchParams.get('intent')).toBe('topup')
+      expect(screen.getByRole('button', { name: 'Recheck' })).toBeInTheDocument()
+    })
+
+    it('falls back when the host returns a malformed embed session', async () => {
+      fetchEmbed.mockResolvedValue({ ok: true, body: { embedUrl: 'not a url' } })
+      renderCard()
+      await screen.findByRole('button', { name: 'Open billing in a new tab' })
+      expect(screen.queryByTestId('billing-embed-frame')).not.toBeInTheDocument()
     })
 
     it('offers the external link when the platform reports the session expired', async () => {
@@ -433,6 +467,19 @@ describe('PlatformPaywallCard', () => {
       postEmbedMessage(PLATFORM_ORIGIN, 'session-expired')
       expect(screen.getByText('This billing session has expired.')).toBeInTheDocument()
       expect(screen.getByRole('button', { name: 'Open billing in a new tab' })).toBeInTheDocument()
+    })
+
+    it('"Try again" mints a fresh session after the previous one expired', async () => {
+      renderCard()
+      await screen.findByTestId('billing-embed-frame')
+      postEmbedMessage(PLATFORM_ORIGIN, 'session-expired')
+      const second = { ...EMBED_SESSION, embedUrl: `${PLATFORM_ORIGIN}/embed/session?token_hash=def&org_id=org_123` }
+      fetchEmbed.mockResolvedValue({ ok: true, body: second })
+      act(() => { screen.getByRole('button', { name: 'Try again' }).click() })
+      const frame = await screen.findByTestId('billing-embed-frame')
+      expect(frame).toHaveAttribute('src', second.embedUrl)
+      expect(fetchEmbed).toHaveBeenCalledTimes(2)
+      expect(screen.getByTestId('billing-embed-loading')).toBeInTheDocument()
     })
 
     it('dismiss removes the inline billing page and hands the composer back', async () => {

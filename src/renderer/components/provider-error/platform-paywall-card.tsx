@@ -176,11 +176,16 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
             />
           </div>
           {embedded && billing.cta && (
+            // Keyed by view: when a recheck flips the CTA (payment fixed → still needs
+            // credit) the frame remounts and mints the panel that now matches the title.
             <BillingEmbedFrame
+              key={view}
               intent={billing.cta.kind === 'topup' ? 'topup' : undefined}
               view={view}
+              orgId={platformAuth?.orgId ?? null}
               fallbackHref={ctaHref(billing.cta)}
               onBillingUpdated={billing.recheck}
+              onOpenExternal={() => setHandedOff(true)}
             />
           )}
         </div>

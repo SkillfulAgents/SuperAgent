@@ -1,11 +1,12 @@
 import { useMutation } from '@tanstack/react-query'
 
 import { apiFetch } from '@renderer/lib/api'
-import type {
-  BillingEmbedErrorCode,
-  BillingEmbedSession,
-  BillingEmbedView,
-} from '@shared/lib/services/platform-billing-embed-service'
+import {
+  billingEmbedSessionSchema,
+  type BillingEmbedErrorCode,
+  type BillingEmbedSession,
+  type BillingEmbedView,
+} from '@shared/lib/services/platform-billing-embed-schema'
 
 export type { BillingEmbedSession, BillingEmbedView }
 
@@ -36,7 +37,11 @@ export function useBillingEmbedSession() {
         const body = (await res.json().catch(() => ({}))) as { error?: string; code?: BillingEmbedErrorCode }
         throw new BillingEmbedRequestError(body.error || 'Could not open billing.', body.code ?? 'unknown')
       }
-      return res.json()
+      const parsed = billingEmbedSessionSchema.safeParse(await res.json().catch(() => null))
+      if (!parsed.success) {
+        throw new BillingEmbedRequestError('Could not open billing.', 'unknown')
+      }
+      return parsed.data
     },
   })
 }

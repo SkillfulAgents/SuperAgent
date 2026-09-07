@@ -8,10 +8,21 @@ import {
   getPlatformAuthStatus,
   PLATFORM_AUTH_PROVIDER_ID,
 } from '@shared/lib/services/platform-auth-service'
+import {
+  type BillingEmbedErrorCode,
+  type BillingEmbedSession,
+  type BillingEmbedView,
+} from '@shared/lib/services/platform-billing-embed-schema'
+
+export {
+  BILLING_EMBED_VIEWS,
+  parseBillingEmbedView,
+  type BillingEmbedErrorCode,
+  type BillingEmbedSession,
+  type BillingEmbedView,
+} from '@shared/lib/services/platform-billing-embed-schema'
 
 const EXCHANGE_TIMEOUT_MS = 10_000
-
-export type BillingEmbedErrorCode = 'not_available' | 'reconnect' | 'forbidden' | 'platform_error'
 
 export class BillingEmbedError extends Error {
   constructor(
@@ -24,14 +35,8 @@ export class BillingEmbedError extends Error {
   }
 }
 
-export interface BillingEmbedSession {
-  /** One-time URL to load in the iframe; boots the partitioned platform session. */
-  embedUrl: string
-  /** Origin the renderer must accept `message` events from. */
-  platformOrigin: string
-}
-
 const embedSessionResponseSchema = z.object({ embed_url: z.string().url() })
+const embedErrorResponseSchema = z.object({ error: z.string() })
 
 function safeOrigin(value: string): string | null {
   try {
@@ -41,16 +46,14 @@ function safeOrigin(value: string): string | null {
   }
 }
 
+async function readPlatformErrorCode(res: Response): Promise<string | null> {
+  const parsed = embedErrorResponseSchema.safeParse(await res.json().catch(() => null))
+  return parsed.success ? parsed.data.error : null
+}
+
 // Trades the acting user's platform OIDC access token (refreshed by Better Auth
 // when expired) for a one-time embed URL. Cloud-only: the platform accepts the
 // parent origin only when it matches this org's registered deployment.
-// One chrome-less platform panel per paywall CTA (mirrors the platform's EMBED_VIEWS).
-export const BILLING_EMBED_VIEWS = ['topup', 'subscribe', 'payment'] as const
-export type BillingEmbedView = (typeof BILLING_EMBED_VIEWS)[number]
-export function parseBillingEmbedView(value: unknown): BillingEmbedView | undefined {
-  return BILLING_EMBED_VIEWS.find((v) => v === value)
-}
-
 export async function createBillingEmbedSession(input: {
   headers: Headers
   parentOrigin: string
@@ -108,6 +111,11 @@ export async function createBillingEmbedSession(input: {
     throw new BillingEmbedError('Sign in again to manage billing in the app.', 'reconnect', 401)
   }
   if (res.status === 403) {
+    // The platform also 403s when this deployment's origin is not registered
+    // for the org (custom domain, preview host): that is not a role problem.
+    if ((await readPlatformErrorCode(res)) === 'parent_not_registered') {
+      throw new BillingEmbedError('In-app billing is not available from this address.', 'not_available', 400)
+    }
     throw new BillingEmbedError('Only workspace owners and admins can manage billing.', 'forbidden', 403)
   }
   if (!res.ok) {

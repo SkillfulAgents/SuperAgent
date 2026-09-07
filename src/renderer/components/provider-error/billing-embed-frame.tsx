@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 
 import { Button } from '@renderer/components/ui/button'
@@ -17,12 +17,13 @@ const FRAME_DEFAULT_HEIGHT = 200
 
 interface EmbedMessage {
   event: BillingEmbedEvent
+  orgId: string | null
   height?: number
 }
 
 function readEmbedMessage(data: unknown): EmbedMessage | null {
   if (typeof data !== 'object' || data === null) return null
-  const record = data as { type?: unknown; event?: unknown; height?: unknown }
+  const record = data as { type?: unknown; event?: unknown; orgId?: unknown; height?: unknown }
   if (record.type !== BILLING_EMBED_MESSAGE_TYPE) return null
   if (
     record.event !== 'ready' &&
@@ -32,7 +33,11 @@ function readEmbedMessage(data: unknown): EmbedMessage | null {
   ) {
     return null
   }
-  return { event: record.event, height: typeof record.height === 'number' ? record.height : undefined }
+  return {
+    event: record.event,
+    orgId: typeof record.orgId === 'string' ? record.orgId : null,
+    height: typeof record.height === 'number' ? record.height : undefined,
+  }
 }
 
 function clampHeight(height: number): number {
@@ -43,17 +48,28 @@ export interface BillingEmbedFrameProps {
   intent?: 'topup'
   /** Which chrome-less platform panel to load; it reports its height back. */
   view: BillingEmbedView
+  /** Org the panel must report for; messages about any other org are ignored. */
+  orgId: string | null
   /** External billing URL for the fallback button. */
   fallbackHref: string | null
   /** Fired on every `billing-updated` from the platform page. */
   onBillingUpdated: () => void
+  /** The user left for the external billing page; the card can offer a recheck. */
+  onOpenExternal: () => void
 }
 
 // Web paywall body: the platform's top-up panel inline, where the composer was.
 // The iframe URL is a one-time session bootstrap minted by the host on mount.
 // Anything that stops the embed from working falls back to opening billing
 // externally, exactly like the Electron flow.
-export function BillingEmbedFrame({ intent, view, fallbackHref, onBillingUpdated }: BillingEmbedFrameProps) {
+export function BillingEmbedFrame({
+  intent,
+  view,
+  orgId,
+  fallbackHref,
+  onBillingUpdated,
+  onOpenExternal,
+}: BillingEmbedFrameProps) {
   const session = useBillingEmbedSession()
   const [frameReady, setFrameReady] = useState(false)
   const [expired, setExpired] = useState(false)
@@ -67,6 +83,14 @@ export function BillingEmbedFrame({ intent, view, fallbackHref, onBillingUpdated
     mutate({ intent, view })
   }, [intent, view, mutate])
 
+  // Each mint is one-time: a retry starts the whole frame over.
+  const retry = useCallback(() => {
+    setFrameReady(false)
+    setExpired(false)
+    setHeight(FRAME_DEFAULT_HEIGHT)
+    mutate({ intent, view })
+  }, [intent, view, mutate])
+
   const platformOrigin = session.data?.platformOrigin ?? null
   useEffect(() => {
     if (!platformOrigin) return
@@ -74,6 +98,7 @@ export function BillingEmbedFrame({ intent, view, fallbackHref, onBillingUpdated
       if (event.origin !== platformOrigin) return
       const message = readEmbedMessage(event.data)
       if (!message) return
+      if (orgId && message.orgId !== orgId) return
       if (message.event === 'ready') setFrameReady(true)
       else if (message.event === 'billing-updated') onBillingUpdated()
       else if (message.event === 'session-expired') setExpired(true)
@@ -81,7 +106,7 @@ export function BillingEmbedFrame({ intent, view, fallbackHref, onBillingUpdated
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [platformOrigin, onBillingUpdated])
+  }, [platformOrigin, orgId, onBillingUpdated])
 
   const sessionError = session.error
   useEffect(() => {
@@ -101,11 +126,22 @@ export function BillingEmbedFrame({ intent, view, fallbackHref, onBillingUpdated
       {failure ? (
         <div className="flex flex-col items-start gap-3 py-2">
           <p className="text-sm text-muted-foreground">{failure}</p>
-          {fallbackHref && (
-            <Button size="sm" onClick={() => void openExternalUrl(fallbackHref)}>
-              Open billing in a new tab
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" disabled={session.isPending} onClick={retry}>
+              Try again
             </Button>
-          )}
+            {fallbackHref && (
+              <Button
+                size="sm"
+                onClick={() => {
+                  void openExternalUrl(fallbackHref)
+                  onOpenExternal()
+                }}
+              >
+                Open billing in a new tab
+              </Button>
+            )}
+          </div>
         </div>
       ) : (
         <>

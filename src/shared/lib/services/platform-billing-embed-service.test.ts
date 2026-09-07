@@ -100,6 +100,11 @@ describe('createBillingEmbedSession', () => {
     await expectError(createBillingEmbedSession({ headers, parentOrigin: PARENT }), code, status)
   })
 
+  it('reports not_available (not forbidden) when the platform rejects this deployment origin', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ error: 'parent_not_registered' }, 403))
+    await expectError(createBillingEmbedSession({ headers, parentOrigin: PARENT }), 'not_available', 400)
+  })
+
   it('rejects an embed URL that is not on the platform origin', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ embed_url: 'https://evil.example/embed/session' }))
     await expectError(createBillingEmbedSession({ headers, parentOrigin: PARENT }), 'platform_error', 502)
