@@ -25,8 +25,8 @@ import { useRenderTracker } from '@renderer/lib/perf'
 import { createMarkdownUrlTransform } from '@renderer/lib/markdown-url-transform'
 import type { EmbeddedImageAliases } from '@renderer/lib/parse-tool-result'
 import { rehypeStreamingWordReveal } from './streaming-word-reveal'
-import { rehypeSpokenWords } from '@renderer/lib/speech/spoken-words'
-import { useIsBeingRead, useSpokenWordHighlight } from '@renderer/hooks/use-read-aloud'
+import { countSpokenWords, rehypeSpokenWords } from '@renderer/lib/speech/spoken-words'
+import { readAloud, useIsBeingRead, useSpokenWordHighlight } from '@renderer/hooks/use-read-aloud'
 import { ReadAloudControls } from './read-aloud-controls'
 
 // Re-export for use by other components
@@ -219,19 +219,24 @@ interface MarkdownBlockProps {
   agentSlug?: string
   /** Wrap every prose word in an indexed span for useSpokenWordHighlight. */
   spoken?: boolean
+  /** Index of this block's first spoken word within the whole message (a reply rendered block by block). */
+  spokenOffset?: number
 }
 
-const SPOKEN_REHYPE_PLUGINS: ReactMarkdownOptions['rehypePlugins'] = [rehypeSpokenWords]
+function spokenPlugins(spoken: boolean | undefined, offset: number | undefined): ReactMarkdownOptions['rehypePlugins'] {
+  return spoken ? [[rehypeSpokenWords, { offset: offset ?? 0 }]] : undefined
+}
 
-export const MarkdownBlock = memo(function MarkdownBlock({ text, embeddedImageAliases, agentSlug, spoken }: MarkdownBlockProps) {
+export const MarkdownBlock = memo(function MarkdownBlock({ text, embeddedImageAliases, agentSlug, spoken, spokenOffset }: MarkdownBlockProps) {
   const urlTransform = useMemo(
     () => createMarkdownUrlTransform({ aliases: embeddedImageAliases, agentSlug }),
     [embeddedImageAliases, agentSlug]
   )
+  const rehypePlugins = useMemo(() => spokenPlugins(spoken, spokenOffset), [spoken, spokenOffset])
   return (
     <ReactMarkdown
       remarkPlugins={REMARK_PLUGINS}
-      rehypePlugins={spoken ? SPOKEN_REHYPE_PLUGINS : undefined}
+      rehypePlugins={rehypePlugins}
       components={MARKDOWN_COMPONENTS}
       urlTransform={urlTransform}
     >
@@ -243,7 +248,7 @@ export const MarkdownBlock = memo(function MarkdownBlock({ text, embeddedImageAl
 // Only the still-growing Markdown tail uses the word wrapper. Settled blocks
 // switch back to MarkdownBlock, keeping the filter-animation surface small even
 // during long responses.
-const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({ text, embeddedImageAliases, agentSlug }: MarkdownBlockProps) {
+const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({ text, embeddedImageAliases, agentSlug, spoken, spokenOffset }: MarkdownBlockProps) {
   const previousTextRef = useRef('')
   const batchStartsRef = useRef<number[]>([0])
   const previousText = previousTextRef.current
@@ -260,9 +265,10 @@ const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({ text, embe
   // The plugin keeps each batch's delays stable across subsequent renders, so
   // existing words do not restart while newly appended words get their own
   // compact stagger sequence.
-  const rehypePlugins: ReactMarkdownOptions['rehypePlugins'] = [[rehypeStreamingWordReveal, {
-    batchStarts: batchStartsRef.current,
-  }]]
+  const rehypePlugins: ReactMarkdownOptions['rehypePlugins'] = [
+    [rehypeStreamingWordReveal, { batchStarts: batchStartsRef.current }],
+    ...(spokenPlugins(spoken, spokenOffset) ?? []),
+  ]
   const urlTransform = useMemo(
     () => createMarkdownUrlTransform({ aliases: embeddedImageAliases, agentSlug }),
     [embeddedImageAliases, agentSlug]
@@ -308,6 +314,14 @@ interface MessageItemProps {
   /** This row's provider error is the session's current one and a `ProviderErrorPlacement`
    *  renders it elsewhere (e.g. composer). Skip the inline card so it does not show twice. */
   suppressInlineError?: boolean
+  /** The newest assistant message of the session, with no streaming row after it. */
+  isLatestAssistant?: boolean
+  /**
+   * Voice mode is reading this session's reply, and this row is a row it
+   * can be: the streaming row, or the latest assistant message. Decided by
+   * the list, so the store's flips re-render one row rather than every one.
+   */
+  voiceReading?: boolean
 }
 
 function resolveSubagentRun(
@@ -332,7 +346,7 @@ function resolveSubagentRun(
   }
 }
 
-function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall, readOnly, workDetailClassName, revealedToolCallIds, embeddedImageAliases, suppressInlineError }: MessageItemProps) {
+function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall, readOnly, workDetailClassName, revealedToolCallIds, embeddedImageAliases, suppressInlineError, isLatestAssistant, voiceReading }: MessageItemProps) {
   useRenderTracker('MessageItem')
   const isUser = message.type === 'user'
   const isAssistant = message.type === 'assistant'
@@ -379,7 +393,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   // While streaming, pre-split the markdown into fence-safe blocks so each
   // settled block parses once; only the small trailing block re-parses per
   // delta (O(N) instead of O(N^2)). Persisted messages render as one document.
-  const streamingSplit = isStreaming && text ? splitStreamingMarkdown(text) : null
+  const streamingSplit = useMemo(() => (isStreaming && text ? splitStreamingMarkdown(text) : null), [isStreaming, text])
 
   // Detect assistant messages that failed due to an LLM provider error (from SDK metadata)
   const isProviderErrorMessage = isAssistant && !!message.apiError && isProviderFacingError(message.apiError, message.errorPresentation)
@@ -398,15 +412,43 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   // the viewport; the follow engine attributes that move to the commit and
   // puts it straight back — see COMMIT_ROLLBACK_WINDOW_MS.)
   const canReadAloud = isAssistant && !!hasText && !isStreaming && !isProviderErrorMessage && !CustomUserRender
-  const isBeingRead = useIsBeingRead(message.id) && canReadAloud
+  // Voice mode reads the reply as it streams: the streaming row while there
+  // is one, then the persisted message it becomes. Its cursor counts words
+  // per message, so the highlight follows across that swap.
+  const isVoiceRead = !!voiceReading && isAssistant && !!hasText && !isProviderErrorMessage && (!!isStreaming || !!isLatestAssistant)
+  const isBeingRead = (useIsBeingRead(message.id) && canReadAloud) || isVoiceRead
   const proseRef = useRef<HTMLDivElement>(null)
-  useSpokenWordHighlight(proseRef, isBeingRead)
+  const getSpokenCursor = useCallback(
+    () => (isVoiceRead ? readAloud.getStreamWordCursor() : (readAloud.getPlayer()?.getWordCursor() ?? -1)),
+    [isVoiceRead],
+  )
+  useSpokenWordHighlight(proseRef, isBeingRead, { getCursor: getSpokenCursor, live: !!isStreaming })
+  // A streaming reply is rendered block by block; each block's spans are
+  // numbered from where the blocks before it left off, so indices match the
+  // message's spoken words end to end.
+  const spokenOffsets = useMemo(() => {
+    if (!isBeingRead || !streamingSplit) return null
+    const offsets: number[] = []
+    let count = 0
+    for (const block of streamingSplit.settled) {
+      offsets.push(count)
+      count += countSpokenWords(block)
+    }
+    offsets.push(count)
+    return offsets
+  }, [isBeingRead, streamingSplit])
 
   // Don't render assistant messages that have no text, no tool calls, and no
   // thinking (and aren't streaming). These are transient empty entries from
   // partially-persisted JSONL that will be filled in on the next refetch.
   if (isAssistant && !hasInlineText && toolCalls.length === 0 && thinking.length === 0 && !isStreaming) {
     return null
+  }
+
+  // Row kinds (the voice-mode boundary) own the whole row: no avatar column,
+  // no bubble width, drawn edge to edge like a compact boundary.
+  if (CustomUserRender && userKind?.chrome === 'row' && hasText) {
+    return <CustomUserRender text={text} message={message} renderMarkdown={renderMarkdown} />
   }
 
   // Skip rendering the text bubble for:
@@ -491,6 +533,8 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                           text={block}
                           embeddedImageAliases={embeddedImageAliases}
                           agentSlug={agentSlug}
+                          spoken={isBeingRead}
+                          spokenOffset={spokenOffsets?.[i]}
                         />
                       ))}
                       {streamingSplit.tail && (
@@ -499,6 +543,8 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                           text={streamingSplit.tail}
                           embeddedImageAliases={embeddedImageAliases}
                           agentSlug={agentSlug}
+                          spoken={isBeingRead}
+                          spokenOffset={spokenOffsets?.[streamingSplit.settled.length]}
                         />
                       )}
                     </>

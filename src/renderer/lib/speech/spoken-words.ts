@@ -37,6 +37,8 @@ interface WalkState {
   words: SpokenWord[]
   /** When set, text nodes are replaced by indexed spans (the rehype plugin). */
   wrap: boolean
+  /** Added to every span's index: this tree's place in a larger text rendered in pieces. */
+  base: number
   /**
    * Whether a word boundary separates the next text from the last word. False
    * right after a word: text that follows with no whitespace in between
@@ -73,7 +75,7 @@ function walkText(node: Text, state: WalkState): RootContent[] {
       state.words.push({ text: part, blockEnd: false })
     }
     state.gap = false
-    out.push(state.wrap ? wordSpan(part, index) : { type: 'text', value: part })
+    out.push(state.wrap ? wordSpan(part, state.base + index) : { type: 'text', value: part })
   }
   return out
 }
@@ -108,7 +110,7 @@ function walk(node: Parent, state: WalkState): void {
 
 /** Prose words of a HAST tree in document order. */
 export function collectSpokenWords(tree: Root): SpokenWord[] {
-  const state: WalkState = { words: [], wrap: false, gap: true }
+  const state: WalkState = { words: [], wrap: false, gap: true, base: 0 }
   walk(tree, state)
   return state.words
 }
@@ -119,9 +121,10 @@ export function collectSpokenWords(tree: Root): SpokenWord[] {
  * `markdownToSpokenWords` on the same Markdown. A word split by inline markup
  * (`**bold**,`) yields several spans sharing one index.
  */
-export function rehypeSpokenWords() {
+export function rehypeSpokenWords(options: { offset?: number } = {}) {
+  const base = options.offset ?? 0
   return (tree: Root) => {
-    walk(tree, { words: [], wrap: true, gap: true })
+    walk(tree, { words: [], wrap: true, gap: true, base })
   }
 }
 
@@ -133,4 +136,21 @@ const processor = unified().use(remarkParse).use(remarkGfm).use(remarkRehype, { 
 export function markdownToSpokenWords(markdown: string): SpokenWord[] {
   const tree = processor.runSync(processor.parse(markdown)) as Root
   return collectSpokenWords(tree)
+}
+
+const COUNT_CACHE_MAX = 512
+const countCache = new Map<string, number>()
+
+/**
+ * Number of spoken words in `markdown`, memoized: a streaming reply is
+ * rendered block by block, and each settled block's count is the offset of
+ * the block after it, asked for on every delta.
+ */
+export function countSpokenWords(markdown: string): number {
+  const cached = countCache.get(markdown)
+  if (cached !== undefined) return cached
+  if (countCache.size >= COUNT_CACHE_MAX) countCache.clear()
+  const count = markdownToSpokenWords(markdown).length
+  countCache.set(markdown, count)
+  return count
 }

@@ -74,6 +74,17 @@ export function useTtsVoices(): { voices: TtsVoiceInfo[]; defaultVoice: string |
   return { voices, defaultVoice }
 }
 
+/**
+ * Whether voice mode (talk, and hear the replies) can be offered here: the
+ * configured provider both transcribes and speaks, and this browser has a
+ * microphone API.
+ */
+export function useCanUseVoiceMode(): boolean {
+  const { configured, supportsTts } = useVoiceConfiguredStatus()
+  const hasMic = typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia
+  return configured && supportsTts && hasMic
+}
+
 export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {
   const [state, setState] = useState<VoiceInputState>('idle')
   const [error, setError] = useState<string | null>(null)

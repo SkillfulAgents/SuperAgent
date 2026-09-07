@@ -257,6 +257,21 @@ describe('session-service', () => {
       expect(sessions[0].messageCount).toBe(0)
     })
 
+    it('names a session after the first message the person sent, skipping system-injected turns', async () => {
+      // A session started by voice opens with the voice-mode notice; the
+      // first real utterance names it.
+      const notice = {
+        ...SAMPLE_JSONL_ENTRIES[0],
+        uuid: '0c0c0c0c-0000-4000-8000-000000000001',
+        message: { role: 'user', content: '[SYSTEM] The user switched to voice mode.\nKeep replies brief.' },
+      }
+      await createSessionFile('test-agent', 'session-voice-first', [notice, ...SAMPLE_JSONL_ENTRIES])
+
+      const session = await getSession('test-agent', 'session-voice-first')
+
+      expect(session?.name).toBe('Whats 1+1?')
+    })
+
     it('uses custom name from metadata', async () => {
       await createSessionFile(
         'test-agent',

@@ -47,6 +47,8 @@ import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
 import { parseByteRange } from '@shared/lib/utils/http-range'
 import { messagePersister } from '@shared/lib/container/message-persister'
+import { recordSessionActivity } from '@shared/lib/services/session-summary-cache'
+import { isSystemMessageText } from '@shared/lib/utils/system-message'
 import { repairLegacySlashCommands } from '@shared/lib/container/slash-commands'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { credentialBroker } from '../credentials/credential-broker'
@@ -1239,6 +1241,20 @@ function getSummarizerModel(): string {
   return resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer')
 }
 
+// Sessions opened by a system notice (voice mode started from the agent
+// home) rather than by something the person said. The notice must not name
+// the session; the first human message does, when it arrives. In-memory:
+// after a restart such a session simply keeps its placeholder name.
+const sessionsAwaitingHumanName = new Set<string>()
+
+/** Name a session opened by a notice from the first message a person sends to it. */
+function nameSessionFromFirstHumanMessage(agentSlug: string, sessionId: string, message: string, agentName: string): void {
+  const key = `${agentSlug}/${sessionId}`
+  if (!sessionsAwaitingHumanName.has(key) || isSystemMessageText(message)) return
+  sessionsAwaitingHumanName.delete(key)
+  generateAndUpdateSessionNameAsync(agentSlug, sessionId, message, agentName).catch(console.error)
+}
+
 // Generate session name using AI (fire and forget)
 async function generateAndUpdateSessionNameAsync(
   agentSlug: string,
@@ -2152,12 +2168,16 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       updateSessionMetadata(slug, sessionId, { slashCommands: containerSession.slashCommands }).catch(console.error)
     }
 
-    generateAndUpdateSessionNameAsync(
-      slug,
-      sessionId,
-      message.trim(),
-      agent.frontmatter.name
-    ).catch(console.error)
+    if (isSystemMessageText(message.trim())) {
+      sessionsAwaitingHumanName.add(`${slug}/${sessionId}`)
+    } else {
+      generateAndUpdateSessionNameAsync(
+        slug,
+        sessionId,
+        message.trim(),
+        agent.frontmatter.name
+      ).catch(console.error)
+    }
 
     return c.json(
       {
@@ -2763,7 +2783,11 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     const messageUuid = randomUUID()
     const text = content.trim()
 
-    if (messagePersister.coalesceIfRecovering(agentSlug, sessionId, { uuid: messageUuid, text })) {
+    if (messagePersister.coalesceIfRecovering(agentSlug, sessionId, {
+      uuid: messageUuid,
+      text,
+      ...(runtimeOptions.shouldQuery === false ? { shouldQuery: false as const } : {}),
+    })) {
       await persistAndBroadcastUserMessage(c, {
         messageUuid,
         sessionId,
@@ -2786,6 +2810,26 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
 
     if (!messagePersister.isSubscribed(agentSlug, sessionId)) {
       await messagePersister.subscribeToSession(agentSlug, sessionId, client, sessionId)
+    }
+
+    // A transcript-only append (the voice-mode notices): the message enters
+    // the agent's context to be read with its next turn, and no turn starts
+    // now. Nothing below applies — there is no turn to queue behind, no
+    // pending input to cancel, and marking the session active would leave it
+    // "working" with no idle event to ever clear it. Runtime options are
+    // dropped for the same reason a queued send drops them.
+    if (runtimeOptions.shouldQuery === false) {
+      await persistAndBroadcastUserMessage(c, {
+        messageUuid,
+        sessionId,
+        agentSlug,
+        content: text,
+        queued: false,
+      })
+      await client.sendMessage(sessionId, text, messageUuid, { shouldQuery: false })
+      // No stream frames follow an append, so the warm summary is told directly.
+      recordSessionActivity(agentSlug, sessionId)
+      return c.json({ success: true, uuid: messageUuid, queued: false }, 201)
     }
 
     // If the session is awaiting user input (an open AskUserQuestion / secret / file
@@ -2821,6 +2865,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     })
 
     await client.sendMessage(sessionId, text, messageUuid, runtimeOptions)
+    nameSessionFromFirstHumanMessage(agentSlug, sessionId, text, agent.frontmatter?.name ?? agentSlug)
     const updates: Parameters<typeof updateSessionMetadata>[2] = {}
     if (runtimeOptions.effort) updates.effort = runtimeOptions.effort
     if (runtimeOptions.speed) updates.speed = runtimeOptions.speed

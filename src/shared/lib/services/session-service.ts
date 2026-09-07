@@ -58,6 +58,7 @@ import {
 } from '@shared/lib/types/agent'
 import { captureException } from '@shared/lib/error-reporting'
 import { isRealPathWithinDir } from '@shared/lib/utils/path-safety'
+import { isSystemMessageText } from '@shared/lib/utils/system-message'
 import {
   getSessionSummaryCacheSlot,
   applyActivity,
@@ -414,10 +415,14 @@ async function summarizeSessionTranscript(jsonlPath: string): Promise<Transcript
     summary.messageCount++
     if (summary.messageCount === 1) summary.firstTimestamp = entry.timestamp
     summary.lastTimestamp = entry.timestamp
+    // A system-injected turn (a voice-mode notice opening a session started
+    // by voice, a wake-up) is not something the person said, so it does not
+    // name the session.
     if (
       summary.firstUserText === undefined &&
       entry.type === 'user' &&
-      typeof entry.message.content === 'string'
+      typeof entry.message.content === 'string' &&
+      !isSystemMessageText(entry.message.content)
     ) {
       summary.firstUserText = entry.message.content
     }

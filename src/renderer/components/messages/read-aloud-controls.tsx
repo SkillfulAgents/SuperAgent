@@ -49,9 +49,10 @@ function IconButton({ label, onClick, testId, status, children }: {
 /**
  * Speaking rate, written to the user's own settings. A synthesizer
  * connection is fixed to one speed, so a change mid-reply restarts playback
- * from the current word with the new one.
+ * from the current word with the new one. Shared with voice mode, which
+ * shows it under the mic.
  */
-function SpeedSelect() {
+export function ReadAloudSpeedSelect({ testId = 'read-aloud-speed', align = 'start' }: { testId?: string; align?: 'start' | 'center' }) {
   const { data: userSettings } = useUserSettings()
   const updateUserSettings = useUpdateUserSettings()
   const stored = ttsSpeedSchema.safeParse(userSettings?.voice?.ttsSpeed)
@@ -64,12 +65,15 @@ function SpeedSelect() {
       onValueChange={(v) => {
         const ttsSpeed = Number(v)
         if (ttsSpeed === speed) return
+        // The restart comes after the save round-trip, outside this gesture:
+        // give it an audio output made inside it.
+        readAloud.unlockAudio()
         updateUserSettings.mutate({ voice: { ttsSpeed } }, { onSuccess: () => readAloud.restart() })
       }}
     >
       <SelectTrigger
         aria-label="Reading speed"
-        data-testid="read-aloud-speed"
+        data-testid={testId}
         className={cn(
           'h-6 w-auto gap-1 border-0 bg-transparent px-1.5 text-xs text-muted-foreground shadow-none',
           'hover:bg-black/[0.06] hover:text-foreground dark:hover:bg-white/[0.1] [&>svg]:h-3 [&>svg]:w-3',
@@ -77,7 +81,7 @@ function SpeedSelect() {
       >
         <SelectValue>{preset?.value === 1 ? '1×' : (preset?.label ?? `${speed}×`)}</SelectValue>
       </SelectTrigger>
-      <SelectContent align="start">
+      <SelectContent align={align}>
         {TTS_SPEEDS.map((s) => (
           <SelectItem key={s.value} value={String(s.value)}>{s.label}</SelectItem>
         ))}
@@ -130,7 +134,7 @@ export function ReadAloudControls({ messageId, markdown, className }: ReadAloudC
             <Square className={cn(ICON, 'fill-current')} />
           </IconButton>
         )}
-        {active && <SpeedSelect />}
+        {active && <ReadAloudSpeedSelect />}
       </div>
     </TooltipProvider>
   )

@@ -7,6 +7,9 @@ import { ArrowUp, Loader2, Eye, Maximize2, Minimize2, MoreVertical, Search } fro
 import { useCreateSession, useSessions } from '@renderer/hooks/use-sessions'
 import { useScheduledTasks } from '@renderer/hooks/use-scheduled-tasks'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
+import { VoiceModeButton } from '@renderer/components/ui/voice-mode-button'
+import { readAloud } from '@renderer/hooks/use-read-aloud'
+import { VOICE_MODE_ENTERED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
 import { UploadError } from '@renderer/components/ui/upload-error'
 import { RelatedSessions, type SortOrder } from '@renderer/components/sessions/related-sessions'
 import { SortPopover } from '@renderer/components/sessions/sort-popover'
@@ -60,7 +63,7 @@ import { ScrollAwarePageTitle } from '@renderer/components/layout/scroll-aware-t
 
 interface AgentHomeProps {
   agent: ApiAgent
-  onSessionCreated: (sessionId: string, initialMessage: string, messageUuid: string) => void
+  onSessionCreated: (sessionId: string, initialMessage: string, messageUuid: string, options?: { voiceMode?: boolean }) => void
 }
 
 export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
@@ -262,6 +265,23 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   }
 
   const isDisabled = createSession.isPending || composer.isUploading || !isRuntimeReady
+
+  // Voice mode from the home page: the session opens with the voice-mode
+  // notice as its first message, and its composer comes up listening.
+  const startVoiceSession = useCallback(async () => {
+    // Audio output is unlocked here, inside the click, for the reply to use.
+    readAloud.unlockAudio()
+    try {
+      const session = await createSession.mutateAsync({
+        agentSlug: agent.slug,
+        message: VOICE_MODE_ENTERED_MESSAGE,
+        ...composerOptions.toRuntimeOptions(),
+      })
+      onSessionCreated(session.id, VOICE_MODE_ENTERED_MESSAGE, session.initialMessageUuid, { voiceMode: true })
+    } catch (error) {
+      console.error('Failed to start a voice session:', error)
+    }
+  }, [createSession, agent.slug, composerOptions, onSessionCreated])
 
   const isFreshUntitled = agent.name === UNTITLED_AGENT_NAME && sessions.length === 0
   const typewriterPlaceholder = useTypewriterPlaceholder(
@@ -505,6 +525,9 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                   rightActions={(
                     <>
                       <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} />
+                      {!isFreshUntitled && (
+                        <VoiceModeButton onClick={() => void startVoiceSession()} disabled={isDisabled} />
+                      )}
                       {isFreshUntitled ? (
                         <Button
                           type="submit"

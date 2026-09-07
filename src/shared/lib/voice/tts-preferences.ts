@@ -30,3 +30,11 @@ export function resolveTtsSpeed(value: unknown): number {
   const parsed = ttsSpeedSchema.safeParse(value)
   return parsed.success ? parsed.data : DEFAULT_TTS_SPEED
 }
+
+/** Voice mode plays a soft loop while the agent works, unless turned off. */
+export const DEFAULT_HOLD_SOUND = true
+
+/** A stored hold-sound preference, or the default when there is none. */
+export function resolveHoldSound(value: unknown): boolean {
+  return typeof value === 'boolean' ? value : DEFAULT_HOLD_SOUND
+}

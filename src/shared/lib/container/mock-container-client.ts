@@ -1750,6 +1750,13 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       'This is a delayed mock response.',
       3000
     )],
+    // The voice-mode notice opens a session started from the agent home. The
+    // reply comes after model-like latency, so the client that navigates in
+    // right after creating the session joins the stream before the first token.
+    ['switched to voice mode', new DelayedTextResponseScenario(
+      "Hi, I'm listening. What can I help with?",
+      1500
+    )],
     // A viewport-overflowing streamed reply (~1200 words over ~6s) so
     // transcript follow/scroll behavior can be observed while it grows
     ['stream a long story', new SimpleTextResponseScenario(
@@ -2959,8 +2966,16 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     // Update last activity
     session.lastActivity = new Date().toISOString()
 
-    // shouldQuery: false — append to transcript without triggering a response
+    // shouldQuery: false — append to transcript without triggering a response.
+    // The real CLI still persists the user entry (that is the point: the agent
+    // reads it with its next turn), so the transcript shows it.
     if (options?.shouldQuery === false) {
+      this.writeJsonlEntry(sessionId, {
+        type: 'user',
+        ...(uuid ? { uuid } : {}),
+        message: { role: 'user', content },
+        timestamp: new Date().toISOString(),
+      })
       return
     }
 

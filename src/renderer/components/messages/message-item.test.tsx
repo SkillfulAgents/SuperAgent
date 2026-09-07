@@ -91,7 +91,8 @@ vi.mock('@renderer/hooks/use-read-aloud', () => ({
     error: readAloudState.error,
   }),
   useSpokenWordHighlight: () => {},
-  readAloud: { restart: vi.fn() },
+  useIsVoiceReading: () => false,
+  readAloud: { restart: vi.fn(), getPlayer: () => null, getStreamWordCursor: () => -1 },
 }))
 
 // The speed picker inside the controls reads user settings (react-query).

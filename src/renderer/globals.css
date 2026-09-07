@@ -1230,3 +1230,51 @@ html[data-keyboard-open] [data-composer-footer] {
     animation: none;
   }
 }
+
+/* Voice mode: the mic button's ring follows the person's voice while it is
+   their turn (--voice-level is set per frame from the mic's analyser) and
+   breathes on its own between words; while the reply is read it glows warm
+   instead. The ring is a sibling span so the icon never scales. */
+.voice-mic-ring {
+  transition: opacity 120ms ease-out;
+}
+
+.voice-mic-listening .voice-mic-ring {
+  background: radial-gradient(circle, rgba(56, 189, 248, 0.45) 0%, rgba(56, 189, 248, 0.12) 55%, transparent 72%);
+  transform: scale(calc(1.08 + var(--voice-level, 0) * 0.55));
+  opacity: calc(0.55 + var(--voice-level, 0) * 0.45);
+  animation: voice-mic-breathe 2.4s ease-in-out infinite;
+}
+
+.voice-mic-speaking {
+  box-shadow: 0 0 0 6px rgba(249, 115, 22, 0.12), 0 0 28px 6px rgba(249, 115, 22, 0.28);
+  animation: voice-mic-glow 1.8s ease-in-out infinite;
+}
+
+.voice-mic-thinking .voice-mic-ring {
+  border: 2px dashed hsl(var(--muted-foreground) / 0.35);
+  inset: -6px;
+  animation: voice-mic-spin 6s linear infinite;
+}
+
+@keyframes voice-mic-breathe {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.25); }
+}
+
+@keyframes voice-mic-glow {
+  0%, 100% { box-shadow: 0 0 0 6px rgba(249, 115, 22, 0.10), 0 0 24px 4px rgba(249, 115, 22, 0.22); }
+  50% { box-shadow: 0 0 0 10px rgba(249, 115, 22, 0.16), 0 0 36px 10px rgba(249, 115, 22, 0.34); }
+}
+
+@keyframes voice-mic-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-mic-listening .voice-mic-ring,
+  .voice-mic-speaking,
+  .voice-mic-thinking .voice-mic-ring {
+    animation: none;
+  }
+}
