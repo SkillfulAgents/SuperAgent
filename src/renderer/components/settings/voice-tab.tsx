@@ -20,10 +20,10 @@ import { useIsTtsConfigured, useTtsVoices, useVoiceInput } from '@renderer/hooks
 import { useReadAloud } from '@renderer/hooks/use-read-aloud'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
-import type { ApiKeyStatus, SttProvider } from '@shared/lib/config/settings'
-import { TTS_SPEEDS, resolveTtsSpeed, type TtsVoiceInfo } from '@shared/lib/stt/tts-preferences'
+import type { ApiKeyStatus, VoiceProvider } from '@shared/lib/config/settings'
+import { TTS_SPEEDS, resolveTtsSpeed, type TtsVoiceInfo } from '@shared/lib/voice/tts-preferences'
 
-const STT_PROVIDERS = [
+const VOICE_PROVIDERS = [
   {
     value: 'platform' as const,
     label: 'Platform',
@@ -76,7 +76,7 @@ const PROVIDER_CONFIG: Record<ApiKeyProvider, {
   },
 }
 
-function isApiKeyProvider(provider: SttProvider): provider is ApiKeyProvider {
+function isApiKeyProvider(provider: VoiceProvider): provider is ApiKeyProvider {
   return provider === 'deepgram' || provider === 'openai'
 }
 
@@ -139,7 +139,7 @@ function SttApiKeyInput({ provider, disabled }: { provider: ApiKeyProvider; disa
   return (
     <div className="space-y-2">
       <Label htmlFor={`${provider}-api-key`}>
-        {STT_PROVIDERS.find(p => p.value === provider)?.label} API Key
+        {VOICE_PROVIDERS.find(p => p.value === provider)?.label} API Key
       </Label>
 
       {apiKeyStatus?.isConfigured && (
@@ -285,7 +285,7 @@ function VoiceTest() {
   )
 }
 
-const VALID_PROVIDERS = new Set(STT_PROVIDERS.map(p => p.value))
+const VALID_PROVIDERS = new Set(VOICE_PROVIDERS.map(p => p.value))
 
 const VOICE_PREVIEW_ID = 'settings-voice-preview'
 const VOICE_PREVIEW_TEXT = 'Hi! This is how your agent will sound when it reads a reply out loud.'
@@ -496,7 +496,7 @@ export function VoiceTab() {
                 value={selectedProvider ?? ''}
                 onValueChange={(value) => {
                   if (value === 'platform' && !isPlatformConnected) return
-                  updateSettings.mutate({ voice: { sttProvider: value as SttProvider } })
+                  updateSettings.mutate({ voice: { sttProvider: value as VoiceProvider } })
                 }}
                 disabled={isLoading}
               >
@@ -504,7 +504,7 @@ export function VoiceTab() {
                   <SelectValue placeholder="Select a provider" />
                 </SelectTrigger>
                 <SelectContent>
-                  {STT_PROVIDERS.map((provider) => (
+                  {VOICE_PROVIDERS.map((provider) => (
                     <SelectItem
                       key={provider.value}
                       value={provider.value}
@@ -523,7 +523,7 @@ export function VoiceTab() {
                 Choose which service to use for voice-to-text transcription.
               </p>
               {selectedProvider && (() => {
-                const info = STT_PROVIDERS.find(p => p.value === selectedProvider)
+                const info = VOICE_PROVIDERS.find(p => p.value === selectedProvider)
                 if (!info) return null
                 return (
                   <p className="text-xs text-muted-foreground">

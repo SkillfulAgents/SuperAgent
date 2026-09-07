@@ -1567,8 +1567,8 @@ class ChatIntegrationManager {
   /** Try to transcribe an audio buffer using the configured STT provider. Returns null on failure. */
   private async tryTranscribeAudio(audioBuffer: Buffer, mimeType: string): Promise<string | null> {
     try {
-      const { getConfiguredSttProvider } = await import('@shared/lib/stt')
-      const provider = getConfiguredSttProvider()
+      const { getConfiguredVoiceProvider } = await import('@shared/lib/voice')
+      const provider = getConfiguredVoiceProvider()
       if (!provider || !provider.supportsTranscription()) return null
       const transcript = await provider.transcribe(audioBuffer, mimeType)
       return transcript || null

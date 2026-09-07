@@ -26,7 +26,7 @@ const MAX_FETCH_CHARS = 100_000
 /**
  * Host-side base for a swappable web vendor. The credential plumbing
  * (settingsKeyField / envVarName / getApiKeyStatus / getEffectiveApiKey) is a verbatim copy of
- * BaseLlmProvider / BaseSttProvider — settings take precedence over env. The shared transport
+ * BaseLlmProvider / BaseVoiceProvider — settings take precedence over env. The shared transport
  * (timeout + retry + status classification) and key validation live here too; a concrete vendor
  * only builds its request and maps its response.
  *

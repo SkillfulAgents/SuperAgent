@@ -57,7 +57,7 @@ describe('readAloud controller', () => {
     expect(readAloud.getSnapshot()).toEqual({ activeId: 'm1', status: 'connecting', error: null, errorId: null })
     await speaking
 
-    expect(apiFetch).toHaveBeenCalledWith('/api/stt/tts-token')
+    expect(apiFetch).toHaveBeenCalledWith('/api/voice/tts-token')
     expect(createTtsAdapter).toHaveBeenCalledWith('deepgram')
     const player = players[0]
     expect(player.options).toMatchObject({ token: 'jwt', voice: { voice: 'aura-2-luna-en', speed: 1.2 } })

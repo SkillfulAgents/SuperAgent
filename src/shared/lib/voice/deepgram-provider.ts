@@ -1,8 +1,8 @@
-import { BaseSttProvider } from './stt-provider'
+import { BaseVoiceProvider } from './voice-provider'
 import { DEEPGRAM_TTS_VOICES } from './deepgram-voices'
 import type { TtsVoiceInfo } from './tts-preferences'
 
-export class DeepgramSttProvider extends BaseSttProvider {
+export class DeepgramVoiceProvider extends BaseVoiceProvider {
   readonly id = 'deepgram' as const
   readonly name = 'Deepgram'
   protected readonly settingsKeyField = 'deepgramApiKey' as const

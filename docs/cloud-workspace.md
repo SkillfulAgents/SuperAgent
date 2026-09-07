@@ -530,7 +530,7 @@ it.
 **Not gated at all, deliberately.** Where the answer comes from the *server* it
 already comes from the machine that owns it: the host-browser providers and their
 Chrome profiles (`detectAllProviders()`), STT availability
-(`/api/stt/configured`), and runtime readiness all describe whichever Superagent
+(`/api/voice/configured`), and runtime readiness all describe whichever Superagent
 is being driven. The runtime banner in the sidebar keeps reporting an unavailable
 cloud runtime — that is true wherever it comes from; only the offer to fix it
 here is not.

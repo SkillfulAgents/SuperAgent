@@ -66,7 +66,7 @@ Export a `getPolyfillJs(): string` function that returns self-contained vanilla 
 - Use `class extends EventTarget` (not prototype-based inheritance — DOM constructors require `new`)
 - Always override native stubs (Chromium often defines broken constructors)
 - Register on `window` (e.g. `window.SpeechRecognition = ...`)
-- Use **absolute paths** for fetch calls to the Superagent API (e.g. `fetch("/api/stt/token")`) since the iframe serves from a subpath — add a comment explaining this
+- Use **absolute paths** for fetch calls to the Superagent API (e.g. `fetch("/api/voice/token")`) since the iframe serves from a subpath — add a comment explaining this
 
 Cache the string to avoid re-generating on every request:
 ```typescript

@@ -116,13 +116,13 @@ vi.mock('../../main/host-browser', () => ({
   detectAllProviders: () => [],
 }))
 
-const mockSttGetApiKeyStatus = vi.fn()
-const mockSttValidateKey = vi.fn()
+const mockVoiceGetApiKeyStatus = vi.fn()
+const mockVoiceValidateKey = vi.fn()
 
-vi.mock('@shared/lib/stt', () => ({
-  getSttProvider: (id: string) => ({
-    getApiKeyStatus: () => mockSttGetApiKeyStatus(id),
-    validateKey: (...args: unknown[]) => mockSttValidateKey(id, ...args),
+vi.mock('@shared/lib/voice', () => ({
+  getVoiceProvider: (id: string) => ({
+    getApiKeyStatus: () => mockVoiceGetApiKeyStatus(id),
+    validateKey: (...args: unknown[]) => mockVoiceValidateKey(id, ...args),
   }),
 }))
 
@@ -278,12 +278,12 @@ function setupDefaults() {
   mockGetEffectiveModels.mockReturnValue({ summarizerModel: 'claude-3-haiku', agentModel: 'claude-sonnet-4-20250514', browserModel: 'claude-3-haiku' })
   mockGetEffectiveAgentLimits.mockReturnValue({ maxTurns: 100 })
   mockGetCustomEnvVars.mockReturnValue({ FOO: 'bar' })
-  mockSttGetApiKeyStatus.mockImplementation((id: string) => {
+  mockVoiceGetApiKeyStatus.mockImplementation((id: string) => {
     if (id === 'deepgram') return { isConfigured: false, source: 'none' }
     if (id === 'openai') return { isConfigured: false, source: 'none' }
     return { isConfigured: false, source: 'none' }
   })
-  mockSttValidateKey.mockResolvedValue({ valid: true })
+  mockVoiceValidateKey.mockResolvedValue({ valid: true })
   mockGetVoiceSettings.mockReturnValue({})
   mockGetReadiness.mockReturnValue({ ready: true })
   mockEnsureImageReady.mockResolvedValue(undefined)
@@ -1242,7 +1242,7 @@ describe('settings route', () => {
   // STT key validation
   // =========================================================================
   describe('POST /validate-stt-key', () => {
-    async function validateSttKey(body: Record<string, unknown>): Promise<Response> {
+    async function validateVoiceKey(body: Record<string, unknown>): Promise<Response> {
       return app.request('http://localhost/api/settings/validate-stt-key', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1251,50 +1251,50 @@ describe('settings route', () => {
     }
 
     it('returns 400 when apiKey is missing', async () => {
-      const res = await validateSttKey({ provider: 'deepgram' })
+      const res = await validateVoiceKey({ provider: 'deepgram' })
       expect(res.status).toBe(400)
       const body = await res.json()
       expect(body.error).toContain('API key is required')
     })
 
     it('returns 400 when provider is missing', async () => {
-      const res = await validateSttKey({ apiKey: 'test-key' })
+      const res = await validateVoiceKey({ apiKey: 'test-key' })
       expect(res.status).toBe(400)
       const body = await res.json()
       expect(body.error).toContain('Invalid provider')
     })
 
     it('returns 400 when provider is invalid', async () => {
-      const res = await validateSttKey({ provider: 'foobar', apiKey: 'test-key' })
+      const res = await validateVoiceKey({ provider: 'foobar', apiKey: 'test-key' })
       expect(res.status).toBe(400)
       const body = await res.json()
       expect(body.error).toContain('Invalid provider')
     })
 
     it('returns valid: true for a valid deepgram key', async () => {
-      mockSttValidateKey.mockResolvedValue({ valid: true })
+      mockVoiceValidateKey.mockResolvedValue({ valid: true })
 
-      const res = await validateSttKey({ provider: 'deepgram', apiKey: 'dg-test-key' })
+      const res = await validateVoiceKey({ provider: 'deepgram', apiKey: 'dg-test-key' })
       expect(res.status).toBe(200)
       const body = await res.json()
       expect(body.valid).toBe(true)
-      expect(mockSttValidateKey).toHaveBeenCalledWith('deepgram', 'dg-test-key')
+      expect(mockVoiceValidateKey).toHaveBeenCalledWith('deepgram', 'dg-test-key')
     })
 
     it('returns valid: true for a valid openai key', async () => {
-      mockSttValidateKey.mockResolvedValue({ valid: true })
+      mockVoiceValidateKey.mockResolvedValue({ valid: true })
 
-      const res = await validateSttKey({ provider: 'openai', apiKey: 'sk-test-key' })
+      const res = await validateVoiceKey({ provider: 'openai', apiKey: 'sk-test-key' })
       expect(res.status).toBe(200)
       const body = await res.json()
       expect(body.valid).toBe(true)
-      expect(mockSttValidateKey).toHaveBeenCalledWith('openai', 'sk-test-key')
+      expect(mockVoiceValidateKey).toHaveBeenCalledWith('openai', 'sk-test-key')
     })
 
     it('returns valid: false with error for an invalid key', async () => {
-      mockSttValidateKey.mockResolvedValue({ valid: false, error: 'Invalid API key' })
+      mockVoiceValidateKey.mockResolvedValue({ valid: false, error: 'Invalid API key' })
 
-      const res = await validateSttKey({ provider: 'deepgram', apiKey: 'bad-key' })
+      const res = await validateVoiceKey({ provider: 'deepgram', apiKey: 'bad-key' })
       expect(res.status).toBe(200)
       const body = await res.json()
       expect(body.valid).toBe(false)
@@ -1302,9 +1302,9 @@ describe('settings route', () => {
     })
 
     it('handles validateKey throwing an error', async () => {
-      mockSttValidateKey.mockRejectedValue(new Error('Network timeout'))
+      mockVoiceValidateKey.mockRejectedValue(new Error('Network timeout'))
 
-      const res = await validateSttKey({ provider: 'openai', apiKey: 'test-key' })
+      const res = await validateVoiceKey({ provider: 'openai', apiKey: 'test-key' })
       expect(res.status).toBe(200)
       const body = await res.json()
       expect(body.valid).toBe(false)
@@ -1416,8 +1416,8 @@ describe('settings route', () => {
   // GET settings includes per-provider STT key status
   // =========================================================================
   describe('GET settings STT key status', () => {
-    it('calls getSttProvider with correct provider ids', async () => {
-      mockSttGetApiKeyStatus.mockImplementation((id: string) => {
+    it('calls getVoiceProvider with correct provider ids', async () => {
+      mockVoiceGetApiKeyStatus.mockImplementation((id: string) => {
         if (id === 'deepgram') return { isConfigured: true, source: 'settings' }
         if (id === 'openai') return { isConfigured: false, source: 'none' }
         return { isConfigured: false, source: 'none' }

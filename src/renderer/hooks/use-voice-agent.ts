@@ -5,7 +5,7 @@ import {
   type VoiceAgentAdapter,
   type VoiceAgentConfig,
   type VoiceAgentEvent,
-  type SttProvider,
+  type VoiceProvider,
 } from '@renderer/lib/voice-agent'
 import { acquireMicStream, float32ToInt16, pcm16ToFloat32 } from '@renderer/lib/stt'
 
@@ -18,7 +18,7 @@ export interface VoiceAgentTranscriptEntry {
 }
 
 interface VoiceAgentCredentials {
-  provider: SttProvider
+  provider: VoiceProvider
   token: string
 }
 
@@ -224,7 +224,7 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
 
     try {
       // 1. Get Voice Agent token
-      const credRes = await apiFetch('/api/stt/voice-agent-token')
+      const credRes = await apiFetch('/api/voice/voice-agent-token')
       const credData: VoiceAgentCredentials | { error: string } = await credRes.json()
       if (!credRes.ok) {
         throw new Error(('error' in credData ? credData.error : null) || 'Failed to get Voice Agent credentials')

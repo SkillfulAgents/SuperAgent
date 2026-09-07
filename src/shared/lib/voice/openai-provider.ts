@@ -1,4 +1,4 @@
-import { BaseSttProvider } from './stt-provider'
+import { BaseVoiceProvider } from './voice-provider'
 
 const MIME_TO_EXT: Record<string, string> = {
   'audio/mpeg': 'mp3',
@@ -15,7 +15,7 @@ const MIME_TO_EXT: Record<string, string> = {
   'audio/amr': 'amr',
 }
 
-export class OpenaiSttProvider extends BaseSttProvider {
+export class OpenaiVoiceProvider extends BaseVoiceProvider {
   readonly id = 'openai' as const
   readonly name = 'OpenAI'
   protected readonly settingsKeyField = 'openaiApiKey' as const

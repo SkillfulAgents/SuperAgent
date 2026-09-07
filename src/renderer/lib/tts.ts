@@ -1,7 +1,7 @@
 // --- Types ---
 
-import type { SttProvider } from '@shared/lib/config/settings'
-export type { SttProvider }
+import type { VoiceProvider } from '@shared/lib/config/settings'
+export type { VoiceProvider }
 
 const CONNECT_TIMEOUT_MS = 10_000
 
@@ -189,7 +189,7 @@ export class DeepgramTtsAdapter implements TtsAdapter {
 
 // --- Factory ---
 
-export function createTtsAdapter(provider: SttProvider): TtsAdapter {
+export function createTtsAdapter(provider: VoiceProvider): TtsAdapter {
   switch (provider) {
     case 'deepgram':
     case 'platform':

@@ -65,6 +65,6 @@ describe('dashboard shims', () => {
   })
 
   it('speech recognition shim points its token call at that prefix', () => {
-    expect(getPolyfillJs()).toContain('fetch(apiPrefix + "/api/stt/token")')
+    expect(getPolyfillJs()).toContain('fetch(apiPrefix + "/api/voice/token")')
   })
 })

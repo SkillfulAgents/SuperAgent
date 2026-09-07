@@ -41,7 +41,7 @@ import {
   validateSettingsTransition,
 } from '@shared/lib/config/settings-patch'
 import { getTenantId } from '@shared/lib/analytics/tenant-id'
-import { getSttProvider } from '@shared/lib/stt'
+import { getVoiceProvider } from '@shared/lib/voice'
 import {
   findWebProvider,
   getWebProvider,
@@ -411,8 +411,8 @@ function buildSettingsResponse(
       browserbase: getBrowserbaseApiKeyStatus(),
       composio: getComposioApiKeyStatus(),
       nango: getNangoApiKeyStatus(),
-      deepgram: getSttProvider('deepgram').getApiKeyStatus(),
-      openai: getSttProvider('openai').getApiKeyStatus(),
+      deepgram: getVoiceProvider('deepgram').getApiKeyStatus(),
+      openai: getVoiceProvider('openai').getApiKeyStatus(),
       exa: getWebProvider('exa').getApiKeyStatus(),
     },
     models: getEffectiveModels(),
@@ -466,7 +466,7 @@ settings.put(
       const ttsVoice = body.voice?.ttsVoice
       if (ttsVoice !== undefined) {
         const providerId = body.voice?.sttProvider ?? getVoiceSettings().sttProvider
-        if (!providerId || !getSttProvider(providerId).hasTtsVoice(ttsVoice)) {
+        if (!providerId || !getVoiceProvider(providerId).hasTtsVoice(ttsVoice)) {
           return c.json({ error: 'Unknown text-to-speech voice for the selected voice provider' }, 400)
         }
       }
@@ -854,7 +854,7 @@ settings.post('/validate-stt-key', async (c) => {
       return c.json({ valid: false, error: 'Invalid provider' }, 400)
     }
 
-    const result = await getSttProvider(provider).validateKey(apiKey)
+    const result = await getVoiceProvider(provider).validateKey(apiKey)
     return c.json(result)
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Validation failed'

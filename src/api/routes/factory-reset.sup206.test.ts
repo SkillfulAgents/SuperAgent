@@ -76,8 +76,8 @@ vi.mock('../../main/host-browser', () => ({
   detectAllProviders: () => [],
 }))
 
-vi.mock('@shared/lib/stt', () => ({
-  getSttProvider: () => ({
+vi.mock('@shared/lib/voice', () => ({
+  getVoiceProvider: () => ({
     getApiKeyStatus: () => ({ isConfigured: false, source: 'none' }),
     validateKey: vi.fn(),
   }),

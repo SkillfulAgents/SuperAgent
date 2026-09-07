@@ -1,7 +1,7 @@
 // --- Types ---
 
-import type { SttProvider } from '@shared/lib/config/settings'
-export type { SttProvider }
+import type { VoiceProvider } from '@shared/lib/config/settings'
+export type { VoiceProvider }
 
 const CONNECT_TIMEOUT_MS = 10_000
 
@@ -392,7 +392,7 @@ class OpenaiAdapter extends WebSocketSttAdapter {
 
 // --- Factory ---
 
-export function createSttAdapter(provider: SttProvider): SttAdapter {
+export function createSttAdapter(provider: VoiceProvider): SttAdapter {
   switch (provider) {
     case 'deepgram':
     case 'platform':
@@ -400,7 +400,7 @@ export function createSttAdapter(provider: SttProvider): SttAdapter {
     case 'openai':
       return new OpenaiAdapter()
     default:
-      throw new Error(`Unknown STT provider: ${provider}`)
+      throw new Error(`Unknown voice provider: ${provider}`)
   }
 }
 

@@ -86,7 +86,7 @@ test.describe('read-aloud at the live edge', () => {
     // Speech is "configured" for this page only. The token endpoint refuses,
     // so no audio is ever fetched: the press goes connecting → error, which
     // re-renders the reply exactly the way play → stop does.
-    await page.route('**/api/stt/configured', (route) =>
+    await page.route('**/api/voice/configured', (route) =>
       route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -99,7 +99,7 @@ test.describe('read-aloud at the live edge', () => {
         }),
       }),
     )
-    await page.route('**/api/stt/tts-token', async (route) => {
+    await page.route('**/api/voice/tts-token', async (route) => {
       // Long enough for the connecting render to paint and settle on its own.
       await new Promise((resolve) => setTimeout(resolve, 600))
       return route.fulfill({
