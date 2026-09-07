@@ -356,8 +356,7 @@ describe('PlatformPaywallCard', () => {
     fetchBilling.mockResolvedValue({ ...billing({ access: ALLOWED }), stale: true })
     clickRecheck('Go to billing')
     await waitFor(() => expect(fetchBilling.mock.calls.length).toBeGreaterThan(before))
-    await act(async () => {})
-    expect(screen.getByTestId('paywall-card')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-blocked', 'false'))
     expect(screen.getByTestId('composer')).toBeInTheDocument()
   })
 
