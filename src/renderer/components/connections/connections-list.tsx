@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { Switch } from '@renderer/components/ui/switch'
 import { Button } from '@renderer/components/ui/button'
-import { ChevronRight, Loader2, Plus, X } from 'lucide-react'
+import { Loader2, Plus, X } from 'lucide-react'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -14,7 +14,7 @@ import {
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
 import { IntegrationDirectoryDialog, type NewApiConnection, type NewMcpConnection } from '@renderer/components/connections/integration-directory-dialog'
-import { IntegrationList } from '@renderer/components/connections/integration-row'
+import { IntegrationList, RowHoverChevron } from '@renderer/components/connections/integration-row'
 import { ConnectionDetailPage } from '@renderer/components/connections/connection-detail-page'
 import { ConnectionLogsView } from '@renderer/components/connections/connection-logs-view'
 import { ConnectionRow } from '@renderer/components/connections/connection-row'
@@ -375,13 +375,8 @@ function AllConnectionsList({ agentSlug, detailRowKey, detailView, detailBackLab
               )}
             </>
           ) : <>
-            {/* Slides in on row hover/focus; -ml-2 swallows the flex gap while hidden. */}
-            <span
-              aria-hidden="true"
-              className="flex justify-center overflow-hidden w-0 -ml-2 opacity-0 transition-all duration-200 ease-out group-hover:w-4 group-hover:ml-0 group-hover:opacity-100 group-focus-visible:w-4 group-focus-visible:ml-0 group-focus-visible:opacity-100"
-            >
-              <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-            </span>
+            {/* Sits before the Switch; -ml-2 swallows the flex gap while hidden. */}
+            <RowHoverChevron className="-ml-2 group-hover:ml-0 group-focus-visible:ml-0" />
             {pending ? (
               <Loader2
                 className="h-4 w-4 animate-spin text-muted-foreground"
