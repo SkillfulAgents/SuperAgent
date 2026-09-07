@@ -44,10 +44,14 @@ function safeOrigin(value: string): string | null {
 // Trades the acting user's platform OIDC access token (refreshed by Better Auth
 // when expired) for a one-time embed URL. Cloud-only: the platform accepts the
 // parent origin only when it matches this org's registered deployment.
+export type BillingEmbedView = 'topup'
+
 export async function createBillingEmbedSession(input: {
   headers: Headers
   parentOrigin: string
   intent?: 'topup'
+  /** `topup`: chrome-less top-up panel sized for a chat card; absent: full billing tab. */
+  view?: BillingEmbedView
 }): Promise<BillingEmbedSession> {
   const origin = safeOrigin(getPlatformBaseUrl())
   if (!isPlatformControlledAuth() || !origin) {
@@ -82,7 +86,12 @@ export async function createBillingEmbedSession(input: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
       },
-      body: JSON.stringify({ org_id: orgId, parent_origin: input.parentOrigin, intent: input.intent }),
+      body: JSON.stringify({
+        org_id: orgId,
+        parent_origin: input.parentOrigin,
+        intent: input.intent,
+        view: input.view,
+      }),
       signal: AbortSignal.timeout(EXCHANGE_TIMEOUT_MS),
     })
   } catch (error) {

@@ -187,7 +187,7 @@ describe('POST /api/platform-auth/billing-embed', () => {
     platformOrigin: 'https://platform.example',
   }
 
-  function post(headers: Record<string, string>, body: unknown = { intent: 'topup' }) {
+  function post(headers: Record<string, string>, body: unknown = { intent: 'topup', view: 'topup' }) {
     return makeApp().request('/api/platform-auth/billing-embed', {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...headers },
@@ -203,10 +203,11 @@ describe('POST /api/platform-auth/billing-embed', () => {
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual(SESSION)
     const [input] = mocks.createBillingEmbedSession.mock.calls[0] as [
-      { headers: Headers; parentOrigin: string; intent?: string },
+      { headers: Headers; parentOrigin: string; intent?: string; view?: string },
     ]
     expect(input.parentOrigin).toBe('https://acme.ongamut.so')
     expect(input.intent).toBe('topup')
+    expect(input.view).toBe('topup')
     expect(input.headers.get('cookie')).toBe('sid=1')
   })
 
@@ -215,9 +216,12 @@ describe('POST /api/platform-auth/billing-embed', () => {
 
     await post({ 'x-forwarded-host': 'acme.ongamut.so', 'x-forwarded-proto': 'https' }, {})
 
-    const [input] = mocks.createBillingEmbedSession.mock.calls[0] as [{ parentOrigin: string; intent?: string }]
+    const [input] = mocks.createBillingEmbedSession.mock.calls[0] as [
+      { parentOrigin: string; intent?: string; view?: string },
+    ]
     expect(input.parentOrigin).toBe('https://acme.ongamut.so')
     expect(input.intent).toBeUndefined()
+    expect(input.view).toBeUndefined()
   })
 
   it('rejects an Origin that is not a bare origin', async () => {

@@ -61,7 +61,7 @@ describe('createBillingEmbedSession', () => {
   })
 
   it('exchanges the user OIDC token for an embed URL on the platform origin', async () => {
-    const session = await createBillingEmbedSession({ headers, parentOrigin: PARENT, intent: 'topup' })
+    const session = await createBillingEmbedSession({ headers, parentOrigin: PARENT, intent: 'topup', view: 'topup' })
     expect(session).toEqual({ embedUrl: EMBED_URL, platformOrigin: PLATFORM })
 
     expect(mocks.getAccessToken).toHaveBeenCalledWith({ body: { providerId: 'platform' }, headers })
@@ -69,7 +69,7 @@ describe('createBillingEmbedSession', () => {
     expect(url).toBe(`${PLATFORM}/api/embed/session`)
     expect(init.method).toBe('POST')
     expect(init.headers.Authorization).toBe('Bearer oidc-token')
-    expect(JSON.parse(init.body)).toEqual({ org_id: 'org_1', parent_origin: PARENT, intent: 'topup' })
+    expect(JSON.parse(init.body)).toEqual({ org_id: 'org_1', parent_origin: PARENT, intent: 'topup', view: 'topup' })
   })
 
   it('is unavailable outside platform-controlled (cloud) auth', async () => {

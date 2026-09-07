@@ -130,14 +130,17 @@ function resolveRequestOrigin(c: Context): string | null {
 // SuperAgent web paywall → in-app billing iframe. Cloud only; the service
 // refuses anything else so the renderer falls back to opening billing externally.
 platformAuth.post('/billing-embed', async (c) => {
-  const body = await c.req.json<{ intent?: unknown }>().catch(() => ({}) as { intent?: unknown })
+  const body = await c.req
+    .json<{ intent?: unknown; view?: unknown }>()
+    .catch(() => ({}) as { intent?: unknown; view?: unknown })
   const intent = body.intent === 'topup' ? ('topup' as const) : undefined
+  const view = body.view === 'topup' ? ('topup' as const) : undefined
   const parentOrigin = resolveRequestOrigin(c)
   if (!parentOrigin) {
     return c.json({ error: 'Could not determine this deployment origin.', code: 'not_available' }, 400)
   }
   try {
-    const session = await createBillingEmbedSession({ headers: c.req.raw.headers, parentOrigin, intent })
+    const session = await createBillingEmbedSession({ headers: c.req.raw.headers, parentOrigin, intent, view })
     return c.json(session)
   } catch (error) {
     if (error instanceof BillingEmbedError) {

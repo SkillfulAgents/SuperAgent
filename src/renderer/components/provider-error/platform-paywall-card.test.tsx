@@ -82,10 +82,13 @@ const EMBED_SESSION = {
   platformOrigin: PLATFORM_ORIGIN,
 }
 
-function postEmbedMessage(origin: string, event: string) {
+function postEmbedMessage(origin: string, event: string, extra: Record<string, unknown> = {}) {
   act(() => {
     window.dispatchEvent(
-      new MessageEvent('message', { origin, data: { type: 'gamut-billing-embed', orgId: 'org_123', event } }),
+      new MessageEvent('message', {
+        origin,
+        data: { type: 'gamut-billing-embed', orgId: 'org_123', event, ...extra },
+      }),
     )
   })
 }
@@ -367,7 +370,7 @@ describe('PlatformPaywallCard', () => {
       renderCard()
       const frame = await screen.findByTestId('billing-embed-frame')
       expect(frame).toHaveAttribute('src', EMBED_SESSION.embedUrl)
-      expect(JSON.parse(String(fetchEmbed.mock.calls[0][0]?.body))).toEqual({ intent: 'topup' })
+      expect(JSON.parse(String(fetchEmbed.mock.calls[0][0]?.body))).toEqual({ intent: 'topup', view: 'topup' })
       expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-embedded', 'true')
       expect(screen.queryByRole('button', { name: 'Add usage' })).not.toBeInTheDocument()
       expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument()
@@ -380,6 +383,18 @@ describe('PlatformPaywallCard', () => {
       expect(screen.getByTestId('billing-embed-loading')).toBeInTheDocument()
       postEmbedMessage(PLATFORM_ORIGIN, 'ready')
       expect(screen.queryByTestId('billing-embed-loading')).not.toBeInTheDocument()
+    })
+
+    it('sizes the frame from the platform resize event, clamped', async () => {
+      renderCard()
+      await screen.findByTestId('billing-embed-frame')
+      const body = screen.getByTestId('billing-embed-body')
+      postEmbedMessage(PLATFORM_ORIGIN, 'resize', { height: 312.4 })
+      expect(body.style.height).toBe('313px')
+      postEmbedMessage(PLATFORM_ORIGIN, 'resize', { height: 5000 })
+      expect(body.style.height).toBe('640px')
+      postEmbedMessage('https://evil.example', 'resize', { height: 200 })
+      expect(body.style.height).toBe('640px')
     })
 
     it('rechecks billing on billing-updated from the platform origin and clears the card', async () => {

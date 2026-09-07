@@ -5,6 +5,7 @@ import { extractSubscriptionRequired } from '@shared/lib/llm-provider/platform-e
 import { cn } from '@shared/lib/utils/cn'
 import { HomeEmptyClouds } from '@renderer/components/home/home-empty-clouds'
 import { Button } from '@renderer/components/ui/button'
+import type { BillingEmbedView } from '@renderer/hooks/use-billing-embed'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { isElectron } from '@renderer/lib/env'
 import { openExternalUrl } from '@renderer/lib/open-external'
@@ -55,6 +56,12 @@ function ctaHref(cta: PaywallCta): string | null {
 // Members are sent to ask an admin; the embed would only show them "no access".
 function canEmbed(cta: PaywallCta): boolean {
   return cta.kind !== 'ask_admin'
+}
+
+// Top-up (and add-card, its no-card twin) get the compact panel; anything that
+// needs the plan or payment status gets the full billing tab.
+function embedView(cta: PaywallCta): BillingEmbedView | undefined {
+  return cta.kind === 'topup' || cta.kind === 'add_card' ? 'topup' : undefined
 }
 
 function PaywallActions({
@@ -168,6 +175,7 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
           {embedded && billing.cta && (
             <BillingEmbedFrame
               intent={billing.cta.kind === 'topup' ? 'topup' : undefined}
+              view={embedView(billing.cta)}
               fallbackHref={ctaHref(billing.cta)}
               onBillingUpdated={billing.recheck}
             />

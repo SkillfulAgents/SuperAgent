@@ -1,9 +1,13 @@
 import { useMutation } from '@tanstack/react-query'
 
 import { apiFetch } from '@renderer/lib/api'
-import type { BillingEmbedErrorCode, BillingEmbedSession } from '@shared/lib/services/platform-billing-embed-service'
+import type {
+  BillingEmbedErrorCode,
+  BillingEmbedSession,
+  BillingEmbedView,
+} from '@shared/lib/services/platform-billing-embed-service'
 
-export type { BillingEmbedSession }
+export type { BillingEmbedSession, BillingEmbedView }
 
 export class BillingEmbedRequestError extends Error {
   constructor(
@@ -17,12 +21,16 @@ export class BillingEmbedRequestError extends Error {
 
 // Each call mints a fresh one-time embed URL, so this is a mutation, not a query.
 export function useBillingEmbedSession() {
-  return useMutation<BillingEmbedSession, BillingEmbedRequestError, { intent?: 'topup' }>({
-    mutationFn: async ({ intent }) => {
+  return useMutation<
+    BillingEmbedSession,
+    BillingEmbedRequestError,
+    { intent?: 'topup'; view?: BillingEmbedView }
+  >({
+    mutationFn: async ({ intent, view }) => {
       const res = await apiFetch('/api/platform-auth/billing-embed', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ intent }),
+        body: JSON.stringify({ intent, view }),
       })
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string; code?: BillingEmbedErrorCode }
