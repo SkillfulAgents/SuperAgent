@@ -25,6 +25,7 @@ import {
 import {
   BillingEmbedError,
   createBillingEmbedSession,
+  parseBillingEmbedView,
 } from '@shared/lib/services/platform-billing-embed-service'
 import { platformService } from '@shared/lib/services/platform-service'
 import { getCloudWorkspace } from '@shared/lib/services/cloud-workspace-service'
@@ -134,7 +135,7 @@ platformAuth.post('/billing-embed', async (c) => {
     .json<{ intent?: unknown; view?: unknown }>()
     .catch(() => ({}) as { intent?: unknown; view?: unknown })
   const intent = body.intent === 'topup' ? ('topup' as const) : undefined
-  const view = body.view === 'topup' ? ('topup' as const) : undefined
+  const view = parseBillingEmbedView(body.view)
   const parentOrigin = resolveRequestOrigin(c)
   if (!parentOrigin) {
     return c.json({ error: 'Could not determine this deployment origin.', code: 'not_available' }, 400)

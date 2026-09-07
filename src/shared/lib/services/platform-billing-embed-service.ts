@@ -44,7 +44,12 @@ function safeOrigin(value: string): string | null {
 // Trades the acting user's platform OIDC access token (refreshed by Better Auth
 // when expired) for a one-time embed URL. Cloud-only: the platform accepts the
 // parent origin only when it matches this org's registered deployment.
-export type BillingEmbedView = 'topup'
+// One chrome-less platform panel per paywall CTA (mirrors the platform's EMBED_VIEWS).
+export const BILLING_EMBED_VIEWS = ['topup', 'subscribe', 'payment'] as const
+export type BillingEmbedView = (typeof BILLING_EMBED_VIEWS)[number]
+export function parseBillingEmbedView(value: unknown): BillingEmbedView | undefined {
+  return BILLING_EMBED_VIEWS.find((v) => v === value)
+}
 
 export async function createBillingEmbedSession(input: {
   headers: Headers

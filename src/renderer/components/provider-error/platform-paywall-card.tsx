@@ -53,10 +53,15 @@ function ctaHref(cta: PaywallCta): string | null {
   return cta.href
 }
 
-// Only top-up (and add-card, its no-card twin) get the inline panel. Everything
-// else (subscribe, fix payment, ask admin) stays a one-click hand-off button.
-function embedView(cta: PaywallCta): BillingEmbedView | undefined {
-  return cta.kind === 'topup' || cta.kind === 'add_card' ? 'topup' : undefined
+// Which chrome-less platform panel each CTA gets. Members (ask_admin) and an
+// unknown role (go_to_billing) cannot act on billing, so they keep the button.
+const EMBED_VIEW: Record<PaywallCta['kind'], BillingEmbedView | undefined> = {
+  topup: 'topup',
+  add_card: 'topup',
+  subscribe: 'subscribe',
+  manage_payment: 'payment',
+  ask_admin: undefined,
+  go_to_billing: undefined,
 }
 
 function PaywallActions({
@@ -135,7 +140,7 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
   // Electron keeps the system-browser hand-off. Web on a cloud workspace (the
   // only place the platform will frame its billing page) embeds it in-app.
   const inApp = !isElectron() && platformAuth?.platformControlled === true
-  const view = billing.cta ? embedView(billing.cta) : undefined
+  const view = billing.cta ? EMBED_VIEW[billing.cta.kind] : undefined
   const embedded = inApp && view !== undefined
   if (billing.cleared || dismissed) return <>{children}</>
 

@@ -451,14 +451,19 @@ describe('PlatformPaywallCard', () => {
       expect(screen.queryByRole('button', { name: 'Add credit card' })).not.toBeInTheDocument()
     })
 
-    it('keeps a one-click hand-off button for anything that is not a top-up (past-due payment)', async () => {
-      fetchBilling.mockResolvedValue(billing({ subscription: { status: 'active', paymentStatus: 'past_due' } }))
+    it('embeds the subscribe panel when a subscription is required', async () => {
+      renderCard('API Error: 402 {"error":"insufficient_balance","subscription_required":true}')
+      await screen.findByTestId('billing-embed-frame')
+      expect(JSON.parse(String(fetchEmbed.mock.calls[0][0]?.body))).toEqual({ view: 'subscribe' })
+      expect(screen.queryByRole('button', { name: 'Subscribe' })).not.toBeInTheDocument()
+    })
+
+    it('embeds the payment panel when the payment is past due', async () => {
+      fetchBilling.mockResolvedValue(billing({ subscription: { status: 'active', paymentStatus: 'past_due', currentPeriodEnd: null } }))
       renderCard()
-      const button = await screen.findByRole('button', { name: 'Fix payment' })
-      expect(screen.queryByTestId('billing-embed-body')).not.toBeInTheDocument()
-      act(() => { button.click() })
-      expect(openExternalUrl).toHaveBeenCalledTimes(1)
-      expect(fetchEmbed).not.toHaveBeenCalled()
+      await screen.findByTestId('billing-embed-frame')
+      expect(JSON.parse(String(fetchEmbed.mock.calls[0][0]?.body))).toEqual({ view: 'payment' })
+      expect(screen.queryByRole('button', { name: 'Fix payment' })).not.toBeInTheDocument()
     })
 
     it('still sends members to the browser (the embed would only show them no access)', async () => {

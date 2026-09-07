@@ -18,7 +18,8 @@ const { BillingEmbedError } = vi.hoisted(() => ({
     }
   },
 }))
-vi.mock('@shared/lib/services/platform-billing-embed-service', () => ({
+vi.mock('@shared/lib/services/platform-billing-embed-service', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/services/platform-billing-embed-service')>()),
   BillingEmbedError,
   createBillingEmbedSession: (...args: unknown[]) => mocks.createBillingEmbedSession(...args),
 }))
@@ -209,6 +210,16 @@ describe('POST /api/platform-auth/billing-embed', () => {
     expect(input.intent).toBe('topup')
     expect(input.view).toBe('topup')
     expect(input.headers.get('cookie')).toBe('sid=1')
+  })
+
+  it('forwards every known view and drops unknown ones', async () => {
+    mocks.createBillingEmbedSession.mockResolvedValue(SESSION)
+    for (const [sent, expected] of [['subscribe', 'subscribe'], ['payment', 'payment'], ['bogus', undefined]] as const) {
+      mocks.createBillingEmbedSession.mockClear()
+      await post({ origin: 'https://acme.ongamut.so' }, { view: sent })
+      const [input] = mocks.createBillingEmbedSession.mock.calls[0] as [{ view?: string }]
+      expect(input.view).toBe(expected)
+    }
   })
 
   it('falls back to the forwarded host and proto when Origin is absent', async () => {
