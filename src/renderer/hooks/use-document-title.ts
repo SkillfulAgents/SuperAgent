@@ -50,7 +50,6 @@ export function applyTitleIndicator(title: string, indicator: string | null): st
 }
 
 const SETTINGS_TAB_TITLES = {
-  profile: 'Profile & Login',
   mobile: 'Mobile',
   general: 'General',
   notifications: 'Notifications',

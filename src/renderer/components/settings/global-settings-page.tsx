@@ -1,5 +1,5 @@
 import { Suspense, type ReactNode } from 'react'
-import { Bolt, Cuboid, Bell, Layers, BarChart3, Blocks, Users, Shield, Route, User, Mic, Activity, Mouse, BadgeCheck, Logs, MousePointer2, Search, Smartphone, Sparkle, Workflow } from 'lucide-react'
+import { Bolt, Cuboid, Bell, Layers, BarChart3, Blocks, Users, Shield, Route, Mic, Activity, Mouse, BadgeCheck, Logs, MousePointer2, Search, Smartphone, Sparkle, Workflow } from 'lucide-react'
 import { SettingsPage, type SettingsPageSection, type SettingsPageSectionGroup } from '@renderer/components/settings/settings-page'
 import { lazyRouteComponent, type LinkProps } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
@@ -10,7 +10,6 @@ import { canUseHostFeatures } from '@renderer/lib/host-features'
 // immediately usable, while only the active pane (and its dependency graph) is
 // downloaded. TanStack's wrapper adds preload support and one-shot recovery
 // from a stale chunk URL after a new deployment.
-const ProfileTab = lazyRouteComponent(() => import('./profile-tab'), 'ProfileTab')
 const MobileTab = lazyRouteComponent(() => import('./mobile-tab'), 'MobileTab')
 const GeneralTab = lazyRouteComponent(() => import('./general-tab'), 'GeneralTab')
 const RuntimeTab = lazyRouteComponent(() => import('./runtime-tab'), 'RuntimeTab')
@@ -82,16 +81,13 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
 
   // Grouped by what the setting concerns (app-level vs agent behavior), not by
   // who can edit it — admin-only sections are filtered per-item instead.
+  // General always leads and Admin always trails; the mode-gated items sit
+  // between those two anchors in every mode.
   const appSections: SettingsPageSection[] = [
-    ...(isAuthMode ? [{ id: 'profile', label: 'Profile & Login', icon: <User className="h-4 w-4" />, render: () => deferredTab(<ProfileTab />) }] : []),
-    // Pairing mints a session credential against THIS deployment's auth, so
-    // the tab only exists in auth mode — a local install has no session to pair.
-    ...(isAuthMode ? [{ id: 'mobile', label: 'Mobile', icon: <Smartphone className="h-4 w-4" />, render: () => deferredTab(<MobileTab />) }] : []),
     { id: 'general', label: 'General', icon: <Bolt className="h-4 w-4" />, render: () => deferredTab(<GeneralTab onOpenWizard={onOpenWizard} />) },
     { id: 'notifications', label: 'Notifications', icon: <Bell className="h-4 w-4" />, render: () => deferredTab(<NotificationsTab />) },
     { id: 'platform', label: 'Account', icon: <BadgeCheck className="h-4 w-4" />, render: () => deferredTab(<PlatformTab readOnly={isAuthMode} />) },
     ...(isAuthMode && showAdminSettings ? [{ id: 'analytics', label: 'Analytics', icon: <Activity className="h-4 w-4" />, render: () => deferredTab(<AnalyticsTab />) }] : []),
-    ...(showAdminSettings ? [{ id: 'admin', label: 'Admin', icon: <Shield className="h-4 w-4" />, render: () => deferredTab(<AdminTab />) }] : []),
     ...(showAuthAdmin
       ? [
           // Keep local role/ban/remove — Platform Team cannot write Better Auth columns.
@@ -115,10 +111,14 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
           },
         ]
       : []),
+    ...(showAdminSettings ? [{ id: 'admin', label: 'Admin', icon: <Shield className="h-4 w-4" />, render: () => deferredTab(<AdminTab />) }] : []),
   ]
 
   // What agents can do or reach — toggled and curated as needs change.
   const capabilitySections: SettingsPageSection[] = [
+    // Pairing mints a session credential against THIS deployment's auth, so
+    // the tab only exists in auth mode — a local install has no session to pair.
+    ...(isAuthMode ? [{ id: 'mobile', label: 'Mobile', icon: <Smartphone className="h-4 w-4" />, render: () => deferredTab(<MobileTab />) }] : []),
     {
       id: 'connections',
       label: 'Connections',
