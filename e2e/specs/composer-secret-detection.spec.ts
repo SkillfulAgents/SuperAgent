@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 import MarkdownIt from 'markdown-it'
 import { AppPage } from '../pages/app.page'
 import { AgentPage, getCurrentAgentSlug } from '../pages/agent.page'
@@ -12,6 +12,19 @@ interface MockRecord {
 }
 
 const recorder = mockRecorder<MockRecord>()
+
+async function paste(input: Locator, content: string, mimeType = 'text/plain') {
+  await input.evaluate((element, { content, mimeType }) => {
+    const clipboardData = new DataTransfer()
+    clipboardData.setData(mimeType, content)
+    element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData }))
+  }, { content, mimeType })
+}
+
+async function saveKey(page: Page, key = 'API Key', value = 'synthetic-test-value') {
+  const saved = await page.request.post(`/api/agents/${getCurrentAgentSlug(page)}/secrets`, { data: { key, value } })
+  expect(saved.ok()).toBeTruthy()
+}
 
 test.describe('composer secret detection', () => {
   let agentPage: AgentPage
@@ -79,11 +92,7 @@ test.describe('composer secret detection', () => {
   test('restores a draft marker after unmatched brackets when its key is saved', async ({ page }) => {
     const prefix = `Restore ${Date.now()} literal`
     const input = page.getByTestId('home-message-input')
-    await input.evaluate((element, text) => {
-      const clipboardData = new DataTransfer()
-      clipboardData.setData('text/plain', text)
-      element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData }))
-    }, `${prefix} [[ then [[secret:API_KEY|API%20Key]]`)
+    await paste(input, `${prefix} [[ then [[secret:API_KEY|API%20Key]]`)
     await expect(input).toHaveText(`${prefix} [[ then [[secret:API_KEY|API%20Key]]`)
 
     await page.getByTestId('home-secrets-open-page').click()
@@ -107,10 +116,7 @@ test.describe('composer secret detection', () => {
     const keyName = `Paste Key ${tag}`
     const marker = `[[secret:${envVar}|${encodeURIComponent(keyName)}]]`
     const slug = getCurrentAgentSlug(page)
-    const saved = await page.request.post(`/api/agents/${slug}/secrets`, {
-      data: { key: keyName, value: `sk-paste-${tag}` },
-    })
-    expect(saved.ok()).toBeTruthy()
+    await saveKey(page, keyName, `sk-paste-${tag}`)
     const renamed = await page.request.put(`/api/agents/${slug}/secrets/${envVar}`, {
       data: { key: keyName.toLowerCase() },
     })
@@ -119,15 +125,7 @@ test.describe('composer secret detection', () => {
     const input = page.locator('[data-testid="home-message-input"]')
 
     await input.fill('')
-    await input.evaluate((element, text) => {
-      const clipboardData = new DataTransfer()
-      clipboardData.setData('text/plain', text)
-      element.dispatchEvent(new ClipboardEvent('paste', {
-        bubbles: true,
-        cancelable: true,
-        clipboardData,
-      }))
-    }, `## Deploy ${marker}\n\n[see ${marker}](https://x.com)`)
+    await paste(input, `## Deploy ${marker}\n\n[see ${marker}](https://x.com)`)
 
     await expect(input.locator('h2 [data-testid="secured-secret"]')).toHaveText(`[${keyName} | *********]`)
     await expect(input.locator('a [data-testid="secured-secret"]')).toHaveText(`[${keyName} | *********]`)
@@ -144,11 +142,7 @@ test.describe('composer secret detection', () => {
   })
 
   test('preserves pasted URL targets while keys load and the visible reference becomes a chip', async ({ page }) => {
-    const slug = getCurrentAgentSlug(page)
-    const saved = await page.request.post(`/api/agents/${slug}/secrets`, {
-      data: { key: 'API Key', value: 'synthetic-test-value' },
-    })
-    expect(saved.ok()).toBeTruthy()
+    await saveKey(page)
     let releaseSecrets!: () => void
     const secretsReady = new Promise<void>(resolve => { releaseSecrets = resolve })
     await page.route('**/api/agents/*/secrets', async route => {
@@ -161,11 +155,7 @@ test.describe('composer secret detection', () => {
     const href = `https://example.com/${marker}`
     const src = `/favicon.ico?${marker}`
     const input = page.getByTestId('home-message-input')
-    await input.evaluate((element, html) => {
-      const clipboardData = new DataTransfer()
-      clipboardData.setData('text/html', html)
-      element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData }))
-    }, `<p>${prefix} <a href="${href}">${href}</a><img src="${src}" alt="image"></p>`)
+    await paste(input, `<p>${prefix} <a href="${href}">${href}</a><img src="${src}" alt="image"></p>`, 'text/html')
     await expect(input.locator('a')).toHaveAttribute('href', href)
     await expect(input.getByTestId('secured-secret')).toHaveCount(0)
     releaseSecrets()
@@ -180,20 +170,12 @@ test.describe('composer secret detection', () => {
 
   for (const deleteKey of [false, true]) {
     test(`preserves an image alt reference through submit${deleteKey ? ' after key deletion' : ''}`, async ({ page }) => {
-      const slug = getCurrentAgentSlug(page)
-      const saved = await page.request.post(`/api/agents/${slug}/secrets`, {
-        data: { key: 'API Key', value: 'synthetic-test-value' },
-      })
-      expect(saved.ok()).toBeTruthy()
+      await saveKey(page)
       await page.reload()
       const prefix = `Image ${Date.now()}`
       const title = '\\[\\[secret:API_KEY|API%20Key\\]\\]'
       const input = page.getByTestId('home-message-input')
-      await input.evaluate((element, text) => {
-        const clipboardData = new DataTransfer()
-        clipboardData.setData('text/plain', text)
-        element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData }))
-      }, `${prefix} ![alt [[secret:API_KEY|API%20Key]](next)](/favicon.ico "${title}")`)
+      await paste(input, `${prefix} ![alt [[secret:API_KEY|API%20Key]](next)](/favicon.ico "${title}")`)
       await expect(input.locator('img[src="/favicon.ico"]')).toHaveAttribute('alt', 'alt [[secret:API_KEY|API%20Key]](next)')
       await expect(input.locator('img[src="/favicon.ico"]')).toHaveAttribute('title', '[[secret:API_KEY|API%20Key]]')
       if (deleteKey) {

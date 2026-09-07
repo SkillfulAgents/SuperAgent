@@ -267,7 +267,7 @@ export function serializeComposerMarkdown(doc: ProseMirrorNode): string {
 }
 
 // markdown-it never runs inline rules inside backticks or fences.
-function leftoverChipReplacements(doc: ProseMirrorNode): { from: number; to: number; node: ProseMirrorNode }[] {
+function leftoverChipReplacements(doc: ProseMirrorNode, knownSecrets = knownSecretsForParse) {
   const replacements: { from: number; to: number; node: ProseMirrorNode }[] = []
   doc.descendants((node, pos) => {
     if (!node.isText || !node.text) return
@@ -276,7 +276,7 @@ function leftoverChipReplacements(doc: ProseMirrorNode): { from: number; to: num
       const kind = getChipKind(match[1])
       if (!kind) continue
       const chip = kind.composer.parse(match[0])
-      if (!chip || !isBackedChip(chip, knownSecretsForParse)) continue
+      if (!chip || !isBackedChip(chip, knownSecrets)) continue
       const type = markdownSchema.nodes[kind.kind]
       if (!type) continue
       const from = pos + match.index
@@ -308,7 +308,7 @@ function demoteUnbackedChips(tr: Transaction, knownSecrets: ReadonlyMap<string, 
 
 function applyChipLifts(
   tr: Transaction,
-  replacements = leftoverChipReplacements(tr.doc)
+  replacements: { from: number; to: number; node: ProseMirrorNode }[]
 ): Transaction {
   for (const { from, to, node } of replacements.reverse()) {
     tr = tr.replaceWith(from, to, node)
@@ -1009,30 +1009,19 @@ export function MarkdownComposerEditor({
     const knownChanged = knownSecrets !== lastKnownSecretsRef.current
     const valueUnchanged = value === lastMarkdownRef.current
     if (valueUnchanged && !knownChanged) return
-    if (knownChanged && valueUnchanged) {
-      lastKnownSecretsRef.current = knownSecrets
-      const previousKnown = knownSecretsForParse
-      knownSecretsForParse = knownSecrets
-      try {
-        const tr = applyChipLifts(demoteUnbackedChips(view.state.tr.setMeta('addToHistory', false), knownSecrets))
-        if (tr.docChanged) {
-          view.updateState(view.state.apply(tr))
-        }
-        lastMarkdownRef.current = restoreEscapedChipMarkers(value, parseComposerMarkdown(value, knownSecrets), knownSecrets)
-        if (lastMarkdownRef.current !== value) onChange(lastMarkdownRef.current)
-      } finally {
-        knownSecretsForParse = previousKnown
-      }
-      setEditorA11yState(view, placeholder, disabled)
-      return
-    }
     const next = parseComposerMarkdown(value, knownSecrets)
-    const tr = view.state.tr
-      .replaceWith(0, view.state.doc.content.size, next.content)
-      .setMeta('addToHistory', false)
-    tr.setSelection(TextSelection.atEnd(tr.doc))
-    view.updateState(view.state.apply(tr))
     lastKnownSecretsRef.current = knownSecrets
+    if (valueUnchanged) {
+      let tr = demoteUnbackedChips(view.state.tr.setMeta('addToHistory', false), knownSecrets)
+      tr = applyChipLifts(tr, leftoverChipReplacements(tr.doc, knownSecrets))
+      if (tr.docChanged) view.updateState(view.state.apply(tr))
+    } else {
+      const tr = view.state.tr
+        .replaceWith(0, view.state.doc.content.size, next.content)
+        .setMeta('addToHistory', false)
+      tr.setSelection(TextSelection.atEnd(tr.doc))
+      view.updateState(view.state.apply(tr))
+    }
     lastMarkdownRef.current = restoreEscapedChipMarkers(value, next, knownSecrets)
     if (lastMarkdownRef.current !== value) onChange(lastMarkdownRef.current)
     setEditorA11yState(view, placeholder, disabled)
