@@ -1,6 +1,8 @@
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { BaseSttProvider } from './stt-provider'
+import { DEEPGRAM_TTS_VOICES } from './deepgram-voices'
+import type { TtsVoiceInfo } from './tts-preferences'
 import type { ApiKeyStatus } from '../config/settings'
 
 export class PlatformSttProvider extends BaseSttProvider {
@@ -55,6 +57,15 @@ export class PlatformSttProvider extends BaseSttProvider {
 
   override async mintVoiceAgentToken(platformToken: string): Promise<string> {
     // Same Deepgram token works for both STT and Voice Agent endpoints
+    return this.mintEphemeralToken(platformToken)
+  }
+
+  override getTtsVoices(): readonly TtsVoiceInfo[] {
+    return DEEPGRAM_TTS_VOICES
+  }
+
+  override async mintTtsToken(platformToken: string): Promise<string> {
+    // Same Deepgram token works for the speak endpoint too
     return this.mintEphemeralToken(platformToken)
   }
 

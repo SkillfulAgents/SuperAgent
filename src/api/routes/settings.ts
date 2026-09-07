@@ -461,6 +461,16 @@ settings.put(
     try {
       const body = c.req.valid('json')
 
+      // A default read-aloud voice must be one the (possibly just-picked)
+      // provider offers; the patch schema only knows it is a string.
+      const ttsVoice = body.voice?.ttsVoice
+      if (ttsVoice !== undefined) {
+        const providerId = body.voice?.sttProvider ?? getVoiceSettings().sttProvider
+        if (!providerId || !getSttProvider(providerId).hasTtsVoice(ttsVoice)) {
+          return c.json({ error: 'Unknown text-to-speech voice for the selected voice provider' }, 400)
+        }
+      }
+
       // Read FRESH and fail-closed: never merge onto the possibly-
       // corruption-defaulted cache (that is what overwrote real API keys/auth).
       // Applying and validating the candidate below are synchronous, so a valid

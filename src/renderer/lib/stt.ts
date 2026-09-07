@@ -416,6 +416,16 @@ export function float32ToInt16(float32: Float32Array): Int16Array {
   return int16
 }
 
+/** Convert Int16 PCM audio to Float32 samples [-1, 1] for Web Audio playback */
+export function pcm16ToFloat32(buffer: ArrayBuffer): Float32Array {
+  const int16 = new Int16Array(buffer)
+  const float32 = new Float32Array(int16.length)
+  for (let i = 0; i < int16.length; i++) {
+    float32[i] = int16[i] / 0x8000
+  }
+  return float32
+}
+
 export interface AudioCaptureHandle {
   stream: MediaStream
   audioContext: AudioContext

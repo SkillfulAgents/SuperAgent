@@ -1,4 +1,6 @@
 import { BaseSttProvider } from './stt-provider'
+import { DEEPGRAM_TTS_VOICES } from './deepgram-voices'
+import type { TtsVoiceInfo } from './tts-preferences'
 
 export class DeepgramSttProvider extends BaseSttProvider {
   readonly id = 'deepgram' as const
@@ -50,6 +52,15 @@ export class DeepgramSttProvider extends BaseSttProvider {
 
   override async mintVoiceAgentToken(apiKey: string): Promise<string> {
     // Same Deepgram token works for both STT and Voice Agent endpoints
+    return this.mintEphemeralToken(apiKey)
+  }
+
+  override getTtsVoices(): readonly TtsVoiceInfo[] {
+    return DEEPGRAM_TTS_VOICES
+  }
+
+  override async mintTtsToken(apiKey: string): Promise<string> {
+    // Same Deepgram token works for the speak endpoint too
     return this.mintEphemeralToken(apiKey)
   }
 

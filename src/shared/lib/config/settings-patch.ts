@@ -170,6 +170,8 @@ const authSettingsPatchSchema = z.object({
 
 const voiceSettingsPatchSchema = z.object({
   sttProvider: z.enum(['deepgram', 'openai', 'platform']),
+  // An id from the provider's catalogue; the route checks it against the provider.
+  ttsVoice: z.string().min(1),
 }).partial().strict()
 
 const computerUseGrantSchema = z.object({

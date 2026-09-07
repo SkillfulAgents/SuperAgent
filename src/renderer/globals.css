@@ -148,6 +148,24 @@ html[data-keyboard-open] [data-composer-footer] {
   }
 }
 
+/* Read-aloud: prose dims while a reply is being spoken and each word lights up
+   as playback reaches it (data-spoken is set per frame from the audio clock).
+   Only spoken words carry the attribute, so code blocks keep their weight. */
+.read-aloud-prose [data-spoken-word] {
+  opacity: 0.4;
+  transition: opacity 180ms ease-out;
+}
+
+.read-aloud-prose [data-spoken-word][data-spoken] {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .read-aloud-prose [data-spoken-word] {
+    transition: none;
+  }
+}
+
 /* The composer uses a ProseMirror document model but its controlled value is
    always serialized Markdown. Keep block spacing compact enough for chat while
    still making each Markdown construct immediately legible as it is typed. */

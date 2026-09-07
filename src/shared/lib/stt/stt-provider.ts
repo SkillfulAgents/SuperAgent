@@ -1,4 +1,5 @@
 import { getSettings, type ApiKeySettings, type ApiKeyStatus, type SttProvider } from '../config/settings'
+import type { TtsVoiceInfo } from './tts-preferences'
 
 export abstract class BaseSttProvider {
   abstract readonly id: SttProvider
@@ -66,6 +67,58 @@ export abstract class BaseSttProvider {
       throw new Error(`No API key configured for ${this.name}. Add one in Settings > Voice.`)
     }
     const token = await this.mintVoiceAgentToken(apiKey)
+    return { provider: this.id, token }
+  }
+
+  /**
+   * Voices this provider can read with, in the order the settings picker
+   * shows them. Empty when the provider cannot synthesize speech. The ids
+   * are the provider's own (they go straight into its synthesis request),
+   * which is why the catalogue lives with the provider and not in settings.
+   */
+  getTtsVoices(): readonly TtsVoiceInfo[] {
+    return []
+  }
+
+  /** Whether this provider supports streaming text-to-speech. */
+  supportsTts(): boolean {
+    return this.getTtsVoices().length > 0
+  }
+
+  /** The voice used when nobody has picked one. Undefined when the provider cannot speak. */
+  getDefaultTtsVoice(): string | undefined {
+    return this.getTtsVoices()[0]?.id
+  }
+
+  hasTtsVoice(id: unknown): id is string {
+    return typeof id === 'string' && this.getTtsVoices().some((voice) => voice.id === id)
+  }
+
+  /**
+   * The first pick this provider can honour, else its default: a user's own
+   * choice, then the deployment's. A stored id the provider no longer offers
+   * (a retired voice, or a pick made under another provider) falls through.
+   */
+  resolveTtsVoice(...picks: unknown[]): string | undefined {
+    return picks.find((pick) => this.hasTtsVoice(pick)) as string | undefined ?? this.getDefaultTtsVoice()
+  }
+
+  /** Mint a token for a text-to-speech session. Override in providers that support it. */
+  async mintTtsToken(apiKey: string): Promise<string> {
+    void apiKey
+    throw new Error(`Text-to-speech not supported by ${this.name}`)
+  }
+
+  /** Convenience: resolve the effective key and mint a text-to-speech token. */
+  async getTtsToken(): Promise<{ provider: SttProvider; token: string }> {
+    if (!this.supportsTts()) {
+      throw new Error(`Text-to-speech not supported by ${this.name}`)
+    }
+    const apiKey = this.getEffectiveApiKey()
+    if (!apiKey) {
+      throw new Error(`No API key configured for ${this.name}. Add one in Settings > Voice.`)
+    }
+    const token = await this.mintTtsToken(apiKey)
     return { provider: this.id, token }
   }
 

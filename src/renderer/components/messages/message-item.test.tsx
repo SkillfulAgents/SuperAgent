@@ -64,9 +64,52 @@ vi.mock('@renderer/hooks/use-platform-auth', () => ({
   usePlatformAuthStatus: () => ({ data: platformAuth }),
 }))
 
+// Read-aloud: the availability query and the playback store are replaced with
+// switches so these tests need neither a QueryClient nor an audio stack.
+const readAloudState = {
+  configured: false,
+  activeId: null as string | null,
+  status: 'speaking' as 'speaking' | 'paused' | 'connecting',
+  error: null as string | null,
+  toggle: vi.fn(),
+  pause: vi.fn(),
+  resume: vi.fn(),
+}
+
+vi.mock('@renderer/hooks/use-voice-input', () => ({
+  useIsTtsConfigured: () => readAloudState.configured,
+}))
+
+vi.mock('@renderer/hooks/use-read-aloud', () => ({
+  useIsBeingRead: (id: string) => readAloudState.activeId === id,
+  useReadAloud: (id: string) => ({
+    status: readAloudState.activeId === id ? readAloudState.status : 'idle',
+    isActive: readAloudState.activeId === id,
+    toggle: readAloudState.toggle,
+    pause: readAloudState.pause,
+    resume: readAloudState.resume,
+    error: readAloudState.error,
+  }),
+  useSpokenWordHighlight: () => {},
+  readAloud: { restart: vi.fn() },
+}))
+
+// The speed picker inside the controls reads user settings (react-query).
+vi.mock('@renderer/hooks/use-user-settings', () => ({
+  useUserSettings: () => ({ data: { voice: { ttsSpeed: 1.2 } } }),
+  useUpdateUserSettings: () => ({ mutate: vi.fn() }),
+}))
+
 describe('MessageItem', () => {
   beforeEach(() => {
     platformAuth.connected = false
+    readAloudState.configured = false
+    readAloudState.activeId = null
+    readAloudState.status = 'speaking'
+    readAloudState.error = null
+    readAloudState.toggle.mockReset()
+    readAloudState.pause.mockReset()
+    readAloudState.resume.mockReset()
   })
 
   describe('user messages', () => {
@@ -213,6 +256,122 @@ describe('MessageItem', () => {
       const { container } = render(<MessageItem message={msg} isStreaming />)
       const cursor = container.querySelector('.animate-pulse')
       expect(cursor).toBeTruthy()
+    })
+  })
+
+  describe('read aloud', () => {
+    it('offers a speaker button under a settled assistant reply when speech is configured', () => {
+      readAloudState.configured = true
+      const msg = createAssistantMessage({ content: { text: 'Hello **there**.' } })
+      render(<MessageItem message={msg} />)
+      const button = screen.getByTestId('read-aloud-button')
+      expect(button).toHaveAttribute('aria-label', 'Read aloud')
+      expect(button).toHaveAttribute('data-status', 'idle')
+      button.click()
+      expect(readAloudState.toggle).toHaveBeenCalledTimes(1)
+    })
+
+    it('shows nothing when the voice provider cannot speak', () => {
+      const msg = createAssistantMessage({ content: { text: 'Hello there.' } })
+      render(<MessageItem message={msg} />)
+      expect(screen.queryByTestId('read-aloud-button')).toBeNull()
+    })
+
+    it('never offers it on user messages, streaming text, or provider errors', () => {
+      readAloudState.configured = true
+      const { unmount } = render(<MessageItem message={createUserMessage({ content: { text: 'hi' } })} />)
+      expect(screen.queryByTestId('read-aloud-button')).toBeNull()
+      unmount()
+
+      const streaming = render(<MessageItem message={createAssistantMessage({ content: { text: 'partial' } })} isStreaming />)
+      expect(screen.queryByTestId('read-aloud-button')).toBeNull()
+      streaming.unmount()
+
+      render(<MessageItem message={createAssistantMessage({ content: { text: 'boom' }, apiError: 'rate_limit' })} />)
+      expect(screen.queryByTestId('read-aloud-button')).toBeNull()
+    })
+
+    it('renders readable replies word-addressable up front, and dims only the one being read', () => {
+      readAloudState.configured = true
+      const msg = createAssistantMessage({ content: { text: 'Hello **bright** world' } })
+      // Idle: spans are already there (so play never changes the DOM shape), no dimming.
+      const idle = render(<MessageItem message={msg} />)
+      const idleWords = Array.from(idle.container.querySelectorAll<HTMLElement>('[data-spoken-word]'))
+      expect(idleWords.map((w) => w.textContent)).toEqual(['Hello', 'bright', 'world'])
+      expect(idleWords.map((w) => w.dataset.spokenWord)).toEqual(['0', '1', '2'])
+      expect(idle.container.querySelector('.read-aloud-prose')).toBeNull()
+      idle.unmount()
+
+      readAloudState.activeId = msg.id
+      const { container } = render(<MessageItem message={msg} />)
+      expect(container.querySelector('.read-aloud-prose')).not.toBeNull()
+      expect(container.querySelectorAll('[data-spoken-word]')).toHaveLength(3)
+      expect(screen.getByTestId('read-aloud-button')).toHaveClass('hidden')
+      expect(screen.getByTestId('read-aloud-stop')).not.toHaveClass('hidden')
+    })
+
+    it('while reading, offers pause, stop, and the speed picker; paused offers resume', () => {
+      readAloudState.configured = true
+      const msg = createAssistantMessage({ content: { text: 'Hello there world' } })
+      readAloudState.activeId = msg.id
+      const speaking = render(<MessageItem message={msg} />)
+      const pause = screen.getByTestId('read-aloud-pause')
+      expect(pause).not.toHaveClass('hidden')
+      expect(screen.getByTestId('read-aloud-resume')).toHaveClass('hidden')
+      pause.click()
+      expect(readAloudState.pause).toHaveBeenCalledTimes(1)
+      expect(screen.getByTestId('read-aloud-speed')).toHaveTextContent('1.2×')
+      expect(screen.getByTestId('read-aloud-speed')).not.toHaveClass('hidden')
+      screen.getByTestId('read-aloud-stop').click()
+      expect(readAloudState.toggle).toHaveBeenCalledTimes(1)
+      speaking.unmount()
+
+      readAloudState.status = 'paused'
+      render(<MessageItem message={msg} />)
+      expect(screen.getByTestId('read-aloud-pause')).toHaveClass('hidden')
+      const resume = screen.getByTestId('read-aloud-resume')
+      expect(resume).not.toHaveClass('hidden')
+      resume.click()
+      expect(readAloudState.resume).toHaveBeenCalledTimes(1)
+    })
+
+    it('shows what went wrong next to the speaker button', () => {
+      readAloudState.configured = true
+      const msg = createAssistantMessage({ content: { text: 'Hello there world' } })
+      const quiet = render(<MessageItem message={msg} />)
+      expect(screen.getByTestId('read-aloud-error')).toHaveClass('hidden')
+      quiet.unmount()
+
+      readAloudState.error = 'Deepgram key revoked'
+      render(<MessageItem message={msg} />)
+      const error = screen.getByTestId('read-aloud-error')
+      expect(error).not.toHaveClass('hidden')
+      expect(error).toHaveTextContent('Deepgram key revoked')
+      expect(screen.getByTestId('read-aloud-button')).not.toHaveClass('hidden')
+    })
+
+    it('keeps every control mounted while idle, only the speaker visible', () => {
+      readAloudState.configured = true
+      render(<MessageItem message={createAssistantMessage({ content: { text: 'Hello there world' } })} />)
+      expect(screen.getByTestId('read-aloud-button')).not.toHaveClass('hidden')
+      for (const id of ['read-aloud-pause', 'read-aloud-resume', 'read-aloud-stop', 'read-aloud-speed']) {
+        expect(screen.getByTestId(id)).toHaveClass('hidden')
+      }
+    })
+
+    it('leaves other messages undimmed while one is being read', () => {
+      readAloudState.configured = true
+      readAloudState.activeId = 'some-other-message'
+      const msg = createAssistantMessage({ content: { text: 'Hello world' } })
+      const { container } = render(<MessageItem message={msg} />)
+      expect(container.querySelector('.read-aloud-prose')).toBeNull()
+      expect(container.querySelectorAll('[data-spoken-word]')).toHaveLength(2)
+    })
+
+    it('adds no spans when speech is not configured', () => {
+      const msg = createAssistantMessage({ content: { text: 'Hello world' } })
+      const { container } = render(<MessageItem message={msg} />)
+      expect(container.querySelector('[data-spoken-word]')).toBeNull()
     })
   })
 

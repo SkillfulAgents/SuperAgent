@@ -25,6 +25,10 @@ import { useRenderTracker } from '@renderer/lib/perf'
 import { createMarkdownUrlTransform } from '@renderer/lib/markdown-url-transform'
 import type { EmbeddedImageAliases } from '@renderer/lib/parse-tool-result'
 import { rehypeStreamingWordReveal } from './streaming-word-reveal'
+import { rehypeSpokenWords } from '@renderer/lib/speech/spoken-words'
+import { useIsBeingRead, useSpokenWordHighlight } from '@renderer/hooks/use-read-aloud'
+import { useIsTtsConfigured } from '@renderer/hooks/use-voice-input'
+import { ReadAloudControls } from './read-aloud-controls'
 
 // Re-export for use by other components
 export type { ApiToolCall }
@@ -214,15 +218,24 @@ interface MarkdownBlockProps {
   text: string
   embeddedImageAliases?: EmbeddedImageAliases
   agentSlug?: string
+  /** Wrap every prose word in an indexed span for useSpokenWordHighlight. */
+  spoken?: boolean
 }
 
-export const MarkdownBlock = memo(function MarkdownBlock({ text, embeddedImageAliases, agentSlug }: MarkdownBlockProps) {
+const SPOKEN_REHYPE_PLUGINS: ReactMarkdownOptions['rehypePlugins'] = [rehypeSpokenWords]
+
+export const MarkdownBlock = memo(function MarkdownBlock({ text, embeddedImageAliases, agentSlug, spoken }: MarkdownBlockProps) {
   const urlTransform = useMemo(
     () => createMarkdownUrlTransform({ aliases: embeddedImageAliases, agentSlug }),
     [embeddedImageAliases, agentSlug]
   )
   return (
-    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={MARKDOWN_COMPONENTS} urlTransform={urlTransform}>
+    <ReactMarkdown
+      remarkPlugins={REMARK_PLUGINS}
+      rehypePlugins={spoken ? SPOKEN_REHYPE_PLUGINS : undefined}
+      components={MARKDOWN_COMPONENTS}
+      urlTransform={urlTransform}
+    >
       {text}
     </ReactMarkdown>
   )
@@ -378,6 +391,21 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   const InlineErrorComponent = providerError.placement === 'inline' ? providerError.Component : ProviderErrorCard
   const hasInlineText = hasText && !(isProviderErrorMessage && !showInlineError)
 
+  // Read-aloud: a settled assistant reply gets a speaker button, and while it
+  // is the one being read its prose is dimmed and lights up as playback
+  // reaches each word. The word spans the highlight addresses are rendered
+  // for every readable reply up front, not on play: re-rendering a reply's
+  // Markdown with the spans (React edits the kept text nodes in place before
+  // inserting) makes WebKit re-clamp the scroll container when the reply
+  // sits at the live edge, throwing the viewport up by a message's worth.
+  // With the structure fixed, play and stop change only classes and
+  // attributes, which never do.
+  const canReadAloud = isAssistant && !!hasText && !isStreaming && !isProviderErrorMessage && !CustomUserRender
+  const spoken = useIsTtsConfigured() && canReadAloud
+  const isBeingRead = useIsBeingRead(message.id) && spoken
+  const proseRef = useRef<HTMLDivElement>(null)
+  useSpokenWordHighlight(proseRef, isBeingRead)
+
   // Don't render assistant messages that have no text, no tool calls, and no
   // thinking (and aren't streaming). These are transient empty entries from
   // partially-persisted JSONL that will be filled in on the next refetch.
@@ -396,7 +424,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   return (
     <div
       className={cn(
-        'flex gap-3',
+        'group/message flex gap-3',
         isUser && 'flex-row-reverse !my-6'
       )}
       data-testid={isUser ? 'message-user' : isAssistant ? 'message-assistant' : undefined}
@@ -458,7 +486,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
 
               {/* Text content */}
               {hasText && !CustomUserRender && !isProviderErrorMessage && (
-                <div dir="auto" className={PROSE_CLASS}>
+                <div ref={proseRef} dir="auto" className={cn(PROSE_CLASS, isBeingRead && 'read-aloud-prose')}>
                   {streamingSplit ? (
                     <>
                       {streamingSplit.settled.map((block, i) => (
@@ -483,6 +511,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                       text={text}
                       embeddedImageAliases={embeddedImageAliases}
                       agentSlug={agentSlug}
+                      spoken={spoken}
                     />
                   )}
                   {isStreaming && (
@@ -497,6 +526,19 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
               )}
             </div>
           </MessageContextMenu>
+        )}
+
+        {/* Read-aloud controls: revealed on hover, pinned while reading */}
+        {canReadAloud && (
+          <div
+            className={cn(
+              'flex items-center -mt-1 transition-opacity',
+              'opacity-0 group-hover/message:opacity-100 focus-within:opacity-100 touch:opacity-100',
+              isBeingRead && 'opacity-100',
+            )}
+          >
+            <ReadAloudControls messageId={message.id} markdown={text} />
+          </div>
         )}
 
         {/* Attached file chips for user messages */}

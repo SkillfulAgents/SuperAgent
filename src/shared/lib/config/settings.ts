@@ -70,6 +70,8 @@ export type SttProvider = 'deepgram' | 'openai' | 'platform'
 
 export interface VoiceSettings {
   sttProvider?: SttProvider
+  /** Text-to-speech voice for reading agent replies aloud: an id from the provider's own catalogue. */
+  ttsVoice?: string
 }
 
 export interface NotificationSettings {
