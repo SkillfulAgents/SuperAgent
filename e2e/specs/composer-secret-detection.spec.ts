@@ -75,6 +75,31 @@ test.describe('composer secret detection', () => {
     await expect(input).toHaveText(rawKey)
   })
 
+  test('restores a draft marker after unmatched brackets when its key is saved', async ({ page }) => {
+    const prefix = `Restore ${Date.now()} literal`
+    const input = page.getByTestId('home-message-input')
+    await input.evaluate((element, text) => {
+      const clipboardData = new DataTransfer()
+      clipboardData.setData('text/plain', text)
+      element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData }))
+    }, `${prefix} [[ then [[secret:API_KEY|API%20Key]]`)
+    await expect(input).toHaveText(`${prefix} [[ then [[secret:API_KEY|API%20Key]]`)
+
+    await page.getByTestId('home-secrets-open-page').click()
+    await page.getByTestId('secrets-add-button').click()
+    await page.getByTestId('secret-dialog-key').fill('API Key')
+    await page.getByTestId('secret-dialog-value').fill('synthetic-test-value')
+    await page.getByTestId('secret-dialog-submit').click()
+    await expect(page.getByTestId('secret-row-API_KEY')).toBeVisible()
+    await page.getByTestId('secrets-back-button').click()
+    await expect(input.getByTestId('secured-secret')).toBeVisible()
+
+    await page.getByTestId('home-send-button').click()
+    await expect(page.getByTestId('message-list')).toBeVisible()
+    const record = await recorder.waitFor(candidate => candidate.type === 'createSession' && candidate.initialMessage?.startsWith(prefix) === true)
+    expect(record.initialMessage).toBe(`${prefix} \\[\\[ then [Key saved to .env - API_KEY]`)
+  })
+
   test('preserves headings and links containing pasted chips through submit', async ({ page }, testInfo) => {
     const tag = `W${testInfo.workerIndex}T${Date.now()}`
     const envVar = `PASTE_KEY_${tag.toUpperCase()}`

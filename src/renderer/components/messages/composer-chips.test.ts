@@ -66,7 +66,7 @@ describe('composer chips', () => {
     )
   })
 
-  it('refuses a secret marker whose label is a raw credential', () => {
+  it('leaves a credential label literal when it differs from the saved name', () => {
     const key = ['sk-', 'proj-Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z'].join('')
     const raw = `[[secret:A|${key}]]`
     expect(rewriteChipsForSend(raw, new Map([['A', 'A']]))).toBe(raw)

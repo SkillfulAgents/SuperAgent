@@ -292,13 +292,15 @@ function parseComposerMarkdown(value: string, knownSecrets: ReadonlyMap<string, 
 }
 
 function restoreEscapedChipMarkers(value: string, doc: ProseMirrorNode, knownSecrets: ReadonlyMap<string, string>): string {
-  const matches = Array.from(value.matchAll(/\\\[\\\[[^\n]*?\\\]\\\]/g))
+  // Look ahead so an unmatched opening pair cannot consume a later marker.
+  const matches = Array.from(value.matchAll(/(?=(\\\[\\\[[^\n]*?\\\]\\\]))/g))
   for (const match of matches.reverse()) {
-    const raw = markdownTokenizer.utils.unescapeAll(match[0])
+    const escaped = match[1]
+    const raw = markdownTokenizer.utils.unescapeAll(escaped)
     const marker = CHIP_MARKER_ANCHORED.exec(raw)
     const chip = marker && getChipKind(marker[1])?.composer.parse(raw)
     if (!chip || !isBackedSecretChip(chip, knownSecrets)) continue
-    const candidate = value.slice(0, match.index) + raw + value.slice(match.index + match[0].length)
+    const candidate = value.slice(0, match.index) + raw + value.slice(match.index + escaped.length)
     // Only restore source escapes that already painted as a chip. Escapes in
     // code or link destinations must retain their original meaning.
     if (parseComposerMarkdown(candidate, knownSecrets).doc.eq(doc)) value = candidate

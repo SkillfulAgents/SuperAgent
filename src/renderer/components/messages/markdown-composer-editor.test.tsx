@@ -69,6 +69,13 @@ describe('MarkdownComposerEditor', () => {
     expect(screen.getByTestId('markdown-value').textContent).toBe('- _Use_ [[secret:API_KEY|My%20Key]]')
   })
 
+  it('restores a saved marker after unmatched escaped opening brackets', () => {
+    const known = new Map([['API_KEY', 'My Key']])
+    render(<ControlledEditor initialValue={'Literal \\[\\[ then \\[\\[secret:API_KEY|My%20Key\\]\\]'} knownSecrets={known} />)
+    expect(screen.getByTestId('secured-secret')).toBeInTheDocument()
+    expect(rewriteChipsForSend(screen.getByTestId('markdown-value').textContent ?? '', known)).toBe('Literal \\[\\[ then [Key saved to .env - API_KEY]')
+  })
+
   it('keeps redo and undo atomic after a pasted chip loses its backing key', () => {
     const marker = formatChipMarker('secret', 'API_KEY', 'My Key')
     const { rerender } = render(<ControlledEditor knownSecrets={new Map([['API_KEY', 'My Key']])} />)
