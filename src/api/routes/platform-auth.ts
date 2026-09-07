@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import type { MiddlewareHandler } from 'hono'
+import type { Context, MiddlewareHandler } from 'hono'
 
 import { Authenticated } from '../middleware/auth'
 import { isAuthMode } from '@shared/lib/auth/mode'
@@ -22,6 +22,10 @@ import {
   redeemDownloadNonce,
   DownloadNonceUnavailableError,
 } from '@shared/lib/services/download-nonce-service'
+import {
+  BillingEmbedError,
+  createBillingEmbedSession,
+} from '@shared/lib/services/platform-billing-embed-service'
 import { platformService } from '@shared/lib/services/platform-service'
 import { getCloudWorkspace } from '@shared/lib/services/cloud-workspace-service'
 import { PlatformRequestError } from '@shared/lib/platform-auth/platform-fetch'
@@ -101,6 +105,46 @@ platformAuth.get('/billing', async (c) => {
 platformAuth.get('/deployments', async (c) => {
   const status = await getCloudWorkspace()
   return c.json(status)
+})
+
+// The renderer is same-origin with this host, so the request origin is the
+// deployment origin the platform must allow to frame /embed/*. Behind the cloud
+// load balancer the browser's Origin header is present on fetch POSTs; the
+// forwarded proto/host pair is the fallback.
+function resolveRequestOrigin(c: Context): string | null {
+  const origin = c.req.header('origin')?.trim()
+  if (origin) {
+    try {
+      const parsed = new URL(origin)
+      if (parsed.origin === origin) return origin
+    } catch {
+      return null
+    }
+  }
+  const host = c.req.header('x-forwarded-host')?.split(',')[0]?.trim() || c.req.header('host')?.trim()
+  if (!host) return null
+  const proto = c.req.header('x-forwarded-proto')?.split(',')[0]?.trim() || 'https'
+  return `${proto}://${host}`
+}
+
+// SuperAgent web paywall → in-app billing iframe. Cloud only; the service
+// refuses anything else so the renderer falls back to opening billing externally.
+platformAuth.post('/billing-embed', async (c) => {
+  const body = await c.req.json<{ intent?: unknown }>().catch(() => ({}) as { intent?: unknown })
+  const intent = body.intent === 'topup' ? ('topup' as const) : undefined
+  const parentOrigin = resolveRequestOrigin(c)
+  if (!parentOrigin) {
+    return c.json({ error: 'Could not determine this deployment origin.', code: 'not_available' }, 400)
+  }
+  try {
+    const session = await createBillingEmbedSession({ headers: c.req.raw.headers, parentOrigin, intent })
+    return c.json(session)
+  } catch (error) {
+    if (error instanceof BillingEmbedError) {
+      return c.json({ error: error.message, code: error.code }, error.status as ContentfulStatusCode)
+    }
+    throw error
+  }
 })
 
 platformAuth.post('/initiate', (c) => {

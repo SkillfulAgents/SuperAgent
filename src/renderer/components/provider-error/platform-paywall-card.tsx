@@ -5,8 +5,11 @@ import { extractSubscriptionRequired } from '@shared/lib/llm-provider/platform-e
 import { cn } from '@shared/lib/utils/cn'
 import { HomeEmptyClouds } from '@renderer/components/home/home-empty-clouds'
 import { Button } from '@renderer/components/ui/button'
+import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
+import { isElectron } from '@renderer/lib/env'
 import { openExternalUrl } from '@renderer/lib/open-external'
 
+import { BillingEmbedDialog } from './billing-embed-dialog'
 import { buildTopupHandoffUrl, type PaywallCta } from './platform-paywall-cta'
 import type { ProviderErrorComponentProps } from './provider-error-registry'
 import { usePlatformPaywallBilling } from './use-platform-paywall-billing'
@@ -49,19 +52,29 @@ function ctaHref(cta: PaywallCta): string | null {
   return cta.href
 }
 
+// Members are sent to ask an admin; the embed would only show them "no access".
+function canEmbed(cta: PaywallCta): boolean {
+  return cta.kind !== 'ask_admin'
+}
+
 function PaywallActions({
   cta,
   loading,
   handedOff,
+  inApp,
   onDismiss,
   onHandOff,
+  onOpenEmbed,
   onRecheck,
 }: {
   cta: PaywallCta | null
   loading: boolean
   handedOff: boolean
+  /** Web on a cloud workspace: billing opens inside the app instead of a new tab. */
+  inApp: boolean
   onDismiss: () => void
   onHandOff: () => void
+  onOpenEmbed: () => void
   onRecheck: () => void
 }) {
   if (loading) {
@@ -88,6 +101,16 @@ function PaywallActions({
         >
           Recheck
         </Button>
+      ) : cta && inApp && canEmbed(cta) ? (
+        <Button
+          size="sm"
+          onClick={(event) => {
+            event.stopPropagation()
+            onOpenEmbed()
+          }}
+        >
+          {CTA_LABELS[cta.kind]}
+        </Button>
       ) : cta ? (
         <Button
           size="sm"
@@ -112,12 +135,17 @@ function PaywallActions({
 export function PlatformPaywallCard({ message, presentation, children, live = true }: ProviderErrorComponentProps) {
   const [dismissed, setDismissed] = useState(false)
   const [handedOff, setHandedOff] = useState(false)
+  const [embedOpen, setEmbedOpen] = useState(false)
+  const { data: platformAuth } = usePlatformAuthStatus()
   const billing = usePlatformPaywallBilling(
     extractSubscriptionRequired(message),
     presentation?.href ?? null,
     live,
     !dismissed,
   )
+  // Electron keeps the system-browser hand-off. Web on a cloud workspace (the
+  // only place the platform will frame its billing page) embeds it in-app.
+  const inApp = !isElectron() && platformAuth?.platformControlled === true
   if (billing.cleared || dismissed) return <>{children}</>
 
   const fallback = splitMessage(presentation?.message ?? message)
@@ -141,12 +169,23 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
             cta={billing.cta}
             loading={billing.loading}
             handedOff={handedOff}
+            inApp={inApp}
             onDismiss={() => setDismissed(true)}
             onHandOff={() => setHandedOff(true)}
+            onOpenEmbed={() => setEmbedOpen(true)}
             onRecheck={billing.recheck}
           />
         </div>
       </div>
+      {inApp && (
+        <BillingEmbedDialog
+          open={embedOpen}
+          onOpenChange={setEmbedOpen}
+          intent={billing.cta?.kind === 'topup' ? 'topup' : undefined}
+          fallbackHref={billing.cta ? ctaHref(billing.cta) : null}
+          onBillingUpdated={billing.recheck}
+        />
+      )}
       {!billing.blocked && children}
     </>
   )
