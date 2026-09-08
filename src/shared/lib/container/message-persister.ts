@@ -200,9 +200,11 @@ interface StreamingState {
   // The runtime's last published session state. 'idle' with background work
   // still open means the turn ended and the process is parked waiting on it.
   runtimeState: 'idle' | 'running' | null
-  // Top-level results seen so far: a count of ended turns. Read before an
-  // interrupt is sent and compared after (see markSessionInterrupted).
-  turnResultCount: number
+  // Turns the runtime has started so far (one per `running` transition). An
+  // interrupt caller snapshots it first (getTurnGeneration) so
+  // markSessionInterrupted can tell the stopped turn from one that started
+  // after the stop was requested.
+  turnGeneration: number
   // Pending settle after the last background task was stopped by the user;
   // see scheduleSettleAfterStop.
   settleAfterStopTimer: ReturnType<typeof setTimeout> | null
@@ -588,7 +590,7 @@ class MessagePersister {
       isActive: priorIsActive,
       isInterrupted: false,
       runtimeState: prior?.runtimeState ?? null,
-      turnResultCount: prior?.turnResultCount ?? 0,
+      turnGeneration: prior?.turnGeneration ?? 0,
       settleAfterStopTimer: null,
       isRecovering: prior?.isRecovering ?? false,
       coalescedUserMessages: prior?.coalescedUserMessages,
@@ -1021,12 +1023,12 @@ class MessagePersister {
     // Interrupt FIRST: abort the parked query so it can never resume into a filler reply.
     // The container keeps its background tasks across this stop, so the host
     // keeps its record of them too — unless the container says it restarted.
-    const turnResultCountBefore = this.getTurnResultCount(agentSlug, sessionId)
+    const turnGenerationBefore = this.getTurnGeneration(agentSlug, sessionId)
     const { processKept } = await this.interruptContainerSession(agentSlug, sessionId).catch((e) => {
       console.error(`[MessagePersister] cancelAwaitingInput interrupt failed for ${sessionId}:`, e)
       return { processKept: false }
     })
-    await this.markSessionInterrupted(agentSlug, sessionId, { processKept, turnResultCountBefore })
+    await this.markSessionInterrupted(agentSlug, sessionId, { processKept, turnGenerationBefore })
 
     // Clear the host-side computer_use bookkeeping explicitly — session_idle only clears
     // the stream store, so a leftover entry would replay a phantom approval card on reconnect.
@@ -1058,12 +1060,18 @@ class MessagePersister {
   }
 
   /**
-   * How many turns this session has ended so far. Callers read it before
-   * sending an interrupt and hand it to markSessionInterrupted, which uses it
-   * to tell the stopped turn from one that started after it.
+   * The generation of the turn an interrupt sent now would stop. Callers read
+   * it before the container call and hand it to markSessionInterrupted, which
+   * treats a higher generation afterwards as a turn that started after the
+   * stop. A send whose `running` frame has not arrived yet (active, no result
+   * for it, runtime not yet running) counts that pending start as the stopped
+   * turn, so its late `running` is not mistaken for a new one.
    */
-  getTurnResultCount(agentSlug: string, sessionId: string): number {
-    return this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))?.turnResultCount ?? 0
+  getTurnGeneration(agentSlug: string, sessionId: string): number {
+    const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
+    if (!state) return 0
+    const startPending = state.isActive && state.lastResultSubtype === null && state.runtimeState !== 'running'
+    return state.turnGeneration + (startPending ? 1 : 0)
   }
 
   getActiveBackgroundTasks(agentSlug: string, sessionId: string): Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean }> {
@@ -1292,24 +1300,25 @@ class MessagePersister {
   async markSessionInterrupted(
     agentSlug: string,
     sessionId: string,
-    options?: { processKept?: boolean; turnResultCountBefore?: number },
+    options?: { processKept?: boolean; turnGenerationBefore?: number },
   ): Promise<void> {
     const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
     const processKept = options?.processKept === true
     let backgroundTasks: Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean }> = []
 
     // The container answers a soft interrupt only after the stopped turn's
-    // result. A background task can settle in that window and wake the agent,
-    // so by now the runtime may be running a turn that is not the one that
-    // was stopped. That turn owns the state: clearing it here would drop its
-    // frames and, when the settled task was the last one, mark the session
-    // idle underneath it.
+    // result (or at once, when there was no turn to stop). A background task
+    // can settle in that window and wake the agent, so by now the runtime may
+    // be running a turn that is not the one that was stopped. That turn owns
+    // the state: clearing it here would drop its frames and, when the settled
+    // task was the last one, mark the session idle underneath it. Only a
+    // `running` transition counts as a new turn — the stopped turn's own
+    // result and idle frames leave the generation alone.
     if (
       state &&
       processKept &&
-      options?.turnResultCountBefore !== undefined &&
-      state.turnResultCount > options.turnResultCountBefore &&
-      state.runtimeState === 'running'
+      options?.turnGenerationBefore !== undefined &&
+      state.turnGeneration > options.turnGenerationBefore
     ) {
       console.log(`[MessagePersister] Session ${sessionId} started a new turn after the stop; leaving it running`)
       return
@@ -1444,7 +1453,7 @@ class MessagePersister {
         isActive: false,
         isInterrupted: false,
         runtimeState: null,
-        turnResultCount: 0,
+        turnGeneration: 0,
         settleAfterStopTimer: null,
         isRecovering: false,
         isCompacting: false,
@@ -2410,6 +2419,9 @@ class MessagePersister {
           if (content.state === 'idle' || content.state === 'running') {
             state.runtimeState = content.state
           }
+          if (content.state === 'running') {
+            state.turnGeneration += 1
+          }
           if (content.state === 'idle') {
             // Only treat idle as authoritative when a result was actually seen
             // for this turn (lastResultSubtype is cleared on every new send).
@@ -2602,7 +2614,6 @@ class MessagePersister {
         }
         state.currentText = ''
         state.lastResultSubtype = typeof content.subtype === 'string' ? content.subtype : null
-        state.turnResultCount += 1
 
         // A clean success with zero turns means the main loop never ran — the
         // signature of a settings-file hook blocking the prompt. (duration_api_ms
