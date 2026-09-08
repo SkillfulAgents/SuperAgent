@@ -474,6 +474,42 @@ describe('useVoiceMode', () => {
     expect(reader.pushStream).toHaveBeenLastCalledWith(STREAM_ID, 'Hi, I am listening. ')
   })
 
+  it('paused for a request card mid-turn, then resumed: the agent keeps the floor and the rest of its reply is read', async () => {
+    const { result, rerender, listener, setStream } = setup()
+    act(() => listener.hear('connect my calendar'))
+    act(() => listener.events.onSpeechEnded())
+    await flush()
+    setStream({ isActive: true, streamingMessage: 'Which account? ' })
+    expect(reader.pushStream).toHaveBeenLastCalledWith(STREAM_ID, 'Which account? ')
+
+    // The request card is up: voice mode pauses.
+    rerender({ active: false })
+    expect(listener.stop).toHaveBeenCalledTimes(1)
+    expect(reader.stop).toHaveBeenCalled()
+    reader.beginStream.mockClear()
+    reader.pushStream.mockClear()
+
+    // Answered; the turn carries on. The question is not read again.
+    rerender({ active: true })
+    expect(result.current.phase).toBe('thinking')
+    expect(reader.beginStream).not.toHaveBeenCalled()
+    setStream({ streamingMessage: 'Connected. Anything else? ' })
+    expect(reader.beginStream).toHaveBeenCalledWith(STREAM_ID)
+    expect(reader.pushStream).toHaveBeenLastCalledWith(STREAM_ID, 'Connected. Anything else? ')
+    setStream({ isActive: false })
+    act(() => reader.set({ activeId: null, status: 'idle' }))
+    expect(result.current.phase).toBe('listening')
+  })
+
+  it('entered while the agent is already replying, it reads what follows', () => {
+    stream.state = { streamingToolUses: [], isActive: true, streamingMessage: 'Half way through. ' }
+    const { result, setStream } = setup()
+    expect(result.current.phase).toBe('thinking')
+    expect(reader.beginStream).not.toHaveBeenCalled()
+    setStream({ streamingMessage: 'Half way through. And the rest. ' })
+    expect(reader.pushStream).toHaveBeenLastCalledWith(STREAM_ID, 'Half way through. And the rest. ')
+  })
+
   it('turning voice mode off releases the mic and silences the reader', () => {
     const { rerender, listener } = setup()
     rerender({ active: false })

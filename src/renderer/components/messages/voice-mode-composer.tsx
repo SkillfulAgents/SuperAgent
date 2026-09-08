@@ -70,24 +70,26 @@ export function VoiceModeComposer({
           <AttachmentPreview attachments={attachments} onRemove={onRemoveAttachment} onRetry={onRetryAttachment} />
         </div>
       )}
+      {/* The transcript line and the indicator's margin above it add up to
+          the gap under the mic, so the mic sits midway between the working
+          indicator and the row of controls. */}
       <div
-        className="mx-auto mb-2 min-h-[1.25rem] max-w-md px-2 text-center text-sm italic text-muted-foreground"
+        className="mx-auto min-h-[1.25rem] max-w-md px-2 text-center text-sm italic text-muted-foreground"
         data-testid="voice-mode-transcript"
         aria-live="polite"
       >
         {phase === 'listening' ? utterance : ''}
       </div>
-      <div className="flex items-end justify-between gap-4">
-        <div className="pb-1">{attachmentPicker}</div>
-        <div className="flex flex-col items-center gap-3">
-          <VoiceMicButton phase={phase} getAnalyser={getAnalyser} onClick={onPressMic} />
+      <div className="flex flex-col items-center gap-7">
+        <VoiceMicButton phase={phase} getAnalyser={getAnalyser} onClick={onPressMic} />
+        <div className="grid w-full grid-cols-[1fr_auto_1fr] items-center gap-4">
+          <div className="justify-self-start">{attachmentPicker}</div>
           <div className="flex items-center gap-1">
             {composerOptions}
             {voiceControls}
           </div>
-        </div>
-        <div className="pb-1">
-          <Button
+          <div className="justify-self-end">
+            <Button
             type="button"
             size="icon"
             variant="outline"
@@ -97,8 +99,9 @@ export function VoiceModeComposer({
             title="Exit voice mode"
             data-testid="voice-mode-exit"
           >
-            <X className="h-4 w-4" />
-          </Button>
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
       </div>
       <VoiceInputError error={error} onDismiss={onClearError} className="mt-3 justify-center" />

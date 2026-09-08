@@ -48,9 +48,15 @@ interface MessageInputProps {
   initialModel?: string
   /** Registers a getter so the stale-session prompt can move the live draft. */
   registerSnapshot?: (getSnapshot: (() => ComposerSnapshot) | null) => void
+  /**
+   * Hidden behind a request card the agent is waiting on. Voice mode pauses
+   * (mic and reader off, no hold sound) and resumes when the card is gone,
+   * rather than ending, so the agent is not told the person left.
+   */
+  suspended?: boolean
 }
 
-export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialSpeed, initialModel, registerSnapshot }: MessageInputProps) {
+export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialSpeed, initialModel, registerSnapshot, suspended = false }: MessageInputProps) {
   useRenderTracker('MessageInput')
   const { canUseAgent, isAuthMode } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
@@ -310,14 +316,14 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
   const voice = useVoiceMode({
     sessionId,
     agentSlug,
-    active: voiceModeOn && !isViewOnly,
+    active: voiceModeOn && !isViewOnly && !suspended,
     send: submitMessage,
     startWithAgentTurn: openedByVoice,
   })
   // Something to hear while the agent works, unless the person muted it.
   const holdSoundWanted = useHoldSoundPreference()
   useHoldSound({
-    enabled: voiceModeOn && !isViewOnly && holdSoundWanted,
+    enabled: voiceModeOn && !isViewOnly && !suspended && holdSoundWanted,
     agentTurn: voice.phase !== 'listening',
     working: voice.working,
   })

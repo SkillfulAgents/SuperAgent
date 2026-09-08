@@ -260,7 +260,17 @@ export function useVoiceMode({ sessionId, agentSlug, active, send, startWithAgen
   // development-mode remount re-runs that with the mode still on, and would
   // hand the floor to the person while the agent is mid-reply.)
   useEffect(() => {
-    if (active) return
+    if (active) {
+      // Coming on (or back on, after a request card) while the agent's turn
+      // is running: the floor is the agent's, and what it said before is
+      // not read again, only what follows.
+      if (isActiveRef.current) {
+        staleTextRef.current = streamingRef.current ?? ''
+        setUserTurn(false)
+        setAwaitingTurn(false)
+      }
+      return
+    }
     setUtterance('')
     setUserTurn(true)
     setAwaitingTurn(false)
