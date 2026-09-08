@@ -523,7 +523,9 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                 'rounded-lg max-w-full text-foreground',
                 !isAssistant && 'overflow-hidden',
                 isUser && 'bg-zinc-100 dark:bg-zinc-800/70 px-4 py-2',
-                isAssistant && 'py-1'
+                // Relative for the read-aloud controls, which overlay the
+                // gap under the bubble rather than adding a row to it.
+                isAssistant && 'relative py-1'
               )}
             >
               {/* Kind-specific user bubble (e.g. slash command) */}
@@ -580,12 +582,17 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
               {!hasText && isStreaming && (
                 <span className="inline-block w-2 h-4 bg-current animate-pulse" />
               )}
+
+              {/* Read-aloud controls, only while this reply is being read (or
+                  failed to be). Overlaid on the gap under the bubble: adding a
+                  row to the last reply at the live edge makes WebKit jump the
+                  transcript to its top. */}
+              {canReadAloud && (
+                <ReadAloudControls messageId={message.id} markdown={text} className="absolute left-0 top-full z-10 -mt-1" />
+              )}
             </div>
           </MessageContextMenu>
         )}
-
-        {/* Read-aloud controls: only while this reply is being read (or failed to be) */}
-        {canReadAloud && <ReadAloudControls messageId={message.id} markdown={text} className="-mt-1" />}
 
         {/* Attached file chips for user messages */}
         {isUser && attachedFiles.length > 0 && agentSlug && (() => {

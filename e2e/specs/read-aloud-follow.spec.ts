@@ -66,9 +66,6 @@ function installPillRecorder(page: Page) {
   })
 }
 
-/** The read-aloud controls row that appears under a reply once it is read: its height plus spacing. */
-const CONTROLS_ROW_PX = 32
-
 function distanceFromBottom(page: Page) {
   return page.evaluate(() => {
     const el = document.querySelector<HTMLElement>('[data-testid="message-list"]')!
@@ -103,8 +100,10 @@ test.describe('read-aloud at the live edge', () => {
       }),
     )
     await page.route('**/api/voice/tts-token', async (route) => {
-      // Long enough for the connecting render to paint and settle on its own.
-      await new Promise((resolve) => setTimeout(resolve, 600))
+      // Long enough for the connecting render to paint and settle on its own,
+      // and for the menu-item click to return (WebKit takes most of a second
+      // to close the menu) before the connecting state is asserted.
+      await new Promise((resolve) => setTimeout(resolve, 1500))
       return route.fulfill({
         status: 500,
         contentType: 'application/json',
@@ -179,17 +178,12 @@ test.describe('read-aloud at the live edge', () => {
     // only a sanity check; the scroll events are the frame-independent record.
     expect(rec.frames).toBeGreaterThan(0)
     expect(rec.pillFrames).toBe(0)
-    // The press adds the controls row under the reply, so the content grows
-    // by that row at the live edge and the engine puts the viewport back.
-    // Every scroll event recorded is that put-back: never further from the
-    // edge than the row it is catching up with, and never moving away.
-    let last = Infinity
-    for (const s of rec.scrolls) {
-      const distance = s.sh - s.ch - s.top
-      expect(distance).toBeLessThan(24 + CONTROLS_ROW_PX)
-      expect(distance).toBeLessThanOrEqual(last)
-      last = distance
-    }
+    // WebKit reports the engine's put-back as a scroll event already at the
+    // live edge; Chromium never moves at all and reports nothing. (The
+    // controls overlay the reply rather than adding a row to it: a row
+    // appearing at the live edge would grow the content, and WebKit answers
+    // that by jumping the transcript to its top.)
+    for (const s of rec.scrolls) expect(s.sh - s.ch - s.top).toBeLessThan(24)
     await expect(page.getByRole('button', { name: 'Scroll to bottom' })).toBeHidden()
   })
 })
