@@ -24,6 +24,25 @@ export {
 
 const EXCHANGE_TIMEOUT_MS = 10_000
 
+// Default `cookie`: the iframe reuses the user's own platform login (platform
+// serves SameSite=None cookies + Storage Access API). `token`: legacy one-time
+// URL exchange via the user's OIDC access token.
+function billingEmbedAuthMode(): 'cookie' | 'token' {
+  return process.env.PLATFORM_BILLING_EMBED_AUTH?.trim().toLowerCase() === 'token' ? 'token' : 'cookie'
+}
+
+function buildCookieEmbedUrl(
+  origin: string,
+  orgId: string,
+  input: { parentOrigin: string; intent?: 'topup'; view?: BillingEmbedView },
+): string {
+  const url = new URL(`/embed/billing/${encodeURIComponent(orgId)}`, origin)
+  url.searchParams.set('parent', input.parentOrigin)
+  if (input.intent) url.searchParams.set('intent', input.intent)
+  if (input.view) url.searchParams.set('view', input.view)
+  return url.href
+}
+
 export class BillingEmbedError extends Error {
   constructor(
     message: string,
@@ -51,9 +70,10 @@ async function readPlatformErrorCode(res: Response): Promise<string | null> {
   return parsed.success ? parsed.data.error : null
 }
 
-// Trades the acting user's platform OIDC access token (refreshed by Better Auth
-// when expired) for a one-time embed URL. Cloud-only: the platform accepts the
-// parent origin only when it matches this org's registered deployment.
+// Cloud-only. Cookie mode returns the platform billing page URL directly; token
+// mode trades the acting user's platform OIDC access token (refreshed by Better
+// Auth when expired) for a one-time embed URL. Either way the platform accepts
+// the parent origin only when it matches this org's registered deployment.
 export async function createBillingEmbedSession(input: {
   headers: Headers
   parentOrigin: string
@@ -68,6 +88,10 @@ export async function createBillingEmbedSession(input: {
   const orgId = getPlatformAuthStatus().orgId
   if (!orgId) {
     throw new BillingEmbedError('This workspace is not connected to the platform.', 'not_available', 400)
+  }
+
+  if (billingEmbedAuthMode() === 'cookie') {
+    return { embedUrl: buildCookieEmbedUrl(origin, orgId, input), platformOrigin: origin }
   }
 
   let accessToken: string | null | undefined

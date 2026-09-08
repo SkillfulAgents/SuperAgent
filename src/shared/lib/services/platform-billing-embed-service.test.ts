@@ -42,13 +42,63 @@ async function expectError(promise: Promise<unknown>, code: string, status: numb
   expect((error as BillingEmbedError).status).toBe(status)
 }
 
-describe('createBillingEmbedSession', () => {
+describe('createBillingEmbedSession (cookie mode, default)', () => {
   const fetchMock = vi.fn()
   const headers = new Headers({ cookie: 'better-auth.session=abc' })
 
   beforeEach(() => {
     vi.clearAllMocks()
     vi.stubGlobal('fetch', fetchMock)
+    vi.stubEnv('PLATFORM_BILLING_EMBED_AUTH', '')
+    mocks.isPlatformControlledAuth.mockReturnValue(true)
+    mocks.getPlatformBaseUrl.mockReturnValue(PLATFORM)
+    mocks.getPlatformAuthStatus.mockReturnValue({ connected: true, orgId: 'org_1' })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.unstubAllEnvs()
+  })
+
+  it('returns the platform billing page URL with parent/intent/view, no token exchange', async () => {
+    const session = await createBillingEmbedSession({ headers, parentOrigin: PARENT, intent: 'topup', view: 'topup' })
+    expect(session.platformOrigin).toBe(PLATFORM)
+    const url = new URL(session.embedUrl)
+    expect(url.origin).toBe(PLATFORM)
+    expect(url.pathname).toBe('/embed/billing/org_1')
+    expect(url.searchParams.get('parent')).toBe(PARENT)
+    expect(url.searchParams.get('intent')).toBe('topup')
+    expect(url.searchParams.get('view')).toBe('topup')
+    expect(mocks.getAccessToken).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('omits intent/view when not given and URL-encodes the org id', async () => {
+    mocks.getPlatformAuthStatus.mockReturnValue({ connected: true, orgId: 'org/with space' })
+    const session = await createBillingEmbedSession({ headers, parentOrigin: PARENT })
+    const url = new URL(session.embedUrl)
+    expect(url.pathname).toBe('/embed/billing/org%2Fwith%20space')
+    expect(url.searchParams.has('intent')).toBe(false)
+    expect(url.searchParams.has('view')).toBe(false)
+  })
+
+  it('still refuses non-cloud auth and missing org', async () => {
+    mocks.isPlatformControlledAuth.mockReturnValue(false)
+    await expectError(createBillingEmbedSession({ headers, parentOrigin: PARENT }), 'not_available', 400)
+    mocks.isPlatformControlledAuth.mockReturnValue(true)
+    mocks.getPlatformAuthStatus.mockReturnValue({ connected: true, orgId: null })
+    await expectError(createBillingEmbedSession({ headers, parentOrigin: PARENT }), 'not_available', 400)
+  })
+})
+
+describe('createBillingEmbedSession (token mode)', () => {
+  const fetchMock = vi.fn()
+  const headers = new Headers({ cookie: 'better-auth.session=abc' })
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubEnv('PLATFORM_BILLING_EMBED_AUTH', 'token')
     mocks.isPlatformControlledAuth.mockReturnValue(true)
     mocks.getPlatformBaseUrl.mockReturnValue(PLATFORM)
     mocks.getPlatformAuthStatus.mockReturnValue({ connected: true, orgId: 'org_1' })
@@ -58,6 +108,7 @@ describe('createBillingEmbedSession', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+    vi.unstubAllEnvs()
   })
 
   it('exchanges the user OIDC token for an embed URL on the platform origin', async () => {
