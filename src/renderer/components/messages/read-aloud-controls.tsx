@@ -91,15 +91,19 @@ export function ReadAloudSpeedSelect({ testId = 'read-aloud-speed', align = 'sta
 }
 
 /**
- * Playback controls under an assistant reply. Idle: one speaker button.
- * While reading: pause/resume, stop, and the speed picker. Hidden entirely
- * when the voice provider can't synthesize speech.
+ * Playback controls under an assistant reply, only while it is being read:
+ * pause/resume, stop, and the speed picker. Nothing while idle (reading is
+ * started from the message's context menu, so the reply carries no extra
+ * row), except a failed read, which shows what went wrong next to a
+ * speaker to try again. Hidden entirely when the voice provider can't
+ * synthesize speech.
  */
 export function ReadAloudControls({ messageId, markdown, className }: ReadAloudControlsProps) {
   const configured = useIsTtsConfigured()
   const { status, toggle, pause, resume, error } = useReadAloud(messageId, markdown)
   if (!configured) return null
   const active = status !== 'idle'
+  if (!active && !error) return null
 
   return (
     <TooltipProvider>

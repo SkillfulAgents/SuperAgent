@@ -27,6 +27,7 @@ import type { EmbeddedImageAliases } from '@renderer/lib/parse-tool-result'
 import { rehypeStreamingWordReveal } from './streaming-word-reveal'
 import { countSpokenWords, rehypeSpokenWords } from '@renderer/lib/speech/spoken-words'
 import { readAloud, useIsBeingRead, useSpokenWordHighlight } from '@renderer/hooks/use-read-aloud'
+import { useIsTtsConfigured } from '@renderer/hooks/use-voice-input'
 import { ReadAloudControls } from './read-aloud-controls'
 
 // Re-export for use by other components
@@ -416,7 +417,20 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   // is one, then the persisted message it becomes. Its cursor counts words
   // per message, so the highlight follows across that swap.
   const isVoiceRead = !!voiceReading && isAssistant && !!hasText && !isProviderErrorMessage && (!!isStreaming || !!isLatestAssistant)
-  const isBeingRead = (useIsBeingRead(message.id) && canReadAloud) || isVoiceRead
+  const isThisBeingRead = useIsBeingRead(message.id) && canReadAloud
+  const isBeingRead = isThisBeingRead || isVoiceRead
+  // "Read aloud" lives in the message's context menu, so an idle reply
+  // carries no row for it; the controls appear under it only while it reads.
+  const ttsConfigured = useIsTtsConfigured()
+  const readAloudMenu = canReadAloud && ttsConfigured
+    ? {
+        active: isThisBeingRead,
+        onToggle: () => {
+          if (isThisBeingRead) readAloud.stop()
+          else void readAloud.speak(message.id, text)
+        },
+      }
+    : undefined
   const proseRef = useRef<HTMLDivElement>(null)
   const getSpokenCursor = useCallback(
     () => (isVoiceRead ? readAloud.getStreamWordCursor() : (readAloud.getPlayer()?.getWordCursor() ?? -1)),
@@ -500,7 +514,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
 
         {/* Message bubble - only show if there's text content */}
         {showMessageBubble && !bareUserRender && (
-          <MessageContextMenu text={text || ''} onRemove={onRemoveMessage ? () => onRemoveMessage(message.id) : undefined}>
+          <MessageContextMenu text={text || ''} onRemove={onRemoveMessage ? () => onRemoveMessage(message.id) : undefined} readAloud={readAloudMenu}>
             <div
               dir="auto"
               // Assistant bubbles opt into table breakout and must not clip it.
@@ -570,18 +584,8 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
           </MessageContextMenu>
         )}
 
-        {/* Read-aloud controls: revealed on hover, pinned while reading */}
-        {canReadAloud && (
-          <div
-            className={cn(
-              'flex items-center -mt-1 transition-opacity',
-              'opacity-0 group-hover/message:opacity-100 focus-within:opacity-100 touch:opacity-100',
-              isBeingRead && 'opacity-100',
-            )}
-          >
-            <ReadAloudControls messageId={message.id} markdown={text} />
-          </div>
-        )}
+        {/* Read-aloud controls: only while this reply is being read (or failed to be) */}
+        {canReadAloud && <ReadAloudControls messageId={message.id} markdown={text} className="-mt-1" />}
 
         {/* Attached file chips for user messages */}
         {isUser && attachedFiles.length > 0 && agentSlug && (() => {
