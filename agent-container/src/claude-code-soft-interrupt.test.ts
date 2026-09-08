@@ -262,6 +262,38 @@ describe('ClaudeCodeProcess soft interrupt', () => {
     expect(outcome.processKept).toBe(true)
   })
 
+  it('still reports the messages a soft attempt cancelled when it falls back to the restart', async () => {
+    // The receipt arrives and its queued message is cancelled, but the turn
+    // never ends: the restart takes over, and the cancelled message must not
+    // vanish from the outcome (the renderer restores it to the composer).
+    const uuid = '22222222-2222-4222-8222-222222222222'
+    // Like the CLI, the mock stops listing a message once it was cancelled,
+    // so the restart's own receipt cannot rediscover it.
+    const cancelled = new Set<string>()
+    interruptBehavior = {
+      receipt: { still_queued: [uuid] },
+      onInterrupt: () => {
+        interruptBehavior.receipt = { still_queued: [uuid].filter((u) => !cancelled.has(u)) }
+      },
+    }
+    let query: MockQuery
+    ;({ proc, query } = await startProcess())
+    ;(query as unknown as Record<string, unknown>).cancelAsyncMessage = vi.fn(async (u: string) => {
+      cancelled.add(u)
+      return true
+    })
+    const discarded: string[] = []
+    proc.on('message', (m: Frame) => {
+      if (m.type === 'command_lifecycle' && m.state === 'discarded') discarded.push(m.command_uuid as string)
+    })
+
+    const outcome = await proc.interrupt({ scope: 'turn' })
+
+    expect(outcome.processKept).toBe(false)
+    expect(outcome.discardedUuids).toEqual([uuid])
+    expect(discarded).toEqual([uuid])
+  }, 15000)
+
   it('stopTask forwards the task id to the SDK', async () => {
     let query: MockQuery
     ;({ proc, query } = await startProcess())

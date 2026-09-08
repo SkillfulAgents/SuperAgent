@@ -3284,7 +3284,9 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
       return c.json({ success: true, note: 'Container not running, session marked inactive' })
     }
 
-    // Try to interrupt in the container
+    // Try to interrupt in the container. The turn count read here tells the
+    // persister whether the turn running afterwards is still the stopped one.
+    const turnResultCountBefore = messagePersister.getTurnResultCount(agentSlug, sessionId)
     const { interrupted, processKept } = await client.interruptSession(sessionId, { scope })
 
     // Even if container interrupt fails (session might not exist there anymore),
@@ -3296,7 +3298,7 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
     // processKept is the container's word, not the requested scope: a 'turn'
     // stop that had to fall back to a process restart killed the background
     // tasks, and the persister must drop them.
-    await messagePersister.markSessionInterrupted(agentSlug, sessionId, { processKept })
+    await messagePersister.markSessionInterrupted(agentSlug, sessionId, { processKept, turnResultCountBefore })
     reviewManager.denyAllForAgent(agentSlug)
 
     return c.json({ success: true, processKept })
@@ -4207,12 +4209,13 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
       // Interrupt the turn so the user can chat directly with the agent.
       // Background tasks are not the user's target here, so they stay.
       let processKept = false
+      const turnResultCountBefore = messagePersister.getTurnResultCount(agentSlug, sessionId)
       try {
         processKept = (await client.interruptSession(sessionId, { scope: 'turn' })).processKept
       } catch (e) {
         console.error(`[complete-browser-input] Failed to interrupt session: ${e}`)
       }
-      await messagePersister.markSessionInterrupted(agentSlug, sessionId, { processKept })
+      await messagePersister.markSessionInterrupted(agentSlug, sessionId, { processKept, turnResultCountBefore })
 
       trackServerEvent('request_declined', { type: 'browser_input', withReason: !!declineReason })
       return c.json({ success: true, declined: true })

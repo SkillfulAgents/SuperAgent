@@ -1,3 +1,4 @@
+import { z } from 'zod'
 import type { ContainerClient, StreamMessage, SlashCommandInfo } from './types'
 import { mergeCanonicalSlashCommands } from './slash-commands'
 import type { SessionUsage, SessionActivity } from '@shared/lib/types/agent'
@@ -160,6 +161,11 @@ function sessionCtx(agentSlug: string, sessionId: string): SessionCtx {
   return { key: sessionKeyOf(agentSlug, sessionId), agentSlug, sessionId }
 }
 
+// Body of the container's POST /sessions/:id/interrupt.
+const interruptContainerResponseSchema = z.object({
+  processKept: z.boolean().optional(),
+})
+
 // Frames that belong to the turn an interrupt just ended, as opposed to frames
 // about the runtime (results, system events, command lifecycle, capability
 // handshakes) that must land even after Stop. See handleMessage.
@@ -194,6 +200,9 @@ interface StreamingState {
   // The runtime's last published session state. 'idle' with background work
   // still open means the turn ended and the process is parked waiting on it.
   runtimeState: 'idle' | 'running' | null
+  // Top-level results seen so far: a count of ended turns. Read before an
+  // interrupt is sent and compared after (see markSessionInterrupted).
+  turnResultCount: number
   // Pending settle after the last background task was stopped by the user;
   // see scheduleSettleAfterStop.
   settleAfterStopTimer: ReturnType<typeof setTimeout> | null
@@ -579,6 +588,7 @@ class MessagePersister {
       isActive: priorIsActive,
       isInterrupted: false,
       runtimeState: prior?.runtimeState ?? null,
+      turnResultCount: prior?.turnResultCount ?? 0,
       settleAfterStopTimer: null,
       isRecovering: prior?.isRecovering ?? false,
       coalescedUserMessages: prior?.coalescedUserMessages,
@@ -1009,10 +1019,14 @@ class MessagePersister {
     const computerUseIds = this.getPendingComputerUseRequests(agentSlug, sessionId).map((r) => r.toolUseId)
 
     // Interrupt FIRST: abort the parked query so it can never resume into a filler reply.
-    await this.interruptContainerSession(agentSlug, sessionId).catch(
-      (e) => console.error(`[MessagePersister] cancelAwaitingInput interrupt failed for ${sessionId}:`, e),
-    )
-    await this.markSessionInterrupted(agentSlug, sessionId)
+    // The container keeps its background tasks across this stop, so the host
+    // keeps its record of them too — unless the container says it restarted.
+    const turnResultCountBefore = this.getTurnResultCount(agentSlug, sessionId)
+    const { processKept } = await this.interruptContainerSession(agentSlug, sessionId).catch((e) => {
+      console.error(`[MessagePersister] cancelAwaitingInput interrupt failed for ${sessionId}:`, e)
+      return { processKept: false }
+    })
+    await this.markSessionInterrupted(agentSlug, sessionId, { processKept, turnResultCountBefore })
 
     // Clear the host-side computer_use bookkeeping explicitly — session_idle only clears
     // the stream store, so a leftover entry would replay a phantom approval card on reconnect.
@@ -1041,6 +1055,15 @@ class MessagePersister {
     if (state) {
       state.slashCommands = commands
     }
+  }
+
+  /**
+   * How many turns this session has ended so far. Callers read it before
+   * sending an interrupt and hand it to markSessionInterrupted, which uses it
+   * to tell the stopped turn from one that started after it.
+   */
+  getTurnResultCount(agentSlug: string, sessionId: string): number {
+    return this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))?.turnResultCount ?? 0
   }
 
   getActiveBackgroundTasks(agentSlug: string, sessionId: string): Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean }> {
@@ -1269,11 +1292,28 @@ class MessagePersister {
   async markSessionInterrupted(
     agentSlug: string,
     sessionId: string,
-    options?: { processKept?: boolean },
+    options?: { processKept?: boolean; turnResultCountBefore?: number },
   ): Promise<void> {
     const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
     const processKept = options?.processKept === true
     let backgroundTasks: Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean }> = []
+
+    // The container answers a soft interrupt only after the stopped turn's
+    // result. A background task can settle in that window and wake the agent,
+    // so by now the runtime may be running a turn that is not the one that
+    // was stopped. That turn owns the state: clearing it here would drop its
+    // frames and, when the settled task was the last one, mark the session
+    // idle underneath it.
+    if (
+      state &&
+      processKept &&
+      options?.turnResultCountBefore !== undefined &&
+      state.turnResultCount > options.turnResultCountBefore &&
+      state.runtimeState === 'running'
+    ) {
+      console.log(`[MessagePersister] Session ${sessionId} started a new turn after the stop; leaving it running`)
+      return
+    }
 
     // Set interrupted flag FIRST to prevent race conditions with incoming events
     if (state) {
@@ -1404,6 +1444,7 @@ class MessagePersister {
         isActive: false,
         isInterrupted: false,
         runtimeState: null,
+        turnResultCount: 0,
         settleAfterStopTimer: null,
         isRecovering: false,
         isCompacting: false,
@@ -1852,7 +1893,13 @@ class MessagePersister {
     // soft interrupt keeps the process alive with background tasks running,
     // so their terminal task frames, the runtime's state transitions and the
     // wake turn they start (`running` clears the flag below) must all land.
-    if (state.isInterrupted && isInterruptedTurnContent(message.content)) {
+    // So must the frames of the background subagents it spared: their input
+    // requests (a browser hand-off, a question) are still waiting on the user.
+    if (
+      state.isInterrupted &&
+      isInterruptedTurnContent(message.content) &&
+      !this.isSparedSubagentFrame(state, message.content)
+    ) {
       return
     }
 
@@ -2555,6 +2602,7 @@ class MessagePersister {
         }
         state.currentText = ''
         state.lastResultSubtype = typeof content.subtype === 'string' ? content.subtype : null
+        state.turnResultCount += 1
 
         // A clean success with zero turns means the main loop never ran — the
         // signature of a settings-file hook blocking the prompt. (duration_api_ms
@@ -4414,12 +4462,35 @@ ${continuation}`
    * (not the `client.interruptSession` helper that route calls) to stay on the proxy-routed path
    * the rest of MessagePersister's container calls use, e.g. `rejectContainerInput`.
    */
-  private async interruptContainerSession(agentSlug: string, sessionId: string): Promise<void> {
+  // A sidechain frame from a background (or resumed) subagent that survived a
+  // soft interrupt. Foreground subagents are dropped from the map when the
+  // turn is stopped, and a restart clears it, so a frame that still resolves
+  // to an entry belongs to work that is genuinely running.
+  private isSparedSubagentFrame(state: StreamingState, content: { parent_tool_use_id?: unknown } | undefined): boolean {
+    const parentToolId = content?.parent_tool_use_id
+    if (typeof parentToolId !== 'string') return false
+    const sub = state.activeSubagents.get(parentToolId)
+    return !!sub && (sub.isBackground || sub.isResumed)
+  }
+
+  private async interruptContainerSession(agentSlug: string, sessionId: string): Promise<{ processKept: boolean }> {
     const cm = await getContainerManager()
     const client = cm.getClient(agentSlug)
-    await client.fetch(`/sessions/${encodeURIComponent(sessionId)}/interrupt`, {
+    const response = await client.fetch(`/sessions/${encodeURIComponent(sessionId)}/interrupt`, {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope: 'turn' }),
     })
+    if (!response?.ok) return { processKept: false }
+    // A container build that predates the field always restarted the process.
+    let raw: unknown = null
+    try {
+      raw = await response.json()
+    } catch {
+      raw = null
+    }
+    const body = interruptContainerResponseSchema.safeParse(raw)
+    return { processKept: body.success && body.data.processKept === true }
   }
 
   // Handle get_available_triggers - blocking: fetch from Composio and resolve

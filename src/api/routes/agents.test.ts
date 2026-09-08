@@ -182,6 +182,7 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     dropCoalescedUserMessage: vi.fn(() => false),
     markSessionActive: vi.fn(),
     markSessionInterrupted: vi.fn(),
+    getTurnResultCount: vi.fn(() => 0),
     cancelAwaitingInput: vi.fn(),
     completeInputRequest: vi.fn(),
     completeCapabilityReview: vi.fn(),
@@ -9186,7 +9187,7 @@ describe('cross-agent session scoping', () => {
       const res = await postJson(app, url(OWN_SESSION, '/interrupt'), {})
 
       expect(res.status).toBe(200)
-      expect(messagePersister.markSessionInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION, { processKept: true })
+      expect(messagePersister.markSessionInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION, { processKept: true, turnResultCountBefore: 0 })
     })
 
     it('still marks the caller’s own session interrupted when the container throws', async () => {
@@ -9203,7 +9204,7 @@ describe('cross-agent session scoping', () => {
 
       expect(res.status).toBe(200)
       expect(mockInterruptSession).toHaveBeenCalledWith(OWN_SESSION, { scope: 'turn' })
-      expect(messagePersister.markSessionInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION, { processKept: true })
+      expect(messagePersister.markSessionInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION, { processKept: true, turnResultCountBefore: 0 })
       await expect(res.json()).resolves.toMatchObject({ success: true, processKept: true })
     })
 
@@ -9214,7 +9215,7 @@ describe('cross-agent session scoping', () => {
 
       expect(res.status).toBe(200)
       expect(mockInterruptSession).toHaveBeenCalledWith(OWN_SESSION, { scope: 'all' })
-      expect(messagePersister.markSessionInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION, { processKept: false })
+      expect(messagePersister.markSessionInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION, { processKept: false, turnResultCountBefore: 0 })
     })
 
     it('drops background-task state when a turn stop had to restart the process', async () => {
@@ -9225,7 +9226,7 @@ describe('cross-agent session scoping', () => {
       const res = await postJson(app, url(OWN_SESSION, '/interrupt'), { scope: 'turn' })
 
       expect(res.status).toBe(200)
-      expect(messagePersister.markSessionInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION, { processKept: false })
+      expect(messagePersister.markSessionInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION, { processKept: false, turnResultCountBefore: 0 })
       await expect(res.json()).resolves.toMatchObject({ processKept: false })
     })
 

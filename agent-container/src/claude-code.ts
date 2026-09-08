@@ -1893,9 +1893,13 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
 
     if (scope === 'turn') {
-      const outcome = await this.interruptTurn();
+      // Queued messages the soft path already cancelled stay cancelled when it
+      // falls back: the restart cannot find them again, so it reports these.
+      const discardedUuids: string[] = [];
+      const outcome = await this.interruptTurn(discardedUuids);
       if (outcome) return outcome;
       console.warn(`[Session ${this.sessionId}] Soft interrupt unavailable — restarting the query instead`);
+      return this.restartQuery(discardedUuids);
     }
 
     return this.restartQuery();
@@ -1904,8 +1908,10 @@ export class ClaudeCodeProcess extends EventEmitter {
   /**
    * The soft path of interrupt(): abort the foreground turn in place. Resolves
    * null when the CLI gave no proof the turn ended — the caller then restarts.
+   * Queued messages cancelled along the way are pushed onto `discardedUuids`,
+   * which the caller owns, so a fallback still reports them.
    */
-  private async interruptTurn(): Promise<InterruptOutcome | null> {
+  private async interruptTurn(discardedUuids: string[]): Promise<InterruptOutcome | null> {
     if (!this.queryInstance) return null;
     if (!this.cliCapabilities.has('interrupt_receipt_v1')) {
       console.warn(`[Session ${this.sessionId}] CLI does not advertise interrupt_receipt_v1`);
@@ -1922,7 +1928,6 @@ export class ClaudeCodeProcess extends EventEmitter {
     // Listen for the aborted turn's result before asking, so it cannot slip
     // past between the receipt and the wait below.
     const turnResult = this.waitForTurnResult(INTERRUPT_RESULT_TIMEOUT_MS);
-    const discardedUuids: string[] = [];
     let receipt: unknown;
     try {
       receipt = await Promise.race([
@@ -2016,8 +2021,11 @@ export class ClaudeCodeProcess extends EventEmitter {
     return true;
   }
 
-  /** The abort-and-re-create path of interrupt(). */
-  private async restartQuery(): Promise<InterruptOutcome> {
+  /**
+   * The abort-and-re-create path of interrupt(). `alreadyDiscarded` names the
+   * queued messages a soft attempt cancelled before it gave up.
+   */
+  private async restartQuery(alreadyDiscarded: string[] = []): Promise<InterruptOutcome> {
     // Ask the SDK which async messages are still queued BEFORE killing the
     // query — after the abort the stream just stops and that knowledge is
     // gone (queued command_lifecycle frames never resolve; see the
@@ -2025,7 +2033,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     // messages would survive a graceful interrupt and run — our Stop
     // semantics kill them, so cancel each one while the query is still alive
     // and report it as discarded.
-    const discardedUuids: string[] = [];
+    const discardedUuids: string[] = [...alreadyDiscarded];
     if (this.queryInstance) {
       try {
         const receipt = await Promise.race([
@@ -2037,7 +2045,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           // execution, in which case the abort below kills it mid-turn and
           // its user message has already materialized — not "discarded".
           const cancelled = await this.cancelQueuedMessage(uuid as UUID);
-          if (cancelled) discardedUuids.push(uuid);
+          if (cancelled && !discardedUuids.includes(uuid)) discardedUuids.push(uuid);
         }
       } catch (error) {
         // Old CLI without the interrupt control request, or a query already
@@ -2050,7 +2058,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     // Messages still buffered locally (never handed to the SDK) die when the
     // queue is replaced below.
     for (const message of this.messageQueue?.drain() ?? []) {
-      if (message.uuid) discardedUuids.push(message.uuid);
+      if (message.uuid && !discardedUuids.includes(message.uuid)) discardedUuids.push(message.uuid);
     }
 
     // Abort the current query
