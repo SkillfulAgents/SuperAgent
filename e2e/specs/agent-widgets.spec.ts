@@ -148,7 +148,11 @@ test.describe('agent widgets', () => {
 
     const frame = card.locator('iframe')
     await expect(frame).toHaveAttribute('sandbox', '')
-    await expect(frame).toHaveAttribute('src', /\/artifacts\/daily-macros\/widget\/html\?scheme=(light|dark)&v=/)
+    // Inlined, not framed by URL: the renderer and the API share an origin on
+    // the web but not in either Electron build, where the document's own
+    // frame-ancestors would block the frame. The policy rides along in a meta.
+    await expect(frame).not.toHaveAttribute('src', /./)
+    await expect(frame).toHaveAttribute('srcdoc', /http-equiv="Content-Security-Policy"/)
     await expect(page.frameLocator('[data-testid="widget-card-daily-macros"] iframe').getByTestId('widget-value'))
       .toHaveText('1,820 kcal')
 

@@ -142,7 +142,7 @@ import {
 import { type ArtifactInfo, listArtifactsFromFilesystem, listArtifactsAndWidgets, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
 import {
   WIDGET_HTML_CSP,
-  applyWidgetScheme,
+  renderWidgetDocument,
   listWidgetsFromFilesystem,
   readWidgetFromFilesystem,
   readWidgetHtml,
@@ -6948,7 +6948,7 @@ agents.get('/:id/artifacts/:artifactSlug/widget/html', AgentRead(), async (c) =>
   const scheme = widgetSchemeSchema.safeParse(c.req.query('scheme'))
   const html = await readWidgetHtml(slug, artifactSlug)
   if (html === null) return c.json({ error: 'Widget has no snapshot yet' }, 404)
-  return c.body(scheme.success ? applyWidgetScheme(html, scheme.data) : html, 200, {
+  return c.body(scheme.success ? renderWidgetDocument(html, scheme.data) : html, 200, {
     'content-type': 'text/html; charset=utf-8',
     'content-security-policy': WIDGET_HTML_CSP,
     'x-content-type-options': 'nosniff',

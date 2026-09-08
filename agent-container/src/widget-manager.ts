@@ -29,6 +29,14 @@ export const SNAPSHOT_META_FILENAME = 'snapshot.json'
 // page load: a broken script must not be re-run each time Agent Home opens.
 const FAILED_REFRESH_RETRY_SECONDS = 5 * 60
 
+// Where the previous widget.html waits while the script runs. Inside
+// snapshots/ so it travels with the rest of the generated state, and dotted so
+// a `ls` in the artifact dir still shows the agent only its own files.
+const PREVIOUS_HTML_FILENAME = '.previous-widget.html'
+
+// How long a killed script gets to actually die before we stop waiting for it.
+const KILL_GRACE_MS = 2000
+
 /**
  * The manifest script that regenerates a widget, run exactly like a
  * dashboard's `start`: `bun run <name>` in the artifact directory, with bun
@@ -190,9 +198,16 @@ class WidgetManager {
     let scriptRan = false
     const htmlPath = path.join(dir, WIDGET_HTML_FILENAME)
     const metaPath = path.join(dir, WIDGET_META_FILENAME)
+    // What the last good run left behind. A script that writes widget.html and
+    // then fails must not cost the user the snapshot still on their screen, so
+    // the old file waits here and goes back if the run does not succeed.
+    const previous = this.readSnapshotSync(dir)
+    const stashPath = path.join(dir, SNAPSHOTS_DIRNAME, PREVIOUS_HTML_FILENAME)
+    let stashed = false
     try {
       if (manifest.script) {
         scriptRan = true
+        stashed = await stashHtml(htmlPath, stashPath)
         // The script may import the artifact's own dependencies (a dashboard's
         // data helpers); a widget-only artifact that declares deps has never
         // had them installed by a dashboard start.
@@ -207,6 +222,9 @@ class WidgetManager {
           const result = await this.runProcess(dir, slug, WIDGET_RUN_COMMAND, manifest.timeoutSeconds, log)
           if (!result.ok) error = result.error
         }
+        if (error && stashed) {
+          await restoreHtml(stashPath, htmlPath, log)
+        }
       }
 
       let htmlHash = ''
@@ -215,15 +233,22 @@ class WidgetManager {
         error ??= `${WIDGET_HTML_FILENAME} is missing — the refresh script must write it`
       } else {
         htmlHash = hashHtml(await fs.promises.readFile(htmlPath))
-        const raster = await rasterizeWidget(dir)
-        renderedSizes = raster.rendered
-        if (raster.error) {
-          log.write(`[WidgetManager] rasterize: ${raster.error}\n`)
-          // A missing Chromium only costs the PNG snapshots; the HTML
-          // snapshot still serves every in-app surface, so this is not a
-          // refresh failure.
-          if (renderedSizes.length === 0 && !error) {
-            console.warn(`[WidgetManager] No PNG snapshots for ${slug}: ${raster.error}`)
+        if (error) {
+          // The run failed and its output was rolled back, so the PNGs on disk
+          // already match this HTML. Re-rendering them would spend a Chromium
+          // launch to produce the same bytes.
+          renderedSizes = previous?.htmlHash === htmlHash ? previous.renderedSizes : []
+        } else {
+          const raster = await rasterizeWidget(dir)
+          renderedSizes = raster.rendered
+          if (raster.error) {
+            log.write(`[WidgetManager] rasterize: ${raster.error}\n`)
+            // A missing Chromium only costs the PNG snapshots; the HTML
+            // snapshot still serves every in-app surface, so this is not a
+            // refresh failure.
+            if (renderedSizes.length === 0) {
+              console.warn(`[WidgetManager] No PNG snapshots for ${slug}: ${raster.error}`)
+            }
           }
         }
       }
@@ -250,7 +275,18 @@ class WidgetManager {
       })
       return snapshot
     } finally {
+      if (stashed) await fs.promises.rm(stashPath, { force: true }).catch(() => {})
       log.end()
+    }
+  }
+
+  /** The snapshot currently on disk, or null when there is none to read. */
+  private readSnapshotSync(dir: string): WidgetSnapshot | null {
+    try {
+      const raw = fs.readFileSync(path.join(dir, SNAPSHOTS_DIRNAME, SNAPSHOT_META_FILENAME), 'utf-8')
+      return WidgetSnapshotSchema.parse(JSON.parse(raw))
+    } catch {
+      return null
     }
   }
 
@@ -316,20 +352,33 @@ class WidgetManager {
           WIDGET_META: path.join(dir, WIDGET_META_FILENAME),
         },
         stdio: ['ignore', 'pipe', 'pipe'],
+        // Its own process group, so the timeout can reach what `bun run`
+        // spawned. Killing the launcher alone left the script running, and it
+        // would come back later to overwrite widget.html under the next run.
+        detached: true,
       })
 
       let stderrTail = ''
       let settled = false
+      let timedOut = false
+      let graceTimer: ReturnType<typeof setTimeout> | undefined
       const finish = (result: ScriptRunResult) => {
         if (settled) return
         settled = true
         clearTimeout(timer)
+        clearTimeout(graceTimer)
         resolve(result)
       }
       const timer = setTimeout(() => {
         log.write(`[WidgetManager] ${bin} exceeded ${timeoutSeconds}s, killing\n`)
-        proc.kill('SIGKILL')
-        finish({ ok: false, error: `Refresh script exceeded ${timeoutSeconds}s` })
+        timedOut = true
+        killProcessGroup(proc, log)
+        // Do not resolve yet: the queue advances on this promise, and a
+        // survivor would write into the next refresh. Wait for the exit we
+        // just caused, and give up only if it never arrives.
+        graceTimer = setTimeout(() => {
+          finish({ ok: false, error: `Refresh script exceeded ${timeoutSeconds}s (kill not confirmed)` })
+        }, KILL_GRACE_MS)
       }, timeoutSeconds * 1000)
 
       proc.stdout?.on('data', (chunk: Buffer) => log.write(chunk))
@@ -342,7 +391,9 @@ class WidgetManager {
         finish({ ok: false, error: `Could not run ${bin}: ${err.message}` })
       })
       proc.on('exit', (code, signal) => {
-        if (code === 0) {
+        if (timedOut) {
+          finish({ ok: false, error: `Refresh script exceeded ${timeoutSeconds}s` })
+        } else if (code === 0) {
           finish({ ok: true, error: null })
         } else {
           const reason = signal ? `signal ${signal}` : `exit code ${code}`
@@ -457,6 +508,55 @@ async function copyTemplateFile(
   } catch (error: any) {
     if (error?.code !== 'EEXIST') throw error
     kept.push(fileName)
+  }
+}
+
+/**
+ * SIGKILL the script's whole process group. `bun run widget` is a launcher:
+ * signalling the child alone leaves the script itself alive, still holding the
+ * artifact dir it was told to write.
+ */
+function killProcessGroup(proc: { pid?: number; kill: (signal: NodeJS.Signals) => boolean }, log: fs.WriteStream): void {
+  const killChild = () => {
+    try {
+      proc.kill('SIGKILL')
+    } catch {
+      // Already gone.
+    }
+  }
+  // No pid means the spawn never got far enough to have a group.
+  if (proc.pid === undefined) return killChild()
+  try {
+    process.kill(-proc.pid, 'SIGKILL')
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException)?.code !== 'ESRCH') {
+      log.write(`[WidgetManager] could not signal the process group: ${String(err)}\n`)
+    }
+    killChild()
+  }
+}
+
+/**
+ * Put the current widget.html aside before a script runs. Returns false when
+ * there was nothing to keep (a first run, or a static widget).
+ */
+async function stashHtml(htmlPath: string, stashPath: string): Promise<boolean> {
+  try {
+    await fs.promises.mkdir(path.dirname(stashPath), { recursive: true })
+    await fs.promises.copyFile(htmlPath, stashPath)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Put the previous widget.html back after a failed run. */
+async function restoreHtml(stashPath: string, htmlPath: string, log: fs.WriteStream): Promise<void> {
+  try {
+    await fs.promises.copyFile(stashPath, htmlPath)
+    log.write(`[WidgetManager] script failed; restored the previous ${WIDGET_HTML_FILENAME}\n`)
+  } catch (err: unknown) {
+    log.write(`[WidgetManager] could not restore the previous ${WIDGET_HTML_FILENAME}: ${String(err)}\n`)
   }
 }
 

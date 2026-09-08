@@ -18,7 +18,9 @@ const {
   hashWidgetHtml,
   listWidgetsFromFilesystem,
   readWidgetFromFilesystem,
+  readWidgetHtml,
   readWidgetLogTail,
+  renderWidgetDocument,
   resolveWidgetPath,
   widgetSnapshotPngPath,
 } = await import('./widget-service')
@@ -171,12 +173,49 @@ describe('widget-service', () => {
   })
 
   it('refuses slugs and segments that escape the artifacts dir', () => {
+    // Containment follows symlinks, so the artifact has to exist for the
+    // happy-path assertion — which is also the only way a route reaches it.
+    seed('macros', { 'package.json': manifest({ script: 'bun run widget.ts' }) })
     expect(resolveWidgetPath(AGENT, '../secrets')).toBeNull()
     expect(resolveWidgetPath(AGENT, 'Macros')).toBeNull()
     expect(resolveWidgetPath(AGENT, 'macros', '..', '..', 'x')).toBeNull()
     expect(widgetSnapshotPngPath(AGENT, 'macros', 'small', 'dark', 3)).toMatch(
       /artifacts\/macros\/snapshots\/small-dark@3x\.png$/,
     )
+  })
+
+  it('refuses a file the agent symlinked out of its own workspace', async () => {
+    // The artifact dir is inside the workspace the container bind-mounts, so
+    // the agent can plant the link itself. Every path check has to follow it.
+    const secret = path.join(tmpRoot, 'outside-secret.txt')
+    fs.writeFileSync(secret, 'host-only')
+    const dir = seed('macros', { 'package.json': manifest({ script: 'bun run widget.ts' }) })
+    fs.symlinkSync(secret, path.join(dir, 'widget.html'))
+    fs.symlinkSync(secret, path.join(dir, 'widget.log'))
+    fs.symlinkSync(secret, path.join(dir, 'snapshots', 'small-dark@3x.png'))
+
+    expect(resolveWidgetPath(AGENT, 'macros', 'widget.html')).toBeNull()
+    expect(widgetSnapshotPngPath(AGENT, 'macros', 'small', 'dark', 3)).toBeNull()
+    expect(await readWidgetHtml(AGENT, 'macros')).toBeNull()
+    expect(await readWidgetLogTail(AGENT, 'macros')).toBeNull()
+  })
+
+  it('carries the policy inside the document the app inlines', () => {
+    // The app cannot frame the URL (the renderer is file:// in a packaged
+    // build), so the restrictions have to travel in the document itself.
+    const withHead = renderWidgetDocument('<html><head><title>x</title></head><body/></html>', 'dark')
+    expect(withHead).toContain('<html data-theme="dark">')
+    expect(withHead).toMatch(/<head><meta http-equiv="Content-Security-Policy" content="default-src 'none';/)
+    // frame-ancestors is ignored in a meta tag; the response header keeps it.
+    expect(withHead).not.toContain('frame-ancestors')
+
+    // A fragment with no head of its own still gets one.
+    expect(renderWidgetDocument('<p>bare</p>', 'light')).toMatch(
+      /<html data-theme="light"><head><meta http-equiv="Content-Security-Policy"/,
+    )
+    // An author who wrote their own policy keeps it — we do not stack two.
+    const authored = '<html><head><meta http-equiv="Content-Security-Policy" content="default-src \'none\'"></head></html>'
+    expect(renderWidgetDocument(authored, 'dark').match(/http-equiv="Content-Security-Policy"/g)).toHaveLength(1)
   })
 
   it('stamps data-theme on the html element, replacing any author value', () => {

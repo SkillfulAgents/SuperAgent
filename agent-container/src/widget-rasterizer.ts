@@ -101,6 +101,13 @@ async function runRasterize(
             viewport: WIDGET_FAMILY_VIEWPORTS[size],
             deviceScaleFactor: scale,
             colorScheme: scheme,
+            // The PNG has to show what the app shows. In the app the snapshot
+            // renders in an empty sandbox under `default-src 'none'`, so
+            // rendering it here with scripts and the network available would
+            // put content in the preview that the user can never see — and run
+            // the page's side effects once per size, scheme and scale.
+            javaScriptEnabled: false,
+            offline: true,
           })
           try {
             const page = await context.newPage()

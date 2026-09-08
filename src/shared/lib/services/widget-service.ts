@@ -3,7 +3,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import pLimit from 'p-limit'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
-import { isPathWithinDir } from '@shared/lib/utils/path-safety'
+import { isRealPathWithinDir } from '@shared/lib/utils/path-safety'
 import {
   WIDGET_HTML_FILENAME,
   artifactPackageSchema,
@@ -44,12 +44,19 @@ export function artifactsDirFor(agentSlug: string): string {
  * Absolute path of a file inside an artifact dir, or null when the slug or
  * file would escape <workspace>/artifacts. Every route that touches disk
  * goes through here.
+ *
+ * Containment is symlink-aware. The artifact dir lives in the workspace the
+ * agent's container bind-mounts, so the agent can plant a link there: a
+ * string-only check passes `widget.html -> /etc/passwd` and the host serves
+ * whatever it points at, under the caller's permission to read their own
+ * agent. `isRealPathWithinDir` fails closed on any fs error, and a dangling
+ * link resolves to its contained parent and reads as absent downstream.
  */
 export function resolveWidgetPath(agentSlug: string, artifactSlug: string, ...segments: string[]): string | null {
   if (!WIDGET_SLUG_REGEX.test(artifactSlug)) return null
   const artifactsDir = artifactsDirFor(agentSlug)
   const resolved = path.resolve(artifactsDir, artifactSlug, ...segments)
-  return isPathWithinDir(artifactsDir, resolved) ? resolved : null
+  return isRealPathWithinDir(artifactsDir, resolved) ? resolved : null
 }
 
 export function widgetSnapshotPngPath(
@@ -86,8 +93,9 @@ export async function describeWidgetFromManifest(
   manifestJson: unknown,
   now: number = Date.now(),
 ): Promise<ApiAgentWidget | null> {
-  const dir = resolveWidgetPath(agentSlug, artifactSlug)
-  if (!dir) return null
+  // The manifest decides whether there is a widget here at all, and answering
+  // that costs no disk. Resolving the path first made every dashboard-only
+  // artifact pay for a containment check it was about to throw away.
   let pkg
   let shape
   try {
@@ -97,6 +105,8 @@ export async function describeWidgetFromManifest(
   } catch {
     return null
   }
+  const dir = resolveWidgetPath(agentSlug, artifactSlug)
+  if (!dir) return null
 
   // Scripted or static is a manifest fact (`scripts.widget`, run as
   // `bun run widget` in the container), so answering it costs no disk reads.
@@ -227,3 +237,33 @@ export function applyWidgetScheme(html: string, scheme: WidgetScheme): string {
  */
 export const WIDGET_HTML_CSP =
   "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; frame-ancestors 'self'; form-action 'none'; base-uri 'none'"
+
+/**
+ * The same policy carried inside the document, for the copy the app inlines
+ * into an iframe with `srcdoc`.
+ *
+ * The app cannot frame the URL directly: the renderer is `file://` in a
+ * packaged desktop build and a different port in `dev:electron`, so
+ * `frame-ancestors 'self'` — which is doing its job, keeping other sites out —
+ * blocks our own frame everywhere except the web build, where renderer and API
+ * happen to share an origin. Inlining the document sidesteps the origin
+ * question entirely, and this meta keeps the restrictions with it.
+ * `frame-ancestors` is dropped because it is ignored in a meta tag; the
+ * response header still carries it for anyone fetching the URL.
+ */
+const WIDGET_DOCUMENT_CSP =
+  "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; form-action 'none'; base-uri 'none'"
+
+const CSP_META = `<meta http-equiv="Content-Security-Policy" content="${WIDGET_DOCUMENT_CSP}">`
+
+/**
+ * The snapshot as the app should render it: scheme stamped, policy inlined.
+ */
+export function renderWidgetDocument(html: string, scheme: WidgetScheme): string {
+  const stamped = applyWidgetScheme(html, scheme)
+  if (/<meta[^>]+http-equiv=["']?Content-Security-Policy/i.test(stamped)) return stamped
+  const withHead = stamped.replace(/<head(\s[^>]*)?>/i, (match) => `${match}${CSP_META}`)
+  if (withHead !== stamped) return withHead
+  // No head of its own — open one right after the html tag we just stamped.
+  return stamped.replace(/<html(\s[^>]*)?>/i, (match) => `${match}<head>${CSP_META}</head>`)
+}

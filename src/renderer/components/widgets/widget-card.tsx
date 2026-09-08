@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { AlertCircle, ArrowUpRight, LayoutGrid, Loader2, RefreshCw } from 'lucide-react'
 import { AppLink } from '@renderer/components/ui/app-link'
 import { useIsDark } from '@renderer/hooks/use-theme'
-import { useRefreshWidget, widgetHtmlUrl, type ApiAgentWidget } from '@renderer/hooks/use-widgets'
+import { useRefreshWidget, useWidgetHtml, type ApiAgentWidget } from '@renderer/hooks/use-widgets'
 import { cn } from '@shared/lib/utils/cn'
 
 /**
@@ -30,7 +30,11 @@ export function WidgetCard({
   const refresh = useRefreshWidget()
   const [frameLoaded, setFrameLoaded] = useState(false)
   const scheme = isDark ? 'dark' : 'light'
-  const src = widget.hasHtml ? widgetHtmlUrl(agentSlug, widget, scheme) : null
+  // Inlined, not framed by URL: the renderer's origin is not the API's origin
+  // in either Electron build, and the document's own frame-ancestors would
+  // block it there. It arrives with its CSP in a meta tag.
+  const { data: html } = useWidgetHtml(agentSlug, widget, scheme)
+  const src = widget.hasHtml && html ? html : null
   const refreshing = widget.refreshing || refresh.isPending
   const errorText = widget.lastError
 
@@ -38,8 +42,8 @@ export function WidgetCard({
     <>
       {src ? (
         <iframe
-          key={src}
-          src={src}
+          key={`${widget.htmlHash ?? 'none'}:${scheme}`}
+          srcDoc={src}
           title={widget.name}
           // Empty sandbox: no scripts, no same-origin, no forms, no popups.
           sandbox=""

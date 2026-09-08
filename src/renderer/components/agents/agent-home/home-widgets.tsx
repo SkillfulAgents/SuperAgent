@@ -15,14 +15,16 @@ export function HomeWidgets({ agentSlug, className }: { agentSlug: string; class
   const triggeredFor = useRef<string | null>(null)
 
   useEffect(() => {
-    if (!widgets || triggeredFor.current === agentSlug) return
-    // Decide once per mount per agent, on the first listing: a later SSE
-    // patch marking a widget stale must not re-trigger (the after-run sweep
-    // covers that case on the server).
+    if (!widgets || widgets.length === 0 || triggeredFor.current === agentSlug) return
+    // Once per mount per agent: a later SSE patch marking a widget stale must
+    // not re-trigger (the after-run sweep covers that on the server).
     triggeredFor.current = agentSlug
-    if (widgets.some((w) => w.isStale && !w.refreshing)) {
-      refreshStale.mutate(agentSlug)
-    }
+    // Whether anything is stale is the server's call, not this list's. A
+    // return visit is served from the query cache, and a cached listing that
+    // still reads fresh would consume the mount trigger and leave an expired
+    // widget unrefreshed. The endpoint re-reads the snapshots itself, wakes
+    // the container only for widgets that need a run, and throttles per agent.
+    refreshStale.mutate(agentSlug)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [widgets, agentSlug])
 

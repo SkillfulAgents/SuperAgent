@@ -70,6 +70,13 @@ describe('rasterizeWidget', () => {
     expect(browser.close).toHaveBeenCalled()
     // Only the renamed files survive; no half-written .tmp is left behind.
     expect(fs.readdirSync(path.join(dir, 'snapshots')).filter((f) => f.endsWith('.tmp'))).toEqual([])
+    // The PNG has to show what the app shows, and the app renders the snapshot
+    // in an empty sandbox under `default-src 'none'`. Rendering it here with
+    // scripts and the network live would put content in the preview that the
+    // user never sees, and re-run the page's side effects eight times.
+    for (const [options] of browser.newContext.mock.calls) {
+      expect(options).toMatchObject({ javaScriptEnabled: false, offline: true })
+    }
   })
 
   it('a hung page ends the batch and closes the browser, rather than leaving it rendering', async () => {

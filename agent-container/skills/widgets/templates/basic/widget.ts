@@ -68,7 +68,12 @@ function escapeHtml(value: string): string {
 function fill(html: string, field: string, value: string): string {
   // Replace the inner text of the element carrying data-field="<field>".
   const re = new RegExp(`(<[^>]*data-field="${field}"[^>]*>)([\\s\\S]*?)(</)`)
-  return html.replace(re, `$1${escapeHtml(value)}$3`)
+  // A callback, not a replacement string: in a replacement string the data's
+  // own `$` sequences are expansions, so a price of $1.99 would paste capture
+  // group 1 back into the document and drop the digit.
+  return html.replace(re, (_match, open: string, _inner: string, close: string) =>
+    `${open}${escapeHtml(value)}${close}`,
+  )
 }
 
 async function writeAtomic(file: string, content: string): Promise<void> {

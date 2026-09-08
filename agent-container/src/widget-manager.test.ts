@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { EventEmitter } from 'events'
 import { PassThrough } from 'stream'
+import { createHash } from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
@@ -36,12 +37,21 @@ const tmpDir = process.env.ARTIFACTS_DIR
 const { widgetManager, hashHtml } = await import('./widget-manager')
 const { dashboardManager } = await import('./dashboard-manager')
 
-type FakeProc = EventEmitter & { stdout: PassThrough; stderr: PassThrough; kill: ReturnType<typeof vi.fn> }
+type FakeProc = EventEmitter & {
+  stdout: PassThrough
+  stderr: PassThrough
+  kill: ReturnType<typeof vi.fn>
+  pid?: number
+}
 
-function fakeProcess(exitCode: number, opts: { stderr?: string; onSpawn?: () => void; neverExit?: boolean } = {}): FakeProc {
+function fakeProcess(
+  exitCode: number,
+  opts: { stderr?: string; onSpawn?: () => void; neverExit?: boolean; pid?: number } = {},
+): FakeProc {
   const proc = new EventEmitter() as FakeProc
   proc.stdout = new PassThrough()
   proc.stderr = new PassThrough()
+  proc.pid = opts.pid
   proc.kill = vi.fn(() => {
     setTimeout(() => proc.emit('exit', null, 'SIGKILL'), 0)
     return true
@@ -252,16 +262,68 @@ describe('widgetManager', () => {
     expect(fs.readFileSync(path.join(dir, 'widget.log'), 'utf-8')).toContain('upstream 500')
   })
 
-  it('kills a script that exceeds its timeout', async () => {
+  it('kills the whole process group of a script that exceeds its timeout', async () => {
     seedArtifact('slow', { widget: { timeoutSeconds: 1 }, script: 'bun run widget.ts', html: '<p>x</p>' })
     let proc: FakeProc | null = null
-    spawnHolder.impl = () => {
-      proc = fakeProcess(0, { neverExit: true })
+    spawnHolder.impl = (_command, _args, options: any) => {
+      // Its own group is what makes the negative-pid signal reach the script.
+      expect(options.detached).toBe(true)
+      proc = fakeProcess(0, { neverExit: true, pid: 4242 })
       return proc
     }
-    const snapshot = await widgetManager.refreshWidget('slow')
-    expect(proc!.kill).toHaveBeenCalledWith('SIGKILL')
-    expect(snapshot.lastError).toMatch(/exceeded 1s/)
+    // `bun run` only launches the script, so signalling the child alone leaves
+    // the script itself running — free to overwrite widget.html later. Spied so
+    // the negative pid never reaches a real process group on this machine.
+    const signalled: Array<number | NodeJS.Signals | undefined> = []
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+      signalled.push(pid, signal)
+      setTimeout(() => proc?.emit('exit', null, 'SIGKILL'), 0)
+      return true
+    })
+    try {
+      const snapshot = await widgetManager.refreshWidget('slow')
+      expect(signalled).toEqual([-4242, 'SIGKILL'])
+      expect(snapshot.lastError).toMatch(/exceeded 1s/)
+      // The exit was observed, so the queue did not advance on a guess.
+      expect(snapshot.lastError).not.toMatch(/kill not confirmed/)
+    } finally {
+      killSpy.mockRestore()
+    }
+  })
+
+  it('rolls back a script that writes widget.html and then fails', async () => {
+    const dir = seedArtifact('macros', { script: 'bun run widget.ts', html: '<p>good</p>' })
+    fs.mkdirSync(path.join(dir, 'snapshots'), { recursive: true })
+    fs.writeFileSync(
+      path.join(dir, 'snapshots', 'snapshot.json'),
+      JSON.stringify({
+        generatedAt: new Date().toISOString(),
+        validUntil: null,
+        validityDefaulted: false,
+        htmlHash: createHash('sha256').update('<p>good</p>').digest('hex').slice(0, 16),
+        renderedSizes: ['small-light@2x'],
+        scriptRan: true,
+        durationMs: 1,
+        lastError: null,
+      }),
+    )
+    spawnHolder.impl = () => {
+      // Half a render, then a crash — the shape of a script that fetches, writes
+      // and only then hits a bad response.
+      fs.writeFileSync(path.join(dir, 'widget.html'), '<p>half-written</p>')
+      return fakeProcess(1, { stderr: 'boom' })
+    }
+
+    const snapshot = await widgetManager.refreshWidget('macros')
+
+    // What is on screen must survive a failed refresh.
+    expect(fs.readFileSync(path.join(dir, 'widget.html'), 'utf-8')).toBe('<p>good</p>')
+    expect(snapshot.lastError).toMatch(/exit code 1/)
+    // The PNGs still match the restored HTML, so they are kept rather than
+    // re-rendered — and never replaced with renders of the broken output.
+    expect(snapshot.renderedSizes).toEqual(['small-light@2x'])
+    expect(rasterMock).not.toHaveBeenCalled()
+    expect(fs.existsSync(path.join(dir, 'snapshots', '.previous-widget.html'))).toBe(false)
   })
 
   it('installs declared dependencies once before the first script run', async () => {

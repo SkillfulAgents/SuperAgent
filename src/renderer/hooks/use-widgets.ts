@@ -1,6 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
-import { getApiBaseUrl } from '@renderer/lib/env'
 import { invalidateAgentWidgets, patchAgentWidget } from '@renderer/lib/agent-cache'
 import type { ApiAgentWidget, WidgetScheme } from '@shared/lib/widgets/widget-schema'
 
@@ -23,6 +22,30 @@ export function useAgentWidgets(agentSlug: string | null) {
     enabled: !!agentSlug,
     staleTime: 30_000,
     refetchInterval: 120_000,
+  })
+}
+
+/**
+ * The snapshot document for one widget, fetched rather than framed by URL.
+ *
+ * The card inlines this with `srcdoc`, so the frame is same-origin with the
+ * renderer wherever the renderer happens to live — `file://` in a packaged
+ * desktop build, a dev port under `dev:electron`, the app's own origin on the
+ * web. Framing the API URL only worked in the last of those. The document
+ * carries its own CSP, and the frame stays in an empty sandbox.
+ */
+export function useWidgetHtml(agentSlug: string, widget: ApiAgentWidget, scheme: WidgetScheme) {
+  return useQuery<string>({
+    // Keyed on the hash: a new snapshot is a new document, and an unchanged
+    // one is served from cache instead of refetched.
+    queryKey: ['widget-html', agentSlug, widget.slug, widget.htmlHash, scheme],
+    queryFn: async () => {
+      const res = await apiFetch(widgetHtmlPath(agentSlug, widget, scheme))
+      if (!res.ok) throw new Error('Failed to fetch widget html')
+      return res.text()
+    },
+    enabled: widget.hasHtml,
+    staleTime: Infinity,
   })
 }
 
@@ -67,7 +90,8 @@ export function useRefreshWidget() {
  * Snapshot document URL for the in-app iframe. The html hash is part of the
  * URL so a refreshed widget is a new document, not a cached one.
  */
-export function widgetHtmlUrl(agentSlug: string, widget: ApiAgentWidget, scheme: WidgetScheme): string {
+/** API path of a widget's snapshot document (no origin — for apiFetch). */
+export function widgetHtmlPath(agentSlug: string, widget: ApiAgentWidget, scheme: WidgetScheme): string {
   const params = new URLSearchParams({ scheme, v: widget.htmlHash ?? 'none' })
-  return `${getApiBaseUrl()}/api/agents/${encodeURIComponent(agentSlug)}/artifacts/${encodeURIComponent(widget.slug)}/widget/html?${params}`
+  return `/api/agents/${encodeURIComponent(agentSlug)}/artifacts/${encodeURIComponent(widget.slug)}/widget/html?${params}`
 }
