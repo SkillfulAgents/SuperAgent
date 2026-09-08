@@ -61,6 +61,23 @@ describe('browser navigation', () => {
     expect(publish).toHaveBeenCalledOnce();
   });
 
+  it('publishes useful history even when iframe updates arrive before every reply', () => {
+    const { navigation, commands, publish, reply } = setup();
+    navigation.handleMessage({ method: 'Page.frameNavigated', params: { frame: { id: 'main' } } });
+    for (let cycle = 0; cycle < 3; cycle++) {
+      const requestId = commands.at(-1)!.id;
+      for (let event = 0; event < 10; event++) {
+        navigation.handleMessage({ method: 'Page.navigatedWithinDocument', params: { frameId: 'child' } });
+      }
+      reply(1, requestId);
+      expect(publish).toHaveBeenLastCalledWith({
+        type: 'history_state', targetId: 'tab-a', url: 'https://b.test/', canGoBack: true, canGoForward: true,
+      });
+    }
+    expect(commands).toHaveLength(4);
+    expect(publish).toHaveBeenCalledOnce();
+  });
+
   it('ignores subframe loads and tracks the main frame across commits', () => {
     const { navigation, commands } = setup();
     navigation.handleMessage({ result: { frameTree: { frame: { id: 'main' } } } });

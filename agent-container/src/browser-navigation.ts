@@ -23,6 +23,7 @@ export function createBrowserNavigation({ targetId, sendCommand, publish }: Brow
   let mainFrameId: string | null = null;
   let revision = 0;
   let pendingStateId: number | undefined;
+  let refreshQueued = false;
   let lastPublished: BrowserHistoryMessage | undefined;
   let disposed = false;
 
@@ -34,11 +35,13 @@ export function createBrowserNavigation({ targetId, sendCommand, publish }: Brow
     if (purpose === 'state') pendingStateId = id;
   }
 
-  function refresh() {
-    revision++;
-    // A new navigation supersedes an outstanding query. Its reply will trigger
-    // one fresh query, regardless of how many lifecycle events arrived meanwhile.
+  function refresh(documentChanged = false) {
+    if (disposed) return;
+    if (documentChanged) revision++;
+    // Only a main-document URL change makes an outstanding reply obsolete.
+    // Iframe/load churn queues one refresh without starving useful responses.
     if (pendingStateId === undefined) request('state');
+    else refreshQueued = true;
   }
 
   function isMainFrame(frameId: string | undefined) {
@@ -52,13 +55,13 @@ export function createBrowserNavigation({ targetId, sendCommand, publish }: Brow
     if (message.method === 'Page.frameNavigated' && message.params?.frame && !message.params.frame.parentId) {
       mainFrameId = message.params.frame.id;
       // The document is visible before all its resources finish loading.
-      refresh();
+      refresh(true);
     } else if (message.method === 'Page.frameStoppedLoading' && isMainFrame(message.params?.frameId)) {
       refresh();
     } else if (message.method === 'Page.navigatedWithinDocument') {
       // Subframe history can affect Back/Forward too. Unchanged state is deduped
       // below, so iframe replaceState churn does not repeatedly render the tray.
-      refresh();
+      refresh(isMainFrame(message.params?.frameId));
     }
 
     const query = message.id === undefined ? undefined : pending.get(message.id);
@@ -66,10 +69,12 @@ export function createBrowserNavigation({ targetId, sendCommand, publish }: Brow
     pending.delete(message.id);
     if (query.purpose === 'state') {
       pendingStateId = undefined;
-      if (query.revision !== revision) {
+      const superseded = query.revision !== revision;
+      if (superseded || refreshQueued) {
+        refreshQueued = false;
         request('state');
-        return true;
       }
+      if (superseded) return true;
     }
     const { entries, currentIndex } = message.result ?? {};
     if (!Array.isArray(entries) || !Number.isInteger(currentIndex) || currentIndex === undefined ||
