@@ -13,6 +13,8 @@ export interface BrowserTabInfo {
   index: number
   url: string
   title: string
+  /** Chrome's favicon URL for the page; missing until it has resolved one. */
+  faviconUrl?: string
   active: boolean // true = agent's active tab
 }
 

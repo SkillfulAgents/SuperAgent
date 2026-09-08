@@ -8,6 +8,16 @@ import { useUser } from '@renderer/context/user-context'
 
 const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta'])
 
+export type NavigateAction = 'back' | 'forward' | 'reload'
+
+interface HistoryState {
+  canGoBack: boolean
+  canGoForward: boolean
+  url: string
+}
+
+const EMPTY_HISTORY: HistoryState = { canGoBack: false, canGoForward: false, url: '' }
+
 // Reconnect backoff for a socket that keeps dying before it opens.
 const RECONNECT_BASE_MS = 1000
 const MAX_RECONNECT_DELAY_MS = 8000
@@ -35,6 +45,10 @@ export function useBrowserStream({
 
   const [connected, setConnected] = useState(false)
   const [pageLoading, setPageLoading] = useState(false)
+  // Where the viewed tab stands in its history, from the container's
+  // `history_state` frames. Reset whenever the viewed tab changes; the
+  // container sends a fresh one once it has attached to the new target.
+  const [history, setHistory] = useState<HistoryState>(EMPTY_HISTORY)
   const [reconnectKey, setReconnectKey] = useState(0)
   const [showCloseWarning, setShowCloseWarning] = useState(false)
   const [isClosing, setIsClosing] = useState(false)
@@ -188,6 +202,12 @@ export function useBrowserStream({
 
         if (data.type === 'page_loading') {
           setPageLoading(prev => prev === data.loading ? prev : data.loading)
+        } else if (data.type === 'history_state') {
+          setHistory({
+            canGoBack: data.canGoBack === true,
+            canGoForward: data.canGoForward === true,
+            url: typeof data.url === 'string' ? data.url : '',
+          })
         } else if (data.type === 'frame' && data.data) {
           if (!resizing) {
             const blob = base64ToBlob(data.data, 'image/jpeg')
@@ -204,7 +224,8 @@ export function useBrowserStream({
           setTabs(prev => {
             if (prev.length === data.tabs.length && prev.every((t: BrowserTabInfo, i: number) =>
               t.targetId === data.tabs[i].targetId && t.title === data.tabs[i].title &&
-              t.url === data.tabs[i].url && t.active === data.tabs[i].active
+              t.url === data.tabs[i].url && t.active === data.tabs[i].active &&
+              t.faviconUrl === data.tabs[i].faviconUrl
             )) return prev
             return data.tabs
           })
@@ -214,7 +235,11 @@ export function useBrowserStream({
           }
         } else if (data.type === 'tab_switched') {
           setAgentActiveTargetId(prev => prev === data.targetId ? prev : data.targetId)
-          setViewingTargetId(prev => prev === data.targetId ? prev : data.targetId)
+          setViewingTargetId(prev => {
+            if (prev === data.targetId) return prev
+            setHistory(EMPTY_HISTORY)
+            return data.targetId
+          })
         } else if (data.type === 'selection_result' && data.text) {
           navigator.clipboard.writeText(data.text).catch(() => {})
         } else if (data.type === 'browser_closed') {
@@ -480,8 +505,14 @@ export function useBrowserStream({
     if (targetId === viewingTargetId) return
     setAutoFollow(false)
     setViewingTargetId(targetId)
+    setHistory(EMPTY_HISTORY)
     sendMessage({ type: 'switch_tab', targetId })
   }, [viewingTargetId, sendMessage])
+
+  /** Back / forward / reload on the tab being viewed. */
+  const navigate = useCallback((action: NavigateAction) => {
+    sendMessage({ type: 'navigate', action })
+  }, [sendMessage])
 
   const handleCloseTab = useCallback((targetId: string) => {
     sendMessage({ type: 'close_tab', targetId })
@@ -555,6 +586,11 @@ export function useBrowserStream({
     handleTabClick,
     handleCloseTab,
     toggleAutoFollow,
+    // History
+    canGoBack: history.canGoBack,
+    canGoForward: history.canGoForward,
+    pageUrl: history.url,
+    navigate,
     // Close handlers
     closeBrowser,
     handleCloseClick,

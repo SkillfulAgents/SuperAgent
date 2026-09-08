@@ -2283,6 +2283,8 @@ let cdpScreencast: {
   autoFollow: boolean;
   /** Pending CDP message IDs for get_selection requests */
   pendingSelections: Set<number>;
+  /** Pending Page.getNavigationHistory requests, by CDP message ID, and why each was asked */
+  pendingHistory: Map<number, HistoryPurpose>;
   /** Main frame ID — used to filter loading events to top-level frame only */
   mainFrameId: string | null;
 } | null = null;
@@ -2303,6 +2305,8 @@ interface PageTarget {
   id: string;
   url: string;
   title: string;
+  /** Chrome's own favicon URL for the page, when it has resolved one. */
+  faviconUrl?: string;
   wsUrl: string;
   /** If true, wsUrl is a browser-level URL; connectCdpToTarget must use Target.attachToTarget */
   requiresSession: boolean;
@@ -2314,6 +2318,8 @@ interface BrowserTabInfo {
   index: number;
   url: string;
   title: string;
+  /** Favicon URL for the tab strip; absent when Chrome has none yet, and the viewer falls back to a globe. */
+  faviconUrl?: string;
   active: boolean;
 }
 
@@ -2337,7 +2343,7 @@ async function getAllPageTargets(): Promise<PageTarget[]> {
   const endpoint = getCdpHttpEndpoint();
   try {
     const res = await fetch(`${endpoint}/json`);
-    const targets = await res.json() as Array<{ id: string; type: string; url: string; title?: string; webSocketDebuggerUrl: string }>;
+    const targets = await res.json() as Array<{ id: string; type: string; url: string; title?: string; faviconUrl?: string; webSocketDebuggerUrl: string }>;
 
     const pages = targets.filter(t => t.type === 'page');
     if (pages.length > 0) {
@@ -2352,6 +2358,7 @@ async function getAllPageTargets(): Promise<PageTarget[]> {
         id: p.id,
         url: p.url,
         title: decodeChromeTargetTitle(p.title || ''),
+        faviconUrl: p.faviconUrl || undefined,
         wsUrl: p.webSocketDebuggerUrl,
         requiresSession: false,
       }));
@@ -2624,6 +2631,24 @@ app.post('/browser/fill-credential', async (c) => {
 });
 
 /** Helper to build a CDP message, adding sessionId when in session mode */
+/** Why a navigation-history query was sent: to step through it, or to tell the viewer where it stands. */
+type HistoryPurpose = 'back' | 'forward' | 'state';
+
+/**
+ * Ask Chrome for the current tab's navigation history. The reply is picked up
+ * in the screencast message handler under `pendingHistory`: a 'state' query
+ * becomes a `history_state` frame for the viewer (back/forward enablement and
+ * the address bar's URL); 'back'/'forward' step to the neighbouring entry.
+ */
+function requestHistory(state: NonNullable<typeof cdpScreencast>, purpose: HistoryPurpose): void {
+  if (state.cdpWs.readyState !== WebSocket.OPEN) return;
+  // Capture the message ID before cdpMsg increments it, to avoid re-parsing
+  const msgId = state.msgId + 1;
+  const msgStr = cdpMsg(state, 'Page.getNavigationHistory');
+  state.pendingHistory.set(msgId, purpose);
+  state.cdpWs.send(msgStr);
+}
+
 function cdpMsg(state: NonNullable<typeof cdpScreencast>, method: string, params?: Record<string, unknown>): string {
   const msg: Record<string, unknown> = { id: ++state.msgId, method };
   if (params) msg.params = params;
@@ -2635,7 +2660,7 @@ function cdpMsg(state: NonNullable<typeof cdpScreencast>, method: string, params
 function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket, requiresSession = false) {
   const cdpWs = new WebSocket(wsUrl);
   const prevAutoFollow = cdpScreencast?.autoFollow ?? true;
-  cdpScreencast = { clientWs, cdpWs, currentTargetId: targetId, msgId: 0, lastDeviceWidth: 0, lastDeviceHeight: 0, cdpSessionId: null, autoFollow: prevAutoFollow, pendingSelections: new Set(), mainFrameId: null as string | null };
+  cdpScreencast = { clientWs, cdpWs, currentTargetId: targetId, msgId: 0, lastDeviceWidth: 0, lastDeviceHeight: 0, cdpSessionId: null, autoFollow: prevAutoFollow, pendingSelections: new Set(), pendingHistory: new Map(), mainFrameId: null as string | null };
   const state = cdpScreencast;
 
   cdpWs.on('open', () => {
@@ -2657,6 +2682,7 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
       // top-level frame, not iframes/ads that load continuously.
       const frameTreeId = ++state.msgId;
       cdpWs.send(JSON.stringify({ id: frameTreeId, method: 'Page.getFrameTree', ...(state.cdpSessionId ? { sessionId: state.cdpSessionId } : {}) }));
+      requestHistory(state, 'state');
     }
   });
 
@@ -2677,6 +2703,7 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
         }));
         // Enable Page domain to receive navigation lifecycle events
         cdpWs.send(cdpMsg(state, 'Page.enable'));
+        requestHistory(state, 'state');
         return;
       }
 
@@ -2708,6 +2735,30 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
             type: 'page_loading',
             loading: msg.method === 'Page.frameStartedLoading',
           }));
+          // The page settled somewhere; tell the viewer where.
+          if (msg.method === 'Page.frameStoppedLoading') requestHistory(state, 'state');
+        }
+      } else if (msg.method === 'Page.navigatedWithinDocument') {
+        // Hash / pushState navigations never fire the loading events above.
+        requestHistory(state, 'state');
+      } else if (msg.id && state.pendingHistory.has(msg.id)) {
+        const purpose = state.pendingHistory.get(msg.id)!;
+        state.pendingHistory.delete(msg.id);
+        const entries = msg.result?.entries as Array<{ id: number; url: string }> | undefined;
+        const currentIndex = msg.result?.currentIndex as number | undefined;
+        if (!entries || typeof currentIndex !== 'number') return;
+        if (purpose === 'state') {
+          if (clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send(JSON.stringify({
+              type: 'history_state',
+              canGoBack: currentIndex > 0,
+              canGoForward: currentIndex < entries.length - 1,
+              url: entries[currentIndex]?.url ?? '',
+            }));
+          }
+        } else {
+          const entry = entries[purpose === 'back' ? currentIndex - 1 : currentIndex + 1];
+          if (entry) cdpWs.send(cdpMsg(state, 'Page.navigateToHistoryEntry', { entryId: entry.id }));
         }
       } else if (msg.id && state.pendingSelections.has(msg.id)) {
         state.pendingSelections.delete(msg.id);
@@ -2841,6 +2892,7 @@ async function broadcastTabList(prefetched?: { allTargets: PageTarget[]; daemonT
         url: dt.url,
         // Prefer Chrome's title (actual <title> tag) over daemon's (often just domain)
         title: target.title || dt.title || '',
+        faviconUrl: target.faviconUrl,
         active: dt.active,
       });
     }
@@ -2855,6 +2907,7 @@ async function broadcastTabList(prefetched?: { allTargets: PageTarget[]; daemonT
         index: i,
         url: t.url,
         title: t.title || '',
+        faviconUrl: t.faviconUrl,
         active: t.id === currentTargetId,
       }));
     }
@@ -3027,7 +3080,14 @@ function handleBrowserStreamConnection(ws: WebSocket) {
           }
         }
       } else if (cdpScreencast.cdpWs.readyState === WebSocket.OPEN) {
-        if (data.type === 'input_mouse') {
+        if (data.type === 'navigate') {
+          // Viewer's back / forward / reload buttons, acting on the tab being viewed.
+          if (data.action === 'reload') {
+            cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Page.reload'));
+          } else if (data.action === 'back' || data.action === 'forward') {
+            requestHistory(cdpScreencast, data.action);
+          }
+        } else if (data.type === 'input_mouse') {
           cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Input.dispatchMouseEvent', {
             type: data.eventType,
             x: Math.round(data.x),
