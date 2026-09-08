@@ -1042,6 +1042,47 @@ describe('transformMessages', () => {
   // transformMessages - Subagent Metadata Extraction Tests
   // ============================================================================
 
+  describe('background Bash task id', () => {
+    it('carries the runtime task id of a backgrounded Bash call', () => {
+      // A backgrounded command's stdout is empty at launch, so the result
+      // text alone cannot name the task; the id rides on the call instead.
+      const entries: JsonlMessageEntry[] = [
+        createAssistantMessage('uuid-1', 'msg-1', [
+          { type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'sleep 10', run_in_background: true } },
+        ]),
+        createUserMessage(
+          'uuid-2',
+          [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Command running in background with ID: bg_abc.' }],
+          '2026-01-24T10:00:02.000Z',
+          {
+            toolUseResult: { stdout: '', stderr: '', interrupted: false, isImage: false, backgroundTaskId: 'bg_abc' },
+          }
+        ),
+      ]
+
+      const toolCall = asMessage(transformMessages(entries)[0]).toolCalls[0]
+      expect(toolCall.backgroundTaskId).toBe('bg_abc')
+      expect(toolCall.result).toBe('')
+    })
+
+    it('omits the field for a foreground Bash call', () => {
+      const entries: JsonlMessageEntry[] = [
+        createAssistantMessage('uuid-1', 'msg-1', [
+          { type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'ls' } },
+        ]),
+        createUserMessage(
+          'uuid-2',
+          [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'a b c' }],
+          '2026-01-24T10:00:02.000Z',
+          { toolUseResult: { stdout: 'a b c', stderr: '', interrupted: false, isImage: false } }
+        ),
+      ]
+
+      const toolCall = asMessage(transformMessages(entries)[0]).toolCalls[0]
+      expect(toolCall).not.toHaveProperty('backgroundTaskId')
+    })
+  })
+
   describe('subagent metadata extraction', () => {
     it('extracts subagent metadata from Task tool result with agentId', () => {
       const entries: JsonlMessageEntry[] = [

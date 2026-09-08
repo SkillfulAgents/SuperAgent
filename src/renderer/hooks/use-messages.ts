@@ -4,7 +4,7 @@ import { uploadFileChunked, type UploadProgress } from '@renderer/lib/upload'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ApiMessage, ApiMessageOrBoundary, ApiSession } from '@shared/lib/types/api'
-import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
+import type { EffortLevel, InterruptScope, SpeedLevel } from '@shared/lib/container/types'
 import type { WorkflowTree } from '@shared/lib/workflows/workflow-schemas'
 import { MESSAGES_PAGE_LIMIT, MESSAGES_PAGE_OLDER_LIMIT } from '@shared/lib/messages-page'
 import { pickDeltaAnchor, mergeDeltaMessages } from '@shared/lib/messages-delta'
@@ -556,13 +556,19 @@ export function useWorkflowAgentMessages(
   })
 }
 
+/**
+ * Stop the agent. scope 'turn' (default) ends the current turn and leaves
+ * background tasks running; 'all' stops those too.
+ */
 export function useInterruptSession() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async ({ sessionId, agentSlug }: { sessionId: string; agentSlug: string }) => {
+    mutationFn: async ({ sessionId, agentSlug, scope = 'turn' }: { sessionId: string; agentSlug: string; scope?: InterruptScope }) => {
       const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/interrupt`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope }),
       })
       if (!res.ok) throw new Error('Failed to interrupt session')
       return res.json()
@@ -570,6 +576,20 @@ export function useInterruptSession() {
     onSuccess: (_, { sessionId }) => {
       // Invalidate messages to refresh state
       queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+    },
+  })
+}
+
+/** Stop one background task (backgrounded command, background subagent, workflow). */
+export function useStopBackgroundTask() {
+  return useMutation({
+    mutationFn: async ({ sessionId, agentSlug, taskId }: { sessionId: string; agentSlug: string; taskId: string }) => {
+      const res = await apiFetch(
+        `/api/agents/${agentSlug}/sessions/${sessionId}/tasks/${encodeURIComponent(taskId)}/stop`,
+        { method: 'POST' },
+      )
+      if (!res.ok) throw new Error('Failed to stop background task')
+      return res.json()
     },
   })
 }

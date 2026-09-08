@@ -137,6 +137,7 @@ const mockSendMessage = vi.fn()
 const mockCancelQueuedMessage = vi.fn()
 const mockKeepAlive = vi.fn()
 const mockInterruptSession = vi.fn()
+const mockStopTask = vi.fn()
 const mockForkSession = vi.fn()
 const mockClientDeleteSession = vi.fn()
 const mockGetCachedInfo = vi.fn(() => ({ status: 'running', port: 8080 }))
@@ -147,6 +148,7 @@ vi.mock('@shared/lib/container/container-manager', () => ({
       sendMessage: (...args: unknown[]) => mockSendMessage(...args),
       cancelQueuedMessage: (...args: unknown[]) => mockCancelQueuedMessage(...args),
       interruptSession: (...args: unknown[]) => mockInterruptSession(...args),
+      stopTask: (...args: unknown[]) => mockStopTask(...args),
       forkSession: (...args: unknown[]) => mockForkSession(...args),
       deleteSession: (...args: unknown[]) => mockClientDeleteSession(...args),
       start: vi.fn(),
@@ -180,6 +182,8 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     dropCoalescedUserMessage: vi.fn(() => false),
     markSessionActive: vi.fn(),
     markSessionInterrupted: vi.fn(),
+    getTurnGeneration: vi.fn(() => 0),
+    isSessionWaitingBackground: vi.fn(() => false),
     cancelAwaitingInput: vi.fn(),
     completeInputRequest: vi.fn(),
     completeCapabilityReview: vi.fn(),
@@ -9143,7 +9147,7 @@ describe('cross-agent session scoping', () => {
     mockAgentExists.mockResolvedValue(true)
     mockIsAuthMode.mockReturnValue(true)
     mockGetCachedInfo.mockReturnValue({ status: 'running', port: 8080 })
-    mockInterruptSession.mockResolvedValue(true)
+    mockInterruptSession.mockResolvedValue({ interrupted: true, processKept: true })
     mockSendMessage.mockResolvedValue(undefined)
     mockContainerFetch.mockResolvedValue({ ok: true, json: async () => ({}) })
 
@@ -9247,7 +9251,7 @@ describe('cross-agent session scoping', () => {
       const res = await postJson(app, url(OWN_SESSION, '/interrupt'), {})
 
       expect(res.status).toBe(200)
-      expect(messagePersister.markSessionInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION)
+      expect(messagePersister.markSessionInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION, { processKept: true, turnGenerationBefore: 0 })
     })
 
     it('still marks the caller’s own session interrupted when the container throws', async () => {
@@ -9257,6 +9261,97 @@ describe('cross-agent session scoping', () => {
 
       expect(res.status).toBe(200)
       expect(messagePersister.markSessionInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION)
+    })
+
+    it('stops only the turn by default, sparing background tasks', async () => {
+      const res = await postJson(app, url(OWN_SESSION, '/interrupt'), {})
+
+      expect(res.status).toBe(200)
+      expect(mockInterruptSession).toHaveBeenCalledWith(OWN_SESSION, { scope: 'turn' })
+      expect(messagePersister.markSessionInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION, { processKept: true, turnGenerationBefore: 0 })
+      await expect(res.json()).resolves.toMatchObject({ success: true, processKept: true })
+    })
+
+    it('passes a full stop through as scope all', async () => {
+      mockInterruptSession.mockResolvedValue({ interrupted: true, processKept: false })
+
+      const res = await postJson(app, url(OWN_SESSION, '/interrupt'), { scope: 'all' })
+
+      expect(res.status).toBe(200)
+      expect(mockInterruptSession).toHaveBeenCalledWith(OWN_SESSION, { scope: 'all' })
+      expect(messagePersister.markSessionInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION, { processKept: false, turnGenerationBefore: 0 })
+    })
+
+    it('drops background-task state when a turn stop had to restart the process', async () => {
+      // The container's word wins over the requested scope: a soft stop that
+      // fell back to a restart killed the tasks, and the UI must not show them.
+      mockInterruptSession.mockResolvedValue({ interrupted: true, processKept: false })
+
+      const res = await postJson(app, url(OWN_SESSION, '/interrupt'), { scope: 'turn' })
+
+      expect(res.status).toBe(200)
+      expect(messagePersister.markSessionInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION, { processKept: false, turnGenerationBefore: 0 })
+      await expect(res.json()).resolves.toMatchObject({ processKept: false })
+    })
+
+    it('rejects an unknown scope', async () => {
+      const res = await postJson(app, url(OWN_SESSION, '/interrupt'), { scope: 'everything' })
+
+      expect(res.status).toBe(400)
+      expect(mockInterruptSession).not.toHaveBeenCalled()
+      expect(messagePersister.markSessionInterrupted).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('POST /sessions/:sessionId/tasks/:taskId/stop', () => {
+    beforeEach(() => {
+      mockStopTask.mockResolvedValue(true)
+    })
+
+    it('404s on a foreign session and never reaches the container', async () => {
+      const res = await postJson(app, url(VICTIM_SESSION, '/tasks/bg_123/stop'), {})
+
+      expect(res.status).toBe(404)
+      expect(mockStopTask).not.toHaveBeenCalled()
+    })
+
+    it('stops a task on the caller’s own session', async () => {
+      const res = await postJson(app, url(OWN_SESSION, '/tasks/bg_123/stop'), {})
+
+      expect(res.status).toBe(200)
+      expect(mockStopTask).toHaveBeenCalledWith(OWN_SESSION, 'bg_123')
+    })
+
+    it('rejects a malformed task id before the session lookup', async () => {
+      const res = await postJson(app, url(OWN_SESSION, '/tasks/..%2F..%2Fetc/stop'), {})
+
+      expect(res.status).toBe(400)
+      expect(mockStopTask).not.toHaveBeenCalled()
+    })
+
+    it('409s when the agent is not running', async () => {
+      mockGetCachedInfo.mockReturnValue({ status: 'stopped', port: 0 })
+
+      const res = await postJson(app, url(OWN_SESSION, '/tasks/bg_123/stop'), {})
+
+      expect(res.status).toBe(409)
+      expect(mockStopTask).not.toHaveBeenCalled()
+    })
+
+    it('409s when the container could not stop the task', async () => {
+      mockStopTask.mockResolvedValue(false)
+
+      const res = await postJson(app, url(OWN_SESSION, '/tasks/bg_123/stop'), {})
+
+      expect(res.status).toBe(409)
+    })
+
+    it('500s when the container call throws', async () => {
+      mockStopTask.mockRejectedValue(new Error('container exploded'))
+
+      const res = await postJson(app, url(OWN_SESSION, '/tasks/bg_123/stop'), {})
+
+      expect(res.status).toBe(500)
     })
   })
 

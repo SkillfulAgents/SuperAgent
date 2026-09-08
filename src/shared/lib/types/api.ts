@@ -173,6 +173,8 @@ export interface ApiToolCall {
     totalTokens?: number
     totalToolUseCount?: number
   }
+  /** The runtime's task id for a Bash call run in the background. */
+  backgroundTaskId?: string
 }
 
 /**

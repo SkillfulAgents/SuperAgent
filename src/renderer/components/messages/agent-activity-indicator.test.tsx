@@ -37,8 +37,10 @@ vi.mock('@renderer/hooks/use-message-stream', () => ({
 
 // Mock useMessages
 const mockMessages: any[] = []
+const mockStopBackgroundTask = { mutateAsync: vi.fn().mockResolvedValue({ success: true }) }
 vi.mock('@renderer/hooks/use-messages', () => ({
   useMessages: () => ({ data: mockMessages }),
+  useStopBackgroundTask: () => mockStopBackgroundTask,
 }))
 
 // Mock useElapsedTimer
@@ -716,7 +718,7 @@ describe('AgentActivityIndicator', () => {
     expect(screen.queryByText('Old todo item')).not.toBeInTheDocument()
   })
 
-  it('shows background process count when background tasks are running', () => {
+  it('shows one row per running background task', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
     mockStreamState.backgroundTasks = [
@@ -724,10 +726,12 @@ describe('AgentActivityIndicator', () => {
     ]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.getByText('1 background process')).toBeInTheDocument()
+    const rows = screen.getAllByTestId('background-task-row')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toHaveTextContent('Background command')
   })
 
-  it('shows plural "processes" for multiple background tasks', () => {
+  it('shows a row for each of several background tasks', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
     mockStreamState.backgroundTasks = [
@@ -736,19 +740,44 @@ describe('AgentActivityIndicator', () => {
     ]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.getByText('2 background processes')).toBeInTheDocument()
+    expect(screen.getAllByTestId('background-task-row')).toHaveLength(2)
   })
 
-  it('does not show background section when no background tasks', () => {
+  it('names a background command after the Bash call that launched it', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockStreamState.backgroundTasks = [
+      { taskId: 'bg_abc', startedAt: Date.now() - 5000 },
+    ]
+    mockMessages.push({
+      id: 'msg-bash',
+      type: 'assistant',
+      content: { text: '' },
+      toolCalls: [{
+        id: 'tc-bash',
+        name: 'Bash',
+        input: { command: 'npm run build', run_in_background: true },
+        result: 'Command running in background with ID: bg_abc. Output is being written to /tmp/x.',
+      }],
+      createdAt: new Date(),
+    })
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    const row = screen.getByTestId('background-task-row')
+    expect(row).toHaveTextContent('Background command')
+    expect(row).toHaveTextContent('npm run build')
+  })
+
+  it('does not show background rows when no background tasks', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
     mockStreamState.backgroundTasks = []
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.queryByText(/background process/)).not.toBeInTheDocument()
+    expect(screen.queryByTestId('background-task-row')).not.toBeInTheDocument()
   })
 
-  it('labels a background workflow as "workflow" instead of "process"', () => {
+  it('labels a background workflow as a workflow', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
     mockStreamState.backgroundTasks = [
@@ -756,24 +785,47 @@ describe('AgentActivityIndicator', () => {
     ]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.getByText('1 background workflow')).toBeInTheDocument()
+    expect(screen.getByTestId('background-task-row')).toHaveTextContent('Background workflow')
   })
 
-  it('pluralizes multiple background workflows as "workflows"', () => {
+  it('stops a background task from its row', async () => {
+    const user = userEvent.setup()
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
     mockStreamState.backgroundTasks = [
-      { taskId: 'wf-1', startedAt: Date.now() - 5000, isWorkflow: true },
-      { taskId: 'wf-2', startedAt: Date.now() - 3000, isWorkflow: true },
+      { taskId: 'bg-1', startedAt: Date.now() - 5000 },
     ]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.getByText('2 background workflows')).toBeInTheDocument()
+    await user.click(screen.getByTestId('stop-task-button'))
+
+    expect(mockStopBackgroundTask.mutateAsync).toHaveBeenCalledWith({
+      sessionId: 's-1',
+      agentSlug: 'agent-1',
+      taskId: 'bg-1',
+    })
   })
 
-  it('hides the background section when the only task is a background subagent', () => {
-    // A background subagent already renders as a named subagent row; counting it
-    // in "N background processes" would show the same work twice.
+  it('keeps the row and offers a retry when the stop fails', async () => {
+    const user = userEvent.setup()
+    mockStopBackgroundTask.mutateAsync.mockRejectedValueOnce(new Error('nope'))
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockStreamState.backgroundTasks = [
+      { taskId: 'bg-1', startedAt: Date.now() - 5000 },
+    ]
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    await user.click(screen.getByTestId('stop-task-button'))
+
+    expect(await screen.findByText('Stop failed')).toBeInTheDocument()
+    expect(screen.getByTestId('background-task-row')).toBeInTheDocument()
+    expect(screen.getByTestId('stop-task-button')).toHaveAttribute('aria-label', expect.stringMatching(/^Retry:/))
+  })
+
+  it('hides the background rows when the only task is a background subagent', () => {
+    // A background subagent already renders as a named subagent row; a row
+    // here too would show the same work twice.
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
     mockStreamState.backgroundTasks = [
@@ -781,10 +833,10 @@ describe('AgentActivityIndicator', () => {
     ]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.queryByText(/background process/)).not.toBeInTheDocument()
+    expect(screen.queryByTestId('background-task-row')).not.toBeInTheDocument()
   })
 
-  it('counts only non-subagent tasks when background subagents and bash tasks mix', () => {
+  it('lists only non-subagent tasks when background subagents and bash tasks mix', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
     mockStreamState.backgroundTasks = [
@@ -793,7 +845,7 @@ describe('AgentActivityIndicator', () => {
     ]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.getByText('1 background process')).toBeInTheDocument()
+    expect(screen.getAllByTestId('background-task-row')).toHaveLength(1)
   })
 
   it('collapses activity details into an active-only summary', () => {

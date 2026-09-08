@@ -32,8 +32,8 @@ test.describe('Background Bash Task Tracking', () => {
     const indicator = sessionPage.getActivityIndicator()
     await expect(indicator).toBeVisible({ timeout: 10000 })
 
-    // Should show background process count
-    await expect(indicator).toContainText('background process', { timeout: 10000 })
+    // Should show the background task's row
+    await expect(indicator).toContainText('Background command', { timeout: 10000 })
 
     // Wait for the background task to complete and agent to respond.
     // The BackgroundBashScenario has a 2s delay, then the agent processes the notification.
@@ -47,9 +47,9 @@ test.describe('Background Bash Task Tracking', () => {
   test('background process indicator disappears after completion', async () => {
     await sessionPage.sendMessage('run background command')
 
-    // Wait for background process indicator to appear
+    // Wait for the background task's row to appear
     const indicator = sessionPage.getActivityIndicator()
-    await expect(indicator).toContainText('background process', { timeout: 10000 })
+    await expect(indicator).toContainText('Background command', { timeout: 10000 })
 
     // Activity indicator should be gone once the background task has completed.
     await expect(indicator).not.toBeVisible({ timeout: 30000 })
@@ -67,9 +67,9 @@ test.describe('Background Bash Task Tracking', () => {
   test('shows both stop and send buttons while waiting for background task', async ({ page }) => {
     await sessionPage.sendMessage('run background command')
 
-    // Wait for the background process indicator (agent turn ended, bg task pending)
+    // Wait for the background task's row (agent turn ended, bg task pending)
     const indicator = sessionPage.getActivityIndicator()
-    await expect(indicator).toContainText('background process', { timeout: 10000 })
+    await expect(indicator).toContainText('Background command', { timeout: 10000 })
 
     // Both stop and send buttons should be visible
     const stopButton = page.locator('[data-testid="stop-button"]')

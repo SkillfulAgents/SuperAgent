@@ -141,6 +141,31 @@ describe('useMessageStream', () => {
     expect(result.current.isStreaming).toBe(false)
   })
 
+  it('reads waiting-background from the connected snapshot, not from the task list alone', async () => {
+    // A late-joining client can find a background task that a still-streaming
+    // turn launched. Only the snapshot's own word marks the turn as over.
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+    const backgroundTasks = [{ taskId: 'bg-1', startedAt: Date.now() }]
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true, backgroundTasks })
+    })
+    expect(result.current.isActive).toBe(true)
+    expect(result.current.backgroundTasks).toEqual(backgroundTasks)
+    expect(result.current.isWaitingBackground).toBe(false)
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'connected', isActive: true, isWaitingBackground: true, backgroundTasks,
+      })
+    })
+    expect(result.current.isWaitingBackground).toBe(true)
+  })
+
   it('handles session_active event', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(
@@ -2872,6 +2897,50 @@ describe('useMessageStream', () => {
     expect(result.current.isActive).toBe(true)
   })
 
+  it('settles the streaming state but keeps the tasks on an interrupted session_waiting_background', async () => {
+    // The user stopped the turn and the runtime spared its background tasks.
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'session_active', isActive: true })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'background_task_started', taskId: 'bg-1', startedAt: 1000 })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'stream_delta',
+        text: 'partial words',
+      })
+    })
+    expect(result.current.isStreaming).toBe(true)
+    expect(result.current.activeStartTime).not.toBeNull()
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'session_waiting_background',
+        interrupted: true,
+        backgroundTaskCount: 1,
+        backgroundTasks: [{ taskId: 'bg-1', startedAt: 1000 }],
+      })
+    })
+
+    expect(result.current.isActive).toBe(true)
+    expect(result.current.isWaitingBackground).toBe(true)
+    expect(result.current.isStreaming).toBe(false)
+    expect(result.current.activeStartTime).toBeNull()
+    // The partial text stays until persisted data replaces it, as on session_idle.
+    expect(result.current.streamingMessage).toContain('partial words')
+    expect(result.current.backgroundTasks).toEqual([{ taskId: 'bg-1', startedAt: 1000 }])
+  })
+
   it('clears isWaitingBackground when the last background task completes', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(
@@ -2972,7 +3041,7 @@ describe('useMessageStream', () => {
     expect(result.current.isWaitingBackground).toBe(false)
   })
 
-  it('restores isWaitingBackground from connected event with backgroundTasks', async () => {
+  it('restores isWaitingBackground from a connected event that says the turn output ended', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(
       () => useMessageStream('session-1', 'agent-1'),
@@ -2983,6 +3052,7 @@ describe('useMessageStream', () => {
       MockEventSource.instances[0].simulateMessage({
         type: 'connected',
         isActive: true,
+        isWaitingBackground: true,
         backgroundTasks: [{ taskId: 'bg-1', startedAt: 500 }],
       })
     })
