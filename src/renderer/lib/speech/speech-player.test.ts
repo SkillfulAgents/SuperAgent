@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { SpeechPlayer, type SpeechPlayerStatus } from './speech-player'
+import { SpeechPlayer, SYNTHESIS_STALL_MS, CLOCK_STALL_MS, type SpeechPlayerStatus } from './speech-player'
 import type { TtsAdapter, TtsAudioCallback, TtsEventCallback } from '@renderer/lib/tts'
 import type { SpokenWord } from './spoken-words'
 
@@ -100,6 +100,54 @@ function setup() {
 describe('SpeechPlayer', () => {
   beforeEach(() => { vi.useFakeTimers() })
   afterEach(() => { vi.useRealTimers() })
+
+  it('a sentence the synthesizer never answers fails the player, so the reader can retry it', () => {
+    const { adapter, player, errors } = setup()
+    player.start()
+    player.append(words('One two three.'))
+    expect(adapter.sent).toEqual(['speak:One two three.', 'flush'])
+    vi.advanceTimersByTime(SYNTHESIS_STALL_MS - 1000)
+    expect(player.status).toBe('connecting')
+    vi.advanceTimersByTime(2000)
+    expect(player.status).toBe('error')
+    expect(errors.at(-1)?.message).toMatch(/stalled/)
+    expect(adapter.closed).toBe(true)
+  })
+
+  it('a synthesizer that keeps answering, however slowly, is not a stall', () => {
+    const { adapter, ctx, player } = setup()
+    player.start()
+    player.append(words('One two three. Four five six.'))
+    expect(adapter.sent).toHaveLength(4)
+    vi.advanceTimersByTime(SYNTHESIS_STALL_MS - 2000)
+    adapter.pushAudio(2)
+    adapter.pushFlushed()
+    for (let i = 0; i < 3; i++) {
+      ctx.currentTime += 1
+      vi.advanceTimersByTime(1000)
+    }
+    expect(player.status).toBe('speaking')
+    vi.advanceTimersByTime(SYNTHESIS_STALL_MS - 4000)
+    adapter.pushAudio(2)
+    expect(player.status).toBe('speaking')
+  })
+
+  it('an audio clock that stops with audio scheduled is resumed, then given up on', () => {
+    const { adapter, ctx, player, errors } = setup()
+    player.start()
+    player.append(words('One two three.'))
+    adapter.pushAudio(3)
+    adapter.pushFlushed()
+    expect(player.status).toBe('speaking')
+    // The output device went away: the browser suspends the context and the clock freezes.
+    ctx.state = 'suspended'
+    vi.advanceTimersByTime(2500)
+    expect(ctx.resume).toHaveBeenCalled()
+    expect(player.status).toBe('speaking')
+    vi.advanceTimersByTime(CLOCK_STALL_MS + 1000)
+    expect(player.status).toBe('error')
+    expect(errors.at(-1)?.message).toMatch(/Audio output stalled/)
+  })
 
   it('sends each sentence as its own speak+flush batch as words arrive', () => {
     const { adapter, player } = setup()
