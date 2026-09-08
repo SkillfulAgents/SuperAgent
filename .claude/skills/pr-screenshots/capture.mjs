@@ -159,7 +159,10 @@ async function runStep(page, step) {
 }
 
 async function settle(page) {
-  await page.waitForLoadState('networkidle').catch(() => {})
+  // Bounded: a session page holds an SSE stream open, so 'networkidle' never
+  // arrives there and the default 30s timeout would stall every step — and a
+  // mock turn a shot depends on can end while the steps are still waiting.
+  await page.waitForLoadState('networkidle', { timeout: 1_000 }).catch(() => {})
   // Let transitions/animations finish before the frame is captured.
   await new Promise((r) => setTimeout(r, 400))
 }

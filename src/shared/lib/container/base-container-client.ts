@@ -20,7 +20,7 @@ import type {
   StopResult,
   StreamMessage,
 } from './types'
-import { ContainerConflictError, ContainerNotFoundError } from './types'
+import { ContainerConflictError, ContainerNotFoundError, type InterruptSessionOptions, type InterruptSessionResult } from './types'
 import type {
   ObserveUnexpectedDeathInput,
   RuntimeDeathProbe,
@@ -28,6 +28,7 @@ import type {
   UnexpectedDeathPlan,
 } from './runtime-death'
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
+import { z } from 'zod'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import { getAgentCapabilitySettings, getSettings } from '@shared/lib/config/settings'
 import { getActiveLlmProvider, getModelContextWindowMap } from '@shared/lib/llm-provider'
@@ -268,6 +269,12 @@ export function parseMemoryValue(value: string): number {
  * Subclasses should override getRunnerCommand() to specify the CLI command,
  * and the static methods isAvailable() and isRunning().
  */
+// Body of the container's POST /sessions/:id/interrupt. processKept is absent
+// on builds that predate the soft interrupt (they always restart the process).
+const interruptResponseSchema = z.object({
+  processKept: z.boolean().optional(),
+})
+
 export abstract class BaseContainerClient extends EventEmitter implements ContainerClient {
   protected config: ContainerConfig
   private wsConnections: Map<string, WebSocket> = new Map()
@@ -1442,10 +1449,41 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return body.cancelled === true
   }
 
-  async interruptSession(sessionId: string): Promise<boolean> {
-    const response = await this.fetch(`/sessions/${sessionId}/interrupt`, { method: 'POST' })
+  async interruptSession(sessionId: string, options?: InterruptSessionOptions): Promise<InterruptSessionResult> {
+    const scope = options?.scope ?? 'turn'
+    const response = await this.fetch(`/sessions/${sessionId}/interrupt`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope }),
+    })
+    if (!response.ok) return { interrupted: false, processKept: false }
 
-    return response.ok
+    // A container build that predates the scope field always restarts the
+    // process (no processKept in its response) — read absence as "replaced"
+    // so the host drops the background tasks that really did die.
+    const body = interruptResponseSchema.safeParse(await response.json().catch(() => ({})))
+    return { interrupted: true, processKept: body.success && body.data.processKept === true }
+  }
+
+  async stopTask(sessionId: string, taskId: string): Promise<boolean> {
+    const response = await this.fetch(
+      `/sessions/${sessionId}/tasks/${encodeURIComponent(taskId)}/stop`,
+      { method: 'POST' }
+    )
+    if (response.status === 404) {
+      const text = await response.text().catch(() => '')
+      if (!text.trim().startsWith('{')) {
+        console.warn(
+          '[ContainerClient] stopTask: container returned 404 — the agent container predates the stop-task endpoint; restart the agent to pick up the current image'
+        )
+      }
+      return false
+    }
+    if (!response.ok) {
+      console.warn(`[ContainerClient] stopTask: container returned ${response.status}`)
+      return false
+    }
+    return true
   }
 
   async forkSession(sessionId: string): Promise<{ id: string } | null> {

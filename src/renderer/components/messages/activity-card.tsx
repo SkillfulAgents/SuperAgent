@@ -25,6 +25,8 @@ export interface ActivitySubagentItem {
   description: string
   status: 'running' | 'completed'
   progressSummary: string | null
+  /** The SDK task id a stop control targets; null while the agent id is still unknown. */
+  taskId?: string | null
 }
 
 export interface ActivityBackgroundTask {
@@ -33,6 +35,10 @@ export interface ActivityBackgroundTask {
   isWorkflow?: boolean
   /** Background subagents already render as named subagent rows — excluded here. */
   isSubagent?: boolean
+  /** What kind of work ("Background command"); the generic noun when absent. */
+  title?: string
+  /** The command or description, when known. */
+  detail?: string | null
 }
 
 export interface ActivityComputerUse {
@@ -57,6 +63,11 @@ export interface ActivityCardProps {
   subagents?: ActivitySubagentItem[]
   backgroundTasks?: ActivityBackgroundTask[]
   todos?: Todo[] | null
+  /**
+   * Stop one background task or subagent by its task id. When absent no row
+   * gets a stop control. Rejections surface as a retry state on the row.
+   */
+  onStopTask?: (taskId: string) => Promise<void>
 }
 
 export function ActivityCard({
@@ -69,6 +80,7 @@ export function ActivityCard({
   subagents = [],
   backgroundTasks = [],
   todos,
+  onStopTask,
 }: ActivityCardProps) {
   const [showAllTodos, setShowAllTodos] = useState(false)
   const [isCollapsed, setIsCollapsed] = useState(false)
@@ -195,16 +207,25 @@ export function ActivityCard({
                     {item.status === 'completed' ? <span>✓</span> : null}
                   </RowMark>
                   <SubagentActivityLabel item={item} />
+                  {onStopTask && item.status === 'running' && item.taskId && (
+                    <StopTaskButton
+                      taskId={item.taskId}
+                      label={`Stop ${item.name}`}
+                      onStop={onStopTask}
+                    />
+                  )}
                 </div>
               </li>
             ))}
 
-            {visibleBackgroundTasks.length > 0 && (
-              <BackgroundTasksRow
-                tasks={visibleBackgroundTasks}
-                tracerRow={computerUseRows + subagents.length}
+            {visibleBackgroundTasks.map((task, index) => (
+              <BackgroundTaskRow
+                key={task.taskId}
+                task={task}
+                tracerRow={computerUseRows + subagents.length + index}
+                onStop={onStopTask}
               />
-            )}
+            ))}
           </ul>
         )}
 
@@ -487,27 +508,92 @@ function ComputerUseRow({ computerUse, tracerRow }: {
   )
 }
 
-/** One tree row standing in for all active background work. */
-function BackgroundTasksRow({ tasks, tracerRow }: {
-  tasks: ActivityBackgroundTask[]
+/**
+ * One tree row per background task, so each can carry its own stop control —
+ * a runaway task is otherwise unstoppable short of stopping the whole session.
+ */
+function BackgroundTaskRow({ task, tracerRow, onStop }: {
+  task: ActivityBackgroundTask
   tracerRow: number
+  onStop?: (taskId: string) => Promise<void>
 }) {
-  const earliest = Math.min(...tasks.map(t => t.startedAt))
-  const elapsed = useElapsedTimer(new Date(earliest))
-  // Label as "workflow" when every active background task is a dynamic workflow;
-  // fall back to the generic "process" wording for backgrounded Bash (or a mix).
-  const allWorkflows = tasks.every(t => t.isWorkflow)
-  const noun = allWorkflows ? 'workflow' : 'process'
-  const label = `${tasks.length} background ${tasks.length === 1 ? noun : allWorkflows ? `${noun}s` : `${noun}es`}`
+  const elapsed = useElapsedTimer(new Date(task.startedAt))
+  const title = task.title ?? (task.isWorkflow ? 'Background workflow' : 'Background command')
+  const fullText = task.detail ? `${title}: ${task.detail}` : title
   return (
-    <li style={tracerRowStyle(tracerRow)} data-tracer-live="true">
+    <li
+      style={tracerRowStyle(tracerRow)}
+      data-tracer-live="true"
+      data-testid="background-task-row"
+      data-task-id={task.taskId}
+    >
       <div className="flex items-center gap-1.5">
-        <span className="text-muted-foreground">{label}</span>
+        {/* flex-1 like the subagent label, so the elapsed time and the stop
+            control sit at the row's right edge in line with the subagent rows'
+            instead of trailing the text. */}
+        <span className="min-w-0 flex-1 truncate" title={fullText}>
+          <span className="text-muted-foreground">{title}</span>
+          {task.detail && (
+            <span className="font-mono text-muted-foreground/80">{' '}{task.detail}</span>
+          )}
+        </span>
         {elapsed && (
-          <span className="text-muted-foreground tabular-nums">{elapsed}</span>
+          <span className="shrink-0 text-muted-foreground tabular-nums">{elapsed}</span>
+        )}
+        {onStop && (
+          <StopTaskButton taskId={task.taskId} label={`Stop ${fullText}`} onStop={onStop} />
         )}
       </div>
     </li>
+  )
+}
+
+/**
+ * The per-row stop control. Owns its own pending/failed state: the row it
+ * sits on disappears when the runtime confirms the stop, so nothing else has
+ * to track it, and a failure stays visible on the row it belongs to.
+ */
+function StopTaskButton({ taskId, label, onStop }: {
+  taskId: string
+  label: string
+  onStop: (taskId: string) => Promise<void>
+}) {
+  const [stopping, setStopping] = useState(false)
+  const [failed, setFailed] = useState(false)
+
+  const handleClick = async () => {
+    setStopping(true)
+    setFailed(false)
+    try {
+      await onStop(taskId)
+    } catch {
+      setFailed(true)
+    } finally {
+      setStopping(false)
+    }
+  }
+
+  return (
+    <>
+      {failed && <span className="shrink-0 text-destructive">Stop failed</span>}
+      <button
+        type="button"
+        onClick={handleClick}
+        disabled={stopping}
+        className={cn(
+          'shrink-0 cursor-pointer rounded p-0.5 transition-colors',
+          failed
+            ? 'text-destructive hover:bg-destructive/10'
+            : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+          stopping && 'cursor-not-allowed opacity-50',
+        )}
+        title={failed ? 'Failed to stop — click to retry' : label}
+        aria-label={failed ? `Retry: ${label}` : label}
+        data-testid="stop-task-button"
+      >
+        <X className="h-3 w-3" />
+      </button>
+    </>
   )
 }
 

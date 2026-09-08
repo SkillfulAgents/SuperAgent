@@ -7,7 +7,7 @@ import {
   type VoiceAgentEvent,
   type VoiceProvider,
 } from '@renderer/lib/voice-agent'
-import { acquireMicStream, float32ToInt16, pcm16ToFloat32 } from '@renderer/lib/stt'
+import { acquireMicStream, pcm16ToFloat32, startAudioCapture, type AudioCaptureHandle } from '@renderer/lib/stt'
 
 export type VoiceAgentState = 'idle' | 'connecting' | 'active' | 'error'
 export type SpeakingState = 'none' | 'user' | 'agent'
@@ -39,7 +39,7 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
   const adapterRef = useRef<VoiceAgentAdapter | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
-  const processorRef = useRef<ScriptProcessorNode | null>(null)
+  const captureRef = useRef<AudioCaptureHandle | null>(null)
   const playbackContextRef = useRef<AudioContext | null>(null)
   const playbackAnalyserRef = useRef<AnalyserNode | null>(null)
   const nextPlaybackTimeRef = useRef(0)
@@ -60,10 +60,9 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
   onErrorRef.current = onError
 
   const cleanupAudio = useCallback(() => {
-    processorRef.current?.disconnect()
-    processorRef.current = null
-
-    audioContextRef.current?.close()
+    // The capture owns its context and closes it.
+    captureRef.current?.cleanup()
+    captureRef.current = null
     audioContextRef.current = null
 
     streamRef.current?.getTracks().forEach(t => t.stop())
@@ -241,35 +240,24 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
 
       // 4. Set up audio capture (AudioContext resamples to the provider rate;
       // the getUserMedia sampleRate constraint is a no-op — see acquireMicStream)
-      const sampleRate = adapter.inputSampleRate
       const stream = await acquireMicStream()
       streamRef.current = stream
 
-      const audioContext = new AudioContext({ sampleRate })
-      if (audioContext.state === 'suspended') {
-        await audioContext.resume()
-      }
-      audioContextRef.current = audioContext
-
-      const source = audioContext.createMediaStreamSource(stream)
-
-      // Set up analyser for visualization
-      const analyser = audioContext.createAnalyser()
-      analyser.fftSize = 256
-      analyser.smoothingTimeConstant = 0.6
-      source.connect(analyser)
-      analyserRef.current = analyser
-
-      // Set up processor to pipe audio to adapter
-      const processor = audioContext.createScriptProcessor(2048, 1, 1)
-      processor.onaudioprocess = (e) => {
-        if (mutedRef.current) return
-        const float32 = e.inputBuffer.getChannelData(0)
-        adapter.sendAudio(float32ToInt16(float32).buffer as ArrayBuffer)
-      }
-      processorRef.current = processor
-      source.connect(processor)
-      processor.connect(audioContext.destination)
+      // Captured at the provider's input rate. Muting drops chunks here
+      // rather than pausing the graph, so unmuting is instant.
+      const capture = await startAudioCapture(
+        {
+          sampleRate: adapter.inputSampleRate,
+          sendAudio: (chunk) => {
+            if (!mutedRef.current) adapter.sendAudio(chunk)
+          },
+        },
+        stream,
+        { withAnalyser: true },
+      )
+      captureRef.current = capture
+      audioContextRef.current = capture.audioContext
+      analyserRef.current = capture.analyser
 
       // 5. Set up audio playback context with an analyser for visualization
       const playbackCtx = new AudioContext({ sampleRate: adapter.outputSampleRate })
@@ -279,9 +267,9 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
       // Guard against race condition: if stop() was called while we were
       // awaiting, clean up everything we just created to avoid leaked resources
       if ((stateRef.current as VoiceAgentState) !== 'connecting') {
-        processor.disconnect()
-        audioContext.close()
-        stream.getTracks().forEach(t => t.stop())
+        capture.cleanup()
+        captureRef.current = null
+        audioContextRef.current = null
         playbackContextRef.current?.close()
         playbackContextRef.current = null
         playbackAnalyserRef.current = null

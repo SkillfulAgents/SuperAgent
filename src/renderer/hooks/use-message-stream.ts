@@ -452,7 +452,10 @@ function getOrCreateEventSource(
           peerUserMessages: current?.peerUserMessages ?? [],
           apiRetry: current?.apiRetry ?? null,
           backgroundTasks: Array.isArray(data.backgroundTasks) ? data.backgroundTasks : (current?.backgroundTasks ?? []),
-          isWaitingBackground: Array.isArray(data.backgroundTasks) && data.backgroundTasks.length > 0,
+          // The snapshot says whether the turn's output has ended; a task in
+          // the list can still belong to a turn that is streaming.
+          isWaitingBackground:
+            data.isWaitingBackground === true && Array.isArray(data.backgroundTasks) && data.backgroundTasks.length > 0,
           discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
         // Reconcile against the persisted transcript on every (re)connect. A client
@@ -585,7 +588,34 @@ function getOrCreateEventSource(
       // Agent turn ended but background tasks are still running — allow sending messages
       else if (data.type === 'session_waiting_background') {
         if (current) {
-          streamStates.set(sessionId, { ...current, isWaitingBackground: true })
+          if (data.interrupted === true) {
+            // The user stopped the turn and the runtime spared its background
+            // tasks. Settle the streaming state as session_idle does (the
+            // partial text stays until persisted data replaces it) but keep
+            // the session active on its task list — the server's copy is
+            // authoritative, a task may have settled while the stop landed.
+            // Foreground subagents died with the turn and will never report
+            // completion; only the ones that are background tasks remain.
+            const backgroundTasks: StreamState['backgroundTasks'] = Array.isArray(data.backgroundTasks)
+              ? data.backgroundTasks
+              : current.backgroundTasks
+            const backgroundAgentIds = new Set(backgroundTasks.filter(t => t.isSubagent).map(t => t.taskId))
+            streamStates.set(sessionId, {
+              ...current,
+              isStreaming: false,
+              streamingToolUses: [],
+              activeStartTime: null,
+              isCompacting: false,
+              typingUser: null,
+              apiRetry: null,
+              activeSubagents: current.activeSubagents.filter(s => !!s.agentId && backgroundAgentIds.has(s.agentId)),
+              backgroundTasks,
+              isWaitingBackground: true,
+            })
+            invalidateMessagesThrottled(queryClient, sessionId)
+          } else {
+            streamStates.set(sessionId, { ...current, isWaitingBackground: true })
+          }
         }
       }
       else if (data.type === 'session_error') {

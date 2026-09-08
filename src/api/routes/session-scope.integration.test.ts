@@ -27,7 +27,7 @@ import * as os from 'os'
 // message-persister are all REAL.
 // ---------------------------------------------------------------------------
 
-const mockInterruptSession = vi.fn((..._args: unknown[]) => Promise.resolve(true))
+const mockInterruptSession = vi.fn((..._args: unknown[]) => Promise.resolve({ interrupted: true, processKept: true }))
 const mockSendMessage = vi.fn((..._args: unknown[]) => Promise.resolve(undefined))
 const mockContainerFetch = vi.fn((..._args: unknown[]) => Promise.resolve({ ok: true, json: async () => ({}) }))
 const mockCreateSession = vi.fn((..._args: unknown[]) => Promise.resolve({ id: 'container-session', slashCommands: [] }))
@@ -260,7 +260,7 @@ beforeEach(async () => {
   vi.clearAllMocks()
   // clearAllMocks drops recorded calls but keeps implementations, so a test
   // that made the container throw would leak that into the next one.
-  mockInterruptSession.mockResolvedValue(true)
+  mockInterruptSession.mockResolvedValue({ interrupted: true, processKept: true })
   mockSendMessage.mockResolvedValue(undefined)
   previousDataDir = process.env.SUPERAGENT_DATA_DIR
   tmpDir = realFs.realpathSync(realFs.mkdtempSync(path.join(os.tmpdir(), 'session-scope-')))

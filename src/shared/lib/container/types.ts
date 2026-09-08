@@ -68,6 +68,21 @@ export interface SlashCommandInfo {
   argumentHint: string
 }
 
+export type InterruptScope = 'turn' | 'all'
+
+export interface InterruptSessionOptions {
+  scope?: InterruptScope
+}
+
+export interface InterruptSessionResult {
+  // The container acknowledged the interrupt (false: session not live there).
+  interrupted: boolean
+  // The CLI process survived, so its background tasks are still running and
+  // their state must be kept. False when the process was replaced (a full
+  // stop, or a soft stop that had to fall back) — every background task died.
+  processKept: boolean
+}
+
 export interface ContainerSession {
   id: string
   createdAt: string
@@ -247,7 +262,12 @@ export interface ContainerClient {
   // Cancel a queued (not yet picked up) message by the uuid it was sent with.
   // false = too late (already picked up) or session not live — never throws for that.
   cancelQueuedMessage(sessionId: string, uuid: string): Promise<boolean>
-  interruptSession(sessionId: string): Promise<boolean>
+  // scope 'turn' (default) ends the foreground turn and spares background
+  // tasks; 'all' replaces the CLI process, which kills them too.
+  interruptSession(sessionId: string, options?: InterruptSessionOptions): Promise<InterruptSessionResult>
+  // Stop one background task by its SDK task id. false = the container could
+  // not (session not live, or a build that predates the endpoint).
+  stopTask(sessionId: string, taskId: string): Promise<boolean>
 
   // Default settles (today's session_error). Overrides must be safe on a live runtime (queued re-run).
   onFatalResult(kind: RuntimeFatalKind): 'settle' | 'defer_for_recovery'
