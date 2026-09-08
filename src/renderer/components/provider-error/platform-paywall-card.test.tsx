@@ -8,12 +8,20 @@ import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-p
 import type { ParsedPlatformBillingInfo } from '@shared/lib/types/skillset-schema'
 import type { BillingInfoResponse } from '@renderer/hooks/use-billing-info'
 
+import { FRAME_READY_TIMEOUT_MS } from './billing-embed-frame'
 import { PlatformPaywallCard } from './platform-paywall-card'
 import { PAYWALL_RECHECK_INTERVAL_MS } from './use-platform-paywall-billing'
 
+const PLATFORM_ORIGIN = 'https://platform.example.com'
+const HOSTILE_ORIGIN = 'https://evil.example.com'
+const PLATFORM_BASE_URL = `${PLATFORM_ORIGIN}/`
+
 const platformAuth = {
   connected: true,
+  orgId: 'org_123' as string | null,
   role: 'member' as string | null,
+  platformControlled: undefined as boolean | undefined,
+  platformBaseUrl: PLATFORM_BASE_URL as string | null,
 }
 vi.mock('@renderer/hooks/use-platform-auth', () => ({
   usePlatformAuthStatus: () => ({ data: platformAuth }),
@@ -70,6 +78,48 @@ const PRESENTATION: ProviderErrorPresentation = {
   href: BILLING_URL,
 }
 
+function embedFrame(): HTMLIFrameElement {
+  return screen.getByTestId('billing-embed-frame') as HTMLIFrameElement
+}
+
+function embedSrc(): URL {
+  return new URL(embedFrame().src)
+}
+
+function frameWindow(): Window {
+  const frame = embedFrame()
+  if (frame.contentWindow) return frame.contentWindow
+  const fake = { name: 'billing-embed-frame' } as unknown as Window
+  Object.defineProperty(frame, 'contentWindow', { configurable: true, value: fake })
+  return fake
+}
+
+function postEmbedMessage(
+  origin: string,
+  event: string,
+  extra: Record<string, unknown> = {},
+  source?: MessageEventSource | null,
+) {
+  act(() => {
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        origin,
+        source: source === undefined ? frameWindow() : source,
+        data: { type: 'gamut-billing-embed', orgId: 'org_123', event, ...extra },
+      }),
+    )
+  })
+}
+
+function expectEmbedUrl(expected: { view: string; intent?: string }) {
+  const url = embedSrc()
+  expect(url.origin).toBe(PLATFORM_ORIGIN)
+  expect(url.pathname).toBe('/embed/billing/org_123')
+  expect(url.searchParams.get('parent')).toBe(window.location.origin)
+  expect(url.searchParams.get('view')).toBe(expected.view)
+  expect(url.searchParams.get('intent')).toBe(expected.intent ?? null)
+}
+
 let client: QueryClient
 function Wrapper({ children }: { children: ReactNode }) {
   return <QueryClientProvider client={client}>{children}</QueryClientProvider>
@@ -96,12 +146,16 @@ describe('PlatformPaywallCard', () => {
   beforeEach(() => {
     client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     platformAuth.connected = true
+    platformAuth.orgId = 'org_123'
     platformAuth.role = 'member'
+    platformAuth.platformControlled = undefined
+    platformAuth.platformBaseUrl = PLATFORM_BASE_URL
     fetchBilling.mockResolvedValue(billing())
   })
 
   afterEach(() => {
     vi.clearAllMocks()
+    delete (window as { electronAPI?: unknown }).electronAPI
   })
 
   it('shows a checking state, then routes members to ask an admin', async () => {
@@ -329,8 +383,258 @@ describe('PlatformPaywallCard', () => {
     fetchBilling.mockResolvedValue({ ...billing({ access: ALLOWED }), stale: true })
     clickRecheck('Go to billing')
     await waitFor(() => expect(fetchBilling.mock.calls.length).toBeGreaterThan(before))
-    await act(async () => {})
-    expect(screen.getByTestId('paywall-card')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-blocked', 'false'))
     expect(screen.getByTestId('composer')).toBeInTheDocument()
+  })
+
+  describe('web on a cloud workspace (in-app billing)', () => {
+    beforeEach(() => {
+      platformAuth.role = 'owner'
+      platformAuth.platformControlled = true
+    })
+
+    it('renders the platform billing page inline, in place of the CTA button', async () => {
+      renderCard()
+      await screen.findByTestId('billing-embed-frame')
+      expectEmbedUrl({ view: 'topup', intent: 'topup' })
+      expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-embedded', 'true')
+      expect(screen.queryByRole('button', { name: 'Add usage' })).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument()
+      expect(openExternalUrl).not.toHaveBeenCalled()
+    })
+
+    it('hides the loading overlay once the platform page reports ready', async () => {
+      renderCard()
+      await screen.findByTestId('billing-embed-frame')
+      expect(screen.getByTestId('billing-embed-loading')).toBeInTheDocument()
+      postEmbedMessage(PLATFORM_ORIGIN, 'ready')
+      expect(screen.queryByTestId('billing-embed-loading')).not.toBeInTheDocument()
+    })
+
+    it('keeps the iframe visible under the loading overlay so a Storage Access prompt can be used', async () => {
+      renderCard()
+      const frame = await screen.findByTestId('billing-embed-frame')
+      const overlay = screen.getByTestId('billing-embed-loading')
+      expect(overlay).toBeInTheDocument()
+      expect(frame).toBeVisible()
+      expect(overlay.className).toContain('pointer-events-none')
+    })
+
+    it('sizes the frame from the platform resize event, clamped', async () => {
+      renderCard()
+      await screen.findByTestId('billing-embed-frame')
+      const body = screen.getByTestId('billing-embed-body')
+      postEmbedMessage(PLATFORM_ORIGIN, 'resize', { height: 312.4 })
+      expect(body.style.height).toBe('313px')
+      postEmbedMessage(PLATFORM_ORIGIN, 'resize', { height: 5000 })
+      expect(body.style.height).toBe('640px')
+      postEmbedMessage(window.location.origin, 'resize', { height: 200 })
+      expect(body.style.height).toBe('640px')
+    })
+
+    it('rechecks billing on billing-updated from the frame and clears the card', async () => {
+      renderCard()
+      await screen.findByTestId('billing-embed-frame')
+      fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
+      postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated')
+      await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
+      expect(screen.getByTestId('composer')).toBeInTheDocument()
+    })
+
+    it('ignores billing-updated from a hostile origin even when the source is the iframe', async () => {
+      renderCard()
+      await screen.findByTestId('billing-embed-frame')
+      const before = fetchBilling.mock.calls.length
+      fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
+      postEmbedMessage(HOSTILE_ORIGIN, 'billing-updated')
+      await act(async () => {})
+      expect(fetchBilling.mock.calls.length).toBe(before)
+      expect(screen.getByTestId('paywall-card')).toBeInTheDocument()
+    })
+
+    it('ignores a matching-origin message whose source is not the iframe', async () => {
+      renderCard()
+      await screen.findByTestId('billing-embed-frame')
+      const before = fetchBilling.mock.calls.length
+      fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
+      postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated', {}, window)
+      postEmbedMessage(PLATFORM_ORIGIN, 'ready', {}, window)
+      await act(async () => {})
+      expect(fetchBilling.mock.calls.length).toBe(before)
+      expect(screen.getByTestId('billing-embed-loading')).toBeInTheDocument()
+    })
+
+    it('ignores messages about another org even from the platform iframe', async () => {
+      renderCard()
+      await screen.findByTestId('billing-embed-frame')
+      const before = fetchBilling.mock.calls.length
+      fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
+      postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated', { orgId: 'org_other' })
+      postEmbedMessage(PLATFORM_ORIGIN, 'ready', { orgId: 'org_other' })
+      await act(async () => {})
+      expect(fetchBilling.mock.calls.length).toBe(before)
+      expect(screen.getByTestId('billing-embed-loading')).toBeInTheDocument()
+    })
+
+    it('remounts the frame with the panel that matches the CTA after a recheck flips it', async () => {
+      fetchBilling.mockResolvedValue(billing({ subscription: { status: 'active', paymentStatus: 'past_due', currentPeriodEnd: null } }))
+      renderCard()
+      await screen.findByTestId('billing-embed-frame')
+      expectEmbedUrl({ view: 'payment' })
+
+      fetchBilling.mockResolvedValue(billing())
+      postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated')
+      await waitFor(() => expectEmbedUrl({ view: 'topup', intent: 'topup' }))
+      expect(screen.getByText('Add usage credit to resume this answer.')).toBeInTheDocument()
+    })
+
+    it('falls back to opening billing externally when the workspace has no org id, then offers a recheck', async () => {
+      platformAuth.orgId = null
+      renderCard()
+      const fallback = await screen.findByRole('button', { name: 'Open billing in a new tab' })
+      expect(screen.getByText('Could not open billing.')).toBeInTheDocument()
+      expect(screen.queryByTestId('billing-embed-frame')).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument()
+      act(() => { fallback.click() })
+      expect(openExternalUrl).toHaveBeenCalledTimes(1)
+      expect(new URL(openExternalUrl.mock.calls[0][0]).searchParams.get('intent')).toBe('topup')
+      expect(screen.getByRole('button', { name: 'Recheck' })).toBeInTheDocument()
+    })
+
+    it('falls back when platform base URL is missing', async () => {
+      platformAuth.platformBaseUrl = null
+      renderCard()
+      expect(await screen.findByText('Could not open billing.')).toBeInTheDocument()
+      expect(screen.queryByTestId('billing-embed-frame')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Open billing in a new tab' })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument()
+    })
+
+    it('falls back when platform base URL is not a valid origin', async () => {
+      platformAuth.platformBaseUrl = 'not-a-url'
+      renderCard()
+      expect(await screen.findByText('Could not open billing.')).toBeInTheDocument()
+      expect(screen.queryByTestId('billing-embed-frame')).not.toBeInTheDocument()
+    })
+
+    it('falls back when the platform page never reports ready', async () => {
+      // Faking timers stalls react-query; fire the ready timeout's callback directly instead.
+      const setTimeoutSpy = vi.spyOn(window, 'setTimeout')
+      try {
+        renderCard()
+        await screen.findByTestId('billing-embed-frame')
+        const readyTimer = setTimeoutSpy.mock.calls.find(([, delay]) => delay === FRAME_READY_TIMEOUT_MS)
+        expect(readyTimer).toBeDefined()
+        act(() => { (readyTimer![0] as () => void)() })
+        expect(screen.getByText('Billing is taking too long to load.')).toBeInTheDocument()
+        expect(screen.queryByTestId('billing-embed-frame')).not.toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Open billing in a new tab' })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument()
+      } finally {
+        setTimeoutSpy.mockRestore()
+      }
+    })
+
+    it('"Try again" after a ready timeout remounts the frame and restarts the timeout', async () => {
+      const setTimeoutSpy = vi.spyOn(window, 'setTimeout')
+      try {
+        renderCard()
+        await screen.findByTestId('billing-embed-frame')
+        const firstTimer = setTimeoutSpy.mock.calls.find(([, delay]) => delay === FRAME_READY_TIMEOUT_MS)
+        expect(firstTimer).toBeDefined()
+        act(() => { (firstTimer![0] as () => void)() })
+        const beforeRetry = setTimeoutSpy.mock.calls.filter(([, delay]) => delay === FRAME_READY_TIMEOUT_MS).length
+        act(() => { screen.getByRole('button', { name: 'Try again' }).click() })
+        const second = await screen.findByTestId('billing-embed-frame')
+        expectEmbedUrl({ view: 'topup', intent: 'topup' })
+        expect(screen.getByTestId('billing-embed-loading')).toBeInTheDocument()
+        const retryTimers = setTimeoutSpy.mock.calls.filter(([, delay]) => delay === FRAME_READY_TIMEOUT_MS)
+        expect(retryTimers.length).toBeGreaterThan(beforeRetry)
+        act(() => { (retryTimers.at(-1)![0] as () => void)() })
+        expect(screen.getByText('Billing is taking too long to load.')).toBeInTheDocument()
+        expect(second).not.toBeInTheDocument()
+      } finally {
+        setTimeoutSpy.mockRestore()
+      }
+    })
+
+    it('offers the external link when the platform reports the session expired', async () => {
+      renderCard()
+      await screen.findByTestId('billing-embed-frame')
+      postEmbedMessage(PLATFORM_ORIGIN, 'session-expired')
+      expect(screen.getByText('This billing session has expired.')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Open billing in a new tab' })).toBeInTheDocument()
+    })
+
+    it('"Try again" reloads the frame after the platform reported the session expired', async () => {
+      renderCard()
+      const first = await screen.findByTestId('billing-embed-frame')
+      postEmbedMessage(PLATFORM_ORIGIN, 'ready')
+      postEmbedMessage(PLATFORM_ORIGIN, 'session-expired')
+      act(() => { screen.getByRole('button', { name: 'Try again' }).click() })
+      const second = await screen.findByTestId('billing-embed-frame')
+      expect(second).not.toBe(first)
+      expectEmbedUrl({ view: 'topup', intent: 'topup' })
+      expect(screen.getByTestId('billing-embed-loading')).toBeInTheDocument()
+    })
+
+    it('dismiss removes the inline billing page and hands the composer back', async () => {
+      renderCard()
+      await screen.findByTestId('billing-embed-frame')
+      act(() => { screen.getByRole('button', { name: 'Dismiss' }).click() })
+      expect(screen.queryByTestId('billing-embed-frame')).not.toBeInTheDocument()
+      expect(screen.getByTestId('composer')).toBeInTheDocument()
+    })
+
+    it('embeds the same top-up panel when the org has no card yet (it offers add-card)', async () => {
+      fetchBilling.mockResolvedValue(billing({ hasPaymentMethod: false }))
+      renderCard()
+      await screen.findByTestId('billing-embed-frame')
+      expectEmbedUrl({ view: 'topup' })
+      expect(screen.queryByRole('button', { name: 'Add credit card' })).not.toBeInTheDocument()
+    })
+
+    it('embeds the subscribe panel when a subscription is required', async () => {
+      renderCard('API Error: 402 {"error":"insufficient_balance","subscription_required":true}')
+      await screen.findByTestId('billing-embed-frame')
+      expectEmbedUrl({ view: 'subscribe' })
+      expect(screen.queryByRole('button', { name: 'Subscribe' })).not.toBeInTheDocument()
+    })
+
+    it('embeds the payment panel when the payment is past due', async () => {
+      fetchBilling.mockResolvedValue(billing({ subscription: { status: 'active', paymentStatus: 'past_due', currentPeriodEnd: null } }))
+      renderCard()
+      await screen.findByTestId('billing-embed-frame')
+      expectEmbedUrl({ view: 'payment' })
+      expect(screen.queryByRole('button', { name: 'Fix payment' })).not.toBeInTheDocument()
+    })
+
+    it('still sends members to the browser (the embed would only show them no access)', async () => {
+      platformAuth.role = 'member'
+      renderCard()
+      const button = await screen.findByRole('button', { name: 'Go to billing' })
+      expect(screen.queryByTestId('billing-embed-body')).not.toBeInTheDocument()
+      act(() => { button.click() })
+      expect(openExternalUrl).toHaveBeenCalledTimes(1)
+    })
+
+    it('keeps the system-browser hand-off in Electron even on a cloud workspace', async () => {
+      ;(window as { electronAPI?: unknown }).electronAPI = {}
+      renderCard()
+      const button = await screen.findByRole('button', { name: 'Add usage' })
+      expect(screen.queryByTestId('billing-embed-body')).not.toBeInTheDocument()
+      act(() => { button.click() })
+      expect(openExternalUrl).toHaveBeenCalledTimes(1)
+      expect(screen.getByRole('button', { name: 'Recheck' })).toBeInTheDocument()
+    })
+
+    it('keeps the system-browser hand-off on web when the workspace is not platform-controlled', async () => {
+      platformAuth.platformControlled = false
+      renderCard()
+      const button = await screen.findByRole('button', { name: 'Add usage' })
+      expect(screen.queryByTestId('billing-embed-body')).not.toBeInTheDocument()
+      act(() => { button.click() })
+      expect(openExternalUrl).toHaveBeenCalledTimes(1)
+    })
   })
 })

@@ -5,8 +5,12 @@ import { extractSubscriptionRequired } from '@shared/lib/llm-provider/platform-e
 import { cn } from '@shared/lib/utils/cn'
 import { HomeEmptyClouds } from '@renderer/components/home/home-empty-clouds'
 import { Button } from '@renderer/components/ui/button'
+import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
+import type { BillingEmbedView } from '@renderer/lib/billing-embed'
+import { isElectron } from '@renderer/lib/env'
 import { openExternalUrl } from '@renderer/lib/open-external'
 
+import { BillingEmbedFrame } from './billing-embed-frame'
 import { buildTopupHandoffUrl, type PaywallCta } from './platform-paywall-cta'
 import type { ProviderErrorComponentProps } from './provider-error-registry'
 import { usePlatformPaywallBilling } from './use-platform-paywall-billing'
@@ -49,10 +53,22 @@ function ctaHref(cta: PaywallCta): string | null {
   return cta.href
 }
 
+// Which chrome-less platform panel each CTA gets. Members (ask_admin) and an
+// unknown role (go_to_billing) cannot act on billing, so they keep the button.
+const EMBED_VIEW: Record<PaywallCta['kind'], BillingEmbedView | undefined> = {
+  topup: 'topup',
+  add_card: 'topup',
+  subscribe: 'subscribe',
+  manage_payment: 'payment',
+  ask_admin: undefined,
+  go_to_billing: undefined,
+}
+
 function PaywallActions({
   cta,
   loading,
   handedOff,
+  embedded,
   onDismiss,
   onHandOff,
   onRecheck,
@@ -60,6 +76,8 @@ function PaywallActions({
   cta: PaywallCta | null
   loading: boolean
   handedOff: boolean
+  /** The billing page is rendered inline below; it carries the CTA itself. */
+  embedded: boolean
   onDismiss: () => void
   onHandOff: () => void
   onRecheck: () => void
@@ -88,7 +106,7 @@ function PaywallActions({
         >
           Recheck
         </Button>
-      ) : cta ? (
+      ) : cta && !embedded ? (
         <Button
           size="sm"
           disabled={!href}
@@ -112,12 +130,18 @@ function PaywallActions({
 export function PlatformPaywallCard({ message, presentation, children, live = true }: ProviderErrorComponentProps) {
   const [dismissed, setDismissed] = useState(false)
   const [handedOff, setHandedOff] = useState(false)
+  const { data: platformAuth } = usePlatformAuthStatus()
   const billing = usePlatformPaywallBilling(
     extractSubscriptionRequired(message),
     presentation?.href ?? null,
     live,
     !dismissed,
   )
+  // Electron keeps the system-browser hand-off. Web on a cloud workspace (the
+  // only place the platform will frame its billing page) embeds it in-app.
+  const inApp = !isElectron() && platformAuth?.platformControlled === true
+  const view = billing.cta ? EMBED_VIEW[billing.cta.kind] : undefined
+  const embedded = inApp && view !== undefined
   if (billing.cleared || dismissed) return <>{children}</>
 
   const fallback = splitMessage(presentation?.message ?? message)
@@ -127,24 +151,47 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
   return (
     <>
       <div className={cn('relative px-4', billing.blocked ? 'pb-5' : 'pb-2')}>
-        <HomeEmptyClouds masked={false} fill={0.6} />
+        {/* The inline panel makes the card tall enough to cover a centred glow; sit it
+            under the bottom edge so the colour spills out around the card again. */}
+        <HomeEmptyClouds masked={false} fill={embedded ? 1 : 0.6} center={embedded ? { x: '50%', y: '85%' } : undefined} />
         <div
           data-testid="paywall-card"
           data-blocked={billing.blocked}
-          className="relative flex flex-wrap items-center gap-x-6 gap-y-3 rounded-xl border bg-card px-5 py-4 shadow-sm"
+          data-embedded={embedded}
+          className={cn(
+            'relative flex flex-col gap-3 rounded-xl border bg-card px-5 py-4 shadow-sm',
+            embedded && 'gap-5 pb-6',
+          )}
         >
-          <div className="min-w-0 flex-1 basis-60">
-            <p className="text-sm font-medium text-foreground">{heading}</p>
-            {detail && <p className="mt-0.5 text-sm text-muted-foreground">{detail}</p>}
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+            <div className="min-w-0 flex-1 basis-60">
+              <p className="text-sm font-medium text-foreground">{heading}</p>
+              {detail && <p className="mt-0.5 text-sm text-muted-foreground">{detail}</p>}
+            </div>
+            <PaywallActions
+              cta={billing.cta}
+              loading={billing.loading}
+              handedOff={handedOff}
+              embedded={embedded}
+              onDismiss={() => setDismissed(true)}
+              onHandOff={() => setHandedOff(true)}
+              onRecheck={billing.recheck}
+            />
           </div>
-          <PaywallActions
-            cta={billing.cta}
-            loading={billing.loading}
-            handedOff={handedOff}
-            onDismiss={() => setDismissed(true)}
-            onHandOff={() => setHandedOff(true)}
-            onRecheck={billing.recheck}
-          />
+          {embedded && billing.cta && (
+            // Keyed by view: when a recheck flips the CTA (payment fixed → still needs
+            // credit) the frame remounts and loads the panel that now matches the title.
+            <BillingEmbedFrame
+              key={view}
+              intent={billing.cta.kind === 'topup' ? 'topup' : undefined}
+              view={view}
+              orgId={platformAuth?.orgId ?? null}
+              platformBaseUrl={platformAuth?.platformBaseUrl ?? null}
+              fallbackHref={ctaHref(billing.cta)}
+              onBillingUpdated={billing.recheck}
+              onOpenExternal={() => setHandedOff(true)}
+            />
+          )}
         </div>
       </div>
       {!billing.blocked && children}
