@@ -263,9 +263,19 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     let voiceText: string | undefined
     if (voiceInput.isRecording || voiceInput.isConnecting) voiceText = await voiceInput.stopRecording()
 
-    const effectiveMessage = voiceText ?? message
+    await submitMessage(voiceText ?? message)
+  }
+
+  /**
+   * Send `effectiveMessage` with the pending attachments as the message, the
+   * way handleSubmit sends the typed draft. Voice mode calls this with each
+   * utterance. Resolves true once the message is accepted, false when there
+   * was nothing to send or the send failed (the text is restored to the draft).
+   */
+  const submitMessage = async (effectiveMessage: string): Promise<boolean> => {
+    if (uploadsInFlight || isUploading || submitDisabled) return false
     const hasContent = effectiveMessage.trim() || attachments.length > 0
-    if (!hasContent) return
+    if (!hasContent) return false
 
     let content = effectiveMessage.trim()
 
@@ -273,7 +283,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
       setIsUploading(true)
       const { ok } = await queue.retryAndWait()
       setIsUploading(false)
-      if (!ok) return
+      if (!ok) return false
     }
 
     const mounts = attachmentsRef.current.filter((a): a is MountAttachment => a.type === 'mount')
@@ -298,7 +308,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
         captureRendererException(error, { tags: { source: 'attachment-upload' }, extra: { agentSlug } })
         setUploadError(error instanceof Error ? error.message : 'Mount failed. Please try again.')
         setIsUploading(false)
-        return
+        return false
       }
       setIsUploading(false)
       content = appendMountedFolders(content, mountResults)
@@ -332,7 +342,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
         // Restore message so the user doesn't lose their text
         setMessage(editableContent)
       }
-      return
+      return false
     }
 
     if (keepMessageUntilComplete) {
@@ -341,6 +351,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
       clearAttachments()
     }
     setSecuredSecrets([])
+    return true
   }
 
   const canSubmit = (!!message.trim() || attachments.length > 0 || voiceInput.isRecording) && !uploadsInFlight && !isUploading && !submitDisabled
@@ -379,6 +390,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     // Submit
     isUploading,
     handleSubmit,
+    submitMessage,
     handlePaste,
     canSubmit,
 

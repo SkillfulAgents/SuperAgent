@@ -4,7 +4,7 @@ import remarkParse from 'remark-parse'
 import remarkRehype from 'remark-rehype'
 import { unified } from 'unified'
 import type { Nodes, Root } from 'hast'
-import { collectSpokenWords, markdownToSpokenWords, rehypeSpokenWords } from './spoken-words'
+import { collectSpokenWords, countSpokenWords, markdownToSpokenWords, rehypeSpokenWords } from './spoken-words'
 
 function spokenText(markdown: string): string {
   return markdownToSpokenWords(markdown).map((w) => (w.blockEnd ? `${w.text}|` : w.text)).join(' ')
@@ -114,5 +114,24 @@ describe('rehypeSpokenWords', () => {
     const tree = processor.runSync(processor.parse(md)) as Root
     const collected = collectSpokenWords(tree)
     expect(collected).toEqual(markdownToSpokenWords(md))
+  })
+})
+
+describe('rehypeSpokenWords with an offset', () => {
+  it('numbers spans from the offset, so blocks rendered separately share one index space', () => {
+    const processor = unified()
+      .use(remarkParse)
+      .use(remarkGfm)
+      .use(remarkRehype, { allowDangerousHtml: true })
+      .use(rehypeSpokenWords, { offset: 7 })
+    const tree = processor.runSync(processor.parse('Hello **big** world')) as Root
+    expect(toHtml(tree)).toBe('<p><span data-spoken-word="7">Hello</span> <strong><span data-spoken-word="8">big</span></strong> <span data-spoken-word="9">world</span></p>')
+  })
+})
+
+describe('countSpokenWords', () => {
+  it('matches markdownToSpokenWords and memoizes', () => {
+    expect(countSpokenWords('- one\n- two three')).toBe(markdownToSpokenWords('- one\n- two three').length)
+    expect(countSpokenWords('- one\n- two three')).toBe(3)
   })
 })

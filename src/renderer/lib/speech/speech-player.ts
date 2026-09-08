@@ -18,6 +18,14 @@ export interface SpeechPlayerOptions {
   firstWordIndex?: number
   /** Injectable for tests; defaults to `new AudioContext({ sampleRate })`. */
   createAudioContext?: (sampleRate: number) => AudioContext
+  /**
+   * A reply still streaming in can leave the synthesizer idle for as long as
+   * a tool call takes, and the server closes an idle connection. With this
+   * set, a close that arrives once every queued segment's audio is in hand
+   * ends this player cleanly (its audio plays out) instead of failing; the
+   * caller opens a fresh player for the words that follow.
+   */
+  finishOnIdleClose?: boolean
 }
 
 interface ScheduledSegment extends SpeechSegment {
@@ -27,6 +35,16 @@ interface ScheduledSegment extends SpeechSegment {
   endTime: number | null
   /** The server has sent every chunk for this segment. */
   flushed: boolean
+  /** This segment's own output gain, for leveling. Created with its first chunk. */
+  gain: GainNode | null
+  /** Sum of squares and count of the segment's voiced samples so far. */
+  levelSumSq: number
+  levelCount: number
+  /** Linear gain the segment is playing at. */
+  level: number
+  /** Chunks kept back until the segment's level is known. */
+  held: Float32Array[]
+  heldSamples: number
 }
 
 /** Small lead before the first chunk so scheduling never lands in the past. */
@@ -41,6 +59,32 @@ const DONE_GRACE_MS = 80
  */
 const AHEAD_S = 10
 const MAX_IN_FLIGHT = 2
+
+/**
+ * Leveling. The synthesizer lands each sentence at its own loudness (4–5 dB
+ * between neighbours is normal, and the same sentence varies between
+ * requests), which is heard as the volume jumping at sentence breaks. Each
+ * segment is brought to the same RMS over its voiced samples. Measured as
+ * chunks arrive: synthesis runs well ahead of playback, so a segment's gain
+ * is nearly always settled before its first sample plays.
+ */
+const TARGET_RMS_DB = -23
+/** Never boost or cut a segment by more than this. */
+const LEVEL_MAX_DB = 6
+/** A segment inherits the previous one's gain until this much of it is voiced. */
+const LEVEL_MIN_VOICED_S = 0.2
+/** Windows quieter than this are pauses, and do not count toward the level. */
+const VOICED_FLOOR_DB = -45
+const LEVEL_WINDOW_S = 0.02
+/** Gain moves with a short ramp, so a refinement mid-segment is never a click. */
+const LEVEL_RAMP_S = 0.05
+/**
+ * A segment's audio is kept back until its level is known, so its first
+ * word plays at its own gain rather than the previous segment's. At most
+ * this much is held: past it (a segment that opens with a long pause) the
+ * audio goes out at the inherited gain and refines as it plays.
+ */
+const LEVEL_HOLD_MAX_S = 0.5
 
 /**
  * Speaks a stream of words through a TtsAdapter and plays the audio as it
@@ -58,8 +102,12 @@ export class SpeechPlayer {
   private readonly voice: TtsVoiceOptions
   private readonly onStatus?: SpeechPlayerOptions['onStatus']
   private readonly createAudioContext: (sampleRate: number) => AudioContext
+  private readonly finishOnIdleClose: boolean
 
   private ctx: AudioContext | null = null
+  /** Output volume, so playback can be ducked while the person talks over it. */
+  private gain: GainNode | null = null
+  private volume = 1
   private readonly firstWordIndex: number
   private readonly segmenter: SpeechSegmenter
   private readonly segments: ScheduledSegment[] = []
@@ -67,6 +115,8 @@ export class SpeechPlayer {
   private receiving = 0
   /** Segments [0, sent) have been handed to the synthesizer. */
   private sent = 0
+  /** The most recent segment's gain, which the next one starts at. */
+  private lastLevel = 1
   private pumpTimer: ReturnType<typeof setTimeout> | null = null
   private nextTime = 0
   /** A dangling byte from a chunk that split an int16 sample. */
@@ -89,6 +139,7 @@ export class SpeechPlayer {
     this.cursorHigh = this.firstWordIndex > 0 ? this.firstWordIndex : -1
     this.segmenter = new SpeechSegmenter(this.firstWordIndex)
     this.createAudioContext = options.createAudioContext ?? ((sampleRate) => new AudioContext({ sampleRate }))
+    this.finishOnIdleClose = options.finishOnIdleClose ?? false
   }
 
   get status(): SpeechPlayerStatus {
@@ -103,10 +154,23 @@ export class SpeechPlayer {
     return this._status === 'done' || this._status === 'stopped' || this._status === 'error'
   }
 
+  /**
+   * Whether audio is coming out right now: speaking, with samples scheduled
+   * past the playhead. False in the silence between a message's sentences
+   * when the synthesizer lags, and through a tool call — voice mode fills
+   * those with the hold sound.
+   */
+  get isAudible(): boolean {
+    return this._status === 'speaking' && this.bufferedAhead() > 0
+  }
+
   /** Open the audio output and the synthesizer connection. Text may be appended immediately. */
   start(): void {
     const ctx = this.createAudioContext(this.adapter.sampleRate)
     this.ctx = ctx
+    this.gain = ctx.createGain()
+    this.gain.gain.value = this.volume
+    this.gain.connect(ctx.destination)
     // A context created outside a user gesture may start suspended. A
     // refused resume is an error, not minutes of silent "speaking".
     if (ctx.state === 'suspended') {
@@ -121,9 +185,18 @@ export class SpeechPlayer {
     })
   }
 
+  /**
+   * Whether words can still be queued. False once ended, including by an
+   * idle close, while buffered audio may still be playing out: the caller
+   * keeps further words for the next player rather than handing them here.
+   */
+  get acceptsWords(): boolean {
+    return !this.isTerminal && !this.ended
+  }
+
   /** Queue more words. Complete sentences are sent to the synthesizer right away. */
   append(words: readonly SpokenWord[]): void {
-    if (this.isTerminal || this.ended) return
+    if (!this.acceptsWords) return
     this.wordCount += words.length
     this.enqueue(this.segmenter.push(words))
   }
@@ -135,6 +208,16 @@ export class SpeechPlayer {
     this.enqueue(this.segmenter.end())
     if (this.segments.length === 0) this.finish()
     else this.maybeFinish()
+  }
+
+  /**
+   * Playback volume, 0..1, with a short ramp. Voice mode ducks the reply
+   * as soon as the person starts talking over it, so their first words
+   * are not fighting the speaker for the microphone.
+   */
+  setVolume(volume: number): void {
+    this.volume = volume
+    if (this.gain && this.ctx) this.gain.gain.setTargetAtTime(volume, this.ctx.currentTime, 0.04)
   }
 
   /** Cut playback off immediately. */
@@ -213,7 +296,7 @@ export class SpeechPlayer {
 
   private enqueue(segments: SpeechSegment[]): void {
     for (const segment of segments) {
-      this.segments.push({ ...segment, startTime: null, endTime: null, flushed: false })
+      this.segments.push({ ...segment, startTime: null, endTime: null, flushed: false, gain: null, levelSumSq: 0, levelCount: 0, level: 1, held: [], heldSamples: 0 })
     }
     this.pump()
   }
@@ -268,17 +351,34 @@ export class SpeechPlayer {
     if (bytes.length === 0) return
 
     const float32 = pcm16ToFloat32(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength))
-    const buffer = ctx.createBuffer(1, float32.length, this.adapter.sampleRate)
-    buffer.copyToChannel(float32 as Float32Array<ArrayBuffer>, 0)
+    const segment = this.segments[this.receiving]
+    if (!segment) {
+      this.scheduleChunk(ctx, float32, this.gain ?? ctx.destination, null)
+      return
+    }
+    this.measureLevel(ctx, segment, float32)
+    if (segment.startTime === null && !this.levelKnown(segment)) {
+      segment.held.push(float32)
+      segment.heldSamples += float32.length
+      if (segment.heldSamples < LEVEL_HOLD_MAX_S * this.adapter.sampleRate) return
+      this.releaseHeld(ctx, segment)
+      return
+    }
+    this.releaseHeld(ctx, segment)
+    this.scheduleChunk(ctx, float32, segment.gain ?? this.gain ?? ctx.destination, segment)
+  }
+
+  private scheduleChunk(ctx: AudioContext, samples: Float32Array, output: AudioNode, segment: ScheduledSegment | null): void {
+    const buffer = ctx.createBuffer(1, samples.length, this.adapter.sampleRate)
+    buffer.copyToChannel(samples as Float32Array<ArrayBuffer>, 0)
     const source = ctx.createBufferSource()
     source.buffer = buffer
-    source.connect(ctx.destination)
+    source.connect(output)
 
     const startAt = Math.max(this.nextTime, ctx.currentTime + LEAD_S)
     source.start(startAt)
     this.nextTime = startAt + buffer.duration
 
-    const segment = this.segments[this.receiving]
     if (segment) {
       if (segment.startTime === null) segment.startTime = startAt
       segment.endTime = this.nextTime
@@ -286,12 +386,70 @@ export class SpeechPlayer {
     if (this._status === 'connecting') this.setStatus('speaking')
   }
 
+  private levelKnown(segment: ScheduledSegment): boolean {
+    return segment.levelCount >= LEVEL_MIN_VOICED_S * this.adapter.sampleRate
+  }
+
+  /** Play what the segment kept back, at the level it has now. */
+  private releaseHeld(ctx: AudioContext, segment: ScheduledSegment): void {
+    if (segment.held.length === 0) return
+    const held = segment.held
+    segment.held = []
+    segment.heldSamples = 0
+    for (const samples of held) this.scheduleChunk(ctx, samples, segment.gain ?? this.gain ?? ctx.destination, segment)
+  }
+
+  /**
+   * Fold this chunk into the segment's level. The segment's gain starts
+   * where the previous segment's was, and moves to its own once enough of
+   * it has been heard: set outright while nothing of it is scheduled yet,
+   * ramped once it is playing.
+   */
+  private measureLevel(ctx: AudioContext, segment: ScheduledSegment, samples: Float32Array): void {
+    if (!segment.gain) {
+      segment.level = this.lastLevel
+      segment.gain = ctx.createGain()
+      segment.gain.gain.value = segment.level
+      segment.gain.connect(this.gain ?? ctx.destination)
+    }
+    const window = Math.max(1, Math.round(LEVEL_WINDOW_S * this.adapter.sampleRate))
+    for (let start = 0; start + window <= samples.length; start += window) {
+      let sumSq = 0
+      for (let i = start; i < start + window; i++) sumSq += samples[i] * samples[i]
+      if (10 * Math.log10(sumSq / window) > VOICED_FLOOR_DB) {
+        segment.levelSumSq += sumSq
+        segment.levelCount += window
+      }
+    }
+    if (this.levelKnown(segment)) this.applyMeasuredLevel(ctx, segment)
+  }
+
+  private applyMeasuredLevel(ctx: AudioContext, segment: ScheduledSegment): void {
+    if (!segment.gain || segment.levelCount === 0) return
+    const rmsDb = 10 * Math.log10(segment.levelSumSq / segment.levelCount)
+    const gainDb = Math.max(-LEVEL_MAX_DB, Math.min(LEVEL_MAX_DB, TARGET_RMS_DB - rmsDb))
+    const level = 10 ** (gainDb / 20)
+    this.lastLevel = level
+    if (Math.abs(level - segment.level) <= 1e-3) return
+    segment.level = level
+    if (segment.startTime === null) segment.gain.gain.value = level
+    else segment.gain.gain.setTargetAtTime(level, ctx.currentTime, LEVEL_RAMP_S)
+  }
+
   private handleEvent(event: TtsEvent): void {
     if (this.isTerminal) return
     switch (event.type) {
       case 'flushed': {
         const segment = this.segments[this.receiving]
-        if (segment) segment.flushed = true
+        if (segment) {
+          // A short segment may never reach the measuring threshold: level
+          // it on what there is, and let it go.
+          if (segment.held.length > 0 && this.ctx) {
+            this.applyMeasuredLevel(this.ctx, segment)
+            this.releaseHeld(this.ctx, segment)
+          }
+          segment.flushed = true
+        }
         this.receiving++
         this.pump()
         this.maybeFinish()
@@ -300,8 +458,17 @@ export class SpeechPlayer {
       case 'closed':
         // The socket is closed on our side only once every segment is in;
         // any earlier close means the rest of the reply will never arrive.
-        if (this.receiving < this.segments.length || !this.ended) {
+        if (this.receiving < this.segments.length) {
           this.fail(new Error('Text-to-speech connection closed before the reply finished'))
+        } else if (!this.ended) {
+          if (!this.finishOnIdleClose) {
+            this.fail(new Error('Text-to-speech connection closed before the reply finished'))
+            break
+          }
+          // Idle close between segments of a streaming reply: nothing queued
+          // is lost. Finish once what was scheduled has played.
+          this.ended = true
+          this.maybeFinish()
         }
         break
       case 'error':
@@ -334,6 +501,9 @@ export class SpeechPlayer {
 
   private fail(error: Error): void {
     if (this.isTerminal) return
+    // Pin the cursor while the clock is still there: the reader hands the
+    // words past it to the next player.
+    this.getWordCursor()
     this.cleanup()
     this.setStatus('error', error)
   }

@@ -1,4 +1,5 @@
 
+import { useIsVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
 import { useMessages } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
@@ -75,6 +76,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
   // disagree with the sidebar/header. It also covers the kinds the old
   // per-type list silently omitted: script_run, computer_use, and
   // capability_review used to read as "Working…" while a card was parked.
+  const voiceModeActive = useIsVoiceModeActive(sessionId)
   const isAwaitingInput = isActive &&
     (pendingUserRequests ?? []).some((r) => r.blocking && !r.autoApproved)
   const { data: messages } = useMessages(sessionId, agentSlug)
@@ -281,6 +283,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
       orbState={orbState}
       elapsed={elapsed}
       isAwaitingInput={isAwaitingInput}
+      detached={voiceModeActive}
       computerUse={computerUseApp ? {
         app: computerUseApp,
         iconBase64: computerUseAppIcon,

@@ -1,7 +1,7 @@
 import type { ComponentType, ReactNode } from 'react'
 import type { ApiMessage } from '@shared/lib/types/api'
 
-export type UserMessageKind = 'system' | 'interrupt' | 'compact' | 'slash' | 'plain'
+export type UserMessageKind = 'system' | 'voice-mode' | 'interrupt' | 'compact' | 'slash' | 'plain'
 
 export interface UserMessageRenderProps {
   /** Bubble text after the structured blocks (sender, files, folders) are peeled. */
@@ -33,7 +33,8 @@ export interface UserMessageKindSpec {
   /**
    * 'bubble' (default) draws Render inside the grey user bubble with its
    * context menu. 'bare' hands Render the whole row slot: no bubble, no menu,
-   * for markers that are not something the person said.
+   * for markers that are not something the person said. 'row' hands it the
+   * entire row, edge to edge, for boundaries drawn across the transcript.
    */
-  chrome?: 'bubble' | 'bare'
+  chrome?: 'bubble' | 'bare' | 'row'
 }

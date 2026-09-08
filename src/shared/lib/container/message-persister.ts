@@ -1115,7 +1115,8 @@ class MessagePersister {
     if (!state?.isRecovering) return false
     const text = message.text.trim()
     if (!text) return true
-    const entry = { uuid: message.uuid, text }
+    const entry: CoalescedUserMessage = { uuid: message.uuid, text }
+    if (message.shouldQuery === false) entry.shouldQuery = false
     state.coalescedUserMessages = state.coalescedUserMessages
       ? [...state.coalescedUserMessages, entry]
       : [entry]

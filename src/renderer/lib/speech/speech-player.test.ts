@@ -27,6 +27,13 @@ class FakeAdapter implements TtsAdapter {
   pushAudio(seconds: number): void {
     this.audioCb?.(new ArrayBuffer(Math.round(seconds * SAMPLE_RATE) * 2))
   }
+  /** Push `seconds` of a square wave at `amplitude` (0..1), whose RMS is the amplitude. */
+  pushTone(seconds: number, amplitude: number): void {
+    const samples = new Int16Array(Math.round(seconds * SAMPLE_RATE))
+    const value = Math.round(amplitude * 32767)
+    for (let i = 0; i < samples.length; i++) samples[i] = i % 2 === 0 ? value : -value
+    this.audioCb?.(samples.buffer)
+  }
   pushFlushed(): void {
     this.eventCb?.({ type: 'flushed', sequenceId: 0 })
   }
@@ -42,12 +49,19 @@ class FakeAudioContext {
   resume = vi.fn(async () => { this.state = 'running' })
   suspend = vi.fn(async () => { this.state = 'suspended' })
   close = vi.fn(async () => { this.closed = true })
+  gains: Array<{ gain: { value: number; setTargetAtTime: ReturnType<typeof vi.fn> }; connect: ReturnType<typeof vi.fn> }> = []
+  createGain() {
+    const node = { gain: { value: 1, setTargetAtTime: vi.fn() }, connect: vi.fn() }
+    this.gains.push(node)
+    return node as unknown as GainNode
+  }
   createBuffer(_channels: number, length: number, sampleRate: number) {
     return {
       duration: length / sampleRate,
       copyToChannel: vi.fn(),
     } as unknown as AudioBuffer
   }
+  sources: Array<{ connect: ReturnType<typeof vi.fn> }> = []
   createBufferSource() {
     const ctx = this
     const source = {
@@ -57,9 +71,12 @@ class FakeAudioContext {
         ctx.scheduled.push({ at, duration: source.buffer!.duration })
       },
     }
+    this.sources.push(source)
     return source as unknown as AudioBufferSourceNode
   }
 }
+
+const db = (linear: number) => 20 * Math.log10(linear)
 
 function words(text: string): SpokenWord[] {
   return text.split(/\s+/).filter(Boolean).map((t) => ({ text: t, blockEnd: false }))
@@ -324,8 +341,21 @@ describe('SpeechPlayer', () => {
     player.append(words('Hi there friend.'))
     adapter.audioCb?.(new Uint8Array([0, 1, 2]).buffer) // 1.5 samples
     adapter.audioCb?.(new Uint8Array([3, 4, 5]).buffer) // + 1.5 → 3 samples total
+    adapter.pushFlushed() // too little to measure a level: released on flush
     const samples = ctx.scheduled.map((s) => Math.round(s.duration * SAMPLE_RATE))
     expect(samples).toEqual([1, 2])
+  })
+
+  it('a failure pins the cursor where playback got to', () => {
+    const { adapter, ctx, player } = setup()
+    player.start()
+    player.append(words('One two three four. Five six seven eight.'))
+    adapter.pushTone(1, 0.05)
+    adapter.pushFlushed()
+    ctx.currentTime = 0.55 // halfway through the first segment's second
+    adapter.eventCb?.({ type: 'error', error: new Error('boom') })
+    expect(player.status).toBe('error')
+    expect(player.getWordCursor()).toBeCloseTo(2, 0)
   })
 
   it('resumes a suspended audio context', () => {
@@ -333,5 +363,228 @@ describe('SpeechPlayer', () => {
     ctx.state = 'suspended'
     player.start()
     expect(ctx.resume).toHaveBeenCalled()
+  })
+})
+
+describe('SpeechPlayer leveling', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  /** The gain node made for segment `index` (gains[0] is the master). */
+  const segmentGain = (ctx: FakeAudioContext, index: number) => ctx.gains[index + 1]
+  /** The gain a segment is at: set outright before it is scheduled, ramped after. */
+  const lastTarget = (gain: FakeAudioContext['gains'][number]) => (gain.gain.setTargetAtTime.mock.lastCall?.[0] as number | undefined) ?? gain.gain.value
+
+  it('brings a quiet sentence up and a loud one down, within the cap', () => {
+    const { adapter, ctx, player } = setup()
+    player.start()
+    player.append(words('Quiet one here. Loud one here.'))
+    // -34 dBFS: 11 dB under target, so the boost is capped at +6 dB.
+    adapter.pushTone(0.5, 0.02)
+    expect(db(lastTarget(segmentGain(ctx, 0)))).toBeCloseTo(6, 1)
+    adapter.pushFlushed()
+    // -14 dBFS: 9 dB over target, cut capped at -6 dB.
+    adapter.pushTone(0.5, 0.2)
+    expect(db(lastTarget(segmentGain(ctx, 1)))).toBeCloseTo(-6, 1)
+    // Each chunk plays through its own segment's gain, which feeds the master.
+    expect(ctx.sources[0].connect).toHaveBeenCalledWith(segmentGain(ctx, 0))
+    expect(ctx.sources[1].connect).toHaveBeenCalledWith(segmentGain(ctx, 1))
+    expect(segmentGain(ctx, 0).connect).toHaveBeenCalledWith(ctx.gains[0])
+  })
+
+  it('lands a moderately quiet sentence on the target exactly', () => {
+    const { adapter, ctx, player } = setup()
+    player.start()
+    player.append(words('One two three.'))
+    adapter.pushTone(0.5, 0.05) // -26 dBFS: 3 dB under target
+    expect(db(lastTarget(segmentGain(ctx, 0)))).toBeCloseTo(3, 1)
+  })
+
+  it('a new sentence starts at the previous one\'s gain until enough of it is heard', () => {
+    const { adapter, ctx, player } = setup()
+    player.start()
+    player.append(words('First one here. Second one here.'))
+    adapter.pushTone(0.5, 0.05)
+    const first = lastTarget(segmentGain(ctx, 0))
+    adapter.pushFlushed()
+    // 100 ms of the next sentence: too little to judge, so it inherits.
+    adapter.pushTone(0.1, 0.2)
+    expect(segmentGain(ctx, 1).gain.value).toBeCloseTo(first, 5)
+    expect(segmentGain(ctx, 1).gain.setTargetAtTime).not.toHaveBeenCalled()
+    adapter.pushTone(0.15, 0.2)
+    expect(db(lastTarget(segmentGain(ctx, 1)))).toBeCloseTo(-6, 1)
+  })
+
+  it('pauses inside a sentence do not count toward its level, and silence alone sets nothing', () => {
+    const { adapter, ctx, player } = setup()
+    player.start()
+    player.append(words('One two three.'))
+    adapter.pushAudio(1)
+    expect(segmentGain(ctx, 0).gain.setTargetAtTime).not.toHaveBeenCalled()
+    adapter.pushTone(0.3, 0.05)
+    adapter.pushAudio(2) // a long trailing pause would otherwise read as a very quiet sentence
+    expect(db(lastTarget(segmentGain(ctx, 0)))).toBeCloseTo(3, 1)
+  })
+
+  it('holds a sentence back until its level is known, then plays it at its own gain from the first sample', () => {
+    const { adapter, ctx, player, statuses } = setup()
+    player.start()
+    player.append(words('One two three four.'))
+    adapter.pushTone(0.1, 0.02)
+    expect(ctx.scheduled).toHaveLength(0)
+    expect(statuses).toEqual([])
+    adapter.pushTone(0.15, 0.02)
+    // Both chunks go out together, at +6 dB, set before anything was scheduled.
+    expect(ctx.scheduled).toHaveLength(2)
+    expect(db(segmentGain(ctx, 0).gain.value)).toBeCloseTo(6, 1)
+    expect(segmentGain(ctx, 0).gain.setTargetAtTime).not.toHaveBeenCalled()
+    expect(statuses).toEqual(['speaking'])
+  })
+
+  it('a sentence too short to measure is leveled on what there is when it is flushed', () => {
+    const { adapter, ctx, player } = setup()
+    player.start()
+    player.append(words('Yes, of course.'))
+    adapter.pushTone(0.1, 0.05)
+    expect(ctx.scheduled).toHaveLength(0)
+    adapter.pushFlushed()
+    expect(ctx.scheduled).toHaveLength(1)
+    expect(db(segmentGain(ctx, 0).gain.value)).toBeCloseTo(3, 1)
+  })
+
+  it('a sentence that opens with a long pause is not held for more than half a second', () => {
+    const { adapter, ctx, player } = setup()
+    player.start()
+    player.append(words('One two three.'))
+    adapter.pushAudio(0.3)
+    expect(ctx.scheduled).toHaveLength(0)
+    adapter.pushAudio(0.3)
+    expect(ctx.scheduled).toHaveLength(2)
+    // Its level, once heard, is ramped in rather than set, since it is playing.
+    adapter.pushTone(0.3, 0.05)
+    expect(segmentGain(ctx, 0).gain.setTargetAtTime).toHaveBeenCalled()
+    expect(db(lastTarget(segmentGain(ctx, 0)))).toBeCloseTo(3, 1)
+  })
+
+  it('a sentence already on target is left alone', () => {
+    const { adapter, ctx, player } = setup()
+    player.start()
+    player.append(words('One two three.'))
+    adapter.pushTone(0.5, 10 ** (-23 / 20))
+    expect(segmentGain(ctx, 0).gain.setTargetAtTime).not.toHaveBeenCalled()
+    expect(segmentGain(ctx, 0).gain.value).toBe(1)
+  })
+})
+
+describe('SpeechPlayer audibility', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('is audible only while speaking with audio scheduled ahead of the playhead', () => {
+    const { adapter, ctx, player } = setup()
+    expect(player.isAudible).toBe(false)
+    player.start()
+    player.append(words('One two three.'))
+    // Connected, nothing back yet.
+    expect(player.isAudible).toBe(false)
+    adapter.pushAudio(1)
+    expect(player.isAudible).toBe(true)
+    // The scheduled second has played out and the synthesizer has sent nothing more.
+    ctx.currentTime = 1.5
+    expect(player.isAudible).toBe(false)
+    adapter.pushAudio(1)
+    expect(player.isAudible).toBe(true)
+    player.stop()
+    expect(player.isAudible).toBe(false)
+  })
+})
+
+describe('SpeechPlayer with finishOnIdleClose', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  function setupIdleClose() {
+    const adapter = new FakeAdapter()
+    const ctx = new FakeAudioContext()
+    const statuses: SpeechPlayerStatus[] = []
+    const errors: (Error | undefined)[] = []
+    const player = new SpeechPlayer({
+      adapter,
+      token: 't',
+      voice: { voice: 'v' },
+      finishOnIdleClose: true,
+      onStatus: (s, e) => { statuses.push(s); errors.push(e) },
+      createAudioContext: () => ctx as unknown as AudioContext,
+    })
+    return { adapter, ctx, player, statuses, errors }
+  }
+
+  it('a close once every queued segment is in finishes the player after its audio plays', () => {
+    const { adapter, ctx, player, statuses } = setupIdleClose()
+    player.start()
+    player.append(words('One two three.'))
+    // Not ended: the reply is still streaming, the synthesizer just idled out.
+    adapter.pushAudio(1)
+    adapter.pushFlushed()
+    adapter.eventCb?.({ type: 'closed' })
+    expect(statuses).toEqual(['speaking'])
+    ctx.currentTime = 2
+    vi.advanceTimersByTime(2000)
+    expect(statuses).toEqual(['speaking', 'done'])
+    expect(adapter.closed).toBe(true)
+  })
+
+  it('refuses words after an idle close while its audio plays out, and says so', () => {
+    const { adapter, ctx, player } = setupIdleClose()
+    player.start()
+    player.append(words('One two three.'))
+    adapter.pushAudio(3)
+    adapter.pushFlushed()
+    expect(player.acceptsWords).toBe(true)
+    adapter.eventCb?.({ type: 'closed' })
+    // Still speaking (three seconds are scheduled), but closed to input.
+    expect(player.status).toBe('speaking')
+    expect(player.acceptsWords).toBe(false)
+    player.append(words('Four five six.'))
+    expect(player.totalWords).toBe(3)
+    expect(adapter.sent).not.toContain('speak:Four five six.')
+    ctx.currentTime = 3.2
+    vi.advanceTimersByTime(3300)
+    expect(player.status).toBe('done')
+  })
+
+  it('a close with a segment still outstanding is still an error', () => {
+    const { adapter, player, statuses, errors } = setupIdleClose()
+    player.start()
+    player.append(words('One two three. Four five six.'))
+    adapter.pushAudio(1)
+    adapter.pushFlushed()
+    adapter.eventCb?.({ type: 'closed' })
+    expect(statuses).toEqual(['speaking', 'error'])
+    expect(errors[1]?.message).toMatch(/closed before the reply finished/)
+  })
+})
+
+describe('SpeechPlayer volume', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('routes audio through a gain node and ramps it on setVolume', () => {
+    const { adapter, ctx, player } = setup()
+    player.start()
+    expect(ctx.gains).toHaveLength(1)
+    expect(ctx.gains[0].connect).toHaveBeenCalledWith(ctx.destination)
+    player.append(words('Hello there now.'))
+    player.end()
+    adapter.pushAudio(1)
+    player.setVolume(0.15)
+    expect(ctx.gains[0].gain.setTargetAtTime).toHaveBeenCalledWith(0.15, ctx.currentTime, expect.any(Number))
+  })
+
+  it('a volume set before start applies to the gain node', () => {
+    const { ctx, player } = setup()
+    player.setVolume(0.2)
+    player.start()
+    expect(ctx.gains[0].gain.value).toBe(0.2)
   })
 })

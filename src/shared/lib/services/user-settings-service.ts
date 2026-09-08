@@ -83,12 +83,14 @@ export const agentFolderSettingsWriteSchema = z.object({
  * must not take the user's other settings with it. The voice is a provider
  * voice id, kept as stored: which ids are valid is the configured provider's
  * business, so the token endpoint asks it and falls back from there. The
- * API validates writes strictly instead.
+ * API validates writes strictly instead. The hold sound is the loop voice
+ * mode plays while the agent works; unset means on.
  */
 const userVoiceSettingsSchema = z
   .object({
     ttsVoice: z.string().min(1).optional().catch(undefined),
     ttsSpeed: ttsSpeedSchema.optional().catch(undefined),
+    holdSound: z.boolean().optional().catch(undefined),
   })
   .optional()
   .catch(undefined)
@@ -99,6 +101,7 @@ export const userVoiceSettingsWriteSchema = z.object({
     .object({
       ttsVoice: z.string().min(1).nullable().optional(),
       ttsSpeed: ttsSpeedSchema.optional(),
+      holdSound: z.boolean().optional(),
     })
     .strict()
     .optional(),

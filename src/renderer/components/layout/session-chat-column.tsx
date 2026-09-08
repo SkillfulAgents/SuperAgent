@@ -1,4 +1,5 @@
 import { MessageInput } from '@renderer/components/messages/message-input'
+import { useIsVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
 import { SessionThread } from '@renderer/components/messages/session-thread'
 import { PendingRequestStack } from '@renderer/components/messages/pending-request-stack'
 import { renderPendingRequest, type RenderContext } from '@renderer/components/messages/pending-request-renderer'
@@ -61,6 +62,7 @@ export function SessionChatColumn({
   pendingWakeNote,
 }: SessionChatColumnProps) {
   const { isActive, browserActive, isWaitingBackground } = useMessageStream(sessionId, agentSlug)
+  const voiceModeActive = useIsVoiceModeActive(sessionId)
   // Keep the phone awake (PWA only) while this session is actively working.
   useScreenWakeLock(isActive || isWaitingBackground)
   const { items: pendingRequestItems, count: pendingRequestCount } = usePendingRequests({
@@ -182,13 +184,17 @@ export function SessionChatColumn({
               ) : (
                 <span className="relative z-10" />
               )}
-              <span className="relative z-10 flex items-center gap-1 text-xs text-muted-foreground">
-                <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-xs font-sans leading-none">↵</kbd>
-                <span>Send</span>
-                <span className="mx-1">·</span>
-                <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-xs font-sans leading-none">⇧↵</kbd>
-                <span>New line</span>
-              </span>
+              {voiceModeActive ? (
+                <span className="relative z-10" />
+              ) : (
+                <span className="relative z-10 flex items-center gap-1 text-xs text-muted-foreground">
+                  <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-xs font-sans leading-none">↵</kbd>
+                  <span>Send</span>
+                  <span className="mx-1">·</span>
+                  <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-xs font-sans leading-none">⇧↵</kbd>
+                  <span>New line</span>
+                </span>
+              )}
             </div>
           </ProviderErrorPlacement>
         )

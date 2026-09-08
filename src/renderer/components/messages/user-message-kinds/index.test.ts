@@ -57,9 +57,25 @@ describe('classifyUserText', () => {
     expect(classifyUserText('[SYSTEM] a')).toBe(classifyUserText('[SYSTEM] b'))
   })
 
-  it('lists hidden kinds before visible ones so the visibility filter is order-safe', () => {
-    const firstVisible = USER_MESSAGE_KINDS.findIndex((spec) => !spec.hidden)
-    expect(USER_MESSAGE_KINDS.slice(firstVisible).every((spec) => !spec.hidden)).toBe(true)
+  it('classifies the voice-mode notices as a visible row boundary, ahead of the hidden system prefix', () => {
+    const entered = classifyUserText('[SYSTEM] The user switched to voice mode.\nKeep replies brief.')
+    expect(entered.kind).toBe('voice-mode')
+    expect(entered.hidden).toBe(false)
+    expect(entered.chrome).toBe('row')
+    expect(classifyUserText('[SYSTEM] The user left voice mode.').kind).toBe('voice-mode')
+    // Any other system message stays hidden.
+    expect(classifyUserText('[SYSTEM] The user switched to something else.').kind).toBe('system')
+  })
+
+  it('lists hidden kinds before the other visible ones so the visibility filter is order-safe', () => {
+    // The voice-mode notice is the one visible kind that must precede the
+    // hidden system prefix it specialises; after it, hidden comes first.
+    const rest = USER_MESSAGE_KINDS.filter((spec) => spec.kind !== 'voice-mode')
+    const firstVisible = rest.findIndex((spec) => !spec.hidden)
+    expect(rest.slice(firstVisible).every((spec) => !spec.hidden)).toBe(true)
+    expect(USER_MESSAGE_KINDS.findIndex((spec) => spec.kind === 'voice-mode')).toBeLessThan(
+      USER_MESSAGE_KINDS.findIndex((spec) => spec.kind === 'system'),
+    )
   })
 })
 

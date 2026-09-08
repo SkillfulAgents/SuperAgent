@@ -3760,6 +3760,22 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     })
   })
 
+  it('appends without a turn when shouldQuery is false: no active mark, no queueing, no runtime options', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+
+    const res = await postJson(app, URL, { content: '[SYSTEM] note', shouldQuery: false, model: 'claude-haiku-4-5' })
+    expect(res.status).toBe(201)
+    const body = await res.json()
+    expect(body).toMatchObject({ success: true, queued: false })
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', '[SYSTEM] note', body.uuid, { shouldQuery: false })
+    // No turn starts, so the session must not be left looking busy, and an
+    // append is never "queued" behind one: the agent reads it with its next turn.
+    expect(messagePersister.isSessionActive).not.toHaveBeenCalled()
+    expect(messagePersister.markSessionActive).not.toHaveBeenCalled()
+    expect(messagePersister.cancelAwaitingInput).not.toHaveBeenCalled()
+    expect(updateSessionMetadata).not.toHaveBeenCalled()
+  })
+
   it('does not broadcast when the accepted selection matches the stored metadata', async () => {
     mockIsAuthMode.mockReturnValue(false)
     // Seeded composers re-send their whole selection on every fresh turn; a
@@ -5822,6 +5838,20 @@ describe('user message SSE broadcast — POST /:id/sessions/:sessionId/messages'
     expect(messagePersister.coalesceIfRecovering).toHaveBeenCalledWith('test-agent', 'sess-1', {
       uuid: expect.any(String),
       text: 'keep going',
+    })
+    expect(mockSendMessage).not.toHaveBeenCalled()
+  })
+
+  it('a transcript-only append coalesced during recovery is remembered as one', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    vi.mocked(messagePersister.coalesceIfRecovering).mockReturnValueOnce(true)
+
+    const res = await postJson(app, URL, { content: '[SYSTEM] note', shouldQuery: false })
+    expect(res.status).toBe(201)
+    expect(messagePersister.coalesceIfRecovering).toHaveBeenCalledWith('test-agent', 'sess-1', {
+      uuid: expect.any(String),
+      text: '[SYSTEM] note',
+      shouldQuery: false,
     })
     expect(mockSendMessage).not.toHaveBeenCalled()
   })
@@ -8212,6 +8242,39 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
       dashboardBuilderModel: 'dashboard-model',
       agentEffort: 'medium',
     })
+  })
+
+  it('a session opened by a system notice is named by the first message a person sends, not the notice', async () => {
+    mockLlmMessagesCreate.mockResolvedValue({ content: [{ type: 'text', text: 'Weather Chat' }] })
+
+    const created = await postJson(app, SESSIONS_URL, { message: '[SYSTEM] The user switched to voice mode.' })
+    expect(created.status).toBe(201)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(mockLlmMessagesCreate).not.toHaveBeenCalled()
+    expect(updateSessionName).not.toHaveBeenCalled()
+
+    // A later notice does not name it either.
+    mockSendMessage.mockResolvedValue(undefined)
+    const MESSAGES_URL = '/api/agents/test-agent/sessions/session-123/messages'
+    expect((await postJson(app, MESSAGES_URL, { content: '[SYSTEM] The user left voice mode.', shouldQuery: false })).status).toBe(201)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(updateSessionName).not.toHaveBeenCalled()
+
+    expect((await postJson(app, MESSAGES_URL, { content: 'what is the weather like' })).status).toBe(201)
+    await vi.waitFor(() => expect(updateSessionName).toHaveBeenCalledWith('test-agent', 'session-123', 'Weather Chat'))
+    expect(mockLlmMessagesCreate).toHaveBeenCalledTimes(1)
+    expect(String((mockLlmMessagesCreate.mock.calls[0][0] as { messages: Array<{ content: string }> }).messages[0].content)).toContain('what is the weather like')
+
+    // Named once: the next message leaves it alone.
+    expect((await postJson(app, MESSAGES_URL, { content: 'and tomorrow?' })).status).toBe(201)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(mockLlmMessagesCreate).toHaveBeenCalledTimes(1)
+  })
+
+  it('a session opened by a person is named from that message as before', async () => {
+    mockLlmMessagesCreate.mockResolvedValue({ content: [{ type: 'text', text: 'Greeting' }] })
+    expect((await postJson(app, SESSIONS_URL, { message: 'hello there' })).status).toBe(201)
+    await vi.waitFor(() => expect(updateSessionName).toHaveBeenCalledWith('test-agent', 'session-123', 'Greeting'))
   })
 
   it('falls back to agent preference defaults when the request has no model/effort', async () => {

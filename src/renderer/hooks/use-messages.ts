@@ -296,10 +296,26 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
   }
 }
 
-export function useSendMessage() {
+export function useSendMessage(options: {
+  /** No error toast: the caller handles (or accepts) a failed send. */
+  quiet?: boolean
+} = {}) {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: async (data: { sessionId: string; agentSlug: string; content: string; effort?: EffortLevel; speed?: SpeedLevel; model?: string }) => {
+    ...(options.quiet ? { meta: { skipGlobalErrorToast: true } } : {}),
+    mutationFn: async (data: {
+      sessionId: string
+      agentSlug: string
+      content: string
+      effort?: EffortLevel
+      speed?: SpeedLevel
+      model?: string
+      /**
+       * false appends the message to the transcript for the agent to read
+       * with its next turn, without starting one (the voice-mode notices).
+       */
+      shouldQuery?: boolean
+    }) => {
       const res = await apiFetch(`/api/agents/${data.agentSlug}/sessions/${data.sessionId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -308,6 +324,7 @@ export function useSendMessage() {
           ...(data.effort ? { effort: data.effort } : {}),
           ...(data.speed ? { speed: data.speed } : {}),
           ...(data.model ? { model: data.model } : {}),
+          ...(data.shouldQuery === false ? { shouldQuery: false } : {}),
         }),
       })
       if (!res.ok) throw new Error('Failed to send message')
@@ -316,6 +333,14 @@ export function useSendMessage() {
       return res.json() as Promise<{ success: boolean; uuid: string; queued: boolean }>
     },
     onSuccess: (result, variables) => {
+      if (variables.shouldQuery === false) {
+        // No turn follows an append, so no stream frame triggers the refetch
+        // that shows it. The CLI writes the entry within moments of the POST.
+        const invalidate = () => queryClient.invalidateQueries({ queryKey: ['messages', variables.sessionId, variables.agentSlug] })
+        invalidate()
+        setTimeout(invalidate, 1500)
+        return
+      }
       // Keep every cached spelling of this session detail (canonical agent id
       // or a pre-resolution display slug) aligned with the runtime options the
       // server accepted. Without this, leaving and returning to the session
