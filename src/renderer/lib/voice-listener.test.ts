@@ -16,7 +16,7 @@ interface FakeAdapter {
 
 const stt = vi.hoisted(() => {
   const adapters: FakeAdapter[] = []
-  const captures: Array<{ cleanup: ReturnType<typeof vi.fn>; processor: { onaudioprocess: unknown }; analyser: object }> = []
+  const captures: Array<{ cleanup: ReturnType<typeof vi.fn>; setSink: ReturnType<typeof vi.fn>; analyser: object }> = []
   const tracks: Array<{ stop: ReturnType<typeof vi.fn> }> = []
   return {
     adapters,
@@ -50,7 +50,7 @@ const stt = vi.hoisted(() => {
       return { getTracks: () => [track] }
     }),
     startAudioCapture: vi.fn(async () => {
-      const capture = { cleanup: vi.fn(), processor: { onaudioprocess: null as unknown }, analyser: { fftSize: 256 } }
+      const capture = { cleanup: vi.fn(), setSink: vi.fn(), analyser: { fftSize: 256 } }
       captures.push(capture)
       return capture
     }),
@@ -171,6 +171,8 @@ describe('VoiceListener', () => {
     expect(ev.onError).not.toHaveBeenCalled()
     expect(listener.utterance).toBe('so far')
     expect(stt.captures).toHaveLength(1)
+    // The same mic now feeds the new socket.
+    expect(stt.captures[0].setSink).toHaveBeenCalledWith(stt.adapters[1])
     expect(listener.isRunning).toBe(true)
 
     // The new socket carries the transcript on.

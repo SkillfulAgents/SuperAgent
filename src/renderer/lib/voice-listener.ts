@@ -2,7 +2,6 @@ import { apiFetch } from '@renderer/lib/api'
 import {
   acquireMicStream,
   createSttAdapter,
-  float32ToInt16,
   startAudioCapture,
   type AudioCaptureHandle,
   type SttAdapter,
@@ -235,13 +234,7 @@ export class VoiceListener {
       }
       this.adapter = adapter
       // Re-point the running capture at the new adapter.
-      const capture = this.capture
-      if (capture) {
-        capture.processor.onaudioprocess = (e) => {
-          const float32 = e.inputBuffer.getChannelData(0)
-          adapter.sendAudio(float32ToInt16(float32).buffer as ArrayBuffer)
-        }
-      }
+      this.capture?.setSink(adapter)
     } catch (err) {
       if (generation !== this.generation) return
       this.stop()

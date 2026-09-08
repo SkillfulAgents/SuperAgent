@@ -477,12 +477,92 @@ export function pcm16ToFloat32(buffer: ArrayBuffer): Float32Array {
   return float32
 }
 
+/** Where captured audio goes: an STT or voice-agent adapter. */
+export interface AudioSink {
+  sendAudio(chunk: ArrayBuffer): void
+}
+
 export interface AudioCaptureHandle {
   stream: MediaStream
   audioContext: AudioContext
-  processor: ScriptProcessorNode
   analyser: AnalyserNode
+  /** Redirect the captured audio (a reconnected adapter), or drop it (null). */
+  setSink: (sink: AudioSink | null) => void
   cleanup: () => void
+}
+
+/** Samples per chunk handed to the sink: 128 ms at 16 kHz, as the ScriptProcessor always sent. */
+const CAPTURE_CHUNK_SAMPLES = 2048
+
+/**
+ * The capture worklet: gathers the 128-frame render quanta into chunks and
+ * posts each one. Runs on the audio thread, so it keeps up where a
+ * ScriptProcessor (main thread) does not: Safari starves the latter down to
+ * a fifth of its callbacks, and the transcript comes out as fragments.
+ */
+const CAPTURE_WORKLET_SOURCE = `
+class PcmCaptureProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super()
+    this.buffer = new Float32Array(${CAPTURE_CHUNK_SAMPLES})
+    this.filled = 0
+  }
+  process(inputs) {
+    const channel = inputs[0] && inputs[0][0]
+    if (channel) {
+      for (let i = 0; i < channel.length; i++) {
+        this.buffer[this.filled++] = channel[i]
+        if (this.filled === this.buffer.length) {
+          const chunk = this.buffer
+          this.buffer = new Float32Array(chunk.length)
+          this.filled = 0
+          this.port.postMessage(chunk, [chunk.buffer])
+        }
+      }
+    }
+    return true
+  }
+}
+registerProcessor('pcm-capture', PcmCaptureProcessor)
+`
+let captureWorkletUrl: string | null = null
+
+interface CaptureNode {
+  node: AudioNode
+  disconnect: () => void
+}
+
+/**
+ * The node that hands captured samples to `onChunk`: an AudioWorklet where
+ * the browser has one, else the deprecated ScriptProcessor.
+ */
+async function createCaptureNode(audioContext: AudioContext, onChunk: (samples: Float32Array) => void): Promise<CaptureNode> {
+  if (audioContext.audioWorklet && typeof AudioWorkletNode !== 'undefined') {
+    try {
+      captureWorkletUrl ??= URL.createObjectURL(new Blob([CAPTURE_WORKLET_SOURCE], { type: 'application/javascript' }))
+      await audioContext.audioWorklet.addModule(captureWorkletUrl)
+      const node = new AudioWorkletNode(audioContext, 'pcm-capture', { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1 })
+      node.port.onmessage = (event: MessageEvent<Float32Array>) => onChunk(event.data)
+      return {
+        node,
+        disconnect: () => {
+          node.port.onmessage = null
+          node.disconnect()
+        },
+      }
+    } catch (err) {
+      console.warn('Audio capture worklet unavailable, falling back to ScriptProcessor:', err)
+    }
+  }
+  const processor = audioContext.createScriptProcessor(CAPTURE_CHUNK_SAMPLES, 1, 1)
+  processor.onaudioprocess = (e) => onChunk(e.inputBuffer.getChannelData(0))
+  return {
+    node: processor,
+    disconnect: () => {
+      processor.onaudioprocess = null
+      processor.disconnect()
+    },
+  }
 }
 
 /**
@@ -504,19 +584,19 @@ export async function acquireMicStream(): Promise<MediaStream> {
 }
 
 /**
- * Set up microphone capture and pipe PCM audio chunks to an SttAdapter.
- * Returns handles for the resources and a cleanup function. The caller owns
- * the passed-in stream (acquire via acquireMicStream) and is responsible for
- * releasing it if this rejects; on success the returned cleanup() stops it.
- *
- * TODO: Migrate from deprecated createScriptProcessor to AudioWorkletNode.
+ * Set up microphone capture and pipe 16-bit PCM chunks to `sink` (an STT or
+ * voice-agent adapter), at the sink's sample rate (16 kHz unless it says
+ * otherwise). Returns handles for the resources and a cleanup function. The
+ * caller owns the passed-in stream (acquire via acquireMicStream) and is
+ * responsible for releasing it if this rejects; on success the returned
+ * cleanup() stops it.
  */
 export async function startAudioCapture(
-  adapter: SttAdapter,
+  sink: AudioSink & { readonly sampleRate?: number },
   stream: MediaStream,
   options?: { withAnalyser?: boolean },
 ): Promise<AudioCaptureHandle> {
-  const sampleRate = adapter.sampleRate ?? 16000
+  const sampleRate = sink.sampleRate ?? 16000
 
   const audioContext = new AudioContext({ sampleRate })
   // The context may start suspended if created outside a synchronous user-gesture
@@ -533,20 +613,27 @@ export async function startAudioCapture(
     source.connect(analyser)
   }
 
-  const processor = audioContext.createScriptProcessor(2048, 1, 1)
-  processor.onaudioprocess = (e) => {
-    const float32 = e.inputBuffer.getChannelData(0)
-    adapter.sendAudio(float32ToInt16(float32).buffer as ArrayBuffer)
-  }
-
-  source.connect(processor)
-  processor.connect(audioContext.destination)
+  let currentSink: AudioSink | null = sink
+  const capture = await createCaptureNode(audioContext, (samples) => {
+    currentSink?.sendAudio(float32ToInt16(samples).buffer as ArrayBuffer)
+  })
+  source.connect(capture.node)
+  capture.node.connect(audioContext.destination)
 
   const cleanup = () => {
-    processor.disconnect()
+    currentSink = null
+    capture.disconnect()
     audioContext.close()
     stream.getTracks().forEach(t => t.stop())
   }
 
-  return { stream, audioContext, processor, analyser, cleanup }
+  return {
+    stream,
+    audioContext,
+    analyser,
+    setSink: (next) => {
+      currentSink = next
+    },
+    cleanup,
+  }
 }
