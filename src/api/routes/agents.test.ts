@@ -183,6 +183,7 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     markSessionActive: vi.fn(),
     markSessionInterrupted: vi.fn(),
     getTurnGeneration: vi.fn(() => 0),
+    isSessionWaitingBackground: vi.fn(() => false),
     cancelAwaitingInput: vi.fn(),
     completeInputRequest: vi.fn(),
     completeCapabilityReview: vi.fn(),

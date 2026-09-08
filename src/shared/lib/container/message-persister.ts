@@ -208,6 +208,11 @@ interface StreamingState {
   // Pending settle after the last background task was stopped by the user;
   // see scheduleSettleAfterStop.
   settleAfterStopTimer: ReturnType<typeof setTimeout> | null
+  // The turn's output has ended and the session is active only for the
+  // background work still open (what a `session_waiting_background` frame
+  // told the live clients). Cleared when a turn starts. A client that connects
+  // now reads it from the `connected` snapshot, since it missed the frame.
+  waitingBackground: boolean
   isRecovering: boolean // Mid-turn death claimed for resume; skip session_error until resume fails
   coalescedUserMessages?: CoalescedUserMessage[] // User texts sent while recovering; delivered with their uuids
   isCompacting: boolean // True while compaction is in progress, cleared on compact completion
@@ -592,6 +597,7 @@ class MessagePersister {
       runtimeState: prior?.runtimeState ?? null,
       turnGeneration: prior?.turnGeneration ?? 0,
       settleAfterStopTimer: null,
+      waitingBackground: prior?.waitingBackground ?? false,
       isRecovering: prior?.isRecovering ?? false,
       coalescedUserMessages: prior?.coalescedUserMessages,
       isCompacting: false,
@@ -1060,6 +1066,18 @@ class MessagePersister {
   }
 
   /**
+   * True while the session is active only for open background work: the
+   * turn's output already ended. What a live client learned from the
+   * `session_waiting_background` frame; a late-joining client gets it in the
+   * `connected` snapshot. Background tasks alone do not mean this — a turn
+   * can still be streaming while one runs.
+   */
+  isSessionWaitingBackground(agentSlug: string, sessionId: string): boolean {
+    const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
+    return !!state && state.isActive && state.waitingBackground
+  }
+
+  /**
    * The generation of the turn an interrupt sent now would stop. Callers read
    * it before the container call and hand it to markSessionInterrupted, which
    * treats a higher generation afterwards as a turn that started after the
@@ -1359,6 +1377,7 @@ class MessagePersister {
     if (state?.isActive) {
       // Only the turn ended. The renderer resets its streaming state off this
       // frame the way it does off session_idle, but keeps the task list.
+      state.waitingBackground = true
       this.broadcastToSSE(agentSlug, sessionId, {
         type: 'session_waiting_background',
         interrupted: true,
@@ -1456,6 +1475,7 @@ class MessagePersister {
         runtimeState: null,
         turnGeneration: 0,
         settleAfterStopTimer: null,
+        waitingBackground: false,
         isRecovering: false,
         isCompacting: false,
         agentSlug,
@@ -1502,6 +1522,7 @@ class MessagePersister {
     state.isActive = true
     // Message-scoped: true for a queued message just as much as a new turn.
     state.isInterrupted = false // Reset interrupted flag on new message
+    state.waitingBackground = false
     this.cancelSettleAfterStop(state)
     state.isAwaitingInput = false // Reset awaiting input on new message
     state.lastApiErrorCode = null // Clear previous API error on new message
@@ -2444,6 +2465,7 @@ class MessagePersister {
                 // alive and surface it as waiting-on-background; the per-task
                 // terminal signal (task_notification / task_updated) clears each
                 // task, and the subsequent, truly-settled idle finalizes.
+                state.waitingBackground = true
                 this.broadcastToSSE(agentSlug, sessionId, {
                   type: 'session_waiting_background',
                   backgroundTaskCount: openBackgroundWork,
@@ -2474,6 +2496,7 @@ class MessagePersister {
             // (After a soft interrupt the process lives on, and its next turn
             // is the background-task wake — with no user send to clear this.)
             state.isInterrupted = false
+            state.waitingBackground = false
             // The wake turn a stopped task was waiting on: the runtime will
             // settle this session itself.
             this.cancelSettleAfterStop(state)
@@ -2718,6 +2741,7 @@ class MessagePersister {
         {
           const openBackgroundWork = this.openBackgroundWorkCount(state)
           if (openBackgroundWork > 0) {
+            state.waitingBackground = true
             this.broadcastToSSE(agentSlug, sessionId, {
               type: 'session_waiting_background',
               backgroundTaskCount: openBackgroundWork,

@@ -103,6 +103,33 @@ test.describe('Stop with background tasks', () => {
     await proveStoppedTaskStayedDead()
   })
 
+  test('Stop still offers to keep the task after a reload mid-response', async ({ page }) => {
+    // A client that connects while the turn is still streaming (a reload, or
+    // a fresh session page that attaches after the launch) learns about the
+    // task from the connect snapshot. That snapshot must not read as "only
+    // background work remains", or Stop would skip the response.
+    test.slow()
+    await sessionPage.sendMessage('run background and keep working')
+    await expect(page.getByTestId('background-task-row')).toBeVisible({ timeout: 10000 })
+
+    await page.reload()
+    const row = page.getByTestId('background-task-row')
+    await expect(row).toBeVisible({ timeout: 10000 })
+
+    await sessionPage.getStopButton().click()
+    const dialog = page.getByTestId('stop-session-dialog')
+    await expect(dialog).toBeVisible()
+    await expect(dialog).toContainText('Stop the background task too?')
+    await page.getByTestId('stop-session-keep-tasks').click()
+    await expect(dialog).not.toBeVisible()
+
+    await expect(sessionPage.getStopButton()).toHaveAttribute('aria-label', 'Stop background processes', { timeout: 10000 })
+    await expect(
+      sessionPage.getAssistantMessages().filter({ hasText: 'Background command completed' })
+    ).toBeVisible({ timeout: 30000 })
+    await sessionPage.waitForInputEnabled(15000)
+  })
+
   test('Stop mid-response can keep the task, which then finishes and wakes the agent', async ({ page }) => {
     // The task runs 6s past its launch and the test waits for it to land.
     test.slow()

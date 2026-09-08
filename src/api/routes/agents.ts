@@ -3232,10 +3232,14 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
         }
       }
       const backgroundTasks = messagePersister.getActiveBackgroundTasks(agentSlug, sessionId)
+      // A background task can run while the turn is still streaming, so the
+      // task list alone does not say whether the turn's output has ended.
+      const isWaitingBackground = messagePersister.isSessionWaitingBackground(agentSlug, sessionId)
       await stream.writeSSE({
         data: JSON.stringify({
           type: 'connected',
           isActive,
+          isWaitingBackground,
           slashCommands: slashCommands.length > 0 ? slashCommands : undefined,
           backgroundTasks: backgroundTasks.length > 0 ? backgroundTasks : undefined,
         }),

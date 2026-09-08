@@ -7326,6 +7326,30 @@ describe('MessagePersister', () => {
       expect(messagePersister.isSessionAwaitingInput(AGENT_SLUG, SESSION_ID)).toBe(true)
     })
 
+    it('tells a late-joining client whether the turn output ended or is still running alongside a task', async () => {
+      // A task launched mid-turn does not make the session "waiting on
+      // background work": the turn is still streaming. Only the turn's end
+      // does, and the next turn (a send or a wake) undoes it.
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      startBackgroundTask('bg-1')
+      expect(messagePersister.isSessionWaitingBackground(AGENT_SLUG, SESSION_ID)).toBe(false)
+
+      mockClient._sendMessage({ type: 'result', subtype: 'success', is_error: false })
+      expect(messagePersister.isSessionWaitingBackground(AGENT_SLUG, SESSION_ID)).toBe(true)
+
+      runtime('running')
+      expect(messagePersister.isSessionWaitingBackground(AGENT_SLUG, SESSION_ID)).toBe(false)
+
+      mockClient._sendMessage({ type: 'result', subtype: 'success', is_error: false })
+      expect(messagePersister.isSessionWaitingBackground(AGENT_SLUG, SESSION_ID)).toBe(true)
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      expect(messagePersister.isSessionWaitingBackground(AGENT_SLUG, SESSION_ID)).toBe(false)
+
+      // A soft stop that spares the task ends the turn the same way.
+      await messagePersister.markSessionInterrupted(AGENT_SLUG, SESSION_ID, { processKept: true })
+      expect(messagePersister.isSessionWaitingBackground(AGENT_SLUG, SESSION_ID)).toBe(true)
+    })
+
     it('keeps a background subagent but drops the foreground one', async () => {
       messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
       for (const toolId of ['task-fg', 'task-bg']) {

@@ -141,6 +141,31 @@ describe('useMessageStream', () => {
     expect(result.current.isStreaming).toBe(false)
   })
 
+  it('reads waiting-background from the connected snapshot, not from the task list alone', async () => {
+    // A late-joining client can find a background task that a still-streaming
+    // turn launched. Only the snapshot's own word marks the turn as over.
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+    const backgroundTasks = [{ taskId: 'bg-1', startedAt: Date.now() }]
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true, backgroundTasks })
+    })
+    expect(result.current.isActive).toBe(true)
+    expect(result.current.backgroundTasks).toEqual(backgroundTasks)
+    expect(result.current.isWaitingBackground).toBe(false)
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'connected', isActive: true, isWaitingBackground: true, backgroundTasks,
+      })
+    })
+    expect(result.current.isWaitingBackground).toBe(true)
+  })
+
   it('handles session_active event', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(
@@ -3016,7 +3041,7 @@ describe('useMessageStream', () => {
     expect(result.current.isWaitingBackground).toBe(false)
   })
 
-  it('restores isWaitingBackground from connected event with backgroundTasks', async () => {
+  it('restores isWaitingBackground from a connected event that says the turn output ended', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(
       () => useMessageStream('session-1', 'agent-1'),
@@ -3027,6 +3052,7 @@ describe('useMessageStream', () => {
       MockEventSource.instances[0].simulateMessage({
         type: 'connected',
         isActive: true,
+        isWaitingBackground: true,
         backgroundTasks: [{ taskId: 'bg-1', startedAt: 500 }],
       })
     })
