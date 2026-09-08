@@ -10,7 +10,7 @@ import {
 import { openExternalUrl } from '@renderer/lib/open-external'
 
 export const BILLING_EMBED_MESSAGE_TYPE = 'gamut-billing-embed'
-type BillingEmbedEvent = 'ready' | 'billing-updated' | 'session-expired' | 'resize'
+type BillingEmbedEvent = 'ready' | 'billing-updated' | 'session-expired' | 'resize' | 'open-billing'
 
 const FRAME_MIN_HEIGHT = 64
 const FRAME_MAX_HEIGHT = 640
@@ -31,7 +31,8 @@ function readEmbedMessage(data: unknown): EmbedMessage | null {
     record.event !== 'ready' &&
     record.event !== 'billing-updated' &&
     record.event !== 'session-expired' &&
-    record.event !== 'resize'
+    record.event !== 'resize' &&
+    record.event !== 'open-billing'
   ) {
     return null
   }
@@ -48,6 +49,9 @@ function clampHeight(height: number): number {
 
 export interface BillingEmbedFrameProps {
   intent?: 'topup'
+  cta?: 'add_card'
+  launcher?: boolean
+  onOpenBilling?: () => void
   view: BillingEmbedView
   orgId: string | null
   platformBaseUrl: string | null
@@ -66,6 +70,9 @@ const FAILURE_MESSAGE: Record<Failure, string> = {
 
 export function BillingEmbedFrame({
   intent,
+  cta,
+  launcher = false,
+  onOpenBilling,
   view,
   orgId,
   platformBaseUrl,
@@ -96,13 +103,14 @@ export function BillingEmbedFrame({
       if (!message) return
       if (orgId && message.orgId !== orgId) return
       if (message.event === 'ready') setFrameReady(true)
-      else if (message.event === 'billing-updated') onBillingUpdated()
+      else if (message.event === 'open-billing' && launcher) onOpenBilling?.()
+      else if (message.event === 'billing-updated' && !launcher) onBillingUpdated()
       else if (message.event === 'session-expired') setFailure('expired')
       else if (message.event === 'resize' && message.height !== undefined) setHeight(clampHeight(message.height))
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [orgId, platformOrigin, onBillingUpdated])
+  }, [orgId, platformOrigin, onBillingUpdated, launcher, onOpenBilling])
 
   useEffect(() => {
     if (frameReady || failure) return
@@ -112,14 +120,26 @@ export function BillingEmbedFrame({
 
   const src =
     orgId && platformOrigin
-      ? buildBillingEmbedUrl(platformBaseUrl, orgId, { view, intent, parent: window.location.origin })
+      ? buildBillingEmbedUrl(platformBaseUrl, orgId, { view, intent, cta, surface: launcher ? 'cta' : undefined, parent: window.location.origin })
       : null
+
+  if (failure && launcher) {
+    return (
+      <Button size="sm" title={FAILURE_MESSAGE[failure]} disabled={!fallbackHref} onClick={() => {
+        if (!fallbackHref) return
+        void openExternalUrl(fallbackHref)
+        onOpenExternal()
+      }}>
+        Open billing in a new tab
+      </Button>
+    )
+  }
 
   return (
     <div
-      className="relative w-full overflow-hidden transition-[height] duration-150"
-      style={{ height: failure ? undefined : height }}
-      data-testid="billing-embed-body"
+      className={launcher ? 'relative w-36 shrink-0 overflow-hidden' : 'relative min-h-0 w-full overflow-hidden'}
+      style={{ height: launcher ? 40 : failure ? undefined : height, maxHeight: launcher ? undefined : 'calc(90dvh - 120px)' }}
+      data-testid={launcher ? 'billing-cta-body' : 'billing-embed-body'}
     >
       {failure ? (
         <div className="flex flex-col items-start gap-3 py-2">
@@ -149,11 +169,11 @@ export function BillingEmbedFrame({
             <iframe
               key={attempt}
               ref={iframeRef}
-              title="Workspace billing"
+              title={launcher ? 'Open workspace billing' : 'Workspace billing'}
               src={src}
-              className="h-full w-full border-0 bg-transparent"
+              className="block h-full w-full border-0 bg-transparent"
               referrerPolicy="strict-origin"
-              data-testid="billing-embed-frame"
+              data-testid={launcher ? 'billing-cta-frame' : 'billing-embed-frame'}
             />
           )}
           {!frameReady && (

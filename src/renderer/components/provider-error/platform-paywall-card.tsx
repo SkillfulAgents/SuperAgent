@@ -1,10 +1,11 @@
-import { useState } from 'react'
-import { Loader2 } from 'lucide-react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { CheckCircle2, Loader2 } from 'lucide-react'
 
 import { extractSubscriptionRequired } from '@shared/lib/llm-provider/platform-error-presentation'
 import { cn } from '@shared/lib/utils/cn'
 import { HomeEmptyClouds } from '@renderer/components/home/home-empty-clouds'
 import { Button } from '@renderer/components/ui/button'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@renderer/components/ui/dialog'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import type { BillingEmbedView } from '@renderer/lib/billing-embed'
 import { isElectron } from '@renderer/lib/env'
@@ -68,7 +69,7 @@ function PaywallActions({
   cta,
   loading,
   handedOff,
-  embedded,
+  embeddedAction,
   onDismiss,
   onHandOff,
   onRecheck,
@@ -76,8 +77,7 @@ function PaywallActions({
   cta: PaywallCta | null
   loading: boolean
   handedOff: boolean
-  /** The billing page is rendered inline below; it carries the CTA itself. */
-  embedded: boolean
+  embeddedAction: ReactNode
   onDismiss: () => void
   onHandOff: () => void
   onRecheck: () => void
@@ -106,7 +106,7 @@ function PaywallActions({
         >
           Recheck
         </Button>
-      ) : cta && !embedded ? (
+      ) : embeddedAction ?? (cta ? (
         <Button
           size="sm"
           disabled={!href}
@@ -119,7 +119,7 @@ function PaywallActions({
         >
           {CTA_LABELS[cta.kind]}
         </Button>
-      ) : null}
+      ) : null)}
     </div>
   )
 }
@@ -130,6 +130,8 @@ function PaywallActions({
 export function PlatformPaywallCard({ message, presentation, children, live = true }: ProviderErrorComponentProps) {
   const [dismissed, setDismissed] = useState(false)
   const [handedOff, setHandedOff] = useState(false)
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const cardRef = useRef<HTMLDivElement>(null)
   const { data: platformAuth } = usePlatformAuthStatus()
   const billing = usePlatformPaywallBilling(
     extractSubscriptionRequired(message),
@@ -142,7 +144,12 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
   const inApp = !isElectron() && platformAuth?.platformControlled === true
   const view = billing.cta ? EMBED_VIEW[billing.cta.kind] : undefined
   const embedded = inApp && view !== undefined
-  if (billing.cleared || dismissed) return <>{children}</>
+  useEffect(() => {
+    if (!billing.cleared || !dialogOpen) return
+    const timer = setTimeout(() => setDialogOpen(false), 1200)
+    return () => clearTimeout(timer)
+  }, [billing.cleared, dialogOpen])
+  if ((billing.cleared && !dialogOpen) || dismissed) return <>{children}</>
 
   const fallback = splitMessage(presentation?.message ?? message)
   const heading = billing.loading ? 'Checking billing' : title(billing.cta, fallback.title)
@@ -151,17 +158,13 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
   return (
     <>
       <div className={cn('relative px-4', billing.blocked ? 'pb-5' : 'pb-2')}>
-        {/* The inline panel makes the card tall enough to cover a centred glow; sit it
-            under the bottom edge so the colour spills out around the card again. */}
-        <HomeEmptyClouds masked={false} fill={embedded ? 1 : 0.6} center={embedded ? { x: '50%', y: '85%' } : undefined} />
+        <HomeEmptyClouds masked={false} fill={0.6} />
         <div
           data-testid="paywall-card"
           data-blocked={billing.blocked}
           data-embedded={embedded}
-          className={cn(
-            'relative flex flex-col gap-3 rounded-xl border bg-card px-5 py-4 shadow-sm',
-            embedded && 'gap-5 pb-6',
-          )}
+          ref={cardRef}
+          className="relative flex flex-col gap-3 rounded-xl border bg-card px-5 py-4 shadow-sm"
         >
           <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
             <div className="min-w-0 flex-1 basis-60">
@@ -172,25 +175,56 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
               cta={billing.cta}
               loading={billing.loading}
               handedOff={handedOff}
-              embedded={embedded}
+              embeddedAction={embedded && billing.cta ? (
+                <BillingEmbedFrame
+                  key={billing.cta.kind}
+                  launcher
+                  cta={billing.cta.kind === 'add_card' ? 'add_card' : undefined}
+                  intent={billing.cta.kind === 'topup' ? 'topup' : undefined}
+                  view={view}
+                  orgId={platformAuth?.orgId ?? null}
+                  platformBaseUrl={platformAuth?.platformBaseUrl ?? null}
+                  fallbackHref={ctaHref(billing.cta)}
+                  onBillingUpdated={billing.recheck}
+                  onOpenBilling={() => setDialogOpen(true)}
+                  onOpenExternal={() => setHandedOff(true)}
+                />
+              ) : null}
               onDismiss={() => setDismissed(true)}
               onHandOff={() => setHandedOff(true)}
               onRecheck={billing.recheck}
             />
           </div>
           {embedded && billing.cta && (
-            // Keyed by view: when a recheck flips the CTA (payment fixed → still needs
-            // credit) the frame remounts and loads the panel that now matches the title.
-            <BillingEmbedFrame
-              key={view}
-              intent={billing.cta.kind === 'topup' ? 'topup' : undefined}
-              view={view}
-              orgId={platformAuth?.orgId ?? null}
-              platformBaseUrl={platformAuth?.platformBaseUrl ?? null}
-              fallbackHref={ctaHref(billing.cta)}
-              onBillingUpdated={billing.recheck}
-              onOpenExternal={() => setHandedOff(true)}
-            />
+            <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+              <DialogContent className="flex w-[calc(100%-2rem)] flex-col overflow-hidden sm:max-w-xl" onCloseAutoFocus={(event) => {
+                event.preventDefault()
+                cardRef.current?.querySelector('iframe')?.focus()
+              }}>
+                <DialogHeader>
+                  <DialogTitle>{billing.cleared ? 'You’re ready to continue' : CTA_LABELS[billing.cta.kind]}</DialogTitle>
+                  <DialogDescription>{billing.cleared ? 'Your workspace billing is up to date.' : detail}</DialogDescription>
+                </DialogHeader>
+                {billing.cleared ? (
+                  <div role="status" className="flex items-center gap-2 py-4 text-sm">
+                    <CheckCircle2 className="h-5 w-5 text-green-600" aria-hidden="true" />
+                    Billing updated successfully.
+                  </div>
+                ) : (
+                  <BillingEmbedFrame
+                    key={view}
+                    cta={billing.cta.kind === 'add_card' ? 'add_card' : undefined}
+                    intent={billing.cta.kind === 'topup' ? 'topup' : undefined}
+                    view={view}
+                    orgId={platformAuth?.orgId ?? null}
+                    platformBaseUrl={platformAuth?.platformBaseUrl ?? null}
+                    fallbackHref={ctaHref(billing.cta)}
+                    onBillingUpdated={billing.recheck}
+                    onOpenExternal={() => setHandedOff(true)}
+                  />
+                )}
+              </DialogContent>
+            </Dialog>
           )}
         </div>
       </div>

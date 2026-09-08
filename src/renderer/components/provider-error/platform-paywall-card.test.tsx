@@ -78,18 +78,18 @@ const PRESENTATION: ProviderErrorPresentation = {
   href: BILLING_URL,
 }
 
-function embedFrame(): HTMLIFrameElement {
-  return screen.getByTestId('billing-embed-frame') as HTMLIFrameElement
+function embedFrame(testId: 'billing-cta-frame' | 'billing-embed-frame' = 'billing-cta-frame'): HTMLIFrameElement {
+  return screen.getByTestId(testId) as HTMLIFrameElement
 }
 
-function embedSrc(): URL {
-  return new URL(embedFrame().src)
+function embedSrc(testId: 'billing-cta-frame' | 'billing-embed-frame' = 'billing-cta-frame'): URL {
+  return new URL(embedFrame(testId).src)
 }
 
-function frameWindow(): Window {
-  const frame = embedFrame()
+function frameWindow(testId: 'billing-cta-frame' | 'billing-embed-frame' = 'billing-cta-frame'): Window {
+  const frame = embedFrame(testId)
   if (frame.contentWindow) return frame.contentWindow
-  const fake = { name: 'billing-embed-frame' } as unknown as Window
+  const fake = { name: testId } as unknown as Window
   Object.defineProperty(frame, 'contentWindow', { configurable: true, value: fake })
   return fake
 }
@@ -99,25 +99,37 @@ function postEmbedMessage(
   event: string,
   extra: Record<string, unknown> = {},
   source?: MessageEventSource | null,
+  testId: 'billing-cta-frame' | 'billing-embed-frame' = 'billing-cta-frame',
 ) {
   act(() => {
     window.dispatchEvent(
       new MessageEvent('message', {
         origin,
-        source: source === undefined ? frameWindow() : source,
+        source: source === undefined ? frameWindow(testId) : source,
         data: { type: 'gamut-billing-embed', orgId: 'org_123', event, ...extra },
       }),
     )
   })
 }
 
-function expectEmbedUrl(expected: { view: string; intent?: string }) {
-  const url = embedSrc()
+function expectEmbedUrl(
+  expected: { view: string; intent?: string; surface?: string; cta?: string },
+  testId: 'billing-cta-frame' | 'billing-embed-frame' = 'billing-cta-frame',
+) {
+  const url = embedSrc(testId)
   expect(url.origin).toBe(PLATFORM_ORIGIN)
   expect(url.pathname).toBe('/embed/billing/org_123')
   expect(url.searchParams.get('parent')).toBe(window.location.origin)
   expect(url.searchParams.get('view')).toBe(expected.view)
   expect(url.searchParams.get('intent')).toBe(expected.intent ?? null)
+  expect(url.searchParams.get('surface')).toBe(expected.surface ?? null)
+  expect(url.searchParams.get('cta')).toBe(expected.cta ?? null)
+}
+
+async function openBillingDialog() {
+  await screen.findByTestId('billing-cta-frame')
+  postEmbedMessage(PLATFORM_ORIGIN, 'open-billing')
+  return screen.findByTestId('billing-embed-frame')
 }
 
 let client: QueryClient
@@ -393,107 +405,146 @@ describe('PlatformPaywallCard', () => {
       platformAuth.platformControlled = true
     })
 
-    it('renders the platform billing page inline, in place of the CTA button', async () => {
+    it('renders the CTA frame in place of the CTA button', async () => {
       renderCard()
-      await screen.findByTestId('billing-embed-frame')
-      expectEmbedUrl({ view: 'topup', intent: 'topup' })
+      await screen.findByTestId('billing-cta-frame')
+      expectEmbedUrl({ view: 'topup', intent: 'topup', surface: 'cta' })
       expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-embedded', 'true')
+      expect(screen.queryByTestId('billing-embed-frame')).not.toBeInTheDocument()
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: 'Add usage' })).not.toBeInTheDocument()
       expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument()
       expect(openExternalUrl).not.toHaveBeenCalled()
     })
 
-    it('hides the loading overlay once the platform page reports ready', async () => {
+    it('hides the loading overlay once the CTA reports ready, without opening the dialog', async () => {
       renderCard()
-      await screen.findByTestId('billing-embed-frame')
+      await screen.findByTestId('billing-cta-frame')
       expect(screen.getByTestId('billing-embed-loading')).toBeInTheDocument()
       postEmbedMessage(PLATFORM_ORIGIN, 'ready')
       expect(screen.queryByTestId('billing-embed-loading')).not.toBeInTheDocument()
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('billing-embed-frame')).not.toBeInTheDocument()
     })
 
     it('keeps the iframe visible under the loading overlay so a Storage Access prompt can be used', async () => {
       renderCard()
-      const frame = await screen.findByTestId('billing-embed-frame')
+      const frame = await screen.findByTestId('billing-cta-frame')
       const overlay = screen.getByTestId('billing-embed-loading')
       expect(overlay).toBeInTheDocument()
       expect(frame).toBeVisible()
       expect(overlay.className).toContain('pointer-events-none')
     })
 
-    it('sizes the frame from the platform resize event, clamped', async () => {
+    it('does not let a CTA resize grow the card', async () => {
       renderCard()
-      await screen.findByTestId('billing-embed-frame')
-      const body = screen.getByTestId('billing-embed-body')
+      await screen.findByTestId('billing-cta-frame')
+      const body = screen.getByTestId('billing-cta-body')
+      expect(body.style.height).toBe('40px')
       postEmbedMessage(PLATFORM_ORIGIN, 'resize', { height: 312.4 })
-      expect(body.style.height).toBe('313px')
+      expect(body.style.height).toBe('40px')
       postEmbedMessage(PLATFORM_ORIGIN, 'resize', { height: 5000 })
+      expect(body.style.height).toBe('40px')
+    })
+
+    it('opens the billing dialog only from a validated open-billing event', async () => {
+      renderCard()
+      await openBillingDialog()
+      expect(screen.getByRole('dialog')).toBeInTheDocument()
+      expectEmbedUrl({ view: 'topup', intent: 'topup' }, 'billing-embed-frame')
+      expect(screen.getByTestId('billing-cta-frame')).toBeInTheDocument()
+    })
+
+    it('ignores open-billing from a hostile origin, a non-iframe source, or another org', async () => {
+      renderCard()
+      await screen.findByTestId('billing-cta-frame')
+      postEmbedMessage(HOSTILE_ORIGIN, 'open-billing')
+      postEmbedMessage(PLATFORM_ORIGIN, 'open-billing', {}, window)
+      postEmbedMessage(PLATFORM_ORIGIN, 'open-billing', { orgId: 'org_other' })
+      await act(async () => {})
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('billing-embed-frame')).not.toBeInTheDocument()
+    })
+
+    it('sizes the dialog frame from the platform resize event, clamped', async () => {
+      renderCard()
+      await openBillingDialog()
+      const body = screen.getByTestId('billing-embed-body')
+      postEmbedMessage(PLATFORM_ORIGIN, 'resize', { height: 312.4 }, undefined, 'billing-embed-frame')
+      expect(body.style.height).toBe('313px')
+      postEmbedMessage(PLATFORM_ORIGIN, 'resize', { height: 5000 }, undefined, 'billing-embed-frame')
       expect(body.style.height).toBe('640px')
-      postEmbedMessage(window.location.origin, 'resize', { height: 200 })
+      postEmbedMessage(window.location.origin, 'resize', { height: 200 }, undefined, 'billing-embed-frame')
       expect(body.style.height).toBe('640px')
     })
 
-    it('rechecks billing on billing-updated from the frame and clears the card', async () => {
+    it('does not recheck from billing-updated on the CTA, and does not close the dialog while still blocked', async () => {
       renderCard()
-      await screen.findByTestId('billing-embed-frame')
-      fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
+      await screen.findByTestId('billing-cta-frame')
+      const before = fetchBilling.mock.calls.length
       postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated')
-      await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
-      expect(screen.getByTestId('composer')).toBeInTheDocument()
-    })
-
-    it('ignores billing-updated from a hostile origin even when the source is the iframe', async () => {
-      renderCard()
-      await screen.findByTestId('billing-embed-frame')
-      const before = fetchBilling.mock.calls.length
-      fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
-      postEmbedMessage(HOSTILE_ORIGIN, 'billing-updated')
       await act(async () => {})
       expect(fetchBilling.mock.calls.length).toBe(before)
-      expect(screen.getByTestId('paywall-card')).toBeInTheDocument()
+
+      await openBillingDialog()
+      postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated', {}, undefined, 'billing-embed-frame')
+      await waitFor(() => expect(fetchBilling.mock.calls.length).toBeGreaterThan(before))
+      expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-blocked', 'true')
+      expect(screen.getByRole('dialog')).toBeInTheDocument()
+      expect(screen.getByTestId('billing-embed-frame')).toBeInTheDocument()
     })
 
-    it('ignores a matching-origin message whose source is not the iframe', async () => {
+    it('shows success in the dialog then closes it 1200ms after billing clears', async () => {
       renderCard()
-      await screen.findByTestId('billing-embed-frame')
-      const before = fetchBilling.mock.calls.length
+      await openBillingDialog()
       fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
-      postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated', {}, window)
-      postEmbedMessage(PLATFORM_ORIGIN, 'ready', {}, window)
-      await act(async () => {})
-      expect(fetchBilling.mock.calls.length).toBe(before)
-      expect(screen.getByTestId('billing-embed-loading')).toBeInTheDocument()
+      const setTimeoutSpy = vi.spyOn(window, 'setTimeout')
+      try {
+        postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated', {}, undefined, 'billing-embed-frame')
+        await screen.findByText('Billing updated successfully.')
+        expect(screen.getByRole('dialog')).toBeInTheDocument()
+        expect(screen.getByTestId('paywall-card')).toBeInTheDocument()
+        const closeTimer = setTimeoutSpy.mock.calls.find(([, delay]) => delay === 1200)
+        expect(closeTimer).toBeDefined()
+        act(() => { (closeTimer![0] as () => void)() })
+        await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
+        expect(screen.getByTestId('composer')).toBeInTheDocument()
+      } finally {
+        setTimeoutSpy.mockRestore()
+      }
     })
 
-    it('ignores messages about another org even from the platform iframe', async () => {
+    it('can close the dialog and reopen it from another validated open-billing event', async () => {
       renderCard()
-      await screen.findByTestId('billing-embed-frame')
-      const before = fetchBilling.mock.calls.length
-      fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
-      postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated', { orgId: 'org_other' })
-      postEmbedMessage(PLATFORM_ORIGIN, 'ready', { orgId: 'org_other' })
-      await act(async () => {})
-      expect(fetchBilling.mock.calls.length).toBe(before)
-      expect(screen.getByTestId('billing-embed-loading')).toBeInTheDocument()
+      await openBillingDialog()
+      act(() => { screen.getByRole('button', { name: 'Close' }).click() })
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+      expect(screen.getByTestId('billing-cta-frame')).toBeInTheDocument()
+      await openBillingDialog()
+      expect(screen.getByRole('dialog')).toBeInTheDocument()
     })
 
-    it('remounts the frame with the panel that matches the CTA after a recheck flips it', async () => {
+    it('remounts the frames with the panel that matches the CTA after a recheck flips it', async () => {
       fetchBilling.mockResolvedValue(billing({ subscription: { status: 'active', paymentStatus: 'past_due', currentPeriodEnd: null } }))
       renderCard()
-      await screen.findByTestId('billing-embed-frame')
-      expectEmbedUrl({ view: 'payment' })
+      await openBillingDialog()
+      expectEmbedUrl({ view: 'payment', surface: 'cta' })
+      expectEmbedUrl({ view: 'payment' }, 'billing-embed-frame')
 
       fetchBilling.mockResolvedValue(billing())
-      postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated')
-      await waitFor(() => expectEmbedUrl({ view: 'topup', intent: 'topup' }))
-      expect(screen.getByText('Add usage credit to resume this answer.')).toBeInTheDocument()
+      postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated', {}, undefined, 'billing-embed-frame')
+      await waitFor(() => expectEmbedUrl({ view: 'topup', intent: 'topup', surface: 'cta' }))
+      expectEmbedUrl({ view: 'topup', intent: 'topup' }, 'billing-embed-frame')
+      expect(screen.getAllByText('Add usage credit to resume this answer.').length).toBeGreaterThan(0)
     })
 
     it('falls back to opening billing externally when the workspace has no org id, then offers a recheck', async () => {
       platformAuth.orgId = null
       renderCard()
       const fallback = await screen.findByRole('button', { name: 'Open billing in a new tab' })
-      expect(screen.getByText('Could not open billing.')).toBeInTheDocument()
-      expect(screen.queryByTestId('billing-embed-frame')).not.toBeInTheDocument()
+      expect(fallback).toHaveAttribute('title', 'Could not open billing.')
+      expect(screen.queryByText('Could not open billing.')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('billing-cta-frame')).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument()
       act(() => { fallback.click() })
       expect(openExternalUrl).toHaveBeenCalledTimes(1)
@@ -504,108 +555,74 @@ describe('PlatformPaywallCard', () => {
     it('falls back when platform base URL is missing', async () => {
       platformAuth.platformBaseUrl = null
       renderCard()
-      expect(await screen.findByText('Could not open billing.')).toBeInTheDocument()
-      expect(screen.queryByTestId('billing-embed-frame')).not.toBeInTheDocument()
-      expect(screen.getByRole('button', { name: 'Open billing in a new tab' })).toBeInTheDocument()
+      const fallback = await screen.findByRole('button', { name: 'Open billing in a new tab' })
+      expect(fallback).toHaveAttribute('title', 'Could not open billing.')
+      expect(screen.queryByTestId('billing-cta-frame')).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument()
     })
 
     it('falls back when platform base URL is not a valid origin', async () => {
       platformAuth.platformBaseUrl = 'not-a-url'
       renderCard()
-      expect(await screen.findByText('Could not open billing.')).toBeInTheDocument()
-      expect(screen.queryByTestId('billing-embed-frame')).not.toBeInTheDocument()
+      expect(await screen.findByRole('button', { name: 'Open billing in a new tab' })).toHaveAttribute('title', 'Could not open billing.')
+      expect(screen.queryByTestId('billing-cta-frame')).not.toBeInTheDocument()
     })
 
     it('falls back when the platform page never reports ready', async () => {
-      // Faking timers stalls react-query; fire the ready timeout's callback directly instead.
       const setTimeoutSpy = vi.spyOn(window, 'setTimeout')
       try {
         renderCard()
-        await screen.findByTestId('billing-embed-frame')
+        await screen.findByTestId('billing-cta-frame')
         const readyTimer = setTimeoutSpy.mock.calls.find(([, delay]) => delay === FRAME_READY_TIMEOUT_MS)
         expect(readyTimer).toBeDefined()
         act(() => { (readyTimer![0] as () => void)() })
-        expect(screen.getByText('Billing is taking too long to load.')).toBeInTheDocument()
-        expect(screen.queryByTestId('billing-embed-frame')).not.toBeInTheDocument()
-        expect(screen.getByRole('button', { name: 'Open billing in a new tab' })).toBeInTheDocument()
-        expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument()
+        const fallback = screen.getByRole('button', { name: 'Open billing in a new tab' })
+        expect(fallback).toHaveAttribute('title', 'Billing is taking too long to load.')
+        expect(screen.queryByText('Billing is taking too long to load.')).not.toBeInTheDocument()
+        expect(screen.queryByTestId('billing-cta-frame')).not.toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument()
       } finally {
         setTimeoutSpy.mockRestore()
       }
     })
 
-    it('"Try again" after a ready timeout remounts the frame and restarts the timeout', async () => {
-      const setTimeoutSpy = vi.spyOn(window, 'setTimeout')
-      try {
-        renderCard()
-        await screen.findByTestId('billing-embed-frame')
-        const firstTimer = setTimeoutSpy.mock.calls.find(([, delay]) => delay === FRAME_READY_TIMEOUT_MS)
-        expect(firstTimer).toBeDefined()
-        act(() => { (firstTimer![0] as () => void)() })
-        const beforeRetry = setTimeoutSpy.mock.calls.filter(([, delay]) => delay === FRAME_READY_TIMEOUT_MS).length
-        act(() => { screen.getByRole('button', { name: 'Try again' }).click() })
-        const second = await screen.findByTestId('billing-embed-frame')
-        expectEmbedUrl({ view: 'topup', intent: 'topup' })
-        expect(screen.getByTestId('billing-embed-loading')).toBeInTheDocument()
-        const retryTimers = setTimeoutSpy.mock.calls.filter(([, delay]) => delay === FRAME_READY_TIMEOUT_MS)
-        expect(retryTimers.length).toBeGreaterThan(beforeRetry)
-        act(() => { (retryTimers.at(-1)![0] as () => void)() })
-        expect(screen.getByText('Billing is taking too long to load.')).toBeInTheDocument()
-        expect(second).not.toBeInTheDocument()
-      } finally {
-        setTimeoutSpy.mockRestore()
-      }
-    })
-
-    it('offers the external link when the platform reports the session expired', async () => {
+    it('offers the compact external link when the CTA reports the session expired', async () => {
       renderCard()
-      await screen.findByTestId('billing-embed-frame')
+      await screen.findByTestId('billing-cta-frame')
       postEmbedMessage(PLATFORM_ORIGIN, 'session-expired')
-      expect(screen.getByText('This billing session has expired.')).toBeInTheDocument()
-      expect(screen.getByRole('button', { name: 'Open billing in a new tab' })).toBeInTheDocument()
+      const fallback = screen.getByRole('button', { name: 'Open billing in a new tab' })
+      expect(fallback).toHaveAttribute('title', 'This billing session has expired.')
+      expect(screen.queryByText('This billing session has expired.')).not.toBeInTheDocument()
     })
 
-    it('"Try again" reloads the frame after the platform reported the session expired', async () => {
+    it('dismiss removes the CTA frame and hands the composer back', async () => {
       renderCard()
-      const first = await screen.findByTestId('billing-embed-frame')
-      postEmbedMessage(PLATFORM_ORIGIN, 'ready')
-      postEmbedMessage(PLATFORM_ORIGIN, 'session-expired')
-      act(() => { screen.getByRole('button', { name: 'Try again' }).click() })
-      const second = await screen.findByTestId('billing-embed-frame')
-      expect(second).not.toBe(first)
-      expectEmbedUrl({ view: 'topup', intent: 'topup' })
-      expect(screen.getByTestId('billing-embed-loading')).toBeInTheDocument()
-    })
-
-    it('dismiss removes the inline billing page and hands the composer back', async () => {
-      renderCard()
-      await screen.findByTestId('billing-embed-frame')
+      await screen.findByTestId('billing-cta-frame')
       act(() => { screen.getByRole('button', { name: 'Dismiss' }).click() })
-      expect(screen.queryByTestId('billing-embed-frame')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('billing-cta-frame')).not.toBeInTheDocument()
       expect(screen.getByTestId('composer')).toBeInTheDocument()
     })
 
-    it('embeds the same top-up panel when the org has no card yet (it offers add-card)', async () => {
+    it('embeds the add-card CTA when the org has no card yet', async () => {
       fetchBilling.mockResolvedValue(billing({ hasPaymentMethod: false }))
       renderCard()
-      await screen.findByTestId('billing-embed-frame')
-      expectEmbedUrl({ view: 'topup' })
+      await screen.findByTestId('billing-cta-frame')
+      expectEmbedUrl({ view: 'topup', surface: 'cta', cta: 'add_card' })
       expect(screen.queryByRole('button', { name: 'Add credit card' })).not.toBeInTheDocument()
     })
 
-    it('embeds the subscribe panel when a subscription is required', async () => {
+    it('embeds the subscribe CTA when a subscription is required', async () => {
       renderCard('API Error: 402 {"error":"insufficient_balance","subscription_required":true}')
-      await screen.findByTestId('billing-embed-frame')
-      expectEmbedUrl({ view: 'subscribe' })
+      await screen.findByTestId('billing-cta-frame')
+      expectEmbedUrl({ view: 'subscribe', surface: 'cta' })
       expect(screen.queryByRole('button', { name: 'Subscribe' })).not.toBeInTheDocument()
     })
 
-    it('embeds the payment panel when the payment is past due', async () => {
+    it('embeds the payment CTA when the payment is past due', async () => {
       fetchBilling.mockResolvedValue(billing({ subscription: { status: 'active', paymentStatus: 'past_due', currentPeriodEnd: null } }))
       renderCard()
-      await screen.findByTestId('billing-embed-frame')
-      expectEmbedUrl({ view: 'payment' })
+      await screen.findByTestId('billing-cta-frame')
+      expectEmbedUrl({ view: 'payment', surface: 'cta' })
       expect(screen.queryByRole('button', { name: 'Fix payment' })).not.toBeInTheDocument()
     })
 
