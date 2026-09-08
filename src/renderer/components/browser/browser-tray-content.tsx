@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback } from 'react'
 import { PanelRight } from 'lucide-react'
 import { BrowserViewport } from './browser-viewport'
+import { BrowserToolbar } from './browser-toolbar'
 import { BrowserActivityLog } from './browser-activity-log'
 import { BrowserTabBar } from './browser-tab-bar'
 import { useBrowserStream } from '@renderer/hooks/use-browser-stream'
@@ -27,15 +28,6 @@ interface BrowserTrayContentProps {
   onClose: () => void
   isExpanded?: boolean
   onToggleExpand?: () => void
-}
-
-/** The host of a page URL, for the title row's secondary text; nothing for a URL that will not parse. */
-function hostOf(url: string): string | null {
-  try {
-    return new URL(url).host || null
-  } catch {
-    return null
-  }
 }
 
 export function BrowserTrayContent({
@@ -80,11 +72,9 @@ export function BrowserTrayContent({
     onResolved: (toolUseId) => stream.dismissBrowserInputRequest(toolUseId),
   })
 
-  // The card is headed by the page the user is looking at, the way the file
-  // card is headed by its filename. Before any tab exists it is just "Browser".
-  const viewingTab = stream.tabs.find((tab) => tab.targetId === stream.viewingTargetId) ?? null
-  const title = viewingTab?.title || 'Browser'
-  const host = viewingTab ? hostOf(viewingTab.url) : null
+  // History is authoritative once received; older containers only provide tab URLs.
+  const viewingTab = stream.tabs.find((tab) => tab.targetId === stream.viewingTargetId)
+  const pageUrl = stream.pageUrl || viewingTab?.url || ''
 
   return (
     <div className="flex flex-col flex-1 min-h-0 overflow-hidden" data-testid="browser-drawer-panel">
@@ -126,21 +116,16 @@ export function BrowserTrayContent({
           )}
           data-testid="browser-tray-card"
         >
-          {/* Title row: the viewed page and its state. */}
-          <div className="flex shrink-0 items-center gap-2 px-4 pt-4 pb-2" data-testid="browser-tray-title">
-            <div className="flex min-w-0 flex-1 items-baseline gap-2">
-              <h2 className="truncate text-sm font-medium text-foreground">{title}</h2>
-              {stream.needsAttention ? (
-                <span className="shrink-0 text-xs font-normal text-blue-600 dark:text-blue-400">Input needed</span>
-              ) : !stream.connected ? (
-                <span className="shrink-0 text-xs font-normal text-muted-foreground">Connecting…</span>
-              ) : host ? (
-                <span className="truncate text-xs font-normal text-muted-foreground" data-testid="browser-tray-host">
-                  {host}
-                </span>
-              ) : null}
-            </div>
-          </div>
+          <BrowserToolbar
+            url={pageUrl}
+            canGoBack={stream.canGoBack}
+            canGoForward={stream.canGoForward}
+            connected={stream.connected}
+            isViewOnly={stream.isViewOnly}
+            loading={stream.pageLoading}
+            needsAttention={stream.needsAttention}
+            onNavigate={stream.navigate}
+          />
 
           <BrowserViewport
             canvasRef={canvasRef}
