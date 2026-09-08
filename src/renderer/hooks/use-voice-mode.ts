@@ -47,6 +47,13 @@ interface UseVoiceModeArgs {
    * so the reply is read rather than waited out.
    */
   startWithAgentTurn?: boolean
+  /**
+   * The person is answering a request card the agent put up. The mic
+   * closes (the card takes the answer), the reply being read finishes
+   * rather than stopping mid-sentence, and when the card is gone the floor
+   * is the agent's again for whatever it says next.
+   */
+  paused?: boolean
 }
 
 /**
@@ -54,7 +61,8 @@ interface UseVoiceModeArgs {
  * utterances are sent on silence, and a reader that speaks each reply as it
  * streams in. Talking over the agent (or pressing the mic) interrupts it.
  */
-export function useVoiceMode({ sessionId, agentSlug, active, send, startWithAgentTurn = false }: UseVoiceModeArgs) {
+export function useVoiceMode({ sessionId, agentSlug, active, send, startWithAgentTurn = false, paused = false }: UseVoiceModeArgs) {
+  const listening = active && !paused
   const { isActive, streamingMessage, streamingToolUses } = useMessageStream(active ? sessionId : null, active ? agentSlug : null)
   const toolsRunning = (streamingToolUses?.length ?? 0) > 0
   const interruptSession = useInterruptSession()
@@ -82,6 +90,9 @@ export function useVoiceMode({ sessionId, agentSlug, active, send, startWithAgen
   const interruptRef = useRef<() => void>(() => {})
   const userTurnRef = useRef(userTurn)
   userTurnRef.current = userTurn
+  // Set alongside the state where an effect in the same commit must see it.
+  const awaitingTurnRef = useRef(awaitingTurn)
+  awaitingTurnRef.current = awaitingTurn
   const isActiveRef = useRef(isActive)
   isActiveRef.current = isActive
   // A send is confirmed by the stream reporting a turn that began after it.
@@ -170,10 +181,11 @@ export function useVoiceMode({ sessionId, agentSlug, active, send, startWithAgen
     else interrupt()
   }, [sendUtterance, interrupt])
 
-  // Open the mic for as long as voice mode is on. A mic that dies (its
-  // socket gone for good) is reopened after a pause, longer each time.
+  // Open the mic for as long as voice mode is on and not paused for a
+  // request card. A mic that dies (its socket gone for good) is reopened
+  // after a pause, longer each time.
   useEffect(() => {
-    if (!active) return
+    if (!listening) return
     let restartTimer: ReturnType<typeof setTimeout> | null = null
     const scheduleRestart = () => {
       if (restartTimer) return
@@ -244,11 +256,10 @@ export function useVoiceMode({ sessionId, agentSlug, active, send, startWithAgen
       }
       listener.stop()
       if (listenerRef.current === listener) listenerRef.current = null
-      readAloud.stop()
-      readerStartedRef.current = false
-      fedRef.current = ''
     }
-  }, [active, sessionId, sendUtterance, streamId, listenerEpoch])
+  }, [listening, sessionId, sendUtterance, streamId, listenerEpoch])
+  // Whatever is being read stops with the hook (the session view is gone).
+  useEffect(() => () => readAloud.stop(), [])
   interruptRef.current = interrupt
 
   useEffect(() => {
@@ -256,27 +267,51 @@ export function useVoiceMode({ sessionId, agentSlug, active, send, startWithAgen
     else if (toolsRunning) setToolCalled(true)
   }, [userTurn, toolsRunning])
 
-  // Voice mode off: the floor is nobody's. (Not in the cleanup above — a
-  // development-mode remount re-runs that with the mode still on, and would
-  // hand the floor to the person while the agent is mid-reply.)
+  // Voice mode off: the floor is nobody's and the reader is silent. (Not
+  // in the mic's cleanup above — a development-mode remount re-runs that
+  // with the mode still on, and would hand the floor to the person while
+  // the agent is mid-reply.) Paused for a request card: the reply being
+  // read finishes. Back from the card, or coming on while the agent's turn
+  // is running: the floor is the agent's, and what it said before is not
+  // read again, only what follows.
+  const wasPausedRef = useRef(false)
   useEffect(() => {
-    if (active) {
-      // Coming on (or back on, after a request card) while the agent's turn
-      // is running: the floor is the agent's, and what it said before is
-      // not read again, only what follows.
-      if (isActiveRef.current) {
-        staleTextRef.current = streamingRef.current ?? ''
-        setUserTurn(false)
-        setAwaitingTurn(false)
+    if (!active) {
+      readAloud.stop()
+      readerStartedRef.current = false
+      fedRef.current = ''
+      setUtterance('')
+      setUserTurn(true)
+      setAwaitingTurn(false)
+      listenerRestartsRef.current = 0
+      interruptPendingRef.current = null
+      wasPausedRef.current = false
+      return
+    }
+    if (paused) {
+      wasPausedRef.current = true
+      if (readerStartedRef.current) {
+        readAloud.endStream(streamId)
+        readerStartedRef.current = false
+        fedRef.current = ''
       }
       return
     }
-    setUtterance('')
-    setUserTurn(true)
-    setAwaitingTurn(false)
-    listenerRestartsRef.current = 0
-    interruptPendingRef.current = null
-  }, [active])
+    const resumed = wasPausedRef.current
+    wasPausedRef.current = false
+    if (isActiveRef.current) {
+      staleTextRef.current = streamingRef.current ?? ''
+      setUserTurn(false)
+      setAwaitingTurn(false)
+    } else if (resumed && !userTurnRef.current) {
+      // The agent had the floor when the card went up and its turn has not
+      // shown up again yet: wait for it as after a send (bounded).
+      staleTextRef.current = streamingRef.current ?? ''
+      turnStartArmedRef.current = true
+      awaitingTurnRef.current = true
+      setAwaitingTurn(true)
+    }
+  }, [active, paused, streamId])
 
   // The stream confirms the turn started: it reports active after having
   // been idle since the send (an interrupted turn still winding down does
@@ -300,7 +335,7 @@ export function useVoiceMode({ sessionId, agentSlug, active, send, startWithAgen
   // Feed the reply to the reader as it streams in. Tool calls are not text
   // and never reach here; each assistant message of the turn is a segment.
   useEffect(() => {
-    if (!active || userTurn) return
+    if (!listening || userTurn) return
     const text = streamingMessage ?? ''
     if (text && text === staleTextRef.current) return
     staleTextRef.current = null
@@ -320,7 +355,7 @@ export function useVoiceMode({ sessionId, agentSlug, active, send, startWithAgen
     }
     fedRef.current = text
     readAloud.pushStream(streamId, text)
-  }, [active, userTurn, streamingMessage, streamId])
+  }, [listening, userTurn, streamingMessage, streamId])
 
   // The turn ended: let the reader finish what it has.
   useEffect(() => {
@@ -336,11 +371,12 @@ export function useVoiceMode({ sessionId, agentSlug, active, send, startWithAgen
   // tail of the reply, and are kept; anything older was noise while the
   // agent spoke.
   useEffect(() => {
-    if (!active || userTurn || awaitingTurn || isActive || readerActive) return
+    // (The ref covers the commit in which resuming from a pause set the wait.)
+    if (!listening || userTurn || awaitingTurn || awaitingTurnRef.current || isActive || readerActive) return
     setUserTurn(true)
     const listener = listenerRef.current
     if (listener?.utterance.trim() && Date.now() - lastHeardAtRef.current > KEEP_RECENT_WORDS_MS) void listener.discard()
-  }, [active, userTurn, awaitingTurn, isActive, readerActive])
+  }, [listening, userTurn, awaitingTurn, isActive, readerActive])
 
   const phase: VoiceModePhase = userTurn ? 'listening' : readerSpeaking ? 'speaking' : 'thinking'
   const getAnalyser = useCallback(() => listenerRef.current?.analyser ?? null, [])

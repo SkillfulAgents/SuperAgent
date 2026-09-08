@@ -50,8 +50,9 @@ interface MessageInputProps {
   registerSnapshot?: (getSnapshot: (() => ComposerSnapshot) | null) => void
   /**
    * Hidden behind a request card the agent is waiting on. Voice mode pauses
-   * (mic and reader off, no hold sound) and resumes when the card is gone,
-   * rather than ending, so the agent is not told the person left.
+   * (mic closed, the reply being read finishes, no hold sound) and resumes
+   * when the card is gone, rather than ending, so the agent is not told the
+   * person left.
    */
   suspended?: boolean
 }
@@ -316,7 +317,8 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
   const voice = useVoiceMode({
     sessionId,
     agentSlug,
-    active: voiceModeOn && !isViewOnly && !suspended,
+    active: voiceModeOn && !isViewOnly,
+    paused: suspended,
     send: submitMessage,
     startWithAgentTurn: openedByVoice,
   })

@@ -170,14 +170,14 @@ describe('MessageInput', () => {
 
       // The agent asks for something: the column hides the composer behind the card.
       rerender(<MessageInput sessionId="s-1" agentSlug="agent-1" suspended />)
-      expect(mockUseVoiceMode).toHaveBeenLastCalledWith(expect.objectContaining({ active: false }))
+      expect(mockUseVoiceMode).toHaveBeenLastCalledWith(expect.objectContaining({ active: true, paused: true }))
       expect(mockUseHoldSound).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: false }))
       expect(screen.getByTestId('voice-mode-composer')).toBeInTheDocument()
       // No "exited" notice: the person did not leave.
       expect(mockSendMessage.mutate).toHaveBeenCalledTimes(1)
 
       rerender(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
-      expect(mockUseVoiceMode).toHaveBeenLastCalledWith(expect.objectContaining({ active: true }))
+      expect(mockUseVoiceMode).toHaveBeenLastCalledWith(expect.objectContaining({ active: true, paused: false }))
       expect(mockSendMessage.mutate).toHaveBeenCalledTimes(1)
 
       // Leave properly, so the deferred exit notice lands here and not in the next test.
