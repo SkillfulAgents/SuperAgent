@@ -44,7 +44,7 @@ export function TextRenderer({ url, filePath, agentSlug, commentsEnabled = true 
                   <td className="pr-4 text-right text-muted-foreground/50 select-none align-top tabular-nums w-[1%] whitespace-nowrap">
                     {i + 1}
                   </td>
-                  <td className="whitespace-pre-wrap break-all">
+                  <td className="whitespace-pre-wrap break-all select-text">
                     {line || '\n'}
                   </td>
                 </tr>
