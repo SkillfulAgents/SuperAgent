@@ -103,6 +103,26 @@ test.describe('Stop with background tasks', () => {
     await proveStoppedTaskStayedDead()
   })
 
+  test('the Stop dialog closes on its own once the last task finishes', async ({ page }) => {
+    test.slow()
+    await sessionPage.sendMessage('run background slowly')
+    await expect(page.getByTestId('background-task-row')).toBeVisible({ timeout: 10000 })
+    await expect(sessionPage.getStopButton()).toHaveAttribute('aria-label', 'Stop background processes', { timeout: 10000 })
+
+    await sessionPage.getStopButton().click()
+    const dialog = page.getByTestId('stop-session-dialog')
+    await expect(dialog).toBeVisible()
+    await expect(dialog).toContainText('Stop the background task?')
+
+    // Left open, the dialog outlives the task: once the task finishes and the
+    // agent reports its output there is nothing left to stop.
+    await expect(
+      sessionPage.getAssistantMessages().filter({ hasText: 'Background command completed' })
+    ).toBeVisible({ timeout: 30000 })
+    await expect(dialog).not.toBeVisible({ timeout: 5000 })
+    await sessionPage.waitForInputEnabled(15000)
+  })
+
   test('Stop still offers to keep the task after a reload mid-response', async ({ page }) => {
     // A client that connects while the turn is still streaming (a reload, or
     // a fresh session page that attaches after the launch) learns about the
@@ -135,9 +155,14 @@ test.describe('Stop with background tasks', () => {
     test.slow()
     await sessionPage.sendMessage('run background and keep working')
 
+    // The row proves the launch landed; the button's label proves the turn is
+    // still in progress. (The mock streams its "still working" text once,
+    // right after the launch — a session page whose stream attaches after
+    // that delta only sees the text once it is persisted at turn end, so
+    // waiting for it would wait for the turn to be over.)
     const row = page.getByTestId('background-task-row')
     await expect(row).toBeVisible({ timeout: 10000 })
-    await expect(page.getByText('Still working on the rest of the request')).toBeVisible({ timeout: 10000 })
+    await expect(sessionPage.getStopButton()).toHaveAttribute('aria-label', 'Stop the agent')
 
     await sessionPage.getStopButton().click()
     const dialog = page.getByTestId('stop-session-dialog')
