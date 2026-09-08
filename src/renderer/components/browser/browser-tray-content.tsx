@@ -6,6 +6,7 @@ import { BrowserActivityLog } from './browser-activity-log'
 import { BrowserTabBar } from './browser-tab-bar'
 import { FollowAgentToggle } from './follow-agent-toggle'
 import { useBrowserStream } from '@renderer/hooks/use-browser-stream'
+import { useBrowserCardSize } from '@renderer/hooks/use-browser-card-size'
 import { Button } from '@renderer/components/ui/button'
 import { DeclineButton } from '@renderer/components/messages/decline-button'
 import { linkify } from '@renderer/lib/linkify'
@@ -56,6 +57,11 @@ export function BrowserTrayContent({
   const [leadingTabFlush, setLeadingTabFlush] = useState(false)
   const onLeadingTabFlush = useCallback((flush: boolean) => setLeadingTabFlush(flush), [])
 
+  const { railRef, cardRef, viewportRef, maxCardWidth, maxStripWidth } = useBrowserCardSize(
+    isExpanded,
+    stream.aspectRatio,
+  )
+
   const latestRequest =
     stream.pendingBrowserInputRequests.length > 0
       ? stream.pendingBrowserInputRequests[stream.pendingBrowserInputRequests.length - 1]
@@ -80,30 +86,35 @@ export function BrowserTrayContent({
   return (
     <div className="flex flex-col flex-1 min-h-0 overflow-hidden" data-testid="browser-drawer-panel">
       {/* Page tabs, with the drawer's own hide control at the strip's right end. */}
-      <BrowserTabBar
-        tabs={stream.tabs}
-        viewingTargetId={stream.viewingTargetId}
-        onTabClick={stream.handleTabClick}
-        onCloseTab={stream.handleCloseTab}
-        onLeadingTabFlush={onLeadingTabFlush}
-        trailing={
-          // The drawer's own control, at the strip's right end like the file drawer's.
-          <button
-            type="button"
-            className="inline-flex p-0.5 rounded hover:bg-muted transition-colors"
-            onClick={onClose}
-            title="Hide browser panel"
-            aria-label="Hide browser panel"
-          >
-            <PanelRight className="h-4 w-4" />
-          </button>
-        }
-      />
+      <div className="shrink-0 bg-muted/60">
+        <div className={cn(isExpanded && 'mx-auto')} style={isExpanded ? { maxWidth: maxStripWidth } : undefined}>
+          <BrowserTabBar
+            tabs={stream.tabs}
+            viewingTargetId={stream.viewingTargetId}
+            onTabClick={stream.handleTabClick}
+            onCloseTab={stream.handleCloseTab}
+            onLeadingTabFlush={onLeadingTabFlush}
+            trailing={
+              // The drawer's own control, at the strip's right end like the file drawer's.
+              <button
+                type="button"
+                className="inline-flex p-0.5 rounded hover:bg-muted transition-colors"
+                onClick={onClose}
+                title="Hide browser panel"
+                aria-label="Hide browser panel"
+              >
+                <PanelRight className="h-4 w-4" />
+              </button>
+            }
+          />
+        </div>
+      </div>
 
       {/* Browser body, on the same gray as the tab rail: the page card inset 16px
           on every side, with the activity log sitting directly on the rail below it. */}
       <div
         className="flex flex-1 min-h-0 flex-col overflow-y-auto bg-muted/60 px-4 pb-4"
+        ref={railRef}
         data-testid="browser-tray-rail"
       >
         <div
@@ -111,7 +122,10 @@ export function BrowserTrayContent({
             'flex w-full shrink-0 flex-col rounded-lg border border-black/5 bg-background shadow-[0_1px_3px_rgba(0,0,0,0.04),0_2px_8px_rgba(0,0,0,0.03)] dark:border-white/5 dark:shadow-[0_1px_3px_rgba(0,0,0,0.2),0_2px_8px_rgba(0,0,0,0.15)]',
             // Square only where a tab actually meets the corner.
             leadingTabFlush && 'rounded-tl-none',
+            isExpanded && 'self-center',
           )}
+          ref={cardRef}
+          style={isExpanded ? { maxWidth: maxCardWidth } : undefined}
           data-testid="browser-tray-card"
         >
           <BrowserToolbar
@@ -126,6 +140,7 @@ export function BrowserTrayContent({
           />
 
           <BrowserViewport
+            viewportRef={viewportRef}
             canvasRef={canvasRef}
             stream={stream}
             isActive={isActive}
@@ -167,16 +182,22 @@ export function BrowserTrayContent({
           )}
         </div>
 
-        {/* Activity log, on the rail rather than in the card. The log pads its own
+        {/* Preserve subscriptions, expanded rows, and scroll position across full screen. */}
+        <div
+          className={cn('flex flex-1 min-h-32 flex-col', isExpanded && 'hidden')}
+          data-testid="browser-activity-region"
+        >
+          {/* Activity log, on the rail rather than in the card. The log pads its own
           rows 16px, so it is pulled back out to the rail's edge to line up with
           the heading and the card. */}
-        <div className="flex items-center py-1 border-b border-border/60 shrink-0 mt-4">
-          <span className="flex-1 text-xs font-medium text-muted-foreground">Browser agent actions</span>
-          {/* Follow changes the viewed browser tab when the agent switches pages. */}
-          <FollowAgentToggle autoFollow={stream.autoFollow} onToggle={stream.toggleAutoFollow} className="-mr-1" />
-        </div>
-        <div className="flex flex-1 min-h-0 flex-col -mx-4">
-          <BrowserActivityLog sessionId={sessionId} agentSlug={agentSlug} />
+          <div className="flex items-center py-1 border-b border-border/60 shrink-0 mt-4">
+            <span className="flex-1 text-xs font-medium text-muted-foreground">Browser agent actions</span>
+            {/* Follow changes the viewed browser tab when the agent switches pages. */}
+            <FollowAgentToggle autoFollow={stream.autoFollow} onToggle={stream.toggleAutoFollow} className="-mr-1" />
+          </div>
+          <div className="flex flex-1 min-h-0 flex-col -mx-4">
+            <BrowserActivityLog sessionId={sessionId} agentSlug={agentSlug} />
+          </div>
         </div>
       </div>
 
