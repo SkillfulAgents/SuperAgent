@@ -56,8 +56,9 @@ vi.mock('@renderer/hooks/use-voice-input', async (importOriginal) => {
   }
 })
 const mockVoice = { phase: 'listening' as 'listening' | 'thinking' | 'speaking', working: false }
+const mockUseVoiceMode = vi.fn()
 vi.mock('@renderer/hooks/use-voice-mode', () => ({
-  useVoiceMode: () => ({
+  useVoiceMode: (args: unknown) => mockUseVoiceMode(args) ?? ({
     phase: mockVoice.phase,
     working: mockVoice.working,
     utterance: '',
@@ -158,6 +159,30 @@ describe('MessageInput', () => {
       mockCanUseVoiceMode = true
       renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
       expect(screen.getByTestId('voice-mode-button')).toBeInTheDocument()
+    })
+
+    it('pauses behind a request card rather than ending, and resumes after it', async () => {
+      mockCanUseVoiceMode = true
+      const { rerender } = renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      await userEvent.click(screen.getByTestId('voice-mode-button'))
+      expect(mockUseVoiceMode).toHaveBeenLastCalledWith(expect.objectContaining({ active: true }))
+      expect(mockSendMessage.mutate).toHaveBeenCalledTimes(1)
+
+      // The agent asks for something: the column hides the composer behind the card.
+      rerender(<MessageInput sessionId="s-1" agentSlug="agent-1" suspended />)
+      expect(mockUseVoiceMode).toHaveBeenLastCalledWith(expect.objectContaining({ active: true, paused: true }))
+      expect(mockUseHoldSound).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: false }))
+      expect(screen.getByTestId('voice-mode-composer')).toBeInTheDocument()
+      // No "exited" notice: the person did not leave.
+      expect(mockSendMessage.mutate).toHaveBeenCalledTimes(1)
+
+      rerender(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      expect(mockUseVoiceMode).toHaveBeenLastCalledWith(expect.objectContaining({ active: true, paused: false }))
+      expect(mockSendMessage.mutate).toHaveBeenCalledTimes(1)
+
+      // Leave properly, so the deferred exit notice lands here and not in the next test.
+      await userEvent.click(screen.getByTestId('voice-mode-exit'))
+      await waitFor(() => expect(mockSendMessage.mutate).toHaveBeenCalledTimes(2))
     })
 
     it('cannot be entered while a dictation is still recording', () => {

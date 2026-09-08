@@ -97,107 +97,114 @@ export function SessionChatColumn({
       overlayFooter
       footerClassName="max-w-[740px] mx-auto w-full"
       footer={
-        pendingRequestCount > 0 ? (
-          <div className="px-4 pb-4" data-testid="pending-request-slot">
-            <PendingRequestStack>
-              {pendingRequestItems.map((d) => (
-                <PendingRequestErrorBoundary
-                  key={d.key}
+        <>
+          {pendingRequestCount > 0 && (
+            <div className="px-4 pb-4" data-testid="pending-request-slot">
+              <PendingRequestStack>
+                {pendingRequestItems.map((d) => (
+                  <PendingRequestErrorBoundary
+                    key={d.key}
+                    sessionId={sessionId}
+                    agentSlug={agentSlug}
+                    onDismiss={d.onComplete}
+                    itemId={d.key}
+                    kind={d.kind}
+                  >
+                    {renderPendingRequest(d, renderCtx)}
+                  </PendingRequestErrorBoundary>
+                ))}
+              </PendingRequestStack>
+            </div>
+          )}
+          {/* Kept mounted behind a request card, just hidden: what it holds (a
+              draft, voice mode) survives the request. Voice mode pauses for it
+              and picks the agent's turn back up once the card is answered. */}
+          <div hidden={pendingRequestCount > 0}>
+            <ProviderErrorPlacement placement="composer" sessionId={sessionId} agentSlug={agentSlug}>
+              {pendingWakeAt && pendingWakeTaskId && !isActive && (
+                <PendingWakeBanner
                   sessionId={sessionId}
                   agentSlug={agentSlug}
-                  onDismiss={d.onComplete}
-                  itemId={d.key}
-                  kind={d.kind}
-                >
-                  {renderPendingRequest(d, renderCtx)}
-                </PendingRequestErrorBoundary>
-              ))}
-            </PendingRequestStack>
-          </div>
-        ) : (
-          <ProviderErrorPlacement placement="composer" sessionId={sessionId} agentSlug={agentSlug}>
-            {pendingWakeAt && pendingWakeTaskId && !isActive && (
-              <PendingWakeBanner
+                  wakeAt={pendingWakeAt}
+                  taskId={pendingWakeTaskId}
+                  note={pendingWakeNote}
+                  readOnly={isViewOnly}
+                />
+              )}
+              {staleSession.showNotice && (
+                <StaleSessionNotice
+                  onIgnore={staleSession.ignore}
+                  onStartFresh={staleSession.startFresh}
+                  onLearnMoreOpenChange={staleSession.setLearnMoreOpen}
+                />
+              )}
+              <MessageInput
+                key={sessionId}
                 sessionId={sessionId}
                 agentSlug={agentSlug}
-                wakeAt={pendingWakeAt}
-                taskId={pendingWakeTaskId}
-                note={pendingWakeNote}
-                readOnly={isViewOnly}
+                onMessageSent={onMessageSent}
+                onMessageUuidAssigned={onMessageUuidAssigned}
+                onMessageFailed={onMessageFailed}
+                initialEffort={effort}
+                initialSpeed={speed}
+                initialModel={model}
+                registerSnapshot={staleSession.registerSnapshot}
+                suspended={pendingRequestCount > 0}
               />
-            )}
-            {staleSession.showNotice && (
-              <StaleSessionNotice
-                onIgnore={staleSession.ignore}
-                onStartFresh={staleSession.startFresh}
-                onLearnMoreOpenChange={staleSession.setLearnMoreOpen}
-              />
-            )}
-            <MessageInput
-              key={sessionId}
-              sessionId={sessionId}
-              agentSlug={agentSlug}
-              onMessageSent={onMessageSent}
-              onMessageUuidAssigned={onMessageUuidAssigned}
-              onMessageFailed={onMessageFailed}
-              initialEffort={effort}
-              initialSpeed={speed}
-              initialModel={model}
-              registerSnapshot={staleSession.registerSnapshot}
-            />
-            <div className="relative isolate flex items-center justify-between gap-1.5 overflow-hidden px-6 py-3">
-              <div
-                aria-hidden="true"
-                className="pointer-events-none absolute inset-y-0 left-0 z-0 w-[52%] bg-gradient-to-r from-background via-background/75 to-transparent backdrop-blur-[2px]"
-                style={{
-                  maskImage: 'linear-gradient(to right, black 0%, black 55%, transparent 100%)',
-                  WebkitMaskImage: 'linear-gradient(to right, black 0%, black 55%, transparent 100%)',
-                }}
-              />
-              <div
-                aria-hidden="true"
-                className="pointer-events-none absolute inset-y-0 right-0 z-0 w-[52%] bg-gradient-to-l from-background via-background/75 to-transparent backdrop-blur-[2px]"
-                style={{
-                  maskImage: 'linear-gradient(to left, black 0%, black 55%, transparent 100%)',
-                  WebkitMaskImage: 'linear-gradient(to left, black 0%, black 55%, transparent 100%)',
-                }}
-              />
-              {contextPercent != null ? (
-                <TooltipProvider delayDuration={0}>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <div className="relative z-10 flex cursor-default items-center gap-1.5">
-                        <span className="text-xs text-muted-foreground">Context Usage</span>
-                        <DonutChart
-                          percent={contextPercent}
-                          animated={isActive}
-                          size="sm"
-                          showLabel={false}
-                        />
-                      </div>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      <p>{contextPercent}%</p>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-              ) : (
-                <span className="relative z-10" />
-              )}
-              {voiceModeActive ? (
-                <span className="relative z-10" />
-              ) : (
-                <span className="relative z-10 flex items-center gap-1 text-xs text-muted-foreground">
-                  <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-xs font-sans leading-none">↵</kbd>
-                  <span>Send</span>
-                  <span className="mx-1">·</span>
-                  <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-xs font-sans leading-none">⇧↵</kbd>
-                  <span>New line</span>
-                </span>
-              )}
-            </div>
-          </ProviderErrorPlacement>
-        )
+              <div className="relative isolate flex items-center justify-between gap-1.5 overflow-hidden px-6 py-3">
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-y-0 left-0 z-0 w-[52%] bg-gradient-to-r from-background via-background/75 to-transparent backdrop-blur-[2px]"
+                  style={{
+                    maskImage: 'linear-gradient(to right, black 0%, black 55%, transparent 100%)',
+                    WebkitMaskImage: 'linear-gradient(to right, black 0%, black 55%, transparent 100%)',
+                  }}
+                />
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-y-0 right-0 z-0 w-[52%] bg-gradient-to-l from-background via-background/75 to-transparent backdrop-blur-[2px]"
+                  style={{
+                    maskImage: 'linear-gradient(to left, black 0%, black 55%, transparent 100%)',
+                    WebkitMaskImage: 'linear-gradient(to left, black 0%, black 55%, transparent 100%)',
+                  }}
+                />
+                {contextPercent != null ? (
+                  <TooltipProvider delayDuration={0}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <div className="relative z-10 flex cursor-default items-center gap-1.5">
+                          <span className="text-xs text-muted-foreground">Context Usage</span>
+                          <DonutChart
+                            percent={contextPercent}
+                            animated={isActive}
+                            size="sm"
+                            showLabel={false}
+                          />
+                        </div>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>{contextPercent}%</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                ) : (
+                  <span className="relative z-10" />
+                )}
+                {voiceModeActive ? (
+                  <span className="relative z-10" />
+                ) : (
+                  <span className="relative z-10 flex items-center gap-1 text-xs text-muted-foreground">
+                    <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-xs font-sans leading-none">↵</kbd>
+                    <span>Send</span>
+                    <span className="mx-1">·</span>
+                    <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-xs font-sans leading-none">⇧↵</kbd>
+                    <span>New line</span>
+                  </span>
+                )}
+              </div>
+            </ProviderErrorPlacement>
+          </div>
+        </>
       }
     />
   )

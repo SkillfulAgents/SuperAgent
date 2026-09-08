@@ -98,17 +98,24 @@ const STREAM_ID = 'voice:s1'
 
 function setup(options: { startWithAgentTurn?: boolean } = {}) {
   const send = vi.fn(async (_text: string) => true)
+  const props = { active: true, paused: false }
   const hook = renderHook(
-    ({ active }: { active: boolean }) => useVoiceMode({ sessionId: 's1', agentSlug: 'agent', active, send, ...options }),
-    { initialProps: { active: true } },
+    ({ active, paused }: { active: boolean; paused: boolean }) =>
+      useVoiceMode({ sessionId: 's1', agentSlug: 'agent', active, paused, send, ...options }),
+    { initialProps: { ...props } },
   )
   const listener = h.listeners[h.listeners.length - 1]
+  const rerender = (next: Partial<typeof props>) =>
+    act(() => {
+      Object.assign(props, next)
+      hook.rerender({ ...props })
+    })
   const setStream = (next: Partial<typeof stream.state>) =>
     act(() => {
       stream.state = { ...stream.state, ...next }
-      hook.rerender({ active: true })
+      hook.rerender({ ...props })
     })
-  return { ...hook, send, listener, setStream }
+  return { ...hook, rerender, send, listener, setStream }
 }
 
 async function flush() {
@@ -472,6 +479,66 @@ describe('useVoiceMode', () => {
     setStream({ isActive: true, streamingMessage: 'Hi, I am listening. ' })
     expect(reader.beginStream).toHaveBeenCalledWith(STREAM_ID)
     expect(reader.pushStream).toHaveBeenLastCalledWith(STREAM_ID, 'Hi, I am listening. ')
+  })
+
+  it('paused for a request card mid-turn, then resumed: the agent keeps the floor and the rest of its reply is read', async () => {
+    const { result, rerender, listener, setStream } = setup()
+    act(() => listener.hear('connect my calendar'))
+    act(() => listener.events.onSpeechEnded())
+    await flush()
+    setStream({ isActive: true, streamingMessage: 'Which account? ' })
+    expect(reader.pushStream).toHaveBeenLastCalledWith(STREAM_ID, 'Which account? ')
+
+    // The request card is up: the mic closes, the question is read to its end.
+    rerender({ paused: true })
+    expect(listener.stop).toHaveBeenCalledTimes(1)
+    expect(reader.endStream).toHaveBeenCalledWith(STREAM_ID)
+    expect(reader.stop).not.toHaveBeenCalled()
+    reader.beginStream.mockClear()
+    reader.pushStream.mockClear()
+
+    // Answered; the turn carries on. The question is not read again.
+    rerender({ paused: false })
+    expect(h.listeners).toHaveLength(2)
+    expect(result.current.phase).toBe('thinking')
+    expect(reader.beginStream).not.toHaveBeenCalled()
+    setStream({ streamingMessage: 'Connected. Anything else? ' })
+    expect(reader.beginStream).toHaveBeenCalledWith(STREAM_ID)
+    expect(reader.pushStream).toHaveBeenLastCalledWith(STREAM_ID, 'Connected. Anything else? ')
+    setStream({ isActive: false })
+    act(() => reader.set({ activeId: null, status: 'idle' }))
+    expect(result.current.phase).toBe('listening')
+  })
+
+  it('resumed after the card with the agent gone quiet, it waits for the turn to show up again, bounded', async () => {
+    vi.useFakeTimers()
+    try {
+      const { result, rerender, listener, setStream } = setup()
+      act(() => listener.hear('connect my calendar'))
+      act(() => listener.events.onSpeechEnded())
+      await flush()
+      setStream({ isActive: true, streamingMessage: 'Which account? ' })
+      rerender({ paused: true })
+      // The stream reports idle while the card is up (the turn is between steps).
+      setStream({ isActive: false, streamingMessage: null })
+      act(() => reader.set({ activeId: null, status: 'idle' }))
+      rerender({ paused: false })
+      expect(result.current.phase).toBe('thinking')
+      // It comes back: read as the agent's reply.
+      setStream({ isActive: true, streamingMessage: 'Connected. ' })
+      expect(reader.pushStream).toHaveBeenLastCalledWith(STREAM_ID, 'Connected. ')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('entered while the agent is already replying, it reads what follows', () => {
+    stream.state = { streamingToolUses: [], isActive: true, streamingMessage: 'Half way through. ' }
+    const { result, setStream } = setup()
+    expect(result.current.phase).toBe('thinking')
+    expect(reader.beginStream).not.toHaveBeenCalled()
+    setStream({ streamingMessage: 'Half way through. And the rest. ' })
+    expect(reader.pushStream).toHaveBeenLastCalledWith(STREAM_ID, 'Half way through. And the rest. ')
   })
 
   it('turning voice mode off releases the mic and silences the reader', () => {

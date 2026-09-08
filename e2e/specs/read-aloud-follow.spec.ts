@@ -100,8 +100,10 @@ test.describe('read-aloud at the live edge', () => {
       }),
     )
     await page.route('**/api/voice/tts-token', async (route) => {
-      // Long enough for the connecting render to paint and settle on its own.
-      await new Promise((resolve) => setTimeout(resolve, 600))
+      // Long enough for the connecting render to paint and settle on its own,
+      // and for the menu-item click to return (WebKit takes most of a second
+      // to close the menu) before the connecting state is asserted.
+      await new Promise((resolve) => setTimeout(resolve, 1500))
       return route.fulfill({
         status: 500,
         contentType: 'application/json',
@@ -135,18 +137,21 @@ test.describe('read-aloud at the live edge', () => {
     await expect.poll(() => distanceFromBottom(page), { timeout: 10000 }).toBeLessThan(24)
     await expect(page.getByRole('button', { name: 'Scroll to bottom' })).toBeHidden()
 
-    // Hover the button, not the reply: WebKit scrolls a hovered element's top
-    // into view when it is taller than the viewport, and that programmatic
-    // jump (rightly) releases following before the press under test.
+    // Open the message menu at a point near the reply's bottom edge, which is
+    // on screen: a point nearer its top would make Playwright scroll it into
+    // view, and that programmatic jump (rightly) releases following before
+    // the press under test.
     const reply = page.getByTestId('message-assistant').last()
-    const speaker = reply.getByTestId('read-aloud-button')
-    await speaker.hover()
-    await expect(speaker).toBeVisible()
+    const box = await reply.boundingBox()
+    if (!box) throw new Error('the reply has no box')
+    await reply.click({ button: 'right', position: { x: 24, y: box.height - 12 } })
+    const readAloudItem = page.getByRole('menuitem', { name: 'Read aloud' })
+    await expect(readAloudItem).toBeVisible()
     await expect.poll(() => distanceFromBottom(page)).toBeLessThan(24)
     await expect(page.getByRole('button', { name: 'Scroll to bottom' })).toBeHidden()
     await installPillRecorder(page)
 
-    await speaker.click()
+    await readAloudItem.click()
 
     // Controls in, spans in — the first re-render.
     const controls = reply.getByTestId('read-aloud-controls')
@@ -157,7 +162,8 @@ test.describe('read-aloud at the live edge', () => {
     // Controls out, spans out — the second re-render, on the refused token.
     await expect(reply.getByTestId('read-aloud-error')).toHaveText('No speech in tests', { timeout: 10000 })
     await expect(reply.locator('[data-spoken-word]')).toHaveCount(0)
-    await expect(speaker).toBeVisible()
+    // The failed read leaves a speaker to try again.
+    await expect(reply.getByTestId('read-aloud-button')).toBeVisible()
 
     // Following held the whole way: the pill was never painted, the viewport
     // is back on the live edge, and nothing is left dangling above it.
@@ -173,7 +179,10 @@ test.describe('read-aloud at the live edge', () => {
     expect(rec.frames).toBeGreaterThan(0)
     expect(rec.pillFrames).toBe(0)
     // WebKit reports the engine's put-back as a scroll event already at the
-    // live edge; Chromium never moves at all and reports nothing.
+    // live edge; Chromium never moves at all and reports nothing. (The
+    // controls overlay the reply rather than adding a row to it: a row
+    // appearing at the live edge would grow the content, and WebKit answers
+    // that by jumping the transcript to its top.)
     for (const s of rec.scrolls) expect(s.sh - s.ch - s.top).toBeLessThan(24)
     await expect(page.getByRole('button', { name: 'Scroll to bottom' })).toBeHidden()
   })

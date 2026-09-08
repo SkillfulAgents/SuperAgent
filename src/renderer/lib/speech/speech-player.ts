@@ -51,6 +51,20 @@ interface ScheduledSegment extends SpeechSegment {
 const LEAD_S = 0.05
 /** Slack after the last scheduled sample before declaring playback done. */
 const DONE_GRACE_MS = 80
+/** How often the watchdog looks at the synthesizer and the audio clock. */
+const WATCHDOG_MS = 1_000
+/**
+ * A sentence handed to the synthesizer with nothing back (no audio, no
+ * flush) for this long: the connection is dead, whatever the socket says.
+ * Its first audio normally arrives well under a second.
+ */
+export const SYNTHESIS_STALL_MS = 10_000
+/**
+ * Audio scheduled ahead but the clock not moving for this long: the output
+ * device went away (headphones off, a Bluetooth switch) and the browser did
+ * not say so. A resume is tried first.
+ */
+export const CLOCK_STALL_MS = 4_000
 /**
  * How far ahead of playback to keep audio scheduled. Segments are sent only
  * as this runs down (plus a couple in flight so the synthesizer's latency is
@@ -123,6 +137,11 @@ export class SpeechPlayer {
   private carry: Uint8Array | null = null
   private ended = false
   private doneTimer: ReturnType<typeof setTimeout> | null = null
+  private watchdogTimer: ReturnType<typeof setInterval> | null = null
+  /** When the synthesizer last sent anything, or was last asked. */
+  private lastSynthesisAt = 0
+  private lastClock = -1
+  private clockStalledSince: number | null = null
   private _status: SpeechPlayerStatus = 'connecting'
   private wordCount = 0
   /** High-water mark of the cursor, so it never reads backwards. */
@@ -183,6 +202,34 @@ export class SpeechPlayer {
     this.adapter.connect(this.token, this.voice).catch((err: unknown) => {
       this.fail(err instanceof Error ? err : new Error('Failed to connect to text-to-speech'))
     })
+    // Neither the socket nor the audio graph promises to report its death;
+    // a player that waits on either forever is minutes of silent "speaking".
+    this.watchdogTimer = setInterval(() => this.watchdog(), WATCHDOG_MS)
+  }
+
+  private watchdog(): void {
+    if (this.isTerminal || this._status === 'paused') return
+    const ctx = this.ctx
+    const now = Date.now()
+    if (ctx && this.bufferedAhead() > 0) {
+      if (ctx.currentTime === this.lastClock) {
+        this.clockStalledSince ??= now
+        if (ctx.state === 'suspended') ctx.resume().catch(() => {})
+        if (now - this.clockStalledSince >= CLOCK_STALL_MS) {
+          this.fail(new Error('Audio output stalled'))
+          return
+        }
+      } else {
+        this.clockStalledSince = null
+      }
+      this.lastClock = ctx.currentTime
+    } else {
+      this.clockStalledSince = null
+      if (ctx) this.lastClock = ctx.currentTime
+    }
+    if (this.sent > this.receiving && now - this.lastSynthesisAt >= SYNTHESIS_STALL_MS) {
+      this.fail(new Error('Text-to-speech stalled: nothing came back for the last sentence'))
+    }
   }
 
   /**
@@ -247,6 +294,8 @@ export class SpeechPlayer {
   resume(): void {
     if (this._status !== 'paused' || !this.ctx) return
     void this.ctx.resume()
+    // The pause is not the synthesizer's silence.
+    this.lastSynthesisAt = Date.now()
     this.setStatus('speaking')
     this.pump()
     this.maybeFinish()
@@ -325,6 +374,7 @@ export class SpeechPlayer {
       const segment = this.segments[this.sent++]
       this.adapter.speak(segment.text)
       this.adapter.flush()
+      this.lastSynthesisAt = Date.now()
     }
     if (this.sent < this.segments.length && this.sent - this.receiving < MAX_IN_FLIGHT) {
       const delayMs = Math.max(100, (this.bufferedAhead() - AHEAD_S) * 1000)
@@ -335,6 +385,7 @@ export class SpeechPlayer {
   private handleAudio(chunk: ArrayBuffer): void {
     const ctx = this.ctx
     if (!ctx || this.isTerminal) return
+    this.lastSynthesisAt = Date.now()
 
     let bytes = new Uint8Array(chunk)
     if (this.carry) {
@@ -440,6 +491,7 @@ export class SpeechPlayer {
     if (this.isTerminal) return
     switch (event.type) {
       case 'flushed': {
+        this.lastSynthesisAt = Date.now()
         const segment = this.segments[this.receiving]
         if (segment) {
           // A short segment may never reach the measuring threshold: level
@@ -512,6 +564,10 @@ export class SpeechPlayer {
     if (this.doneTimer) {
       clearTimeout(this.doneTimer)
       this.doneTimer = null
+    }
+    if (this.watchdogTimer) {
+      clearInterval(this.watchdogTimer)
+      this.watchdogTimer = null
     }
     if (this.pumpTimer) {
       clearTimeout(this.pumpTimer)

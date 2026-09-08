@@ -44,9 +44,18 @@ vi.mock('./sent-attachment-chip', async (importOriginal) => ({
   ),
 }))
 
-// Mock MessageContextMenu to just render children
+// Mock MessageContextMenu to render children, plus its read-aloud item as a plain button
 vi.mock('./message-context-menu', () => ({
-  MessageContextMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  MessageContextMenu: ({ children, readAloud }: { children: React.ReactNode; readAloud?: { active: boolean; onToggle: () => void } }) => (
+    <>
+      {children}
+      {readAloud && (
+        <button type="button" data-testid="context-read-aloud" data-active={String(readAloud.active)} onClick={readAloud.onToggle}>
+          {readAloud.active ? 'Stop reading' : 'Read aloud'}
+        </button>
+      )}
+    </>
+  ),
 }))
 
 // Mock tooltip to render inline (avoids Radix portal issues in tests)
@@ -74,6 +83,8 @@ const readAloudState = {
   toggle: vi.fn(),
   pause: vi.fn(),
   resume: vi.fn(),
+  speak: vi.fn(),
+  stop: vi.fn(),
 }
 
 vi.mock('@renderer/hooks/use-voice-input', () => ({
@@ -92,7 +103,13 @@ vi.mock('@renderer/hooks/use-read-aloud', () => ({
   }),
   useSpokenWordHighlight: () => {},
   useIsVoiceReading: () => false,
-  readAloud: { restart: vi.fn(), getPlayer: () => null, getStreamWordCursor: () => -1 },
+  readAloud: {
+    restart: vi.fn(),
+    getPlayer: () => null,
+    getStreamWordCursor: () => -1,
+    speak: (...args: unknown[]) => readAloudState.speak(...args),
+    stop: () => readAloudState.stop(),
+  },
 }))
 
 // The speed picker inside the controls reads user settings (react-query).
@@ -261,35 +278,51 @@ describe('MessageItem', () => {
   })
 
   describe('read aloud', () => {
-    it('offers a speaker button under a settled assistant reply when speech is configured', () => {
+    it('offers "Read aloud" in the message menu when speech is configured, and nothing under the reply', () => {
       readAloudState.configured = true
+      readAloudState.speak.mockClear()
       const msg = createAssistantMessage({ content: { text: 'Hello **there**.' } })
       render(<MessageItem message={msg} />)
-      const button = screen.getByTestId('read-aloud-button')
-      expect(button).toHaveAttribute('aria-label', 'Read aloud')
-      expect(button).toHaveAttribute('data-status', 'idle')
-      button.click()
-      expect(readAloudState.toggle).toHaveBeenCalledTimes(1)
+      expect(screen.queryByTestId('read-aloud-controls')).toBeNull()
+      expect(screen.queryByTestId('read-aloud-button')).toBeNull()
+      const item = screen.getByTestId('context-read-aloud')
+      expect(item).toHaveTextContent('Read aloud')
+      expect(item).toHaveAttribute('data-active', 'false')
+      item.click()
+      expect(readAloudState.speak).toHaveBeenCalledWith(msg.id, 'Hello **there**.')
+    })
+
+    it('offers "Stop reading" in the menu while this reply is being read', () => {
+      readAloudState.configured = true
+      readAloudState.stop.mockClear()
+      const msg = createAssistantMessage({ content: { text: 'Hello there world' } })
+      readAloudState.activeId = msg.id
+      render(<MessageItem message={msg} />)
+      const item = screen.getByTestId('context-read-aloud')
+      expect(item).toHaveTextContent('Stop reading')
+      item.click()
+      expect(readAloudState.stop).toHaveBeenCalledTimes(1)
     })
 
     it('shows nothing when the voice provider cannot speak', () => {
       const msg = createAssistantMessage({ content: { text: 'Hello there.' } })
       render(<MessageItem message={msg} />)
-      expect(screen.queryByTestId('read-aloud-button')).toBeNull()
+      expect(screen.queryByTestId('context-read-aloud')).toBeNull()
+      expect(screen.queryByTestId('read-aloud-controls')).toBeNull()
     })
 
     it('never offers it on user messages, streaming text, or provider errors', () => {
       readAloudState.configured = true
       const { unmount } = render(<MessageItem message={createUserMessage({ content: { text: 'hi' } })} />)
-      expect(screen.queryByTestId('read-aloud-button')).toBeNull()
+      expect(screen.queryByTestId('context-read-aloud')).toBeNull()
       unmount()
 
       const streaming = render(<MessageItem message={createAssistantMessage({ content: { text: 'partial' } })} isStreaming />)
-      expect(screen.queryByTestId('read-aloud-button')).toBeNull()
+      expect(screen.queryByTestId('context-read-aloud')).toBeNull()
       streaming.unmount()
 
       render(<MessageItem message={createAssistantMessage({ content: { text: 'boom' }, apiError: 'rate_limit' })} />)
-      expect(screen.queryByTestId('read-aloud-button')).toBeNull()
+      expect(screen.queryByTestId('context-read-aloud')).toBeNull()
     })
 
     it('renders the word spans and dims the prose only for the reply being read', () => {
@@ -344,11 +377,10 @@ describe('MessageItem', () => {
       expect(screen.getByTestId('read-aloud-button')).toBeInTheDocument()
     })
 
-    it('mounts only the speaker while idle', () => {
+    it('mounts nothing under the reply while idle', () => {
       readAloudState.configured = true
       render(<MessageItem message={createAssistantMessage({ content: { text: 'Hello there world' } })} />)
-      expect(screen.getByTestId('read-aloud-button')).toBeInTheDocument()
-      for (const id of ['read-aloud-pause', 'read-aloud-resume', 'read-aloud-stop', 'read-aloud-speed']) {
+      for (const id of ['read-aloud-controls', 'read-aloud-button', 'read-aloud-pause', 'read-aloud-resume', 'read-aloud-stop', 'read-aloud-speed']) {
         expect(screen.queryByTestId(id)).toBeNull()
       }
     })
