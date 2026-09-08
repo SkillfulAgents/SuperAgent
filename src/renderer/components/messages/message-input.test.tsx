@@ -139,6 +139,7 @@ vi.mock('@renderer/hooks/use-settings', () => ({
 describe('MessageInput', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockCanUseVoiceMode = false
     mockStreamState.isActive = false
     mockStreamState.isWaitingBackground = false
     mockStreamState.backgroundTasks = []
@@ -192,12 +193,44 @@ describe('MessageInput', () => {
       await waitFor(() => expect(mockSendMessage.mutate).toHaveBeenCalledTimes(2))
     })
 
+    it('is the primary action while there is nothing to send, then yields that slot to Send', async () => {
+      mockCanUseVoiceMode = true
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      // Empty: one live action — voice mode, filled — and no disabled Send beside it.
+      expect(screen.getByTestId('voice-mode-button')).toHaveClass('bg-primary')
+      expect(screen.queryByTestId('send-button')).not.toBeInTheDocument()
+
+      const input = screen.getByTestId('message-input')
+      await userEvent.type(input, 'Hello')
+      expect(screen.getByTestId('send-button')).toBeEnabled()
+      expect(screen.getByTestId('voice-mode-button')).not.toHaveClass('bg-primary')
+
+      await userEvent.clear(input)
+      expect(screen.queryByTestId('send-button')).not.toBeInTheDocument()
+      expect(screen.getByTestId('voice-mode-button')).toHaveClass('bg-primary')
+    })
+
+    it('stays secondary to Send while the agent works, next to Stop', async () => {
+      mockCanUseVoiceMode = true
+      mockStreamState.isActive = true
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getByTestId('stop-button')).toBeInTheDocument()
+      expect(screen.getByTestId('voice-mode-button')).toHaveClass('bg-primary')
+      expect(screen.queryByTestId('send-button')).not.toBeInTheDocument()
+
+      await userEvent.type(screen.getByTestId('message-input'), 'Hello')
+      expect(screen.getByTestId('send-button')).toHaveAttribute('aria-label', 'Queue message')
+      expect(screen.getByTestId('voice-mode-button')).not.toHaveClass('bg-primary')
+    })
+
     it('cannot be entered while a dictation is still recording', () => {
       mockCanUseVoiceMode = true
       mockDictating = true
       try {
         renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+        // The dictation is what gets sent, so Send holds the primary slot.
         expect(screen.getByTestId('voice-mode-button')).toBeDisabled()
+        expect(screen.getByTestId('send-button')).toBeInTheDocument()
       } finally {
         mockDictating = false
       }
