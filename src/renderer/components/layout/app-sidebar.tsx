@@ -1,5 +1,5 @@
 
-import { Bell, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, MoreVertical, Plus, Search, Settings, AlertTriangle, LayoutGrid, SquareMousePointer, LogOut, User, Users, Compass, MoonStar } from 'lucide-react'
+import { Bell, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, Plus, Search, Settings, AlertTriangle, LayoutGrid, SquareMousePointer, LogOut, User, Users, Compass, MoonStar } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { toast } from 'sonner'
 import { cn } from '@shared/lib/utils/cn'
@@ -61,6 +61,7 @@ import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
 import { SIDEBAR_TREE_CONNECTORS } from '@renderer/components/ui/tree-connectors'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
+import { AgentMenuButton } from '@renderer/components/agents/agent-menu-button'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { DashboardContextMenu } from '@renderer/components/dashboards/dashboard-context-menu'
 import { useQueryClient } from '@tanstack/react-query'
@@ -552,10 +553,8 @@ const AgentMenuItemInner = React.forwardRef<
   })
 
   // Right-click on the row was the only way to reach the agent menu, which
-  // nobody discovers. A 3-dot button now takes over the status slot on hover
-  // and opens that same menu — one menu surface, not two: the button
-  // synthesizes the `contextmenu` event the row's trigger already listens for
-  // (same trick as the touch long-press in ui/context-menu.tsx).
+  // nobody discovers. The shared AgentMenuButton takes over the status slot on
+  // hover and opens that same menu by replaying a contextmenu on the row.
   const [menuOpen, setMenuOpen] = useState(false)
   const rowRef = React.useRef<HTMLAnchorElement | null>(null)
   const setRowRef = useCallback(
@@ -565,21 +564,6 @@ const AgentMenuItemInner = React.forwardRef<
     },
     [hintRef]
   )
-  const handleMenuButtonClick = (e: React.MouseEvent<HTMLButtonElement>) => {
-    e.preventDefault()
-    e.stopPropagation()
-    const row = rowRef.current
-    if (!row) return
-    const rect = e.currentTarget.getBoundingClientRect()
-    row.dispatchEvent(
-      new MouseEvent('contextmenu', {
-        bubbles: true,
-        cancelable: true,
-        clientX: rect.right,
-        clientY: rect.bottom,
-      })
-    )
-  }
 
   return (
     <Collapsible asChild open={isOpen && !isDragActive} onOpenChange={setIsOpen}>
@@ -637,17 +621,18 @@ const AgentMenuItemInner = React.forwardRef<
             while the cmd-hint overlay owns that slot.
           */}
           {hint === null && (
-            <button
-              type="button"
-              onClick={handleMenuButtonClick}
-              aria-label={`Options for ${agent.name}`}
-              aria-haspopup="menu"
-              title="Agent options"
+            <AgentMenuButton
+              triggerRef={rowRef}
+              agentName={agent.name}
+              menuOpen={menuOpen}
+              // Spill to the right: a dropdown here would cover the rows below.
+              anchor="beside"
               data-testid={`agent-menu-button-${agent.slug}`}
+              iconClassName="h-3.5 w-3.5"
               className={cn(
                 // right-1.5 + w-5 centers the icon exactly where the w-4
                 // indicator slot sits, so the swap doesn't shift the row.
-                'absolute right-1.5 top-1/2 -translate-y-1/2 flex h-5 w-5 items-center justify-center rounded-md',
+                'absolute right-1.5 top-1/2 -translate-y-1/2 h-5 w-5 rounded-md',
                 'text-muted-foreground/60 opacity-0 transition-[opacity,background-color,color]',
                 // One step darker than the row's #f4f4f5 wash it sits on
                 // (composites to ~#e2e2e4). Translucent rather than a fixed
@@ -661,9 +646,7 @@ const AgentMenuItemInner = React.forwardRef<
                 'focus-visible:ring-2 focus-visible:ring-sidebar-ring outline-none',
                 menuOpen && 'opacity-100 text-sidebar-foreground'
               )}
-            >
-              <MoreVertical className="h-3.5 w-3.5" />
-            </button>
+            />
           )}
           {/*
             Sibling chevron button overlays its slot in the row so the row stays a
