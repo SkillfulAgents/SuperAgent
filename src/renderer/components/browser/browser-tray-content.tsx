@@ -4,6 +4,7 @@ import { BrowserViewport } from './browser-viewport'
 import { BrowserToolbar } from './browser-toolbar'
 import { BrowserActivityLog } from './browser-activity-log'
 import { BrowserTabBar } from './browser-tab-bar'
+import { FollowAgentToggle } from './follow-agent-toggle'
 import { useBrowserStream } from '@renderer/hooks/use-browser-stream'
 import { Button } from '@renderer/components/ui/button'
 import { DeclineButton } from '@renderer/components/messages/decline-button'
@@ -82,11 +83,8 @@ export function BrowserTrayContent({
       <BrowserTabBar
         tabs={stream.tabs}
         viewingTargetId={stream.viewingTargetId}
-        autoFollow={stream.autoFollow}
-        loading={stream.pageLoading}
         onTabClick={stream.handleTabClick}
         onCloseTab={stream.handleCloseTab}
-        onToggleAutoFollow={stream.toggleAutoFollow}
         onLeadingTabFlush={onLeadingTabFlush}
         trailing={
           // The drawer's own control, at the strip's right end like the file drawer's.
@@ -172,8 +170,10 @@ export function BrowserTrayContent({
         {/* Activity log, on the rail rather than in the card. The log pads its own
           rows 16px, so it is pulled back out to the rail's edge to line up with
           the heading and the card. */}
-        <div className="flex items-center gap-1 py-1.5 border-b border-border/60 shrink-0 mt-4">
-          <span className="text-2xs font-medium uppercase tracking-wider text-muted-foreground">Activity</span>
+        <div className="flex items-center py-1 border-b border-border/60 shrink-0 mt-4">
+          <span className="flex-1 text-xs font-medium text-muted-foreground">Browser agent actions</span>
+          {/* Follow changes the viewed browser tab when the agent switches pages. */}
+          <FollowAgentToggle autoFollow={stream.autoFollow} onToggle={stream.toggleAutoFollow} className="-mr-1" />
         </div>
         <div className="flex flex-1 min-h-0 flex-col -mx-4">
           <BrowserActivityLog sessionId={sessionId} agentSlug={agentSlug} />

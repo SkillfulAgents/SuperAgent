@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { useState } from 'react'
 import { DrawerTabStrip, drawerTabClassName } from '@renderer/components/tray/drawer-tab-strip'
-import { Eye, EyeOff, Globe, Loader2, X } from 'lucide-react'
+import { Globe, X } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import {
   ContextMenu,
@@ -38,11 +38,8 @@ function TabIcon({ faviconUrl, title }: { faviconUrl?: string; title: string }) 
 interface BrowserTabBarProps {
   tabs: BrowserTabInfo[]
   viewingTargetId: string | null
-  autoFollow: boolean
-  loading?: boolean
   onTabClick: (targetId: string) => void
   onCloseTab?: (targetId: string) => void
-  onToggleAutoFollow: () => void
   /**
    * Whether the viewed tab's left edge is flush with the strip's left inset —
    * true only for the first tab, unscrolled. The body card squares off its
@@ -57,24 +54,12 @@ function tabLabel(tab: BrowserTabInfo): string {
   return tab.title || tab.url || `Tab ${tab.index + 1}`
 }
 
-/**
- * The browser drawer's tab strip, in the same Chrome-style dress as the file
- * drawer's (`file-tab-bar.tsx`): tabs on a gray rail, the viewed tab raised as
- * a card whose open bottom hides the body's top border, labels that fade out
- * instead of ellipsizing.
- *
- * Unlike the file strip it always renders, even with no tabs: the drawer's own
- * controls (auto-follow, hide panel) live at its right end, and a browser that
- * is still connecting has a drawer to hide before it has a page to show.
- */
+/** The hide control remains available while the browser connects, before tabs arrive. */
 export function BrowserTabBar({
   tabs,
   viewingTargetId,
-  autoFollow,
-  loading,
   onTabClick,
   onCloseTab,
-  onToggleAutoFollow,
   onLeadingTabFlush,
   trailing,
 }: BrowserTabBarProps) {
@@ -85,24 +70,7 @@ export function BrowserTabBar({
       activeIndex={viewingIndex}
       onLeadingTabFlush={onLeadingTabFlush}
       testId="browser-tab"
-      trailing={
-        <>
-          {loading && <Loader2 className="h-3 w-3 animate-spin shrink-0" />}
-          <button
-            type="button"
-            className={cn(
-              'p-0.5 rounded transition-colors shrink-0',
-              autoFollow ? 'text-blue-500 hover:text-blue-600' : 'text-muted-foreground hover:text-foreground',
-            )}
-            onClick={onToggleAutoFollow}
-            title={autoFollow ? 'Auto-following agent (click to pin)' : 'Not following agent (click to follow)'}
-            aria-label={autoFollow ? 'Auto-following agent (click to pin)' : 'Not following agent (click to follow)'}
-          >
-            {autoFollow ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
-          </button>
-          {trailing}
-        </>
-      }
+      trailing={trailing}
     >
       {(reveal) =>
         tabs.map((tab, index) => {
