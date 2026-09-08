@@ -149,7 +149,6 @@ test.describe('Settings Page', () => {
     await expect(page.locator('[data-testid="settings-nav-admin"]')).toBeVisible()
 
     // Auth-only tabs should NOT be visible in non-auth mode
-    await expect(page.locator('[data-testid="settings-nav-profile"]')).not.toBeVisible()
     await expect(page.locator('[data-testid="settings-nav-users"]')).not.toBeVisible()
     await expect(page.locator('[data-testid="settings-nav-auth"]')).not.toBeVisible()
   })

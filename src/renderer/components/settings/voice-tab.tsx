@@ -10,6 +10,7 @@ import {
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
 import { Button } from '@renderer/components/ui/button'
+import { Switch } from '@renderer/components/ui/switch'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
@@ -17,11 +18,11 @@ import { useUser } from '@renderer/context/user-context'
 import { apiFetch } from '@renderer/lib/api'
 import { AlertTriangle, Eye, EyeOff, Check, Loader2, ExternalLink, Square, Volume2 } from 'lucide-react'
 import { useIsTtsConfigured, useTtsVoices, useVoiceInput } from '@renderer/hooks/use-voice-input'
-import { useReadAloud } from '@renderer/hooks/use-read-aloud'
+import { readAloud, useReadAloud } from '@renderer/hooks/use-read-aloud'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import type { ApiKeyStatus, VoiceProvider } from '@shared/lib/config/settings'
-import { TTS_SPEEDS, resolveTtsSpeed, type TtsVoiceInfo } from '@shared/lib/voice/tts-preferences'
+import { TTS_SPEEDS, resolveHoldSound, resolveTtsSpeed, type TtsVoiceInfo } from '@shared/lib/voice/tts-preferences'
 
 const VOICE_PROVIDERS = [
   {
@@ -382,6 +383,7 @@ function PersonalVoiceSection({ heading, offerWorkspaceDefault }: { heading: str
   const stored = userSettings?.voice?.ttsVoice
   const ownVoice = stored && voices.some((v) => v.id === stored) ? stored : null
   const speedOption = TTS_SPEEDS.find((s) => s.value === speed)
+  const holdSound = resolveHoldSound(userSettings?.voice?.holdSound)
 
   return (
     <div className="space-y-4" data-testid="personal-voice-section">
@@ -394,14 +396,14 @@ function PersonalVoiceSection({ heading, offerWorkspaceDefault }: { heading: str
           value={offerWorkspaceDefault ? ownVoice : (ownVoice ?? workspaceDefault ?? null)}
           disabled={isLoading}
           workspaceDefault={offerWorkspaceDefault ? workspaceDefault : undefined}
-          onChange={(ttsVoice) => updateUserSettings.mutate({ voice: { ttsVoice } })}
+          onChange={(ttsVoice) => updateUserSettings.mutate({ voice: { ttsVoice } }, { onSuccess: () => readAloud.restart() })}
         />
       </div>
       <div className="space-y-2">
         <Label htmlFor="tts-speed">Speed</Label>
         <Select
           value={String(speed)}
-          onValueChange={(v) => updateUserSettings.mutate({ voice: { ttsSpeed: Number(v) } })}
+          onValueChange={(v) => updateUserSettings.mutate({ voice: { ttsSpeed: Number(v) } }, { onSuccess: () => readAloud.restart() })}
           disabled={isLoading}
         >
           <SelectTrigger id="tts-speed">
@@ -416,9 +418,21 @@ function PersonalVoiceSection({ heading, offerWorkspaceDefault }: { heading: str
         </Select>
       </div>
       <p className="text-xs text-muted-foreground">
-        Used by the speaker button under agent replies. Only you hear these choices.
+        Used by the speaker button under agent replies and in voice mode. Only you hear these choices.
       </p>
       <VoicePreviewButton />
+      <div className="flex items-center justify-between gap-4 pt-2">
+        <div className="space-y-1">
+          <Label htmlFor="voice-hold-sound">Hold sound in voice mode</Label>
+          <p className="text-xs text-muted-foreground">A soft loop while the agent works, so silence never reads as a dropped call.</p>
+        </div>
+        <Switch
+          id="voice-hold-sound"
+          checked={holdSound}
+          disabled={isLoading}
+          onCheckedChange={(holdSound) => updateUserSettings.mutate({ voice: { holdSound } })}
+        />
+      </div>
     </div>
   )
 }

@@ -21,7 +21,11 @@ const MAX_BUFFERED_AUDIO_BYTES = 1_000_000
 const FLUSH_TIMEOUT_MS = 1_500
 
 export interface TranscriptEvent {
-  type: 'interim' | 'final' | 'speech_ended'
+  /**
+   * 'finalized' answers finalize(): the server has turned everything sent so
+   * far into finals (delivered as 'final' events just before it). Text is empty.
+   */
+  type: 'interim' | 'final' | 'speech_started' | 'speech_ended' | 'finalized'
   text: string
 }
 
@@ -42,6 +46,13 @@ export interface SttAdapter {
    * tail of the utterance — callers that need the final text should await it.
    */
   finish(): Promise<void>
+  /**
+   * Turn the audio sent so far into final transcripts now, without closing:
+   * a 'finalized' event follows the resulting finals. For a caller that wants
+   * the utterance before the server's own silence detection would end it,
+   * while continuing to listen. No-op with no live socket.
+   */
+  finalize(): void
   close(): void
 }
 
@@ -81,6 +92,11 @@ abstract class WebSocketSttAdapter implements SttAdapter {
    * the audio), in which case finish() completes immediately instead of waiting.
    */
   protected abstract requestFinalize(): boolean
+  /**
+   * Ask the server for finals of the audio sent so far while keeping the
+   * connection open. The subclass emits 'finalized' when they have arrived.
+   */
+  protected abstract requestMidStreamFinalize(): void
   /** Handle one decoded server message (transcripts, errors, completion). */
   protected abstract handleMessage(data: any): void
   /** Hook run once the socket opens, before buffered audio is flushed (e.g. session config). */
@@ -184,6 +200,11 @@ abstract class WebSocketSttAdapter implements SttAdapter {
     })
   }
 
+  finalize(): void {
+    if (this.closed || this.finishing || this.ws?.readyState !== WebSocket.OPEN) return
+    this.requestMidStreamFinalize()
+  }
+
   close(): void {
     // finish() already sent the finalize message; don't send it twice.
     if (!this.closed && !this.finishing && this.ws?.readyState === WebSocket.OPEN) {
@@ -259,12 +280,21 @@ class DeepgramAdapter extends WebSocketSttAdapter {
     return true
   }
 
+  protected requestMidStreamFinalize(): void {
+    // Answered by a Results message flagged from_finalize (empty when nothing
+    // was pending); the stream stays open.
+    this.ws?.send(JSON.stringify({ type: 'Finalize' }))
+  }
+
   protected handleMessage(data: any): void {
     if (data.type === 'Results') {
       const alt = data.channel?.alternatives?.[0]
       const text = alt?.transcript || ''
-      if (!text) return
-      this.emitTranscript({ type: data.speech_final || data.is_final ? 'final' : 'interim', text })
+      if (text) this.emitTranscript({ type: data.speech_final || data.is_final ? 'final' : 'interim', text })
+      if (data.from_finalize) this.emitTranscript({ type: 'finalized', text: '' })
+    } else if (data.type === 'SpeechStarted') {
+      // Voice activity, ahead of any words: the earliest sign the person is talking.
+      this.emitTranscript({ type: 'speech_started', text: '' })
     } else if (data.type === 'UtteranceEnd') {
       this.emitTranscript({ type: 'speech_ended', text: '' })
     }
@@ -302,6 +332,8 @@ class OpenaiAdapter extends WebSocketSttAdapter {
   // auto-commits each utterance, so a manual commit with nothing pending fails
   // with "buffer too small" — only commit when there's actually audio to flush.
   private hasUncommittedAudio = false
+  // A finalize() is waiting for the transcript of the buffer it committed.
+  private finalizePending = false
 
   protected createSocket(token: string): WebSocket {
     const url = 'wss://api.openai.com/v1/realtime?intent=transcription'
@@ -349,6 +381,18 @@ class OpenaiAdapter extends WebSocketSttAdapter {
     return true
   }
 
+  protected requestMidStreamFinalize(): void {
+    // Same empty-buffer hazard as requestFinalize: with nothing to commit the
+    // utterance is already final, so answer right away.
+    if (!this.hasUncommittedAudio) {
+      this.emitTranscript({ type: 'finalized', text: '' })
+      return
+    }
+    this.finalizePending = true
+    this.ws?.send(JSON.stringify({ type: 'input_audio_buffer.commit' }))
+    this.hasUncommittedAudio = false
+  }
+
   protected handleMessage(data: any): void {
     switch (data.type) {
       case 'conversation.item.input_audio_transcription.delta':
@@ -363,6 +407,10 @@ class OpenaiAdapter extends WebSocketSttAdapter {
         if (data.transcript) {
           this.emitTranscript({ type: 'final', text: data.transcript })
         }
+        if (this.finalizePending) {
+          this.finalizePending = false
+          this.emitTranscript({ type: 'finalized', text: '' })
+        }
         // The committed utterance's transcript is in — complete a pending finish()
         // (no-op during normal streaming, when nothing is awaiting).
         this.completeFinish()
@@ -370,6 +418,9 @@ class OpenaiAdapter extends WebSocketSttAdapter {
       case 'input_audio_buffer.committed':
         // Server committed the buffer (server_vad) — nothing left to flush.
         this.hasUncommittedAudio = false
+        break
+      case 'input_audio_buffer.speech_started':
+        this.emitTranscript({ type: 'speech_started', text: '' })
         break
       case 'input_audio_buffer.speech_stopped':
         this.emitTranscript({ type: 'speech_ended', text: '' })

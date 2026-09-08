@@ -419,6 +419,22 @@ describe('recoverFromUnexpectedDeath', () => {
     expect(deps.syncAgentStatus).not.toHaveBeenCalled()
   })
 
+  it('delivers a coalesced transcript-only append without starting a turn', async () => {
+    const deps = createDeps({
+      takeCoalescedUserMessages: () => [{ uuid: TEST_MESSAGE_UUID, text: '[SYSTEM] note', shouldQuery: false }],
+    })
+    deps.observeUnexpectedDeath.mockResolvedValue(recoverPlan())
+
+    await recoverFromUnexpectedDeath(deps)
+
+    expect(deps.sendMessage.mock.calls[1]).toEqual([
+      'sess-1',
+      '[SYSTEM] note',
+      TEST_MESSAGE_UUID,
+      { shouldQuery: false },
+    ])
+  })
+
   it('settles instead of recovering once the crash-loop budget is exhausted', async () => {
     const deps = createDeps()
     deps.observeUnexpectedDeath.mockResolvedValue(recoverPlan())

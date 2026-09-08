@@ -2,6 +2,7 @@ import { Outlet, useParams, useNavigate } from '@tanstack/react-router'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useUser } from '@renderer/context/user-context'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
+import { requestVoiceMode } from '@renderer/lib/voice-mode-handoff'
 import { useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
 import { useSidebar } from '@renderer/components/ui/sidebar'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
@@ -144,16 +145,23 @@ export function AgentShell() {
   // stays mounted across that navigation, so the ghost is intact when the leaf
   // reads it via getPendingMessages.
   const onSessionCreated = useCallback(
-    (newSessionId: string, initialMessage: string, messageUuid: string) => {
-      pendingMessagesRef.current.set(newSessionId, [
-        {
-          localId: messageUuid,
-          uuid: messageUuid,
-          text: initialMessage,
-          sentAt: Date.now(),
-          sender: isAuthMode && user ? { id: user.id, name: user.name, email: user.email } : undefined,
-        },
-      ])
+    (newSessionId: string, initialMessage: string, messageUuid: string, options?: { voiceMode?: boolean }) => {
+      if (options?.voiceMode) {
+        // A session started by voice opens with the voice-mode notice, which
+        // draws as a boundary once fetched — no ghost bubble for it. The
+        // session composer comes up in voice mode instead.
+        requestVoiceMode(newSessionId)
+      } else {
+        pendingMessagesRef.current.set(newSessionId, [
+          {
+            localId: messageUuid,
+            uuid: messageUuid,
+            text: initialMessage,
+            sentAt: Date.now(),
+            sender: isAuthMode && user ? { id: user.id, name: user.name, email: user.email } : undefined,
+          },
+        ])
+      }
       if (slug) {
         void navigate({
           to: '/agents/$slug/sessions/$sessionId',

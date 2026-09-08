@@ -10,7 +10,7 @@ const state = {
   ttsConfigured: true,
   sttProvider: 'deepgram' as string | undefined,
   defaultVoice: undefined as string | undefined,
-  userVoice: undefined as { ttsVoice?: string; ttsSpeed?: number } | undefined,
+  userVoice: undefined as { ttsVoice?: string; ttsSpeed?: number; holdSound?: boolean } | undefined,
 }
 const VOICES = [
   { id: 'aura-2-thalia-en', label: 'Thalia', description: 'Clear' },
@@ -50,8 +50,10 @@ vi.mock('@renderer/hooks/use-voice-input', () => ({
   useTtsVoices: () => ({ voices: VOICES, defaultVoice: state.defaultVoice ?? 'aura-2-thalia-en' }),
   useVoiceInput: () => ({ state: 'idle', isRecording: false, isConnecting: false, isFinalizing: false, error: null, clearError: vi.fn(), isSupported: false, analyserRef: { current: null }, startRecording: vi.fn(), stopRecording: vi.fn() }),
 }))
+const readAloudRestart = vi.fn()
 vi.mock('@renderer/hooks/use-read-aloud', () => ({
   useReadAloud: () => ({ status: 'idle', isActive: false, toggle: vi.fn(), error: null }),
+  readAloud: { restart: () => readAloudRestart() },
 }))
 vi.mock('@renderer/hooks/use-platform-auth', () => ({
   usePlatformAuthStatus: () => ({ data: { connected: false } }),
@@ -137,7 +139,7 @@ describe('VoiceTab', () => {
     renderWithProviders(<VoiceTab />)
     fireEvent.click(screen.getByLabelText('Voice', { selector: '#tts-voice' }))
     fireEvent.click(screen.getByRole('option', { name: /Workspace Default \(Zeus\)/ }))
-    expect(updateUserSettings).toHaveBeenCalledWith({ voice: { ttsVoice: null } })
+    expect(updateUserSettings).toHaveBeenCalledWith({ voice: { ttsVoice: null } }, expect.anything())
   })
 
   it('a local install offers no workspace default: there is nobody else to follow', () => {
@@ -145,6 +147,31 @@ describe('VoiceTab', () => {
     expect(screen.getByLabelText('Voice', { selector: '#tts-voice' })).toHaveTextContent('Thalia')
     fireEvent.click(screen.getByLabelText('Voice', { selector: '#tts-voice' }))
     expect(screen.queryByRole('option', { name: /Workspace Default/ })).toBeNull()
+  })
+
+  it('the hold sound is on until turned off, and the choice is the person\'s own', () => {
+    renderWithProviders(<VoiceTab />)
+    const toggle = screen.getByLabelText('Hold sound in voice mode')
+    expect(toggle).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(toggle)
+    expect(updateUserSettings).toHaveBeenCalledWith({ voice: { holdSound: false } })
+  })
+
+  it('a muted hold sound shows as off', () => {
+    state.userVoice = { holdSound: false }
+    renderWithProviders(<VoiceTab />)
+    expect(screen.getByLabelText('Hold sound in voice mode')).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('a saved speed reaches the reader, which drops its cached credentials', () => {
+    state.userVoice = { ttsSpeed: 1.2 }
+    renderWithProviders(<VoiceTab />)
+    fireEvent.click(screen.getByLabelText('Speed'))
+    fireEvent.click(screen.getByRole('option', { name: 'Normal' }))
+    expect(updateUserSettings).toHaveBeenLastCalledWith({ voice: { ttsSpeed: 1 } }, expect.objectContaining({ onSuccess: expect.any(Function) }))
+    expect(readAloudRestart).not.toHaveBeenCalled()
+    updateUserSettings.mock.calls.at(-1)?.[1].onSuccess()
+    expect(readAloudRestart).toHaveBeenCalledTimes(1)
   })
 
   it('a speed off the preset list still renders readably', () => {
@@ -166,7 +193,7 @@ describe('VoiceTab', () => {
     renderWithProviders(<VoiceTab />)
     fireEvent.click(screen.getByLabelText('Voice', { selector: '#tts-voice' }))
     fireEvent.click(screen.getByRole('option', { name: /Luna/ }))
-    expect(updateUserSettings).toHaveBeenCalledWith({ voice: { ttsVoice: 'aura-2-luna-en' } })
+    expect(updateUserSettings).toHaveBeenCalledWith({ voice: { ttsVoice: 'aura-2-luna-en' } }, expect.anything())
     expect(updateSettings).not.toHaveBeenCalled()
   })
 })

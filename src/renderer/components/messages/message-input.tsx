@@ -9,6 +9,14 @@ import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
+import { VoiceModeButton } from '@renderer/components/ui/voice-mode-button'
+import { VoiceModeComposer } from './voice-mode-composer'
+import { VoiceModeControls, useHoldSoundPreference } from './voice-mode-controls'
+import { useVoiceMode } from '@renderer/hooks/use-voice-mode'
+import { useHoldSound } from '@renderer/hooks/use-hold-sound'
+import { readAloud } from '@renderer/hooks/use-read-aloud'
+import { clearVoiceModeRequest, isVoiceModeRequested, setVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
+import { VOICE_MODE_ENTERED_MESSAGE, VOICE_MODE_EXITED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
 import { UploadError } from '@renderer/components/ui/upload-error'
 import { ComposerActionButton } from './composer-action-button'
 import { SlashCommandMenu } from './slash-command-menu'
@@ -275,9 +283,128 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
 
   const isDisabled = sendMessage.isPending || composer.isUploading || isOffline || !isRuntimeReady
 
+  // Voice mode. A session opened from the home page's voice button arrives
+  // with the request already made (and the entry notice already sent as its
+  // first message); otherwise it starts here, with the notice appended for
+  // the agent to read with the next utterance.
+  const [openedByVoice] = useState(() => isVoiceModeRequested(sessionId))
+  const [voiceModeOn, setVoiceModeOn] = useState(openedByVoice)
+  useEffect(() => clearVoiceModeRequest(sessionId), [sessionId])
+  // The rest of the session view draws around the mic (activity card, hints).
+  useEffect(() => {
+    setVoiceModeActive(sessionId, voiceModeOn)
+    return () => setVoiceModeActive(sessionId, false)
+  }, [sessionId, voiceModeOn])
+  // Its own mutation: the composer treats a pending send as "busy", and an
+  // utterance spoken while the entry notice is still in flight must not be
+  // dropped for it.
+  // A notice that fails (the session was deleted, the app is offline as
+  // the person leaves) is not worth a toast: the agent misses a hint.
+  const sendNotice = useSendMessage({ quiet: true })
+  const sendNoticeRef = useRef<(content: string) => void>(() => {})
+  sendNoticeRef.current = (content: string) => {
+    sendNotice.mutate(
+      { sessionId, agentSlug, content, shouldQuery: false },
+      { onError: (err) => console.warn('Voice-mode notice not delivered:', err) },
+    )
+  }
+  const enterVoiceMode = useCallback(() => {
+    // Audio output is unlocked inside the click, for the first reply to use.
+    readAloud.unlockAudio()
+    setVoiceModeOn(true)
+    sendNoticeRef.current(VOICE_MODE_ENTERED_MESSAGE)
+    track('voice_mode_entered', { origin: 'session' })
+  }, [track])
+  const exitVoiceMode = useCallback(() => setVoiceModeOn(false), [])
+  const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Leaving voice mode — by the exit button or by navigating away from the
+  // session — tells the agent. Deferred a tick so a development-mode
+  // remount does not send it for a mode that is still on.
+  useEffect(() => {
+    if (!voiceModeOn) return
+    return () => {
+      const timer = setTimeout(() => sendNoticeRef.current(VOICE_MODE_EXITED_MESSAGE), 0)
+      exitTimerRef.current = timer
+    }
+  }, [voiceModeOn])
+  useEffect(() => {
+    if (!voiceModeOn || exitTimerRef.current === null) return
+    clearTimeout(exitTimerRef.current)
+    exitTimerRef.current = null
+  }, [voiceModeOn])
+  const { submitMessage } = composer
+  const voice = useVoiceMode({
+    sessionId,
+    agentSlug,
+    active: voiceModeOn && !isViewOnly,
+    send: submitMessage,
+    startWithAgentTurn: openedByVoice,
+  })
+  // Something to hear while the agent works, unless the person muted it.
+  const holdSoundWanted = useHoldSoundPreference()
+  useHoldSound({
+    enabled: voiceModeOn && !isViewOnly && holdSoundWanted,
+    agentTurn: voice.phase !== 'listening',
+    working: voice.working,
+  })
+
 
   if (isViewOnly) {
     return null
+  }
+
+  if (voiceModeOn) {
+    return (
+      <div
+        className={`relative z-10 isolate px-4 pt-0 ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
+        {...composer.dragHandlers}
+      >
+        <MountChoiceDialog
+          open={composer.mountDialog.open}
+          onChoice={composer.mountDialog.onChoice}
+          folderName={composer.mountDialog.folderName}
+        />
+        <VoiceModeComposer
+          phase={voice.phase}
+          utterance={voice.utterance}
+          error={voice.error}
+          onClearError={voice.clearError}
+          onPressMic={voice.pressMic}
+          getAnalyser={voice.getAnalyser}
+          onExit={exitVoiceMode}
+          attachments={composer.attachments}
+          onRemoveAttachment={composer.removeAttachment}
+          onRetryAttachment={composer.retryAttachment}
+          attachmentPicker={(
+            <AttachmentPicker
+              onFileSelect={composer.handleFileSelect}
+              onFolderSelect={composer.handleFolderSelect}
+              onRecentFileAttach={(file) => composer.addFiles([{ file }])}
+              disabled={isDisabled}
+            />
+          )}
+          composerOptions={(
+            <ComposerOptions
+              state={composerOptions}
+              disabled={isDisabled || isActive}
+              footer={<AgentDefaultFooter agentSlug={agentSlug} state={composerOptions} />}
+            />
+          )}
+          voiceControls={<VoiceModeControls />}
+          footer={(
+            <>
+              {isOffline && (
+                <div className="mt-2 flex items-center justify-center gap-1.5 text-xs text-destructive">
+                  <WifiOff className="h-3 w-3 shrink-0" />
+                  <span>No internet connection. Messages cannot be sent.</span>
+                </div>
+              )}
+              <UploadError error={composer.uploadError} onDismiss={composer.clearUploadError} className="mt-2 justify-center" />
+            </>
+          )}
+        />
+      </div>
+    )
   }
 
   return (
@@ -363,6 +490,8 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
               message={composer.message}
               disabled={isDisabled}
             />
+            {/* Not mid-dictation: that mic and socket would stay open under voice mode's own. */}
+            <VoiceModeButton onClick={enterVoiceMode} disabled={isDisabled || composer.voiceInput.isRecording || composer.voiceInput.isConnecting} />
             <ComposerActionButton
               isActive={isActive}
               isWaitingBackground={isWaitingBackground}

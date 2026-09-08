@@ -2,6 +2,7 @@
 import { useMessages, useDeleteMessage, useDeleteToolCall, useCancelQueuedMessage, TranscriptNotFoundError } from '@renderer/hooks/use-messages'
 import { useAgent } from '@renderer/hooks/use-agents'
 import { useIsVoiceAgentConfigured } from '@renderer/hooks/use-voice-input'
+import { useIsVoiceReading } from '@renderer/hooks/use-read-aloud'
 import { VoiceAgentFeedbackDialog } from './voice-agent-feedback-dialog'
 import {
   useMessageStream,
@@ -497,6 +498,19 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     () => currentRoutedProviderError({ isActive, error: streamError, apiErrorCode, errorPresentation }, messages),
     [isActive, streamError, apiErrorCode, errorPresentation, messages],
   )
+
+  // Voice mode reading this session: subscribed once here and handed to
+  // the rows that can be read, so its flips do not re-render every row.
+  const voiceReading = useIsVoiceReading(sessionId)
+  // The newest assistant message: while voice mode reads a reply, the
+  // highlight moves from the streaming row to this once it is persisted.
+  const latestAssistantId = useMemo(() => {
+    if (!messages?.length) return null
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].type === 'assistant') return messages[i].id
+    }
+    return null
+  }, [messages])
 
   // Check if streaming message is already in persisted messages (prevents double-render)
   const isStreamingMessagePersisted = useMemo(() => {
@@ -1189,6 +1203,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                       message={displayedMessage}
                       agentSlug={agentSlug}
                       sessionId={sessionId}
+                      isLatestAssistant={item.id === latestAssistantId && !(streamingMessage && !isStreamingMessagePersisted)}
+                      voiceReading={voiceReading && item.id === latestAssistantId}
                       isSessionActive={canHaveRunningToolCalls.has(item.id)}
                       activeSubagents={activeSubagents}
                       completedSubagents={completedSubagents}
@@ -1328,6 +1344,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
               agentSlug={agentSlug}
               sessionId={sessionId}
               embeddedImageAliases={embeddedImageAliases}
+              voiceReading={voiceReading}
             />
           </MessageErrorBoundary>
         )}

@@ -531,3 +531,83 @@ describe('graceful finish', () => {
     expect(errors[0].message).toBe('something broke')
   })
 })
+
+// ============================================================================
+// Mid-stream finalize (voice mode takes an utterance without closing)
+// ============================================================================
+
+describe('finalize', () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = []
+    FakeWebSocket.autoOpen = false
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('deepgram: sends Finalize on an open socket and reports the finals it produces, then finalized', async () => {
+    const adapter = createSttAdapter('deepgram')
+    adapter.finalize() // no socket yet: nothing to do
+    const connectPromise = adapter.connect('token')
+    const ws = FakeWebSocket.instances[0]
+    adapter.finalize() // still connecting: nothing to do
+    ws.simulateOpen()
+    await connectPromise
+    expect(ws.sent).toHaveLength(0)
+
+    const events: TranscriptEvent[] = []
+    adapter.onTranscript((e) => events.push(e))
+    adapter.finalize()
+    expect(jsonSent(ws)).toEqual([{ type: 'Finalize' }])
+
+    ws.simulateMessage({ type: 'Results', is_final: true, from_finalize: true, channel: { alternatives: [{ transcript: 'the tail' }] } })
+    expect(events).toEqual([{ type: 'final', text: 'the tail' }, { type: 'finalized', text: '' }])
+
+    // Nothing pending: an empty finalize result still answers.
+    adapter.finalize()
+    ws.simulateMessage({ type: 'Results', is_final: true, from_finalize: true, channel: { alternatives: [{ transcript: '' }] } })
+    expect(events).toHaveLength(3)
+    expect(events[2]).toEqual({ type: 'finalized', text: '' })
+    // The socket stays open for the next utterance.
+    expect(ws.readyState).toBe(FakeWebSocket.OPEN)
+  })
+
+  it('openai: commits the pending audio and reports finalized on its transcript', async () => {
+    const adapter = createSttAdapter('openai')
+    const connectPromise = adapter.connect('token')
+    const ws = FakeWebSocket.instances[0]
+    ws.simulateOpen()
+    await connectPromise
+    const events: TranscriptEvent[] = []
+    adapter.onTranscript((e) => events.push(e))
+
+    adapter.sendAudio(chunkOf(4, 1))
+    adapter.finalize()
+    expect(jsonSent(ws).at(-1)).toEqual({ type: 'input_audio_buffer.commit' })
+    ws.simulateMessage({ type: 'conversation.item.input_audio_transcription.completed', transcript: 'ship it' })
+    expect(events).toEqual([{ type: 'final', text: 'ship it' }, { type: 'finalized', text: '' }])
+
+    // A server-driven completion later is a plain final, not an answer to a finalize.
+    ws.simulateMessage({ type: 'conversation.item.input_audio_transcription.completed', transcript: 'more' })
+    expect(events.at(-1)).toEqual({ type: 'final', text: 'more' })
+  })
+
+  it('openai: with nothing to commit, finalize answers at once without a commit', async () => {
+    const adapter = createSttAdapter('openai')
+    const connectPromise = adapter.connect('token')
+    const ws = FakeWebSocket.instances[0]
+    ws.simulateOpen()
+    await connectPromise
+    const events: TranscriptEvent[] = []
+    adapter.onTranscript((e) => events.push(e))
+    const before = ws.sent.length
+
+    adapter.finalize()
+    expect(ws.sent).toHaveLength(before)
+    expect(events).toEqual([{ type: 'finalized', text: '' }])
+  })
+})

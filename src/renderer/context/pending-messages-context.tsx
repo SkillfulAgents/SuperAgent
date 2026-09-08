@@ -14,7 +14,8 @@ export interface PendingMessagesContextValue {
   onMessageSent: (content: string, localId: string, queued: boolean) => void
   onMessageUuidAssigned: (localId: string, uuid: string, queued: boolean) => void
   onPendingMessageAppeared: (localId: string) => void
-  onSessionCreated: (sessionId: string, initialMessage: string, messageUuid: string) => void
+  /** `voiceMode` opens the new session's composer listening, with no ghost for the notice that started it. */
+  onSessionCreated: (sessionId: string, initialMessage: string, messageUuid: string, options?: { voiceMode?: boolean }) => void
   clearPendingMessagesForSession: (sessionId: string) => void
   streamContextUsage: SessionUsage | null
 }

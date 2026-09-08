@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MessageInput } from './message-input'
+import { VOICE_MODE_ENTERED_MESSAGE, VOICE_MODE_EXITED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { useDraft } from '@renderer/context/drafts-context'
 import { useEffect } from 'react'
@@ -13,6 +14,7 @@ import type { DataTransferResult } from '@renderer/lib/file-utils'
 // Mock hooks
 const mockSendMessage = {
   mutateAsync: vi.fn().mockResolvedValue({ success: true, uuid: 'server-uuid-1', queued: false }),
+  mutate: vi.fn(),
   isPending: false,
 }
 const mockUploadFile = { mutateAsync: vi.fn().mockResolvedValue({ path: '/tmp/file' }) }
@@ -38,6 +40,44 @@ vi.mock('@renderer/hooks/use-messages', () => ({
 
 vi.mock('@renderer/hooks/use-secrets', () => ({
   useCreateSecret: () => mockCreateSecret,
+}))
+
+// Voice mode: offered per test, and its mic/reader loop stubbed out.
+let mockCanUseVoiceMode = false
+// A dictation in progress, over the real hook's idle state.
+let mockDictating = false
+vi.mock('@renderer/hooks/use-voice-input', async (importOriginal) => {
+  const original = await importOriginal<typeof import('@renderer/hooks/use-voice-input')>()
+  return {
+    ...original,
+    useCanUseVoiceMode: () => mockCanUseVoiceMode,
+    useVoiceInput: (...args: Parameters<typeof original.useVoiceInput>) => {
+      const real = original.useVoiceInput(...args)
+      return mockDictating ? { ...real, isRecording: true } : real
+    },
+  }
+})
+const mockVoice = { phase: 'listening' as 'listening' | 'thinking' | 'speaking', working: false }
+vi.mock('@renderer/hooks/use-voice-mode', () => ({
+  useVoiceMode: () => ({
+    phase: mockVoice.phase,
+    working: mockVoice.working,
+    utterance: '',
+    error: null,
+    clearError: vi.fn(),
+    pressMic: vi.fn(),
+    getAnalyser: () => null,
+  }),
+}))
+const mockUseHoldSound = vi.fn()
+vi.mock('@renderer/hooks/use-hold-sound', () => ({
+  useHoldSound: (args: unknown) => mockUseHoldSound(args),
+}))
+const mockUserVoiceSettings: { ttsSpeed?: number; holdSound?: boolean } = {}
+const mockUpdateUserSettings = vi.fn()
+vi.mock('@renderer/hooks/use-user-settings', () => ({
+  useUserSettings: () => ({ data: { voice: mockUserVoiceSettings } }),
+  useUpdateUserSettings: () => ({ mutate: mockUpdateUserSettings }),
 }))
 
 const mockStreamState = {
@@ -113,6 +153,105 @@ describe('MessageInput', () => {
       key: 'GitHub Token',
       envVar: 'GITHUB_TOKEN',
       hasValue: true,
+    })
+  })
+
+  describe('voice mode', () => {
+    it('is offered only when the provider can both hear and speak', () => {
+      mockCanUseVoiceMode = false
+      const { unmount } = renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.queryByTestId('voice-mode-button')).not.toBeInTheDocument()
+      unmount()
+      mockCanUseVoiceMode = true
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getByTestId('voice-mode-button')).toBeInTheDocument()
+    })
+
+    it('cannot be entered while a dictation is still recording', () => {
+      mockCanUseVoiceMode = true
+      mockDictating = true
+      try {
+        renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+        expect(screen.getByTestId('voice-mode-button')).toBeDisabled()
+      } finally {
+        mockDictating = false
+      }
+    })
+
+    it('enters and leaves with a notice the agent reads on its next turn, never a turn of its own', async () => {
+      mockCanUseVoiceMode = true
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+
+      await userEvent.click(screen.getByTestId('voice-mode-button'))
+      expect(mockSendMessage.mutate).toHaveBeenCalledWith({
+        sessionId: 's-1',
+        agentSlug: 'agent-1',
+        content: VOICE_MODE_ENTERED_MESSAGE,
+        shouldQuery: false,
+      }, expect.anything())
+      expect(screen.getByTestId('voice-mode-composer')).toBeInTheDocument()
+      expect(screen.queryByTestId('message-input')).not.toBeInTheDocument()
+
+      await userEvent.click(screen.getByTestId('voice-mode-exit'))
+      expect(screen.getByTestId('message-input')).toBeInTheDocument()
+      await waitFor(() =>
+        expect(mockSendMessage.mutate).toHaveBeenLastCalledWith({
+          sessionId: 's-1',
+          agentSlug: 'agent-1',
+          content: VOICE_MODE_EXITED_MESSAGE,
+          shouldQuery: false,
+        }, expect.anything()),
+      )
+      expect(mockSendMessage.mutate).toHaveBeenCalledTimes(2)
+    })
+
+    it('shows the reading speed and hold sound under the mic, written to the person\'s settings', async () => {
+      mockCanUseVoiceMode = true
+      mockUserVoiceSettings.ttsSpeed = 1.2
+      delete mockUserVoiceSettings.holdSound
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.queryByTestId('voice-mode-controls')).not.toBeInTheDocument()
+      await userEvent.click(screen.getByTestId('voice-mode-button'))
+      expect(screen.getByTestId('voice-mode-speed')).toHaveTextContent('1.2×')
+      const hold = screen.getByTestId('voice-mode-hold-sound')
+      expect(hold).toHaveAttribute('aria-pressed', 'true')
+      await userEvent.click(hold)
+      // Written as a function of the settings at write time, so two quick
+      // clicks toggle twice rather than both writing "off".
+      const patch = mockUpdateUserSettings.mock.calls.at(-1)?.[0] as (current: { voice?: { holdSound?: boolean } }) => unknown
+      expect(patch({ voice: { holdSound: true } })).toEqual({ voice: { holdSound: false } })
+      expect(patch({ voice: { holdSound: false } })).toEqual({ voice: { holdSound: true } })
+      expect(patch({})).toEqual({ voice: { holdSound: false } })
+    })
+
+    it('plays the hold sound while the agent has the floor, unless muted', async () => {
+      mockCanUseVoiceMode = true
+      delete mockUserVoiceSettings.holdSound
+      mockVoice.phase = 'thinking'
+      mockVoice.working = true
+      const { unmount } = renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      expect(mockUseHoldSound).toHaveBeenLastCalledWith({ enabled: false, agentTurn: true, working: true })
+      await userEvent.click(screen.getByTestId('voice-mode-button'))
+      expect(mockUseHoldSound).toHaveBeenLastCalledWith({ enabled: true, agentTurn: true, working: true })
+      unmount()
+
+      mockUserVoiceSettings.holdSound = false
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      await userEvent.click(screen.getByTestId('voice-mode-button'))
+      expect(mockUseHoldSound).toHaveBeenLastCalledWith({ enabled: false, agentTurn: true, working: true })
+      expect(screen.getByTestId('voice-mode-hold-sound')).toHaveAttribute('aria-pressed', 'false')
+      mockVoice.phase = 'listening'
+      mockVoice.working = false
+    })
+
+    it('tells the agent when the session is left while voice mode is on', async () => {
+      mockCanUseVoiceMode = true
+      const { unmount } = renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      await userEvent.click(screen.getByTestId('voice-mode-button'))
+      unmount()
+      await waitFor(() =>
+        expect(mockSendMessage.mutate).toHaveBeenLastCalledWith(expect.objectContaining({ content: VOICE_MODE_EXITED_MESSAGE }), expect.anything()),
+      )
     })
   })
 
