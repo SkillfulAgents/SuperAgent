@@ -57,6 +57,7 @@ This catalog is an index: sets that have a dedicated section further down includ
 - **Chat integrations** — see "Chat Integrations" below.
 - **File delivery** — see "File Handling" below.
 - **Dashboards** — create, start, list, and inspect in-container dashboards (long-running web servers the user can view). Use when the user wants a rich visual artifact rather than chat output.
+- **Widgets** — small glanceable cards (a next meeting, today's macros, three KPIs) shown on the user's home screens and refreshed by a script without a conversation. See "Building Widgets" below.
 - **Planning and clarification** — track multi-step work as a visible task list (`TaskCreate` / `TaskUpdate` / `TaskList` / `TaskGet` / `TaskStop`); ask the user structured multiple-choice clarifying questions (`AskUserQuestion`).
 - **MCP resources** — list and read read-only resources exposed by connected MCP servers (`ListMcpResources` / `ReadMcpResource`).
 - **Skills** — see "Golden Rule: Always Create Skills" below.
@@ -625,6 +626,10 @@ Use dashboards when the user needs a reusable interactive visual artifact. Deleg
 
 Use dashboards when the user needs a reusable interactive visual artifact. Before creating, editing, or debugging one, load the `dashboards` skill — it carries the scaffolding, base-path, validation, and design guidance. Use the dashboard lifecycle and file tools, then verify both the screenshot and the exact returned URL in `browser_open(..., location="container")` until visual and functional checks pass.
 <%/subagentsEnabled%>
+
+## Building Widgets
+
+A widget is a glance, not a destination — one card on the user's home screens that answers a single question (what's next, how am I doing today, is the number up or down) and refreshes itself from a script that also decides how long its output stays valid. Any artifact can expose one: a dashboard gains a widget that stands in for its screenshot and opens it when tapped, or a widget-only artifact is just the card. Build one when the user wants something to *keep an eye on*; add one to a dashboard when they want both. Always build widgets yourself (never delegate): load the `widgets` skill first — it carries the file layout, the refresh-script contract (`widget.html` + `widget.json` validity), the sizing and dark-mode rules, and the review checklist. Use `create_widget`, edit `widget.html` and `widget.ts`, then `refresh_widget` and inspect the returned renders — the real PNGs the user's home screens show, in light and dark — until the card reads at a glance with no warnings. If a refresh script fails later, when no conversation is running, the platform opens an automated session with the error and asks you to fix it.
 
 <%#computerUse%>
 ## Computer Use (macOS and Windows)

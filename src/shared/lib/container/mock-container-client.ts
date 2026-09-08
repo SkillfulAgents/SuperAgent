@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events'
-import { randomUUID } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
 import { z } from 'zod'
@@ -32,8 +32,27 @@ const seededDashboardPackageSchema = z
   .object({
     name: z.string().optional(),
     description: z.string().optional(),
+    scripts: z.object({ start: z.string().optional(), widget: z.string().optional() }).loose().optional(),
+    gamut: z
+      .object({
+        widget: z.object({ size: z.string().optional() }).loose().optional(),
+      })
+      .loose()
+      .optional(),
   })
   .loose()
+
+// Mirror of the container's snapshot.json contract (widget-manager.ts).
+const mockWidgetSnapshotSchema = z.object({
+  generatedAt: z.string(),
+  validUntil: z.string().nullable(),
+  validityDefaulted: z.boolean(),
+  htmlHash: z.string(),
+  renderedSizes: z.array(z.string()),
+  scriptRan: z.boolean(),
+  durationMs: z.number(),
+  lastError: z.string().nullable(),
+})
 
 const mockJsonlLineSchema = z
   .object({
@@ -2625,6 +2644,76 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       })
     }
 
+    // Widget refresh — mirror the container's widget-manager without running
+    // the script or Chromium: hash the seeded widget.html, take validUntil from
+    // a seeded widget.json (else the one-hour fallback), and write
+    // snapshots/snapshot.json, exactly the file the host reads back. A spec
+    // that seeds `widget.mock-fail` sees a failed refresh instead.
+    const widgetRefreshMatch = fetchPath.match(/^\/artifacts\/([^/]+)\/widget\/refresh$/)
+    if (widgetRefreshMatch && init?.method === 'POST') {
+      const startedAt = Date.now()
+      try {
+        const artifactSlug = decodeURIComponent(widgetRefreshMatch[1])
+        const artifactDir = path.join(getAgentWorkspaceDir(this.getAgentId()), 'artifacts', artifactSlug)
+        const pkgPath = path.join(artifactDir, 'package.json')
+        if (artifactSlug.includes('..') || !fs.existsSync(pkgPath)) {
+          return new Response(JSON.stringify({ error: `/workspace/artifacts/${artifactSlug} does not expose a widget` }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        // Scripted vs static is the manifest's `scripts.widget`, same as the
+        // real manager — the mock just never runs the command.
+        const seededPkg = seededDashboardPackageSchema.parse(JSON.parse(fs.readFileSync(pkgPath, 'utf-8')))
+        const hasScript = (seededPkg.scripts?.widget ?? '').trim().length > 0
+        const shouldFail = fs.existsSync(path.join(artifactDir, 'widget.mock-fail'))
+        const htmlPath = path.join(artifactDir, 'widget.html')
+        const html = fs.existsSync(htmlPath) ? fs.readFileSync(htmlPath) : null
+        const error = shouldFail
+          ? 'Refresh script failed (exit code 1): mock failure'
+          : html === null
+            ? 'widget.html is missing — the refresh script must write it'
+            : null
+        const generatedAt = new Date()
+        let validUntil: string | null = null
+        let validityDefaulted = false
+        if (error) {
+          validUntil = new Date(generatedAt.getTime() + 300_000).toISOString()
+          validityDefaulted = true
+        } else if (hasScript) {
+          try {
+            const meta = z.object({ validUntil: z.string().nullable() })
+              .parse(JSON.parse(fs.readFileSync(path.join(artifactDir, 'widget.json'), 'utf-8')))
+            validUntil = meta.validUntil
+          } catch {
+            validUntil = new Date(generatedAt.getTime() + 3_600_000).toISOString()
+            validityDefaulted = true
+          }
+        }
+        const snapshot = mockWidgetSnapshotSchema.parse({
+          generatedAt: generatedAt.toISOString(),
+          validUntil,
+          validityDefaulted,
+          htmlHash: html ? createHash('sha256').update(html).digest('hex').slice(0, 16) : '',
+          renderedSizes: [],
+          scriptRan: hasScript,
+          durationMs: Date.now() - startedAt,
+          lastError: error,
+        })
+        fs.mkdirSync(path.join(artifactDir, 'snapshots'), { recursive: true })
+        fs.writeFileSync(path.join(artifactDir, 'snapshots', 'snapshot.json'), JSON.stringify(snapshot, null, 2))
+        return new Response(JSON.stringify(snapshot), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err instanceof Error ? err.message : 'mock refresh failed' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+    }
+
     // Mirror the real container: report the dashboards that exist under the
     // agent's workspace artifacts dir (seeded by specs), as running. Specs
     // that seed nothing keep getting [] exactly as before.
@@ -2638,6 +2727,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
             const pkg = seededDashboardPackageSchema.parse(
               JSON.parse(fs.readFileSync(path.join(artifactsDir, entry.name, 'package.json'), 'utf-8'))
             )
+            // Widget-only artifacts have no server to report.
+            if (pkg.gamut?.widget && !pkg.scripts?.start) continue
             artifacts.push({
               slug: entry.name,
               name: pkg.name || entry.name,

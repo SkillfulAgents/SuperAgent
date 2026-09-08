@@ -412,6 +412,9 @@ vi.mock('@shared/lib/services/skillset-service', () => ({
 
 vi.mock('@shared/lib/services/artifact-service', () => ({
   listArtifactsFromFilesystem: vi.fn(),
+  // The agents list reads an artifact's dashboard and widget halves from one
+  // scan, so that is where a test seeds either of them.
+  listArtifactsAndWidgets: vi.fn(async () => ({ dashboards: [], widgets: [] })),
 }))
 
 vi.mock('@shared/lib/services/chat-integration-service', () => ({
@@ -619,7 +622,7 @@ import {
 import { getAgent, getAgentWithStatus, listAgentsWithStatus } from '@shared/lib/services/agent-service'
 import { listSessionsFromSummary, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesByAgent } from '@shared/lib/services/scheduled-task-service'
-import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
+import { listArtifactsFromFilesystem, listArtifactsAndWidgets } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
@@ -6104,6 +6107,7 @@ describe('GET /api/agents (enriched summary)', () => {
     })
     vi.mocked(listPendingScheduledTasks).mockResolvedValue([])
     vi.mocked(listArtifactsFromFilesystem).mockResolvedValue([])
+    vi.mocked(listArtifactsAndWidgets).mockResolvedValue({ dashboards: [], widgets: [] })
   })
 
   it.each([
@@ -6935,10 +6939,13 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('returns dashboard summaries from artifacts', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listArtifactsFromFilesystem).mockResolvedValue([
-      { slug: 'dash-1', name: 'Sales Dashboard', description: '', status: 'running', port: 5000 },
-      { slug: 'dash-2', name: 'Metrics', description: '', status: 'stopped', port: 5001 },
-    ] as any)
+    vi.mocked(listArtifactsAndWidgets).mockResolvedValue({
+      dashboards: [
+        { slug: 'dash-1', name: 'Sales Dashboard', description: '', status: 'running', port: 5000 },
+        { slug: 'dash-2', name: 'Metrics', description: '', status: 'stopped', port: 5001 },
+      ],
+      widgets: [],
+    } as any)
 
     const res = await getReq(app, '/api/agents')
     const body = await res.json()
@@ -6951,9 +6958,10 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('uses artifact slug as fallback name when name is empty', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listArtifactsFromFilesystem).mockResolvedValue([
-      { slug: 'unnamed-dash', name: '', description: '', status: 'running', port: 5000 },
-    ] as any)
+    vi.mocked(listArtifactsAndWidgets).mockResolvedValue({
+      dashboards: [{ slug: 'unnamed-dash', name: '', description: '', status: 'running', port: 5000 }],
+      widgets: [],
+    } as any)
 
     const res = await getReq(app, '/api/agents')
     const body = await res.json()

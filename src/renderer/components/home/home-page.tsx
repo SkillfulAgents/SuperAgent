@@ -28,6 +28,8 @@ import { useSidebar } from '@renderer/components/ui/sidebar'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { DashboardCard } from './dashboard-card'
+import { WidgetCard } from '@renderer/components/widgets/widget-card'
+import type { ApiAgentWidget } from '@shared/lib/types/api'
 import { HomeEmptyClouds } from './home-empty-clouds'
 import { PwaInstallBanner } from './pwa-install-banner'
 import { isElectron, getPlatform } from '@renderer/lib/env'
@@ -707,7 +709,10 @@ function AgentCard({
   )
 }
 
-/** Widget-grid key for a dashboard tile. Agents use their bare slug. */
+/**
+ * Widget-grid key for an artifact tile (dashboard screenshot or widget — one
+ * tile per artifact either way). Agents use their bare slug.
+ */
 const dashKey = (agentSlug: string, dashSlug: string) => `dash::${agentSlug}::${dashSlug}`
 
 function dashboardAgentSlugFromKey(id: string): string | null {
@@ -876,22 +881,32 @@ export function HomePage() {
   const [arrangeHiddenApps, setArrangeHiddenApps] = useState<Set<string> | null>(null)
   const displayedHiddenApps = arrangeHiddenApps ?? hiddenApps
 
-  const { widgetItems, dashboardsById, agentsWithApp } = useMemo(() => {
+  const { widgetItems, dashboardsById, agentWidgetsById, agentsWithApp } = useMemo(() => {
     const items: WidgetItem[] = []
     const dashes = new Map<string, { agentSlug: string; dashboard: { slug: string; name: string } }>()
+    const widgets = new Map<string, { agentSlug: string; widget: ApiAgentWidget }>()
     const withApp = new Set<string>()
     for (const agent of orderedAgents) {
       items.push({ id: agent.slug, rect: displayedLayout?.[agent.slug], defaultSize: 'W' })
       const dashboards = Array.isArray(agent.dashboards) ? agent.dashboards : []
-      if (dashboards.length > 0) withApp.add(agent.slug)
-      if (displayedHiddenApps.has(agent.slug)) continue // app card toggled off — skip its dashboard tiles
+      const agentWidgets = Array.isArray(agent.widgets) ? agent.widgets : []
+      if (dashboards.length > 0 || agentWidgets.length > 0) withApp.add(agent.slug)
+      if (displayedHiddenApps.has(agent.slug)) continue // app card toggled off — skip its dashboard/widget tiles
+      // One tile per artifact: an artifact with a widget shows the widget
+      // (its own default footprint) instead of the dashboard screenshot.
+      for (const w of agentWidgets) {
+        const id = dashKey(agent.slug, w.slug)
+        items.push({ id, rect: displayedLayout?.[id], defaultSize: w.size === 'medium' ? 'W' : 'S' })
+        widgets.set(id, { agentSlug: agent.slug, widget: w })
+      }
       for (const d of dashboards) {
         const id = dashKey(agent.slug, d.slug)
+        if (widgets.has(id)) continue
         items.push({ id, rect: displayedLayout?.[id], defaultSize: 'S' })
         dashes.set(id, { agentSlug: agent.slug, dashboard: d })
       }
     }
-    return { widgetItems: items, dashboardsById: dashes, agentsWithApp: withApp }
+    return { widgetItems: items, dashboardsById: dashes, agentWidgetsById: widgets, agentsWithApp: withApp }
   }, [orderedAgents, displayedLayout, displayedHiddenApps])
 
   const agentBySlug = useMemo(() => new Map(orderedAgents.map((a) => [a.slug, a])), [orderedAgents])
@@ -1180,6 +1195,17 @@ export function HomePage() {
                 dragEnabled={!isMobile || isArranging}
                 disableContextMenu={isMobile && isArranging}
                 renderItem={(id, size, onResize) => {
+                  const agentWidget = agentWidgetsById.get(id)
+                  if (agentWidget) {
+                    return (
+                      <div className="relative h-full transition-transform duration-150 group-hover/widget:-translate-y-0.5">
+                        <WidgetCard widget={agentWidget.widget} agentSlug={agentWidget.agentSlug} variant="fill" />
+                        <div className="absolute right-4 top-2 z-30 flex h-[26px] items-center">
+                          <WidgetSizePopover size={size} onPick={onResize} />
+                        </div>
+                      </div>
+                    )
+                  }
                   const dash = dashboardsById.get(id)
                   if (dash) {
                     return (

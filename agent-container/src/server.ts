@@ -19,6 +19,7 @@ import { inputManager } from './input-manager';
 import { resolveCdpIp } from './cdp-host';
 import { startScreenshotJanitor } from './screenshot-janitor';
 import { dashboardManager, getDashboardBasePath } from './dashboard-manager';
+import { widgetManager } from './widget-manager';
 import {
   dashboardHttpForwardHeaders,
   dashboardHttpUpstreamPath,
@@ -642,6 +643,42 @@ app.get('/artifacts/:slug/logs', async (c) => {
   }
 });
 
+// ============================================================
+// Widgets — an artifact's static snapshot, refreshed by a script, no server.
+// Registered before the dashboard proxy so /artifacts/:slug/widget/* never
+// reaches a dashboard process.
+// ============================================================
+
+// GET /widgets - Artifacts that expose a widget, with snapshot metadata
+app.get('/widgets', (c) => {
+  return c.json(widgetManager.listWidgets());
+});
+
+// POST /artifacts/:slug/widget/refresh - Run the widget script, rasterize,
+// rewrite snapshot.json. Long-running (script timeout + rasterization); the
+// host calls it with a matching fetch timeout. Serialized in the manager.
+app.post('/artifacts/:slug/widget/refresh', async (c) => {
+  try {
+    const slug = c.req.param('slug');
+    const snapshot = await widgetManager.refreshWidget(slug);
+    return c.json(snapshot);
+  } catch (error: any) {
+    console.error('[Widgets] Error refreshing widget:', error);
+    return c.json({ error: error.message || 'Failed to refresh widget' }, 500);
+  }
+});
+
+// GET /artifacts/:slug/widget/logs - Refresh script stdout/stderr
+app.get('/artifacts/:slug/widget/logs', async (c) => {
+  try {
+    const slug = c.req.param('slug');
+    const clear = c.req.query('clear') === 'true';
+    return c.text(await widgetManager.getWidgetLogs(slug, clear));
+  } catch (error: any) {
+    return c.json({ error: error.message || 'Failed to get widget logs' }, 500);
+  }
+});
+
 // Shared handler for proxying requests to a dashboard server
 async function proxyToDashboard(c: any) {
   const slug = c.req.param('slug');
@@ -707,6 +744,7 @@ app.all('/artifacts/:slug', async (c) => {
     return c.json({ error: error.message || 'Failed to proxy request' }, 502);
   }
 });
+
 
 // ============================================================
 // Browser automation endpoints (agent-browser tool proxy)

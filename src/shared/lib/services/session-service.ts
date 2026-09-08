@@ -252,7 +252,8 @@ export async function updateSessionMetadata(
 export type AutomationStatusResult = 'updated' | 'not-automation' | 'already-final'
 
 /**
- * Record the terminal outcome of a cron/webhook session's automation turn.
+ * Record the terminal outcome of an automation turn (cron, webhook, or a
+ * widget-repair session).
  *
  * Guard rules live inside the serialized mutator (single locked
  * read-then-maybe-write, no TOCTOU):
@@ -270,7 +271,10 @@ export async function finalizeAutomationStatus(
   let result: AutomationStatusResult = 'not-automation'
   await mutateSessionMetadata(agentSlug, (metadata) => {
     const meta = metadata[sessionId]
-    if (!meta?.isScheduledExecution && !meta?.isWebhookExecution) return false
+    // Every session kind that sets automationStatus: 'running' at creation
+    // must be listed here, or its status never leaves 'running' — and a guard
+    // built on that ("is a repair already in flight?") would block forever.
+    if (!meta?.isScheduledExecution && !meta?.isWebhookExecution && !meta?.isWidgetRepair) return false
     if (meta.promotedToInteractive && !meta.automationStatus) return false
     if (meta.automationStatus && meta.automationStatus !== 'running') {
       result = 'already-final'
