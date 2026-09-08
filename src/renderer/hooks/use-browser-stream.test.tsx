@@ -355,3 +355,61 @@ describe('useBrowserStream history', () => {
     expect(hook.result.current.pageUrl).toBe('https://b.test')
   })
 })
+
+
+describe('useBrowserStream ordered history', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    FakeWebSocket.instances = []
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    mockApiFetch.mockResolvedValue({ json: () => Promise.resolve({ active: true, sessionId: 's' }) })
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  async function setup() {
+    const canvasRef = createRef<HTMLCanvasElement | null>()
+    const hook = renderHook(() => useBrowserStream(baseOpts(canvasRef)))
+    await settle()
+    const ws = FakeWebSocket.instances[0]
+    act(() => {
+      ws.completeHandshake()
+      ws.emit({ type: 'tab_list', tabs: [
+        { targetId: 't1', index: 0, url: 'https://a.test', title: 'A', active: true },
+        { targetId: 't2', index: 1, url: 'https://b.test', title: 'B', active: false },
+      ], activeTargetId: 't1' })
+      ws.emit({ type: 'history_state', targetId: 't1', canGoBack: true, canGoForward: false, url: 'https://a.test' })
+    })
+    return {hook, ws}
+  }
+
+  it('preserves destination history when switch and history frames are batched', async () => {
+    const {hook, ws} = await setup()
+    act(() => {
+      ws.emit({ type: 'tab_switched', targetId: 't2' })
+      ws.emit({ type: 'history_state', targetId: 't2', canGoBack: true, canGoForward: true, url: 'https://b.test' })
+    })
+    expect(hook.result.current.viewingTargetId).toBe('t2')
+    expect(hook.result.current.pageUrl).toBe('https://b.test')
+    expect(hook.result.current.canGoBack).toBe(true)
+    expect(hook.result.current.canGoForward).toBe(true)
+  })
+
+  it('ignores the old tab history after a manual switch', async () => {
+    const {hook, ws} = await setup()
+    act(() => hook.result.current.handleTabClick('t2'))
+    act(() => ws.emit({type:'history_state', targetId:'t1', canGoBack:true, canGoForward:false, url:'https://a.test/old'}))
+    expect(hook.result.current.pageUrl).toBe('')
+    act(() => ws.emit({type:'history_state', targetId:'t2', canGoBack:false, canGoForward:true, url:'https://b.test'}))
+    expect(hook.result.current.pageUrl).toBe('https://b.test')
+  })
+
+  it('clears pinned history when following the agent again', async () => {
+    const {hook, ws} = await setup()
+    act(() => hook.result.current.handleTabClick('t2'))
+    act(() => ws.emit({type:'history_state', targetId:'t2', canGoBack:true, canGoForward:true, url:'https://b.test'}))
+    act(() => hook.result.current.toggleAutoFollow())
+    expect(hook.result.current.viewingTargetId).toBe('t1')
+    expect(hook.result.current.pageUrl).toBe('')
+    expect(hook.result.current.canGoBack).toBe(false)
+  })
+})

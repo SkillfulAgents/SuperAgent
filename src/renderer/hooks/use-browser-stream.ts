@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
-import type { BrowserTabInfo } from '@renderer/components/browser/browser-tab-bar'
+import { useState, useEffect, useRef, useCallback, useReducer } from 'react'
+import type { BrowserTabInfo, BrowserNavigateAction } from '@shared/lib/browser-stream-protocol'
+import { browserViewReducer, initialBrowserView } from '@renderer/lib/browser-stream-state'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { apiFetch } from '@renderer/lib/api'
 import { clearBrowserActive } from '@renderer/hooks/use-message-stream'
@@ -8,15 +9,7 @@ import { useUser } from '@renderer/context/user-context'
 
 const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta'])
 
-export type NavigateAction = 'back' | 'forward' | 'reload'
-
-interface HistoryState {
-  canGoBack: boolean
-  canGoForward: boolean
-  url: string
-}
-
-const EMPTY_HISTORY: HistoryState = { canGoBack: false, canGoForward: false, url: '' }
+export type NavigateAction = BrowserNavigateAction
 
 // Reconnect backoff for a socket that keeps dying before it opens.
 const RECONNECT_BASE_MS = 1000
@@ -45,10 +38,6 @@ export function useBrowserStream({
 
   const [connected, setConnected] = useState(false)
   const [pageLoading, setPageLoading] = useState(false)
-  // Where the viewed tab stands in its history, from the container's
-  // `history_state` frames. Reset whenever the viewed tab changes; the
-  // container sends a fresh one once it has attached to the new target.
-  const [history, setHistory] = useState<HistoryState>(EMPTY_HISTORY)
   const [reconnectKey, setReconnectKey] = useState(0)
   const [showCloseWarning, setShowCloseWarning] = useState(false)
   const [isClosing, setIsClosing] = useState(false)
@@ -58,7 +47,8 @@ export function useBrowserStream({
   // Multi-tab state
   const [tabs, setTabs] = useState<BrowserTabInfo[]>([])
   const [agentActiveTargetId, setAgentActiveTargetId] = useState<string | null>(null)
-  const [viewingTargetId, setViewingTargetId] = useState<string | null>(null)
+  const [{ targetId: viewingTargetId, history }, dispatchView] = useReducer(browserViewReducer, initialBrowserView)
+  const setViewingTargetId = useCallback((targetId: string | null) => dispatchView({ type: 'view', targetId }), [])
   const [autoFollow, setAutoFollow] = useState(true)
   const autoFollowRef = useRef(autoFollow)
   autoFollowRef.current = autoFollow
@@ -174,6 +164,7 @@ export function useBrowserStream({
 
     ws.onopen = () => {
       failedReconnectsRef.current = 0
+      dispatchView({ type: 'reset' })
       setConnected(true)
     }
 
@@ -203,10 +194,14 @@ export function useBrowserStream({
         if (data.type === 'page_loading') {
           setPageLoading(prev => prev === data.loading ? prev : data.loading)
         } else if (data.type === 'history_state') {
-          setHistory({
-            canGoBack: data.canGoBack === true,
-            canGoForward: data.canGoForward === true,
-            url: typeof data.url === 'string' ? data.url : '',
+          dispatchView({
+            type: 'history',
+            targetId: typeof data.targetId === 'string' ? data.targetId : undefined,
+            history: {
+              canGoBack: data.canGoBack === true,
+              canGoForward: data.canGoForward === true,
+              url: typeof data.url === 'string' ? data.url : '',
+            },
           })
         } else if (data.type === 'frame' && data.data) {
           if (!resizing) {
@@ -231,15 +226,11 @@ export function useBrowserStream({
           })
           setAgentActiveTargetId(prev => prev === data.activeTargetId ? prev : data.activeTargetId)
           if (autoFollowRef.current) {
-            setViewingTargetId(prev => prev === data.activeTargetId ? prev : data.activeTargetId)
+            setViewingTargetId(data.activeTargetId)
           }
         } else if (data.type === 'tab_switched') {
           setAgentActiveTargetId(prev => prev === data.targetId ? prev : data.targetId)
-          setViewingTargetId(prev => {
-            if (prev === data.targetId) return prev
-            setHistory(EMPTY_HISTORY)
-            return data.targetId
-          })
+          setViewingTargetId(data.targetId)
         } else if (data.type === 'selection_result' && data.text) {
           navigator.clipboard.writeText(data.text).catch(() => {})
         } else if (data.type === 'browser_closed') {
@@ -257,6 +248,7 @@ export function useBrowserStream({
       if (wsRef.current !== ws) return
       setConnected(false)
       setPageLoading(false)
+      dispatchView({ type: 'reset' })
       if (browserGone) {
         clearBrowserActive(sessionId)
         return
@@ -301,7 +293,7 @@ export function useBrowserStream({
       wsRef.current = null
       setConnected(false)
     }
-  }, [browserActive, isConnected, agentSlug, sessionId, renderFrame, reconnectKey])
+  }, [browserActive, isConnected, agentSlug, sessionId, renderFrame, reconnectKey, setViewingTargetId])
 
   // Reset overlay dismiss state when attention state ends
   useEffect(() => {
@@ -316,7 +308,7 @@ export function useBrowserStream({
       setViewingTargetId(agentActiveTargetId)
       setAutoFollow(true)
     }
-  }, [tabs, viewingTargetId, agentActiveTargetId])
+  }, [tabs, viewingTargetId, agentActiveTargetId, setViewingTargetId])
 
   // Prevent default scroll behavior (must use native listener with passive: false
   // so preventDefault() works; React's onWheel is passive and can't prevent scrolling)
@@ -505,14 +497,13 @@ export function useBrowserStream({
     if (targetId === viewingTargetId) return
     setAutoFollow(false)
     setViewingTargetId(targetId)
-    setHistory(EMPTY_HISTORY)
     sendMessage({ type: 'switch_tab', targetId })
-  }, [viewingTargetId, sendMessage])
+  }, [viewingTargetId, sendMessage, setViewingTargetId])
 
   /** Back / forward / reload on the tab being viewed. */
   const navigate = useCallback((action: NavigateAction) => {
-    sendMessage({ type: 'navigate', action })
-  }, [sendMessage])
+    if (!isViewOnly) sendMessage({ type: 'navigate', action })
+  }, [sendMessage, isViewOnly])
 
   const handleCloseTab = useCallback((targetId: string) => {
     sendMessage({ type: 'close_tab', targetId })
@@ -525,7 +516,7 @@ export function useBrowserStream({
     if (next && agentActiveTargetId) {
       setViewingTargetId(agentActiveTargetId)
     }
-  }, [autoFollow, agentActiveTargetId, sendMessage])
+  }, [autoFollow, agentActiveTargetId, sendMessage, setViewingTargetId])
 
   const closeBrowser = useCallback(async () => {
     setIsClosing(true)

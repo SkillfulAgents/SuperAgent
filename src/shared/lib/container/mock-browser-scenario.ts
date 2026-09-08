@@ -1,3 +1,4 @@
+import type { BrowserTabListMessage } from '../browser-stream-protocol'
 /**
  * Browser scenario for E2E testing.
  *
@@ -201,7 +202,7 @@ export class BrowserScenario implements MockScenario {
           active: t.id === activeId,
         })),
         activeTargetId: activeId ?? '',
-      })
+      } satisfies BrowserTabListMessage)
       wss.clients.forEach((ws) => {
         if (ws.readyState === WebSocket.OPEN && lastTabListJson) ws.send(lastTabListJson)
       })

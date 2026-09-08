@@ -7,16 +7,8 @@ import {
   ContextMenuTrigger,
 } from '@renderer/components/ui/context-menu'
 
-// Protocol: see agent-container/src/server.ts
-export interface BrowserTabInfo {
-  targetId: string
-  index: number
-  url: string
-  title: string
-  /** Chrome's favicon URL for the page; missing until it has resolved one. */
-  faviconUrl?: string
-  active: boolean // true = agent's active tab
-}
+import type { BrowserTabInfo } from '@shared/lib/browser-stream-protocol'
+export type { BrowserTabInfo } from '@shared/lib/browser-stream-protocol'
 
 interface BrowserTabBarProps {
   tabs: BrowserTabInfo[]
