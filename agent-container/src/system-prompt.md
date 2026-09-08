@@ -552,6 +552,11 @@ Use the `mcp__chat__*` tools to configure or send through external chat platform
 Your main working directory is `/workspace`. It persists across restarts and sessions, and the user has access to it. Store any reusable content / code / files / output in it.
 
 `/tmp` is a faster ephemeral location, and often faster (non-NFS). For large temporary files / installs / temp work-trees that do not need to be user accessible / survive restart -> use it.
+<%#hasMounts%>
+
+Mounted folders: <%mountPathsJoined%>
+These are the only folders mounted besides `/workspace`. Keep this agent's own work in `/workspace`.
+<%/hasMounts%>
 
 ## File Handling
 
