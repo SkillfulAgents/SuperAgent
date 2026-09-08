@@ -3235,7 +3235,14 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
   })
 })
 
-// POST /api/agents/:id/sessions/:sessionId/interrupt - Interrupt an active session
+// POST /api/agents/:id/sessions/:sessionId/interrupt - Interrupt an active session.
+// Body `scope`: 'turn' (default) ends the current turn and leaves background
+// tasks (backgrounded Bash, background subagents, workflows) running; 'all' is
+// the full stop that kills them too.
+const interruptSessionBodySchema = z.object({
+  scope: z.enum(['turn', 'all']).default('turn'),
+})
+
 agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
   const agentSlug = getAgentId(c)
   const sessionId = c.req.param('sessionId')
@@ -3247,6 +3254,21 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
   if (!(await sessionIsKnown(agentSlug, sessionId))) {
     return c.json({ error: 'Session not found' }, 404)
   }
+
+  const rawBody = await c.req.text()
+  let parsedBody: unknown = {}
+  if (rawBody.trim()) {
+    try {
+      parsedBody = JSON.parse(rawBody)
+    } catch {
+      return c.json({ error: 'Invalid JSON body' }, 400)
+    }
+  }
+  const body = interruptSessionBodySchema.safeParse(parsedBody)
+  if (!body.success) {
+    return c.json({ error: 'Invalid interrupt scope' }, 400)
+  }
+  const { scope } = body.data
 
   try {
     const client = containerManager.getClient(agentSlug)
@@ -3263,7 +3285,7 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
     }
 
     // Try to interrupt in the container
-    const interrupted = await client.interruptSession(sessionId)
+    const { interrupted, processKept } = await client.interruptSession(sessionId, { scope })
 
     // Even if container interrupt fails (session might not exist there anymore),
     // still mark it as interrupted locally to update the UI
@@ -3271,10 +3293,13 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
       console.log(`[Agents] Container interrupt returned false for session ${sessionId}, marking as interrupted locally`)
     }
 
-    await messagePersister.markSessionInterrupted(agentSlug, sessionId)
+    // processKept is the container's word, not the requested scope: a 'turn'
+    // stop that had to fall back to a process restart killed the background
+    // tasks, and the persister must drop them.
+    await messagePersister.markSessionInterrupted(agentSlug, sessionId, { processKept })
     reviewManager.denyAllForAgent(agentSlug)
 
-    return c.json({ success: true })
+    return c.json({ success: true, processKept })
   } catch (error) {
     console.error('Failed to interrupt session:', error)
     // Even on error, try to mark session as interrupted to fix UI state.
@@ -3286,6 +3311,42 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
     } catch {
       return c.json({ error: 'Failed to interrupt session' }, 500)
     }
+  }
+})
+
+// POST /api/agents/:id/sessions/:sessionId/tasks/:taskId/stop - Stop one
+// background task (backgrounded Bash, background subagent, workflow) by the
+// id the stream reported in background_task_started. The runtime answers on
+// the stream with the task's terminal signal, which retires it from the
+// session's task list — this route only asks.
+const taskIdParamSchema = z.string().min(1).max(200).regex(/^[A-Za-z0-9_.:-]+$/)
+
+agents.post('/:id/sessions/:sessionId/tasks/:taskId/stop', AgentUser(), async (c) => {
+  const agentSlug = getAgentId(c)
+  const sessionId = c.req.param('sessionId')
+  const taskIdParam = taskIdParamSchema.safeParse(c.req.param('taskId'))
+  if (!taskIdParam.success) {
+    return c.json({ error: 'Invalid task id' }, 400)
+  }
+
+  if (!(await sessionIsKnown(agentSlug, sessionId))) {
+    return c.json({ error: 'Session not found' }, 404)
+  }
+
+  const info = containerManager.getCachedInfo(agentSlug)
+  if (info.status !== 'running') {
+    return c.json({ error: 'Agent is not running' }, 409)
+  }
+
+  try {
+    const stopped = await containerManager.getClient(agentSlug).stopTask(sessionId, taskIdParam.data)
+    if (!stopped) {
+      return c.json({ error: 'Task could not be stopped' }, 409)
+    }
+    return c.json({ success: true })
+  } catch (error) {
+    console.error('Failed to stop background task:', error)
+    return c.json({ error: 'Failed to stop background task' }, 500)
   }
 })
 
@@ -4143,13 +4204,15 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
       const sessionId = c.req.param('sessionId')
       messagePersister.completeInputRequest(agentSlug, sessionId, toolUseId, 'declined')
 
-      // Interrupt the session so the user can chat directly with the agent
+      // Interrupt the turn so the user can chat directly with the agent.
+      // Background tasks are not the user's target here, so they stay.
+      let processKept = false
       try {
-        await client.interruptSession(sessionId)
+        processKept = (await client.interruptSession(sessionId, { scope: 'turn' })).processKept
       } catch (e) {
         console.error(`[complete-browser-input] Failed to interrupt session: ${e}`)
       }
-      await messagePersister.markSessionInterrupted(agentSlug, sessionId)
+      await messagePersister.markSessionInterrupted(agentSlug, sessionId, { processKept })
 
       trackServerEvent('request_declined', { type: 'browser_input', withReason: !!declineReason })
       return c.json({ success: true, declined: true })

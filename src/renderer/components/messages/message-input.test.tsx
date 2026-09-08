@@ -27,7 +27,9 @@ const mockCreateSecret = {
   isPending: false,
 }
 
+const mockMessages: any[] = []
 vi.mock('@renderer/hooks/use-messages', () => ({
+  useMessages: () => ({ data: mockMessages }),
   useSendMessage: () => mockSendMessage,
   useUploadFile: () => mockUploadFile,
   useUploadFolder: () => mockUploadFolder,
@@ -40,6 +42,8 @@ vi.mock('@renderer/hooks/use-secrets', () => ({
 
 const mockStreamState = {
   isActive: false,
+  isWaitingBackground: false,
+  backgroundTasks: [] as Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean }>,
   slashCommands: [] as Array<{ name: string; description: string; argumentHint: string }>,
 }
 
@@ -95,7 +99,10 @@ describe('MessageInput', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockStreamState.isActive = false
+    mockStreamState.isWaitingBackground = false
+    mockStreamState.backgroundTasks = []
     mockStreamState.slashCommands = []
+    mockMessages.length = 0
     mockSendMessage.isPending = false
     mockIsOnline = true
     mockRuntimeStatus.data.runtimeReadiness.status = 'READY'
@@ -457,6 +464,101 @@ describe('MessageInput', () => {
     expect(mockInterruptSession.mutateAsync).toHaveBeenCalledWith({
       sessionId: 's-1',
       agentSlug: 'agent-1',
+      scope: 'turn',
+    })
+    expect(screen.queryByTestId('stop-session-dialog')).not.toBeInTheDocument()
+  })
+
+  describe('stopping with background tasks running', () => {
+    const bashLaunch = {
+      id: 'msg-bash',
+      type: 'assistant',
+      content: { text: '' },
+      toolCalls: [{
+        id: 'tc-bash',
+        name: 'Bash',
+        input: { command: 'sleep 10 && echo done', run_in_background: true },
+        result: 'Command running in background with ID: bg_1. Output is being written to /tmp/x.',
+      }],
+      createdAt: new Date(),
+    }
+
+    beforeEach(() => {
+      mockStreamState.isActive = true
+      mockStreamState.backgroundTasks = [{ taskId: 'bg_1', startedAt: Date.now() - 2000 }]
+      mockMessages.push(bashLaunch)
+    })
+
+    it('asks before stopping, naming the running tasks', async () => {
+      const user = userEvent.setup()
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+
+      await user.click(screen.getByTestId('stop-button'))
+
+      expect(mockInterruptSession.mutateAsync).not.toHaveBeenCalled()
+      const dialog = await screen.findByTestId('stop-session-dialog')
+      expect(dialog).toHaveTextContent('Stop the background task too?')
+      expect(screen.getByTestId('stop-session-dialog-tasks')).toHaveTextContent('sleep 10 && echo done')
+    })
+
+    it('stops only the response when the user keeps the tasks', async () => {
+      const user = userEvent.setup()
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+
+      await user.click(screen.getByTestId('stop-button'))
+      await user.click(await screen.findByTestId('stop-session-keep-tasks'))
+
+      expect(mockInterruptSession.mutateAsync).toHaveBeenCalledWith({
+        sessionId: 's-1',
+        agentSlug: 'agent-1',
+        scope: 'turn',
+      })
+    })
+
+    it('stops everything when the user says so', async () => {
+      const user = userEvent.setup()
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+
+      await user.click(screen.getByTestId('stop-button'))
+      await user.click(await screen.findByTestId('stop-session-everything'))
+
+      expect(mockInterruptSession.mutateAsync).toHaveBeenCalledWith({
+        sessionId: 's-1',
+        agentSlug: 'agent-1',
+        scope: 'all',
+      })
+    })
+
+    it('cancelling stops nothing', async () => {
+      const user = userEvent.setup()
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+
+      await user.click(screen.getByTestId('stop-button'))
+      await user.click(await screen.findByTestId('stop-session-cancel'))
+
+      expect(mockInterruptSession.mutateAsync).not.toHaveBeenCalled()
+      await waitFor(() => {
+        expect(screen.queryByTestId('stop-session-dialog')).not.toBeInTheDocument()
+      })
+    })
+
+    it('offers only a full stop once the response has ended and tasks remain', async () => {
+      // Waiting on background work: there is no response left to stop by itself.
+      mockStreamState.isWaitingBackground = true
+      const user = userEvent.setup()
+      renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+
+      await user.click(screen.getByTestId('stop-button'))
+
+      const dialog = await screen.findByTestId('stop-session-dialog')
+      expect(dialog).toHaveTextContent('Stop the background task?')
+      expect(screen.queryByTestId('stop-session-keep-tasks')).not.toBeInTheDocument()
+      await user.click(screen.getByTestId('stop-session-everything'))
+      expect(mockInterruptSession.mutateAsync).toHaveBeenCalledWith({
+        sessionId: 's-1',
+        agentSlug: 'agent-1',
+        scope: 'all',
+      })
     })
   })
 

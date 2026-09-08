@@ -160,6 +160,23 @@ function sessionCtx(agentSlug: string, sessionId: string): SessionCtx {
   return { key: sessionKeyOf(agentSlug, sessionId), agentSlug, sessionId }
 }
 
+// Frames that belong to the turn an interrupt just ended, as opposed to frames
+// about the runtime (results, system events, command lifecycle, capability
+// handshakes) that must land even after Stop. See handleMessage.
+function isInterruptedTurnContent(content: { type?: unknown; subtype?: unknown } | undefined): boolean {
+  if (!content) return true
+  switch (content.type) {
+    case 'result':
+    case 'system':
+    case 'command_lifecycle':
+    case 'capability_review_cancelled':
+    case 'connection_closed':
+      return false
+    default:
+      return true
+  }
+}
+
 
 // Tracks streaming state for SSE broadcasts
 // In the file-based model, messages are stored in JSONL files by the Claude SDK.
@@ -174,6 +191,12 @@ interface StreamingState {
   currentThinkingBlockIndex?: number | null // Content index within currentAssistantMessageId
   isActive: boolean // True from user message until result received
   isInterrupted: boolean // True after user interrupts, prevents race conditions
+  // The runtime's last published session state. 'idle' with background work
+  // still open means the turn ended and the process is parked waiting on it.
+  runtimeState: 'idle' | 'running' | null
+  // Pending settle after the last background task was stopped by the user;
+  // see scheduleSettleAfterStop.
+  settleAfterStopTimer: ReturnType<typeof setTimeout> | null
   isRecovering: boolean // Mid-turn death claimed for resume; skip session_error until resume fails
   coalescedUserMessages?: CoalescedUserMessage[] // User texts sent while recovering; delivered with their uuids
   isCompacting: boolean // True while compaction is in progress, cleared on compact completion
@@ -555,6 +578,8 @@ class MessagePersister {
       currentToolInput: '',
       isActive: priorIsActive,
       isInterrupted: false,
+      runtimeState: prior?.runtimeState ?? null,
+      settleAfterStopTimer: null,
       isRecovering: prior?.isRecovering ?? false,
       coalescedUserMessages: prior?.coalescedUserMessages,
       isCompacting: false,
@@ -1228,29 +1253,69 @@ class MessagePersister {
   }
 
   // Mark a session as interrupted (not active)
-  async markSessionInterrupted(agentSlug: string, sessionId: string): Promise<void> {
+  /**
+   * The user stopped the session (or the host is settling one it cannot reach).
+   *
+   * `processKept` — the container ended only the foreground turn and the CLI
+   * process survived, so its background work (backgrounded Bash, background
+   * subagents, workflows) is still running and keeps its state here; the
+   * session then rests in the same waiting-background state a normally
+   * finished turn leaves it in. Without it the process was replaced: every
+   * background task died with it and no terminal signal or removal snapshot
+   * will ever arrive, so the state is dropped — leaving only the incremental
+   * map would keep the level set stale for the life of the session, and every
+   * later turn would end waiting-background, never idle.
+   */
+  async markSessionInterrupted(
+    agentSlug: string,
+    sessionId: string,
+    options?: { processKept?: boolean },
+  ): Promise<void> {
     const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
+    const processKept = options?.processKept === true
+    let backgroundTasks: Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean }> = []
 
     // Set interrupted flag FIRST to prevent race conditions with incoming events
     if (state) {
       state.isInterrupted = true
       state.isStreaming = false
-      state.isActive = false
       state.isAwaitingInput = false
       state.lastResultCleanSuccess = false
       state.currentText = ''
       state.currentToolUse = null
       state.currentToolInput = ''
-      state.activeSubagents.clear()
-      state.activeBackgroundTasks.clear()
-      // Stop replaces the CLI process, so its background tasks are gone and no
-      // terminal signal or removal snapshot will ever arrive for them. Dropping
-      // only the incremental map would leave the level set stale for the life of
-      // the session — every later turn would end waiting-background, never idle.
-      state.bgTasksSnapshot = null
       state.isRecovering = false
       state.coalescedUserMessages = undefined
-      this.stopAllWorkflowTailers(agentSlug, sessionId)
+      if (processKept) {
+        // Foreground subagents died with the turn; background and resumed ones
+        // are tasks of their own and settle through their terminal task frames.
+        for (const [parentToolId, sub] of [...state.activeSubagents]) {
+          if (!sub.isBackground && !sub.isResumed) state.activeSubagents.delete(parentToolId)
+        }
+        backgroundTasks = this.getActiveBackgroundTasks(agentSlug, sessionId)
+        // Open background work keeps the session active exactly as a finished
+        // turn with background tasks does (see the session_state_changed idle
+        // handler): the runtime wakes the agent when a task settles.
+        state.isActive = this.openBackgroundWorkCount(state) > 0
+      } else {
+        state.isActive = false
+        state.activeSubagents.clear()
+        state.activeBackgroundTasks.clear()
+        state.bgTasksSnapshot = null
+        this.stopAllWorkflowTailers(agentSlug, sessionId)
+      }
+    }
+
+    if (state?.isActive) {
+      // Only the turn ended. The renderer resets its streaming state off this
+      // frame the way it does off session_idle, but keeps the task list.
+      this.broadcastToSSE(agentSlug, sessionId, {
+        type: 'session_waiting_background',
+        interrupted: true,
+        backgroundTaskCount: backgroundTasks.length,
+        backgroundTasks,
+      })
+      return
     }
 
     // Broadcast to session-specific clients
@@ -1338,6 +1403,8 @@ class MessagePersister {
         currentToolInput: '',
         isActive: false,
         isInterrupted: false,
+        runtimeState: null,
+        settleAfterStopTimer: null,
         isRecovering: false,
         isCompacting: false,
         agentSlug,
@@ -1384,6 +1451,7 @@ class MessagePersister {
     state.isActive = true
     // Message-scoped: true for a queued message just as much as a new turn.
     state.isInterrupted = false // Reset interrupted flag on new message
+    this.cancelSettleAfterStop(state)
     state.isAwaitingInput = false // Reset awaiting input on new message
     state.lastApiErrorCode = null // Clear previous API error on new message
     // Clear the previous turn's result subtype so a late idle from an
@@ -1773,18 +1841,18 @@ class MessagePersister {
     const state = this.streamingStates.get(ctx.key)
     if (!state) return
 
-    // Skip processing if session was interrupted (prevents race conditions)
-    // Allow 'result' through as it indicates the container actually stopped.
-    // `process_restarted` is allowed for the same reason: the interrupt path itself
-    // restarts the query, so this is a fact about which runtime we are now
-    // talking to, not turn content. Swallowing it leaves the recorded process
-    // identity a generation behind, and the next reattach then reads a changed
-    // name as a restart and drops background tasks that are actually running.
-    if (
-      state.isInterrupted &&
-      message.content?.type !== 'result' &&
-      message.content?.subtype !== 'process_restarted'
-    ) {
+    // After an interrupt, the aborted turn's own content (stream events,
+    // assistant/user frames still in the pipe) is stale and skipped — the
+    // state was already cleared. Everything that describes the runtime rather
+    // than the turn still gets through: 'result' (the container actually
+    // stopped), `process_restarted` (which runtime we now talk to — swallowing
+    // it leaves the recorded identity a generation behind, so the next
+    // reattach reads a changed name as a restart and drops background tasks
+    // that are actually running), and every other system/lifecycle frame. A
+    // soft interrupt keeps the process alive with background tasks running,
+    // so their terminal task frames, the runtime's state transitions and the
+    // wake turn they start (`running` clears the flag below) must all land.
+    if (state.isInterrupted && isInterruptedTurnContent(message.content)) {
       return
     }
 
@@ -1805,6 +1873,25 @@ class MessagePersister {
       const taskId = content.task_id as string | undefined
       if (taskId && content.status) {
         this.clearBackgroundTask(agentSlug, sessionId, state, taskId)
+      }
+      // A task the user stopped (stop_task) may be the one terminal signal
+      // the runtime does NOT follow with a wake turn: a completed task always
+      // wakes the agent (running → result → idle settles the session), but a
+      // stopped Bash task ends with this frame (observed on CLI 2.1.263),
+      // while a stopped subagent still wakes the agent a few ms later. If it
+      // was the last open background work and the runtime is parked idle,
+      // give the wake a moment to show up (`running` cancels the timer) and
+      // otherwise settle — nothing else ever would, and the session would
+      // read "working" with nothing running.
+      if (
+        content.subtype === 'task_notification' &&
+        content.status === 'stopped' &&
+        state.isActive &&
+        state.runtimeState === 'idle' &&
+        state.lastResultSubtype !== null &&
+        this.openBackgroundWorkCount(state) === 0
+      ) {
+        this.scheduleSettleAfterStop(agentSlug, sessionId, state)
       }
     }
 
@@ -2195,7 +2282,9 @@ class MessagePersister {
           // See the background-bash-busy-completion replay fixture.
           const taskId = content.task_id as string | undefined
           const status = (content.patch as { status?: string } | undefined)?.status
-          const isTerminal = status === 'completed' || status === 'failed' || status === 'killed'
+          // 'stopped' is the CLI's answer to a stop_task control request.
+          const isTerminal =
+            status === 'completed' || status === 'failed' || status === 'killed' || status === 'stopped'
           // Unconditional on map membership, same reason as the task_notification
           // path above: the id may only exist in the snapshot.
           if (taskId && isTerminal) {
@@ -2233,7 +2322,7 @@ class MessagePersister {
           const sub = toolUseId ? state.activeSubagents.get(toolUseId) : undefined
           if (
             (sub?.isBackground || sub?.isResumed) &&
-            (status === 'completed' || status === 'failed' || status === 'killed')
+            (status === 'completed' || status === 'failed' || status === 'killed' || status === 'stopped')
           ) {
             const summary = typeof content.summary === 'string' ? content.summary : undefined
             this.broadcastSubagentCompleted(agentSlug, sessionId, state, toolUseId!, summary)
@@ -2271,6 +2360,9 @@ class MessagePersister {
           // up-front via the `capabilities` message; observing one directly
           // covers builds that emit state events but predate that handshake.)
           state.stateEventsAuthority = true
+          if (content.state === 'idle' || content.state === 'running') {
+            state.runtimeState = content.state
+          }
           if (content.state === 'idle') {
             // Only treat idle as authoritative when a result was actually seen
             // for this turn (lastResultSubtype is cleared on every new send).
@@ -2316,7 +2408,17 @@ class MessagePersister {
               // Error path already cleared isActive, so finalizeIdle never ran.
               this.maybeReleaseSettledAutomationStream(state)
             }
-          } else if (content.state === 'running' && !state.isActive) {
+          } else if (content.state === 'running') {
+            // A turn is running again, so the interrupted turn's stale frames
+            // can no longer be in the pipe: let this turn's content through.
+            // (After a soft interrupt the process lives on, and its next turn
+            // is the background-task wake — with no user send to clear this.)
+            state.isInterrupted = false
+            // The wake turn a stopped task was waiting on: the runtime will
+            // settle this session itself.
+            this.cancelSettleAfterStop(state)
+          }
+          if (content.state === 'running' && !state.isActive) {
             // The runtime started a turn we didn't initiate via POST (e.g. a
             // queued message picked up after an out-of-order idle) — self-heal.
             state.isActive = true
@@ -2436,8 +2538,15 @@ class MessagePersister {
           this.onUnexpectedDeathRequested?.(state.agentSlug)
           break
         }
-        if (isError || classification.isInterrupt) {
+        if (isError || (classification.isInterrupt && this.openBackgroundWorkCount(state) === 0)) {
           state.isActive = false
+          state.isAwaitingInput = false
+        } else if (classification.isInterrupt) {
+          // The turn was stopped but background work is still open. A soft
+          // interrupt spares it, so the session stays active on it (the same
+          // waiting-background state a finished turn leaves); the Stop route's
+          // markSessionInterrupted settles the session if the process was in
+          // fact replaced, and process_restarted drops the tasks otherwise.
           state.isAwaitingInput = false
         } else if (state.stateEventsAuthority || this.openBackgroundWorkCount(state) > 0) {
           this.syncSessionAwaiting(agentSlug, sessionId)
@@ -2927,6 +3036,30 @@ class MessagePersister {
   // becomes a permanent pin: the SDK re-emits the level only on a membership
   // CHANGE and emits nothing at all for a fresh process, so an id that enters
   // bgTasksSnapshot and never leaves it can never be retired by the SDK.
+  // How long a stopped task's wake turn gets to announce itself (`running`)
+  // before the host settles the session on its own. The subagent wake was
+  // observed ~20ms after the stopped notification; Bash stops never wake.
+  private static readonly SETTLE_AFTER_STOP_GRACE_MS = 1500
+
+  private scheduleSettleAfterStop(agentSlug: string, sessionId: string, state: StreamingState): void {
+    this.cancelSettleAfterStop(state)
+    state.settleAfterStopTimer = setTimeout(() => {
+      state.settleAfterStopTimer = null
+      // Still the live state, still parked with nothing running.
+      if (this.streamingStates.get(sessionKeyOf(agentSlug, sessionId)) !== state) return
+      if (!state.isActive || state.runtimeState !== 'idle' || this.openBackgroundWorkCount(state) > 0) return
+      console.log(`[MessagePersister] Session ${sessionId}: last background task stopped while idle — settling`)
+      this.finalizeIdle(agentSlug, sessionId, state)
+    }, MessagePersister.SETTLE_AFTER_STOP_GRACE_MS)
+  }
+
+  private cancelSettleAfterStop(state: StreamingState): void {
+    if (state.settleAfterStopTimer) {
+      clearTimeout(state.settleAfterStopTimer)
+      state.settleAfterStopTimer = null
+    }
+  }
+
   private openBackgroundWorkCount(state: StreamingState): number {
     if (!state.bgTasksSnapshot) return state.activeBackgroundTasks.size
     const union = new Set(state.activeBackgroundTasks.keys())

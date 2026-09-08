@@ -3,7 +3,7 @@ import type { UUID } from 'crypto';
 import { forkSession as sdkForkSession, deleteSession as sdkDeleteSession } from '@anthropic-ai/claude-agent-sdk';
 import { Session, SDKMessage, CreateSessionRequest, EffortLevel, SpeedLevel, AgentCapabilityPolicies } from './types';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
-import { ClaudeCodeProcess } from './claude-code';
+import { ClaudeCodeProcess, type InterruptScope } from './claude-code';
 import { SessionPersistence } from './session-persistence';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
@@ -1067,14 +1067,31 @@ export class SessionManager extends EventEmitter {
     return this.persistence.getSessionCapabilityGrants(sessionId);
   }
 
-  async interruptSession(sessionId: string): Promise<{ found: boolean; discardedUuids: string[] }> {
+  async interruptSession(
+    sessionId: string,
+    scope: InterruptScope = 'all',
+  ): Promise<{ found: boolean; discardedUuids: string[]; processKept: boolean }> {
     const sessionData = this.sessions.get(sessionId);
     if (!sessionData) {
-      return { found: false, discardedUuids: [] };
+      return { found: false, discardedUuids: [], processKept: false };
     }
 
-    const outcome = await sessionData.process.interrupt();
-    return { found: true, discardedUuids: outcome.discardedUuids };
+    // A soft (scope 'turn') interrupt keeps the CLI process, so no
+    // query-start fires and the settlement tracker keeps its background task
+    // ids — they are still running. Only the restart path resets them.
+    const outcome = await sessionData.process.interrupt({ scope });
+    return { found: true, discardedUuids: outcome.discardedUuids, processKept: outcome.processKept };
+  }
+
+  /**
+   * Stop one background task of a live session. found=false when the session
+   * is not resident; stopped=false when it has no live query to ask.
+   */
+  async stopTask(sessionId: string, taskId: string): Promise<{ found: boolean; stopped: boolean }> {
+    const sessionData = this.sessions.get(sessionId);
+    if (!sessionData) return { found: false, stopped: false };
+    const stopped = await sessionData.process.stopTask(taskId);
+    return { found: true, stopped };
   }
 
   /**

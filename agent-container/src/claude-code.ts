@@ -253,13 +253,28 @@ export function stillQueuedFromReceipt(receipt: unknown): string[] {
   return parsed.data.still_queued ?? [];
 }
 
+// 'turn' ends the foreground turn and spares background tasks; 'all' tears the
+// query down and re-creates it, which kills every background task with it.
+export type InterruptScope = 'turn' | 'all';
+
 export interface InterruptOutcome {
   interrupted: boolean;
   // Uuids of queued user messages that died with this interrupt — never picked
   // up by the agent. The same uuids are also emitted on the message stream as
   // synthetic `command_lifecycle` frames with state 'discarded'.
   discardedUuids: string[];
+  // True when the CLI process survived the interrupt: background tasks it was
+  // running are still running. False when the query was re-created — every
+  // background task died with the old process.
+  processKept: boolean;
 }
+
+// How long Query.interrupt() gets to answer with its receipt.
+const INTERRUPT_RECEIPT_TIMEOUT_MS = 2000;
+// After the receipt, how long the aborted turn's result gets to arrive before
+// a soft interrupt gives up and restarts the query.
+const INTERRUPT_RESULT_TIMEOUT_MS = 5000;
+const RECEIPT_TIMEOUT = Symbol('interrupt receipt timeout');
 
 // An error result with no human-readable text anywhere gets the resume-failure
 // fallback copy. `result` counts as text: the modern error shape (is_error:true
@@ -558,6 +573,9 @@ export class ClaudeCodeProcess extends EventEmitter {
   private lastTurnInformationals: SDKMessage[] = [];
   private lastResultMessage: SDKMessage | null = null;
   private lastSessionState: string | null = null;
+  // Protocol capabilities the CLI advertised on system/init (SDK feature
+  // detection — see Options.perTaskStopAffordance and interruptTurn).
+  private cliCapabilities = new Set<string>();
   // Pre-spawned CLI subprocess from prewarm(), waiting for a prompt. Claimed
   // (once) by the next createQuery; see prewarm() for why the handle lives on
   // the process rather than in a detached pool.
@@ -925,6 +943,12 @@ export class ClaudeCodeProcess extends EventEmitter {
       permissionMode: 'bypassPermissions',
       includePartialMessages: true,
       agentProgressSummaries: true,
+      // The host renders a stop control per background task (wired to
+      // stopTask below), so a user interrupt only aborts the foreground turn
+      // and spares running background agents, Bash tasks and workflows.
+      // Without this declaration the CLI fails closed and kills them all on
+      // every interrupt. See interrupt().
+      perTaskStopAffordance: true,
       // Expose the dynamic-workflows `Workflow` tool. In headless/SDK mode the
       // feature is hidden unless explicitly opted in (there is no interactive
       // /config to record consent, so the SDK defaults it OFF). There is no
@@ -1366,6 +1390,11 @@ export class ClaudeCodeProcess extends EventEmitter {
           }
           console.log(`[Session ${this.sessionId}] Captured Claude session ID:`, this.claudeSessionId);
           this.emit('claude-session-id', this.claudeSessionId);
+          this.cliCapabilities = new Set(
+            Array.isArray(message.capabilities)
+              ? message.capabilities.filter((name): name is string => typeof name === 'string')
+              : [],
+          );
           // The init list owns the executable names. supportedCommands adds
           // descriptions/hints, but skill entries may use display titles there.
           const canonicalCommandNames = Array.isArray(message.slash_commands)
@@ -1631,6 +1660,11 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
     console.log(`[Session ${this.sessionId}] Sending message (userMessageCount=${this.userMessageCount}):`, content.substring(0, 100));
     this.messageQueue!.push(message);
+    // A turn is about to start; until the CLI says otherwise the session is
+    // no longer known-idle (interruptTurn reads this to decide whether there
+    // is a foreground turn to abort, and a Stop in the send→running window
+    // must still reach it).
+    if (shouldQuery !== false) this.lastSessionState = null;
     // Every send path must reach the session's settlement tracker — including
     // internal ones that bypass SessionManager.sendMessage (the MCP-injection
     // continuation in addRemoteMcpServer). Without this, a send landing while
@@ -1832,14 +1866,158 @@ export class ClaudeCodeProcess extends EventEmitter {
     ].map((m) => ({ ...(m as Record<string, unknown>), replayed: true }));
   }
 
-  async interrupt(): Promise<InterruptOutcome> {
-    console.log(`[Session ${this.sessionId}] Interrupting current query`);
+  /**
+   * Stop what the session is doing.
+   *
+   * scope 'turn' — the user's Stop button. Sends only the SDK `interrupt`
+   * control request and keeps the CLI process: the foreground turn ends, and
+   * because the query declared `perTaskStopAffordance`, running background
+   * tasks (backgrounded Bash, background subagents, workflows) are spared.
+   * Falls back to the restart below when the CLI cannot be trusted to honor
+   * that (no `interrupt_receipt_v1` capability, receipt timeout, or no result
+   * for the aborted turn), so an old runtime keeps today's kill-everything
+   * behavior rather than leaving orphans the host cannot see.
+   *
+   * scope 'all' — a full stop, and every deliberate re-query (MCP injection,
+   * effort/speed change): aborts the query and re-creates it with `resume`.
+   * The abort closes stdio and signals the CLI, so background tasks die with
+   * it; the SessionManager hears `query-start` and resets its bookkeeping.
+   */
+  async interrupt(options?: { scope?: InterruptScope }): Promise<InterruptOutcome> {
+    const scope = options?.scope ?? 'all';
+    console.log(`[Session ${this.sessionId}] Interrupting current query (scope=${scope})`);
 
     if (this.stopping || !this.abortController || !this.isProcessing) {
       console.log(`[Session ${this.sessionId}] Nothing to interrupt`);
-      return { interrupted: false, discardedUuids: [] };
+      return { interrupted: false, discardedUuids: [], processKept: true };
     }
 
+    if (scope === 'turn') {
+      const outcome = await this.interruptTurn();
+      if (outcome) return outcome;
+      console.warn(`[Session ${this.sessionId}] Soft interrupt unavailable — restarting the query instead`);
+    }
+
+    return this.restartQuery();
+  }
+
+  /**
+   * The soft path of interrupt(): abort the foreground turn in place. Resolves
+   * null when the CLI gave no proof the turn ended — the caller then restarts.
+   */
+  private async interruptTurn(): Promise<InterruptOutcome | null> {
+    if (!this.queryInstance) return null;
+    if (!this.cliCapabilities.has('interrupt_receipt_v1')) {
+      console.warn(`[Session ${this.sessionId}] CLI does not advertise interrupt_receipt_v1`);
+      return null;
+    }
+    // Between turns (the turn-end `idle` — which the CLI also emits while
+    // background work is still running) there is no foreground turn to abort.
+    // Stop is then a no-op for the turn; the caller stops tasks one by one.
+    if (this.lastSessionState === 'idle') {
+      console.log(`[Session ${this.sessionId}] No foreground turn to interrupt`);
+      return { interrupted: false, discardedUuids: [], processKept: true };
+    }
+
+    // Listen for the aborted turn's result before asking, so it cannot slip
+    // past between the receipt and the wait below.
+    const turnResult = this.waitForTurnResult(INTERRUPT_RESULT_TIMEOUT_MS);
+    const discardedUuids: string[] = [];
+    let receipt: unknown;
+    try {
+      receipt = await Promise.race([
+        this.queryInstance.interrupt(),
+        new Promise<typeof RECEIPT_TIMEOUT>((resolve) =>
+          setTimeout(() => resolve(RECEIPT_TIMEOUT), INTERRUPT_RECEIPT_TIMEOUT_MS)),
+      ]);
+    } catch (error) {
+      console.warn(`[Session ${this.sessionId}] Graceful interrupt failed:`, error);
+      turnResult.cancel();
+      return null;
+    }
+    if (receipt === RECEIPT_TIMEOUT) {
+      console.warn(`[Session ${this.sessionId}] Interrupt receipt timed out`);
+      turnResult.cancel();
+      return null;
+    }
+
+    // Same Stop semantics as the restart path: queued messages die with the
+    // turn. still_queued names the ones the CLI holds; the local buffer holds
+    // the ones it never pulled.
+    for (const uuid of stillQueuedFromReceipt(receipt)) {
+      const cancelled = await this.cancelQueuedMessage(uuid as UUID);
+      if (cancelled) discardedUuids.push(uuid);
+    }
+    for (const message of this.messageQueue?.drain() ?? []) {
+      if (message.uuid) discardedUuids.push(message.uuid);
+    }
+
+    // The receipt is written before the aborted turn's result. Wait for that
+    // result so the host sees the turn end before the interrupt call returns,
+    // and so a CLI that acknowledged but never stopped gets the restart.
+    if (!(await turnResult.promise)) {
+      console.warn(`[Session ${this.sessionId}] No result after interrupt receipt`);
+      return null;
+    }
+
+    for (const uuid of discardedUuids) this.emitDiscarded(uuid);
+    console.log(`[Session ${this.sessionId}] Turn interrupted; process kept`);
+    return { interrupted: true, discardedUuids, processKept: true };
+  }
+
+  private waitForTurnResult(timeoutMs: number): { promise: Promise<boolean>; cancel: () => void } {
+    let cleanup = () => {};
+    const promise = new Promise<boolean>((resolve) => {
+      const onMessage = (message: unknown) => {
+        if ((message as { type?: string })?.type === 'result') {
+          cleanup();
+          resolve(true);
+        }
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        resolve(false);
+      }, timeoutMs);
+      cleanup = () => {
+        clearTimeout(timer);
+        this.off('message', onMessage);
+      };
+      this.on('message', onMessage);
+    });
+    return { promise, cancel: () => cleanup() };
+  }
+
+  // Downstream (persister → SSE → renderer) learns each dead uuid through the
+  // exact same pipeline as real SDK frames and can rescue the message text
+  // deterministically instead of racing a refetch.
+  private emitDiscarded(uuid: string): void {
+    this.emit('message', {
+      type: 'command_lifecycle',
+      command_uuid: uuid,
+      state: 'discarded',
+      session_id: this.claudeSessionId || this.sessionId,
+    });
+  }
+
+  /**
+   * Stop one background task (backgrounded Bash, background subagent or
+   * workflow) by the id the SDK reports in task_started / task_notification.
+   * The CLI answers with a task_notification of status 'stopped', which
+   * retires the task downstream. false = no live query to ask.
+   */
+  async stopTask(taskId: string): Promise<boolean> {
+    if (this.stopping || !this.queryInstance) return false;
+    if (typeof this.queryInstance.stopTask !== 'function') {
+      console.warn(`[Session ${this.sessionId}] stopTask unavailable in this SDK build`);
+      return false;
+    }
+    console.log(`[Session ${this.sessionId}] Stopping background task ${taskId}`);
+    await this.queryInstance.stopTask(taskId);
+    return true;
+  }
+
+  /** The abort-and-re-create path of interrupt(). */
+  private async restartQuery(): Promise<InterruptOutcome> {
     // Ask the SDK which async messages are still queued BEFORE killing the
     // query — after the abort the stream just stops and that knowledge is
     // gone (queued command_lifecycle frames never resolve; see the
@@ -1852,7 +2030,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       try {
         const receipt = await Promise.race([
           this.queryInstance.interrupt(),
-          new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 2000)),
+          new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), INTERRUPT_RECEIPT_TIMEOUT_MS)),
         ]);
         for (const uuid of stillQueuedFromReceipt(receipt)) {
           // Reuses the two-layer cancel; false = already dequeued for
@@ -1876,7 +2054,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
 
     // Abort the current query
-    this.abortController.abort();
+    this.abortController!.abort();
 
     // Wait for the current processing to stop
     await new Promise<void>((resolve) => {
@@ -1894,17 +2072,8 @@ export class ClaudeCodeProcess extends EventEmitter {
     });
 
     // The SDK's own terminal lifecycle frames died with the query, so emit
-    // them ourselves: downstream (persister → SSE → renderer) learns each
-    // dead uuid through the exact same pipeline as real SDK frames and can
-    // rescue the message text deterministically instead of racing a refetch.
-    for (const uuid of discardedUuids) {
-      this.emit('message', {
-        type: 'command_lifecycle',
-        command_uuid: uuid,
-        state: 'discarded',
-        session_id: this.claudeSessionId || this.sessionId,
-      });
-    }
+    // them ourselves.
+    for (const uuid of discardedUuids) this.emitDiscarded(uuid);
 
     // A stop()/dispose() may have raced in while we were waiting above — the
     // teardown wins: restarting here would revive a subprocess for a session
@@ -1912,7 +2081,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     // reaper. The abort already landed, so the turn is dead either way.
     if (this.stopping) {
       console.log(`[Session ${this.sessionId}] Stop raced the interrupt — not restarting query`);
-      return { interrupted: true, discardedUuids };
+      return { interrupted: true, discardedUuids, processKept: false };
     }
 
     // Restart the query with resume to continue the session
@@ -1920,6 +2089,6 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.initializeQuery();
     this.processingDone = this.processMessages();
 
-    return { interrupted: true, discardedUuids };
+    return { interrupted: true, discardedUuids, processKept: false };
   }
 }

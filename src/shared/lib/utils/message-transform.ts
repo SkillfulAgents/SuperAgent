@@ -34,6 +34,8 @@ export interface TransformedMessage {
       totalTokens?: number
       totalToolUseCount?: number
     }
+    /** The runtime's task id for a Bash call run in the background. */
+    backgroundTaskId?: string
   }>
   createdAt: Date
   sender?: {
@@ -573,6 +575,9 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
               }
             : undefined
 
+          // A backgrounded Bash call's result is its (empty) stdout; the id
+          // the runtime assigned is what lets the UI name the running task.
+          const backgroundTaskId = toolResult?.toolUseResult?.backgroundTaskId
           toolCalls.push({
             id: block.id,
             name: block.name,
@@ -580,6 +585,7 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
             result: resultContent,
             isError: toolResult?.isError,
             subagent,
+            ...(typeof backgroundTaskId === 'string' && backgroundTaskId ? { backgroundTaskId } : {}),
           })
         }
       }

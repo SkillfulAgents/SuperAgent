@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
 import { z } from 'zod'
-import { ContainerNotFoundError } from './types'
+import { ContainerNotFoundError, type InterruptSessionOptions, type InterruptSessionResult } from './types'
 import type {
   ContainerClient,
   ContainerConfig,
@@ -1440,15 +1440,26 @@ export class XAgentReviewScenario implements MockScenario {
  * its turn, then after a delay a task-notification arrives and the agent responds.
  */
 export class BackgroundBashScenario implements MockScenario {
+  /**
+   * @param delayMs how long the background command runs after the turn ends
+   * @param commandOutput what it prints
+   * @param foregroundWorkMs keep the launching turn busy this long after the
+   *   task starts — a turn that can be stopped while the task keeps running
+   */
   constructor(
     private delayMs: number = 2000,
     private commandOutput: string = 'done sleeping',
+    private foregroundWorkMs: number = 0,
   ) {}
 
   execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
     let delay = 10
     const toolId = `tool_bash_${Date.now()}`
     const bgTaskId = `bg_${Date.now().toString(36)}`
+    // The task outlives the turn that launched it, and an interrupt of that
+    // turn must not take the task's own completion with it — so everything
+    // the task emits goes through the unguarded client (see scenarioView).
+    const runtime = client.unguarded
 
     // Start assistant message
     setTimeout(() => {
@@ -1552,9 +1563,9 @@ export class BackgroundBashScenario implements MockScenario {
     }, delay)
     delay += 10
 
-    // Write JSONL and emit result (agent turn ends, but bg task is still running)
-    const firstResultDelay = delay
-    setTimeout(() => {
+    // The launch as the transcript records it: the user's message, the Bash
+    // call and its "running in background" result.
+    const persistLaunch = () => {
       client.writeJsonlEntry(sessionId, {
         type: 'user',
         message: { content: userMessage },
@@ -1574,6 +1585,44 @@ export class BackgroundBashScenario implements MockScenario {
         message: { content: [{ type: 'tool_result', tool_use_id: toolId, content: `Command running in background with ID: ${bgTaskId}.` }] },
         timestamp: new Date().toISOString(),
       })
+    }
+
+    // Keep the turn busy after the launch: more streamed text, and the
+    // result held back for foregroundWorkMs. The launch is persisted up
+    // front here (the real CLI writes each step as it happens), so a Stop
+    // during the extra work leaves a transcript that names the task.
+    const foregroundText = 'Still working on the rest of the request while that runs...'
+    if (this.foregroundWorkMs > 0) {
+      setTimeout(() => {
+        persistLaunch()
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'message_start' } },
+        })
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'text' } } },
+        })
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: foregroundText } } },
+        })
+      }, delay)
+      delay += this.foregroundWorkMs
+    }
+
+    // Write JSONL and emit result (agent turn ends, but bg task is still running)
+    const firstResultDelay = delay
+    setTimeout(() => {
+      if (this.foregroundWorkMs > 0) {
+        client.writeJsonlEntry(sessionId, {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: foregroundText }] },
+          timestamp: new Date().toISOString(),
+        })
+      } else {
+        persistLaunch()
+      }
 
       client.emitStreamMessage(sessionId, {
         type: 'result',
@@ -1589,8 +1638,11 @@ export class BackgroundBashScenario implements MockScenario {
     // background-bash-busy-completion replay fixture.
     const notificationDelay = firstResultDelay + this.delayMs
     setTimeout(() => {
-      client.completeBackgroundTask(sessionId, bgTaskId)
-      client.emitStreamMessage(sessionId, {
+      // Stopped in the meantime (its own stop control, or a full stop): the
+      // runtime already reported its end and never wakes the agent for it.
+      if (!runtime.isBackgroundTaskRunning(sessionId, bgTaskId)) return
+      runtime.completeBackgroundTask(sessionId, bgTaskId)
+      runtime.emitStreamMessage(sessionId, {
         type: 'system',
         content: {
           type: 'system',
@@ -1600,65 +1652,67 @@ export class BackgroundBashScenario implements MockScenario {
           session_id: sessionId,
         },
       })
+
+      // Agent processes the notification — reads the output and responds.
+      // The wake is an idle -> running transition the CLI publishes.
+      const finalDelay = 50
+      const finalText = `Background command completed. Output: ${this.commandOutput}`
+      setTimeout(() => {
+        runtime.emitSessionState(sessionId, 'running')
+        runtime.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'message_start' } },
+        })
+      }, finalDelay)
+
+      setTimeout(() => {
+        runtime.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'text' } } },
+        })
+      }, finalDelay + 10)
+
+      setTimeout(() => {
+        runtime.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: finalText } } },
+        })
+      }, finalDelay + 20)
+
+      setTimeout(() => {
+        runtime.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'content_block_stop' } },
+        })
+      }, finalDelay + 30)
+
+      setTimeout(() => {
+        runtime.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'message_stop' } },
+        })
+      }, finalDelay + 40)
+
+      // Write JSONL and final result
+      setTimeout(() => {
+        runtime.writeJsonlEntry(sessionId, {
+          type: 'user',
+          origin: { kind: 'task-notification' },
+          message: { content: `<task-notification>\n<task-id>${bgTaskId}</task-id>\n<status>completed</status>\n</task-notification>` },
+          timestamp: new Date().toISOString(),
+        })
+        runtime.writeJsonlEntry(sessionId, {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: finalText }] },
+          timestamp: new Date().toISOString(),
+        })
+
+        runtime.emitStreamMessage(sessionId, {
+          type: 'result',
+          content: { type: 'result', subtype: 'success' },
+        })
+      }, finalDelay + 50)
     }, notificationDelay)
-
-    // Agent processes the notification — reads the output and responds
-    const finalDelay = notificationDelay + 50
-    setTimeout(() => {
-      client.emitStreamMessage(sessionId, {
-        type: 'stream_event',
-        content: { type: 'stream_event', event: { type: 'message_start' } },
-      })
-    }, finalDelay)
-
-    setTimeout(() => {
-      client.emitStreamMessage(sessionId, {
-        type: 'stream_event',
-        content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'text' } } },
-      })
-    }, finalDelay + 10)
-
-    const finalText = `Background command completed. Output: ${this.commandOutput}`
-    setTimeout(() => {
-      client.emitStreamMessage(sessionId, {
-        type: 'stream_event',
-        content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: finalText } } },
-      })
-    }, finalDelay + 20)
-
-    setTimeout(() => {
-      client.emitStreamMessage(sessionId, {
-        type: 'stream_event',
-        content: { type: 'stream_event', event: { type: 'content_block_stop' } },
-      })
-    }, finalDelay + 30)
-
-    setTimeout(() => {
-      client.emitStreamMessage(sessionId, {
-        type: 'stream_event',
-        content: { type: 'stream_event', event: { type: 'message_stop' } },
-      })
-    }, finalDelay + 40)
-
-    // Write JSONL and final result
-    setTimeout(() => {
-      client.writeJsonlEntry(sessionId, {
-        type: 'user',
-        origin: { kind: 'task-notification' },
-        message: { content: `<task-notification>\n<task-id>${bgTaskId}</task-id>\n<status>completed</status>\n</task-notification>` },
-        timestamp: new Date().toISOString(),
-      })
-      client.writeJsonlEntry(sessionId, {
-        type: 'assistant',
-        message: { content: [{ type: 'text', text: finalText }] },
-        timestamp: new Date().toISOString(),
-      })
-
-      client.emitStreamMessage(sessionId, {
-        type: 'result',
-        content: { type: 'result', subtype: 'success' },
-      })
-    }, finalDelay + 50)
   }
 }
 
@@ -1741,6 +1795,12 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       'file1.txt\nfile2.txt\nfolder/',
       'I found the following files in the current directory.'
     )],
+    // A background task launched by a turn that then keeps working: the shape
+    // where Stop has to choose between the response and the task. Listed
+    // before the plain keyword it contains — first match wins.
+    ['run background and keep working', new BackgroundBashScenario(6000, 'done sleeping', 8000)],
+    // A task long enough to be stopped deliberately before it completes.
+    ['run background slowly', new BackgroundBashScenario(6000, 'done sleeping')],
     // Register a background bash scenario for testing background task tracking
     ['run background', new BackgroundBashScenario(2000, 'done sleeping')],
     // A workspace hook blocking the prompt before the model sees it
@@ -2219,6 +2279,12 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   // the in-flight scenario (see scenarioView).
   private interruptEpochs = new Map<string, number>()
 
+  // The real client, for frames a scenario must deliver even after the turn
+  // that scheduled them was interrupted (a background task's own completion
+  // and the wake turn it triggers). A scenarioView inherits this property
+  // from the client it was created from, so it always names the real one.
+  readonly unguarded: MockContainerClient = this
+
   getAgentId(): string {
     return this.config.agentId
   }
@@ -2364,6 +2430,10 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
    * background work runs, so the result hook withholds 'idle' until the
    * scenario marks the task complete.
    */
+  isBackgroundTaskRunning(sessionId: string, taskId: string): boolean {
+    return this.runningBackgroundTaskIds.get(sessionId)?.has(taskId) ?? false
+  }
+
   registerBackgroundTask(sessionId: string, taskId: string): void {
     const tasks = this.runningBackgroundTaskIds.get(sessionId) ?? new Set()
     tasks.add(taskId)
@@ -3072,6 +3142,9 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   private scenarioView(sessionId: string): MockContainerClient {
     const epoch = this.interruptEpochs.get(sessionId) ?? 0
     const live = () => (this.interruptEpochs.get(sessionId) ?? 0) === epoch
+    // `unguarded` is inherited from the real client (it IS the real client),
+    // so a scenario can route frames that must outlive an interrupt around
+    // the guards below — see BackgroundBashScenario.
     const view = Object.create(this) as MockContainerClient
     view.emitStreamMessage = (sid: string, content: { type: string; content: unknown }): void => {
       if (live()) this.emitStreamMessage(sid, content)
@@ -3082,11 +3155,49 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     return view
   }
 
-  async interruptSession(sessionId: string): Promise<boolean> {
+  /**
+   * Stop one background task. Mirrors the real CLI's answer to a stop_task
+   * control request: a task_notification of status 'stopped' on the stream,
+   * which is what retires the task in the persister and the UI. The task's
+   * own scheduled completion becomes a no-op (already cleared).
+   */
+  async stopTask(sessionId: string, taskId: string): Promise<boolean> {
     const session = this.sessions.get(sessionId)
     if (!session) return false
+    const tasks = this.runningBackgroundTaskIds.get(sessionId)
+    if (!tasks?.has(taskId)) return false
+
+    this.completeBackgroundTask(sessionId, taskId)
+    this.emitStreamMessage(sessionId, {
+      type: 'system',
+      content: {
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: taskId,
+        status: 'stopped',
+        summary: 'Stopped by user',
+        session_id: sessionId,
+      },
+    })
+    // The real runtime settles once its last background task is gone and no
+    // foreground turn is running.
+    if (!this.busySessions.has(sessionId) && tasks.size === 0) {
+      this.emitSessionState(sessionId, 'idle')
+    }
+    return true
+  }
+
+  async interruptSession(sessionId: string, options?: InterruptSessionOptions): Promise<InterruptSessionResult> {
+    const session = this.sessions.get(sessionId)
+    if (!session) return { interrupted: false, processKept: false }
 
     const hadTurnInFlight = this.busySessions.has(sessionId)
+    // 'turn' keeps the process and its background tasks (the real CLI honors
+    // perTaskStopAffordance); 'all' replaces it, so every task dies with it.
+    const processKept = (options?.scope ?? 'turn') === 'turn'
+    if (!processKept) {
+      this.runningBackgroundTaskIds.delete(sessionId)
+    }
 
     // Supersede the in-flight scenario so its pending timers can't finish the
     // turn after the abort (see scenarioView), and let the next send start a
@@ -3141,7 +3252,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       type: 'session_idle',
       content: { interrupted: true },
     })
-    return true
+    return { interrupted: true, processKept }
   }
 
   // Streaming

@@ -165,11 +165,32 @@ app.delete('/sessions/:id', async (c) => {
   return c.json({ success: true });
 });
 
+// scope 'turn' (default) ends the foreground turn and keeps the CLI process,
+// so background tasks live on; 'all' replaces the process and kills them.
+// `processKept` tells the host which of the two actually happened — a soft
+// interrupt falls back to the restart when the CLI cannot be trusted with it.
+const interruptBodySchema = z.object({
+  scope: z.enum(['turn', 'all']).default('turn'),
+});
+
 app.post('/sessions/:id/interrupt', async (c) => {
   const sessionId = c.req.param('id');
 
   try {
-    const { found, discardedUuids } = await sessionManager.interruptSession(sessionId);
+    const rawBody = await c.req.text();
+    let parsedBody: unknown = {};
+    if (rawBody.trim()) {
+      try {
+        parsedBody = JSON.parse(rawBody);
+      } catch {
+        return c.json({ error: 'Invalid JSON body' }, 400);
+      }
+    }
+    const body = interruptBodySchema.safeParse(parsedBody);
+    if (!body.success) {
+      return c.json({ error: 'Invalid interrupt scope' }, 400);
+    }
+    const { found, discardedUuids, processKept } = await sessionManager.interruptSession(sessionId, body.data.scope);
 
     if (!found) {
       return c.json({ error: 'Session not found' }, 404);
@@ -177,7 +198,7 @@ app.post('/sessions/:id/interrupt', async (c) => {
 
     // The same uuids also flow to the host as synthetic command_lifecycle
     // 'discarded' stream frames; this response is for the API caller.
-    return c.json({ success: true, discardedUuids });
+    return c.json({ success: true, discardedUuids, processKept });
   } catch (error: any) {
     console.error('Error interrupting session:', error);
     return c.json({ error: error.message || 'Failed to interrupt session' }, 500);
@@ -231,6 +252,28 @@ app.post('/sessions/:id/messages', async (c) => {
   } catch (error: any) {
     console.error('Error sending message:', error);
     return c.json({ error: error.message || 'Failed to send message' }, 500);
+  }
+});
+
+// Stop one background task (backgrounded Bash, background subagent, workflow)
+// by the SDK task id. The CLI answers on the stream with a task_notification
+// of status 'stopped', which is what retires the task in the host UI.
+app.post('/sessions/:id/tasks/:taskId/stop', async (c) => {
+  const sessionId = c.req.param('id');
+  const taskId = c.req.param('taskId');
+
+  try {
+    const { found, stopped } = await sessionManager.stopTask(sessionId, taskId);
+    if (!found) {
+      return c.json({ error: 'Session not found' }, 404);
+    }
+    if (!stopped) {
+      return c.json({ error: 'Session has no running query' }, 409);
+    }
+    return c.json({ success: true });
+  } catch (error: any) {
+    console.error(`Error stopping task :`, error);
+    return c.json({ error: error.message || 'Failed to stop task' }, 500);
   }
 });
 
@@ -3088,6 +3131,7 @@ console.log('  GET    /sessions/:id');
 console.log('  GET    /sessions');
 console.log('  DELETE /sessions/:id');
 console.log('  POST   /sessions/:id/interrupt');
+console.log('  POST   /sessions/:id/tasks/:taskId/stop');
 console.log('  POST   /sessions/:id/messages');
 console.log('  WS     /sessions/:id/stream');
 console.log('  GET    /files/*');

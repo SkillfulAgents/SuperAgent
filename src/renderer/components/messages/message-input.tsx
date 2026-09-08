@@ -1,7 +1,9 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { getApiBaseUrl } from '@renderer/lib/env'
-import { useSendMessage, useUploadFile, useUploadFolder, useInterruptSession } from '@renderer/hooks/use-messages'
+import { useMessages, useSendMessage, useUploadFile, useUploadFolder, useInterruptSession } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
+import { labelBackgroundTasks } from '@renderer/lib/background-task-label'
+import { StopSessionDialog } from './stop-session-dialog'
 import { WifiOff } from 'lucide-react'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
@@ -67,7 +69,20 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
   const uploadFile = useUploadFile()
   const uploadFolder = useUploadFolder()
   const interruptSession = useInterruptSession()
-  const { isActive, slashCommands, isWaitingBackground } = useMessageStream(sessionId, agentSlug)
+  const { isActive, slashCommands, isWaitingBackground, backgroundTasks } = useMessageStream(sessionId, agentSlug)
+  // The Stop dialog names what is running; the launching tool calls in the
+  // transcript carry the names.
+  const { data: messages } = useMessages(sessionId, agentSlug)
+  const [stopDialogOpen, setStopDialogOpen] = useState(false)
+  const stopDialogTasks = useMemo(
+    () => (stopDialogOpen ? labelBackgroundTasks(backgroundTasks, messages) : []),
+    [stopDialogOpen, backgroundTasks, messages]
+  )
+  // The tasks can finish while the question is open; with none left there is
+  // nothing to decide, and the next Stop goes straight through.
+  useEffect(() => {
+    if (stopDialogOpen && backgroundTasks.length === 0) setStopDialogOpen(false)
+  }, [stopDialogOpen, backgroundTasks.length])
   const isOnline = useIsOnline()
   const isOffline = !isOnline
   const { track } = useAnalyticsTracking()
@@ -201,13 +216,24 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     }
   }, [composer, slashCommands.length, isAuthMode, agentSlug, sessionId])
 
-  const handleInterrupt = async () => {
+  const runInterrupt = async (scope: 'turn' | 'all') => {
     if (interruptSession.isPending) return
     try {
-      await interruptSession.mutateAsync({ sessionId, agentSlug })
+      await interruptSession.mutateAsync({ sessionId, agentSlug, scope })
     } catch (error) {
       console.error('Failed to interrupt session:', error)
     }
+  }
+
+  // Stop ends the response. Background tasks are the user's call: with any
+  // running, ask whether they go too, instead of killing them silently.
+  const handleInterrupt = () => {
+    if (interruptSession.isPending) return
+    if (backgroundTasks.length > 0) {
+      setStopDialogOpen(true)
+      return
+    }
+    void runInterrupt('turn')
   }
 
   const handleKeyDown = (e: KeyboardEvent) => {
@@ -260,6 +286,16 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
       className={`relative z-10 isolate px-4 pt-0 ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
       {...composer.dragHandlers}
     >
+      <StopSessionDialog
+        open={stopDialogOpen}
+        onOpenChange={setStopDialogOpen}
+        tasks={stopDialogTasks}
+        // Waiting on background work means the response already ended; the
+        // only thing left to stop is the tasks themselves.
+        turnInProgress={!isWaitingBackground}
+        onStopTurn={() => { setStopDialogOpen(false); void runInterrupt('turn') }}
+        onStopAll={() => { setStopDialogOpen(false); void runInterrupt('all') }}
+      />
       <MountChoiceDialog
         open={composer.mountDialog.open}
         onChoice={composer.mountDialog.onChoice}

@@ -1,9 +1,10 @@
 
-import { useMessages } from '@renderer/hooks/use-messages'
+import { useMessages, useStopBackgroundTask } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
 import { usePendingUserRequests } from '@renderer/hooks/use-pending-user-requests'
 import { apiFetch } from '@renderer/lib/api'
+import { labelBackgroundTasks } from '@renderer/lib/background-task-label'
 import { resolveProviderError } from '@renderer/components/provider-error/provider-error-registry'
 import { isProviderFacingError } from '@shared/lib/types/api'
 import { isTurnStartingUserMessage } from './pending-message'
@@ -56,6 +57,14 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
 
   const [revoking, setRevoking] = useState(false)
   const [revokeError, setRevokeError] = useState(false)
+
+  const stopBackgroundTask = useStopBackgroundTask()
+  const handleStopTask = useCallback(
+    async (taskId: string) => {
+      await stopBackgroundTask.mutateAsync({ sessionId, agentSlug, taskId })
+    },
+    [stopBackgroundTask, sessionId, agentSlug]
+  )
 
   const handleRevokeComputerUse = useCallback(async () => {
     setRevoking(true)
@@ -230,9 +239,18 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
         description: selected.description || metadata?.description || '',
         status: isCompleted(selected) ? 'completed' as const : 'running' as const,
         progressSummary: selected.progressSummary ?? null,
+        // The agent id is the task id the runtime's stop_task takes.
+        taskId: selectedAgentId ?? null,
       }
     })
   }, [messages, activeSubagents, completedSubagents])
+
+  // Name each background task after the tool call that launched it (the
+  // command, the subagent's description) so the rows say what would be stopped.
+  const labeledBackgroundTasks = useMemo(
+    () => labelBackgroundTasks(backgroundTasks, messages),
+    [backgroundTasks, messages]
+  )
 
   // Derive the todo/task list from TaskCreate/TaskUpdate (newer SDK) or fall back
   // to TodoWrite (older SDK). Memoized on [messages] so it doesn't re-scan the
@@ -289,8 +307,9 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
         onRevoke: handleRevokeComputerUse,
       } : null}
       subagents={subagentItems}
-      backgroundTasks={backgroundTasks}
+      backgroundTasks={labeledBackgroundTasks}
       todos={todos}
+      onStopTask={handleStopTask}
     />
   )
 }

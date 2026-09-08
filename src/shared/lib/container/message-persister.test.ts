@@ -6953,6 +6953,218 @@ describe('MessagePersister', () => {
   })
 
   // ============================================================================
+  // Stop that spares background tasks (the container kept the CLI process)
+  // ============================================================================
+
+  describe('stopping the turn while background tasks run', () => {
+    function startBackgroundTask(taskId: string) {
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { backgroundTaskId: taskId },
+        message: { content: [{ type: 'tool_result', tool_use_id: `tool-${taskId}`, content: 'Running' }] },
+      })
+    }
+
+    it('keeps background tasks and the session active when the process was kept', async () => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      startBackgroundTask('bg-1')
+      sseEvents.length = 0
+
+      await messagePersister.markSessionInterrupted(AGENT_SLUG, SESSION_ID, { processKept: true })
+
+      expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID).map((t) => t.taskId)).toEqual(['bg-1'])
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+      const waiting = sseEvents.filter((e) => e.type === 'session_waiting_background')
+      expect(waiting).toHaveLength(1)
+      expect(waiting[0]).toMatchObject({ interrupted: true, backgroundTaskCount: 1 })
+      expect(waiting[0].backgroundTasks.map((t: { taskId: string }) => t.taskId)).toEqual(['bg-1'])
+      expect(sseEvents.some((e) => e.type === 'session_idle')).toBe(false)
+    })
+
+    it('settles to idle when the process was kept but nothing runs in the background', async () => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      sseEvents.length = 0
+
+      await messagePersister.markSessionInterrupted(AGENT_SLUG, SESSION_ID, { processKept: true })
+
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+      expect(sseEvents.filter((e) => e.type === 'session_idle')).toHaveLength(1)
+      expect(sseEvents.some((e) => e.type === 'session_waiting_background')).toBe(false)
+    })
+
+    it('drops background tasks when the process was replaced', async () => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      startBackgroundTask('bg-1')
+      sseEvents.length = 0
+
+      await messagePersister.markSessionInterrupted(AGENT_SLUG, SESSION_ID)
+
+      expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toEqual([])
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+      expect(sseEvents.filter((e) => e.type === 'session_idle')).toHaveLength(1)
+    })
+
+    it('retires a spared task on its stopped notification after the stop', async () => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      startBackgroundTask('bg-1')
+      await messagePersister.markSessionInterrupted(AGENT_SLUG, SESSION_ID, { processKept: true })
+      sseEvents.length = 0
+
+      // The CLI's answer to stop_task.
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'bg-1',
+        status: 'stopped',
+        summary: 'Stopped by user',
+      })
+
+      expect(sseEvents.filter((e) => e.type === 'background_task_completed' && e.taskId === 'bg-1')).toHaveLength(1)
+      expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toEqual([])
+    })
+
+    it('settles the session when the last spared task is stopped while the runtime is parked', async () => {
+      // Seen on the real CLI: after stop_task it emits background_tasks_changed,
+      // task_updated and task_notification(stopped) and nothing else — no
+      // wake turn, no second idle.
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      startBackgroundTask('bg-1')
+      mockClient._sendMessage({ type: 'result', subtype: 'success', is_error: true, terminal_reason: 'aborted_streaming' })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      await messagePersister.markSessionInterrupted(AGENT_SLUG, SESSION_ID, { processKept: true })
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+      sseEvents.length = 0
+
+      vi.useFakeTimers()
+      try {
+        mockClient._sendMessage({ type: 'system', subtype: 'background_tasks_changed', tasks: [] })
+        mockClient._sendMessage({ type: 'system', subtype: 'task_updated', task_id: 'bg-1', patch: { status: 'killed' } })
+        mockClient._sendMessage({ type: 'system', subtype: 'task_notification', task_id: 'bg-1', status: 'stopped', summary: '' })
+
+        expect(sseEvents.filter((e) => e.type === 'background_task_completed' && e.taskId === 'bg-1')).toHaveLength(1)
+        // Not yet: a stopped subagent's wake turn gets a moment to show up.
+        expect(sseEvents.filter((e) => e.type === 'session_idle')).toHaveLength(0)
+        vi.advanceTimersByTime(1600)
+      } finally {
+        vi.useRealTimers()
+      }
+
+      expect(sseEvents.filter((e) => e.type === 'session_idle')).toHaveLength(1)
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+    })
+
+    it('leaves the settle to the runtime when the stopped task wakes the agent', async () => {
+      // A stopped subagent still wakes the agent (running → result → idle);
+      // settling first would flap the session idle → active → idle.
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      startBackgroundTask('agent-1')
+      mockClient._sendMessage({ type: 'result', subtype: 'success', is_error: true, terminal_reason: 'aborted_streaming' })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      await messagePersister.markSessionInterrupted(AGENT_SLUG, SESSION_ID, { processKept: true })
+      sseEvents.length = 0
+
+      vi.useFakeTimers()
+      try {
+        mockClient._sendMessage({ type: 'system', subtype: 'task_notification', task_id: 'agent-1', status: 'stopped', summary: '' })
+        mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+        vi.advanceTimersByTime(1600)
+      } finally {
+        vi.useRealTimers()
+      }
+
+      expect(sseEvents.filter((e) => e.type === 'session_idle')).toHaveLength(0)
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+    })
+
+    it('does not settle on a completed task — the runtime wakes the agent for it', async () => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      startBackgroundTask('bg-1')
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      sseEvents.length = 0
+
+      mockClient._sendMessage({ type: 'system', subtype: 'task_notification', task_id: 'bg-1', status: 'completed', summary: 'done' })
+
+      expect(sseEvents.filter((e) => e.type === 'session_idle')).toHaveLength(0)
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+    })
+
+    it('treats a stopped task_updated as terminal too', async () => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      startBackgroundTask('bg-1')
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_updated',
+        task_id: 'bg-1',
+        patch: { status: 'stopped' },
+      })
+
+      expect(sseEvents.filter((e) => e.type === 'background_task_completed' && e.taskId === 'bg-1')).toHaveLength(1)
+    })
+
+    it('skips the stopped turn’s stale content but lets the wake turn through', async () => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      startBackgroundTask('bg-1')
+      await messagePersister.markSessionInterrupted(AGENT_SLUG, SESSION_ID, { processKept: true })
+      sseEvents.length = 0
+
+      const textDelta = () => mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'late words' } },
+      })
+
+      // Still in the pipe from the aborted turn: dropped.
+      textDelta()
+      expect(sseEvents.some((e) => e.type === 'stream_delta')).toBe(false)
+
+      // The task settles and the runtime wakes the agent for it.
+      mockClient._sendMessage({ type: 'system', subtype: 'task_updated', task_id: 'bg-1', patch: { status: 'completed' } })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+      textDelta()
+
+      expect(sseEvents.some((e) => e.type === 'stream_delta')).toBe(true)
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+    })
+
+    it('keeps a background subagent but drops the foreground one', async () => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      for (const toolId of ['task-fg', 'task-bg']) {
+        mockClient._sendMessage({
+          type: 'stream_event',
+          event: { type: 'content_block_start', content_block: { type: 'tool_use', id: toolId, name: 'Agent' } },
+        })
+        mockClient._sendMessage({ type: 'stream_event', event: { type: 'content_block_stop' } })
+      }
+      // The background launch acknowledges immediately; the foreground one is
+      // still running its blocking call.
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { status: 'async_launched', agentId: 'agent-bg' },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'task-bg', content: 'Launched' }] },
+      })
+      expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toMatchObject([{ taskId: 'agent-bg', isSubagent: true }])
+
+      await messagePersister.markSessionInterrupted(AGENT_SLUG, SESSION_ID, { processKept: true })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+      sseEvents.length = 0
+
+      // The foreground subagent died with the turn: its late result is not a completion.
+      mockClient._sendMessage({
+        type: 'user',
+        message: { content: [{ type: 'tool_result', tool_use_id: 'task-fg', content: 'done' }] },
+      })
+      expect(sseEvents.filter((e) => e.type === 'subagent_completed')).toHaveLength(0)
+
+      // The background subagent is still tracked and settles through its task signal.
+      mockClient._sendMessage({ type: 'system', subtype: 'task_updated', task_id: 'agent-bg', patch: { status: 'stopped' } })
+      expect(sseEvents.filter((e) => e.type === 'subagent_completed')).toHaveLength(1)
+      expect(sseEvents.filter((e) => e.type === 'background_task_completed' && e.taskId === 'agent-bg')).toHaveLength(1)
+    })
+  })
+
+  // ============================================================================
   // Background Bash task tracking
   // ============================================================================
 
