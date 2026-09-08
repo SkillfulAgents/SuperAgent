@@ -61,6 +61,7 @@ import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
 import { SIDEBAR_TREE_CONNECTORS } from '@renderer/components/ui/tree-connectors'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
+import { SessionMenuButton } from '@renderer/components/sessions/session-menu-button'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { DashboardContextMenu } from '@renderer/components/dashboards/dashboard-context-menu'
 import { useQueryClient } from '@tanstack/react-query'
@@ -212,10 +213,26 @@ function SessionSubItem({
     disabled: isAwaitingInput,
   })
 
+  // Right-click on the row was the only way into the session menu, which
+  // nobody discovers. A 3-dot button takes over the indicator slot on hover
+  // and opens that same menu by replaying a contextmenu on the row (see
+  // SessionMenuButton) — one menu surface, not two.
+  const [menuOpen, setMenuOpen] = useState(false)
+  const rowRef = React.useRef<HTMLAnchorElement | null>(null)
+  const setRowRef = useCallback(
+    (element: HTMLAnchorElement | null) => {
+      rowRef.current = element
+      hintRef(element)
+    },
+    [hintRef]
+  )
+
   return (
+    // The <li> is the 3-dot's positioning box (the tree connectors already make
+    // it relative; spelled out so that stays true without them).
     <SidebarMenuSubItem
       {...dragHandlers}
-      className={cn('rounded-md', SIDEBAR_FILE_DROP_CUE)}
+      className={cn('relative rounded-md group/session-row', SIDEBAR_FILE_DROP_CUE)}
     >
       <SessionContextMenu
         sessionId={session.id}
@@ -226,13 +243,18 @@ function SessionSubItem({
           isAwaitingInput: !!session.isAwaitingInput,
           isStreaming,
         }}
+        onOpenChange={setMenuOpen}
       >
         <SidebarMenuSubButton
           asChild
           isActive={isSelected}
+          // The 3-dot is a sibling painted over the row (the row must stay a
+          // single <a>), so pointing at it un-hovers the row itself and its
+          // background would drop out; the wrapper holds the wash instead.
+          className="group-hover/session-row:bg-sidebar-accent group-hover/session-row:text-sidebar-accent-foreground"
         >
           <AppLink
-            ref={hintRef}
+            ref={setRowRef}
             to="/agents/$slug/sessions/$sessionId"
             params={{ slug: agentSlug, sessionId: session.id }}
             className="flex items-center gap-2 w-full"
@@ -248,7 +270,15 @@ function SessionSubItem({
             {hint !== null ? (
               <CmdHintBadge hint={hint} />
             ) : (
-              <span className="flex items-center justify-center gap-1 min-w-4 shrink-0">
+              // Yields the slot to the 3-dot button on hover (and for as long
+              // as the menu it opened stays open).
+              <span
+                className={cn(
+                  'flex items-center justify-center gap-1 min-w-4 shrink-0 transition-opacity',
+                  'group-hover/session-row:opacity-0',
+                  menuOpen && 'opacity-0'
+                )}
+              >
                 {showPendingWake && (
                   <span
                     className="flex items-center"
@@ -272,6 +302,35 @@ function SessionSubItem({
           </AppLink>
         </SidebarMenuSubButton>
       </SessionContextMenu>
+      {/*
+        Sibling of the row link (never nested inside it), sitting over the
+        indicator slot the row just faded out. Hidden while the cmd-hint
+        overlay owns that slot.
+      */}
+      {hint === null && (
+        <SessionMenuButton
+          triggerRef={rowRef}
+          sessionName={session.name}
+          menuOpen={menuOpen}
+          title="Session options"
+          // Spill to the right: a dropdown here would cover the rows below.
+          anchor="beside"
+          data-testid={`session-menu-button-${session.id}`}
+          iconClassName="h-3.5 w-3.5"
+          className={cn(
+            // right-1.5 + w-5 centers the icon on the min-w-4 indicator slot
+            // (the sub-button pads px-2), so the swap doesn't shift the row.
+            'absolute right-1.5 top-1/2 -translate-y-1/2 h-5 w-5 rounded-md',
+            'text-muted-foreground/60 opacity-0 transition-[opacity,background-color,color]',
+            // One step darker than the row wash it sits on; translucent so
+            // dark mode gets the same one-step contrast as a lighter chip.
+            'hover:bg-sidebar-foreground/10 hover:text-sidebar-foreground',
+            'group-hover/session-row:opacity-100 focus-visible:opacity-100',
+            'focus-visible:ring-2 focus-visible:ring-sidebar-ring outline-none',
+            menuOpen && 'opacity-100 text-sidebar-foreground'
+          )}
+        />
+      )}
     </SidebarMenuSubItem>
   )
 }
