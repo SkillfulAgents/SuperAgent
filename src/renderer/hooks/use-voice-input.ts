@@ -2,12 +2,120 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
-import { acquireMicStream, createSttAdapter, startAudioCapture, type SttAdapter, type VoiceProvider, type AudioCaptureHandle } from '@renderer/lib/stt'
+import { acquireMicStream, createSttAdapter, startAudioCapture, type SttAdapter, type VoiceProvider, type AudioCaptureHandle, type CaptureKind } from '@renderer/lib/stt'
+import { addRendererBreadcrumb, captureRendererException, captureRendererMessage } from '@renderer/lib/error-reporting'
 import type { TtsVoiceInfo } from '@shared/lib/voice/tts-preferences'
 
 // 'finalizing': mic released, but we're flushing buffered audio and awaiting the
 // server's trailing transcripts before the final text is ready.
 export type VoiceInputState = 'idle' | 'connecting' | 'recording' | 'finalizing'
+
+/**
+ * One dictation attempt, from credentials to final text, as the error reports
+ * describe it. Dictation audio goes from the browser straight to the speech
+ * provider, so nothing server-side sees a session that fails on that leg; the
+ * renderer has to report it.
+ */
+interface DictationSession {
+  provider: VoiceProvider
+  /** Ordinal of this attempt within the page, so retries can be told apart. */
+  attempt: number
+  startedAt: number
+  adapter: SttAdapter
+  captureKind?: CaptureKind
+  contextSampleRate?: number
+  track?: Record<string, unknown>
+  /** An error has already been shown and reported for this session. */
+  failed: boolean
+}
+
+/**
+ * Audio a session must have captured before ending with no words counts as a
+ * failure worth reporting, rather than a mic tap the person changed their mind
+ * about. In seconds of PCM at the adapter's rate.
+ */
+const NO_TRANSCRIPT_REPORT_MIN_SECONDS = 1.5
+
+/**
+ * A peak sample at or below this (about -36 dBFS) means the mic delivered
+ * silence: the person did not speak, or the OS handed us a muted device.
+ */
+const SILENT_PEAK_SAMPLE = 500
+
+/** Denied or missing mic permission is the person's choice, not a defect. */
+function isMicPermissionRefusal(err: unknown): boolean {
+  return err instanceof DOMException && (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError' || err.name === 'SecurityError')
+}
+
+function describeTrack(stream: MediaStream): Record<string, unknown> {
+  const track = stream.getAudioTracks()[0]
+  if (!track) return { present: false }
+  const settings = typeof track.getSettings === 'function' ? track.getSettings() : {}
+  return {
+    present: true,
+    label: track.label,
+    enabled: track.enabled,
+    muted: track.muted,
+    readyState: track.readyState,
+    sampleRate: settings.sampleRate,
+    channelCount: settings.channelCount,
+  }
+}
+
+function describeSession(session: DictationSession): Record<string, unknown> {
+  return {
+    provider: session.provider,
+    attempt: session.attempt,
+    durationMs: Date.now() - session.startedAt,
+    captureKind: session.captureKind,
+    contextSampleRate: session.contextSampleRate,
+    adapterSampleRate: session.adapter.sampleRate ?? 16000,
+    track: session.track,
+    ...session.adapter.stats,
+  }
+}
+
+function reportSessionFailure(session: DictationSession | null, provider: VoiceProvider | undefined, stage: string, err: unknown): void {
+  if (session) session.failed = true
+  if (isMicPermissionRefusal(err)) {
+    addRendererBreadcrumb('dictation', 'microphone permission refused', { stage })
+    return
+  }
+  captureRendererException(err, {
+    tags: { feature: 'dictation', stage, provider: session?.provider ?? provider ?? 'unknown' },
+    extra: session ? describeSession(session) : undefined,
+  })
+}
+
+/**
+ * The session ended with audio captured but no words back, and no error was
+ * shown: the case that otherwise leaves no trace anywhere. Tagged so a socket
+ * that never opened, silence from the mic, and a server that stayed quiet can
+ * each be told apart in the tracker.
+ */
+function reportNoTranscript(session: DictationSession): void {
+  const stats = session.adapter.stats
+  if (!stats) return
+  const minBytes = (session.adapter.sampleRate ?? 16000) * 2 * NO_TRANSCRIPT_REPORT_MIN_SECONDS
+  if (stats.bytesReceived < minBytes) return
+  // The attempt number is in the message on purpose: Sentry drops an event
+  // identical to the previous one, and a person who retries three times in a
+  // row is exactly who we need every attempt from. The fingerprint keeps them
+  // in one issue.
+  captureRendererMessage(`Dictation ended without a transcript (attempt ${session.attempt})`, {
+    fingerprint: ['dictation', 'no-transcript'],
+    level: 'warning',
+    tags: {
+      feature: 'dictation',
+      stage: 'no_transcript',
+      provider: session.provider,
+      socket: stats.socketOpened ? 'opened' : 'never_opened',
+      audio: stats.peakSample > SILENT_PEAK_SAMPLE ? 'audible' : 'silent',
+      capture: session.captureKind ?? 'unknown',
+    },
+    extra: describeSession(session),
+  })
+}
 
 interface UseVoiceInputOptions {
   onTranscriptUpdate: (text: string) => void
@@ -102,6 +210,10 @@ export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {
   // the component unmounts can detect it's stale and release what it acquired
   // instead of resurrecting a session nobody owns.
   const generationRef = useRef(0)
+  // The attempt in progress, as the error reports describe it.
+  const sessionRef = useRef<DictationSession | null>(null)
+  // Attempts started on this page, numbering each report.
+  const attemptsRef = useRef(0)
 
   // Keep stateRef in sync so callbacks always see the latest value
   stateRef.current = state
@@ -123,6 +235,7 @@ export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {
 
     adapterRef.current?.close()
     adapterRef.current = null
+    sessionRef.current = null
   }, [])
 
   /**
@@ -146,6 +259,8 @@ export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {
     // guard on adapter identity) treat this session as already gone.
     const adapter = adapterRef.current
     adapterRef.current = null
+    const session = sessionRef.current
+    sessionRef.current = null
     await adapter?.finish().catch(() => {}) // finish() never rejects; guard anyway
 
     // Include both finalized and any pending interim text
@@ -156,6 +271,10 @@ export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {
     finalizedRef.current = ''
     interimRef.current = ''
     const transcribed = (finalized + (interim ? (finalized ? ' ' : '') + interim : '')).trimEnd()
+    if (session) {
+      addRendererBreadcrumb('dictation', 'stopped', { transcribedChars: transcribed.length, ...describeSession(session) })
+      if (!transcribed && !session.failed) reportNoTranscript(session)
+    }
     // If nothing was transcribed, restore original text (prefix without trailing space)
     const finalText = transcribed
       ? prefix + transcribed
@@ -199,6 +318,7 @@ export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {
       }).catch(() => {})
     }
 
+    let provider: VoiceProvider | undefined
     try {
       // 1. Get API key from backend
       const credRes = await apiFetch('/api/voice/token')
@@ -206,7 +326,10 @@ export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {
       if (!credRes.ok) {
         throw new Error(('error' in credData ? credData.error : null) || 'Failed to get STT credentials')
       }
-      const { provider, token } = credData as SttCredentials
+      const credentials = credData as SttCredentials
+      provider = credentials.provider
+      const token = credentials.token
+      addRendererBreadcrumb('dictation', 'credentials received', { provider })
 
       // Bail if a stop/restart or unmount happened while fetching the token.
       // Cast needed because TS narrows the ref, but callbacks can mutate it during awaits.
@@ -218,6 +341,8 @@ export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {
       // 2. Create adapter and wire transcript events
       const adapter = createSttAdapter(provider)
       adapterRef.current = adapter
+      const session: DictationSession = { provider, attempt: ++attemptsRef.current, startedAt: Date.now(), adapter, failed: false }
+      sessionRef.current = session
 
       adapter.onTranscript((event) => {
         switch (event.type) {
@@ -238,6 +363,7 @@ export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {
       adapter.onError((err) => {
         if (adapterRef.current !== adapter) return // stale/orphaned adapter — don't touch the live session
         console.error('STT adapter error:', err)
+        reportSessionFailure(session, provider, 'stream', err)
         setError(err.message)
         stopRecording()
       })
@@ -248,6 +374,7 @@ export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {
         if (adapterRef.current !== adapter) return // recording already stopped
         const message = err instanceof Error ? err.message : 'Failed to connect'
         console.error('STT connect error:', err)
+        reportSessionFailure(session, provider, 'connect', err)
         setError(message)
         stopRecording()
       })
@@ -260,16 +387,27 @@ export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {
         capture.cleanup()
         adapter.close()
         if (adapterRef.current === adapter) adapterRef.current = null
+        if (sessionRef.current === session) sessionRef.current = null
         releaseStream()
         return
       }
       captureRef.current = capture
       analyserRef.current = capture.analyser
+      session.captureKind = capture.captureKind
+      session.contextSampleRate = capture.audioContext.sampleRate
+      session.track = describeTrack(capture.stream)
+      addRendererBreadcrumb('dictation', 'capture started', {
+        provider,
+        captureKind: session.captureKind,
+        contextSampleRate: session.contextSampleRate,
+        track: session.track,
+      })
 
       setState('recording')
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to start recording'
       console.error('Voice input error:', err)
+      reportSessionFailure(sessionRef.current, provider, sessionRef.current ? 'capture' : 'credentials', err)
       setError(message)
       releaseStream()
       cleanup()
