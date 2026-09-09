@@ -4,6 +4,7 @@ import { getDataDir } from '@shared/lib/config/data-dir'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { getOrCreateMapping } from './context-map-store'
+import { GooglePasskeyRecovery } from './google-passkey-recovery'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo, BrowserDebugInfo } from './types'
 
 const CONTEXTS_FILE = 'platform-browserbase-contexts.json'
@@ -31,6 +32,7 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
 
   /** Maps instanceId → Browserbase session ID (proxied through platform) */
   private sessions: Map<string, string> = new Map()
+  private passkeyRecovery = new GooglePasskeyRecovery()
 
   onExternalClose: ((instanceId: string) => void) | null = null
 
@@ -69,12 +71,14 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
           const debugUrl = await this.getDebugBrowserUrl(existingSessionId, token)
           if (debugUrl) {
             console.log(`[PlatformBrowserProvider] Reusing session ${existingSessionId} for instance ${instanceId}`)
+            this.passkeyRecovery.watch(instanceId, debugUrl)
             return { cdpUrl: debugUrl }
           }
         }
       } catch {
         // Session no longer valid
       }
+      this.passkeyRecovery.stop(instanceId)
       this.sessions.delete(instanceId)
     }
 
@@ -125,6 +129,7 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
 
     const debugUrl = await this.getDebugBrowserUrl(session.id, token)
     if (debugUrl) {
+      this.passkeyRecovery.watch(instanceId, debugUrl)
       return { cdpUrl: debugUrl }
     }
 
@@ -160,6 +165,7 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
   }
 
   async stop(instanceId: string): Promise<void> {
+    this.passkeyRecovery.stop(instanceId)
     const sessionId = this.sessions.get(instanceId)
     if (!sessionId) return
 
