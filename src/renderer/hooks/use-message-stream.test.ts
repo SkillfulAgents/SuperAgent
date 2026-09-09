@@ -2755,6 +2755,41 @@ describe('useMessageStream', () => {
   // Background Bash task events
   // ============================================================================
 
+  it('background_task_updated replaces the row a snapshot-listed task already has', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'background_task_started',
+        taskId: 'bg-1',
+        startedAt: 1000,
+        fromSnapshot: true,
+        label: { title: 'Background command', detail: 'Sleep' },
+      })
+    })
+    expect(result.current.backgroundTasks).toHaveLength(1)
+    expect(result.current.backgroundTasks[0]).toMatchObject({ taskId: 'bg-1', fromSnapshot: true })
+
+    // The registration a frame later: same id, no longer snapshot-only.
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'background_task_updated',
+        taskId: 'bg-1',
+        startedAt: 1001,
+      })
+    })
+    expect(result.current.backgroundTasks).toHaveLength(1)
+    expect(result.current.backgroundTasks[0]).toMatchObject({ taskId: 'bg-1', startedAt: 1001 })
+    expect(result.current.backgroundTasks[0].fromSnapshot).toBeUndefined()
+  })
+
   it('tracks background tasks from SSE events', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(

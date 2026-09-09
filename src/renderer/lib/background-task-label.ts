@@ -14,6 +14,8 @@ export interface BackgroundTaskRef {
   isSubagent?: boolean
   /** Launched by a subagent: the launching call is not in this transcript. */
   launchedBySubagent?: boolean
+  /** Listed from the runtime snapshot alone; no launching call was seen at all. */
+  fromSnapshot?: boolean
   /** The name the host attached when the transcript cannot supply one. */
   label?: BackgroundTaskLabel
 }

@@ -7870,6 +7870,125 @@ describe('MessagePersister', () => {
     })
 
     // ------------------------------------------------------------------
+    // Tasks the runtime snapshot lists that nothing registered. They already
+    // count toward open background work (union gate), so they have to be
+    // listed and stoppable too — otherwise a missed launch pins the session
+    // with an empty task list and Stop has nothing to offer.
+    describe('tasks known only from the runtime snapshot', () => {
+      function snapshot(tasks: Array<{ task_id: string; task_type?: string; description?: string }>) {
+        mockClient._sendMessage({ type: 'system', subtype: 'background_tasks_changed', tasks })
+      }
+
+      it('lists an unregistered task as a row named from the snapshot', () => {
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        sseEvents.length = 0
+        snapshot([{ task_id: 'unseen-1', task_type: 'local_bash', description: 'Warm the cache' }])
+
+        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toEqual([
+          expect.objectContaining({
+            taskId: 'unseen-1',
+            fromSnapshot: true,
+            label: { title: 'Background command', detail: 'Warm the cache' },
+          }),
+        ])
+        const started = sseEvents.filter(e => e.type === 'background_task_started')
+        expect(started).toHaveLength(1)
+        expect(started[0]).toMatchObject({ taskId: 'unseen-1', fromSnapshot: true, label: { title: 'Background command', detail: 'Warm the cache' } })
+      })
+
+      it('names agents and workflows by their task type', () => {
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        snapshot([
+          { task_id: 'a1', task_type: 'local_agent' },
+          { task_id: 'w1', task_type: 'local_workflow', description: 'Deep research' },
+          { task_id: 'x1' },
+        ])
+        const rows = messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)
+        expect(rows.find(r => r.taskId === 'a1')).toMatchObject({ label: { title: 'Background agent', detail: null } })
+        expect(rows.find(r => r.taskId === 'w1')).toMatchObject({ isWorkflow: true, label: { title: 'Background workflow', detail: 'Deep research' } })
+        expect(rows.find(r => r.taskId === 'x1')).toMatchObject({ label: { title: 'Background task', detail: null } })
+      })
+
+      it('does not double-list a task the snapshot announces before its registration', () => {
+        // The normal main-stream order: snapshot first, tool result a frame later.
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        snapshot([{ task_id: 'bg-1', task_type: 'local_bash', description: 'Sleep' }])
+        sseEvents.length = 0
+        mockClient._sendMessage({
+          type: 'user',
+          tool_use_result: { backgroundTaskId: 'bg-1' },
+          message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running' }] },
+        })
+
+        const rows = messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)
+        expect(rows.map(r => r.taskId)).toEqual(['bg-1'])
+        expect(rows[0].fromSnapshot).toBeUndefined()
+        // The snapshot's row already started the task on the wire; the
+        // registration only updates it (clients replace the row by id), so
+        // every task still starts once and completes once.
+        expect(sseEvents.filter(e => e.type === 'background_task_started')).toHaveLength(0)
+        const updated = sseEvents.filter(e => e.type === 'background_task_updated')
+        expect(updated).toHaveLength(1)
+        expect(updated[0]).toMatchObject({ taskId: 'bg-1' })
+        expect(updated[0].fromSnapshot).toBeUndefined()
+        expect(sseEvents.filter(e => e.type === 'background_task_completed')).toHaveLength(0)
+
+        // A later snapshot with the same membership changes nothing.
+        sseEvents.length = 0
+        snapshot([{ task_id: 'bg-1', task_type: 'local_bash', description: 'Sleep' }])
+        expect(sseEvents).toHaveLength(0)
+        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toHaveLength(1)
+      })
+
+      it('retires the row when the snapshot drops the task', () => {
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        snapshot([{ task_id: 'unseen-1', task_type: 'local_bash' }])
+        sseEvents.length = 0
+        snapshot([])
+        expect(sseEvents.filter(e => e.type === 'background_task_completed').map(e => e.taskId)).toEqual(['unseen-1'])
+        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toEqual([])
+      })
+
+      it('retires the row on its terminal signal, and the session then settles', () => {
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        snapshot([{ task_id: 'unseen-1', task_type: 'local_bash', description: 'Warm the cache' }])
+        mockClient._sendMessage({ type: 'result', subtype: 'success' })
+        mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+        expect(messagePersister.isSessionWaitingBackground(AGENT_SLUG, SESSION_ID)).toBe(true)
+        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID).map(t => t.taskId)).toEqual(['unseen-1'])
+
+        // The per-task stop route's answer: a stopped notification, no wake.
+        sseEvents.length = 0
+        vi.useFakeTimers()
+        try {
+          mockClient._sendMessage({
+            type: 'system', subtype: 'task_notification', task_id: 'unseen-1', tool_use_id: 'tool-x', status: 'stopped',
+          })
+          expect(sseEvents.filter(e => e.type === 'background_task_completed').map(e => e.taskId)).toEqual(['unseen-1'])
+          expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toEqual([])
+          vi.advanceTimersByTime(1600)
+        } finally {
+          vi.useRealTimers()
+        }
+        expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+      })
+
+      it('drops the rows with the process', async () => {
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        snapshot([{ task_id: 'unseen-1', task_type: 'local_bash' }])
+        sseEvents.length = 0
+        mockClient._sendMessage({ type: 'system', subtype: 'process_restarted', process_instance: 'p2' })
+        expect(sseEvents.filter(e => e.type === 'background_task_completed').map(e => e.taskId)).toEqual(['unseen-1'])
+        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toEqual([])
+
+        snapshot([{ task_id: 'unseen-2', task_type: 'local_bash' }])
+        await messagePersister.markSessionInterrupted(AGENT_SLUG, SESSION_ID, { processKept: false })
+        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toEqual([])
+        expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+      })
+    })
+
+    // ------------------------------------------------------------------
     // The level set must drain from BOTH directions. `background_tasks_changed`
     // is a level signal the SDK only re-emits on a membership CHANGE, and it
     // emits nothing at all when a fresh CLI process starts. So any id that

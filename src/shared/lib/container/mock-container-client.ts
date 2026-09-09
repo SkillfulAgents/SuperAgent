@@ -1924,6 +1924,149 @@ export class SubagentBackgroundBashScenario implements MockScenario {
 }
 
 /**
+ * A background task whose launch the host never sees: only the runtime's
+ * background_tasks_changed snapshot names it (a lost frame, a launcher shape
+ * this host does not know). It still keeps the session from settling, so it
+ * has to be listed — from the snapshot's description — and stoppable.
+ */
+export class UnseenBackgroundTaskScenario implements MockScenario {
+  static readonly DESCRIPTION = 'Warm the render cache'
+
+  constructor(
+    private delayMs: number = 6000,
+    private commandOutput: string = 'cache warm',
+  ) {}
+
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    const bgTaskId = `bg_${Date.now().toString(36)}`
+    const runtime = client.unguarded
+    const leadText = 'Started a background job.'
+
+    client.writeJsonlEntry(sessionId, {
+      type: 'user',
+      message: { content: userMessage },
+      timestamp: new Date().toISOString(),
+    })
+
+    let delay = 10
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_start' } },
+      })
+    }, delay)
+    delay += 20
+
+    // The snapshot is all the host gets about this task.
+    setTimeout(() => {
+      client.registerBackgroundTask(sessionId, bgTaskId)
+      client.emitStreamMessage(sessionId, {
+        type: 'system',
+        content: {
+          type: 'system',
+          subtype: 'background_tasks_changed',
+          tasks: [{ task_id: bgTaskId, task_type: 'local_bash', description: UnseenBackgroundTaskScenario.DESCRIPTION }],
+          session_id: sessionId,
+        },
+      })
+    }, delay)
+    delay += 20
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'text' } } },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: leadText } } },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_stop' } },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_stop' } },
+      })
+    }, delay)
+    delay += 20
+
+    const firstResultDelay = delay
+    setTimeout(() => {
+      client.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: leadText }] },
+        timestamp: new Date().toISOString(),
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'result',
+        content: { type: 'result', subtype: 'success' },
+      })
+    }, firstResultDelay)
+
+    setTimeout(() => {
+      if (!runtime.isBackgroundTaskRunning(sessionId, bgTaskId)) return
+      runtime.completeBackgroundTask(sessionId, bgTaskId)
+      runtime.emitStreamMessage(sessionId, {
+        type: 'system',
+        content: {
+          type: 'system',
+          subtype: 'task_notification',
+          task_id: bgTaskId,
+          tool_use_id: 'unseen',
+          status: 'completed',
+          summary: 'Command completed',
+          session_id: sessionId,
+        },
+      })
+      runtime.emitStreamMessage(sessionId, {
+        type: 'system',
+        content: { type: 'system', subtype: 'background_tasks_changed', tasks: [], session_id: sessionId },
+      })
+
+      const finalText = `Background command completed. Output: ${this.commandOutput}`
+      const finalDelay = 50
+      setTimeout(() => {
+        runtime.emitSessionState(sessionId, 'running')
+        runtime.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'message_start' } },
+        })
+        runtime.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'text' } } },
+        })
+        runtime.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: finalText } } },
+        })
+        runtime.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'content_block_stop' } },
+        })
+        runtime.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'message_stop' } },
+        })
+      }, finalDelay)
+
+      setTimeout(() => {
+        runtime.writeJsonlEntry(sessionId, {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: finalText }] },
+          timestamp: new Date().toISOString(),
+        })
+        runtime.emitStreamMessage(sessionId, {
+          type: 'result',
+          content: { type: 'result', subtype: 'success' },
+        })
+      }, finalDelay + 50)
+    }, firstResultDelay + this.delayMs)
+  }
+}
+
+/**
  * Mock implementation of ContainerClient for E2E testing.
  * Simulates container behavior without requiring Docker/Podman.
  */
@@ -2008,6 +2151,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     // A task launched by a subagent (sidechain), still running after the turn.
     // Listed before the plain keyword it contains — first match wins.
     ['run background from a subagent', new SubagentBackgroundBashScenario(6000, 'nested done')],
+    // A task only the runtime snapshot names (its launch never reached the host).
+    ['run background unseen', new UnseenBackgroundTaskScenario(6000, 'cache warm')],
     ['run background and keep working', new BackgroundBashScenario(6000, 'done sleeping', 8000)],
     // A task long enough to be stopped deliberately before it completes.
     ['run background slowly', new BackgroundBashScenario(6000, 'done sleeping')],
