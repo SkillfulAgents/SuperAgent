@@ -47,6 +47,11 @@ const mockBroadcastSessionUpdate = vi.fn()
 
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
+    withSessionSend: async (agentSlug: string, sessionId: string, _client: unknown, send: () => Promise<unknown>) => {
+      mockMarkSessionActive(agentSlug, sessionId)
+      try { return await send() }
+      catch (error) { mockMarkSessionIdle(agentSlug, sessionId); throw error }
+    },
     subscribeToSession: (...args: unknown[]) => mockSubscribeToSession(...args),
     markSessionActive: (...args: unknown[]) => mockMarkSessionActive(...args),
     markSessionIdle: (...args: unknown[]) => mockMarkSessionIdle(...args),

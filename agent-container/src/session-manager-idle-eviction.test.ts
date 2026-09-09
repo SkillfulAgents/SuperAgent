@@ -176,6 +176,43 @@ describe('SessionManager idle eviction', () => {
     expect(mockReleaseBrowserLock).toHaveBeenCalledWith(id)
   })
 
+  it('announces eviction only after the process stops and before a racing send resumes', async () => {
+    const { id, proc } = await createIdleSession()
+    const processInstance = manager.getProcessInstanceId(id)
+    const events: unknown[] = []
+    manager.subscribe(id, (message) => events.push(message))
+    let finishStop!: () => void
+    const stopStarted = vi.spyOn(proc, 'stop').mockImplementation(async () => {
+      await new Promise<void>((resolve) => { finishStop = resolve })
+      proc.running = false
+    })
+    await pastThreshold()
+    const eviction = manager.evictIdleSessions()
+    expect(stopStarted).toHaveBeenCalledOnce()
+    expect(events).toEqual([])
+    const sentBefore = proc.sendMessageCalls
+    const send = manager.sendMessage(id, 'continue the same conversation')
+    expect(proc.sendMessageCalls).toBe(sentBefore)
+    finishStop()
+    await Promise.all([eviction, send])
+    expect(events[0]).toMatchObject({ type: 'system', subtype: 'process_evicted', process_instance: processInstance })
+    expect(proc.sendMessageCalls).toBe(sentBefore + 1)
+    expect(proc.sentContents.at(-1)).toBe('continue the same conversation')
+    expect(manager.hasActiveSession(id)).toBe(true)
+    stopStarted.mockRestore()
+  })
+
+  it('does not announce eviction if stopping fails', async () => {
+    const { id, proc } = await createIdleSession()
+    const events: unknown[] = []
+    manager.subscribe(id, (message) => events.push(message))
+    vi.spyOn(proc, 'stop').mockRejectedValueOnce(new Error('stop failed'))
+    await pastThreshold()
+    await manager.evictIdleSessions()
+    expect(events).toEqual([])
+    expect(proc.isRunning()).toBe(true)
+  })
+
   it('does not evict a session that is still busy', async () => {
     const { proc } = await createIdleSession()
     proc.emit('message', { type: 'system', subtype: 'session_state_changed', state: 'running' })

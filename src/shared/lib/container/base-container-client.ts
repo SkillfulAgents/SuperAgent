@@ -278,6 +278,7 @@ const interruptResponseSchema = z.object({
 export abstract class BaseContainerClient extends EventEmitter implements ContainerClient {
   protected config: ContainerConfig
   private wsConnections: Map<string, WebSocket> = new Map()
+  private wsReadyRejectors = new WeakMap<WebSocket, (error: Error) => void>()
 
   /** Whether this runner is eligible on the current platform. Override for platform-specific runners. */
   static isEligible(): boolean {
@@ -949,7 +950,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
   protected terminateWebSocketConnections(): void {
     for (const ws of this.wsConnections.values()) {
+      this.wsReadyRejectors.get(ws)?.(new Error('Session stream stopped before initialization'))
       ws.removeAllListeners()
+      ws.on('error', () => {})
       try {
         ws.terminate()
       } catch {
@@ -1571,6 +1574,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   private closeTrackedWebSocket(sessionId: string): void {
     const ws = this.wsConnections.get(sessionId)
     if (!ws) return
+    this.wsReadyRejectors.get(ws)?.(new Error('Session stream closed before initialization'))
     ws.removeAllListeners()
     // close() on CONNECTING emits 'error'; zero listeners is an uncaughtException.
     ws.on('error', () => {})
@@ -1584,13 +1588,22 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   ): { unsubscribe: () => void; ready: Promise<void> } {
     let resolveReady: () => void
     let rejectReady: (error: Error) => void
+    let socket: WebSocket | undefined
+    let cancelled = false
     const ready = new Promise<void>((resolve, reject) => {
-      resolveReady = resolve
-      rejectReady = reject
+      resolveReady = () => {
+        if (socket) this.wsReadyRejectors.delete(socket)
+        resolve()
+      }
+      rejectReady = (error) => {
+        if (socket) this.wsReadyRejectors.delete(socket)
+        reject(error)
+      }
     })
 
     const setupWebSocket = async () => {
       const port = await this.getPortOrThrow()
+      if (cancelled) return
 
       if (this.wsConnections.has(sessionId)) {
         this.closeTrackedWebSocket(sessionId)
@@ -1601,9 +1614,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         { headers: this.getHostAuthHeaders() }
       )
 
+      socket = ws
+      this.wsReadyRejectors.set(ws, rejectReady)
+
       ws.on('open', () => {
         console.log(`WebSocket connected for session ${sessionId}`)
-        resolveReady()
       })
 
       ws.on('message', (data) => {
@@ -1617,6 +1632,13 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           }
           callback(streamMessage)
           this.emit('message', sessionId, message)
+          // The guest sends this acknowledgement AFTER attaching its listener
+          // and replaying terminal frames. Socket open precedes both: allowing
+          // a send then lets the previous result + idle settle the new turn.
+          // This existing status frame also works with older container images.
+          if (message.type === 'status' && message.data?.message === 'Connected to session stream') {
+            resolveReady()
+          }
         } catch (error) {
           console.error('Failed to parse WebSocket message:', error)
         }
@@ -1639,6 +1661,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       ws.on('close', () => {
         console.log(`WebSocket closed for session ${sessionId}`)
+        rejectReady(new Error('Session stream closed before initialization'))
         this.wsConnections.delete(sessionId)
         // Notify the callback that the connection was lost
         // This allows the message persister to handle the disconnection
@@ -1655,6 +1678,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     }
 
     setupWebSocket().catch((error) => {
+      if (cancelled) return
       console.error('Failed to set up WebSocket:', error)
       this.safeEmitError(error)
       // Notify the callback so the consumer (e.g. MessagePersister) can react to
@@ -1672,7 +1696,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     })
 
     const unsubscribe = () => {
-      this.closeTrackedWebSocket(sessionId)
+      cancelled = true
+      rejectReady(new Error('Session stream unsubscribed before initialization'))
+      if (socket && this.wsConnections.get(sessionId) === socket) {
+        this.closeTrackedWebSocket(sessionId)
+      }
     }
 
     return { unsubscribe, ready }

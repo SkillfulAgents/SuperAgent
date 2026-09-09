@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import type { ContainerClient, StreamMessage } from './types'
+import type { ContainerClient, ContainerInfo, StreamMessage } from './types'
+import { WebSocketServer } from 'ws'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SchedMockFn = (...args: any[]) => any
@@ -967,6 +968,38 @@ describe('MessagePersister', () => {
       expect(mockAppendInformationalEntry).toHaveBeenCalledTimes(1)
       expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
       expect(sseEvents.some((e) => e.type === 'session_idle')).toBe(true)
+    })
+
+    it.each([
+      { isChatIntegrationSession: true },
+      { isScheduledExecution: true },
+      { isWebhookExecution: true },
+      { invokedByAgentSlug: 'caller' },
+    ])('finishes attachment before releasing a missed completed turn (%j)', async (metadata) => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      vi.mocked(getSessionMetadata).mockResolvedValue(metadata as never)
+      const subscribe = vi.mocked(mockClient.subscribeToStream).getMockImplementation()!
+      let finishReplay!: () => void
+      vi.mocked(mockClient.subscribeToStream).mockImplementationOnce((...args) => ({
+        ...subscribe(...args),
+        ready: new Promise<void>(resolve => { finishReplay = resolve }),
+      }))
+      const subscription = messagePersister.subscribeToSession(AGENT_SLUG, SESSION_ID, mockClient, SESSION_ID)
+      try {
+        await new Promise(resolve => setTimeout(resolve, 0))
+        sendCapabilities()
+        mockClient._sendMessage({ type: 'result', subtype: 'success', is_error: false, replayed: true })
+        mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle', replayed: true })
+        expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+        expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(true)
+        finishReplay()
+        await subscription
+        expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(false)
+      } finally {
+        finishReplay()
+        await subscription
+        vi.mocked(getSessionMetadata).mockResolvedValue(null)
+      }
     })
 
     it('ignores replayed frames when the live copies were already processed', () => {
@@ -2547,6 +2580,333 @@ describe('MessagePersister', () => {
   // ============================================================================
   // markSessionIdle (optimistic-active revert)
   // ============================================================================
+
+  describe('withSessionSend', () => {
+    const emitResult = (subtype = 'success') => mockClient._sendMessage({
+      type: 'result', subtype, is_error: subtype !== 'success', num_turns: 1,
+      usage: { input_tokens: 1, output_tokens: 1 },
+    })
+    const emitIdle = () => mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+    const send = (delivery: () => Promise<void>) =>
+      messagePersister.withSessionSend(AGENT_SLUG, SESSION_ID, mockClient, delivery)
+
+    beforeEach(() => {
+      mockClient._sendMessage({ type: 'system', subtype: 'capabilities', session_state_events: true, process_instance: 'process-1' })
+    })
+
+    it.each(['before', 'after'] as const)('preserves an active turn when its final idle arrives %s a follow-up fails', async (timing) => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+      emitResult()
+      await expect(send(async () => {
+        if (timing === 'before') emitIdle()
+        throw new Error('HTTP 429')
+      })).rejects.toThrow('HTTP 429')
+      if (timing === 'after') {
+        expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+        emitIdle()
+      }
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+      expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(1)
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledOnce()
+    })
+
+    it('preserves a newer terminal result received during a failed follow-up', async () => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      emitResult()
+      await expect(send(async () => {
+        emitResult('error_during_execution')
+        emitIdle()
+        throw new Error('send failed')
+      })).rejects.toThrow('send failed')
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+      expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
+      expect(sseEvents.filter(e => e.type === 'session_error')).toHaveLength(1)
+    })
+
+    it('restores background waiting and settles when the last background task is stopped', async () => {
+      vi.useFakeTimers()
+      try {
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        mockClient._sendMessage({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'bg-task' }] })
+        emitResult()
+        emitIdle()
+        await expect(send(async () => { throw new Error('send failed') })).rejects.toThrow('send failed')
+        expect(messagePersister.isSessionWaitingBackground(AGENT_SLUG, SESSION_ID)).toBe(true)
+        mockClient._sendMessage({ type: 'system', subtype: 'task_notification', task_id: 'bg-task', status: 'stopped' })
+        await vi.advanceTimersByTimeAsync(1500)
+        expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('preserves the stopped-task grace when a follow-up fails', async () => {
+      vi.useFakeTimers()
+      try {
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        mockClient._sendMessage({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'bg-task' }] })
+        emitResult()
+        emitIdle()
+        mockClient._sendMessage({ type: 'system', subtype: 'task_notification', task_id: 'bg-task', status: 'stopped' })
+        await expect(send(async () => { throw new Error('send failed') })).rejects.toThrow('send failed')
+        expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+        await vi.advanceTimersByTimeAsync(1500)
+        expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('cleans up a rejected reconnect without activating or sending', async () => {
+      messagePersister.unsubscribeFromSession(AGENT_SLUG, SESSION_ID)
+      const unsubscribe = vi.fn()
+      vi.mocked(mockClient.subscribeToStream).mockReturnValueOnce({
+        unsubscribe, ready: Promise.reject(new Error('reconnect failed')),
+      })
+      const delivery = vi.fn(async () => {})
+      await expect(send(delivery)).rejects.toThrow('reconnect failed')
+      expect(delivery).not.toHaveBeenCalled()
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+      expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(false)
+      expect(unsubscribe).toHaveBeenCalledOnce()
+    })
+
+    it('rolls back an unaccepted fresh send and its provisional recency', async () => {
+      await expect(send(async () => { throw new Error('send failed') })).rejects.toThrow('send failed')
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+      expect(mockRevertSessionActivity).toHaveBeenCalledOnce()
+    })
+
+    it.each(['assistant', 'stream_event'])('does not roll back accepted %s output after a failed HTTP response', async (type) => {
+      await expect(send(async () => {
+        mockClient._sendMessage(type === 'assistant'
+          ? { type, message: { role: 'assistant', content: 'Already running' } }
+          : { type, event: { type: 'message_start', message: { id: 'new-message' } } })
+        throw new Error('response lost')
+      })).rejects.toThrow('response lost')
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+      expect(mockRevertSessionActivity).not.toHaveBeenCalled()
+      emitResult()
+      emitIdle()
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+    })
+
+    it('rolls back overlapping failed deliveries without inheriting provisional activity', async () => {
+      let rejectFirst!: (error: Error) => void
+      const first = send(() => new Promise<void>((_resolve, reject) => { rejectFirst = reject }))
+      const secondDelivery = vi.fn(async () => { throw new Error('second failed') })
+      const second = send(secondDelivery)
+      expect(secondDelivery).not.toHaveBeenCalled()
+      const failures = Promise.all([
+        expect(first).rejects.toThrow('first failed'),
+        expect(second).rejects.toThrow('second failed'),
+      ])
+      rejectFirst(new Error('first failed'))
+      await failures
+      expect(secondDelivery).toHaveBeenCalledOnce()
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+      expect(mockRevertSessionActivity).toHaveBeenCalledTimes(2)
+    })
+
+    it('leaves a turn owned by recovery active when delivery fails', async () => {
+      await expect(send(async () => {
+        messagePersister.snapshotMidTurnSessions(AGENT_SLUG)
+        throw new Error('connection lost during recovery')
+      })).rejects.toThrow('connection lost during recovery')
+      expect(messagePersister.isSessionRecovering(AGENT_SLUG, SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+      expect(mockRevertSessionActivity).not.toHaveBeenCalled()
+    })
+
+    it('does not roll back a newer send when an older delivery fails', async () => {
+      await expect(send(async () => {
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        throw new Error('older send failed')
+      })).rejects.toThrow('older send failed')
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+      expect(mockRevertSessionActivity).not.toHaveBeenCalled()
+    })
+
+    it.each([
+      { isScheduledExecution: true },
+      { isWebhookExecution: true },
+      { isChatIntegrationSession: true },
+      { invokedByAgentSlug: 'caller' },
+    ])('releases an unpromoted automation only after delivery and settlement (%j)', async (metadata) => {
+      vi.mocked(getSessionMetadata).mockResolvedValue(metadata as never)
+      try {
+        await messagePersister.subscribeToSession(AGENT_SLUG, SESSION_ID, mockClient, SESSION_ID)
+        await send(async () => {
+          emitResult()
+          emitIdle()
+          expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(true)
+        })
+        expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+        expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(false)
+      } finally {
+        vi.mocked(getSessionMetadata).mockResolvedValue(null)
+      }
+    })
+
+    it('remembers eviction during a failed send and releases its idle transport', async () => {
+      vi.mocked(getSessionMetadata).mockResolvedValue({ isChatIntegrationSession: true } as never)
+      try {
+        await messagePersister.subscribeToSession(AGENT_SLUG, SESSION_ID, mockClient, SESSION_ID)
+        await expect(send(async () => {
+          mockClient._sendMessage({ type: 'system', subtype: 'process_evicted', process_instance: 'process-1' })
+          expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(true)
+          throw new Error('send failed')
+        })).rejects.toThrow('send failed')
+        expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(false)
+      } finally {
+        vi.mocked(getSessionMetadata).mockResolvedValue(null)
+      }
+    })
+
+    it.each([
+      { isChatIntegrationSession: true },
+      { isScheduledExecution: true },
+      { isWebhookExecution: true },
+      { invokedByAgentSlug: 'caller' },
+    ])('keeps the new reply subscribed when terminal replay arrives after WebSocket open (%j)', async (metadata) => {
+      // Exercise the real client's readiness contract: the server opens the
+      // socket and sends capabilities, then delays its replay and acknowledgement.
+      const { BaseContainerClient } = await import('./base-container-client')
+      const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+      await new Promise<void>(resolve => server.once('listening', resolve))
+      const address = server.address() as { port: number }
+      class ReplayClient extends BaseContainerClient {
+        protected getRunnerCommand() { return 'docker' }
+        async getInfoFromRuntime(): Promise<ContainerInfo> {
+          return { status: 'running', port: address.port }
+        }
+        getHostAuthHeaders() { return {} }
+      }
+      const client = new ReplayClient({ agentId: AGENT_SLUG })
+      const socketConnected = new Promise<import('ws').WebSocket>(resolve => {
+        server.once('connection', socket => {
+          socket.send(JSON.stringify({ type: 'system', subtype: 'capabilities', session_state_events: true, process_instance: 'process-1' }))
+          resolve(socket)
+        })
+      })
+      const capabilitiesReceived = new Promise<void>(resolve => client.once('message', () => resolve()))
+      let acceptDelivery!: () => void
+      const deliveryAccepted = new Promise<void>(resolve => { acceptDelivery = resolve })
+      let sendStarted!: () => void
+      const deliveryStarted = new Promise<void>(resolve => { sendStarted = resolve })
+      let pendingSend: Promise<void> | undefined
+      vi.mocked(getSessionMetadata).mockResolvedValue(metadata as never)
+      try {
+        await messagePersister.subscribeToSession(AGENT_SLUG, SESSION_ID, mockClient, SESSION_ID)
+        await send(async () => { emitResult(); emitIdle() })
+        expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(false)
+        const idleEventsBefore = sseEvents.filter(e => e.type === 'session_idle').length
+        pendingSend = messagePersister.withSessionSend(AGENT_SLUG, SESSION_ID, client, async () => {
+          sendStarted()
+          await deliveryAccepted
+        })
+        const socket = await socketConnected
+        await capabilitiesReceived
+        const replayReceived = new Promise<void>(resolve => {
+          const onMessage = (_id: string, message: { type: string }) => {
+            if (message.type === 'status') {
+              client.off('message', onMessage)
+              resolve()
+            }
+          }
+          client.on('message', onMessage)
+        })
+        socket.send(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, replayed: true }))
+        socket.send(JSON.stringify({ type: 'system', subtype: 'session_state_changed', state: 'idle', replayed: true }))
+        socket.send(JSON.stringify({ type: 'status', data: { message: 'Connected to session stream' } }))
+        await replayReceived
+        await deliveryStarted
+        acceptDelivery()
+        await pendingSend
+        expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(true)
+        expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+        expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(idleEventsBefore)
+
+        const replyReceived = new Promise<void>(resolve => {
+          const onMessage = (_id: string, message: { state?: string }) => {
+            if (message.state === 'idle') {
+              client.off('message', onMessage)
+              resolve()
+            }
+          }
+          client.on('message', onMessage)
+        })
+        socket.send(JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: 'The new reply' } }))
+        socket.send(JSON.stringify({ type: 'result', subtype: 'success', is_error: false }))
+        socket.send(JSON.stringify({ type: 'system', subtype: 'session_state_changed', state: 'idle' }))
+        await replyReceived
+        expect(notificationManager.triggerSessionComplete).toHaveBeenLastCalledWith(SESSION_ID, AGENT_SLUG,
+          expect.objectContaining({ responseText: 'The new reply' }))
+        expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(false)
+      } finally {
+        acceptDelivery()
+        messagePersister.unsubscribeFromSession(AGENT_SLUG, SESSION_ID)
+        await pendingSend?.catch(() => {})
+        for (const socket of server.clients) socket.terminate()
+        await new Promise<void>(resolve => server.close(() => resolve()))
+        vi.mocked(getSessionMetadata).mockResolvedValue(null)
+      }
+    })
+
+    it.each(['explicit', 'automatic'])('waits for an %s attachment already in progress before sending', async (mode) => {
+      const subscribe = vi.mocked(mockClient.subscribeToStream).getMockImplementation()!
+      let finishReplay!: () => void
+      vi.mocked(mockClient.subscribeToStream).mockImplementationOnce((...args) => ({
+        ...subscribe(...args),
+        ready: new Promise<void>(resolve => { finishReplay = resolve }),
+      }))
+      let subscription: Promise<void> | undefined
+      if (mode === 'explicit') {
+        subscription = messagePersister.subscribeToSession(AGENT_SLUG, SESSION_ID, mockClient, SESSION_ID)
+      } else {
+        vi.mocked(mockClient.getSession).mockResolvedValueOnce({ isRunning: true } as never)
+        mockClient._sendMessage({ type: 'connection_closed' })
+        await new Promise(resolve => setTimeout(resolve, 0))
+      }
+      const delivery = vi.fn(async () => {})
+      const pendingSend = send(delivery)
+      try {
+        await new Promise(resolve => setTimeout(resolve, 0))
+        expect(delivery).not.toHaveBeenCalled()
+      } finally {
+        finishReplay()
+        await Promise.all([subscription, pendingSend])
+      }
+      expect(delivery).toHaveBeenCalledOnce()
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+    })
+
+    it('reconnects before activating a new turn and ignores the previous terminal replay', async () => {
+      vi.mocked(getSessionMetadata).mockResolvedValue({ isChatIntegrationSession: true } as never)
+      try {
+        await messagePersister.subscribeToSession(AGENT_SLUG, SESSION_ID, mockClient, SESSION_ID)
+        await send(async () => { emitResult(); emitIdle() })
+        expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(false)
+        const subscribe = vi.mocked(mockClient.subscribeToStream).getMockImplementation()!
+        vi.mocked(mockClient.subscribeToStream).mockImplementationOnce((...args) => {
+          const subscription = subscribe(...args)
+          return { ...subscription, ready: Promise.resolve().then(() => {
+            mockClient._sendMessage({ type: 'result', subtype: 'success', is_error: false, replayed: true })
+            mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle', replayed: true })
+          }) }
+        })
+        const idleEventsBefore = sseEvents.filter(e => e.type === 'session_idle').length
+        await send(async () => {
+          expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(true)
+          expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+          expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(idleEventsBefore)
+        })
+      } finally {
+        vi.mocked(getSessionMetadata).mockResolvedValue(null)
+      }
+    })
+  })
 
   describe('markSessionIdle', () => {
     it('flips an active session back to idle and broadcasts session_idle', () => {
@@ -4744,6 +5104,100 @@ describe('MessagePersister', () => {
       expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(false)
     })
 
+    function announceProcess(processInstance = 'process-1') {
+      mockClient._sendMessage({
+        type: 'system', subtype: 'capabilities', session_state_events: true,
+        process_instance: processInstance,
+      })
+    }
+
+    function evictProcess(processInstance = 'process-1') {
+      mockClient._sendMessage({ type: 'system', subtype: 'process_evicted', process_instance: processInstance })
+    }
+
+    it('releases only a chat transport when its turn settles', async () => {
+      await resubscribeWithMetadata({ isChatIntegrationSession: true })
+      announceProcess()
+      const teardown = vi.spyOn(messagePersister, 'unsubscribeFromSession')
+      const recovery = vi.fn()
+      messagePersister.setUnexpectedDeathCallback(recovery)
+      settleSession()
+      expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(false)
+      expect(teardown).not.toHaveBeenCalled()
+      expect(recovery).not.toHaveBeenCalled()
+      const subscription = vi.mocked(mockClient.subscribeToStream).mock.results.at(-1)!.value
+      expect(subscription.unsubscribe).toHaveBeenCalledTimes(1)
+      teardown.mockRestore()
+      messagePersister.setUnexpectedDeathCallback(null)
+    })
+
+    it.each([null, { isChatIntegrationSession: true, promotedToInteractive: true }])(
+      'retains interactive or promoted streams on eviction (%j)', async (metadata) => {
+        await resubscribeWithMetadata(metadata)
+        announceProcess()
+        settleSession()
+        evictProcess()
+        expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(true)
+      },
+    )
+
+    it('does not detach for an older process or a new turn racing eviction', async () => {
+      await resubscribeWithMetadata({ isChatIntegrationSession: true })
+      announceProcess()
+      evictProcess('older-process')
+      expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(true)
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      evictProcess()
+      expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+    })
+
+    it.each(['isAwaitingInput', 'isRecovering'] as const)('retains a chat transport while %s', async (hold) => {
+      await resubscribeWithMetadata({ isChatIntegrationSession: true })
+      announceProcess()
+      const states = (messagePersister as unknown as {
+        streamingStates: Map<string, { isAwaitingInput: boolean; isRecovering: boolean }>
+      }).streamingStates
+      states.get(sessionKeyOf(AGENT_SLUG, SESSION_ID))![hold] = true
+      evictProcess()
+      expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(true)
+    })
+
+    it('retains a chat transport with background work even if foreground is idle', async () => {
+      await resubscribeWithMetadata({ isChatIntegrationSession: true })
+      announceProcess()
+      mockClient._sendMessage({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'background-task' }] })
+      evictProcess()
+      expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(true)
+    })
+
+    it('retains an evicted chat stream after promotion', async () => {
+      await resubscribeWithMetadata({ isChatIntegrationSession: true })
+      announceProcess()
+      await messagePersister.promoteAutomatedSession(AGENT_SLUG, SESSION_ID)
+      evictProcess()
+      expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(true)
+    })
+
+    it('releases chat transports on repeated settlement and receives output after reconnect', async () => {
+      await resubscribeWithMetadata({ isChatIntegrationSession: true })
+      const events: unknown[] = []
+      const removeListener = messagePersister.addSSEClient(AGENT_SLUG, SESSION_ID, (event) => events.push(event))
+      for (let cycle = 0; cycle < 12; cycle++) {
+        announceProcess(`process-${cycle}`)
+        settleSession()
+        evictProcess(`process-${cycle}`)
+        expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(false)
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        await messagePersister.subscribeToSession(AGENT_SLUG, SESSION_ID, mockClient, SESSION_ID)
+        expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+        expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(true)
+        mockClient._sendMessage({ type: 'system', subtype: 'init', slash_commands: [] })
+        expect(events.at(-1)).toMatchObject({ type: 'stream_start' })
+      }
+      removeListener()
+    })
+
     it('keeps the stream for an interactive session', async () => {
       await resubscribeWithMetadata(null)
 
@@ -4806,6 +5260,41 @@ describe('MessagePersister', () => {
       })
 
       expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+      expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(true)
+    })
+
+    it('releases when automation metadata resolves after the turn already settled', async () => {
+      let resolveMetadata!: (value: never) => void
+      vi.mocked(getSessionMetadata).mockImplementationOnce(() => new Promise(resolve => { resolveMetadata = resolve }))
+      await messagePersister.subscribeToSession(AGENT_SLUG, SESSION_ID, mockClient, SESSION_ID)
+      settleSession()
+      expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(true)
+      resolveMetadata({ invokedByAgentSlug: 'caller' } as never)
+      await vi.waitFor(() => expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(false))
+    })
+
+    it('does not use an older idle as settlement for a newer error result', async () => {
+      settleSession()
+      let resolveMetadata!: (value: never) => void
+      vi.mocked(getSessionMetadata).mockImplementationOnce(() => new Promise(resolve => { resolveMetadata = resolve }))
+      await messagePersister.subscribeToSession(AGENT_SLUG, SESSION_ID, mockClient, SESSION_ID)
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      mockClient._sendMessage({ type: 'result', subtype: 'error_during_execution', is_error: true })
+      resolveMetadata({ isChatIntegrationSession: true } as never)
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(true)
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(false)
+    })
+
+    it.each([
+      { isScheduledExecution: true }, { isWebhookExecution: true },
+      { isChatIntegrationSession: true }, { invokedByAgentSlug: 'caller' },
+    ])('retains every promoted automation category (%j)', async (metadata) => {
+      await resubscribeWithMetadata({ ...metadata, promotedToInteractive: true })
+      announceProcess()
+      settleSession()
+      evictProcess()
       expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(true)
     })
 

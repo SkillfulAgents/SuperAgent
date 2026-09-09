@@ -1099,8 +1099,9 @@ class ChatIntegrationManager {
       })
       if (consumed) return
 
-      await client.sendMessage(sessionId, messageText)
-      messagePersister.markSessionActive(integration.agentSlug, sessionId)
+      await messagePersister.withSessionSend(integration.agentSlug, sessionId, client, () =>
+        client.sendMessage(sessionId, messageText),
+      )
       const now = Date.now()
       const lastTouch = this.lastSessionTouch.get(chatSession.id) ?? 0
       if (now - lastTouch > 60_000) {
@@ -1223,9 +1224,11 @@ class ChatIntegrationManager {
       displayName,
     })
 
-    await messagePersister.subscribeToSession(integration.agentSlug, sessionId, client, sessionId)
+    // createSession already started this turn. Observe it and wire chat delivery
+    // before attaching, so even a fast turn's replay is consumed and forwarded.
     messagePersister.markSessionActive(integration.agentSlug, sessionId)
     this.subscribeChatSession(integration.id, chatId, sessionId)
+    await messagePersister.subscribeToSession(integration.agentSlug, sessionId, client, sessionId)
   }
 
   /**

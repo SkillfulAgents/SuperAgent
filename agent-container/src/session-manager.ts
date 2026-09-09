@@ -1025,7 +1025,15 @@ export class SessionManager extends EventEmitter {
           // Graceful: let the CLI exit on stdin EOF and flush its transcript —
           // a hard abort here races the flush and can truncate the session
           // JSONL tail, silently losing the latest turns on the next resume.
+          const processInstance = data.processInstanceId;
           await data.process.stop({ graceful: true });
+          if (!data.process.isRunning() && data.processInstanceId === processInstance) {
+            this.broadcast(sessionId, {
+              type: 'system',
+              subtype: 'process_evicted',
+              process_instance: processInstance,
+            });
+          }
           console.log(
             `[Session ${sessionId}] Evicted idle session process (idle ${Math.round((Date.now() - data.session.lastActivity.getTime()) / 60_000)}m)`
           );
