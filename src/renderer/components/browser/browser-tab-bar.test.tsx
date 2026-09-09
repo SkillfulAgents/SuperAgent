@@ -17,9 +17,7 @@ describe('BrowserTabBar', () => {
   const defaultProps = {
     tabs: makeTabs(3),
     viewingTargetId: 'target-0',
-    autoFollow: true,
     onTabClick: vi.fn(),
-    onToggleAutoFollow: vi.fn(),
   }
 
   it('renders all tabs', () => {
@@ -151,33 +149,5 @@ describe('BrowserTabBar', () => {
     fireEvent.error(screen.getByTestId('browser-tab-favicon'))
     expect(screen.queryByTestId('browser-tab-favicon')).toBeNull()
     expect(screen.getByTestId('browser-tab-globe')).toBeInTheDocument()
-  })
-  it('shows Eye icon and blue text when autoFollow is true', () => {
-    render(<BrowserTabBar {...defaultProps} autoFollow={true} />)
-    const toggleButton = screen.getByTitle('Auto-following agent (click to pin)')
-    expect(toggleButton.className).toContain('text-blue-500')
-  })
-
-  it('shows EyeOff icon when autoFollow is false', () => {
-    render(<BrowserTabBar {...defaultProps} autoFollow={false} />)
-    expect(screen.getByTitle('Not following agent (click to follow)')).toBeInTheDocument()
-  })
-
-  it('calls onToggleAutoFollow when toggle button is clicked', async () => {
-    const onToggleAutoFollow = vi.fn()
-    const user = userEvent.setup()
-    render(<BrowserTabBar {...defaultProps} onToggleAutoFollow={onToggleAutoFollow} />)
-    await user.click(screen.getByTitle('Auto-following agent (click to pin)'))
-    expect(onToggleAutoFollow).toHaveBeenCalledOnce()
-  })
-
-  it('shows loading spinner when loading is true', () => {
-    const { container } = render(<BrowserTabBar {...defaultProps} loading={true} />)
-    expect(container.querySelector('.animate-spin')).toBeInTheDocument()
-  })
-
-  it('does not show loading spinner when loading is false', () => {
-    const { container } = render(<BrowserTabBar {...defaultProps} loading={false} />)
-    expect(container.querySelector('.animate-spin')).not.toBeInTheDocument()
   })
 })
