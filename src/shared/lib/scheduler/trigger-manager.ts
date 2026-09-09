@@ -371,8 +371,9 @@ class TriggerManager {
       automationStatus: 'running',
     })
 
-    await messagePersister.subscribeToSession(trigger.agentSlug, sessionId, client, sessionId)
+    // createSession already started the turn; replay may finish it during attachment.
     messagePersister.markSessionActive(trigger.agentSlug, sessionId)
+    await messagePersister.subscribeToSession(trigger.agentSlug, sessionId, client, sessionId)
 
     // Update trigger tracking
     await markTriggerFired(trigger.id, sessionId)

@@ -550,7 +550,7 @@ class MessagePersister {
   }
 
   // Subscribe to a session's messages for SSE streaming.
-  // Returns a promise that resolves when the WebSocket connection is ready.
+  // Resolves after the guest attaches its listener and finishes terminal replay.
   // Idempotent: concurrent calls for the same sessionId await the same in-flight
   // subscription instead of racing each other (which would re-init state and
   // leak listeners).
@@ -563,10 +563,19 @@ class MessagePersister {
     const ctx = sessionCtx(agentSlug, sessionId)
     const inFlight = this.subscribingNow.get(ctx.key)
     if (inFlight) return inFlight
-    const promise = this.doSubscribeToSession(ctx, client, containerSessionId)
-      .finally(() => {
-        this.subscribingNow.delete(ctx.key)
-      })
+    return this.trackSubscription(ctx, this.doSubscribeToSession(ctx, client, containerSessionId))
+  }
+
+  private trackSubscription(ctx: SessionCtx, ready: Promise<void>): Promise<void> {
+    const promise = ready.finally(() => {
+      if (this.subscribingNow.get(ctx.key) !== promise) return
+      this.subscribingNow.delete(ctx.key)
+      // Replayed terminal frames can settle an automation during attachment.
+      // Defer its release until ready resolves, or closing before the guest's
+      // acknowledgement would abort an otherwise successful subscription.
+      const state = this.streamingStates.get(ctx.key)
+      if (state) this.maybeReleaseSessionTransport(state)
+    })
     this.subscribingNow.set(ctx.key, promise)
     return promise
   }
@@ -774,7 +783,7 @@ class MessagePersister {
       state.releaseStreamWhenIdle && !state.promotedToInteractive &&
       !state.isActive && !state.isAwaitingInput && !state.isRecovering &&
       this.openBackgroundWorkCount(state) === 0 &&
-      !this.pendingSessionSends.has(key) &&
+      !this.pendingSessionSends.has(key) && !this.subscribingNow.has(key) &&
       (settled || evicted) && this.subscriptions.has(key)
     ) {
       console.log(`[MessagePersister] Releasing idle automation stream for session ${sessionId}`)
@@ -800,6 +809,8 @@ class MessagePersister {
     this.pendingSessionSends.set(key, (this.pendingSessionSends.get(key) ?? 0) + 1)
     try {
       if (previousSend) await previousSend
+      const connecting = this.subscribingNow.get(key)
+      if (connecting) await connecting
       if (!this.isSubscribed(agentSlug, sessionId)) {
         await this.subscribeToSession(agentSlug, sessionId, client, sessionId)
       }
@@ -3007,7 +3018,7 @@ class MessagePersister {
           // handler to the `ready` promise. A failed reconnect routes a
           // synthesized connection_closed message through the callback above;
           // this only stops the discarded rejection from becoming unhandled.
-          ready.catch((err) => {
+          this.trackSubscription(sessionCtx(agentSlug, sessionId), ready).catch((err) => {
             console.error(`[MessagePersister] Re-subscribe failed for session ${sessionId}:`, err)
           })
         } else {

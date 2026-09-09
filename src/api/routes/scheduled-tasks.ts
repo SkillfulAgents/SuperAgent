@@ -335,8 +335,9 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
       scheduledTaskName: task.name || undefined,
     })
 
-    await messagePersister.subscribeToSession(task.agentSlug, sessionId, client, sessionId)
+    // createSession already started the turn; replay may finish it during attachment.
     messagePersister.markSessionActive(task.agentSlug, sessionId)
+    await messagePersister.subscribeToSession(task.agentSlug, sessionId, client, sessionId)
 
     if (task.isRecurring) {
       // Recurring: keep schedule, just record the manual execution

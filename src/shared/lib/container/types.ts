@@ -274,7 +274,8 @@ export interface ContainerClient {
   observeUnexpectedDeath(input?: ObserveUnexpectedDeathInput): Promise<UnexpectedDeathPlan>
   getRuntimeGenerationId(): string | null
 
-  // Streaming - returns unsubscribe function and a ready promise
+  // Streaming - ready resolves after listener attachment and terminal replay,
+  // before a new send may safely mark the session active.
   subscribeToStream(
     sessionId: string,
     callback: (message: StreamMessage) => void

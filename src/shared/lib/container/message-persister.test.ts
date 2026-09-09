@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import type { ContainerClient, StreamMessage } from './types'
+import type { ContainerClient, ContainerInfo, StreamMessage } from './types'
+import { WebSocketServer } from 'ws'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SchedMockFn = (...args: any[]) => any
@@ -967,6 +968,38 @@ describe('MessagePersister', () => {
       expect(mockAppendInformationalEntry).toHaveBeenCalledTimes(1)
       expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
       expect(sseEvents.some((e) => e.type === 'session_idle')).toBe(true)
+    })
+
+    it.each([
+      { isChatIntegrationSession: true },
+      { isScheduledExecution: true },
+      { isWebhookExecution: true },
+      { invokedByAgentSlug: 'caller' },
+    ])('finishes attachment before releasing a missed completed turn (%j)', async (metadata) => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      vi.mocked(getSessionMetadata).mockResolvedValue(metadata as never)
+      const subscribe = vi.mocked(mockClient.subscribeToStream).getMockImplementation()!
+      let finishReplay!: () => void
+      vi.mocked(mockClient.subscribeToStream).mockImplementationOnce((...args) => ({
+        ...subscribe(...args),
+        ready: new Promise<void>(resolve => { finishReplay = resolve }),
+      }))
+      const subscription = messagePersister.subscribeToSession(AGENT_SLUG, SESSION_ID, mockClient, SESSION_ID)
+      try {
+        await new Promise(resolve => setTimeout(resolve, 0))
+        sendCapabilities()
+        mockClient._sendMessage({ type: 'result', subtype: 'success', is_error: false, replayed: true })
+        mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle', replayed: true })
+        expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+        expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(true)
+        finishReplay()
+        await subscription
+        expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(false)
+      } finally {
+        finishReplay()
+        await subscription
+        vi.mocked(getSessionMetadata).mockResolvedValue(null)
+      }
     })
 
     it('ignores replayed frames when the live copies were already processed', () => {
@@ -2729,6 +2762,124 @@ describe('MessagePersister', () => {
       } finally {
         vi.mocked(getSessionMetadata).mockResolvedValue(null)
       }
+    })
+
+    it.each([
+      { isChatIntegrationSession: true },
+      { isScheduledExecution: true },
+      { isWebhookExecution: true },
+      { invokedByAgentSlug: 'caller' },
+    ])('keeps the new reply subscribed when terminal replay arrives after WebSocket open (%j)', async (metadata) => {
+      // Exercise the real client's readiness contract: the server opens the
+      // socket and sends capabilities, then delays its replay and acknowledgement.
+      const { BaseContainerClient } = await import('./base-container-client')
+      const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+      await new Promise<void>(resolve => server.once('listening', resolve))
+      const address = server.address() as { port: number }
+      class ReplayClient extends BaseContainerClient {
+        protected getRunnerCommand() { return 'docker' }
+        async getInfoFromRuntime(): Promise<ContainerInfo> {
+          return { status: 'running', port: address.port }
+        }
+        getHostAuthHeaders() { return {} }
+      }
+      const client = new ReplayClient({ agentId: AGENT_SLUG })
+      const socketConnected = new Promise<import('ws').WebSocket>(resolve => {
+        server.once('connection', socket => {
+          socket.send(JSON.stringify({ type: 'system', subtype: 'capabilities', session_state_events: true, process_instance: 'process-1' }))
+          resolve(socket)
+        })
+      })
+      const capabilitiesReceived = new Promise<void>(resolve => client.once('message', () => resolve()))
+      let acceptDelivery!: () => void
+      const deliveryAccepted = new Promise<void>(resolve => { acceptDelivery = resolve })
+      let sendStarted!: () => void
+      const deliveryStarted = new Promise<void>(resolve => { sendStarted = resolve })
+      let pendingSend: Promise<void> | undefined
+      vi.mocked(getSessionMetadata).mockResolvedValue(metadata as never)
+      try {
+        await messagePersister.subscribeToSession(AGENT_SLUG, SESSION_ID, mockClient, SESSION_ID)
+        await send(async () => { emitResult(); emitIdle() })
+        expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(false)
+        const idleEventsBefore = sseEvents.filter(e => e.type === 'session_idle').length
+        pendingSend = messagePersister.withSessionSend(AGENT_SLUG, SESSION_ID, client, async () => {
+          sendStarted()
+          await deliveryAccepted
+        })
+        const socket = await socketConnected
+        await capabilitiesReceived
+        const replayReceived = new Promise<void>(resolve => {
+          const onMessage = (_id: string, message: { type: string }) => {
+            if (message.type === 'status') {
+              client.off('message', onMessage)
+              resolve()
+            }
+          }
+          client.on('message', onMessage)
+        })
+        socket.send(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, replayed: true }))
+        socket.send(JSON.stringify({ type: 'system', subtype: 'session_state_changed', state: 'idle', replayed: true }))
+        socket.send(JSON.stringify({ type: 'status', data: { message: 'Connected to session stream' } }))
+        await replayReceived
+        await deliveryStarted
+        acceptDelivery()
+        await pendingSend
+        expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(true)
+        expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+        expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(idleEventsBefore)
+
+        const replyReceived = new Promise<void>(resolve => {
+          const onMessage = (_id: string, message: { state?: string }) => {
+            if (message.state === 'idle') {
+              client.off('message', onMessage)
+              resolve()
+            }
+          }
+          client.on('message', onMessage)
+        })
+        socket.send(JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: 'The new reply' } }))
+        socket.send(JSON.stringify({ type: 'result', subtype: 'success', is_error: false }))
+        socket.send(JSON.stringify({ type: 'system', subtype: 'session_state_changed', state: 'idle' }))
+        await replyReceived
+        expect(notificationManager.triggerSessionComplete).toHaveBeenLastCalledWith(SESSION_ID, AGENT_SLUG,
+          expect.objectContaining({ responseText: 'The new reply' }))
+        expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(false)
+      } finally {
+        acceptDelivery()
+        messagePersister.unsubscribeFromSession(AGENT_SLUG, SESSION_ID)
+        await pendingSend?.catch(() => {})
+        for (const socket of server.clients) socket.terminate()
+        await new Promise<void>(resolve => server.close(() => resolve()))
+        vi.mocked(getSessionMetadata).mockResolvedValue(null)
+      }
+    })
+
+    it.each(['explicit', 'automatic'])('waits for an %s attachment already in progress before sending', async (mode) => {
+      const subscribe = vi.mocked(mockClient.subscribeToStream).getMockImplementation()!
+      let finishReplay!: () => void
+      vi.mocked(mockClient.subscribeToStream).mockImplementationOnce((...args) => ({
+        ...subscribe(...args),
+        ready: new Promise<void>(resolve => { finishReplay = resolve }),
+      }))
+      let subscription: Promise<void> | undefined
+      if (mode === 'explicit') {
+        subscription = messagePersister.subscribeToSession(AGENT_SLUG, SESSION_ID, mockClient, SESSION_ID)
+      } else {
+        vi.mocked(mockClient.getSession).mockResolvedValueOnce({ isRunning: true } as never)
+        mockClient._sendMessage({ type: 'connection_closed' })
+        await new Promise(resolve => setTimeout(resolve, 0))
+      }
+      const delivery = vi.fn(async () => {})
+      const pendingSend = send(delivery)
+      try {
+        await new Promise(resolve => setTimeout(resolve, 0))
+        expect(delivery).not.toHaveBeenCalled()
+      } finally {
+        finishReplay()
+        await Promise.all([subscription, pendingSend])
+      }
+      expect(delivery).toHaveBeenCalledOnce()
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
     })
 
     it('reconnects before activating a new turn and ignores the previous terminal replay', async () => {

@@ -1224,9 +1224,11 @@ class ChatIntegrationManager {
       displayName,
     })
 
-    await messagePersister.subscribeToSession(integration.agentSlug, sessionId, client, sessionId)
+    // createSession already started this turn. Observe it and wire chat delivery
+    // before attaching, so even a fast turn's replay is consumed and forwarded.
     messagePersister.markSessionActive(integration.agentSlug, sessionId)
     this.subscribeChatSession(integration.id, chatId, sessionId)
+    await messagePersister.subscribeToSession(integration.agentSlug, sessionId, client, sessionId)
   }
 
   /**
