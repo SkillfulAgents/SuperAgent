@@ -11,6 +11,11 @@ import type { BillingInfoResponse } from '@renderer/hooks/use-billing-info'
 import { PlatformPaywallCard } from './platform-paywall-card'
 import { PAYWALL_RECHECK_INTERVAL_MS } from './use-platform-paywall-billing'
 
+const mocks = vi.hoisted(() => ({ track: vi.fn() }))
+vi.mock('@renderer/context/analytics-context', () => ({
+  useAnalyticsTracking: () => ({ track: mocks.track }),
+}))
+
 const platformAuth = {
   connected: true,
   role: 'member' as string | null,
@@ -102,6 +107,18 @@ describe('PlatformPaywallCard', () => {
 
   afterEach(() => {
     vi.clearAllMocks()
+  })
+
+  it('tracks the paywall being shown, its CTA click and its dismissal', async () => {
+    renderCard()
+    await waitFor(() => expect(screen.getByText('Workspace billing needs attention')).toBeInTheDocument())
+    expect(mocks.track).toHaveBeenCalledWith('paywall_shown', { ctaKind: 'ask_admin', blocked: true, placement: 'composer' })
+    expect(mocks.track).toHaveBeenCalledTimes(1)
+    act(() => { screen.getByRole('button', { name: 'Go to billing' }).click() })
+    expect(mocks.track).toHaveBeenCalledWith('paywall_cta_clicked', { ctaKind: 'ask_admin' })
+    act(() => { screen.getByRole('button', { name: 'Dismiss' }).click() })
+    expect(mocks.track).toHaveBeenCalledWith('paywall_dismissed', { ctaKind: 'ask_admin', handedOff: true })
+    expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument()
   })
 
   it('shows a checking state, then routes members to ask an admin', async () => {

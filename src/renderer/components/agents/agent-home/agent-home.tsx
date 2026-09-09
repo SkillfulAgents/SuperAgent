@@ -15,6 +15,7 @@ import { RelatedSessions, type SortOrder } from '@renderer/components/sessions/r
 import { SortPopover } from '@renderer/components/sessions/sort-popover'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { useNavTransient } from '@renderer/context/nav-transient-context'
+import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useFilePreview } from '@renderer/context/file-preview-context'
 import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
@@ -124,6 +125,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const sessionSearchRef = useRef<HTMLInputElement>(null)
   const composerTextareaRef = useRef<HTMLDivElement>(null)
   const isMobile = useIsMobile()
+  const { track } = useAnalyticsTracking()
   // Tracks an explicit user collapse so the auto-expand effect doesn't fight it.
   // Reset when the message clears (e.g. after submit).
   const userCollapsedRef = useRef(false)
@@ -283,10 +285,12 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
         ...composerOptions.toRuntimeOptions(),
       })
       onSessionCreated(session.id, VOICE_MODE_ENTERED_MESSAGE, session.initialMessageUuid, { voiceMode: true })
+      track('voice_mode_entered', { origin: 'home' })
     } catch (error) {
       console.error('Failed to start a voice session:', error)
+      track('voice_mode_start_failed', { origin: 'home' })
     }
-  }, [createSession, agent.slug, composerOptions, onSessionCreated])
+  }, [createSession, agent.slug, composerOptions, onSessionCreated, track])
 
   const isFreshUntitled = agent.name === UNTITLED_AGENT_NAME && sessions.length === 0
   const typewriterPlaceholder = useTypewriterPlaceholder(
