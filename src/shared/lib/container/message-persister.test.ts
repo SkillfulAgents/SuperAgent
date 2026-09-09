@@ -4718,6 +4718,106 @@ describe('MessagePersister', () => {
       expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(false)
     })
 
+    function announceProcess(processInstance = 'process-1') {
+      mockClient._sendMessage({
+        type: 'system', subtype: 'capabilities', session_state_events: true,
+        process_instance: processInstance,
+      })
+    }
+
+    function evictProcess(processInstance = 'process-1') {
+      mockClient._sendMessage({ type: 'system', subtype: 'process_evicted', process_instance: processInstance })
+    }
+
+    it('retains a chat stream on idle, then detaches only its transport on eviction', async () => {
+      await resubscribeWithMetadata({ isChatIntegrationSession: true })
+      announceProcess()
+      settleSession()
+      expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(true)
+      const teardown = vi.spyOn(messagePersister, 'unsubscribeFromSession')
+      const recovery = vi.fn()
+      messagePersister.setUnexpectedDeathCallback(recovery)
+      evictProcess()
+      expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(false)
+      expect(teardown).not.toHaveBeenCalled()
+      expect(recovery).not.toHaveBeenCalled()
+      const subscription = vi.mocked(mockClient.subscribeToStream).mock.results.at(-1)!.value
+      expect(subscription.unsubscribe).toHaveBeenCalledTimes(1)
+      teardown.mockRestore()
+      messagePersister.setUnexpectedDeathCallback(null)
+    })
+
+    it.each([null, { isChatIntegrationSession: true, promotedToInteractive: true }])(
+      'retains interactive or promoted streams on eviction (%j)', async (metadata) => {
+        await resubscribeWithMetadata(metadata)
+        announceProcess()
+        settleSession()
+        evictProcess()
+        expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(true)
+      },
+    )
+
+    it('does not detach for an older process or a new turn racing eviction', async () => {
+      await resubscribeWithMetadata({ isChatIntegrationSession: true })
+      announceProcess()
+      settleSession()
+      evictProcess('older-process')
+      expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(true)
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      evictProcess()
+      expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+    })
+
+    it.each(['isAwaitingInput', 'isRecovering'] as const)('retains a chat transport while %s', async (hold) => {
+      await resubscribeWithMetadata({ isChatIntegrationSession: true })
+      announceProcess()
+      settleSession()
+      const states = (messagePersister as unknown as {
+        streamingStates: Map<string, { isAwaitingInput: boolean; isRecovering: boolean }>
+      }).streamingStates
+      states.get(sessionKeyOf(AGENT_SLUG, SESSION_ID))![hold] = true
+      evictProcess()
+      expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(true)
+    })
+
+    it('retains a chat transport with background work even if foreground is idle', async () => {
+      await resubscribeWithMetadata({ isChatIntegrationSession: true })
+      announceProcess()
+      settleSession()
+      mockClient._sendMessage({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'background-task' }] })
+      evictProcess()
+      expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(true)
+    })
+
+    it('retains an evicted chat stream after promotion', async () => {
+      await resubscribeWithMetadata({ isChatIntegrationSession: true })
+      announceProcess()
+      settleSession()
+      await messagePersister.promoteAutomatedSession(AGENT_SLUG, SESSION_ID)
+      evictProcess()
+      expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(true)
+    })
+
+    it('releases chat transports on repeated eviction and receives output after reconnect', async () => {
+      await resubscribeWithMetadata({ isChatIntegrationSession: true })
+      const events: unknown[] = []
+      const removeListener = messagePersister.addSSEClient(AGENT_SLUG, SESSION_ID, (event) => events.push(event))
+      for (let cycle = 0; cycle < 12; cycle++) {
+        announceProcess(`process-${cycle}`)
+        settleSession()
+        evictProcess(`process-${cycle}`)
+        expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(false)
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        await messagePersister.subscribeToSession(AGENT_SLUG, SESSION_ID, mockClient, SESSION_ID)
+        expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+        expect(messagePersister.isSubscribed(AGENT_SLUG, SESSION_ID)).toBe(true)
+        mockClient._sendMessage({ type: 'system', subtype: 'init', slash_commands: [] })
+        expect(events.at(-1)).toMatchObject({ type: 'stream_start' })
+      }
+      removeListener()
+    })
+
     it('keeps the stream for an interactive session', async () => {
       await resubscribeWithMetadata(null)
 

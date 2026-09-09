@@ -223,6 +223,7 @@ interface StreamingState {
   // session settles. Resolved from session metadata at subscribe time so the
   // settle-time teardown in finalizeIdle stays synchronous (race-free).
   releaseStreamOnSettle?: boolean
+  releaseStreamOnEviction?: boolean
   // Set synchronously on promote so an in-flight subscribe-time metadata read
   // cannot flip releaseStreamOnSettle back to true.
   promotedToInteractive?: boolean
@@ -636,10 +637,11 @@ class MessagePersister {
       // Carried over so a transport reattach mid-run doesn't lose the verdict
       // before the refresh below lands.
       releaseStreamOnSettle: prior?.releaseStreamOnSettle ?? false,
+      releaseStreamOnEviction: prior?.releaseStreamOnEviction ?? false,
       promotedToInteractive: prior?.promotedToInteractive ?? false,
     })
 
-    this.resolveReleaseStreamOnSettle(ctx)
+    this.resolveStreamReleasePolicy(ctx)
 
     // Store container client for reconnection checks
     this.containerClients.set(ctx.key, client)
@@ -662,12 +664,8 @@ class MessagePersister {
     await ready
   }
 
-  // Resolve whether this subscription belongs to an unpromoted cron, webhook,
-  // or x-agent session. Non-blocking: automation runs last long enough that
-  // the verdict lands well before finalizeIdle consumes it, and an unresolved
-  // read just means the stream is kept (the pre-fix behavior). Automation
-  // paths register metadata before subscribing, so the read can't miss them.
-  private resolveReleaseStreamOnSettle(ctx: SessionCtx): void {
+  // An unresolved metadata read keeps the transport rather than guessing its lifecycle.
+  private resolveStreamReleasePolicy(ctx: SessionCtx): void {
     const { agentSlug, sessionId } = ctx
     const stateRef = this.streamingStates.get(ctx.key)
     void getSessionMetadata(agentSlug, sessionId)
@@ -677,6 +675,7 @@ class MessagePersister {
         if (!current || current !== stateRef) return
         // Promote wins: its marker is set synchronously, this read may be stale.
         if (current.promotedToInteractive) return
+        current.releaseStreamOnEviction = Boolean(meta?.isChatIntegrationSession && !meta?.promotedToInteractive)
         current.releaseStreamOnSettle = Boolean(
           (meta?.isScheduledExecution || meta?.isWebhookExecution || meta?.invokedByAgentSlug) &&
             !meta?.promotedToInteractive
@@ -685,7 +684,7 @@ class MessagePersister {
       .catch((error) => {
         console.warn('[MessagePersister] Failed to resolve automation stream policy:', error)
         captureException(error, {
-          tags: { area: 'container', op: 'resolveReleaseStreamOnSettle' },
+          tags: { area: 'container', op: 'resolveStreamReleasePolicy' },
           extra: { sessionId, agentSlug },
         })
       })
@@ -1766,6 +1765,7 @@ class MessagePersister {
     if (state) {
       state.promotedToInteractive = true
       state.releaseStreamOnSettle = false
+      state.releaseStreamOnEviction = false
     }
 
     console.log(`[MessagePersister] Promoted automated session ${sessionId} to interactive (agent: ${agentSlug})`)
@@ -2404,6 +2404,18 @@ class MessagePersister {
           ) {
             const summary = typeof content.summary === 'string' ? content.summary : undefined
             this.broadcastSubagentCompleted(agentSlug, sessionId, state, toolUseId!, summary)
+          }
+        } else if (content.subtype === 'process_evicted') {
+          if (
+            state.releaseStreamOnEviction &&
+            !state.isActive &&
+            !state.isAwaitingInput &&
+            !state.isRecovering &&
+            this.openBackgroundWorkCount(state) === 0 &&
+            typeof content.process_instance === 'string' &&
+            content.process_instance === state.processInstanceId
+          ) {
+            this.detachSessionTransport(agentSlug, sessionId)
           }
         } else if (content.subtype === 'process_restarted') {
           // Container-synthesized, live: the session's CLI process was replaced

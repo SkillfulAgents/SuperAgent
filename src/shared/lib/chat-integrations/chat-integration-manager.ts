@@ -1099,8 +1099,18 @@ class ChatIntegrationManager {
       })
       if (consumed) return
 
-      await client.sendMessage(sessionId, messageText)
+      const wasActive = messagePersister.isSessionActive(integration.agentSlug, sessionId)
+      // Pin the upcoming turn before reconnecting so a racing eviction cannot detach its stream.
       messagePersister.markSessionActive(integration.agentSlug, sessionId)
+      try {
+        if (!messagePersister.isSubscribed(integration.agentSlug, sessionId)) {
+          await messagePersister.subscribeToSession(integration.agentSlug, sessionId, client, sessionId)
+        }
+        await client.sendMessage(sessionId, messageText)
+      } catch (error) {
+        if (!wasActive) messagePersister.markSessionIdle(integration.agentSlug, sessionId)
+        throw error
+      }
       const now = Date.now()
       const lastTouch = this.lastSessionTouch.get(chatSession.id) ?? 0
       if (now - lastTouch > 60_000) {
