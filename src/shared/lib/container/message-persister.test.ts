@@ -8726,6 +8726,24 @@ describe('MessagePersister connection lost mid-turn', () => {
     expect(messagePersister.getSessionActivity(AGENT_SLUG, SESSION_ID)).toBe('idle')
   })
 
+  it('drops tasks listed from the runtime snapshot alone when the connection is lost', async () => {
+    // The runtime died with its tasks. A row known only from its snapshot
+    // must go too, or a client attaching afterwards lists a dead task whose
+    // per-task Stop can only fail (the agent is no longer running).
+    messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+    mockClient._sendMessage({
+      type: 'system', subtype: 'background_tasks_changed',
+      tasks: [{ task_id: 'unseen-server', task_type: 'local_bash', description: 'Serve local assets' }],
+    })
+    expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID).map((t) => t.taskId)).toEqual(['unseen-server'])
+
+    await dropConnection()
+
+    expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+    expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toEqual([])
+    expect(messagePersister.isSessionWaitingBackground(AGENT_SLUG, SESSION_ID)).toBe(false)
+  })
+
   it('also announces the mid-turn death on the global stream (sidebar/notifications)', async () => {
     const globalEvents: any[] = []
     const removeGlobal = messagePersister.addGlobalNotificationClient((data) => {

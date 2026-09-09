@@ -3003,7 +3003,9 @@ class MessagePersister {
     state.activeSubagents.clear()
     state.activeBackgroundTasks.clear()
     // The runtime is gone; its background tasks went with it (same reasoning as
-    // markSessionInterrupted).
+    // markSessionInterrupted) — the ones listed from its snapshot alone too, or
+    // a reconnect would still show a dead task nobody can stop.
+    state.snapshotOnlyTasks.clear()
     state.bgTasksSnapshot = null
     state.bgTaskDescriptions.clear()
     this.stopAllWorkflowTailers(agentSlug, sessionId)
