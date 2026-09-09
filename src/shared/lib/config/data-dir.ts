@@ -1,6 +1,7 @@
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
+import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 
 /**
  * Get the data directory for Superagent.
@@ -51,6 +52,36 @@ export function getCacheDir(): string {
  */
 export function getAgentsDataDir(): string {
   return path.join(getDataDir(), 'agents')
+}
+
+/**
+ * Where an app-managed folder under the data dir sits on the shared org disk,
+ * as a path relative to the disk root, or null when a cloud runtime cannot
+ * mount it.
+ *
+ * The host app and every cloud agent mount the same disk, and the host app's
+ * data dir is that disk's root (the provisioner sets both to the same access
+ * point at /data). So a path under the data dir maps to a sub-path by
+ * stripping the data dir: volumes/<id>. The database and the skillset cache
+ * are deliberately placed outside the data dir, so this is only correct for
+ * folders the app itself created under it.
+ *
+ * Both sides are resolved through symlinks before comparing. The data dir
+ * itself is never a mount.
+ */
+export function storageSubPath(hostPath: string): string | null {
+  let root: string
+  let target: string
+  try {
+    root = fs.realpathSync(getDataDir())
+    target = fs.realpathSync(hostPath)
+  } catch {
+    return null
+  }
+  if (!isPathWithinDir(root, target)) return null
+  const rel = path.relative(root, target)
+  if (rel === '') return null
+  return rel.split(path.sep).join('/')
 }
 
 /**

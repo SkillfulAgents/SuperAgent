@@ -14,9 +14,6 @@ const mockStopSync = vi.fn()
 const mockGetInfoFromRuntime = vi.fn()
 const mockGetStats = vi.fn()
 const mockIsHealthy = vi.fn()
-const mockBuildVolumeFlag = vi.fn(
-  (hostPath: string, containerPath: string) => `"${hostPath}:${containerPath}"`
-)
 
 vi.mock('./client-factory', () => ({
   createContainerClient: () => ({
@@ -31,7 +28,6 @@ vi.mock('./client-factory', () => ({
     getRuntimeGenerationId: () => null,
     fetch: vi.fn(),
     getHostApiBaseUrl: () => `http://${mockGetContainerHostUrl()}:${mockGetAppPort()}`,
-    buildVolumeFlag: (...args: unknown[]) => mockBuildVolumeFlag(...(args as [string, string])),
   }),
   checkAllRunnersAvailability: vi.fn().mockResolvedValue([]),
   checkImageExists: vi.fn().mockResolvedValue(true),
