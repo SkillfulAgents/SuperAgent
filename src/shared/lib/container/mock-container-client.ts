@@ -1717,6 +1717,213 @@ export class BackgroundBashScenario implements MockScenario {
 }
 
 /**
+ * A background Bash command launched by a SUBAGENT: the launching call and
+ * its result travel the sidechain (parent_tool_use_id set), the subagent then
+ * finishes, and the lead's turn ends while the command keeps running. The
+ * host has to track the task from the sidechain result — the main transcript
+ * never sees the call — or the session sits in waiting-background with an
+ * empty task list and Stop has nothing to offer (prod, 2026-09-09).
+ */
+export class SubagentBackgroundBashScenario implements MockScenario {
+  static readonly COMMAND = 'python3 -m http.server 8080'
+
+  /**
+   * @param delayMs how long the background command runs after the turn ends
+   * @param commandOutput what it prints
+   */
+  constructor(
+    private delayMs: number = 6000,
+    private commandOutput: string = 'nested done',
+  ) {}
+
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    const parentToolId = `agent_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
+    const subToolId = `subtool_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
+    const bgTaskId = `bg_${Date.now().toString(36)}`
+    // Everything the task itself emits must outlive an interrupt of the
+    // launching turn (see BackgroundBashScenario / scenarioView).
+    const runtime = client.unguarded
+    const command = SubagentBackgroundBashScenario.COMMAND
+    const leadText = 'A subagent started a local server in the background.'
+
+    client.writeJsonlEntry(sessionId, {
+      type: 'user',
+      message: { content: userMessage },
+      timestamp: new Date().toISOString(),
+    })
+
+    let delay = 10
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_start' } },
+      })
+    }, delay)
+    delay += 20
+
+    // The subagent's Bash call: a complete sidechain assistant message.
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'assistant',
+        content: {
+          type: 'assistant',
+          parent_tool_use_id: parentToolId,
+          message: {
+            content: [{
+              type: 'tool_use',
+              id: subToolId,
+              name: 'Bash',
+              input: { command, run_in_background: true, description: 'Serve local assets' },
+            }],
+          },
+        },
+      })
+    }, delay)
+    delay += 20
+
+    // Its result, on the sidechain, with the runtime's task id.
+    setTimeout(() => {
+      client.registerBackgroundTask(sessionId, bgTaskId)
+      client.emitStreamMessage(sessionId, {
+        type: 'user',
+        content: {
+          type: 'user',
+          parent_tool_use_id: parentToolId,
+          tool_use_result: { backgroundTaskId: bgTaskId, stdout: '', stderr: '', interrupted: false, isImage: false },
+          message: {
+            content: [{
+              type: 'tool_result',
+              tool_use_id: subToolId,
+              content: `Command running in background with ID: ${bgTaskId}. Output is being written to: /tmp/tasks/${bgTaskId}.output.`,
+            }],
+          },
+        },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'system',
+        content: {
+          type: 'system',
+          subtype: 'background_tasks_changed',
+          tasks: [{ task_id: bgTaskId, task_type: 'local_bash', description: 'Serve local assets' }],
+          session_id: sessionId,
+        },
+      })
+    }, delay)
+    delay += 20
+
+    // The subagent finishes; the lead reports and its turn ends.
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'result',
+        content: { type: 'result', parent_tool_use_id: parentToolId, subtype: 'success' },
+      })
+    }, delay)
+    delay += 20
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'text' } } },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: leadText } } },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_stop' } },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_stop' } },
+      })
+    }, delay)
+    delay += 20
+
+    const firstResultDelay = delay
+    setTimeout(() => {
+      client.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: leadText }] },
+        timestamp: new Date().toISOString(),
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'result',
+        content: { type: 'result', subtype: 'success' },
+      })
+    }, firstResultDelay)
+
+    // The command finishes while the agent is idle: the runtime notifies the
+    // LEAD session with the subagent's tool id (the idle/wake path), drops the
+    // task from its snapshot, and wakes the agent to report.
+    setTimeout(() => {
+      if (!runtime.isBackgroundTaskRunning(sessionId, bgTaskId)) return
+      runtime.completeBackgroundTask(sessionId, bgTaskId)
+      runtime.emitStreamMessage(sessionId, {
+        type: 'system',
+        content: {
+          type: 'system',
+          subtype: 'task_notification',
+          task_id: bgTaskId,
+          tool_use_id: subToolId,
+          status: 'completed',
+          summary: 'Command completed',
+          session_id: sessionId,
+        },
+      })
+      runtime.emitStreamMessage(sessionId, {
+        type: 'system',
+        content: { type: 'system', subtype: 'background_tasks_changed', tasks: [], session_id: sessionId },
+      })
+
+      const finalText = `Background command completed. Output: ${this.commandOutput}`
+      const finalDelay = 50
+      setTimeout(() => {
+        runtime.emitSessionState(sessionId, 'running')
+        runtime.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'message_start' } },
+        })
+        runtime.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'text' } } },
+        })
+        runtime.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: finalText } } },
+        })
+        runtime.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'content_block_stop' } },
+        })
+        runtime.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'message_stop' } },
+        })
+      }, finalDelay)
+
+      setTimeout(() => {
+        runtime.writeJsonlEntry(sessionId, {
+          type: 'user',
+          origin: { kind: 'task-notification' },
+          message: { content: `<task-notification>\n<task-id>${bgTaskId}</task-id>\n<status>completed</status>\n</task-notification>` },
+          timestamp: new Date().toISOString(),
+        })
+        runtime.writeJsonlEntry(sessionId, {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: finalText }] },
+          timestamp: new Date().toISOString(),
+        })
+        runtime.emitStreamMessage(sessionId, {
+          type: 'result',
+          content: { type: 'result', subtype: 'success' },
+        })
+      }, finalDelay + 50)
+    }, firstResultDelay + this.delayMs)
+  }
+}
+
+/**
  * Mock implementation of ContainerClient for E2E testing.
  * Simulates container behavior without requiring Docker/Podman.
  */
@@ -1798,6 +2005,9 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     // A background task launched by a turn that then keeps working: the shape
     // where Stop has to choose between the response and the task. Listed
     // before the plain keyword it contains — first match wins.
+    // A task launched by a subagent (sidechain), still running after the turn.
+    // Listed before the plain keyword it contains — first match wins.
+    ['run background from a subagent', new SubagentBackgroundBashScenario(6000, 'nested done')],
     ['run background and keep working', new BackgroundBashScenario(6000, 'done sleeping', 8000)],
     // A task long enough to be stopped deliberately before it completes.
     ['run background slowly', new BackgroundBashScenario(6000, 'done sleeping')],

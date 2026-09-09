@@ -7690,6 +7690,186 @@ describe('MessagePersister', () => {
     })
 
     // ------------------------------------------------------------------
+    // Background work a SUBAGENT launches. Its tool_result arrives on the
+    // sidechain, which used to register nothing: the runtime's snapshot still
+    // listed the task, so the session sat in waiting-background with an empty
+    // task list and no way to stop it (prod, 2026-09-09: a subagent's local
+    // asset server pinned the lead session). These pin that such launches are
+    // tracked, named, listed, and retired like main-stream ones.
+    describe('background work launched by a subagent', () => {
+      const PARENT = 'agent-tool-1'
+
+      function subagentToolUse(id: string, name: string, input: Record<string, unknown>) {
+        mockClient._sendMessage({
+          type: 'assistant',
+          parent_tool_use_id: PARENT,
+          message: { content: [{ type: 'tool_use', id, name, input }] },
+        })
+      }
+
+      function subagentToolResult(
+        toolUseId: string,
+        opts: { toolUseResult?: Record<string, unknown>; text?: string; isError?: boolean } = {},
+      ) {
+        mockClient._sendMessage({
+          type: 'user',
+          parent_tool_use_id: PARENT,
+          ...(opts.toolUseResult && { tool_use_result: opts.toolUseResult }),
+          message: {
+            content: [{ type: 'tool_result', tool_use_id: toolUseId, content: opts.text ?? 'Running', ...(opts.isError && { is_error: true }) }],
+          },
+        })
+      }
+
+      it('tracks a backgrounded Bash command, named after the command the subagent ran', () => {
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        sseEvents.length = 0
+        subagentToolUse('sub-bash-1', 'Bash', { command: 'python3 -m http.server 8080', run_in_background: true })
+        subagentToolResult('sub-bash-1', { toolUseResult: { backgroundTaskId: 'nested-1' } })
+
+        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toEqual([
+          expect.objectContaining({
+            taskId: 'nested-1',
+            launchedBySubagent: true,
+            label: { title: 'Background command', detail: 'python3 -m http.server 8080' },
+          }),
+        ])
+        const started = sseEvents.filter(e => e.type === 'background_task_started')
+        expect(started).toHaveLength(1)
+        expect(started[0]).toMatchObject({
+          taskId: 'nested-1',
+          launchedBySubagent: true,
+          label: { title: 'Background command', detail: 'python3 -m http.server 8080' },
+        })
+        // The remembered call is consumed by its result.
+        expect((messagePersister as any).streamingStates.get(sessionKeyOf(AGENT_SLUG, SESSION_ID))?.sidechainToolInputs.size).toBe(0)
+      })
+
+      it('keeps the session in waiting-background with the task listed, then settles when it finishes', () => {
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        subagentToolUse('sub-bash-1', 'Bash', { command: 'sleep 60', run_in_background: true })
+        subagentToolResult('sub-bash-1', { toolUseResult: { backgroundTaskId: 'nested-1' } })
+        mockClient._sendMessage({
+          type: 'system',
+          subtype: 'background_tasks_changed',
+          tasks: [{ task_id: 'nested-1', task_type: 'local_bash', description: 'Sleep' }],
+        })
+        // The subagent finishes and the lead's turn ends.
+        mockClient._sendMessage({ type: 'result', parent_tool_use_id: PARENT, subtype: 'success' })
+        mockClient._sendMessage({ type: 'result', subtype: 'success' })
+        sseEvents.length = 0
+        mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+
+        const waiting = sseEvents.filter(e => e.type === 'session_waiting_background')
+        expect(waiting).toHaveLength(1)
+        expect(waiting[0].backgroundTaskCount).toBe(1)
+        // What the connect snapshot and the Stop dialog list: one stoppable row.
+        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID).map(t => t.taskId)).toEqual(['nested-1'])
+
+        // The idle/wake path: the runtime notifies the LEAD with the subagent's tool id.
+        sseEvents.length = 0
+        mockClient._sendMessage({
+          type: 'system', subtype: 'task_notification', task_id: 'nested-1', tool_use_id: 'sub-bash-1', status: 'completed',
+        })
+        expect(sseEvents.filter(e => e.type === 'background_task_completed').map(e => e.taskId)).toEqual(['nested-1'])
+        mockClient._sendMessage({ type: 'system', subtype: 'background_tasks_changed', tasks: [] })
+        mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+        expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(1)
+        expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+      })
+
+      it('names the task from the runtime snapshot when the launching call was not seen', () => {
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        // The snapshot leads the tool result on the wire; here the call itself
+        // was missed (attached mid-turn), so the description is all there is.
+        mockClient._sendMessage({
+          type: 'system',
+          subtype: 'background_tasks_changed',
+          tasks: [{ task_id: 'nested-1', task_type: 'local_bash', description: 'Serve local assets' }],
+        })
+        subagentToolResult('sub-bash-1', { toolUseResult: { backgroundTaskId: 'nested-1' } })
+
+        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)[0]).toMatchObject({
+          taskId: 'nested-1',
+          label: { title: 'Background command', detail: 'Serve local assets' },
+        })
+      })
+
+      it('falls back to the result text for a runtime that carries no backgroundTaskId', () => {
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        subagentToolUse('sub-bash-1', 'Bash', { command: 'make all', run_in_background: true })
+        subagentToolResult('sub-bash-1', {
+          text: 'Command running in background with ID: nested-text. Output is being written to: /tmp/o.',
+        })
+        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)[0]).toMatchObject({
+          taskId: 'nested-text',
+          label: { title: 'Background command', detail: 'make all' },
+        })
+      })
+
+      it('does not track a launch that failed', () => {
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        subagentToolUse('sub-bash-1', 'Bash', { command: 'false', run_in_background: true })
+        subagentToolResult('sub-bash-1', { toolUseResult: { backgroundTaskId: 'nested-err' }, isError: true, text: 'failed' })
+        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toEqual([])
+      })
+
+      it('tracks a background agent a subagent launched, as a listed row', () => {
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        sseEvents.length = 0
+        subagentToolUse('sub-agent-1', 'Agent', {
+          subagent_type: 'general-purpose', description: 'Locate Apple UI assets', run_in_background: true,
+        })
+        subagentToolResult('sub-agent-1', {
+          toolUseResult: { status: 'async_launched', agentId: 'acff9c4c8a5717906' },
+          text: 'Async agent launched successfully. agentId: acff9c4c8a5717906',
+        })
+
+        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toEqual([
+          expect.objectContaining({
+            taskId: 'acff9c4c8a5717906',
+            isSubagent: true,
+            // No named subagent row represents it, so the generic list keeps it.
+            launchedBySubagent: true,
+            label: { title: 'general-purpose', detail: 'Locate Apple UI assets' },
+          }),
+        ])
+
+        // Its terminal task frame (task_id = agentId) retires it.
+        sseEvents.length = 0
+        mockClient._sendMessage({
+          type: 'system', subtype: 'task_updated', task_id: 'acff9c4c8a5717906', patch: { status: 'completed' },
+        })
+        expect(sseEvents.filter(e => e.type === 'background_task_completed').map(e => e.taskId)).toEqual(['acff9c4c8a5717906'])
+        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toEqual([])
+      })
+
+      it('a soft stop keeps the task, a full stop drops it', async () => {
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        subagentToolUse('sub-bash-1', 'Bash', { command: 'sleep 60', run_in_background: true })
+        subagentToolResult('sub-bash-1', { toolUseResult: { backgroundTaskId: 'nested-1' } })
+
+        await messagePersister.markSessionInterrupted(AGENT_SLUG, SESSION_ID, { processKept: true })
+        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID).map(t => t.taskId)).toEqual(['nested-1'])
+        expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+
+        await messagePersister.markSessionInterrupted(AGENT_SLUG, SESSION_ID, { processKept: false })
+        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toEqual([])
+        expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
+      })
+
+      it('bounds the remembered subagent calls', () => {
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        for (let i = 0; i < 250; i++) subagentToolUse(`sub-bash-${i}`, 'Bash', { command: `cmd ${i}` })
+        const inputs = (messagePersister as any).streamingStates.get(sessionKeyOf(AGENT_SLUG, SESSION_ID))?.sidechainToolInputs
+        expect(inputs?.size).toBe(200)
+        // Oldest evicted first.
+        expect(inputs?.has('sub-bash-0')).toBe(false)
+        expect(inputs?.has('sub-bash-249')).toBe(true)
+      })
+    })
+
+    // ------------------------------------------------------------------
     // The level set must drain from BOTH directions. `background_tasks_changed`
     // is a level signal the SDK only re-emits on a membership CHANGE, and it
     // emits nothing at all when a fresh CLI process starts. So any id that

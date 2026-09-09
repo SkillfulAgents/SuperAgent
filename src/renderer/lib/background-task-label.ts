@@ -12,6 +12,10 @@ export interface BackgroundTaskRef {
   startedAt: number
   isWorkflow?: boolean
   isSubagent?: boolean
+  /** Launched by a subagent: the launching call is not in this transcript. */
+  launchedBySubagent?: boolean
+  /** The name the host attached when the transcript cannot supply one. */
+  label?: BackgroundTaskLabel
 }
 
 export interface BackgroundTaskLabel {
@@ -76,5 +80,7 @@ export function labelBackgroundTasks(
     }
   }
 
-  return tasks.map((task) => ({ ...task, ...(byTaskId.get(task.taskId) ?? genericLabel(task)) }))
+  // The transcript names what it launched; the host names what a subagent
+  // launched (its call lives in the subagent's own transcript).
+  return tasks.map((task) => ({ ...task, ...(byTaskId.get(task.taskId) ?? task.label ?? genericLabel(task)) }))
 }
