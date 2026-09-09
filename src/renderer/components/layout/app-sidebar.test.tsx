@@ -1157,17 +1157,28 @@ describe('AppSidebar — agent folders', () => {
     expect(screen.getByTestId('agent-folder-root')).toHaveTextContent('Your Agents')
   })
 
-  it('renders a folder with its name and how many agents are in it', () => {
+  it('renders a folder with its name, and how many agents are in it only while collapsed', () => {
     mockUserSettings.mockReturnValue({
       agentOrder: ['test-agent', 'other-agent'],
       agentFolders: [FOLDERS[0]],
       agentFolderAssignments: { 'test-agent': 'f1', 'other-agent': 'f1' },
     })
-    renderWithProviders(<AppSidebar />)
+    const { unmount } = renderWithProviders(<AppSidebar />)
 
-    const folder = screen.getByTestId('agent-folder-f1')
-    expect(folder).toHaveTextContent('Work')
-    expect(folder).toHaveTextContent('2')
+    // Expanded: the rows underneath say how many there are, so no count.
+    expect(screen.getByTestId('agent-folder-f1')).toHaveTextContent('Work')
+    expect(screen.queryByTestId('agent-folder-count-f1')).not.toBeInTheDocument()
+    unmount()
+
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [FOLDERS[0]],
+      agentFolderAssignments: { 'test-agent': 'f1', 'other-agent': 'f1' },
+      collapsedAgentFolders: ['f1'],
+    })
+    renderWithProviders(<AppSidebar />)
+    expect(screen.getByTestId('agent-folder-f1')).toHaveTextContent('Work')
+    expect(screen.getByTestId('agent-folder-count-f1')).toHaveTextContent('2')
   })
 
   it('defaults the default folder first before anything is arranged', () => {
