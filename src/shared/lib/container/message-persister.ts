@@ -3286,13 +3286,17 @@ class MessagePersister {
 
     // A background agent. The SDK's sidechain acknowledgement can arrive
     // without tool_use_result (0.3.260 does), so the ack text counts too —
-    // with the same corroboration: the remembered call was an Agent/Task
-    // launch, or the runtime snapshot lists the agent.
+    // with evidence of background work, not just the tool name: a foreground
+    // Agent can return archived text carrying an old ack and agentId. Either
+    // the remembered call asked for the background, or the runtime snapshot
+    // lists the agent (the CLI's default launch is background with no flag
+    // set, and the snapshot leads the ack on the wire).
     const agentId = typeof tur?.agentId === 'string' ? tur.agentId : agentIdFromText(text)
     if (!agentId) return
     const structuredAck = tur?.status === 'async_launched' || tur?.isAsync === true
-    const textAck =
-      ASYNC_AGENT_ACK_TEXT.test(text) && (launcher === 'Agent' || launcher === 'Task' || runtimeLists(agentId))
+    const askedForBackground =
+      (launcher === 'Agent' || launcher === 'Task') && launch?.input.run_in_background === true
+    const textAck = ASYNC_AGENT_ACK_TEXT.test(text) && (askedForBackground || runtimeLists(agentId))
     if (!structuredAck && !textAck) return
     const subagentType = typeof launch?.input.subagent_type === 'string' && launch.input.subagent_type ? launch.input.subagent_type : 'Agent'
     const description = typeof launch?.input.description === 'string' && launch.input.description ? launch.input.description : null

@@ -7814,9 +7814,9 @@ describe('MessagePersister', () => {
 
       it('tracks a background agent acknowledged without tool_use_result metadata (SDK 0.3.260 sidechain shape)', () => {
         // The real sidechain ack carries only the text; the remembered Agent
-        // call is what corroborates it.
+        // call, which asked for the background, is what corroborates it.
         messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
-        subagentToolUse('sub-agent-1', 'Agent', { subagent_type: 'general-purpose', description: 'Locate Apple UI assets' })
+        subagentToolUse('sub-agent-1', 'Agent', { subagent_type: 'general-purpose', description: 'Locate Apple UI assets', run_in_background: true })
         subagentToolResult('sub-agent-1', { text: REAL_ASYNC_ACK })
 
         expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toEqual([
@@ -7839,6 +7839,36 @@ describe('MessagePersister', () => {
         expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)[0]).toMatchObject({
           taskId: 'acff9c4c8a5717906', label: { title: 'Agent', detail: 'Locate assets' },
         })
+      })
+
+      it('tracks a default (flag-less) background launch when the runtime snapshot lists the agent', () => {
+        // The CLI's default Agent launch is background with no flag set; the
+        // snapshot, which leads the ack on the wire, is the evidence.
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        subagentToolUse('sub-agent-1', 'Agent', { subagent_type: 'general-purpose', description: 'Locate Apple UI assets' })
+        mockClient._sendMessage({
+          type: 'system', subtype: 'background_tasks_changed',
+          tasks: [{ task_id: 'acff9c4c8a5717906', task_type: 'local_agent' }],
+        })
+        subagentToolResult('sub-agent-1', { text: REAL_ASYNC_ACK })
+        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)[0]).toMatchObject({
+          taskId: 'acff9c4c8a5717906', label: { title: 'general-purpose', detail: 'Locate Apple UI assets' },
+        })
+      })
+
+      it('does not register a foreground agent whose result quotes an archived ack', () => {
+        // A foreground Agent (run_in_background: false) returning archived text
+        // that carries an old ack and agentId: nothing is running under that id.
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        subagentToolUse('sub-agent-fg', 'Agent', { subagent_type: 'general-purpose', description: 'Summarise the old log', run_in_background: false })
+        subagentToolResult('sub-agent-fg', { text: 'From the archive:\n' + REAL_ASYNC_ACK })
+        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toEqual([])
+        expect(sseEvents.filter(e => e.type === 'background_task_started')).toHaveLength(0)
+
+        // Same with the flag simply absent and no runtime listing.
+        subagentToolUse('sub-agent-fg2', 'Agent', { subagent_type: 'general-purpose', description: 'Summarise the old log' })
+        subagentToolResult('sub-agent-fg2', { text: REAL_ASYNC_ACK })
+        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toEqual([])
       })
 
       it('ignores an agent ack phrase with neither a remembered launch nor a snapshot entry', () => {
