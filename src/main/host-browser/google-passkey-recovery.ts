@@ -5,8 +5,15 @@ const CHECK_INTERVAL_MS = 1_000
 const COMMAND_TIMEOUT_MS = 5_000
 const RECONNECT_MS = 5_000
 const MAX_RECONNECTS = 5
-const MAX_CHECKS = 60
-const PASSKEY_PATH = '^/v3/signin/challenge/pk/?$'
+const FAST_CHECKS = 60
+const SLOW_CHECK_INTERVAL_MS = 15_000
+const VERIFY_TIMEOUT_MS = 10_000
+const CLEAR_GRACE_MS = 2_000
+const ATTEMPT_WINDOW_MS = 60_000
+const MAX_ATTEMPTS_PER_WINDOW = 3
+// Google uses pk for passkey sign-in and sk/webauthn for a security key
+// requested as the second factor after a password. Both open native WebAuthn.
+const PASSKEY_PATH = '^/v3/signin/challenge/(?:pk|sk/webauthn)/?$'
 
 export function isGooglePasskeyChallenge(url: string): boolean {
   try {
@@ -20,30 +27,68 @@ export function isGooglePasskeyChallenge(url: string): boolean {
 /**
  * A native WebAuthn dialog blocks CDP input, but Runtime.evaluate still works.
  * Invoke Google's own fallback handler so Google aborts its pending request.
+ * Recognize passkey sign-in and post-password security-key verification.
  * Do not act on conditional WebAuthn, pre-prompt screens, or other challenges.
- * English copy is intentional: unfamiliar/localized UI fails closed.
+ * The security-key structure was verified in English, German, and Hebrew.
+ * Unknown structures retain the narrowly scoped English fallback.
  */
-export const GOOGLE_PASSKEY_RECOVERY_EXPRESSION = String.raw`(() => {
+function googlePasskeyExpression(recover: boolean): string {
+  return String.raw`(() => {
   if (location.origin !== 'https://accounts.google.com' ||
       !new RegExp(${JSON.stringify(PASSKEY_PATH)}).test(location.pathname)) return 'not-applicable';
 
-  const text = (document.body?.innerText || '').replace(/\s+/g, ' ').replace(/\u2019/g, "'");
-  if (!text.includes("Verifying it's you") ||
-      !text.includes('Complete sign-in using your passkey')) return 'waiting';
-
-  const buttons = [...document.querySelectorAll('button')].filter(button => {
-    const rect = button.getBoundingClientRect();
-    const style = getComputedStyle(button);
-    return button.innerText.trim() === 'Try another way' &&
+  const visible = element => {
+    const rect = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return !element.closest('[hidden], [aria-hidden="true"], [inert]') &&
       rect.width > 0 && rect.height > 0 &&
-      style.visibility === 'visible' && style.display !== 'none' &&
+      style.visibility === 'visible' && style.display !== 'none';
+  };
+  const enabled = button => visible(button) &&
       !button.matches(':disabled') && button.getAttribute('aria-disabled') !== 'true' &&
       !button.closest('[inert]');
-  });
+
+  const text = (document.body?.innerText || '').replace(/\s+/g, ' ').replace(/\u2019/g, "'");
+  const englishProgress = text.includes("Verifying it's you") &&
+    (text.includes('Complete sign-in using your passkey') ||
+     text.includes('Complete sign-in using your security key'));
+  let structuralProgress = false;
+  let structuralButtons = [];
+  const views = location.pathname.replace(/\/$/, '') === '/v3/signin/challenge/sk/webauthn'
+    ? [...document.querySelectorAll('c-wiz[jscontroller="OzD1R"][data-view-id="gm7v4"]')].filter(visible) : [];
+  if (views.length > 1) return 'waiting';
+  if (views.length === 1) {
+    const view = views[0];
+    const sections = [...view.querySelectorAll('[jsname="rEuO1b"][jscontroller="qPYxq"] section[jscontroller="Tbb4sb"]')];
+    const progress = sections.filter(section => !section.hasAttribute('jsname'));
+    const errors = sections.filter(section => ['INM6z', 'dZbRZb'].includes(section.getAttribute('jsname')));
+    // These are Google's verification/error states, not translated headings.
+    // Require the complete known shape so a changed view fails closed.
+    const knownShape = sections.length === 3 && progress.length === 1 && errors.length === 2 &&
+      new Set(errors.map(section => section.getAttribute('jsname'))).size === 2;
+    if (knownShape) {
+      const progressVisible = visible(progress[0]);
+      const errorVisible = errors.some(visible);
+      if (!progressVisible && errorVisible) return 'cleared';
+      if (progressVisible && errorVisible) return 'waiting';
+      structuralProgress = progressVisible;
+      structuralButtons = [...view.querySelectorAll('[jsname="DH6Rkf"][jscontroller="z0u0L"] [jsname="eBSUOb"][jscontroller="f8Gu1e"] button[jsname="LgbsSe"][type="button"]')];
+    }
+    if (!structuralProgress && !englishProgress) return 'waiting';
+  }
+  if (!structuralProgress && !englishProgress) return 'cleared';
+  const buttons = [...document.querySelectorAll('button')].filter(button => enabled(button) &&
+    ((structuralProgress && structuralButtons.includes(button)) ||
+     (englishProgress && button.innerText.trim() === 'Try another way')));
   if (buttons.length !== 1) return 'waiting';
+  if (!${recover}) return 'ready';
   buttons[0].click();
   return 'clicked';
 })()`
+}
+
+export const GOOGLE_PASSKEY_RECOVERY_EXPRESSION = googlePasskeyExpression(true)
+export const GOOGLE_PASSKEY_INSPECTION_EXPRESSION = googlePasskeyExpression(false)
 
 interface TargetInfo {
   targetId: string
@@ -58,6 +103,11 @@ interface TargetState {
   generation: number
   checks: number
   attempted: boolean
+  attemptedAt?: number
+  clearSince?: number
+  verificationReported: boolean
+  nextCheckAt: number
+  attemptTimes: number[]
   busy: boolean
 }
 
@@ -164,8 +214,8 @@ class RecoveryConnection {
       this.retries = 0
       this.interval = setInterval(() => {
         for (const [id, target] of this.targets) {
-          if (isGooglePasskeyChallenge(target.url) && !target.busy && !target.attempted &&
-              target.checks < MAX_CHECKS && Date.now() - target.since >= GRACE_MS) {
+          if (isGooglePasskeyChallenge(target.url) && !target.busy &&
+              Date.now() >= target.nextCheckAt && Date.now() - target.since >= GRACE_MS) {
             void this.check(id, target, socket)
           }
         }
@@ -181,15 +231,24 @@ class RecoveryConnection {
     const target = this.targets.get(info.targetId)
     if (target) {
       if (target.url !== info.url || newDocument) {
+        if (target.attemptedAt !== undefined &&
+            !isGooglePasskeyChallenge(info.url)) {
+          console.log('[GooglePasskeyRecovery] Google verification prompt cleared after fallback')
+        }
         target.url = info.url
         target.since = Date.now()
         target.generation++
         target.checks = 0
         target.attempted = false
+        target.attemptedAt = undefined
+        target.clearSince = undefined
+        target.verificationReported = false
+        target.nextCheckAt = 0
       }
     } else if (isGooglePasskeyChallenge(info.url)) {
       this.targets.set(info.targetId, {
         url: info.url, since: Date.now(), generation: 0, checks: 0, attempted: false, busy: false,
+        verificationReported: false, nextCheckAt: 0, attemptTimes: [],
       })
     }
   }
@@ -197,6 +256,8 @@ class RecoveryConnection {
   private async check(id: string, target: TargetState, socket: WebSocket): Promise<void> {
     target.busy = true
     target.checks++
+    target.nextCheckAt = Date.now() + (target.verificationReported || target.checks >= FAST_CHECKS
+      ? SLOW_CHECK_INTERVAL_MS : CHECK_INTERVAL_MS)
     const generation = target.generation
     const current = () => !this.stopped && this.socket === socket &&
       this.targets.get(id) === target && target.generation === generation
@@ -211,20 +272,67 @@ class RecoveryConnection {
         }
       }
       if (!current() || !target.sessionId) return
-      // A timeout may mean the click ran but its response was lost. Never retry
-      // an ambiguous evaluation during this challenge, even after reconnecting.
+      target.attemptTimes = target.attemptTimes.filter(time => Date.now() - time < ATTEMPT_WINDOW_MS)
+      if (!target.attempted && target.attemptTimes.length >= MAX_ATTEMPTS_PER_WINDOW) {
+        // Stay in read-only mode until the prompt clears or a new visit starts.
+        // Waiting out the window must not itself trigger another click.
+        target.attempted = true
+        console.warn('[GooglePasskeyRecovery] Paused automatic fallback after repeated challenges')
+      }
+      const inspection = target.attempted
+      // A timeout may mean the click ran but its response was lost. Only read
+      // afterward, even across reconnects, until the old prompt visibly clears.
       target.attempted = true
+      if (!inspection) {
+        target.attemptedAt = Date.now()
+        // Reserve before dispatch: navigation, exceptions, and timeouts can
+        // prevent a response even though Google's click handler already ran.
+        target.attemptTimes.push(target.attemptedAt)
+      }
+      const expression = inspection ? GOOGLE_PASSKEY_INSPECTION_EXPRESSION : GOOGLE_PASSKEY_RECOVERY_EXPRESSION
       const result = await this.send('Runtime.evaluate', {
-        expression: `location.href === ${JSON.stringify(target.url)} ? ${GOOGLE_PASSKEY_RECOVERY_EXPRESSION} : 'not-applicable'`,
+        expression: `location.href === ${JSON.stringify(target.url)} ? ${expression} : 'not-applicable'`,
         returnByValue: true,
       }, target.sessionId)
       if (!current()) return
       const value = (result.result as { value?: string } | undefined)?.value
-      if (value === 'waiting') target.attempted = false
-      if (value === 'clicked') console.log('[GooglePasskeyRecovery] Invoked Google passkey fallback')
+      if (!inspection) {
+        if (value === 'waiting' || value === 'cleared') {
+          target.attempted = false
+          target.attemptedAt = undefined
+          target.attemptTimes.pop()
+        } else {
+          target.nextCheckAt = Date.now() + CHECK_INTERVAL_MS
+        }
+      } else if (value === 'cleared') {
+        target.clearSince ??= Date.now()
+        target.nextCheckAt = Date.now() + CHECK_INTERVAL_MS
+        if (Date.now() - target.clearSince >= CLEAR_GRACE_MS) {
+          if (target.attemptedAt !== undefined) {
+            console.log('[GooglePasskeyRecovery] Google verification prompt cleared after fallback')
+          }
+          target.attempted = false
+          target.attemptedAt = undefined
+          target.clearSince = undefined
+          target.verificationReported = false
+          target.since = Date.now()
+          target.checks = 0
+        }
+      } else {
+        target.clearSince = undefined
+      }
+      if (inspection && target.attemptedAt !== undefined && !target.verificationReported) {
+        target.nextCheckAt = Date.now() + CHECK_INTERVAL_MS
+      }
     } catch {
       // Recovery is best effort and must never break browser launch or input.
     } finally {
+      if (current() && target.attemptedAt !== undefined && !target.verificationReported &&
+          Date.now() - target.attemptedAt >= VERIFY_TIMEOUT_MS) {
+        target.verificationReported = true
+        target.nextCheckAt = Date.now() + SLOW_CHECK_INTERVAL_MS
+        console.warn('[GooglePasskeyRecovery] Could not confirm fallback cleared the verification prompt; observing without another click')
+      }
       target.busy = false
     }
   }
