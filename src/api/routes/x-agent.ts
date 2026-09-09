@@ -779,29 +779,30 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           })
           return c.json({ error: deliveryCutoffError() }, 504)
         }
-        messagePersister.markSessionActive(targetSlug, existingSessionId)
         stage = 'send_message'
-        let messageUuid: string | undefined
-        if (isAuthMode() && attributedUserId) {
-          const candidateUuid = randomUUID()
-          const recorded = await insertMessageAuthorBestEffort({
-            id: candidateUuid,
-            sessionId: existingSessionId,
-            agentSlug: targetSlug,
-            userId: attributedUserId,
-          })
-          if (recorded) messageUuid = candidateUuid
-        }
-        try {
-          if (messageUuid) {
-            await client.sendMessage(existingSessionId, prompt, messageUuid, { isAutomated: true })
-          } else {
-            await client.sendMessage(existingSessionId, prompt, undefined, { isAutomated: true })
+        await messagePersister.withSessionSend(targetSlug, existingSessionId, client, async () => {
+          let messageUuid: string | undefined
+          if (isAuthMode() && attributedUserId) {
+            const candidateUuid = randomUUID()
+            const recorded = await insertMessageAuthorBestEffort({
+              id: candidateUuid,
+              sessionId: existingSessionId,
+              agentSlug: targetSlug,
+              userId: attributedUserId,
+            })
+            if (recorded) messageUuid = candidateUuid
           }
-        } catch (sendError) {
-          if (messageUuid) await deleteMessageAuthorBestEffort(messageUuid)
-          throw sendError
-        }
+          try {
+            if (messageUuid) {
+              await client.sendMessage(existingSessionId, prompt, messageUuid, { isAutomated: true })
+            } else {
+              await client.sendMessage(existingSessionId, prompt, undefined, { isAutomated: true })
+            }
+          } catch (sendError) {
+            if (messageUuid) await deleteMessageAuthorBestEffort(messageUuid)
+            throw sendError
+          }
+        })
 
         if (sync) {
           stage = 'wait_for_idle'

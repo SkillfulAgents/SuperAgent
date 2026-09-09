@@ -70,6 +70,7 @@ vi.mock('@shared/lib/container/container-manager', () => ({
 }))
 
 const mockMessagePersister = vi.hoisted(() => ({
+  withSessionSend: vi.fn(async (_agentSlug: string, _sessionId: string, _client: unknown, send: () => Promise<unknown>) => send()),
   isSessionActive: vi.fn(),
   subscribeToSession: vi.fn(),
   markSessionActive: vi.fn(),
