@@ -90,6 +90,8 @@ export const TOOLKIT_ALLOWED_HOSTS: Record<string, string[]> = {
   shopify: ['*.myshopify.com'],
   // files.stripe.com is the file create/upload host.
   stripe: ['api.stripe.com', 'files.stripe.com'],
+  // Agents address Plaid's own hosts; the platform proxy routes them via its toolkit bridge.
+  plaid: ['production.plaid.com', 'development.plaid.com', 'sandbox.plaid.com'],
   quickbooks: [
     'quickbooks.api.intuit.com',
     'sandbox-quickbooks.api.intuit.com',
