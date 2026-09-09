@@ -224,19 +224,6 @@ export async function readWidgetHtml(agentSlug: string, artifactSlug: string): P
 }
 
 /**
- * Force the colour scheme the app is showing onto the snapshot document. The
- * widget guidelines have authors style `:root[data-theme="dark"]`, so
- * stamping the attribute on <html> is enough.
- */
-export function applyWidgetScheme(html: string, scheme: WidgetScheme): string {
-  const stamped = html.replace(/<html(\s[^>]*)?>/i, (match, attrs: string | undefined) => {
-    const rest = (attrs ?? '').replace(/\sdata-theme="[^"]*"/i, '')
-    return `<html data-theme="${scheme}"${rest}>`
-  })
-  return stamped === html ? `<html data-theme="${scheme}">${html}</html>` : stamped
-}
-
-/**
  * CSP for the in-app iframe. Widgets are display-only: no scripts, no
  * network, inline styles and data: images only. Paired with a sandbox
  * attribute WITHOUT allow-scripts on the renderer side.
@@ -266,14 +253,10 @@ const CSP_META = `<meta http-equiv="Content-Security-Policy" content="${WIDGET_D
  * The snapshot as the app should render it: scheme stamped, policy inlined.
  */
 export function renderWidgetDocument(html: string, scheme: WidgetScheme): string {
-  const stamped = applyWidgetScheme(html, scheme)
-  // Ours goes in whether or not the author wrote one. Since the app inlines
-  // this document, the response header no longer covers the frame, so skipping
-  // insertion would leave an authored `default-src *` as the only policy.
-  // Two policies are enforced as an intersection, so an author can only
-  // restrict further, never widen.
-  const withHead = stamped.replace(/<head(\s[^>]*)?>/i, (match) => `${match}${CSP_META}`)
-  if (withHead !== stamped) return withHead
-  // No head of its own — open one right after the html tag we just stamped.
-  return stamped.replace(/<html(\s[^>]*)?>/i, (match) => `${match}<head>${CSP_META}</head>`)
+  // Parse the platform head before any authored markup. Searching for a head
+  // tag can put the policy inside a comment, attribute, or raw-text element.
+  // Keep the head open so authored metadata and styles stay in it. The HTML
+  // parser merges later html attributes without replacing our data-theme,
+  // and an authored CSP can only add restrictions to this first policy.
+  return `<!DOCTYPE html><html data-theme="${scheme}"><head>${CSP_META}${html}`
 }

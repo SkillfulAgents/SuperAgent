@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+import { JSDOM } from 'jsdom'
 
 const launchMock = vi.hoisted(() => vi.fn())
 
@@ -56,6 +57,7 @@ describe('rasterizeWidget', () => {
   })
 
   it('renders every family, scheme and scale from one browser', async () => {
+    fs.writeFileSync(path.join(dir, 'widget.html'), '<!DOCTYPE html><!-- Put styles in <head>. --><html><head></head><body>hi</body></html>')
     const page = workingPage()
     const browser = fakeBrowser(page)
     launchMock.mockResolvedValue(browser)
@@ -83,8 +85,17 @@ describe('rasterizeWidget', () => {
     // policy and the scheme ride inside the document instead.
     expect(page.goto).not.toHaveBeenCalled()
     for (const [doc] of page.setContent.mock.calls) {
-      expect(doc).toContain('http-equiv="Content-Security-Policy"')
-      expect(doc).toMatch(/<html data-theme="(light|dark)"/)
+      const dom = new JSDOM(doc)
+      try {
+        const { document } = dom.window
+        const policy = document.head.firstElementChild
+        expect(policy?.getAttribute('http-equiv')).toBe('Content-Security-Policy')
+        expect(policy?.getAttribute('content')).toContain("default-src 'none'")
+        expect(document.documentElement.getAttribute('data-theme')).toMatch(/^(light|dark)$/)
+        expect(document.body.textContent).toBe('hi')
+      } finally {
+        dom.window.close()
+      }
     }
     expect(page.setContent.mock.calls.some(([d]) => (d as string).includes('data-theme="dark"'))).toBe(true)
   })

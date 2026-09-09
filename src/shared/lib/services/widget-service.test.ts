@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as os from 'os'
@@ -14,7 +15,6 @@ vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => {
 })
 
 const {
-  applyWidgetScheme,
   hashWidgetHtml,
   listWidgetsFromFilesystem,
   readWidgetFromFilesystem,
@@ -241,11 +241,32 @@ describe('widget-service', () => {
     expect(rendered).toMatch(/<head><meta http-equiv="Content-Security-Policy" content="default-src 'none';/)
   })
 
-  it('stamps data-theme on the html element, replacing any author value', () => {
-    expect(applyWidgetScheme('<!DOCTYPE html><html lang="en" data-theme="light"><body/></html>', 'dark')).toBe(
-      '<!DOCTYPE html><html data-theme="dark" lang="en"><body/></html>',
-    )
-    expect(applyWidgetScheme('<html><body/></html>', 'light')).toBe('<html data-theme="light"><body/></html>')
-    expect(applyWidgetScheme('<p>bare</p>', 'dark')).toBe('<html data-theme="dark"><p>bare</p></html>')
+  it.each([
+    ['a comment', '<!-- Widget styles belong in <head>. --><html><head></head><body><p>value</p></body></html>'],
+    ['a quoted attribute', '<html><head data-note="a > b"></head><body><p>value</p></body></html>'],
+    ['CSS with an omitted head tag', '<html><style>/* <head> */</style><body><p>value</p></body></html>'],
+    ['an inert template', '<html><template><head></head></template><body><p>value</p></body></html>'],
+    ['a fragment', '<p>value</p>'],
+  ])('places an active CSP before authored content containing %s', (_name, html) => {
+    const document = new DOMParser().parseFromString(renderWidgetDocument(html, 'dark'), 'text/html')
+    // A string match also finds policies trapped in comments, attributes,
+    // raw text, or template contents. Check the parsed document instead.
+    const policy = document.head.firstElementChild
+    expect(policy?.tagName).toBe('META')
+    expect(policy?.getAttribute('http-equiv')).toBe('Content-Security-Policy')
+    expect(policy?.getAttribute('content')).toContain("default-src 'none'")
+    expect(document.body.textContent).toContain('value')
+  })
+
+  it.each(['light', 'dark'] as const)('preserves metadata and content in the %s document', (scheme) => {
+    const html = '<!DOCTYPE html><html lang="en"><head><title>Widget</title><style>body { color: red; }</style></head><body><p>value</p></body></html>'
+    const document = new DOMParser().parseFromString(renderWidgetDocument(html, scheme), 'text/html')
+    expect(document.compatMode).toBe('CSS1Compat')
+    expect(document.querySelectorAll('html')).toHaveLength(1)
+    expect(document.documentElement.getAttribute('data-theme')).toBe(scheme)
+    expect(document.documentElement.getAttribute('lang')).toBe('en')
+    expect(document.head.querySelector('title')?.textContent).toBe('Widget')
+    expect(document.head.querySelector('style')?.textContent).toBe('body { color: red; }')
+    expect(document.body.textContent).toBe('value')
   })
 })

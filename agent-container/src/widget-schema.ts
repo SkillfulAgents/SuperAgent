@@ -49,15 +49,11 @@ export const WIDGET_DOCUMENT_CSP =
 /** The document as the app renders it: scheme stamped, policy inlined. */
 export function renderWidgetDocument(html: string, scheme: WidgetScheme): string {
   const meta = `<meta http-equiv="Content-Security-Policy" content="${WIDGET_DOCUMENT_CSP}">`
-  const stamped = html.replace(/<html(\s[^>]*)?>/i, (match, attrs: string | undefined) => {
-    const rest = (attrs ?? '').replace(/\sdata-theme="[^"]*"/i, '')
-    return `<html data-theme="${scheme}"${rest}>`
-  })
-  const withHtml = stamped === html ? `<html data-theme="${scheme}">${html}</html>` : stamped
-  const withHead = withHtml.replace(/<head(\s[^>]*)?>/i, (match) => `${match}${meta}`)
-  return withHead !== withHtml
-    ? withHead
-    : withHtml.replace(/<html(\s[^>]*)?>/i, (match) => `${match}<head>${meta}</head>`)
+  // Keep this prefix in sync with the host helper: the policy must be parsed
+  // before authored comments, attributes, templates, or raw-text elements.
+  // Leave the head open for authored metadata and styles; later html tags
+  // merge their attributes without replacing the platform's data-theme.
+  return `<!DOCTYPE html><html data-theme="${scheme}"><head>${meta}${html}`
 }
 
 export const WIDGET_HTML_FILENAME = 'widget.html'

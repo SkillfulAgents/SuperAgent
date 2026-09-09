@@ -57,6 +57,7 @@ function seedArtifact(
     dashboard?: boolean
     withScript?: boolean
     validUntil?: string | null
+    html?: string
     /** Pre-write a snapshot matching the seeded HTML, so the widget starts fresh. */
     freshSnapshot?: boolean
   } = {},
@@ -91,7 +92,8 @@ function seedArtifact(
     }),
   )
   if (opts.widget !== false) {
-    fs.writeFileSync(path.join(dir, 'widget.html'), WIDGET_HTML)
+    const html = opts.html ?? WIDGET_HTML
+    fs.writeFileSync(path.join(dir, 'widget.html'), html)
     if (withScript) fs.writeFileSync(path.join(dir, 'widget.ts'), '// stub')
     if (opts.validUntil !== undefined) {
       fs.writeFileSync(path.join(dir, 'widget.json'), JSON.stringify({ validUntil: opts.validUntil }))
@@ -104,7 +106,7 @@ function seedArtifact(
           generatedAt: '2026-01-01T00:00:00.000Z',
           validUntil: '2999-01-01T00:00:00.000Z',
           validityDefaulted: false,
-          htmlHash: createHash('sha256').update(WIDGET_HTML).digest('hex').slice(0, 16),
+          htmlHash: createHash('sha256').update(html).digest('hex').slice(0, 16),
           renderedSizes: [],
           scriptRan: true,
           durationMs: 1,
@@ -123,6 +125,45 @@ async function listWidgets(request: APIRequestContext, agentSlug: string): Promi
 }
 
 test.describe('agent widgets', () => {
+  test('authored markup cannot swallow the widget CSP or override the requested theme', async ({
+    page,
+    request,
+  }, testInfo) => {
+    const agent = await createAgent(request, uniqueName(testInfo, 'Widget CSP'))
+    const probeUrl = 'https://widget-csp.invalid/probe.svg'
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>'
+    let networkRequests = 0
+    await page.route(probeUrl, async (route) => {
+      networkRequests++
+      await route.fulfill({ contentType: 'image/svg+xml', body: svg })
+    })
+    seedArtifact(agent.slug, 'policy', {
+      withScript: false,
+      freshSnapshot: true,
+      html: `<!DOCTYPE html><!-- Widget styles belong in <head>. -->
+        <html lang="en" data-theme="authored"><head>
+          <meta http-equiv="Content-Security-Policy" content="default-src * data: 'unsafe-inline'">
+          <title>Widget policy</title><style>body { color: rgb(1, 2, 3); }</style>
+        </head><body><p data-testid="widget-value">value</p>
+          <img data-testid="remote-image" src="${probeUrl}" alt="remote">
+          <img data-testid="inline-image" src="data:image/svg+xml,${encodeURIComponent(svg)}" alt="inline">
+        </body></html>`,
+    })
+
+    await page.goto(`/agents/${agent.slug}`)
+    const frame = page.frameLocator('[data-testid="widget-card-policy"] iframe')
+    await expect(frame.getByTestId('widget-value')).toHaveText('value')
+    await expect(frame.locator('html')).toHaveAttribute('data-theme', /^(light|dark)$/)
+    await expect(frame.locator('html')).toHaveAttribute('lang', 'en')
+    await expect(frame.locator('head > meta').first()).toHaveAttribute('content', /^default-src 'none';/)
+    await expect(frame.locator('head > meta')).toHaveCount(2)
+    await expect(frame.locator('body')).toHaveCSS('color', 'rgb(1, 2, 3)')
+    await expect(frame.getByTestId('inline-image')).toHaveJSProperty('naturalWidth', 1)
+    await expect(frame.getByTestId('remote-image')).toHaveJSProperty('complete', true)
+    await expect(frame.getByTestId('remote-image')).toHaveJSProperty('naturalWidth', 0)
+    expect(networkRequests).toBe(0)
+  })
+
   test('Agent Home shows the snapshot in a sandboxed frame and triggers the stale refresh', async ({
     page,
     request,
