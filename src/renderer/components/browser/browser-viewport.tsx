@@ -6,6 +6,7 @@ import { cn } from '@shared/lib/utils/cn'
 
 interface BrowserViewportProps {
   canvasRef: RefObject<HTMLCanvasElement>
+  viewportRef?: RefObject<HTMLDivElement>
   stream: ReturnType<typeof useBrowserStream>
   isActive: boolean
   isExpanded: boolean
@@ -13,9 +14,16 @@ interface BrowserViewportProps {
 }
 
 /** Keep the controls sticky to the visible rail even when a tall page overflows it. */
-export function BrowserViewport({ canvasRef, stream, isActive, isExpanded, onToggleExpand }: BrowserViewportProps) {
+export function BrowserViewport({
+  canvasRef,
+  viewportRef,
+  stream,
+  isActive,
+  isExpanded,
+  onToggleExpand,
+}: BrowserViewportProps) {
   return (
-    <div className="grid shrink-0">
+    <div ref={viewportRef} className="grid shrink-0">
       {/* Canvas viewport */}
       <div
         className={cn(
@@ -97,14 +105,14 @@ export function BrowserViewport({ canvasRef, stream, isActive, isExpanded, onTog
                 <button
                   type="button"
                   onClick={onToggleExpand}
-                  aria-label={isExpanded ? 'Collapse' : 'Expand'}
-                  data-testid="browser-tray-expand"
+                  aria-label={isExpanded ? 'Exit full screen' : 'Full screen'}
+                  data-testid="browser-tray-fullscreen"
                   className="p-1.5 rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                 >
                   {isExpanded ? <Shrink className="h-3.5 w-3.5" /> : <Expand className="h-3.5 w-3.5" />}
                 </button>
               </TooltipTrigger>
-              <TooltipContent side="top">{isExpanded ? 'Collapse' : 'Expand'}</TooltipContent>
+              <TooltipContent side="top">{isExpanded ? 'Exit full screen' : 'Full screen'}</TooltipContent>
             </Tooltip>
           </div>
         </TooltipProvider>

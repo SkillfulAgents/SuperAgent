@@ -9,8 +9,11 @@ test.describe('Browser Streaming', () => {
   let agentPage: AgentPage
   let sessionPage: SessionPage
   let testAgentName: string
+  let pageErrors: string[]
 
   test.beforeEach(async ({ page }, testInfo) => {
+    pageErrors = []
+    page.on('pageerror', (error) => pageErrors.push(error.message))
     appPage = new AppPage(page)
     agentPage = new AgentPage(page)
     sessionPage = new SessionPage(page)
@@ -22,15 +25,11 @@ test.describe('Browser Streaming', () => {
     await agentPage.createAgent(testAgentName)
   })
 
+  test.afterEach(() => {
+    expect(pageErrors).toEqual([])
+  })
+
   test('browser preview shows live screencast from host browser', async ({ page }) => {
-    // Skip if E2E_CHROMIUM_PATH is not set (no browser available)
-    // The dev server logs this, but we can also check by sending the message
-    // and seeing if the scenario falls back to the default text response.
-
-    // Capture page errors for debugging
-    const pageErrors: string[] = []
-    page.on('pageerror', (err) => pageErrors.push(err.message))
-
     // Send "browse" message to trigger BrowserScenario.
     // Uses a data: URL so the test doesn't depend on network access.
     await sessionPage.sendMessage(
@@ -61,9 +60,6 @@ test.describe('Browser Streaming', () => {
       },
       { timeout: 20000 },
     )
-
-    // Verify no page errors occurred during the flow
-    expect(pageErrors).toEqual([])
   })
 
   test('keeps the browser controls reachable for a tall page in a short drawer', async ({ page }) => {
@@ -74,10 +70,75 @@ test.describe('Browser Streaming', () => {
 
     const rail = page.getByTestId('browser-tray-rail')
     await expect.poll(() => rail.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
-    for (const testId of ['browser-tray-stop', 'browser-tray-expand']) {
+    for (const testId of ['browser-tray-stop', 'browser-tray-fullscreen']) {
       await expect.poll(() => isControlReachable(page.getByTestId(testId))).toBe(true)
     }
     await page.getByTestId('browser-tray-stop').click()
     await expect(page.getByRole('alertdialog')).toBeVisible()
+  })
+
+  test('fits a portrait page and its controls in full screen as the window shrinks', async ({ page }) => {
+    await page.setViewportSize({ width: 1200, height: 600 })
+    await mockBrowserStream(page, 600, 800)
+    await sessionPage.sendMessage('browse data:text/html,<h1>Portrait page</h1>')
+    await expect(page.getByTestId('browser-canvas')).toHaveAttribute('height', '800')
+    await page.getByTestId('browser-tray-fullscreen').click()
+    await expect(page.getByTestId('tray-drawer')).toHaveAttribute('data-fullscreen')
+    await expect(page.getByTestId('browser-activity-region')).toBeHidden()
+
+    for (const height of [600, 360]) {
+      await page.setViewportSize({ width: 1200, height })
+      await expect
+        .poll(() =>
+          page.getByTestId('browser-tray-card').evaluate((card) => {
+            const rail = card.parentElement!.getBoundingClientRect()
+            const rect = card.getBoundingClientRect()
+            return rect.top >= rail.top && rect.bottom <= rail.bottom && rect.width > 100
+          }),
+        )
+        .toBe(true)
+      for (const testId of ['browser-tray-stop', 'browser-tray-fullscreen']) {
+        await expect.poll(() => isControlReachable(page.getByTestId(testId))).toBe(true)
+      }
+    }
+    await page.getByTestId('browser-tray-fullscreen').click()
+    await expect(page.getByTestId('tray-drawer')).not.toHaveAttribute('data-fullscreen')
+    await expect(page.getByTestId('browser-activity-region')).toBeVisible()
+  })
+
+  test('gives Escape to the focused remote page or local dialog before full screen', async ({ page }) => {
+    const stream = await mockBrowserStream(page, 800, 450)
+    await sessionPage.sendMessage('browse data:text/html,<h1>Keyboard ownership</h1>')
+    await expect(page.getByTestId('browser-canvas')).toHaveAttribute('width', '800')
+    await page.getByTestId('browser-tray-fullscreen').click()
+    await expect(page.getByTestId('tray-drawer')).toHaveAttribute('data-fullscreen')
+    const remoteEscapes = () =>
+      stream.messages
+        .map((message) => {
+          try {
+            return JSON.parse(message)
+          } catch {
+            throw new Error('Expected valid JSON from the browser stream')
+          }
+        })
+        .filter((message) => message.type === 'input_press' && message.key === 'Escape')
+
+    await page.getByTestId('browser-canvas').focus()
+    await page.keyboard.press('Escape')
+    await expect.poll(() => remoteEscapes().length).toBe(1)
+    await expect(page.getByTestId('tray-drawer')).toHaveAttribute('data-fullscreen')
+
+    await page.getByTestId('browser-tray-stop').click()
+    await expect(page.getByRole('alertdialog')).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('alertdialog')).toBeHidden()
+    await expect(page.getByTestId('tray-drawer')).toHaveAttribute('data-fullscreen')
+
+    // Move out of controls whose focus opens a tooltip (another Escape owner).
+    await page.getByTestId('browser-tray-url').click()
+    await expect(page.getByRole('tooltip')).toBeHidden()
+    await page.keyboard.press('Escape')
+    await expect(page.getByTestId('tray-drawer')).not.toHaveAttribute('data-fullscreen')
+    expect(remoteEscapes()).toHaveLength(1)
   })
 })

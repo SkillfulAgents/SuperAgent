@@ -1012,6 +1012,21 @@ html[data-keyboard-open] [data-composer-footer] {
   z-index: 30;
 }
 
+/* Full screen: the drawer covers its whole tray host (the session body or the
+   agent home body, both `relative`), edge to edge. Width is forced over the
+   persisted inline value the same way the compact overlay does it. */
+.tray-drawer-fullscreen {
+  position: absolute;
+  inset: 0;
+  width: 100% !important;
+  z-index: 30;
+  border-left-width: 0;
+  box-shadow: none;
+}
+.tray-drawer-fullscreen .tray-drawer-resize-handle {
+  display: none;
+}
+
 @container (max-width: 767px) {
   .file-preview-responsive-overlay {
     position: absolute;

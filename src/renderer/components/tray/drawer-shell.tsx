@@ -17,6 +17,8 @@ interface DrawerShellProps {
   responsiveFullWidth?: boolean
   /** Overlay the parent instead of participating in its wide-screen flex layout. */
   wideOverlay?: boolean
+  /** Cover the whole tray host, edge to edge, ignoring the persisted width. */
+  fullScreen?: boolean
   defaultWidth?: number
   minWidth?: number
   maxWidth?: number
@@ -30,6 +32,7 @@ export const DrawerShell = forwardRef<DrawerShellHandle, DrawerShellProps>(funct
   storageKey,
   responsiveFullWidth = false,
   wideOverlay = false,
+  fullScreen = false,
   defaultWidth = DEFAULT_WIDTH,
   minWidth = MIN_WIDTH,
   maxWidth = MAX_WIDTH,
@@ -94,18 +97,20 @@ export const DrawerShell = forwardRef<DrawerShellHandle, DrawerShellProps>(funct
         responsiveFullWidth && 'file-preview-responsive-overlay',
         responsiveFullWidth && !isOpen && 'file-preview-responsive-overlay-closed',
         wideOverlay && 'file-preview-wide-overlay',
+        fullScreen && 'tray-drawer-fullscreen',
         !isResizing && 'transition-[width] duration-300 ease-in-out',
         className
       )}
       style={{ width: isOpen ? drawerWidth : 0, maxWidth: '100%', contain: 'layout paint', willChange: 'transform' }}
       onTransitionEnd={onTransitionEnd}
       data-testid="tray-drawer"
+      data-fullscreen={fullScreen || undefined}
     >
       {/* Resize handle on left edge */}
       {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
       <div
         className={cn(
-          'absolute inset-y-0 left-0 z-20 w-1 cursor-col-resize hover:bg-border transition-colors',
+          'tray-drawer-resize-handle absolute inset-y-0 left-0 z-20 w-1 cursor-col-resize hover:bg-border transition-colors',
           responsiveFullWidth && 'file-preview-responsive-resize-handle',
         )}
         onMouseDown={handleResizeMouseDown}
