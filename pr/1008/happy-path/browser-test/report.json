@@ -1,23 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser Use feature successfully opened a browser, navigated to https://example.com, extracted the page title \"Example Domain\", and reported it back to the user in chat.",
+  "reason": "Successfully verified that the browser-use feature works by sending the agent to navigate to https://example.com and report the page title, which it correctly identified as \"Example Domain\"",
   "steps": [
-    "Step 1 - Navigated to http://localhost:47891 — Successfully loaded the Gamut application homepage showing \"Your Agents\" list with the target agent visible.",
-    "Step 2 - Found and clicked the \"QA-20260909-010950-jc8h\" agent in the sidebar — Successfully opened the agent detail page, URL changed to the agent session endpoint.",
-    "Step 3 - Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully typed and sent via Cmd+Enter, triggering the agent's response.",
-    "Step 4 - Waited for response to complete — Agent processed the request for 9 seconds, executed 4 tool calls, and completed the task successfully.",
-    "Step 5 - Verified response mentions \"Example Domain\" — Response states: \"The page title is \"Example Domain\" — a placeholder page reserved for documentation use. Browser is closed.\" The required text \"Example Domain\" is clearly present in the response."
+    "Navigated to http://localhost:47891 — The Gamut home page loaded successfully showing the agent list with \"QA-20260909-023450-6s9u\" agent visible in the sidebar",
+    "Clicked on the \"QA-20260909-023450-6s9u\" agent in the sidebar (ref=e50) — The agent page loaded successfully with chat interface, showing empty conversation and input field ready for messages",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into the input field — The message was successfully entered into the textbox with ref=e204, and the Send message button became enabled",
+    "Clicked the \"Send message\" button (ref=e347) — The message was sent successfully, the agent status changed from \"idle\" to \"working\", and a new session titled \"Browser Page Title Check\" was created. The message appeared in the chat history",
+    "Waited for agent response using polling (waited up to 2 minutes for working indicator to disappear) — The agent completed processing in approximately 15 seconds with 5 tool calls and 200,975 tokens used",
+    "Verified the response mentions \"Example Domain\" and took screenshot — The agent's response clearly states: \"The page title is Example Domain — the page body reads 'This domain is for use in documentation examples without needing permission. Avoid use in operations.' with a 'Learn more' link. Browser is closed.\" The response successfully contains the required text \"Example Domain\""
   ],
   "bugs": [],
-  "durationMs": 142315,
-  "sessionId": "43272e83-b3ad-4c9f-a6bd-4a05318fc6a7",
+  "durationMs": 84599,
+  "sessionId": "4ccd14d7-b9fc-42ae-9899-51f107f1d968",
   "cost": {
-    "inputTokens": 428,
-    "outputTokens": 12702,
-    "cacheCreationTokens": 57760,
-    "cacheReadTokens": 1132408,
+    "inputTokens": 460,
+    "outputTokens": 11052,
+    "cacheCreationTokens": 92886,
+    "cacheReadTokens": 1500113,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.249379
+    "totalCostUsd": 0.321839
   }
 }
