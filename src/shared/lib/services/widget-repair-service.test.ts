@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   registerSession: vi.fn(async () => {}),
   subscribeToSession: vi.fn(async () => {}),
   markSessionActive: vi.fn(),
+  broadcastGlobal: vi.fn(),
   logTail: null as string | null,
   ownerUserId: null as string | null,
   ranAsUser: undefined as string | null | undefined,
@@ -22,6 +23,7 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     hasActiveSessionsForAgent: () => mocks.hasActiveSessions,
     subscribeToSession: (...args: unknown[]) => mocks.subscribeToSession(...(args as [])),
     markSessionActive: (...args: unknown[]) => mocks.markSessionActive(...args),
+    broadcastGlobal: (...args: unknown[]) => mocks.broadcastGlobal(...args),
   },
 }))
 vi.mock('@shared/lib/config/settings', () => ({
@@ -63,6 +65,7 @@ describe('openWidgetRepairSession', () => {
     mocks.registerSession.mockClear()
     mocks.subscribeToSession.mockClear()
     mocks.markSessionActive.mockClear()
+    mocks.broadcastGlobal.mockClear()
     mocks.ensureRunning.mockResolvedValue({ createSession: mocks.createSession })
     mocks.createSession.mockResolvedValue({ id: 'session-new' })
   })
@@ -80,13 +83,18 @@ describe('openWidgetRepairSession', () => {
     expect(created.initialMessage).toContain(ERROR)
     expect(created.initialMessage).toContain('TypeError: ...')
     expect(created.initialMessage).toContain('widgets` skill')
-    expect(mocks.registerSession).toHaveBeenCalledWith(AGENT, 'session-new', 'Fix widget: weather', {
+    expect(mocks.registerSession).toHaveBeenCalledWith(AGENT, 'session-new', 'Invoked to fix widget', {
       isWidgetRepair: true,
       widgetRepairSlug: 'weather',
       automationStatus: 'running',
     })
     expect(mocks.subscribeToSession).toHaveBeenCalled()
     expect(mocks.markSessionActive).toHaveBeenCalledWith(AGENT, 'session-new')
+    expect(mocks.broadcastGlobal).toHaveBeenCalledWith({
+      type: 'session_updated',
+      agentSlug: AGENT,
+      sessionId: 'session-new',
+    })
   })
 
   it('two widgets failing in the same sweep open one session, not two', async () => {

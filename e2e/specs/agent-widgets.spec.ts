@@ -307,7 +307,7 @@ test.describe('agent widgets', () => {
     const [repairSessionId, repairMeta] = Object.entries(readSessionMetadata(agent.slug)).find(
       ([, meta]) => meta.isWidgetRepair === true,
     )!
-    expect(repairMeta).toMatchObject({ widgetRepairSlug: 'broken', name: 'Fix widget: broken' })
+    expect(repairMeta).toMatchObject({ widgetRepairSlug: 'broken', name: 'Invoked to fix widget' })
 
     // Automated: hidden from the session list like a cron or webhook run.
     const visible = await listSessions(request, agent)
@@ -320,6 +320,25 @@ test.describe('agent widgets', () => {
         timeout: 10_000,
       })
       .toBe(1)
+
+    // Even an agent with no x-agent calls exposes repairs through the history
+    // entry, without a reload or adding them to the normal session list.
+    const historyEntry = page.getByTestId('home-trigger-row-inbound-x-agent')
+    await expect(historyEntry).toBeVisible({ timeout: 15_000 })
+    await historyEntry.click()
+    await expect(page).toHaveURL(`/agents/${agent.slug}/called-from-agents`)
+    const repairRow = page.getByRole('button', { name: 'Open widget repair for broken' })
+    await expect(repairRow).toContainText('Invoked to fix widget')
+    await repairRow.click()
+    await expect(page).toHaveURL(`/agents/${agent.slug}/sessions/${repairSessionId}`)
+    await expect(page.getByTestId('widget-repair-session-banner')).toContainText('Invoked to fix widget: broken')
+    await expect(page.getByText(/The refresh script for the widget in/)).toBeVisible()
+    await expect(page.getByTestId('session-breadcrumb')).toContainText('Invoked to fix widget')
+    await page.getByTestId('widget-repair-session-back-button').click()
+    await expect(repairRow).toBeVisible()
+    await repairRow.click()
+    await page.getByTestId('inbound-x-agent-breadcrumb').click()
+    await expect(repairRow).toBeVisible()
   })
 
   test('a widget marked refreshOnTurnEnd re-renders after a turn; the others wait until they are stale', async ({

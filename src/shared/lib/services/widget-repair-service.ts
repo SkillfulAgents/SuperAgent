@@ -186,13 +186,15 @@ async function startRepairSession(
       ...(resolved.speed ? { speed: resolved.speed } : {}),
     })
 
-    await registerSession(agentSlug, session.id, `Fix widget: ${widgetSlug}`, {
+    await registerSession(agentSlug, session.id, 'Invoked to fix widget', {
       isWidgetRepair: true,
       widgetRepairSlug: widgetSlug,
       automationStatus: 'running',
     })
     await messagePersister.subscribeToSession(agentSlug, session.id, client, session.id)
     messagePersister.markSessionActive(agentSlug, session.id)
+    // The home entry and inbound history may already be mounted.
+    messagePersister.broadcastGlobal({ type: 'session_updated', agentSlug, sessionId: session.id })
     console.log(`[WidgetRepair] ${agentSlug}/${widgetSlug}: opened repair session ${session.id}`)
     return { started: true, sessionId: session.id }
   } catch (err) {

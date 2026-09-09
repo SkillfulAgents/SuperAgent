@@ -5959,7 +5959,7 @@ describe('GET /api/agents/:id/inbound-x-agent', () => {
     mockAgentExists.mockResolvedValue(true)
   })
 
-  it('returns x-agent session history for the resolved target agent', async () => {
+  it('returns x-agent and widget repair history for the resolved target agent', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([{
       slug: 'target',
       displaySlug: 'target',
@@ -5973,6 +5973,11 @@ describe('GET /api/agents/:id/inbound-x-agent', () => {
         invokedByAgentSlug: 'deleted-caller',
         createdAt: '2026-08-20T12:00:00.000Z',
       },
+      'repair-session': {
+        isWidgetRepair: true,
+        widgetRepairSlug: 'weather',
+        createdAt: '2026-08-21T12:00:00.000Z',
+      },
     })
 
     const res = await getReq(createApp(), '/api/agents/target/inbound-x-agent')
@@ -5980,6 +5985,11 @@ describe('GET /api/agents/:id/inbound-x-agent', () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
       sessions: [{
+        id: 'repair-session',
+        createdAt: '2026-08-21T12:00:00.000Z',
+        isWidgetRepair: true,
+        widgetRepairSlug: 'weather',
+      }, {
         id: 'session-a',
         createdAt: '2026-08-20T12:00:00.000Z',
         triggeredBy: { slug: 'deleted-caller', name: 'deleted-caller' },
@@ -8949,6 +8959,24 @@ describe('session existence guards read metadata, not the transcript', () => {
       invokedByAgentSlug: 'caller-agent',
       invokedByAgentName: 'Caller Agent',
     })
+  })
+
+  it('returns widget repair provenance for the session breadcrumb and back bar', async () => {
+    vi.mocked(getSessionMetadata).mockResolvedValue({
+      isWidgetRepair: true,
+      widgetRepairSlug: 'weather',
+    })
+
+    const res = await getReq(app, '/api/agents/test-agent/sessions/sess-1')
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body).toMatchObject({
+      id: 'sess-1',
+      isWidgetRepair: true,
+      widgetRepairSlug: 'weather',
+    })
+    expect(body).not.toHaveProperty('invokedByAgentSlug')
   })
 
   it('returns fork lineage from the parent listing name', async () => {

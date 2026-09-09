@@ -3018,6 +3018,8 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       invokedByAgentName: metadata?.invokedByAgentSlug
         ? invokingAgent?.frontmatter.name ?? metadata.invokedByAgentSlug
         : undefined,
+      isWidgetRepair: metadata?.isWidgetRepair,
+      widgetRepairSlug: metadata?.widgetRepairSlug,
       forkedFromSessionId: metadata?.forkedFromSessionId,
       forkedFromSessionName: metadata?.forkedFromSessionId
         ? (await getSessionMetadata(agentSlug, metadata.forkedFromSessionId))?.name
@@ -7679,7 +7681,7 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
 // X-Agent invoke policies (per-agent remembered cross-agent permissions)
 // =============================================================================
 
-// GET /api/agents/:id/inbound-x-agent - Sessions created by other agents, plus
+// GET /api/agents/:id/inbound-x-agent - Other-agent calls and widget repairs, plus
 // every agent currently eligible to invoke this target. The target's read ACL
 // protects the page; caller rows remain visible but carry canAccess=false when
 // the viewing user cannot open that caller agent.
