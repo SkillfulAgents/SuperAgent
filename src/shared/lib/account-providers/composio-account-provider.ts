@@ -1,7 +1,7 @@
 import { BaseAccountProvider } from './base-account-provider'
 import type { InitiateConnectionResult, ProviderConnection, ProviderConnectionListItem } from './base-account-provider'
 import { resolveDisplayName } from './display-name-helpers'
-import { getProvider } from './service-catalog'
+import { getProvider, getProviderSlug, getToolkitSlugFromProviderSlug } from './service-catalog'
 import {
   getOrCreateAuthConfig,
   initiateConnection as composioInitiateConnection,
@@ -47,7 +47,7 @@ export class ComposioAccountProvider extends BaseAccountProvider {
       .map((c) => ({
         id: c.id,
         status: c.status,
-        toolkitSlug: c.toolkitSlug!,
+        toolkitSlug: getToolkitSlugFromProviderSlug(c.toolkitSlug!, 'composio') ?? c.toolkitSlug!,
         createdAt: c.createdAt,
       }))
   }
@@ -57,7 +57,7 @@ export class ComposioAccountProvider extends BaseAccountProvider {
     callbackUrl: string,
     userId?: string,
   ): Promise<InitiateConnectionResult> {
-    const authConfig = await getOrCreateAuthConfig(toolkitSlug)
+    const authConfig = await getOrCreateAuthConfig(getProviderSlug(toolkitSlug, 'composio'))
     return composioInitiateConnection(authConfig.id, callbackUrl, userId)
   }
 

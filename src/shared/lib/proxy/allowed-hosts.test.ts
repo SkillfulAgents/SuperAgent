@@ -42,6 +42,12 @@ describe('isHostAllowed', () => {
     expect(isHostAllowed('gmail', 'api.github.com')).toBe(false)
   })
 
+  it('allows only Plaid API hosts for the plaid toolkit', () => {
+    expect(isHostAllowed('plaid', 'production.plaid.com')).toBe(true)
+    expect(isHostAllowed('plaid', 'sandbox.plaid.com')).toBe(true)
+    expect(isHostAllowed('plaid', 'secure.plaid.com')).toBe(false)
+  })
+
   it('allows every github host the toolkit actually needs', () => {
     expect(isHostAllowed('github', 'api.github.com')).toBe(true)
     // github.com carries the git smart-HTTP transport, which api.github.com
