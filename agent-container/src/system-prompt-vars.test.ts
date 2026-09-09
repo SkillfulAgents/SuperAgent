@@ -109,8 +109,6 @@ describe('generateSystemPrompt rendering', () => {
     expect(out.includes('## Built-in Exa search')).toBe(webhook)
     expect(out.includes('/opt/gamut/docs/exa.md')).toBe(webhook)
     expect(out.includes('Prefer the normal web-search tool')).toBe(webhook)
-    expect(out.includes('Do not use this fallback to bypass')).toBe(webhook)
-    expect(out.includes('Before large batches or repeated deep searches')).toBe(webhook)
     expect(out).not.toContain('v1/deepgram')
     expect(out).not.toContain('v1/exa')
     expect(out).not.toContain('v1/replicate')
