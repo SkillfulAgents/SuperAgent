@@ -75,6 +75,7 @@ interface StreamState {
     isWorkflow?: boolean
     isSubagent?: boolean
     launchedBySubagent?: boolean
+    fromSnapshot?: boolean
     label?: { title: string; detail: string | null }
   }> // Active background Bash commands, dynamic workflows + background subagents
   isWaitingBackground: boolean // True when agent turn ended but background tasks are still running
@@ -687,7 +688,9 @@ function getOrCreateEventSource(
         }
       }
       // Background Bash task events
-      else if (data.type === 'background_task_started') {
+      // `updated` is the registration of a task the runtime snapshot had
+      // already listed: same row, fuller fields — replaced by id below.
+      else if (data.type === 'background_task_started' || data.type === 'background_task_updated') {
         if (current) {
           const existing = current.backgroundTasks.filter(t => t.taskId !== data.taskId)
           streamStates.set(sessionId, {
@@ -698,6 +701,7 @@ function getOrCreateEventSource(
               isWorkflow: data.isWorkflow,
               isSubagent: data.isSubagent,
               launchedBySubagent: data.launchedBySubagent,
+              fromSnapshot: data.fromSnapshot,
               label: data.label,
             }],
           })

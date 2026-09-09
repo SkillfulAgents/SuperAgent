@@ -19,7 +19,7 @@ import {
 } from '@shared/lib/user-input/request-schema'
 import { classifyResult } from './result-classification'
 import { inferOomSigkillFatal, type CoalescedUserMessage, type RuntimeFatalKind } from './runtime-death'
-import { parseBackgroundTasksChanged } from './background-tasks-changed'
+import { parseBackgroundTasksChanged, type BackgroundTasksSnapshot } from './background-tasks-changed'
 import { parseCommandLifecycle } from './command-lifecycle'
 import { captureException } from '@shared/lib/error-reporting'
 import {
@@ -207,14 +207,33 @@ export interface BackgroundTaskEntry {
   label?: BackgroundTaskLabel
 }
 
-/** What clients get for a tracked background task (connect snapshot, waiting-background frames). */
+/** A task known only from the runtime's background_tasks_changed snapshot: its launch was never seen. */
+export interface SnapshotOnlyTaskEntry {
+  startedAt: number
+  isWorkflow?: boolean
+  label: BackgroundTaskLabel
+}
+
+/** What clients get for a background task (connect snapshot, waiting-background frames). */
 export interface BackgroundTaskInfo {
   taskId: string
   startedAt: number
   isWorkflow?: boolean
   isSubagent?: boolean
   launchedBySubagent?: boolean
+  /** Listed from the runtime snapshot alone; the launching call was never seen. */
+  fromSnapshot?: boolean
   label?: BackgroundTaskLabel
+}
+
+/** The generic name for a task the snapshot alone describes. */
+function labelFromSnapshotTask(task: { task_type?: string; description?: string }): BackgroundTaskLabel {
+  const title =
+    task.task_type === 'local_agent' ? 'Background agent'
+    : task.task_type === 'local_workflow' ? 'Background workflow'
+    : task.task_type === 'local_bash' ? 'Background command'
+    : 'Background task'
+  return { title, detail: task.description ?? null }
 }
 
 interface StreamingState {
@@ -325,6 +344,13 @@ interface StreamingState {
   // `description` per task id from the latest background_tasks_changed frame:
   // the fallback name for a task whose launching call was never seen.
   bgTaskDescriptions: Map<string, string>
+  // Tasks the snapshot lists that nothing registered — the launch was missed
+  // (a frame lost, a shape this host does not know). They count toward open
+  // background work either way (see openBackgroundWorkCount), so they must be
+  // listed and stoppable too, or they pin the session with nothing to act on.
+  // An id leaves here when it is registered, when the snapshot drops it, or
+  // when a terminal per-task signal names it.
+  snapshotOnlyTasks: Map<string, SnapshotOnlyTaskEntry>
   // Latest system/background_tasks_changed snapshot (SDK >= 0.3.203): the full
   // authoritative set of live background task ids. null until the first frame
   // (older runtimes never send one — all gates then fall back to the
@@ -692,6 +718,7 @@ class MessagePersister {
       bgTasksSnapshot: prior?.bgTasksSnapshot ?? null,
       sidechainToolInputs: new Map(),
       bgTaskDescriptions: prior?.bgTaskDescriptions ?? new Map(),
+      snapshotOnlyTasks: prior?.snapshotOnlyTasks ?? new Map(),
       // Carried with the snapshot it describes — the incoming handshake is what
       // decides whether both are still valid.
       processInstanceId: prior?.processInstanceId ?? null,
@@ -1163,7 +1190,7 @@ class MessagePersister {
   getActiveBackgroundTasks(agentSlug: string, sessionId: string): BackgroundTaskInfo[] {
     const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
     if (!state) return []
-    return Array.from(state.activeBackgroundTasks.entries()).map(([taskId, info]) => ({
+    const tracked: BackgroundTaskInfo[] = Array.from(state.activeBackgroundTasks.entries()).map(([taskId, info]) => ({
       taskId,
       startedAt: info.startedAt,
       isWorkflow: info.isWorkflow,
@@ -1171,6 +1198,14 @@ class MessagePersister {
       ...(info.launchedBySubagent && { launchedBySubagent: true }),
       ...(info.label && { label: info.label }),
     }))
+    const fromSnapshot: BackgroundTaskInfo[] = Array.from(state.snapshotOnlyTasks.entries()).map(([taskId, info]) => ({
+      taskId,
+      startedAt: info.startedAt,
+      isWorkflow: info.isWorkflow,
+      fromSnapshot: true,
+      label: info.label,
+    }))
+    return [...tracked, ...fromSnapshot]
   }
 
   // Check if a session has an active subscription
@@ -1439,6 +1474,7 @@ class MessagePersister {
         state.isActive = false
         state.activeSubagents.clear()
         state.activeBackgroundTasks.clear()
+        state.snapshotOnlyTasks.clear()
         state.bgTasksSnapshot = null
         state.bgTaskDescriptions.clear()
         this.stopAllWorkflowTailers(agentSlug, sessionId)
@@ -1569,6 +1605,7 @@ class MessagePersister {
         bgTasksSnapshot: null,
         sidechainToolInputs: new Map(),
         bgTaskDescriptions: new Map(),
+        snapshotOnlyTasks: new Map(),
         processInstanceId: null,
         pendingDeliverFiles: new Map(),
         stateEventsAuthority: false,
@@ -2382,8 +2419,7 @@ class MessagePersister {
                 toolUseId,
                 workflowName: typeof content.workflow_name === 'string' ? content.workflow_name : undefined,
               })
-              this.broadcastToSSE(agentSlug, sessionId, { type: 'background_task_started', taskId: workflowTaskId, startedAt, isWorkflow: true })
-              this.broadcastGlobal({ type: 'background_task_started', sessionId, agentSlug: state.agentSlug, taskId: workflowTaskId })
+              this.announceBackgroundTask(agentSlug, sessionId, state, workflowTaskId, { startedAt, isWorkflow: true })
               // NOTE: we do NOT emit workflow_started or start the journal tailer yet — the
               // real on-disk runId (`wf_…`, the name of the subagents/workflows/<runId> dir)
               // is NOT the task_id; it only appears in the Workflow tool RESULT, which the
@@ -2608,6 +2644,7 @@ class MessagePersister {
                 this.clearBackgroundTask(agentSlug, sessionId, state, taskId)
               }
             }
+            this.reconcileSnapshotOnlyTasks(agentSlug, sessionId, state, snapshot)
           }
         } else if (content.subtype === 'memory_recall') {
           // Memory recall — agent is reading memory files
@@ -2966,7 +3003,9 @@ class MessagePersister {
     state.activeSubagents.clear()
     state.activeBackgroundTasks.clear()
     // The runtime is gone; its background tasks went with it (same reasoning as
-    // markSessionInterrupted).
+    // markSessionInterrupted) — the ones listed from its snapshot alone too, or
+    // a reconnect would still show a dead task nobody can stop.
+    state.snapshotOnlyTasks.clear()
     state.bgTasksSnapshot = null
     state.bgTaskDescriptions.clear()
     this.stopAllWorkflowTailers(agentSlug, sessionId)
@@ -3150,18 +3189,35 @@ class MessagePersister {
     if (state.activeBackgroundTasks.has(taskId)) return
     const startedAt = Date.now()
     state.activeBackgroundTasks.set(taskId, { startedAt, ...extra })
+    this.announceBackgroundTask(agentSlug, sessionId, state, taskId, { startedAt, ...extra })
+  }
+
+  // A task starts once on the wire. The snapshot may already have listed it
+  // (it leads the per-task frames), in which case the registration is an
+  // update to the row clients hold, not a second start — every started
+  // task completes exactly once, and that pairing is what liveness gates
+  // downstream count on.
+  private announceBackgroundTask(
+    agentSlug: string,
+    sessionId: string,
+    state: StreamingState,
+    taskId: string,
+    fields: Record<string, unknown>,
+  ): void {
+    const wasListed = state.snapshotOnlyTasks.delete(taskId)
     this.broadcastToSSE(agentSlug, sessionId, {
-      type: 'background_task_started',
+      type: wasListed ? 'background_task_updated' : 'background_task_started',
       taskId,
-      startedAt,
-      ...extra,
+      ...fields,
     })
-    this.broadcastGlobal({
-      type: 'background_task_started',
-      sessionId,
-      agentSlug: state.agentSlug,
-      taskId,
-    })
+    if (!wasListed) {
+      this.broadcastGlobal({
+        type: 'background_task_started',
+        sessionId,
+        agentSlug: state.agentSlug,
+        taskId,
+      })
+    }
   }
 
   // Remember what a subagent's Bash/Agent call asked for until its result
@@ -3274,19 +3330,7 @@ class MessagePersister {
     // already represents this work in the activity tray. One a
     // subagent launched has no such row, so launchedBySubagent
     // puts it back.
-    this.broadcastToSSE(agentSlug, sessionId, {
-      type: 'background_task_started',
-      taskId: agentId,
-      startedAt,
-      isSubagent: true,
-      ...extra,
-    })
-    this.broadcastGlobal({
-      type: 'background_task_started',
-      sessionId,
-      agentSlug: state.agentSlug,
-      taskId: agentId,
-    })
+    this.announceBackgroundTask(agentSlug, sessionId, state, agentId, { startedAt, isSubagent: true, ...extra })
   }
 
   // Clear a finished background task (backgrounded Bash OR a dynamic workflow),
@@ -3363,11 +3407,61 @@ class MessagePersister {
   // rest of its life. Mirrors SessionSettlementTracker.resetBackgroundTasks.
   private dropProcessLocalBackgroundState(sessionId: string, state: StreamingState): void {
     const { agentSlug } = state
-    for (const taskId of [...state.activeBackgroundTasks.keys()]) {
+    for (const taskId of [...state.activeBackgroundTasks.keys(), ...state.snapshotOnlyTasks.keys()]) {
       this.clearBackgroundTask(agentSlug, sessionId, state, taskId)
     }
     state.bgTasksSnapshot = null
     state.bgTaskDescriptions.clear()
+  }
+
+  private broadcastBackgroundTaskCompleted(agentSlug: string, sessionId: string, state: StreamingState, taskId: string): void {
+    this.broadcastToSSE(agentSlug, sessionId, { type: 'background_task_completed', taskId })
+    this.broadcastGlobal({ type: 'background_task_completed', sessionId, agentSlug: state.agentSlug, taskId })
+  }
+
+  // Keep the snapshot-only list equal to "in the snapshot, not registered".
+  // A new such id gets a row (named from the snapshot's type and description)
+  // so it can be seen and stopped; an id the snapshot dropped gets its
+  // completion; an id that has since been registered is simply forgotten here
+  // — the registration's own started frame replaced its row.
+  private reconcileSnapshotOnlyTasks(
+    agentSlug: string,
+    sessionId: string,
+    state: StreamingState,
+    snapshot: BackgroundTasksSnapshot,
+  ): void {
+    for (const taskId of [...state.snapshotOnlyTasks.keys()]) {
+      if (!snapshot.taskIds.has(taskId)) {
+        state.snapshotOnlyTasks.delete(taskId)
+        this.broadcastBackgroundTaskCompleted(agentSlug, sessionId, state, taskId)
+      } else if (state.activeBackgroundTasks.has(taskId)) {
+        state.snapshotOnlyTasks.delete(taskId)
+      }
+    }
+    for (const task of snapshot.tasks) {
+      if (state.activeBackgroundTasks.has(task.task_id) || state.snapshotOnlyTasks.has(task.task_id)) continue
+      const startedAt = Date.now()
+      const entry: SnapshotOnlyTaskEntry = {
+        startedAt,
+        label: labelFromSnapshotTask(task),
+        ...(task.task_type === 'local_workflow' && { isWorkflow: true }),
+      }
+      state.snapshotOnlyTasks.set(task.task_id, entry)
+      this.broadcastToSSE(agentSlug, sessionId, {
+        type: 'background_task_started',
+        taskId: task.task_id,
+        startedAt,
+        ...(entry.isWorkflow && { isWorkflow: true }),
+        fromSnapshot: true,
+        label: entry.label,
+      })
+      this.broadcastGlobal({
+        type: 'background_task_started',
+        sessionId,
+        agentSlug: state.agentSlug,
+        taskId: task.task_id,
+      })
+    }
   }
 
   private clearBackgroundTask(agentSlug: string, sessionId: string, state: StreamingState, taskId: string): boolean {
@@ -3376,11 +3470,14 @@ class MessagePersister {
     // that removal frame never arrives, the freshest information has to win or
     // the union pins the session. Mirrors SessionSettlementTracker.removeTask.
     state.bgTasksSnapshot?.delete(taskId)
+    if (state.snapshotOnlyTasks.delete(taskId)) {
+      this.broadcastBackgroundTaskCompleted(agentSlug, sessionId, state, taskId)
+      return true
+    }
     const info = state.activeBackgroundTasks.get(taskId)
     if (!info) return false
     state.activeBackgroundTasks.delete(taskId)
-    this.broadcastToSSE(agentSlug, sessionId, { type: 'background_task_completed', taskId })
-    this.broadcastGlobal({ type: 'background_task_completed', sessionId, agentSlug: state.agentSlug, taskId })
+    this.broadcastBackgroundTaskCompleted(agentSlug, sessionId, state, taskId)
     // Use the real on-disk runId (learned from the tool result), NOT the task_id.
     if (info.isWorkflow && info.runId) {
       this.broadcastToSSE(agentSlug, sessionId, { type: 'workflow_completed', runId: info.runId })
