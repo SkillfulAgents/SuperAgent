@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
-
+import { isControlReachable, mockBrowserStream } from '../helpers/browser-stream'
 
 test.describe('Browser Streaming', () => {
   let appPage: AppPage
@@ -64,5 +64,20 @@ test.describe('Browser Streaming', () => {
 
     // Verify no page errors occurred during the flow
     expect(pageErrors).toEqual([])
+  })
+
+  test('keeps the browser controls reachable for a tall page in a short drawer', async ({ page }) => {
+    await page.setViewportSize({ width: 1200, height: 600 })
+    await mockBrowserStream(page, 600, 800)
+    await sessionPage.sendMessage('browse data:text/html,<h1>Tall page</h1>')
+    await expect(page.getByTestId('browser-canvas')).toHaveAttribute('height', '800')
+
+    const rail = page.getByTestId('browser-tray-rail')
+    await expect.poll(() => rail.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true)
+    for (const testId of ['browser-tray-stop', 'browser-tray-expand']) {
+      await expect.poll(() => isControlReachable(page.getByTestId(testId))).toBe(true)
+    }
+    await page.getByTestId('browser-tray-stop').click()
+    await expect(page.getByRole('alertdialog')).toBeVisible()
   })
 })
