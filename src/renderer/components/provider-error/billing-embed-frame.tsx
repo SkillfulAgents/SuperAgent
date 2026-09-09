@@ -2,16 +2,11 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 
 import { Button } from '@renderer/components/ui/button'
-import {
-  buildBillingEmbedUrl,
-  platformOriginFromBaseUrl,
-  type BillingEmbedView,
-} from '@renderer/lib/billing-embed'
+import { buildBillingEmbedUrl, platformOriginFromBaseUrl, type BillingEmbedView } from '@renderer/lib/billing-embed'
 import { openExternalUrl } from '@renderer/lib/open-external'
 
 export const BILLING_EMBED_MESSAGE_TYPE = 'gamut-billing-embed'
-type BillingEmbedEvent = 'ready' | 'billing-updated' | 'session-expired' | 'resize' | 'open-billing'
-
+type BillingEmbedEvent = 'ready' | 'billing-updated' | 'session-expired' | 'resize' | 'open-billing' | 'cta-state'
 const FRAME_MIN_HEIGHT = 64
 const FRAME_MAX_HEIGHT = 640
 const FRAME_DEFAULT_HEIGHT = 300
@@ -21,25 +16,24 @@ interface EmbedMessage {
   event: BillingEmbedEvent
   orgId: string | null
   height?: number
+  hint?: string
+  label?: string
 }
 
 function readEmbedMessage(data: unknown): EmbedMessage | null {
   if (typeof data !== 'object' || data === null) return null
-  const record = data as { type?: unknown; event?: unknown; orgId?: unknown; height?: unknown }
+  const record = data as { type?: unknown; event?: unknown; orgId?: unknown; height?: unknown; hint?: unknown; label?: unknown }
   if (record.type !== BILLING_EMBED_MESSAGE_TYPE) return null
   if (
-    record.event !== 'ready' &&
-    record.event !== 'billing-updated' &&
-    record.event !== 'session-expired' &&
-    record.event !== 'resize' &&
-    record.event !== 'open-billing'
-  ) {
-    return null
-  }
+    record.event !== 'ready' && record.event !== 'billing-updated' && record.event !== 'session-expired' &&
+    record.event !== 'resize' && record.event !== 'open-billing' && record.event !== 'cta-state'
+  ) return null
   return {
     event: record.event,
     orgId: typeof record.orgId === 'string' ? record.orgId : null,
     height: typeof record.height === 'number' && Number.isFinite(record.height) ? record.height : undefined,
+    hint: typeof record.hint === 'string' && record.hint.length <= 300 ? record.hint : undefined,
+    label: typeof record.label === 'string' && record.label.length <= 40 ? record.label : undefined,
   }
 }
 
@@ -51,7 +45,9 @@ export interface BillingEmbedFrameProps {
   intent?: 'topup'
   cta?: 'add_card'
   launcher?: boolean
+  label?: string
   onOpenBilling?: () => void
+  onHintChange?: (hint: string) => void
   view: BillingEmbedView
   orgId: string | null
   platformBaseUrl: string | null
@@ -61,7 +57,6 @@ export interface BillingEmbedFrameProps {
 }
 
 type Failure = 'no_org' | 'expired' | 'timeout'
-
 const FAILURE_MESSAGE: Record<Failure, string> = {
   no_org: 'Could not open billing.',
   expired: 'This billing session has expired.',
@@ -69,16 +64,8 @@ const FAILURE_MESSAGE: Record<Failure, string> = {
 }
 
 export function BillingEmbedFrame({
-  intent,
-  cta,
-  launcher = false,
-  onOpenBilling,
-  view,
-  orgId,
-  platformBaseUrl,
-  fallbackHref,
-  onBillingUpdated,
-  onOpenExternal,
+  intent, cta, launcher = false, label = 'Open billing', onOpenBilling, onHintChange,
+  view, orgId, platformBaseUrl, fallbackHref, onBillingUpdated, onOpenExternal,
 }: BillingEmbedFrameProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const platformOrigin = platformOriginFromBaseUrl(platformBaseUrl)
@@ -86,12 +73,32 @@ export function BillingEmbedFrame({
   const [failure, setFailure] = useState<Failure | null>(orgId && platformOrigin ? null : 'no_org')
   const [height, setHeight] = useState(FRAME_DEFAULT_HEIGHT)
   const [attempt, setAttempt] = useState(0)
+  const [hint, setHint] = useState('')
+  const [frameLabel, setFrameLabel] = useState(label)
+  useEffect(() => {
+    if (launcher) onHintChange?.(failure ? FAILURE_MESSAGE[failure] : hint)
+  }, [failure, hint, launcher, onHintChange])
+
+  const sendTheme = useCallback(() => {
+    if (!platformOrigin || !orgId) return
+    iframeRef.current?.contentWindow?.postMessage({
+      type: 'gamut-billing-theme', orgId,
+      theme: document.documentElement.classList.contains('dark') ? 'dark' : 'light',
+    }, platformOrigin)
+  }, [platformOrigin, orgId])
+
+  useEffect(() => {
+    const observer = new MutationObserver(sendTheme)
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
+    return () => observer.disconnect()
+  }, [sendTheme])
 
   const retry = useCallback(() => {
     setFrameReady(false)
     setFailure(orgId && platformOrigin ? null : 'no_org')
     setHeight(FRAME_DEFAULT_HEIGHT)
-    setAttempt((n) => n + 1)
+    setHint('')
+    setAttempt(n => n + 1)
   }, [orgId, platformOrigin])
 
   useEffect(() => {
@@ -100,17 +107,20 @@ export function BillingEmbedFrame({
       const frameWindow = iframeRef.current?.contentWindow
       if (!frameWindow || event.source !== frameWindow) return
       const message = readEmbedMessage(event.data)
-      if (!message) return
-      if (orgId && message.orgId !== orgId) return
-      if (message.event === 'ready') setFrameReady(true)
-      else if (message.event === 'open-billing' && launcher) onOpenBilling?.()
-      else if (message.event === 'billing-updated' && !launcher) onBillingUpdated()
+      if (!message || message.orgId !== orgId) return
+      if (message.event === 'ready') { setFrameReady(true); sendTheme() }
+      else if (message.event === 'open-billing' && launcher && view === 'topup') onOpenBilling?.()
+      else if (message.event === 'billing-updated') onBillingUpdated()
       else if (message.event === 'session-expired') setFailure('expired')
-      else if (message.event === 'resize' && message.height !== undefined) setHeight(clampHeight(message.height))
+      else if (message.event === 'resize' && !launcher && message.height !== undefined) setHeight(clampHeight(message.height))
+      else if (message.event === 'cta-state' && launcher) {
+        if (message.hint !== undefined) setHint(message.hint)
+        if (message.label) setFrameLabel(message.label)
+      }
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [orgId, platformOrigin, onBillingUpdated, launcher, onOpenBilling])
+  }, [orgId, platformOrigin, onBillingUpdated, launcher, onOpenBilling, view, sendTheme])
 
   useEffect(() => {
     if (frameReady || failure) return
@@ -118,73 +128,49 @@ export function BillingEmbedFrame({
     return () => window.clearTimeout(timer)
   }, [frameReady, failure, attempt])
 
-  const src =
-    orgId && platformOrigin
-      ? buildBillingEmbedUrl(platformBaseUrl, orgId, { view, intent, cta, surface: launcher ? 'cta' : undefined, parent: window.location.origin })
-      : null
-
-  if (failure && launcher) {
-    return (
-      <Button size="sm" title={FAILURE_MESSAGE[failure]} disabled={!fallbackHref} onClick={() => {
-        if (!fallbackHref) return
-        void openExternalUrl(fallbackHref)
-        onOpenExternal()
-      }}>
-        Open billing in a new tab
-      </Button>
-    )
+  const src = orgId && platformOrigin
+    ? buildBillingEmbedUrl(platformBaseUrl, orgId, { view, intent, cta, surface: launcher ? 'cta' : undefined, parent: window.location.origin })
+    : null
+  const openFallback = () => {
+    if (!fallbackHref) return
+    void openExternalUrl(fallbackHref)
+    onOpenExternal()
   }
 
+  if (launcher) return (
+    <div className="flex min-w-0 flex-col items-end gap-1">
+      {!onHintChange && (hint || failure) && <p className="max-w-xs text-right text-xs text-muted-foreground" data-testid="billing-cta-hint">{failure ? FAILURE_MESSAGE[failure] : hint}</p>}
+      {failure ? (
+        <Button size="sm" title={FAILURE_MESSAGE[failure]} disabled={!fallbackHref} onClick={openFallback}>Open billing in a new tab</Button>
+      ) : (
+        <div className="relative shrink-0" data-testid="billing-cta-body">
+          <Button size="sm" className={frameReady ? 'invisible' : ''} disabled tabIndex={-1} aria-hidden="true" data-testid="billing-cta-size-reference">{frameLabel}</Button>
+          {src && <iframe key={attempt} ref={iframeRef} title="Open workspace billing" src={src} onLoad={sendTheme}
+            className="absolute inset-0 block h-full w-full border-0 bg-transparent" style={{ visibility: frameReady ? 'visible' : 'hidden' }}
+            referrerPolicy="strict-origin" data-testid="billing-cta-frame" />}
+          {!frameReady && <span role="status" className="sr-only" data-testid="billing-embed-loading">Loading billing…</span>}
+        </div>
+      )}
+    </div>
+  )
+
   return (
-    <div
-      className={launcher ? 'relative w-36 shrink-0 overflow-hidden' : 'relative min-h-0 w-full overflow-hidden'}
-      style={{ height: launcher ? 40 : failure ? undefined : height, maxHeight: launcher ? undefined : 'calc(90dvh - 120px)' }}
-      data-testid={launcher ? 'billing-cta-body' : 'billing-embed-body'}
-    >
+    <div className="relative min-h-0 w-full overflow-hidden" style={{ height: failure ? undefined : height, maxHeight: 'calc(90dvh - 120px)' }} data-testid="billing-embed-body">
       {failure ? (
         <div className="flex flex-col items-start gap-3 py-2">
           <p className="text-sm text-muted-foreground">{FAILURE_MESSAGE[failure]}</p>
           <div className="flex items-center gap-2">
-            {failure !== 'no_org' && (
-              <Button size="sm" variant="outline" onClick={retry}>
-                Try again
-              </Button>
-            )}
-            {fallbackHref && (
-              <Button
-                size="sm"
-                onClick={() => {
-                  void openExternalUrl(fallbackHref)
-                  onOpenExternal()
-                }}
-              >
-                Open billing in a new tab
-              </Button>
-            )}
+            {failure !== 'no_org' && <Button size="sm" variant="outline" onClick={retry}>Try again</Button>}
+            {fallbackHref && <Button size="sm" onClick={openFallback}>Open billing in a new tab</Button>}
           </div>
         </div>
       ) : (
         <>
-          {src && (
-            <iframe
-              key={attempt}
-              ref={iframeRef}
-              title={launcher ? 'Open workspace billing' : 'Workspace billing'}
-              src={src}
-              className="block h-full w-full border-0 bg-transparent"
-              referrerPolicy="strict-origin"
-              data-testid={launcher ? 'billing-cta-frame' : 'billing-embed-frame'}
-            />
-          )}
-          {!frameReady && (
-            <div
-              className="pointer-events-none absolute inset-0 flex items-center justify-center gap-2 bg-card/80 text-xs text-muted-foreground"
-              data-testid="billing-embed-loading"
-            >
-              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-              Loading billing…
-            </div>
-          )}
+          {src && <iframe key={attempt} ref={iframeRef} title="Workspace billing" src={src} onLoad={sendTheme}
+            className="block h-full w-full border-0 bg-transparent" referrerPolicy="strict-origin" data-testid="billing-embed-frame" />}
+          {!frameReady && <div className="pointer-events-none absolute inset-0 flex items-center justify-center gap-2 bg-card/80 text-xs text-muted-foreground" data-testid="billing-embed-loading">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />Loading billing…
+          </div>}
         </>
       )}
     </div>

@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { CheckCircle2, Loader2 } from 'lucide-react'
+import { toast } from 'sonner'
 
 import { extractSubscriptionRequired } from '@shared/lib/llm-provider/platform-error-presentation'
 import { cn } from '@shared/lib/utils/cn'
@@ -24,7 +25,7 @@ function splitMessage(markdown: string): { title: string; body: string } {
 }
 
 function title(cta: PaywallCta | null, fallback: string): string {
-  if (cta?.kind === 'subscribe') return 'Subscribe to keep going'
+  if (cta?.kind === 'subscribe') return 'Upgrade to keep going'
   if (cta?.kind === 'add_card') return 'Add a payment method'
   if (cta?.kind === 'manage_payment') return 'Payment needs attention'
   if (cta?.kind === 'ask_admin') return 'Workspace billing needs attention'
@@ -41,12 +42,12 @@ function subtitle(cta: PaywallCta | null, fallback: string): string {
 }
 
 const CTA_LABELS: Record<PaywallCta['kind'], string> = {
-  subscribe: 'Subscribe',
+  subscribe: 'Upgrade',
   add_card: 'Add credit card',
   manage_payment: 'Fix payment',
   go_to_billing: 'Go to billing',
   ask_admin: 'Go to billing',
-  topup: 'Add usage',
+  topup: 'Add credits',
 }
 
 function ctaHref(cta: PaywallCta): string | null {
@@ -92,7 +93,7 @@ function PaywallActions({
   }
   const href = cta ? ctaHref(cta) : null
   return (
-    <div className="flex items-center gap-2" data-testid="paywall-actions">
+    <div className="flex items-end gap-2" data-testid="paywall-actions">
       <Button size="sm" variant="ghost" onClick={onDismiss}>
         Dismiss
       </Button>
@@ -131,7 +132,10 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
   const [dismissed, setDismissed] = useState(false)
   const [handedOff, setHandedOff] = useState(false)
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [ctaHint, setCtaHint] = useState('')
   const cardRef = useRef<HTMLDivElement>(null)
+  const billingChanged = useRef(false)
+  const successShown = useRef(false)
   const { data: platformAuth } = usePlatformAuthStatus()
   const billing = usePlatformPaywallBilling(
     extractSubscriptionRequired(message),
@@ -144,8 +148,22 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
   const inApp = !isElectron() && platformAuth?.platformControlled === true
   const view = billing.cta ? EMBED_VIEW[billing.cta.kind] : undefined
   const embedded = inApp && view !== undefined
+  const { recheck } = billing
+  const handleBillingUpdated = useCallback(() => {
+    billingChanged.current = true
+    recheck()
+  }, [recheck])
+  useEffect(() => {
+    if (dialogOpen && view !== 'topup') setDialogOpen(false)
+  }, [dialogOpen, view])
+  useEffect(() => {
+    if (!billing.cleared || !inApp || dialogOpen || !billingChanged.current || successShown.current) return
+    successShown.current = true
+    toast.success('Billing updated. You can continue.')
+  }, [billing.cleared, inApp, dialogOpen])
   useEffect(() => {
     if (!billing.cleared || !dialogOpen) return
+    successShown.current = true
     const timer = setTimeout(() => setDialogOpen(false), 1200)
     return () => clearTimeout(timer)
   }, [billing.cleared, dialogOpen])
@@ -170,6 +188,7 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
             <div className="min-w-0 flex-1 basis-60">
               <p className="text-sm font-medium text-foreground">{heading}</p>
               {detail && <p className="mt-0.5 text-sm text-muted-foreground">{detail}</p>}
+              {embedded && ctaHint && <p className="mt-1 text-xs text-muted-foreground" data-testid="billing-cta-hint">{ctaHint}</p>}
             </div>
             <PaywallActions
               cta={billing.cta}
@@ -179,13 +198,15 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
                 <BillingEmbedFrame
                   key={billing.cta.kind}
                   launcher
+                  label={CTA_LABELS[billing.cta.kind]}
+                  onHintChange={setCtaHint}
                   cta={billing.cta.kind === 'add_card' ? 'add_card' : undefined}
                   intent={billing.cta.kind === 'topup' ? 'topup' : undefined}
                   view={view}
                   orgId={platformAuth?.orgId ?? null}
                   platformBaseUrl={platformAuth?.platformBaseUrl ?? null}
                   fallbackHref={ctaHref(billing.cta)}
-                  onBillingUpdated={billing.recheck}
+                  onBillingUpdated={handleBillingUpdated}
                   onOpenBilling={() => setDialogOpen(true)}
                   onOpenExternal={() => setHandedOff(true)}
                 />
@@ -195,15 +216,15 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
               onRecheck={billing.recheck}
             />
           </div>
-          {embedded && billing.cta && (
+          {embedded && billing.cta && view === 'topup' && (
             <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
               <DialogContent className="flex w-[calc(100%-2rem)] flex-col overflow-hidden sm:max-w-xl" onCloseAutoFocus={(event) => {
                 event.preventDefault()
                 cardRef.current?.querySelector('iframe')?.focus()
               }}>
                 <DialogHeader>
-                  <DialogTitle>{billing.cleared ? 'You’re ready to continue' : CTA_LABELS[billing.cta.kind]}</DialogTitle>
-                  <DialogDescription>{billing.cleared ? 'Your workspace billing is up to date.' : detail}</DialogDescription>
+                  <DialogTitle>{billing.cleared ? 'You’re ready to continue' : 'Add credits'}</DialogTitle>
+                  <DialogDescription>{billing.cleared ? 'Your workspace billing is up to date.' : 'Choose an amount to resume this answer.'}</DialogDescription>
                 </DialogHeader>
                 {billing.cleared ? (
                   <div role="status" className="flex items-center gap-2 py-4 text-sm">
@@ -219,7 +240,7 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
                     orgId={platformAuth?.orgId ?? null}
                     platformBaseUrl={platformAuth?.platformBaseUrl ?? null}
                     fallbackHref={ctaHref(billing.cta)}
-                    onBillingUpdated={billing.recheck}
+                    onBillingUpdated={handleBillingUpdated}
                     onOpenExternal={() => setHandedOff(true)}
                   />
                 )}
