@@ -528,6 +528,25 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   /**
+   * The other face of the same corruption: `run` succeeds, but the agent
+   * server dies at boot reading a file that ships inside the image (a
+   * truncated package.json under /app/node_modules, a module missing from
+   * /app/dist, a JS file cut off mid-way). Seen on Docker Desktop (Windows)
+   * and the bundled Lima VM after a pull unpacked onto a strained disk. The
+   * container can never become healthy; the fix is the same remove-and-
+   * recreate as the snapshot case. Only image-owned paths (/app) count:
+   * /workspace is user data and is not something a re-pull can repair.
+   */
+  protected isCorruptImageContentLog(logs: string): boolean {
+    if (!logs) return false
+    return (
+      /Invalid package config \/app\//.test(logs) ||
+      /Cannot find module '\/app\//.test(logs) ||
+      /\/app\/(?:node_modules|dist)\/[^\n]*:\d+\n[\s\S]{0,500}SyntaxError: Unexpected end of input/.test(logs)
+    )
+  }
+
+  /**
    * Remove the agent image so the next ensureImageExists() recreates it from
    * scratch. Base implementation only removes the tagged image — conservative
    * on user-owned daemons (docker/podman) that may hold unrelated images.
@@ -750,7 +769,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       // Bounded retry loop. Each recovery path makes exactly one attempt of
       // progress so the loop can't spin: dropping a mount shrinks `volumes`,
       // re-picking a port is capped by portRetries, and VM provisioning and
-      // image re-creation each run once. A fresh force-remove precedes every
+      // image re-creation each run once (the latter shared between the two
+      // corruption shapes: a run that fails to mount, and a run that starts
+      // but dies on a corrupt file). A fresh force-remove precedes every
       // attempt so we never double-start, using one runtime process instead
       // of a redundant stop followed by rm.
       const MAX_PORT_RETRIES = 3
@@ -765,7 +786,6 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
           try {
             ({ stdout } = await execWithPath(buildRunCmd(), { timeoutMs: this.getRunExecTimeoutMs() }))
-            break
           } catch (runError: any) {
             // 1. Inaccessible bind mount (e.g. iCloud/File Provider path the VM
             //    can't stat). Drop that one mount and retry without it.
@@ -829,44 +849,73 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
             throw runError
           }
+
+          console.log(`Started container ${stdout.trim()} on port ${port}`)
+
+          // Wait for container to be healthy
+          addErrorBreadcrumb({ category: 'container', message: 'Waiting for container health check', data: { port, containerName } })
+          const healthy = await this.waitForHealthy(60000, port)
+          if (healthy) break
+
+          // Grab logs to help diagnose the failure
+          const logs = await this.getLogs(30)
+
+          // 5. The run succeeded but the server died reading a file baked into
+          //    the image (see isCorruptImageContentLog). Same corruption, same
+          //    remedy, same once-only budget as #3: remove the image, recreate
+          //    it, and go around again. The dead container must go first — a
+          //    stopped container still pins the image, so `rmi` would refuse.
+          if (!imageRecoveryTried && this.isCorruptImageContentLog(logs)) {
+            imageRecoveryTried = true
+            console.warn(`[Container] Corrupt image content detected in container logs, removing ${image} and recreating`)
+            addErrorBreadcrumb({ category: 'container', message: 'Corrupt image content, removing image and recreating', data: { image, agentId: this.config.agentId } })
+            await execWithPathSilent(`${runner} rm -f ${containerName}`)
+            try {
+              await this.removeCorruptImage(image)
+              await this.recreateImage(image)
+              captureMessage('Recovered from corrupt container image content', {
+                level: 'warning',
+                tags: { component: 'container', operation: 'corrupt-image-recovery' },
+                extra: { agentId: this.config.agentId, image, containerLogs: logs.slice(0, 2000) },
+              })
+              continue
+            } catch (repairError) {
+              captureException(repairError, {
+                tags: { component: 'container', operation: 'corrupt-image-recovery' },
+                extra: { agentId: this.config.agentId, image, containerLogs: logs.slice(0, 2000) },
+              })
+              // Fall through — surface the health error below.
+            }
+          }
+
+          const logsSnippet = logs ? `\n\nContainer logs:\n${logs}` : ''
+          const healthError = new Error(`Container failed to become healthy${logsSnippet}`)
+          captureException(healthError, {
+            tags: { component: 'container', operation: 'health-check' },
+            extra: {
+              agentId: this.config.agentId,
+              containerName,
+              port,
+              image,
+              runner: settings.container.containerRunner,
+              cpu,
+              memory,
+              containerLogs: logs,
+            },
+          })
+          // Stop + remove the just-created-but-unhealthy container. Otherwise it
+          // stays process-alive, and the next start() short-circuits on the
+          // running-status early return (getInfoFromRuntime derives 'running'
+          // from inspect's State.Running, not /health), caching a container that
+          // never became healthy. Best-effort/silent so an already-gone container
+          // is harmless and cleanup failure never masks the health error. Logs
+          // were already captured above, before this removes the container.
+          await execWithPathSilent(`${runner} stop ${containerName}`)
+          await execWithPathSilent(`${runner} rm ${containerName}`)
+          throw healthError
         }
       } finally {
         cleanupEnvFile()
-      }
-
-      console.log(`Started container ${stdout.trim()} on port ${port}`)
-
-      // Wait for container to be healthy
-      addErrorBreadcrumb({ category: 'container', message: 'Waiting for container health check', data: { port, containerName } })
-      const healthy = await this.waitForHealthy(60000, port)
-      if (!healthy) {
-        // Grab logs to help diagnose the failure
-        const logs = await this.getLogs(30)
-        const logsSnippet = logs ? `\n\nContainer logs:\n${logs}` : ''
-        const healthError = new Error(`Container failed to become healthy${logsSnippet}`)
-        captureException(healthError, {
-          tags: { component: 'container', operation: 'health-check' },
-          extra: {
-            agentId: this.config.agentId,
-            containerName,
-            port,
-            image,
-            runner: settings.container.containerRunner,
-            cpu,
-            memory,
-            containerLogs: logs,
-          },
-        })
-        // Stop + remove the just-created-but-unhealthy container. Otherwise it
-        // stays process-alive, and the next start() short-circuits on the
-        // running-status early return (getInfoFromRuntime derives 'running'
-        // from inspect's State.Running, not /health), caching a container that
-        // never became healthy. Best-effort/silent so an already-gone container
-        // is harmless and cleanup failure never masks the health error. Logs
-        // were already captured above, before this removes the container.
-        await execWithPathSilent(`${runner} stop ${containerName}`)
-        await execWithPathSilent(`${runner} rm ${containerName}`)
-        throw healthError
       }
 
       console.log(`Container ${containerName} is now running on port ${port}`)
