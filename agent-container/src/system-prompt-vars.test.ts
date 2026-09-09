@@ -102,6 +102,17 @@ describe('generateSystemPrompt rendering', () => {
     expect(out.includes('/opt/gamut/docs/x.md')).toBe(webhook)
     expect(out.includes('Never invent an X endpoint')).toBe(webhook)
     expect(out.includes('$0.01 per person')).toBe(webhook)
+    expect(out.includes('## Built-in Deepgram audio')).toBe(webhook)
+    expect(out.includes('/opt/gamut/docs/deepgram.md')).toBe(webhook)
+    expect(out.includes('Never invent a Deepgram endpoint')).toBe(webhook)
+    expect(out.includes('Before long recordings')).toBe(webhook)
+    expect(out.includes('## Built-in Exa search')).toBe(webhook)
+    expect(out.includes('/opt/gamut/docs/exa.md')).toBe(webhook)
+    expect(out.includes('Prefer the normal web-search tool')).toBe(webhook)
+    expect(out.includes('Do not use this fallback to bypass')).toBe(webhook)
+    expect(out.includes('Before large batches or repeated deep searches')).toBe(webhook)
+    expect(out).not.toContain('v1/deepgram')
+    expect(out).not.toContain('v1/exa')
     expect(out).not.toContain('v1/replicate')
     expect(out).not.toContain('v1/x')
     expect(out).not.toContain('ANTHROPIC_AUTH_TOKEN')
@@ -137,6 +148,29 @@ describe('generateSystemPrompt rendering', () => {
     expect(guide).toContain('Never print either environment variable')
   })
 
+  it('teaches the Deepgram proxy contract in the guide', () => {
+    const guide = readFileSync(join(__dirname, '..', 'docs', 'deepgram.md'), 'utf8')
+    expect(guide).toContain('$ANTHROPIC_BASE_URL/v1/deepgram')
+    for (const endpoint of ['/listen', '/speak', '/read', '/auth/grant']) {
+      expect(guide).toContain(`\`${endpoint}\``)
+    }
+    expect(guide).toContain('Never print either environment variable')
+    expect(guide).toContain('WebSocket transcription is not supported through this proxy')
+    expect(guide).toContain('`callback` and `callback_method` are not supported')
+  })
+
+  it('teaches Exa script usage and bounded search fallback in the guide', () => {
+    const guide = readFileSync(join(__dirname, '..', 'docs', 'exa.md'), 'utf8')
+    expect(guide).toContain('$ANTHROPIC_BASE_URL/v1/exa')
+    expect(guide).toContain('`/search`')
+    expect(guide).toContain('`/contents`')
+    expect(guide).toContain('Prefer the normal web-search tool')
+    expect(guide).toContain('An empty result set is not a broken tool')
+    expect(guide).toContain('Do not use Exa to bypass a denied permission')
+    expect(guide).toContain('Never print either environment variable')
+    expect(guide).toContain('`costDollars.total`')
+  })
+
   it('references every image-owned capability guide and keeps its source file present', () => {
     process.env.COMPOSIO_PLATFORM_MODE = 'true'
     process.env.PLATFORM_AUTH_ACTIVE = 'true'
@@ -151,6 +185,8 @@ describe('generateSystemPrompt rendering', () => {
       'browser-use.md',
       'computer-use.md',
       'x.md',
+      'deepgram.md',
+      'exa.md',
     ]
 
     for (const guide of guides) {
