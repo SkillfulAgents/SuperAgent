@@ -288,4 +288,4 @@ Each agent runs in its own Docker/Podman container with Claude Code in headless 
 - Containers communicate via HTTP/WebSocket APIs
 - SSE streaming for real-time message updates
 - File-based persistence for agents, sessions, and messages
-- SQLite database for OAuth connected accounts
+- SQLite database for OAuth connected accounts 
