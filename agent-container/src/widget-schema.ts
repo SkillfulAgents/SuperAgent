@@ -36,6 +36,30 @@ export const WIDGET_FAMILY_VIEWPORTS: Record<WidgetSize, { width: number; height
   medium: { width: 364, height: 170 },
 }
 
+/**
+ * The policy the app renders a widget under. Mirrored by hand from
+ * `src/shared/lib/services/widget-service.ts` (this package cannot import
+ * @shared), and stamped into the document before rasterizing so a PNG cannot
+ * show what the app would refuse to load — a sibling stylesheet or image, say,
+ * which no HTTP policy blocks because it never crosses the network.
+ */
+export const WIDGET_DOCUMENT_CSP =
+  "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; form-action 'none'; base-uri 'none'"
+
+/** The document as the app renders it: scheme stamped, policy inlined. */
+export function renderWidgetDocument(html: string, scheme: WidgetScheme): string {
+  const meta = `<meta http-equiv="Content-Security-Policy" content="${WIDGET_DOCUMENT_CSP}">`
+  const stamped = html.replace(/<html(\s[^>]*)?>/i, (match, attrs: string | undefined) => {
+    const rest = (attrs ?? '').replace(/\sdata-theme="[^"]*"/i, '')
+    return `<html data-theme="${scheme}"${rest}>`
+  })
+  const withHtml = stamped === html ? `<html data-theme="${scheme}">${html}</html>` : stamped
+  const withHead = withHtml.replace(/<head(\s[^>]*)?>/i, (match) => `${match}${meta}`)
+  return withHead !== withHtml
+    ? withHead
+    : withHtml.replace(/<html(\s[^>]*)?>/i, (match) => `${match}<head>${meta}</head>`)
+}
+
 export const WIDGET_HTML_FILENAME = 'widget.html'
 export const WIDGET_META_FILENAME = 'widget.json'
 

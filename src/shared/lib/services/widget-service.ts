@@ -55,6 +55,12 @@ export function artifactsDirFor(agentSlug: string): string {
 export function resolveWidgetPath(agentSlug: string, artifactSlug: string, ...segments: string[]): string | null {
   if (!WIDGET_SLUG_REGEX.test(artifactSlug)) return null
   const artifactsDir = artifactsDirFor(agentSlug)
+  // `artifacts` is itself something the agent can replace with a link, and
+  // resolving both sides would then take the link's target as the boundary and
+  // agree with itself — another agent's workspace reading as "contained". The
+  // anchor has to be the workspace: that is the bind mount, which the agent
+  // cannot swap from inside the container.
+  if (!isRealPathWithinDir(getAgentWorkspaceDir(agentSlug), artifactsDir)) return null
   const resolved = path.resolve(artifactsDir, artifactSlug, ...segments)
   return isRealPathWithinDir(artifactsDir, resolved) ? resolved : null
 }
@@ -261,7 +267,11 @@ const CSP_META = `<meta http-equiv="Content-Security-Policy" content="${WIDGET_D
  */
 export function renderWidgetDocument(html: string, scheme: WidgetScheme): string {
   const stamped = applyWidgetScheme(html, scheme)
-  if (/<meta[^>]+http-equiv=["']?Content-Security-Policy/i.test(stamped)) return stamped
+  // Ours goes in whether or not the author wrote one. Since the app inlines
+  // this document, the response header no longer covers the frame, so skipping
+  // insertion would leave an authored `default-src *` as the only policy.
+  // Two policies are enforced as an intersection, so an author can only
+  // restrict further, never widen.
   const withHead = stamped.replace(/<head(\s[^>]*)?>/i, (match) => `${match}${CSP_META}`)
   if (withHead !== stamped) return withHead
   // No head of its own — open one right after the html tag we just stamped.

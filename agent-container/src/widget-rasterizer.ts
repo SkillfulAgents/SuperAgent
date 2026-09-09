@@ -8,6 +8,7 @@ import {
   WIDGET_SCALES,
   WIDGET_SCHEMES,
   WIDGET_SIZES,
+  renderWidgetDocument,
   snapshotFileName,
   type WidgetScheme,
 } from './widget-schema'
@@ -91,7 +92,13 @@ async function runRasterize(
     if (run.aborted) return { rendered: [...rendered], error: 'Rasterization aborted' }
     const outDir = path.join(widgetDir, 'snapshots')
     await fs.promises.mkdir(outDir, { recursive: true })
-    const fileUrl = `file://${htmlPath}`
+    // Rendered once per scheme rather than per screenshot: the same eight
+    // renders come from two documents.
+    const html = await fs.promises.readFile(htmlPath, 'utf-8')
+    const documents: Record<WidgetScheme, string> = {
+      light: renderWidgetDocument(html, 'light'),
+      dark: renderWidgetDocument(html, 'dark'),
+    }
 
     for (const size of WIDGET_SIZES) {
       for (const scheme of WIDGET_SCHEMES) {
@@ -111,8 +118,15 @@ async function runRasterize(
           })
           try {
             const page = await context.newPage()
-            await page.goto(fileUrl, { waitUntil: 'networkidle', timeout: NAV_TIMEOUT_MS })
-            await applyScheme(page, scheme)
+            // setContent, not a file:// navigation. Loading the file gives the
+            // document a directory to resolve against, and `./chart.css` or a
+            // sibling PNG then renders into the preview even though the app —
+            // which inlines the same document under `default-src 'none'` —
+            // refuses them. No file base, and the policy travels in the
+            // document, so the two agree. It also carries data-theme, which
+            // used to be set by evaluating in the page: that needs the
+            // scripting this context deliberately does not have.
+            await page.setContent(documents[scheme], { waitUntil: 'networkidle', timeout: NAV_TIMEOUT_MS })
             await page.waitForTimeout(SETTLE_MS)
             const fileName = snapshotFileName(size, scheme, scale)
             // Written to a temp name then renamed so a reader never sees a
@@ -142,13 +156,4 @@ async function runRasterize(
     }
   }
   return { rendered: [...rendered], error }
-}
-
-async function applyScheme(
-  page: { evaluate: (script: string) => Promise<unknown> },
-  scheme: WidgetScheme,
-): Promise<void> {
-  // String form: this file compiles without the DOM lib, and the script runs
-  // in the page, not here.
-  await page.evaluate(`document.documentElement.setAttribute('data-theme', ${JSON.stringify(scheme)})`)
 }

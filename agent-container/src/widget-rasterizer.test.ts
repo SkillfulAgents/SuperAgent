@@ -32,8 +32,8 @@ function fakeBrowser(page: Record<string, unknown>): FakeBrowser {
 
 function workingPage() {
   return {
+    setContent: vi.fn(async () => {}),
     goto: vi.fn(async () => {}),
-    evaluate: vi.fn(async () => {}),
     waitForTimeout: vi.fn(async () => {}),
     screenshot: vi.fn(async ({ path: file }: { path: string }) => {
       await fs.promises.writeFile(file, 'png')
@@ -56,7 +56,8 @@ describe('rasterizeWidget', () => {
   })
 
   it('renders every family, scheme and scale from one browser', async () => {
-    const browser = fakeBrowser(workingPage())
+    const page = workingPage()
+    const browser = fakeBrowser(page)
     launchMock.mockResolvedValue(browser)
 
     const result = await rasterizeWidget(dir)
@@ -77,13 +78,22 @@ describe('rasterizeWidget', () => {
     for (const [options] of browser.newContext.mock.calls) {
       expect(options).toMatchObject({ javaScriptEnabled: false, offline: true })
     }
+    // Inlined rather than navigated to: a file:// document resolves `./x.css`
+    // against the artifact dir and renders resources the app refuses. The
+    // policy and the scheme ride inside the document instead.
+    expect(page.goto).not.toHaveBeenCalled()
+    for (const [doc] of page.setContent.mock.calls) {
+      expect(doc).toContain('http-equiv="Content-Security-Policy"')
+      expect(doc).toMatch(/<html data-theme="(light|dark)"/)
+    }
+    expect(page.setContent.mock.calls.some(([d]) => (d as string).includes('data-theme="dark"'))).toBe(true)
   })
 
   it('a hung page ends the batch and closes the browser, rather than leaving it rendering', async () => {
     vi.useFakeTimers()
     const page = workingPage()
-    // The first navigation never settles — the failure the timeout exists for.
-    page.goto = vi.fn(() => new Promise<void>(() => {}))
+    // The first render never settles — the failure the timeout exists for.
+    page.setContent = vi.fn(() => new Promise<void>(() => {}))
     const browser = fakeBrowser(page)
     launchMock.mockResolvedValue(browser)
 

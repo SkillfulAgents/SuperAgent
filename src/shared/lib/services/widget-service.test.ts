@@ -200,6 +200,24 @@ describe('widget-service', () => {
     expect(await readWidgetLogTail(AGENT, 'macros')).toBeNull()
   })
 
+  it('refuses to read through an artifacts dir the agent replaced with a link', async () => {
+    // The leaf checks are not enough on their own: resolving both sides against
+    // a swapped `artifacts` makes the link's target the boundary, and it agrees
+    // with itself. This is the cross-agent read that buys.
+    const victim = path.join(tmpRoot, 'agent-2', 'workspace', 'artifacts', 'daily-macros')
+    fs.mkdirSync(victim, { recursive: true })
+    fs.writeFileSync(path.join(victim, 'package.json'), manifest({ script: 'bun run widget.ts' }))
+    fs.writeFileSync(path.join(victim, 'widget.html'), '<p>other agent</p>')
+
+    const ourWorkspace = path.join(tmpRoot, AGENT, 'workspace')
+    fs.mkdirSync(ourWorkspace, { recursive: true })
+    fs.symlinkSync(path.join(tmpRoot, 'agent-2', 'workspace', 'artifacts'), path.join(ourWorkspace, 'artifacts'))
+
+    expect(resolveWidgetPath(AGENT, 'daily-macros', 'widget.html')).toBeNull()
+    expect(await readWidgetHtml(AGENT, 'daily-macros')).toBeNull()
+    expect(await readWidgetFromFilesystem(AGENT, 'daily-macros')).toBeNull()
+  })
+
   it('carries the policy inside the document the app inlines', () => {
     // The app cannot frame the URL (the renderer is file:// in a packaged
     // build), so the restrictions have to travel in the document itself.
@@ -213,9 +231,14 @@ describe('widget-service', () => {
     expect(renderWidgetDocument('<p>bare</p>', 'light')).toMatch(
       /<html data-theme="light"><head><meta http-equiv="Content-Security-Policy"/,
     )
-    // An author who wrote their own policy keeps it — we do not stack two.
-    const authored = '<html><head><meta http-equiv="Content-Security-Policy" content="default-src \'none\'"></head></html>'
-    expect(renderWidgetDocument(authored, 'dark').match(/http-equiv="Content-Security-Policy"/g)).toHaveLength(1)
+    // An authored policy does not displace ours. The app inlines this document,
+    // so the response header no longer covers the frame — were ours skipped,
+    // an authored `default-src *` would be the only policy in force. Browsers
+    // enforce two policies as an intersection, so the author can only restrict.
+    const authored = '<html><head><meta http-equiv="Content-Security-Policy" content="default-src *"></head></html>'
+    const rendered = renderWidgetDocument(authored, 'dark')
+    expect(rendered.match(/http-equiv="Content-Security-Policy"/g)).toHaveLength(2)
+    expect(rendered).toMatch(/<head><meta http-equiv="Content-Security-Policy" content="default-src 'none';/)
   })
 
   it('stamps data-theme on the html element, replacing any author value', () => {
