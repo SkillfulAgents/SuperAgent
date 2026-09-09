@@ -462,6 +462,9 @@ export class WaitForIdleTimeoutError extends Error {
 const BACKGROUND_TASK_ID_TEXT = /background with ID:\s*([A-Za-z0-9_-]+)/i
 // A background Agent launch acknowledges with "… agentId: <hex> …".
 const AGENT_ID_TEXT = /\bagentId:\s*([a-f0-9]+)\b/
+// …and opens with this line (the SDK's sidechain ack may carry no
+// tool_use_result at all, so the text is what identifies it).
+const ASYNC_AGENT_ACK_TEXT = /\bAsync agent launched\b/i
 
 function backgroundTaskIdOf(toolUseResult: unknown): string | undefined {
   const tur = toolUseResult as { backgroundTaskId?: unknown; background_task_id?: unknown } | undefined
@@ -3256,8 +3259,21 @@ class MessagePersister {
     const tur = content.tool_use_result as
       | { status?: unknown; isAsync?: unknown; agentId?: unknown }
       | undefined
+    const text = resultTextOf(resultBlock?.content)
+    const launcher = launch?.name
+    const runtimeLists = (id: string) => state.bgTasksSnapshot?.has(id) === true
 
-    const bgId = backgroundTaskIdOf(content.tool_use_result) ?? backgroundTaskIdFromText(resultBlock?.content)
+    // A backgrounded Bash command. The runtime's own metadata is the launch;
+    // the CLI's result text is accepted only with corroboration — the
+    // remembered call was a background Bash, or the runtime snapshot lists
+    // the id — because the same line sits in archived logs, and a subagent
+    // reading one must not register a task that is not running.
+    let bgId = backgroundTaskIdOf(content.tool_use_result)
+    if (!bgId) {
+      const fromText = backgroundTaskIdFromText(text)
+      const launchedInBackground = launcher === 'Bash' && launch?.input.run_in_background === true
+      if (fromText && (launchedInBackground || runtimeLists(fromText))) bgId = fromText
+    }
     if (bgId) {
       const command = typeof launch?.input.command === 'string' ? launch.input.command : null
       const detail = command ?? state.bgTaskDescriptions.get(bgId) ?? null
@@ -3268,11 +3284,16 @@ class MessagePersister {
       return
     }
 
-    const isAsyncLaunch = tur?.status === 'async_launched' || tur?.isAsync === true
-    if (!isAsyncLaunch) return
-    const agentId =
-      typeof tur?.agentId === 'string' ? tur.agentId : agentIdFromText(resultBlock?.content)
+    // A background agent. The SDK's sidechain acknowledgement can arrive
+    // without tool_use_result (0.3.260 does), so the ack text counts too —
+    // with the same corroboration: the remembered call was an Agent/Task
+    // launch, or the runtime snapshot lists the agent.
+    const agentId = typeof tur?.agentId === 'string' ? tur.agentId : agentIdFromText(text)
     if (!agentId) return
+    const structuredAck = tur?.status === 'async_launched' || tur?.isAsync === true
+    const textAck =
+      ASYNC_AGENT_ACK_TEXT.test(text) && (launcher === 'Agent' || launcher === 'Task' || runtimeLists(agentId))
+    if (!structuredAck && !textAck) return
     const subagentType = typeof launch?.input.subagent_type === 'string' && launch.input.subagent_type ? launch.input.subagent_type : 'Agent'
     const description = typeof launch?.input.description === 'string' && launch.input.description ? launch.input.description : null
     this.registerBackgroundSubagent(sessionId, state, agentId, toolUseId ?? '', {

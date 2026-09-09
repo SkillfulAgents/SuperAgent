@@ -7807,6 +7807,74 @@ describe('MessagePersister', () => {
         })
       })
 
+      const REAL_ASYNC_ACK =
+        'Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)\n' +
+        "agentId: acff9c4c8a5717906 (internal ID - do not mention to user. Use SendMessage with to: 'acff9c4c8a5717906', summary: '<5-10 word recap>' to continue this agent.)\n" +
+        'The agent is working in the background. You will be notified automatically when it completes.'
+
+      it('tracks a background agent acknowledged without tool_use_result metadata (SDK 0.3.260 sidechain shape)', () => {
+        // The real sidechain ack carries only the text; the remembered Agent
+        // call is what corroborates it.
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        subagentToolUse('sub-agent-1', 'Agent', { subagent_type: 'general-purpose', description: 'Locate Apple UI assets' })
+        subagentToolResult('sub-agent-1', { text: REAL_ASYNC_ACK })
+
+        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toEqual([
+          expect.objectContaining({
+            taskId: 'acff9c4c8a5717906',
+            isSubagent: true,
+            launchedBySubagent: true,
+            label: { title: 'general-purpose', detail: 'Locate Apple UI assets' },
+          }),
+        ])
+      })
+
+      it('accepts a text-only agent ack whose call was missed when the runtime snapshot lists the agent', () => {
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        mockClient._sendMessage({
+          type: 'system', subtype: 'background_tasks_changed',
+          tasks: [{ task_id: 'acff9c4c8a5717906', task_type: 'local_agent', description: 'Locate assets' }],
+        })
+        subagentToolResult('sub-unknown-1', { text: REAL_ASYNC_ACK })
+        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)[0]).toMatchObject({
+          taskId: 'acff9c4c8a5717906', label: { title: 'Agent', detail: 'Locate assets' },
+        })
+      })
+
+      it('ignores an agent ack phrase with neither a remembered launch nor a snapshot entry', () => {
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        subagentToolResult('sub-unknown-1', { text: REAL_ASYNC_ACK })
+        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toEqual([])
+      })
+
+      it('does not register a task from a tool result that merely quotes a launch line', () => {
+        // A subagent reading an archived log, or a plain Bash echoing one,
+        // returns the CLI's "running in background" line without any task running.
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        const quoted = '2026-09-01 build.log: Command running in background with ID: historical_1. Output is being written to: /tmp/o.'
+        subagentToolUse('sub-read-1', 'Read', { file_path: '/workspace/logs/build.log' })
+        subagentToolResult('sub-read-1', { text: quoted })
+        subagentToolUse('sub-bash-1', 'Bash', { command: 'cat /workspace/logs/build.log' })
+        subagentToolResult('sub-bash-1', { text: quoted })
+
+        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toEqual([])
+        expect(sseEvents.filter(e => e.type === 'background_task_started')).toHaveLength(0)
+      })
+
+      it('accepts a text-only task id whose call was missed when the runtime snapshot lists it', () => {
+        messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+        mockClient._sendMessage({
+          type: 'system', subtype: 'background_tasks_changed',
+          tasks: [{ task_id: 'nested-9', task_type: 'local_bash', description: 'Serve local assets' }],
+        })
+        subagentToolResult('sub-unknown-2', {
+          text: 'Command running in background with ID: nested-9. Output is being written to: /tmp/o.',
+        })
+        expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)[0]).toMatchObject({
+          taskId: 'nested-9', label: { title: 'Background command', detail: 'Serve local assets' },
+        })
+      })
+
       it('does not track a launch that failed', () => {
         messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
         subagentToolUse('sub-bash-1', 'Bash', { command: 'false', run_in_background: true })
