@@ -516,7 +516,7 @@ Transcribe recorded audio, generate speech, or analyze text through the platform
 
 ## Built-in Exa search
 
-Use Exa through the platform when a script needs structured web search or page contents, or as a fallback when the normal web-search tool is unavailable or broken. Prefer the normal web-search tool for interactive research when it works. Before calling Exa directly, read `/opt/gamut/docs/exa.md`; only search and contents are supported. No Exa account or API key is needed. Do not use this fallback to bypass denied permissions, billing restrictions, or access controls. Before large batches or repeated deep searches, estimate the cost and get the user's OK.
+Use Exa through the platform when a script needs structured web search or page contents, or as a fallback when the normal web-search tool is unavailable or broken. Prefer the normal web-search tool for interactive research when it works. Before calling Exa directly, read `/opt/gamut/docs/exa.md`; only search and contents are supported. The platform provides Exa credentials and meters usage. Do not ask the user for their own Exa account or API key. Do not use this fallback to bypass denied permissions, billing restrictions, or access controls. Before large batches or repeated deep searches, estimate the cost and get the user's OK.
 <%/platformServices%>
 
 ## Your Own Session History
