@@ -1,0 +1,125 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e8]:
+        - generic [ref=e9]: Gamut
+        - button "Search" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+      - generic [ref=e15]:
+        - list [ref=e18]:
+          - listitem [ref=e19]:
+            - link "Home" [ref=e20] [cursor=pointer]:
+              - /url: /
+              - img [ref=e21]
+              - generic [ref=e26]: Home
+          - listitem [ref=e27]:
+            - link "Notifications" [ref=e28] [cursor=pointer]:
+              - /url: /notifications
+              - img [ref=e29]
+              - generic [ref=e32]: Notifications
+          - listitem [ref=e156]:
+            - link "Discover New Agents New" [ref=e157] [cursor=pointer]:
+              - /url: /explore
+              - img [ref=e158]
+              - generic [ref=e161]: Discover New Agents
+              - generic [ref=e162]: New
+          - listitem [ref=e33]:
+            - button "New Agent" [ref=e34] [cursor=pointer]:
+              - img [ref=e35]
+              - generic [ref=e36]: New Agent
+        - list [ref=e39]:
+          - listitem [ref=e40]:
+            - button "Your Agents" [ref=e41] [cursor=pointer]:
+              - button "Your Agents" [expanded] [ref=e42]:
+                - generic [ref=e43]: Your Agents
+            - button "New folder" [ref=e45] [cursor=pointer]:
+              - img [ref=e46]
+            - list [ref=e49]:
+              - button "QA-20260909-221404-a092 working Collapse Browser Navigation and Title Extraction working" [ref=e348] [cursor=pointer]:
+                - generic [ref=e51]:
+                  - link "QA-20260909-221404-a092 working" [ref=e349]:
+                    - /url: /agents/qa-20260909-221404-a092-y44dnhkbel
+                    - generic [ref=e54]: QA-20260909-221404-a092
+                    - img "working" [ref=e350]:
+                      - img "working" [ref=e351]
+                  - button "Collapse" [expanded] [ref=e355]:
+                    - img [ref=e356]
+                - list [ref=e359]:
+                  - listitem [ref=e360]:
+                    - link "Browser Navigation and Title Extraction working" [ref=e361]:
+                      - /url: /agents/y44dnhkbel/sessions/5536f174-41df-4279-b22d-0175b0531722
+                      - generic [ref=e363]: Browser Navigation and Title Extraction
+                      - img "working" [ref=e365]
+              - button "QA-20260909-221402-9kc0 idle" [ref=e65] [cursor=pointer]:
+                - link "QA-20260909-221402-9kc0 idle" [ref=e67]:
+                  - /url: /agents/qa-20260909-221402-9kc0-ecsst01eqq
+                  - generic [ref=e69]: QA-20260909-221402-9kc0
+                  - img "idle" [ref=e70]:
+                    - img [ref=e71]
+          - status [ref=e163]
+      - generic [ref=e81]:
+        - button "Settings" [ref=e82] [cursor=pointer]:
+          - img [ref=e83]
+          - generic [ref=e86]: Settings
+        - button "0.5.20-rc.2" [ref=e87] [cursor=pointer]:
+          - generic [ref=e88]: 0.5.20-rc.2
+      - button "Toggle Sidebar" [ref=e89]
+    - main [ref=e90]:
+      - generic [ref=e168]:
+        - generic [ref=e169]:
+          - button "Toggle Sidebar" [ref=e170] [cursor=pointer]:
+            - img
+            - generic [ref=e171]: Toggle Sidebar
+          - generic [ref=e174]:
+            - link "QA-20260909-221404-a092" [ref=e370]:
+              - /url: /agents/qa-20260909-221404-a092-y44dnhkbel
+            - text: /New Session
+          - generic [ref=e175]:
+            - generic [ref=e176]:
+              - img "working" [ref=e371]
+              - generic [ref=e186]: working
+            - button "Stop Agent" [ref=e188] [cursor=pointer]:
+              - img
+        - generic [ref=e377]:
+          - region "Messages" [ref=e379]:
+            - log [ref=e381]:
+              - time [ref=e383]: Today at 10:14 PM
+              - paragraph [ref=e388]:
+                - text: Open a browser and go to
+                - link "https://example.com" [ref=e389] [cursor=pointer]:
+                  - /url: https://example.com
+                - text: . Tell me the page title.
+              - paragraph [ref=e394]: I
+          - generic [ref=e398]:
+            - generic [ref=e401]:
+              - generic [ref=e403]: Working...
+              - generic [ref=e404]: 0s
+            - generic [ref=e405]:
+              - generic [ref=e407]:
+                - textbox "Type your next message..." [ref=e410]:
+                  - text: Type your next message...
+                  - paragraph [ref=e411]
+                - generic [ref=e412]:
+                  - generic [ref=e413]:
+                    - button "Add files" [ref=e414] [cursor=pointer]:
+                      - img
+                    - 'button "Model and effort: Opus 5 · Medium. Click to change." [disabled]':
+                      - generic:
+                        - text: Opus 5
+                        - generic: · Medium
+                      - img
+                  - generic [ref=e415]:
+                    - button "Set up voice input" [ref=e416] [cursor=pointer]:
+                      - img
+                    - generic [ref=e418]:
+                      - button "Stop the agent" [ref=e419] [cursor=pointer]:
+                        - img
+                      - button "Queue message" [disabled]:
+                        - img
+              - generic [ref=e421]:
+                - generic [ref=e422]: ↵
+                - generic [ref=e423]: Send
+                - generic [ref=e424]: ·
+                - generic [ref=e425]: ⇧↵
+                - generic [ref=e426]: New line
+  - region "Notifications alt+T"
