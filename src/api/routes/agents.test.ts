@@ -412,6 +412,9 @@ vi.mock('@shared/lib/services/skillset-service', () => ({
 
 vi.mock('@shared/lib/services/artifact-service', () => ({
   listArtifactsFromFilesystem: vi.fn(),
+  // The agents list reads an artifact's dashboard and widget halves from one
+  // scan, so that is where a test seeds either of them.
+  listArtifactsAndWidgets: vi.fn(async () => ({ dashboards: [], widgets: [] })),
 }))
 
 vi.mock('@shared/lib/services/chat-integration-service', () => ({
@@ -619,7 +622,7 @@ import {
 import { getAgent, getAgentWithStatus, listAgentsWithStatus } from '@shared/lib/services/agent-service'
 import { listSessionsFromSummary, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesByAgent } from '@shared/lib/services/scheduled-task-service'
-import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
+import { listArtifactsFromFilesystem, listArtifactsAndWidgets } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
@@ -5956,7 +5959,7 @@ describe('GET /api/agents/:id/inbound-x-agent', () => {
     mockAgentExists.mockResolvedValue(true)
   })
 
-  it('returns x-agent session history for the resolved target agent', async () => {
+  it('returns x-agent and widget repair history for the resolved target agent', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([{
       slug: 'target',
       displaySlug: 'target',
@@ -5970,6 +5973,11 @@ describe('GET /api/agents/:id/inbound-x-agent', () => {
         invokedByAgentSlug: 'deleted-caller',
         createdAt: '2026-08-20T12:00:00.000Z',
       },
+      'repair-session': {
+        isWidgetRepair: true,
+        widgetRepairSlug: 'weather',
+        createdAt: '2026-08-21T12:00:00.000Z',
+      },
     })
 
     const res = await getReq(createApp(), '/api/agents/target/inbound-x-agent')
@@ -5977,6 +5985,11 @@ describe('GET /api/agents/:id/inbound-x-agent', () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
       sessions: [{
+        id: 'repair-session',
+        createdAt: '2026-08-21T12:00:00.000Z',
+        isWidgetRepair: true,
+        widgetRepairSlug: 'weather',
+      }, {
         id: 'session-a',
         createdAt: '2026-08-20T12:00:00.000Z',
         triggeredBy: { slug: 'deleted-caller', name: 'deleted-caller' },
@@ -6104,6 +6117,7 @@ describe('GET /api/agents (enriched summary)', () => {
     })
     vi.mocked(listPendingScheduledTasks).mockResolvedValue([])
     vi.mocked(listArtifactsFromFilesystem).mockResolvedValue([])
+    vi.mocked(listArtifactsAndWidgets).mockResolvedValue({ dashboards: [], widgets: [] })
   })
 
   it.each([
@@ -6935,10 +6949,13 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('returns dashboard summaries from artifacts', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listArtifactsFromFilesystem).mockResolvedValue([
-      { slug: 'dash-1', name: 'Sales Dashboard', description: '', status: 'running', port: 5000 },
-      { slug: 'dash-2', name: 'Metrics', description: '', status: 'stopped', port: 5001 },
-    ] as any)
+    vi.mocked(listArtifactsAndWidgets).mockResolvedValue({
+      dashboards: [
+        { slug: 'dash-1', name: 'Sales Dashboard', description: '', status: 'running', port: 5000 },
+        { slug: 'dash-2', name: 'Metrics', description: '', status: 'stopped', port: 5001 },
+      ],
+      widgets: [],
+    } as any)
 
     const res = await getReq(app, '/api/agents')
     const body = await res.json()
@@ -6951,9 +6968,10 @@ describe('GET /api/agents (enriched summary)', () => {
 
   it('uses artifact slug as fallback name when name is empty', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
-    vi.mocked(listArtifactsFromFilesystem).mockResolvedValue([
-      { slug: 'unnamed-dash', name: '', description: '', status: 'running', port: 5000 },
-    ] as any)
+    vi.mocked(listArtifactsAndWidgets).mockResolvedValue({
+      dashboards: [{ slug: 'unnamed-dash', name: '', description: '', status: 'running', port: 5000 }],
+      widgets: [],
+    } as any)
 
     const res = await getReq(app, '/api/agents')
     const body = await res.json()
@@ -8941,6 +8959,24 @@ describe('session existence guards read metadata, not the transcript', () => {
       invokedByAgentSlug: 'caller-agent',
       invokedByAgentName: 'Caller Agent',
     })
+  })
+
+  it('returns widget repair provenance for the session breadcrumb and back bar', async () => {
+    vi.mocked(getSessionMetadata).mockResolvedValue({
+      isWidgetRepair: true,
+      widgetRepairSlug: 'weather',
+    })
+
+    const res = await getReq(app, '/api/agents/test-agent/sessions/sess-1')
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body).toMatchObject({
+      id: 'sess-1',
+      isWidgetRepair: true,
+      widgetRepairSlug: 'weather',
+    })
+    expect(body).not.toHaveProperty('invokedByAgentSlug')
   })
 
   it('returns fork lineage from the parent listing name', async () => {

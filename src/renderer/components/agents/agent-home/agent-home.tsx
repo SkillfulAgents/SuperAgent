@@ -41,6 +41,7 @@ import { HomeVolumes } from './home-volumes'
 import { HomeHooks } from './home-hooks'
 import { HomeBookmarks } from './home-bookmarks'
 import { DashboardCard } from '@renderer/components/home/dashboard-card'
+import { HomeWidgets } from './home-widgets'
 import { useUpdateAgent, useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { AgentCreationAids, type ImportResult } from '@renderer/components/agents/agent-creation-aids'
@@ -97,6 +98,10 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const { canUseAgent, canAdminAgent } = useUser()
   const isViewOnly = !canUseAgent(agent.slug)
   const isOwner = canAdminAgent(agent.slug)
+  const replacedDashboards = useMemo(
+    () => new Set((Array.isArray(agent.widgets) ? agent.widgets : []).filter((w) => w.hasDashboard).map((w) => w.slug)),
+    [agent.widgets],
+  )
   const [isExpanded, setIsExpanded] = useState(false)
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false)
   const [sessionSearch, setSessionSearch] = useState('')
@@ -633,13 +638,17 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
         {/* Right Column — Triggers + Connections + Skills + Volumes */}
         {showRightColumn && (
           <div className="space-y-3">
-            {(Array.isArray(agent.dashboards) ? agent.dashboards : []).map((d) => (
-              <DashboardCard
-                key={d.slug}
-                dashboard={d}
-                agentSlug={agent.slug}
-              />
-            ))}
+            <HomeWidgets agentSlug={agent.slug} />
+            {(Array.isArray(agent.dashboards) ? agent.dashboards : [])
+              // An artifact with a widget shows the widget instead of its screenshot.
+              .filter((d) => !replacedDashboards.has(d.slug))
+              .map((d) => (
+                <DashboardCard
+                  key={d.slug}
+                  dashboard={d}
+                  agentSlug={agent.slug}
+                />
+              ))}
             <HomeTriggers
               className="intro-step intro-step-4"
               agentSlug={agent.slug}

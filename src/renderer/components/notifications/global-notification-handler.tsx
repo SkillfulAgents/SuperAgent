@@ -26,7 +26,9 @@ import {
   applyDashboardRuntimeStatus,
   applySessionActivityStatus,
   invalidateAgentArtifacts,
+  invalidateAgentWidgets,
   markDashboardScreenshotReady,
+  patchAgentWidget,
   updateAgentRuntimeCache,
   type SessionStatusPatch,
 } from '@renderer/lib/agent-cache'
@@ -478,6 +480,48 @@ export function GlobalNotificationHandler() {
             const dashboardSlug = data.dashboardSlug as string | undefined
             if (agentSlug && dashboardSlug) {
               markDashboardScreenshotReady(queryClient, agentSlug, dashboardSlug)
+            }
+            break
+          }
+
+          case 'widget_refresh_started': {
+            const agentSlug = data.agentSlug as string | undefined
+            const widgetSlug = data.widgetSlug as string | undefined
+            if (agentSlug && widgetSlug) {
+              patchAgentWidget(queryClient, agentSlug, widgetSlug, { refreshing: true })
+            }
+            break
+          }
+
+          case 'widget_snapshot_ready': {
+            // The event carries the new snapshot identity, so patch the cards
+            // in place (the iframe URL keys on htmlHash) and refetch the
+            // listing quietly for anything else that changed.
+            const agentSlug = data.agentSlug as string | undefined
+            const widgetSlug = data.widgetSlug as string | undefined
+            if (agentSlug && widgetSlug) {
+              const error = typeof data.error === 'string' ? data.error : null
+              patchAgentWidget(queryClient, agentSlug, widgetSlug, {
+                refreshing: false,
+                isStale: false,
+                lastError: error,
+                ...(typeof data.htmlHash === 'string' ? { htmlHash: data.htmlHash, hasHtml: true } : {}),
+                ...(typeof data.generatedAt === 'string' ? { generatedAt: data.generatedAt } : {}),
+                validUntil: typeof data.validUntil === 'string' ? data.validUntil : null,
+              })
+              invalidateAgentWidgets(queryClient, agentSlug)
+            }
+            break
+          }
+
+          case 'widget_refresh_failed': {
+            const agentSlug = data.agentSlug as string | undefined
+            const widgetSlug = data.widgetSlug as string | undefined
+            if (agentSlug && widgetSlug) {
+              patchAgentWidget(queryClient, agentSlug, widgetSlug, {
+                refreshing: false,
+                lastError: typeof data.error === 'string' ? data.error : 'Refresh failed',
+              })
             }
             break
           }

@@ -43,6 +43,9 @@ import { createDashboardTool } from './tools/create-dashboard'
 import { startDashboardTool } from './tools/start-dashboard'
 import { listDashboardsTool } from './tools/list-dashboards'
 import { getDashboardLogsTool } from './tools/get-dashboard-logs'
+import { createWidgetTool } from './tools/create-widget'
+import { refreshWidgetTool } from './tools/refresh-widget'
+import { listWidgetsTool } from './tools/list-widgets'
 import { listAgentsTool } from './tools/agents/list-agents'
 import { createAgentTool } from './tools/agents/create-agent'
 import { makeInvokeAgentTool } from './tools/agents/invoke-agent'
@@ -124,6 +127,14 @@ export function createDashboardsMcpServer() {
     name: 'dashboards',
     version: '1.0.0',
     tools: [createDashboardTool, startDashboardTool, listDashboardsTool, getDashboardLogsTool],
+  })
+}
+
+export function createWidgetsMcpServer() {
+  return createSdkMcpServer({
+    name: 'widgets',
+    version: '1.0.0',
+    tools: [createWidgetTool, refreshWidgetTool, listWidgetsTool],
   })
 }
 

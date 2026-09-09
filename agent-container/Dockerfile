@@ -22,6 +22,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnupg \
     # Timezone data (required for TZ env var to resolve IANA names)
     tzdata \
+    # Colour emoji for headless Chromium: widget snapshots rasterized in the
+    # container ship to native surfaces (iOS) and would show tofu without it.
+    fonts-noto-color-emoji \
     # Network/DNS utilities
     dnsutils \
     iputils-ping \

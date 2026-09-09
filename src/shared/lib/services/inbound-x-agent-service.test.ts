@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ApiAgent } from '@shared/lib/types/api'
+import { inboundXAgentDetailsSchema } from '@shared/lib/types/inbound-x-agent-schema'
 import { buildInboundXAgentDetails } from './inbound-x-agent-service'
 
 function agent(slug: string, name: string): ApiAgent {
@@ -29,7 +30,7 @@ describe('buildInboundXAgentDetails', () => {
     })
 
     expect(result.sessions.map((session) => session.id)).toEqual(['newest', 'old'])
-    expect(result.sessions[0].triggeredBy.name).toBe('Beta')
+    expect(result.sessions[0]).toMatchObject({ triggeredBy: { name: 'Beta' } })
     expect(result.callers).toEqual([{
       slug: 'caller-a',
       displaySlug: 'alpha-caller-a',
@@ -37,6 +38,42 @@ describe('buildInboundXAgentDetails', () => {
       decision: 'review',
       canAccess: true,
     }])
+  })
+
+  it('includes running, settled, and legacy repairs without inventing caller permissions', () => {
+    const result = buildInboundXAgentDetails({
+      targetSlug: 'target',
+      metadata: {
+        legacy: { name: 'Fix widget: weather', isWidgetRepair: true, widgetRepairSlug: 'weather', createdAt: '2026-08-19T10:00:00.000Z' },
+        call: { invokedByAgentSlug: 'deleted-caller', createdAt: '2026-08-20T10:00:00.000Z' },
+        succeeded: { isWidgetRepair: true, widgetRepairSlug: 'weather', automationStatus: 'succeeded', createdAt: '2026-08-21T10:00:00.000Z' },
+        failed: { isWidgetRepair: true, widgetRepairSlug: 'weather', automationStatus: 'failed', createdAt: '2026-08-22T10:00:00.000Z' },
+        running: { isWidgetRepair: true, widgetRepairSlug: 'weather', automationStatus: 'running', createdAt: '2026-08-23T10:00:00.000Z' },
+        promoted: { isWidgetRepair: true, widgetRepairSlug: 'weather', promotedToInteractive: true, createdAt: '2026-08-24T10:00:00.000Z' },
+        invalidDate: { isWidgetRepair: true, createdAt: 'invalid' },
+        noDate: { isWidgetRepair: true },
+        human: { createdAt: '2026-08-24T10:00:00.000Z' },
+        cron: { isScheduledExecution: true, createdAt: '2026-08-24T10:00:00.000Z' },
+        webhook: { isWebhookExecution: true, createdAt: '2026-08-24T10:00:00.000Z' },
+      },
+      agents: [agent('target', 'Target')],
+      authMode: false,
+      aclRows: [],
+    })
+
+    // Exercise the renderer's boundary too, including the existing caller shape.
+    const parsed = inboundXAgentDetailsSchema.parse(result)
+    expect(parsed.sessions.map((session) => session.id)).toEqual([
+      'promoted', 'running', 'failed', 'succeeded', 'call', 'legacy',
+    ])
+    expect(parsed.sessions.filter((session) => session.isWidgetRepair)).toHaveLength(5)
+    expect(parsed.sessions.at(-1)).toEqual({
+      id: 'legacy',
+      createdAt: '2026-08-19T10:00:00.000Z',
+      isWidgetRepair: true,
+      widgetRepairSlug: 'weather',
+    })
+    expect(parsed.callers).toEqual([])
   })
 
   it('requires a caller owner with user access to the target and greys inaccessible callers', () => {

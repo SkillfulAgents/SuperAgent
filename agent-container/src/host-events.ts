@@ -37,3 +37,21 @@ export async function notifyDashboardStatusChanged(
 ): Promise<boolean> {
   return postHostEvent('dashboard-status-changed', { dashboardSlug, status })
 }
+
+/**
+ * A widget refresh finished (successfully or not) and snapshot.json was
+ * rewritten. Sent for every refresh, including agent-initiated ones the host
+ * never asked for, so open Home surfaces reload the snapshot.
+ */
+export async function notifyWidgetSnapshotReady(
+  widgetSlug: string,
+  snapshot: { generatedAt: string; validUntil: string | null; htmlHash: string; lastError: string | null },
+): Promise<boolean> {
+  return postHostEvent('widget-snapshot-ready', {
+    widgetSlug,
+    generatedAt: snapshot.generatedAt,
+    validUntil: snapshot.validUntil,
+    htmlHash: snapshot.htmlHash,
+    error: snapshot.lastError,
+  })
+}

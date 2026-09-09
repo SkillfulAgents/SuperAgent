@@ -8,14 +8,25 @@ export const inboundXAgentCallerSchema = z.object({
   canAccess: z.boolean(),
 })
 
-export const inboundXAgentSessionSchema = z.object({
+const inboundSessionBaseSchema = z.object({
   id: z.string(),
   createdAt: z.string(),
-  triggeredBy: z.object({
-    slug: z.string(),
-    name: z.string(),
-  }),
 })
+
+export const inboundXAgentSessionSchema = z.union([
+  inboundSessionBaseSchema.extend({
+    isWidgetRepair: z.literal(true),
+    widgetRepairSlug: z.string().optional(),
+  }),
+  inboundSessionBaseSchema.extend({
+    // Optional so existing x-agent history payloads remain valid.
+    isWidgetRepair: z.literal(false).optional(),
+    triggeredBy: z.object({
+      slug: z.string(),
+      name: z.string(),
+    }),
+  }),
+])
 
 export const inboundXAgentDetailsSchema = z.object({
   sessions: z.array(inboundXAgentSessionSchema),

@@ -211,7 +211,9 @@ export function InboundXAgentView({ agentSlug }: InboundXAgentViewProps) {
                   key={session.id}
                   role="button"
                   tabIndex={0}
-                  aria-label={`Open call from ${session.triggeredBy.name}`}
+                  aria-label={session.isWidgetRepair
+                    ? `Open widget repair${session.widgetRepairSlug ? ` for ${session.widgetRepairSlug}` : ''}`
+                    : `Open call from ${session.triggeredBy.name}`}
                   className="group grid cursor-pointer grid-cols-[minmax(0,1fr)_minmax(0,0.8fr)] items-center gap-4 border-b px-2 py-3 text-xs transition-colors hover:bg-muted/50"
                   onClick={() => {
                     void navigate({
@@ -230,7 +232,14 @@ export function InboundXAgentView({ agentSlug }: InboundXAgentViewProps) {
                 >
                   <span>{new Date(session.createdAt).toLocaleString()}</span>
                   <span className="flex min-w-0 items-center justify-between gap-2">
-                    <span className="truncate">{session.triggeredBy.name}</span>
+                    <span className="min-w-0">
+                      <span className="block truncate">
+                        {session.isWidgetRepair ? 'Invoked to fix widget' : session.triggeredBy.name}
+                      </span>
+                      {session.isWidgetRepair && session.widgetRepairSlug && (
+                        <span className="block truncate text-muted-foreground">{session.widgetRepairSlug}</span>
+                      )}
+                    </span>
                     <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
                   </span>
                 </div>

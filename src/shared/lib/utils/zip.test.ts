@@ -206,11 +206,25 @@ describe('openZipFromFile', () => {
       }
       return count
     }
+    // close() hands the descriptor to the OS asynchronously, so the release
+    // trails the rejection by an unpredictable amount under load — a busy CI
+    // worker loses that race where a quiet laptop wins it. Wait for the
+    // descriptor to go rather than sampling once: a real leak never goes and
+    // still fails, just a second later.
+    const waitForReleasedFd = async (timeoutMs = 2000): Promise<number> => {
+      const deadline = Date.now() + timeoutMs
+      let open = openFdsForZip()
+      while (open > 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        open = openFdsForZip()
+      }
+      return open
+    }
     try {
       await expect(openZipFromFile(zipPath)).rejects.toThrow(/central directory/i)
       expect(closeSpy).toHaveBeenCalled()
       // The descriptor opened for the zip must be released on the error path.
-      expect(openFdsForZip()).toBe(0)
+      expect(await waitForReleasedFd()).toBe(0)
     } finally {
       closeSpy.mockRestore()
     }
