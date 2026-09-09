@@ -3317,7 +3317,18 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
   if (!body.success) {
     return c.json({ error: 'Invalid interrupt scope' }, 400)
   }
-  const { scope } = body.data
+  const requestedScope = body.data.scope
+  // A turn stop leaves background tasks running on purpose — but only tasks
+  // the user can see and stop one by one. When the only open work is untracked
+  // (the runtime lists it, the host's task list does not — a task a subagent
+  // launched, for one), a turn stop keeps the session pinned "working" with
+  // nothing to stop it from. Escalate to the full stop instead, without asking:
+  // there is no keep/kill choice to offer when the list is empty.
+  const escalate = requestedScope === 'turn' && messagePersister.hasOnlyUntrackedBackgroundWork(agentSlug, sessionId)
+  const scope = escalate ? 'all' : requestedScope
+  if (escalate) {
+    console.log(`[Agents] Session ${sessionId}: only untracked background work is open — stopping everything instead of the turn`)
+  }
 
   try {
     const client = containerManager.getClient(agentSlug)

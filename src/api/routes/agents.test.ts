@@ -184,6 +184,7 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     markSessionInterrupted: vi.fn(),
     getTurnGeneration: vi.fn(() => 0),
     isSessionWaitingBackground: vi.fn(() => false),
+    hasOnlyUntrackedBackgroundWork: vi.fn(() => false),
     cancelAwaitingInput: vi.fn(),
     completeInputRequest: vi.fn(),
     completeCapabilityReview: vi.fn(),
@@ -9292,6 +9293,32 @@ describe('cross-agent session scoping', () => {
       expect(res.status).toBe(200)
       expect(messagePersister.markSessionInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION, { processKept: false, turnGenerationBefore: 0 })
       await expect(res.json()).resolves.toMatchObject({ processKept: false })
+    })
+
+    it('escalates a turn stop to a full stop when the only open background work is untracked', async () => {
+      // The session is pinned by work the runtime lists but the host never
+      // registered (a task a subagent launched). A turn stop keeps the
+      // process and the task, and there is no row to stop the task from —
+      // so the route stops everything, without offering a choice.
+      vi.mocked(messagePersister.hasOnlyUntrackedBackgroundWork).mockReturnValue(true)
+      mockInterruptSession.mockResolvedValue({ interrupted: true, processKept: false })
+
+      const res = await postJson(app, url(OWN_SESSION, '/interrupt'), { scope: 'turn' })
+
+      expect(res.status).toBe(200)
+      expect(messagePersister.hasOnlyUntrackedBackgroundWork).toHaveBeenCalledWith(ATTACKER, OWN_SESSION)
+      expect(mockInterruptSession).toHaveBeenCalledWith(OWN_SESSION, { scope: 'all' })
+      expect(messagePersister.markSessionInterrupted).toHaveBeenCalledWith(ATTACKER, OWN_SESSION, { processKept: false, turnGenerationBefore: 0 })
+      await expect(res.json()).resolves.toMatchObject({ success: true, processKept: false })
+    })
+
+    it('keeps a turn stop as a turn stop while the open background work is tracked', async () => {
+      vi.mocked(messagePersister.hasOnlyUntrackedBackgroundWork).mockReturnValue(false)
+
+      const res = await postJson(app, url(OWN_SESSION, '/interrupt'), { scope: 'turn' })
+
+      expect(res.status).toBe(200)
+      expect(mockInterruptSession).toHaveBeenCalledWith(OWN_SESSION, { scope: 'turn' })
     })
 
     it('rejects an unknown scope', async () => {
