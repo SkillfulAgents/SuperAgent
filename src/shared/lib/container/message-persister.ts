@@ -1078,6 +1078,24 @@ class MessagePersister {
   }
 
   /**
+   * True when every open background task is one the host never tracked: the
+   * SDK's `background_tasks_changed` snapshot lists work, but the incremental
+   * map — the list clients see and the per-task Stop buttons come from — is
+   * empty. A task a subagent launched lands here: its tool result travels the
+   * sidechain, so nothing registers it, while the runtime's snapshot names it.
+   *
+   * A stop scoped to the turn cannot end such a session: the container keeps
+   * the process (and the task) and the union keeps the session active, with
+   * no row anywhere to stop the task from. Callers escalate to a full stop
+   * instead, which is what Stop always did before tasks were spared.
+   */
+  hasOnlyUntrackedBackgroundWork(agentSlug: string, sessionId: string): boolean {
+    const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
+    if (!state) return false
+    return state.activeBackgroundTasks.size === 0 && this.openBackgroundWorkCount(state) > 0
+  }
+
+  /**
    * The generation of the turn an interrupt sent now would stop. Callers read
    * it before the container call and hand it to markSessionInterrupted, which
    * treats a higher generation afterwards as a turn that started after the
@@ -4512,10 +4530,13 @@ ${continuation}`
   private async interruptContainerSession(agentSlug: string, sessionId: string): Promise<{ processKept: boolean }> {
     const cm = await getContainerManager()
     const client = cm.getClient(agentSlug)
+    // Same escalation as the interrupt route: a turn stop cannot settle a
+    // session whose only background work is untracked, so stop everything.
+    const scope = this.hasOnlyUntrackedBackgroundWork(agentSlug, sessionId) ? 'all' : 'turn'
     const response = await client.fetch(`/sessions/${encodeURIComponent(sessionId)}/interrupt`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scope: 'turn' }),
+      body: JSON.stringify({ scope }),
     })
     if (!response?.ok) return { processKept: false }
     // A container build that predates the field always restarted the process.
