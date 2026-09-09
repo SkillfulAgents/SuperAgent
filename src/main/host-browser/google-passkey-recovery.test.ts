@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { GooglePasskeyRecovery } from './google-passkey-recovery'
+import { GooglePasskeyRecovery, GOOGLE_PASSKEY_INSPECTION_EXPRESSION, GOOGLE_PASSKEY_RECOVERY_EXPRESSION } from './google-passkey-recovery'
 
 type Command = { id: number; method: string; params: Record<string, unknown>; sessionId?: string }
 type TestSocket = {
@@ -47,7 +47,11 @@ vi.mock('ws', async () => {
 
 const challenge = 'https://accounts.google.com/v3/signin/challenge/pk?flow=test'
 const info = (targetId = 'tab', url = challenge, type = 'page') => ({ targetId, url, type })
-const evaluations = (socket = h.sockets[0]) => socket.commands.filter(c => c.method === 'Runtime.evaluate')
+const evaluations = (socket = h.sockets[0]) => socket.commands.filter(c =>
+  c.method === 'Runtime.evaluate' && String(c.params.expression).includes(GOOGLE_PASSKEY_RECOVERY_EXPRESSION))
+const inspections = (socket = h.sockets[0]) => socket.commands.filter(c =>
+  c.method === 'Runtime.evaluate' && String(c.params.expression).includes(GOOGLE_PASSKEY_INSPECTION_EXPRESSION))
+const isInspection = (command: Command) => String(command.params.expression).includes(GOOGLE_PASSKEY_INSPECTION_EXPRESSION)
 let recovery: GooglePasskeyRecovery
 
 beforeEach(() => {
@@ -56,10 +60,11 @@ beforeEach(() => {
   h.respond.mockReset().mockImplementation(command => {
     if (command.method === 'Target.getTargets') return { targetInfos: [info()] }
     if (command.method === 'Target.attachToTarget') return { sessionId: `attached-${command.params.targetId}` }
-    if (command.method === 'Runtime.evaluate') return { result: { value: 'clicked' } }
+    if (command.method === 'Runtime.evaluate') return { result: { value: isInspection(command) ? 'ready' : 'clicked' } }
     return {}
   })
   vi.spyOn(console, 'log').mockImplementation(() => {})
+  vi.spyOn(console, 'warn').mockImplementation(() => {})
   recovery = new GooglePasskeyRecovery()
 })
 
@@ -109,6 +114,31 @@ describe('Google passkey observer', () => {
     await vi.advanceTimersByTimeAsync(2_000)
     expect(evaluations()).toHaveLength(1)
     expect(evaluations()[0].sessionId).toBe('popup-session')
+  })
+
+  it.each(['already open', 'after password'])('recovers a security-key challenge %s once after the grace period', async entry => {
+    const securityKeyChallenge = 'https://accounts.google.com/v3/signin/challenge/sk/webauthn?flow=test'
+    const initialUrl = entry === 'already open'
+      ? securityKeyChallenge : 'https://accounts.google.com/v3/signin/challenge/pwd'
+    const original = h.respond.getMockImplementation()!
+    h.respond.mockImplementation(command => command.method === 'Target.getTargets'
+      ? { targetInfos: [info('tab', initialUrl)] } : original(command))
+    const socket = await start()
+
+    if (entry === 'after password') {
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(evaluations()).toHaveLength(0)
+      socket.event('Target.targetInfoChanged', { targetInfo: info('tab', securityKeyChallenge) })
+    }
+
+    await vi.advanceTimersByTimeAsync(1_999)
+    expect(evaluations()).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(evaluations()).toHaveLength(1)
+    expect(evaluations()[0].sessionId).toBe('attached-tab')
+    expect(evaluations()[0].params.expression).toContain(JSON.stringify(securityKeyChallenge))
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(evaluations()).toHaveLength(1)
   })
 
   it('waits for recognizable DOM and rearms only on a new challenge visit', async () => {
@@ -182,12 +212,88 @@ describe('Google passkey observer', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
-  it('bounds DOM polling when the page never matches', async () => {
+  it('backs off DOM polling without abandoning a late-rendering prompt', async () => {
     const original = h.respond.getMockImplementation()!
-    h.respond.mockImplementation(c => c.method === 'Runtime.evaluate' ? { result: { value: 'waiting' } } : original(c))
+    let ready = false
+    h.respond.mockImplementation(c => c.method === 'Runtime.evaluate'
+      ? { result: { value: ready ? (isInspection(c) ? 'ready' : 'clicked') : 'waiting' } } : original(c))
     await start()
     await vi.advanceTimersByTimeAsync(120_000)
-    expect(evaluations()).toHaveLength(60)
+    const checksBeforeReady = evaluations().length
+    expect(checksBeforeReady).toBeGreaterThan(60)
+    expect(checksBeforeReady).toBeLessThan(70)
+    ready = true
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(evaluations()).toHaveLength(checksBeforeReady + 1)
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(evaluations()).toHaveLength(checksBeforeReady + 1)
+  })
+
+  it('confirms navigation away from the challenge, rather than claiming success from a click', async () => {
+    const socket = await start()
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(console.log).not.toHaveBeenCalled()
+    socket.event('Target.targetInfoChanged', { targetInfo: info('tab', 'https://accounts.google.com/v3/signin/challenge/selection') })
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('prompt cleared'))
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(console.log).toHaveBeenCalledTimes(1)
+    expect(console.warn).not.toHaveBeenCalled()
+  })
+
+  it('confirms a stable disappearance and recovers a fresh prompt in the same document', async () => {
+    const original = h.respond.getMockImplementation()!
+    let visible = true
+    h.respond.mockImplementation(c => c.method === 'Runtime.evaluate'
+      ? { result: { value: visible ? (isInspection(c) ? 'ready' : 'clicked') : 'cleared' } } : original(c))
+    await start()
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(evaluations()).toHaveLength(1)
+    visible = false
+    await vi.advanceTimersByTimeAsync(3_000)
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('prompt cleared'))
+    visible = true
+    await vi.advanceTimersByTimeAsync(1_999)
+    expect(evaluations()).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(evaluations()).toHaveLength(2)
+    expect(inspections().length).toBeGreaterThan(0)
+  })
+
+  it('does not rearm on a transient disappearance, disabled control, or unchanged prompt', async () => {
+    const original = h.respond.getMockImplementation()!
+    let status = 'ready'
+    h.respond.mockImplementation(c => c.method === 'Runtime.evaluate' && isInspection(c)
+      ? { result: { value: status } } : original(c))
+    await start()
+    await vi.advanceTimersByTimeAsync(2_000)
+    status = 'cleared'
+    await vi.advanceTimersByTimeAsync(1_000)
+    status = 'waiting'
+    await vi.advanceTimersByTimeAsync(3_000)
+    status = 'ready'
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(evaluations()).toHaveLength(1)
+    expect(console.log).not.toHaveBeenCalled()
+    expect(console.warn).toHaveBeenCalledTimes(1)
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('Could not confirm'))
+    const reads = inspections().length
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(inspections().length - reads).toBeLessThanOrEqual(4)
+  })
+
+  it('pauses repeated recovery loops across reloads and does not resume just because time elapsed', async () => {
+    const socket = await start()
+    for (let visit = 0; visit < 4; visit++) {
+      if (visit > 0) socket.event('Page.frameNavigated', { frame: { url: challenge } }, 'attached-tab')
+      await vi.advanceTimersByTimeAsync(2_000)
+    }
+    expect(evaluations()).toHaveLength(3)
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('repeated challenges'))
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(evaluations()).toHaveLength(3)
+    socket.event('Page.frameNavigated', { frame: { url: challenge } }, 'attached-tab')
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(evaluations()).toHaveLength(4)
   })
 
 
