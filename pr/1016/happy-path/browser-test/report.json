@@ -1,23 +1,17 @@
 {
   "storyId": "browser-test",
-  "passed": true,
-  "reason": "Verified that the QA-20260909-200516-vvt1 agent can successfully execute browser commands via the browser-use feature, navigate to https://example.com, retrieve the page title \"Example Domain\", and report the results back in the chat interface.",
-  "steps": [
-    "Step 1: Navigated to http://localhost:47891 — Successfully loaded the Gamut application homepage showing the \"Your Agents\" section with two agents listed, including \"QA-20260909-200516-vvt1\".",
-    "Step 2: Clicked on the \"QA-20260909-200516-vvt1\" agent in the sidebar — Successfully navigated to the agent's configuration page at http://localhost:47891/agents/qa-20260909-200516-vvt1-gq997id5wf, displaying the chat interface with message input box.",
-    "Step 3: Typed and sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully entered in the input box and sent by clicking the Send button, creating a new session.",
-    "Step 4: Waited for the agent to process the request — The agent completed processing in approximately 9 seconds. The \"Working...\" indicator disappeared, confirming the agent finished its task. The page title changed to \"Browser Navigation Page Title Check — QA-20260909-200516-vvt1\".",
-    "Step 5: Verified the response mentions \"Example Domain\" — The agent's response clearly states: \"The page title is \"Example Domain\" — a placeholder page reserved for documentation examples. Browser is closed.\" The response includes metadata showing \"Worked for 9s · 4 tool calls · 166,549 tokens\", confirming the browser-use feature executed 4 tool calls to complete the task."
-  ],
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: ** All features are working as expected:\n- Agent successfully received and processed the message\n- Browser opening and navigation tools executed correctly\n- Page title retrieval worked properly\n- Response was delivered back to the chat interface\n- Browser cleanup was performed after task completion\n",
+  "steps": [],
   "bugs": [],
-  "durationMs": 87598,
-  "sessionId": "dcdeac0d-2ada-4300-beb4-b5065edef708",
+  "durationMs": 73759,
+  "sessionId": "af4b7dae-2c76-4da7-8a76-2985e2373442",
   "cost": {
-    "inputTokens": 380,
-    "outputTokens": 13439,
-    "cacheCreationTokens": 81578,
-    "cacheReadTokens": 1135813,
+    "inputTokens": 290,
+    "outputTokens": 9053,
+    "cacheCreationTokens": 62823,
+    "cacheReadTokens": 779489,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.283129
+    "totalCostUsd": 0.202033
   }
 }
