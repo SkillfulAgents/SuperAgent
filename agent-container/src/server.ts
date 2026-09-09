@@ -42,6 +42,8 @@ import {
 } from './workspace-entry-operations';
 
 import { getEditingCommands } from './cdp-editing-commands';
+import { createBrowserNavigation, type BrowserNavigation } from './browser-navigation';
+import type { BrowserTabInfo, BrowserTabListMessage } from './browser-stream-protocol';
 import { CREDENTIAL_AUTOFILL_FUNCTION } from './credential-autofill-script';
 import { selectActivePageTarget } from './active-page-target';
 import { decodeChromeTargetTitle } from './chrome-target-title';
@@ -2283,8 +2285,7 @@ let cdpScreencast: {
   autoFollow: boolean;
   /** Pending CDP message IDs for get_selection requests */
   pendingSelections: Set<number>;
-  /** Main frame ID — used to filter loading events to top-level frame only */
-  mainFrameId: string | null;
+  navigation: BrowserNavigation;
 } | null = null;
 
 /** Derive the CDP HTTP endpoint from the current browser state */
@@ -2303,18 +2304,11 @@ interface PageTarget {
   id: string;
   url: string;
   title: string;
+  /** Chrome's own favicon URL for the page, when it has resolved one. */
+  faviconUrl?: string;
   wsUrl: string;
   /** If true, wsUrl is a browser-level URL; connectCdpToTarget must use Target.attachToTarget */
   requiresSession: boolean;
-}
-
-// Protocol: see src/renderer/components/browser/browser-preview.tsx
-interface BrowserTabInfo {
-  targetId: string;
-  index: number;
-  url: string;
-  title: string;
-  active: boolean;
 }
 
 /**
@@ -2337,7 +2331,7 @@ async function getAllPageTargets(): Promise<PageTarget[]> {
   const endpoint = getCdpHttpEndpoint();
   try {
     const res = await fetch(`${endpoint}/json`);
-    const targets = await res.json() as Array<{ id: string; type: string; url: string; title?: string; webSocketDebuggerUrl: string }>;
+    const targets = await res.json() as Array<{ id: string; type: string; url: string; title?: string; faviconUrl?: string; webSocketDebuggerUrl: string }>;
 
     const pages = targets.filter(t => t.type === 'page');
     if (pages.length > 0) {
@@ -2352,6 +2346,7 @@ async function getAllPageTargets(): Promise<PageTarget[]> {
         id: p.id,
         url: p.url,
         title: decodeChromeTargetTitle(p.title || ''),
+        faviconUrl: p.faviconUrl || undefined,
         wsUrl: p.webSocketDebuggerUrl,
         requiresSession: false,
       }));
@@ -2635,10 +2630,28 @@ function cdpMsg(state: NonNullable<typeof cdpScreencast>, method: string, params
 function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket, requiresSession = false) {
   const cdpWs = new WebSocket(wsUrl);
   const prevAutoFollow = cdpScreencast?.autoFollow ?? true;
-  cdpScreencast = { clientWs, cdpWs, currentTargetId: targetId, msgId: 0, lastDeviceWidth: 0, lastDeviceHeight: 0, cdpSessionId: null, autoFollow: prevAutoFollow, pendingSelections: new Set(), mainFrameId: null as string | null };
-  const state = cdpScreencast;
+  const state: NonNullable<typeof cdpScreencast> = {
+    clientWs, cdpWs, currentTargetId: targetId, msgId: 0,
+    lastDeviceWidth: 0, lastDeviceHeight: 0, cdpSessionId: null,
+    autoFollow: prevAutoFollow, pendingSelections: new Set(),
+    navigation: createBrowserNavigation({
+      targetId,
+      sendCommand(method, params) {
+        if (cdpScreencast !== state || cdpWs.readyState !== WebSocket.OPEN) return;
+        cdpWs.send(cdpMsg(state, method, params));
+        return state.msgId;
+      },
+      publish(message) {
+        if (cdpScreencast === state && clientWs.readyState === WebSocket.OPEN) {
+          clientWs.send(JSON.stringify(message));
+        }
+      },
+    }),
+  };
+  cdpScreencast = state;
 
   cdpWs.on('open', () => {
+    if (cdpScreencast !== state) { cdpWs.close(); return; }
     if (requiresSession) {
       // Remote CDP: attach to target with flattened session first
       cdpWs.send(JSON.stringify({
@@ -2657,17 +2670,14 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
       // top-level frame, not iframes/ads that load continuously.
       const frameTreeId = ++state.msgId;
       cdpWs.send(JSON.stringify({ id: frameTreeId, method: 'Page.getFrameTree', ...(state.cdpSessionId ? { sessionId: state.cdpSessionId } : {}) }));
+      state.navigation.refresh();
     }
   });
 
   cdpWs.on('message', (rawData) => {
+    if (cdpScreencast !== state) return;
     try {
       const msg = JSON.parse(rawData.toString());
-
-      // Capture main frame ID from Page.getFrameTree response
-      if (msg.result?.frameTree?.frame?.id && !state.mainFrameId) {
-        state.mainFrameId = msg.result.frameTree.frame.id;
-      }
 
       // Handle attachToTarget response — start screencast once we have a session
       if (requiresSession && !state.cdpSessionId && msg.result?.sessionId) {
@@ -2675,13 +2685,16 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
         cdpWs.send(cdpMsg(state, 'Page.startScreencast', {
           format: 'jpeg', quality: 80, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1,
         }));
-        // Enable Page domain to receive navigation lifecycle events
+        // Discover the main frame in remote session mode too.
         cdpWs.send(cdpMsg(state, 'Page.enable'));
+        cdpWs.send(cdpMsg(state, 'Page.getFrameTree'));
+        state.navigation.refresh();
         return;
       }
 
       // In session mode, only handle messages for our session
       if (state.cdpSessionId && msg.sessionId && msg.sessionId !== state.cdpSessionId) return;
+      if (state.navigation.handleMessage(msg)) return;
 
       if (msg.method === 'Page.screencastFrame') {
         cdpWs.send(cdpMsg(state, 'Page.screencastFrameAck', { sessionId: msg.params.sessionId }));
@@ -2703,7 +2716,7 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
         // Only forward loading state for the main frame — subframes (ads,
         // analytics, iframes) load continuously and would keep the spinner on.
         const frameId = msg.params?.frameId;
-        if ((!state.mainFrameId || frameId === state.mainFrameId) && clientWs.readyState === WebSocket.OPEN) {
+        if (state.navigation.isMainFrame(frameId) && clientWs.readyState === WebSocket.OPEN) {
           clientWs.send(JSON.stringify({
             type: 'page_loading',
             loading: msg.method === 'Page.frameStartedLoading',
@@ -2720,6 +2733,7 @@ function connectCdpToTarget(targetId: string, wsUrl: string, clientWs: WebSocket
   });
 
   cdpWs.on('close', () => {
+    state.navigation.dispose();
     // If this wasn't our active connection (already replaced by a tab switch), ignore
     if (cdpScreencast?.cdpWs !== cdpWs) return;
 
@@ -2841,6 +2855,7 @@ async function broadcastTabList(prefetched?: { allTargets: PageTarget[]; daemonT
         url: dt.url,
         // Prefer Chrome's title (actual <title> tag) over daemon's (often just domain)
         title: target.title || dt.title || '',
+        faviconUrl: target.faviconUrl,
         active: dt.active,
       });
     }
@@ -2855,6 +2870,7 @@ async function broadcastTabList(prefetched?: { allTargets: PageTarget[]; daemonT
         index: i,
         url: t.url,
         title: t.title || '',
+        faviconUrl: t.faviconUrl,
         active: t.id === currentTargetId,
       }));
     }
@@ -2874,7 +2890,7 @@ async function broadcastTabList(prefetched?: { allTargets: PageTarget[]; daemonT
       type: 'tab_list',
       tabs,
       activeTargetId: activeEntry?.targetId ?? cdpScreencast?.currentTargetId ?? '',
-    }));
+    } satisfies BrowserTabListMessage));
   } catch (err) {
     console.error('[CDP] Failed to broadcast tab list:', err);
   }
@@ -3027,7 +3043,12 @@ function handleBrowserStreamConnection(ws: WebSocket) {
           }
         }
       } else if (cdpScreencast.cdpWs.readyState === WebSocket.OPEN) {
-        if (data.type === 'input_mouse') {
+        if (data.type === 'navigate') {
+          // Viewer's back / forward / reload buttons, acting on the tab being viewed.
+          if (data.action === 'reload' || data.action === 'back' || data.action === 'forward') {
+            cdpScreencast.navigation.navigate(data.action);
+          }
+        } else if (data.type === 'input_mouse') {
           cdpScreencast.cdpWs.send(cdpMsg(cdpScreencast, 'Input.dispatchMouseEvent', {
             type: data.eventType,
             x: Math.round(data.x),

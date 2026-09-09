@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
-import type { BrowserTabInfo } from '@renderer/components/browser/browser-tab-bar'
+import { useState, useEffect, useRef, useCallback, useReducer } from 'react'
+import type { BrowserTabInfo, BrowserNavigateAction } from '@shared/lib/browser-stream-protocol'
+import { browserViewReducer, initialBrowserView } from '@renderer/lib/browser-stream-state'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { apiFetch } from '@renderer/lib/api'
 import { clearBrowserActive } from '@renderer/hooks/use-message-stream'
@@ -7,6 +8,8 @@ import { usePendingBrowserInputRequests } from '@renderer/components/messages/us
 import { useUser } from '@renderer/context/user-context'
 
 const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta'])
+
+export type NavigateAction = BrowserNavigateAction
 
 // Reconnect backoff for a socket that keeps dying before it opens.
 const RECONNECT_BASE_MS = 1000
@@ -44,7 +47,8 @@ export function useBrowserStream({
   // Multi-tab state
   const [tabs, setTabs] = useState<BrowserTabInfo[]>([])
   const [agentActiveTargetId, setAgentActiveTargetId] = useState<string | null>(null)
-  const [viewingTargetId, setViewingTargetId] = useState<string | null>(null)
+  const [{ targetId: viewingTargetId, history }, dispatchView] = useReducer(browserViewReducer, initialBrowserView)
+  const setViewingTargetId = useCallback((targetId: string | null) => dispatchView({ type: 'view', targetId }), [])
   const [autoFollow, setAutoFollow] = useState(true)
   const autoFollowRef = useRef(autoFollow)
   autoFollowRef.current = autoFollow
@@ -160,6 +164,7 @@ export function useBrowserStream({
 
     ws.onopen = () => {
       failedReconnectsRef.current = 0
+      dispatchView({ type: 'reset' })
       setConnected(true)
     }
 
@@ -188,6 +193,16 @@ export function useBrowserStream({
 
         if (data.type === 'page_loading') {
           setPageLoading(prev => prev === data.loading ? prev : data.loading)
+        } else if (data.type === 'history_state') {
+          dispatchView({
+            type: 'history',
+            targetId: typeof data.targetId === 'string' ? data.targetId : undefined,
+            history: {
+              canGoBack: data.canGoBack === true,
+              canGoForward: data.canGoForward === true,
+              url: typeof data.url === 'string' ? data.url : '',
+            },
+          })
         } else if (data.type === 'frame' && data.data) {
           if (!resizing) {
             const blob = base64ToBlob(data.data, 'image/jpeg')
@@ -204,17 +219,18 @@ export function useBrowserStream({
           setTabs(prev => {
             if (prev.length === data.tabs.length && prev.every((t: BrowserTabInfo, i: number) =>
               t.targetId === data.tabs[i].targetId && t.title === data.tabs[i].title &&
-              t.url === data.tabs[i].url && t.active === data.tabs[i].active
+              t.url === data.tabs[i].url && t.active === data.tabs[i].active &&
+              t.faviconUrl === data.tabs[i].faviconUrl
             )) return prev
             return data.tabs
           })
           setAgentActiveTargetId(prev => prev === data.activeTargetId ? prev : data.activeTargetId)
           if (autoFollowRef.current) {
-            setViewingTargetId(prev => prev === data.activeTargetId ? prev : data.activeTargetId)
+            setViewingTargetId(data.activeTargetId)
           }
         } else if (data.type === 'tab_switched') {
           setAgentActiveTargetId(prev => prev === data.targetId ? prev : data.targetId)
-          setViewingTargetId(prev => prev === data.targetId ? prev : data.targetId)
+          setViewingTargetId(data.targetId)
         } else if (data.type === 'selection_result' && data.text) {
           navigator.clipboard.writeText(data.text).catch(() => {})
         } else if (data.type === 'browser_closed') {
@@ -232,6 +248,7 @@ export function useBrowserStream({
       if (wsRef.current !== ws) return
       setConnected(false)
       setPageLoading(false)
+      dispatchView({ type: 'reset' })
       if (browserGone) {
         clearBrowserActive(sessionId)
         return
@@ -276,7 +293,7 @@ export function useBrowserStream({
       wsRef.current = null
       setConnected(false)
     }
-  }, [browserActive, isConnected, agentSlug, sessionId, renderFrame, reconnectKey])
+  }, [browserActive, isConnected, agentSlug, sessionId, renderFrame, reconnectKey, setViewingTargetId])
 
   // Reset overlay dismiss state when attention state ends
   useEffect(() => {
@@ -291,7 +308,7 @@ export function useBrowserStream({
       setViewingTargetId(agentActiveTargetId)
       setAutoFollow(true)
     }
-  }, [tabs, viewingTargetId, agentActiveTargetId])
+  }, [tabs, viewingTargetId, agentActiveTargetId, setViewingTargetId])
 
   // Prevent default scroll behavior (must use native listener with passive: false
   // so preventDefault() works; React's onWheel is passive and can't prevent scrolling)
@@ -481,7 +498,12 @@ export function useBrowserStream({
     setAutoFollow(false)
     setViewingTargetId(targetId)
     sendMessage({ type: 'switch_tab', targetId })
-  }, [viewingTargetId, sendMessage])
+  }, [viewingTargetId, sendMessage, setViewingTargetId])
+
+  /** Back / forward / reload on the tab being viewed. */
+  const navigate = useCallback((action: NavigateAction) => {
+    if (!isViewOnly) sendMessage({ type: 'navigate', action })
+  }, [sendMessage, isViewOnly])
 
   const handleCloseTab = useCallback((targetId: string) => {
     sendMessage({ type: 'close_tab', targetId })
@@ -494,7 +516,7 @@ export function useBrowserStream({
     if (next && agentActiveTargetId) {
       setViewingTargetId(agentActiveTargetId)
     }
-  }, [autoFollow, agentActiveTargetId, sendMessage])
+  }, [autoFollow, agentActiveTargetId, sendMessage, setViewingTargetId])
 
   const closeBrowser = useCallback(async () => {
     setIsClosing(true)
@@ -555,6 +577,11 @@ export function useBrowserStream({
     handleTabClick,
     handleCloseTab,
     toggleAutoFollow,
+    // History
+    canGoBack: history.canGoBack,
+    canGoForward: history.canGoForward,
+    pageUrl: history.url,
+    navigate,
     // Close handlers
     closeBrowser,
     handleCloseClick,

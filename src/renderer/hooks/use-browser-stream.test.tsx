@@ -52,6 +52,12 @@ class FakeWebSocket {
     this.onmessage?.({ data: JSON.stringify(payload) })
   }
 
+  /** Messages the hook sent, parsed. */
+  sent: unknown[] = []
+  send(data: string) {
+    this.sent.push(JSON.parse(data))
+  }
+
   close() {
     if (this.readyState === FakeWebSocket.CLOSED) return
     this.readyState = FakeWebSocket.CLOSED
@@ -262,5 +268,148 @@ describe('useBrowserStream reconnect', () => {
 
     expect(FakeWebSocket.instances).toHaveLength(7)
     expect(clearBrowserActive).not.toHaveBeenCalled()
+  })
+})
+
+describe('useBrowserStream history', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    FakeWebSocket.instances = []
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    mockApiFetch.mockResolvedValue({
+      json: () => Promise.resolve({ active: true, sessionId: 's' }),
+    })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  async function openSocket() {
+    const canvasRef = createRef<HTMLCanvasElement | null>()
+    const hook = renderHook(() => useBrowserStream(baseOpts(canvasRef)))
+    await settle()
+    const ws = FakeWebSocket.instances[0]
+    act(() => {
+      ws.completeHandshake()
+    })
+    await settle()
+    return { hook, ws }
+  }
+
+  it('starts with nowhere to go and no address', async () => {
+    const { hook } = await openSocket()
+    expect(hook.result.current.canGoBack).toBe(false)
+    expect(hook.result.current.canGoForward).toBe(false)
+    expect(hook.result.current.pageUrl).toBe('')
+  })
+
+  it('takes back/forward enablement and the address from a history_state frame', async () => {
+    const { hook, ws } = await openSocket()
+    act(() => {
+      ws.emit({ type: 'history_state', canGoBack: true, canGoForward: false, url: 'https://example.com/pricing' })
+    })
+    expect(hook.result.current.canGoBack).toBe(true)
+    expect(hook.result.current.canGoForward).toBe(false)
+    expect(hook.result.current.pageUrl).toBe('https://example.com/pricing')
+  })
+
+  it('sends a navigate command for back, forward, and reload', async () => {
+    const { hook, ws } = await openSocket()
+    act(() => {
+      hook.result.current.navigate('back')
+      hook.result.current.navigate('forward')
+      hook.result.current.navigate('reload')
+    })
+    expect(ws.sent).toEqual([
+      { type: 'navigate', action: 'back' },
+      { type: 'navigate', action: 'forward' },
+      { type: 'navigate', action: 'reload' },
+    ])
+  })
+
+  it('forgets the old tab\'s history when the viewed tab changes', async () => {
+    const { hook, ws } = await openSocket()
+    act(() => {
+      ws.emit({ type: 'tab_list', tabs: [
+        { targetId: 't1', index: 0, url: 'https://a.test', title: 'A', active: true },
+        { targetId: 't2', index: 1, url: 'https://b.test', title: 'B', active: false },
+      ], activeTargetId: 't1' })
+      ws.emit({ type: 'history_state', canGoBack: true, canGoForward: true, url: 'https://a.test/2' })
+    })
+    expect(hook.result.current.canGoBack).toBe(true)
+
+    act(() => {
+      hook.result.current.handleTabClick('t2')
+    })
+    expect(hook.result.current.canGoBack).toBe(false)
+    expect(hook.result.current.canGoForward).toBe(false)
+    expect(hook.result.current.pageUrl).toBe('')
+    expect(ws.sent).toContainEqual({ type: 'switch_tab', targetId: 't2' })
+
+    // The container attaches to the new tab and reports where it stands.
+    act(() => {
+      ws.emit({ type: 'history_state', canGoBack: false, canGoForward: true, url: 'https://b.test' })
+    })
+    expect(hook.result.current.canGoForward).toBe(true)
+    expect(hook.result.current.pageUrl).toBe('https://b.test')
+  })
+})
+
+
+describe('useBrowserStream ordered history', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    FakeWebSocket.instances = []
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    mockApiFetch.mockResolvedValue({ json: () => Promise.resolve({ active: true, sessionId: 's' }) })
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  async function setup() {
+    const canvasRef = createRef<HTMLCanvasElement | null>()
+    const hook = renderHook(() => useBrowserStream(baseOpts(canvasRef)))
+    await settle()
+    const ws = FakeWebSocket.instances[0]
+    act(() => {
+      ws.completeHandshake()
+      ws.emit({ type: 'tab_list', tabs: [
+        { targetId: 't1', index: 0, url: 'https://a.test', title: 'A', active: true },
+        { targetId: 't2', index: 1, url: 'https://b.test', title: 'B', active: false },
+      ], activeTargetId: 't1' })
+      ws.emit({ type: 'history_state', targetId: 't1', canGoBack: true, canGoForward: false, url: 'https://a.test' })
+    })
+    return {hook, ws}
+  }
+
+  it('preserves destination history when switch and history frames are batched', async () => {
+    const {hook, ws} = await setup()
+    act(() => {
+      ws.emit({ type: 'tab_switched', targetId: 't2' })
+      ws.emit({ type: 'history_state', targetId: 't2', canGoBack: true, canGoForward: true, url: 'https://b.test' })
+    })
+    expect(hook.result.current.viewingTargetId).toBe('t2')
+    expect(hook.result.current.pageUrl).toBe('https://b.test')
+    expect(hook.result.current.canGoBack).toBe(true)
+    expect(hook.result.current.canGoForward).toBe(true)
+  })
+
+  it('ignores the old tab history after a manual switch', async () => {
+    const {hook, ws} = await setup()
+    act(() => hook.result.current.handleTabClick('t2'))
+    act(() => ws.emit({type:'history_state', targetId:'t1', canGoBack:true, canGoForward:false, url:'https://a.test/old'}))
+    expect(hook.result.current.pageUrl).toBe('')
+    act(() => ws.emit({type:'history_state', targetId:'t2', canGoBack:false, canGoForward:true, url:'https://b.test'}))
+    expect(hook.result.current.pageUrl).toBe('https://b.test')
+  })
+
+  it('clears pinned history when following the agent again', async () => {
+    const {hook, ws} = await setup()
+    act(() => hook.result.current.handleTabClick('t2'))
+    act(() => ws.emit({type:'history_state', targetId:'t2', canGoBack:true, canGoForward:true, url:'https://b.test'}))
+    act(() => hook.result.current.toggleAutoFollow())
+    expect(hook.result.current.viewingTargetId).toBe('t1')
+    expect(hook.result.current.pageUrl).toBe('')
+    expect(hook.result.current.canGoBack).toBe(false)
   })
 })
