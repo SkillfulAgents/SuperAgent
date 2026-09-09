@@ -10,6 +10,29 @@ const message = (toolCalls: unknown[]) => ({
 })
 
 describe('labelBackgroundTasks', () => {
+  it('uses the name the stream carried when the transcript has no launching call', () => {
+    // A task a subagent launched: its Bash call is in the subagent's own
+    // transcript, so the host names it on background_task_started.
+    const [task] = labelBackgroundTasks(
+      [{
+        taskId: 'bg_nested',
+        startedAt: 1,
+        launchedBySubagent: true,
+        label: { title: 'Background command', detail: 'python -m http.server 8080' },
+      }],
+      [message([])] as never,
+    )
+    expect(task).toMatchObject({ taskId: 'bg_nested', title: 'Background command', detail: 'python -m http.server 8080' })
+  })
+
+  it('prefers the transcript over the stream label when both name a task', () => {
+    const [task] = labelBackgroundTasks(
+      [{ taskId: 'bg_both', startedAt: 1, label: { title: 'Background command', detail: 'from the stream' } }],
+      [message([{ id: 'tc1', name: 'Bash', input: { command: 'from the transcript' }, result: '', backgroundTaskId: 'bg_both' }])] as never,
+    )
+    expect(task.detail).toBe('from the transcript')
+  })
+
   it('names a backgrounded Bash task after its command', () => {
     const [task] = labelBackgroundTasks(
       [{ taskId: 'bg_abc', startedAt: 1 }],

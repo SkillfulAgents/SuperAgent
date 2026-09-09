@@ -187,6 +187,36 @@ function isInterruptedTurnContent(content: { type?: unknown; subtype?: unknown }
 // Tracks streaming state for SSE broadcasts
 // In the file-based model, messages are stored in JSONL files by the Claude SDK.
 // This class only handles SSE streaming updates to the frontend, not persistence.
+/** How a background task is named where it is listed: the per-task rows and the Stop dialog. */
+export interface BackgroundTaskLabel {
+  title: string
+  detail: string | null
+}
+
+/** A tracked background task as the persister holds it. */
+export interface BackgroundTaskEntry {
+  startedAt: number
+  isWorkflow?: boolean
+  isSubagent?: boolean
+  toolUseId?: string
+  workflowName?: string
+  runId?: string
+  /** Set when the launching call was not on the main stream (a subagent launched it). */
+  launchedBySubagent?: boolean
+  /** Host-side name, carried on the wire for tasks the transcript cannot name. */
+  label?: BackgroundTaskLabel
+}
+
+/** What clients get for a tracked background task (connect snapshot, waiting-background frames). */
+export interface BackgroundTaskInfo {
+  taskId: string
+  startedAt: number
+  isWorkflow?: boolean
+  isSubagent?: boolean
+  launchedBySubagent?: boolean
+  label?: BackgroundTaskLabel
+}
+
 interface StreamingState {
   currentText: string
   isStreaming: boolean
@@ -286,10 +316,15 @@ interface StreamingState {
   // For workflows we also carry the launching tool's id, the meta.name, and — once the
   // Workflow tool result arrives — the real on-disk runId (`wf_…`), which is DISTINCT from
   // the task_id and is the name of the `subagents/workflows/<runId>` dir.
-  activeBackgroundTasks: Map<
-    string,
-    { startedAt: number; isWorkflow?: boolean; isSubagent?: boolean; toolUseId?: string; workflowName?: string; runId?: string }
-  >
+  activeBackgroundTasks: Map<string, BackgroundTaskEntry>
+  // Tool calls a subagent made whose results have not arrived yet, keyed by
+  // tool_use id — only the launchers of background work (Bash, Agent), so a
+  // sidechain tool_result that registers a task can name it (the command, the
+  // subagent's description). Entries leave with their result; bounded anyway.
+  sidechainToolInputs: Map<string, { name: string; input: Record<string, unknown> }>
+  // `description` per task id from the latest background_tasks_changed frame:
+  // the fallback name for a task whose launching call was never seen.
+  bgTaskDescriptions: Map<string, string>
   // Latest system/background_tasks_changed snapshot (SDK >= 0.3.203): the full
   // authoritative set of live background task ids. null until the first frame
   // (older runtimes never send one — all gates then fall back to the
@@ -396,6 +431,34 @@ export class WaitForIdleTimeoutError extends Error {
 }
 
 // TODO this file is too big, this class is HUGE. Needs breaking up
+// The CLI's tool_result text for a backgrounded Bash call names the task:
+// "Command running in background with ID: bg_abc123. Output is being…"
+const BACKGROUND_TASK_ID_TEXT = /background with ID:\s*([A-Za-z0-9_-]+)/i
+// A background Agent launch acknowledges with "… agentId: <hex> …".
+const AGENT_ID_TEXT = /\bagentId:\s*([a-f0-9]+)\b/
+
+function backgroundTaskIdOf(toolUseResult: unknown): string | undefined {
+  const tur = toolUseResult as { backgroundTaskId?: unknown; background_task_id?: unknown } | undefined
+  const id = tur?.backgroundTaskId ?? tur?.background_task_id
+  return typeof id === 'string' && id ? id : undefined
+}
+
+function resultTextOf(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content
+    .map((part) => (part && typeof part === 'object' && typeof (part as { text?: unknown }).text === 'string' ? (part as { text: string }).text : ''))
+    .join('')
+}
+
+function backgroundTaskIdFromText(content: unknown): string | undefined {
+  return BACKGROUND_TASK_ID_TEXT.exec(resultTextOf(content))?.[1]
+}
+
+function agentIdFromText(content: unknown): string | undefined {
+  return AGENT_ID_TEXT.exec(resultTextOf(content))?.[1]
+}
+
 class MessagePersister {
   private streamingStates: Map<SessionKey, StreamingState> = new Map()
   // "Allow for this session" capability grants, keyed by sessionId. Display
@@ -624,6 +687,8 @@ class MessagePersister {
         priorIsActive ? (prior?.resetAssistantBeforeNextTurnOutput ?? false) : false,
       activeBackgroundTasks: priorBackgroundTasks,
       bgTasksSnapshot: prior?.bgTasksSnapshot ?? null,
+      sidechainToolInputs: new Map(),
+      bgTaskDescriptions: prior?.bgTaskDescriptions ?? new Map(),
       // Carried with the snapshot it describes — the incoming handshake is what
       // decides whether both are still valid.
       processInstanceId: prior?.processInstanceId ?? null,
@@ -1092,7 +1157,7 @@ class MessagePersister {
     return state.turnGeneration + (startPending ? 1 : 0)
   }
 
-  getActiveBackgroundTasks(agentSlug: string, sessionId: string): Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean }> {
+  getActiveBackgroundTasks(agentSlug: string, sessionId: string): BackgroundTaskInfo[] {
     const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
     if (!state) return []
     return Array.from(state.activeBackgroundTasks.entries()).map(([taskId, info]) => ({
@@ -1100,6 +1165,8 @@ class MessagePersister {
       startedAt: info.startedAt,
       isWorkflow: info.isWorkflow,
       isSubagent: info.isSubagent,
+      ...(info.launchedBySubagent && { launchedBySubagent: true }),
+      ...(info.label && { label: info.label }),
     }))
   }
 
@@ -1323,7 +1390,7 @@ class MessagePersister {
   ): Promise<void> {
     const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
     const processKept = options?.processKept === true
-    let backgroundTasks: Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean }> = []
+    let backgroundTasks: BackgroundTaskInfo[] = []
 
     // The container answers a soft interrupt only after the stopped turn's
     // result (or at once, when there was no turn to stop). A background task
@@ -1370,6 +1437,7 @@ class MessagePersister {
         state.activeSubagents.clear()
         state.activeBackgroundTasks.clear()
         state.bgTasksSnapshot = null
+        state.bgTaskDescriptions.clear()
         this.stopAllWorkflowTailers(agentSlug, sessionId)
       }
     }
@@ -1496,6 +1564,8 @@ class MessagePersister {
         resetAssistantBeforeNextTurnOutput: false,
         activeBackgroundTasks: new Map(),
         bgTasksSnapshot: null,
+        sidechainToolInputs: new Map(),
+        bgTaskDescriptions: new Map(),
         processInstanceId: null,
         pendingDeliverFiles: new Map(),
         stateEventsAuthority: false,
@@ -2179,23 +2249,8 @@ class MessagePersister {
 
         // Detect background Bash task from tool_use_result metadata
         {
-          const tur = content.tool_use_result as Record<string, unknown> | undefined
-          const bgId = (tur?.backgroundTaskId ?? tur?.background_task_id) as string | undefined
-          if (bgId && typeof bgId === 'string' && !state.activeBackgroundTasks.has(bgId)) {
-            const startedAt = Date.now()
-            state.activeBackgroundTasks.set(bgId, { startedAt })
-            this.broadcastToSSE(agentSlug, sessionId, {
-              type: 'background_task_started',
-              taskId: bgId,
-              startedAt,
-            })
-            this.broadcastGlobal({
-              type: 'background_task_started',
-              sessionId,
-              agentSlug: state.agentSlug,
-              taskId: bgId,
-            })
-          }
+          const bgId = backgroundTaskIdOf(content.tool_use_result)
+          if (bgId) this.registerBackgroundBashTask(sessionId, state, bgId)
         }
 
         // After SDK compaction starts, the next relevant user message is the compact summary.
@@ -2534,6 +2589,9 @@ class MessagePersister {
           const snapshot = parseBackgroundTasksChanged(content)
           if (snapshot) {
             state.bgTasksSnapshot = snapshot.taskIds
+            state.bgTaskDescriptions = new Map(
+              snapshot.tasks.flatMap((t) => (t.description ? [[t.task_id, t.description] as const] : [])),
+            )
             // Self-heal: a tracked task the SDK no longer lists has finished.
             // Its per-task terminal signal normally follows within a frame and
             // then no-ops (clearBackgroundTask is idempotent) — but if that
@@ -2907,6 +2965,7 @@ class MessagePersister {
     // The runtime is gone; its background tasks went with it (same reasoning as
     // markSessionInterrupted).
     state.bgTasksSnapshot = null
+    state.bgTaskDescriptions.clear()
     this.stopAllWorkflowTailers(agentSlug, sessionId)
     if (diedMidTurn) {
       // Mirror the result-error path: settle isActive BEFORE broadcasting so
@@ -3005,6 +3064,7 @@ class MessagePersister {
       // until the whole turn ends.
       if (content.type === 'user') {
         this.resolveSidechainInputRequests(sessionId, state, content)
+        this.registerSidechainBackgroundLaunch(sessionId, state, content)
       }
       if (content.type === 'assistant') {
         const messageContent = content.message?.content
@@ -3040,6 +3100,7 @@ class MessagePersister {
 
           for (const block of messageContent) {
             if (block.type !== 'tool_use') continue
+            this.rememberSidechainToolInput(state, block)
             const input = JSON.stringify(block.input || {})
             this.dispatchBlockingUserInputTool(
               sessionId,
@@ -3073,11 +3134,105 @@ class MessagePersister {
     }
   }
 
+  // A backgrounded Bash command, from the main stream (named later by the
+  // renderer from the transcript) or from a subagent's sidechain (named here,
+  // since the launching call never reaches the main transcript).
+  private registerBackgroundBashTask(
+    sessionId: string,
+    state: StreamingState,
+    taskId: string,
+    extra?: { label?: BackgroundTaskLabel; launchedBySubagent?: boolean },
+  ): void {
+    const { agentSlug } = state
+    if (state.activeBackgroundTasks.has(taskId)) return
+    const startedAt = Date.now()
+    state.activeBackgroundTasks.set(taskId, { startedAt, ...extra })
+    this.broadcastToSSE(agentSlug, sessionId, {
+      type: 'background_task_started',
+      taskId,
+      startedAt,
+      ...extra,
+    })
+    this.broadcastGlobal({
+      type: 'background_task_started',
+      sessionId,
+      agentSlug: state.agentSlug,
+      taskId,
+    })
+  }
+
+  // Remember what a subagent's Bash/Agent call asked for until its result
+  // arrives, so the task the result announces can be named. Bounded: a
+  // result that never comes (the subagent died) must not grow this forever.
+  private static readonly SIDECHAIN_TOOL_INPUT_LIMIT = 200
+
+  private rememberSidechainToolInput(state: StreamingState, block: { id?: unknown; name?: unknown; input?: unknown }): void {
+    if (typeof block.id !== 'string' || typeof block.name !== 'string') return
+    if (block.name !== 'Bash' && block.name !== 'Agent' && block.name !== 'Task') return
+    const input = block.input && typeof block.input === 'object' ? (block.input as Record<string, unknown>) : {}
+    state.sidechainToolInputs.set(block.id, { name: block.name, input })
+    while (state.sidechainToolInputs.size > MessagePersister.SIDECHAIN_TOOL_INPUT_LIMIT) {
+      const oldest = state.sidechainToolInputs.keys().next().value
+      if (oldest === undefined) break
+      state.sidechainToolInputs.delete(oldest)
+    }
+  }
+
+  // A subagent's tool_result that launched background work. Its frame never
+  // reaches the main 'user' handler, so without this the task is known only
+  // to the runtime's snapshot: it keeps the session in waiting-background
+  // with no row to see or stop it from (prod, 2026-09-09: a subagent's local
+  // asset server pinned the lead session for hours). Register it exactly like
+  // a main-stream launch, named from the call the subagent made — or, failing
+  // that, from the description the runtime's snapshot carries.
+  private registerSidechainBackgroundLaunch(
+    sessionId: string,
+    state: StreamingState,
+    content: { tool_use_result?: unknown; message?: { content?: unknown } },
+  ): void {
+    const blocks = Array.isArray(content.message?.content) ? content.message.content : []
+    const resultBlock = blocks.find(
+      (b: { type?: unknown }) => b && typeof b === 'object' && b.type === 'tool_result',
+    ) as { tool_use_id?: unknown; is_error?: unknown; content?: unknown } | undefined
+    const toolUseId = typeof resultBlock?.tool_use_id === 'string' ? resultBlock.tool_use_id : undefined
+    const launch = toolUseId ? state.sidechainToolInputs.get(toolUseId) : undefined
+    if (toolUseId) state.sidechainToolInputs.delete(toolUseId)
+    if (resultBlock?.is_error === true) return
+
+    const tur = content.tool_use_result as
+      | { status?: unknown; isAsync?: unknown; agentId?: unknown }
+      | undefined
+
+    const bgId = backgroundTaskIdOf(content.tool_use_result) ?? backgroundTaskIdFromText(resultBlock?.content)
+    if (bgId) {
+      const command = typeof launch?.input.command === 'string' ? launch.input.command : null
+      const detail = command ?? state.bgTaskDescriptions.get(bgId) ?? null
+      this.registerBackgroundBashTask(sessionId, state, bgId, {
+        label: { title: 'Background command', detail },
+        launchedBySubagent: true,
+      })
+      return
+    }
+
+    const isAsyncLaunch = tur?.status === 'async_launched' || tur?.isAsync === true
+    if (!isAsyncLaunch) return
+    const agentId =
+      typeof tur?.agentId === 'string' ? tur.agentId : agentIdFromText(resultBlock?.content)
+    if (!agentId) return
+    const subagentType = typeof launch?.input.subagent_type === 'string' && launch.input.subagent_type ? launch.input.subagent_type : 'Agent'
+    const description = typeof launch?.input.description === 'string' && launch.input.description ? launch.input.description : null
+    this.registerBackgroundSubagent(sessionId, state, agentId, toolUseId ?? '', {
+      label: { title: subagentType, detail: description ?? state.bgTaskDescriptions.get(agentId) ?? null },
+      launchedBySubagent: true,
+    })
+  }
+
   private registerBackgroundSubagent(
     sessionId: string,
     state: StreamingState,
     agentId: string,
     toolUseId: string,
+    extra?: { label?: BackgroundTaskLabel; launchedBySubagent?: boolean },
   ): void {
     const { agentSlug } = state
     if (state.activeBackgroundTasks.has(agentId)) return
@@ -3087,15 +3242,19 @@ class MessagePersister {
       startedAt,
       isSubagent: true,
       toolUseId,
+      ...extra,
     })
     // isSubagent lets the renderer skip these in the generic
     // "N background processes" row — the named subagent row
-    // already represents this work in the activity tray.
+    // already represents this work in the activity tray. One a
+    // subagent launched has no such row, so launchedBySubagent
+    // puts it back.
     this.broadcastToSSE(agentSlug, sessionId, {
       type: 'background_task_started',
       taskId: agentId,
       startedAt,
       isSubagent: true,
+      ...extra,
     })
     this.broadcastGlobal({
       type: 'background_task_started',
@@ -3183,6 +3342,7 @@ class MessagePersister {
       this.clearBackgroundTask(agentSlug, sessionId, state, taskId)
     }
     state.bgTasksSnapshot = null
+    state.bgTaskDescriptions.clear()
   }
 
   private clearBackgroundTask(agentSlug: string, sessionId: string, state: StreamingState, taskId: string): boolean {

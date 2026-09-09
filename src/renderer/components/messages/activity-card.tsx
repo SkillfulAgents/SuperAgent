@@ -35,6 +35,8 @@ export interface ActivityBackgroundTask {
   isWorkflow?: boolean
   /** Background subagents already render as named subagent rows — excluded here. */
   isSubagent?: boolean
+  /** Launched by a subagent: no named row represents it, so it is listed after all. */
+  launchedBySubagent?: boolean
   /** What kind of work ("Background command"); the generic noun when absent. */
   title?: string
   /** The command or description, when known. */
@@ -87,8 +89,9 @@ export function ActivityCard({
   const listRef = useRef<HTMLUListElement>(null)
 
   // Background subagents are excluded: they already render as named subagent
-  // rows above, and counting them here would show the same work twice.
-  const visibleBackgroundTasks = backgroundTasks.filter((task) => !task.isSubagent)
+  // rows above, and counting them here would show the same work twice. One a
+  // subagent launched has no row above, so it stays.
+  const visibleBackgroundTasks = backgroundTasks.filter((task) => !task.isSubagent || task.launchedBySubagent)
   const backgroundWorkflowCount = visibleBackgroundTasks.filter((task) => task.isWorkflow).length
   const backgroundProcessCount = visibleBackgroundTasks.length - backgroundWorkflowCount
   const activeSubagentCount = subagents.filter((item) => item.status === 'running').length
