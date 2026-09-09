@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 
 import { extractSubscriptionRequired } from '@shared/lib/llm-provider/platform-error-presentation'
 import { cn } from '@shared/lib/utils/cn'
+import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { HomeEmptyClouds } from '@renderer/components/home/home-empty-clouds'
 import { Button } from '@renderer/components/ui/button'
 import { openExternalUrl } from '@renderer/lib/open-external'
@@ -60,9 +61,9 @@ function PaywallActions({
   cta: PaywallCta | null
   loading: boolean
   handedOff: boolean
-  onDismiss: () => void
-  onHandOff: () => void
-  onRecheck: () => void
+  onDismiss: (ctaKind: string) => void
+  onHandOff: (ctaKind: string) => void
+  onRecheck: (ctaKind: string) => void
 }) {
   if (loading) {
     return (
@@ -73,9 +74,10 @@ function PaywallActions({
     )
   }
   const href = cta ? ctaHref(cta) : null
+  const ctaKind = cta?.kind ?? 'none'
   return (
     <div className="flex items-center gap-2" data-testid="paywall-actions">
-      <Button size="sm" variant="ghost" onClick={onDismiss}>
+      <Button size="sm" variant="ghost" onClick={() => onDismiss(ctaKind)}>
         Dismiss
       </Button>
       {handedOff ? (
@@ -83,7 +85,7 @@ function PaywallActions({
           size="sm"
           onClick={(event) => {
             event.stopPropagation()
-            onRecheck()
+            onRecheck(ctaKind)
           }}
         >
           Recheck
@@ -96,7 +98,7 @@ function PaywallActions({
             event.stopPropagation()
             if (!href) return
             void openExternalUrl(href)
-            onHandOff()
+            onHandOff(ctaKind)
           }}
         >
           {CTA_LABELS[cta.kind]}
@@ -112,12 +114,26 @@ function PaywallActions({
 export function PlatformPaywallCard({ message, presentation, children, live = true }: ProviderErrorComponentProps) {
   const [dismissed, setDismissed] = useState(false)
   const [handedOff, setHandedOff] = useState(false)
+  const { track } = useAnalyticsTracking()
   const billing = usePlatformPaywallBilling(
     extractSubscriptionRequired(message),
     presentation?.href ?? null,
     live,
     !dismissed,
   )
+
+  const ctaKind = billing.cta?.kind ?? 'none'
+  const shownRef = useRef(false)
+  useEffect(() => {
+    if (shownRef.current || billing.loading || billing.cleared || dismissed) return
+    shownRef.current = true
+    track('paywall_shown', { ctaKind, blocked: billing.blocked, placement: presentation?.placement ?? 'unknown' })
+  }, [billing.loading, billing.cleared, billing.blocked, dismissed, ctaKind, presentation?.placement, track])
+  useEffect(() => {
+    if (!shownRef.current || !billing.cleared) return
+    track('paywall_cleared', { ctaKind, handedOff })
+  }, [billing.cleared, ctaKind, handedOff, track])
+
   if (billing.cleared || dismissed) return <>{children}</>
 
   const fallback = splitMessage(presentation?.message ?? message)
@@ -141,9 +157,18 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
             cta={billing.cta}
             loading={billing.loading}
             handedOff={handedOff}
-            onDismiss={() => setDismissed(true)}
-            onHandOff={() => setHandedOff(true)}
-            onRecheck={billing.recheck}
+            onDismiss={(kind) => {
+              track('paywall_dismissed', { ctaKind: kind, handedOff })
+              setDismissed(true)
+            }}
+            onHandOff={(kind) => {
+              track('paywall_cta_clicked', { ctaKind: kind })
+              setHandedOff(true)
+            }}
+            onRecheck={(kind) => {
+              track('paywall_recheck_clicked', { ctaKind: kind })
+              billing.recheck()
+            }}
           />
         </div>
       </div>
