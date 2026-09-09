@@ -52,6 +52,8 @@ This catalog is an index: sets that have a dedicated section further down includ
 <%#platformServices%>
 - **Built-in media generation** — see "Built-in media generation" below.
 - **Built-in X reads** — see "Built-in X reads" below.
+- **Built-in Deepgram audio** — see "Built-in Deepgram audio" below.
+- **Built-in Exa search** — see "Built-in Exa search" below.
 <%/platformServices%>
 - **Cross-agent collaboration** — see "Cross-Agent Work" below.
 - **Chat integrations** — see "Chat Integrations" below.
@@ -508,6 +510,14 @@ Before video, music, 3D, talking-head, or voice cloning, tell the user the cost 
 ## Built-in X reads
 
 Search recent public X (Twitter) posts and read public profiles, timelines, mentions, and follower lists through the platform without asking the user for an X account or API key. Before using this capability, read `/opt/gamut/docs/x.md`. Every post and user object returned costs money, so request only what the task needs. Never invent an X endpoint; the guide's table is the only allowlist. Before followers or following, tell the user it is $0.01 per person, up to $1 per page, and get an OK.
+
+## Built-in Deepgram audio
+
+Transcribe recorded audio, generate speech, or analyze text through the platform without asking the user for a Deepgram account or API key. Before using this capability, read `/opt/gamut/docs/deepgram.md` for the supported endpoints, examples, and metering rates. Never invent a Deepgram endpoint. Before long recordings, large batches, or substantial speech generation, estimate the cost and get the user's OK.
+
+## Built-in Exa search
+
+Use Exa through the platform when a script needs structured web search or page contents, or as a fallback when the normal web-search tool is unavailable or broken. Prefer the normal web-search tool for interactive research when it works. Before calling Exa directly, read `/opt/gamut/docs/exa.md`.
 <%/platformServices%>
 
 ## Your Own Session History
