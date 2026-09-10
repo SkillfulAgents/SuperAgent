@@ -9,7 +9,7 @@ import type { IncomingMessage } from 'http'
 import type { Duplex } from 'stream'
 import type { ServerType } from '@hono/node-server'
 import { WebSocketServer, WebSocket } from 'ws'
-import { containerManager } from '@shared/lib/container/container-manager'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { resolveAgentId } from '@shared/lib/utils/file-storage'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { getSettings } from '@shared/lib/config/settings'
@@ -70,18 +70,18 @@ export function setupBrowserStreamProxy(server: ServerType): void {
     const canInput = (request as any)._canInput === true
 
     try {
-        // Ensure client exists (creates if needed) and get cached status
-        const client = containerManager.getClient(agentSlug)
-        const info = containerManager.getCachedInfo(agentSlug)
+        // Cached status only — no runtime query
+        const actor = agentRegistry.get(agentSlug)
+        const info = actor.container.status()
 
         if (info.status !== 'running' || !info.port) {
           ws.close(1011, 'Agent container is not running')
           return
         }
 
-        const wsUrl = `${client.getWebSocketBaseUrl(info.port)}/browser/stream`
+        const wsUrl = `${actor.container.webSocketBaseUrl(info.port)}/browser/stream`
         console.log(`[BrowserProxy] Connecting upstream to: ${wsUrl}`)
-        const upstream = new WebSocket(wsUrl, { headers: client.getHostAuthHeaders() })
+        const upstream = new WebSocket(wsUrl, { headers: actor.container.hostAuthHeaders() })
 
         upstream.on('open', () => {
           console.log(`[BrowserProxy] Connected to container stream for agent ${agentSlug}`)
@@ -120,7 +120,7 @@ export function setupBrowserStreamProxy(server: ServerType): void {
 
         upstream.on('error', (error) => {
           console.error(`[BrowserProxy] Upstream error for agent ${agentSlug}:`, error)
-          const containerStatus = containerManager.getCachedInfo(agentSlug).status
+          const containerStatus = actor.container.status().status
           const isConnectionReset = error instanceof Error && (error.message.includes('ECONNRESET') || error.message.includes('socket hang up'))
           const isExpected = isConnectionReset && containerStatus !== 'running'
           if (!isExpected) {

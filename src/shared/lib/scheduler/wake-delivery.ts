@@ -12,7 +12,7 @@
  * attempt, and a crash before the send loses nothing.
  */
 
-import { containerManager } from '@shared/lib/container/container-manager'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import {
@@ -20,10 +20,6 @@ import {
   markTaskExecuted,
   type ScheduledTask,
 } from '@shared/lib/services/scheduled-task-service'
-import {
-  getSessionMetadata,
-  updateSessionMetadata,
-} from '@shared/lib/services/session-service'
 import { agentExists } from '@shared/lib/services/agent-service'
 import { buildWakeMessage } from './wake-message'
 import { randomUUID } from 'crypto'
@@ -71,10 +67,11 @@ export async function deliverSessionWake(
     if (!task || (task.status !== 'pending' && task.status !== 'paused')) {
       return { outcome: 'not-pending', status: task?.status ?? 'missing' }
     }
+    const actor = agentRegistry.get(task.agentSlug)
 
     // Session-exists guard: the wake outlives most session lifecycles, so the
     // target may have been deleted while sleeping.
-    const sessionMeta = await getSessionMetadata(task.agentSlug, sessionId)
+    const sessionMeta = await actor.sessions.metadata(sessionId)
     if (!sessionMeta) {
       return { outcome: 'session-missing' }
     }
@@ -97,26 +94,26 @@ export async function deliverSessionWake(
 
     // Cold start is fine: sendMessage into a session with no live process
     // resumes it from the container's session descriptor.
-    const client = await containerManager.ensureRunning(task.agentSlug)
+    await actor.container.start()
 
-    if (!messagePersister.isSubscribed(task.agentSlug, sessionId)) {
-      await messagePersister.subscribeToSession(task.agentSlug, sessionId, client, sessionId)
+    if (!actor.sessions.isStreamSubscribed(sessionId)) {
+      await actor.sessions.subscribeStream(sessionId, sessionId)
     }
 
     // If the session went to sleep with a blocking user-input request still
     // open (agent asked, nobody answered), cancel it so the wake message
     // starts a fresh turn instead of deadlocking behind the blocked tool.
-    await messagePersister.cancelAwaitingInput(task.agentSlug, sessionId)
+    await actor.inputs.cancelAwaiting(sessionId)
 
-    await messagePersister.withSessionSend(task.agentSlug, sessionId, client, () =>
-      client.sendMessage(sessionId, buildWakeMessage(task, trigger), randomUUID(), {
+    await actor.messages.withSend(sessionId, () =>
+      actor.messages.send(sessionId, buildWakeMessage(task, trigger), randomUUID(), {
         shouldQuery: true,
       }),
     )
 
     // Side effect landed; record the slot so a crash between here and
     // markTaskExecuted can't double-deliver on the next attempt.
-    await updateSessionMetadata(task.agentSlug, sessionId, {
+    await actor.sessions.updateMetadata(sessionId, {
       lastWake: { taskId: task.id, executionAt },
     })
     await markTaskExecuted(task.id, sessionId)

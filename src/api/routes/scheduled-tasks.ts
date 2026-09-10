@@ -23,13 +23,9 @@ import {
   resumeScheduledTask,
 } from '@shared/lib/services/scheduled-task-service'
 import { promptUpdateSchema } from './trigger-prompt-schema'
-import {
-  getSessionsByScheduledTask,
-  registerSession,
-  updateSessionMetadata,
-} from '@shared/lib/services/session-service'
+import { getSessionsByScheduledTask } from '@shared/lib/services/session-service'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
-import { containerManager } from '@shared/lib/container/container-manager'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
@@ -69,7 +65,7 @@ scheduledTasksRouter.get('/:taskId/sessions', TaskAgentRole('viewer'), async (c)
     const sessions = await getSessionsByScheduledTask(task!.agentSlug, task!.id)
     const sessionsWithStatus = sessions.map((session) => ({
       ...session,
-      isActive: messagePersister.isSessionActive(task!.agentSlug, session.id),
+      isActive: agentRegistry.get(task!.agentSlug).sessions.isActive(session.id),
     }))
     return c.json(sessionsWithStatus)
   } catch (error) {
@@ -304,7 +300,8 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
       return c.json({ error: 'Task is not pending' }, 400)
     }
 
-    const client = await containerManager.ensureRunning(task.agentSlug)
+    const actor = agentRegistry.get(task.agentSlug)
+    await actor.container.start()
     const availableEnvVars = await getSecretEnvVars(task.agentSlug)
     // Model/effort/speed preference order: task override > agent default > global default.
     const models = getEffectiveModels()
@@ -315,7 +312,7 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
       models,
     )
 
-    const containerSession = await client.createSession({
+    const containerSession = await actor.sessions.create({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: task.prompt,
       model: resolved.model,
@@ -328,16 +325,16 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
     const sessionId = containerSession.id
     const sessionName = task.name || 'Scheduled Task (Run Now)'
 
-    await registerSession(task.agentSlug, sessionId, sessionName)
-    await updateSessionMetadata(task.agentSlug, sessionId, {
+    await actor.sessions.register(sessionId, sessionName)
+    await actor.sessions.updateMetadata(sessionId, {
       isScheduledExecution: true,
       scheduledTaskId: task.id,
       scheduledTaskName: task.name || undefined,
     })
 
     // createSession already started the turn; replay may finish it during attachment.
-    messagePersister.markSessionActive(task.agentSlug, sessionId)
-    await messagePersister.subscribeToSession(task.agentSlug, sessionId, client, sessionId)
+    actor.sessions.markActive(sessionId)
+    await actor.sessions.subscribeStream(sessionId, sessionId)
 
     if (task.isRecurring) {
       // Recurring: keep schedule, just record the manual execution

@@ -44,6 +44,8 @@ vi.mock('@shared/lib/platform-attribution', () => ({
 vi.mock('@shared/lib/container/container-manager', () => ({
   containerManager: {
     ensureRunning: vi.fn(),
+    // The actor reaches the client through getClient after start().
+    getClient: () => mockContainerClient,
   },
 }))
 

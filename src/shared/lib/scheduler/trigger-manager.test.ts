@@ -9,9 +9,16 @@ const mockEnsureRunning = vi.fn().mockResolvedValue({
   createSession: mockCreateSession,
 })
 
+// The actor reaches the container client through getClient after start();
+// hand back whatever ensureRunning last resolved to.
+let mockClient: unknown
 vi.mock('@shared/lib/container/container-manager', () => ({
   containerManager: {
-    ensureRunning: (...args: unknown[]) => mockEnsureRunning(...args),
+    ensureRunning: async (...args: unknown[]) => {
+      mockClient = await mockEnsureRunning(...args)
+      return mockClient
+    },
+    getClient: () => mockClient,
   },
 }))
 

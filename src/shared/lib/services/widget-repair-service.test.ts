@@ -15,8 +15,17 @@ const mocks = vi.hoisted(() => ({
   ranAsUser: undefined as string | null | undefined,
 }))
 
+// The actor reaches the container client through getClient after start();
+// hand back whatever ensureRunning last resolved to.
+let ensuredClient: unknown
 vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: { ensureRunning: (...args: unknown[]) => mocks.ensureRunning(...args) },
+  containerManager: {
+    ensureRunning: async (...args: unknown[]) => {
+      ensuredClient = await mocks.ensureRunning(...args)
+      return ensuredClient
+    },
+    getClient: () => ensuredClient,
+  },
 }))
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {

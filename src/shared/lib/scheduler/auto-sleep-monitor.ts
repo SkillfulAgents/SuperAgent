@@ -6,9 +6,7 @@
  * longer than a configurable timeout.
  */
 
-import { containerManager } from '@shared/lib/container/container-manager'
-import { messagePersister } from '@shared/lib/container/message-persister'
-import { listSessions } from '@shared/lib/services/session-service'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { getSettings } from '@shared/lib/config/settings'
 
 class AutoSleepMonitor {
@@ -67,31 +65,30 @@ class AutoSleepMonitor {
       // 0 means disabled
       if (timeoutMinutes <= 0) return
 
-      // getRunningAgentIds uses cached status (no docker process spawned)
-      const runningAgentIds = containerManager.getRunningAgentIds()
-      if (runningAgentIds.length === 0) return
+      // Running agents come from cached status (no docker process spawned)
+      const runningAgents = agentRegistry.all()
+      if (runningAgents.length === 0) return
 
       const now = Date.now()
       const timeoutMs = timeoutMinutes * 60 * 1000
 
-      for (const agentId of runningAgentIds) {
+      for (const actor of runningAgents) {
+        const agentId = actor.slug
         try {
           // Skip if any session is currently processing a request
-          if (messagePersister.hasActiveSessionsForAgent(agentId)) {
+          if (actor.sessions.hasActive()) {
             continue
           }
 
           // Check last activity across all sessions
-          const sessions = await listSessions(agentId)
+          const sessions = await actor.sessions.list()
 
           // Use container start time as a floor — when an agent is woken up
           // to view its dashboard, session timestamps are stale from before
           // the previous sleep and would cause immediate re-sleep. Also covers
           // warm-started containers that still have zero sessions.
-          const containerStartTime =
-            containerManager.getContainerStartTime(agentId) ?? 0
-          const lastKeepAlive =
-            containerManager.getLastKeepAlive(agentId) ?? 0
+          const containerStartTime = actor.container.startedAt() ?? 0
+          const lastKeepAlive = actor.container.lastKeepAliveAt() ?? 0
 
           const lastActivity = Math.max(
             containerStartTime,
@@ -109,7 +106,7 @@ class AutoSleepMonitor {
               `[AutoSleepMonitor] Agent ${agentId} idle for >${timeoutMinutes}m, stopping...`
             )
 
-            await containerManager.stopContainer(agentId, {
+            await actor.container.stop({
               stopTimeoutMs: 60_000,
               killTimeoutMs: 30_000,
               // Never force-stop the shared VM from a background idle sweep — it
