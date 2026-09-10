@@ -6,6 +6,14 @@ import { AccountReauthRequestItem } from './account-reauth-request-item'
 const mockReconnect = vi.fn()
 const mockDismiss = vi.fn()
 let mockPendingAccountId: string | null = null
+vi.mock('./connected-account-request-item', () => ({
+  ConnectedAccountRequestItem: ({ toolkit, replacement }: { toolkit: string; replacement: { requestId: string; onCancel: () => void } }) => (
+    <div data-testid="replacement-picker" data-toolkit={toolkit} data-request-id={replacement.requestId}>
+      <button onClick={replacement.onCancel}>Cancel replacement</button>
+    </div>
+  ),
+}))
+
 let mockOwnedAccountIds = ['account-1', 'account-2', 'account-3']
 
 vi.mock('@renderer/lib/reauth-dismiss', () => ({
@@ -93,7 +101,7 @@ describe('AccountReauthRequestItem', () => {
     expect(screen.getByText('Waiting for reconnection')).toBeInTheDocument()
   })
 
-  it('offers a member who does not own the account a way out instead of reconnect', () => {
+  it('lets a non-owner replace the connection and cancel back to the recovery card', () => {
     mockOwnedAccountIds = []
     render(
       <AccountReauthRequestItem
@@ -106,11 +114,16 @@ describe('AccountReauthRequestItem', () => {
       />,
     )
 
-    // Reconnecting stays the owner's alone, but the card blocks every session
-    // of the agent — so this member must not be left with nothing to press.
     expect(screen.queryByTestId('account-reauth-reconnect-btn')).not.toBeInTheDocument()
     expect(screen.getByTestId('account-reauth-dismiss-btn')).toBeInTheDocument()
-    expect(screen.getByText(/Only the connection owner can reconnect/)).toBeInTheDocument()
+    expect(screen.getByText(/Replace it with an account you own/)).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('account-reauth-replace-btn'))
+    expect(screen.getByTestId('replacement-picker')).toHaveAttribute('data-toolkit', 'gmail')
+    expect(screen.getByTestId('replacement-picker')).toHaveAttribute('data-request-id', 'proxy-4')
+    fireEvent.click(screen.getByText('Cancel replacement'))
+    expect(screen.getByTestId('account-reauth-dismiss-btn')).toBeInTheDocument()
+    expect(mockReconnect).not.toHaveBeenCalled()
+    expect(mockDismiss).not.toHaveBeenCalled()
   })
 
   it('dismisses the parked request and closes the card', async () => {
@@ -174,5 +187,6 @@ describe('AccountReauthRequestItem', () => {
     )
 
     expect(screen.queryByTestId('account-reauth-dismiss-btn')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('account-reauth-replace-btn')).not.toBeInTheDocument()
   })
 })

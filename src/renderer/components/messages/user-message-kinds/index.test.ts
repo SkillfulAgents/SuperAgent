@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { classifyUserMessage, classifyUserText, plainMessage, USER_MESSAGE_KINDS } from './index'
+import { buildConnectionReplacementMessage } from '@shared/lib/utils/connection-replacement-message'
 import { SlashCommandBubble } from './slash-command'
 
 const kindOf = (text: string) => classifyUserText(text).kind
@@ -67,15 +68,26 @@ describe('classifyUserText', () => {
     expect(classifyUserText('[SYSTEM] The user switched to something else.').kind).toBe('system')
   })
 
+  it.each(['connected-accounts', 'remote-mcps'] as const)('shows %s replacement notices before the hidden system catch-all', (kind) => {
+    const text = buildConnectionReplacementMessage({ kind, name: 'Service', previousId: 'old', replacementId: 'new' })
+    const spec = classifyUserText(text)
+    expect(spec.kind).toBe('connection-replacement')
+    expect(spec.hidden).toBe(false)
+    expect(spec.chrome).toBe('row')
+    expect(classifyUserText('[SYSTEM] Connection to an unrelated service').hidden).toBe(true)
+  })
+
   it('lists hidden kinds before the other visible ones so the visibility filter is order-safe', () => {
-    // The voice-mode notice is the one visible kind that must precede the
-    // hidden system prefix it specialises; after it, hidden comes first.
-    const rest = USER_MESSAGE_KINDS.filter((spec) => spec.kind !== 'voice-mode')
+    // Dedicated system notices must precede the hidden system prefix.
+    const notices = ['voice-mode', 'connection-replacement']
+    const rest = USER_MESSAGE_KINDS.filter((spec) => !notices.includes(spec.kind))
     const firstVisible = rest.findIndex((spec) => !spec.hidden)
     expect(rest.slice(firstVisible).every((spec) => !spec.hidden)).toBe(true)
-    expect(USER_MESSAGE_KINDS.findIndex((spec) => spec.kind === 'voice-mode')).toBeLessThan(
-      USER_MESSAGE_KINDS.findIndex((spec) => spec.kind === 'system'),
-    )
+    for (const kind of notices) {
+      expect(USER_MESSAGE_KINDS.findIndex((spec) => spec.kind === kind)).toBeLessThan(
+        USER_MESSAGE_KINDS.findIndex((spec) => spec.kind === 'system'),
+      )
+    }
   })
 })
 

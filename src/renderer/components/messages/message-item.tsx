@@ -459,7 +459,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
     return null
   }
 
-  // Row kinds (the voice-mode boundary) own the whole row: no avatar column,
+  // System notice rows own the whole row: no avatar column,
   // no bubble width, drawn edge to edge like a compact boundary.
   if (CustomUserRender && userKind?.chrome === 'row' && hasText) {
     return <CustomUserRender text={text} message={message} renderMarkdown={renderMarkdown} />

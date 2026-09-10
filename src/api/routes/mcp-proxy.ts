@@ -4,6 +4,7 @@ import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { resolveMcpPolicy } from '@shared/lib/proxy/policy-resolver'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
 import { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
+import { getReplacementMcpId } from '@shared/lib/proxy/mcp-replacement'
 import { isReauthDismissed, reauthDismissalReason, withDismissalReason } from '@shared/lib/proxy/reauth-dismissal'
 import { db } from '@shared/lib/db'
 import {
@@ -385,6 +386,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
 
   type ReauthResult =
     | { ok: true }
+    | { ok: false; reason: 'replaced'; replacementMcpId: string }
     // See the account proxy for `dismissReason`.
     | { ok: false; reason: 'timeout' | 'dismissed' | 'missing' | 'inactive'; dismissReason?: string }
 
@@ -397,6 +399,8 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
         authType: mcp!.authType,
       }, c.req.raw.signal)
     } catch (error) {
+      const replacementMcpId = getReplacementMcpId(error)
+      if (replacementMcpId) return { ok: false, reason: 'replaced', replacementMcpId }
       // See the account proxy: a dismissal is a decision, not a stalled wait.
       if (isReauthDismissed(error)) {
         return { ok: false, reason: 'dismissed', dismissReason: reauthDismissalReason(error) }
@@ -414,6 +418,15 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
   const reauthFailureResponse = async (
     result: Exclude<ReauthResult, { ok: true }>,
   ) => {
+    if (result.reason === 'replaced') {
+      const message = `This MCP connection was replaced. Use the tools for MCP ID ${result.replacementMcpId} instead of ${mcpId}.`
+      await logMcpAuditEntry({
+        agentSlug, remoteMcpId: mcpId, remoteMcpName: mcp?.name ?? mcpId,
+        method, requestPath: mcpMethodInfo, statusCode: 409, errorMessage: message,
+        durationMs: Date.now() - startTime, matchedTool: toolName ?? undefined,
+      })
+      return c.json({ error: 'mcp_replaced', message, replacementMcpId: result.replacementMcpId }, 409)
+    }
     const failure = MCP_REAUTH_FAILURES[result.reason]
     const { statusCode, error } = failure
     const message = withDismissalReason(failure.message, result.dismissReason)

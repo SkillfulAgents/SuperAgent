@@ -1212,7 +1212,7 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
           const text = await res.text()
           mainWindow?.webContents.send(
             'mcp-oauth-callback',
-            parseMcpOAuthCompletionResponse(text),
+            { ...parseMcpOAuthCompletionResponse(text), state: plan.state },
           )
         })
         .catch((err) => {
@@ -1220,6 +1220,7 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
           mainWindow?.webContents.send('mcp-oauth-callback', {
             success: false,
             error: err.message || 'Failed to complete OAuth',
+            state: plan.state,
           })
         })
     }

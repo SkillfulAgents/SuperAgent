@@ -61,6 +61,7 @@ function escapeHtml(str: string): string {
 
 type McpOAuthCallbackPayload = {
   type: 'mcp-oauth-callback'
+  state?: string
   success: boolean
   mcpId?: string
   error?: string
@@ -155,6 +156,7 @@ function renderMcpOAuthHandoffHtml(payload: McpOAuthCallbackPayload, desktopProt
   const protocol = resolveDesktopOAuthProtocol(desktopProtocol)
   const params = new URLSearchParams()
   params.set('success', payload.success ? 'true' : 'false')
+  if (payload.state) params.set('state', payload.state)
   if (payload.mcpId) params.set('mcpId', payload.mcpId)
   if (payload.error) params.set('error', payload.error)
   const deepLink = `${protocol}://mcp-oauth-callback?${params.toString()}`
@@ -422,14 +424,14 @@ remoteMcps.get('/oauth-callback', async (c) => {
     const issuerValidation = validateAndConsumeOAuthErrorResponse(state, iss)
     if (!issuerValidation.valid) {
       return c.html(mcpOAuthCallbackBody(
-        { type: 'mcp-oauth-callback', success: false, error: 'OAuth callback validation failed' },
+        { type: 'mcp-oauth-callback', state, success: false, error: 'OAuth callback validation failed' },
         'OAuth callback validation failed. You can close this window.',
         issuerValidation,
       ))
     }
 
     return c.html(mcpOAuthCallbackBody(
-      { type: 'mcp-oauth-callback', success: false, error },
+      { type: 'mcp-oauth-callback', state, success: false, error },
       `OAuth error: ${error}. You can close this window.`,
       issuerValidation,
     ))
@@ -448,7 +450,7 @@ remoteMcps.get('/oauth-callback', async (c) => {
 
   if (!result.success || !result.mcpId) {
     return c.html(mcpOAuthCallbackBody(
-      { type: 'mcp-oauth-callback', success: false, error: 'Token exchange failed' },
+      { type: 'mcp-oauth-callback', state, success: false, error: 'Token exchange failed' },
       'OAuth failed. You can close this window.',
       delivery,
     ))
@@ -492,6 +494,7 @@ remoteMcps.get('/oauth-callback', async (c) => {
     return c.html(mcpOAuthCallbackBody(
       {
         type: 'mcp-oauth-callback',
+        state,
         success: false,
         error: `Connected but failed to discover tools: ${errorMsg}`,
       },
@@ -506,7 +509,7 @@ remoteMcps.get('/oauth-callback', async (c) => {
 
   trackServerEvent('mcp_oauth_succeeded', { url: serverUrl, mcpId: result.mcpId })
   return c.html(mcpOAuthCallbackBody(
-    { type: 'mcp-oauth-callback', success: true, mcpId: result.mcpId },
+    { type: 'mcp-oauth-callback', state, success: true, mcpId: result.mcpId },
     'OAuth successful! You can close this window.',
     delivery,
   ))

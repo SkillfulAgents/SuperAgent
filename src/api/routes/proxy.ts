@@ -6,6 +6,7 @@ import { matchScopes } from '@shared/lib/proxy/scope-matcher'
 import { resolveApiPolicy } from '@shared/lib/proxy/policy-resolver'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
 import { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
+import { getReplacementAccountId } from '@shared/lib/proxy/account-replacement'
 import { isReauthDismissed, reauthDismissalReason, withDismissalReason } from '@shared/lib/proxy/reauth-dismissal'
 import { getAccountProviderByName } from '@shared/lib/account-providers'
 import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
@@ -151,6 +152,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
 
   type ReauthResult =
     | { ok: true }
+    | { ok: false; reason: 'replaced'; replacementAccountId: string }
     // `dismissReason` is what the dismisser typed, forwarded so the agent
     // learns WHY a person cut its call off, not merely that they did.
     | { ok: false; reason: 'timeout' | 'dismissed' | 'missing' | 'inactive'; dismissReason?: string }
@@ -164,6 +166,8 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
         accountStatus: status,
       }, c.req.raw.signal)
     } catch (error) {
+      const replacementAccountId = getReplacementAccountId(error)
+      if (replacementAccountId) return { ok: false, reason: 'replaced', replacementAccountId }
       // A person pressing Dismiss and a five-minute timer both land here; only
       // the first should read as a decision the agent must respect.
       if (isReauthDismissed(error)) {
@@ -184,6 +188,15 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
     status: 'expired' | 'revoked',
     auditError: (message: string, statusCode: number) => Promise<void>,
   ) => {
+    if (result.reason === 'replaced') {
+      await auditError('Account replaced for this agent by a user', 409)
+      return c.json({
+        error: 'account_replaced',
+        replacementAccountId: result.replacementAccountId,
+        message: `A user replaced this connection for this agent. Retry the request using account ID ${result.replacementAccountId} in the proxy URL instead of ${accountId}. The replacement account's access policies will be checked on the new request.`,
+      }, 409)
+    }
+
     if (result.reason === 'timeout') {
       await auditError(`Account re-authentication timed out (${status})`, 408)
       return c.json({

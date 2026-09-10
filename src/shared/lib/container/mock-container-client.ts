@@ -2555,6 +2555,16 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   async fetch(fetchPath: string, init?: RequestInit): Promise<Response> {
     // Mock fetch - return appropriate empty responses based on path
+    if (fetchPath === '/env' && init?.method === 'POST') {
+      try {
+        const body = JSON.parse(String(init.body)) as { key: string; value: string }
+        if (body.key === 'CONNECTED_ACCOUNTS' || body.key === 'REMOTE_MCPS') {
+          this.writeMockRecord({ type: 'connectionEnvironment', agentSlug: this.config.agentId, key: body.key, value: body.value })
+        }
+      } catch {
+        // A malformed body has no connection snapshot to record.
+      }
+    }
 
     // Workspace entry mutations are executed inside the real agent container.
     // The E2E mock has no container namespace, so mirror the operation against
@@ -3298,6 +3308,10 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     if (!session) return { interrupted: false, processKept: false }
 
     const hadTurnInFlight = this.busySessions.has(sessionId)
+    this.writeMockRecord({
+      type: 'interruptSession', agentSlug: this.config.agentId, sessionId,
+      scope: options?.scope ?? 'turn', hadTurnInFlight,
+    })
     // 'turn' keeps the process and its background tasks (the real CLI honors
     // perTaskStopAffordance); 'all' replaces it, so every task dies with it.
     const processKept = (options?.scope ?? 'turn') === 'turn'
@@ -3406,4 +3420,11 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   // Events (inherited from EventEmitter)
   // on, off are already available from EventEmitter
+}
+
+// Recording-only scenario; ordinary E2E runs keep the default registry.
+if (process.env.E2E_MOCK === 'true' && process.env.E2E_CONNECTION_REPLACEMENT_DEMO === 'true') {
+  void import('./mock-connection-replacement-scenario').then(({ registerConnectionReplacementDemo }) => {
+    registerConnectionReplacementDemo()
+  })
 }

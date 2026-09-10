@@ -2,6 +2,7 @@ export interface McpOAuthCallbackResult {
   success: boolean
   mcpId: string | null
   error: string | null
+  state?: string
 }
 
 export type McpOAuthCallbackPlan =
@@ -10,7 +11,7 @@ export type McpOAuthCallbackPlan =
   | { action: 'notify'; result: McpOAuthCallbackResult }
   // Custom-scheme path: the app received the raw code/state, so the token
   // exchange still has to run — against the Superagent that initiated the flow.
-  | { action: 'complete'; completionUrl: string }
+  | { action: 'complete'; completionUrl: string; state?: string }
 
 /**
  * Decide how to handle an mcp-oauth-callback deep link. `apiBaseUrl` must be
@@ -29,6 +30,7 @@ export function planMcpOAuthCallback(
     return null
   }
   const params = callbackUrl.searchParams
+  const state = params.get('state')
 
   if (params.has('success')) {
     const success = params.get('success') === 'true'
@@ -36,6 +38,7 @@ export function planMcpOAuthCallback(
       action: 'notify',
       result: {
         success,
+        ...(state ? { state } : {}),
         mcpId: params.get('mcpId') || null,
         error: success ? null : (params.get('error') || 'OAuth failed'),
       },
@@ -44,6 +47,7 @@ export function planMcpOAuthCallback(
 
   return {
     action: 'complete',
+    ...(state ? { state } : {}),
     completionUrl: `${apiBaseUrl}/api/remote-mcps/oauth-callback${callbackUrl.search}`,
   }
 }

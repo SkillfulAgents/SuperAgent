@@ -82,6 +82,7 @@ const defaultServer = {
 describe('RemoteMcpRequestItem', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockUseMcpOAuthListener.mockReset()
     mockInitiateOAuthMutateAsync.mockReset()
     mockServerListResponse([defaultServer])
   })
@@ -131,6 +132,154 @@ describe('RemoteMcpRequestItem', () => {
     expect(defaultProps.onComplete).toHaveBeenCalled()
   })
 
+  it('provides a replacement through the agent-scoped endpoint without a session', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(<RemoteMcpRequestItem {...defaultProps} sessionId={undefined}
+      replacement={{ requestId: 'reauth-1', onCancel: vi.fn() }} />)
+    await user.click(await screen.findByRole('button', { name: 'Replace connection' }))
+    expect(mockApiFetch).toHaveBeenCalledWith('/api/agents/my-agent/reauth-request/reauth-1/replace-mcp',
+      expect.objectContaining({ body: JSON.stringify({ toolUseId: 'tu-1', remoteMcpIds: ['mcp-1'] }) }))
+    await waitFor(() => expect(defaultProps.onComplete).toHaveBeenCalledOnce())
+  })
+
+  it('cancels replacement without declining the pending MCP request', async () => {
+    const user = userEvent.setup()
+    const onCancel = vi.fn()
+    renderWithProviders(<RemoteMcpRequestItem {...defaultProps}
+      replacement={{ requestId: 'reauth-1', onCancel }} />)
+    await screen.findByRole('button', { name: 'Replace connection' })
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(onCancel).toHaveBeenCalledOnce()
+    expect(mockApiFetch.mock.calls.some(([, options]) => options?.method === 'POST')).toBe(false)
+    expect(defaultProps.onComplete).not.toHaveBeenCalled()
+  })
+
+  it('uses the exact new OAuth connection when replacing with a sibling at the same URL', async () => {
+    const user = userEvent.setup()
+    mockInitiateOAuthMutateAsync.mockResolvedValue({ state: 'flow-state', redirectUrl: 'https://oauth.example' })
+    renderWithProviders(<RemoteMcpRequestItem {...defaultProps} authHint="oauth"
+      replacement={{ requestId: 'reauth-1', onCancel: vi.fn() }} />)
+    await screen.findByRole('button', { name: 'Replace connection' })
+    await user.click(screen.getByRole('button', { name: /Connect Another|Add New/i }))
+    await waitFor(() => expect(mockUseMcpOAuthListener).toHaveBeenCalledWith(true, expect.any(Function), 'flow-state'))
+    mockServerListResponse([defaultServer, { ...defaultServer, id: 'new-mcp', name: 'New connection' }])
+    const callback = mockUseMcpOAuthListener.mock.calls.find(([active]) => active)?.[1]
+    act(() => callback({ success: true, mcpId: 'new-mcp' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Replace connection' })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: 'Replace connection' }))
+    expect(mockApiFetch).toHaveBeenCalledWith('/api/agents/my-agent/reauth-request/reauth-1/replace-mcp',
+      expect.objectContaining({ body: JSON.stringify({ toolUseId: 'tu-1', remoteMcpIds: ['new-mcp'] }) }))
+  })
+
+  it('connects a custom replacement using an entered URL when safe prefill is unavailable', async () => {
+    mockServerListResponse([])
+    mockInitiateOAuthMutateAsync.mockResolvedValue({ state: 'flow-state', redirectUrl: 'https://oauth.example' })
+    const user = userEvent.setup()
+    renderWithProviders(<RemoteMcpRequestItem {...defaultProps} url="" authHint="oauth"
+      replacement={{ requestId: 'reauth-1', onCancel: vi.fn() }} />)
+    const input = await screen.findByRole('textbox', { name: 'MCP server URL' })
+    const connect = await screen.findByRole('button', { name: 'Connect' })
+    expect(connect).toBeDisabled()
+    await user.type(input, 'not-a-url')
+    expect(connect).toBeDisabled()
+    await user.clear(input)
+    await user.type(input, defaultProps.url)
+    await user.click(connect)
+    expect(mockInitiateOAuthMutateAsync).toHaveBeenCalledWith(expect.objectContaining({ url: defaultProps.url }))
+    mockServerListResponse([{ ...defaultServer, id: 'custom-new' }])
+    const callback = mockUseMcpOAuthListener.mock.calls.find(([active]) => active)?.[1]
+    await act(async () => callback({ success: true, mcpId: 'custom-new' }))
+    await user.click(await screen.findByRole('button', { name: 'Replace connection' }))
+    expect(mockApiFetch).toHaveBeenCalledWith('/api/agents/my-agent/reauth-request/reauth-1/replace-mcp',
+      expect.objectContaining({ body: JSON.stringify({ toolUseId: 'tu-1', remoteMcpIds: ['custom-new'] }) }))
+  })
+
+  it.each(['bearer', undefined] as const)('registers an entered replacement URL with %s authentication', async (authHint) => {
+    let created = false
+    mockApiFetch.mockImplementation((path: string, options?: { method?: string }) => {
+      if (path === '/api/remote-mcps' && options?.method === 'POST') {
+        created = true
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ server: defaultServer }) })
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ servers: created ? [defaultServer] : [], policies: [] }) })
+    })
+    const user = userEvent.setup()
+    renderWithProviders(<RemoteMcpRequestItem {...defaultProps} url="" authHint={authHint}
+      replacement={{ requestId: 'reauth-1', onCancel: vi.fn() }} />)
+    await user.type(await screen.findByRole('textbox', { name: 'MCP server URL' }), defaultProps.url)
+    if (authHint) await user.type(screen.getByPlaceholderText('Bearer token'), 'member-token')
+    await user.click(screen.getByRole('button', { name: 'Connect' }))
+    expect(mockApiFetch).toHaveBeenCalledWith('/api/remote-mcps', expect.objectContaining({
+      body: JSON.stringify({ name: defaultProps.name, url: defaultProps.url, authType: authHint ?? 'none', ...(authHint ? { accessToken: 'member-token' } : {}) }),
+    }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Replace connection' })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: 'Replace connection' }))
+    expect(defaultProps.onComplete).toHaveBeenCalledOnce()
+    expect(mockInitiateOAuthMutateAsync).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    'https://mcp.example.com/another-service',
+    'https://mcp.example.com:8443/sse',
+    'http://mcp.example.com/sse',
+    'https://another.example/sse',
+  ])('excludes incompatible replacement %s from auto-selection and the picker', async (url) => {
+    mockServerListResponse([
+      { ...defaultServer, status: 'auth_required', authType: 'oauth' },
+      { ...defaultServer, id: 'incompatible', name: 'Wrong endpoint', url },
+    ])
+    const user = userEvent.setup()
+    renderWithProviders(<RemoteMcpRequestItem {...defaultProps}
+      replacement={{ requestId: 'reauth-1', onCancel: vi.fn() }} />)
+    expect(await screen.findByRole('button', { name: 'Replace connection' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: 'Select a different one' }))
+    expect(screen.queryByText('Wrong endpoint')).not.toBeInTheDocument()
+    expect(mockApiFetch.mock.calls.some(([, options]) => options?.method === 'POST')).toBe(false)
+  })
+
+  it('shows compatible replacement accounts across query and trailing-slash variants', async () => {
+    mockServerListResponse([
+      { ...defaultServer, name: 'First account', url: 'https://mcp.facebook.com/ads/?token=first' },
+      { ...defaultServer, id: 'second', name: 'Second account', url: 'https://mcp.facebook.com/ads' },
+    ])
+    renderWithProviders(<RemoteMcpRequestItem {...defaultProps} url="https://mcp.facebook.com/ads?token=member"
+      replacement={{ requestId: 'reauth-1', onCancel: vi.fn() }} />)
+    expect(await screen.findByText('First account')).toBeInTheDocument()
+    expect(screen.getByText('Second account')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Replace connection' })).toBeEnabled()
+  })
+
+  it.each([defaultProps.url, 'https://unrelated.example/mcp'])('ignores another OAuth flow at %s and still accepts its own callback', async (otherUrl) => {
+    const actual = await vi.importActual<typeof import('@renderer/hooks/use-mcp-oauth-listener')>('@renderer/hooks/use-mcp-oauth-listener')
+    mockUseMcpOAuthListener.mockImplementation(actual.useMcpOAuthListener)
+    mockInitiateOAuthMutateAsync.mockResolvedValue({ state: 'flow-state', redirectUrl: 'https://oauth.example' })
+    const user = userEvent.setup()
+    renderWithProviders(<RemoteMcpRequestItem {...defaultProps} authHint="oauth"
+      replacement={{ requestId: 'reauth-1', onCancel: vi.fn() }} />)
+    await screen.findByRole('button', { name: 'Replace connection' })
+    await user.click(screen.getByRole('button', { name: /Add New Account/ }))
+    await screen.findByText('Waiting for authorization...')
+    mockServerListResponse([defaultServer,
+      { ...defaultServer, id: 'other-flow-mcp', url: otherUrl },
+      { ...defaultServer, id: 'own-flow-mcp' },
+    ])
+    const callback = (data: Record<string, unknown>) => window.dispatchEvent(new MessageEvent('message', {
+      origin: window.location.origin, data: { type: 'mcp-oauth-callback', ...data },
+    }))
+    await act(async () => {
+      callback({ success: true, state: 'other-flow', mcpId: 'other-flow-mcp' })
+      callback({ success: false, state: 'other-flow', error: 'Other flow failed' })
+      callback({ success: true, mcpId: 'other-flow-mcp' })
+    })
+    expect(screen.getByText('Waiting for authorization...')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Replace connection' })).toBeDisabled()
+    await act(async () => callback({ success: true, state: 'flow-state', mcpId: 'own-flow-mcp' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Replace connection' })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: 'Replace connection' }))
+    expect(mockApiFetch).toHaveBeenCalledWith('/api/agents/my-agent/reauth-request/reauth-1/replace-mcp',
+      expect.objectContaining({ body: JSON.stringify({ toolUseId: 'tu-1', remoteMcpIds: ['own-flow-mcp'] }) }))
+  })
+
   it('declines remote MCP request', async () => {
     const user = userEvent.setup()
 
@@ -178,7 +327,7 @@ describe('RemoteMcpRequestItem', () => {
   it('uses the shared OAuth callback listener while waiting for web OAuth', async () => {
     const user = userEvent.setup()
     mockServerListResponse([])
-    mockInitiateOAuthMutateAsync.mockResolvedValue({ redirectUrl: 'https://auth.example.com/oauth' })
+    mockInitiateOAuthMutateAsync.mockResolvedValue({ state: 'flow-state', redirectUrl: 'https://auth.example.com/oauth' })
 
     renderWithProviders(
       <RemoteMcpRequestItem
@@ -191,7 +340,7 @@ describe('RemoteMcpRequestItem', () => {
     await user.click(await screen.findByRole('button', { name: /Connect/i }))
 
     await waitFor(() => {
-      expect(mockUseMcpOAuthListener).toHaveBeenCalledWith(true, expect.any(Function))
+      expect(mockUseMcpOAuthListener).toHaveBeenCalledWith(true, expect.any(Function), 'flow-state')
     })
 
     const activeCall = mockUseMcpOAuthListener.mock.calls.find(([active]) => active === true)
@@ -301,7 +450,7 @@ describe('RemoteMcpRequestItem', () => {
 
     it('starts re-auth OAuth for the existing server on Reconnect', async () => {
       const user = userEvent.setup()
-      mockInitiateOAuthMutateAsync.mockResolvedValue({ redirectUrl: 'https://auth.example.com/oauth' })
+      mockInitiateOAuthMutateAsync.mockResolvedValue({ state: 'flow-state', redirectUrl: 'https://auth.example.com/oauth' })
 
       renderWithProviders(<RemoteMcpRequestItem {...defaultProps} />)
 
@@ -324,14 +473,14 @@ describe('RemoteMcpRequestItem', () => {
 
     it('enables Allow Access after re-auth completes and the server is active', async () => {
       const user = userEvent.setup()
-      mockInitiateOAuthMutateAsync.mockResolvedValue({ redirectUrl: 'https://auth.example.com/oauth' })
+      mockInitiateOAuthMutateAsync.mockResolvedValue({ state: 'flow-state', redirectUrl: 'https://auth.example.com/oauth' })
 
       renderWithProviders(<RemoteMcpRequestItem {...defaultProps} />)
 
       await user.click(await screen.findByRole('button', { name: /Reconnect/i }))
 
       await waitFor(() => {
-        expect(mockUseMcpOAuthListener).toHaveBeenCalledWith(true, expect.any(Function))
+        expect(mockUseMcpOAuthListener).toHaveBeenCalledWith(true, expect.any(Function), 'flow-state')
       })
 
       // Server comes back active after OAuth
@@ -354,7 +503,7 @@ describe('RemoteMcpRequestItem', () => {
       const serverA = { ...defaultServer, id: 'mcp-a', name: 'Account A' }
       const serverB = { ...staleServer, id: 'mcp-b', name: 'Account B' }
       mockServerListResponse([serverA, serverB])
-      mockInitiateOAuthMutateAsync.mockResolvedValue({ redirectUrl: 'https://auth.example.com/oauth' })
+      mockInitiateOAuthMutateAsync.mockResolvedValue({ state: 'flow-state', redirectUrl: 'https://auth.example.com/oauth' })
 
       renderWithProviders(<RemoteMcpRequestItem {...defaultProps} />)
 
@@ -481,7 +630,7 @@ describe('RemoteMcpRequestItem', () => {
 
     it('prefills the client ID the agent supplied and sends it on connect', async () => {
       mockServerListResponse([])
-      mockInitiateOAuthMutateAsync.mockResolvedValue({ redirectUrl: 'https://auth.example.com/authorize' })
+      mockInitiateOAuthMutateAsync.mockResolvedValue({ state: 'flow-state', redirectUrl: 'https://auth.example.com/authorize' })
       await act(async () => {
         renderWithProviders(
           <RemoteMcpRequestItem
@@ -508,7 +657,7 @@ describe('RemoteMcpRequestItem', () => {
 
     it('leaves the user free to correct what the agent supplied', async () => {
       mockServerListResponse([])
-      mockInitiateOAuthMutateAsync.mockResolvedValue({ redirectUrl: 'https://auth.example.com/authorize' })
+      mockInitiateOAuthMutateAsync.mockResolvedValue({ state: 'flow-state', redirectUrl: 'https://auth.example.com/authorize' })
       await act(async () => {
         renderWithProviders(
           <RemoteMcpRequestItem

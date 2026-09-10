@@ -2,7 +2,8 @@
  * Prefix for system-injected user messages: entries the app or the container
  * writes into the transcript as `user` turns (chat-integration notices,
  * scheduler wake-ups, MCP registration nudges) that the person never typed.
- * The UI hides them and notification summaries skip them.
+ * The UI hides them by default (some have dedicated renderers), and
+ * notification summaries skip them.
  *
  * The container keeps its own copy of this constant because it is a separate
  * package. Keep in sync with SYSTEM_MESSAGE_PREFIX in agent-container/src/claude-code.ts.
