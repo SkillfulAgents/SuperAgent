@@ -120,6 +120,7 @@ export function GlobalNotificationHandler() {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const reconnectAttemptRef = useRef(0)
   const wasDeadRef = useRef(false)
+  const hasConnectedRef = useRef(false)
   const streamRef = useRef<EventSource | null>(null)
 
   // Sync dock badge count with unread notifications (macOS Electron only)
@@ -663,10 +664,13 @@ export function GlobalNotificationHandler() {
       }
     }
 
-    // Catch up anything missed while the stream was down, including the
-    // window before the first successful connect.
+    // Agents and roles cover the window before the first connect. Rosters and
+    // the session are already loading on mount; only refresh them after a gap.
     es.onopen = () => {
+      const isReconnect = hasConnectedRef.current || wasDeadRef.current
+      hasConnectedRef.current = true
       reconnectAttemptRef.current = 0
+      if (isReconnect && userIdRef.current) authClient.$store.notify('$sessionSignal')
       if (wasDeadRef.current) {
         // The dead window can be arbitrarily long, and every family this
         // stream feeds may have moved in it. Refetch what is mounted.
@@ -676,9 +680,10 @@ export function GlobalNotificationHandler() {
       }
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
-      queryClient.invalidateQueries({ queryKey: ['agent-members'] })
-      queryClient.invalidateQueries({ queryKey: ['agent-invite-candidates'] })
-      if (userIdRef.current) authClient.$store.notify('$sessionSignal')
+      if (isReconnect) {
+        queryClient.invalidateQueries({ queryKey: ['agent-members'] })
+        queryClient.invalidateQueries({ queryKey: ['agent-invite-candidates'] })
+      }
     }
 
     es.onerror = () => {

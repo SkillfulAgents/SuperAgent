@@ -589,13 +589,21 @@ const AgentMenuItemInner = React.forwardRef<
                 <span className="block truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
               </AppLink>
               {isShared && <SidebarMemberIndicator agentSlug={agent.slug} agentName={agent.name} memberCount={memberCount} selected={isSelected} />}
-              <span className="ml-auto flex shrink-0 items-center">
+              {/* Expose the status title above the stretched link while keeping
+                  clicks (including modifier clicks) native agent navigation. */}
+              <AppLink
+                to="/agents/$slug"
+                params={{ slug: agent.displaySlug }}
+                tabIndex={-1}
+                aria-label={`Open ${agent.name}`}
+                className="relative z-10 ml-auto flex shrink-0 items-center"
+              >
                 {hint !== null ? (
                   <CmdHintBadge hint={hint} />
                 ) : (
                   <AgentRowIndicator agent={agent} sessions={sessions} isOpen={isOpen} />
                 )}
-              </span>
+              </AppLink>
               {hasExpandableContent && (
                 <button
                   type="button"

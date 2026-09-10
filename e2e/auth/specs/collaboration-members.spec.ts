@@ -27,6 +27,16 @@ test('members share one live roster while invitation and revocation follow permi
     await expect(ownerStack).toHaveCount(0)
     await expect(page.getByTestId(`sidebar-members-${agent.slug}`)).toHaveCount(0)
 
+    // The stretched name link must not cover the status icon's native tooltip.
+    const agentLink = page.getByTestId(`agent-item-${agent.slug}`)
+    const status = page.locator('[data-sidebar="menu-button"]').filter({ has: agentLink }).getByTestId('agent-status')
+    await status.hover()
+    expect(await status.evaluate((element) => {
+      const bounds = element.getBoundingClientRect()
+      return element.contains(document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2))
+    })).toBe(true)
+    await expect(status).toHaveAttribute('title', 'sleeping')
+
     // Private agents retain Share; the same pane stays open when the first invite makes it shared.
     await page.getByTestId('agent-share-button').click()
     const sharing = page.getByTestId('agent-share-popover')
@@ -126,6 +136,17 @@ test('members share one live roster while invitation and revocation follow permi
     await expect(ownerStack.getByTestId('agent-members-overflow')).toHaveText('+1')
     expect((await users[2].context.request.post(`${endpoint}/leave`)).ok()).toBeTruthy()
     await expect(ownerStack.getByTestId('agent-members-overflow')).toHaveCount(0)
+
+    // The first signup is the deployment admin. Removing their explicit ACL
+    // hides the sidebar entry but preserves access to the open agent page.
+    expect((await page.request.patch(`${endpoint}/access/${users[3].id}`, { data: { role: 'owner' } })).ok()).toBeTruthy()
+    expect((await users[3].context.request.delete(`${endpoint}/access/${users[0].id}`)).ok()).toBeTruthy()
+    await expect(agentLink).toHaveCount(0)
+    await expect(page).toHaveURL(new RegExp(`/agents/[^/]*${agent.slug}$`))
+    await expect(ownerStack.getByTestId(`agent-member-${users[0].id}`)).toHaveCount(0)
+    await expect(ownerStack.getByTestId(`agent-member-${users[3].id}`)).toBeVisible()
+    expect((await page.request.get(`${endpoint}/members`)).status()).toBe(200)
+    expect((await page.request.get(`${endpoint}/access`)).status()).toBe(200)
   } finally {
     await Promise.all(contexts.map((context) => context.close()))
   }

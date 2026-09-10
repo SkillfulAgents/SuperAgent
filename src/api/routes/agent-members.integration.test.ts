@@ -73,6 +73,24 @@ describe('authorized agent roster', () => {
     for (const name of ['owner', 'admin']) expect((await get(name, 'access')).status).toBe(200)
   })
 
+  it('sends a membership change when a removed deployment admin retains access', async () => {
+    const { agentAcl } = await import('@shared/lib/db/schema')
+    db.db.insert(agentAcl).values({ id: randomUUID(), userId: people.admin.id, agentSlug, role: 'viewer', createdAt: new Date() }).run()
+    const received: CollaborationEvent[] = []
+    const stop = events.subscribeCollaborationEvents(people.admin.id, (event) => { received.push(event) })
+    try {
+      db.sqlite.prepare('DELETE FROM agent_acl WHERE agent_slug = ? AND user_id = ?').run(agentSlug, people.admin.id)
+      service.notifyAgentMembersChanged(agentSlug, people.admin.id)
+      expect(received).toEqual([{ type: 'agent_members_changed', agentSlug }])
+      expect((await get('admin')).status).toBe(200)
+      expect((await get('admin', 'access')).status).toBe(200)
+      expect(service.listAgentMembers(agentSlug).some((member) => member.id === people.admin.id)).toBe(false)
+    } finally {
+      stop()
+      db.sqlite.prepare('DELETE FROM agent_acl WHERE agent_slug = ? AND user_id = ?').run(agentSlug, people.admin.id)
+    }
+  })
+
   it('scopes profile and membership hints and delivers revocation after removing access', async () => {
     const received = Object.fromEntries(Object.keys(people).map((name) => [name, [] as CollaborationEvent[]]))
     const stops = Object.keys(people).map((name) => events.subscribeCollaborationEvents(people[name].id, (event) => { received[name].push(event) }))

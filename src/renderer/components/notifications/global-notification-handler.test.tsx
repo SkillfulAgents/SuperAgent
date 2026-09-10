@@ -47,10 +47,24 @@ vi.mock('@renderer/router/use-route-location', () => ({
   useRouteLocation: vi.fn(() => ({ selectedAgentSlug: null, view: { kind: 'home' } })),
 }))
 
+const { mockSessionNotify, mockAuthState } = vi.hoisted(() => ({
+  mockSessionNotify: vi.fn(),
+  mockAuthState: { user: null as { id: string } | null },
+}))
+
+vi.mock('@renderer/lib/auth-client', () => ({
+  authClient: { $store: { notify: mockSessionNotify } },
+}))
+
+beforeEach(() => {
+  mockSessionNotify.mockClear()
+  mockAuthState.user = null
+})
+
 vi.mock('@renderer/context/user-context', () => ({
   useUser: () => ({
     isAuthMode: false,
-    user: null,
+    user: mockAuthState.user,
     canAccessAgent: () => true,
   }),
 }))
@@ -149,6 +163,15 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(invalidate).not.toHaveBeenCalled()
     simulateSSEMessage(getLatestEventSource(), { type: 'user_profile_changed', userId: 'peer' })
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['agent-members'] })
+  })
+
+  it('refreshes the session for the signed-in user’s profile change only', () => {
+    mockAuthState.user = { id: 'current-user' }
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+    simulateSSEMessage(getLatestEventSource(), { type: 'user_profile_changed', userId: 'peer' })
+    expect(mockSessionNotify).not.toHaveBeenCalled()
+    simulateSSEMessage(getLatestEventSource(), { type: 'user_profile_changed', userId: 'current-user' })
+    expect(mockSessionNotify).toHaveBeenCalledExactlyOnceWith('$sessionSignal')
   })
 
   it('drops revoked data, updates roles immediately, and leaves the active agent', async () => {
@@ -903,7 +926,8 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
   })
 
-  it('SSE open invalidates agents and roles, including the first connect', () => {
+  it('only refreshes collaboration queries and the session on reconnect, not first open', () => {
+    mockAuthState.user = { id: 'current-user' }
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 
     render(
@@ -916,12 +940,18 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     es.onopen?.()
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['agent-members'] })
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['agent-invite-candidates'] })
+    expect(mockSessionNotify).not.toHaveBeenCalled()
 
     invalidateSpy.mockClear()
     es.onerror?.()
     es.onopen?.()
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agent-members'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agent-invite-candidates'] })
+    expect(mockSessionNotify).toHaveBeenCalledExactlyOnceWith('$sessionSignal')
     // Mount and a browser-handled reconnect are not outages.
     expect(invalidateSpy).not.toHaveBeenCalledWith({ predicate: isRefetchableAfterOutage })
   })
@@ -966,6 +996,7 @@ describe('stream healing', () => {
   }
 
   it('error at readyState 2 reopens and the reopen refetches everything mounted except LLM-backed queries', async () => {
+    mockAuthState.user = { id: 'current-user' }
     renderHandler()
     expect(MockEventSource.instances).toHaveLength(1)
 
@@ -976,6 +1007,7 @@ describe('stream healing', () => {
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
     getLatestEventSource().onopen?.()
     expect(invalidateSpy).toHaveBeenCalledWith({ predicate: isRefetchableAfterOutage })
+    expect(mockSessionNotify).toHaveBeenCalledExactlyOnceWith('$sessionSignal')
     expect(isRefetchableAfterOutage({ queryKey: ['sessions', 'a1'] })).toBe(true)
     for (const key of ['agent-template-publish-info', 'agent-template-pr-info', 'skill-publish-info', 'skill-pr-info']) {
       expect(isRefetchableAfterOutage({ queryKey: [key, 'a1'] })).toBe(false)

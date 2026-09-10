@@ -19,14 +19,22 @@ export function listAgentMembers(agentSlug: string) {
   })))
 }
 
-export function notifyAgentMembersChanged(agentSlug: string, revokedUserId?: string): void {
+export function notifyAgentMembersChanged(agentSlug: string, removedUserId?: string): void {
   if (!isAuthMode()) return
   try {
     const recipients = db.select({ id: agentAcl.userId }).from(agentAcl)
       .where(eq(agentAcl.agentSlug, agentSlug)).all().map((row) => row.id)
     publishCollaborationEvent(recipients, { type: 'agent_members_changed', agentSlug })
-    // The removed user no longer passes the usual agent audience filter.
-    if (revokedUserId) publishCollaborationEvent([revokedUserId], { type: 'agent_access_revoked', agentSlug })
+    // Removed members still need a direct hint. Deployment admins retain
+    // route access without an ACL entry, so only refresh their membership UI.
+    if (removedUserId) {
+      const removedUser = db.select({ role: user.role }).from(user)
+        .where(eq(user.id, removedUserId)).get()
+      publishCollaborationEvent([removedUserId], {
+        type: removedUser?.role === 'admin' ? 'agent_members_changed' : 'agent_access_revoked',
+        agentSlug,
+      })
+    }
   } catch (error) {
     // The mutation already committed. Reconnect/focus refetches recover hints.
     console.error('Failed to notify agent members:', error)
