@@ -299,6 +299,43 @@ export function isComputerUseHost(): boolean {
 }
 
 /**
+ * The calendar facts the system prompt states about "now", in the zone the
+ * container runs in (the TZ env the host sets to the agent owner's zone).
+ */
+export interface PromptDate {
+  /** Local calendar date, YYYY-MM-DD. */
+  date: string;
+  weekday: string;
+  /** IANA zone name, e.g. America/Los_Angeles. */
+  timeZone: string;
+  /** e.g. UTC-07:00 */
+  utcOffset: string;
+}
+
+export function promptDate(
+  now: Date = new Date(),
+  timeZone: string = Intl.DateTimeFormat().resolvedOptions().timeZone,
+): PromptDate {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    weekday: 'long',
+    timeZoneName: 'longOffset',
+  }).formatToParts(now);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === type)?.value ?? '';
+  // longOffset renders a zero offset as bare "GMT".
+  const offset = part('timeZoneName');
+  return {
+    date: `${part('year')}-${part('month')}-${part('day')}`,
+    weekday: part('weekday'),
+    timeZone,
+    utcOffset: offset === 'GMT' ? 'UTC+00:00' : offset.replace('GMT', 'UTC'),
+  };
+}
+
+/**
  * The template renders every section itself; this bag carries only data. Each
  * list is paired with a `has*` boolean because a Mustache list section repeats
  * its body per item and so cannot host the section's heading. A string needs no
@@ -306,6 +343,10 @@ export function isComputerUseHost(): boolean {
  */
 export interface SystemPromptVars {
   CLAUDE_CONFIG_DIR: string;
+  todayWeekday: string;
+  todayDate: string;
+  timeZone: string;
+  utcOffset: string;
   webSearchToolName: string;
   webFetchToolName: string;
   subagentsEnabled: boolean;
@@ -366,8 +407,13 @@ export function buildSystemPromptVars(
   const envVars = agentEnvVars(availableEnvVars);
   const userInstructions = userSystemPrompt?.trim() || '';
   const mountPaths = parseMountPaths(process.env.SUPERAGENT_MOUNTS);
+  const today = promptDate();
   return {
     CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR || PROMPT_ENV_DEFAULTS.CLAUDE_CONFIG_DIR,
+    todayWeekday: today.weekday,
+    todayDate: today.date,
+    timeZone: today.timeZone,
+    utcOffset: today.utcOffset,
     webSearchToolName: webSearchProvider ? 'mcp__web__web_search' : 'WebSearch',
     webFetchToolName: webFetchProvider ? 'mcp__web__web_fetch' : 'WebFetch',
     // Blocked subagents must not be advertised anywhere in the prompt; review
@@ -519,7 +565,9 @@ export class ClaudeCodeProcess extends EventEmitter {
   private sessionId: string;
   private workingDirectory: string;
   private claudeSessionId: string | null;
-  private systemPrompt: string;
+  private systemPrompt = '';
+  // Local calendar day the prompt (and any subprocess spawned from it) reads as today.
+  private promptRenderedOn = '';
   private model: string | undefined;
   private browserModel: string | undefined;
   private dashboardBuilderModel: string | undefined;
@@ -629,23 +677,16 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.availableEnvVars = options.availableEnvVars;
     this.userSystemPrompt = options.userSystemPrompt;
     this.modelPromptHints = options.modelPromptHints;
-    this.systemPrompt = generateSystemPrompt(
-      options.availableEnvVars,
-      options.userSystemPrompt,
-      options.modelPromptHints,
-      options.webSearchProvider,
-      options.webFetchProvider,
-      options.capabilityPolicies,
-      this.subagentModels,
-    );
+    this.refreshSystemPrompt();
   }
 
   /**
    * Regenerate the system prompt from the current runtime env. The live query
-   * keeps the prompt it was created with; the refreshed text is what the NEXT
-   * query creation (cold restart, effort/model re-query) carries.
+   * keeps the prompt it was created with; every query creation re-renders so
+   * the date line reads the day the subprocess starts.
    */
   private refreshSystemPrompt(): void {
+    this.promptRenderedOn = promptDate().date;
     this.systemPrompt = generateSystemPrompt(
       this.availableEnvVars,
       this.userSystemPrompt,
@@ -1362,11 +1403,20 @@ export class ClaudeCodeProcess extends EventEmitter {
     // New query generation: a stale processMessages loop from a previous
     // query must not clobber this one's state when it finally unwinds.
     this.queryGeneration++;
+    // A parked subprocess baked in the prompt of the day it was spawned. Past
+    // a midnight its date line is wrong, and the CLI's own date-change notice
+    // carries the date but not the weekday — spawn cold instead.
+    if (this.warmHandle && this.promptRenderedOn !== promptDate().date) {
+      console.log(`[Session ${this.sessionId}] Discarding pre-warmed subprocess rendered on ${this.promptRenderedOn}`);
+      this.warmHandle.close();
+      this.warmHandle = null;
+    }
     // A pre-warmed subprocess was spawned with prewarm()'s AbortController
     // already baked into its options; replacing it here would leave that
     // subprocess with no way to be aborted.
     if (!this.warmHandle) {
       this.abortController = new AbortController();
+      this.refreshSystemPrompt();
     }
     this.messageQueue = new MessageQueue();
     this.queryInstance = this.createQuery();
