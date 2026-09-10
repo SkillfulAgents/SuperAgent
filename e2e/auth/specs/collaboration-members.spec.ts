@@ -23,10 +23,11 @@ test('members share one live roster while invitation and revocation follow permi
     const endpoint = `/api/agents/${agent.slug}`
     await page.goto(`/agents/${agent.slug}`)
     const ownerStack = page.getByTestId('agent-member-stack')
-    await expect(ownerStack.getByTestId(`agent-member-${users[0].id}`)).toBeVisible({ timeout: 15_000 })
-    await expect(ownerStack.getByTestId('agent-members-overflow')).toHaveCount(0)
+    await expect(page.getByTestId('agent-share-button')).toHaveText('Share', { timeout: 15_000 })
+    await expect(ownerStack).toHaveCount(0)
+    await expect(page.getByTestId(`sidebar-members-${agent.slug}`)).toHaveCount(0)
 
-    // The new + still opens Invite / Publish / Export, and invitation works through it.
+    // Private agents retain Share; the same pane stays open when the first invite makes it shared.
     await page.getByTestId('agent-share-button').click()
     const sharing = page.getByTestId('agent-share-popover')
     await expect(sharing.getByRole('tab', { name: 'Publish', exact: true })).toBeVisible()
@@ -37,7 +38,9 @@ test('members share one live roster while invitation and revocation follow permi
     await page.getByRole('option', { name: 'Viewer Can view sessions only' }).click()
     await sharing.getByRole('button', { name: 'Invite', exact: true }).click()
     await expect(ownerStack.getByTestId(`agent-member-${users[1].id}`)).toBeVisible()
+    await expect(sharing).toBeVisible()
     await page.keyboard.press('Escape')
+    await expect(sharing).not.toBeVisible()
 
     const viewer = await users[1].context.newPage()
     await viewer.goto(`/agents/${agent.slug}`)
@@ -48,8 +51,30 @@ test('members share one live roster while invitation and revocation follow permi
     expect((await viewer.request.post(`${endpoint}/access`, { data: { userId: users[7].id, role: 'owner' } })).status()).toBe(403)
     expect((await users[7].context.request.get(`${endpoint}/members`)).status()).toBe(403)
 
+    await viewer.getByTestId(`sidebar-members-${agent.slug}`).click()
+    await expect(viewer.getByTestId(`sidebar-members-invite-${agent.slug}`)).toHaveCount(0)
+    await viewer.keyboard.press('Escape')
+
+    // Sidebar Invite targets its agent while leaving the current page in place.
+    await page.goto('/')
+    const sidebarStack = page.getByTestId(`sidebar-members-${agent.slug}`)
+    const sidebarRoster = page.getByTestId(`sidebar-members-list-${agent.slug}`)
+    await sidebarStack.click()
+    await page.getByTestId(`sidebar-members-invite-${agent.slug}`).click()
+    await expect(sharing.getByTestId('invite-search-input')).toBeFocused()
+    await sharing.getByTestId('invite-search-input').fill(users[2].email)
+    await sharing.getByTestId(`invite-user-result-${users[2].id}`).click()
+    await sharing.getByTestId('invite-add-button').click()
+    await expect(sidebarRoster.getByRole('listitem')).toHaveCount(3)
+    await expect(page).toHaveURL(`${baseURL}/`)
+    await page.keyboard.press('Escape')
+    await expect(sharing).not.toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(sidebarRoster).not.toBeVisible()
+    await page.goto(`/agents/${agent.slug}`)
+
     // A second window refreshes without opening Share or reloading the page.
-    for (const member of users.slice(2, 7)) {
+    for (const member of users.slice(3, 7)) {
       expect((await page.request.post(`${endpoint}/access`, { data: { userId: member.id, role: 'user' } })).ok()).toBeTruthy()
     }
     await expect(ownerStack.getByTestId('agent-members-overflow')).toHaveText('+2')
