@@ -1,8 +1,10 @@
 name: Agent E2E Test
 
 on:
+  # Every PR, whatever its base: a stacked PR must get this gate too, not only
+  # the one at the bottom of the stack that targets main. detect-changes diffs
+  # against the PR's own base branch, so a stacked PR is judged on its own diff.
   pull_request:
-    branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
