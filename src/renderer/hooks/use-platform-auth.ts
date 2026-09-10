@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tansta
 
 import { apiFetch } from '@renderer/lib/api'
 import { useUpdateSettings } from '@renderer/hooks/use-settings'
+import { useDelayedOAuthAbort } from '@renderer/hooks/use-delayed-oauth-abort'
 import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
 import type {
   PlatformAuthSource,
@@ -272,11 +273,33 @@ export function usePlatformConnect(options?: PlatformConnectOptions) {
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const wasConnected = !!platformAuth?.connected
+  // Each launch gets an attempt number; a request that settles after a newer
+  // attempt started (or after Cancel) is stale and must not touch state.
+  const attemptRef = useRef(0)
+  const abortConnectRef = useRef<(() => void) | null>(null)
+  const canCancel = useDelayedOAuthAbort(isLaunching)
+
+  const cancelConnect = useCallback(() => {
+    abortConnectRef.current?.()
+  }, [])
 
   const onSuccessRef = useRef(options?.onSuccess)
   onSuccessRef.current = options?.onSuccess
   const successMessageRef = useRef(options?.successMessage)
   successMessageRef.current = options?.successMessage
+
+  // In a browser window the login callback is a deep link that lands in the
+  // desktop app, so nothing here ever ends the launch. A token saved by any
+  // path (access key included) bumps updatedAt and ends the wait.
+  const updatedAt = platformAuth?.updatedAt
+  const seenUpdatedAtRef = useRef(updatedAt)
+  useEffect(() => {
+    if (updatedAt === seenUpdatedAtRef.current) return
+    seenUpdatedAtRef.current = updatedAt
+    // On desktop the callback owns the launch; a metadata refresh mid-login must not end it.
+    if (window.electronAPI?.onPlatformAuthCallback) return
+    setIsLaunching(false)
+  }, [updatedAt])
 
   usePlatformAuthCallbackListener((params) => {
     setIsLaunching(false)
@@ -306,6 +329,13 @@ export function usePlatformConnect(options?: PlatformConnectOptions) {
 
   const handleConnect = useCallback(async () => {
     const popup = prepareOAuthPopup()
+    const attempt = ++attemptRef.current
+    const stale = () => attempt !== attemptRef.current
+    abortConnectRef.current = () => {
+      attemptRef.current++
+      popup.close()
+      setIsLaunching(false)
+    }
     setError(null)
     setMessage(null)
     setIsLaunching(true)
@@ -314,9 +344,12 @@ export function usePlatformConnect(options?: PlatformConnectOptions) {
       if (wasConnected) {
         await revokePlatformToken.mutateAsync({ clearLocal: false }).catch(() => ({ success: false }))
       }
+      if (stale()) return
       const result = await initiateLogin.mutateAsync()
+      if (stale()) return
       await popup.navigate(result.loginUrl)
     } catch (err) {
+      if (stale()) return
       popup.close()
       setIsLaunching(false)
       setError(err instanceof Error ? err.message : 'Failed to open platform login.')
@@ -325,7 +358,9 @@ export function usePlatformConnect(options?: PlatformConnectOptions) {
 
   return {
     handleConnect,
-    isLaunching: isLaunching || initiateLogin.isPending,
+    cancelConnect,
+    canCancel,
+    isLaunching,
     error,
     message,
     isConnected: !!platformAuth?.connected,
