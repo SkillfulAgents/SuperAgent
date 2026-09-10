@@ -113,15 +113,18 @@ const mockEnsureRunning = vi.fn(async (..._args: unknown[]) => ({
 // The actor reaches the container client through getClient after start();
 // hand back whatever ensureRunning last resolved to.
 let mockClient: unknown
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    ensureRunning: async (...args: unknown[]) => {
-      mockClient = await mockEnsureRunning(...args)
-      return mockClient
-    },
-    getClient: () => mockClient,
-  },
-}))
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      ensureRunning: async (...args: unknown[]) => {
+        mockClient = await mockEnsureRunning(...args)
+        return mockClient
+      },
+      getClient: () => mockClient,
+    }),
+  }
+})
 
 // Message persister
 // Built by name, not by importing the class from the (wholesale-mocked) module:

@@ -14,13 +14,16 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     withSessionSend: (...args: unknown[]) => mocks.withSessionSend(...args),
   },
 }))
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    ensureRunning: async () => ({ sendMessage: mocks.send }),
-    // The actor reaches the client through getClient after start().
-    getClient: () => ({ sendMessage: mocks.send }),
-  },
-}))
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      ensureRunning: async () => ({ sendMessage: mocks.send }),
+      // The actor reaches the client through getClient after start().
+      getClient: () => ({ sendMessage: mocks.send }),
+    }),
+  }
+})
 vi.mock('@shared/lib/services/agent-service', () => ({ agentExists: async () => true }))
 vi.mock('@shared/lib/services/chat-integration-access-service', () => ({
   decideInboundAccess: () => ({ action: 'allowed' }),

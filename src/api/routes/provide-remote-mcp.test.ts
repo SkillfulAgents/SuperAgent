@@ -16,18 +16,21 @@ vi.mock('../middleware/auth', () => ({
 
 const mockGetHostApiBaseUrl = vi.fn()
 const mockContainerFetch = vi.fn()
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    getClient: () => ({
-      fetch: (...args: unknown[]) => mockContainerFetch(...args),
-      getHostApiBaseUrl: (...args: unknown[]) => mockGetHostApiBaseUrl(...args),
-      start: vi.fn(),
-      stop: vi.fn(),
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      getClient: () => ({
+        fetch: (...args: unknown[]) => mockContainerFetch(...args),
+        getHostApiBaseUrl: (...args: unknown[]) => mockGetHostApiBaseUrl(...args),
+        start: vi.fn(),
+        stop: vi.fn(),
+      }),
+      ensureRunning: vi.fn(),
+      getCachedInfo: () => ({ status: 'running', port: 8080 }),
     }),
-    ensureRunning: vi.fn(),
-    getCachedInfo: () => ({ status: 'running', port: 8080 }),
-  },
-}))
+  }
+})
 
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {

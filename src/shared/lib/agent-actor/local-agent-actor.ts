@@ -1,4 +1,4 @@
-import type { containerManager } from '@shared/lib/container/container-manager'
+import type { containerHost } from '@shared/lib/container/container-host'
 import type { messagePersister } from '@shared/lib/container/message-persister'
 import type { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import type { reviewManager } from '@shared/lib/proxy/review-manager'
@@ -36,14 +36,15 @@ import type {
 
 /**
  * What a local actor delegates to. Injected so the registry can be built
- * against fakes in tests and so the next PR can swap the container manager
- * for a per-actor container client without touching the ops.
+ * against fakes in tests.
  *
  * Every op reads its dependency from `deps` at call time, never at
  * construction, so a dependency is only touched by the call that uses it.
+ * The container host hands out this agent's `ContainerRuntime`, which holds
+ * the client and every cached fact about the container.
  */
 export interface LocalActorDeps {
-  readonly containerManager: typeof containerManager
+  readonly containerHost: typeof containerHost
   readonly messagePersister: typeof messagePersister
   readonly userInputRequestManager: typeof userInputRequestManager
   readonly reviewManager: typeof reviewManager
@@ -87,29 +88,30 @@ export class LocalAgentActor implements AgentActor {
 }
 
 function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps {
-  const client = () => deps.containerManager.getClient(slug)
+  const runtime = () => deps.containerHost.runtime(slug)
+  const client = () => runtime().getClient()
   return {
     start: async () => {
-      await deps.containerManager.ensureRunning(slug)
+      await runtime().ensureRunning()
     },
-    stop: (...args) => deps.containerManager.stopContainer(slug, ...args),
+    stop: (...args) => runtime().stopContainer(...args),
     restart: async () => {
-      await deps.containerManager.restartContainer(slug)
+      await runtime().restartContainer()
     },
-    keepAlive: () => deps.containerManager.keepAlive(slug),
-    status: () => deps.containerManager.getCachedInfo(slug),
-    syncStatus: () => deps.containerManager.syncAgentStatus(slug),
-    health: () => deps.containerManager.getHealthWarnings(slug),
-    startedAt: () => deps.containerManager.getContainerStartTime(slug),
-    lastKeepAliveAt: () => deps.containerManager.getLastKeepAlive(slug),
+    keepAlive: () => runtime().keepAlive(),
+    status: () => runtime().getCachedInfo(),
+    syncStatus: () => runtime().syncAgentStatus(),
+    health: () => runtime().getHealthWarnings(),
+    startedAt: () => runtime().getContainerStartTime(),
+    lastKeepAliveAt: () => runtime().getLastKeepAlive(),
     stats: () => client().getStats(),
     info: () => client().getInfo(),
     updateConnectedAccountsEnvironment: () => deps.updateConnectedAccountsEnvironment(slug, client()),
     updateRemoteMcpEnvironment: () => deps.updateRemoteMcpEnvironment(slug, client()),
-    syncConnectionEnvironment: (kind) => deps.syncAgentConnectionEnvironment(slug, kind),
+    syncConnectionEnvironment: (kind) => deps.syncAgentConnectionEnvironment(slug, kind, runtime()),
     fetch: (...args) => client().fetch(...args),
     openWebSocket: (path, init) => {
-      const info = deps.containerManager.getCachedInfo(slug)
+      const info = runtime().getCachedInfo()
       if (info.status !== 'running' || !info.port) {
         throw new Error(`Container for agent ${slug} is not running`)
       }
@@ -124,7 +126,7 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
 }
 
 function createSessionOps(slug: AgentSlug, deps: LocalActorDeps): SessionOps {
-  const client = () => deps.containerManager.getClient(slug)
+  const client = () => deps.containerHost.runtime(slug).getClient()
   return {
     list: (...args) => deps.sessionService.listSessions(slug, ...args),
     listFromSummary: (...args) => deps.sessionService.listSessionsFromSummary(slug, ...args),
@@ -186,7 +188,7 @@ function createSessionOps(slug: AgentSlug, deps: LocalActorDeps): SessionOps {
 }
 
 function createMessageOps(slug: AgentSlug, deps: LocalActorDeps): MessageOps {
-  const client = () => deps.containerManager.getClient(slug)
+  const client = () => deps.containerHost.runtime(slug).getClient()
   return {
     send: (...args) => client().sendMessage(...args),
     cancelQueued: (sessionId, uuid) => client().cancelQueuedMessage(sessionId, uuid),

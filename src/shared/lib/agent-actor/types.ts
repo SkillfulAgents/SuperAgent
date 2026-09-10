@@ -66,11 +66,14 @@ export interface AgentRegistry {
   get(slug: AgentSlug): AgentActor
   /** The handle if `get` has been called for this slug and it was not evicted. */
   peek(slug: AgentSlug): AgentActor | undefined
-  /** Handles for the agents whose container is currently running. */
-  all(): AgentActor[]
-  /** Drop the handle and its container client. Today's `containerManager.removeClient`. */
+  /**
+   * Handles for the agents whose container is currently running. Not "every
+   * agent": a cross-agent read that wants all agents iterates the agent list.
+   */
+  running(): AgentActor[]
+  /** Drop the handle and forget its container runtime. Does not stop the container. */
   evict(slug: AgentSlug): void
-  /** Drop every handle and client. Today's `containerManager.clearClients`. */
+  /** Drop every handle and forget every runtime. Does not stop containers. */
   evictAll(): void
 }
 

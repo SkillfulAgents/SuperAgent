@@ -16,9 +16,6 @@
   "src/api/routes/browser.ts": [
     "@shared/lib/container/message-persister"
   ],
-  "src/api/routes/debug.ts": [
-    "@shared/lib/container/container-manager"
-  ],
   "src/api/routes/mcp-proxy.ts": [
     "@shared/lib/proxy/mcp-reauth-manager"
   ],
@@ -28,15 +25,9 @@
   "src/api/routes/remote-mcps.ts": [
     "@shared/lib/proxy/mcp-reauth-manager"
   ],
-  "src/api/routes/runtime-status.ts": [
-    "@shared/lib/container/container-manager"
-  ],
   "src/api/routes/scheduled-tasks.ts": [
     "@shared/lib/container/message-persister",
     "@shared/lib/services/session-service"
-  ],
-  "src/api/routes/settings.ts": [
-    "@shared/lib/container/container-manager"
   ],
   "src/api/routes/webhook-triggers.ts": [
     "@shared/lib/services/session-service"
@@ -123,7 +114,6 @@
     "@shared/lib/config/data-dir#getAgentWorkspaceDir"
   ],
   "src/shared/lib/startup.ts": [
-    "@shared/lib/container/container-manager",
     "@shared/lib/proxy/mcp-reauth-manager",
     "@shared/lib/proxy/review-manager",
     "@shared/lib/services/session-service"

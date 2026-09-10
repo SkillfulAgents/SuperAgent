@@ -10,14 +10,17 @@ const mockGetContainerStartTime = vi.fn<(id: string) => number | undefined>()
 const mockGetLastKeepAlive = vi.fn<(id: string) => number | undefined>()
 const mockStopContainer = vi.fn()
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    getRunningAgentIds: () => mockGetRunningAgentIds(),
-    getContainerStartTime: (id: string) => mockGetContainerStartTime(id),
-    getLastKeepAlive: (id: string) => mockGetLastKeepAlive(id),
-    stopContainer: (...args: unknown[]) => mockStopContainer(...args),
-  },
-}))
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      getRunningAgentIds: () => mockGetRunningAgentIds(),
+      getContainerStartTime: (id: string) => mockGetContainerStartTime(id),
+      getLastKeepAlive: (id: string) => mockGetLastKeepAlive(id),
+      stopContainer: (...args: unknown[]) => mockStopContainer(...args),
+    }),
+  }
+})
 
 const mockHasActiveSessions = vi.fn<(id: string) => boolean>(() => false)
 

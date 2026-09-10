@@ -91,7 +91,7 @@ const h = vi.hoisted(() => {
   const execSyncMock = vi.fn(() => 'default via 172.22.192.1 dev eth0')
 
   // The active container runner's host-bridge IP, as ChromeProvider reads it via
-  // containerManager.getClient().getHostBridgeIp(). null = a loopback-forwarding
+  // the agent's container client getHostBridgeIp(). null = a loopback-forwarding
   // runner (Docker Desktop); a string = a runner that routes containers through a
   // real bridge gateway (Lima, WSL2, native Docker/Podman).
   let hostBridgeIp: string | null = null
@@ -202,15 +202,18 @@ vi.mock('@shared/lib/error-reporting', () => ({
 
 // ChromeProvider asks the active container runner how its containers reach the
 // host (getHostBridgeIp), and runs the CDP proxy bound to that IP. Mock the
-// manager so each test controls that answer without loading container-manager.
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    getClient: () => ({
-      getHostBridgeIp: h.getHostBridgeIp,
-      probeHostPortFromRunner: h.probeHostPortFromRunner,
+// host so each test controls that answer without loading the real container host.
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      getClient: () => ({
+        getHostBridgeIp: h.getHostBridgeIp,
+        probeHostPortFromRunner: h.probeHostPortFromRunner,
+      }),
     }),
-  },
-}))
+  }
+})
 
 import { ChromeProvider } from './chrome-provider'
 
