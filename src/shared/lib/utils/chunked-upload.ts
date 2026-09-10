@@ -121,23 +121,6 @@ export async function storeUploadChunk(
   }
 }
 
-// Move an assembled temp file into dest; stream-copy on cross-device rename failure.
-export async function moveUploadedFile(srcPath: string, destPath: string): Promise<number> {
-  await fs.promises.mkdir(path.dirname(destPath), { recursive: true })
-  try {
-    await fs.promises.rename(srcPath, destPath)
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err
-    await pipeline(fs.createReadStream(srcPath), fs.createWriteStream(destPath))
-    try {
-      await fs.promises.unlink(srcPath)
-    } catch (cleanupErr) {
-      ignoreCleanupError(cleanupErr, 'unlink-src-after-exdev-copy', { srcPath, destPath })
-    }
-  }
-  return (await fs.promises.stat(destPath)).size
-}
-
 // Remove stale chunk dirs and orphaned `.assembled` files (crash between assemble and consume).
 export async function cleanupStaleTempUploads(maxAgeMs: number, nowMs: number = Date.now()): Promise<void> {
   const uploadsDir = getTempUploadsDir()

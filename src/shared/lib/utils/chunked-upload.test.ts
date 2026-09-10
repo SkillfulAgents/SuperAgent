@@ -7,7 +7,6 @@ import {
   UploadTooLargeError,
   cleanupStaleTempUploads,
   formatUploadTooLargeMessage,
-  moveUploadedFile,
   storeUploadChunk,
 } from './chunked-upload'
 
@@ -85,43 +84,6 @@ describe('storeUploadChunk', () => {
       expect(await fs.promises.readFile(assembled.filePath, 'utf8')).toBe('bbbbcc')
       await fs.promises.unlink(assembled.filePath)
     }
-  })
-})
-
-describe('moveUploadedFile', () => {
-  beforeEach(async () => {
-    await fs.promises.mkdir(tmpRoot, { recursive: true })
-  })
-
-  afterEach(async () => {
-    await fs.promises.rm(tmpRoot, { recursive: true, force: true })
-  })
-
-  it('renames when source and dest share a filesystem', async () => {
-    const src = path.join(tmpRoot, 'src.bin')
-    const dest = path.join(tmpRoot, 'dest', 'out.bin')
-    await fs.promises.writeFile(src, 'payload')
-
-    const size = await moveUploadedFile(src, dest)
-    expect(size).toBe(7)
-    expect(await fs.promises.readFile(dest, 'utf8')).toBe('payload')
-    expect(fs.existsSync(src)).toBe(false)
-  })
-
-  it('falls back to stream copy on EXDEV', async () => {
-    const src = path.join(tmpRoot, 'exdev-src.bin')
-    const dest = path.join(tmpRoot, 'exdev-dest', 'out.bin')
-    await fs.promises.writeFile(src, 'cross-device')
-
-    const renameSpy = vi.spyOn(fs.promises, 'rename').mockRejectedValueOnce(
-      Object.assign(new Error('cross-device'), { code: 'EXDEV' }),
-    )
-
-    const size = await moveUploadedFile(src, dest)
-    expect(size).toBe(Buffer.byteLength('cross-device'))
-    expect(await fs.promises.readFile(dest, 'utf8')).toBe('cross-device')
-    expect(fs.existsSync(src)).toBe(false)
-    renameSpy.mockRestore()
   })
 })
 

@@ -32,7 +32,14 @@ import {
   agentExists,
   AgentContainerStopError,
 } from '@shared/lib/services/agent-service'
-import { agentRegistry } from '@shared/lib/agent-actor'
+import {
+  agentRegistry,
+  containerHost,
+  WorkspaceFileError,
+  joinWorkspacePath,
+  normalizeWorkspacePath,
+  type FileStat,
+} from '@shared/lib/agent-actor'
 import { parseRuntimeOptions, resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import {
   sessionDashboardDispatchSchema,
@@ -63,13 +70,12 @@ import {
 } from '@shared/lib/services/session-service'
 import { forkSession, ForkSessionError, type ForkSessionOpts } from '@shared/lib/services/session-fork-service'
 import { decodeMediaRef, openMediaBlob } from '@shared/lib/services/session-media'
-import { getSessionJsonlPath, getAgentSessionsDir, readJsonlFile, writeJsonFileAtomic, displaySlug, createJsonArrayStringifyTransform, directoryExists } from '@shared/lib/utils/file-storage'
+import { getSessionJsonlPath, getAgentSessionsDir, readJsonlFile, displaySlug, createJsonArrayStringifyTransform } from '@shared/lib/utils/file-storage'
 import {
   MAX_UPLOAD_TOTAL_SIZE,
   UploadTooLargeError,
   cleanupStaleTempUploads,
   formatUploadTooLargeMessage,
-  moveUploadedFile,
   storeUploadChunk,
 } from '@shared/lib/utils/chunked-upload'
 import { getMountsWithHealth, addMount, removeMount } from '@shared/lib/services/mount-service'
@@ -191,7 +197,6 @@ import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-
 import { captureException } from '@shared/lib/error-reporting'
 import * as fs from 'fs'
 import { Readable, pipeline } from 'stream'
-import { pipeline as streamPipeline } from 'stream/promises'
 import pLimit from 'p-limit'
 import * as path from 'path'
 import type { ApiAgent } from '@shared/lib/types/api'
@@ -282,19 +287,13 @@ function isContainerPathWithin(basePath: string, candidatePath: string): boolean
   return relative === '' || (!relative.startsWith('../') && relative !== '..' && !path.posix.isAbsolute(relative))
 }
 
-function workspaceContainerPathToHost(workspaceDir: string, containerPath: string): string | null {
-  const normalized = normalizeWorkspaceContainerPath(containerPath)
-  if (!normalized) return null
-  const relative = path.posix.relative('/workspace', normalized)
-  return path.resolve(workspaceDir, ...relative.split('/').filter(Boolean))
-}
+const BOOKMARKS_FILE = 'bookmarks.json'
 
 async function readWorkspaceBookmarks(agentSlug: string): Promise<WorkspaceBookmark[]> {
-  const bookmarksPath = path.join(agentRegistry.get(agentSlug).files.workspacePath(), 'bookmarks.json')
-  const content = await fs.promises.readFile(bookmarksPath, 'utf-8').catch(() => null)
-  if (!content) return []
+  const bytes = await agentRegistry.get(agentSlug).files.getDoc(BOOKMARKS_FILE).catch(() => null)
+  if (!bytes || bytes.byteLength === 0) return []
   try {
-    const parsed = JSON.parse(content)
+    const parsed = JSON.parse(Buffer.from(bytes).toString('utf-8'))
     if (!Array.isArray(parsed)) return []
     return parsed.flatMap((entry): WorkspaceBookmark[] => {
       const result = WorkspaceBookmarkSchema.safeParse(entry)
@@ -306,6 +305,11 @@ async function readWorkspaceBookmarks(agentSlug: string): Promise<WorkspaceBookm
 }
 
 function workspaceFolderFsError(error: unknown): WorkspaceFolderAccessError | null {
+  if (error instanceof WorkspaceFileError) {
+    if (error.status === 400) return new WorkspaceFolderAccessError('Invalid folder path', 400)
+    if (error.status === 403) return new WorkspaceFolderAccessError('Folder is not accessible', 403)
+    return new WorkspaceFolderAccessError('Folder or file not found', 404)
+  }
   const code = error instanceof Error && 'code' in error
     ? (error as NodeJS.ErrnoException).code
     : undefined
@@ -342,37 +346,26 @@ async function resolveBookmarkedWorkspacePath(
     }
   }
 
-  const workspaceDir = agentRegistry.get(agentSlug).files.workspacePath()
-  const hostRoot = workspaceContainerPathToHost(workspaceDir, rootPath)
-  const hostCurrentPath = workspaceContainerPathToHost(workspaceDir, currentPath)
-  if (!hostRoot || !hostCurrentPath) {
+  // Both are container paths (`/workspace/…`), which the actor's file
+  // operations accept as workspace paths; containment against the workspace
+  // itself is theirs to enforce. What the actor cannot know is the bookmark
+  // root: a link inside the shared sub-tree that points elsewhere in the
+  // workspace would widen what a viewer can reach, so a path reached through a
+  // link is refused here, and an escaping link is the same 400 it always was.
+  let stat: FileStat | null
+  try {
+    stat = await agentRegistry.get(agentSlug).files.stat(currentPath)
+  } catch (error) {
+    if (error instanceof WorkspaceFileError) {
+      throw new WorkspaceFolderAccessError(error.status === 400 ? 'Invalid folder path' : error.message, error.status)
+    }
+    throw error
+  }
+  if (stat?.throughLink) {
     throw new WorkspaceFolderAccessError('Invalid folder path', 400)
   }
 
-  try {
-    const [canonicalWorkspace, canonicalRoot, canonicalCurrentPath] = await Promise.all([
-      fs.promises.realpath(workspaceDir),
-      fs.promises.realpath(hostRoot),
-      fs.promises.realpath(hostCurrentPath),
-    ])
-    if (
-      !isPathWithinDir(canonicalWorkspace, canonicalRoot)
-      || !isPathWithinDir(canonicalRoot, canonicalCurrentPath)
-    ) {
-      throw new WorkspaceFolderAccessError('Invalid folder path', 400)
-    }
-
-    return {
-      rootPath,
-      currentPath,
-      hostCurrentPath,
-      canonicalRoot,
-      canonicalCurrentPath,
-    }
-  } catch (error) {
-    if (error instanceof WorkspaceFolderAccessError) throw error
-    throw workspaceFolderFsError(error) ?? error
-  }
+  return { rootPath, currentPath, stat }
 }
 
 async function requestContainerWorkspaceMutation<T>(
@@ -1867,10 +1860,11 @@ const OpenDirectoryBody = z.object({ open: z.boolean().optional() })
 agents.post('/:id/open-directory', AgentAdmin(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const workspaceDir = agentRegistry.get(slug).files.workspacePath()
 
-    // Ensure directory exists
-    await fs.promises.mkdir(workspaceDir, { recursive: true })
+    // Ensure the workspace exists, then find where it lives on this machine —
+    // opening it in the OS file manager is a host capability, not a file operation.
+    await agentRegistry.get(slug).files.mkdir('')
+    const workspaceDir = containerHost.workspaceHostPath(slug)
 
     const raw = await c.req.json().catch(() => ({}))
     const { open } = OpenDirectoryBody.parse(raw)
@@ -5863,6 +5857,29 @@ agents.post('/:id/skills/import-zip', AgentAdmin(), async (c) => {
   }
 })
 
+/** The workspace path of an installed skill's directory. `dir` is validated by the route. */
+function skillWorkspaceDir(dir: string): string {
+  return joinWorkspacePath('.claude/skills', dir)
+}
+
+/**
+ * The workspace path of a file inside a skill directory, or null when
+ * `filePath` would reach outside it (absolute, `..`, or otherwise invalid).
+ * The actor keeps paths inside the workspace; this keeps them inside the skill.
+ */
+function resolveSkillFilePath(dir: string, filePath: string): string | null {
+  if (path.isAbsolute(filePath) || filePath.startsWith('/')) return null
+  const skillDir = skillWorkspaceDir(dir)
+  let target: string
+  try {
+    target = joinWorkspacePath(skillDir, filePath)
+  } catch (error) {
+    if (error instanceof WorkspaceFileError) return null
+    throw error
+  }
+  return target.startsWith(`${skillDir}/`) ? target : null
+}
+
 // GET /api/agents/:id/skills/:dir/files - List all files in a skill directory
 agents.get('/:id/skills/:dir/files', AgentAdmin(), async (c) => {
   try {
@@ -5873,21 +5890,22 @@ agents.get('/:id/skills/:dir/files', AgentAdmin(), async (c) => {
       return c.json({ error: 'Invalid skill directory name' }, 400)
     }
 
-    const skillDir = path.join(agentRegistry.get(agentSlug).files.workspacePath(), '.claude', 'skills', dir)
+    const actor = agentRegistry.get(agentSlug)
+    const skillDir = skillWorkspaceDir(dir)
 
-    if (!(await directoryExists(skillDir))) {
+    const skillStat = await actor.files.stat(skillDir)
+    if (!skillStat || skillStat.kind !== 'directory') {
       return c.json({ error: 'Skill directory not found' }, 404)
     }
 
     const files: Array<{ path: string; type: 'file' | 'directory' }> = []
 
     const walk = async (currentDir: string, prefix: string) => {
-      const entries = await fs.promises.readdir(currentDir, { withFileTypes: true })
-      for (const entry of entries) {
+      for (const entry of await actor.files.list(currentDir)) {
         const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name
-        if (entry.isDirectory()) {
+        if (entry.kind === 'directory') {
           files.push({ path: relativePath, type: 'directory' })
-          await walk(path.join(currentDir, entry.name), relativePath)
+          await walk(entry.path, relativePath)
         } else {
           files.push({ path: relativePath, type: 'file' })
         }
@@ -5902,6 +5920,9 @@ agents.get('/:id/skills/:dir/files', AgentAdmin(), async (c) => {
 
     return c.json({ files })
   } catch (error) {
+    if (error instanceof WorkspaceFileError) {
+      return c.json({ error: error.status === 404 ? 'Skill directory not found' : error.message }, error.status)
+    }
     console.error('Failed to list skill files:', error)
     return c.json({ error: 'Failed to list skill files' }, 500)
   }
@@ -5921,18 +5942,19 @@ agents.get('/:id/skills/:dir/files/content', AgentAdmin(), async (c) => {
       return c.json({ error: 'path query parameter is required' }, 400)
     }
 
-    const skillDir = path.join(agentRegistry.get(agentSlug).files.workspacePath(), '.claude', 'skills', dir)
-    const resolved = path.resolve(skillDir, filePath)
-
-    if (!isPathWithinDir(skillDir, resolved)) {
+    const target = resolveSkillFilePath(dir, filePath)
+    if (!target) {
       return c.json({ error: 'Invalid file path' }, 400)
     }
 
-    const content = await fs.promises.readFile(resolved, 'utf-8')
-    return c.json({ content, path: filePath })
-  } catch (error) {
-    if (error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+    const bytes = await agentRegistry.get(agentSlug).files.getDoc(target)
+    if (!bytes) {
       return c.json({ error: 'File not found' }, 404)
+    }
+    return c.json({ content: Buffer.from(bytes).toString('utf-8'), path: filePath })
+  } catch (error) {
+    if (error instanceof WorkspaceFileError) {
+      return c.json({ error: error.status === 400 ? 'Invalid file path' : error.message }, error.status)
     }
     console.error('Failed to read skill file:', error)
     return c.json({ error: 'Failed to read skill file' }, 500)
@@ -5949,20 +5971,21 @@ agents.put('/:id/skills/:dir/files/content', AgentAdmin(), async (c) => {
     if (!dir || dir.includes('/') || dir.includes('\\') || dir.includes('..')) {
       return c.json({ error: 'Invalid skill directory name' }, 400)
     }
-    if (!filePath || typeof content !== 'string') {
+    if (!filePath || typeof filePath !== 'string' || typeof content !== 'string') {
       return c.json({ error: 'path and content are required' }, 400)
     }
 
-    const skillDir = path.join(agentRegistry.get(agentSlug).files.workspacePath(), '.claude', 'skills', dir)
-    const resolved = path.resolve(skillDir, filePath)
-
-    if (!isPathWithinDir(skillDir, resolved)) {
+    const target = resolveSkillFilePath(dir, filePath)
+    if (!target) {
       return c.json({ error: 'Invalid file path' }, 400)
     }
 
-    await fs.promises.writeFile(resolved, content, 'utf-8')
+    await agentRegistry.get(agentSlug).files.putDoc(target, content)
     return c.json({ saved: true })
   } catch (error) {
+    if (error instanceof WorkspaceFileError) {
+      return c.json({ error: error.status === 400 ? 'Invalid file path' : error.message }, error.status)
+    }
     console.error('Failed to write skill file:', error)
     return c.json({ error: 'Failed to write skill file' }, 500)
   }
@@ -6019,33 +6042,39 @@ agents.get('/:id/audit-log', AgentAdmin(), async (c) => {
   }
 })
 
-function resolveUploadDestPath(agentSlug: string, filename: string, relativePath?: string) {
+const UPLOADS_DIR = 'uploads'
+
+/** The workspace path an upload lands at, always inside `uploads/`. */
+function resolveUploadDestPath(filename: string, relativePath?: string): string {
   // If relativePath is provided (folder upload), preserve directory structure
   let uploadPath: string
   if (relativePath) {
     const normalized = path.normalize(relativePath).replace(/^(\.\.[/\\])+/, '')
-    uploadPath = `uploads/${normalized}`
+    uploadPath = `${UPLOADS_DIR}/${normalized}`
   } else {
     // Single-file upload: collapse the untrusted name to a safe basename
-    // (shared with the chat-attachment write path). isPathWithinDir below is
-    // the defense-in-depth backstop.
-    uploadPath = `uploads/${withUploadTimestamp(sanitizeUploadFilename(filename))}`
+    // (shared with the chat-attachment write path). The check below is the
+    // defense-in-depth backstop.
+    uploadPath = `${UPLOADS_DIR}/${withUploadTimestamp(sanitizeUploadFilename(filename))}`
   }
 
-  const workspaceDir = agentRegistry.get(agentSlug).files.workspacePath()
-  const fullPath = path.resolve(workspaceDir, uploadPath)
-
-  // Security: ensure path doesn't escape the uploads directory
-  if (!isPathWithinDir(path.resolve(workspaceDir, 'uploads'), fullPath)) {
+  // Security: the actor keeps the write inside the workspace; this keeps it
+  // inside the one folder uploads are allowed into.
+  if (!normalizeWorkspacePath(uploadPath).startsWith(`${UPLOADS_DIR}/`)) {
     throw new Error('Invalid file path')
   }
 
-  return { uploadPath, fullPath }
+  return uploadPath
 }
 
 async function writeUploadedFileFromPath(agentSlug: string, filename: string, srcPath: string, relativePath?: string) {
-  const { uploadPath, fullPath } = resolveUploadDestPath(agentSlug, filename, relativePath)
-  const size = await moveUploadedFile(srcPath, fullPath)
+  const uploadPath = resolveUploadDestPath(filename, relativePath)
+  // `srcPath` is the assembled chunk file in this machine's temp dir, not a
+  // workspace file; stream it into the workspace through the actor.
+  const { size } = await agentRegistry.get(agentSlug).files.write(
+    uploadPath,
+    Readable.toWeb(fs.createReadStream(srcPath)) as ReadableStream<Uint8Array>,
+  )
   return {
     success: true,
     path: `/workspace/${uploadPath}`,
@@ -6058,27 +6087,12 @@ async function handleFileUpload(agentSlug: string, file: File, relativePath?: st
   if (file.size > MAX_UPLOAD_TOTAL_SIZE) {
     throw new UploadTooLargeError(file.size, MAX_UPLOAD_TOTAL_SIZE)
   }
-  const { uploadPath, fullPath } = resolveUploadDestPath(agentSlug, file.name, relativePath)
-  await fs.promises.mkdir(path.dirname(fullPath), { recursive: true })
+  const uploadPath = resolveUploadDestPath(file.name, relativePath)
 
-  // Stream to disk instead of Buffer.from(await file.arrayBuffer()) — avoids a
-  // second full in-memory copy of the file on top of formData()'s buffering.
-  try {
-    await streamPipeline(
-      Readable.fromWeb(file.stream() as import('stream/web').ReadableStream),
-      fs.createWriteStream(fullPath),
-    )
-  } catch (err) {
-    // Don't leave a partial file behind (pipeline already closed the fd).
-    try {
-      await fs.promises.unlink(fullPath)
-    } catch (cleanupErr) {
-      if ((cleanupErr as NodeJS.ErrnoException)?.code !== 'ENOENT') {
-        console.warn('[agents] failed to remove partial upload:', cleanupErr)
-      }
-    }
-    throw err
-  }
+  // Stream into the workspace instead of Buffer.from(await file.arrayBuffer()) —
+  // avoids a second full in-memory copy of the file on top of formData()'s
+  // buffering. A write that fails part-way leaves nothing behind.
+  await agentRegistry.get(agentSlug).files.write(uploadPath, file.stream() as ReadableStream<Uint8Array>)
 
   return {
     success: true,
@@ -6123,7 +6137,7 @@ async function handleChunkedFileUpload(c: Context, agentSlug: string, formData: 
     try {
       await fs.promises.unlink(result.filePath)
     } catch (err) {
-      // rename may have already moved the file
+      // The assembled file is read, not moved; ENOENT means it is already gone.
       if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
         console.warn('[agents] failed to unlink assembled file upload:', err)
         captureException(err, {
@@ -6198,22 +6212,38 @@ agents.post('/:id/upload-file', AgentUser(), uploadRequestBodyLimit, respondUplo
 agents.post('/:id/sessions/:sessionId/upload-file', AgentUser(), uploadRequestBodyLimit, respondUploadFile)
 
 async function handleFolderUpload(agentSlug: string, sourcePath: string) {
+  // `sourcePath` is a folder on this machine, chosen in the Electron file
+  // picker. Walk it with fs and stream each regular file into the workspace;
+  // symbolic links are skipped rather than followed.
   const stat = await fs.promises.stat(sourcePath)
   if (!stat.isDirectory()) {
     throw new Error('Source is not a directory')
   }
 
   const folderName = path.basename(sourcePath)
-  const workspaceDir = agentRegistry.get(agentSlug).files.workspacePath()
-  const destPath = path.resolve(workspaceDir, 'uploads', folderName)
+  const destRoot = joinWorkspacePath(UPLOADS_DIR, folderName)
 
   // Security: ensure dest doesn't escape uploads directory
-  if (!isPathWithinDir(path.resolve(workspaceDir, 'uploads'), destPath)) {
+  if (!destRoot.startsWith(`${UPLOADS_DIR}/`)) {
     throw new Error('Invalid path')
   }
 
-  await fs.promises.mkdir(path.dirname(destPath), { recursive: true })
-  await fs.promises.cp(sourcePath, destPath, { recursive: true })
+  const actor = agentRegistry.get(agentSlug)
+  const copyDirectory = async (hostDir: string, destDir: string) => {
+    // Created up front so an empty folder still arrives.
+    await actor.files.mkdir(destDir)
+    for (const entry of await fs.promises.readdir(hostDir, { withFileTypes: true })) {
+      if (entry.isSymbolicLink()) continue
+      const hostEntry = path.join(hostDir, entry.name)
+      const destEntry = joinWorkspacePath(destDir, entry.name)
+      if (entry.isDirectory()) {
+        await copyDirectory(hostEntry, destEntry)
+      } else if (entry.isFile()) {
+        await actor.files.write(destEntry, Readable.toWeb(fs.createReadStream(hostEntry)) as ReadableStream<Uint8Array>)
+      }
+    }
+  }
+  await copyDirectory(sourcePath, destRoot)
 
   return {
     success: true,
@@ -6338,24 +6368,23 @@ agents.get('/:id/folders', AgentRead(), async (c) => {
   }
 
   try {
-    const { rootPath, currentPath, canonicalCurrentPath } = await resolveBookmarkedWorkspacePath(
+    // The resolver has already stat'ed the path (and refused one reached
+    // through a link); this only asks what is there.
+    const { rootPath, currentPath, stat } = await resolveBookmarkedWorkspacePath(
       agentSlug,
       rawRoot,
       rawCurrentPath,
     )
-
-    const stat = await fs.promises.stat(canonicalCurrentPath)
-    if (!stat.isDirectory()) {
+    if (!stat || stat.kind !== 'directory') {
       return c.json({ error: 'Folder not found' }, 404)
     }
 
-    const dirents = await fs.promises.readdir(canonicalCurrentPath, { withFileTypes: true })
-    const entries = dirents
-      .filter(entry => !entry.isSymbolicLink() && (entry.isDirectory() || entry.isFile()))
+    // One level only; the actor never lists symbolic links.
+    const entries = (await agentRegistry.get(agentSlug).files.list(currentPath))
       .map(entry => ({
         name: entry.name,
         path: path.posix.join(currentPath, entry.name),
-        type: entry.isDirectory() ? 'directory' as const : 'file' as const,
+        type: entry.kind,
       }))
       .sort((a, b) => {
         if (a.type !== b.type) return a.type === 'directory' ? -1 : 1
@@ -6538,11 +6567,21 @@ agents.post('/:id/folders/reveal-path', AgentAdmin(), async (c) => {
       parsed.data.root,
       parsed.data.path,
     )
-    const sourceStat = await fs.promises.lstat(resolved.hostCurrentPath)
+    // The resolver has confirmed the entry sits inside the workspace and was
+    // not reached through a link. Where it is on this machine is then a host
+    // question, as it is for open-directory.
+    if (!resolved.stat) {
+      throw new WorkspaceFolderAccessError('File or directory not found', 404)
+    }
+    const hostPath = path.join(
+      containerHost.workspaceHostPath(agentSlug),
+      ...normalizeWorkspacePath(resolved.currentPath).split('/').filter(Boolean),
+    )
+    const sourceStat = await fs.promises.lstat(hostPath)
     if (sourceStat.isSymbolicLink() || (!sourceStat.isDirectory() && !sourceStat.isFile())) {
       throw new WorkspaceFolderAccessError('File or directory not found', 404)
     }
-    return c.json({ hostPath: resolved.canonicalCurrentPath })
+    return c.json({ hostPath: await fs.promises.realpath(hostPath) })
   } catch (error) {
     const accessError = error instanceof WorkspaceFolderAccessError
       ? error
@@ -6572,29 +6611,12 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
       return c.json({ error: 'File path is required' }, 400)
     }
 
-
-    const workspaceDir = agentRegistry.get(agentSlug).files.workspacePath()
-    const fullPath = path.resolve(workspaceDir, filePath)
-
-    // Security: ensure path doesn't escape workspace. A bare startsWith() check
-    // is unsafe because a sibling directory can share the workspace path prefix
-    // (e.g. workspace "agent" vs sibling "agent-victim"), so confirm genuine
-    // containment via isPathWithinDir (path.relative based).
-    if (!isPathWithinDir(workspaceDir, fullPath)) {
-      return c.json({ error: 'Invalid path' }, 400)
-    }
-
-    const canonicalWorkspace = await fs.promises.realpath(workspaceDir).catch(() => null)
-    const canonicalFile = await fs.promises.realpath(fullPath).catch(() => null)
-    if (!canonicalWorkspace || !canonicalFile) {
-      return c.json({ error: 'File not found' }, 404)
-    }
-    if (!isPathWithinDir(canonicalWorkspace, canonicalFile)) {
-      return c.json({ error: 'Invalid path' }, 400)
-    }
-
-    const stat = await fs.promises.stat(canonicalFile).catch(() => null)
-    if (!stat || !stat.isFile()) {
+    // Security: containment is the actor's. A path that would leave the
+    // workspace — lexically, as an absolute path, or through a link — fails
+    // as a WorkspaceFileError, answered as 400 in the catch below.
+    const actor = agentRegistry.get(agentSlug)
+    const stat = await actor.files.stat(filePath)
+    if (!stat || stat.kind !== 'file') {
       return c.json({ error: 'File not found' }, 404)
     }
 
@@ -6654,15 +6676,18 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
       c.header('Content-Range', `bytes ${start}-${end}/${size}`)
       c.header('Content-Length', (end - start + 1).toString())
       if (bodyless) return c.body(null, 206)
-      const chunk = Readable.toWeb(fs.createReadStream(canonicalFile, { start, end })) as ReadableStream
+      const chunk = await actor.files.read(filePath, { start, end })
       return c.body(chunk, 206)
     }
 
     c.header('Content-Length', size.toString())
     if (bodyless) return c.body(null)
-    const webStream = Readable.toWeb(fs.createReadStream(canonicalFile)) as ReadableStream
+    const webStream = await actor.files.read(filePath)
     return c.body(webStream)
   } catch (error) {
+    if (error instanceof WorkspaceFileError) {
+      return c.json({ error: error.status === 400 ? 'Invalid path' : error.message }, error.status)
+    }
     console.error('Failed to download file:', error)
     return c.json({ error: 'Failed to download file' }, 500)
   }
@@ -6925,7 +6950,7 @@ agents.get('/:id/artifacts/:artifactSlug/widget/html', AgentRead(), async (c) =>
 
 // GET /api/agents/:id/artifacts/:artifactSlug/widget/snapshot?family=&scale=&scheme=
 // Rasterized PNG for native surfaces (the iOS widget extension). Served from
-// the host filesystem, so it works while the container sleeps.
+// the agent's workspace, so it works while the container sleeps.
 agents.get('/:id/artifacts/:artifactSlug/widget/snapshot', AgentRead(), async (c) => {
   const slug = getAgentId(c)
   const artifactSlug = c.req.param('artifactSlug')
@@ -6943,9 +6968,10 @@ agents.get('/:id/artifacts/:artifactSlug/widget/snapshot', AgentRead(), async (c
   const pngPath = widgetSnapshotPngPath(slug, artifactSlug, family, scheme, scale)
   if (!pngPath) return c.json({ error: 'Invalid artifact slug' }, 400)
   try {
-    const buf = await fs.promises.readFile(pngPath)
+    const png = await agentRegistry.get(slug).files.getDoc(pngPath)
+    if (png === null) return c.json({ error: 'No snapshot rendered yet' }, 404)
     // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins
-    const body = new Uint8Array(buf)
+    const body = new Uint8Array(png)
     return new Response(body, {
       status: 200,
       headers: {
@@ -6955,34 +6981,34 @@ agents.get('/:id/artifacts/:artifactSlug/widget/snapshot', AgentRead(), async (c
         ...(widget.validUntil ? { 'x-widget-valid-until': widget.validUntil } : {}),
       },
     })
-  } catch (error: any) {
-    if (error?.code === 'ENOENT') return c.json({ error: 'No snapshot rendered yet' }, 404)
+  } catch (error) {
+    if (error instanceof WorkspaceFileError) return c.json({ error: error.message }, error.status)
     console.error('Failed to read widget snapshot:', error)
     return c.json({ error: 'Failed to read snapshot' }, 500)
   }
 })
 
 // GET /api/agents/:id/artifacts/:artifactSlug/screenshot.png - Serve the
-// auto-captured dashboard thumbnail directly from the host filesystem. Works
+// auto-captured dashboard thumbnail from the agent's workspace. Works
 // regardless of whether the container is running. Must be registered before
 // the catch-all artifact proxy below.
 agents.get('/:id/artifacts/:artifactSlug/screenshot.png', AgentRead(), async (c) => {
   const agentSlug = getAgentId(c)
   const artifactSlug = c.req.param('artifactSlug')
 
-  const workspaceDir = agentRegistry.get(agentSlug).files.workspacePath()
-  const artifactsDir = path.join(workspaceDir, 'artifacts')
-  const screenshotPath = path.join(artifactsDir, artifactSlug, 'screenshot.png')
-  // Belt-and-suspenders path traversal guard: slug cannot escape artifactsDir.
-  const resolved = path.resolve(screenshotPath)
-  if (!isPathWithinDir(artifactsDir, resolved)) {
+  // A bad slug is answered here; containment of the path is the actor's job.
+  const screenshotPath = resolveWidgetPath(agentSlug, artifactSlug, 'screenshot.png')
+  if (!screenshotPath) {
     return c.json({ error: 'Invalid artifact slug' }, 400)
   }
 
   try {
-    const buf = await fs.promises.readFile(screenshotPath)
+    const png = await agentRegistry.get(agentSlug).files.getDoc(screenshotPath)
+    if (png === null) {
+      return c.json({ error: 'No screenshot available' }, 404)
+    }
     // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins
-    const body = new Uint8Array(buf)
+    const body = new Uint8Array(png)
     return new Response(body, {
       status: 200,
       headers: {
@@ -6994,10 +7020,8 @@ agents.get('/:id/artifacts/:artifactSlug/screenshot.png', AgentRead(), async (c)
         'cache-control': 'private, max-age=60, must-revalidate',
       },
     })
-  } catch (error: any) {
-    if (error?.code === 'ENOENT') {
-      return c.json({ error: 'No screenshot available' }, 404)
-    }
+  } catch (error) {
+    if (error instanceof WorkspaceFileError) return c.json({ error: error.message }, error.status)
     console.error('Failed to read dashboard screenshot:', error)
     return c.json({ error: 'Failed to read screenshot' }, 500)
   }
@@ -7840,10 +7864,9 @@ agents.put('/:id/bookmarks', AgentAdmin(), async (c) => {
     if (!parsed.success) {
       return c.json({ error: 'Invalid bookmarks', issues: parsed.error.issues }, 400)
     }
-    const bookmarksPath = path.join(agentRegistry.get(agentSlug).files.workspacePath(), 'bookmarks.json')
     // Atomic write: full-replace from client input, but crash-safe so
     // an interrupted write can't truncate bookmarks.json.
-    await writeJsonFileAtomic(bookmarksPath, parsed.data)
+    await agentRegistry.get(agentSlug).files.putDoc(BOOKMARKS_FILE, JSON.stringify(parsed.data, null, 2))
     return c.json(parsed.data)
   } catch (error) {
     console.error('Failed to update bookmarks:', error)
