@@ -6,9 +6,9 @@ describe('promptDate', () => {
   const instant = new Date('2026-09-10T23:30:00Z')
 
   it.each([
-    ['UTC', { date: '2026-09-10', weekday: 'Thursday', utcOffset: 'UTC+00:00' }],
-    ['Asia/Kolkata', { date: '2026-09-11', weekday: 'Friday', utcOffset: 'UTC+05:30' }],
-  ])('renders the calendar day and offset in %s', (timeZone, expected) => {
+    ['UTC', { date: '2026-09-10', weekday: 'Thursday', utcOffset: 'UTC+00:00', time: '23:30' }],
+    ['Asia/Kolkata', { date: '2026-09-11', weekday: 'Friday', utcOffset: 'UTC+05:30', time: '05:00' }],
+  ])('renders the calendar day, clock and offset in %s', (timeZone, expected) => {
     expect(promptDate(instant, timeZone)).toEqual({ timeZone, ...expected })
   })
 })

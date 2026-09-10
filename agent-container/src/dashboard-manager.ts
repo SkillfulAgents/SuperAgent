@@ -1,4 +1,5 @@
 import { spawn, ChildProcess } from 'child_process'
+import { readFileTail } from './file-tail'
 import * as fs from 'fs'
 import * as path from 'path'
 import { captureDashboardScreenshot, type ScreenshotResult } from './dashboard-screenshot'
@@ -43,15 +44,8 @@ export async function truncateOversizedLog(
     const stat = await fs.promises.stat(logPath)
     if (stat.size <= maxBytes) return false
 
-    const fd = await fs.promises.open(logPath, 'r')
-    let tail: Buffer
-    try {
-      const buf = Buffer.alloc(Math.min(keepBytes, stat.size))
-      const { bytesRead } = await fd.read(buf, 0, buf.length, stat.size - buf.length)
-      tail = buf.subarray(0, bytesRead)
-    } finally {
-      await fd.close()
-    }
+    const tail = await readFileTail(logPath, keepBytes)
+    if (!tail) return false
 
     await fs.promises.writeFile(
       logPath,

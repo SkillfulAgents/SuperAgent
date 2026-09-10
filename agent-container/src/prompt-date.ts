@@ -10,6 +10,8 @@ export interface PromptDate {
   timeZone: string;
   /** e.g. UTC-07:00 */
   utcOffset: string;
+  /** Local wall clock, HH:MM. */
+  time: string;
 }
 
 export function promptDate(
@@ -22,6 +24,9 @@ export function promptDate(
     month: '2-digit',
     day: '2-digit',
     weekday: 'long',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
     timeZoneName: 'longOffset',
   }).formatToParts(now);
   const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === type)?.value ?? '';
@@ -32,5 +37,6 @@ export function promptDate(
     weekday: part('weekday'),
     timeZone,
     utcOffset: offset === 'GMT' ? 'UTC+00:00' : offset.replace('GMT', 'UTC'),
+    time: `${part('hour')}:${part('minute')}`,
   };
 }

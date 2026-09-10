@@ -21,6 +21,7 @@ import { createBrowserTools } from './tools/browser';
 import { renameBrowserSession } from './browser-state';
 import { computerUseTools } from './tools/computer-use';
 import { fileHooks, resolveToolFilePath } from './file-hooks';
+import { elapsedTimeNote } from './elapsed-time-note';
 import { promptDate } from './prompt-date';
 
 /**
@@ -1202,6 +1203,19 @@ export class ClaudeCodeProcess extends EventEmitter {
         return { behavior: 'allow' as const, updatedInput: toolInput };
       },
       hooks: {
+        // The transcript the CLI hands the hook does not yet hold this prompt,
+        // so its newest entry is the end of the previous exchange.
+        UserPromptSubmit: [
+          {
+            hooks: [
+              async (input) => {
+                const note = await elapsedTimeNote(input.transcript_path);
+                if (!note) return {};
+                return { hookSpecificOutput: { hookEventName: 'UserPromptSubmit' as const, additionalContext: note } };
+              },
+            ],
+          },
+        ],
         PreToolUse: [
           {
             matcher: 'mcp__user-input__.*',
