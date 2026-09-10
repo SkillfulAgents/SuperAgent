@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { Hono } from 'hono'
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { user } from '@shared/lib/db/schema'
 import { bodyLimit } from 'hono/body-limit'
@@ -34,9 +34,10 @@ profile.delete('/avatar', async (c) => {
 profile.get('/images/:filename', async (c) => {
   const filename = avatarFilenameSchema.safeParse(c.req.param('filename'))
   if (!filename.success) return c.notFound()
-  const owner = db.select({ id: user.id }).from(user)
-    .where(eq(user.avatarOverride, `/api/profile/images/${filename.data}`)).get()
-  if (!owner) return c.notFound()
+  // Only check existence so the avatar index covers the entire lookup.
+  const activeAvatar = db.select({ exists: sql`1` }).from(user)
+    .where(eq(user.avatarOverride, `/api/profile/images/${filename.data}`)).limit(1).get()
+  if (!activeAvatar) return c.notFound()
   try {
     const bytes = await fs.readFile(path.join(avatarDirectory(), filename.data))
     c.header('Content-Type', 'image/png')
