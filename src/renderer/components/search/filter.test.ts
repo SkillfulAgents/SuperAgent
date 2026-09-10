@@ -68,6 +68,21 @@ describe('filterAgentsAndSessions', () => {
     expect(betaGroup.sessions.map((s) => s.id)).toEqual(['s3'])
   })
 
+  it('ranks agent-name matches ahead of groups that only contain a child match', () => {
+    const disk = agent('disk', 'Disk Space Cleaner')
+    const groups = filterAgentsAndSessions(
+      [alpha, beta, disk],
+      {
+        alpha: [session('s1', 'alpha', 'Disputing a report')],
+        beta: [session('s2', 'beta', 'Discovery notes')],
+        disk: [session('s3', 'disk', 'Disk cleanup help')],
+      },
+      'dis'
+    )
+
+    expect(groups.map((group) => group.agent.slug)).toEqual(['disk', 'alpha', 'beta'])
+  })
+
   it('matched agent with no matching sessions returns the agent only', () => {
     const groups = filterAgentsAndSessions([alpha, beta], sessions, 'alpha')
     expect(groups).toHaveLength(1)
