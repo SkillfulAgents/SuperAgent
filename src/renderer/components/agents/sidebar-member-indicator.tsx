@@ -1,14 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
+import { UserPlus } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { useAgentMembers } from '@renderer/hooks/use-agent-members'
 import { useIsMobile } from '@renderer/hooks/use-mobile'
+import { useUser } from '@renderer/context/user-context'
+import { AgentSharePopover } from '@renderer/components/agents/agent-share-popover'
+import { Button } from '@renderer/components/ui/button'
 import { UserAvatar } from '@renderer/components/ui/user-avatar'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 
 const AVATAR_SIZE = 16
 const OVERFLOW_SIZE = 17
 
-/** A compact member stack with a read-only roster, independent of navigation. */
+/** A compact member stack with roster and invite access, independent of navigation. */
 export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxFaces = 3, selected = false }: {
   agentSlug: string
   agentName: string
@@ -19,6 +23,8 @@ export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxF
 }) {
   const { data: members, isLoading, isError, refetch } = useAgentMembers(agentSlug, memberCount > 1)
   const isMobile = useIsMobile()
+  const { isAuthMode, isAdmin, canAdminAgent } = useUser()
+  const canInvite = isAuthMode && (isAdmin || canAdminAgent(agentSlug))
   const [open, setOpen] = useState(false)
   const [pinned, setPinned] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -41,7 +47,7 @@ export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxF
   }
   function leave() {
     clearTimer()
-    if (!pinned && document.activeElement !== triggerRef.current) {
+    if (!pinned && document.activeElement !== triggerRef.current && !contentRef.current?.contains(document.activeElement)) {
       timer.current = setTimeout(() => setOpen(false), 160)
     }
   }
@@ -113,7 +119,31 @@ export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxF
         onPointerEnter={clearTimer}
         onPointerLeave={leave}
       >
-        <p className="px-2 py-1.5 text-xs font-medium">{count} members</p>
+        <div className="flex items-center justify-between gap-2 px-2 py-1.5">
+          <p className="text-xs font-medium">{count} members</p>
+          {canInvite && (
+            <AgentSharePopover
+              agentSlug={agentSlug}
+              agentName={agentName}
+              trigger={(
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="outline"
+                  className="h-6 px-2 text-[11px] [&_svg]:size-3"
+                  data-testid={`sidebar-members-invite-${agentSlug}`}
+                  onClick={() => {
+                    clearTimer()
+                    setPinned(true)
+                  }}
+                >
+                  <UserPlus aria-hidden="true" />
+                  Invite
+                </Button>
+              )}
+            />
+          )}
+        </div>
         {isLoading && <p role="status" className="px-2 py-3 text-xs text-muted-foreground">Loading members…</p>}
         {isError && <button type="button" onClick={() => void refetch()} className="m-2 rounded text-xs text-muted-foreground underline outline-none focus-visible:ring-2 focus-visible:ring-ring">Retry members</button>}
         {members && (

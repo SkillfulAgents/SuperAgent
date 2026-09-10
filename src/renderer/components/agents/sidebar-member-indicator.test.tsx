@@ -3,11 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import type { AgentMember } from '@shared/lib/agent-members-schema'
 import { useAgentMembers } from '@renderer/hooks/use-agent-members'
+import { AgentSharePopover } from './agent-share-popover'
 import { SidebarMemberIndicator } from './sidebar-member-indicator'
 
 vi.mock('@renderer/hooks/use-agent-members', () => ({ useAgentMembers: vi.fn() }))
 vi.mock('@renderer/hooks/use-mobile', () => ({ useIsMobile: () => false }))
 vi.mock('@renderer/lib/env', () => ({ getApiBaseUrl: () => '' }))
+vi.mock('./agent-share-popover', () => ({ AgentSharePopover: vi.fn(({ trigger }) => trigger) }))
+const user = { isAuthMode: true, isAdmin: false, canAdminAgent: vi.fn((_slug: string) => false) }
+vi.mock('@renderer/context/user-context', () => ({ useUser: () => user }))
 
 const members: AgentMember[] = Array.from({ length: 6 }, (_, i) => ({
   id: `member-${i}`, name: `Person ${i}`, email: `person-${i}@example.test`, image: null,
@@ -18,10 +22,37 @@ const refetch = vi.fn()
 function roster(data: AgentMember[] | undefined, state = { isLoading: false, isError: false }) {
   vi.mocked(useAgentMembers).mockReturnValue({ data, ...state, refetch } as unknown as ReturnType<typeof useAgentMembers>)
 }
-beforeEach(() => { vi.clearAllMocks(); roster(members) })
+beforeEach(() => {
+  vi.clearAllMocks()
+  user.isAuthMode = true
+  user.isAdmin = false
+  user.canAdminAgent.mockReturnValue(false)
+  roster(members)
+})
 afterEach(cleanup)
 
 describe('SidebarMemberIndicator', () => {
+  it.each([
+    { isAdmin: false, isOwner: true, canInvite: true },
+    { isAdmin: true, isOwner: false, canInvite: true },
+    { isAdmin: false, isOwner: false, canInvite: false },
+  ])('offers invitations for owner=$isOwner, admin=$isAdmin', ({ isAdmin, isOwner, canInvite }) => {
+    user.isAdmin = isAdmin
+    user.canAdminAgent.mockImplementation(slug => slug === props.agentSlug && isOwner)
+    render(<SidebarMemberIndicator {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: '6 members of Shared Agent' }))
+    if (canInvite) {
+      expect(screen.getByRole('button', { name: 'Invite' })).toBeVisible()
+      expect(vi.mocked(AgentSharePopover).mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+        agentSlug: props.agentSlug,
+        agentName: props.agentName,
+      }))
+    } else {
+      expect(screen.queryByRole('button', { name: 'Invite' })).toBeNull()
+      expect(AgentSharePopover).not.toHaveBeenCalled()
+    }
+  })
+
   it.each([
     { count: 3, faces: 3, overflow: null },
     { count: 4, faces: 2, overflow: '+2' },
