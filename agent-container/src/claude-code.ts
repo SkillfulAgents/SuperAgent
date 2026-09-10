@@ -942,6 +942,10 @@ export class ClaudeCodeProcess extends EventEmitter {
         // agent's other sessions — cross-session messaging we neither want nor
         // surface. SendMessage stays: it is how a spawned subagent is continued.
         'ListAgents',
+        // Only meaningful under the CLI's bundled code-review skill, which
+        // `disableBundledSkills` (below) removes — without it the tool is dead
+        // weight in every session's tool list.
+        'ReportFindings',
         // Suppress native WebSearch only when a host vendor is active; it's replaced by mcp__web__web_search.
         ...(this.webSearchProvider ? ['WebSearch'] : []),
         // Same for native WebFetch → mcp__web__web_fetch when a host fetch vendor is active.
