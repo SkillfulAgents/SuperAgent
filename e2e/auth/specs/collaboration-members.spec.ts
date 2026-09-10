@@ -137,16 +137,23 @@ test('members share one live roster while invitation and revocation follow permi
     expect((await users[2].context.request.post(`${endpoint}/leave`)).ok()).toBeTruthy()
     await expect(ownerStack.getByTestId('agent-members-overflow')).toHaveCount(0)
 
-    // The first signup is the deployment admin. Removing their explicit ACL
-    // hides the sidebar entry but preserves access to the open agent page.
+    // Other specs may have created the deployment's first user. Check the
+    // actual deployment role instead of treating the agent owner as an admin.
+    const session = await (await page.request.get('/api/auth/get-session')).json()
+    const isDeploymentAdmin = session.user.role === 'admin'
     expect((await page.request.patch(`${endpoint}/access/${users[3].id}`, { data: { role: 'owner' } })).ok()).toBeTruthy()
     expect((await users[3].context.request.delete(`${endpoint}/access/${users[0].id}`)).ok()).toBeTruthy()
     await expect(agentLink).toHaveCount(0)
-    await expect(page).toHaveURL(new RegExp(`/agents/[^/]*${agent.slug}$`))
-    await expect(ownerStack.getByTestId(`agent-member-${users[0].id}`)).toHaveCount(0)
-    await expect(ownerStack.getByTestId(`agent-member-${users[3].id}`)).toBeVisible()
-    expect((await page.request.get(`${endpoint}/members`)).status()).toBe(200)
-    expect((await page.request.get(`${endpoint}/access`)).status()).toBe(200)
+    if (isDeploymentAdmin) {
+      await expect(page).toHaveURL(new RegExp(`/agents/[^/]*${agent.slug}$`))
+      await expect(ownerStack.getByTestId(`agent-member-${users[0].id}`)).toHaveCount(0)
+      await expect(ownerStack.getByTestId(`agent-member-${users[3].id}`)).toBeVisible()
+    } else {
+      await expect(page).toHaveURL(`${baseURL}/`)
+      await expect(ownerStack).toHaveCount(0)
+    }
+    expect((await page.request.get(`${endpoint}/members`)).status()).toBe(isDeploymentAdmin ? 200 : 403)
+    expect((await page.request.get(`${endpoint}/access`)).status()).toBe(isDeploymentAdmin ? 200 : 403)
   } finally {
     await Promise.all(contexts.map((context) => context.close()))
   }

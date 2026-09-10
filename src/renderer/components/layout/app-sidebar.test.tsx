@@ -12,7 +12,7 @@ if (typeof localStorage === 'undefined' || !localStorage) {
   Object.defineProperty(globalThis, 'localStorage', { value: stub, configurable: true })
 }
 import { cloneElement, isValidElement, type ReactElement } from 'react'
-import { act, fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { pointerWithin } from '@dnd-kit/core'
 import { AppSidebar } from './app-sidebar'
@@ -595,7 +595,8 @@ describe('AppSidebar — agent rows', () => {
     const members = screen.getByRole('button', { name: '4 members of Test Agent' })
     expect(link).not.toContainElement(members)
     expect(link.parentElement).toContainElement(members)
-    expect(members).toHaveTextContent('+2')
+    expect(within(members).getAllByRole('img', { hidden: true })).toHaveLength(4)
+    expect(members).not.toHaveTextContent('+')
     expect(screen.queryByTestId('sidebar-members-other-agent')).toBeNull()
     expect(mockUseAgentMembers).toHaveBeenCalledWith('test-agent', true)
     expect(mockUseAgentMembers).not.toHaveBeenCalledWith('other-agent', expect.anything())
