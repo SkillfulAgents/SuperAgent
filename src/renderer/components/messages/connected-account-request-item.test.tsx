@@ -1,12 +1,15 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor } from '@testing-library/react'
+import { act, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ConnectedAccountRequestItem } from './connected-account-request-item'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { useConnectedAccountsByToolkit, useDeleteConnectedAccount } from '@renderer/hooks/use-connected-accounts'
 
 const mockApiFetch = vi.fn()
+vi.mock('@renderer/lib/oauth-popup', () => ({
+  prepareOAuthPopup: () => ({ navigate: vi.fn().mockResolvedValue(undefined), close: vi.fn() }),
+}))
 vi.mock('@renderer/lib/api', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
 }))
@@ -138,6 +141,97 @@ describe('ConnectedAccountRequestItem', () => {
       expect(screen.getByText('Access Granted')).toBeInTheDocument()
     })
     expect(defaultProps.onComplete).toHaveBeenCalled()
+  })
+
+  it('submits a replacement to the agent-scoped endpoint without a session', async () => {
+    const user = userEvent.setup()
+    mockApiFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ success: true }) })
+    renderWithProviders(
+      <ConnectedAccountRequestItem {...defaultProps} sessionId={undefined}
+        replacement={{ requestId: 'reauth-1', onCancel: vi.fn() }} />,
+    )
+    await user.click(screen.getByRole('button', { name: 'Replace connection' }))
+    expect(mockApiFetch).toHaveBeenCalledWith(
+      '/api/agents/my-agent/reauth-request/reauth-1/replace-account',
+      expect.objectContaining({ body: expect.stringContaining('"accountIds":["acc-1"]') }),
+    )
+    await waitFor(() => expect(defaultProps.onComplete).toHaveBeenCalledOnce())
+  })
+
+  it('keeps the replacement picker open when the server rejects the account', async () => {
+    const user = userEvent.setup()
+    mockApiFetch.mockResolvedValueOnce({ ok: false, json: async () => ({ error: 'Account not found' }) })
+    renderWithProviders(
+      <ConnectedAccountRequestItem {...defaultProps}
+        replacement={{ requestId: 'reauth-1', onCancel: vi.fn() }} />,
+    )
+    await user.click(screen.getByRole('button', { name: 'Replace connection' }))
+    expect(await screen.findByText(/Account not found/)).toBeInTheDocument()
+    expect(defaultProps.onComplete).not.toHaveBeenCalled()
+  })
+
+  it('selects only one account when replacing a connection', async () => {
+    const user = userEvent.setup()
+    const existing = vi.mocked(useConnectedAccountsByToolkit)('github')
+    vi.mocked(useConnectedAccountsByToolkit).mockReturnValue({
+      ...existing,
+      data: { accounts: [existing.data!.accounts[0], { ...existing.data!.accounts[0], id: 'acc-2' }] },
+    })
+    renderWithProviders(
+      <ConnectedAccountRequestItem {...defaultProps}
+        replacement={{ requestId: 'reauth-1', onCancel: vi.fn() }} />,
+    )
+    const [first, second] = screen.getAllByRole('checkbox')
+    await user.click(first)
+    await user.click(second)
+    expect(first).not.toBeChecked()
+    expect(second).toBeChecked()
+  })
+
+  it('connects a new owned account and uses it instead of the previous selection', async () => {
+    const user = userEvent.setup()
+    const existing = vi.mocked(useConnectedAccountsByToolkit)('github')
+    const newAccount = { ...existing.data!.accounts[0], id: 'new-account', displayName: 'New GitHub Account' }
+    const refetch = vi.fn(async () => {
+      vi.mocked(useConnectedAccountsByToolkit).mockReturnValue({
+        ...existing, data: { accounts: [...existing.data!.accounts, newAccount] }, refetch,
+      } as any)
+      return { data: { accounts: [...existing.data!.accounts, newAccount] } }
+    })
+    vi.mocked(useConnectedAccountsByToolkit).mockReturnValue({ ...existing, refetch } as any)
+    mockApiFetch
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ redirectUrl: 'https://oauth.example' }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ success: true }) })
+    renderWithProviders(
+      <ConnectedAccountRequestItem {...defaultProps}
+        replacement={{ requestId: 'reauth-1', onCancel: vi.fn() }} />,
+    )
+    await user.click(screen.getByRole('button', { name: 'Add New Account' }))
+    expect(mockApiFetch).toHaveBeenNthCalledWith(1, '/api/connected-accounts/initiate',
+      expect.objectContaining({ body: JSON.stringify({ providerSlug: 'github', electron: false }) }))
+    await act(async () => {
+      window.dispatchEvent(new MessageEvent('message', {
+        origin: window.location.origin,
+        data: { type: 'oauth-callback', success: true, accountId: 'new-account' },
+      }))
+    })
+    await user.click(screen.getByRole('button', { name: 'Replace connection' }))
+    expect(mockApiFetch).toHaveBeenNthCalledWith(2,
+      '/api/agents/my-agent/reauth-request/reauth-1/replace-account',
+      expect.objectContaining({ body: expect.stringContaining('"accountIds":["new-account"]') }))
+  })
+
+  it('cancels replacement without declining the parked request', async () => {
+    const user = userEvent.setup()
+    const onCancel = vi.fn()
+    renderWithProviders(
+      <ConnectedAccountRequestItem {...defaultProps}
+        replacement={{ requestId: 'reauth-1', onCancel }} />,
+    )
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(onCancel).toHaveBeenCalledOnce()
+    expect(mockApiFetch).not.toHaveBeenCalled()
+    expect(defaultProps.onComplete).not.toHaveBeenCalled()
   })
 
   it('declines access request', async () => {

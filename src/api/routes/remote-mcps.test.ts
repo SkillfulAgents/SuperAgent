@@ -1280,6 +1280,7 @@ describe('OAuth callback — postMessage origin', () => {
     expect(res.status).toBe(200)
     const html = await res.text()
     expect(html).toContain('window.location.origin')
+    expect(html).toContain('"state":"xyz"')
     expect(html).not.toContain("'*'")
   })
 
@@ -1330,6 +1331,7 @@ describe('OAuth callback — postMessage origin', () => {
     expect(res.status).toBe(200)
     const html = await res.text()
     expect(html).toContain('window.location.origin')
+    expect(html).toContain('"state":"xyz"')
     expect(html).not.toContain("'*'")
   })
 
@@ -1378,6 +1380,7 @@ describe('OAuth callback — postMessage origin', () => {
     expect(res.status).toBe(200)
     const html = await res.text()
     expect(html).toContain('window.location.origin')
+    expect(html).toContain('"state":"xyz"')
     expect(html).not.toContain("'*'")
     expect(mockFindAgentsAssignedRemoteMcp).toHaveBeenCalledWith('mcp-new')
     expect(mockSyncRemoteMcpAgents).toHaveBeenCalledWith(['agent-a'])
@@ -1458,6 +1461,7 @@ describe('OAuth callback — postMessage origin', () => {
     expect(html).toContain('window.location.replace')
     expect(html).toContain('superagent://mcp-oauth-callback?success=true')
     expect(html).toContain('mcpId=mcp-new')
+    expect(html).toContain('state=xyz')
     // NOT the web postMessage/BroadcastChannel bridge.
     expect(html).not.toContain("new BroadcastChannel('mcp-oauth-callback')")
   })

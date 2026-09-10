@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { useState } from 'react'
+import { buildConnectionReplacementMessage } from '@shared/lib/utils/connection-replacement-message'
 import { MessageList } from './message-list'
 // Resolves to the mocked module's class below — the one the component's
 // instanceof check sees.
@@ -215,6 +216,45 @@ describe('MessageList', () => {
     )
     expect(screen.getByText('Hi')).toBeInTheDocument()
     expect(screen.getByText('Hello!')).toBeInTheDocument()
+  })
+
+  it.each(['connected-accounts', 'remote-mcps'] as const)('replaces the adjacent interrupt badge with a %s notice when it arrives', (kind) => {
+    const interrupted = [
+      createUserMessage({ content: { text: 'Read the shared connection' } }),
+      createAssistantMessage({ content: { text: 'Reading…' } }),
+      createUserMessage({ content: { text: '[Request interrupted by user]' } }),
+    ]
+    mockMessagesData.data = interrupted
+    const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByTestId('interrupt-marker')).toBeInTheDocument()
+
+    mockMessagesData.data = [
+      ...interrupted,
+      createUserMessage({ content: { text: '[SYSTEM] Hidden runtime bookkeeping' } }),
+      createUserMessage({ content: { text: buildConnectionReplacementMessage({
+        kind, name: kind === 'connected-accounts' ? 'Slack' : 'Amplitude', previousId: 'old', replacementId: 'new',
+      }) } }),
+      createAssistantMessage({ content: { text: 'Continuing with the new connection' } }),
+    ]
+    rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByTestId('connection-replacement-notice')).toHaveTextContent('connection replaced')
+    expect(screen.queryByTestId('interrupt-marker')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Hidden runtime bookkeeping/)).not.toBeInTheDocument()
+    expect(screen.getByText('Continuing with the new connection')).toBeInTheDocument()
+  })
+
+  it('keeps a separate user stop when intervening conversation separates it from the replacement', () => {
+    mockMessagesData.data = [
+      createUserMessage({ content: { text: '[Request interrupted by user]' } }),
+      createUserMessage({ content: { text: 'Try again' } }),
+      createAssistantMessage({ content: { text: 'Reading Slack' } }),
+      createUserMessage({ content: { text: buildConnectionReplacementMessage({
+        kind: 'connected-accounts', name: 'Slack', previousId: 'old', replacementId: 'new',
+      }) } }),
+    ]
+    renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByTestId('interrupt-marker')).toHaveTextContent('Stopped')
+    expect(screen.getByTestId('connection-replacement-notice')).toBeInTheDocument()
   })
 
   it('renders the interrupt marker as a bare chip in the user column', () => {

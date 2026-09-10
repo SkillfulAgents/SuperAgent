@@ -426,11 +426,19 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     return () => clearTimeout(timerId)
   }, [pendingUserMessages, peerUserMessages, isActive, onPendingMessageAppeared, sessionId, draftsStore])
 
-  // Visible messages with system-injected entries filtered out (these must not
-  // consume window slots, and the windowing operates on what the user can see).
+  // Hidden system messages and redundant interrupt markers must not consume
+  // window slots: windowing operates on what the user can see.
   const visibleMessages = useMemo(() => {
     if (!messages) return []
-    return messages.filter((item) => !classifyUserMessage(item).hidden)
+    const visible = messages.filter((item) => !classifyUserMessage(item).hidden)
+    // The replacement notice explains its preceding interrupt. Keep the raw
+    // transcript intact for turn bookkeeping; only omit the redundant badge
+    // from display, before windowing. Other user stops remain visible.
+    return visible.filter((item, index) => !(
+      classifyUserMessage(item).kind === 'interrupt' &&
+      visible[index + 1] &&
+      classifyUserMessage(visible[index + 1]).kind === 'connection-replacement'
+    ))
   }, [messages])
 
   // Time flags are derived from all loaded history rather than the trailing DOM
@@ -454,7 +462,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       if (
         item.type !== 'user' ||
         item.queued ||
-        classifyUserMessage(item).kind === 'interrupt'
+        classifyUserMessage(item).kind === 'interrupt' ||
+        classifyUserMessage(item).kind === 'connection-replacement'
       ) continue
 
       const createdAt = new Date(item.createdAt)

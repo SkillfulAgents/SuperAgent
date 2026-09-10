@@ -119,6 +119,20 @@ describe('MCP re-auth park → reconnect → resume integration', () => {
     userInputRequestManager.reset()
   })
 
+  it('settles replaced MCP calls with the new ID without forwarding stale tools', async () => {
+    const response = app.request('http://localhost/api/mcp-proxy/agent-1/mcp-1', {
+      method: 'POST', headers: rpcHeaders(),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 21, method: 'tools/call', params: { name: 'search', arguments: {} } }),
+    })
+    await vi.waitFor(() => expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(1))
+    const [request] = userInputRequestManager.getAgentScopedRequests('agent-1')
+    expect(mcpReauthManager.replaceMcp(request.id, 'agent-1', 'new-mcp')).toBe(true)
+    const result = await response
+    expect(result.status).toBe(409)
+    expect(await result.json()).toMatchObject({ error: 'mcp_replaced', replacementMcpId: 'new-mcp' })
+    expect(mocks.safeFetch).not.toHaveBeenCalled()
+  })
+
   it('deduplicates the card and resumes concurrent calls on one real upstream session', async () => {
     const initialize = await app.request('http://localhost/api/mcp-proxy/agent-1/mcp-1', {
       method: 'POST',
