@@ -21,7 +21,6 @@ import {
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getAgent } from '@shared/lib/services/agent-service'
-import { getSessionMetadata } from '@shared/lib/services/session-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { captureException } from '@shared/lib/error-reporting'
 import { getNotificationChannels } from './channels'
@@ -221,7 +220,7 @@ class NotificationManager {
     agentSlug: string,
     options: SessionCompleteNotificationOptions,
   ): Promise<void> {
-    const meta = await getSessionMetadata(agentSlug, sessionId)
+    const meta = await agentRegistry.get(agentSlug).sessions.metadata(sessionId)
     if (isHiddenAutomatedSession(meta)) {
       return
     }

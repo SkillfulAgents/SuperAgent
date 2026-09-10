@@ -59,7 +59,7 @@ vi.mock('@shared/lib/mcp/oauth', () => ({
   discoverOAuthMetadata: (...args: unknown[]) => mockDiscoverOAuthMetadata(...args),
 }))
 
-vi.mock('@shared/lib/container/connection-runtime-sync', () => ({
+vi.mock('@shared/lib/services/connection-sync-service', () => ({
   findAgentsAssignedRemoteMcp: (...args: unknown[]) =>
     mockFindAgentsAssignedRemoteMcp(...args),
   syncAgentsAssignedRemoteMcp: (...args: unknown[]) =>

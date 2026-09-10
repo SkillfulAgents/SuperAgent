@@ -72,14 +72,14 @@ interface UsageEntry {
   costUSD?: number
 }
 
-interface CommonLoadOptions {
+export interface CommonLoadOptions {
   since?: string
   concurrency?: number
   providerId?: LlmProviderId
   loadStatus?: UsageLoadStatus
 }
 
-interface UsageLoadStatus {
+export interface UsageLoadStatus {
   incomplete: boolean
 }
 

@@ -1,3 +1,4 @@
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { captureException } from '@shared/lib/error-reporting'
 import {
@@ -6,7 +7,6 @@ import {
 } from '@shared/lib/llm-provider/helpers'
 import { resolveActiveProviderModel } from '@shared/lib/llm-provider'
 import { stripMarkdownPreview } from '@shared/lib/markdown-preview'
-import { findLastSessionEntry } from '@shared/lib/services/session-service'
 import type {
   ContentBlock,
   JsonlMessageEntry,
@@ -121,8 +121,7 @@ async function findLastUserRequest(
   if (responseTranscriptEndOffset == null) return null
 
   try {
-    const entry = await findLastSessionEntry(
-      agentSlug,
+    const entry = await agentRegistry.get(agentSlug).messages.findLastEntry(
       sessionId,
       (candidate) => userRequestText(candidate) !== null,
       { endOffset: responseTranscriptEndOffset },

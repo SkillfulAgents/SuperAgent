@@ -6,11 +6,19 @@ import type { computerUsePermissionManager } from '@shared/lib/computer-use/perm
 import type { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
 import type * as sessionService from '@shared/lib/services/session-service'
 import type { appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
-import type { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import type {
+  getAgentClaudeConfigDir,
+  getAgentWorkspaceDir,
+  getSessionJsonlPath,
+} from '@shared/lib/utils/file-storage'
+import type {
+  syncAgentConnectionEnvironment,
   updateConnectedAccountsEnvironment,
   updateRemoteMcpEnvironment,
 } from '@shared/lib/container/connection-runtime-sync'
+import type { loadDailyUsageData, loadSessionUsageTotals } from '@shared/lib/services/usage-service'
+import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
+import { WebSocket } from 'ws'
 import { createLocalFileOps } from './local-file-ops'
 import type {
   AgentActor,
@@ -23,6 +31,7 @@ import type {
   MessageOps,
   ReviewOps,
   SessionOps,
+  UsageOps,
 } from './types'
 
 /**
@@ -43,8 +52,13 @@ export interface LocalActorDeps {
   readonly sessionService: typeof sessionService
   readonly appendInformationalEntry: typeof appendInformationalEntry
   readonly getAgentWorkspaceDir: typeof getAgentWorkspaceDir
+  readonly getAgentClaudeConfigDir: typeof getAgentClaudeConfigDir
+  readonly getSessionJsonlPath: typeof getSessionJsonlPath
   readonly updateConnectedAccountsEnvironment: typeof updateConnectedAccountsEnvironment
   readonly updateRemoteMcpEnvironment: typeof updateRemoteMcpEnvironment
+  readonly syncAgentConnectionEnvironment: typeof syncAgentConnectionEnvironment
+  readonly loadDailyUsageData: typeof loadDailyUsageData
+  readonly loadSessionUsageTotals: typeof loadSessionUsageTotals
 }
 
 /**
@@ -59,6 +73,7 @@ export class LocalAgentActor implements AgentActor {
   readonly sessions: SessionOps
   readonly messages: MessageOps
   readonly inputs: InputOps
+  readonly usage: UsageOps
   readonly files: FileOps
 
   constructor(readonly slug: AgentSlug, deps: LocalActorDeps) {
@@ -66,6 +81,7 @@ export class LocalAgentActor implements AgentActor {
     this.sessions = createSessionOps(slug, deps)
     this.messages = createMessageOps(slug, deps)
     this.inputs = createInputOps(slug, deps)
+    this.usage = createUsageOps(slug, deps)
     this.files = createLocalFileOps(slug, deps)
   }
 }
@@ -90,9 +106,18 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
     info: () => client().getInfo(),
     updateConnectedAccountsEnvironment: () => deps.updateConnectedAccountsEnvironment(slug, client()),
     updateRemoteMcpEnvironment: () => deps.updateRemoteMcpEnvironment(slug, client()),
+    syncConnectionEnvironment: (kind) => deps.syncAgentConnectionEnvironment(slug, kind),
     fetch: (...args) => client().fetch(...args),
-    hostAuthHeaders: () => client().getHostAuthHeaders(),
-    webSocketBaseUrl: (port) => client().getWebSocketBaseUrl(port),
+    openWebSocket: (path, init) => {
+      const info = deps.containerManager.getCachedInfo(slug)
+      if (info.status !== 'running' || !info.port) {
+        throw new Error(`Container for agent ${slug} is not running`)
+      }
+      const c = client()
+      return new WebSocket(`${c.getWebSocketBaseUrl(info.port)}${path}${init?.search ?? ''}`, init?.protocols, {
+        headers: { ...init?.headers, ...c.getHostAuthHeaders() },
+      })
+    },
     hostBridgeIp: () => client().getHostBridgeIp(),
     probeHostPort: (host, port) => client().probeHostPortFromRunner(host, port),
   }
@@ -120,6 +145,8 @@ function createSessionOps(slug: AgentSlug, deps: LocalActorDeps): SessionOps {
       deps.sessionService.finalizeAutomationStatus(slug, sessionId, status),
     ensureDirectory: () => deps.sessionService.ensureSessionsDirectory(slug),
     fileRealPathWithinAgent: (sessionId) => deps.sessionService.sessionFileRealPathWithinAgent(slug, sessionId),
+    usage: (sessionId, options) =>
+      deps.loadSessionUsageTotals({ sessionPath: deps.getSessionJsonlPath(slug, sessionId), ...options }),
 
     create: (options) => client().createSession(options),
     fork: (sessionId) => client().forkSession(sessionId),
@@ -185,17 +212,28 @@ function createMessageOps(slug: AgentSlug, deps: LocalActorDeps): MessageOps {
 }
 
 function createInputOps(slug: AgentSlug, deps: LocalActorDeps): InputOps {
+  const manager = () => deps.userInputRequestManager
+  /** The open request when this agent owns it. Another agent's request is not found. */
+  const owned = (id: string): PendingUserInputRequest | null => {
+    const request = manager().getOpenRequest(id)
+    return request && request.scope.agentSlug === slug ? request : null
+  }
   return {
-    register: (input) => deps.userInputRequestManager.register(input),
-    open: (sessionId) => deps.userInputRequestManager.getOpenRequestsForSession(slug, sessionId),
-    openForAgent: () => deps.userInputRequestManager.getOpenRequestsForAgent(slug),
-    get: (id) => deps.userInputRequestManager.getOpenRequest(id),
-    claim: (id) => deps.userInputRequestManager.claimRequest(id),
-    releaseClaim: (id) => deps.userInputRequestManager.releaseClaim(id),
-    resolve: (id, outcome) => deps.userInputRequestManager.resolve(id, outcome),
-    recentResolution: (id) => deps.userInputRequestManager.getRecentResolution(id),
-    snapshot: (...args) => deps.userInputRequestManager.getSnapshotForScope(slug, ...args),
-    enrich: (id, kind, enrichment) => deps.userInputRequestManager.enrichOpenRequestPayload(id, kind, enrichment),
+    register: (input) => manager().register({ ...input, scope: { ...input.scope, agentSlug: slug } }),
+    open: (sessionId) => manager().getOpenRequestsForSession(slug, sessionId),
+    openForAgent: () => manager().getOpenRequestsForAgent(slug),
+    get: (id) => owned(id),
+    claim: (id) => (owned(id) ? manager().claimRequest(id) : null),
+    releaseClaim: (id) => {
+      if (owned(id)) manager().releaseClaim(id)
+    },
+    resolve: (id, outcome) => (owned(id) ? manager().resolve(id, outcome) : null),
+    recentResolution: (id) => {
+      const settled = manager().getRecentResolution(id)
+      return settled && settled.scope.agentSlug === slug ? settled : undefined
+    },
+    snapshot: (...args) => manager().getSnapshotForScope(slug, ...args),
+    enrich: (id, kind, enrichment) => (owned(id) ? manager().enrichOpenRequestPayload(id, kind, enrichment) : false),
 
     complete: (sessionId, toolUseId, outcome) =>
       deps.messagePersister.completeInputRequest(slug, sessionId, toolUseId, outcome),
@@ -233,6 +271,12 @@ function createComputerUseOps(slug: AgentSlug, deps: LocalActorDeps): ComputerUs
     consumeOnce: (...args) => deps.computerUsePermissionManager.consumeOnceGrant(slug, ...args),
     revokeGrant: (...args) => deps.computerUsePermissionManager.revokeGrant(slug, ...args),
     clearPending: (...args) => deps.messagePersister.clearPendingComputerUseRequest(slug, ...args),
+  }
+}
+
+function createUsageOps(slug: AgentSlug, deps: LocalActorDeps): UsageOps {
+  return {
+    daily: (options) => deps.loadDailyUsageData({ claudePath: deps.getAgentClaudeConfigDir(slug), ...options }),
   }
 }
 

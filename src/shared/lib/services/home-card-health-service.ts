@@ -10,12 +10,12 @@
 
 import pLimit from 'p-limit'
 import { and, eq, inArray, isNull } from 'drizzle-orm'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { db } from '@shared/lib/db'
 import { scheduledTasks, webhookTriggers } from '@shared/lib/db/schema'
 import type { HomeCardHealthData } from '@shared/lib/types/home-card-health-schema'
 import type { ActivityStatsOptions } from './activity-stats-service'
 import { buildAutomationActivityStats } from './activity-stats-service'
-import { readSessionMetadata } from './session-service'
 
 export interface HomeCardHealthScope extends ActivityStatsOptions {
   /** Agents the caller may see (ACL-resolved in auth mode, all otherwise). */
@@ -110,7 +110,7 @@ export async function buildHomeCardHealth(
           agentSlug,
           cronsByAgent.get(agentSlug) ?? [],
           webhooksByAgent.get(agentSlug) ?? [],
-          await readSessionMetadata(agentSlug),
+          await agentRegistry.get(agentSlug).sessions.readMetadata(),
           { ...scope, now },
         )
         Object.assign(cronByTaskId, activity.cronByTaskId)

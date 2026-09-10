@@ -33,7 +33,6 @@ import {
   AgentContainerStopError,
 } from '@shared/lib/services/agent-service'
 import { agentRegistry } from '@shared/lib/agent-actor'
-import { syncAgentConnectionEnvironment } from '@shared/lib/container/connection-runtime-sync'
 import { parseRuntimeOptions, resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import {
   sessionDashboardDispatchSchema,
@@ -58,28 +57,9 @@ import type {
   UserInputRequestScope,
 } from '@shared/lib/user-input/request-schema'
 import {
-  listSessionsFromSummary,
-  listSessionsByIds,
   sortSessionsNewestFirst,
   SESSIONS_LIST_MAX_LIMIT,
   type SessionSortBy,
-  getSessionSummary,
-  readSessionMetadata,
-  updateSessionName,
-  registerSession,
-  getSessionMessagesWithCompact,
-  getSessionMessagesPage,
-  getSessionMessagesDelta,
-  getSession,
-  getSessionMetadata,
-  sessionExists,
-  sessionIsKnown,
-  sessionFileRealPathWithinAgent,
-  isSessionRegistered,
-  updateSessionMetadata,
-  deleteSession,
-  removeMessage,
-  removeToolCall,
 } from '@shared/lib/services/session-service'
 import { forkSession, ForkSessionError, type ForkSessionOpts } from '@shared/lib/services/session-fork-service'
 import { decodeMediaRef, openMediaBlob } from '@shared/lib/services/session-media'
@@ -208,7 +188,6 @@ import { cleanupAgentData } from '@shared/lib/services/agent-cleanup-service'
 import { stopInstanceOnAllProviders } from '../../main/host-browser'
 import { deleteBrowserProfile } from '../../main/host-browser/profile-maintenance'
 import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
-import { loadSessionUsageTotals } from '@shared/lib/services/usage-service'
 import { captureException } from '@shared/lib/error-reporting'
 import * as fs from 'fs'
 import { Readable, pipeline } from 'stream'
@@ -216,7 +195,7 @@ import { pipeline as streamPipeline } from 'stream/promises'
 import pLimit from 'p-limit'
 import * as path from 'path'
 import type { ApiAgent } from '@shared/lib/types/api'
-import type { SessionInfo, SessionMetadataMap } from '@shared/lib/types/agent'
+import type { SessionInfo, SessionMetadata, SessionMetadataMap } from '@shared/lib/types/agent'
 import { toPublicChatIntegration } from '@shared/lib/chat-integrations/public'
 import { toPublicWebhookTrigger } from '@shared/lib/webhook-triggers/public'
 import {
@@ -564,6 +543,7 @@ async function getLatestVisibleSessionTail(
   sessionMetadata: SessionMetadataMap,
   signal?: AbortSignal,
 ): Promise<NonNullable<ApiAgent['latestVisibleSession']>> {
+  const actor = agentRegistry.get(agentSlug)
   // KNOWN RESIDUAL (accepted, out of scope): `session` comes from the listing,
   // which drops symlinked transcripts by dirent type but still readdir's THROUGH
   // a symlinked ancestor directory (e.g. an agent that replaced its own
@@ -580,7 +560,7 @@ async function getLatestVisibleSessionTail(
   // Read first, check existence only if the read came back empty: the page
   // reader answers a missing transcript with an empty page, so the common
   // case (a transcript with messages) costs no stat at all.
-  const messageTail = await getSessionMessagesPage(agentSlug, session.id, {
+  const messageTail = await actor.messages.page(session.id, {
     limit: LATEST_VISIBLE_SESSION_TAIL_LIMIT,
     byteBudget: LATEST_VISIBLE_SESSION_TAIL_BYTE_BUDGET,
     media: 'ref',
@@ -595,7 +575,7 @@ async function getLatestVisibleSessionTail(
   if (
     messageTail.messages.length === 0 &&
     !(Object.hasOwn(sessionMetadata, session.id) && sessionMetadata[session.id]?.createdAt) &&
-    !(await sessionExists(agentSlug, session.id))
+    !(await actor.sessions.exists(session.id))
   ) {
     throw new Error(
       'Latest visible session transcript not found for ' + agentSlug + '/' + session.id,
@@ -638,7 +618,7 @@ async function getVisibleSessionExpansion(
     // cache with the metadata map the caller already read, so a warm poll
     // costs one directory stat per agent instead of one stat per transcript.
     sessionMetadata = await sessionMetadataPromise
-    visibleSessions = await listSessionsFromSummary(agentSlug, {
+    visibleSessions = await agentRegistry.get(agentSlug).sessions.listFromSummary({
       metadata: sessionMetadata,
       excludeAutomated: true,
       sortBy: 'last_activity_at',
@@ -721,7 +701,8 @@ async function enrichAgentsWithSummary(
       const unreadSessionIds = markedIds.size === 0
         ? notifiedIds
         : new Set<string>([...notifiedIds, ...markedIds])
-      const sessionMetadataPromise = readSessionMetadata(agent.slug)
+      const actor = agentRegistry.get(agent.slug)
+      const sessionMetadataPromise = actor.sessions.readMetadata()
       const visibleSessionExpansionPromise = options.includeLatestVisibleSessionTail
         ? getVisibleSessionExpansion(
             agent.slug,
@@ -735,7 +716,7 @@ async function enrichAgentsWithSummary(
       // outer p-limit).
       const [sessionSummary, { dashboards: artifacts, widgets }, sessionMetadata, visibleSessionExpansion] =
         await Promise.all([
-          getSessionSummary(agent.slug),
+          actor.sessions.summary(),
           // Dashboards and widgets are two halves of the same artifacts, read
           // in one scan: listing them separately doubled the manifest reads.
           listArtifactsAndWidgets(agent.slug),
@@ -1313,7 +1294,7 @@ Respond with ONLY the session name, nothing else. No quotes, no explanation.`,
       ? clampGeneratedName(sessionName)
       : message.trim().split(/\s+/).slice(0, 6).join(' ').substring(0, 60)
     if (finalName) {
-      await updateSessionName(agentSlug, sessionId, finalName)
+      await agentRegistry.get(agentSlug).sessions.rename(sessionId, finalName)
       messagePersister.broadcastSessionUpdate(agentSlug, sessionId)
     }
   } catch (error) {
@@ -1920,6 +1901,7 @@ agents.post('/:id/open-directory', AgentAdmin(), async (c) => {
 agents.get('/:id/sessions', AgentRead(), async (c) => {
   try {
     const slug = getAgentId(c)
+    const actor = agentRegistry.get(slug)
     const sortByRaw = c.req.query('sort_by')
     const notableRaw = c.req.query('notable')
     const limitRaw = c.req.query('limit')
@@ -1949,8 +1931,7 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
         getSessionIdsMarkedUnread(slug, getCurrentUserId(c)),
       ])
       const activeIds = agentRegistry.get(slug).sessions.activeIds()
-      const infos = await listSessionsByIds(
-        slug,
+      const infos = await actor.sessions.listByIds(
         [...new Set([...activeIds, ...unreadIds, ...markedUnreadIds])],
         { excludeAutomated: true },
       )
@@ -1983,7 +1964,7 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
     // marks, scheduled tasks table) — overlap them rather than paying their
     // latencies in series.
     const [sessionList, unreadSessionIds, markedUnreadSessionIds, pendingWakes] = await Promise.all([
-      listSessionsFromSummary(slug, {
+      actor.sessions.listFromSummary({
         excludeAutomated: true,
         ...(sortByRaw === undefined ? {} : { sortBy }),
         ...(resultLimit === undefined ? {} : { limit: resultLimit }),
@@ -2107,7 +2088,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     // inherited defaults. Persist the effective values, not merely explicit
     // overrides, so changing an agent/app default later cannot silently change
     // an existing conversation's next turn or make the composer claim it will.
-    const initialMetadata: Parameters<typeof updateSessionMetadata>[2] = {
+    const initialMetadata: Partial<SessionMetadata> = {
       model: resolved.model,
       ...(resolved.effort ? { effort: resolved.effort } : {}),
       ...(resolved.speed ? { speed: resolved.speed } : {}),
@@ -2152,7 +2133,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         })
       }
 
-      await registerSession(slug, sessionId, 'New Session', initialMetadata)
+      await actor.sessions.register(sessionId, 'New Session', initialMetadata)
       sessionRegistered = true
     } catch (error) {
       if (lifecycleStarted && !sessionRegistered) {
@@ -2163,7 +2144,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     // Store slash commands from container's init event (captured during session creation)
     if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
       agentRegistry.get(slug).sessions.setSlashCommands(sessionId, containerSession.slashCommands)
-      updateSessionMetadata(slug, sessionId, { slashCommands: containerSession.slashCommands }).catch(console.error)
+      actor.sessions.updateMetadata(sessionId, { slashCommands: containerSession.slashCommands }).catch(console.error)
     }
 
     if (isSystemMessageText(message.trim())) {
@@ -2300,6 +2281,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
+    const actor = agentRegistry.get(agentSlug)
 
     const rawLimit = c.req.query('limit')
     const rawCursor = c.req.query('cursor')
@@ -2314,7 +2296,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
       rawAfter !== undefined ||
       rawMedia !== undefined
 
-    if (!(await sessionExists(agentSlug, sessionId))) {
+    if (!(await actor.sessions.exists(sessionId))) {
       // A live session whose first turn has not persisted anything yet: the
       // CLI creates the transcript on its first written line, seconds after
       // createSession returns on a cold agent, and the creating client has
@@ -2324,7 +2306,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
       // (sessionIsKnown keeps the containment guarantee for the id.)
       if (
         agentRegistry.get(agentSlug).sessions.isActive(sessionId) &&
-        (await sessionIsKnown(agentSlug, sessionId))
+        (await actor.sessions.isKnown(sessionId))
       ) {
         return paginated ? c.json({ messages: [], nextCursor: null }) : c.json([])
       }
@@ -2355,7 +2337,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
         // refetch only cares about lines appended since the last read). The
         // window is bounded by the active turn near EOF, so this stays a few
         // KB while the full trailing page is multi-MB on long sessions.
-        const delta = await getSessionMessagesDelta(agentSlug, sessionId, {
+        const delta = await actor.messages.delta(sessionId, {
           after: parsed.data.after,
           signal: c.req.raw.signal,
           media: parsed.data.media,
@@ -2369,7 +2351,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
           ...(delta.resync ? { resync: true as const } : {}),
         })
       }
-      const page = await getSessionMessagesPage(agentSlug, sessionId, {
+      const page = await actor.messages.page(sessionId, {
         limit: capMessagesPageLimit(parsed.data.limit, parsed.data.cursor),
         cursor: parsed.data.cursor,
         signal: c.req.raw.signal,
@@ -2388,7 +2370,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
       })
     }
 
-    const messages = await getSessionMessagesWithCompact(agentSlug, sessionId)
+    const messages = await actor.messages.withCompact(sessionId)
     // The legacy full read above predates abort support (reworked wholesale by
     // the streaming-page follow-up); at least skip transform + serialization
     // when the client is already gone.
@@ -2493,6 +2475,7 @@ agents.get('/:id/sessions/:sessionId/media/:ref', AgentRead(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
+    const actor = agentRegistry.get(agentSlug)
     // Ownership only. There is deliberately no existence preflight here:
     // fileExists() answers false for any stat failure, so EIO/EACCES/EMFILE
     // would 404 — telling the client the image is gone when the truth is that
@@ -2505,8 +2488,8 @@ agents.get('/:id/sessions/:sessionId/media/:ref', AgentRead(), async (c) => {
     // admitting a legitimately deleted transcript, whose bytes are gone and
     // which openMediaBlob answers with a 410.
     if (
-      !(await sessionIsKnown(agentSlug, sessionId)) ||
-      !sessionFileRealPathWithinAgent(agentSlug, sessionId)
+      !(await actor.sessions.isKnown(sessionId)) ||
+      !actor.sessions.fileRealPathWithinAgent(sessionId)
     ) {
       return c.json({ error: 'Session transcript not found' }, 404)
     }
@@ -2547,7 +2530,7 @@ agents.delete('/:id/sessions/:sessionId/messages/:messageId', AgentUser(), async
     const messageId = c.req.param('messageId')
 
 
-    const removed = await removeMessage(agentSlug, sessionId, messageId)
+    const removed = await agentRegistry.get(agentSlug).messages.remove(sessionId, messageId)
     if (!removed) {
       return c.json({ error: 'Message not found' }, 404)
     }
@@ -2567,7 +2550,7 @@ agents.delete('/:id/sessions/:sessionId/tool-calls/:toolCallId', AgentUser(), as
     const toolCallId = c.req.param('toolCallId')
 
 
-    const removed = await removeToolCall(agentSlug, sessionId, toolCallId)
+    const removed = await agentRegistry.get(agentSlug).messages.removeToolCall(sessionId, toolCallId)
     if (!removed) {
       return c.json({ error: 'Tool call not found' }, 404)
     }
@@ -2631,7 +2614,7 @@ agents.get('/:id/sessions/:sessionId/raw-log', AgentRead(), async (c) => {
     // directly, so without the gate a traversal-shaped id throws into the
     // catch (500, not 404) and a planted symlink is followed to another
     // agent's transcript. sessionExists is non-throwing and symlink-aware.
-    if (!(await sessionExists(agentSlug, sessionId))) {
+    if (!(await agentRegistry.get(agentSlug).sessions.exists(sessionId))) {
       return c.json({ error: 'Session log not found' }, 404)
     }
 
@@ -2690,14 +2673,14 @@ agents.get('/:id/sessions/:sessionId/usage', AgentRead(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
+    const actor = agentRegistry.get(agentSlug)
 
-    if (!(await sessionExists(agentSlug, sessionId))) {
+    if (!(await actor.sessions.exists(sessionId))) {
       return c.json({ error: 'Session not found' }, 404)
     }
 
-    const sessionPath = getSessionJsonlPath(agentSlug, sessionId)
     const providerId = getSettings().llmProvider ?? 'anthropic'
-    const totals = await loadSessionUsageTotals({ sessionPath, providerId })
+    const totals = await actor.sessions.usage(sessionId, { providerId })
     return c.json(totals)
   } catch (error) {
     console.error('Failed to calculate session usage:', error)
@@ -2731,6 +2714,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
+    const actor = agentRegistry.get(agentSlug)
     const body = await c.req.json()
     const { content } = body
 
@@ -2744,7 +2728,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     // all keyed by session id alone: an unowned id would cancel another agent's
     // pending input request, re-bind its session to this agent, and inject a
     // spoofed user message into every client watching it.
-    if (!(await sessionIsKnown(agentSlug, sessionId))) {
+    if (!(await actor.sessions.isKnown(sessionId))) {
       return c.json({ error: 'Session not found' }, 404)
     }
 
@@ -2783,7 +2767,6 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       return c.json({ success: true, uuid: messageUuid, queued: true }, 201)
     }
 
-    const actor = agentRegistry.get(agentSlug)
     // Use cached status to avoid spawning docker process
     let info = agentRegistry.get(agentSlug).container.status()
 
@@ -2851,7 +2834,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
 
     await actor.messages.send(sessionId, text, messageUuid, runtimeOptions)
     nameSessionFromFirstHumanMessage(agentSlug, sessionId, text, agent.frontmatter?.name ?? agentSlug)
-    const updates: Parameters<typeof updateSessionMetadata>[2] = {}
+    const updates: Partial<SessionMetadata> = {}
     if (runtimeOptions.effort) updates.effort = runtimeOptions.effort
     if (runtimeOptions.speed) updates.speed = runtimeOptions.speed
     if (runtimeOptions.model) updates.model = runtimeOptions.model
@@ -2867,7 +2850,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     }
     if (Object.keys(updates).length > 0) {
       try {
-        const previous = await updateSessionMetadata(agentSlug, sessionId, updates)
+        const previous = await actor.sessions.updateMetadata(sessionId, updates)
         // The composer re-sends its whole selection on every fresh turn, so
         // option presence alone doesn't mean anything changed. Compare against
         // the previous metadata (captured under the update's lock) — otherwise
@@ -2909,7 +2892,8 @@ agents.delete('/:id/sessions/:sessionId/queued-messages/:uuid', AgentUser(), asy
       return c.json({ error: 'Invalid message uuid' }, 400)
     }
 
-    if (!(await sessionIsKnown(agentSlug, sessionId))) {
+    const actor = agentRegistry.get(agentSlug)
+    if (!(await actor.sessions.isKnown(sessionId))) {
       return c.json({ error: 'Session not found' }, 404)
     }
 
@@ -2917,7 +2901,6 @@ agents.delete('/:id/sessions/:sessionId/queued-messages/:uuid', AgentUser(), asy
       return c.json({ cancelled: true })
     }
 
-    const actor = agentRegistry.get(agentSlug)
     const cancelled = await actor.messages.cancelQueued(sessionId, uuidParam.data)
     return c.json({ cancelled })
   } catch (error) {
@@ -2934,7 +2917,7 @@ agents.post('/:id/sessions/:sessionId/typing', AgentUser(), async (c) => {
 
   // Otherwise this puts the caller's name in the typing indicator of a session
   // in someone else's agent.
-  if (!(await sessionIsKnown(getAgentId(c), sessionId))) {
+  if (!(await agentRegistry.get(getAgentId(c)).sessions.isKnown(sessionId))) {
     return c.json({ error: 'Session not found' }, 404)
   }
 
@@ -2951,16 +2934,16 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
+    const actor = agentRegistry.get(agentSlug)
 
-
-    const session = await getSession(agentSlug, sessionId)
+    const session = await actor.sessions.get(sessionId)
 
     if (!session) {
       return c.json({ error: 'Session not found' }, 404)
     }
 
     const isActive = agentRegistry.get(agentSlug).sessions.isActive(sessionId)
-    const metadata = await getSessionMetadata(agentSlug, sessionId)
+    const metadata = await actor.sessions.metadata(sessionId)
     const pendingWake = await getPendingWakeForSession(agentSlug, sessionId)
     const invokingAgent = metadata?.invokedByAgentSlug
       ? await getAgent(metadata.invokedByAgentSlug)
@@ -2992,7 +2975,7 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       widgetRepairSlug: metadata?.widgetRepairSlug,
       forkedFromSessionId: metadata?.forkedFromSessionId,
       forkedFromSessionName: metadata?.forkedFromSessionId
-        ? (await getSessionMetadata(agentSlug, metadata.forkedFromSessionId))?.name
+        ? (await actor.sessions.metadata(metadata.forkedFromSessionId))?.name
         : undefined,
       effort: metadata?.effort,
       speed: metadata?.speed,
@@ -3018,22 +3001,22 @@ agents.patch('/:id/sessions/:sessionId', AgentUser(), async (c) => {
     const sessionId = c.req.param('sessionId')
     const body = await c.req.json()
     const { name } = body
-
+    const actor = agentRegistry.get(agentSlug)
 
     // Guard before renaming so an unknown session never gets metadata written
     // for it — the rename below would otherwise register one.
-    if (!(await sessionIsKnown(agentSlug, sessionId))) {
+    if (!(await actor.sessions.isKnown(sessionId))) {
       return c.json({ error: 'Session not found' }, 404)
     }
 
     if (name?.trim()) {
-      await updateSessionName(agentSlug, sessionId, name.trim())
+      await actor.sessions.rename(sessionId, name.trim())
     }
 
     // Read the transcript once, after the rename, rather than on both sides of
     // it: renaming touches metadata only, so the pre-rename read differed from
     // this one by exactly the name.
-    const updated = await getSession(agentSlug, sessionId)
+    const updated = await actor.sessions.get(sessionId)
 
     if (!updated) {
       return c.json({ error: 'Session not found' }, 404)
@@ -3072,7 +3055,7 @@ async function setUnreadFlag(c: Context, sessionId: string, markedUnread: boolea
 
     // Guard first: writing the flag registers metadata under this id, so an
     // unknown session would otherwise be conjured into the map.
-    if (!(await sessionIsKnown(agentSlug, sessionId))) {
+    if (!(await agentRegistry.get(agentSlug).sessions.isKnown(sessionId))) {
       return c.json({ error: 'Session not found' }, 404)
     }
 
@@ -3123,6 +3106,7 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
+    const actor = agentRegistry.get(agentSlug)
 
     // Ownership first: unsubscribeFromSession below is keyed by session id
     // alone, so on a foreign id it would tear down another agent's live message
@@ -3130,8 +3114,8 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
     // exactly the "transcript OR metadata entry exists" condition that
     // deleteSession itself reports success for.
     if (
-      !(await sessionExists(agentSlug, sessionId)) &&
-      !(await isSessionRegistered(agentSlug, sessionId))
+      !(await actor.sessions.exists(sessionId)) &&
+      !(await actor.sessions.isRegistered(sessionId))
     ) {
       return c.json({ error: 'Session not found' }, 404)
     }
@@ -3146,7 +3130,7 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
     // than gating on a prior read, keeps a dangling session with only one half
     // left (e.g. a metadata entry whose transcript was already removed)
     // removable instead of wrongly reported as not-found.
-    const deleted = await deleteSession(agentSlug, sessionId)
+    const deleted = await actor.sessions.delete(sessionId)
     if (!deleted) {
       return c.json({ error: 'Session not found' }, 404)
     }
@@ -3181,7 +3165,8 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
 agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
   const agentSlug = getAgentId(c)
   const sessionId = c.req.param('sessionId')
-  if (!(await sessionIsKnown(agentSlug, sessionId))) {
+  const actor = agentRegistry.get(agentSlug)
+  if (!(await actor.sessions.isKnown(sessionId))) {
     return c.json({ error: 'Session not found' }, 404)
   }
 
@@ -3207,13 +3192,13 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
       let slashCommands = agentRegistry.get(agentSlug).sessions.slashCommands(sessionId)
       // Fall back to persisted metadata (e.g. after container restart)
       if (slashCommands.length === 0) {
-        const meta = await getSessionMetadata(agentSlug, sessionId)
+        const meta = await actor.sessions.metadata(sessionId)
         if (meta?.slashCommands && meta.slashCommands.length > 0) {
           const repaired = repairLegacySlashCommands(meta.slashCommands)
           slashCommands = repaired.commands
           agentRegistry.get(agentSlug).sessions.setSlashCommands(sessionId, slashCommands)
           if (repaired.changed) {
-            updateSessionMetadata(agentSlug, sessionId, { slashCommands }).catch(console.error)
+            actor.sessions.updateMetadata(sessionId, { slashCommands }).catch(console.error)
           }
         }
       }
@@ -3286,7 +3271,7 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
   // markSessionInterrupted, which is keyed by session id alone across all agents,
   // so an unowned id reaching any of them wipes another agent's live session
   // state and tells its viewers it went idle.
-  if (!(await sessionIsKnown(agentSlug, sessionId))) {
+  if (!(await agentRegistry.get(agentSlug).sessions.isKnown(sessionId))) {
     return c.json({ error: 'Session not found' }, 404)
   }
 
@@ -3377,11 +3362,11 @@ agents.post('/:id/sessions/:sessionId/tasks/:taskId/stop', AgentUser(), async (c
     return c.json({ error: 'Invalid task id' }, 400)
   }
 
-  if (!(await sessionIsKnown(agentSlug, sessionId))) {
+  const actor = agentRegistry.get(agentSlug)
+  if (!(await actor.sessions.isKnown(sessionId))) {
     return c.json({ error: 'Session not found' }, 404)
   }
 
-  const actor = agentRegistry.get(agentSlug)
   const info = actor.container.status()
   if (info.status !== 'running') {
     return c.json({ error: 'Agent is not running' }, 409)
@@ -3448,27 +3433,22 @@ function gateRequestDecision(
   // Every gated route is mounted under /sessions/:sessionId, so the param is
   // always present; '' is an unmatchable placeholder, not a wildcard.
   const sessionId = c.req.param('sessionId') ?? ''
+  // The actor only ever hands back this agent's requests: another agent's
+  // parked ask, or one with no agent in its scope, reads as unknown here and
+  // falls through to the settled shape below with nothing disclosed.
   const open = agentRegistry.get(agentSlug).inputs.get(toolUseId)
   if (open) {
-    if (!open.scope.agentSlug) {
-      // Fail closed, loudly: an unattributable request cannot be proven to
-      // belong to this agent, and a silent 404 on a card the user just clicked
-      // would be near-undiagnosable.
-      console.error(
-        `[agents] Refusing decision for request ${toolUseId} (kind=${kind}): scope carries no agentSlug`,
-      )
-    }
     if (!requestMatchesRoute(open, kind, agentSlug, sessionId)) {
-      // A caller-supplied id must not settle someone else's parked wait — the
-      // same guard submitDecision has for review kinds.
+      // A caller-supplied id must not settle a wait parked for another kind or
+      // session — the same guard submitDecision has for review kinds.
       return c.json({ error: 'Request not found' }, 404)
     }
     return null
   }
-  // Settled, or never existed. A settled record is still route-bound: report
-  // its outcome only to the route that could have decided it, so settling a
-  // request can never widen who may read it. A record that fails the match is
-  // as good as absent — same 404 an open mismatch gets.
+  // Settled, or never existed (including another agent's). A settled record is
+  // still route-bound: report its outcome only to the route that could have
+  // decided it, so settling a request can never widen who may read it. A record
+  // that fails the match is as good as absent — same 404 an open mismatch gets.
   const settled = agentRegistry.get(agentSlug).inputs.recentResolution(toolUseId)
   if (settled && !requestMatchesRoute(settled, kind, agentSlug, sessionId)) {
     return c.json({ error: 'Request not found' }, 404)
@@ -4456,14 +4436,13 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
     const gated = gateRequestDecision(c, toolUseId, 'computer_use')
     if (gated) return gated
 
+    const actor = agentRegistry.get(agentSlug)
     // Validate session belongs to this agent (skip for _auto internal calls from auto-execute)
     if (sessionId !== '_auto') {
-      if (!(await sessionIsKnown(agentSlug, sessionId))) {
+      if (!(await actor.sessions.isKnown(sessionId))) {
         return c.json({ error: 'Session not found' }, 404)
       }
     }
-
-    const actor = agentRegistry.get(agentSlug)
 
     if (decline) {
       const reason = declineReason || 'User denied computer use request'
@@ -4615,7 +4594,7 @@ agents.post('/:id/sessions/:sessionId/computer-use/revoke', AgentUser(), async (
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
 
-    if (!(await sessionIsKnown(agentSlug, sessionId))) {
+    if (!(await agentRegistry.get(agentSlug).sessions.isKnown(sessionId))) {
       return c.json({ error: 'Session not found' }, 404)
     }
 
@@ -4676,8 +4655,9 @@ agents.get('/:id/scheduled-tasks', AgentRead(), async (c) => {
 agents.get('/:id/scheduled-tasks/completed-sessions', AgentRead(), async (c) => {
   try {
     const slug = getAgentId(c)
+    const actor = agentRegistry.get(slug)
     const tasks = await listCompletedOneTimeTasks(slug)
-    const metadata = await readSessionMetadata(slug)
+    const metadata = await actor.sessions.readMetadata()
 
     const completedSessionIds = tasks
       .map((task) => task.lastSessionId)
@@ -4691,7 +4671,7 @@ agents.get('/:id/scheduled-tasks/completed-sessions', AgentRead(), async (c) => 
           || !agentRegistry.get(slug).sessions.isActive(sessionId)
       })
 
-    const sessions = await listSessionsByIds(slug, completedSessionIds)
+    const sessions = await actor.sessions.listByIds(completedSessionIds)
     const sessionsWithStatus = sessions.map((session) => ({
       ...session,
       isActive: agentRegistry.get(slug).sessions.isActive(session.id),
@@ -5041,7 +5021,7 @@ agents.post('/:id/connected-accounts', AgentUser(), async (c) => {
       ))
 
     for (const accountId of insertedAccountIds) { logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: accountId, action: 'assigned', details: { agentSlug: slug } }) }
-    const liveRefresh = await syncAgentConnectionEnvironment(slug, 'connected-accounts')
+    const liveRefresh = await agentRegistry.get(slug).container.syncConnectionEnvironment('connected-accounts')
     return c.json({ accounts, liveRefresh })
   } catch (error) {
     console.error('Failed to map connected accounts to agent:', error)
@@ -5078,7 +5058,7 @@ agents.delete('/:id/connected-accounts/:accountId', AgentUser(), async (c) => {
       .where(eq(agentConnectedAccounts.id, found.id))
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: accountId, action: 'unassigned', details: { agentSlug: slug } })
-    const liveRefresh = await syncAgentConnectionEnvironment(slug, 'connected-accounts')
+    const liveRefresh = await agentRegistry.get(slug).container.syncConnectionEnvironment('connected-accounts')
     return c.json({ success: true, liveRefresh })
   } catch (error) {
     console.error('Failed to remove account mapping:', error)
@@ -5125,7 +5105,7 @@ agents.delete('/:id/connected-accounts/mapping/:mappingId', AgentAdmin(), async 
       .where(eq(agentConnectedAccounts.id, found.id))
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: found.connectedAccountId, action: 'unassigned', details: { agentSlug: slug } })
-    const liveRefresh = await syncAgentConnectionEnvironment(slug, 'connected-accounts')
+    const liveRefresh = await agentRegistry.get(slug).container.syncConnectionEnvironment('connected-accounts')
     return c.json({ success: true, liveRefresh })
   } catch (error) {
     console.error('Failed to remove account mapping:', error)
@@ -5207,7 +5187,7 @@ agents.post('/:id/remote-mcps', AgentUser(), async (c) => {
     await db.insert(agentRemoteMcps).values(values).onConflictDoNothing()
 
     for (const mcpId of newMcpIds) { logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: mcpId, action: 'assigned', details: { agentSlug: slug } }) }
-    const liveRefresh = await syncAgentConnectionEnvironment(slug, 'remote-mcps')
+    const liveRefresh = await agentRegistry.get(slug).container.syncConnectionEnvironment('remote-mcps')
     return c.json({ success: true, added: newMcpIds.length, liveRefresh })
   } catch (error) {
     console.error('Failed to assign remote MCPs to agent:', error)
@@ -5242,7 +5222,7 @@ agents.delete('/:id/remote-mcps/:mcpId', AgentUser(), async (c) => {
 
     await db.delete(agentRemoteMcps).where(eq(agentRemoteMcps.id, mapping.id))
     logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: mcpId, action: 'unassigned', details: { agentSlug: slug } })
-    const liveRefresh = await syncAgentConnectionEnvironment(slug, 'remote-mcps')
+    const liveRefresh = await agentRegistry.get(slug).container.syncConnectionEnvironment('remote-mcps')
     return c.json({ success: true, liveRefresh })
   } catch (error) {
     console.error('Failed to remove remote MCP from agent:', error)
@@ -5272,7 +5252,7 @@ agents.delete('/:id/remote-mcps/mapping/:mappingId', AgentAdmin(), async (c) => 
 
     await db.delete(agentRemoteMcps).where(eq(agentRemoteMcps.id, mapping.id))
     logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: mapping.remoteMcpId, action: 'unassigned', details: { agentSlug: slug } })
-    const liveRefresh = await syncAgentConnectionEnvironment(slug, 'remote-mcps')
+    const liveRefresh = await agentRegistry.get(slug).container.syncConnectionEnvironment('remote-mcps')
     return c.json({ success: true, liveRefresh })
   } catch (error) {
     console.error('Failed to remove remote MCP from agent:', error)

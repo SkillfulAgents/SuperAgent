@@ -7,7 +7,6 @@ import type { SessionMetadata } from '@shared/lib/types/agent'
 import { getAgentOwnerUserId } from './agent-owner'
 import { readAgentPreferences } from './agent-preferences-service'
 import { getSecretEnvVars } from './secrets-service'
-import { readSessionMetadata, registerSession } from './session-service'
 import { readWidgetLogTail } from './widget-service'
 
 /**
@@ -136,7 +135,7 @@ async function openRepairSession(
   error: string,
   now: number,
 ): Promise<RepairOutcome> {
-  const metadata = await readSessionMetadata(agentSlug)
+  const metadata = await agentRegistry.get(agentSlug).sessions.readMetadata()
   const previous = repairSessions(metadata, widgetSlug)
   // A repair still marked running is one in flight — but only inside the
   // cooldown window. A session killed by an app restart keeps 'running'
@@ -187,7 +186,7 @@ async function startRepairSession(
       ...(resolved.speed ? { speed: resolved.speed } : {}),
     })
 
-    await registerSession(agentSlug, session.id, 'Invoked to fix widget', {
+    await actor.sessions.register(session.id, 'Invoked to fix widget', {
       isWidgetRepair: true,
       widgetRepairSlug: widgetSlug,
       automationStatus: 'running',
