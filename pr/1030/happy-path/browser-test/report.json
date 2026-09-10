@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser-use feature test: agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it back to the user.",
+  "steps": [
+    "Step 1: Navigated to http://localhost:47891 — Page loaded successfully with title \"Gamut\"",
+    "Step 2: Found and clicked on agent \"QA-20260910-190327-fng3\" in the sidebar — Agent page opened successfully, showing the chat interface for the agent",
+    "Step 3: Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully submitted to the agent",
+    "Step 4: Waited up to 3 minutes for a response — Agent completed the task in approximately 10 seconds, well within the 3-minute timeout",
+    "Step 5: Verified the response mentions \"Example Domain\" and took a screenshot — Response clearly states: \"The page title is \"Example Domain\" — a placeholder page reserved for use in documentation. Browser closed.\""
+  ],
+  "bugs": [],
+  "durationMs": 106506,
+  "sessionId": "23f67e73-0f07-469d-96fe-9992a8185381",
+  "cost": {
+    "inputTokens": 440,
+    "outputTokens": 14174,
+    "cacheCreationTokens": 74694,
+    "cacheReadTokens": 1256659,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.290343
+  }
+}
