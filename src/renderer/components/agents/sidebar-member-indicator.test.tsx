@@ -55,9 +55,10 @@ describe('SidebarMemberIndicator', () => {
 
   it.each([
     { count: 3, faces: 3, overflow: null },
-    { count: 4, faces: 2, overflow: '+2' },
-    { count: 6, faces: 2, overflow: '+4' },
-  ])('represents a $count-member team within three circles', ({ count, faces, overflow }) => {
+    { count: 4, faces: 4, overflow: null },
+    { count: 5, faces: 3, overflow: '+2' },
+    { count: 6, faces: 3, overflow: '+3' },
+  ])('represents a $count-member team within four circles', ({ count, faces, overflow }) => {
     roster(members.slice(0, count))
     render(<SidebarMemberIndicator {...props} memberCount={count} />)
     const trigger = screen.getByRole('button', { name: `${count} members of Shared Agent` })

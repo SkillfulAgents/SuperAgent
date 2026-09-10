@@ -13,7 +13,7 @@ const AVATAR_SIZE = 16
 const OVERFLOW_SIZE = 17
 
 /** A compact member stack with roster and invite access, independent of navigation. */
-export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxFaces = 3, selected = false }: {
+export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxFaces = 4, selected = false }: {
   agentSlug: string
   agentName: string
   memberCount: number
