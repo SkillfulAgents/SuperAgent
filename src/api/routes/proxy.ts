@@ -7,7 +7,8 @@ import { resolveApiPolicy } from '@shared/lib/proxy/policy-resolver'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
 import { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
 import { isReauthDismissed, reauthDismissalReason, withDismissalReason } from '@shared/lib/proxy/reauth-dismissal'
-import { getAccountProviderByName } from '@shared/lib/account-providers'
+import { getAccountProviderByName, getProvider } from '@shared/lib/account-providers'
+import { isPlatformComposioActive } from '@shared/lib/composio/client'
 import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { db } from '@shared/lib/db'
@@ -392,18 +393,33 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
       }),
     )
 
-  let response: Response
-  try {
-    response = await forwardRequest()
-  } catch (error) {
-    const isTokenError = String(error).includes('token') || String(error).includes('Token')
-    const errorLabel = isTokenError ? 'Failed to fetch access token' : 'Proxy request failed'
+  const outcome = (r: Response) => ({
+    statusCode: r.status,
+    ...(r.status >= 400 ? { errorMessage: `Upstream returned ${r.status}` } : {}),
+  })
 
-    if (isTokenError) {
+  // Mark the account expired, park the call until the user reconnects, then
+  // forward once more with a fresh provider. Each branch audits its own outcome.
+  const reauthAndRetry = async (label: string): Promise<Response> => {
+    // Another call on this account may have finished reconnecting while this
+    // one was in flight. Retry on the replacement instead of expiring it.
+    const current = await loadMappedAccount()
+    if (
+      current &&
+      current.status === 'active' &&
+      current.providerConnectionId !== account.providerConnectionId
+    ) {
+      account = current
+    } else {
       try {
+        // Expire only the connection that failed, so a reconnect that lands
+        // between the read above and this write keeps its fresh row.
         await db.update(connectedAccounts)
           .set({ status: 'expired', updatedAt: new Date() })
-          .where(eq(connectedAccounts.id, accountId))
+          .where(and(
+            eq(connectedAccounts.id, accountId),
+            eq(connectedAccounts.providerConnectionId, account.providerConnectionId),
+          ))
       } catch (statusUpdateErr) {
         console.warn('[proxy] Failed to persist expired account status:', statusUpdateErr)
       }
@@ -413,29 +429,51 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
         return reauthFailureResponse(reauthResult, 'expired', (errorMessage, statusCode) =>
           audit({ statusCode, errorMessage }))
       }
-      provider = getAccountProviderByName(account.providerName)
-      try {
-        response = await forwardRequest()
-      } catch (retryError) {
-        await audit({ errorMessage: `${errorLabel} after re-authentication: ${retryError}` })
-        return c.json(
-          { error: errorLabel, details: String(retryError), accountStatus: 'expired' },
-          502,
-        )
-      }
-    } else {
-      await audit({ errorMessage: `${errorLabel}: ${error}` })
+    }
+    provider = getAccountProviderByName(account.providerName)
+
+    let retried: Response
+    try {
+      retried = await forwardRequest()
+    } catch (retryError) {
+      await audit({ errorMessage: `${label} after re-authentication: ${retryError}` })
       return c.json(
-        { error: errorLabel, details: String(error) },
+        { error: label, details: String(retryError), accountStatus: 'expired' },
+        502,
+      )
+    }
+    audit(outcome(retried))
+    return retried
+  }
+
+  let response: Response
+  try {
+    response = await forwardRequest()
+  } catch (error) {
+    const isTokenError = String(error).includes('token') || String(error).includes('Token')
+    if (!isTokenError) {
+      await audit({ errorMessage: `Proxy request failed: ${error}` })
+      return c.json(
+        { error: 'Proxy request failed', details: String(error) },
         502
       )
     }
+    return reauthAndRetry('Failed to fetch access token')
   }
 
-  audit({
-    statusCode: response.status,
-    ...(response.status >= 400 ? { errorMessage: `Upstream returned ${response.status}` } : {}),
-  })
+  // A platform-only toolkit's token can die while Composio still reports the
+  // connection ACTIVE (app access revoked upstream, refresh failed). The hop
+  // hands back the upstream 401 inside its envelope, so treat it as expiry.
+  // A local Composio key runs its own X app and keeps today's behaviour.
+  if (
+    response.status === 401 &&
+    getProvider(account.toolkitSlug)?.platformOnly &&
+    isPlatformComposioActive()
+  ) {
+    return reauthAndRetry('Upstream rejected the access token')
+  }
+
+  audit(outcome(response))
   return response
 })
 

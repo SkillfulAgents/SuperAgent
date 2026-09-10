@@ -1,6 +1,7 @@
 import { BaseAccountProvider } from './base-account-provider'
 import type { InitiateConnectionResult, ProviderConnection, ProviderConnectionListItem } from './base-account-provider'
 import { resolveDisplayName } from './display-name-helpers'
+import { getProvider } from './service-catalog'
 import {
   getOrCreateAuthConfig,
   initiateConnection as composioInitiateConnection,
@@ -9,6 +10,8 @@ import {
   listConnections as composioListConnections,
   getConnectionToken,
   proxyExecute,
+  isPlatformComposioActive,
+  ComposioApiError,
   ComposioRedactedTokenError,
 } from '@shared/lib/composio/client'
 import type { ProxyExecuteParams } from '@shared/lib/composio/client'
@@ -25,6 +28,12 @@ type ConnectionMode =
   | { kind: 'use-proxy'; cacheExpiresAt: number }
 
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000
+
+// Refusals the platform hop issues before reaching Composio (bad endpoint,
+// org balance, unknown route or account, payload over the hop's cap). The
+// agent needs the real status and body to act on them; anything else stays a
+// 502 at the route as today.
+const HOP_REFUSAL_STATUSES = new Set([400, 402, 404, 413])
 
 export class ComposioAccountProvider extends BaseAccountProvider {
   readonly name = 'composio' as const
@@ -68,6 +77,13 @@ export class ComposioAccountProvider extends BaseAccountProvider {
     headers: Headers
     body: ArrayBuffer | null
   }): Promise<Response> {
+    // Platform-only toolkits always take the hop so the platform can meter
+    // them. Their custom auth configs return full tokens, which would
+    // otherwise flip the connection into token mode and bypass the hop.
+    if (getProvider(params.toolkitSlug)?.platformOnly && isPlatformComposioActive()) {
+      return this.proxyForward(params)
+    }
+
     const mode = await this.resolveConnectionMode(params.providerConnectionId)
 
     if (mode.kind === 'token') {
@@ -192,8 +208,20 @@ export class ComposioAccountProvider extends BaseAccountProvider {
       ...(translation.body !== undefined ? { body: translation.body } : {}),
       ...(parameters.length ? { parameters } : {}),
       ...(translation.binaryBody ? { binaryBody: translation.binaryBody } : {}),
+    }).catch((err: unknown) => {
+      if (
+        err instanceof ComposioApiError &&
+        HOP_REFUSAL_STATUSES.has(err.statusCode) &&
+        isPlatformComposioActive()
+      ) {
+        return new Response(
+          JSON.stringify(err.details ?? { message: err.message }),
+          { status: err.statusCode, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+      throw err
     })
 
-    return envelopeToResponse(result)
+    return result instanceof Response ? result : envelopeToResponse(result)
   }
 }

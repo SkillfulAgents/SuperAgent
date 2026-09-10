@@ -118,6 +118,24 @@ describe('matchScopes', () => {
     expect(exportJob.scopes).toEqual(['design:content:read'])
   })
 
+  it('matches X user-lane paths with one distinguishing scope per row', () => {
+    const bookmarks = matchScopes('twitter', 'GET', '/2/users/123/bookmarks')
+    expect(bookmarks.matched).toBe(true)
+    expect(bookmarks.scopes).toEqual(['bookmark.read'])
+
+    const post = matchScopes('twitter', 'POST', '/2/tweets')
+    expect(post.matched).toBe(true)
+    expect(post.scopes).toEqual(['tweet.write'])
+
+    // Group DM conversation ids carry a dash; one segment, one wildcard.
+    const dm = matchScopes('twitter', 'GET', '/2/dm_conversations/123-456/dm_events')
+    expect(dm.matched).toBe(true)
+    expect(dm.scopes).toEqual(['dm.read'])
+
+    // Block writes are not in the platform table, so they do not match here either.
+    expect(matchScopes('twitter', 'POST', '/2/users/123/blocking').matched).toBe(false)
+  })
+
   it('empty path returns matched: false', () => {
     const result = matchScopes('gmail', 'GET', '')
     expect(result.matched).toBe(false)
