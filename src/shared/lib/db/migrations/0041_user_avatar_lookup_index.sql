@@ -1,0 +1,1 @@
+CREATE INDEX `user_avatar_override_idx` ON `user` (`avatar_override`);

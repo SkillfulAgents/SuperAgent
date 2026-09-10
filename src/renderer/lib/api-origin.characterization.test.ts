@@ -144,6 +144,7 @@ const DIRECT_BASE_URL_CONSUMERS: Record<string, string> = {
   'lib/upload.ts':
     'XHR upload transport — fetch cannot report request-body progress, so sendUploadRequest prefixes getApiBaseUrl() the way apiFetch does',
   'components/ui/model-icon.tsx': '<img src> — model icon asset',
+  'components/ui/user-avatar.tsx': '<img src> — authenticated workspace photo, including the desktop cloud prefix',
   'components/home/dashboard-card.tsx': '<img src> — dashboard screenshot',
   'components/dashboards/dashboard-view.tsx': '<iframe src> — embedded dashboard',
   'lib/workspace-file-url.ts':

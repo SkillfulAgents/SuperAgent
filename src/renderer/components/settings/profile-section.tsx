@@ -13,6 +13,7 @@ import { usePublicAuthConfig } from '@renderer/hooks/use-public-auth-config'
 import { authClient } from '@renderer/lib/auth-client'
 import { useChangePasswordSchema } from '@renderer/lib/password-utils'
 import { cn } from '@shared/lib/utils'
+import { ProfilePhoto } from './profile-photo'
 
 // Shared with the Account tab's other sections so this card looks native there.
 const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
@@ -258,6 +259,7 @@ export function ProfileSection() {
     <div className="space-y-2">
       <h3 className={SECTION_HEADING}>Profile & Login</h3>
       <div className={CARD_CLASS}>
+        <ProfilePhoto />
         <SettingRow
           name="Email"
           right={<span className={VALUE_CLASS}>{user?.email ?? '—'}</span>}

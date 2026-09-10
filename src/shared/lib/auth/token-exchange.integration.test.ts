@@ -637,3 +637,30 @@ describe('observability', () => {
     }
   })
 })
+
+
+describe('profile image propagation', () => {
+  it('populates and refreshes the provider photo without overwriting the workspace photo', async () => {
+    expect((await exchangeRequest(await signGrant({ payload: { picture: 'https://example.com/first.png' } }))).status).toBe(200)
+    const first = dbModule.sqlite.prepare('SELECT id, image FROM user').get() as { id: string; image: string }
+    expect(first.image).toBe('https://example.com/first.png')
+    dbModule.sqlite.prepare('UPDATE user SET avatar_override = ?').run('/api/profile/images/00000000-0000-4000-8000-000000000001.png')
+    expect((await exchangeRequest(await signGrant({ payload: { picture: 'https://example.com/new.png' } }))).status).toBe(200)
+    expect(dbModule.sqlite.prepare('SELECT id, image, avatar_override FROM user').get()).toEqual({
+      id: first.id, image: 'https://example.com/new.png', avatar_override: '/api/profile/images/00000000-0000-4000-8000-000000000001.png',
+    })
+  })
+
+  it.each([undefined, null, 123, 'javascript:alert(1)', 'https://example.com/' + 'x'.repeat(4096)])('ignores missing/invalid optional image metadata (case %#)', async (picture) => {
+    expect((await exchangeRequest(await signGrant({ payload: { picture: 'https://example.com/photo.png' } }))).status).toBe(200)
+    expect((await exchangeRequest(await signGrant({ payload: { picture } }))).status).toBe(200)
+    expect(dbModule.sqlite.prepare('SELECT image FROM user').get()).toEqual({ image: 'https://example.com/photo.png' })
+  })
+
+  it('sets the photo when linking an existing local user', async () => {
+    const { getAuth } = await import('./index')
+    const local = await getAuth().api.signUpEmail({ body: { name: 'Local User', email: 'member@example.com', password: 'TestPassword123!' } })
+    expect((await exchangeRequest(await signGrant({ payload: { picture: 'https://example.com/linked.png' } }))).status).toBe(200)
+    expect(dbModule.sqlite.prepare('SELECT id, image FROM user').get()).toEqual({ id: local.user.id, image: 'https://example.com/linked.png' })
+  })
+})

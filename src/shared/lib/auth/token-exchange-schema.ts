@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { normalizeProviderImage } from '@shared/lib/user-profile-schema'
 
 // RFC 7523 JWT bearer authorization grant URN (RFC 7523 §2.1).
 export const JWT_BEARER_GRANT_TYPE = 'urn:ietf:params:oauth:grant-type:jwt-bearer'
@@ -27,6 +28,7 @@ export const DeploymentGrantClaimsSchema = z
     email: z.email().max(320),
     email_verified: z.boolean(),
     name: z.string().max(512).optional(),
+    picture: z.unknown().optional().transform((value) => normalizeProviderImage(value) ?? undefined),
     role: z.string().max(64).optional(),
   })
   .passthrough()
