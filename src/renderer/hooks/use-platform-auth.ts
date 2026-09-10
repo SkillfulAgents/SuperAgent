@@ -278,6 +278,19 @@ export function usePlatformConnect(options?: PlatformConnectOptions) {
   const successMessageRef = useRef(options?.successMessage)
   successMessageRef.current = options?.successMessage
 
+  // In a browser window the login callback is a deep link that lands in the
+  // desktop app, so nothing here ever ends the launch. A token saved by any
+  // path (access key included) bumps updatedAt and ends the wait.
+  const updatedAt = platformAuth?.updatedAt
+  const seenUpdatedAtRef = useRef(updatedAt)
+  useEffect(() => {
+    if (updatedAt === seenUpdatedAtRef.current) return
+    seenUpdatedAtRef.current = updatedAt
+    // On desktop the callback owns the launch; a metadata refresh mid-login must not end it.
+    if (window.electronAPI?.onPlatformAuthCallback) return
+    setIsLaunching(false)
+  }, [updatedAt])
+
   usePlatformAuthCallbackListener((params) => {
     setIsLaunching(false)
     if (params.success) {
