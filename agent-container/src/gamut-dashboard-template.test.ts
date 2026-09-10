@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import {
   gamutDashboard,
   getGamutDashboardRuntimeFallbackJs,
-} from '../skills/dashboards/templates/react-vite/gamut-dashboard.js'
+} from '../plugin/skills/dashboards/templates/react-vite/gamut-dashboard.js'
 
 function runtimeFor(pathname: string) {
   const windowObject: Record<string, unknown> = { location: { pathname } }

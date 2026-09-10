@@ -5,6 +5,7 @@ import { captureDashboardScreenshot, type ScreenshotResult } from './dashboard-s
 import { notifyDashboardScreenshotReady, notifyDashboardStatusChanged } from './host-events'
 import { DashboardPackageSchema } from './dashboard-package-schema'
 import { readArtifactShapeSync } from './artifact-kind'
+import { gamutSkillPath } from './gamut-plugin'
 
 const SCREENSHOT_FILENAME = 'screenshot.png'
 
@@ -840,10 +841,7 @@ console.log(\`Dashboard server running on http://localhost:\${port}\`);
     name: string,
     description: string
   ): Promise<void> {
-    const templateDir = path.join(
-      process.env.HOME || '/home/claude',
-      '.claude/skills/dashboards/templates/react-vite'
-    )
+    const templateDir = gamutSkillPath('dashboards', 'templates', 'react-vite')
 
     // Copy template directory recursively
     await fs.promises.cp(templateDir, dir, { recursive: true })

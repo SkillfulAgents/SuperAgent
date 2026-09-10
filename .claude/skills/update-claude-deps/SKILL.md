@@ -71,9 +71,19 @@ Review the current versions of Claude-related packages and create an upgrade pla
 
 4. If either E2E file fails, do not ship the bump — check the settlement tracker (`agent-container/src/session-settlement.ts`) and graceful-stop path (`claude-code.ts stop({graceful:true})`) against the new CLI's stream behavior.
 
+5. **Vendored bundled-workflow drift** (MANDATORY on any `@anthropic-ai/claude-agent-sdk` / CLI bump): `claude-code.ts buildQueryOptions()` sets `disableBundledSkills: true`, which strips every skill and workflow that ships inside the CLI, and `agent-container/plugin/workflows/` carries a verbatim copy of the one we keep (`deep-research`, shipped to sessions inside the image-baked Gamut plugin — see `agent-container/plugin/README.md`). That copy no longer tracks upstream, so after `npm ci` in `agent-container/` run
+   ```bash
+   node .claude/skills/update-claude-deps/extract-bundled-workflow.mjs
+   ```
+   - exit 0 → no drift, nothing to do;
+   - exit 1 → it prints a unified diff against the script embedded in the new binary. Read the diff (prompt wording, vote thresholds, fetch budgets, schema changes), then adopt it with `--write` unless a change is clearly wrong for us — the file must stay identical to upstream apart from the extractor's `LOCAL_PATCHES` (mechanical one-line substitutions such as the `gamut:` workflow prefix), so any bigger local edit means forking under a new name instead;
+   - exit 2 → the extractor could not find or parse the bundled-workflows chunk, or one of its `LOCAL_PATCHES` no longer matches upstream. Fix the markers or the patch in the script (its header comment explains the expected shape) rather than shipping blind.
+   While there, list what the new CLI bundles (`grep -a -o 'var i="[a-z-]*",e=i,' <binary>` for workflows; the `skills` array in a headless run's `system:init` message for skills) and decide whether anything new is worth vendoring the same way — `disableBundledSkills` hides all of it, so a useful addition is invisible until someone looks.
+
 ## Important notes
 
 - The Claude Code CLI ships inside `@anthropic-ai/claude-agent-sdk` as per-platform native-binary optional dependencies (`claude-agent-sdk-<os>-<arch>`); the Dockerfile symlinks the bundled binary onto PATH. There is no separate install.sh/npm CLI install to pin — bumping the SDK version bumps the CLI.
 - SDK and CLI versions track in lockstep by patch number (SDK 0.3.x ↔ CLI 2.1.x, e.g. 0.3.238 ↔ 2.1.238)
 - `DISABLE_AUTOUPDATER=1` is set in the Dockerfile to prevent runtime updates
+- Bundled CLI skills/workflows are disabled in agent sessions (`disableBundledSkills`); `deep-research` is vendored under `agent-container/plugin/workflows/` and checked for drift by `extract-bundled-workflow.mjs` in this skill's directory (validation step 5)
 - Do NOT run `npm build` — use typecheck + lint to verify changes
