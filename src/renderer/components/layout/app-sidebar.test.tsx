@@ -885,7 +885,7 @@ describe('UserMenu action for the current target', () => {
   // platform connection and would mint another.
   beforeEach(() => {
     mockUserContext.isAuthMode = true
-    mockUserContext.user = { name: 'Ada' } as never
+    mockUserContext.user = { id: 'ada-user', name: 'Ada', email: 'ada@example.test' } as never
     _resetApiTargetForTest()
   })
 
