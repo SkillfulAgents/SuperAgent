@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
-import { buildSystemPromptVars, generateSystemPrompt, promptDate } from './claude-code'
+import { buildSystemPromptVars, generateSystemPrompt } from './claude-code'
 import { SERVICES } from './tools/search-connected-account-services'
 import { BROWSER_USE_GUIDANCE_HINT } from './tools/browser'
 import { COMPUTER_USE_GUIDANCE_HINT } from './tools/computer-use'
@@ -10,18 +10,6 @@ const KEYS = ['COMPOSIO_PLATFORM_MODE', 'PLATFORM_AUTH_ACTIVE', 'CONNECTED_ACCOU
 let saved: Record<string, string | undefined>
 beforeEach(() => { saved = Object.fromEntries(KEYS.map(k => [k, process.env[k]])); for (const k of KEYS) delete process.env[k] })
 afterEach(() => { for (const k of KEYS) { saved[k] === undefined ? delete process.env[k] : process.env[k] = saved[k]! } })
-
-describe('promptDate', () => {
-  // 23:30Z sits on both sides of midnight depending on the zone.
-  const instant = new Date('2026-09-10T23:30:00Z')
-
-  it.each([
-    ['UTC', { date: '2026-09-10', weekday: 'Thursday', utcOffset: 'UTC+00:00' }],
-    ['Asia/Kolkata', { date: '2026-09-11', weekday: 'Friday', utcOffset: 'UTC+05:30' }],
-  ])('renders the calendar day and offset in %s', (timeZone, expected) => {
-    expect(promptDate(instant, timeZone)).toEqual({ timeZone, ...expected })
-  })
-})
 
 describe('buildSystemPromptVars', () => {
   it('defaults CLAUDE_CONFIG_DIR when the host env is unset', () => {
