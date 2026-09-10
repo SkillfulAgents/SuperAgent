@@ -2,7 +2,7 @@
  * Auto-generated scope maps for all supported providers.
  * Maps API endpoints to sufficient OAuth/authorization scopes.
  * 
- * Total: 42 providers, 4275 endpoints
+ * Total: 43 providers, 4281 endpoints
  */
 
 export interface ScopeMapEntry {
@@ -4686,6 +4686,22 @@ export const SCOPE_MAPS: Record<string, ProviderScopeMap> = {
       { method: "POST", pathPattern: "/v2/accounts/*/plans", sufficientScopes: ["account:write"], description: "Subscribe to plans" },
       { method: "PUT", pathPattern: "/v2/accounts/*/plans/base", sufficientScopes: ["account:write"], description: "Update base plan" },
       { method: "PUT", pathPattern: "/v2/accounts/*/plans/addons", sufficientScopes: ["account:write"], description: "Update add-on plan" },
+    ],
+  },
+  // Plaid has no OAuth scopes; rows mirror the platform toolkit bridge's PLAID_ALLOWLIST
+  // (apps/toolkit-bridge/src/adapters/plaid.ts). scope-maps-plaid.test.ts pins the two.
+  "plaid": {
+    provider: "plaid",
+    apiHost: "production.plaid.com",
+    basePath: "",
+    allScopes: ["accounts.read", "transactions.read"],
+    scopeMap: [
+      { method: "POST", pathPattern: "/accounts/get", sufficientScopes: ["accounts.read"], description: "List the linked accounts" },
+      { method: "POST", pathPattern: "/accounts/balance/get", sufficientScopes: ["accounts.read"], description: "Get real-time account balances" },
+      { method: "POST", pathPattern: "/item/get", sufficientScopes: ["accounts.read"], description: "Get the linked Item and its institution" },
+      { method: "POST", pathPattern: "/institutions/get_by_id", sufficientScopes: ["accounts.read"], description: "Look up an institution" },
+      { method: "POST", pathPattern: "/transactions/sync", sufficientScopes: ["transactions.read"], description: "Sync transactions incrementally" },
+      { method: "POST", pathPattern: "/transactions/get", sufficientScopes: ["transactions.read"], description: "List transactions in a date range" },
     ],
   },
 };

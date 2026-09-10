@@ -334,8 +334,9 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     displayName: 'Plaid',
     icon: 'landmark',
     description: 'Bank accounts, balances, and transactions',
-    // Custom toolkit hosted by the platform's toolkit bridge (Plaid Link is not OAuth).
+    // Plaid Link is not OAuth: the platform's toolkit bridge hosts it as a custom toolkit.
     composioSlug: 'custom_plaid',
+    platformOnly: true,
   },
 
   // Marketing

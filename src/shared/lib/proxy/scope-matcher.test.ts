@@ -136,6 +136,20 @@ describe('matchScopes', () => {
     expect(matchScopes('twitter', 'POST', '/2/users/123/blocking').matched).toBe(false)
   })
 
+  it('matches Plaid bridge paths to product-style scopes', () => {
+    const balances = matchScopes('plaid', 'POST', '/accounts/balance/get')
+    expect(balances.matched).toBe(true)
+    expect(balances.scopes).toEqual(['accounts.read'])
+
+    const sync = matchScopes('plaid', 'POST', '/transactions/sync')
+    expect(sync.matched).toBe(true)
+    expect(sync.scopes).toEqual(['transactions.read'])
+
+    // Plaid is POST-only; /item/remove is reachable only through the bridge's revoke route.
+    expect(matchScopes('plaid', 'GET', '/accounts/get').matched).toBe(false)
+    expect(matchScopes('plaid', 'POST', '/item/remove').matched).toBe(false)
+  })
+
   it('empty path returns matched: false', () => {
     const result = matchScopes('gmail', 'GET', '')
     expect(result.matched).toBe(false)

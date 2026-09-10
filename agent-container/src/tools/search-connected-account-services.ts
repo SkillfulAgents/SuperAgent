@@ -66,7 +66,10 @@ export const SERVICES: ServiceInfo[] = [
   { slug: 'stripe', displayName: 'Stripe', category: 'Finance', description: 'Payment processing' },
   { slug: 'quickbooks', displayName: 'QuickBooks', category: 'Finance', description: 'Accounting and bookkeeping' },
   { slug: 'xero', displayName: 'Xero', category: 'Finance', description: 'Accounting software' },
-  { slug: 'plaid', displayName: 'Plaid', category: 'Finance', description: 'Bank accounts, balances, and transactions' },
+  // Plaid exists only through Gamut's Composio (bridge-hosted custom toolkit).
+  ...(process.env.COMPOSIO_PLATFORM_MODE === 'true'
+    ? [{ slug: 'plaid', displayName: 'Plaid', category: 'Finance', description: 'Bank accounts, balances, and transactions' }]
+    : []),
   // Marketing
   { slug: 'mailchimp', displayName: 'Mailchimp', category: 'Marketing', description: 'Email marketing platform' },
   // Design
