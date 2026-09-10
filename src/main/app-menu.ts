@@ -21,6 +21,7 @@ export type PendingMenuCommand =
   | { channel: 'navigate-to-agent'; agentSlug: string }
   | { channel: 'open-settings' }
   | { channel: 'open-create-agent' }
+  | { channel: 'navigate-to-explore' }
 
 const pendingMenuCommands: PendingMenuCommand[] = []
 
@@ -33,6 +34,8 @@ function buildPendingCommand(channel: string, args: unknown[]): PendingMenuComma
       return { channel: 'open-settings' }
     case 'open-create-agent':
       return { channel: 'open-create-agent' }
+    case 'navigate-to-explore':
+      return { channel: 'navigate-to-explore' }
     default:
       return null
   }

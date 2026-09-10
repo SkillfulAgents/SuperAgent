@@ -184,6 +184,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.removeAllListeners('open-create-agent')
   },
 
+  onNavigateToExplore: (callback: () => void): (() => void) => {
+    const handler = () => callback()
+    ipcRenderer.on('navigate-to-explore', handler)
+    return () => {
+      ipcRenderer.removeListener('navigate-to-explore', handler)
+    }
+  },
+
+  removeNavigateToExplore: () => {
+    ipcRenderer.removeAllListeners('navigate-to-explore')
+  },
+
   onHistoryNavigationCommand: (callback: (command: 'back' | 'forward') => void): (() => void) => {
     const handler = (_event: unknown, command: unknown) => {
       if (command === 'back' || command === 'forward') callback(command)
@@ -262,6 +274,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       | { channel: 'navigate-to-agent'; agentSlug: string }
       | { channel: 'open-settings' }
       | { channel: 'open-create-agent' }
+      | { channel: 'navigate-to-explore' }
     >
   > => {
     return ipcRenderer.invoke('flush-pending-menu-commands')
@@ -500,6 +513,8 @@ declare global {
       removeOpenSettings: () => void
       onOpenCreateAgent: (callback: () => void) => () => void
       removeOpenCreateAgent: () => void
+      onNavigateToExplore: (callback: () => void) => () => void
+      removeNavigateToExplore: () => void
       onHistoryNavigationCommand: (callback: (command: 'back' | 'forward') => void) => () => void
       removeHistoryNavigationCommand: () => void
       beginTargetSwitch: () => Promise<void>
@@ -523,6 +538,7 @@ declare global {
           | { channel: 'navigate-to-agent'; agentSlug: string }
           | { channel: 'open-settings' }
           | { channel: 'open-create-agent' }
+          | { channel: 'navigate-to-explore' }
         >
       >
       setBadgeCount: (count: number) => Promise<void>

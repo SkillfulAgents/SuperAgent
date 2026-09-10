@@ -12,6 +12,7 @@ type MenuCommand =
   | { channel: 'navigate-to-agent'; agentSlug: string; sessionId?: string | null }
   | { channel: 'open-settings' }
   | { channel: 'open-create-agent' }
+  | { channel: 'navigate-to-explore' }
 
 /**
  * Single source of truth for what each menu command DOES in the renderer. Both
@@ -47,6 +48,9 @@ function useMenuCommandDispatch(): (command: MenuCommand) => void {
         case 'open-create-agent':
           void createUntitledAgent()
           break
+        case 'navigate-to-explore':
+          void navigate({ to: '/explore' })
+          break
       }
     },
     [navigate, openSettings, createUntitledAgent],
@@ -76,6 +80,7 @@ export function MenuCommandHandler() {
       ),
       api.onOpenSettings?.(() => dispatch({ channel: 'open-settings' })),
       api.onOpenCreateAgent?.(() => dispatch({ channel: 'open-create-agent' })),
+      api.onNavigateToExplore?.(() => dispatch({ channel: 'navigate-to-explore' })),
     ]
     return () => unsubscribers.forEach((unsubscribe) => unsubscribe?.())
   }, [dispatch])
