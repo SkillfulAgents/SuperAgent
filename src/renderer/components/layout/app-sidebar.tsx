@@ -1,5 +1,5 @@
 
-import { Bell, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, Plus, Search, Settings, AlertTriangle, LayoutGrid, SquareMousePointer, LogOut, Users, Compass, MoonStar } from 'lucide-react'
+import { Bell, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, Plus, Search, Settings, AlertTriangle, LayoutGrid, SquareMousePointer, LogOut, Compass, MoonStar } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { toast } from 'sonner'
 import { cn } from '@shared/lib/utils/cn'
@@ -58,6 +58,7 @@ import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
+import { SidebarMemberIndicator } from '@renderer/components/agents/sidebar-member-indicator'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
 import { SIDEBAR_TREE_CONNECTORS } from '@renderer/components/ui/tree-connectors'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
@@ -460,7 +461,7 @@ const AgentMenuItemInner = React.forwardRef<
 >(({ agent, style, ...rest }, ref) => {
   useRenderTracker('AgentMenuItem')
   const { view } = useRouteLocation()
-  const { agentMemberCount } = useUser()
+  const { isAuthMode, agentMemberCount } = useUser()
   const queryClient = useQueryClient()
   // Route-derived selection (URL is authoritative — correct on a cold reload,
   // and inherently false on the global notifications/home views since they carry
@@ -497,7 +498,8 @@ const AgentMenuItemInner = React.forwardRef<
   }, [isViewingSubItem])
   const [showAll, setShowAll] = useState(false)
   const [showSkeleton, setShowSkeleton] = useState(false)
-  const isShared = agentMemberCount(agent.slug) > 1
+  const memberCount = agentMemberCount(agent.slug)
+  const isShared = isAuthMode && memberCount > 1
 
   // Lazy-load detail data only when expanded
   const { data: sessions, isLoading: sessionsLoading } = useSessions(isOpen ? agent.slug : null)
@@ -554,59 +556,65 @@ const AgentMenuItemInner = React.forwardRef<
 
   return (
     <Collapsible asChild open={isOpen && !isDragActive} onOpenChange={setIsOpen}>
-      <SidebarMenuItem ref={ref} style={style} {...rest} onMouseEnter={handleMouseEnter}>
-        {/*
-          Wrap the row + chevron in a relative box so the absolutely-positioned
-          chevron tracks the row height, not the (potentially expanded) menu
-          item that also contains CollapsibleContent below.
-        */}
-        <div
-          className={cn('relative rounded-md', SIDEBAR_FILE_DROP_CUE)}
-          {...dragHandlers}
-        >
-          <AgentContextMenu agent={agent}>
-            <SidebarMenuButton
-              asChild
-              isActive={isSelected}
-              className="justify-between pl-7"
-              data-testid={`agent-item-${agent.slug}`}
-            >
-              <AppLink ref={hintRef} to="/agents/$slug" params={{ slug: agent.displaySlug }}>
-                <span className="flex items-center gap-1.5 min-w-0">
-                  <span className="truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
-                  {isShared && <Users className="h-3 w-3 shrink-0 text-muted-foreground" />}
-                </span>
+      <SidebarMenuItem
+        ref={ref}
+        style={style}
+        {...rest}
+        onMouseEnter={handleMouseEnter}
+        // Portaled menus bubble through React, but are outside the draggable row.
+        onPointerDown={event => {
+          if (event.currentTarget.contains(event.target as Node)) rest.onPointerDown?.(event)
+        }}
+        onKeyDown={event => {
+          if (event.currentTarget.contains(event.target as Node)) rest.onKeyDown?.(event)
+        }}
+      >
+        <AgentContextMenu agent={agent}>
+          <SidebarMenuButton
+            asChild
+            isActive={isSelected}
+            className={cn('relative gap-1.5 overflow-visible pl-7', SIDEBAR_FILE_DROP_CUE)}
+          >
+            <div {...dragHandlers}>
+              {/* Stretch the native link across the row; the roster and
+                  chevron sit above it as separate interactive controls. */}
+              <AppLink
+                ref={hintRef}
+                to="/agents/$slug"
+                params={{ slug: agent.displaySlug }}
+                data-testid={`agent-item-${agent.slug}`}
+                data-active={isSelected}
+                className="min-w-0 outline-none after:absolute after:inset-0 after:rounded-md focus-visible:after:ring-2 focus-visible:after:ring-sidebar-ring"
+              >
+                <span className="block truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
+              </AppLink>
+              {isShared && <SidebarMemberIndicator agentSlug={agent.slug} agentName={agent.name} memberCount={memberCount} selected={isSelected} />}
+              <span className="ml-auto flex shrink-0 items-center">
                 {hint !== null ? (
                   <CmdHintBadge hint={hint} />
                 ) : (
                   <AgentRowIndicator agent={agent} sessions={sessions} isOpen={isOpen} />
                 )}
-              </AppLink>
-            </SidebarMenuButton>
-          </AgentContextMenu>
-          {/*
-            Sibling chevron button overlays its slot in the row so the row stays a
-            single <button> (no nested interactive controls). Only rendered when
-            there is expandable content so agents with no sessions or dashboards
-            do not show an empty chevron.
-          */}
-          {hasExpandableContent && (
-            <button
-              type="button"
-              onClick={handleChevronClick}
-              aria-label={isOpen ? 'Collapse' : 'Expand'}
-              aria-expanded={isOpen}
-              className="absolute left-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded focus-visible:ring-2 focus-visible:ring-sidebar-ring outline-none"
-            >
-              <ChevronRight
-                className={cn(
-                  'h-3.5 w-3.5 text-muted-foreground/60 transition-[color,transform] group-hover/menu-item:text-sidebar-foreground',
-                  isOpen && !isDragActive && 'rotate-90'
-                )}
-              />
-            </button>
-          )}
-        </div>
+              </span>
+              {hasExpandableContent && (
+                <button
+                  type="button"
+                  onClick={handleChevronClick}
+                  aria-label={isOpen ? 'Collapse' : 'Expand'}
+                  aria-expanded={isOpen}
+                  className="absolute left-1.5 top-1/2 z-10 -translate-y-1/2 p-0.5 rounded focus-visible:ring-2 focus-visible:ring-sidebar-ring outline-none"
+                >
+                  <ChevronRight
+                    className={cn(
+                      'h-3.5 w-3.5 text-muted-foreground/60 transition-[color,transform] group-hover/menu-item:text-sidebar-foreground',
+                      isOpen && !isDragActive && 'rotate-90'
+                    )}
+                  />
+                </button>
+              )}
+            </div>
+          </SidebarMenuButton>
+        </AgentContextMenu>
         {hasExpandableContent ? (
           <>
             <CollapsibleContent>

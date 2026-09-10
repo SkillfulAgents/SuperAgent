@@ -3,7 +3,7 @@ import { apiFetch } from '@renderer/lib/api'
 import { useUser } from '@renderer/context/user-context'
 import { agentMembersSchema } from '@shared/lib/agent-members-schema'
 
-/** The header and sharing pane share one current-agent roster. */
+/** Sidebar, header, and sharing pane reuse the same live roster per agent. */
 export function useAgentMembers(agentSlug: string, enabled = true) {
   const { isAuthMode } = useUser()
   return useQuery({
