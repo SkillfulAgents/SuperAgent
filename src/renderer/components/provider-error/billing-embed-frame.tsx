@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 
+import { cn } from '@shared/lib/utils/cn'
 import { Button } from '@renderer/components/ui/button'
 import { buildBillingEmbedUrl, platformOriginFromBaseUrl, type BillingEmbedView } from '@renderer/lib/billing-embed'
 import { openExternalUrl } from '@renderer/lib/open-external'
@@ -45,6 +46,8 @@ export interface BillingEmbedFrameProps {
   intent?: 'topup'
   cta?: 'add_card'
   launcher?: boolean
+  // Launcher only: the frame now shows a panel, so it takes the full width and its reported height.
+  expanded?: boolean
   label?: string
   onOpenBilling?: () => void
   onHintChange?: (hint: string) => void
@@ -64,7 +67,7 @@ const FAILURE_MESSAGE: Record<Failure, string> = {
 }
 
 export function BillingEmbedFrame({
-  intent, cta, launcher = false, label = 'Open billing', onOpenBilling, onHintChange,
+  intent, cta, launcher = false, expanded = false, label = 'Open billing', onOpenBilling, onHintChange,
   view, orgId, platformBaseUrl, fallbackHref, onBillingUpdated, onOpenExternal,
 }: BillingEmbedFrameProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
@@ -73,6 +76,12 @@ export function BillingEmbedFrame({
   const [failure, setFailure] = useState<Failure | null>(orgId && platformOrigin ? null : 'no_org')
   const [height, setHeight] = useState(FRAME_DEFAULT_HEIGHT)
   const [attempt, setAttempt] = useState(0)
+  // Frozen per attempt: changing `src` navigates the iframe to a new document, which
+  // drops its storage-access grant and any panel it was showing.
+  const buildSrc = useCallback(() => orgId && platformOrigin
+    ? buildBillingEmbedUrl(platformBaseUrl, orgId, { view, intent, cta, surface: launcher ? 'cta' : undefined, parent: window.location.origin })
+    : null, [orgId, platformOrigin, platformBaseUrl, view, intent, cta, launcher])
+  const [src, setSrc] = useState(buildSrc)
   const [hint, setHint] = useState('')
   const [frameLabel, setFrameLabel] = useState(label)
   useEffect(() => {
@@ -98,8 +107,9 @@ export function BillingEmbedFrame({
     setFailure(orgId && platformOrigin ? null : 'no_org')
     setHeight(FRAME_DEFAULT_HEIGHT)
     setHint('')
+    setSrc(buildSrc())
     setAttempt(n => n + 1)
-  }, [orgId, platformOrigin])
+  }, [orgId, platformOrigin, buildSrc])
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -112,7 +122,7 @@ export function BillingEmbedFrame({
       else if (message.event === 'open-billing' && launcher && view === 'topup') onOpenBilling?.()
       else if (message.event === 'billing-updated') onBillingUpdated()
       else if (message.event === 'session-expired') setFailure('expired')
-      else if (message.event === 'resize' && !launcher && message.height !== undefined) setHeight(clampHeight(message.height))
+      else if (message.event === 'resize' && (!launcher || expanded) && message.height !== undefined) setHeight(clampHeight(message.height))
       else if (message.event === 'cta-state' && launcher) {
         if (message.hint !== undefined) setHint(message.hint)
         if (message.label) setFrameLabel(message.label)
@@ -120,7 +130,7 @@ export function BillingEmbedFrame({
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [orgId, platformOrigin, onBillingUpdated, launcher, onOpenBilling, view, sendTheme])
+  }, [orgId, platformOrigin, onBillingUpdated, launcher, expanded, onOpenBilling, view, sendTheme])
 
   useEffect(() => {
     if (frameReady || failure) return
@@ -128,23 +138,21 @@ export function BillingEmbedFrame({
     return () => window.clearTimeout(timer)
   }, [frameReady, failure, attempt])
 
-  const src = orgId && platformOrigin
-    ? buildBillingEmbedUrl(platformBaseUrl, orgId, { view, intent, cta, surface: launcher ? 'cta' : undefined, parent: window.location.origin })
-    : null
   const openFallback = () => {
     if (!fallbackHref) return
     void openExternalUrl(fallbackHref)
     onOpenExternal()
   }
 
+  // Same iframe element in both layouts; only the box around it changes.
   if (launcher) return (
-    <div className="flex min-w-0 flex-col items-end gap-1">
+    <div className={cn('flex min-w-0 flex-col gap-1', expanded ? 'w-full items-stretch' : 'items-end')}>
       {!onHintChange && (hint || failure) && <p className="max-w-xs text-right text-xs text-muted-foreground" data-testid="billing-cta-hint">{failure ? FAILURE_MESSAGE[failure] : hint}</p>}
       {failure ? (
         <Button size="sm" title={FAILURE_MESSAGE[failure]} disabled={!fallbackHref} onClick={openFallback}>Open billing in a new tab</Button>
       ) : (
-        <div className="relative shrink-0" data-testid="billing-cta-body">
-          <Button size="sm" className={frameReady ? 'invisible' : ''} disabled tabIndex={-1} aria-hidden="true" data-testid="billing-cta-size-reference">{frameLabel}</Button>
+        <div className={cn('relative', expanded ? 'w-full' : 'shrink-0')} style={expanded ? { height } : undefined} data-testid="billing-cta-body" data-expanded={expanded}>
+          <Button size="sm" className={expanded ? 'hidden' : frameReady ? 'invisible' : ''} disabled tabIndex={-1} aria-hidden="true" data-testid="billing-cta-size-reference">{frameLabel}</Button>
           {src && <iframe key={attempt} ref={iframeRef} title="Open workspace billing" src={src} onLoad={sendTheme}
             className="absolute inset-0 block h-full w-full border-0 bg-transparent" style={{ visibility: frameReady ? 'visible' : 'hidden' }}
             referrerPolicy="strict-origin" data-testid="billing-cta-frame" />}

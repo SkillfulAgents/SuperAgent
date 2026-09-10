@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { CheckCircle2, Loader2 } from 'lucide-react'
+import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { extractSubscriptionRequired } from '@shared/lib/llm-provider/platform-error-presentation'
@@ -7,7 +7,6 @@ import { cn } from '@shared/lib/utils/cn'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { HomeEmptyClouds } from '@renderer/components/home/home-empty-clouds'
 import { Button } from '@renderer/components/ui/button'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@renderer/components/ui/dialog'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import type { BillingEmbedView } from '@renderer/lib/billing-embed'
 import { isElectron } from '@renderer/lib/env'
@@ -71,6 +70,7 @@ function PaywallActions({
   cta,
   loading,
   handedOff,
+  expanded,
   embeddedAction,
   onDismiss,
   onHandOff,
@@ -79,6 +79,8 @@ function PaywallActions({
   cta: PaywallCta | null
   loading: boolean
   handedOff: boolean
+  // The embedded frame is showing a panel: give it the full row, Dismiss drops below it.
+  expanded: boolean
   embeddedAction: ReactNode
   onDismiss: (ctaKind: string) => void
   onHandOff: (ctaKind: string) => void
@@ -95,8 +97,8 @@ function PaywallActions({
   const href = cta ? ctaHref(cta) : null
   const ctaKind = cta?.kind ?? 'none'
   return (
-    <div className="flex items-end gap-2" data-testid="paywall-actions">
-      <Button size="sm" variant="ghost" onClick={() => onDismiss(ctaKind)}>
+    <div className={cn('flex gap-2', expanded ? 'basis-full flex-col items-stretch' : 'items-end')} data-testid="paywall-actions" data-expanded={expanded}>
+      <Button size="sm" variant="ghost" className={expanded ? 'order-last self-end' : undefined} onClick={() => onDismiss(ctaKind)}>
         Dismiss
       </Button>
       {handedOff ? (
@@ -133,9 +135,8 @@ function PaywallActions({
 export function PlatformPaywallCard({ message, presentation, children, live = true }: ProviderErrorComponentProps) {
   const [dismissed, setDismissed] = useState(false)
   const [handedOff, setHandedOff] = useState(false)
-  const [dialogOpen, setDialogOpen] = useState(false)
+  const [expanded, setExpanded] = useState(false)
   const [ctaHint, setCtaHint] = useState('')
-  const cardRef = useRef<HTMLDivElement>(null)
   const billingChanged = useRef(false)
   const successShown = useRef(false)
   const { data: platformAuth } = usePlatformAuthStatus()
@@ -156,20 +157,15 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
     billingChanged.current = true
     recheck()
   }, [recheck])
+  // Only the top-up panel expands in place; a view change remounts the frame anyway.
   useEffect(() => {
-    if (dialogOpen && view !== 'topup') setDialogOpen(false)
-  }, [dialogOpen, view])
+    if (expanded && view !== 'topup') setExpanded(false)
+  }, [expanded, view])
   useEffect(() => {
-    if (!billing.cleared || !inApp || dialogOpen || !billingChanged.current || successShown.current) return
+    if (!billing.cleared || !inApp || !billingChanged.current || successShown.current) return
     successShown.current = true
     toast.success('Billing updated. You can continue.')
-  }, [billing.cleared, inApp, dialogOpen])
-  useEffect(() => {
-    if (!billing.cleared || !dialogOpen) return
-    successShown.current = true
-    const timer = setTimeout(() => setDialogOpen(false), 1200)
-    return () => clearTimeout(timer)
-  }, [billing.cleared, dialogOpen])
+  }, [billing.cleared, inApp])
 
   const ctaKind = billing.cta?.kind ?? 'none'
   const shownRef = useRef(false)
@@ -183,7 +179,7 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
     track('paywall_cleared', { ctaKind, handedOff })
   }, [billing.cleared, ctaKind, handedOff, track])
 
-  if ((billing.cleared && !dialogOpen) || dismissed) return <>{children}</>
+  if (billing.cleared || dismissed) return <>{children}</>
 
   const fallback = splitMessage(presentation?.message ?? message)
   const heading = billing.loading ? 'Checking billing' : title(billing.cta, fallback.title)
@@ -197,7 +193,7 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
           data-testid="paywall-card"
           data-blocked={billing.blocked}
           data-embedded={embedded}
-          ref={cardRef}
+          data-expanded={embedded && expanded}
           className="relative flex flex-col gap-3 rounded-xl border bg-card px-5 py-4 shadow-sm"
         >
           <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
@@ -210,10 +206,14 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
               cta={billing.cta}
               loading={billing.loading}
               handedOff={handedOff}
+              expanded={embedded && expanded}
               embeddedAction={embedded && billing.cta ? (
+                // Keyed by view, not CTA kind: add_card → topup after a card is saved must
+                // keep the same iframe document (and its storage-access grant).
                 <BillingEmbedFrame
-                  key={billing.cta.kind}
+                  key={view}
                   launcher
+                  expanded={expanded}
                   label={CTA_LABELS[billing.cta.kind]}
                   onHintChange={setCtaHint}
                   cta={billing.cta.kind === 'add_card' ? 'add_card' : undefined}
@@ -223,8 +223,8 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
                   platformBaseUrl={platformAuth?.platformBaseUrl ?? null}
                   fallbackHref={ctaHref(billing.cta)}
                   onBillingUpdated={handleBillingUpdated}
-                  onOpenBilling={() => setDialogOpen(true)}
-                  onOpenExternal={() => setHandedOff(true)}
+                  onOpenBilling={() => setExpanded(true)}
+                  onOpenExternal={() => { setExpanded(false); setHandedOff(true) }}
                 />
               ) : null}
               onDismiss={(kind) => {
@@ -241,37 +241,6 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
               }}
             />
           </div>
-          {embedded && billing.cta && view === 'topup' && (
-            <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-              <DialogContent className="flex w-[calc(100%-2rem)] flex-col overflow-hidden sm:max-w-xl" onCloseAutoFocus={(event) => {
-                event.preventDefault()
-                cardRef.current?.querySelector('iframe')?.focus()
-              }}>
-                <DialogHeader>
-                  <DialogTitle>{billing.cleared ? 'You’re ready to continue' : 'Add credits'}</DialogTitle>
-                  <DialogDescription>{billing.cleared ? 'Your workspace billing is up to date.' : 'Choose an amount to resume this answer.'}</DialogDescription>
-                </DialogHeader>
-                {billing.cleared ? (
-                  <div role="status" className="flex items-center gap-2 py-4 text-sm">
-                    <CheckCircle2 className="h-5 w-5 text-green-600" aria-hidden="true" />
-                    Billing updated successfully.
-                  </div>
-                ) : (
-                  <BillingEmbedFrame
-                    key={view}
-                    cta={billing.cta.kind === 'add_card' ? 'add_card' : undefined}
-                    intent={billing.cta.kind === 'topup' ? 'topup' : undefined}
-                    view={view}
-                    orgId={platformAuth?.orgId ?? null}
-                    platformBaseUrl={platformAuth?.platformBaseUrl ?? null}
-                    fallbackHref={ctaHref(billing.cta)}
-                    onBillingUpdated={handleBillingUpdated}
-                    onOpenExternal={() => setHandedOff(true)}
-                  />
-                )}
-              </DialogContent>
-            </Dialog>
-          )}
         </div>
       </div>
       {!billing.blocked && children}

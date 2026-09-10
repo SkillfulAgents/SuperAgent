@@ -134,10 +134,11 @@ function expectEmbedUrl(
   expect(url.searchParams.get('cta')).toBe(expected.cta ?? null)
 }
 
-async function openBillingDialog() {
-  await screen.findByTestId('billing-cta-frame')
+async function expandCta() {
+  const frame = await screen.findByTestId('billing-cta-frame')
   postEmbedMessage(PLATFORM_ORIGIN, 'open-billing')
-  return screen.findByTestId('billing-embed-frame')
+  await waitFor(() => expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-expanded', 'true'))
+  return frame
 }
 
 let client: QueryClient
@@ -430,6 +431,7 @@ describe('PlatformPaywallCard', () => {
       await screen.findByTestId('billing-cta-frame')
       expectEmbedUrl({ view: 'topup', intent: 'topup', surface: 'cta' })
       expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-embedded', 'true')
+      expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-expanded', 'false')
       expect(screen.queryByTestId('billing-embed-frame')).not.toBeInTheDocument()
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: 'Add credits' })).not.toBeInTheDocument()
@@ -437,13 +439,13 @@ describe('PlatformPaywallCard', () => {
       expect(openExternalUrl).not.toHaveBeenCalled()
     })
 
-    it('hides the loading overlay once the CTA reports ready, without opening the dialog', async () => {
+    it('hides the loading overlay once the CTA reports ready, without expanding', async () => {
       renderCard()
       await screen.findByTestId('billing-cta-frame')
       expect(screen.getByTestId('billing-embed-loading')).toBeInTheDocument()
       postEmbedMessage(PLATFORM_ORIGIN, 'ready')
       expect(screen.queryByTestId('billing-embed-loading')).not.toBeInTheDocument()
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-expanded', 'false')
       expect(screen.queryByTestId('billing-embed-frame')).not.toBeInTheDocument()
     })
 
@@ -457,12 +459,12 @@ describe('PlatformPaywallCard', () => {
       expect(screen.getByTestId('billing-cta-size-reference')).toHaveClass('invisible')
     })
 
-    it('does not let a CTA resize grow the card', async () => {
+    it('does not let a resize grow the compact CTA', async () => {
       renderCard()
       await screen.findByTestId('billing-cta-frame')
       const body = screen.getByTestId('billing-cta-body')
       expect(body.style.height).toBe('')
-      expect(body.className).not.toContain('w-36')
+      expect(body.className).not.toContain('w-full')
       expect(screen.getByTestId('billing-cta-size-reference').className).toContain('h-8')
       postEmbedMessage(PLATFORM_ORIGIN, 'resize', { height: 312.4 })
       expect(body.style.height).toBe('')
@@ -491,17 +493,17 @@ describe('PlatformPaywallCard', () => {
       expect(screen.queryByTestId('billing-cta-hint')).not.toBeInTheDocument()
     })
 
-    it('shows an authorized upgrade quote on the card without a details dialog', async () => {
+    it('shows an authorized upgrade quote on the card and never expands the subscribe CTA', async () => {
       renderCard('API Error: 402 {"error":"insufficient_balance","subscription_required":true}')
       await screen.findByTestId('billing-cta-frame')
       postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', { label: 'Upgrade', hint: '2 seats · $400/mo. Cancel anytime.' })
       expect(screen.getByTestId('billing-cta-hint')).toHaveTextContent('2 seats · $400/mo. Cancel anytime.')
       postEmbedMessage(PLATFORM_ORIGIN, 'open-billing')
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-expanded', 'false')
       fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
       postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated')
       await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Billing updated. You can continue.'))
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument()
     })
 
     it('sends theme changes only to the configured platform iframe', async () => {
@@ -516,12 +518,20 @@ describe('PlatformPaywallCard', () => {
       send.mockRestore()
     })
 
-    it('opens the billing dialog only from a validated open-billing event', async () => {
+    it('expands the same CTA iframe in place on a validated open-billing event, with no dialog or second frame', async () => {
       renderCard()
-      await openBillingDialog()
-      expect(screen.getByRole('dialog')).toBeInTheDocument()
-      expectEmbedUrl({ view: 'topup', intent: 'topup' }, 'billing-embed-frame')
-      expect(screen.getByTestId('billing-cta-frame')).toBeInTheDocument()
+      await screen.findByTestId('billing-cta-frame')
+      const before = embedFrame()
+      const srcBefore = before.src
+      const frame = await expandCta()
+      expect(frame).toBe(before)
+      expect(embedFrame().src).toBe(srcBefore)
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('billing-embed-frame')).not.toBeInTheDocument()
+      expect(screen.getByTestId('billing-cta-body')).toHaveClass('w-full')
+      expect(screen.getByTestId('billing-cta-size-reference')).toHaveClass('hidden')
+      expect(screen.getByTestId('paywall-actions')).toHaveAttribute('data-expanded', 'true')
+      expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument()
     })
 
     it('ignores open-billing from a hostile origin, a non-iframe source, or another org', async () => {
@@ -531,82 +541,87 @@ describe('PlatformPaywallCard', () => {
       postEmbedMessage(PLATFORM_ORIGIN, 'open-billing', {}, window)
       postEmbedMessage(PLATFORM_ORIGIN, 'open-billing', { orgId: 'org_other' })
       await act(async () => {})
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-expanded', 'false')
       expect(screen.queryByTestId('billing-embed-frame')).not.toBeInTheDocument()
     })
 
-    it('sizes the dialog frame from the platform resize event, clamped', async () => {
+    it('sizes the expanded CTA frame from the platform resize event, clamped', async () => {
       renderCard()
-      await openBillingDialog()
-      const body = screen.getByTestId('billing-embed-body')
-      postEmbedMessage(PLATFORM_ORIGIN, 'resize', { height: 312.4 }, undefined, 'billing-embed-frame')
+      await expandCta()
+      const body = screen.getByTestId('billing-cta-body')
+      postEmbedMessage(PLATFORM_ORIGIN, 'resize', { height: 312.4 })
       expect(body.style.height).toBe('313px')
-      postEmbedMessage(PLATFORM_ORIGIN, 'resize', { height: 5000 }, undefined, 'billing-embed-frame')
+      postEmbedMessage(PLATFORM_ORIGIN, 'resize', { height: 5000 })
       expect(body.style.height).toBe('640px')
-      postEmbedMessage(window.location.origin, 'resize', { height: 200 }, undefined, 'billing-embed-frame')
+      postEmbedMessage(window.location.origin, 'resize', { height: 200 })
       expect(body.style.height).toBe('640px')
     })
 
-    it('rechecks after hosted checkout and does not close the credits dialog while still blocked', async () => {
+    it('rechecks after hosted checkout and stays expanded while still blocked', async () => {
       renderCard()
       await screen.findByTestId('billing-cta-frame')
       const before = fetchBilling.mock.calls.length
       postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated')
       await waitFor(() => expect(fetchBilling.mock.calls.length).toBeGreaterThan(before))
 
-      await openBillingDialog()
-      postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated', {}, undefined, 'billing-embed-frame')
-      await waitFor(() => expect(fetchBilling.mock.calls.length).toBeGreaterThan(before))
+      const frame = await expandCta()
+      const after = fetchBilling.mock.calls.length
+      postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated')
+      await waitFor(() => expect(fetchBilling.mock.calls.length).toBeGreaterThan(after))
       expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-blocked', 'true')
-      expect(screen.getByRole('dialog')).toBeInTheDocument()
-      expect(screen.getByTestId('billing-embed-frame')).toBeInTheDocument()
+      expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-expanded', 'true')
+      expect(screen.getByTestId('billing-cta-frame')).toBe(frame)
     })
 
-    it('shows success in the dialog then closes it 1200ms after billing clears', async () => {
+    it('removes the card and toasts once an inline top-up clears billing', async () => {
       renderCard()
-      await openBillingDialog()
+      await expandCta()
       fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
-      const setTimeoutSpy = vi.spyOn(window, 'setTimeout')
-      try {
-        postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated', {}, undefined, 'billing-embed-frame')
-        await screen.findByText('Billing updated successfully.')
-        expect(screen.getByRole('dialog')).toBeInTheDocument()
-        expect(screen.getByTestId('paywall-card')).toBeInTheDocument()
-        const closeTimer = setTimeoutSpy.mock.calls.find(([, delay]) => delay === 1200)
-        expect(closeTimer).toBeDefined()
-        act(() => { (closeTimer![0] as () => void)() })
-        await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
-        expect(screen.getByTestId('composer')).toBeInTheDocument()
-      } finally {
-        setTimeoutSpy.mockRestore()
-      }
+      postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated')
+      await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
+      expect(screen.getByTestId('composer')).toBeInTheDocument()
+      expect(toastSuccess).toHaveBeenCalledWith('Billing updated. You can continue.')
     })
 
-    it('can close the dialog and reopen it from another validated open-billing event', async () => {
+    it('dismiss works while expanded and hands the composer back', async () => {
       renderCard()
-      await openBillingDialog()
-      act(() => { screen.getByRole('button', { name: 'Close' }).click() })
-      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-      expect(screen.getByTestId('billing-cta-frame')).toBeInTheDocument()
-      await openBillingDialog()
-      expect(screen.getByRole('dialog')).toBeInTheDocument()
+      await expandCta()
+      act(() => { screen.getByRole('button', { name: 'Dismiss' }).click() })
+      expect(screen.queryByTestId('billing-cta-frame')).not.toBeInTheDocument()
+      expect(screen.getByTestId('composer')).toBeInTheDocument()
     })
 
-    it('remounts the frames with the panel that matches the CTA after a recheck flips it', async () => {
+    it('keeps the same iframe document when saving a card flips the CTA from add_card to topup', async () => {
+      fetchBilling.mockResolvedValue(billing({ hasPaymentMethod: false }))
+      renderCard()
+      const frame = await screen.findByTestId('billing-cta-frame')
+      expectEmbedUrl({ view: 'topup', surface: 'cta', cta: 'add_card' })
+      expect(screen.getByText('Add a payment method')).toBeInTheDocument()
+
+      fetchBilling.mockResolvedValue(billing())
+      await expandCta()
+      postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated')
+      await waitFor(() => expect(screen.getByText('You need more usage credit to continue')).toBeInTheDocument())
+      expect(screen.getByTestId('billing-cta-frame')).toBe(frame)
+      expectEmbedUrl({ view: 'topup', surface: 'cta', cta: 'add_card' })
+      expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-expanded', 'true')
+    })
+
+    it('remounts the frame with the panel that matches the CTA after a recheck changes the view', async () => {
       fetchBilling.mockResolvedValue(billing({ subscription: { status: 'active', paymentStatus: 'past_due', currentPeriodEnd: null } }))
       renderCard()
-      await screen.findByTestId('billing-cta-frame')
+      const paymentFrame = await screen.findByTestId('billing-cta-frame')
       expectEmbedUrl({ view: 'payment', surface: 'cta' })
       postEmbedMessage(PLATFORM_ORIGIN, 'open-billing')
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-expanded', 'false')
 
       fetchBilling.mockResolvedValue(billing())
       postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated')
       await waitFor(() => expectEmbedUrl({ view: 'topup', intent: 'topup', surface: 'cta' }))
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-      await openBillingDialog()
-      expectEmbedUrl({ view: 'topup', intent: 'topup' }, 'billing-embed-frame')
-      expect(screen.getAllByText('Add usage credit to resume this answer.').length).toBeGreaterThan(0)
+      expect(screen.getByTestId('billing-cta-frame')).not.toBe(paymentFrame)
+      expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-expanded', 'false')
+      await expandCta()
+      expect(screen.getByText('Add usage credit to resume this answer.')).toBeInTheDocument()
     })
 
     it('falls back to opening billing externally when the workspace has no org id, then offers a recheck', async () => {
@@ -688,7 +703,7 @@ describe('PlatformPaywallCard', () => {
       expectEmbedUrl({ view: 'subscribe', surface: 'cta' })
       expect(screen.queryByRole('button', { name: 'Upgrade' })).not.toBeInTheDocument()
       postEmbedMessage(PLATFORM_ORIGIN, 'open-billing')
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-expanded', 'false')
     })
 
     it('embeds the payment CTA when the payment is past due', async () => {
