@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import crypto from 'crypto'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { resolveMcpPolicy } from '@shared/lib/proxy/policy-resolver'
-import { reviewManager } from '@shared/lib/proxy/review-manager'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
 import { getReplacementMcpId } from '@shared/lib/proxy/mcp-replacement'
 import { isReauthDismissed, reauthDismissalReason, withDismissalReason } from '@shared/lib/proxy/reauth-dismissal'
@@ -392,8 +392,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
 
   const holdForReauth = async (): Promise<ReauthResult> => {
     try {
-      await mcpReauthManager.requestReauth({
-        agentSlug,
+      await agentRegistry.get(agentSlug).inputs.mcpReauth.request({
         mcpId,
         mcpName: mcp!.name,
         authType: mcp!.authType,
@@ -592,8 +591,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
 
     if (policyResult.decision === 'review') {
       try {
-        const decision = await reviewManager.requestReview({
-          agentSlug,
+        const decision = await agentRegistry.get(agentSlug).inputs.reviews.request({
           accountId: mcpId,
           toolkit: mcp.name,
           method,

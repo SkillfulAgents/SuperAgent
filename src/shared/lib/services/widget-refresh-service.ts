@@ -1,4 +1,4 @@
-import { containerManager } from '@shared/lib/container/container-manager'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import {
   containerWidgetRefreshResponseSchema,
@@ -123,7 +123,7 @@ class WidgetRefreshService {
     widgetSlug: string,
     opts: { wake: boolean; reason: RefreshReason },
   ): Promise<RefreshOutcome> {
-    if (!opts.wake && containerManager.getCachedInfo(agentSlug).status !== 'running') {
+    if (!opts.wake && agentRegistry.get(agentSlug).container.status().status !== 'running') {
       return { ok: false, error: 'Agent is not running', skipped: true }
     }
     messagePersister.broadcastGlobal({
@@ -133,10 +133,9 @@ class WidgetRefreshService {
       reason: opts.reason,
     })
     try {
-      const client = opts.wake
-        ? await containerManager.ensureRunning(agentSlug)
-        : containerManager.getClient(agentSlug)
-      const response = await client.fetch(`/artifacts/${encodeURIComponent(widgetSlug)}/widget/refresh`, {
+      const actor = agentRegistry.get(agentSlug)
+      if (opts.wake) await actor.container.start()
+      const response = await actor.container.fetch(`/artifacts/${encodeURIComponent(widgetSlug)}/widget/refresh`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reason: opts.reason }),
@@ -224,7 +223,7 @@ class WidgetRefreshService {
   }
 
   async runPostRun(agentSlug: string): Promise<string[]> {
-    if (containerManager.getCachedInfo(agentSlug).status !== 'running') return []
+    if (agentRegistry.get(agentSlug).container.status().status !== 'running') return []
     const widgets = await listWidgetsFromFilesystem(agentSlug)
     const now = Date.now()
     const picked = widgets.filter((w) => {

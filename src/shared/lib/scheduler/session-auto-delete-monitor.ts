@@ -8,7 +8,7 @@ import { readAgentPreferences } from '@shared/lib/services/agent-preferences-ser
 import { deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
 import { deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { listSessionIdsWithPendingWakes } from '@shared/lib/services/scheduled-task-service'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { getSettings } from '@shared/lib/config/settings'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { db } from '@shared/lib/db'
@@ -107,7 +107,7 @@ class SessionAutoDeleteMonitor {
       .filter((s) => {
         if (s.lastActivityAt.getTime() >= cutoff) return false
         if (metadata[s.id]?.starred) return false
-        if (messagePersister.isSessionActive(agentSlug, s.id)) return false
+        if (agentRegistry.get(agentSlug).sessions.isActive(s.id)) return false
         if (pendingWakeSessionIds.has(s.id)) return false
         return true
       })
@@ -118,7 +118,7 @@ class SessionAutoDeleteMonitor {
     const deletedIds = await deleteSessionsBatch(agentSlug, toDelete)
 
     for (const sessionId of deletedIds) {
-      messagePersister.unsubscribeFromSession(agentSlug, sessionId)
+      agentRegistry.get(agentSlug).sessions.unsubscribeStream(sessionId)
     }
 
     if (isAuthMode() && deletedIds.length > 0) {

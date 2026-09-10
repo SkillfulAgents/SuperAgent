@@ -5,7 +5,7 @@ import type { Duplex } from 'stream'
 import type { ServerType } from '@hono/node-server'
 import { WebSocketServer, WebSocket } from 'ws'
 
-import { containerManager } from '@shared/lib/container/container-manager'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { captureException } from '@shared/lib/error-reporting'
 import { resolveAgentId } from '@shared/lib/utils/file-storage'
 import { authenticateAgentWebSocket } from './agent-websocket-auth'
@@ -166,18 +166,18 @@ export function setupArtifactStreamProxy(server: ServerType): void {
           return deny(socket, '403 Forbidden')
         }
 
-        const client = containerManager.getClient(agentSlug)
-        const info = containerManager.getCachedInfo(agentSlug)
+        const actor = agentRegistry.get(agentSlug)
+        const info = actor.container.status()
         if (info.status !== 'running' || !info.port) return deny(socket, '503 Service Unavailable')
 
         const protocols = requestedProtocols(request)
         const upstream = new WebSocket(
-          `${client.getWebSocketBaseUrl(info.port)}${route.containerPath}${url.search}`,
+          `${actor.container.webSocketBaseUrl(info.port)}${route.containerPath}${url.search}`,
           protocols,
           {
             headers: {
               ...artifactWebSocketForwardHeaders(request, route.publicBasePath),
-              ...client.getHostAuthHeaders(),
+              ...actor.container.hostAuthHeaders(),
             },
           },
         )

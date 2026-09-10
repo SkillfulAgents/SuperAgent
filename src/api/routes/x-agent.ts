@@ -36,9 +36,8 @@ import {
   registerSession,
   sessionIsKnown,
 } from '@shared/lib/services/session-service'
-import { containerManager } from '@shared/lib/container/container-manager'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { messagePersister } from '@shared/lib/container/message-persister'
-import { reviewManager } from '@shared/lib/proxy/review-manager'
 import {
   evaluate as evaluatePolicy,
   type XAgentOperation,
@@ -225,8 +224,7 @@ async function checkAgentPolicy(
   }
 
   try {
-    const userDecision = await reviewManager.requestXAgentReview(
-      callerSlug,
+    const userDecision = await agentRegistry.get(callerSlug).inputs.reviews.requestXAgent(
       targetSlug ?? '',
       targetName,
       operation,
@@ -357,7 +355,7 @@ xAgent.post('/get-sessions', zValidator('json', getSessionsBodySchema), async (c
       createdAt: s.createdAt,
       lastActivityAt: s.lastActivityAt,
       messageCount: s.messageCount,
-      isRunning: messagePersister.isSessionActive(targetSlug, s.id),
+      isRunning: agentRegistry.get(targetSlug).sessions.isActive(s.id),
     })),
     total: allSessions.length,
     offset,
@@ -509,10 +507,10 @@ async function waitForTurnWithinBudget(
     // Pre-wait work can eat the whole budget; if the turn already finished
     // during it, that's a completion — reporting 'timeout' here would label a
     // finished turn 'running' and make the caller poll for a result it has.
-    return messagePersister.isSessionActive(targetSlug, sessionId) ? 'timeout' : 'completed'
+    return agentRegistry.get(targetSlug).sessions.isActive(sessionId) ? 'timeout' : 'completed'
   }
   try {
-    await messagePersister.waitForIdle(targetSlug, sessionId, {
+    await agentRegistry.get(targetSlug).sessions.waitForIdle(sessionId, {
       timeoutMs: remainingMs,
       requireActiveFirst: false,
     })
@@ -600,7 +598,7 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
     return c.json({ error: 'Session not found' }, 404)
   }
 
-  if (sync && messagePersister.isSessionActive(targetSlug, sessionId)) {
+  if (sync && agentRegistry.get(targetSlug).sessions.isActive(sessionId)) {
     // Last reply flushed before we started waiting — used below to detect that
     // the turn we waited out has actually reached the transcript file.
     const boundaryEntry = await findLastSessionEntry(targetSlug, sessionId, isReturnableAssistantEntry)
@@ -624,7 +622,7 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
       // poll budget on sessions that are simply idle. A session that went idle
       // just before the isSessionActive check above keeps plain read-what's-
       // flushed semantics.
-      if (outcome === 'completed' || !messagePersister.isSessionActive(targetSlug, sessionId)) {
+      if (outcome === 'completed' || !agentRegistry.get(targetSlug).sessions.isActive(sessionId)) {
         await readLastAssistantMessage(targetSlug, sessionId, boundaryEntry?.uuid)
       }
     } catch (error) {
@@ -634,8 +632,8 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
     }
   }
 
-  const isAwaiting = messagePersister.isSessionAwaitingInput(targetSlug, sessionId)
-  const isActive = messagePersister.isSessionActive(targetSlug, sessionId)
+  const isAwaiting = agentRegistry.get(targetSlug).sessions.isAwaitingInput(sessionId)
+  const isActive = agentRegistry.get(targetSlug).sessions.isActive(sessionId)
   const status: 'running' | 'idle' | 'awaiting_input' = isAwaiting
     ? 'awaiting_input'
     : isActive
@@ -742,6 +740,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     // Stages for runtime 500s: ensure_running → create_session / send_message.
     let stage = 'ensure_running'
     try {
+      const targetActor = agentRegistry.get(targetSlug)
       if (existingSessionId) {
         // Invoke rights on the target say nothing about the session id sent
         // with them. The persister is keyed by session id alone, so a third
@@ -750,11 +749,11 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         if (!(await sessionIsKnown(targetSlug, existingSessionId))) {
           return c.json({ error: 'Session not found' }, 404)
         }
-        if (messagePersister.isSessionActive(targetSlug, existingSessionId)) {
+        if (targetActor.sessions.isActive(existingSessionId)) {
           return c.json({ error: 'Target session is currently running' }, 409)
         }
         stage = 'ensure_running'
-        const client = await containerManager.ensureRunning(targetSlug)
+        await targetActor.container.start()
         // Last reply flushed before THIS prompt goes out — used to make sure a
         // fast turn's answer isn't confused with the previous turn's while the
         // new entry is still being written to the JSONL file.
@@ -762,9 +761,9 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           ? await findLastSessionEntry(targetSlug, existingSessionId, isReturnableAssistantEntry)
           : null
         stage = 'subscribe'
-        if (!messagePersister.isSubscribed(targetSlug, existingSessionId)) {
+        if (!targetActor.sessions.isStreamSubscribed(existingSessionId)) {
           await subscribeWithTimeout(
-            messagePersister.subscribeToSession(targetSlug, existingSessionId, client, existingSessionId),
+            targetActor.sessions.subscribeStream(existingSessionId, existingSessionId),
           )
         }
         // Checked AFTER every unbounded pre-send await (container startup and
@@ -780,7 +779,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           return c.json({ error: deliveryCutoffError() }, 504)
         }
         stage = 'send_message'
-        await messagePersister.withSessionSend(targetSlug, existingSessionId, client, async () => {
+        await targetActor.messages.withSend(existingSessionId, async () => {
           let messageUuid: string | undefined
           if (isAuthMode() && attributedUserId) {
             const candidateUuid = randomUUID()
@@ -794,9 +793,9 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           }
           try {
             if (messageUuid) {
-              await client.sendMessage(existingSessionId, prompt, messageUuid, { isAutomated: true })
+              await targetActor.messages.send(existingSessionId, prompt, messageUuid, { isAutomated: true })
             } else {
-              await client.sendMessage(existingSessionId, prompt, undefined, { isAutomated: true })
+              await targetActor.messages.send(existingSessionId, prompt, undefined, { isAutomated: true })
             }
           } catch (sendError) {
             if (messageUuid) await deleteMessageAuthorBestEffort(messageUuid)
@@ -842,7 +841,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
       }
 
       stage = 'ensure_running'
-      const client = await containerManager.ensureRunning(targetSlug)
+      await targetActor.container.start()
       const availableEnvVars = await getSecretEnvVars(targetSlug)
       const agentLimits = getEffectiveAgentLimits()
       const customEnvVars = getCustomEnvVars()
@@ -869,7 +868,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
       // lands after the caller's fetch is already dead, revoke the session the
       // moment it materializes instead of leaving a ghost run for the caller's
       // retry to duplicate.
-      const createPromise = client.createSession({
+      const createPromise = targetActor.sessions.create({
         availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
         initialMessage: prompt,
         ...(initialMessageUuid ? { initialMessageUuid } : {}),
@@ -894,7 +893,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         })
         void createPromise.then(
           (lateSession) =>
-            client.deleteSession(lateSession.id).catch((cleanupErr) => {
+            targetActor.sessions.deleteLive(lateSession.id).catch((cleanupErr) => {
               console.error('[x-agent] failed to revoke late-created session', {
                 sessionId: lateSession.id,
                 error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
@@ -907,7 +906,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
       const containerSession = created
       const newSessionId = containerSession.id
       // Mark active before any await so waitForIdle sees state if result arrives early.
-      messagePersister.markSessionActive(targetSlug, newSessionId)
+      targetActor.sessions.markActive(newSessionId)
 
       const authorRecorded = initialMessageUuid && attributedUserId
         ? await insertMessageAuthorBestEffort({
@@ -946,7 +945,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           tags: { ...X_AGENT_SENTRY, stage },
           extra: { callerSlug, targetSlug, sessionId: newSessionId },
         })
-        await client.deleteSession(newSessionId).catch((cleanupErr) => {
+        await targetActor.sessions.deleteLive(newSessionId).catch((cleanupErr) => {
           console.error('[x-agent] failed to clean up orphaned container session', {
             sessionId: newSessionId,
             error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
@@ -955,14 +954,14 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         if (authorRecorded && initialMessageUuid) {
           await deleteMessageAuthorBestEffort(initialMessageUuid)
         }
-        messagePersister.unsubscribeFromSession(targetSlug, newSessionId)
+        targetActor.sessions.unsubscribeStream(newSessionId)
         return c.json({ error: `Failed to register invoked session: ${message}` }, 500)
       }
 
       stage = 'subscribe'
       try {
         await subscribeWithTimeout(
-          messagePersister.subscribeToSession(targetSlug, newSessionId, client, newSessionId),
+          targetActor.sessions.subscribeStream(newSessionId, newSessionId),
         )
       } catch (subscribeErr) {
         const message = subscribeErr instanceof Error ? subscribeErr.message : String(subscribeErr)
@@ -980,7 +979,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         // Without the stream attach nothing would persist this session's
         // transcript — it would run as an invisible ghost. Revoke it, same
         // remediation as a failed registration above.
-        await client.deleteSession(newSessionId).catch((cleanupErr) => {
+        await targetActor.sessions.deleteLive(newSessionId).catch((cleanupErr) => {
           console.error('[x-agent] failed to clean up orphaned container session', {
             sessionId: newSessionId,
             error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
@@ -989,11 +988,11 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         if (authorRecorded && initialMessageUuid) {
           await deleteMessageAuthorBestEffort(initialMessageUuid)
         }
-        messagePersister.unsubscribeFromSession(targetSlug, newSessionId)
+        targetActor.sessions.unsubscribeStream(newSessionId)
         return c.json({ error: `Failed to attach to invoked session: ${message}` }, 500)
       }
       if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
-        messagePersister.setSlashCommands(targetSlug, newSessionId, containerSession.slashCommands)
+        targetActor.sessions.setSlashCommands(newSessionId, containerSession.slashCommands)
       }
 
       if (sync) {

@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { Authenticated } from '../middleware/auth'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { buildHomeCardHealth } from '@shared/lib/services/home-card-health-service'
 import { parseActivityDays, parseActivityTzOffset } from './activity-query'
 import { getHomeAgentScope } from './home-agent-scope'
@@ -19,7 +19,7 @@ homeCardHealth.get('/', async (c) => {
       days: parseActivityDays(c.req.query('days')),
       tzOffsetMinutes: parseActivityTzOffset(c.req.query('tz')),
       isSessionLive: (agentSlug: string, sessionId: string) =>
-        messagePersister.isSessionActive(agentSlug, sessionId),
+        agentRegistry.get(agentSlug).sessions.isActive(sessionId),
     }))
   } catch (error) {
     console.error('Failed to build home card health:', error)

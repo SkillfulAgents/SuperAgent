@@ -2,7 +2,7 @@ import { createHash } from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
 import pLimit from 'p-limit'
-import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { isRealPathWithinDir } from '@shared/lib/utils/path-safety'
 import {
   WIDGET_HTML_FILENAME,
@@ -37,7 +37,7 @@ export function isWidgetOnlyArtifact(pkg: unknown): boolean {
 }
 
 export function artifactsDirFor(agentSlug: string): string {
-  return path.join(getAgentWorkspaceDir(agentSlug), 'artifacts')
+  return path.join(agentRegistry.get(agentSlug).files.workspacePath(), 'artifacts')
 }
 
 /**
@@ -60,7 +60,7 @@ export function resolveWidgetPath(agentSlug: string, artifactSlug: string, ...se
   // agree with itself — another agent's workspace reading as "contained". The
   // anchor has to be the workspace: that is the bind mount, which the agent
   // cannot swap from inside the container.
-  if (!isRealPathWithinDir(getAgentWorkspaceDir(agentSlug), artifactsDir)) return null
+  if (!isRealPathWithinDir(agentRegistry.get(agentSlug).files.workspacePath(), artifactsDir)) return null
   const resolved = path.resolve(artifactsDir, artifactSlug, ...segments)
   return isRealPathWithinDir(artifactsDir, resolved) ? resolved : null
 }

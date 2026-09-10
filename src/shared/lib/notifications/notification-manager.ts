@@ -12,7 +12,7 @@
  *    delivers (deliberate v1 scope).
  */
 
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import {
   createNotification,
   getAgentAccessUserIds,
@@ -129,7 +129,7 @@ class NotificationManager {
     // and before the settings check: visibility isn't a notification pref.
     if (type === 'session_waiting') {
       try {
-        await messagePersister.promoteAutomatedSession(agentSlug, sessionId)
+        await agentRegistry.get(agentSlug).sessions.promoteAutomated(sessionId)
       } catch (error) {
         console.error('[NotificationManager] Failed to promote automated session:', error)
       }

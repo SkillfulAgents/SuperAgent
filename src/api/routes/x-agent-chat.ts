@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { randomUUID } from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
-import { containerManager } from '@shared/lib/container/container-manager'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import {
   getChatIntegration,
@@ -449,8 +449,9 @@ async function notifySessionOfOutboundMessage(
   // Falls back to raw JSONL if the container isn't running or the session doesn't
   // exist on the container yet (e.g. ensureSession just created a lightweight session).
   try {
-    const client = await containerManager.ensureRunning(agentSlug)
-    await client.sendMessage(sessionId, notificationText, undefined, { shouldQuery: false })
+    const actor = agentRegistry.get(agentSlug)
+    await actor.container.start()
+    await actor.messages.send(sessionId, notificationText, undefined, { shouldQuery: false })
   } catch {
     appendAssistantMessage(agentSlug, sessionId, notificationText)
   }

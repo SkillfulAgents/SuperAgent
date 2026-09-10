@@ -9,10 +9,9 @@
 
 import { captureException } from '@shared/lib/error-reporting'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
-import { containerManager } from '@shared/lib/container/container-manager'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
-import { messagePersister } from '@shared/lib/container/message-persister'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { runWithOptionalUser, attribution } from '@shared/lib/platform-attribution'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
@@ -26,7 +25,6 @@ import {
 } from '@shared/lib/services/webhook-trigger-service'
 import type { WebhookTrigger } from '@shared/lib/services/webhook-trigger-service'
 import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
-import { registerSession } from '@shared/lib/services/session-service'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentExists } from '@shared/lib/services/agent-service'
 import {
@@ -338,7 +336,8 @@ class TriggerManager {
     const prompt = composeTriggerPrompt(trigger, events)
 
     // Start agent session
-    const client = await containerManager.ensureRunning(trigger.agentSlug)
+    const actor = agentRegistry.get(trigger.agentSlug)
+    await actor.container.start()
     const availableEnvVars = await getSecretEnvVars(trigger.agentSlug)
 
     // Model/effort/speed preference order: trigger override > agent default > global default.
@@ -349,7 +348,7 @@ class TriggerManager {
       agentPrefs,
       models,
     )
-    const containerSession = await client.createSession({
+    const containerSession = await actor.sessions.create({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: prompt,
       model: resolved.model,
@@ -363,7 +362,7 @@ class TriggerManager {
     const sessionId = containerSession.id
     const sessionName = trigger.name || `Webhook: ${trigger.triggerType}`
 
-    await registerSession(trigger.agentSlug, sessionId, sessionName, {
+    await actor.sessions.register(sessionId, sessionName, {
       isWebhookExecution: true,
       webhookTriggerId: trigger.id,
       webhookTriggerName: trigger.name || undefined,
@@ -372,8 +371,8 @@ class TriggerManager {
     })
 
     // createSession already started the turn; replay may finish it during attachment.
-    messagePersister.markSessionActive(trigger.agentSlug, sessionId)
-    await messagePersister.subscribeToSession(trigger.agentSlug, sessionId, client, sessionId)
+    actor.sessions.markActive(sessionId)
+    await actor.sessions.subscribeStream(sessionId, sessionId)
 
     // Update trigger tracking
     await markTriggerFired(trigger.id, sessionId)

@@ -142,10 +142,14 @@ const mockStopTask = vi.fn()
 const mockForkSession = vi.fn()
 const mockClientDeleteSession = vi.fn()
 const mockGetCachedInfo = vi.fn(() => ({ status: 'running', port: 8080 }))
+// The actor reaches the client through getClient after start(), so the
+// create-session fake lives here rather than on ensureRunning's resolved value.
+const mockClientCreateSession = vi.fn()
 vi.mock('@shared/lib/container/container-manager', () => ({
   containerManager: {
     getClient: () => ({
       fetch: (...args: unknown[]) => mockContainerFetch(...args),
+      createSession: (...args: unknown[]) => mockClientCreateSession(...args),
       sendMessage: (...args: unknown[]) => mockSendMessage(...args),
       cancelQueuedMessage: (...args: unknown[]) => mockCancelQueuedMessage(...args),
       interruptSession: (...args: unknown[]) => mockInterruptSession(...args),
@@ -8238,7 +8242,7 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
   let app: ReturnType<typeof createApp>
 
   const SESSIONS_URL = '/api/agents/test-agent/sessions'
-  const mockCreateSession = vi.fn()
+  const mockCreateSession = mockClientCreateSession
 
   beforeEach(() => {
     vi.clearAllMocks()
