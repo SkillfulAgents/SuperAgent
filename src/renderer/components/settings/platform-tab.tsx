@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react'
-import { ArrowUpRight, BadgeX, ChevronsUpDown, Loader2, RefreshCw } from 'lucide-react'
+import { ArrowUpRight, BadgeX, Check, ChevronsUpDown, Loader2, RefreshCw } from 'lucide-react'
 
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Button } from '@renderer/components/ui/button'
@@ -9,6 +9,7 @@ import { Progress } from '@renderer/components/ui/progress'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { RequestError } from '@renderer/components/messages/request-error'
 import { ProfileSection } from './profile-section'
+import { StaleAgentsNotice } from './stale-agents-notice'
 import { useUser } from '@renderer/context/user-context'
 import { usePlatformConnect, useSavePlatformAccessKey } from '@renderer/hooks/use-platform-auth'
 import { useBillingInfo } from '@renderer/hooks/use-billing-info'
@@ -503,7 +504,8 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
     platformAuth: data,
     isLoadingPlatformAuth: isLoading,
   } = usePlatformConnect({
-    successMessage: 'Connected. Please restart your running agents for the new token to take effect.',
+    // Agents that need a restart announce themselves below (StaleAgentsNotice).
+    successMessage: 'Connected.',
   })
   // The signed-in user's own profile leads this tab instead of having a tab of
   // its own. Only auth mode has a user to edit, so local installs skip it.
@@ -639,10 +641,12 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
         </Alert>
       )}
       {message && (
-        <Alert>
-          <AlertDescription>{message}</AlertDescription>
-        </Alert>
+        <p className="text-xs text-green-600 dark:text-green-400 flex items-center gap-1">
+          <Check className="h-3 w-3" />
+          {message}
+        </p>
       )}
+      {!readOnly && <StaleAgentsNotice />}
       {error && (
         <Alert variant="destructive" className="py-2 text-xs">
           <AlertDescription className="text-xs">

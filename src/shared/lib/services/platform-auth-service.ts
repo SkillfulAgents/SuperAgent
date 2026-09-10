@@ -507,6 +507,18 @@ export async function savePlatformAuth(_userId: string, input: SavePlatformAuthI
   })
   writeRecord(record)
 
+  if (existing?.token !== trimmedToken) {
+    // Running containers baked the previous token into their env at start.
+    // Dynamic import breaks the module cycle (container-manager → here).
+    // A same-token re-save (refreshStoredPlatformAccount) must not arm.
+    try {
+      const { containerManager } = await import('@shared/lib/container/container-manager')
+      containerManager.markAgentsStale()
+    } catch (error) {
+      captureException(error, { tags: { area: 'platform-auth', op: 'mark-agents-stale' } })
+    }
+  }
+
   if (orgChanged) {
     // Auth state changed — sweep stale configs + installed files for the
     // previous org. Runs *after* writing the new record so the polymorphic
