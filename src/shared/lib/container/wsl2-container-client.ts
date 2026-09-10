@@ -12,6 +12,7 @@ import {
   classifyWSL2Stderr,
   extractStderr,
   unknownRunnerSetupError,
+  sanitizeWSLDiagnostic,
   type RunnerSetupRemediation,
 } from './wsl2-setup-errors'
 
@@ -60,7 +61,7 @@ function collectWSL2Diagnostics(): Record<string, unknown> {
         diag.distro_dir_exists = fs.existsSync(distroDir)
         if (diag.distro_dir_exists) {
           const entries = fs.readdirSync(distroDir)
-          diag.distro_dir_contents = entries
+          diag.distro_dir_entry_count = entries.length
           // Check vhdx size (the virtual disk)
           const vhdx = entries.find(e => e.endsWith('.vhdx'))
           if (vhdx) {
@@ -222,10 +223,9 @@ function reportWSL2SetupFailure(
   context: { operation: string; isRetry?: boolean; [key: string]: unknown },
 ): void {
   const extra = {
-    ...context,
+    isRetry: context.isRetry ?? false,
     runner_setup_kind: payload.kind,
-    runner_setup_stderr: payload.originalStderr,
-    original_error_message: originalError instanceof Error ? originalError.message : String(originalError),
+    runner_setup_diagnostic: sanitizeWSLDiagnostic(payload.originalStderr),
     ...collectWSL2Diagnostics(),
   }
   const tags = {
@@ -731,20 +731,26 @@ async function ensureWSL2ReadyImpl(isRetry: boolean): Promise<void> {
   // Use the helper script to ensure containerd is running and verify nerdctl works.
   // The superagent-nerdctl script starts containerd on-demand if not already running.
   let containerdReady = false
+  let readinessAttempts = 0
+  let lastReadinessDiagnostic = ''
+  const readinessStartedAt = Date.now()
   console.log('Ensuring containerd is running...')
   try {
+    readinessAttempts++
     await execWSL('/usr/local/bin/superagent-nerdctl version')
     containerdReady = true
-  } catch {
+  } catch (error) {
+    lastReadinessDiagnostic = sanitizeWSLDiagnostic(extractStderr(error))
     // Helper script might need a moment on first run; retry a few times
     for (let i = 0; i < 15; i++) {
       await new Promise(r => setTimeout(r, 1000))
       try {
+        readinessAttempts++
         await execWSL('/usr/local/bin/superagent-nerdctl version')
         containerdReady = true
         break
-      } catch {
-        // keep trying
+      } catch (retryError) {
+        lastReadinessDiagnostic = sanitizeWSLDiagnostic(extractStderr(retryError))
       }
     }
   }
@@ -755,8 +761,19 @@ async function ensureWSL2ReadyImpl(isRetry: boolean): Promise<void> {
       'Try running "wsl --unregister superagent" in PowerShell and restarting the app.'
     )
     captureException(containerdError, {
-      tags: { component: 'wsl2', operation: 'containerd-start' },
-      extra: { wsl2Home, ...collectWSL2Diagnostics() },
+      tags: {
+        component: 'wsl2',
+        operation: 'containerd-start',
+        readiness_cause: lastReadinessDiagnostic ? 'command_nonzero' : 'unknown',
+        system_arch: os.arch(),
+      },
+      fingerprint: ['wsl2-readiness', 'containerd-start', os.arch()],
+      extra: {
+        attempts: readinessAttempts,
+        elapsedMs: Date.now() - readinessStartedAt,
+        diagnostic: lastReadinessDiagnostic,
+        ...collectWSL2Diagnostics(),
+      },
     })
     throw containerdError
   }
