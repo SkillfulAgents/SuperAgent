@@ -411,12 +411,12 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
             {isAuthMode ? (
               <AgentMemberStack
                 agentSlug={agent.slug}
-                inviteControl={(isOwner || isAdmin) ? (
-                  <AgentSharePopover ref={shareRef} agentSlug={agent.slug} agentName={agent.name} trigger={
+                renderShareControl={(isOwner || isAdmin) ? (isShared) => (
+                  <AgentSharePopover ref={shareRef} agentSlug={agent.slug} agentName={agent.name} trigger={isShared ? (
                     <Button type="button" size="icon" variant="outline" className="h-8 w-8 shrink-0 rounded-full bg-background ring-2 ring-background focus-visible:ring-ring" aria-label="Share agent" title="Invite, publish, or export" data-testid="agent-share-button">
                       <Plus className="h-4 w-4" />
                     </Button>
-                  } />
+                  ) : undefined} />
                 ) : undefined}
               />
             ) : isOwner && <AgentSharePopover ref={shareRef} agentSlug={agent.slug} agentName={agent.name} />}

@@ -1,5 +1,4 @@
 import { useState, type ReactNode } from 'react'
-import { Users } from 'lucide-react'
 import type { AgentMember } from '@shared/lib/agent-members-schema'
 import { useAgentMembers } from '@renderer/hooks/use-agent-members'
 import { UserAvatar } from '@renderer/components/ui/user-avatar'
@@ -34,15 +33,21 @@ function MemberFace({ member, open, offset, onOpenChange }: {
   )
 }
 
-export function AgentMemberStack({ agentSlug, inviteControl }: { agentSlug: string; inviteControl?: ReactNode }) {
+export function AgentMemberStack({ agentSlug, renderShareControl }: {
+  agentSlug: string
+  renderShareControl?: (isShared: boolean) => ReactNode
+}) {
   const { data: members, isLoading, isError, refetch } = useAgentMembers(agentSlug)
   const [activeId, setActiveId] = useState<string | null>(null)
   const activeIndex = members?.findIndex((member) => member.id === activeId) ?? -1
+  const isShared = (members?.length ?? 0) > 1
+  const shareControl = renderShareControl?.(isShared)
+  if (!isLoading && !isError && !isShared && !shareControl) return null
   return (
-    <div className="flex shrink-0 items-center px-2 py-1" data-testid="agent-member-stack" role="group" aria-label="Agent members">
-      {isLoading ? <span role="status" className="mr-4 text-xs text-muted-foreground">Loading members…</span>
-        : isError ? <button className="mr-4 text-xs text-muted-foreground underline" onClick={() => void refetch()}>Retry members</button>
-        : members?.length ? (
+    <div className={isShared ? "flex shrink-0 items-center px-2 py-1" : "flex shrink-0 items-center gap-2"} data-testid={isShared ? "agent-member-stack" : undefined} role={isShared ? "group" : undefined} aria-label={isShared ? "Agent members" : undefined}>
+      {isLoading ? <span role="status" className={isShared ? "mr-4 text-xs text-muted-foreground" : "text-xs text-muted-foreground"}>Loading members…</span>
+        : isError ? <button className={isShared ? "mr-4 text-xs text-muted-foreground underline" : "text-xs text-muted-foreground underline"} onClick={() => void refetch()}>Retry members</button>
+        : isShared && members ? (
           <TooltipProvider delayDuration={150}>
             {members.slice(0, 5).map((member, index) => (
               <MemberFace
@@ -76,10 +81,10 @@ export function AgentMemberStack({ agentSlug, inviteControl }: { agentSlug: stri
               </Popover>
             )}
           </TooltipProvider>
-        ) : <span className="mr-4 flex items-center gap-1 text-xs text-muted-foreground"><Users className="h-4 w-4" />No members</span>}
-      {inviteControl && (
-        <div className="relative -ml-2 first:ml-0 flex shrink-0 transition-transform duration-150 motion-reduce:transition-none hover:z-10 focus-within:z-10" style={{ transform: `translateX(${activeIndex < 0 ? 0 : 8}px)` }}>
-          {inviteControl}
+        ) : null}
+      {shareControl && (
+        <div className={isShared ? "relative -ml-2 first:ml-0 flex shrink-0 transition-transform duration-150 motion-reduce:transition-none hover:z-10 focus-within:z-10" : "flex shrink-0"} style={isShared ? { transform: `translateX(${activeIndex < 0 ? 0 : 8}px)` } : undefined}>
+          {shareControl}
         </div>
       )}
     </div>

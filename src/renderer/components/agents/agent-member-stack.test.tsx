@@ -17,14 +17,14 @@ describe('AgentMemberStack', () => {
   it.each([0, 1, 5, 8])('fits a roster of %i without exposing an invite action to readers', (count) => {
     roster(count)
     render(<AgentMemberStack agentSlug="agent-one" />)
-    expect(screen.queryAllByTestId(/^agent-member-member-/)).toHaveLength(Math.min(count, 5))
+    expect(screen.queryAllByTestId(/^agent-member-member-/)).toHaveLength(count > 1 ? Math.min(count, 5) : 0)
     expect(screen.queryByTestId('agent-members-overflow') !== null).toBe(count > 5)
     expect(screen.queryByRole('button', { name: 'Share agent' })).toBeNull()
   })
 
   it('opens the full read-only roster from overflow and retains the separate invite control', () => {
     roster(8)
-    render(<AgentMemberStack agentSlug="agent-one" inviteControl={<button>Share agent</button>} />)
+    render(<AgentMemberStack agentSlug="agent-one" renderShareControl={() => <button>Share agent</button>} />)
     fireEvent.click(screen.getByRole('button', { name: 'Show all 8 members' }))
     expect(screen.getAllByRole('listitem')).toHaveLength(8)
     expect(screen.getByText('person-7@example.test')).toBeTruthy()
@@ -32,7 +32,7 @@ describe('AgentMemberStack', () => {
   })
 
   it('shows a name and email on keyboard focus and touch/click', async () => {
-    roster(1)
+    roster(2)
     render(<AgentMemberStack agentSlug="agent-one" />)
     const face = screen.getByTestId('agent-member-member-0')
     fireEvent.focus(face)
