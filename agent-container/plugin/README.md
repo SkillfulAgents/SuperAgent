@@ -26,29 +26,33 @@ name. A workflow is addressed by its qualified name:
   the dashboard-builder prompt points at (`/opt/gamut/plugin/skills/dashboards/*.md`).
 - `widgets/` — building home-screen widgets; holds the template
   `widget-manager.ts` scaffolds from.
+- `workflow-authoring/` — vendored from the CLI (see below): the script-API
+  reference the Workflow tool's own prompt tells the model to load before
+  writing a workflow. Without it the model authors scripts blind.
 
 ## workflows/
-
-Verbatim copies of workflows that ship inside the Claude Code CLI. We disable
-the bundled set (developer-workflow skills that fire on their own and compete
-with our guidance) and keep only what we want:
 
 - `deep-research.js` — fan-out web search → fetch → 3-vote adversarial verify →
   cited report. Needs the Workflow tool (`enableWorkflows`), WebSearch and
   WebFetch, exactly like upstream.
 
-Keep these files identical to upstream except for the `LOCAL_PATCHES` listed in
-the extractor (today: the usage hint in deep-research says
-`gamut:deep-research`, because a plugin workflow is addressed by its qualified
-name). The extractor applies the same patches to the upstream script before
-diffing, so the drift check stays a plain diff. On every
-`@anthropic-ai/claude-agent-sdk` bump:
+## Vendored from the CLI
+
+`workflows/deep-research.js` and `skills/workflow-authoring/SKILL.md` are
+extracted from the Claude Code CLI binary. We disable the bundled set
+(developer-workflow skills that fire on their own and compete with our
+guidance) and keep only what we want. Keep these files identical to upstream
+except for the `patches` listed per entry in the extractor's `VENDORED` table
+(today: the usage hint in deep-research says `gamut:deep-research`, because a
+plugin workflow is addressed by its qualified name). The extractor applies the
+same patches to the upstream text before diffing, so the drift check stays a
+plain diff. On every `@anthropic-ai/claude-agent-sdk` bump:
 
 ```bash
-node .claude/skills/update-claude-deps/extract-bundled-workflow.mjs        # diff
-node .claude/skills/update-claude-deps/extract-bundled-workflow.mjs --write # adopt
+node .claude/skills/update-claude-deps/extract-bundled.mjs         # diff all
+node .claude/skills/update-claude-deps/extract-bundled.mjs --write # adopt all
 ```
 
 (step 5 of the `update-claude-deps` skill's validation list). Any further local
-change goes into `LOCAL_PATCHES` if it is a one-line mechanical substitution;
-anything bigger means forking under a different name.
+change goes into that entry's `patches` if it is a one-line mechanical
+substitution; anything bigger means forking under a different name.
