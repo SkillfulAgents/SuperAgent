@@ -194,7 +194,11 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
           data-blocked={billing.blocked}
           data-embedded={embedded}
           data-expanded={embedded && expanded}
-          className="relative flex flex-col gap-3 rounded-xl border bg-card px-5 py-4 shadow-sm"
+          className={cn(
+            'relative flex flex-col gap-3 rounded-xl border bg-card px-5 py-4 shadow-sm',
+            // West's purchase dialog was max-w-md; keep the collapsed banner full-width.
+            embedded && expanded && 'mx-auto w-full max-w-md',
+          )}
         >
           <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
             <div className="min-w-0 flex-1 basis-60">
