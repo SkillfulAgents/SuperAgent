@@ -74,4 +74,20 @@ describe('ProviderErrorCard', () => {
     expect(card).toHaveAttribute('data-severity', 'error')
     expect(screen.queryByRole('link', { name: /raise spend limit/i })).not.toBeInTheDocument()
   })
+
+  it('hides Dismiss unless dismissible', () => {
+    render(<ProviderErrorCard message={SPEND_CAP} />)
+    expect(screen.queryByRole('button', { name: 'Dismiss' })).not.toBeInTheDocument()
+  })
+
+  it('shows Dismiss when dismissible and removes the card on click', () => {
+    render(
+      <ProviderErrorCard message={SPEND_CAP} dismissible>
+        <div data-testid="composer">composer</div>
+      </ProviderErrorCard>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByTestId('provider-error-card')).not.toBeInTheDocument()
+    expect(screen.getByTestId('composer')).toBeInTheDocument()
+  })
 })

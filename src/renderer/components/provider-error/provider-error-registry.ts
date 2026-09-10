@@ -17,6 +17,8 @@ export interface ProviderErrorComponentProps {
   children?: ReactNode
   /** True when this is the in-flight turn error, not a persisted history row. */
   live?: boolean
+  /** When true, the card shows Dismiss. Default false. */
+  dismissible?: boolean
 }
 
 export const DEFAULT_ERROR_COMPONENT = 'default'

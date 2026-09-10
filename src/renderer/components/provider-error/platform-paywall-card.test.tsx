@@ -149,9 +149,10 @@ function renderCard(
   message = 'API Error: 402 {"error":"insufficient_balance"}',
   live = true,
   presentation = PRESENTATION,
+  dismissible = false,
 ) {
   return render(
-    <PlatformPaywallCard message={message} presentation={presentation} live={live}>
+    <PlatformPaywallCard message={message} presentation={presentation} live={live} dismissible={dismissible}>
       <div data-testid="composer">composer</div>
     </PlatformPaywallCard>,
     { wrapper: Wrapper },
@@ -179,16 +180,15 @@ describe('PlatformPaywallCard', () => {
     delete (window as { electronAPI?: unknown }).electronAPI
   })
 
-  it('tracks the paywall being shown, its CTA click and its dismissal', async () => {
+  it('tracks the paywall being shown and its CTA click', async () => {
     renderCard()
     await waitFor(() => expect(screen.getByText('Workspace billing needs attention')).toBeInTheDocument())
     expect(mocks.track).toHaveBeenCalledWith('paywall_shown', { ctaKind: 'ask_admin', blocked: true, placement: 'composer' })
     expect(mocks.track).toHaveBeenCalledTimes(1)
     act(() => { screen.getByRole('button', { name: 'Go to billing' }).click() })
     expect(mocks.track).toHaveBeenCalledWith('paywall_cta_clicked', { ctaKind: 'ask_admin' })
-    act(() => { screen.getByRole('button', { name: 'Dismiss' }).click() })
-    expect(mocks.track).toHaveBeenCalledWith('paywall_dismissed', { ctaKind: 'ask_admin', handedOff: true })
-    expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Dismiss' })).not.toBeInTheDocument()
+    expect(screen.getByTestId('paywall-card')).toBeInTheDocument()
   })
 
   it('shows a checking state, then routes members to ask an admin', async () => {
@@ -231,6 +231,26 @@ describe('PlatformPaywallCard', () => {
     expect(screen.getByTestId('composer')).toBeInTheDocument()
   })
 
+  it('shows Dismiss when dismissible and hands the composer back while blocked', async () => {
+    renderCard(undefined, true, PRESENTATION, true)
+    await screen.findByText('Workspace billing needs attention')
+    expect(screen.queryByTestId('composer')).not.toBeInTheDocument()
+    act(() => { screen.getByRole('button', { name: 'Dismiss' }).click() })
+    expect(mocks.track).toHaveBeenCalledWith('paywall_dismissed', { ctaKind: 'ask_admin', handedOff: false })
+    expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument()
+    expect(screen.getByTestId('composer')).toBeInTheDocument()
+  })
+
+  it('stops listening for refresh signals once dismissed', async () => {
+    renderCard(undefined, true, PRESENTATION, true)
+    await screen.findByText('Workspace billing needs attention')
+    act(() => { screen.getByRole('button', { name: 'Dismiss' }).click() })
+    const before = fetchBilling.mock.calls.length
+    act(() => { window.dispatchEvent(new Event('focus')) })
+    await act(async () => { await new Promise((r) => setTimeout(r, 80)) })
+    expect(fetchBilling.mock.calls.length).toBe(before)
+  })
+
   it('keeps the composer when the platform is disconnected (billing query disabled)', async () => {
     platformAuth.connected = false
     renderCard()
@@ -238,15 +258,6 @@ describe('PlatformPaywallCard', () => {
     expect(screen.getByTestId('paywall-card')).toBeInTheDocument()
     expect(screen.getByTestId('composer')).toBeInTheDocument()
     expect(fetchBilling).not.toHaveBeenCalled()
-  })
-
-  it('dismiss hands the composer back and removes the card, even while blocked', async () => {
-    renderCard()
-    await screen.findByText('Workspace billing needs attention')
-    expect(screen.queryByTestId('composer')).not.toBeInTheDocument()
-    act(() => { screen.getByRole('button', { name: 'Dismiss' }).click() })
-    expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument()
-    expect(screen.getByTestId('composer')).toBeInTheDocument()
   })
 
   it('opens the platform on Add usage, then that button becomes Recheck', async () => {
@@ -356,16 +367,6 @@ describe('PlatformPaywallCard', () => {
     expect(fetchBilling.mock.calls.length).toBe(before + 1)
   })
 
-  it('stops listening for refresh signals once dismissed', async () => {
-    renderCard()
-    await screen.findByText('Workspace billing needs attention')
-    act(() => { screen.getByRole('button', { name: 'Dismiss' }).click() })
-    const before = fetchBilling.mock.calls.length
-    act(() => { window.dispatchEvent(new Event('focus')) })
-    await act(async () => { await new Promise((r) => setTimeout(r, 80)) })
-    expect(fetchBilling.mock.calls.length).toBe(before)
-  })
-
   it('asks admins to add a card first when the org has no payment method', async () => {
     platformAuth.role = 'admin'
     fetchBilling.mockResolvedValue(billing({ hasPaymentMethod: false }))
@@ -436,7 +437,7 @@ describe('PlatformPaywallCard', () => {
       expect(screen.queryByTestId('billing-embed-frame')).not.toBeInTheDocument()
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: 'Add usage' })).not.toBeInTheDocument()
-      expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Dismiss' })).not.toBeInTheDocument()
       expect(openExternalUrl).not.toHaveBeenCalled()
     })
 
@@ -533,7 +534,17 @@ describe('PlatformPaywallCard', () => {
       expect(screen.getByTestId('billing-cta-body')).toHaveClass('w-full')
       expect(screen.getByTestId('billing-cta-size-reference')).toHaveClass('hidden')
       expect(screen.getByTestId('paywall-actions')).toHaveAttribute('data-expanded', 'true')
+      expect(screen.queryByRole('button', { name: 'Dismiss' })).not.toBeInTheDocument()
+    })
+
+    it('shows Dismiss when dismissible, including while expanded', async () => {
+      renderCard(undefined, true, PRESENTATION, true)
+      await screen.findByTestId('billing-cta-frame')
       expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument()
+      await expandCta()
+      act(() => { screen.getByRole('button', { name: 'Dismiss' }).click() })
+      expect(screen.queryByTestId('billing-cta-frame')).not.toBeInTheDocument()
+      expect(screen.getByTestId('composer')).toBeInTheDocument()
     })
 
     it('ignores open-billing from a hostile origin, a non-iframe source, or another org', async () => {
@@ -583,14 +594,6 @@ describe('PlatformPaywallCard', () => {
       await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
       expect(screen.getByTestId('composer')).toBeInTheDocument()
       expect(toastSuccess).toHaveBeenCalledWith('Billing updated. You can continue.')
-    })
-
-    it('dismiss works while expanded and hands the composer back', async () => {
-      renderCard()
-      await expandCta()
-      act(() => { screen.getByRole('button', { name: 'Dismiss' }).click() })
-      expect(screen.queryByTestId('billing-cta-frame')).not.toBeInTheDocument()
-      expect(screen.getByTestId('composer')).toBeInTheDocument()
     })
 
     it('keeps the same iframe document when saving a card flips the CTA from add_card to topup', async () => {
@@ -681,14 +684,6 @@ describe('PlatformPaywallCard', () => {
       const fallback = screen.getByRole('button', { name: 'Open billing in a new tab' })
       expect(fallback).toHaveAttribute('title', 'This billing session has expired.')
       expect(screen.getByTestId('billing-cta-hint')).toHaveTextContent('This billing session has expired.')
-    })
-
-    it('dismiss removes the CTA frame and hands the composer back', async () => {
-      renderCard()
-      await screen.findByTestId('billing-cta-frame')
-      act(() => { screen.getByRole('button', { name: 'Dismiss' }).click() })
-      expect(screen.queryByTestId('billing-cta-frame')).not.toBeInTheDocument()
-      expect(screen.getByTestId('composer')).toBeInTheDocument()
     })
 
     it('embeds the add-card CTA when the org has no card yet', async () => {

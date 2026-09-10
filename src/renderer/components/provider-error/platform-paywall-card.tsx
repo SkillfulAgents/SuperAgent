@@ -71,6 +71,7 @@ function PaywallActions({
   loading,
   handedOff,
   expanded,
+  dismissible,
   embeddedAction,
   onDismiss,
   onHandOff,
@@ -81,6 +82,7 @@ function PaywallActions({
   handedOff: boolean
   // The embedded frame is showing a panel: give it the full row, Dismiss drops below it.
   expanded: boolean
+  dismissible: boolean
   embeddedAction: ReactNode
   onDismiss: (ctaKind: string) => void
   onHandOff: (ctaKind: string) => void
@@ -98,9 +100,11 @@ function PaywallActions({
   const ctaKind = cta?.kind ?? 'none'
   return (
     <div className={cn('flex gap-2', expanded ? 'basis-full flex-col items-stretch' : 'items-end')} data-testid="paywall-actions" data-expanded={expanded}>
-      <Button size="sm" variant="ghost" className={expanded ? 'order-last self-end' : undefined} onClick={() => onDismiss(ctaKind)}>
-        Dismiss
-      </Button>
+      {dismissible && (
+        <Button size="sm" variant="ghost" className={expanded ? 'order-last self-end' : undefined} onClick={() => onDismiss(ctaKind)}>
+          Dismiss
+        </Button>
+      )}
       {handedOff ? (
         <Button
           size="sm"
@@ -131,8 +135,8 @@ function PaywallActions({
 
 // Platform 402. An invitation, not a failure: neutral card, title + muted subtitle, one
 // role/billing-aware CTA. Fails open: the composer is withheld only while a fresh billing
-// snapshot positively denies access; otherwise the card sits above it. Dismiss always works.
-export function PlatformPaywallCard({ message, presentation, children, live = true }: ProviderErrorComponentProps) {
+// snapshot positively denies access; otherwise the card sits above it.
+export function PlatformPaywallCard({ message, presentation, children, live = true, dismissible = false }: ProviderErrorComponentProps) {
   const [dismissed, setDismissed] = useState(false)
   const [handedOff, setHandedOff] = useState(false)
   const [expanded, setExpanded] = useState(false)
@@ -211,6 +215,7 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
               loading={billing.loading}
               handedOff={handedOff}
               expanded={embedded && expanded}
+              dismissible={dismissible}
               embeddedAction={embedded && billing.cta ? (
                 // Keyed by view, not CTA kind: add_card → topup after a card is saved must
                 // keep the same iframe document (and its storage-access grant).
