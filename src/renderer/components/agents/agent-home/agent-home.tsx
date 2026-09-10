@@ -1,3 +1,5 @@
+import { AgentMemberStack } from '@renderer/components/agents/agent-member-stack'
+import { Plus } from 'lucide-react'
 
 import { useState, useRef, useMemo, useCallback, useEffect } from 'react'
 import { cn } from '@shared/lib/utils/cn'
@@ -96,7 +98,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   }, [introStagger, setJustCreatedSlug])
   const startOnboardingSession = useStartOnboardingSession()
   const draftsStore = useDraftsStore()
-  const { canUseAgent, canAdminAgent } = useUser()
+  const { canUseAgent, canAdminAgent, isAuthMode, isAdmin } = useUser()
   const isViewOnly = !canUseAgent(agent.slug)
   const isOwner = canAdminAgent(agent.slug)
   const replacedDashboards = useMemo(
@@ -406,10 +408,18 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                 />
               </div>
             </AgentContextMenu>
-            {/* Share (ACL + publish) lives on the header, not in settings. Owners
-                only; outside auth mode everyone is an owner and the popover
-                shows just the Publish pane. */}
-            {isOwner && <AgentSharePopover ref={shareRef} agentSlug={agent.slug} agentName={agent.name} />}
+            {isAuthMode ? (
+              <AgentMemberStack
+                agentSlug={agent.slug}
+                renderShareControl={(isOwner || isAdmin) ? (isShared) => (
+                  <AgentSharePopover ref={shareRef} agentSlug={agent.slug} agentName={agent.name} trigger={isShared ? (
+                    <Button type="button" size="icon" variant="outline" className="h-8 w-8 shrink-0 rounded-full bg-background ring-2 ring-background focus-visible:ring-ring" aria-label="Share agent" title="Invite, publish, or export" data-testid="agent-share-button">
+                      <Plus className="h-4 w-4" />
+                    </Button>
+                  ) : undefined} />
+                ) : undefined}
+              />
+            ) : isOwner && <AgentSharePopover ref={shareRef} agentSlug={agent.slug} agentName={agent.name} />}
             {/* Three-dot = the same agent menu a right-click on the title (or
                 the sidebar row) opens, so the two never drift apart. A click
                 replays as a contextmenu event on the title's trigger, anchored

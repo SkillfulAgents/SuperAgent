@@ -1,3 +1,4 @@
+vi.mock('@shared/lib/services/agent-members-service', () => ({ notifyAgentMembersChanged: vi.fn(), listAgentMembers: vi.fn(() => []) }))
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 import { runInNewContext } from 'node:vm'
@@ -286,6 +287,13 @@ vi.mock('drizzle-orm', () => ({
   like: (col: string, val: string) => ({ col, val }),
   or: (...args: unknown[]) => args,
 }))
+
+vi.mock('@shared/lib/services/user-profile-service', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@shared/lib/services/user-profile-service')>(),
+  getUserSummaries: vi.fn(),
+  userExists: vi.fn(),
+}))
+import { getUserSummaries, userExists } from '@shared/lib/services/user-profile-service'
 
 // Auth
 const mockIsAuthMode = vi.fn().mockReturnValue(false)
@@ -648,6 +656,8 @@ function createApp() {
 }
 
 beforeEach(() => {
+  vi.mocked(getUserSummaries).mockReturnValue(new Map())
+  vi.mocked(userExists).mockReturnValue(true)
   mockAuthorizedAgentRole = 'owner'
   vi.mocked(sessionIsKnown).mockResolvedValue(true)
 })
@@ -2110,10 +2120,7 @@ describe('ACL — POST /:id/access (invite user)', () => {
   })
 
   it('returns 404 when target user does not exist', async () => {
-    // db.select().from(userTable).where().limit(1) → no user found
-    mockDbSelectFrom.mockReturnValueOnce({
-      where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) })),
-    })
+    vi.mocked(userExists).mockReturnValue(false)
 
     const res = await postJson(app, INVITE_URL, { userId: 'nonexistent', role: 'user' })
     expect(res.status).toBe(404)
@@ -2122,11 +2129,7 @@ describe('ACL — POST /:id/access (invite user)', () => {
   })
 
   it('returns 409 when user already has access', async () => {
-    // First query: user exists
-    mockDbSelectFrom.mockReturnValueOnce({
-      where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([{ id: 'user-1' }])) })),
-    })
-    // Second query: ACL entry already exists
+    // ACL entry already exists
     mockDbSelectFrom.mockReturnValueOnce({
       where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([{ id: 'acl-1' }])) })),
     })
@@ -2138,11 +2141,7 @@ describe('ACL — POST /:id/access (invite user)', () => {
   })
 
   it('returns 201 on successful invite', async () => {
-    // First query: user exists
-    mockDbSelectFrom.mockReturnValueOnce({
-      where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([{ id: 'user-1' }])) })),
-    })
-    // Second query: no existing ACL
+    // No existing ACL
     mockDbSelectFrom.mockReturnValueOnce({
       where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) })),
     })
@@ -2156,9 +2155,6 @@ describe('ACL — POST /:id/access (invite user)', () => {
   })
 
   it.each(['owner', 'user', 'viewer'])('accepts valid role: %s', async (role) => {
-    mockDbSelectFrom.mockReturnValueOnce({
-      where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([{ id: 'user-1' }])) })),
-    })
     mockDbSelectFrom.mockReturnValueOnce({
       where: vi.fn(() => ({ limit: vi.fn(() => Promise.resolve([])) })),
     })
@@ -3986,36 +3982,40 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
     expect(mockDbSelectFrom).not.toHaveBeenCalled()
   })
 
-  it('annotates user messages with sender info in auth mode', async () => {
-    mockIsAuthMode.mockReturnValue(true)
-    mockTransformMessages.mockReturnValue([
-      { id: 'msg-1', type: 'user', content: { text: 'hi' }, toolCalls: [], createdAt: new Date() },
-      { id: 'msg-2', type: 'assistant', content: { text: 'hello' }, toolCalls: [], createdAt: new Date() },
-    ])
+  it.each(['', '?limit=2', '?after=previous'])(
+    'annotates user messages with sender info in auth mode (%s)', async (query) => {
+      mockIsAuthMode.mockReturnValue(true)
+      const messages = [
+        { id: 'msg-1', type: 'user' as const, content: { text: 'hi' }, toolCalls: [], createdAt: new Date() },
+        { id: 'msg-2', type: 'assistant' as const, content: { text: 'hello' }, toolCalls: [], createdAt: new Date() },
+      ]
+      mockTransformMessages.mockReturnValue(messages)
+      vi.mocked(getSessionMessagesPage).mockResolvedValue({ messages, nextCursor: null })
+      vi.mocked(getSessionMessagesDelta).mockResolvedValue({ messages, anchor: null })
 
-    // Mock the DB select chain for author lookup: db.select().from().innerJoin().where()
-    mockDbSelectFrom.mockReturnValue({
-      innerJoin: () => ({
-        where: () => Promise.resolve([
-          { messageId: 'msg-1', userId: 'user-1', userName: 'Alice', userEmail: 'alice@example.com', image: 'https://example.com/alice.png' },
-        ]),
-      }),
-    })
+      mockDbSelectFrom.mockReturnValue({
+        where: () => Promise.resolve([{ messageId: 'msg-1', userId: 'user-1' }]),
+      })
+      vi.mocked(getUserSummaries).mockReturnValue(new Map([['user-1', {
+        id: 'user-1', name: 'Alice', email: 'alice@example.com', image: 'https://example.com/alice.png',
+      }]]))
 
-    const res = await getReq(app, URL)
-    expect(res.status).toBe(200)
+      const res = await getReq(app, `${URL}${query}`)
+      expect(res.status).toBe(200)
 
-    const body = await res.json()
-    // User message should have sender
-    expect(body[0].sender).toEqual({
-      id: 'user-1',
-      name: 'Alice',
-      email: 'alice@example.com',
-      image: 'https://example.com/alice.png',
-    })
-    // Assistant message should not have sender
-    expect(body[1].sender).toBeUndefined()
-  })
+      const response = await res.json()
+      const body = query ? response.messages : response
+      // User message should have sender
+      expect(body[0].sender).toEqual({
+        id: 'user-1',
+        name: 'Alice',
+        email: 'alice@example.com',
+        image: 'https://example.com/alice.png',
+      })
+      // Assistant message should not have sender
+      expect(body[1].sender).toBeUndefined()
+    },
+  )
 
   it('handles sessions with no author records gracefully', async () => {
     mockIsAuthMode.mockReturnValue(true)
@@ -4024,11 +4024,7 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
     ])
 
     // DB returns no author records (messages from before feature was added)
-    mockDbSelectFrom.mockReturnValue({
-      innerJoin: () => ({
-        where: () => Promise.resolve([]),
-      }),
-    })
+    mockDbSelectFrom.mockReturnValue({ where: () => Promise.resolve([]) })
 
     const res = await getReq(app, URL)
     expect(res.status).toBe(200)

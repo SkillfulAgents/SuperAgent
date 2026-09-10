@@ -5,6 +5,7 @@ import path from 'node:path'
 import { Hono } from 'hono'
 import { PNG } from 'pngjs'
 import { SignJWT } from 'jose'
+import Database from 'better-sqlite3'
 
 let directory: string
 let db: typeof import('@shared/lib/db')
@@ -73,6 +74,24 @@ describe('profile avatar API', () => {
     expect((await app.request('/api/profile/avatar', { method: 'DELETE', headers })).status).toBe(200)
     expect(db.sqlite.prepare('SELECT image, avatar_override FROM user').get()).toEqual({ image: 'https://example.com/provider.png', avatar_override: null })
     expect((await app.request(avatarOverride, { headers })).status).toBe(404)
+  })
+
+  it('validates uploaded image references with a covering index lookup', async () => {
+    const signedIn = await login()
+    const { avatarOverride } = await (await upload(signedIn.token!)).json()
+    const prepare = vi.spyOn(Database.prototype, 'prepare')
+    try {
+      expect((await app.request(avatarOverride, { headers: { authorization: `Bearer ${signedIn.token}` } })).status).toBe(200)
+      const lookup = prepare.mock.calls.find(([query]) => query.includes('where "user"."avatar_override" ='))?.[0]
+      expect(lookup).toBeDefined()
+      // Explain the actual image route query against the fully migrated DB.
+      const plan = db.sqlite.prepare(`EXPLAIN QUERY PLAN ${lookup!}`).all(avatarOverride, 1)
+      expect(plan).toEqual([expect.objectContaining({
+        detail: expect.stringContaining('USING COVERING INDEX user_avatar_override_idx'),
+      })])
+    } finally {
+      prepare.mockRestore()
+    }
   })
 
   it('removes the stored photo when the user is deleted', async () => {

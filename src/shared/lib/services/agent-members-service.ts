@@ -1,0 +1,50 @@
+import { asc, eq, inArray } from 'drizzle-orm'
+import { db } from '@shared/lib/db'
+import { agentAcl, user } from '@shared/lib/db/schema'
+import { isAuthMode } from '@shared/lib/auth/mode'
+import { agentMembersByAgentSchema, type AgentMember } from '@shared/lib/agent-members-schema'
+import { getUserSummaries } from './user-profile-service'
+import { publishCollaborationEvent } from './collaboration-events'
+
+/** Callers must authorize every agent before reading its roster. */
+export function listAgentMembersByAgent(agentSlugs: readonly string[]) {
+  const slugs = [...new Set(agentSlugs)]
+  const members = new Map(slugs.map(slug => [slug, [] as AgentMember[]]))
+  if (!slugs.length) return {}
+  const rows = db.select({ agentSlug: agentAcl.agentSlug, id: agentAcl.userId, role: agentAcl.role }).from(agentAcl)
+    .where(inArray(agentAcl.agentSlug, slugs))
+    // Joining time + stable ID keep faces stationary when names or roles change.
+    .orderBy(asc(agentAcl.createdAt), asc(agentAcl.userId)).all()
+  const profiles = getUserSummaries(rows.map(row => row.id))
+  for (const row of rows) {
+    const profile = profiles.get(row.id)
+    if (profile) members.get(row.agentSlug)!.push({ ...profile, role: row.role })
+  }
+  return agentMembersByAgentSchema.parse(Object.fromEntries(members))
+}
+
+export function listAgentMembers(agentSlug: string) {
+  return listAgentMembersByAgent([agentSlug])[agentSlug]
+}
+
+export function notifyAgentMembersChanged(agentSlug: string, removedUserId?: string): void {
+  if (!isAuthMode()) return
+  try {
+    const recipients = db.select({ id: agentAcl.userId }).from(agentAcl)
+      .where(eq(agentAcl.agentSlug, agentSlug)).all().map((row) => row.id)
+    publishCollaborationEvent(recipients, { type: 'agent_members_changed', agentSlug })
+    // Removed members still need a direct hint. Deployment admins retain
+    // route access without an ACL entry, so only refresh their membership UI.
+    if (removedUserId) {
+      const removedUser = db.select({ role: user.role }).from(user)
+        .where(eq(user.id, removedUserId)).get()
+      publishCollaborationEvent([removedUserId], {
+        type: removedUser?.role === 'admin' ? 'agent_members_changed' : 'agent_access_revoked',
+        agentSlug,
+      })
+    }
+  } catch (error) {
+    // The mutation already committed. Reconnect/focus refetches recover hints.
+    console.error('Failed to notify agent members:', error)
+  }
+}

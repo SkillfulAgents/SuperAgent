@@ -19,6 +19,7 @@ type AppLinkProps = LinkProps & {
   onDoubleClick?: MouseEventHandler<HTMLAnchorElement>
   onKeyDown?: KeyboardEventHandler<HTMLAnchorElement>
   title?: string
+  tabIndex?: number
   draggable?: boolean
   'aria-label'?: string
   'data-testid'?: string

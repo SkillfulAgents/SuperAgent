@@ -1,4 +1,6 @@
-import { getUserImage, type UserImageFields } from '@shared/lib/user-profile-schema'
+import agentMembers, { agentMembersBatch } from './agent-members'
+import { notifyAgentMembersChanged } from '@shared/lib/services/agent-members-service'
+import { getUserSummaries, searchUserSummaries, toUserSender, userExists, type UserSenderSource } from '@shared/lib/services/user-profile-service'
 import { Hono, type Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { streamSSE } from 'hono/streaming'
@@ -116,8 +118,8 @@ import {
   listPendingWakesByAgent,
 } from '@shared/lib/services/scheduled-task-service'
 import { db } from '@shared/lib/db'
-import { connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, user as userTable, messageAuthor, apiScopePolicies, mcpToolPolicies } from '@shared/lib/db/schema'
-import { eq, and, inArray, notInArray, desc, count, or, sql, type AnyColumn } from 'drizzle-orm'
+import { connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, messageAuthor, apiScopePolicies, mcpToolPolicies } from '@shared/lib/db/schema'
+import { eq, and, inArray, desc, count } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getViewerUserId, ownerScope } from '@shared/lib/auth/ownership'
@@ -902,6 +904,9 @@ const agents = new Hono()
 
 agents.use('*', Authenticated())
 
+// Collection roster reads must be mounted before /:id/* resolution.
+agents.route('/members/batch', agentMembersBatch)
+
 // ============================================================
 // Routes that must be registered BEFORE /:id middleware
 // (paths like /import-template would otherwise match as :id)
@@ -1570,6 +1575,8 @@ agents.put('/:id/preferences', AgentAdmin(), async (c) => {
 // Agent Access (ACL) endpoints
 // ============================================================
 
+agents.route('/:id/members', agentMembers)
+
 // GET /api/agents/:id/access - List users with roles on this agent
 agents.get('/:id/access', AgentAdmin(), async (c) => {
   try {
@@ -1579,15 +1586,14 @@ agents.get('/:id/access', AgentAdmin(), async (c) => {
         userId: agentAcl.userId,
         role: agentAcl.role,
         createdAt: agentAcl.createdAt,
-        userName: userTable.name,
-        userEmail: userTable.email,
-        image: userTable.image,
-        avatarOverride: userTable.avatarOverride,
       })
       .from(agentAcl)
-      .innerJoin(userTable, eq(agentAcl.userId, userTable.id))
       .where(eq(agentAcl.agentSlug, slug))
-    return c.json(rows.map(({ avatarOverride, ...row }) => ({ ...row, image: getUserImage({ ...row, avatarOverride }) })))
+    const profiles = getUserSummaries(rows.map(row => row.userId))
+    return c.json(rows.flatMap(row => {
+      const profile = profiles.get(row.userId)
+      return profile ? [{ ...row, userName: profile.name, userEmail: profile.email, image: profile.image }] : []
+    }))
   } catch (error) {
     console.error('Failed to fetch agent access:', error)
     return c.json({ error: 'Failed to fetch agent access' }, 500)
@@ -1608,12 +1614,7 @@ agents.post('/:id/access', AgentAdmin(), async (c) => {
     }
 
     // Check user exists
-    const [targetUser] = await db
-      .select({ id: userTable.id })
-      .from(userTable)
-      .where(eq(userTable.id, userId))
-      .limit(1)
-    if (!targetUser) {
+    if (!userExists(userId)) {
       return c.json({ error: 'User not found' }, 404)
     }
 
@@ -1635,6 +1636,7 @@ agents.post('/:id/access', AgentAdmin(), async (c) => {
       createdAt: new Date(),
     })
 
+    notifyAgentMembersChanged(slug)
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'granted', details: { targetUserId: userId, role } })
     return c.json({ ok: true }, 201)
   } catch (error) {
@@ -1688,6 +1690,7 @@ agents.patch('/:id/access/:userId', AgentAdmin(), async (c) => {
       const status = error.includes('does not have access') ? 404 : 400
       return c.json({ error }, status)
     }
+    notifyAgentMembersChanged(slug)
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'changed', details: { targetUserId: targetUserId, role } })
     return c.json({ ok: true })
   } catch (error) {
@@ -1735,6 +1738,7 @@ agents.delete('/:id/access/:userId', AgentAdmin(), async (c) => {
       const status = error.includes('does not have access') ? 404 : 400
       return c.json({ error }, status)
     }
+    notifyAgentMembersChanged(slug, targetUserId)
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'revoked', details: { targetUserId } })
     return c.body(null, 204)
   } catch (error) {
@@ -1779,6 +1783,7 @@ agents.post('/:id/leave', AgentRead(), async (c) => {
     if (error) {
       return c.json({ error }, 400)
     }
+    notifyAgentMembersChanged(slug, userId)
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'revoked', details: { targetUserId: userId } })
     return c.body(null, 204)
   } catch (error) {
@@ -1803,26 +1808,7 @@ agents.get('/:id/access/search-users', AgentAdmin(), async (c) => {
 
     const excludeIds = existingUserIds.map((r) => r.userId)
 
-    // Search users by name or email (SQLite LIKE is case-insensitive by default)
-    // Escape LIKE wildcards to prevent pattern injection (e.g. searching "%"
-    // matching all users); the ESCAPE clause is required for the backslashes
-    // to act as escapes rather than literals.
-    const escaped = query ? query.replace(/[\\%_]/g, '\\$&') : ''
-    const matchesQuery = (column: AnyColumn) =>
-      sql`${column} LIKE ${`%${escaped}%`} ESCAPE '\\'`
-    const users = await db
-      .select({ id: userTable.id, name: userTable.name, email: userTable.email, image: userTable.image, avatarOverride: userTable.avatarOverride })
-      .from(userTable)
-      .where(
-        and(
-          // Exclude access holders in the WHERE so they don't eat limit slots
-          excludeIds.length ? notInArray(userTable.id, excludeIds) : undefined,
-          escaped ? or(matchesQuery(userTable.name), matchesQuery(userTable.email)) : undefined
-        )
-      )
-      .limit(50)
-
-    return c.json(users.map(({ avatarOverride, ...person }) => ({ ...person, image: getUserImage({ ...person, avatarOverride }) })))
+    return c.json(searchUserSummaries(query, excludeIds))
   } catch (error) {
     console.error('Failed to search users:', error)
     return c.json({ error: 'Failed to search users' }, 500)
@@ -2285,26 +2271,17 @@ async function annotateAndRecoverMessages(
     .select({
       messageId: messageAuthor.id,
       userId: messageAuthor.userId,
-      userName: userTable.name,
-      userEmail: userTable.email,
-      image: userTable.image,
-      avatarOverride: userTable.avatarOverride,
     })
     .from(messageAuthor)
-    .innerJoin(userTable, eq(messageAuthor.userId, userTable.id))
     .where(and(eq(messageAuthor.sessionId, sessionId), inArray(messageAuthor.id, userMessageIds)))
 
-  const authorMap = new Map(authors.map((a) => [a.messageId, a]))
+  const profiles = getUserSummaries(authors.map(author => author.userId))
+  const authorMap = new Map(authors.map(author => [author.messageId, profiles.get(author.userId)]))
   for (const msg of transformed) {
     if (msg.type !== 'user') continue
     const author = authorMap.get(msg.id)
     if (author) {
-      msg.sender = {
-        id: author.userId,
-        name: author.userName,
-        email: author.userEmail,
-        image: getUserImage(author),
-      }
+      msg.sender = author
     }
   }
 }
@@ -2470,27 +2447,18 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
           .select({
             messageId: messageAuthor.id,
             userId: messageAuthor.userId,
-            userName: userTable.name,
-            userEmail: userTable.email,
-            image: userTable.image,
-            avatarOverride: userTable.avatarOverride,
           })
           .from(messageAuthor)
-          .innerJoin(userTable, eq(messageAuthor.userId, userTable.id))
           .where(eq(messageAuthor.sessionId, sessionId))
 
-        const authorMap = new Map(authors.map((a) => [a.messageId, a]))
+        const profiles = getUserSummaries(authors.map(author => author.userId))
+        const authorMap = new Map(authors.map(author => [author.messageId, profiles.get(author.userId)]))
 
         for (const msg of transformed) {
           if (msg.type !== 'user') continue
           const author = authorMap.get(msg.id)
           if (author) {
-            msg.sender = {
-              id: author.userId,
-              name: author.userName,
-              email: author.userEmail,
-              image: getUserImage(author),
-            }
+            msg.sender = author
           }
         }
       }
@@ -2754,11 +2722,10 @@ async function persistAndBroadcastUserMessage(
     agentSlug: args.agentSlug,
     userId,
   })
-  const user = c.get('user' as never) as { id: string; name: string } & UserImageFields
   messagePersister.broadcastSessionEvent(args.agentSlug, args.sessionId, {
     type: 'user_message',
     content: args.content,
-    sender: { id: user.id, name: user.name, image: getUserImage(user) },
+    sender: toUserSender(c.get('user' as never) as UserSenderSource),
     uuid: args.messageUuid,
     queued: args.queued,
   })
@@ -2969,7 +2936,6 @@ agents.post('/:id/sessions/:sessionId/typing', AgentUser(), async (c) => {
   if (!isAuthMode()) return c.json({ ok: true })
 
   const sessionId = c.req.param('sessionId')
-  const user = c.get('user' as never) as { id: string; name: string } & UserImageFields
 
   // Otherwise this puts the caller's name in the typing indicator of a session
   // in someone else's agent.
@@ -2979,7 +2945,7 @@ agents.post('/:id/sessions/:sessionId/typing', AgentUser(), async (c) => {
 
   messagePersister.broadcastSessionEvent(getAgentId(c), sessionId, {
     type: 'user_typing',
-    sender: { id: user.id, name: user.name, image: getUserImage(user) },
+    sender: toUserSender(c.get('user' as never) as UserSenderSource),
   })
 
   return c.json({ ok: true })

@@ -1,3 +1,6 @@
+import { collaborationEventSchema } from '@shared/lib/agent-members-schema'
+import { resolveRouteAgentId } from '@renderer/hooks/use-agents'
+import type { ApiAgent } from '@shared/lib/types/api'
 /**
  * Global Notification Handler
  *
@@ -94,13 +97,15 @@ function isNotificationTypeEnabled(
 export function GlobalNotificationHandler() {
   useRenderTracker('GlobalNotificationHandler')
   const queryClient = useQueryClient()
-  const { view } = useRouteLocation()
+  const { view, selectedAgentSlug } = useRouteLocation()
   const navigate = useNavigate()
   const selectedSessionId = view.kind === 'session' ? view.id : null
   const { data: unreadData } = useUnreadNotificationCount()
   const { data: platformUnreadData } = usePlatformUnreadCount()
   const { data: userSettings } = useUserSettings()
   const { canAccessAgent } = useUser()
+  const selectedAgentRef = useRef(selectedAgentSlug)
+  selectedAgentRef.current = selectedAgentSlug
   // Use refs to avoid recreating EventSource when reactive values change
   const selectedSessionIdRef = useRef(selectedSessionId)
   selectedSessionIdRef.current = selectedSessionId
@@ -112,6 +117,7 @@ export function GlobalNotificationHandler() {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const reconnectAttemptRef = useRef(0)
   const wasDeadRef = useRef(false)
+  const hasConnectedRef = useRef(false)
   const streamRef = useRef<EventSource | null>(null)
 
   // Sync dock badge count with unread notifications (macOS Electron only)
@@ -255,6 +261,35 @@ export function GlobalNotificationHandler() {
         const data = JSON.parse(event.data)
 
         switch (data.type) {
+          case 'agent_members_changed':
+          case 'agent_access_revoked': {
+            const parsed = collaborationEventSchema.safeParse(data)
+            if (!parsed.success) break
+            const change = parsed.data
+            if (change.type === 'agent_access_revoked') {
+              const activeSlug = selectedAgentRef.current
+              const activeId = resolveRouteAgentId(activeSlug ?? undefined, queryClient.getQueryData<ApiAgent[]>(['agents']))
+              if (activeId === change.agentSlug) void navigate({ to: '/' })
+              // Don't retain a revoked roster while refetches are in flight.
+              queryClient.setQueryData(['agent-members', change.agentSlug], [])
+              queryClient.setQueryData<Record<string, unknown>>(['my-agent-roles'], (roles) => {
+                if (!roles) return roles
+                const remaining = { ...roles }
+                delete remaining[change.agentSlug]
+                return remaining
+              })
+              const revokedQueries = { predicate: (query: { queryKey: readonly unknown[] }) =>
+                query.queryKey.includes(change.agentSlug) || (!!activeSlug && activeId === change.agentSlug && query.queryKey.includes(activeSlug)) }
+              void queryClient.cancelQueries(revokedQueries).then(() => queryClient.removeQueries(revokedQueries))
+            } else {
+              queryClient.invalidateQueries({ queryKey: ['agent-members', change.agentSlug] })
+              queryClient.invalidateQueries({ queryKey: ['agent-invite-candidates', change.agentSlug] })
+            }
+            queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
+            queryClient.invalidateQueries({ queryKey: ['agents'] })
+            break
+          }
+
           case 'platform_notifications_changed': {
             // A platform notification INSERT arrived over Realtime — refresh
             // the proxy-live inbox + badge (there is no local copy to update).
@@ -619,9 +654,11 @@ export function GlobalNotificationHandler() {
       }
     }
 
-    // Catch up anything missed while the stream was down, including the
-    // window before the first successful connect.
+    // Agents and roles cover the window before the first connect. Rosters are
+    // already loading on mount; only refresh them after a gap.
     es.onopen = () => {
+      const isReconnect = hasConnectedRef.current || wasDeadRef.current
+      hasConnectedRef.current = true
       reconnectAttemptRef.current = 0
       if (wasDeadRef.current) {
         // The dead window can be arbitrarily long, and every family this
@@ -632,6 +669,10 @@ export function GlobalNotificationHandler() {
       }
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
+      if (isReconnect) {
+        queryClient.invalidateQueries({ queryKey: ['agent-members'] })
+        queryClient.invalidateQueries({ queryKey: ['agent-invite-candidates'] })
+      }
     }
 
     es.onerror = () => {

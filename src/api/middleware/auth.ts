@@ -1,5 +1,5 @@
 import type { Context, Next, MiddlewareHandler } from 'hono'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { runWithOptionalUser, runWithRequestUser } from '@shared/lib/platform-attribution'
 import { db } from '@shared/lib/db'
@@ -140,6 +140,16 @@ function resolvedAgentSlug(c: Context): string {
   return (c.get('agentId' as never) as string | undefined) ?? c.req.param('id')!
 }
 
+/** AgentRead's policy for a collection of already-resolved IDs, in one ACL query. */
+export function getReadableAgentIds(c: Context, agentIds: readonly string[]): Set<string> {
+  if (!isAuthMode()) return new Set(agentIds)
+  const user = getUser(c)
+  if (isAdmin(user)) return new Set(agentIds)
+  if (!agentIds.length) return new Set()
+  const rows = db.select({ agentSlug: agentAcl.agentSlug, role: agentAcl.role }).from(agentAcl)
+    .where(and(eq(agentAcl.userId, user.id), inArray(agentAcl.agentSlug, [...agentIds]))).all()
+  return new Set(rows.filter(row => hasMinRole(row.role, 'viewer')).map(row => row.agentSlug))
+}
 
 /**
  * AgentRead — user has any role on the agent (viewer+).
