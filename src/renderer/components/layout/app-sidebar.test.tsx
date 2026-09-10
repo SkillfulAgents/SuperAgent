@@ -232,16 +232,28 @@ vi.mock('@renderer/components/agents/agent-context-menu', () => ({
   AgentContextMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
+// Stands in for the real Radix context menu: like the real asChild trigger it
+// adds no DOM of its own, it reports "opened" when a contextmenu reaches the
+// row (which is how the row's 3-dot button opens it), and it exposes the
+// activity the tests inspect.
 vi.mock('@renderer/components/sessions/session-context-menu', () => ({
   SessionContextMenu: ({
     children,
     activity,
+    onOpenChange,
   }: {
     children: React.ReactNode
     activity: { isActive: boolean; isAwaitingInput: boolean; isStreaming: boolean }
+    onOpenChange?: (open: boolean) => void
   }) => (
     isValidElement(children)
-      ? cloneElement(children as ReactElement, { 'data-is-active': String(activity.isActive || activity.isStreaming) } as any)
+      ? cloneElement(children as ReactElement, {
+          'data-is-active': String(activity.isActive || activity.isStreaming),
+          onContextMenu: (e: React.MouseEvent) => {
+            e.preventDefault()
+            onOpenChange?.(true)
+          },
+        } as any)
       : <>{children}</>
   ),
 }))
@@ -875,6 +887,44 @@ describe('AppSidebar — agent row indicator', () => {
     const status = screen.getByTestId('agent-status-running')
     expect(status).toHaveAttribute('data-awaiting', 'true')
     expect(screen.queryByLabelText('unread notifications')).not.toBeInTheDocument()
+  })
+})
+
+// ============================================================================
+// Session row 3-dot menu button
+// ----------------------------------------------------------------------------
+// Right-click was the only way into the session menu and nobody found it. The
+// button takes over the indicator slot on hover and opens that same menu, so
+// the two gestures can never drift apart.
+// ============================================================================
+describe('AppSidebar — session row menu button', () => {
+  function renderExpandedAgent() {
+    mockUseSessions.mockImplementation((slug: string | null) => ({
+      data: slug === 'test-agent' ? [makeSession({ isAwaitingInput: true })] : [],
+      isLoading: false,
+    }))
+    mockRouteParams = { slug: 'test-agent' }
+    renderWithProviders(<AppSidebar />)
+  }
+
+  it('opens the session context menu, hiding the session indicator behind it', async () => {
+    renderExpandedAgent()
+    // The awaiting dot owns the slot until the menu opens.
+    expect(screen.getByTestId('awaiting-dot').parentElement).not.toHaveClass('opacity-0')
+
+    await userEvent.click(screen.getByTestId('session-menu-button-session-1'))
+
+    expect(screen.getByTestId('awaiting-dot').parentElement).toHaveClass('opacity-0')
+  })
+
+  it('keeps the button a sibling of the session link, never nested inside it', () => {
+    renderExpandedAgent()
+    const row = screen.getByTestId('session-item-session-1')
+    const button = screen.getByTestId('session-menu-button-session-1')
+    // A <button> inside the row's <a> would be invalid markup and its click
+    // would navigate; the row must stay a single interactive element.
+    expect(row.contains(button)).toBe(false)
+    expect(button).toHaveAccessibleName('Options for Session 1')
   })
 })
 
