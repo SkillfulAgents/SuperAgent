@@ -43,9 +43,6 @@
   "src/api/routes/x-agent.ts": [
     "@shared/lib/container/message-persister"
   ],
-  "src/main/host-browser/chrome-provider.ts": [
-    "@shared/lib/config/data-dir#getAgentDownloadsDir"
-  ],
   "src/shared/lib/chat-integrations/chat-integration-manager.ts": [
     "@shared/lib/container/message-persister"
   ],
@@ -78,9 +75,6 @@
   ],
   "src/shared/lib/services/agent-template-service.ts": [
     "@shared/lib/utils/file-storage#getAgentClaudeMdPath",
-    "@shared/lib/utils/file-storage#getAgentWorkspaceDir"
-  ],
-  "src/shared/lib/services/artifact-service.ts": [
     "@shared/lib/utils/file-storage#getAgentWorkspaceDir"
   ],
   "src/shared/lib/services/home-graph-service.ts": [

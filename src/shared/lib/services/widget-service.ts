@@ -1,9 +1,6 @@
 import { createHash } from 'crypto'
-import * as fs from 'fs'
-import * as path from 'path'
 import pLimit from 'p-limit'
-import { agentRegistry } from '@shared/lib/agent-actor'
-import { isRealPathWithinDir } from '@shared/lib/utils/path-safety'
+import { WorkspaceFileError, agentRegistry, joinWorkspacePath, type FileEntry } from '@shared/lib/agent-actor'
 import {
   WIDGET_HTML_FILENAME,
   artifactPackageSchema,
@@ -19,12 +16,14 @@ import {
 } from '@shared/lib/widgets/widget-schema'
 
 export const WIDGET_SLUG_REGEX = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/
+const ARTIFACTS_DIRNAME = 'artifacts'
+const ARTIFACT_MANIFEST_FILENAME = 'package.json'
 const SNAPSHOTS_DIRNAME = 'snapshots'
 const SNAPSHOT_META_FILENAME = 'snapshot.json'
 const WIDGET_LOG_FILENAME = 'widget.log'
 
 /** Same 16-hex-char sha256 prefix the container writes into snapshot.json. */
-export function hashWidgetHtml(html: string | Buffer): string {
+export function hashWidgetHtml(html: string | Uint8Array): string {
   return createHash('sha256').update(html).digest('hex').slice(0, 16)
 }
 
@@ -36,33 +35,36 @@ export function isWidgetOnlyArtifact(pkg: unknown): boolean {
   return !artifactShapeOf(pkg).isDashboard
 }
 
-export function artifactsDirFor(agentSlug: string): string {
-  return path.join(agentRegistry.get(agentSlug).files.workspacePath(), 'artifacts')
+/**
+ * Workspace path of the directory that holds an agent's artifacts. A
+ * workspace path is relative to that agent's workspace root, so it is the
+ * same spelling for every agent; the slug stays in the signature because the
+ * path only means something next to `agentRegistry.get(agentSlug).files`.
+ */
+export function artifactsDirFor(_agentSlug: string): string {
+  return ARTIFACTS_DIRNAME
+}
+
+/** One path segment: a directory or file name, not a climb and not a path. */
+function isPlainSegment(segment: string): boolean {
+  return segment.length > 0 && segment !== '.' && segment !== '..' && !/[/\\\0]/.test(segment)
 }
 
 /**
- * Absolute path of a file inside an artifact dir, or null when the slug or
- * file would escape <workspace>/artifacts. Every route that touches disk
- * goes through here.
+ * Workspace path of a file inside an artifact dir, or null when the slug is
+ * not an artifact slug or a segment would leave the artifact's directory.
+ * Every route that touches an artifact's files goes through here.
  *
- * Containment is symlink-aware. The artifact dir lives in the workspace the
- * agent's container bind-mounts, so the agent can plant a link there: a
- * string-only check passes `widget.html -> /etc/passwd` and the host serves
- * whatever it points at, under the caller's permission to read their own
- * agent. `isRealPathWithinDir` fails closed on any fs error, and a dangling
- * link resolves to its contained parent and reads as absent downstream.
+ * This is domain validation only: a slug like `../x` is a bad slug and is
+ * answered as one. Containment — lexical and through links the agent can plant
+ * in its bind-mounted workspace — is the actor's job. The path returned here
+ * is handed to `agentRegistry.get(agentSlug).files`, which refuses anything
+ * that leaves the workspace, and nothing here knows where that workspace is.
  */
 export function resolveWidgetPath(agentSlug: string, artifactSlug: string, ...segments: string[]): string | null {
   if (!WIDGET_SLUG_REGEX.test(artifactSlug)) return null
-  const artifactsDir = artifactsDirFor(agentSlug)
-  // `artifacts` is itself something the agent can replace with a link, and
-  // resolving both sides would then take the link's target as the boundary and
-  // agree with itself — another agent's workspace reading as "contained". The
-  // anchor has to be the workspace: that is the bind mount, which the agent
-  // cannot swap from inside the container.
-  if (!isRealPathWithinDir(agentRegistry.get(agentSlug).files.workspacePath(), artifactsDir)) return null
-  const resolved = path.resolve(artifactsDir, artifactSlug, ...segments)
-  return isRealPathWithinDir(artifactsDir, resolved) ? resolved : null
+  if (!segments.every(isPlainSegment)) return null
+  return joinWorkspacePath(artifactsDirFor(agentSlug), artifactSlug, ...segments)
 }
 
 export function widgetSnapshotPngPath(
@@ -75,11 +77,45 @@ export function widgetSnapshotPngPath(
   return resolveWidgetPath(agentSlug, artifactSlug, SNAPSHOTS_DIRNAME, snapshotFileName(size, scheme, scale))
 }
 
-export async function readWidgetSnapshot(agentSlug: string, artifactSlug: string): Promise<WidgetSnapshot | null> {
-  const metaPath = resolveWidgetPath(agentSlug, artifactSlug, SNAPSHOTS_DIRNAME, SNAPSHOT_META_FILENAME)
-  if (!metaPath) return null
+/**
+ * A whole file from the agent's workspace, or null when there is none. A path
+ * the actor refuses (a link out of the workspace, a directory where a file
+ * should be) reads as absent too, as it always has on these read paths.
+ */
+async function readArtifactDoc(agentSlug: string, workspacePath: string | null): Promise<Uint8Array | null> {
+  if (workspacePath === null) return null
   try {
-    return widgetSnapshotSchema.parse(JSON.parse(await fs.promises.readFile(metaPath, 'utf-8')))
+    return await agentRegistry.get(agentSlug).files.getDoc(workspacePath)
+  } catch {
+    return null
+  }
+}
+
+async function readArtifactText(agentSlug: string, workspacePath: string | null): Promise<string | null> {
+  const bytes = await readArtifactDoc(agentSlug, workspacePath)
+  return bytes === null ? null : new TextDecoder().decode(bytes)
+}
+
+/**
+ * True when a listing failed for a reason that means "nothing to list": no
+ * directory there yet, a file where the directory should be, or a directory
+ * the actor refuses to follow (a link planted out of the workspace). The
+ * agents list fans out over every agent's artifacts, so a planted link must
+ * read as an empty listing rather than take the whole list down — and there is
+ * nothing trustworthy to show for it anyway.
+ */
+export function isMissingDirectoryError(error: unknown): boolean {
+  return error instanceof WorkspaceFileError
+}
+
+export async function readWidgetSnapshot(agentSlug: string, artifactSlug: string): Promise<WidgetSnapshot | null> {
+  const meta = await readArtifactText(
+    agentSlug,
+    resolveWidgetPath(agentSlug, artifactSlug, SNAPSHOTS_DIRNAME, SNAPSHOT_META_FILENAME),
+  )
+  if (meta === null) return null
+  try {
+    return widgetSnapshotSchema.parse(JSON.parse(meta))
   } catch {
     return null
   }
@@ -100,8 +136,7 @@ export async function describeWidgetFromManifest(
   now: number = Date.now(),
 ): Promise<ApiAgentWidget | null> {
   // The manifest decides whether there is a widget here at all, and answering
-  // that costs no disk. Resolving the path first made every dashboard-only
-  // artifact pay for a containment check it was about to throw away.
+  // that costs no reads. Every dashboard-only artifact stops here.
   let pkg
   let shape
   try {
@@ -115,10 +150,10 @@ export async function describeWidgetFromManifest(
   if (!dir) return null
 
   // Scripted or static is a manifest fact (`scripts.widget`, run as
-  // `bun run widget` in the container), so answering it costs no disk reads.
+  // `bun run widget` in the container), so answering it costs no reads.
   const hasScript = typeof pkg.scripts?.widget === 'string' && pkg.scripts.widget.trim().length > 0
   const [html, snapshot] = await Promise.all([
-    fs.promises.readFile(path.join(dir, WIDGET_HTML_FILENAME)).catch(() => null),
+    readArtifactDoc(agentSlug, joinWorkspacePath(dir, WIDGET_HTML_FILENAME)),
     readWidgetSnapshot(agentSlug, artifactSlug),
   ])
   const htmlHash = html ? hashWidgetHtml(html) : null
@@ -151,9 +186,11 @@ export async function readWidgetFromFilesystem(
 ): Promise<ApiAgentWidget | null> {
   const dir = resolveWidgetPath(agentSlug, artifactSlug)
   if (!dir) return null
+  const manifest = await readArtifactText(agentSlug, joinWorkspacePath(dir, ARTIFACT_MANIFEST_FILENAME))
+  if (manifest === null) return null
   let manifestJson: unknown
   try {
-    manifestJson = JSON.parse(await fs.promises.readFile(path.join(dir, 'package.json'), 'utf-8'))
+    manifestJson = JSON.parse(manifest)
   } catch {
     return null
   }
@@ -161,7 +198,7 @@ export async function readWidgetFromFilesystem(
 }
 
 /**
- * List an agent's widgets from the host filesystem. Works whether or not the
+ * List an agent's widgets from its workspace. Works whether or not the
  * container is running — snapshots persist in the bind-mounted workspace, so
  * a widget shows exactly what it showed last time, across app launches.
  *
@@ -169,19 +206,19 @@ export async function readWidgetFromFilesystem(
  * through listArtifactsAndWidgets, which shares one scan with the dashboards.
  */
 export async function listWidgetsFromFilesystem(agentSlug: string): Promise<ApiAgentWidget[]> {
-  let entries: fs.Dirent[]
+  let entries: FileEntry[]
   try {
-    entries = await fs.promises.readdir(artifactsDirFor(agentSlug), { withFileTypes: true })
-  } catch {
-    return []
+    entries = await agentRegistry.get(agentSlug).files.list(artifactsDirFor(agentSlug))
+  } catch (error) {
+    // No artifacts directory yet: nothing to list.
+    if (isMissingDirectoryError(error)) return []
+    throw error
   }
-  // Test doubles of fs resolve readdir with nothing; treat that as no artifacts.
-  if (!Array.isArray(entries)) return []
   const limit = pLimit(8)
   const now = Date.now()
   const widgets = await Promise.all(
     entries
-      .filter((entry) => entry.isDirectory() && isWidgetSlug(entry.name))
+      .filter((entry) => entry.kind === 'directory' && isWidgetSlug(entry.name))
       .map((entry) => limit(() => readWidgetFromFilesystem(agentSlug, entry.name, now))),
   )
   return widgets.filter((w): w is ApiAgentWidget => w !== null)
@@ -201,26 +238,15 @@ export async function readWidgetLogTail(
   artifactSlug: string,
   maxChars = 2000,
 ): Promise<string | null> {
-  const logPath = resolveWidgetPath(agentSlug, artifactSlug, WIDGET_LOG_FILENAME)
-  if (!logPath) return null
-  try {
-    const content = await fs.promises.readFile(logPath, 'utf-8')
-    const trimmed = content.trimEnd()
-    if (!trimmed) return null
-    return trimmed.length > maxChars ? trimmed.slice(-maxChars) : trimmed
-  } catch {
-    return null
-  }
+  const content = await readArtifactText(agentSlug, resolveWidgetPath(agentSlug, artifactSlug, WIDGET_LOG_FILENAME))
+  if (content === null) return null
+  const trimmed = content.trimEnd()
+  if (!trimmed) return null
+  return trimmed.length > maxChars ? trimmed.slice(-maxChars) : trimmed
 }
 
 export async function readWidgetHtml(agentSlug: string, artifactSlug: string): Promise<string | null> {
-  const htmlPath = resolveWidgetPath(agentSlug, artifactSlug, WIDGET_HTML_FILENAME)
-  if (!htmlPath) return null
-  try {
-    return await fs.promises.readFile(htmlPath, 'utf-8')
-  } catch {
-    return null
-  }
+  return readArtifactText(agentSlug, resolveWidgetPath(agentSlug, artifactSlug, WIDGET_HTML_FILENAME))
 }
 
 /**

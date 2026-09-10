@@ -2,7 +2,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { listArtifactsFromFilesystem } from './artifact-service'
+import {
+  deleteArtifactFromFilesystem,
+  listArtifactsFromFilesystem,
+  renameArtifactOnFilesystem,
+} from './artifact-service'
 
 describe('artifact-service', () => {
   let testDir: string
@@ -46,7 +50,7 @@ describe('artifact-service', () => {
   describe('listArtifactsFromFilesystem', () => {
     it('never has more than ten filesystem probes in flight, even with rejected groups', async () => {
       // 30 artifacts × 3 probes each, a third of them without package.json —
-      // the rejection that frees a per-artifact slot early would let sibling
+      // an artifact that gives up early frees its slot, which would let sibling
       // probes exceed the bound if the limiter wrapped artifacts.
       for (let i = 0; i < 30; i++) {
         const slug = `art-${String(i).padStart(2, '0')}`
@@ -70,13 +74,12 @@ describe('artifact-service', () => {
           inFlight -= 1
         }
       }
+      // The manifest read and the two existence checks; the actor's own
+      // containment lookups around each are not what the bound is about.
       const realReadFile = fs.promises.readFile
-      const realAccess = fs.promises.access
       const realStat = fs.promises.stat
       vi.spyOn(fs.promises, 'readFile').mockImplementation(((...args: Parameters<typeof realReadFile>) =>
         track(() => realReadFile(...args))) as typeof fs.promises.readFile)
-      vi.spyOn(fs.promises, 'access').mockImplementation(((...args: Parameters<typeof realAccess>) =>
-        track(() => realAccess(...args))) as typeof fs.promises.access)
       vi.spyOn(fs.promises, 'stat').mockImplementation(((...args: Parameters<typeof realStat>) =>
         track(() => realStat(...args))) as typeof fs.promises.stat)
 
@@ -291,16 +294,59 @@ describe('artifact-service', () => {
 
     it('treats a directory named screenshot.png as absent', async () => {
       const dir = createArtifactDir('test-agent', 'weird', { name: 'Weird' })
-      // A directory (not a file) at the same path should still be readable via
-      // access(R_OK), so this edge case is tolerated — confirm behaviour rather
-      // than crash. If a future change tightens this (e.g. stat + isFile), the
-      // expectation here should flip.
+      // hasScreenshot asks whether there is a FILE at that name; a directory is
+      // not a screenshot the route could serve, so it is not advertised.
       fs.mkdirSync(path.join(dir, 'screenshot.png'))
       const result = await listArtifactsFromFilesystem('test-agent')
       expect(result).toHaveLength(1)
-      // Current implementation only checks access(R_OK), which succeeds for a
-      // directory. Document that explicitly.
-      expect(result[0].hasScreenshot).toBe(true)
+      expect(result[0].hasScreenshot).toBeUndefined()
+    })
+  })
+
+  describe('renameArtifactOnFilesystem', () => {
+    it('rewrites the manifest name in place, pretty-printed with a trailing newline', async () => {
+      const dir = createArtifactDir('test-agent', 'sales', { name: 'Sales', scripts: { start: 'bun run x' } })
+
+      await renameArtifactOnFilesystem('test-agent', 'sales', 'Quarterly Sales')
+
+      const written = fs.readFileSync(path.join(dir, 'package.json'), 'utf-8')
+      expect(written).toBe(JSON.stringify({ name: 'Quarterly Sales', scripts: { start: 'bun run x' } }, null, 2) + '\n')
+      expect((await listArtifactsFromFilesystem('test-agent'))[0].name).toBe('Quarterly Sales')
+    })
+
+    it('rejects a slug that is not a plain artifact directory name', async () => {
+      createArtifactDir('test-agent', 'sales', { name: 'Sales' })
+      await expect(renameArtifactOnFilesystem('test-agent', '../sales', 'x')).rejects.toThrow('Invalid artifact slug')
+      await expect(renameArtifactOnFilesystem('test-agent', 'Sales', 'x')).rejects.toThrow('Invalid artifact slug')
+    })
+
+    it('throws when the artifact has no manifest', async () => {
+      await expect(renameArtifactOnFilesystem('test-agent', 'missing', 'x')).rejects.toThrow(/package\.json/)
+    })
+  })
+
+  describe('deleteArtifactFromFilesystem', () => {
+    it('removes the artifact directory and everything in it', async () => {
+      const dir = createArtifactDir('test-agent', 'sales', { name: 'Sales' })
+      fs.writeFileSync(path.join(dir, 'node_modules', 'left-pad.js'), '')
+
+      await deleteArtifactFromFilesystem('test-agent', 'sales')
+
+      expect(fs.existsSync(dir)).toBe(false)
+      expect(await listArtifactsFromFilesystem('test-agent')).toEqual([])
+    })
+
+    it('is a no-op for an artifact that does not exist', async () => {
+      createArtifactDir('test-agent', 'sales', { name: 'Sales' })
+      await expect(deleteArtifactFromFilesystem('test-agent', 'gone')).resolves.toBeUndefined()
+      expect(await listArtifactsFromFilesystem('test-agent')).toHaveLength(1)
+    })
+
+    it('rejects a slug that is not a plain artifact directory name', async () => {
+      createArtifactDir('test-agent', 'sales', { name: 'Sales' })
+      await expect(deleteArtifactFromFilesystem('test-agent', '../sales')).rejects.toThrow('Invalid artifact slug')
+      await expect(deleteArtifactFromFilesystem('test-agent', '.')).rejects.toThrow('Invalid artifact slug')
+      expect(await listArtifactsFromFilesystem('test-agent')).toHaveLength(1)
     })
   })
 })

@@ -31,6 +31,7 @@ import { ensureLimaReady } from './lima-container-client'
 import type { ImagePullProgress, RuntimeReadiness } from './types'
 import { messagePersister } from './message-persister'
 import { getSettings, mutateSettings } from '@shared/lib/config/settings'
+import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 
 /** Interval for syncing container status with reality (in ms). Default: 300 seconds */
@@ -90,6 +91,16 @@ export class ContainerHost {
   dropRuntime(slug: string): void {
     this.runtimes.get(slug)?.dispose()
     this.runtimes.delete(slug)
+  }
+
+  /**
+   * Where an agent's workspace lives on this machine. A host capability, not
+   * an actor operation: its callers open the folder in the OS file manager
+   * and point Chrome's downloads at it, both things only this machine can do.
+   * An actor whose files are elsewhere has no such path.
+   */
+  workspaceHostPath(slug: string): string {
+    return getAgentWorkspaceDir(slug)
   }
 
   // Forget every runtime (e.g., when the container runner setting changes).

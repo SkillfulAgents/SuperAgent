@@ -1,11 +1,15 @@
-import * as fs from 'fs'
-import * as path from 'path'
 import pLimit from 'p-limit'
-import { getAgentWorkspaceDir, writeFileAtomic } from '@shared/lib/utils/file-storage'
-import { isPathWithinDir } from '@shared/lib/utils/path-safety'
+import { agentRegistry, joinWorkspacePath, type FileEntry } from '@shared/lib/agent-actor'
 import type { ApiAgentWidget } from '@shared/lib/widgets/widget-schema'
-import { describeWidgetFromManifest, isWidgetSlug, isWidgetOnlyArtifact } from './widget-service'
+import {
+  artifactsDirFor,
+  describeWidgetFromManifest,
+  isMissingDirectoryError,
+  isWidgetOnlyArtifact,
+  isWidgetSlug,
+} from './widget-service'
 
+const ARTIFACT_MANIFEST_FILENAME = 'package.json'
 const ARTIFACT_SCREENSHOT_FILENAME = 'screenshot.png'
 
 export interface ArtifactInfo {
@@ -26,7 +30,7 @@ export interface ArtifactListing {
 }
 
 /**
- * List dashboard artifacts for an agent by reading the host filesystem.
+ * List dashboard artifacts for an agent from its workspace.
  * Used when the container is not running (all dashboards reported as 'stopped').
  */
 export async function listArtifactsFromFilesystem(
@@ -40,7 +44,7 @@ export async function listArtifactsFromFilesystem(
  *
  * An artifact's package.json decides whether it is a dashboard, a widget or
  * both, so the agents-list path reads it ONCE and answers both questions from
- * that copy. Listing the two separately doubled the readdir and the manifest
+ * that copy. Listing the two separately doubled the listing and the manifest
  * read of every artifact of every agent on every poll — including the warm
  * iOS poll, which is meant to be nearly free.
  */
@@ -52,46 +56,45 @@ async function scanArtifacts(
   agentSlug: string,
   opts: { includeWidgets: boolean },
 ): Promise<ArtifactListing> {
-  const workspaceDir = getAgentWorkspaceDir(agentSlug)
-  const artifactsDir = path.join(workspaceDir, 'artifacts')
+  const files = agentRegistry.get(agentSlug).files
 
-  let entries: fs.Dirent[]
+  let entries: FileEntry[]
   try {
-    entries = await fs.promises.readdir(artifactsDir, { withFileTypes: true })
-  } catch {
-    return { dashboards: [], widgets: [] }
+    entries = await files.list(artifactsDirFor(agentSlug))
+  } catch (error) {
+    // No artifacts directory yet: nothing to list.
+    if (isMissingDirectoryError(error)) return { dashboards: [], widgets: [] }
+    throw error
   }
-  // Test doubles of fs resolve readdir with nothing; treat that as no artifacts.
-  if (!Array.isArray(entries)) return { dashboards: [], widgets: [] }
 
   // Three independent lookups per artifact, artifacts independent of each
   // other: issue them concurrently instead of one round trip at a time —
   // this runs for every agent on every agents-list poll. The limiter bounds
-  // individual filesystem probes, not artifacts: wrapping the artifact would
-  // let each slot fan out to three probes, and a missing package.json would
-  // reject the group and free the slot while its two siblings still ran.
+  // individual probes, not artifacts: wrapping the artifact would let each
+  // slot fan out to three probes, and an artifact that gives up early (no
+  // package.json) would free its slot while its two siblings still ran.
   // Result order follows the directory listing, as before.
   const limit = pLimit(10)
   // One clock for the whole scan, so two widgets never disagree about staleness.
   const now = Date.now()
   const scanned = await Promise.all(
     entries
-      .filter((entry) => entry.isDirectory())
+      .filter((entry) => entry.kind === 'directory')
       .map(async (entry): Promise<{ dashboard: ArtifactInfo | null; widget: ApiAgentWidget | null }> => {
-        const artifactDir = path.join(artifactsDir, entry.name)
         const nothing = { dashboard: null, widget: null }
         let pkg: { name?: unknown; description?: unknown }
         let hasScreenshot: boolean
         let hasNodeModules: boolean
         try {
-          const [pkgContent, screenshot, nodeModules] = await Promise.all([
-            limit(() => fs.promises.readFile(path.join(artifactDir, 'package.json'), 'utf-8')),
-            limit(() => fileExists(path.join(artifactDir, ARTIFACT_SCREENSHOT_FILENAME))),
-            limit(() => directoryExists(path.join(artifactDir, 'node_modules'))),
+          const [manifest, screenshot, nodeModules] = await Promise.all([
+            limit(() => files.getDoc(joinWorkspacePath(entry.path, ARTIFACT_MANIFEST_FILENAME))),
+            limit(() => files.stat(joinWorkspacePath(entry.path, ARTIFACT_SCREENSHOT_FILENAME))),
+            limit(() => files.stat(joinWorkspacePath(entry.path, 'node_modules'))),
           ])
-          pkg = JSON.parse(pkgContent)
-          hasScreenshot = screenshot
-          hasNodeModules = nodeModules
+          if (manifest === null) return nothing
+          pkg = JSON.parse(new TextDecoder().decode(manifest))
+          hasScreenshot = screenshot?.kind === 'file'
+          hasNodeModules = nodeModules?.kind === 'directory'
         } catch {
           // No valid package.json, skip
           return nothing
@@ -130,21 +133,15 @@ async function scanArtifacts(
   }
 }
 
-async function fileExists(p: string): Promise<boolean> {
-  try {
-    await fs.promises.access(p, fs.constants.R_OK)
-    return true
-  } catch {
-    return false
-  }
-}
-
-async function directoryExists(p: string): Promise<boolean> {
-  try {
-    return (await fs.promises.stat(p)).isDirectory()
-  } catch {
-    return false
-  }
+/**
+ * Workspace path of one artifact's directory. The slug has to be a plain
+ * directory name under the rule the container's dashboard manager applies to
+ * every artifact it creates; anything else is a bad slug, answered here rather
+ * than handed to the actor as a path.
+ */
+function artifactDirFor(agentSlug: string, artifactSlug: string): string {
+  if (!isWidgetSlug(artifactSlug)) throw new Error('Invalid artifact slug')
+  return joinWorkspacePath(artifactsDirFor(agentSlug), artifactSlug)
 }
 
 /**
@@ -155,46 +152,29 @@ export async function renameArtifactOnFilesystem(
   artifactSlug: string,
   newName: string
 ): Promise<void> {
-  const workspaceDir = getAgentWorkspaceDir(agentSlug)
-  const artifactDir = path.join(workspaceDir, 'artifacts', artifactSlug)
+  const manifestPath = joinWorkspacePath(artifactDirFor(agentSlug, artifactSlug), ARTIFACT_MANIFEST_FILENAME)
+  const files = agentRegistry.get(agentSlug).files
 
-  // Ensure the path is within the expected artifacts directory
-  const artifactsDir = path.join(workspaceDir, 'artifacts')
-  const resolved = path.resolve(artifactDir)
-  if (!isPathWithinDir(artifactsDir, resolved)) {
-    throw new Error('Invalid artifact slug')
-  }
-
-  const pkgPath = path.join(artifactDir, 'package.json')
-  const pkgContent = await fs.promises.readFile(pkgPath, 'utf-8')
+  const manifest = await files.getDoc(manifestPath)
+  if (manifest === null) throw new Error(`No such file: ${manifestPath}`)
   let pkg: Record<string, unknown>
   try {
-    pkg = JSON.parse(pkgContent)
+    pkg = JSON.parse(new TextDecoder().decode(manifest))
   } catch {
-    throw new Error(`Failed to parse ${pkgPath}`)
+    throw new Error(`Failed to parse ${manifestPath}`)
   }
   pkg.name = newName
   // Atomic write: the read already throws on a corrupt package.json,
   // so this never overwrites with a default — just make the write crash-safe.
-  await writeFileAtomic(pkgPath, JSON.stringify(pkg, null, 2) + '\n')
+  await files.putDoc(manifestPath, JSON.stringify(pkg, null, 2) + '\n')
 }
 
 /**
- * Delete a dashboard artifact by removing its directory from the host filesystem.
+ * Delete a dashboard artifact by removing its directory from the workspace.
  */
 export async function deleteArtifactFromFilesystem(
   agentSlug: string,
   artifactSlug: string
 ): Promise<void> {
-  const workspaceDir = getAgentWorkspaceDir(agentSlug)
-  const artifactDir = path.join(workspaceDir, 'artifacts', artifactSlug)
-
-  // Ensure the path is within the expected artifacts directory
-  const artifactsDir = path.join(workspaceDir, 'artifacts')
-  const resolved = path.resolve(artifactDir)
-  if (!isPathWithinDir(artifactsDir, resolved)) {
-    throw new Error('Invalid artifact slug')
-  }
-
-  await fs.promises.rm(artifactDir, { recursive: true, force: true })
+  await agentRegistry.get(agentSlug).files.delete(artifactDirFor(agentSlug, artifactSlug), { recursive: true })
 }

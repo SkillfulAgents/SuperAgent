@@ -25,6 +25,7 @@ const {
   widgetSnapshotPngPath,
 } = await import('./widget-service')
 const { listArtifactsFromFilesystem, listArtifactsAndWidgets } = await import('./artifact-service')
+const { WorkspaceFileError, agentRegistry } = await import('@shared/lib/agent-actor')
 
 const AGENT = 'agent-1'
 
@@ -173,20 +174,22 @@ describe('widget-service', () => {
   })
 
   it('refuses slugs and segments that escape the artifacts dir', () => {
-    // Containment follows symlinks, so the artifact has to exist for the
-    // happy-path assertion — which is also the only way a route reaches it.
-    seed('macros', { 'package.json': manifest({ script: 'bun run widget.ts' }) })
+    // Pure string work: the slug is domain validation, the result a workspace
+    // path. Containment of that path is the actor's job, tested below.
     expect(resolveWidgetPath(AGENT, '../secrets')).toBeNull()
     expect(resolveWidgetPath(AGENT, 'Macros')).toBeNull()
     expect(resolveWidgetPath(AGENT, 'macros', '..', '..', 'x')).toBeNull()
-    expect(widgetSnapshotPngPath(AGENT, 'macros', 'small', 'dark', 3)).toMatch(
-      /artifacts\/macros\/snapshots\/small-dark@3x\.png$/,
+    expect(resolveWidgetPath(AGENT, 'macros', 'nested/file')).toBeNull()
+    expect(resolveWidgetPath(AGENT, 'macros')).toBe('artifacts/macros')
+    expect(widgetSnapshotPngPath(AGENT, 'macros', 'small', 'dark', 3)).toBe(
+      'artifacts/macros/snapshots/small-dark@3x.png',
     )
   })
 
   it('refuses a file the agent symlinked out of its own workspace', async () => {
     // The artifact dir is inside the workspace the container bind-mounts, so
-    // the agent can plant the link itself. Every path check has to follow it.
+    // the agent can plant the link itself. The paths are fine — valid slug,
+    // workspace-relative — and it is the actor that refuses to follow them.
     const secret = path.join(tmpRoot, 'outside-secret.txt')
     fs.writeFileSync(secret, 'host-only')
     const dir = seed('macros', { 'package.json': manifest({ script: 'bun run widget.ts' }) })
@@ -194,16 +197,22 @@ describe('widget-service', () => {
     fs.symlinkSync(secret, path.join(dir, 'widget.log'))
     fs.symlinkSync(secret, path.join(dir, 'snapshots', 'small-dark@3x.png'))
 
-    expect(resolveWidgetPath(AGENT, 'macros', 'widget.html')).toBeNull()
-    expect(widgetSnapshotPngPath(AGENT, 'macros', 'small', 'dark', 3)).toBeNull()
+    const { files } = agentRegistry.get(AGENT)
+    const htmlPath = resolveWidgetPath(AGENT, 'macros', 'widget.html')
+    expect(htmlPath).toBe('artifacts/macros/widget.html')
+    await expect(files.getDoc(htmlPath!)).rejects.toBeInstanceOf(WorkspaceFileError)
+    const pngPath = widgetSnapshotPngPath(AGENT, 'macros', 'small', 'dark', 3)
+    await expect(files.getDoc(pngPath!)).rejects.toBeInstanceOf(WorkspaceFileError)
+    // The readers turn that refusal into "absent", as they always have.
     expect(await readWidgetHtml(AGENT, 'macros')).toBeNull()
     expect(await readWidgetLogTail(AGENT, 'macros')).toBeNull()
   })
 
   it('refuses to read through an artifacts dir the agent replaced with a link', async () => {
-    // The leaf checks are not enough on their own: resolving both sides against
-    // a swapped `artifacts` makes the link's target the boundary, and it agrees
-    // with itself. This is the cross-agent read that buys.
+    // A swapped `artifacts` used to be the cross-agent read that a check
+    // anchored on `artifacts` itself would pass: resolving both sides against
+    // the link makes its target the boundary. The actor anchors on the
+    // workspace, which the agent cannot swap from inside the container.
     const victim = path.join(tmpRoot, 'agent-2', 'workspace', 'artifacts', 'daily-macros')
     fs.mkdirSync(victim, { recursive: true })
     fs.writeFileSync(path.join(victim, 'package.json'), manifest({ script: 'bun run widget.ts' }))
@@ -213,9 +222,14 @@ describe('widget-service', () => {
     fs.mkdirSync(ourWorkspace, { recursive: true })
     fs.symlinkSync(path.join(tmpRoot, 'agent-2', 'workspace', 'artifacts'), path.join(ourWorkspace, 'artifacts'))
 
-    expect(resolveWidgetPath(AGENT, 'daily-macros', 'widget.html')).toBeNull()
+    expect(resolveWidgetPath(AGENT, 'daily-macros', 'widget.html')).toBe('artifacts/daily-macros/widget.html')
     expect(await readWidgetHtml(AGENT, 'daily-macros')).toBeNull()
     expect(await readWidgetFromFilesystem(AGENT, 'daily-macros')).toBeNull()
+    // The listing answers empty rather than with the other agent's artifacts.
+    // Empty, not an error: the agents list fans out over every agent, and a
+    // link one agent planted must not take the whole list down.
+    expect(await listWidgetsFromFilesystem(AGENT)).toEqual([])
+    expect(await listArtifactsAndWidgets(AGENT)).toEqual({ dashboards: [], widgets: [] })
   })
 
   it('carries the policy inside the document the app inlines', () => {
