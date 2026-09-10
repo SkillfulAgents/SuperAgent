@@ -77,19 +77,26 @@ const mockResetReadiness = vi.fn()
 const mockMarkRuntimeUnavailable = vi.fn()
 const mockUpdateStartProgress = vi.fn()
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    hasRunningAgents: (...args: unknown[]) => mockHasRunningAgents(...args),
-    getRunningAgentIds: (...args: unknown[]) => mockGetRunningAgentIds(...args),
-    clearClients: (...args: unknown[]) => mockClearClients(...args),
-    ensureImageReady: (...args: unknown[]) => mockEnsureImageReady(...args),
-    getReadiness: (...args: unknown[]) => mockGetReadiness(...args),
-    resetReadiness: (...args: unknown[]) => mockResetReadiness(...args),
-    markRuntimeUnavailable: (...args: unknown[]) => mockMarkRuntimeUnavailable(...args),
-    updateStartProgress: (...args: unknown[]) => mockUpdateStartProgress(...args),
-    stopAll: vi.fn(),
-  },
-}))
+// The route reaches the host through `@shared/lib/agent-actor`, which re-exports
+// the container-host singleton and runs the real agent registry against it;
+// `agentRegistry.evictAll()` lands on the host's `clearRuntimes`, which the
+// adapter maps onto `clearClients`.
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      hasRunningAgents: (...args: unknown[]) => mockHasRunningAgents(...args),
+      getRunningAgentIds: (...args: unknown[]) => mockGetRunningAgentIds(...args),
+      clearClients: (...args: unknown[]) => mockClearClients(...args),
+      ensureImageReady: (...args: unknown[]) => mockEnsureImageReady(...args),
+      getReadiness: (...args: unknown[]) => mockGetReadiness(...args),
+      resetReadiness: (...args: unknown[]) => mockResetReadiness(...args),
+      markRuntimeUnavailable: (...args: unknown[]) => mockMarkRuntimeUnavailable(...args),
+      updateStartProgress: (...args: unknown[]) => mockUpdateStartProgress(...args),
+      stopAll: vi.fn(),
+    }),
+  }
+})
 
 const mockCheckAllRunnersAvailability = vi.fn()
 const mockRefreshRunnerAvailability = vi.fn()

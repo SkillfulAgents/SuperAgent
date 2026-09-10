@@ -210,15 +210,18 @@ vi.mock('@shared/lib/services/platform-service', () => ({
 // download route against the REAL filesystem so the actual path resolution and
 // containment check are validated end to end.
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    getClient: () => ({ fetch: vi.fn(), sendMessage: vi.fn(), start: vi.fn(), stop: vi.fn() }),
-    ensureRunning: vi.fn(),
-    getCachedInfo: () => ({ status: 'running', port: 8080 }),
-    removeClient: vi.fn(),
-    keepAlive: vi.fn(),
-  },
-}))
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      getClient: () => ({ fetch: vi.fn(), sendMessage: vi.fn(), start: vi.fn(), stop: vi.fn() }),
+      ensureRunning: vi.fn(),
+      getCachedInfo: () => ({ status: 'running', port: 8080 }),
+      removeClient: vi.fn(),
+      keepAlive: vi.fn(),
+    }),
+  }
+})
 
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {

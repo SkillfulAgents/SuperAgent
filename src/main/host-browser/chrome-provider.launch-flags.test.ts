@@ -136,14 +136,17 @@ vi.mock('@shared/lib/error-reporting', () => ({
   addErrorBreadcrumb: () => {},
 }))
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    getClient: () => ({
-      getHostBridgeIp: () => null,
-      probeHostPortFromRunner: async () => 'unknown',
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      getClient: () => ({
+        getHostBridgeIp: () => null,
+        probeHostPortFromRunner: async () => 'unknown',
+      }),
     }),
-  },
-}))
+  }
+})
 
 import { ChromeProvider } from './chrome-provider'
 

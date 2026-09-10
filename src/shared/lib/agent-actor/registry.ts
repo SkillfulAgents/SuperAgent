@@ -1,4 +1,4 @@
-import { containerManager } from '@shared/lib/container/container-manager'
+import { containerHost } from '@shared/lib/container/container-host'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
@@ -17,9 +17,9 @@ import { LocalAgentActor, type LocalActorDeps } from './local-agent-actor'
 import type { AgentActor, AgentRegistry, AgentSlug } from './types'
 
 /**
- * Build a registry whose handles delegate to `deps`. Handles hold no state of
- * their own yet — the container client and per-agent caches still live in the
- * container manager — so a handle is cheap and is created on first `get`.
+ * Build a registry whose handles delegate to `deps`. A handle is cheap and is
+ * created on first `get`; the container state behind it is the agent's
+ * `ContainerRuntime`, held by the container host and created on first use.
  */
 export function createAgentRegistry(deps: LocalActorDeps): AgentRegistry {
   const handles = new Map<AgentSlug, AgentActor>()
@@ -36,13 +36,13 @@ export function createAgentRegistry(deps: LocalActorDeps): AgentRegistry {
   return {
     get,
     peek: (slug) => handles.get(slug),
-    all: () => deps.containerManager.getRunningAgentIds().map(get),
+    running: () => deps.containerHost.getRunningAgentIds().map(get),
     evict: (slug) => {
-      deps.containerManager.removeClient(slug)
+      deps.containerHost.dropRuntime(slug)
       handles.delete(slug)
     },
     evictAll: () => {
-      deps.containerManager.clearClients()
+      deps.containerHost.clearRuntimes()
       handles.clear()
     },
   }
@@ -53,8 +53,8 @@ export function createAgentRegistry(deps: LocalActorDeps): AgentRegistry {
 // intercepts exactly the call it always intercepted, and the others are never
 // touched — the same as when the consumer imported the module directly.
 export const agentRegistry: AgentRegistry = createAgentRegistry({
-  get containerManager() {
-    return containerManager
+  get containerHost() {
+    return containerHost
   },
   get messagePersister() {
     return messagePersister

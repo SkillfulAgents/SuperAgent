@@ -6,16 +6,19 @@ import {
   remoteMcpServers,
 } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
-import { containerManager } from './container-manager'
+import type { ContainerClient, ContainerInfo } from './types'
 import {
   buildConnectedAccountsProjection,
   buildRemoteMcpProjection,
 } from './connection-runtime-projections'
 
-type RuntimeClient = Pick<
-  ReturnType<typeof containerManager.getClient>,
-  'fetch' | 'getHostApiBaseUrl'
->
+type RuntimeClient = Pick<ContainerClient, 'fetch' | 'getHostApiBaseUrl'>
+
+/** The part of an agent's container runtime a sync needs: is it up, and how to reach it. */
+export interface ConnectionRuntime {
+  getCachedInfo(): ContainerInfo
+  getClient(): RuntimeClient
+}
 
 export type ConnectionRuntimeKind = 'connected-accounts' | 'remote-mcps'
 
@@ -79,14 +82,15 @@ export async function updateRemoteMcpEnvironment(
 export async function syncAgentConnectionEnvironment(
   agentSlug: string,
   kind: ConnectionRuntimeKind,
+  runtime: ConnectionRuntime,
 ): Promise<boolean> {
-  if (containerManager.getCachedInfo(agentSlug).status !== 'running') {
+  if (runtime.getCachedInfo().status !== 'running') {
     // Container startup rebuilds both projections from the mapping tables.
     return true
   }
 
   try {
-    const client = containerManager.getClient(agentSlug)
+    const client = runtime.getClient()
     const response = kind === 'remote-mcps'
       ? await updateRemoteMcpEnvironment(agentSlug, client)
       : await updateConnectedAccountsEnvironment(agentSlug, client)

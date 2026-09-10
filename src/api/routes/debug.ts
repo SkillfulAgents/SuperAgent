@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { Authenticated, IsAdmin } from '../middleware/auth'
-import { containerManager } from '@shared/lib/container/container-manager'
+import { containerHost } from '@shared/lib/agent-actor'
 import { checkAllRunnersAvailability, type ContainerRunner } from '@shared/lib/container/client-factory'
 import { getSettings } from '@shared/lib/config/settings'
 import { execWithPath } from '@shared/lib/container/base-container-client'
@@ -88,7 +88,7 @@ debug.get('/runtime', async (c) => {
     platform: platform(),
     runners: availability,
     vmStatus,
-    readiness: containerManager.getReadiness(),
+    readiness: containerHost.getReadiness(),
   })
 })
 

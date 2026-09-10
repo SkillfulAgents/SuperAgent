@@ -8,7 +8,7 @@ import {
   SAMPLE_CLAUDE_MD_NO_FRONTMATTER,
 } from './__fixtures__/test-data'
 
-// Mock containerManager before importing the service
+// Mock the container host before importing the service
 // Use vi.hoisted to ensure mock variables are available when vi.mock is hoisted
 const { mockGetCachedInfo, mockStopContainer, mockGetClient, mockGetPendingReviewsForAgent } = vi.hoisted(() => {
   const mockGetCachedInfo = vi.fn((): { status: string; port: number | null } => ({ status: 'stopped', port: null }))
@@ -21,14 +21,17 @@ const { mockGetCachedInfo, mockStopContainer, mockGetClient, mockGetPendingRevie
   return { mockGetCachedInfo, mockStopContainer, mockGetClient, mockGetPendingReviewsForAgent }
 })
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    getClient: mockGetClient,
-    getCachedInfo: mockGetCachedInfo,
-    stopContainer: mockStopContainer,
-    getHealthWarnings: vi.fn(() => []),
-  },
-}))
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      getClient: mockGetClient,
+      getCachedInfo: mockGetCachedInfo,
+      stopContainer: mockStopContainer,
+      getHealthWarnings: vi.fn(() => []),
+    }),
+  }
+})
 
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: {

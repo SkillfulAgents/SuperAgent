@@ -43,15 +43,18 @@ vi.mock('./session-service', () => ({
   sessionIsKnown,
 }))
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    ensureRunning,
-    getClient: () => ({
-      forkSession: forkInContainer,
-      deleteSession: deleteInContainer,
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      ensureRunning,
+      getClient: () => ({
+        forkSession: forkInContainer,
+        deleteSession: deleteInContainer,
+      }),
     }),
-  },
-}))
+  }
+})
 
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: { isSessionActive },
