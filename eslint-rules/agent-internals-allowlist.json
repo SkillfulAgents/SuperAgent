@@ -3,7 +3,12 @@
     "@shared/lib/container/message-persister"
   ],
   "src/api/routes/agents.ts": [
-    "@shared/lib/container/message-persister"
+    "@shared/lib/container/message-persister",
+    "@shared/lib/services/session-media",
+    "@shared/lib/services/session-service",
+    "@shared/lib/services/session-summary-cache",
+    "@shared/lib/utils/file-storage#getAgentSessionsDir",
+    "@shared/lib/utils/file-storage#getSessionJsonlPath"
   ],
   "src/api/routes/browser.ts": [
     "@shared/lib/container/message-persister"
@@ -24,13 +29,28 @@
     "@shared/lib/container/container-manager"
   ],
   "src/api/routes/scheduled-tasks.ts": [
-    "@shared/lib/container/message-persister"
+    "@shared/lib/container/message-persister",
+    "@shared/lib/services/session-service"
   ],
   "src/api/routes/settings.ts": [
     "@shared/lib/container/container-manager"
   ],
+  "src/api/routes/webhook-triggers.ts": [
+    "@shared/lib/services/session-service"
+  ],
+  "src/api/routes/workflows.ts": [
+    "@shared/lib/utils/file-storage#getAgentSessionsDir",
+    "@shared/lib/workflows/workflow-tree"
+  ],
+  "src/api/routes/x-agent-chat.ts": [
+    "@shared/lib/services/session-summary-cache",
+    "@shared/lib/utils/file-storage#getSessionJsonlPath"
+  ],
   "src/api/routes/x-agent.ts": [
     "@shared/lib/container/message-persister"
+  ],
+  "src/main/host-browser/chrome-provider.ts": [
+    "@shared/lib/config/data-dir#getAgentDownloadsDir"
   ],
   "src/shared/lib/chat-integrations/chat-integration-manager.ts": [
     "@shared/lib/container/message-persister"
@@ -45,26 +65,47 @@
   "src/shared/lib/scheduler/platform-notifications-manager.ts": [
     "@shared/lib/container/message-persister"
   ],
+  "src/shared/lib/scheduler/task-scheduler.ts": [
+    "@shared/lib/services/session-service"
+  ],
   "src/shared/lib/scheduler/wake-delivery.ts": [
     "@shared/lib/container/message-persister"
   ],
   "src/shared/lib/services/agent-hooks-service.ts": [
     "@shared/lib/utils/file-storage#getAgentWorkspaceDir"
   ],
+  "src/shared/lib/services/agent-preferences-service.ts": [
+    "@shared/lib/utils/file-storage#getAgentPreferencesPath"
+  ],
+  "src/shared/lib/services/agent-service.ts": [
+    "@shared/lib/utils/file-storage#getAgentClaudeMdPath",
+    "@shared/lib/utils/file-storage#getAgentDir",
+    "@shared/lib/utils/file-storage#getAgentsDir"
+  ],
   "src/shared/lib/services/agent-template-service.ts": [
+    "@shared/lib/utils/file-storage#getAgentClaudeMdPath",
     "@shared/lib/utils/file-storage#getAgentWorkspaceDir"
   ],
   "src/shared/lib/services/artifact-service.ts": [
     "@shared/lib/utils/file-storage#getAgentWorkspaceDir"
   ],
+  "src/shared/lib/services/home-graph-service.ts": [
+    "@shared/lib/utils/file-storage#getAgentSessionMetadataPath"
+  ],
+  "src/shared/lib/services/mount-service.ts": [
+    "@shared/lib/utils/file-storage#getAgentDir"
+  ],
   "src/shared/lib/services/secrets-service.ts": [
+    "@shared/lib/utils/file-storage#getAgentEnvPath",
     "@shared/lib/utils/file-storage#getAgentWorkspaceDir"
   ],
-  "src/shared/lib/services/session-service.ts": [
-    "@shared/lib/utils/file-storage#getAgentWorkspaceDir"
+  "src/shared/lib/services/session-fork-service.ts": [
+    "@shared/lib/utils/file-storage#getAgentSessionsDir",
+    "@shared/lib/utils/file-storage#getSessionJsonlPath"
   ],
   "src/shared/lib/services/skillset-reconcile.ts": [
-    "@shared/lib/utils/file-storage#getAgentWorkspaceDir"
+    "@shared/lib/utils/file-storage#getAgentWorkspaceDir",
+    "@shared/lib/utils/file-storage#getAgentsDir"
   ],
   "src/shared/lib/services/skillset-service.ts": [
     "@shared/lib/utils/file-storage#getAgentWorkspaceDir"
@@ -81,6 +122,7 @@
   "src/shared/lib/startup.ts": [
     "@shared/lib/container/container-manager",
     "@shared/lib/proxy/mcp-reauth-manager",
-    "@shared/lib/proxy/review-manager"
+    "@shared/lib/proxy/review-manager",
+    "@shared/lib/services/session-service"
   ]
 }

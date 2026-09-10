@@ -107,70 +107,7 @@ export async function syncAgentConnectionEnvironment(
   }
 }
 
-async function syncAgents(
-  agentSlugs: string[],
-  kind: ConnectionRuntimeKind,
-): Promise<boolean> {
-  const results = await Promise.all(
-    [...new Set(agentSlugs)].map((slug) =>
-      syncAgentConnectionEnvironment(slug, kind),
-    ),
-  )
-  return results.every(Boolean)
-}
-
-export async function findAgentsAssignedRemoteMcp(mcpId: string): Promise<string[]> {
-  const mappings = await db
-    .select({ agentSlug: agentRemoteMcps.agentSlug })
-    .from(agentRemoteMcps)
-    .where(eq(agentRemoteMcps.remoteMcpId, mcpId))
-  return mappings.map(({ agentSlug }) => agentSlug)
-}
-
-export async function findAgentsAssignedConnectedAccount(
-  accountId: string,
-): Promise<string[]> {
-  const mappings = await db
-    .select({ agentSlug: agentConnectedAccounts.agentSlug })
-    .from(agentConnectedAccounts)
-    .where(eq(agentConnectedAccounts.connectedAccountId, accountId))
-  return mappings.map(({ agentSlug }) => agentSlug)
-}
-
-export async function syncRemoteMcpAgents(agentSlugs: string[]): Promise<boolean> {
-  return syncAgents(agentSlugs, 'remote-mcps')
-}
-
-export async function syncConnectedAccountAgents(
-  agentSlugs: string[],
-): Promise<boolean> {
-  return syncAgents(agentSlugs, 'connected-accounts')
-}
-
-export async function syncAgentsAssignedRemoteMcp(mcpId: string): Promise<boolean> {
-  try {
-    return syncRemoteMcpAgents(await findAgentsAssignedRemoteMcp(mcpId))
-  } catch (error) {
-    console.warn(
-      `[ConnectionRuntimeSync] Failed to resolve agents assigned MCP ${mcpId}:`,
-      error,
-    )
-    return false
-  }
-}
-
-export async function syncAgentsAssignedConnectedAccount(
-  accountId: string,
-): Promise<boolean> {
-  try {
-    return syncConnectedAccountAgents(
-      await findAgentsAssignedConnectedAccount(accountId),
-    )
-  } catch (error) {
-    console.warn(
-      `[ConnectionRuntimeSync] Failed to resolve agents assigned account ${accountId}:`,
-      error,
-    )
-    return false
-  }
-}
+// Fanning a sync out over several agents lives in
+// `@shared/lib/services/connection-sync-service`, which goes through the agent
+// actor for each one. This module only knows how to build and push one agent's
+// projection.

@@ -170,17 +170,12 @@ export function setupArtifactStreamProxy(server: ServerType): void {
         const info = actor.container.status()
         if (info.status !== 'running' || !info.port) return deny(socket, '503 Service Unavailable')
 
-        const protocols = requestedProtocols(request)
-        const upstream = new WebSocket(
-          `${actor.container.webSocketBaseUrl(info.port)}${route.containerPath}${url.search}`,
-          protocols,
-          {
-            headers: {
-              ...artifactWebSocketForwardHeaders(request, route.publicBasePath),
-              ...actor.container.hostAuthHeaders(),
-            },
-          },
-        )
+        // Forwarded headers first; the actor adds the container's auth headers after them.
+        const upstream = actor.container.openWebSocket(route.containerPath, {
+          search: url.search,
+          protocols: requestedProtocols(request),
+          headers: artifactWebSocketForwardHeaders(request, route.publicBasePath),
+        })
 
         let settled = false
         const fail = (error?: unknown) => {

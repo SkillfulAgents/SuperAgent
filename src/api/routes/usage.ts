@@ -1,7 +1,6 @@
 import { Hono } from 'hono'
 import { listAgents, getAgent } from '@shared/lib/services/agent-service'
-import { getAgentClaudeConfigDir } from '@shared/lib/utils/file-storage'
-import { loadDailyUsageData } from '@shared/lib/services/usage-service'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { getSettings } from '@shared/lib/config/settings'
 import { subDays, format, addDays } from 'date-fns'
 import type { DailyUsageEntry, UsageResponse } from '@shared/lib/types/usage'
@@ -90,8 +89,7 @@ usage.get('/', async (c) => {
     const results = await Promise.all(
       batch.map(async (agent) => {
         try {
-          const claudePath = getAgentClaudeConfigDir(agent.slug)
-          const dailyData = await loadDailyUsageData({ claudePath, since, providerId })
+          const dailyData = await agentRegistry.get(agent.slug).usage.daily({ since, providerId })
           return { agent, dailyData }
         } catch {
           return null

@@ -28,14 +28,6 @@ import {
   getAgent,
 } from '@shared/lib/services/agent-service'
 import { resolveAgentId, displaySlug } from '@shared/lib/utils/file-storage'
-import {
-  listSessions,
-  getSessionMessagesWithCompact,
-  findLastSessionEntry,
-  getSessionMetadata,
-  registerSession,
-  sessionIsKnown,
-} from '@shared/lib/services/session-service'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import {
@@ -346,7 +338,8 @@ xAgent.post('/get-sessions', zValidator('json', getSessionsBodySchema), async (c
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
   }
 
-  const allSessions = await listSessions(targetSlug)
+  const actor = agentRegistry.get(targetSlug)
+  const allSessions = await actor.sessions.list()
   const page = allSessions.slice(offset, offset + limit)
   return c.json({
     sessions: page.map((s) => ({
@@ -355,7 +348,7 @@ xAgent.post('/get-sessions', zValidator('json', getSessionsBodySchema), async (c
       createdAt: s.createdAt,
       lastActivityAt: s.lastActivityAt,
       messageCount: s.messageCount,
-      isRunning: agentRegistry.get(targetSlug).sessions.isActive(s.id),
+      isRunning: actor.sessions.isActive(s.id),
     })),
     total: allSessions.length,
     offset,
@@ -545,11 +538,12 @@ async function readLastAssistantMessage(
   sessionId: string,
   boundaryUuid?: string,
 ): Promise<{ role: string; content: string; toolName?: string } | null> {
+  const actor = agentRegistry.get(targetSlug)
   for (let i = 0; i < READ_RETRY_ATTEMPTS; i++) {
     // Only the most recent assistant entry matters, so read the transcript
     // from the tail instead of full-parsing it (transcripts reach 100MB+, and
     // this runs up to READ_RETRY_ATTEMPTS times per invoke).
-    const entry = await findLastSessionEntry(targetSlug, sessionId, isReturnableAssistantEntry)
+    const entry = await actor.messages.findLastEntry(sessionId, isReturnableAssistantEntry)
     const isStaleBoundary = boundaryUuid !== undefined && entry?.uuid === boundaryUuid
     if (entry && !isStaleBoundary) {
       const compact = compactMessage(entry)
@@ -591,17 +585,19 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
   }
 
+  const actor = agentRegistry.get(targetSlug)
+
   // Status and wait state live in the process-global persister. Validate the
   // target/session pair before consulting it, not only before reading the
   // target-scoped transcript below.
-  if (!(await sessionIsKnown(targetSlug, sessionId))) {
+  if (!(await actor.sessions.isKnown(sessionId))) {
     return c.json({ error: 'Session not found' }, 404)
   }
 
-  if (sync && agentRegistry.get(targetSlug).sessions.isActive(sessionId)) {
+  if (sync && actor.sessions.isActive(sessionId)) {
     // Last reply flushed before we started waiting — used below to detect that
     // the turn we waited out has actually reached the transcript file.
-    const boundaryEntry = await findLastSessionEntry(targetSlug, sessionId, isReturnableAssistantEntry)
+    const boundaryEntry = await actor.messages.findLastEntry(sessionId, isReturnableAssistantEntry)
     try {
       // 'timeout' falls through: return the transcript so far with status
       // 'running'. Sync get-transcript is a bounded long-poll the caller can
@@ -622,7 +618,7 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
       // poll budget on sessions that are simply idle. A session that went idle
       // just before the isSessionActive check above keeps plain read-what's-
       // flushed semantics.
-      if (outcome === 'completed' || !agentRegistry.get(targetSlug).sessions.isActive(sessionId)) {
+      if (outcome === 'completed' || !actor.sessions.isActive(sessionId)) {
         await readLastAssistantMessage(targetSlug, sessionId, boundaryEntry?.uuid)
       }
     } catch (error) {
@@ -632,15 +628,15 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
     }
   }
 
-  const isAwaiting = agentRegistry.get(targetSlug).sessions.isAwaitingInput(sessionId)
-  const isActive = agentRegistry.get(targetSlug).sessions.isActive(sessionId)
+  const isAwaiting = actor.sessions.isAwaitingInput(sessionId)
+  const isActive = actor.sessions.isActive(sessionId)
   const status: 'running' | 'idle' | 'awaiting_input' = isAwaiting
     ? 'awaiting_input'
     : isActive
       ? 'running'
       : 'idle'
 
-  const entries = await getSessionMessagesWithCompact(targetSlug, sessionId)
+  const entries = await actor.messages.withCompact(sessionId)
   const { messages, total } = pageTranscript(entries, { fullTranscript, limit })
 
   return c.json({ status, messages, total })
@@ -682,7 +678,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
 
   // One-hop rule: sessions started by another agent cannot invoke further.
   const callerMeta = _callerSessionId
-    ? await getSessionMetadata(callerSlug, _callerSessionId)
+    ? await agentRegistry.get(callerSlug).sessions.metadata(_callerSessionId)
     : null
   if (callerMeta?.invokedByAgentSlug) {
     return c.json(
@@ -746,7 +742,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         // with them. The persister is keyed by session id alone, so a third
         // agent's id would get re-pointed at the target's container here — and
         // the target's transcript written under it.
-        if (!(await sessionIsKnown(targetSlug, existingSessionId))) {
+        if (!(await targetActor.sessions.isKnown(existingSessionId))) {
           return c.json({ error: 'Session not found' }, 404)
         }
         if (targetActor.sessions.isActive(existingSessionId)) {
@@ -758,7 +754,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
         // fast turn's answer isn't confused with the previous turn's while the
         // new entry is still being written to the JSONL file.
         const replyBoundary = sync
-          ? await findLastSessionEntry(targetSlug, existingSessionId, isReturnableAssistantEntry)
+          ? await targetActor.messages.findLastEntry(existingSessionId, isReturnableAssistantEntry)
           : null
         stage = 'subscribe'
         if (!targetActor.sessions.isStreamSubscribed(existingSessionId)) {
@@ -919,7 +915,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
 
       stage = 'register_session'
       try {
-        await registerSession(targetSlug, newSessionId, `Invoked by ${callerName}`, {
+        await targetActor.sessions.register(newSessionId, `Invoked by ${callerName}`, {
           invokedByAgentSlug: callerSlug,
           ...(authorRecorded && attributedUserId ? { createdByUserId: attributedUserId } : {}),
         })

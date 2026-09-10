@@ -6,11 +6,13 @@ import { computerUsePermissionManager } from '@shared/lib/computer-use/permissio
 import { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
 import * as sessionService from '@shared/lib/services/session-service'
 import { appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
-import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
+import { getAgentClaudeConfigDir, getAgentWorkspaceDir, getSessionJsonlPath } from '@shared/lib/utils/file-storage'
 import {
+  syncAgentConnectionEnvironment,
   updateConnectedAccountsEnvironment,
   updateRemoteMcpEnvironment,
 } from '@shared/lib/container/connection-runtime-sync'
+import { loadDailyUsageData, loadSessionUsageTotals } from '@shared/lib/services/usage-service'
 import { LocalAgentActor, type LocalActorDeps } from './local-agent-actor'
 import type { AgentActor, AgentRegistry, AgentSlug } from './types'
 
@@ -78,10 +80,25 @@ export const agentRegistry: AgentRegistry = createAgentRegistry({
   get getAgentWorkspaceDir() {
     return getAgentWorkspaceDir
   },
+  get getAgentClaudeConfigDir() {
+    return getAgentClaudeConfigDir
+  },
+  get getSessionJsonlPath() {
+    return getSessionJsonlPath
+  },
   get updateConnectedAccountsEnvironment() {
     return updateConnectedAccountsEnvironment
   },
   get updateRemoteMcpEnvironment() {
     return updateRemoteMcpEnvironment
+  },
+  get syncAgentConnectionEnvironment() {
+    return syncAgentConnectionEnvironment
+  },
+  get loadDailyUsageData() {
+    return loadDailyUsageData
+  },
+  get loadSessionUsageTotals() {
+    return loadSessionUsageTotals
   },
 })

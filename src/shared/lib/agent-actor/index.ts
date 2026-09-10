@@ -10,6 +10,8 @@ export type {
   InputOps,
   McpReauthOps,
   MessageOps,
+  OpenWebSocketInit,
   ReviewOps,
   SessionOps,
+  UsageOps,
 } from './types'

@@ -1,18 +1,21 @@
 /**
  * Count the agent actor's escape hatches per file.
  *
- * `actor.container.fetch()`, `hostAuthHeaders()`, `webSocketBaseUrl()`,
- * `hostBridgeIp()`, `probeHostPort()` and `actor.files.workspacePath()` expose
- * the container's transport and the workspace's location to callers that still
- * do the work themselves. They exist so the routing refactor could land without
- * moving logic; each later PR burns some down. This rule reports one warning
- * per file with the counts so the total is visible in every lint run. It is a
- * meter, not a gate, and never fails CI.
+ * `actor.container.fetch()` and `actor.files.workspacePath()` let a caller
+ * speak to the container API or the workspace directory itself instead of
+ * asking the actor for the operation. They exist so the routing refactor could
+ * land without moving logic; each later PR burns some down. This rule reports
+ * one warning per file with the counts so the total is visible in every lint
+ * run. It is a meter, not a gate, and never fails CI.
+ *
+ * `hostBridgeIp()` and `probeHostPort()` are not counted: they describe the
+ * host machine, not the container's transport, and stay as capabilities that a
+ * remote actor answers with null / 'unknown'.
  *
  * @type {import('eslint').Rule.RuleModule}
  */
 const ESCAPE_HATCHES = new Map([
-  ['container', new Set(['fetch', 'hostAuthHeaders', 'webSocketBaseUrl', 'hostBridgeIp', 'probeHostPort'])],
+  ['container', new Set(['fetch'])],
   ['files', new Set(['workspacePath'])],
 ])
 

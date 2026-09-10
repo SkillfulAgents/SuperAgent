@@ -29,6 +29,10 @@ import type {
   StopOptions,
 } from '@shared/lib/container/types'
 import type { CoalescedUserMessage } from '@shared/lib/container/runtime-death'
+import type { WebSocket } from 'ws'
+import type { ConnectionRuntimeKind } from '@shared/lib/container/connection-runtime-sync'
+import type { CommonLoadOptions, DailyUsageData } from '@shared/lib/services/usage-service'
+import type { SessionUsageTotals } from '@shared/lib/types/usage'
 import type {
   JsonlMessageEntry,
   JsonlSystemEntry,
@@ -76,6 +80,7 @@ export interface AgentActor {
   readonly sessions: SessionOps
   readonly messages: MessageOps
   readonly inputs: InputOps
+  readonly usage: UsageOps
   readonly files: FileOps
 }
 
@@ -106,21 +111,42 @@ export interface ContainerOps {
   updateConnectedAccountsEnvironment(): Promise<Response>
   /** `updateRemoteMcpEnvironment` (connection-runtime-sync) with this agent's client. */
   updateRemoteMcpEnvironment(): Promise<Response>
+  /**
+   * `syncAgentConnectionEnvironment` (connection-runtime-sync) — push one
+   * projection to a running container. True when it was applied or when the
+   * container is stopped (startup rebuilds it); false on a failed push.
+   */
+  syncConnectionEnvironment(kind: ConnectionRuntimeKind): Promise<boolean>
 
-  // Escape hatches. These expose the container's transport to callers that
-  // still speak to the container API directly. The lint fence counts them so
-  // they can be burned down in later PRs.
+  // Transport to the container API. These are honest for any runtime: a
+  // remote actor answers them over the network the same way.
 
-  /** `client.fetch` */
+  /** `client.fetch` — an HTTP request to the container API. Counted by the lint fence until its direct callers move inward. */
   fetch(path: string, init?: RequestInit): Promise<Response>
-  /** `client.getHostAuthHeaders` */
-  hostAuthHeaders(): Record<string, string>
-  /** `client.getWebSocketBaseUrl` */
-  webSocketBaseUrl(port: number): string
-  /** `client.getHostBridgeIp` */
+  /**
+   * A WebSocket to the container API at `path`, authenticated the way `fetch`
+   * is. Returned before it opens so the caller attaches its own listeners.
+   * Throws when the container is not running.
+   */
+  openWebSocket(path: string, init?: OpenWebSocketInit): WebSocket
+
+  // Host capabilities. These describe the machine running the API, not the
+  // container's transport: an actor whose container is elsewhere answers
+  // null / 'unknown', and callers gate on that.
+
+  /** `client.getHostBridgeIp` — the address the container reaches this host on, if any. */
   hostBridgeIp(): string | null
-  /** `client.probeHostPortFromRunner` */
+  /** `client.probeHostPortFromRunner` — whether the container's network can reach a port on this host. */
   probeHostPort(host: string, port: number): Promise<HostPortProbeResult>
+}
+
+export interface OpenWebSocketInit {
+  /** Query string including the leading `?`. */
+  search?: string
+  /** WebSocket subprotocols to offer. */
+  protocols?: string | string[]
+  /** Extra request headers. The container's auth headers are added after these and win. */
+  headers?: Record<string, string>
 }
 
 export interface SessionOps {
@@ -162,6 +188,8 @@ export interface SessionOps {
   ensureDirectory(): Promise<void>
   /** `sessionFileRealPathWithinAgent` */
   fileRealPathWithinAgent(sessionId: string): boolean
+  /** `loadSessionUsageTotals` (usage-service) over this session's transcript files. */
+  usage(sessionId: string, options?: Pick<CommonLoadOptions, 'providerId'>): Promise<SessionUsageTotals>
 
   // Live sessions — ContainerClient. Needs the container.
 
@@ -284,10 +312,12 @@ export interface MessageOps {
 }
 
 export interface InputOps {
-  // Open requests — userInputRequestManager. Requests are addressed by id;
-  // the agent scope is carried by the request itself today.
+  // Open requests — userInputRequestManager, scoped to this agent. `register`
+  // stamps this agent onto the request's scope, and every id-addressed method
+  // treats a request registered for another agent as not found (null, false,
+  // or a no-op), so a handle cannot see or settle another agent's requests.
 
-  /** `userInputRequestManager.register` */
+  /** `userInputRequestManager.register` with `scope.agentSlug` set to this agent. */
   register(input: PendingUserInputRequestInput): PendingUserInputRequest | null
   /** `userInputRequestManager.getOpenRequestsForSession` */
   open(sessionId: string): PendingUserInputRequest[]
@@ -374,6 +404,12 @@ export interface McpReauthOps {
   request(details: Omit<McpReauthDetails, 'agentSlug'>, signal?: AbortSignal): Promise<void>
   /** `mcpReauthManager.dismiss` */
   dismiss(entryId: string, reason?: string): boolean
+}
+
+/** Model usage read from this agent's Claude data directory — usage-service. */
+export interface UsageOps {
+  /** `loadDailyUsageData` with this agent's `claudePath`. */
+  daily(options?: CommonLoadOptions): Promise<DailyUsageData[]>
 }
 
 /**

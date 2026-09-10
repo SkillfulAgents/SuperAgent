@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { WebSocket } from 'ws'
+import type { PendingUserInputRequest, UserInputRequestOutcome } from '@shared/lib/user-input/request-schema'
 import { createAgentRegistry } from './registry'
 import type { LocalActorDeps } from './local-agent-actor'
 
@@ -13,16 +15,77 @@ vi.mock('@shared/lib/computer-use/permission-manager', () => ({ computerUsePermi
 vi.mock('@shared/lib/proxy/mcp-reauth-manager', () => ({ mcpReauthManager: {} }))
 vi.mock('@shared/lib/services/session-service', () => ({}))
 vi.mock('@shared/lib/services/session-transcript-append', () => ({ appendInformationalEntry: vi.fn() }))
-vi.mock('@shared/lib/utils/file-storage', () => ({ getAgentWorkspaceDir: vi.fn() }))
+vi.mock('@shared/lib/utils/file-storage', () => ({
+  getAgentWorkspaceDir: vi.fn(),
+  getAgentClaudeConfigDir: vi.fn(),
+  getSessionJsonlPath: vi.fn(),
+}))
+vi.mock('@shared/lib/container/connection-runtime-sync', () => ({
+  updateConnectedAccountsEnvironment: vi.fn(),
+  updateRemoteMcpEnvironment: vi.fn(),
+  syncAgentConnectionEnvironment: vi.fn(),
+}))
+vi.mock('@shared/lib/services/usage-service', () => ({ loadDailyUsageData: vi.fn(), loadSessionUsageTotals: vi.fn() }))
+vi.mock('ws', () => ({ WebSocket: vi.fn() }))
+
+type FakeRequest = {
+  id: string
+  kind: PendingUserInputRequest['kind']
+  scope: { agentSlug?: string; sessionId?: string }
+  payload: Record<string, unknown>
+}
+
+/** Enough of UserInputRequestManager to exercise the actor's ownership guard. */
+function fakeInputManager() {
+  const requests = new Map<string, FakeRequest>()
+  const claimed = new Set<string>()
+  const settled: Array<{ id: string; kind: FakeRequest['kind']; scope: FakeRequest['scope']; outcome: unknown }> = []
+  return {
+    requests,
+    claimed,
+    register: vi.fn((input: FakeRequest) => {
+      requests.set(input.id, input)
+      return input
+    }),
+    getOpenRequest: vi.fn((id: string) => requests.get(id) ?? null),
+    claimRequest: vi.fn((id: string) => {
+      const request = requests.get(id)
+      if (!request || claimed.has(id)) return null
+      claimed.add(id)
+      return request
+    }),
+    releaseClaim: vi.fn((id: string) => {
+      claimed.delete(id)
+    }),
+    resolve: vi.fn((id: string, outcome: unknown) => {
+      const request = requests.get(id)
+      if (!request) return null
+      requests.delete(id)
+      claimed.delete(id)
+      settled.push({ id, kind: request.kind, scope: request.scope, outcome })
+      return request
+    }),
+    getRecentResolution: vi.fn((id: string) => settled.find((entry) => entry.id === id)),
+    enrichOpenRequestPayload: vi.fn((id: string, kind: FakeRequest['kind'], enrichment: Record<string, unknown>) => {
+      const request = requests.get(id)
+      if (!request || request.kind !== kind) return false
+      Object.assign(request.payload, enrichment)
+      return true
+    }),
+    getOpenRequestsForAgent: vi.fn((slug: string) => [...requests.values()].filter((r) => r.scope.agentSlug === slug)),
+  }
+}
 
 function fakeDeps() {
   const client = {
     sendMessage: vi.fn().mockResolvedValue(undefined),
     getHostAuthHeaders: vi.fn().mockReturnValue({ 'x-host': '1' }),
+    getWebSocketBaseUrl: vi.fn().mockReturnValue('ws://127.0.0.1:4321'),
   }
   const containerManager = {
     getClient: vi.fn().mockReturnValue(client),
     ensureRunning: vi.fn().mockResolvedValue(client),
+    getCachedInfo: vi.fn().mockReturnValue({ status: 'running', port: 4321 }),
     getRunningAgentIds: vi.fn().mockReturnValue([]),
     removeClient: vi.fn(),
     clearClients: vi.fn(),
@@ -30,25 +93,46 @@ function fakeDeps() {
   const reviewManager = {
     requestReview: vi.fn().mockResolvedValue('allow'),
   }
+  const inputManager = fakeInputManager()
+  const loadDailyUsageData = vi.fn().mockResolvedValue([])
+  const loadSessionUsageTotals = vi.fn().mockResolvedValue({ totalCost: 0, totalTokens: 0, priceMissing: false })
+  const syncAgentConnectionEnvironment = vi.fn().mockResolvedValue(true)
   const deps = {
     containerManager,
     messagePersister: {},
-    userInputRequestManager: {},
+    userInputRequestManager: inputManager,
     reviewManager,
     computerUsePermissionManager: {},
     mcpReauthManager: {},
     sessionService: {},
     appendInformationalEntry: vi.fn(),
     getAgentWorkspaceDir: vi.fn((slug: string) => `/workspaces/${slug}`),
+    getAgentClaudeConfigDir: vi.fn((slug: string) => `/workspaces/${slug}/.claude`),
+    getSessionJsonlPath: vi.fn((slug: string, sessionId: string) => `/workspaces/${slug}/sessions/${sessionId}.jsonl`),
+    syncAgentConnectionEnvironment,
+    loadDailyUsageData,
+    loadSessionUsageTotals,
   }
-  return { deps: deps as unknown as LocalActorDeps, containerManager, client, reviewManager }
+  return {
+    deps: deps as unknown as LocalActorDeps,
+    containerManager,
+    client,
+    reviewManager,
+    inputManager,
+    loadDailyUsageData,
+    loadSessionUsageTotals,
+    syncAgentConnectionEnvironment,
+  }
 }
+
+const outcome = { kind: 'settled' } as unknown as UserInputRequestOutcome
 
 describe('createAgentRegistry', () => {
   let fake: ReturnType<typeof fakeDeps>
 
   beforeEach(() => {
     fake = fakeDeps()
+    vi.mocked(WebSocket).mockClear()
   })
 
   it('returns one stable handle per slug, created on first get', () => {
@@ -114,11 +198,53 @@ describe('createAgentRegistry', () => {
       expect(fake.client.sendMessage).toHaveBeenCalledWith('s1', 'hi', 'u1', { isAutomated: true })
     })
 
-    it('container.hostAuthHeaders reads the client at call time, not at construction', () => {
+    it('container.openWebSocket targets this agent\'s container and adds its auth headers last', () => {
       const actor = createAgentRegistry(fake.deps).get('a')
       expect(fake.containerManager.getClient).not.toHaveBeenCalled()
-      expect(actor.container.hostAuthHeaders()).toEqual({ 'x-host': '1' })
-      expect(fake.containerManager.getClient).toHaveBeenCalledWith('a')
+
+      actor.container.openWebSocket('/browser/stream', {
+        search: '?since=1',
+        protocols: ['p1'],
+        headers: { 'x-forwarded': 'yes', 'x-host': 'spoofed' },
+      })
+
+      expect(fake.containerManager.getCachedInfo).toHaveBeenCalledWith('a')
+      expect(fake.client.getWebSocketBaseUrl).toHaveBeenCalledWith(4321)
+      expect(vi.mocked(WebSocket)).toHaveBeenCalledWith('ws://127.0.0.1:4321/browser/stream?since=1', ['p1'], {
+        headers: { 'x-forwarded': 'yes', 'x-host': '1' },
+      })
+    })
+
+    it('container.openWebSocket refuses while the container is not running', () => {
+      fake.containerManager.getCachedInfo.mockReturnValue({ status: 'stopped', port: null })
+      const actor = createAgentRegistry(fake.deps).get('a')
+      expect(() => actor.container.openWebSocket('/browser/stream')).toThrow(/not running/)
+      expect(vi.mocked(WebSocket)).not.toHaveBeenCalled()
+    })
+
+    it('container.syncConnectionEnvironment pushes one projection for this agent', async () => {
+      const actor = createAgentRegistry(fake.deps).get('a')
+      await expect(actor.container.syncConnectionEnvironment('remote-mcps')).resolves.toBe(true)
+      expect(fake.syncAgentConnectionEnvironment).toHaveBeenCalledWith('a', 'remote-mcps')
+    })
+
+    it('usage.daily reads this agent\'s Claude data directory', async () => {
+      const actor = createAgentRegistry(fake.deps).get('a')
+      await actor.usage.daily({ since: '2026-09-01', providerId: 'anthropic' })
+      expect(fake.loadDailyUsageData).toHaveBeenCalledWith({
+        claudePath: '/workspaces/a/.claude',
+        since: '2026-09-01',
+        providerId: 'anthropic',
+      })
+    })
+
+    it('sessions.usage reads this session\'s transcript', async () => {
+      const actor = createAgentRegistry(fake.deps).get('a')
+      await actor.sessions.usage('s1', { providerId: 'anthropic' })
+      expect(fake.loadSessionUsageTotals).toHaveBeenCalledWith({
+        sessionPath: '/workspaces/a/sessions/s1.jsonl',
+        providerId: 'anthropic',
+      })
     })
 
     it('inputs.reviews.request stamps the actor\'s slug onto the review', async () => {
@@ -139,6 +265,65 @@ describe('createAgentRegistry', () => {
     it('files.workspacePath resolves the agent workspace by slug', () => {
       const actor = createAgentRegistry(fake.deps).get('a')
       expect(actor.files.workspacePath()).toBe('/workspaces/a')
+    })
+  })
+
+  describe('inputs are scoped to the handle\'s agent', () => {
+    const request = (id: string, agentSlug: string): FakeRequest => ({
+      id,
+      kind: 'question' as PendingUserInputRequest['kind'],
+      scope: { agentSlug, sessionId: 's' },
+      payload: {},
+    })
+
+    it('register stamps this agent onto the scope, whatever the caller wrote', () => {
+      const actor = createAgentRegistry(fake.deps).get('a')
+      actor.inputs.register(request('r1', 'b') as never)
+      expect(fake.inputManager.register).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'r1', scope: { agentSlug: 'a', sessionId: 's' } }),
+      )
+    })
+
+    it('another agent\'s request is not found: get, claim, enrich and resolve miss and leave it untouched', () => {
+      const registry = createAgentRegistry(fake.deps)
+      fake.inputManager.requests.set('rb', request('rb', 'b'))
+      const a = registry.get('a').inputs
+
+      expect(a.get('rb')).toBeNull()
+      expect(a.claim('rb')).toBeNull()
+      expect(a.enrich('rb', 'question' as PendingUserInputRequest['kind'], { note: 1 })).toBe(false)
+      expect(a.resolve('rb', outcome)).toBeNull()
+
+      expect(fake.inputManager.claimRequest).not.toHaveBeenCalled()
+      expect(fake.inputManager.enrichOpenRequestPayload).not.toHaveBeenCalled()
+      expect(fake.inputManager.resolve).not.toHaveBeenCalled()
+      expect(fake.inputManager.requests.get('rb')).toEqual(request('rb', 'b'))
+    })
+
+    it('the owning agent can still see, claim, settle and read back its own request', () => {
+      const registry = createAgentRegistry(fake.deps)
+      fake.inputManager.requests.set('rb', request('rb', 'b'))
+      const b = registry.get('b').inputs
+
+      expect(b.get('rb')?.id).toBe('rb')
+      expect(b.claim('rb')?.id).toBe('rb')
+      expect(b.enrich('rb', 'question' as PendingUserInputRequest['kind'], { note: 1 })).toBe(true)
+      expect(b.resolve('rb', outcome)?.id).toBe('rb')
+      expect(b.recentResolution('rb')?.id).toBe('rb')
+      // The settled record is scoped too: another agent cannot read it back.
+      expect(registry.get('a').inputs.recentResolution('rb')).toBeUndefined()
+    })
+
+    it('releaseClaim only drops a claim this agent could have taken', () => {
+      const registry = createAgentRegistry(fake.deps)
+      fake.inputManager.requests.set('rb', request('rb', 'b'))
+      expect(registry.get('b').inputs.claim('rb')?.id).toBe('rb')
+
+      registry.get('a').inputs.releaseClaim('rb')
+      expect(fake.inputManager.claimed.has('rb')).toBe(true)
+
+      registry.get('b').inputs.releaseClaim('rb')
+      expect(fake.inputManager.claimed.has('rb')).toBe(false)
     })
   })
 })

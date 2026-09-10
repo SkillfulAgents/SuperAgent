@@ -1,5 +1,6 @@
 import { and, eq, gte, inArray, sql, type SQL } from 'drizzle-orm'
 import type { SQLiteColumn } from 'drizzle-orm/sqlite-core'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { db } from '@shared/lib/db'
 import {
   agentConnectedAccounts,
@@ -28,7 +29,6 @@ import {
   normalizeAutomationStatus,
   type DailyActivityEvent,
 } from './activity-aggregation'
-import { readSessionMetadata } from './session-service'
 
 export interface ActivityStatsOptions {
   days: number
@@ -267,7 +267,7 @@ export async function getAgentActivityStats(
   ] = await Promise.all([
     db.select().from(scheduledTasks).where(eq(scheduledTasks.agentSlug, agentSlug)),
     db.select().from(webhookTriggers).where(eq(webhookTriggers.agentSlug, agentSlug)),
-    readSessionMetadata(agentSlug),
+    agentRegistry.get(agentSlug).sessions.readMetadata(),
     db.select({ id: agentConnectedAccounts.connectedAccountId })
       .from(agentConnectedAccounts)
       .innerJoin(

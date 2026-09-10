@@ -24,7 +24,7 @@ import {
   findAgentsAssignedRemoteMcp,
   syncAgentsAssignedRemoteMcp,
   syncRemoteMcpAgents,
-} from '@shared/lib/container/connection-runtime-sync'
+} from '@shared/lib/services/connection-sync-service'
 import { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
 
 function safeParseTools(json: string | null): McpToolInfo[] {

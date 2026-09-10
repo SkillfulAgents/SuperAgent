@@ -79,9 +79,8 @@ export function setupBrowserStreamProxy(server: ServerType): void {
           return
         }
 
-        const wsUrl = `${actor.container.webSocketBaseUrl(info.port)}/browser/stream`
-        console.log(`[BrowserProxy] Connecting upstream to: ${wsUrl}`)
-        const upstream = new WebSocket(wsUrl, { headers: actor.container.hostAuthHeaders() })
+        console.log(`[BrowserProxy] Connecting upstream to /browser/stream for agent ${agentSlug}`)
+        const upstream = actor.container.openWebSocket('/browser/stream')
 
         upstream.on('open', () => {
           console.log(`[BrowserProxy] Connected to container stream for agent ${agentSlug}`)

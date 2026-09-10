@@ -15,6 +15,7 @@
 import fs from 'node:fs'
 import pLimit from 'p-limit'
 import { count, eq, inArray, isNotNull, ne, and } from 'drizzle-orm'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { db } from '@shared/lib/db'
 import {
   agentConnectedAccounts,
@@ -32,7 +33,6 @@ import {
 } from './chat-integration-service'
 import { listActiveWebhookTriggersByAgents } from './webhook-trigger-service'
 import { listPendingScheduledTasksByAgents } from './scheduled-task-service'
-import { readSessionMetadata } from './session-service'
 import { getAgentSessionMetadataPath } from '@shared/lib/utils/file-storage'
 
 export interface HomeGraphScope {
@@ -81,7 +81,7 @@ async function countCallersForAgent(slug: string): Promise<Map<string, number>> 
     }
   }
   // readSessionMetadata degrades to {} on a missing/corrupt file.
-  const metadata = await readSessionMetadata(slug)
+  const metadata = await agentRegistry.get(slug).sessions.readMetadata()
   const callerCounts = new Map<string, number>()
   for (const meta of Object.values(metadata)) {
     const caller = meta.invokedByAgentSlug
