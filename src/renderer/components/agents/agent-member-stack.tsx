@@ -39,47 +39,49 @@ export function AgentMemberStack({ agentSlug, inviteControl }: { agentSlug: stri
   const [activeId, setActiveId] = useState<string | null>(null)
   const activeIndex = members?.findIndex((member) => member.id === activeId) ?? -1
   return (
-    <div className="flex shrink-0 items-center gap-2" data-testid="agent-member-stack" role="group" aria-label="Agent members">
-      {isLoading ? <span role="status" className="text-xs text-muted-foreground">Loading members…</span>
-        : isError ? <button className="text-xs text-muted-foreground underline" onClick={() => void refetch()}>Retry members</button>
+    <div className="flex shrink-0 items-center px-2 py-1" data-testid="agent-member-stack" role="group" aria-label="Agent members">
+      {isLoading ? <span role="status" className="mr-4 text-xs text-muted-foreground">Loading members…</span>
+        : isError ? <button className="mr-4 text-xs text-muted-foreground underline" onClick={() => void refetch()}>Retry members</button>
         : members?.length ? (
           <TooltipProvider delayDuration={150}>
-            <div className="flex items-center px-2 py-1">
-              {members.slice(0, 5).map((member, index) => (
-                <MemberFace
-                  key={member.id} member={member} open={activeId === member.id}
-                  offset={activeIndex < 0 || activeIndex === index ? 0 : index < activeIndex ? -8 : 8}
-                  onOpenChange={(open) => setActiveId((current) => open ? member.id : current === member.id ? null : current)}
-                />
-              ))}
-              {members.length > 5 && (
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <button type="button" className="relative ml-3 flex h-8 min-w-8 items-center justify-center rounded-full border bg-background px-1.5 text-xs font-medium hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={`Show all ${members.length} members`} data-testid="agent-members-overflow">
-                      +{members.length - 5}
-                    </button>
-                  </PopoverTrigger>
-                  <PopoverContent align="end" className="w-72 max-w-[calc(100vw-2rem)] p-2" data-testid="agent-members-list">
-                    <p className="px-2 py-1 text-xs font-medium">{members.length} members</p>
-                    <ul className="max-h-72 overflow-y-auto" aria-label="All agent members">
-                      {members.map((member) => (
-                        <li key={member.id} className="flex items-center gap-2 px-2 py-2">
-                          <UserAvatar user={member} />
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate text-xs font-medium">{member.name || member.email}</p>
-                            <p className="truncate text-[11px] text-muted-foreground">{member.email}</p>
-                          </div>
-                          <span className="text-[11px] capitalize text-muted-foreground">{member.role}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </PopoverContent>
-                </Popover>
-              )}
-            </div>
+            {members.slice(0, 5).map((member, index) => (
+              <MemberFace
+                key={member.id} member={member} open={activeId === member.id}
+                offset={activeIndex < 0 || activeIndex === index ? 0 : index < activeIndex ? -8 : 8}
+                onOpenChange={(open) => setActiveId((current) => open ? member.id : current === member.id ? null : current)}
+              />
+            ))}
+            {members.length > 5 && (
+              <Popover>
+                <PopoverTrigger asChild>
+                  <button type="button" className="relative -ml-2 flex h-8 min-w-8 shrink-0 items-center justify-center rounded-full border bg-background px-1.5 text-xs font-medium ring-2 ring-background transition-transform duration-150 motion-reduce:transition-none hover:z-10 hover:bg-accent focus:z-10 focus-visible:outline-none focus-visible:ring-ring" style={{ transform: `translateX(${activeIndex < 0 ? 0 : 8}px)` }} aria-label={`Show all ${members.length} members`} data-testid="agent-members-overflow">
+                    +{members.length - 5}
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-72 max-w-[calc(100vw-2rem)] p-2" data-testid="agent-members-list">
+                  <p className="px-2 py-1 text-xs font-medium">{members.length} members</p>
+                  <ul className="max-h-72 overflow-y-auto" aria-label="All agent members">
+                    {members.map((member) => (
+                      <li key={member.id} className="flex items-center gap-2 px-2 py-2">
+                        <UserAvatar user={member} />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-xs font-medium">{member.name || member.email}</p>
+                          <p className="truncate text-[11px] text-muted-foreground">{member.email}</p>
+                        </div>
+                        <span className="text-[11px] capitalize text-muted-foreground">{member.role}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </PopoverContent>
+              </Popover>
+            )}
           </TooltipProvider>
-        ) : <span className="flex items-center gap-1 text-xs text-muted-foreground"><Users className="h-4 w-4" />No members</span>}
-      {inviteControl}
+        ) : <span className="mr-4 flex items-center gap-1 text-xs text-muted-foreground"><Users className="h-4 w-4" />No members</span>}
+      {inviteControl && (
+        <div className="relative -ml-2 first:ml-0 flex shrink-0 transition-transform duration-150 motion-reduce:transition-none hover:z-10 focus-within:z-10" style={{ transform: `translateX(${activeIndex < 0 ? 0 : 8}px)` }}>
+          {inviteControl}
+        </div>
+      )}
     </div>
   )
 }

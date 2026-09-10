@@ -413,7 +413,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                 agentSlug={agent.slug}
                 inviteControl={(isOwner || isAdmin) ? (
                   <AgentSharePopover ref={shareRef} agentSlug={agent.slug} agentName={agent.name} trigger={
-                    <Button type="button" size="icon" variant="outline" className="h-8 w-8 shrink-0 rounded-full" aria-label="Share agent" title="Invite, publish, or export" data-testid="agent-share-button">
+                    <Button type="button" size="icon" variant="outline" className="h-8 w-8 shrink-0 rounded-full bg-background ring-2 ring-background focus-visible:ring-ring" aria-label="Share agent" title="Invite, publish, or export" data-testid="agent-share-button">
                       <Plus className="h-4 w-4" />
                     </Button>
                   } />
