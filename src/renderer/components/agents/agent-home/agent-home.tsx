@@ -1,9 +1,9 @@
 
 import { useState, useRef, useMemo, useCallback, useEffect } from 'react'
 import { cn } from '@shared/lib/utils/cn'
-import { Button } from '@renderer/components/ui/button'
+import { Button, buttonVariants } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { ArrowUp, Loader2, Eye, Maximize2, Minimize2, MoreVertical, Search } from 'lucide-react'
+import { ArrowUp, Loader2, Eye, Maximize2, Minimize2, Search } from 'lucide-react'
 import { useCreateSession, useSessions } from '@renderer/hooks/use-sessions'
 import { useScheduledTasks } from '@renderer/hooks/use-scheduled-tasks'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
@@ -21,6 +21,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { AgentSharePopover, type AgentSharePopoverHandle } from '@renderer/components/agents/agent-share-popover'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
+import { AgentMenuButton } from '@renderer/components/agents/agent-menu-button'
 import { SystemPromptDialog } from '@renderer/components/agents/system-prompt-dialog'
 import { toast } from 'sonner'
 import { apiFetch } from '@renderer/lib/api'
@@ -411,32 +412,16 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                 shows just the Publish pane. */}
             {isOwner && <AgentSharePopover ref={shareRef} agentSlug={agent.slug} agentName={agent.name} />}
             {/* Three-dot = the same agent menu a right-click on the title (or
-                the sidebar row) opens, so the two never drift apart. A click
-                replays as a contextmenu event on the title's trigger, anchored
-                under this button; Rename hands off to the inline title above. */}
-            <Button
-              type="button"
-              size="icon"
-              variant="outline"
-              className="h-8 w-8 shrink-0"
-              aria-label="Agent menu"
-              aria-haspopup="menu"
-              aria-expanded={menuOpen}
+                the sidebar row) opens. The shared AgentMenuButton replays the
+                click as a contextmenu on the title's trigger, anchored under
+                this button; Rename hands off to the inline title above. */}
+            <AgentMenuButton
+              triggerRef={menuTriggerRef}
+              agentName={agent.name}
+              menuOpen={menuOpen}
               data-testid="agent-settings-button"
-              onClick={(event) => {
-                const rect = event.currentTarget.getBoundingClientRect()
-                menuTriggerRef.current?.dispatchEvent(
-                  new MouseEvent('contextmenu', {
-                    bubbles: true,
-                    cancelable: true,
-                    clientX: rect.left,
-                    clientY: rect.bottom + 4,
-                  })
-                )
-              }}
-            >
-              <MoreVertical className="h-4 w-4" />
-            </Button>
+              className={cn(buttonVariants({ variant: 'outline', size: 'icon' }), 'h-8 w-8 shrink-0')}
+            />
           </ScrollAwarePageTitle>
           {isViewOnly ? (
             <div className="flex items-center justify-center gap-2 text-sm font-medium text-muted-foreground border rounded-lg p-6" data-testid="view-only-banner">

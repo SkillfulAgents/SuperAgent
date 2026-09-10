@@ -83,7 +83,13 @@ interface AgentContextMenuProps {
    * home and the panel opens on arrival.
    */
   onOpenDirectory?: () => void
-  /** Reports the menu opening and closing (e.g. for a button's aria-expanded). */
+  /**
+   * Reports the menu opening and closing (e.g. for a button's aria-expanded).
+   * Call sites that reveal a trigger on hover (the sidebar's 3-dot button)
+   * also need this: once the menu is open Radix takes pointer events off the
+   * page, so `:hover` drops and a hover-only affordance would disappear out
+   * from under its own menu.
+   */
   onOpenChange?: (open: boolean) => void
   /** Homepage-only controls that should share the agent's single menu surface. */
   additionalOptions?: React.ReactNode
