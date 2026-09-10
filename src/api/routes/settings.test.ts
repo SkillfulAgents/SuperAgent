@@ -77,6 +77,8 @@ const mockResetReadiness = vi.fn()
 const mockMarkRuntimeUnavailable = vi.fn()
 const mockUpdateStartProgress = vi.fn()
 
+const mockGetStaleAgents = vi.fn()
+const mockRestartStaleAgents = vi.fn()
 vi.mock('@shared/lib/container/container-manager', () => ({
   containerManager: {
     hasRunningAgents: (...args: unknown[]) => mockHasRunningAgents(...args),
@@ -88,6 +90,8 @@ vi.mock('@shared/lib/container/container-manager', () => ({
     markRuntimeUnavailable: (...args: unknown[]) => mockMarkRuntimeUnavailable(...args),
     updateStartProgress: (...args: unknown[]) => mockUpdateStartProgress(...args),
     stopAll: vi.fn(),
+    getStaleAgents: (...args: unknown[]) => mockGetStaleAgents(...args),
+    restartStaleAgents: (...args: unknown[]) => mockRestartStaleAgents(...args),
   },
 }))
 
@@ -1235,6 +1239,20 @@ describe('settings route', () => {
 
       expect(res.status).toBe(400)
       expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+  })
+
+  // =========================================================================
+  // Stale agents
+  // =========================================================================
+  describe('stale agents', () => {
+    it('POST restart answers 409 with the current state while a run is in flight', async () => {
+      const inFlight = { agents: [{ slug: 'a', status: 'restarting' }], running: true }
+      mockGetStaleAgents.mockReturnValue(inFlight)
+      const res = await app.request('http://localhost/api/settings/stale-agents/restart', { method: 'POST' })
+      expect(res.status).toBe(409)
+      expect(await res.json()).toEqual(inFlight)
+      expect(mockRestartStaleAgents).not.toHaveBeenCalled()
     })
   })
 

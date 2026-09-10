@@ -651,6 +651,18 @@ settings.post('/restart-runner', async (c) => {
   }
 })
 
+// GET /api/settings/stale-agents - agents still on a pre-change container env
+settings.get('/stale-agents', (c) => c.json(containerManager.getStaleAgents()))
+
+// POST /api/settings/stale-agents/restart - restart them one at a time, awaited
+// to completion like restart-runner. 409 with the current state while a run is
+// already in flight.
+settings.post('/stale-agents/restart', async (c) => {
+  const current = containerManager.getStaleAgents()
+  if (current?.running) return c.json(current, 409)
+  return c.json(await containerManager.restartStaleAgents())
+})
+
 // POST /api/settings/refresh-availability - Force-refresh runner availability (clears cache)
 settings.post('/refresh-availability', async (c) => {
   try {

@@ -47,6 +47,23 @@ export interface ApiAgent {
   attentionOutsideLatest?: ApiAttentionOutsideLatest | null
 }
 
+export type StaleAgentStatus = 'pending' | 'restarting' | 'restarted' | 'failed' | 'skipped'
+
+export interface StaleAgentEntry {
+  slug: string
+  status: StaleAgentStatus
+  error?: string
+}
+
+/**
+ * GET /api/settings/stale-agents: agents that were running when a setting baked
+ * into the container env changed, plus whether a restart run is in flight.
+ */
+export interface ApiStaleAgents {
+  agents: StaleAgentEntry[]
+  running: boolean
+}
+
 /** Response returned when an agent template has been installed or imported. */
 export interface ApiAgentTemplateInstallResult extends ApiAgent {
   hasOnboarding?: boolean

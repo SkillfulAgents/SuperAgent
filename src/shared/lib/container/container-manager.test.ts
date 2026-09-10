@@ -199,6 +199,7 @@ vi.mock('@shared/lib/services/mount-service', () => ({
 }))
 
 import { containerManager } from './container-manager'
+import type { StaleAgentStatus } from '@shared/lib/types/api'
 
 describe('containerManager.ensureRunning — env var construction', () => {
   beforeEach(() => {
@@ -1533,5 +1534,212 @@ describe('containerManager.stopContainer force stop recovery', () => {
     expect(messagePersister.markAllSessionsInactiveForAgent).toHaveBeenCalledWith('error-agent', {
       settleRecovering: true,
     })
+  })
+})
+
+// The stale-agents record: which agents were running when a container-baked
+// setting changed, and the sequential restart run that clears them.
+describe('containerManager stale agents', () => {
+  beforeEach(() => {
+    for (const slug of ['a', 'b', 'c']) containerManager.removeClient(slug)
+    containerManager['staleAgents'] = null
+    containerManager['staleRunInFlight'] = false
+    vi.restoreAllMocks()
+  })
+
+  function running(...slugs: string[]) {
+    for (const slug of slugs) containerManager.updateCachedStatus(slug, 'running', 4000)
+  }
+
+  function setStatus(slug: string, status: StaleAgentStatus, error?: string) {
+    const entry = containerManager['staleAgents']?.find((e) => e.slug === slug)
+    if (!entry) throw new Error(`no stale entry for ${slug}`)
+    Object.assign(entry, error === undefined ? { status } : { status, error })
+  }
+
+  it('markAgentsStale snapshots the running set as pending and replaces a prior record', () => {
+    running('a', 'b')
+    containerManager.markAgentsStale()
+    expect(containerManager.getStaleAgents()).toEqual({
+      agents: [{ slug: 'a', status: 'pending' }, { slug: 'b', status: 'pending' }],
+      running: false,
+    })
+
+    containerManager.updateCachedStatus('a', 'stopped', null)
+    running('c')
+    containerManager.markAgentsStale()
+    expect(containerManager.getStaleAgents()?.agents.map((e) => e.slug)).toEqual(['b', 'c'])
+
+    containerManager.updateCachedStatus('b', 'stopped', null)
+    containerManager.updateCachedStatus('c', 'stopped', null)
+    containerManager.markAgentsStale()
+    expect(containerManager.getStaleAgents()).toBeNull()
+  })
+
+
+  it('a repeated stopped write (routine sync) keeps a failed entry for Retry', () => {
+    running('a')
+    containerManager.markAgentsStale()
+    setStatus('a', 'failed', 'boom')
+    containerManager['containerStatuses'].set('a', { status: 'stopped', port: null, lastSyncedAt: Date.now() })
+    containerManager.updateCachedStatus('a', 'stopped', null) // sync rewrite, no flip
+    expect(containerManager.getStaleAgents()?.agents).toEqual([{ slug: 'a', status: 'failed', error: 'boom' }])
+  })
+
+  it('a running write clears a failed entry (the agent came back outside the run) and nothing else', () => {
+    running('a', 'b')
+    containerManager.markAgentsStale()
+    setStatus('a', 'failed', 'boom')
+    setStatus('b', 'restarting')
+    containerManager.updateCachedStatus('a', 'running', 4000)
+    containerManager.updateCachedStatus('b', 'running', 4000)
+    expect(containerManager.getStaleAgents()?.agents).toEqual([{ slug: 'b', status: 'restarting' }])
+  })
+
+  it('removing an agent drops its entry whatever its status', () => {
+    running('a', 'b')
+    containerManager.markAgentsStale()
+    setStatus('a', 'failed', 'boom')
+    containerManager.removeClient('a')
+    expect(containerManager.getStaleAgents()?.agents.map((e) => e.slug)).toEqual(['b'])
+  })
+
+  it('a stopped write prunes every entry but a restarting one, and drops an empty record', () => {
+    running('a', 'b', 'c')
+    containerManager.markAgentsStale()
+    setStatus('a', 'restarted')
+    setStatus('b', 'failed', 'boom')
+    setStatus('c', 'restarting')
+
+    containerManager.updateCachedStatus('a', 'stopped', null)
+    containerManager.updateCachedStatus('b', 'stopped', null)
+    containerManager.updateCachedStatus('c', 'stopped', null)
+    expect(containerManager.getStaleAgents()?.agents).toEqual([{ slug: 'c', status: 'restarting' }])
+
+    setStatus('c', 'pending')
+    running('c')
+    containerManager.updateCachedStatus('c', 'stopped', null)
+    expect(containerManager.getStaleAgents()).toBeNull()
+  })
+
+  it('restartStaleAgents restarts one at a time, in order, and continues past a throw', async () => {
+    running('a', 'b', 'c')
+    containerManager.markAgentsStale()
+    const order: string[] = []
+    const gates: Record<string, () => void> = {}
+    vi.spyOn(containerManager, 'restartContainer').mockImplementation((slug: string) => {
+      order.push(slug)
+      return new Promise((resolve, reject) => {
+        gates[slug] = () => (slug === 'b' ? reject(new Error('Container failed to become healthy')) : resolve({} as never))
+      })
+    })
+
+    const run = containerManager.restartStaleAgents()
+    await Promise.resolve()
+    // a is in flight; b has not been asked to start.
+    expect(order).toEqual(['a'])
+    expect(containerManager.getStaleAgents()?.agents.map((e) => e.status)).toEqual(['restarting', 'pending', 'pending'])
+
+    gates.a()
+    await vi.waitFor(() => expect(order).toEqual(['a', 'b']))
+    gates.b() // throws: the run records it and moves on
+    await vi.waitFor(() => expect(order).toEqual(['a', 'b', 'c']))
+    gates.c()
+
+    expect(await run).toEqual({
+      agents: [
+        { slug: 'a', status: 'restarted' },
+        { slug: 'b', status: 'failed', error: 'Container failed to become healthy' },
+        { slug: 'c', status: 'restarted' },
+      ],
+      running: false,
+    })
+    // Only what still needs action stays behind for a later visit.
+    expect(containerManager.getStaleAgents()?.agents).toEqual([
+      { slug: 'b', status: 'failed', error: 'Container failed to become healthy' },
+    ])
+  })
+
+  it('restartStaleAgents leaves alone an agent that left the list while an earlier one was restarting', async () => {
+    running('a', 'b')
+    containerManager.markAgentsStale()
+    const restarted: string[] = []
+    vi.spyOn(containerManager, 'restartContainer').mockImplementation(async (slug: string) => {
+      restarted.push(slug)
+      if (slug === 'a') {
+        // b stops and comes back on its own mid-run: pruned, and fresh.
+        containerManager.updateCachedStatus('b', 'stopped', null)
+        running('b')
+      }
+      return {} as never
+    })
+
+    const result = await containerManager.restartStaleAgents()
+    expect(restarted).toEqual(['a'])
+    expect(result?.agents).toEqual([{ slug: 'a', status: 'restarted' }])
+  })
+
+  it('restartStaleAgents marks a pending agent that is no longer running as skipped', async () => {
+    running('a')
+    containerManager.markAgentsStale()
+    // Stopped without going through the cache write (e.g. the record was armed
+    // against a status that is stale itself); the run checks live status.
+    setStatus('a', 'pending')
+    containerManager['containerStatuses'].set('a', { status: 'stopped', port: null, lastSyncedAt: Date.now() })
+    const restart = vi.spyOn(containerManager, 'restartContainer')
+
+    const result = await containerManager.restartStaleAgents()
+    expect(restart).not.toHaveBeenCalled()
+    expect(result?.agents).toEqual([{ slug: 'a', status: 'skipped' }])
+  })
+
+  it('restartStaleAgents always attempts a failed agent, by starting it', async () => {
+    running('a')
+    containerManager.markAgentsStale()
+    setStatus('a', 'failed', 'earlier')
+    containerManager['containerStatuses'].set('a', { status: 'stopped', port: null, lastSyncedAt: Date.now() })
+    const restart = vi.spyOn(containerManager, 'restartContainer')
+    const start = vi.spyOn(containerManager, 'ensureRunning').mockResolvedValue({} as never)
+
+    const result = await containerManager.restartStaleAgents()
+    expect(restart).not.toHaveBeenCalled()
+    expect(start).toHaveBeenCalledWith('a')
+    expect(result?.agents).toEqual([{ slug: 'a', status: 'restarted' }])
+  })
+
+  it('restartStaleAgents refuses while a run is in flight', async () => {
+    running('a')
+    containerManager.markAgentsStale()
+    let release!: () => void
+    vi.spyOn(containerManager, 'restartContainer').mockImplementation(
+      () => new Promise((resolve) => { release = () => resolve({} as never) }),
+    )
+
+    const first = containerManager.restartStaleAgents()
+    await Promise.resolve()
+    const second = await containerManager.restartStaleAgents()
+    expect(second).toEqual({ agents: [{ slug: 'a', status: 'restarting' }], running: true })
+
+    release()
+    expect((await first)?.running).toBe(false)
+  })
+
+  it('a run writes no marks onto a snapshot armed after it started', async () => {
+    running('a')
+    containerManager.markAgentsStale()
+    vi.spyOn(containerManager, 'restartContainer').mockImplementation(async () => {
+      // A new token lands mid-run: the record is replaced, the flag is not.
+      running('b')
+      containerManager.markAgentsStale()
+      expect(containerManager.getStaleAgents()?.running).toBe(true)
+      return {} as never
+    })
+
+    const result = await containerManager.restartStaleAgents()
+    expect(result?.agents).toEqual([
+      { slug: 'a', status: 'pending' },
+      { slug: 'b', status: 'pending' },
+    ])
+    expect(result?.running).toBe(false)
   })
 })

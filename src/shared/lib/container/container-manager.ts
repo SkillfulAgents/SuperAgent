@@ -2,6 +2,7 @@ import path from 'path'
 import { createContainerClient, checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage, startRunner, refreshRunnerAvailability, clearRunnerAvailabilityCache, reconcileRunnerState, getRunnerDisplayName, getContainerClientClass, getCliCommand, getAvailableDiskSpace, MIN_IMAGE_DISK_SPACE_BYTES, type ContainerRunner } from './client-factory'
 import { ensureLimaReady } from './lima-container-client'
 import type { ContainerClient, ContainerConfig, ContainerInfo, HealthCheckResult, ImagePullProgress, RuntimeReadiness, StopOptions } from './types'
+import type { ApiStaleAgents, StaleAgentEntry, StaleAgentStatus } from '@shared/lib/types/api'
 import { healthMonitor } from './health-monitor'
 import { db } from '@shared/lib/db'
 import { agentConnectedAccounts, connectedAccounts, agentRemoteMcps, remoteMcpServers } from '@shared/lib/db/schema'
@@ -65,6 +66,12 @@ class ContainerManager {
   private lastKeepAliveAt: Map<string, number> = new Map()
   /** Cached container statuses - avoids repeated docker inspect calls */
   private containerStatuses: Map<string, CachedContainerStatus> = new Map()
+  /** Agents still on a pre-change container env. Replaced wholesale by every arm. */
+  private staleAgents: StaleAgentEntry[] | null = null
+  /** Bumped by every arm so an in-flight run can tell the list was replaced under it. */
+  private staleGeneration = 0
+  /** Separate from the list on purpose: an arm mid-run replaces the list, never this flag. */
+  private staleRunInFlight = false
   private syncIntervalId: NodeJS.Timeout | null = null
   private isSyncing = false
   private healthCheckIntervalId: NodeJS.Timeout | null = null
@@ -203,11 +210,32 @@ class ContainerManager {
    * Update cached container status. Called after start/stop operations.
    */
   updateCachedStatus(agentId: string, status: 'running' | 'stopped', port: number | null): void {
+    const wasRunning = this.containerStatuses.get(agentId)?.status === 'running'
     this.containerStatuses.set(agentId, {
       status,
       port,
       lastSyncedAt: Date.now(),
     })
+    // A container that stops starts fresh next time, so it leaves the stale
+    // list. Only the running -> stopped flip counts: the routine sync rewrites
+    // stopped for every stopped container, and a failed entry's container is
+    // stopped by definition. An entry mid-restart stays: that stop is the run's own.
+    if (wasRunning && status === 'stopped' && this.staleAgents) {
+      this.dropStaleEntry(agentId, (e) => e.status !== 'restarting')
+    }
+    // A container that came up outside the run is fresh: a failed entry for it
+    // has nothing left to retry. The run's own start finds the entry marked
+    // restarting, not failed, so it is untouched here.
+    if (status === 'running' && this.staleAgents) {
+      this.dropStaleEntry(agentId, (e) => e.status === 'failed')
+    }
+  }
+
+  /** Remove this agent's stale entry when `matches` holds; drop the record when empty. */
+  private dropStaleEntry(agentId: string, matches: (e: StaleAgentEntry) => boolean): void {
+    if (!this.staleAgents) return
+    const kept = this.staleAgents.filter((e) => e.slug !== agentId || !matches(e))
+    this.staleAgents = kept.length > 0 ? kept : null
   }
 
   /**
@@ -788,6 +816,9 @@ class ContainerManager {
     this.healthWarnings.delete(agentId)
     this.stoppingAgents.delete(agentId)
     this.startingAgents.delete(agentId)
+    // Deletion drops the status before the stop, so the stopped write below
+    // never sees a flip; a deleted agent must not stay restartable.
+    this.dropStaleEntry(agentId, () => true)
   }
 
   // Clear all cached clients (e.g., when container runner setting changes).
@@ -871,6 +902,72 @@ class ContainerManager {
       }
     }
     return running
+  }
+
+  // ---------------------------------------------------------------------------
+  // Stale agents: which containers were running when a setting baked into the
+  // container env changed, and the sequential restart run that clears them.
+  // ---------------------------------------------------------------------------
+
+  /** Snapshot the running set as stale. Empty set clears the list. */
+  markAgentsStale(): void {
+    const agents = this.getRunningAgentIds().map<StaleAgentEntry>((slug) => ({ slug, status: 'pending' }))
+    this.staleAgents = agents.length > 0 ? agents : null
+    this.staleGeneration++
+  }
+
+  getStaleAgents(): ApiStaleAgents | null {
+    return this.staleAgents && { agents: this.staleAgents, running: this.staleRunInFlight }
+  }
+
+  /**
+   * Restart every pending or failed stale agent, one at a time, in order.
+   * Never aborts: a throw marks that agent failed and the run continues.
+   * Refuses (returns the current state) while a run is already in flight.
+   */
+  async restartStaleAgents(): Promise<ApiStaleAgents | null> {
+    if (this.staleRunInFlight || !this.staleAgents) return this.getStaleAgents()
+    const generation = this.staleGeneration
+    const targets = this.staleAgents.filter((e) => e.status === 'pending' || e.status === 'failed')
+    // Marks land only while the list the run started against is still current.
+    const mark = (slug: string, status: StaleAgentStatus, error?: string) => {
+      if (this.staleGeneration !== generation) return
+      const entry = this.staleAgents?.find((e) => e.slug === slug)
+      if (entry) Object.assign(entry, { status, error })
+    }
+    this.staleRunInFlight = true
+    try {
+      for (const { slug, status } of targets) {
+        // Pruned while an earlier agent was restarting (stopped and came back
+        // fresh on its own): it is no longer stale, leave it alone.
+        if (!this.staleAgents?.some((e) => e.slug === slug)) continue
+        mark(slug, 'restarting')
+        try {
+          if (status === 'failed') {
+            await this.ensureRunning(slug) // its container is already stopped from the failed start
+          } else if (this.containerStatuses.get(slug)?.status !== 'running') {
+            mark(slug, 'skipped')
+            continue
+          } else {
+            await this.restartContainer(slug)
+          }
+          mark(slug, 'restarted')
+        } catch (error) {
+          console.error(`[ContainerManager] Stale-agent restart failed for ${slug}:`, error)
+          mark(slug, 'failed', error instanceof Error ? error.message : String(error))
+        }
+      }
+    } finally {
+      this.staleRunInFlight = false
+    }
+    // The caller that clicked gets the whole result. What stays is only what
+    // still needs action, so a later visit shows a red block or nothing, never
+    // a stale "restarted" line.
+    const result = this.getStaleAgents()
+    const snapshot = result && { ...result, agents: result.agents.map((e) => ({ ...e })) }
+    const remaining = this.staleAgents?.filter((e) => e.status === 'pending' || e.status === 'failed') ?? []
+    this.staleAgents = remaining.length > 0 ? remaining : null
+    return snapshot
   }
 
   /** Get the current runtime readiness state. */

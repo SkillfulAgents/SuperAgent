@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tansta
 
 import { apiFetch } from '@renderer/lib/api'
 import { useUpdateSettings } from '@renderer/hooks/use-settings'
+import { STALE_AGENTS_KEY } from '@renderer/hooks/use-stale-agents'
 import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
 import type {
   PlatformAuthSource,
@@ -115,6 +116,8 @@ function usePlatformAuthCallbackListener(
 
     const handleCallback = (params: PlatformAuthCallbackParams) => {
       queryClient.invalidateQueries({ queryKey: ['platform-auth'] })
+      // A changed token arms the host's stale-agents record; nothing else refetches it.
+      queryClient.invalidateQueries({ queryKey: STALE_AGENTS_KEY })
       // Reset, not invalidate: this key holds another account's deployment URL
       // behind a live "Open" button, and invalidation keeps serving stale data
       // while the refetch runs. Reset drops it and refetches from scratch.
@@ -195,6 +198,7 @@ export function useRedeemDownloadNonce() {
     onSuccess: async () => {
       window.localStorage.setItem(PLATFORM_AUTH_CHOICE_STORAGE_KEY, 'platform')
       queryClient.invalidateQueries({ queryKey: ['platform-auth'] })
+      queryClient.invalidateQueries({ queryKey: STALE_AGENTS_KEY })
       // Reset, not invalidate: this key holds another account's deployment URL
       // behind a live "Open" button, and invalidation keeps serving stale data
       // while the refetch runs. Reset drops it and refetches from scratch.
@@ -250,6 +254,7 @@ export function useSavePlatformAccessKey() {
     onSuccess: async () => {
       window.localStorage.setItem(PLATFORM_AUTH_CHOICE_STORAGE_KEY, 'platform')
       queryClient.invalidateQueries({ queryKey: ['platform-auth'] })
+      queryClient.invalidateQueries({ queryKey: STALE_AGENTS_KEY })
       // Reset, not invalidate: this key holds another account's deployment URL
       // behind a live "Open" button, and invalidation keeps serving stale data
       // while the refetch runs. Reset drops it and refetches from scratch.
