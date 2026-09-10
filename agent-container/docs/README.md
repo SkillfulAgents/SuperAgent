@@ -36,6 +36,8 @@ itself important.
 - `browser-use.md`
 - `computer-use.md`
 - `x.md`
+- `deepgram.md`
+- `exa.md`
 
 `session-history.md` is the one guide with executable companions: the two
 readers under `agent-container/bin/`, installed at `/opt/gamut/bin/`. Keep the

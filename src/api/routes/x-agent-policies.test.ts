@@ -96,6 +96,9 @@ vi.mock('@shared/lib/container/container-manager', () => ({
 
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
+    withSessionSend: async (_agentSlug: string, _sessionId: string, _client: unknown, send: () => Promise<unknown>) => {
+      return send()
+    },
     isSessionActive: vi.fn(() => false),
     isSessionAwaitingInput: vi.fn(() => false),
     hasActiveSessionsForAgent: vi.fn(() => false),

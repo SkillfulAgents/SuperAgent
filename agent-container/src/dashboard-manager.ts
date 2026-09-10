@@ -4,6 +4,7 @@ import * as path from 'path'
 import { captureDashboardScreenshot, type ScreenshotResult } from './dashboard-screenshot'
 import { notifyDashboardScreenshotReady, notifyDashboardStatusChanged } from './host-events'
 import { DashboardPackageSchema } from './dashboard-package-schema'
+import { readArtifactShapeSync } from './artifact-kind'
 
 const SCREENSHOT_FILENAME = 'screenshot.png'
 
@@ -221,6 +222,8 @@ class DashboardManager {
         const pkgPath = path.join(ARTIFACTS_DIR, entry.name, 'package.json')
         try {
           await fs.promises.access(pkgPath)
+          // Widgets share the artifacts dir but have no server to start.
+          if (readArtifactShapeSync(path.join(ARTIFACTS_DIR, entry.name))?.isDashboard === false) continue
           // Boot scan trusts the node_modules freshness heuristic — deps only
           // change through agent-initiated starts, which force an install.
           const info = await this.startDashboard(entry.name, { forceInstall: false })
@@ -307,6 +310,11 @@ class DashboardManager {
   ): Promise<DashboardInfo> {
     const forceInstall = opts?.forceInstall ?? true
     validateSlug(slug)
+    if (readArtifactShapeSync(path.join(ARTIFACTS_DIR, slug))?.isDashboard === false) {
+      throw new Error(
+        `"${slug}" only exposes a widget (no start script) — there is no server to start. Use refresh_widget instead.`,
+      )
+    }
     const existing = this.dashboards.get(slug)
 
     // If already running, kill and restart
@@ -654,6 +662,7 @@ class DashboardManager {
         const pkgPath = path.join(ARTIFACTS_DIR, entry.name, 'package.json')
         try {
           fs.accessSync(pkgPath)
+          if (readArtifactShapeSync(path.join(ARTIFACTS_DIR, entry.name))?.isDashboard === false) continue
           const { name, description } = this.readPackageJson(entry.name)
           result.push({
             slug: entry.name,
@@ -750,10 +759,10 @@ class DashboardManager {
     validateSlug(slug)
     const dir = path.join(ARTIFACTS_DIR, slug)
 
-    // Check if dashboard already exists
+    // Check if an artifact (dashboard or widget) already owns the slug
     try {
       await fs.promises.access(path.join(dir, 'package.json'))
-      throw new Error(`Dashboard "${slug}" already exists. Use a different slug or delete the existing dashboard first.`)
+      throw new Error(`An artifact named "${slug}" already exists. Use a different slug or delete the existing one first.`)
     } catch (error: any) {
       if (error.code !== 'ENOENT') throw error
     }

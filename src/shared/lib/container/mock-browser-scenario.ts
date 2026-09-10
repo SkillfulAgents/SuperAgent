@@ -1,3 +1,4 @@
+import type { BrowserTabListMessage } from '../browser-stream-protocol'
 /**
  * Browser scenario for E2E testing.
  *
@@ -99,6 +100,9 @@ export class BrowserScenario implements MockScenario {
     // get an immediate frame even if the page is static and CDP stopped sending.
     let lastMetadataJson: string | null = null
     let lastFrameBuffer: Buffer | null = null
+    // The tab list is sent once per connection, the way the container does after
+    // a page settles, so the renderer's tab strip has something to draw.
+    let lastTabListJson: string | null = null
 
     wss.on('connection', (ws) => {
       console.log('[BrowserScenario] WS client connected to mock stream')
@@ -107,6 +111,7 @@ export class BrowserScenario implements MockScenario {
         ws.send(lastMetadataJson)
         ws.send(lastFrameBuffer)
       }
+      if (lastTabListJson) ws.send(lastTabListJson)
     })
 
     await new Promise<void>((resolve) => {
@@ -152,7 +157,7 @@ export class BrowserScenario implements MockScenario {
     //    Page.startScreencast only works on page targets, not the browser target.
     //    /json returns the list of page targets; /json/version returns the browser target.
     const pagesRes = await fetch(`http://127.0.0.1:${cdpPort}/json`)
-    const pages = (await pagesRes.json()) as Array<{ webSocketDebuggerUrl: string; type: string }>
+    const pages = (await pagesRes.json()) as Array<{ id: string; webSocketDebuggerUrl: string; type: string }>
     const pageTarget = pages.find((p) => p.type === 'page')
     if (!pageTarget) {
       throw new Error('No page target found in Chrome')
@@ -178,6 +183,32 @@ export class BrowserScenario implements MockScenario {
 
     // Wait a moment for navigation
     await new Promise((r) => setTimeout(r, 2000))
+
+    // Tab list from Chrome's own page targets — same shape the container sends
+    // (see broadcastTabList in agent-container/src/server.ts).
+    try {
+      const listRes = await fetch(`http://127.0.0.1:${cdpPort}/json`)
+      const targets = (await listRes.json()) as Array<{ id: string; type: string; url: string; title: string; faviconUrl?: string; webSocketDebuggerUrl: string }>
+      const pageTargets = targets.filter((t) => t.type === 'page')
+      const activeId = pageTargets.find((t) => t.webSocketDebuggerUrl === pageTarget.webSocketDebuggerUrl)?.id ?? pageTargets[0]?.id
+      lastTabListJson = JSON.stringify({
+        type: 'tab_list',
+        tabs: pageTargets.map((t, i) => ({
+          targetId: t.id,
+          index: i,
+          url: t.url,
+          title: t.title || '',
+          faviconUrl: t.faviconUrl || undefined,
+          active: t.id === activeId,
+        })),
+        activeTargetId: activeId ?? '',
+      } satisfies BrowserTabListMessage)
+      wss.clients.forEach((ws) => {
+        if (ws.readyState === WebSocket.OPEN && lastTabListJson) ws.send(lastTabListJson)
+      })
+    } catch (err) {
+      console.warn('[BrowserScenario] Could not build tab list:', err)
+    }
 
     // 8. Start screencast on the page target
     cdpSend('Page.startScreencast', {

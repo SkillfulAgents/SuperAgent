@@ -1,7 +1,7 @@
 import { SessionChatColumn } from './session-chat-column'
 import { FilePreviewProvider } from '@renderer/context/file-preview-context'
 import { WorkflowProvider } from '@renderer/context/workflow-context'
-import { CalendarClock, GitFork, Split, Zap } from 'lucide-react'
+import { CalendarClock, GitFork, Split, Wrench, Zap } from 'lucide-react'
 import { SessionProvenanceBanner } from './session-provenance-banner'
 import { useEffect } from 'react'
 import { useSession, useSetSessionMarkedUnread, useClearSessionUnread } from '@renderer/hooks/use-sessions'
@@ -128,6 +128,20 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
               void navigate({ to: '/agents/$slug/webhooks/$webhookId', params: { slug: agentSlug, webhookId } })
             },
           }}
+        />
+      )}
+      {session?.isWidgetRepair && (
+        <SessionProvenanceBanner
+          icon={Wrench}
+          text={<>Invoked to fix widget{session.widgetRepairSlug ? `: ${session.widgetRepairSlug}` : ''}</>}
+          back={{
+            label: 'Back',
+            onClick: () => {
+              void navigate({ to: '/agents/$slug/called-from-agents', params: { slug: agentSlug } })
+            },
+            testId: 'widget-repair-session-back-button',
+          }}
+          testId="widget-repair-session-banner"
         />
       )}
       {session?.invokedByAgentSlug && (

@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { readBootstrapEnv } from '@shared/lib/container/agent-bootstrap-env-store'
 import { messagePersister } from '@shared/lib/container/message-persister'
+import { widgetSnapshotReadyEventSchema } from '@shared/lib/widgets/widget-schema'
 
 const agentBootstrap = new Hono()
 const DASHBOARD_SLUG_REGEX = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/
@@ -80,6 +81,28 @@ agentBootstrap.post('/:agentSlug/events/dashboard-status-changed', async (c) => 
     agentSlug,
     dashboardSlug: parsed.data.dashboardSlug,
     status: parsed.data.status,
+  })
+  return c.body(null, 204)
+})
+
+// A widget refresh finished inside the container (host-requested or agent-
+// initiated via refresh_widget) and snapshot.json was rewritten. Open Home
+// surfaces reload the snapshot; the iframe URL keys on htmlHash.
+agentBootstrap.post('/:agentSlug/events/widget-snapshot-ready', async (c) => {
+  const agentSlug = c.req.param('agentSlug')
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token) return c.json({ error: 'Unauthorized' }, 401)
+  const callerSlug = await validateProxyToken(token)
+  if (!callerSlug) return c.json({ error: 'Unauthorized' }, 401)
+  if (callerSlug !== agentSlug) return c.json({ error: 'Token does not match agent' }, 403)
+
+  const parsed = widgetSnapshotReadyEventSchema.safeParse(await c.req.json().catch(() => null))
+  if (!parsed.success) return c.json({ error: 'Invalid widget snapshot event' }, 400)
+
+  messagePersister.broadcastGlobal({
+    type: 'widget_snapshot_ready',
+    agentSlug,
+    ...parsed.data,
   })
   return c.body(null, 204)
 })

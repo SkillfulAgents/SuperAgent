@@ -188,6 +188,10 @@ Do not patch generated bundles after Vite hashes them and do not add a query str
 - **Use both diagnostic surfaces.** Use `get_dashboard_logs` for server failures and browser diagnostics for rendering or client-side failures.
 - **Close the browser when validation is complete.**
 
+## Exposing a Widget
+
+A dashboard can also expose a **widget**: a small glanceable card on the user's home screens that stands in for the dashboard's screenshot and opens the dashboard when tapped. It is a static `widget.html` rewritten by a `widget.ts` script (which can import this dashboard's own data helpers) — no server involved, refreshed by the platform when the snapshot's `validUntil` passes and the user looks. Call `create_widget` with this dashboard's slug and load the `widgets` skill for the contract (sizing, dark mode, `widget.json` validity, review checklist). Offer one whenever the dashboard has a headline number or a "what's next" the user would want at a glance.
+
 ## Built-in APIs
 
 The following APIs are automatically available in all dashboards (injected by the platform):

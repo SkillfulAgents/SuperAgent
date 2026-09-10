@@ -219,12 +219,20 @@ interface StreamingState {
   agentSlug: string // The agent that owns this session; half of its registry key
   sessionId: string // The bare id, for payloads and disk paths
   notAutomationSession?: boolean // Cached "not a cron/webhook session" verdict; skips the automation-status metadata write on later results
-  // Unpromoted cron/webhook session: release its container stream when the
-  // session settles. Resolved from session metadata at subscribe time so the
-  // settle-time teardown in finalizeIdle stays synchronous (race-free).
-  releaseStreamOnSettle?: boolean
+  // Shared by every unpromoted automation, including chat and x-agent sessions.
+  // Unknown metadata keeps the stream until its policy is resolved.
+  releaseStreamWhenIdle?: boolean
+  retainStateOnStreamRelease?: boolean
+  evictedProcessInstanceId?: string
+  // Send rollback must not overwrite a later host send or runtime result.
+  activityGeneration?: number
+  resultGeneration?: number
+  // Only an idle after this result proves settlement on the current transport.
+  settledResultGeneration?: number
+  // A fresh send that already produced output was accepted despite HTTP failure.
+  outputGeneration?: number
   // Set synchronously on promote so an in-flight subscribe-time metadata read
-  // cannot flip releaseStreamOnSettle back to true.
+  // cannot enable stream release again.
   promotedToInteractive?: boolean
   // True when the most recent result was a clean success (not error-shaped,
   // not an interrupt, not a resume-exit). Consumed by finalizeIdle: a success
@@ -422,6 +430,12 @@ class MessagePersister {
   // subscribeToSession() calls for the same session share the underlying
   // promise so we don't double-install listeners or double-tear-down state.
   private subscribingNow: Map<SessionKey, Promise<void>> = new Map()
+  // A send can outlive the previous turn's idle or the reconnect handshake.
+  // Hold the transport independently of the current turn's activity.
+  private pendingSessionSends: Map<SessionKey, number> = new Map()
+  // Serialize delivery attempts, not runtime turns. A rejected send is fully
+  // rolled back before another caller snapshots the same session's activity.
+  private sendingNow: Map<SessionKey, Promise<void>> = new Map()
 
   constructor() {
     // Unified wire: every registry transition — no matter which of the many
@@ -536,7 +550,7 @@ class MessagePersister {
   }
 
   // Subscribe to a session's messages for SSE streaming.
-  // Returns a promise that resolves when the WebSocket connection is ready.
+  // Resolves after the guest attaches its listener and finishes terminal replay.
   // Idempotent: concurrent calls for the same sessionId await the same in-flight
   // subscription instead of racing each other (which would re-init state and
   // leak listeners).
@@ -549,10 +563,19 @@ class MessagePersister {
     const ctx = sessionCtx(agentSlug, sessionId)
     const inFlight = this.subscribingNow.get(ctx.key)
     if (inFlight) return inFlight
-    const promise = this.doSubscribeToSession(ctx, client, containerSessionId)
-      .finally(() => {
-        this.subscribingNow.delete(ctx.key)
-      })
+    return this.trackSubscription(ctx, this.doSubscribeToSession(ctx, client, containerSessionId))
+  }
+
+  private trackSubscription(ctx: SessionCtx, ready: Promise<void>): Promise<void> {
+    const promise = ready.finally(() => {
+      if (this.subscribingNow.get(ctx.key) !== promise) return
+      this.subscribingNow.delete(ctx.key)
+      // Replayed terminal frames can settle an automation during attachment.
+      // Defer its release until ready resolves, or closing before the guest's
+      // acknowledgement would abort an otherwise successful subscription.
+      const state = this.streamingStates.get(ctx.key)
+      if (state) this.maybeReleaseSessionTransport(state)
+    })
     this.subscribingNow.set(ctx.key, promise)
     return promise
   }
@@ -629,17 +652,25 @@ class MessagePersister {
       processInstanceId: prior?.processInstanceId ?? null,
       pendingDeliverFiles: new Map(),
       stateEventsAuthority: prior?.stateEventsAuthority ?? false,
-      lastResultSubtype: null,
-      lastResultCleanSuccess: false,
-      provisionalActivity: null,
+      lastResultSubtype: prior?.lastResultSubtype ?? null,
+      lastResultCleanSuccess: prior?.lastResultCleanSuccess ?? false,
+      provisionalActivity: prior?.provisionalActivity ?? null,
+      activityGeneration: prior?.activityGeneration,
+      resultGeneration: prior?.resultGeneration,
+      outputGeneration: prior?.outputGeneration,
+      // A requested reattach must stay open until this subscription observes
+      // settlement/eviction; the outgoing transport's proof is already spent.
+      settledResultGeneration: undefined,
+      evictedProcessInstanceId: undefined,
       isRetrying: false,
       // Carried over so a transport reattach mid-run doesn't lose the verdict
       // before the refresh below lands.
-      releaseStreamOnSettle: prior?.releaseStreamOnSettle ?? false,
+      releaseStreamWhenIdle: prior?.releaseStreamWhenIdle ?? false,
+      retainStateOnStreamRelease: prior?.retainStateOnStreamRelease ?? false,
       promotedToInteractive: prior?.promotedToInteractive ?? false,
     })
 
-    this.resolveReleaseStreamOnSettle(ctx)
+    this.resolveStreamReleasePolicy(ctx)
 
     // Store container client for reconnection checks
     this.containerClients.set(ctx.key, client)
@@ -658,16 +689,18 @@ class MessagePersister {
       await this.capture.recordNote(sessionId, 'subscribe', { agentSlug, containerSessionId })
     }
 
-    // Wait for the WebSocket connection to be established
-    await ready
+    // A rejected handshake must not leave isSubscribed pointing at a dead
+    // transport. A replacement subscription, if any, owns its own cleanup.
+    try {
+      await ready
+    } catch (error) {
+      if (this.subscriptions.get(ctx.key) === unsubscribe) this.detachSessionTransport(agentSlug, sessionId)
+      throw error
+    }
   }
 
-  // Resolve whether this subscription belongs to an unpromoted cron, webhook,
-  // or x-agent session. Non-blocking: automation runs last long enough that
-  // the verdict lands well before finalizeIdle consumes it, and an unresolved
-  // read just means the stream is kept (the pre-fix behavior). Automation
-  // paths register metadata before subscribing, so the read can't miss them.
-  private resolveReleaseStreamOnSettle(ctx: SessionCtx): void {
+  // An unresolved metadata read keeps the transport rather than guessing its lifecycle.
+  private resolveStreamReleasePolicy(ctx: SessionCtx): void {
     const { agentSlug, sessionId } = ctx
     const stateRef = this.streamingStates.get(ctx.key)
     void getSessionMetadata(agentSlug, sessionId)
@@ -677,15 +710,14 @@ class MessagePersister {
         if (!current || current !== stateRef) return
         // Promote wins: its marker is set synchronously, this read may be stale.
         if (current.promotedToInteractive) return
-        current.releaseStreamOnSettle = Boolean(
-          (meta?.isScheduledExecution || meta?.isWebhookExecution || meta?.invokedByAgentSlug) &&
-            !meta?.promotedToInteractive
-        )
+        current.releaseStreamWhenIdle = isHiddenAutomatedSession(meta)
+        current.retainStateOnStreamRelease = Boolean(meta?.isChatIntegrationSession)
+        this.maybeReleaseSessionTransport(current)
       })
       .catch((error) => {
         console.warn('[MessagePersister] Failed to resolve automation stream policy:', error)
         captureException(error, {
-          tags: { area: 'container', op: 'resolveReleaseStreamOnSettle' },
+          tags: { area: 'container', op: 'resolveStreamReleasePolicy' },
           extra: { sessionId, agentSlug },
         })
       })
@@ -734,20 +766,162 @@ class MessagePersister {
       agentSlug: state.agentSlug,
       isActive: false,
     })
-    this.maybeReleaseSettledAutomationStream(state)
+    this.maybeReleaseSessionTransport(state)
   }
 
-  // Tear down a settled automation stream. Sync: an async gap races the wake path's isSubscribed check.
-  // Gated on stateEventsAuthority so a legacy idle can't drop a queued turn's stream.
-  private maybeReleaseSettledAutomationStream(state: StreamingState): void {
+  // All automation categories share the same release guard. Chat retains
+  // conversation/request state across reconnect; other automations keep their
+  // existing full cleanup so completed runs don't accumulate in memory.
+  // A result alone cannot prove the queue and background work have drained.
+  private maybeReleaseSessionTransport(state: StreamingState): void {
     const { agentSlug, sessionId } = state
+    const key = sessionKeyOf(agentSlug, sessionId)
+    const settled = state.stateEventsAuthority && state.runtimeState === 'idle' &&
+      state.lastResultSubtype !== null && state.settledResultGeneration === state.resultGeneration
+    const evicted = state.evictedProcessInstanceId !== undefined && state.evictedProcessInstanceId === state.processInstanceId
     if (
-      state.releaseStreamOnSettle &&
-      state.stateEventsAuthority &&
-      this.subscriptions.has(sessionKeyOf(agentSlug, sessionId))
+      state.releaseStreamWhenIdle && !state.promotedToInteractive &&
+      !state.isActive && !state.isAwaitingInput && !state.isRecovering &&
+      this.openBackgroundWorkCount(state) === 0 &&
+      !this.pendingSessionSends.has(key) && !this.subscribingNow.has(key) &&
+      (settled || evicted) && this.subscriptions.has(key)
     ) {
-      console.log(`[MessagePersister] Releasing settled automation stream for session ${sessionId}`)
-      this.unsubscribeFromSession(agentSlug, sessionId)
+      console.log(`[MessagePersister] Releasing idle automation stream for session ${sessionId}`)
+      if (state.retainStateOnStreamRelease) this.detachSessionTransport(agentSlug, sessionId)
+      else this.unsubscribeFromSession(agentSlug, sessionId)
+    }
+  }
+
+  // Shared delivery boundary for chat, scheduled wakes and x-agent follow-ups.
+  // The transport reservation precedes reconnect; activity is marked only
+  // after reconnect, allowing its terminal replay to observe the settled turn.
+  async withSessionSend<T>(
+    agentSlug: string,
+    sessionId: string,
+    client: ContainerClient,
+    send: () => Promise<T>,
+  ): Promise<T> {
+    const key = sessionKeyOf(agentSlug, sessionId)
+    const previousSend = this.sendingNow.get(key)
+    let finishDelivery!: () => void
+    const deliveryDone = new Promise<void>(resolve => { finishDelivery = resolve })
+    this.sendingNow.set(key, deliveryDone)
+    this.pendingSessionSends.set(key, (this.pendingSessionSends.get(key) ?? 0) + 1)
+    try {
+      if (previousSend) await previousSend
+      const connecting = this.subscribingNow.get(key)
+      if (connecting) await connecting
+      if (!this.isSubscribed(agentSlug, sessionId)) {
+        await this.subscribeToSession(agentSlug, sessionId, client, sessionId)
+      }
+      const before = { ...this.streamingStates.get(key)! }
+      this.markSessionActive(agentSlug, sessionId)
+      const marked = this.streamingStates.get(key)!
+      const generation = marked.activityGeneration
+      const activity = marked.provisionalActivity
+      try {
+        return await send()
+      } catch (error) {
+        const state = this.streamingStates.get(key)
+        // A later send, interrupt, recovery, or new runtime turn owns its state.
+        if (
+          state && state.activityGeneration === generation &&
+          state.turnGeneration === before.turnGeneration &&
+          state.processInstanceId === before.processInstanceId && !state.isInterrupted && !state.isRecovering
+        ) {
+          const outputArrived = state.outputGeneration !== before.outputGeneration
+          if ((before.isActive || !outputArrived) && state.provisionalActivity === activity && activity) {
+            revertSessionActivity(agentSlug, sessionId, activity)
+            state.provisionalActivity = null
+          }
+          if (before.isActive) {
+            const resultArrived = state.resultGeneration !== before.resultGeneration
+            // Remove only this rejected queued message. If its speculative
+            // boundary was consumed by a result, there is no next answer to reset.
+            if (state.queuedTurnCount > 0) state.queuedTurnCount -= 1
+            else state.resetAssistantBeforeNextTurnOutput = false
+            if (!resultArrived) {
+              state.lastResultSubtype = before.lastResultSubtype
+              state.lastResultCleanSuccess = before.lastResultCleanSuccess
+              state.lastApiErrorCode = before.lastApiErrorCode
+              state.isInterrupted = before.isInterrupted
+            }
+            // The final idle may have arrived while the failed send was in
+            // flight and its result guard was cleared. Apply it now as well.
+            if (
+              !resultArrived && (before.settleAfterStopTimer || before.waitingBackground) &&
+              state.isActive && state.runtimeState === 'idle' && this.openBackgroundWorkCount(state) === 0
+            ) {
+              // Preserve the stopped background task's grace for a possible wake.
+              this.scheduleSettleAfterStop(agentSlug, sessionId, state)
+            } else if (state.runtimeState === 'idle') {
+              this.handleSessionIdle(state)
+            }
+          } else if (!outputArrived) {
+            this.markSessionIdle(agentSlug, sessionId)
+            state.lastResultSubtype = before.lastResultSubtype
+            state.lastResultCleanSuccess = before.lastResultCleanSuccess
+          }
+        }
+        throw error
+      }
+    } finally {
+      finishDelivery()
+      if (this.sendingNow.get(key) === deliveryDone) this.sendingNow.delete(key)
+      const remaining = (this.pendingSessionSends.get(key) ?? 1) - 1
+      if (remaining > 0) this.pendingSessionSends.set(key, remaining)
+      else this.pendingSessionSends.delete(key)
+      const state = this.streamingStates.get(key)
+      if (state) this.maybeReleaseSessionTransport(state)
+    }
+  }
+
+  private handleSessionIdle(state: StreamingState): void {
+    const { agentSlug, sessionId } = state
+    // Only treat idle as authoritative when a result was actually seen
+    // for this turn (lastResultSubtype is cleared on every new send).
+    // A bare idle with no preceding result — a stale idle from a prior
+    // or interrupted run racing a fresh message, or an event before any
+    // turn output — must not finalize, or it fires a spurious
+    // session_idle (and a bogus completion notification).
+    if (state.isActive && state.lastResultSubtype !== null) {
+      const openBackgroundWork = this.openBackgroundWorkCount(state)
+      if (openBackgroundWork > 0) {
+        // Idle here does NOT mean "settled". activeBackgroundTasks holds
+        // backgrounded Bash commands (task_type=local_bash) and dynamic
+        // workflows (local_workflow); for both the SDK fires `idle` at
+        // TURN-END while the work is still running, then re-fires `running`
+        // + task_notification when it actually finishes. Phantom-clearing
+        // + finalizing here would
+        // drop the indicator and un-gate auto-sleep mid-job — the exact
+        // failure run_in_background is meant to prevent. Keep the session
+        // alive and surface it as waiting-on-background; the per-task
+        // terminal signal (task_notification / task_updated) clears each
+        // task, and the subsequent, truly-settled idle finalizes.
+        state.waitingBackground = true
+        this.broadcastToSSE(agentSlug, sessionId, {
+          type: 'session_waiting_background',
+          backgroundTaskCount: openBackgroundWork,
+        })
+      } else {
+        this.finalizeIdle(agentSlug, sessionId, state)
+        // Completion notification at the real end of the work. Skip
+        // resume-exits: the session is pausing for a resume, not done.
+        if (state.lastResultSubtype === 'success' && state.agentSlug) {
+          notificationManager.triggerSessionComplete(sessionId, state.agentSlug, {
+            responseText: state.lastAssistantText,
+            responseTranscriptEndOffset: this.getSessionTranscriptEndOffset(
+              state.agentSlug,
+              sessionId,
+            ),
+          }).catch((err) => {
+            console.error('[MessagePersister] Failed to trigger session complete notification:', err)
+          })
+        }
+      }
+    } else if (!state.isActive && state.lastResultSubtype !== null) {
+      // Error path already cleared isActive, so finalizeIdle never ran.
+      this.maybeReleaseSessionTransport(state)
     }
   }
 
@@ -1075,6 +1249,24 @@ class MessagePersister {
   isSessionWaitingBackground(agentSlug: string, sessionId: string): boolean {
     const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
     return !!state && state.isActive && state.waitingBackground
+  }
+
+  /**
+   * True when every open background task is one the host never tracked: the
+   * SDK's `background_tasks_changed` snapshot lists work, but the incremental
+   * map — the list clients see and the per-task Stop buttons come from — is
+   * empty. A task a subagent launched lands here: its tool result travels the
+   * sidechain, so nothing registers it, while the runtime's snapshot names it.
+   *
+   * A stop scoped to the turn cannot end such a session: the container keeps
+   * the process (and the task) and the union keeps the session active, with
+   * no row anywhere to stop the task from. Callers escalate to a full stop
+   * instead, which is what Stop always did before tasks were spared.
+   */
+  hasOnlyUntrackedBackgroundWork(agentSlug: string, sessionId: string): boolean {
+    const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
+    if (!state) return false
+    return state.activeBackgroundTasks.size === 0 && this.openBackgroundWorkCount(state) > 0
   }
 
   /**
@@ -1519,6 +1711,7 @@ class MessagePersister {
     // session's whole reported status collapses to "Working…" the moment a
     // follow-up is queued (SUP-736).
     const wasActive = state.isActive
+    state.activityGeneration = (state.activityGeneration ?? 0) + 1
     state.isActive = true
     // Message-scoped: true for a queued message just as much as a new turn.
     state.isInterrupted = false // Reset interrupted flag on new message
@@ -1765,7 +1958,7 @@ class MessagePersister {
     const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
     if (state) {
       state.promotedToInteractive = true
-      state.releaseStreamOnSettle = false
+      state.releaseStreamWhenIdle = false
     }
 
     console.log(`[MessagePersister] Promoted automated session ${sessionId} to interactive (agent: ${agentSlug})`)
@@ -1935,6 +2128,11 @@ class MessagePersister {
     }
 
     const content = message.content
+    if (!content.replayed && (
+      content.type === 'assistant' || content.type === 'user' || content.type === 'result' || content.type === 'stream_event'
+    )) {
+      state.outputGeneration = (state.outputGeneration ?? 0) + 1
+    }
 
     // Detect background task completion from `task_notification` system messages
     // BEFORE the sidechain filter. This is the idle/wake path: when a backgrounded
@@ -2405,6 +2603,13 @@ class MessagePersister {
             const summary = typeof content.summary === 'string' ? content.summary : undefined
             this.broadcastSubagentCompleted(agentSlug, sessionId, state, toolUseId!, summary)
           }
+        } else if (content.subtype === 'process_evicted') {
+          if (typeof content.process_instance === 'string' && content.process_instance === state.processInstanceId) {
+            // Remember eviction across an in-flight send or metadata read; a
+            // failed delivery must not lose this one-shot release opportunity.
+            state.evictedProcessInstanceId = content.process_instance
+            this.maybeReleaseSessionTransport(state)
+          }
         } else if (content.subtype === 'process_restarted') {
           // Container-synthesized, live: the session's CLI process was replaced
           // while we were attached (MCP-injection restart, crash, an
@@ -2445,51 +2650,8 @@ class MessagePersister {
             state.turnGeneration += 1
           }
           if (content.state === 'idle') {
-            // Only treat idle as authoritative when a result was actually seen
-            // for this turn (lastResultSubtype is cleared on every new send).
-            // A bare idle with no preceding result — a stale idle from a prior
-            // or interrupted run racing a fresh message, or an event before any
-            // turn output — must not finalize, or it fires a spurious
-            // session_idle (and a bogus completion notification).
-            if (state.isActive && state.lastResultSubtype !== null) {
-              const openBackgroundWork = this.openBackgroundWorkCount(state)
-              if (openBackgroundWork > 0) {
-                // Idle here does NOT mean "settled". activeBackgroundTasks holds
-                // backgrounded Bash commands (task_type=local_bash) and dynamic
-                // workflows (local_workflow); for both the SDK fires `idle` at
-                // TURN-END while the work is still running, then re-fires `running`
-                // + task_notification when it actually finishes. Phantom-clearing
-                // + finalizing here would
-                // drop the indicator and un-gate auto-sleep mid-job — the exact
-                // failure run_in_background is meant to prevent. Keep the session
-                // alive and surface it as waiting-on-background; the per-task
-                // terminal signal (task_notification / task_updated) clears each
-                // task, and the subsequent, truly-settled idle finalizes.
-                state.waitingBackground = true
-                this.broadcastToSSE(agentSlug, sessionId, {
-                  type: 'session_waiting_background',
-                  backgroundTaskCount: openBackgroundWork,
-                })
-              } else {
-                this.finalizeIdle(agentSlug, sessionId, state)
-                // Completion notification at the real end of the work. Skip
-                // resume-exits: the session is pausing for a resume, not done.
-                if (state.lastResultSubtype === 'success' && state.agentSlug) {
-                  notificationManager.triggerSessionComplete(sessionId, state.agentSlug, {
-                    responseText: state.lastAssistantText,
-                    responseTranscriptEndOffset: this.getSessionTranscriptEndOffset(
-                      state.agentSlug,
-                      sessionId,
-                    ),
-                  }).catch((err) => {
-                    console.error('[MessagePersister] Failed to trigger session complete notification:', err)
-                  })
-                }
-              }
-            } else if (!state.isActive && state.lastResultSubtype !== null) {
-              // Error path already cleared isActive, so finalizeIdle never ran.
-              this.maybeReleaseSettledAutomationStream(state)
-            }
+            state.settledResultGeneration = state.resultGeneration
+            this.handleSessionIdle(state)
           } else if (content.state === 'running') {
             // A turn is running again, so the interrupted turn's stale frames
             // can no longer be in the pipe: let this turn's content through.
@@ -2577,6 +2739,7 @@ class MessagePersister {
       }
 
       case 'result': {
+        state.resultGeneration = (state.resultGeneration ?? 0) + 1
         // Query completed. Classification handles both error shapes — the
         // legacy error subtypes and the modern success-subtype-with-is_error
         // (terminal_reason: api_error etc.) that a subtype check alone misses.
@@ -2873,7 +3036,7 @@ class MessagePersister {
           // handler to the `ready` promise. A failed reconnect routes a
           // synthesized connection_closed message through the callback above;
           // this only stops the discarded rejection from becoming unhandled.
-          ready.catch((err) => {
+          this.trackSubscription(sessionCtx(agentSlug, sessionId), ready).catch((err) => {
             console.error(`[MessagePersister] Re-subscribe failed for session ${sessionId}:`, err)
           })
         } else {
@@ -4512,10 +4675,13 @@ ${continuation}`
   private async interruptContainerSession(agentSlug: string, sessionId: string): Promise<{ processKept: boolean }> {
     const cm = await getContainerManager()
     const client = cm.getClient(agentSlug)
+    // Same escalation as the interrupt route: a turn stop cannot settle a
+    // session whose only background work is untracked, so stop everything.
+    const scope = this.hasOnlyUntrackedBackgroundWork(agentSlug, sessionId) ? 'all' : 'turn'
     const response = await client.fetch(`/sessions/${encodeURIComponent(sessionId)}/interrupt`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scope: 'turn' }),
+      body: JSON.stringify({ scope }),
     })
     if (!response?.ok) return { processKept: false }
     // A container build that predates the field always restarted the process.

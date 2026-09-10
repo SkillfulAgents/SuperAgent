@@ -2,6 +2,7 @@ import path from 'path'
 import { getSettings, getEffectiveBrowserbaseApiKey, getEffectiveBrowserbaseProjectId } from '@shared/lib/config/settings'
 import { getDataDir } from '@shared/lib/config/data-dir'
 import { getOrCreateMapping } from './context-map-store'
+import { GooglePasskeyRecovery } from './google-passkey-recovery'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo, BrowserDebugInfo } from './types'
 
 const BROWSERBASE_API_BASE = 'https://api.browserbase.com/v1'
@@ -30,6 +31,7 @@ export class BrowserbaseProvider implements HostBrowserProvider {
 
   /** Maps instanceId → Browserbase session ID */
   private sessions: Map<string, string> = new Map()
+  private passkeyRecovery = new GooglePasskeyRecovery()
 
   onExternalClose: ((instanceId: string) => void) | null = null
 
@@ -67,12 +69,14 @@ export class BrowserbaseProvider implements HostBrowserProvider {
           const debugUrl = await this.getDebugBrowserUrl(existingSessionId, apiKey)
           if (debugUrl) {
             console.log(`[BrowserbaseProvider] Reusing session ${existingSessionId} for instance ${instanceId}`)
+            this.passkeyRecovery.watch(instanceId, debugUrl)
             return { cdpUrl: debugUrl }
           }
         }
       } catch {
         // Session no longer valid
       }
+      this.passkeyRecovery.stop(instanceId)
       this.sessions.delete(instanceId)
     }
 
@@ -135,6 +139,7 @@ export class BrowserbaseProvider implements HostBrowserProvider {
     // unlike the connectUrl which is single-use)
     const debugUrl = await this.getDebugBrowserUrl(session.id, apiKey)
     if (debugUrl) {
+      this.passkeyRecovery.watch(instanceId, debugUrl)
       return { cdpUrl: debugUrl }
     }
 
@@ -172,6 +177,7 @@ export class BrowserbaseProvider implements HostBrowserProvider {
   }
 
   async stop(instanceId: string): Promise<void> {
+    this.passkeyRecovery.stop(instanceId)
     const sessionId = this.sessions.get(instanceId)
     if (!sessionId) return
 

@@ -250,9 +250,9 @@ class TaskScheduler {
       automationStatus: 'running',
     })
 
-    // Subscribe to the session for SSE updates
-    await messagePersister.subscribeToSession(task.agentSlug, sessionId, client, sessionId)
+    // createSession already started the turn; replay may finish it during attachment.
     messagePersister.markSessionActive(task.agentSlug, sessionId)
+    await messagePersister.subscribeToSession(task.agentSlug, sessionId, client, sessionId)
 
     console.log(
       `[TaskScheduler] Task ${task.id} started, session: ${sessionId}`

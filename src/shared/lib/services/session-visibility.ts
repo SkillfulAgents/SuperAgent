@@ -2,7 +2,8 @@ import type { SessionMetadata } from '@shared/lib/types/agent'
 
 /**
  * True when a session is automated (scheduled / webhook / chat integration /
- * x-agent invocation) and has not been promoted to interactive. These sessions
+ * x-agent invocation / widget repair) and has not been promoted to
+ * interactive. These sessions
  * are excluded from every user-facing session list (`excludeAutomated`), so
  * per-session signals derived elsewhere — unread-notification flags, badge
  * dots — must skip them too: a signal on a hidden session points at nothing
@@ -14,6 +15,7 @@ export function isHiddenAutomatedSession(meta: SessionMetadata | null | undefine
     meta.isScheduledExecution ||
     meta.isWebhookExecution ||
     meta.isChatIntegrationSession ||
-    meta.invokedByAgentSlug
+    meta.invokedByAgentSlug ||
+    meta.isWidgetRepair
   )
 }

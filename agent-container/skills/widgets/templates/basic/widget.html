@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en" data-generated-at="">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Widget</title>
+  <style>
+    /* Light palette on bare :root; dark under BOTH the media query and the
+       explicit data-theme override (the app and the rasterizer set the latter). */
+    :root {
+      --bg: #ffffff;
+      --fg: #111111;
+      --muted: #6b7280;
+      --accent: #2563eb;
+      --track: #e5e7eb;
+      color-scheme: light dark;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --bg: #111214;
+        --fg: #f5f5f5;
+        --muted: #9ca3af;
+        --accent: #60a5fa;
+        --track: #2a2b2f;
+      }
+    }
+    :root[data-theme="dark"] {
+      --bg: #111214;
+      --fg: #f5f5f5;
+      --muted: #9ca3af;
+      --accent: #60a5fa;
+      --track: #2a2b2f;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: var(--bg);
+      color: var(--fg);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+      overflow: hidden; /* a widget never scrolls */
+      -webkit-font-smoothing: antialiased;
+    }
+    .widget {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: clamp(10px, 7%, 16px);
+    }
+    .label {
+      font-size: clamp(10px, 6.5cqw, 13px);
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .value {
+      font-size: clamp(28px, 22cqw, 44px);
+      font-weight: 700;
+      line-height: 1;
+      letter-spacing: -0.02em;
+      font-variant-numeric: tabular-nums;
+    }
+    .detail {
+      font-size: clamp(11px, 7cqw, 14px);
+      color: var(--muted);
+    }
+    .bar { height: 6px; border-radius: 999px; background: var(--track); overflow: hidden; margin-top: 8px; }
+    .bar > span { display: block; height: 100%; background: var(--accent); width: 0; }
+    .widget { container-type: inline-size; }
+  </style>
+</head>
+<body>
+  <div class="widget">
+    <div class="label" data-field="label">Label</div>
+    <div>
+      <div class="value" data-field="value">—</div>
+      <div class="bar"><span data-field="bar" style="width: 0%"></span></div>
+    </div>
+    <div class="detail" data-field="detail">Not refreshed yet</div>
+  </div>
+</body>
+</html>

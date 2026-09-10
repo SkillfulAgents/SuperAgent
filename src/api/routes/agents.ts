@@ -139,7 +139,18 @@ import {
   importSkillFromZip,
   SKILL_MAX_COMPRESSED_SIZE,
 } from '@shared/lib/services/skillset-service'
-import { type ArtifactInfo, listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
+import { type ArtifactInfo, listArtifactsFromFilesystem, listArtifactsAndWidgets, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
+import {
+  WIDGET_HTML_CSP,
+  renderWidgetDocument,
+  listWidgetsFromFilesystem,
+  readWidgetFromFilesystem,
+  readWidgetHtml,
+  resolveWidgetPath,
+  widgetSnapshotPngPath,
+} from '@shared/lib/services/widget-service'
+import { widgetRefreshService } from '@shared/lib/services/widget-refresh-service'
+import { widgetSchemeSchema, widgetSizeSchema } from '@shared/lib/widgets/widget-schema'
 import { getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents, deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
@@ -726,10 +737,12 @@ async function enrichAgentsWithSummary(
 
       // Only FS operations remain per-agent (parallelized and bounded by the
       // outer p-limit).
-      const [sessionSummary, artifacts, sessionMetadata, visibleSessionExpansion] =
+      const [sessionSummary, { dashboards: artifacts, widgets }, sessionMetadata, visibleSessionExpansion] =
         await Promise.all([
           getSessionSummary(agent.slug),
-          listArtifactsFromFilesystem(agent.slug),
+          // Dashboards and widgets are two halves of the same artifacts, read
+          // in one scan: listing them separately doubled the manifest reads.
+          listArtifactsAndWidgets(agent.slug),
           sessionMetadataPromise,
           visibleSessionExpansionPromise,
         ])
@@ -785,6 +798,7 @@ async function enrichAgentsWithSummary(
           name: a.name || a.slug,
           ...(a.hasScreenshot ? { hasScreenshot: true } : {}),
         })),
+        widgets: widgetRefreshService.decorate(agent.slug, widgets),
         ...(options.includeLatestVisibleSessionTail
           ? {
               latestVisibleSession: visibleSessionExpansion?.latestVisibleSession ?? null,
@@ -3004,6 +3018,8 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       invokedByAgentName: metadata?.invokedByAgentSlug
         ? invokingAgent?.frontmatter.name ?? metadata.invokedByAgentSlug
         : undefined,
+      isWidgetRepair: metadata?.isWidgetRepair,
+      widgetRepairSlug: metadata?.widgetRepairSlug,
       forkedFromSessionId: metadata?.forkedFromSessionId,
       forkedFromSessionName: metadata?.forkedFromSessionId
         ? (await getSessionMetadata(agentSlug, metadata.forkedFromSessionId))?.name
@@ -3317,7 +3333,18 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
   if (!body.success) {
     return c.json({ error: 'Invalid interrupt scope' }, 400)
   }
-  const { scope } = body.data
+  const requestedScope = body.data.scope
+  // A turn stop leaves background tasks running on purpose — but only tasks
+  // the user can see and stop one by one. When the only open work is untracked
+  // (the runtime lists it, the host's task list does not — a task a subagent
+  // launched, for one), a turn stop keeps the session pinned "working" with
+  // nothing to stop it from. Escalate to the full stop instead, without asking:
+  // there is no keep/kill choice to offer when the list is empty.
+  const escalate = requestedScope === 'turn' && messagePersister.hasOnlyUntrackedBackgroundWork(agentSlug, sessionId)
+  const scope = escalate ? 'all' : requestedScope
+  if (escalate) {
+    console.log(`[Agents] Session ${sessionId}: only untracked background work is open — stopping everything instead of the turn`)
+  }
 
   try {
     const client = containerManager.getClient(agentSlug)
@@ -6861,6 +6888,128 @@ agents.patch('/:id/artifacts/:artifactSlug', AgentAdmin(), async (c) => {
   }
 })
 
+// ============================================================
+// Widgets — an artifact's static snapshot, refreshed by a script in the
+// container. Routes live under the artifact and are registered before the
+// dashboard proxy so /artifacts/:slug/widget/* never reaches a dashboard.
+// ============================================================
+
+// The after-run trigger listens on the persister's global stream; arm it
+// once when the routes register (both the web server and Electron main
+// import this module exactly once).
+widgetRefreshService.start()
+
+const WidgetSnapshotQuery = z.object({
+  family: widgetSizeSchema.optional(),
+  scale: z.enum(['2', '3']).optional(),
+  scheme: widgetSchemeSchema.optional(),
+})
+
+// GET /api/agents/:id/widgets - Every artifact that exposes a widget, with
+// snapshot state, from the host filesystem. Never touches the container:
+// this is what App Home and a cold launch read, and it must be free.
+agents.get('/:id/widgets', AgentRead(), async (c) => {
+  try {
+    const slug = getAgentId(c)
+    const widgets = await listWidgetsFromFilesystem(slug)
+    return c.json(widgetRefreshService.decorate(slug, widgets))
+  } catch (error) {
+    console.error('Failed to list widgets:', error)
+    return c.json({ error: 'Failed to list widgets' }, 500)
+  }
+})
+
+// POST /api/agents/:id/widgets/refresh-stale - The Agent Home mount trigger.
+// Starts a refresh for every stale widget (waking the container if needed)
+// and returns the slugs in flight; completion arrives over SSE. Throttled
+// per agent so tab-switching cannot spam the container.
+//
+// AgentUser, not AgentRead: this can start a container, which is what
+// POST /:id/start requires. Reading a widget stays free — the listing, the
+// snapshot document and the PNG never touch the container.
+agents.post('/:id/widgets/refresh-stale', AgentUser(), async (c) => {
+  try {
+    const slug = getAgentId(c)
+    const result = await widgetRefreshService.refreshStale(slug, { wake: true })
+    return c.json(result)
+  } catch (error) {
+    console.error('Failed to refresh stale widgets:', error)
+    return c.json({ error: 'Failed to refresh widgets' }, 500)
+  }
+})
+
+// POST /api/agents/:id/artifacts/:artifactSlug/widget/refresh - Explicit
+// refresh (the card's refresh button). Waits for the container so the caller
+// gets the outcome; the SSE events fire along the way as well.
+agents.post('/:id/artifacts/:artifactSlug/widget/refresh', AgentUser(), async (c) => {
+  const slug = getAgentId(c)
+  const artifactSlug = c.req.param('artifactSlug')
+  if (!resolveWidgetPath(slug, artifactSlug)) return c.json({ error: 'Invalid artifact slug' }, 400)
+  const widget = await readWidgetFromFilesystem(slug, artifactSlug)
+  if (!widget) return c.json({ error: 'Artifact has no widget' }, 404)
+  const outcome = await widgetRefreshService.refreshWidget(slug, artifactSlug, { wake: true, reason: 'manual' })
+  if (!outcome.ok) return c.json({ ok: false, error: outcome.error }, 502)
+  return c.json({ ok: true, snapshot: outcome.snapshot })
+})
+
+// GET /api/agents/:id/artifacts/:artifactSlug/widget/html?scheme=light|dark -
+// The snapshot document for the in-app iframe. Served straight off disk with
+// a display-only CSP; the renderer adds a sandbox without allow-scripts.
+agents.get('/:id/artifacts/:artifactSlug/widget/html', AgentRead(), async (c) => {
+  const slug = getAgentId(c)
+  const artifactSlug = c.req.param('artifactSlug')
+  const scheme = widgetSchemeSchema.safeParse(c.req.query('scheme'))
+  const html = await readWidgetHtml(slug, artifactSlug)
+  if (html === null) return c.json({ error: 'Widget has no snapshot yet' }, 404)
+  return c.body(scheme.success ? renderWidgetDocument(html, scheme.data) : html, 200, {
+    'content-type': 'text/html; charset=utf-8',
+    'content-security-policy': WIDGET_HTML_CSP,
+    'x-content-type-options': 'nosniff',
+    // The iframe URL carries the html hash, so a changed snapshot is a new
+    // URL; the document itself can be cached briefly and privately.
+    'cache-control': 'private, max-age=60, must-revalidate',
+  })
+})
+
+// GET /api/agents/:id/artifacts/:artifactSlug/widget/snapshot?family=&scale=&scheme=
+// Rasterized PNG for native surfaces (the iOS widget extension). Served from
+// the host filesystem, so it works while the container sleeps.
+agents.get('/:id/artifacts/:artifactSlug/widget/snapshot', AgentRead(), async (c) => {
+  const slug = getAgentId(c)
+  const artifactSlug = c.req.param('artifactSlug')
+  const parsed = WidgetSnapshotQuery.safeParse({
+    family: c.req.query('family'),
+    scale: c.req.query('scale'),
+    scheme: c.req.query('scheme'),
+  })
+  if (!parsed.success) return c.json({ error: 'Invalid snapshot query' }, 400)
+  const widget = await readWidgetFromFilesystem(slug, artifactSlug)
+  if (!widget) return c.json({ error: 'Artifact has no widget' }, 404)
+  const family = parsed.data.family ?? widget.size
+  const scale = parsed.data.scale === '3' ? 3 : 2
+  const scheme = parsed.data.scheme ?? 'light'
+  const pngPath = widgetSnapshotPngPath(slug, artifactSlug, family, scheme, scale)
+  if (!pngPath) return c.json({ error: 'Invalid artifact slug' }, 400)
+  try {
+    const buf = await fs.promises.readFile(pngPath)
+    // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins
+    const body = new Uint8Array(buf)
+    return new Response(body, {
+      status: 200,
+      headers: {
+        'content-type': 'image/png',
+        'cache-control': 'private, max-age=60, must-revalidate',
+        ...(widget.generatedAt ? { 'x-widget-generated-at': widget.generatedAt } : {}),
+        ...(widget.validUntil ? { 'x-widget-valid-until': widget.validUntil } : {}),
+      },
+    })
+  } catch (error: any) {
+    if (error?.code === 'ENOENT') return c.json({ error: 'No snapshot rendered yet' }, 404)
+    console.error('Failed to read widget snapshot:', error)
+    return c.json({ error: 'Failed to read snapshot' }, 500)
+  }
+})
+
 // GET /api/agents/:id/artifacts/:artifactSlug/screenshot.png - Serve the
 // auto-captured dashboard thumbnail directly from the host filesystem. Works
 // regardless of whether the container is running. Must be registered before
@@ -7543,7 +7692,7 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
 // X-Agent invoke policies (per-agent remembered cross-agent permissions)
 // =============================================================================
 
-// GET /api/agents/:id/inbound-x-agent - Sessions created by other agents, plus
+// GET /api/agents/:id/inbound-x-agent - Other-agent calls and widget repairs, plus
 // every agent currently eligible to invoke this target. The target's read ACL
 // protects the page; caller rows remain visible but carry canAccess=false when
 // the viewing user cannot open that caller agent.

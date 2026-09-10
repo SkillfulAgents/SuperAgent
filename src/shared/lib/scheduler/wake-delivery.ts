@@ -108,17 +108,11 @@ export async function deliverSessionWake(
     // starts a fresh turn instead of deadlocking behind the blocked tool.
     await messagePersister.cancelAwaitingInput(task.agentSlug, sessionId)
 
-    messagePersister.markSessionActive(task.agentSlug, sessionId)
-    try {
-      await client.sendMessage(sessionId, buildWakeMessage(task, trigger), randomUUID(), {
+    await messagePersister.withSessionSend(task.agentSlug, sessionId, client, () =>
+      client.sendMessage(sessionId, buildWakeMessage(task, trigger), randomUUID(), {
         shouldQuery: true,
-      })
-    } catch (error) {
-      // The turn never started — clear the optimistic active flag so the UI
-      // doesn't show a phantom "working" session while the wake awaits retry.
-      messagePersister.markSessionIdle(task.agentSlug, sessionId)
-      throw error
-    }
+      }),
+    )
 
     // Side effect landed; record the slot so a crash between here and
     // markTaskExecuted can't double-deliver on the next attempt.

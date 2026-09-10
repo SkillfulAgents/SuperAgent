@@ -15,6 +15,7 @@ import { RelatedSessions, type SortOrder } from '@renderer/components/sessions/r
 import { SortPopover } from '@renderer/components/sessions/sort-popover'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { useNavTransient } from '@renderer/context/nav-transient-context'
+import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useFilePreview } from '@renderer/context/file-preview-context'
 import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
@@ -41,6 +42,7 @@ import { HomeVolumes } from './home-volumes'
 import { HomeHooks } from './home-hooks'
 import { HomeBookmarks } from './home-bookmarks'
 import { DashboardCard } from '@renderer/components/home/dashboard-card'
+import { HomeWidgets } from './home-widgets'
 import { useUpdateAgent, useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { AgentCreationAids, type ImportResult } from '@renderer/components/agents/agent-creation-aids'
@@ -97,6 +99,10 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const { canUseAgent, canAdminAgent } = useUser()
   const isViewOnly = !canUseAgent(agent.slug)
   const isOwner = canAdminAgent(agent.slug)
+  const replacedDashboards = useMemo(
+    () => new Set((Array.isArray(agent.widgets) ? agent.widgets : []).filter((w) => w.hasDashboard).map((w) => w.slug)),
+    [agent.widgets],
+  )
   const [isExpanded, setIsExpanded] = useState(false)
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false)
   const [sessionSearch, setSessionSearch] = useState('')
@@ -119,6 +125,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const sessionSearchRef = useRef<HTMLInputElement>(null)
   const composerTextareaRef = useRef<HTMLDivElement>(null)
   const isMobile = useIsMobile()
+  const { track } = useAnalyticsTracking()
   // Tracks an explicit user collapse so the auto-expand effect doesn't fight it.
   // Reset when the message clears (e.g. after submit).
   const userCollapsedRef = useRef(false)
@@ -278,10 +285,12 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
         ...composerOptions.toRuntimeOptions(),
       })
       onSessionCreated(session.id, VOICE_MODE_ENTERED_MESSAGE, session.initialMessageUuid, { voiceMode: true })
+      track('voice_mode_entered', { origin: 'home' })
     } catch (error) {
       console.error('Failed to start a voice session:', error)
+      track('voice_mode_start_failed', { origin: 'home' })
     }
-  }, [createSession, agent.slug, composerOptions, onSessionCreated])
+  }, [createSession, agent.slug, composerOptions, onSessionCreated, track])
 
   const isFreshUntitled = agent.name === UNTITLED_AGENT_NAME && sessions.length === 0
   const typewriterPlaceholder = useTypewriterPlaceholder(
@@ -633,13 +642,17 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
         {/* Right Column — Triggers + Connections + Skills + Volumes */}
         {showRightColumn && (
           <div className="space-y-3">
-            {(Array.isArray(agent.dashboards) ? agent.dashboards : []).map((d) => (
-              <DashboardCard
-                key={d.slug}
-                dashboard={d}
-                agentSlug={agent.slug}
-              />
-            ))}
+            <HomeWidgets agentSlug={agent.slug} />
+            {(Array.isArray(agent.dashboards) ? agent.dashboards : [])
+              // An artifact with a widget shows the widget instead of its screenshot.
+              .filter((d) => !replacedDashboards.has(d.slug))
+              .map((d) => (
+                <DashboardCard
+                  key={d.slug}
+                  dashboard={d}
+                  agentSlug={agent.slug}
+                />
+              ))}
             <HomeTriggers
               className="intro-step intro-step-4"
               agentSlug={agent.slug}

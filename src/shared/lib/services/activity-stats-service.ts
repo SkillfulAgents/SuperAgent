@@ -323,7 +323,8 @@ export async function getAgentActivityStats(
   let lastInvokedAt: string | null = null
   let lastInvokedAtMs = Number.NEGATIVE_INFINITY
   for (const meta of Object.values(metadata)) {
-    if (!meta.invokedByAgentSlug || !meta.createdAt) continue
+    // Widget repairs share the inbound history, including its home entry.
+    if ((!meta.invokedByAgentSlug && !meta.isWidgetRepair) || !meta.createdAt) continue
     const createdAt = new Date(meta.createdAt)
     if (!Number.isFinite(createdAt.getTime())) continue
     inboundTotal += 1

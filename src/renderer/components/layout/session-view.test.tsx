@@ -120,6 +120,32 @@ describe('SessionView x-agent provenance', () => {
   })
 })
 
+describe('SessionView widget repair provenance', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.session = {
+      id: 'repair-session',
+      agentSlug: 'target-agent',
+      name: 'Invoked to fix widget',
+      isWidgetRepair: true,
+      widgetRepairSlug: 'weather',
+    }
+    mocks.clearUnread.mockReturnValue(false)
+  })
+
+  it('identifies the widget and returns to the invocation history', () => {
+    render(<SessionView agentSlug="target-agent" sessionId="repair-session" />)
+
+    expect(screen.getByTestId('widget-repair-session-banner')).toHaveTextContent('Invoked to fix widget: weather')
+    expect(screen.queryByTestId('x-agent-session-banner')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('widget-repair-session-back-button'))
+    expect(mocks.navigate).toHaveBeenCalledWith({
+      to: '/agents/$slug/called-from-agents',
+      params: { slug: 'target-agent' },
+    })
+  })
+})
+
 describe('SessionView fork provenance', () => {
   beforeEach(() => {
     vi.clearAllMocks()

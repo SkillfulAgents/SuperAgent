@@ -89,6 +89,34 @@ describe('InboundXAgentView', () => {
     })
   })
 
+  it.each(['click', 'Enter', ' '])('opens a widget repair transcript with %s', (action) => {
+    mocks.useDetails.mockReturnValue({
+      data: {
+        sessions: [{
+          id: 'repair-session',
+          createdAt: '2026-08-20T18:00:00.000Z',
+          isWidgetRepair: true,
+          widgetRepairSlug: 'weather',
+        }],
+        callers: [],
+      },
+      isLoading: false,
+      error: null,
+    })
+    renderWithProviders(<InboundXAgentView agentSlug="target" />)
+
+    const row = screen.getByRole('button', { name: 'Open widget repair for weather' })
+    expect(within(row).getByText('Invoked to fix widget')).toBeInTheDocument()
+    expect(within(row).getByText('weather')).toBeInTheDocument()
+    if (action === 'click') fireEvent.click(row)
+    else fireEvent.keyDown(row, { key: action })
+    expect(mocks.navigate).toHaveBeenCalledWith({
+      to: '/agents/$slug/sessions/$sessionId',
+      params: { slug: 'target', sessionId: 'repair-session' },
+    })
+    expect(screen.queryByRole('switch')).not.toBeInTheDocument()
+  })
+
   it('persists a toggle and animates the row into the other section', async () => {
     renderWithProviders(<InboundXAgentView agentSlug="target" />)
 

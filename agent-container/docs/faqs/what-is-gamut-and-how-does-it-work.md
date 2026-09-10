@@ -12,7 +12,7 @@ Gamut is a platform for building and running personal AI agents. You create agen
 
 ### How it works
 
-Each agent you create in Gamut runs inside its own isolated container (Docker, Podman, or other supported runtimes). Inside that container, the agent is powered by Claude, Anthropic's large language model. The agent has access to a set of tools -- a shell, file system, web browser, and any external services you connect -- and uses them to carry out the tasks you describe in natural language.
+Each agent you create in Gamut runs inside its own isolated container (Docker, Podman, or other supported runtimes). Inside that container, the agent is powered by the best models from the leading AI labs. The agent has access to a set of tools -- a shell, file system, web browser, and any external services you connect -- and uses them to carry out the tasks you describe in natural language.
 
 You interact with agents through a chat interface. You can send messages, ask questions, assign tasks, and watch the agent work in real time. Agents remember context across sessions, learn your preferences over time, and can be scheduled to run tasks on their own.
 

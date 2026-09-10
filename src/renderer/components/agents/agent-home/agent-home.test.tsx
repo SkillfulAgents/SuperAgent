@@ -36,6 +36,10 @@ const mockUpdateAgentMutate = vi.fn()
 const mockUpdateAgentMutateAsync = vi.fn()
 const mockDeleteAgentMutate = vi.fn()
 
+vi.mock('@renderer/context/analytics-context', () => ({
+  useAnalyticsTracking: () => ({ track: vi.fn() }),
+}))
+
 vi.mock('@renderer/hooks/use-agents', () => ({
   useAgent: () => ({ data: { ...testAgent, mounts: [] } }),
   useAgents: () => ({ data: [testAgent] }),

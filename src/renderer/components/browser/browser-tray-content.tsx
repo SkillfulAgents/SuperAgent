@@ -1,11 +1,14 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
-import { Globe, MousePointerClick, PanelRightClose, Pause, Play, Square, Expand, Shrink } from 'lucide-react'
+import { useState, useRef, useCallback } from 'react'
+import { PanelRight } from 'lucide-react'
+import { BrowserViewport } from './browser-viewport'
+import { BrowserToolbar } from './browser-toolbar'
 import { BrowserActivityLog } from './browser-activity-log'
 import { BrowserTabBar } from './browser-tab-bar'
+import { FollowAgentToggle } from './follow-agent-toggle'
 import { useBrowserStream } from '@renderer/hooks/use-browser-stream'
+import { useBrowserCardSize } from '@renderer/hooks/use-browser-card-size'
 import { Button } from '@renderer/components/ui/button'
 import { DeclineButton } from '@renderer/components/messages/decline-button'
-import { apiFetch } from '@renderer/lib/api'
 import { linkify } from '@renderer/lib/linkify'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useBrowserInputActions } from '@renderer/hooks/use-browser-input-actions'
@@ -49,202 +52,154 @@ export function BrowserTrayContent({
     canvasRef,
   })
 
-  const [isPaused, setIsPaused] = useState(false)
+  // The body card squares off its top-left corner only while the viewed tab sits
+  // directly above it; the strip is the only thing that knows when that is.
+  const [leadingTabFlush, setLeadingTabFlush] = useState(false)
+  const onLeadingTabFlush = useCallback((flush: boolean) => setLeadingTabFlush(flush), [])
 
-  const handlePauseResume = useCallback(async () => {
-    if (isPaused) {
-      try {
-        await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/messages`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content: 'resume' }),
-        })
-        setIsPaused(false)
-      } catch (err) {
-        console.error('Failed to resume session:', err)
-      }
-    } else {
-      try {
-        await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/interrupt`, {
-          method: 'POST',
-        })
-        setIsPaused(true)
-      } catch (err) {
-        console.error('Failed to pause session:', err)
-      }
-    }
-  }, [agentSlug, sessionId, isPaused])
+  const { railRef, cardRef, viewportRef, maxCardWidth, maxStripWidth } = useBrowserCardSize(
+    isExpanded,
+    stream.aspectRatio,
+  )
 
-  useEffect(() => {
-    if (!browserActive) setIsPaused(false)
-  }, [browserActive])
-
-  const latestRequest = stream.pendingBrowserInputRequests.length > 0
-    ? stream.pendingBrowserInputRequests[stream.pendingBrowserInputRequests.length - 1]
-    : null
+  const latestRequest =
+    stream.pendingBrowserInputRequests.length > 0
+      ? stream.pendingBrowserInputRequests[stream.pendingBrowserInputRequests.length - 1]
+      : null
 
   // Same decline/complete behavior as the in-chat request card, shared via the hook.
-  const { submittingAction, error: actionError, complete, decline } = useBrowserInputActions({
+  const {
+    submittingAction,
+    error: actionError,
+    complete,
+    decline,
+  } = useBrowserInputActions({
     agentSlug,
     sessionId,
     onResolved: (toolUseId) => stream.dismissBrowserInputRequest(toolUseId),
   })
 
+  // History is authoritative once received; older containers only provide tab URLs.
+  const viewingTab = stream.tabs.find((tab) => tab.targetId === stream.viewingTargetId)
+  const pageUrl = stream.pageUrl || viewingTab?.url || ''
+
   return (
     <div className="flex flex-col flex-1 min-h-0 overflow-hidden" data-testid="browser-drawer-panel">
-      {/* Header */}
-      <div className="flex items-center gap-2 px-4 py-2 text-sm text-muted-foreground select-none shrink-0">
-        <Globe className="h-4 w-4 shrink-0" />
-        <span className="flex-1 text-xs truncate font-medium">
-          {stream.needsAttention ? (
-            <span className="text-blue-600 dark:text-blue-400">Input needed</span>
-          ) : (
-            <>Browser{stream.connected ? '' : ' (connecting...)'}</>
-          )}
-        </span>
-        <button
-          className="p-0.5 rounded hover:bg-muted transition-colors"
-          onClick={onClose}
-          title="Hide browser panel"
-        >
-          <PanelRightClose className="h-4 w-4" />
-        </button>
+      {/* Page tabs, with the drawer's own hide control at the strip's right end. */}
+      <div className="shrink-0 bg-muted/60">
+        <div className={cn(isExpanded && 'mx-auto')} style={isExpanded ? { maxWidth: maxStripWidth } : undefined}>
+          <BrowserTabBar
+            tabs={stream.tabs}
+            viewingTargetId={stream.viewingTargetId}
+            onTabClick={stream.handleTabClick}
+            onCloseTab={stream.handleCloseTab}
+            onLeadingTabFlush={onLeadingTabFlush}
+            trailing={
+              // The drawer's own control, at the strip's right end like the file drawer's.
+              <button
+                type="button"
+                className="inline-flex p-0.5 rounded hover:bg-muted transition-colors"
+                onClick={onClose}
+                title="Hide browser panel"
+                aria-label="Hide browser panel"
+              >
+                <PanelRight className="h-4 w-4" />
+              </button>
+            }
+          />
+        </div>
       </div>
 
-      {/* Tab bar */}
-      {stream.tabs.length >= 1 && (
-        <BrowserTabBar
-          tabs={stream.tabs}
-          viewingTargetId={stream.viewingTargetId}
-          autoFollow={stream.autoFollow}
-          loading={stream.pageLoading}
-          onTabClick={stream.handleTabClick}
-          onCloseTab={stream.handleCloseTab}
-          onToggleAutoFollow={stream.toggleAutoFollow}
-        />
-      )}
-
-      {/* Canvas viewport */}
-      <div className={cn('relative shrink-0 overflow-hidden bg-background border-y border-border/40', isActive && !stream.needsAttention && 'browser-glow-container')}>
-        <canvas
-          ref={canvasRef}
-          className={`w-full block ${stream.isViewOnly ? 'cursor-not-allowed' : 'cursor-default'}`}
-          style={{ aspectRatio: stream.aspectRatio, willChange: 'transform' }}
-          tabIndex={stream.isViewOnly ? -1 : 0}
-          data-testid="browser-canvas"
-          onMouseDown={stream.isViewOnly ? undefined : stream.handleMouseDown}
-          onMouseUp={stream.isViewOnly ? undefined : stream.handleMouseUp}
-          onMouseMove={stream.isViewOnly ? undefined : stream.handleMouseMove}
-          onWheel={stream.isViewOnly ? undefined : stream.handleWheel}
-          onKeyDown={stream.isViewOnly ? undefined : stream.handleKeyDown}
-          onKeyUp={stream.isViewOnly ? undefined : stream.handleKeyUp}
-          onPaste={stream.isViewOnly ? undefined : stream.handlePaste}
-          onContextMenu={(e) => e.preventDefault()}
-        />
-        {!stream.connected && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/50">
-            <span className="text-white text-xs">Connecting to browser stream...</span>
-          </div>
-        )}
-        {stream.showOverlay && (
-          <div
-            className="absolute inset-0 flex flex-col items-center justify-center bg-black/40 backdrop-blur-sm cursor-pointer z-10 transition-opacity duration-300"
-            role="button"
-            tabIndex={0}
-            onClick={stream.dismissOverlay}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault()
-                stream.dismissOverlay()
-              }
-            }}
-          >
-            <span className="relative flex h-3 w-3 mb-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-3 w-3 bg-blue-500"></span>
-            </span>
-            <span className="text-white text-sm font-medium mb-3">Your input needed</span>
-            <MousePointerClick className="h-6 w-6 text-white animate-pulse" />
-            <span className="text-white/70 text-xs mt-1">Click to interact</span>
-          </div>
-        )}
-      </div>
-
-      {/* Browser controls pill. translateZ(0) forces this onto its own compositing
-          layer so it paints above the screencast <canvas> (which sets
-          will-change: transform). Without its own layer, Safari/WebKit composites
-          the canvas layer over the z-index'd pill and the controls disappear. */}
+      {/* Browser body, on the same gray as the tab rail: the page card inset 16px
+          on every side, with the activity log sitting directly on the rail below it. */}
       <div
-        className="sticky bottom-2 z-20 flex justify-center pointer-events-none shrink-0 -mt-10"
-        style={{ transform: 'translateZ(0)' }}
+        className="flex flex-1 min-h-0 flex-col overflow-y-auto bg-muted/60 px-4 pb-4"
+        ref={railRef}
+        data-testid="browser-tray-rail"
       >
-        <div className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-background px-2 py-1 shadow-md pointer-events-auto">
-          {(isPaused || (isActive && !stream.needsAttention)) && (
-            <button
-              className="p-1.5 rounded-full hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
-              onClick={handlePauseResume}
-              title={isPaused ? 'Resume' : 'Pause'}
-            >
-              {isPaused ? <Play className="h-3.5 w-3.5 fill-current" /> : <Pause className="h-3.5 w-3.5 fill-current" />}
-            </button>
+        <div
+          className={cn(
+            'flex w-full shrink-0 flex-col rounded-lg border border-black/5 bg-background shadow-[0_1px_3px_rgba(0,0,0,0.04),0_2px_8px_rgba(0,0,0,0.03)] dark:border-white/5 dark:shadow-[0_1px_3px_rgba(0,0,0,0.2),0_2px_8px_rgba(0,0,0,0.15)]',
+            // Square only where a tab actually meets the corner.
+            leadingTabFlush && 'rounded-tl-none',
+            isExpanded && 'self-center',
           )}
-          <button
-            className="p-1.5 rounded-full hover:bg-muted transition-colors text-red-500 hover:text-red-600"
-            onClick={stream.handleCloseClick}
-            title="Stop browser"
-          >
-            <Square className="h-3.5 w-3.5 fill-current" />
-          </button>
-          <button
-            className="p-1.5 rounded-full hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
-            onClick={onToggleExpand}
-            title={isExpanded ? 'Collapse' : 'Expand'}
-          >
-            {isExpanded ? <Shrink className="h-3.5 w-3.5" /> : <Expand className="h-3.5 w-3.5" />}
-          </button>
-        </div>
-      </div>
+          ref={cardRef}
+          style={isExpanded ? { maxWidth: maxCardWidth } : undefined}
+          data-testid="browser-tray-card"
+        >
+          <BrowserToolbar
+            url={pageUrl}
+            canGoBack={stream.canGoBack}
+            canGoForward={stream.canGoForward}
+            connected={stream.connected}
+            isViewOnly={stream.isViewOnly}
+            loading={stream.pageLoading}
+            needsAttention={stream.needsAttention}
+            onNavigate={stream.navigate}
+          />
 
-      {/* Action bar */}
-      {stream.needsAttention && latestRequest && (
-        <div className="shrink-0 px-4 mt-3">
-          <div className="rounded-lg border border-border/60 bg-muted/30 p-3 flex items-center gap-2">
-            <span className="text-xs font-medium text-foreground flex-1 truncate">
-              {latestRequest.message ? linkify(latestRequest.message) : 'Your input needed'}
-            </span>
-            <DeclineButton
-              onDecline={(reason) => decline(latestRequest.toolUseId, reason)}
-              disabled={submittingAction !== null}
-              label="Decline"
-              showIcon={false}
-              size="sm"
-              // Chevron sits inside the grey action bar; clear the bar's bottom edge
-              // (plus a small gap) rather than offsetting from the chevron.
-              popoverSideOffset={18}
-              className="h-7 text-xs border-border text-foreground hover:bg-muted"
-              data-testid="browser-tray-decline-btn"
-            />
-            <Button
-              onClick={() => complete(latestRequest.toolUseId)}
-              loading={submittingAction === 'completing'}
-              disabled={submittingAction !== null}
-              size="sm"
-              className="h-7 text-xs bg-blue-600 text-white hover:bg-blue-700"
-            >
-              Done
-            </Button>
+          <BrowserViewport
+            viewportRef={viewportRef}
+            canvasRef={canvasRef}
+            stream={stream}
+            isActive={isActive}
+            isExpanded={isExpanded}
+            onToggleExpand={onToggleExpand}
+          />
+
+          {/* Action bar */}
+          {stream.needsAttention && latestRequest && (
+            <div className="shrink-0 px-4 py-3 border-t border-border/40">
+              <div className="rounded-lg border border-border/60 bg-muted/30 p-3 flex items-center gap-2">
+                <span className="text-xs font-medium text-foreground flex-1 truncate">
+                  {latestRequest.message ? linkify(latestRequest.message) : 'Your input needed'}
+                </span>
+                <DeclineButton
+                  onDecline={(reason) => decline(latestRequest.toolUseId, reason)}
+                  disabled={submittingAction !== null}
+                  label="Decline"
+                  showIcon={false}
+                  size="sm"
+                  // Chevron sits inside the grey action bar; clear the bar's bottom edge
+                  // (plus a small gap) rather than offsetting from the chevron.
+                  popoverSideOffset={18}
+                  className="h-7 text-xs border-border text-foreground hover:bg-muted"
+                  data-testid="browser-tray-decline-btn"
+                />
+                <Button
+                  onClick={() => complete(latestRequest.toolUseId)}
+                  loading={submittingAction === 'completing'}
+                  disabled={submittingAction !== null}
+                  size="sm"
+                  className="h-7 text-xs bg-blue-600 text-white hover:bg-blue-700"
+                >
+                  Done
+                </Button>
+              </div>
+              {actionError && <p className="mt-1 px-1 text-2xs text-destructive">{actionError}</p>}
+            </div>
+          )}
+        </div>
+
+        {/* Preserve subscriptions, expanded rows, and scroll position across full screen. */}
+        <div
+          className={cn('flex flex-1 min-h-32 flex-col', isExpanded && 'hidden')}
+          data-testid="browser-activity-region"
+        >
+          {/* Activity log, on the rail rather than in the card. The log pads its own
+          rows 16px, so it is pulled back out to the rail's edge to line up with
+          the heading and the card. */}
+          <div className="flex items-center py-1 border-b border-border/60 shrink-0 mt-4">
+            <span className="flex-1 text-xs font-medium text-muted-foreground">Browser agent actions</span>
+            {/* Follow changes the viewed browser tab when the agent switches pages. */}
+            <FollowAgentToggle autoFollow={stream.autoFollow} onToggle={stream.toggleAutoFollow} className="-mr-1" />
           </div>
-          {actionError && (
-            <p className="mt-1 px-1 text-2xs text-destructive">{actionError}</p>
-          )}
+          <div className="flex flex-1 min-h-0 flex-col -mx-4">
+            <BrowserActivityLog sessionId={sessionId} agentSlug={agentSlug} />
+          </div>
         </div>
-      )}
-
-      {/* Activity log */}
-      <div className="flex items-center gap-1 py-1.5 border-b shrink-0 mx-4 mt-4">
-        <span className="text-2xs font-medium uppercase tracking-wider text-muted-foreground">Activity</span>
       </div>
-      <BrowserActivityLog sessionId={sessionId} agentSlug={agentSlug} />
 
       {/* Close confirmation dialog */}
       <AlertDialog open={stream.showCloseWarning} onOpenChange={stream.setShowCloseWarning}>

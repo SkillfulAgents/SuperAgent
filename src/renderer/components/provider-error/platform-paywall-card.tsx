@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 
 import { extractSubscriptionRequired } from '@shared/lib/llm-provider/platform-error-presentation'
 import { cn } from '@shared/lib/utils/cn'
+import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { HomeEmptyClouds } from '@renderer/components/home/home-empty-clouds'
 import { Button } from '@renderer/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@renderer/components/ui/dialog'
@@ -79,9 +80,9 @@ function PaywallActions({
   loading: boolean
   handedOff: boolean
   embeddedAction: ReactNode
-  onDismiss: () => void
-  onHandOff: () => void
-  onRecheck: () => void
+  onDismiss: (ctaKind: string) => void
+  onHandOff: (ctaKind: string) => void
+  onRecheck: (ctaKind: string) => void
 }) {
   if (loading) {
     return (
@@ -92,9 +93,10 @@ function PaywallActions({
     )
   }
   const href = cta ? ctaHref(cta) : null
+  const ctaKind = cta?.kind ?? 'none'
   return (
     <div className="flex items-end gap-2" data-testid="paywall-actions">
-      <Button size="sm" variant="ghost" onClick={onDismiss}>
+      <Button size="sm" variant="ghost" onClick={() => onDismiss(ctaKind)}>
         Dismiss
       </Button>
       {handedOff ? (
@@ -102,7 +104,7 @@ function PaywallActions({
           size="sm"
           onClick={(event) => {
             event.stopPropagation()
-            onRecheck()
+            onRecheck(ctaKind)
           }}
         >
           Recheck
@@ -115,7 +117,7 @@ function PaywallActions({
             event.stopPropagation()
             if (!href) return
             void openExternalUrl(href)
-            onHandOff()
+            onHandOff(ctaKind)
           }}
         >
           {CTA_LABELS[cta.kind]}
@@ -137,6 +139,7 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
   const billingChanged = useRef(false)
   const successShown = useRef(false)
   const { data: platformAuth } = usePlatformAuthStatus()
+  const { track } = useAnalyticsTracking()
   const billing = usePlatformPaywallBilling(
     extractSubscriptionRequired(message),
     presentation?.href ?? null,
@@ -167,6 +170,19 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
     const timer = setTimeout(() => setDialogOpen(false), 1200)
     return () => clearTimeout(timer)
   }, [billing.cleared, dialogOpen])
+
+  const ctaKind = billing.cta?.kind ?? 'none'
+  const shownRef = useRef(false)
+  useEffect(() => {
+    if (shownRef.current || billing.loading || billing.cleared || dismissed) return
+    shownRef.current = true
+    track('paywall_shown', { ctaKind, blocked: billing.blocked, placement: presentation?.placement ?? 'unknown' })
+  }, [billing.loading, billing.cleared, billing.blocked, dismissed, ctaKind, presentation?.placement, track])
+  useEffect(() => {
+    if (!shownRef.current || !billing.cleared) return
+    track('paywall_cleared', { ctaKind, handedOff })
+  }, [billing.cleared, ctaKind, handedOff, track])
+
   if ((billing.cleared && !dialogOpen) || dismissed) return <>{children}</>
 
   const fallback = splitMessage(presentation?.message ?? message)
@@ -211,9 +227,18 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
                   onOpenExternal={() => setHandedOff(true)}
                 />
               ) : null}
-              onDismiss={() => setDismissed(true)}
-              onHandOff={() => setHandedOff(true)}
-              onRecheck={billing.recheck}
+              onDismiss={(kind) => {
+                track('paywall_dismissed', { ctaKind: kind, handedOff })
+                setDismissed(true)
+              }}
+              onHandOff={(kind) => {
+                track('paywall_cta_clicked', { ctaKind: kind })
+                setHandedOff(true)
+              }}
+              onRecheck={(kind) => {
+                track('paywall_recheck_clicked', { ctaKind: kind })
+                billing.recheck()
+              }}
             />
           </div>
           {embedded && billing.cta && view === 'topup' && (

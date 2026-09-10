@@ -1,5 +1,5 @@
 import type { QueryClient } from '@tanstack/react-query'
-import type { ApiAgent, ApiSession } from '@shared/lib/types/api'
+import type { ApiAgent, ApiAgentWidget, ApiSession } from '@shared/lib/types/api'
 import type { ArtifactInfo } from '@renderer/hooks/use-artifacts'
 
 function matchesAgent(agent: ApiAgent, slug: string): boolean {
@@ -302,5 +302,50 @@ export function markDashboardScreenshotReady(
           : dashboard
       )),
     }
+  })
+}
+
+/**
+ * Apply a partial update to one widget everywhere it is cached: the agents
+ * list, agent detail entries, and the per-agent ['widgets', slug] query.
+ * Used by the widget SSE events so a refresh flips the card without a
+ * full agents-list refetch.
+ */
+export function patchAgentWidget(
+  queryClient: QueryClient,
+  agentSlug: string,
+  widgetSlug: string,
+  patch: Partial<ApiAgentWidget>,
+): void {
+  const apply = (widgets: ApiAgentWidget[] | undefined) => (
+    widgets?.map((widget) => (widget.slug === widgetSlug ? { ...widget, ...patch } : widget))
+  )
+  updateMatchingAgents(queryClient, agentSlug, (agent) => (
+    agent.widgets?.some((widget) => widget.slug === widgetSlug)
+      ? { ...agent, widgets: apply(agent.widgets) }
+      : agent
+  ))
+  const aliases = agentSlugAliases(queryClient, agentSlug)
+  queryClient.setQueriesData<ApiAgentWidget[]>(
+    {
+      predicate: (query) => (
+        query.queryKey[0] === 'widgets'
+        && typeof query.queryKey[1] === 'string'
+        && aliases.has(query.queryKey[1])
+      ),
+    },
+    apply,
+  )
+}
+
+/** Refetch the authoritative widget listing for one agent (all route aliases). */
+export function invalidateAgentWidgets(queryClient: QueryClient, slug: string): void {
+  const aliases = agentSlugAliases(queryClient, slug)
+  queryClient.invalidateQueries({
+    predicate: (query) => (
+      query.queryKey[0] === 'widgets'
+      && typeof query.queryKey[1] === 'string'
+      && aliases.has(query.queryKey[1])
+    ),
   })
 }

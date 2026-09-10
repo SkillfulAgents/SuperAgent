@@ -90,3 +90,50 @@ export function captureRendererException(
     // against a future implementation changing that contract.
   })
 }
+
+/**
+ * Report a condition that is not an exception but still needs a record — a
+ * session that ended without producing what it should have. Same safety
+ * contract as captureRendererException: never throws, no-op in dev.
+ */
+export function captureRendererMessage(
+  message: string,
+  context?: {
+    level?: 'info' | 'warning' | 'error'
+    tags?: Record<string, string>
+    extra?: Record<string, unknown>
+    /**
+     * Groups every report under one issue regardless of message text. Sentry
+     * drops an event identical to the one before it (same message, fingerprint,
+     * and stack), so a caller that expects repeats varies the message and pins
+     * the fingerprint to keep each repeat and still get one issue.
+     */
+    fingerprint?: string[]
+  }
+): void {
+  void loadSentry().then((provider) => {
+    if (!provider) return
+    try {
+      provider.captureMessage(message, {
+        level: context?.level ?? 'warning',
+        tags: context?.tags,
+        extra: context?.extra,
+        fingerprint: context?.fingerprint,
+      })
+    } catch { /* never crash */ }
+  }).catch(() => {})
+}
+
+/**
+ * Leave a breadcrumb on the trail that travels with the next captured event,
+ * so a lifecycle step (a socket opened, a capture started) explains an error
+ * reported seconds later. Never throws, no-op in dev.
+ */
+export function addRendererBreadcrumb(category: string, message: string, data?: Record<string, unknown>): void {
+  void loadSentry().then((provider) => {
+    if (!provider) return
+    try {
+      provider.addBreadcrumb({ category, message, data, level: 'info' })
+    } catch { /* never crash */ }
+  }).catch(() => {})
+}

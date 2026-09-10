@@ -4,7 +4,7 @@ import { agentAcl } from '@shared/lib/db/schema'
 import type { ApiAgent } from '@shared/lib/types/api'
 import type { AgentRole, SessionMetadataMap } from '@shared/lib/types/agent'
 import { hasMinRole } from '@shared/lib/types/agent'
-import type { InboundXAgentDetails } from '@shared/lib/types/inbound-x-agent-schema'
+import type { InboundXAgentDetails, InboundXAgentSession } from '@shared/lib/types/inbound-x-agent-schema'
 import { listAgentsWithStatus } from './agent-service'
 import { readSessionMetadata } from './session-service'
 import {
@@ -46,10 +46,19 @@ export function buildInboundXAgentDetails({
 }: BuildInboundXAgentDetailsInput): InboundXAgentDetails {
   const agentBySlug = new Map(agents.map((agent) => [agent.slug, agent]))
   const sessions = Object.entries(metadata)
-    .flatMap(([id, meta]) => {
-      if (!meta.invokedByAgentSlug || !meta.createdAt) return []
+    .flatMap<InboundXAgentSession>(([id, meta]) => {
+      if (!meta.createdAt) return []
       const createdAt = new Date(meta.createdAt)
       if (!Number.isFinite(createdAt.getTime())) return []
+      if (meta.isWidgetRepair) {
+        return [{
+          id,
+          createdAt: createdAt.toISOString(),
+          isWidgetRepair: true,
+          widgetRepairSlug: meta.widgetRepairSlug,
+        }]
+      }
+      if (!meta.invokedByAgentSlug) return []
       const caller = agentBySlug.get(meta.invokedByAgentSlug)
       return [{
         id,

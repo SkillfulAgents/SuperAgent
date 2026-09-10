@@ -126,6 +126,11 @@ export interface SessionMetadata {
   // X-Agent: present when this session was created by another agent invoking this one.
   // Such sessions are hidden as automated until promoted for human input.
   invokedByAgentSlug?: string
+  // Widget repair: the platform opened this session because the artifact's
+  // widget refresh script failed. Automated (hidden) like a cron run, and the
+  // slug doubles as the per-widget dedupe key.
+  isWidgetRepair?: boolean
+  widgetRepairSlug?: string
   // Dashboard dispatch: present when the session was started from a dashboard's
   // dispatch confirmation dialog. Provenance only — a human clicked Dispatch,
   // so these sessions stay interactive (never hidden as automated).
