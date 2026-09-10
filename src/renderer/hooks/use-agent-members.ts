@@ -1,18 +1,14 @@
-import { useQuery } from '@tanstack/react-query'
-import { apiFetch } from '@renderer/lib/api'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { loadAgentMembers } from '@renderer/lib/agent-members-loader'
 import { useUser } from '@renderer/context/user-context'
-import { agentMembersSchema } from '@shared/lib/agent-members-schema'
 
 /** Sidebar, header, and sharing pane reuse the same live roster per agent. */
 export function useAgentMembers(agentSlug: string, enabled = true) {
   const { isAuthMode } = useUser()
+  const queryClient = useQueryClient()
   return useQuery({
     queryKey: ['agent-members', agentSlug],
-    queryFn: async () => {
-      const response = await apiFetch(`/api/agents/${agentSlug}/members`)
-      if (!response.ok) throw new Error('Could not load members')
-      return agentMembersSchema.parse(await response.json())
-    },
+    queryFn: ({ signal }) => loadAgentMembers(queryClient, agentSlug, signal),
     enabled: isAuthMode && enabled,
     staleTime: 30_000,
   })

@@ -1,4 +1,4 @@
-import agentMembers from './agent-members'
+import agentMembers, { agentMembersBatch } from './agent-members'
 import { notifyAgentMembersChanged } from '@shared/lib/services/agent-members-service'
 import { getUserSummaries, searchUserSummaries, toUserSender, userExists, type UserSenderSource } from '@shared/lib/services/user-profile-service'
 import { Hono, type Context } from 'hono'
@@ -903,6 +903,9 @@ export async function resolveInterruptedSubagents(
 const agents = new Hono()
 
 agents.use('*', Authenticated())
+
+// Collection roster reads must be mounted before /:id/* resolution.
+agents.route('/members/batch', agentMembersBatch)
 
 // ============================================================
 // Routes that must be registered BEFORE /:id middleware
