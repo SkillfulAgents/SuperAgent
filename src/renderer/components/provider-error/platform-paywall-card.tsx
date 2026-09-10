@@ -25,7 +25,7 @@ function splitMessage(markdown: string): { title: string; body: string } {
 }
 
 function title(cta: PaywallCta | null, fallback: string): string {
-  if (cta?.kind === 'subscribe') return 'Upgrade to keep going'
+  if (cta?.kind === 'subscribe') return 'Subscribe to keep going'
   if (cta?.kind === 'add_card') return 'Add a payment method'
   if (cta?.kind === 'manage_payment') return 'Payment needs attention'
   if (cta?.kind === 'ask_admin') return 'Workspace billing needs attention'
@@ -33,21 +33,21 @@ function title(cta: PaywallCta | null, fallback: string): string {
 }
 
 function subtitle(cta: PaywallCta | null, fallback: string): string {
-  if (cta?.kind === 'subscribe') return 'Start a subscription to continue using this workspace.'
+  if (cta?.kind === 'subscribe') return 'An active subscription lets your agents pick this back up.'
   if (cta?.kind === 'add_card') return 'Add a payment method before purchasing more usage credit.'
   if (cta?.kind === 'topup') return 'Add usage credit to resume this answer.'
   if (cta?.kind === 'manage_payment') return 'Your payment needs attention before agents can continue.'
-  if (cta?.kind === 'ask_admin') return 'Ask a workspace admin to resolve billing for this organization.'
+  if (cta?.kind === 'ask_admin') return 'Ask a workspace admin to add usage credit to this organization.'
   return fallback
 }
 
 const CTA_LABELS: Record<PaywallCta['kind'], string> = {
-  subscribe: 'Upgrade',
+  subscribe: 'Subscribe',
   add_card: 'Add credit card',
   manage_payment: 'Fix payment',
   go_to_billing: 'Go to billing',
   ask_admin: 'Go to billing',
-  topup: 'Add credits',
+  topup: 'Add usage',
 }
 
 function ctaHref(cta: PaywallCta): string | null {

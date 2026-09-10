@@ -252,7 +252,7 @@ describe('PlatformPaywallCard', () => {
   it('opens the platform on Add usage, then that button becomes Recheck', async () => {
     platformAuth.role = 'owner'
     renderCard()
-    const button = await screen.findByRole('button', { name: 'Add credits' })
+    const button = await screen.findByRole('button', { name: 'Add usage' })
     expect(screen.getByText('You need more usage credit to continue')).toBeInTheDocument()
     act(() => { button.click() })
     expect(openExternalUrl).toHaveBeenCalledTimes(1)
@@ -262,7 +262,7 @@ describe('PlatformPaywallCard', () => {
     expect(url.searchParams.get('intent')).toBe('topup')
     expect(url.searchParams.has('return_app')).toBe(false)
     const recheck = screen.getByRole('button', { name: 'Recheck' })
-    expect(screen.queryByRole('button', { name: 'Add credits' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add usage' })).not.toBeInTheDocument()
     fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
     act(() => { recheck.click() })
     await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
@@ -272,7 +272,7 @@ describe('PlatformPaywallCard', () => {
   it('disables the CTA when the provider attached no href', async () => {
     platformAuth.role = 'owner'
     renderCard(undefined, true, { ...PRESENTATION, href: undefined })
-    const button = await screen.findByRole('button', { name: 'Add credits' })
+    const button = await screen.findByRole('button', { name: 'Add usage' })
     expect(button).toBeDisabled()
     act(() => { button.click() })
     expect(openExternalUrl).not.toHaveBeenCalled()
@@ -434,7 +434,7 @@ describe('PlatformPaywallCard', () => {
       expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-expanded', 'false')
       expect(screen.queryByTestId('billing-embed-frame')).not.toBeInTheDocument()
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: 'Add credits' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Add usage' })).not.toBeInTheDocument()
       expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument()
       expect(openExternalUrl).not.toHaveBeenCalled()
     })
@@ -475,7 +475,7 @@ describe('PlatformPaywallCard', () => {
     it('shows only a light authorization hint and clears it after access is restored', async () => {
       renderCard()
       await screen.findByTestId('billing-cta-frame')
-      postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', { label: 'Add credits', hint: 'Allow access to billing to continue.' })
+      postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', { label: 'Add usage', hint: 'Allow access to billing to continue.' })
       expect(screen.getByTestId('billing-cta-hint')).toHaveTextContent('Allow access to billing to continue.')
       expect(screen.getByTestId('billing-cta-hint').className).toContain('text-xs')
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
@@ -496,7 +496,7 @@ describe('PlatformPaywallCard', () => {
     it('shows an authorized upgrade quote on the card and never expands the subscribe CTA', async () => {
       renderCard('API Error: 402 {"error":"insufficient_balance","subscription_required":true}')
       await screen.findByTestId('billing-cta-frame')
-      postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', { label: 'Upgrade', hint: '2 seats · $400/mo. Cancel anytime.' })
+      postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', { label: 'Subscribe', hint: '2 seats · $400/mo. Cancel anytime.' })
       expect(screen.getByTestId('billing-cta-hint')).toHaveTextContent('2 seats · $400/mo. Cancel anytime.')
       postEmbedMessage(PLATFORM_ORIGIN, 'open-billing')
       expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-expanded', 'false')
@@ -701,7 +701,7 @@ describe('PlatformPaywallCard', () => {
       renderCard('API Error: 402 {"error":"insufficient_balance","subscription_required":true}')
       await screen.findByTestId('billing-cta-frame')
       expectEmbedUrl({ view: 'subscribe', surface: 'cta' })
-      expect(screen.queryByRole('button', { name: 'Upgrade' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Subscribe' })).not.toBeInTheDocument()
       postEmbedMessage(PLATFORM_ORIGIN, 'open-billing')
       expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-expanded', 'false')
     })
@@ -726,7 +726,7 @@ describe('PlatformPaywallCard', () => {
     it('keeps the system-browser hand-off in Electron even on a cloud workspace', async () => {
       ;(window as { electronAPI?: unknown }).electronAPI = {}
       renderCard()
-      const button = await screen.findByRole('button', { name: 'Add credits' })
+      const button = await screen.findByRole('button', { name: 'Add usage' })
       expect(screen.queryByTestId('billing-embed-body')).not.toBeInTheDocument()
       act(() => { button.click() })
       expect(openExternalUrl).toHaveBeenCalledTimes(1)
@@ -736,7 +736,7 @@ describe('PlatformPaywallCard', () => {
     it('keeps the system-browser hand-off on web when the workspace is not platform-controlled', async () => {
       platformAuth.platformControlled = false
       renderCard()
-      const button = await screen.findByRole('button', { name: 'Add credits' })
+      const button = await screen.findByRole('button', { name: 'Add usage' })
       expect(screen.queryByTestId('billing-embed-body')).not.toBeInTheDocument()
       act(() => { button.click() })
       expect(openExternalUrl).toHaveBeenCalledTimes(1)
