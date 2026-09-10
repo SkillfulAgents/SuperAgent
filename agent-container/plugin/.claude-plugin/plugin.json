@@ -1,0 +1,5 @@
+{
+  "name": "gamut",
+  "description": "Gamut platform skills (dashboards, widgets) and vendored workflows (deep-research), baked into the agent image",
+  "version": "1.0.0"
+}

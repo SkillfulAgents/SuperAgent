@@ -6,6 +6,7 @@ import { ARTIFACTS_DIR, validateSlug, truncateOversizedLog, BUN_INSTALL_NETWORK_
 import { readArtifactShapeSync, type ArtifactShape } from './artifact-kind'
 import { notifyWidgetSnapshotReady } from './host-events'
 import { rasterizeWidget } from './widget-rasterizer'
+import { gamutSkillPath } from './gamut-plugin'
 import {
   ArtifactPackageSchema,
   DEFAULT_SCRIPT_TIMEOUT_SECONDS,
@@ -439,10 +440,7 @@ class WidgetManager {
   ): Promise<{ dir: string; addedToDashboard: boolean; kept: string[] }> {
     const dir = this.artifactDir(slug)
     const pkgPath = path.join(dir, 'package.json')
-    const templateDir = path.join(
-      process.env.HOME || '/home/claude',
-      '.claude/skills/widgets/templates/basic',
-    )
+    const templateDir = gamutSkillPath('widgets', 'templates', 'basic')
     const widgetBlock: WidgetConfig = {
       size: opts.size ?? 'small',
       timeoutSeconds: DEFAULT_SCRIPT_TIMEOUT_SECONDS,

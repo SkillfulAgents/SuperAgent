@@ -15,6 +15,7 @@ import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { EffortLevel, SpeedLevel } from './types';
+import { gamutPluginDir } from './gamut-plugin';
 import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpServer, createDashboardsMcpServer, createWidgetsMcpServer, createAgentsMcpServer, createChatMcpServer, createWebMcpServer } from './mcp-server';
 import { createBrowserTools } from './tools/browser';
 import { renameBrowserSession } from './browser-state';
@@ -975,8 +976,26 @@ export class ClaudeCodeProcess extends EventEmitter {
       // the `settings` flag layer (`enableWorkflows` is a Settings field, not a
       // top-level Option). Without it the model can't see a Workflow tool at all
       // and falls back to simulating with Agent subagents.
-      settings: { enableWorkflows: capabilityTools.enableWorkflows },
+      settings: {
+        enableWorkflows: capabilityTools.enableWorkflows,
+        // Drop every skill and workflow that ships inside the CLI (dataviz,
+        // claude-api, code-review, loop, batch, ...). They are developer-
+        // workflow skills that fire on their own — `dataviz` on any chart or
+        // dashboard, `claude-api` on any mention of Claude — and pull guidance
+        // that competes with ours into context. A per-skill denylist would
+        // silently admit whatever the next SDK bump adds, so opt out of the
+        // whole set. The one we want, `deep-research`, is vendored in the
+        // Gamut plugin (`plugins` below); plugin skills and agent-created
+        // skills under /workspace/.claude/skills are unaffected by this flag.
+        disableBundledSkills: true,
+      },
       settingSources: ['user', 'project'],
+      // The image-baked Gamut plugin: the dashboards + widgets skills and the
+      // vendored deep-research workflow. The CLI discovers skills only under
+      // $CLAUDE_CONFIG_DIR and inside plugins, so this is what makes them
+      // visible to the model (see gamut-plugin.ts). We own every MCP
+      // connection ourselves, so the plugin's MCP discovery is skipped.
+      plugins: [{ type: 'local', path: gamutPluginDir(), skipMcpDiscovery: true }],
       allowedTools: capabilityTools.allowedTools,
       disallowedTools: capabilityTools.disallowedTools,
       // Request summarized thinking so reasoning text streams to the UI. Without an

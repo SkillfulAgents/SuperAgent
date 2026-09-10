@@ -21,7 +21,7 @@ Build one when the user needs a rich, reusable visual artifact rather than a cha
 
 ## Quick Start (React)
 
-1. Copy the template: `cp -r ~/.claude/skills/dashboards/templates/react-vite /workspace/artifacts/<slug>`
+1. Copy the template: `cp -r /opt/gamut/plugin/skills/dashboards/templates/react-vite /workspace/artifacts/<slug>`
 2. Update `package.json` with the dashboard's `name` and `description`
 3. Edit `src/App.jsx` to build the UI (add API routes in `serve.js` if needed). Build dashboard-scoped URLs with `window.__GAMUT_DASHBOARD__.url('api/data')`.
 4. Use `start_dashboard` to build and start the server; inspect its screenshot and note the returned port
@@ -77,7 +77,7 @@ console.log(`Server running on port ${port}`);
 A pre-configured React + Vite template is available. To create a new React dashboard:
 
 ```bash
-cp -r ~/.claude/skills/dashboards/templates/react-vite /workspace/artifacts/<slug>
+cp -r /opt/gamut/plugin/skills/dashboards/templates/react-vite /workspace/artifacts/<slug>
 ```
 
 Then update `package.json` with the dashboard's `name` and `description`, and edit `src/App.jsx` to build the UI.
@@ -196,9 +196,9 @@ A dashboard can also expose a **widget**: a small glanceable card on the user's 
 
 The following APIs are automatically available in all dashboards (injected by the platform):
 
-- **Speech Recognition** — The standard `SpeechRecognition` Web API for voice-to-text. See `~/.claude/skills/dashboards/SPEECH_RECOGNITION.md` for full documentation and examples.
-- **LLM (Anthropic SDK)** — An Anthropic SDK-compatible `Anthropic` client for calling Claude. No API keys needed. See `~/.claude/skills/dashboards/LLM_API.md` for full documentation and examples.
-- **Session Dispatch** — `window.__GAMUT_DASHBOARD__.dispatchSession({ prompt, title? })` asks the app to start a new session on this dashboard's own agent. The app always shows the user a confirmation popup first (with the prompt editable), so wire it to explicit user actions like buttons — never call it automatically. See `~/.claude/skills/dashboards/SESSION_DISPATCH.md` for full documentation and examples.
+- **Speech Recognition** — The standard `SpeechRecognition` Web API for voice-to-text. See `/opt/gamut/plugin/skills/dashboards/SPEECH_RECOGNITION.md` for full documentation and examples.
+- **LLM (Anthropic SDK)** — An Anthropic SDK-compatible `Anthropic` client for calling Claude. No API keys needed. See `/opt/gamut/plugin/skills/dashboards/LLM_API.md` for full documentation and examples.
+- **Session Dispatch** — `window.__GAMUT_DASHBOARD__.dispatchSession({ prompt, title? })` asks the app to start a new session on this dashboard's own agent. The app always shows the user a confirmation popup first (with the prompt editable), so wire it to explicit user actions like buttons — never call it automatically. See `/opt/gamut/plugin/skills/dashboards/SESSION_DISPATCH.md` for full documentation and examples.
 
 ## Best Practices
 

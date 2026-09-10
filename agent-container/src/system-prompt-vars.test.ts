@@ -273,7 +273,7 @@ describe('generateSystemPrompt rendering', () => {
       expect(out).toContain('`dashboards` skill')
       expect(out).not.toContain('building-dashboards.md')
     }
-    expect(existsSync(join(__dirname, '..', 'skills', 'dashboards', 'SKILL.md'))).toBe(true)
+    expect(existsSync(join(__dirname, '..', 'plugin', 'skills', 'dashboards', 'SKILL.md'))).toBe(true)
   })
 
   // Every relative link inside the shipped docs resolves to a shipped file.
