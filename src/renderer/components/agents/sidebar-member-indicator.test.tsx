@@ -70,6 +70,20 @@ describe('SidebarMemberIndicator', () => {
     expect(within(screen.getByRole('dialog')).queryByRole('button')).toBeNull()
   })
 
+  it('keeps the first roster open when pressing Invite blurs the avatar trigger', () => {
+    user.canAdminAgent.mockReturnValue(true)
+    render(<SidebarMemberIndicator {...props} />)
+    const trigger = screen.getByRole('button', { name: '6 members of Shared Agent' })
+    fireEvent.focus(trigger)
+    const invite = screen.getByRole('button', { name: 'Invite' })
+    fireEvent.pointerDown(invite)
+    fireEvent.blur(trigger, { relatedTarget: null })
+    expect(screen.getByRole('dialog')).toBeVisible()
+    expect(invite).toBeInTheDocument()
+    fireEvent.click(invite)
+    expect(screen.getByRole('dialog')).toBeVisible()
+  })
+
   it('counts the overflow circle toward the configurable limit', () => {
     const { rerender } = render(<SidebarMemberIndicator {...props} maxFaces={1} />)
     const trigger = screen.getByRole('button', { name: '6 members of Shared Agent' })

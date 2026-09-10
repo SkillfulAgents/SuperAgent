@@ -132,6 +132,11 @@ export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxF
                   variant="outline"
                   className="h-6 px-2 text-[11px] [&_svg]:size-3"
                   data-testid={`sidebar-members-invite-${agentSlug}`}
+                  // Keep the roster mounted if the press blurs its trigger before click.
+                  onPointerDownCapture={() => {
+                    clearTimer()
+                    setPinned(true)
+                  }}
                   onClick={() => {
                     clearTimer()
                     setPinned(true)
