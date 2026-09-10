@@ -1,0 +1,125 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e8]:
+        - generic [ref=e9]: Gamut
+        - button "Search" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+      - generic [ref=e15]:
+        - list [ref=e18]:
+          - listitem [ref=e19]:
+            - link "Home" [ref=e20] [cursor=pointer]:
+              - /url: /
+              - img [ref=e21]
+              - generic [ref=e26]: Home
+          - listitem [ref=e27]:
+            - link "Notifications" [ref=e356] [cursor=pointer]:
+              - /url: /notifications
+              - img [ref=e29]
+              - generic [ref=e32]: Notifications
+          - listitem [ref=e156]:
+            - link "Discover New Agents New" [ref=e157] [cursor=pointer]:
+              - /url: /explore
+              - img [ref=e158]
+              - generic [ref=e161]: Discover New Agents
+              - generic [ref=e162]: New
+          - listitem [ref=e33]:
+            - button "New Agent" [ref=e34] [cursor=pointer]:
+              - img [ref=e35]
+              - generic [ref=e36]: New Agent
+        - list [ref=e39]:
+          - listitem [ref=e40]:
+            - button "Your Agents" [ref=e41] [cursor=pointer]:
+              - button "Your Agents" [expanded] [ref=e42]:
+                - generic [ref=e43]: Your Agents
+            - button "New folder" [ref=e45] [cursor=pointer]:
+              - img [ref=e46]
+            - list [ref=e49]:
+              - button "QA-20260910-173459-r8k9 working Collapse New Session working" [ref=e358] [cursor=pointer]:
+                - generic [ref=e51]:
+                  - link "QA-20260910-173459-r8k9 working" [ref=e359]:
+                    - /url: /agents/qa-20260910-173459-r8k9-1vq4z8ilmh
+                    - generic [ref=e54]: QA-20260910-173459-r8k9
+                    - img "working" [ref=e360]:
+                      - img "working" [ref=e361]
+                  - button "Collapse" [expanded] [ref=e365]:
+                    - img [ref=e366]
+                - list [ref=e369]:
+                  - listitem [ref=e370]:
+                    - link "New Session working" [ref=e371]:
+                      - /url: /agents/1vq4z8ilmh/sessions/b56bba33-d243-4097-abc1-951fdd9124f8
+                      - generic [ref=e373]: New Session
+                      - img "working" [ref=e375]
+              - button "QA-20260910-173458-y9zm idle Expand" [ref=e379] [cursor=pointer]:
+                - generic [ref=e66]:
+                  - link "QA-20260910-173458-y9zm idle" [ref=e380]:
+                    - /url: /agents/qa-20260910-173458-y9zm-8sxsns9wy1
+                    - generic [ref=e69]: QA-20260910-173458-y9zm
+                    - img "idle" [ref=e381]:
+                      - img [ref=e382]
+                  - button "Expand" [ref=e353]:
+                    - img [ref=e354]
+          - status [ref=e163]
+      - generic [ref=e81]:
+        - button "Settings" [ref=e82] [cursor=pointer]:
+          - img [ref=e83]
+          - generic [ref=e86]: Settings
+        - button "0.5.20" [ref=e87] [cursor=pointer]:
+          - generic [ref=e88]: 0.5.20
+      - button "Toggle Sidebar" [ref=e89]
+    - main [ref=e90]:
+      - generic [ref=e168]:
+        - generic [ref=e169]:
+          - button "Toggle Sidebar" [ref=e170] [cursor=pointer]:
+            - img
+            - generic [ref=e171]: Toggle Sidebar
+          - generic [ref=e174]:
+            - link "QA-20260910-173459-r8k9" [ref=e392]:
+              - /url: /agents/qa-20260910-173459-r8k9-1vq4z8ilmh
+            - text: /New Session
+          - generic [ref=e175]:
+            - generic [ref=e176]:
+              - img "working" [ref=e393]
+              - generic [ref=e186]: working
+            - button "Stop Agent" [ref=e188] [cursor=pointer]:
+              - img
+        - generic [ref=e399]:
+          - region "Messages" [ref=e401]:
+            - log [ref=e403]:
+              - time [ref=e405]: Today at 5:35 PM
+              - paragraph [ref=e412]:
+                - text: Open a browser and go to
+                - link "https://example.com" [ref=e413] [cursor=pointer]:
+                  - /url: https://example.com
+                - text: . Tell me the page title.
+          - generic [ref=e416]:
+            - generic [ref=e421]: Working...
+            - generic [ref=e422]:
+              - generic [ref=e424]:
+                - textbox "Type your next message..." [ref=e427]:
+                  - text: Type your next message...
+                  - paragraph [ref=e428]
+                - generic [ref=e429]:
+                  - generic [ref=e430]:
+                    - button "Add files" [ref=e431] [cursor=pointer]:
+                      - img
+                    - 'button "Model and effort: Opus 5 · Medium. Click to change." [disabled]':
+                      - generic:
+                        - text: Opus 5
+                        - generic: · Medium
+                      - img
+                  - generic [ref=e432]:
+                    - button "Set up voice input" [ref=e433] [cursor=pointer]:
+                      - img
+                    - generic [ref=e435]:
+                      - button "Stop the agent" [ref=e436] [cursor=pointer]:
+                        - img
+                      - button "Queue message" [disabled]:
+                        - img
+              - generic [ref=e438]:
+                - generic [ref=e439]: ↵
+                - generic [ref=e440]: Send
+                - generic [ref=e441]: ·
+                - generic [ref=e442]: ⇧↵
+                - generic [ref=e443]: New line
+  - region "Notifications alt+T"

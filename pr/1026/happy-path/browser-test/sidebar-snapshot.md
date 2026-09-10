@@ -1,0 +1,103 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e8]:
+        - generic [ref=e9]: Gamut
+        - button "Search" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+      - generic [ref=e15]:
+        - list [ref=e18]:
+          - listitem [ref=e19]:
+            - link "Home" [ref=e20] [cursor=pointer]:
+              - /url: /
+              - img [ref=e21]
+              - generic [ref=e26]: Home
+          - listitem [ref=e27]:
+            - link "Notifications" [ref=e28] [cursor=pointer]:
+              - /url: /notifications
+              - img [ref=e29]
+              - generic [ref=e32]: Notifications
+          - listitem [ref=e156]:
+            - link "Discover New Agents New" [ref=e157] [cursor=pointer]:
+              - /url: /explore
+              - img [ref=e158]
+              - generic [ref=e161]: Discover New Agents
+              - generic [ref=e162]: New
+          - listitem [ref=e33]:
+            - button "New Agent" [ref=e34] [cursor=pointer]:
+              - img [ref=e35]
+              - generic [ref=e36]: New Agent
+        - list [ref=e39]:
+          - listitem [ref=e40]:
+            - button "Your Agents" [ref=e41] [cursor=pointer]:
+              - button "Your Agents" [expanded] [ref=e42]:
+                - generic [ref=e43]: Your Agents
+            - button "New folder" [ref=e45] [cursor=pointer]:
+              - img [ref=e46]
+            - list [ref=e49]:
+              - button "QA-20260910-173459-r8k9 idle" [ref=e50] [cursor=pointer]:
+                - link "QA-20260910-173459-r8k9 idle" [ref=e52]:
+                  - /url: /agents/qa-20260910-173459-r8k9-1vq4z8ilmh
+                  - generic [ref=e54]: QA-20260910-173459-r8k9
+                  - img "idle" [ref=e55]:
+                    - img [ref=e56]
+              - button "QA-20260910-173458-y9zm idle" [ref=e65] [cursor=pointer]:
+                - link "QA-20260910-173458-y9zm idle" [ref=e67]:
+                  - /url: /agents/qa-20260910-173458-y9zm-8sxsns9wy1
+                  - generic [ref=e69]: QA-20260910-173458-y9zm
+                  - img "idle" [ref=e70]:
+                    - img [ref=e71]
+          - status [ref=e163]
+      - generic [ref=e81]:
+        - button "Settings" [ref=e82] [cursor=pointer]:
+          - img [ref=e83]
+          - generic [ref=e86]: Settings
+        - button "0.5.20" [ref=e87] [cursor=pointer]:
+          - generic [ref=e88]: 0.5.20
+      - button "Toggle Sidebar" [ref=e89]
+    - main [ref=e90]:
+      - generic [ref=e91]:
+        - generic [ref=e92]:
+          - button "Toggle Sidebar" [ref=e93] [cursor=pointer]:
+            - img
+            - generic [ref=e94]: Toggle Sidebar
+          - button "Search agents and sessions... Ctrl+K" [ref=e96] [cursor=pointer]:
+            - img [ref=e97]
+            - generic [ref=e100]: Search agents and sessions...
+            - generic [ref=e101]: Ctrl+K
+          - generic [ref=e102]:
+            - button "Card view" [pressed] [ref=e103] [cursor=pointer]:
+              - img [ref=e104]
+            - button "Graph view" [ref=e109] [cursor=pointer]:
+              - img [ref=e110]
+        - generic [ref=e119]:
+          - generic [ref=e120]:
+            - generic [ref=e121]:
+              - heading "Your Agents" [level=2] [ref=e122]
+              - button "Agent layout options" [ref=e123] [cursor=pointer]:
+                - img [ref=e124]
+            - button "New Agent" [ref=e128] [cursor=pointer]:
+              - img
+              - text: New Agent
+          - generic [ref=e129]:
+            - generic [ref=e132]:
+              - link "Open QA-20260910-173459-r8k9" [ref=e133] [cursor=pointer]:
+                - /url: /agents/qa-20260910-173459-r8k9-1vq4z8ilmh
+              - generic [ref=e135]:
+                - generic [ref=e136]: Idle
+                - button "Stop agent" [ref=e137] [cursor=pointer]:
+                  - img [ref=e138]
+              - generic:
+                - generic: QA-20260910-173459-r8k9
+                - generic: Last run never
+            - generic [ref=e145]:
+              - link "Open QA-20260910-173458-y9zm" [ref=e146] [cursor=pointer]:
+                - /url: /agents/qa-20260910-173458-y9zm-8sxsns9wy1
+              - generic [ref=e148]:
+                - generic [ref=e149]: Idle
+                - button "Stop agent" [ref=e150] [cursor=pointer]:
+                  - img [ref=e151]
+              - generic:
+                - generic: QA-20260910-173458-y9zm
+                - generic: Last run never
+  - region "Notifications alt+T"
