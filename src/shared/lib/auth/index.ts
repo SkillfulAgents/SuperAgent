@@ -135,12 +135,6 @@ function createAuthInstance() {
         },
     databaseHooks: {
       user: {
-        update: {
-          after: async (updatedUser) => {
-            const { notifyUserProfileChanged } = await import('@shared/lib/services/agent-members-service')
-            notifyUserProfileChanged(updatedUser.id)
-          },
-        },
         delete: {
           after: async (deletedUser) => {
             if (typeof deletedUser.avatarOverride !== 'string') return

@@ -97,9 +97,11 @@ test('members share one live roster while invitation and revocation follow permi
     const image = new PNG({ width: 32, height: 32 })
     image.data.fill(160)
     expect((await viewer.request.put('/api/profile/avatar', { headers: { 'Content-Type': 'image/png' }, data: PNG.sync.write(image) })).ok()).toBeTruthy()
+    expect((await viewer.request.post('/api/auth/update-user', { headers: { Origin: baseURL! }, data: { name: 'Victoria Viewer' } })).ok()).toBeTruthy()
+    // Other members see the updated photo and name on their next reload.
+    await page.reload()
     const viewerFace = ownerStack.getByTestId(`agent-member-${users[1].id}`)
     await expect(viewerFace.locator('img')).toHaveAttribute('src', /\/api\/profile\/images\//)
-    expect((await viewer.request.post('/api/auth/update-user', { headers: { Origin: baseURL! }, data: { name: 'Victoria Viewer' } })).ok()).toBeTruthy()
     await expect(viewerFace).toHaveAttribute('aria-label', /Victoria Viewer/)
     await ownerStack.getByTestId(`agent-member-${users[0].id}`).hover()
     await expect(page.getByRole('tooltip').filter({ hasText: users[0].email })).toBeVisible()

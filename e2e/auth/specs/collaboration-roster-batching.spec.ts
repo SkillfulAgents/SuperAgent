@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { agentMembersBatchRequestSchema } from '../../../src/shared/lib/agent-members-schema'
 
-test('sidebar rosters load and refresh together without per-agent requests', async ({ browser, page, baseURL }) => {
+test('sidebar rosters batch loads and pick up profile changes on reload', async ({ browser, page, baseURL }) => {
   const stamp = Date.now()
   const peer = await browser.newContext({ baseURL })
   try {
@@ -39,10 +39,13 @@ test('sidebar rosters load and refresh together without per-agent requests', asy
     expect(new Set(batches[0])).toEqual(new Set(slugs))
     expect(individual).toEqual([])
 
-    // The peer's profile hint invalidates all five active per-agent caches.
-    const refresh = page.waitForResponse(response => response.url().endsWith('/api/agents/members/batch'))
+    // Profile edits don't push roster refreshes; the next load reads the new data.
     expect((await peer.request.post('/api/auth/update-user', { headers: { Origin: baseURL! }, data: { name: 'Updated Roster Peer' } })).ok()).toBeTruthy()
-    expect((await refresh).ok()).toBeTruthy()
+    for (const slug of slugs) {
+      await expect(page.getByTestId(`sidebar-members-${slug}`).locator('[role="img"][aria-label="Roster Peer"]')).toBeVisible()
+    }
+    expect(batches).toHaveLength(1)
+    await page.reload()
     for (const slug of slugs) {
       await expect(page.getByTestId(`sidebar-members-${slug}`).locator('[role="img"][aria-label="Updated Roster Peer"]')).toBeVisible()
     }

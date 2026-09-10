@@ -27,6 +27,5 @@ export const agentMembersBatchResponseSchema = z.record(z.string(), z.discrimina
 export const collaborationEventSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('agent_members_changed'), agentSlug: z.string().min(1) }),
   z.object({ type: z.literal('agent_access_revoked'), agentSlug: z.string().min(1) }),
-  z.object({ type: z.literal('user_profile_changed'), userId: z.string().min(1) }),
 ])
 export type CollaborationEvent = z.infer<typeof collaborationEventSchema>

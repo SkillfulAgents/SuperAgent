@@ -28,7 +28,9 @@ export const user = sqliteTable('user', {
   banReason: text('ban_reason'),
   banExpires: integer('ban_expires', { mode: 'timestamp_ms' }),
   mustChangePassword: integer('must_change_password', { mode: 'boolean' }).default(false),
-})
+}, (table) => ({
+  avatarOverrideIdx: index('user_avatar_override_idx').on(table.avatarOverride),
+}))
 
 /**
  * Stable installed-mobile-device identity. Access sessions rotate underneath
