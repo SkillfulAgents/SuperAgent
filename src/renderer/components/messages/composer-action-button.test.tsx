@@ -30,6 +30,18 @@ describe('ComposerActionButton', () => {
     expect(send).toHaveAttribute('aria-label', 'Queue message')
   })
 
+  it('renders the primary slot in place of Send, beside Stop while active', () => {
+    const primary = <button type="button" data-testid="primary-slot" />
+    const { rerender } = render(<ComposerActionButton {...baseProps} primary={primary} />)
+    expect(screen.getByTestId('primary-slot')).toBeInTheDocument()
+    expect(screen.queryByTestId('send-button')).not.toBeInTheDocument()
+
+    rerender(<ComposerActionButton {...baseProps} isActive primary={primary} />)
+    expect(screen.getByTestId('stop-button')).toBeInTheDocument()
+    expect(screen.getByTestId('primary-slot')).toBeInTheDocument()
+    expect(screen.queryByTestId('send-button')).not.toBeInTheDocument()
+  })
+
   it('disables the send button when canSubmit is false', () => {
     render(<ComposerActionButton {...baseProps} canSubmit={false} />)
     expect(screen.getByTestId('send-button')).toBeDisabled()

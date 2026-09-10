@@ -144,6 +144,7 @@ vi.mock('@renderer/components/agents/system-prompt-dialog', () => ({
 
 const mockComposer = {
   message: '',
+  hasContent: false,
   setMessage: vi.fn(),
   attachments: [] as any[],
   isDragOver: false,

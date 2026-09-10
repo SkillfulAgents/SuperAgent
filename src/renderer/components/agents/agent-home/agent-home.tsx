@@ -8,6 +8,7 @@ import { useCreateSession, useSessions } from '@renderer/hooks/use-sessions'
 import { useScheduledTasks } from '@renderer/hooks/use-scheduled-tasks'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { VoiceModeButton } from '@renderer/components/ui/voice-mode-button'
+import { useCanUseVoiceMode } from '@renderer/hooks/use-voice-input'
 import { readAloud } from '@renderer/hooks/use-read-aloud'
 import { VOICE_MODE_ENTERED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
 import { UploadError } from '@renderer/components/ui/upload-error'
@@ -293,6 +294,11 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   }, [createSession, agent.slug, composerOptions, onSessionCreated, track])
 
   const isFreshUntitled = agent.name === UNTITLED_AGENT_NAME && sessions.length === 0
+  // An empty composer leads with voice mode as its one live action; once there
+  // is something to send, Send takes the primary slot and voice mode steps back
+  // beside it. A fresh untitled agent keeps its "Create Agent" button instead.
+  const canUseVoiceMode = useCanUseVoiceMode()
+  const voiceModeIsPrimary = !isFreshUntitled && canUseVoiceMode && !composer.hasContent
   const typewriterPlaceholder = useTypewriterPlaceholder(
     isFreshUntitled ? DEFAULT_AGENT_PROMPT_EXAMPLES : TYPEWRITER_DISABLED,
   )
@@ -534,7 +540,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                   rightActions={(
                     <>
                       <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} />
-                      {!isFreshUntitled && (
+                      {!isFreshUntitled && !voiceModeIsPrimary && (
                         <VoiceModeButton onClick={() => void startVoiceSession()} disabled={isDisabled} />
                       )}
                       {isFreshUntitled ? (
@@ -553,6 +559,8 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                             'Create Agent'
                           )}
                         </Button>
+                      ) : voiceModeIsPrimary ? (
+                        <VoiceModeButton variant="default" onClick={() => void startVoiceSession()} disabled={isDisabled} />
                       ) : (
                         <Button
                           type="submit"

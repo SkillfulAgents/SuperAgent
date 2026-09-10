@@ -354,7 +354,10 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     return true
   }
 
-  const canSubmit = (!!message.trim() || attachments.length > 0 || voiceInput.isRecording) && !uploadsInFlight && !isUploading && !submitDisabled
+  // Something to send: typed text, an attachment, or a dictation in flight
+  // (Send stops it and sends the transcript).
+  const hasContent = !!message.trim() || attachments.length > 0 || voiceInput.isRecording
+  const canSubmit = hasContent && !uploadsInFlight && !isUploading && !submitDisabled
 
   return {
     // Message state
@@ -392,6 +395,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     handleSubmit,
     submitMessage,
     handlePaste,
+    hasContent,
     canSubmit,
 
     // Upload error (surfaced to the user; cleared on next submit attempt)
