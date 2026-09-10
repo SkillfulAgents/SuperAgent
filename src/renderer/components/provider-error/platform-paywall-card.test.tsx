@@ -264,7 +264,7 @@ describe('PlatformPaywallCard', () => {
     platformAuth.role = 'owner'
     renderCard()
     const button = await screen.findByRole('button', { name: 'Add usage' })
-    expect(screen.getByText('You need more usage credit to continue')).toBeInTheDocument()
+    expect(screen.queryByText('You need more usage credit to continue')).not.toBeInTheDocument()
     act(() => { button.click() })
     expect(openExternalUrl).toHaveBeenCalledTimes(1)
     const url = new URL(openExternalUrl.mock.calls[0][0])
@@ -437,6 +437,7 @@ describe('PlatformPaywallCard', () => {
       expect(screen.queryByTestId('billing-embed-frame')).not.toBeInTheDocument()
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: 'Add usage' })).not.toBeInTheDocument()
+      expect(screen.queryByText('You need more usage credit to continue')).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: 'Dismiss' })).not.toBeInTheDocument()
       expect(openExternalUrl).not.toHaveBeenCalled()
     })
@@ -606,7 +607,8 @@ describe('PlatformPaywallCard', () => {
       fetchBilling.mockResolvedValue(billing())
       await expandCta()
       postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated')
-      await waitFor(() => expect(screen.getByText('You need more usage credit to continue')).toBeInTheDocument())
+      await waitFor(() => expect(screen.queryByText('Add a payment method')).not.toBeInTheDocument())
+      expect(screen.queryByText('You need more usage credit to continue')).not.toBeInTheDocument()
       expect(screen.getByTestId('billing-cta-frame')).toBe(frame)
       expectEmbedUrl({ view: 'topup', surface: 'cta', cta: 'add_card' })
       expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-expanded', 'true')
@@ -626,7 +628,8 @@ describe('PlatformPaywallCard', () => {
       expect(screen.getByTestId('billing-cta-frame')).not.toBe(paymentFrame)
       expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-expanded', 'false')
       await expandCta()
-      expect(screen.getByText('Add usage credit to resume this answer.')).toBeInTheDocument()
+      expect(screen.queryByText('You need more usage credit to continue')).not.toBeInTheDocument()
+      expect(screen.queryByText('Add usage credit to resume this answer.')).not.toBeInTheDocument()
     })
 
     it('falls back to opening billing externally when the workspace has no org id, then offers a recheck', async () => {

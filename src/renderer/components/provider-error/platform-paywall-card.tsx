@@ -25,6 +25,7 @@ function splitMessage(markdown: string): { title: string; body: string } {
 }
 
 function title(cta: PaywallCta | null, fallback: string): string {
+  if (cta?.kind === 'topup') return ''
   if (cta?.kind === 'subscribe') return 'Subscribe to keep going'
   if (cta?.kind === 'add_card') return 'Add a payment method'
   if (cta?.kind === 'manage_payment') return 'Payment needs attention'
@@ -33,9 +34,9 @@ function title(cta: PaywallCta | null, fallback: string): string {
 }
 
 function subtitle(cta: PaywallCta | null, fallback: string): string {
+  if (cta?.kind === 'topup') return ''
   if (cta?.kind === 'subscribe') return 'An active subscription lets your agents pick this back up.'
   if (cta?.kind === 'add_card') return 'Add a payment method before purchasing more usage credit.'
-  if (cta?.kind === 'topup') return 'Add usage credit to resume this answer.'
   if (cta?.kind === 'manage_payment') return 'Your payment needs attention before agents can continue.'
   if (cta?.kind === 'ask_admin') return 'Ask a workspace admin to add usage credit to this organization.'
   return fallback
@@ -186,8 +187,11 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
   if (billing.cleared || dismissed) return <>{children}</>
 
   const fallback = splitMessage(presentation?.message ?? message)
+  const panelOpen = embedded && expanded
   const heading = billing.loading ? 'Checking billing' : title(billing.cta, fallback.title)
   const detail = billing.loading ? 'Checking your workspace billing status.' : subtitle(billing.cta, fallback.body)
+  const hint = embedded && !panelOpen ? ctaHint : ''
+  const showHeader = !panelOpen && Boolean(heading || detail || hint)
 
   return (
     <>
@@ -197,19 +201,21 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
           data-testid="paywall-card"
           data-blocked={billing.blocked}
           data-embedded={embedded}
-          data-expanded={embedded && expanded}
+          data-expanded={panelOpen}
           className={cn(
             'relative flex flex-col gap-3 rounded-xl border bg-card px-5 py-4 shadow-sm',
             // West's purchase dialog was max-w-md; keep the collapsed banner full-width.
-            embedded && expanded && 'mx-auto w-full max-w-md',
+            panelOpen && 'mx-auto w-full max-w-md',
           )}
         >
-          <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
-            <div className="min-w-0 flex-1 basis-60">
-              <p className="text-sm font-medium text-foreground">{heading}</p>
-              {detail && <p className="mt-0.5 text-sm text-muted-foreground">{detail}</p>}
-              {embedded && ctaHint && <p className="mt-1 text-xs text-muted-foreground" data-testid="billing-cta-hint">{ctaHint}</p>}
-            </div>
+          <div className={cn('flex flex-wrap items-center gap-x-6 gap-y-3', !showHeader && 'justify-end')}>
+            {showHeader && (
+              <div className="min-w-0 flex-1 basis-60">
+                {heading && <p className="text-sm font-medium text-foreground">{heading}</p>}
+                {detail && <p className="mt-0.5 text-sm text-muted-foreground">{detail}</p>}
+                {hint && <p className="mt-1 text-xs text-muted-foreground" data-testid="billing-cta-hint">{hint}</p>}
+              </div>
+            )}
             <PaywallActions
               cta={billing.cta}
               loading={billing.loading}
