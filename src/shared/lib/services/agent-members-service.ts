@@ -3,20 +3,19 @@ import { db } from '@shared/lib/db'
 import { agentAcl, user } from '@shared/lib/db/schema'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { agentMembersSchema } from '@shared/lib/agent-members-schema'
-import { getUserImage } from '@shared/lib/user-profile-schema'
+import { getUserSummaries } from './user-profile-service'
 import { publishCollaborationEvent } from './collaboration-events'
 
 export function listAgentMembers(agentSlug: string) {
-  const rows = db.select({
-    id: user.id, name: user.name, email: user.email, image: user.image,
-    avatarOverride: user.avatarOverride, role: agentAcl.role,
-  }).from(agentAcl).innerJoin(user, eq(agentAcl.userId, user.id))
+  const rows = db.select({ id: agentAcl.userId, role: agentAcl.role }).from(agentAcl)
     .where(eq(agentAcl.agentSlug, agentSlug))
     // Joining time + stable ID keep faces stationary when names or roles change.
-    .orderBy(asc(agentAcl.createdAt), asc(user.id)).all()
-  return agentMembersSchema.parse(rows.map(({ avatarOverride, ...row }) => ({
-    ...row, image: getUserImage({ ...row, avatarOverride }),
-  })))
+    .orderBy(asc(agentAcl.createdAt), asc(agentAcl.userId)).all()
+  const profiles = getUserSummaries(rows.map(row => row.id))
+  return agentMembersSchema.parse(rows.flatMap(row => {
+    const profile = profiles.get(row.id)
+    return profile ? [{ ...profile, role: row.role }] : []
+  }))
 }
 
 export function notifyAgentMembersChanged(agentSlug: string, removedUserId?: string): void {
