@@ -3,6 +3,8 @@ import { Hono } from 'hono'
 import { serve } from '@hono/node-server'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
+import type { Context } from 'hono'
+import * as collaborationEvents from '@shared/lib/services/collaboration-events'
 
 /**
  * The notifications SSE stream over a real HTTP listener.
@@ -18,12 +20,13 @@ import type { AddressInfo } from 'node:net'
 
 // Observable stand-in for the persister's global-client registry, with the
 // exact semantics of the real one (Set membership + unsubscribe deletes).
-const { globalClients, abortBeforeHandler } = vi.hoisted(() => ({
+const { globalClients, abortBeforeHandler, authMode } = vi.hoisted(() => ({
   globalClients: new Set<(data: unknown) => void>(),
   // When true, the streamSSE wrapper below aborts the stream BEFORE the
   // route's handler body runs — deterministically reproducing a client that
   // disconnected during handler setup, i.e. before onAbort is registered.
   abortBeforeHandler: { value: false },
+  authMode: { value: false },
 }))
 
 // Transparent pass-through around streamSSE, except it can pre-abort the
@@ -56,11 +59,11 @@ vi.mock('@shared/lib/container/message-persister', () => ({
   },
 }))
 
-vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: () => false }))
+vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: () => authMode.value }))
 
 // Auth middleware: no-op in tests
 vi.mock('../middleware/auth', () => ({
-  Authenticated: () => async (_c: unknown, next: () => Promise<void>) => next(),
+  Authenticated: () => async (c: Context, next: () => Promise<void>) => { c.set('user', { id: c.req.header('x-test-user') }); return next() },
   HasNotificationAccess: () => async (_c: unknown, next: () => Promise<void>) => next(),
 }))
 
@@ -121,6 +124,7 @@ afterAll(async () => {
 afterEach(() => {
   globalClients.clear()
   abortBeforeHandler.value = false
+  authMode.value = false
 })
 
 /** Poll until `predicate` holds or `timeoutMs` elapses. */
@@ -134,14 +138,14 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<bool
 }
 
 /** Open the SSE endpoint over a real socket; resolves once bytes can be read. */
-function connectSSE(): Promise<{
+function connectSSE(userId = 'local'): Promise<{
   received: () => string
   destroy: () => void
   waitForData: (needle: string, timeoutMs?: number) => Promise<boolean>
 }> {
   return new Promise((resolve, reject) => {
     const req = http.get(
-      { host: '127.0.0.1', port, path: '/api/notifications/stream', headers: { Accept: 'text/event-stream' } },
+      { host: '127.0.0.1', port, path: '/api/notifications/stream', headers: { Accept: 'text/event-stream', 'x-test-user': userId } },
       (res) => {
         let buffer = ''
         res.on('data', (chunk: Buffer) => {
@@ -222,5 +226,35 @@ describe('GET /api/notifications/stream teardown', () => {
 
     expect(globalClients.size).toBe(0)
     expect(await waitFor(() => clearedKeepAlives.size === createdKeepAlives.size)).toBe(true)
+  })
+})
+
+
+describe('collaboration hints over the existing stream', () => {
+  it('delivers only to the targeted users and releases subscriptions on socket close', async () => {
+    authMode.value = true
+    const originalSubscribe = collaborationEvents.subscribeCollaborationEvents
+    const stops: ReturnType<typeof vi.fn>[] = []
+    const spy = vi.spyOn(collaborationEvents, 'subscribeCollaborationEvents').mockImplementation((...args) => {
+      const stop = vi.fn(originalSubscribe(...args))
+      stops.push(stop)
+      return stop
+    })
+    const clients = await Promise.all(['owner', 'removed', 'unrelated'].map((userId) => connectSSE(userId)))
+    try {
+      for (const client of clients) expect(await client.waitForData('"type":"connected"')).toBe(true)
+      collaborationEvents.publishCollaborationEvent(['owner'], { type: 'agent_members_changed', agentSlug: 'private-agent' })
+      collaborationEvents.publishCollaborationEvent(['removed'], { type: 'agent_access_revoked', agentSlug: 'private-agent' })
+      collaborationEvents.publishCollaborationEvent(['unrelated'], { type: 'user_profile_changed', userId: 'unrelated' })
+      expect(await clients[0].waitForData('agent_members_changed')).toBe(true)
+      expect(await clients[1].waitForData('agent_access_revoked')).toBe(true)
+      expect(await clients[2].waitForData('user_profile_changed')).toBe(true)
+      expect(clients[2].received()).not.toContain('private-agent')
+      expect(clients[0].received()).not.toContain('agent_access_revoked')
+    } finally {
+      clients.forEach((client) => client.destroy())
+      expect(await waitFor(() => stops.length === 3 && stops.every((stop) => stop.mock.calls.length === 1))).toBe(true)
+      spy.mockRestore()
+    }
   })
 })

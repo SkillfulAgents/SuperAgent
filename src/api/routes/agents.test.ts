@@ -1,3 +1,4 @@
+vi.mock('@shared/lib/services/agent-members-service', () => ({ notifyAgentMembersChanged: vi.fn(), listAgentMembers: vi.fn(() => []) }))
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 import { runInNewContext } from 'node:vm'

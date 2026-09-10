@@ -1,5 +1,7 @@
+import { useAgentMembers } from '@renderer/hooks/use-agent-members'
+import type { AgentMember } from '@shared/lib/agent-members-schema'
 import { UserAvatar } from '@renderer/components/ui/user-avatar'
-import { forwardRef, useEffect, useImperativeHandle, useState, useRef } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useState, useRef, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
 import { useUser } from '@renderer/context/user-context'
@@ -52,15 +54,6 @@ import {
 } from 'lucide-react'
 import type { AgentRole } from '@shared/lib/types/agent'
 
-interface AccessEntry {
-  userId: string
-  role: AgentRole
-  createdAt: string
-  userName: string
-  userEmail: string
-  image?: string | null
-}
-
 interface SearchUser {
   id: string
   name: string
@@ -71,6 +64,7 @@ interface SearchUser {
 interface AgentSharePopoverProps {
   agentSlug: string
   agentName: string
+  trigger?: ReactNode
 }
 
 /** Imperative surface: lets the agent menu's "Export Agent" open this
@@ -192,7 +186,7 @@ function InviteEducationPane() {
  * becomes a disabled preview pointing at Cloud instead of disappearing.
  */
 export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentSharePopoverProps>(
-  function AgentSharePopover({ agentSlug, agentName }, ref) {
+  function AgentSharePopover({ agentSlug, agentName, trigger }, ref) {
   const queryClient = useQueryClient()
   const { user, isAuthMode } = useUser()
   const [open, setOpen] = useState(false)
@@ -244,21 +238,12 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
   }
 
   const invalidateAccess = () => {
-    queryClient.invalidateQueries({ queryKey: ['agent-access', agentSlug] })
+    queryClient.invalidateQueries({ queryKey: ['agent-members', agentSlug] })
     queryClient.invalidateQueries({ queryKey: ['agent-invite-candidates', agentSlug] })
     queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
   }
 
-  // Fetch access list (only while open — the popover is mounted with the header)
-  const { data: accessList, isLoading } = useQuery<AccessEntry[]>({
-    queryKey: ['agent-access', agentSlug],
-    queryFn: async () => {
-      const res = await apiFetch(`/api/agents/${agentSlug}/access`)
-      if (!res.ok) throw new Error('Failed to fetch access list')
-      return res.json()
-    },
-    enabled: open && isAuthMode,
-  })
+  const { data: accessList, isLoading, isError: membersError, refetch: refetchMembers } = useAgentMembers(agentSlug, open)
 
   // The server caps results at 50 users, so client-side filtering alone can't
   // find everyone in a larger workspace — re-query with the typed text
@@ -359,7 +344,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
   const ownerCount = accessList?.filter((e) => e.role === 'owner').length ?? 0
 
   const selectedIds = new Set(selectedUsers.map((u) => u.id))
-  const accessIds = new Set(accessList?.map((e) => e.userId) ?? [])
+  const accessIds = new Set(accessList?.map((e) => e.id) ?? [])
   const filter = searchQuery.trim().toLowerCase()
   // Candidates are already ACL-filtered server-side; re-filter here so the list
   // updates instantly after an invite (before the refetch lands).
@@ -373,7 +358,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
   // section while searching.
   const matchedAccess = filter
     ? (accessList ?? []).filter(
-        (e) => e.userName.toLowerCase().includes(filter) || e.userEmail.toLowerCase().includes(filter)
+        (e) => e.name.toLowerCase().includes(filter) || e.email.toLowerCase().includes(filter)
       )
     : []
 
@@ -386,22 +371,22 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
   }
 
   // Shared by the default people list and the "Already shared with" section.
-  const renderAccessEntry = (entry: AccessEntry) => {
+  const renderAgentMember = (entry: AgentMember) => {
     const isLastOwner = entry.role === 'owner' && ownerCount <= 1
-    const isSelf = entry.userId === user?.id
+    const isSelf = entry.id === user?.id
     return (
       <div
-        key={entry.userId}
+        key={entry.id}
         className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-accent/50"
-        data-testid={`access-entry-${entry.userId}`}
+        data-testid={`access-entry-${entry.id}`}
       >
-        <UserAvatar user={{ id: entry.userId, name: entry.userName, image: entry.image }} />
+        <UserAvatar user={entry} />
         <div className="min-w-0 flex-1">
           <div className="truncate text-[11px]">
-            {entry.userName}
+            {entry.name}
             {isSelf && <span className="text-muted-foreground"> (You)</span>}
           </div>
-          <div className="truncate text-[11px] text-muted-foreground">{entry.userEmail}</div>
+          <div className="truncate text-[11px] text-muted-foreground">{entry.email}</div>
         </div>
         <TooltipProvider>
           <Tooltip>
@@ -413,15 +398,15 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
                   value={entry.role}
                   onValueChange={(role) => {
                     if (role === REMOVE_SENTINEL) {
-                      removeAccess.mutate(entry.userId)
+                      removeAccess.mutate(entry.id)
                     } else {
-                      changeRole.mutate({ userId: entry.userId, role: role as AgentRole })
+                      changeRole.mutate({ userId: entry.id, role: role as AgentRole })
                     }
                   }}
                 >
                   <SelectTrigger
                     className="h-7 w-auto shrink-0 gap-1 border-none bg-transparent px-1.5 text-[11px] text-muted-foreground shadow-none hover:text-foreground focus:ring-0 focus-visible:ring-1 focus-visible:ring-ring"
-                    data-testid={`access-role-${entry.userId}`}
+                    data-testid={`access-role-${entry.id}`}
                   >
                     <SelectValue>{ROLE_LABELS[entry.role]}</SelectValue>
                   </SelectTrigger>
@@ -434,7 +419,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
                       value={REMOVE_SENTINEL}
                       disabled={isLastOwner}
                       className="pr-8 text-[11px] text-destructive focus:text-destructive"
-                      data-testid={`access-remove-${entry.userId}`}
+                      data-testid={`access-remove-${entry.id}`}
                     >
                       Remove
                     </SelectItem>
@@ -463,7 +448,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
       }}
     >
       <PopoverTrigger asChild>
-        <Button
+        {trigger ?? <Button
           type="button"
           size="sm"
           variant="outline"
@@ -472,7 +457,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
           data-testid="agent-share-button"
         >
           Share
-        </Button>
+        </Button>}
       </PopoverTrigger>
       {/* 28rem = 448px, the `md` token — nearest to the 456px design width */}
       <PopoverContent
@@ -828,6 +813,10 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
             <div className="flex items-center justify-center py-6">
               <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
             </div>
+          ) : membersError ? (
+            <div className="px-2 py-4 text-center text-xs text-muted-foreground">
+              Could not load members. <button className="underline" onClick={() => void refetchMembers()}>Try again</button>
+            </div>
           ) : filter ? (
             <>
               {matchedAccess.length > 0 && (
@@ -835,7 +824,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
                   <p className="px-2 pb-1 pt-0.5 text-[11px] text-muted-foreground">
                     Already shared with
                   </p>
-                  {matchedAccess.map(renderAccessEntry)}
+                  {matchedAccess.map(renderAgentMember)}
                 </>
               )}
               {suggested.length > 0 && (
@@ -889,7 +878,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
               <p className="px-2 pb-1 pt-0.5 text-[11px] text-muted-foreground">
                 Members with access
               </p>
-              {accessList.map(renderAccessEntry)}
+              {accessList.map(renderAgentMember)}
             </>
           )}
         </div>

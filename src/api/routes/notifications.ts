@@ -1,3 +1,4 @@
+import { subscribeCollaborationEvents } from '@shared/lib/services/collaboration-events'
 /**
  * Notifications API Routes
  *
@@ -48,6 +49,7 @@ notificationsRouter.get('/stream', async (c) => {
   return streamSSE(c, async (stream) => {
     let pingInterval: ReturnType<typeof setInterval> | null = null
     let unsubscribe: (() => void) | null = null
+    let unsubscribeCollaboration: (() => void) | undefined
 
     try {
       // Subscribe to global notifications
@@ -70,6 +72,12 @@ notificationsRouter.get('/stream', async (c) => {
           console.error('Error sending global notification SSE:', error)
         }
       })
+
+      if (user) {
+        unsubscribeCollaboration = subscribeCollaborationEvents(user.id, async (data) => {
+          await stream.writeSSE({ data: JSON.stringify(data), event: 'message' })
+        })
+      }
 
       // Send initial connection message
       await stream.writeSSE({
@@ -102,6 +110,7 @@ notificationsRouter.get('/stream', async (c) => {
     } finally {
       if (pingInterval) clearInterval(pingInterval)
       if (unsubscribe) unsubscribe()
+      unsubscribeCollaboration?.()
     }
   })
 })

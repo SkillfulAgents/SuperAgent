@@ -1,3 +1,4 @@
+import { notifyUserProfileChanged } from './agent-members-service'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
@@ -83,5 +84,6 @@ export async function setAvatar(userId: string, input: Buffer | null): Promise<s
     throw error
   }
   await removeStoredAvatar(previous)
+  notifyUserProfileChanged(userId)
   return reference
 }

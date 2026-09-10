@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-const providerImageSchema = z.string().trim().max(4096).url().refine((url) => /^https?:\/\//i.test(url))
+export const providerImageSchema = z.string().trim().max(4096).url().refine((url) => /^https?:\/\//i.test(url))
 export const avatarFilenameSchema = z.string().regex(/^[0-9a-f-]{36}\.png$/)
 export const avatarOverrideSchema = z.string().regex(/^\/api\/profile\/images\/[0-9a-f-]{36}\.png$/)
 export const MAX_AVATAR_BYTES = 1024 * 1024

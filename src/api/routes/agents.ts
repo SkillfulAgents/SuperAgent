@@ -1,3 +1,5 @@
+import agentMembers from './agent-members'
+import { notifyAgentMembersChanged } from '@shared/lib/services/agent-members-service'
 import { getUserImage, type UserImageFields } from '@shared/lib/user-profile-schema'
 import { Hono, type Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
@@ -1570,6 +1572,8 @@ agents.put('/:id/preferences', AgentAdmin(), async (c) => {
 // Agent Access (ACL) endpoints
 // ============================================================
 
+agents.route('/:id/members', agentMembers)
+
 // GET /api/agents/:id/access - List users with roles on this agent
 agents.get('/:id/access', AgentAdmin(), async (c) => {
   try {
@@ -1635,6 +1639,7 @@ agents.post('/:id/access', AgentAdmin(), async (c) => {
       createdAt: new Date(),
     })
 
+    notifyAgentMembersChanged(slug)
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'granted', details: { targetUserId: userId, role } })
     return c.json({ ok: true }, 201)
   } catch (error) {
@@ -1688,6 +1693,7 @@ agents.patch('/:id/access/:userId', AgentAdmin(), async (c) => {
       const status = error.includes('does not have access') ? 404 : 400
       return c.json({ error }, status)
     }
+    notifyAgentMembersChanged(slug)
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'changed', details: { targetUserId: targetUserId, role } })
     return c.json({ ok: true })
   } catch (error) {
@@ -1735,6 +1741,7 @@ agents.delete('/:id/access/:userId', AgentAdmin(), async (c) => {
       const status = error.includes('does not have access') ? 404 : 400
       return c.json({ error }, status)
     }
+    notifyAgentMembersChanged(slug, targetUserId)
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'revoked', details: { targetUserId } })
     return c.body(null, 204)
   } catch (error) {
@@ -1779,6 +1786,7 @@ agents.post('/:id/leave', AgentRead(), async (c) => {
     if (error) {
       return c.json({ error }, 400)
     }
+    notifyAgentMembersChanged(slug, userId)
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent_access', objectId: slug, action: 'revoked', details: { targetUserId: userId } })
     return c.body(null, 204)
   } catch (error) {
