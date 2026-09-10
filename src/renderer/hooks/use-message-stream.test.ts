@@ -3328,3 +3328,29 @@ describe('useMessageStream — extended thinking blocks', () => {
     expect(result.current.thinkingBlocks).toBe(before)
   })
 })
+
+
+describe('typing leases', () => {
+  it('keeps the latest photo and typing event alive for a full five seconds, then cleans up on unmount', async () => {
+    const { useMessageStream } = await getHookModule()
+    vi.useFakeTimers()
+    try {
+      const { result, unmount } = renderHook(() => useMessageStream('typing-session', 'agent-1'), { wrapper: createWrapper() })
+      const es = MockEventSource.instances[0]
+      act(() => es.simulateMessage({ type: 'user_typing', sender: { id: 'u2', name: 'Ada', image: 'https://example.com/ada.png' } }))
+      act(() => vi.advanceTimersByTime(3000))
+      act(() => es.simulateMessage({ type: 'user_typing', sender: { id: 'u2', name: 'Ada', image: 'https://example.com/new.png' } }))
+      act(() => vi.advanceTimersByTime(2500))
+      expect(result.current.typingUser?.image).toBe('https://example.com/new.png')
+      act(() => vi.advanceTimersByTime(2500))
+      expect(result.current.typingUser).toBeNull()
+      act(() => es.simulateMessage({ type: 'user_typing', sender: { id: 'u2', name: 'Ada' } }))
+      unmount()
+      const remounted = renderHook(() => useMessageStream('typing-session', 'agent-1'), { wrapper: createWrapper() })
+      expect(remounted.result.current.typingUser).toBeNull()
+      remounted.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

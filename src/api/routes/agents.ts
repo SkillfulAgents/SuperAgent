@@ -1,3 +1,4 @@
+import { getUserImage, type UserImageFields } from '@shared/lib/user-profile-schema'
 import { Hono, type Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { streamSSE } from 'hono/streaming'
@@ -1580,11 +1581,13 @@ agents.get('/:id/access', AgentAdmin(), async (c) => {
         createdAt: agentAcl.createdAt,
         userName: userTable.name,
         userEmail: userTable.email,
+        image: userTable.image,
+        avatarOverride: userTable.avatarOverride,
       })
       .from(agentAcl)
       .innerJoin(userTable, eq(agentAcl.userId, userTable.id))
       .where(eq(agentAcl.agentSlug, slug))
-    return c.json(rows)
+    return c.json(rows.map(({ avatarOverride, ...row }) => ({ ...row, image: getUserImage({ ...row, avatarOverride }) })))
   } catch (error) {
     console.error('Failed to fetch agent access:', error)
     return c.json({ error: 'Failed to fetch agent access' }, 500)
@@ -1808,7 +1811,7 @@ agents.get('/:id/access/search-users', AgentAdmin(), async (c) => {
     const matchesQuery = (column: AnyColumn) =>
       sql`${column} LIKE ${`%${escaped}%`} ESCAPE '\\'`
     const users = await db
-      .select({ id: userTable.id, name: userTable.name, email: userTable.email })
+      .select({ id: userTable.id, name: userTable.name, email: userTable.email, image: userTable.image, avatarOverride: userTable.avatarOverride })
       .from(userTable)
       .where(
         and(
@@ -1819,7 +1822,7 @@ agents.get('/:id/access/search-users', AgentAdmin(), async (c) => {
       )
       .limit(50)
 
-    return c.json(users)
+    return c.json(users.map(({ avatarOverride, ...person }) => ({ ...person, image: getUserImage({ ...person, avatarOverride }) })))
   } catch (error) {
     console.error('Failed to search users:', error)
     return c.json({ error: 'Failed to search users' }, 500)
@@ -2284,6 +2287,8 @@ async function annotateAndRecoverMessages(
       userId: messageAuthor.userId,
       userName: userTable.name,
       userEmail: userTable.email,
+      image: userTable.image,
+      avatarOverride: userTable.avatarOverride,
     })
     .from(messageAuthor)
     .innerJoin(userTable, eq(messageAuthor.userId, userTable.id))
@@ -2298,6 +2303,7 @@ async function annotateAndRecoverMessages(
         id: author.userId,
         name: author.userName,
         email: author.userEmail,
+        image: getUserImage(author),
       }
     }
   }
@@ -2466,6 +2472,8 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
             userId: messageAuthor.userId,
             userName: userTable.name,
             userEmail: userTable.email,
+            image: userTable.image,
+            avatarOverride: userTable.avatarOverride,
           })
           .from(messageAuthor)
           .innerJoin(userTable, eq(messageAuthor.userId, userTable.id))
@@ -2481,6 +2489,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
               id: author.userId,
               name: author.userName,
               email: author.userEmail,
+              image: getUserImage(author),
             }
           }
         }
@@ -2745,11 +2754,11 @@ async function persistAndBroadcastUserMessage(
     agentSlug: args.agentSlug,
     userId,
   })
-  const user = c.get('user' as never) as { id: string; name: string }
+  const user = c.get('user' as never) as { id: string; name: string } & UserImageFields
   messagePersister.broadcastSessionEvent(args.agentSlug, args.sessionId, {
     type: 'user_message',
     content: args.content,
-    sender: { id: user.id, name: user.name },
+    sender: { id: user.id, name: user.name, image: getUserImage(user) },
     uuid: args.messageUuid,
     queued: args.queued,
   })
@@ -2960,7 +2969,7 @@ agents.post('/:id/sessions/:sessionId/typing', AgentUser(), async (c) => {
   if (!isAuthMode()) return c.json({ ok: true })
 
   const sessionId = c.req.param('sessionId')
-  const user = c.get('user' as never) as { id: string; name: string }
+  const user = c.get('user' as never) as { id: string; name: string } & UserImageFields
 
   // Otherwise this puts the caller's name in the typing indicator of a session
   // in someone else's agent.
@@ -2970,7 +2979,7 @@ agents.post('/:id/sessions/:sessionId/typing', AgentUser(), async (c) => {
 
   messagePersister.broadcastSessionEvent(getAgentId(c), sessionId, {
     type: 'user_typing',
-    sender: { id: user.id, name: user.name },
+    sender: { id: user.id, name: user.name, image: getUserImage(user) },
   })
 
   return c.json({ ok: true })

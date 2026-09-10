@@ -3997,7 +3997,7 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
     mockDbSelectFrom.mockReturnValue({
       innerJoin: () => ({
         where: () => Promise.resolve([
-          { messageId: 'msg-1', userId: 'user-1', userName: 'Alice', userEmail: 'alice@example.com' },
+          { messageId: 'msg-1', userId: 'user-1', userName: 'Alice', userEmail: 'alice@example.com', image: 'https://example.com/alice.png' },
         ]),
       }),
     })
@@ -4011,6 +4011,7 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
       id: 'user-1',
       name: 'Alice',
       email: 'alice@example.com',
+      image: 'https://example.com/alice.png',
     })
     // Assistant message should not have sender
     expect(body[1].sender).toBeUndefined()
@@ -5816,7 +5817,7 @@ describe('user message SSE broadcast — POST /:id/sessions/:sessionId/messages'
     expect(messagePersister.broadcastSessionEvent).toHaveBeenCalledWith('test-agent', 'sess-1', {
       type: 'user_message',
       content: 'hello everyone',
-      sender: { id: 'test-user-id', name: 'Test User' },
+      sender: { id: 'test-user-id', name: 'Test User', image: null },
       uuid: expect.any(String),
       queued: false,
     })
@@ -5935,7 +5936,7 @@ describe('typing indicator — POST /:id/sessions/:sessionId/typing', () => {
 
     expect(messagePersister.broadcastSessionEvent).toHaveBeenCalledWith('test-agent', 'sess-1', {
       type: 'user_typing',
-      sender: { id: 'test-user-id', name: 'Test User' },
+      sender: { id: 'test-user-id', name: 'Test User', image: null },
     })
   })
 

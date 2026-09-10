@@ -196,6 +196,7 @@ export interface ApiMessageContent {
  * Message response from API
  */
 export interface ApiMessageSender {
+  image?: string | null
   id: string
   name: string
   email: string

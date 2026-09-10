@@ -1,3 +1,4 @@
+import { UserAvatar } from '@renderer/components/ui/user-avatar'
 import { forwardRef, useEffect, useImperativeHandle, useState, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
@@ -57,12 +58,14 @@ interface AccessEntry {
   createdAt: string
   userName: string
   userEmail: string
+  image?: string | null
 }
 
 interface SearchUser {
   id: string
   name: string
   email: string
+  image?: string | null
 }
 
 interface AgentSharePopoverProps {
@@ -102,16 +105,6 @@ function RoleSelectItems() {
         </SelectItem>
       ))}
     </>
-  )
-}
-
-function UserAvatar({ name, className }: { name: string; className?: string }) {
-  return (
-    <div
-      className={`flex shrink-0 items-center justify-center rounded-full bg-muted font-medium uppercase text-muted-foreground ${className ?? 'h-7 w-7 text-[11px]'}`}
-    >
-      {name.charAt(0) || '?'}
-    </div>
   )
 }
 
@@ -172,7 +165,7 @@ function InviteEducationPane() {
             </p>
             {GHOST_MEMBERS.map((m) => (
               <div key={m.name} className="flex items-center gap-2 rounded-md px-2 py-1.5">
-                <UserAvatar name={m.name} />
+                <UserAvatar user={{ id: m.name, name: m.name }} />
                 <div className="min-w-0 flex-1 space-y-1.5 py-0.5">
                   <div className={cn('h-2 rounded-full bg-muted-foreground/30', m.nameWidth)} />
                   <div className={cn('h-2 rounded-full bg-muted-foreground/20', m.emailWidth)} />
@@ -402,7 +395,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
         className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-accent/50"
         data-testid={`access-entry-${entry.userId}`}
       >
-        <UserAvatar name={entry.userName} />
+        <UserAvatar user={{ id: entry.userId, name: entry.userName, image: entry.image }} />
         <div className="min-w-0 flex-1">
           <div className="truncate text-[11px]">
             {entry.userName}
@@ -765,7 +758,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
                     className="flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[11px]"
                     data-testid={`invite-chip-${u.id}`}
                   >
-                    <UserAvatar name={u.name} className="h-4 w-4 text-[10px]" />
+                    <UserAvatar user={u} size={16} />
                     <span className="max-w-32 truncate">{u.name}</span>
                     <button
                       type="button"
@@ -862,7 +855,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
                         aria-checked={isSelected}
                         data-testid={`invite-user-result-${u.id}`}
                       >
-                        <UserAvatar name={u.name} />
+                        <UserAvatar user={u} />
                         <div className="min-w-0 flex-1">
                           <div className="truncate">{u.name}</div>
                           <div className="truncate text-[11px] text-muted-foreground">{u.email}</div>

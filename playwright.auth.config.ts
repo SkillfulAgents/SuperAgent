@@ -13,6 +13,13 @@ const configuredWorkers = process.env.PLAYWRIGHT_WORKERS
 
 const authProjects = [
   {
+    name: 'auth-collaboration',
+    testMatch: '**/collaboration-*.spec.ts',
+    port: e2ePort + 9,
+    dataDir: path.join(e2eDataDir, 'collaboration'),
+    viteCacheDir: path.join(e2eDataDir, '.vite', 'collaboration'),
+  },
+  {
     name: 'auth-flow',
     testMatch: '**/auth-flow.spec.ts',
     port: e2ePort,

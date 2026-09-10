@@ -281,6 +281,13 @@
       "when": 1788396615359,
       "tag": "0039_webhook_trigger_minted_by_member",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "6",
+      "when": 1789059097911,
+      "tag": "0040_user_avatar_override",
+      "breakpoints": true
     }
   ]
 }
