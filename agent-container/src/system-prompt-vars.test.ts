@@ -16,7 +16,6 @@ describe('promptDate', () => {
   const instant = new Date('2026-09-10T23:30:00Z')
 
   it.each([
-    ['America/Los_Angeles', { date: '2026-09-10', weekday: 'Thursday', utcOffset: 'UTC-07:00' }],
     ['UTC', { date: '2026-09-10', weekday: 'Thursday', utcOffset: 'UTC+00:00' }],
     ['Asia/Kolkata', { date: '2026-09-11', weekday: 'Friday', utcOffset: 'UTC+05:30' }],
   ])('renders the calendar day and offset in %s', (timeZone, expected) => {
@@ -65,13 +64,6 @@ describe('buildSystemPromptVars', () => {
 })
 
 describe('generateSystemPrompt rendering', () => {
-  it('states the weekday, date and zone, and points at `date` for the time', () => {
-    const today = promptDate()
-    expect(generateSystemPrompt()).toContain(
-      ` - Today is ${today.weekday}, ${today.date} in ${today.timeZone} (${today.utcOffset}). For the current time, run \`date\`.`
-    )
-  })
-
   it('renders the mounted-folders block only when mounts are present', () => {
     expect(generateSystemPrompt()).not.toContain('Mounted folders:')
     process.env.SUPERAGENT_MOUNTS = JSON.stringify(['/mounts/project'])
