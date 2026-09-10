@@ -245,10 +245,10 @@ describe('collaboration hints over the existing stream', () => {
       for (const client of clients) expect(await client.waitForData('"type":"connected"')).toBe(true)
       collaborationEvents.publishCollaborationEvent(['owner'], { type: 'agent_members_changed', agentSlug: 'private-agent' })
       collaborationEvents.publishCollaborationEvent(['removed'], { type: 'agent_access_revoked', agentSlug: 'private-agent' })
-      collaborationEvents.publishCollaborationEvent(['unrelated'], { type: 'user_profile_changed', userId: 'unrelated' })
+      collaborationEvents.publishCollaborationEvent(['unrelated'], { type: 'agent_members_changed', agentSlug: 'unrelated-agent' })
       expect(await clients[0].waitForData('agent_members_changed')).toBe(true)
       expect(await clients[1].waitForData('agent_access_revoked')).toBe(true)
-      expect(await clients[2].waitForData('user_profile_changed')).toBe(true)
+      expect(await clients[2].waitForData('unrelated-agent')).toBe(true)
       expect(clients[2].received()).not.toContain('private-agent')
       expect(clients[0].received()).not.toContain('agent_access_revoked')
     } finally {

@@ -1,5 +1,4 @@
 import { collaborationEventSchema } from '@shared/lib/agent-members-schema'
-import { authClient } from '@renderer/lib/auth-client'
 import { resolveRouteAgentId } from '@renderer/hooks/use-agents'
 import type { ApiAgent } from '@shared/lib/types/api'
 /**
@@ -104,9 +103,7 @@ export function GlobalNotificationHandler() {
   const { data: unreadData } = useUnreadNotificationCount()
   const { data: platformUnreadData } = usePlatformUnreadCount()
   const { data: userSettings } = useUserSettings()
-  const { canAccessAgent, user } = useUser()
-  const userIdRef = useRef(user?.id)
-  userIdRef.current = user?.id
+  const { canAccessAgent } = useUser()
   const selectedAgentRef = useRef(selectedAgentSlug)
   selectedAgentRef.current = selectedAgentSlug
   // Use refs to avoid recreating EventSource when reactive values change
@@ -265,17 +262,10 @@ export function GlobalNotificationHandler() {
 
         switch (data.type) {
           case 'agent_members_changed':
-          case 'agent_access_revoked':
-          case 'user_profile_changed': {
+          case 'agent_access_revoked': {
             const parsed = collaborationEventSchema.safeParse(data)
             if (!parsed.success) break
             const change = parsed.data
-            if (change.type === 'user_profile_changed') {
-              queryClient.invalidateQueries({ queryKey: ['agent-members'] })
-              queryClient.invalidateQueries({ queryKey: ['agent-invite-candidates'] })
-              if (change.userId === userIdRef.current) authClient.$store.notify('$sessionSignal')
-              break
-            }
             if (change.type === 'agent_access_revoked') {
               const activeSlug = selectedAgentRef.current
               const activeId = resolveRouteAgentId(activeSlug ?? undefined, queryClient.getQueryData<ApiAgent[]>(['agents']))
@@ -664,13 +654,12 @@ export function GlobalNotificationHandler() {
       }
     }
 
-    // Agents and roles cover the window before the first connect. Rosters and
-    // the session are already loading on mount; only refresh them after a gap.
+    // Agents and roles cover the window before the first connect. Rosters are
+    // already loading on mount; only refresh them after a gap.
     es.onopen = () => {
       const isReconnect = hasConnectedRef.current || wasDeadRef.current
       hasConnectedRef.current = true
       reconnectAttemptRef.current = 0
-      if (isReconnect && userIdRef.current) authClient.$store.notify('$sessionSignal')
       if (wasDeadRef.current) {
         // The dead window can be arbitrarily long, and every family this
         // stream feeds may have moved in it. Refetch what is mounted.

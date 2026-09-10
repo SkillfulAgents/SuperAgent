@@ -48,16 +48,3 @@ export function notifyAgentMembersChanged(agentSlug: string, removedUserId?: str
     console.error('Failed to notify agent members:', error)
   }
 }
-
-export function notifyUserProfileChanged(userId: string): void {
-  if (!isAuthMode()) return
-  try {
-    const sharedAgents = db.select({ slug: agentAcl.agentSlug }).from(agentAcl)
-      .where(eq(agentAcl.userId, userId)).all().map((row) => row.slug)
-    const recipients = sharedAgents.length ? db.selectDistinct({ id: agentAcl.userId }).from(agentAcl)
-      .where(inArray(agentAcl.agentSlug, sharedAgents)).all().map((row) => row.id) : []
-    publishCollaborationEvent([userId, ...recipients], { type: 'user_profile_changed', userId })
-  } catch (error) {
-    console.error('Failed to notify profile change:', error)
-  }
-}

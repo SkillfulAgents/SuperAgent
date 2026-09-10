@@ -5,6 +5,7 @@ import path from 'node:path'
 import { Hono } from 'hono'
 import { randomUUID } from 'node:crypto'
 import Database from 'better-sqlite3'
+import { PNG } from 'pngjs'
 import { MAX_AGENT_MEMBERS_BATCH_SIZE, type CollaborationEvent } from '@shared/lib/agent-members-schema'
 import { persistedSettingsSchema } from '@shared/lib/config/settings-schema'
 
@@ -150,6 +151,29 @@ describe('authorized agent roster', () => {
     }
   })
 
+  it('reads updated profiles on the next roster request without broadcasting changes', async () => {
+    const { setAvatar } = await import('@shared/lib/services/profile-avatar-service')
+    const received: CollaborationEvent[] = []
+    const stops = Object.values(people).map(person => events.subscribeCollaborationEvents(person.id, event => { received.push(event) }))
+    const image = new PNG({ width: 4, height: 4 })
+    image.data.fill(160)
+    try {
+      await (await authModule.getAuth().$context).internalAdapter.updateUser(people.viewer.id, { name: 'Updated Viewer', image: 'https://example.test/new.png' })
+      const avatar = await setAvatar(people.viewer.id, PNG.sync.write(image))
+      expect(received).toEqual([])
+      const uploaded = await (await get('owner')).json()
+      expect(uploaded).toContainEqual(expect.objectContaining({ id: people.viewer.id, name: 'Updated Viewer', image: avatar }))
+      await setAvatar(people.viewer.id, null)
+      expect(received).toEqual([])
+      const restored = await (await batch('owner', [agentSlug, secondAgent])).json()
+      for (const slug of [agentSlug, secondAgent]) {
+        expect(restored[slug].members).toContainEqual(expect.objectContaining({ id: people.viewer.id, name: 'Updated Viewer', image: 'https://example.test/new.png' }))
+      }
+    } finally {
+      stops.forEach(stop => stop())
+    }
+  })
+
   it('sends a membership change when a removed deployment admin retains access', async () => {
     const { agentAcl } = await import('@shared/lib/db/schema')
     db.db.insert(agentAcl).values({ id: randomUUID(), userId: people.admin.id, agentSlug, role: 'viewer', createdAt: new Date() }).run()
@@ -168,27 +192,17 @@ describe('authorized agent roster', () => {
     }
   })
 
-  it('scopes profile and membership hints and delivers revocation after removing access', async () => {
+  it('scopes membership hints and delivers revocation after removing access', async () => {
     const received = Object.fromEntries(Object.keys(people).map((name) => [name, [] as CollaborationEvent[]]))
     const stops = Object.keys(people).map((name) => events.subscribeCollaborationEvents(people[name].id, (event) => { received[name].push(event) }))
     try {
-      service.notifyUserProfileChanged(people.viewer.id)
-      for (const name of ['owner', 'user', 'viewer']) expect(received[name]).toEqual([{ type: 'user_profile_changed', userId: people.viewer.id }])
-      expect(received.outsider).toEqual([])
-      expect(received.admin).toEqual([])
-      // A real Better Auth profile update uses the same audience.
-      await (await authModule.getAuth().$context).internalAdapter.updateUser(people.viewer.id, { name: 'Updated Viewer' })
-      expect(received.owner).toHaveLength(2)
       db.sqlite.prepare('DELETE FROM agent_acl WHERE agent_slug = ? AND user_id = ?').run(agentSlug, people.viewer.id)
       service.notifyAgentMembersChanged(agentSlug, people.viewer.id)
-      expect(received.owner.at(-1)).toEqual({ type: 'agent_members_changed', agentSlug })
-      expect(received.user.at(-1)).toEqual({ type: 'agent_members_changed', agentSlug })
-      expect(received.viewer.at(-1)).toEqual({ type: 'agent_access_revoked', agentSlug })
+      expect(received.owner).toEqual([{ type: 'agent_members_changed', agentSlug }])
+      expect(received.user).toEqual([{ type: 'agent_members_changed', agentSlug }])
+      expect(received.viewer).toEqual([{ type: 'agent_access_revoked', agentSlug }])
       expect((await get('viewer')).status).toBe(403)
       expect((await (await batch('viewer', [agentSlug, secondAgent])).json())[agentSlug]).toEqual({ status: 403 })
-      db.sqlite.prepare('DELETE FROM agent_acl WHERE agent_slug = ? AND user_id = ?').run(secondAgent, people.viewer.id)
-      service.notifyUserProfileChanged(people.owner.id)
-      expect(received.viewer).toHaveLength(3)
       expect(received.outsider).toEqual([])
       expect(received.admin).toEqual([])
     } finally {
