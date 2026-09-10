@@ -5,6 +5,7 @@ import { and, desc, eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { authAccount } from '@shared/lib/db/schema'
 import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
+import { getAgentOwnerUserId } from '@shared/lib/services/agent-owner'
 import { decodeOrgIdFromToken } from '@shared/lib/platform-auth/decode-org-id'
 
 import { getRequestUserId } from './request-context'
@@ -119,6 +120,17 @@ export const attribution = {
   },
   current(): Attribution | null {
     return attributionContext.getStore()?.auth ?? fromCurrentRequest()
+  },
+  // Container cold start: ambient scope, else the agent owner, else the stored
+  // member. Same fallback chain as trigger minting (SUP-765); null only when
+  // nothing resolves, so callers never bake a bare org token by accident (SUP-805).
+  forAgent(agentSlug: string): Attribution | null {
+    const ambient = attributionContext.getStore()?.auth ?? fromCurrentRequest()
+    if (ambient) return ambient
+    const ownerUserId = getAgentOwnerUserId(agentSlug)
+    return buildAttribution(
+      ownerUserId ? resolveMemberIdForUserId(ownerUserId) : getStoredPlatformMemberId(),
+    )
   },
   requiresActingMember,
 } as const
