@@ -4,7 +4,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { Hono } from 'hono'
 import { randomUUID } from 'node:crypto'
-import type { CollaborationEvent } from '@shared/lib/agent-members-schema'
+import Database from 'better-sqlite3'
+import { MAX_AGENT_MEMBERS_BATCH_SIZE, type CollaborationEvent } from '@shared/lib/agent-members-schema'
+import { persistedSettingsSchema } from '@shared/lib/config/settings-schema'
 
 let directory: string
 let db: typeof import('@shared/lib/db')
@@ -13,12 +15,17 @@ let service: typeof import('@shared/lib/services/agent-members-service')
 let events: typeof import('@shared/lib/services/collaboration-events')
 let app: Hono
 const agentSlug = '0123456789'
+const secondAgent = '9876543210'
+const privateAgent = 'private-agent'
+const emptyAgent = 'empty-agent'
 const people: Record<string, { id: string; token: string }> = {}
 
 beforeAll(async () => {
   directory = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-members-'))
-  fs.mkdirSync(path.join(directory, 'agents', agentSlug), { recursive: true })
-  fs.writeFileSync(path.join(directory, 'settings.json'), JSON.stringify({ auth: { signupMode: 'open', requireAdminApproval: false } }))
+  for (const slug of [agentSlug, secondAgent, privateAgent, emptyAgent]) {
+    fs.mkdirSync(path.join(directory, 'agents', slug), { recursive: true })
+  }
+  fs.writeFileSync(path.join(directory, 'settings.json'), JSON.stringify(persistedSettingsSchema.parse({ auth: { signupMode: 'open', requireAdminApproval: false } })))
   vi.stubEnv('SUPERAGENT_DATA_DIR', directory)
   vi.stubEnv('AUTH_MODE', 'true')
   vi.stubEnv('AUTH_PROVIDERS_JSON', '[]')
@@ -28,9 +35,11 @@ beforeAll(async () => {
   service = await import('@shared/lib/services/agent-members-service')
   events = await import('@shared/lib/services/collaboration-events')
   const { Authenticated, ResolveAgent, AgentAdmin } = await import('../middleware/auth')
-  const members = (await import('./agent-members')).default
+  const { default: members, agentMembersBatch } = await import('./agent-members')
   app = new Hono()
-  app.use('/api/agents/:id/*', Authenticated(), ResolveAgent())
+  app.use('/api/agents/*', Authenticated())
+  app.route('/api/agents/members/batch', agentMembersBatch)
+  app.use('/api/agents/:id/*', ResolveAgent())
   app.route('/api/agents/:id/members', members)
   app.get('/api/agents/:id/access', AgentAdmin(), (c) => c.json({ management: true }))
   for (const name of ['admin', 'owner', 'user', 'viewer', 'outsider']) {
@@ -41,6 +50,12 @@ beforeAll(async () => {
   for (const [index, role] of ['owner', 'user', 'viewer'].entries()) {
     db.db.insert(agentAcl).values({ id: randomUUID(), userId: people[role].id, agentSlug, role: role as 'owner' | 'user' | 'viewer', createdAt: new Date(index * 1000) }).run()
   }
+  db.db.insert(agentAcl).values([
+    { id: randomUUID(), userId: people.viewer.id, agentSlug: secondAgent, role: 'owner', createdAt: new Date(0) },
+    { id: randomUUID(), userId: people.owner.id, agentSlug: secondAgent, role: 'viewer', createdAt: new Date(1000) },
+    { id: randomUUID(), userId: people.outsider.id, agentSlug: privateAgent, role: 'owner', createdAt: new Date(0) },
+  ]).run()
+
 })
 afterAll(() => {
   authModule.resetAuth()
@@ -50,6 +65,15 @@ afterAll(() => {
 })
 function get(name: string | null, resource = 'members', slug = agentSlug) {
   return app.request(`/api/agents/${slug}/${resource}`, name ? { headers: { authorization: `Bearer ${people[name].token}` } } : {})
+}
+
+
+function batch(name: string | null, agentSlugs: string[]) {
+  return app.request('/api/agents/members/batch', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...(name ? { authorization: `Bearer ${people[name].token}` } : {}) },
+    body: JSON.stringify({ agentSlugs }),
+  })
 }
 
 describe('authorized agent roster', () => {
@@ -71,6 +95,59 @@ describe('authorized agent roster', () => {
     expect((await get('viewer', 'members', 'does-not-exist')).status).toBe(404)
     for (const name of ['user', 'viewer', 'outsider']) expect((await get(name, 'access')).status).toBe(403)
     for (const name of ['owner', 'admin']) expect((await get(name, 'access')).status).toBe(200)
+  })
+
+  it('batches authorized rosters and isolates forbidden or missing agents', async () => {
+    for (const name of ['owner', 'viewer', 'user', 'admin']) {
+      const response = await batch(name, [agentSlug, `launch-${secondAgent}`, privateAgent, 'missing', agentSlug])
+      expect(response.status).toBe(200)
+      const result = await response.json()
+      expect(Object.keys(result)).toHaveLength(4)
+      expect(result[agentSlug]).toEqual({ status: 200, members: await (await get(name)).json() })
+      expect(result[`launch-${secondAgent}`]).toEqual(name === 'user'
+        ? { status: 403 }
+        : { status: 200, members: await (await get(name, 'members', secondAgent)).json() })
+      expect(result[privateAgent]).toEqual(name === 'admin'
+        ? { status: 200, members: await (await get(name, 'members', privateAgent)).json() }
+        : { status: 403 })
+      expect(result.missing).toEqual({ status: 404 })
+    }
+    expect(await (await batch('outsider', [agentSlug, secondAgent])).json()).toEqual({
+      [agentSlug]: { status: 403 }, [secondAgent]: { status: 403 },
+    })
+    expect(await (await batch('admin', [emptyAgent])).json()).toEqual({ [emptyAgent]: { status: 200, members: [] } })
+  })
+
+  it('loads multiple rosters in two data queries with distinct per-agent roles and stable order', () => {
+    const prepare = vi.spyOn(Database.prototype, 'prepare')
+    try {
+      const result = service.listAgentMembersByAgent([agentSlug, secondAgent, emptyAgent, agentSlug])
+      expect(prepare).toHaveBeenCalledTimes(2) // One membership query and one shared user lookup.
+      expect(result[agentSlug].map(member => member.id)).toEqual([people.owner.id, people.user.id, people.viewer.id])
+      expect(result[secondAgent].map(member => [member.id, member.role])).toEqual([
+        [people.viewer.id, 'owner'], [people.owner.id, 'viewer'],
+      ])
+      expect(result[emptyAgent]).toEqual([])
+      expect(result[secondAgent][0].image).toBe(result[agentSlug][2].image)
+      prepare.mockClear()
+      expect(service.listAgentMembersByAgent([])).toEqual({})
+      expect(prepare).not.toHaveBeenCalled()
+    } finally {
+      prepare.mockRestore()
+    }
+  })
+
+  it('requires a session, limits batch size, and disables batch reads outside auth mode', async () => {
+    expect((await batch(null, [agentSlug])).status).toBe(401)
+    expect((await batch('owner', [])).status).toBe(400)
+    expect((await batch('owner', Array(MAX_AGENT_MEMBERS_BATCH_SIZE + 1).fill(agentSlug))).status).toBe(400)
+    expect((await batch('owner', ['a'.repeat(40_000)])).status).toBe(413)
+    vi.stubEnv('AUTH_MODE', 'false')
+    try {
+      expect((await batch(null, [agentSlug])).status).toBe(404)
+    } finally {
+      vi.stubEnv('AUTH_MODE', 'true')
+    }
   })
 
   it('sends a membership change when a removed deployment admin retains access', async () => {
@@ -108,6 +185,8 @@ describe('authorized agent roster', () => {
       expect(received.user.at(-1)).toEqual({ type: 'agent_members_changed', agentSlug })
       expect(received.viewer.at(-1)).toEqual({ type: 'agent_access_revoked', agentSlug })
       expect((await get('viewer')).status).toBe(403)
+      expect((await (await batch('viewer', [agentSlug, secondAgent])).json())[agentSlug]).toEqual({ status: 403 })
+      db.sqlite.prepare('DELETE FROM agent_acl WHERE agent_slug = ? AND user_id = ?').run(secondAgent, people.viewer.id)
       service.notifyUserProfileChanged(people.owner.id)
       expect(received.viewer).toHaveLength(3)
       expect(received.outsider).toEqual([])

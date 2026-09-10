@@ -2,20 +2,29 @@ import { asc, eq, inArray } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { agentAcl, user } from '@shared/lib/db/schema'
 import { isAuthMode } from '@shared/lib/auth/mode'
-import { agentMembersSchema } from '@shared/lib/agent-members-schema'
+import { agentMembersByAgentSchema, type AgentMember } from '@shared/lib/agent-members-schema'
 import { getUserSummaries } from './user-profile-service'
 import { publishCollaborationEvent } from './collaboration-events'
 
-export function listAgentMembers(agentSlug: string) {
-  const rows = db.select({ id: agentAcl.userId, role: agentAcl.role }).from(agentAcl)
-    .where(eq(agentAcl.agentSlug, agentSlug))
+/** Callers must authorize every agent before reading its roster. */
+export function listAgentMembersByAgent(agentSlugs: readonly string[]) {
+  const slugs = [...new Set(agentSlugs)]
+  const members = new Map(slugs.map(slug => [slug, [] as AgentMember[]]))
+  if (!slugs.length) return {}
+  const rows = db.select({ agentSlug: agentAcl.agentSlug, id: agentAcl.userId, role: agentAcl.role }).from(agentAcl)
+    .where(inArray(agentAcl.agentSlug, slugs))
     // Joining time + stable ID keep faces stationary when names or roles change.
     .orderBy(asc(agentAcl.createdAt), asc(agentAcl.userId)).all()
   const profiles = getUserSummaries(rows.map(row => row.id))
-  return agentMembersSchema.parse(rows.flatMap(row => {
+  for (const row of rows) {
     const profile = profiles.get(row.id)
-    return profile ? [{ ...profile, role: row.role }] : []
-  }))
+    if (profile) members.get(row.agentSlug)!.push({ ...profile, role: row.role })
+  }
+  return agentMembersByAgentSchema.parse(Object.fromEntries(members))
+}
+
+export function listAgentMembers(agentSlug: string) {
+  return listAgentMembersByAgent([agentSlug])[agentSlug]
 }
 
 export function notifyAgentMembersChanged(agentSlug: string, removedUserId?: string): void {
