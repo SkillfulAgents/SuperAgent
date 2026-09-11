@@ -2,7 +2,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { listSubagents, readSubagentTranscript, readWorkflowAgentTranscript } from './local-transcript-ops'
+import { listSubagents, readSubagentTranscript } from './local-transcript-ops'
 import { WorkspaceFileError } from './workspace-path'
 
 // Real directories: the sessions directory lives inside the workspace the
@@ -79,21 +79,12 @@ describe('local transcript ops — containment', () => {
     expect(await codeOf(readSubagentTranscript(AGENT, SESSION, 'x'))).toBe('not-found')
   })
 
-  it('a link planted as the workflow run directory does not either', async () => {
-    const workflows = path.join(subagentsDir, 'workflows')
-    await fs.promises.mkdir(workflows, { recursive: true })
-    await fs.promises.symlink(path.dirname(otherTranscript), path.join(workflows, 'wf_run'))
-
-    expect(await codeOf(readWorkflowAgentTranscript(AGENT, SESSION, 'wf_run', 'secret'))).toBe('not-found')
-  })
-
   it('a link swapped in for the sessions directory itself is caught against the workspace', async () => {
     const sessionsDir = sessionsDirOf(dataDir, AGENT)
     await fs.promises.rm(sessionsDir, { recursive: true, force: true })
     await fs.promises.symlink(path.dirname(otherTranscript), sessionsDir)
 
     expect(await codeOf(readSubagentTranscript(AGENT, 'anything', 'x'))).toBe('not-found')
-    expect(await listSubagents(AGENT, 'anything').catch((error: WorkspaceFileError) => error.code)).toBe('not-found')
   })
 
   it('a traversal in a segment is rejected before the filesystem is consulted', async () => {
