@@ -140,6 +140,7 @@ export function describeFileOpsContract(name: string, make: () => Promise<FileOp
 
       await files.putDoc('f.txt', 'f')
       expect(await codeOf(files.mkdir('f.txt/child'))).toBe('not-a-directory')
+      expect(await codeOf(files.putDoc('f.txt/child', 'x'))).toBe('not-a-directory')
     })
 
     it('the root cannot be written as a file or deleted', async () => {

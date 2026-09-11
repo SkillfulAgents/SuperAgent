@@ -124,9 +124,14 @@ describe('LocalFileOps — symbolic links', () => {
 
   it('write leaves the previous file intact when the source fails', async () => {
     await fs.promises.writeFile(path.join(root, 'data.bin'), 'old')
+    // The source fails after its first chunk was consumed, the way a dropped
+    // upload does; erroring before a reader attaches would surface as an
+    // unhandled error outside the test.
     const failing = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(new TextEncoder().encode('partial'))
+      },
+      pull(controller) {
         controller.error(new Error('source broke'))
       },
     })
