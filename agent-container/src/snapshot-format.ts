@@ -155,6 +155,8 @@ export function pageProbeScript(opts: { previewChars?: number } = {}): string {
   return (
     '(function(){var o={iframes:[],textChars:0,live:[],preview:"",url:"",title:"",readyState:"",http:0,contentType:"",busy:0,blocker:"",netError:""};' +
     'var ws=function(s){return String(s||"").replace(/\\s+/g," ").trim()};var body="";' +
+    // checkVisibility also excludes visibility:hidden / opacity:0 (see action-effect.ts).
+    'var vis=function(el){try{if(typeof el.checkVisibility==="function")return el.checkVisibility({visibilityProperty:true,opacityProperty:true,checkVisibilityCSS:true,checkOpacity:true});return el.getClientRects().length>0}catch(e){return false}};' +
     'try{o.url=String(location.href||"")}catch(e){}' +
     'try{o.title=ws(document.title).slice(0,200);o.readyState=String(document.readyState||"");o.contentType=String(document.contentType||"")}catch(e){}' +
     'try{var nav=performance.getEntriesByType("navigation")[0];o.http=(nav&&nav.responseStatus)|0}catch(e){}' +
@@ -163,11 +165,11 @@ export function pageProbeScript(opts: { previewChars?: number } = {}): string {
     'return{title:f.title||"",host:host,sameOrigin:same}})}catch(e){}' +
     'try{body=ws(document.body&&document.body.innerText);o.textChars=body.length}catch(e){}' +
     'try{var seen={};var els=document.querySelectorAll(\'[role="alert"],[role="status"],[aria-live]:not([aria-live="off"]),output\');' +
-    'for(var i=0;i<els.length&&o.live.length<' + LIVE_REGION_MAX + ';i++){var el=els[i];if(!el.getClientRects().length)continue;' +
+    'for(var i=0;i<els.length&&o.live.length<' + LIVE_REGION_MAX + ';i++){var el=els[i];if(!vis(el))continue;' +
     'var s=ws(el.innerText);if(!s||seen[s])continue;seen[s]=1;o.live.push(s.slice(0,' + LIVE_REGION_CHARS + '))}}catch(e){}' +
     'try{var m=document.querySelector("main,[role=main]")||document.body;o.preview=ws(m&&m.innerText).slice(0,' + previewChars + ')}catch(e){}' +
     'try{var bs=document.querySelectorAll(\'[aria-busy="true"],[role="progressbar"],[class*="skeleton"]\');' +
-    'for(var b=0;b<bs.length;b++){if(bs[b].getClientRects().length)o.busy++}}catch(e){}' +
+    'for(var b=0;b<bs.length;b++){if(vis(bs[b]))o.busy++}}catch(e){}' +
     // Chrome's error document: full Chrome renders #main-frame-error with the
     // ERR_ code in its text; the headless shell shows an empty page whose only
     // tell is the chrome-error:// URL (verified in the container image).
@@ -180,7 +182,14 @@ export function pageProbeScript(opts: { previewChars?: number } = {}): string {
 
 export const PAGE_PROBE_SCRIPT = pageProbeScript()
 
-/** Parse page-probe output (CLI double-JSON-encodes). Never throws; missing parts default empty. */
+/**
+ * Parse page-probe output. Accepts the raw eval shape (`http`, `live`; CLI
+ * double-JSON-encodes it) and the normalized PageProbe shape the server
+ * forwards to the tools (`httpStatus`, `liveRegions`) — the browser_open tool
+ * re-parses the server's `page` field, and reading only the raw keys there
+ * silently dropped the HTTP status (caught driving the built container).
+ * Never throws; missing parts default empty.
+ */
 export function parsePageProbe(stdout: string): PageProbe {
   try {
     let parsed: unknown = JSON.parse(stdout.trim())
@@ -189,15 +198,16 @@ export function parsePageProbe(stdout: string): PageProbe {
     const p = parsed as Record<string, unknown>
     const str = (v: unknown): string => (typeof v === 'string' ? v : '')
     const num = (v: unknown): number => (typeof v === 'number' && v > 0 ? Math.floor(v) : 0)
+    const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((s): s is string => typeof s === 'string' && s.length > 0) : [])
     return {
       iframes: parseIframeInfo(JSON.stringify(p.iframes ?? [])),
       textChars: num(p.textChars),
-      liveRegions: Array.isArray(p.live) ? p.live.filter((s): s is string => typeof s === 'string' && s.length > 0) : [],
+      liveRegions: strs(p.live ?? p.liveRegions),
       preview: str(p.preview),
       url: str(p.url),
       title: str(p.title),
       readyState: str(p.readyState),
-      httpStatus: num(p.http),
+      httpStatus: num(p.http ?? p.httpStatus),
       contentType: str(p.contentType),
       busy: num(p.busy),
       blocker: str(p.blocker),

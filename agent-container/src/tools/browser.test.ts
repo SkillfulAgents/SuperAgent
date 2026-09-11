@@ -106,7 +106,7 @@ describe('browser_open location', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
       success: true,
       location: 'host',
-      page: { url: 'https://app.com/login?next=%2Fdashboard', title: 'Sign in', readyState: 'complete', http: 200, contentType: 'text/html' },
+      page: { url: 'https://app.com/login?next=%2Fdashboard', title: 'Sign in', readyState: 'complete', httpStatus: 200, contentType: 'text/html' },
     }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
 
     const openTool = createBrowserTools(() => 'session-4')
@@ -122,7 +122,7 @@ describe('browser_open location', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
       success: true,
       location: 'host',
-      page: { url: 'https://drinkolipop.com/', title: '', readyState: 'complete', http: 429, contentType: 'text/plain', preview: 'local_rate_limited' },
+      page: { url: 'https://drinkolipop.com/', title: '', readyState: 'complete', httpStatus: 429, contentType: 'text/plain', preview: 'local_rate_limited' },
     }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
 
     const openTool = createBrowserTools(() => 'session-5')
