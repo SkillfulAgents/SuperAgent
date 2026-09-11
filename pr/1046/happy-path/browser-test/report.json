@@ -1,0 +1,17 @@
+{
+  "storyId": "browser-test",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: ture is functioning correctly. The agent successfully:\n- Opened a browser session\n- Navigated to the requested URL (https://example.com)\n- Retrieved the correct page title (\"Example Domain\")\n- Reported back with the accurate information\n- Closed the browser session\n\nNo bugs or issues were detected.\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 182008,
+  "sessionId": "6e3f594f-485c-45fd-a9e8-f953b6944951",
+  "cost": {
+    "inputTokens": 574,
+    "outputTokens": 16844,
+    "cacheCreationTokens": 109864,
+    "cacheReadTokens": 1567124,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.378836
+  }
+}
