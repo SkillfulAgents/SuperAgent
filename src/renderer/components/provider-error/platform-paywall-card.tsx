@@ -168,9 +168,10 @@ function PaywallActions({
 // The subscribe card: why to upgrade on the left, the quote and the action on the right;
 // below `sm` the quote stacks under the benefits. The quote comes from the platform CTA
 // (seat count and per-seat price), so it is absent until that arrives and on Electron.
-function SubscribeBody({ plan, hint, actions }: { plan: SubscribePlan | null; hint: string; actions: ReactNode }) {
+// An expanded CTA panel (promo code) drops below both columns at full width.
+function SubscribeBody({ plan, hint, actions, expanded }: { plan: SubscribePlan | null; hint: string; actions: ReactNode; expanded: boolean }) {
   return (
-    <div className="flex flex-col gap-4 py-1.5 sm:flex-row sm:items-center sm:gap-6" data-testid="paywall-subscribe">
+    <div className="flex flex-col gap-4 py-1.5 sm:flex-row sm:flex-wrap sm:items-center sm:gap-6" data-testid="paywall-subscribe">
       <div className="min-w-0 flex-1">
         <p className="text-base font-medium leading-6 text-muted-foreground">Your trial has ended.</p>
         <p className="text-base font-medium leading-6 text-foreground">Upgrade to Pro to keep going.</p>
@@ -185,8 +186,16 @@ function SubscribeBody({ plan, hint, actions }: { plan: SubscribePlan | null; hi
         {hint && <p className="mt-3 text-[11px] leading-4 text-muted-foreground" data-testid="billing-cta-hint">{hint}</p>}
       </div>
       <div
-        className="flex flex-col items-start justify-center gap-3 border-t border-border/70 pt-4 sm:min-w-[200px] sm:shrink-0 sm:self-stretch sm:border-l sm:border-t-0 sm:py-1 sm:pl-10 sm:pr-3"
+        className={cn(
+          'flex flex-col justify-center gap-3 border-t border-border/70 pt-4',
+          // Same element either way so the CTA iframe keeps its document; the aside just
+          // wraps under the benefits and takes the full row while the panel is open.
+          expanded
+            ? 'w-full items-stretch sm:basis-full'
+            : 'items-start sm:min-w-[200px] sm:shrink-0 sm:self-stretch sm:border-l sm:border-t-0 sm:py-1 sm:pl-10 sm:pr-3',
+        )}
         data-testid="paywall-subscribe-aside"
+        data-expanded={expanded}
       >
         {plan && (
           <div data-testid="paywall-plan">
@@ -250,10 +259,10 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
     setPanelHold(false)
   }, [])
   const holding = embedded && panelHold
-  // Only the top-up panel expands in place; a view change remounts the frame anyway.
+  // A view change remounts the frame, so any open panel (and its hold) is gone with it.
   useEffect(() => {
-    if (expanded && view !== 'topup') collapse()
-  }, [expanded, view, collapse])
+    collapse()
+  }, [view, collapse])
   useEffect(() => {
     if (!billing.cleared || holding || !inApp || !billingChanged.current || successShown.current) return
     successShown.current = true
@@ -352,11 +361,12 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
             PAYWALL_GLASS_CLASS,
             subscribeLayout ? 'px-4 py-4 sm:px-6 sm:py-5' : 'px-5 py-4',
             // West's purchase dialog was max-w-md; keep the collapsed banner full-width.
-            panelOpen && 'mx-auto w-full max-w-md',
+            // The subscribe card keeps its two-column width, the panel wraps under it.
+            panelOpen && !subscribeLayout && 'mx-auto w-full max-w-md',
           )}
         >
           {subscribeLayout ? (
-            <SubscribeBody plan={plan} hint={hint} actions={actions} />
+            <SubscribeBody plan={plan} hint={hint} actions={actions} expanded={panelOpen} />
           ) : (
             <div className={cn('flex flex-wrap items-center gap-x-6 gap-y-3', !showHeader && 'justify-end')}>
               {showHeader && (

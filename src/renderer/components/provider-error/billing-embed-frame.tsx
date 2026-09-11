@@ -17,6 +17,11 @@ export const LAUNCHER_MAX_HEIGHT = 'calc(100dvh - 160px)'
 const MAX_SEATS = 10_000
 const MAX_SEAT_PRICE_CENTS = 100_000_00
 export const FRAME_READY_TIMEOUT_MS = 15_000
+// Views whose CTA can swap its button for an in-frame panel (top-up form, promo code).
+const EXPANDABLE_VIEWS: ReadonlySet<BillingEmbedView> = new Set(['topup', 'subscribe'])
+// Mirrors the platform's promo line under the upgrade button (mt-1.5 + 16px), so the
+// CTA box is tall enough for it.
+export const PROMO_LINK_LABEL = 'Have a promo code?'
 
 /** The subscribe quote the platform CTA reports, so the host can draw the price block. */
 export interface SubscribePlan {
@@ -157,7 +162,7 @@ export function BillingEmbedFrame({
       const message = readEmbedMessage(event.data)
       if (!message || message.orgId !== orgId) return
       if (message.event === 'ready') { setFrameReady(true); sendTheme() }
-      else if (message.event === 'open-billing' && launcher && view === 'topup') onOpenBilling?.()
+      else if (message.event === 'open-billing' && launcher && EXPANDABLE_VIEWS.has(view)) onOpenBilling?.()
       else if (message.event === 'close' && launcher) onClose?.()
       else if (message.event === 'billing-updated') onBillingUpdated({ pending: message.pending })
       else if (message.event === 'session-expired') setFailure('expired')
@@ -199,6 +204,14 @@ export function BillingEmbedFrame({
           >
             {frameLabel}
           </Button>
+          {view === 'subscribe' && (
+            <p
+              className={cn('mt-1.5 h-4 text-center text-[11px] leading-4 text-muted-foreground', expanded ? 'hidden' : frameReady ? 'invisible' : '')}
+              aria-hidden="true" data-testid="billing-cta-promo-reference"
+            >
+              {PROMO_LINK_LABEL}
+            </p>
+          )}
           {src && <iframe key={attempt} ref={iframeRef} title="Open workspace billing" src={src} onLoad={sendTheme}
             className="absolute inset-0 block h-full w-full border-0 bg-transparent" style={{ visibility: frameReady ? 'visible' : 'hidden' }}
             referrerPolicy="strict-origin" data-testid="billing-cta-frame" />}
