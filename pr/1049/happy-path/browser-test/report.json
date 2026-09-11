@@ -1,0 +1,26 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser use feature successfully executed: Agent opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported the result back in the chat.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application homepage with the agent sidebar visible",
+    "Clicked on \"QA-20260911-015321-ep80\" agent in the sidebar (ref=e50) — Successfully opened the agent's chat page with session \"Browser Page Title Retrieval Test\"",
+    "Clicked the message input textbox (ref=e200) — Textbox was focused and ready for input",
+    "Typed message: \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully entered in the textbox",
+    "Clicked \"Send message\" button (ref=e343) — Message was sent successfully, initiating a new session",
+    "Waited for agent response with polling loop (up to 3 minutes) — Agent completed task quickly; \"Working...\" indicator disappeared after response was ready",
+    "Verified response content in snapshot — Response clearly states: \"The page title is \"Example Domain\" (HTTP 200). Browser closed.\" — Contains the required \"Example Domain\" text",
+    "Took final screenshot showing complete response — Screenshot shows the chat conversation with the user message and agent's response mentioning \"Example Domain\""
+  ],
+  "bugs": [],
+  "durationMs": 72538,
+  "sessionId": "b9c73fc6-c4c0-464a-9bd8-adb828f5dc46",
+  "cost": {
+    "inputTokens": 374,
+    "outputTokens": 10715,
+    "cacheCreationTokens": 76065,
+    "cacheReadTokens": 1119859,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.261016
+  }
+}
