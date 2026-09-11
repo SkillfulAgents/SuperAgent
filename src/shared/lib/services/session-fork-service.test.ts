@@ -63,6 +63,7 @@ vi.mock('@shared/lib/container/message-persister', () => ({
 vi.mock('@shared/lib/utils/file-storage', () => ({
   copyDirectoryFiltered,
   getAgentSessionsDir: () => '/sessions',
+  getAgentWorkspaceDir: () => '/',
   getSessionJsonlPath: (slug: string, id: string) => `/sessions/${slug}/${id}.jsonl`,
   streamJsonlFile,
 }))
