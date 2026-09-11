@@ -106,7 +106,7 @@ export function countRefs(tree: string): number {
  * sentence. (Upstream already merges runs that were split without a wrapper.)
  */
 export function compactWithText(tree: string): string {
-  const lines = tree.split('\n').filter(l => l.trim().length > 0)
+  const lines = logicalLines(tree)
   if (lines.length === 0) return tree
   const keep = new Array<boolean>(lines.length).fill(false)
   for (let i = 0; i < lines.length; i++) {
@@ -116,6 +116,7 @@ export function compactWithText(tree: string): string {
       line.includes('ref=') ||
       (st !== null && st.trim().length > 0) ||
       /^\s*- image "/.test(line) ||
+      LINE_BREAK.test(line) ||
       line.includes(': ')
     if (!isContent) continue
     keep[i] = true
@@ -133,7 +134,27 @@ export function compactWithText(tree: string): string {
   return joinInlineRuns(kept).join('\n')
 }
 
+/**
+ * The tree's lines, with a multi-line value kept on its node: a textarea's
+ * `textbox "Notes" [ref=e3]: line one⏎line two` renders with raw newlines, and
+ * a line that does not start a node is the continuation of the one before it.
+ * Splitting naively made "line two" a nameless line that the filter dropped
+ * and "line three" an "ancestor" it kept.
+ */
+function logicalLines(tree: string): string[] {
+  const out: string[] = []
+  for (const raw of tree.split('\n')) {
+    if (/^\s*- /.test(raw) || out.length === 0) {
+      if (raw.trim().length > 0) out.push(raw)
+    } else {
+      out[out.length - 1] += `\n${raw}`
+    }
+  }
+  return out
+}
+
 const INLINE_WRAPPER = /^\s*- (strong|emphasis|code|mark|superscript|subscript|deletion|insertion|time|generic)$/
+const LINE_BREAK = /^(\s*)- LineBreak\b/
 const STATIC_TEXT = /^(\s*)- StaticText ("(?:[^"\\]|\\.)*")$/
 const NAMED_LINE = /^\s*- \S+ ("(?:[^"\\]|\\.)*")/
 
@@ -167,8 +188,46 @@ function nameOf(line: string): string | null {
   }
 }
 
+/**
+ * What goes between two text runs the tree split at an element boundary: a
+ * space, unless one side already carries whitespace, the next run opens with
+ * punctuation that attaches to the previous word (`.00`, `,`, `)`), or the
+ * previous run ends with something the next word attaches to (`(`, `$`, `/`).
+ */
+function glueBetween(prev: string, next: string): string {
+  if (/\s$/.test(prev) || /^\s/.test(next)) return ''
+  if (/^[.,;:!?%)\]}'"’”…/-]/.test(next)) return ''
+  if (/[([{$€£"'‘“/-]$/.test(prev)) return ''
+  return ' '
+}
+
+/** Drop text that adds nothing: the parent's value, or a sibling control's name. */
+function dropsRedundantText(lines: string[]): string[] {
+  return lines.filter((line, i) => {
+    const text = staticTextOf(line)
+    if (text === null) return true
+    const trimmed = text.trim()
+    const depth = indentOf(line)
+    for (let j = i - 1; j >= 0; j--) {
+      if (indentOf(lines[j]) < depth) {
+        if (lines[j].endsWith(`: ${trimmed}`)) return false
+        break
+      }
+    }
+    for (const k of [i - 1, i + 1]) {
+      if (k >= 0 && k < lines.length && indentOf(lines[k]) === depth && nameOf(lines[k]) === trimmed) return false
+    }
+    return true
+  })
+}
+
 function joinInlineRuns(input: string[]): string[] {
-  let lines = input
+  // 0. A line break inside prose (a textarea's value, a <br>) is text that
+  // says "\n" — kept through the merge so the lines stay lines.
+  let lines = input.map(line => {
+    const m = LINE_BREAK.exec(line)
+    return m ? staticTextLine(m[1].length >> 1, '\n') : line
+  })
   // 1. Collapse inline wrappers whose children are all text, until stable (they nest).
   for (let pass = 0; pass < 5; pass++) {
     const out: string[] = []
@@ -192,37 +251,34 @@ function joinInlineRuns(input: string[]): string[] {
     lines = out
     if (!changed) break
   }
-  // 2. Drop text that adds nothing: blank, the parent's value, or a sibling control's name.
-  lines = lines.filter((line, i) => {
+  // 2. Drop text that adds nothing: blank (a line break excepted), the
+  // parent's value, or a sibling control's name.
+  lines = dropsRedundantText(lines.filter(line => {
     const text = staticTextOf(line)
-    if (text === null) return true
-    const trimmed = text.trim()
-    if (trimmed.length === 0) return false
-    const depth = indentOf(line)
-    for (let j = i - 1; j >= 0; j--) {
-      if (indentOf(lines[j]) < depth) {
-        if (lines[j].endsWith(`: ${trimmed}`)) return false
-        break
-      }
-    }
-    for (const k of [i - 1, i + 1]) {
-      if (k >= 0 && k < lines.length && indentOf(lines[k]) === depth && nameOf(lines[k]) === trimmed) return false
-    }
-    return true
-  })
-  // 3. Merge adjacent text siblings into one line.
+    return text === null || text === '\n' || text.trim().length > 0
+  }))
+  // 3. Merge adjacent text siblings into one line. The tree splits prose at
+  // element boundaries and the whitespace between two inline elements is its
+  // own (dropped) node, so two runs that meet without a space on either side
+  // get one — `Never` + `delete` is two words, not "Neverdelete". A run that
+  // is split mid-word by markup is far rarer than a run split at a word.
   const merged: string[] = []
   for (const line of lines) {
     const text = staticTextOf(line)
     const prev = merged.length > 0 ? merged[merged.length - 1] : null
     const prevText = prev !== null ? staticTextOf(prev) : null
     if (text !== null && prev !== null && prevText !== null && indentOf(prev) === indentOf(line)) {
-      merged[merged.length - 1] = staticTextLine(indentOf(line), prevText + text)
+      merged[merged.length - 1] = staticTextLine(indentOf(line), prevText + glueBetween(prevText, text) + text)
     } else {
       merged.push(line)
     }
   }
-  return merged
+  // 4. A merged run can now equal the parent's value (a textarea's lines
+  // re-joined) — drop it the same way; and a run that is only line breaks.
+  return dropsRedundantText(merged).filter(line => {
+    const text = staticTextOf(line)
+    return text === null || text.trim().length > 0
+  })
 }
 
 /**

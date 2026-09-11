@@ -63,8 +63,17 @@ export const pageObservationSchema = z.object({
   top: z.array(topLayerEntrySchema).default([]),
   /** Focused element as `role "name"`, or "nothing focused". */
   focus: z.string().default(''),
-  /** Value of the focused field, capped — typing changes this, not the page text. '' for password and other secret fields. */
+  /**
+   * Identity of the focused element beyond its display name — `tag#id@i`
+   * where i is its position among the page's interactive elements — so two
+   * unnamed inputs, or two fields with the same label, are told apart.
+   */
+  focusId: z.string().default(''),
+  /** The focused field's value, whitespace-collapsed and capped at FOCUS_VALUE_PREVIEW_CHARS for display. '' for password and other secret fields. */
   focusValue: z.string().default(''),
+  /** Length and hash of the full (uncapped) value: change detection uses these, not the preview. */
+  focusValueChars: z.number().default(0),
+  focusValueHash: z.number().default(0),
   /** Bot-challenge vendor when the page is a challenge wall, or ''. */
   blocker: z.string().default(''),
   /** Chrome net-error code when the document is Chrome's error page, or ''. */
@@ -97,6 +106,7 @@ export const THIN_TREE_PREVIEW_CHARS = 1500
 const LIVE_REGION_MAX = 8
 const LIVE_REGION_CHARS = 300
 const TEXT_HASH_CAP = 100_000
+export const FOCUS_VALUE_PREVIEW_CHARS = 120
 
 const LIVE_SELECTOR = '[role="alert"],[role="status"],[aria-live]:not([aria-live="off"]),output'
 const INTERACTIVE_SELECTOR =
@@ -106,8 +116,12 @@ const INTERACTIVE_SELECTOR =
 const TOP_LAYER_SELECTOR = 'dialog[open],[role="dialog"],[role="alertdialog"],[aria-modal="true"]'
 /** Attributes whose values feed `stateHash` — visible controls only. */
 const STATE_ATTRS = ['checked', 'aria-checked', 'aria-pressed', 'aria-expanded', 'aria-selected', 'aria-disabled', 'disabled', 'open']
-/** A focused field whose value must never be reported. */
-const SECRET_AUTOCOMPLETE = 'current-password|new-password|one-time-code|cc-number|cc-csc|cc-exp'
+/**
+ * A focused field whose value must never be reported. Matched per token of
+ * the autocomplete attribute, which is a space-separated list ("section-billing
+ * shipping cc-number" is valid), never against the whole string.
+ */
+const SECRET_AUTOCOMPLETE = 'current-password|new-password|one-time-code|cc-number|cc-csc|cc-exp|cc-exp-month|cc-exp-year'
 
 /**
  * Bot-challenge signatures: the wording of the challenge page itself, matched
@@ -115,8 +129,10 @@ const SECRET_AUTOCOMPLETE = 'current-password|new-password|one-time-code|cc-numb
  * URL for Google's /sorry/). Product names are deliberately absent — "This
  * site is protected by reCAPTCHA" is printed on ordinary login forms, and a
  * page can mention Imperva or DataDome in prose. A match only counts on a
- * page with at most BLOCKER_MAX_CONTROLS visible controls or a 403/429/503
- * response: a challenge page is a wall, not a form.
+ * page that looks like a wall — at most BLOCKER_MAX_CONTROLS visible controls
+ * and at most BLOCKER_MAX_CHARS of text — or on a 403/429/503 response: a
+ * challenge page is a few hundred characters with nothing to click, an
+ * article about challenge pages is neither.
  */
 const BLOCKER_SIGNATURES: Array<[string, string]> = [
   ['Cloudflare', 'checking your browser before accessing|verify you are human|confirm you are human|cloudflare ray id|attention required.{0,40}cloudflare|cf-browser-verification|performing security verification'],
@@ -128,6 +144,7 @@ const BLOCKER_SIGNATURES: Array<[string, string]> = [
 ]
 /** A challenge page has (almost) nothing to interact with; more than this and the match is prose on a real page. */
 const BLOCKER_MAX_CONTROLS = 3
+const BLOCKER_MAX_CHARS = 2000
 const BLOCKER_STATUSES = [403, 429, 503]
 
 export interface ObserverOptions {
@@ -143,7 +160,7 @@ export function observerScript(opts: ObserverOptions = {}): string {
   const sigs = JSON.stringify(BLOCKER_SIGNATURES)
   return (
     '(function(){' +
-    'var o={url:"",title:"",readyState:"",httpStatus:0,contentType:"",textChars:0,contentChars:0,contentHash:0,preview:"",liveRegions:[],iframes:[],interactive:0,stateHash:0,top:[],focus:"",focusValue:"",blocker:"",netError:""};' +
+    'var o={url:"",title:"",readyState:"",httpStatus:0,contentType:"",textChars:0,contentChars:0,contentHash:0,preview:"",liveRegions:[],iframes:[],interactive:0,stateHash:0,top:[],focus:"",focusId:"",focusValue:"",focusValueChars:0,focusValueHash:0,blocker:"",netError:""};' +
     'var ws=function(s){return String(s||"").replace(/\\s+/g," ").trim()};var body="";' +
     'var hash=function(s){var h=5381;var lim=Math.min(s.length,' + TEXT_HASH_CAP + ');for(var q=0;q<lim;q++){h=((h<<5)+h+s.charCodeAt(q))|0}return h};' +
     // checkVisibility covers visibility:hidden / opacity:0 — how many dropdowns hide
@@ -165,8 +182,9 @@ export function observerScript(opts: ObserverOptions = {}): string {
     'try{o.iframes=[].slice.call(document.querySelectorAll("iframe")).filter(function(f){return f.offsetParent!==null})' +
     '.map(function(f){var host="";try{host=new URL(f.src).host}catch(e){}var same=false;try{same=!!f.contentDocument}catch(e){}return{title:f.title||"",host:host,sameOrigin:same}})}catch(e){}' +
     // Interactive census, and the state of every visible control.
+    'var act=null;try{act=document.activeElement}catch(e){}var actIx=-1;' +
     'try{var els=document.querySelectorAll(' + JSON.stringify(INTERACTIVE_SELECTOR) + ');var sa=' + JSON.stringify(STATE_ATTRS) + ';var st="";' +
-    'for(var j=0;j<els.length;j++){var ce=els[j];if(!vis(ce))continue;o.interactive++;' +
+    'for(var j=0;j<els.length;j++){var ce=els[j];if(ce===act)actIx=j;if(!vis(ce))continue;o.interactive++;' +
     'for(var j2=0;j2<sa.length;j2++){var av=ce.getAttribute(sa[j2]);if(av!==null)st+=sa[j2]+"="+av+";"}' +
     'if(typeof ce.checked==="boolean")st+="c="+(ce.checked?1:0)+";";if(typeof ce.selectedIndex==="number")st+="s="+ce.selectedIndex+";";st+="|"}' +
     'o.stateHash=hash(st)}catch(e){}' +
@@ -185,14 +203,16 @@ export function observerScript(opts: ObserverOptions = {}): string {
     'var tag=a.tagName.toLowerCase();var role=a.getAttribute("role");var an=a.getAttribute("aria-label")||(a.labels&&a.labels[0]&&a.labels[0].innerText)||a.getAttribute("placeholder")||a.getAttribute("name")||a.innerText||"";' +
     'var implied={a:"link",input:a.type==="checkbox"||a.type==="radio"||a.type==="submit"||a.type==="button"?a.type:"textbox",select:"combobox",textarea:"textbox"};' +
     'o.focus=(role||implied[tag]||tag)+(an?" "+JSON.stringify(ws(an).slice(0,60)):"");' +
+    'o.focusId=tag+(a.id?"#"+String(a.id).slice(0,40):"")+"@"+actIx;' +
     // Never the value of a secret field: the app autofills passwords the model must not see.
-    'var secret=String(a.type||"").toLowerCase()==="password"||/^(' + SECRET_AUTOCOMPLETE + ')$/i.test(String(a.getAttribute("autocomplete")||""));' +
-    'var fv=secret?"":typeof a.value==="string"?a.value:(a.isContentEditable?a.innerText:"");o.focusValue=ws(fv).slice(0,120)}}catch(e){}' +
+    'var acs=String(a.getAttribute("autocomplete")||"").toLowerCase().split(/\\s+/);var secret=String(a.type||"").toLowerCase()==="password";' +
+    'for(var s1=0;s1<acs.length&&!secret;s1++){if(/^(' + SECRET_AUTOCOMPLETE + ')$/.test(acs[s1]))secret=true}' +
+    'var fv=secret?"":ws(typeof a.value==="string"?a.value:(a.isContentEditable?a.innerText:""));o.focusValue=fv.slice(0,' + FOCUS_VALUE_PREVIEW_CHARS + ');o.focusValueChars=fv.length;o.focusValueHash=hash(fv)}}catch(e){}' +
     // Chrome's error document: full Chrome renders #main-frame-error with the ERR_
     // code in its text; the headless shell shows an empty page whose only tell is
     // the chrome-error:// URL (verified in the container image).
     'try{if(document.getElementById("main-frame-error")||/^chrome-error:/.test(o.url)){var em=/\\bERR_[A-Z_]{3,}\\b/.exec(body);o.netError=em?em[0]:"net error"}}catch(e){}' +
-    'try{if(o.interactive<=' + BLOCKER_MAX_CONTROLS + '||' + JSON.stringify(BLOCKER_STATUSES) + '.indexOf(o.httpStatus)>=0){var hay=(o.title+" "+body.slice(0,3000)).toLowerCase();var sg=' + sigs + ';' +
+    'try{if((o.interactive<=' + BLOCKER_MAX_CONTROLS + '&&body.length<=' + BLOCKER_MAX_CHARS + ')||' + JSON.stringify(BLOCKER_STATUSES) + '.indexOf(o.httpStatus)>=0){var hay=(o.title+" "+body.slice(0,3000)).toLowerCase();var sg=' + sigs + ';' +
     'for(var g=0;g<sg.length&&!o.blocker;g++){if(new RegExp(sg[g][1],"i").test(sg[g][0]==="Google"?o.url+" "+hay:hay))o.blocker=sg[g][0]}}}catch(e){}' +
     'return JSON.stringify(o)})()'
   )

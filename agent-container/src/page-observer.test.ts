@@ -144,11 +144,31 @@ describe('observerScript', () => {
     expect(makePage({}).run().focus).toBe('nothing focused')
   })
 
-  it('never reports the value of a password or other secret field', () => {
-    expect(makePage({ active: el({ tag: 'input', type: 'password', labels: [{ innerText: 'Password' }], value: 'hunter2' }) }).run()).toMatchObject({ focus: 'textbox "Password"', focusValue: '' })
+  it('never reports the value of a password or other secret field, whatever else the autocomplete list says', () => {
+    expect(makePage({ active: el({ tag: 'input', type: 'password', labels: [{ innerText: 'Password' }], value: 'hunter2' }) }).run()).toMatchObject({ focus: 'textbox "Password"', focusValue: '', focusValueChars: 0 })
     expect(makePage({ active: el({ tag: 'input', attrs: { autocomplete: 'cc-number' }, value: '4242424242424242' }) }).run().focusValue).toBe('')
+    expect(makePage({ active: el({ tag: 'input', attrs: { autocomplete: 'section-billing shipping cc-number' }, value: '4242424242424242' }) }).run().focusValue).toBe('')
     expect(makePage({ active: el({ tag: 'input', attrs: { autocomplete: 'one-time-code' }, value: '123456' }) }).run().focusValue).toBe('')
+    expect(makePage({ active: el({ tag: 'input', attrs: { autocomplete: 'CC-Exp-Year' }, value: '2031' }) }).run().focusValue).toBe('')
     expect(makePage({ active: el({ tag: 'input', attrs: { autocomplete: 'email' }, value: 'a@b.c' }) }).run().focusValue).toBe('a@b.c')
+  })
+
+  it('identifies the focused element beyond its name, and hashes its full value while previewing a capped one', () => {
+    const first = el({ tag: 'input', value: 'first' })
+    const second = el({ tag: 'input', value: 'second' })
+    const sel = { [INTERACTIVE]: [first, second] }
+    const a = makePage({ sel, active: first }).run()
+    const b = makePage({ sel, active: second }).run()
+    expect(a.focus).toBe(b.focus) // both are unnamed textboxes…
+    expect(a.focusId).toBe('input@0')
+    expect(b.focusId).toBe('input@1') // …but not the same element
+    expect(makePage({ active: el({ tag: 'textarea', value: 'x'.repeat(165) }) }).run()).toMatchObject({ focusValue: 'x'.repeat(120), focusValueChars: 165 })
+    const long = makePage({ active: el({ tag: 'textarea', value: 'x'.repeat(165) }) }).run()
+    const shorter = makePage({ active: el({ tag: 'textarea', value: 'x'.repeat(164) }) }).run()
+    expect(long.focusValue).toBe(shorter.focusValue)
+    expect(long.focusValueHash).not.toBe(shorter.focusValueHash)
+    // An element outside the interactive census still gets an identity.
+    expect(makePage({ active: el({ tag: 'div', role: 'textbox', isContentEditable: true, text: 'Hi', attrs: { } }) }).run().focusId).toBe('div@-1')
   })
 
   it('lists visible iframes with host and origin', () => {
@@ -164,7 +184,9 @@ describe('observerScript', () => {
     expect(makePage({ body: 'Sign in. This site is protected by reCAPTCHA and the Google Privacy Policy apply.', sel: { [INTERACTIVE]: form } }).run().blocker).toBe('')
     expect(makePage({ body: 'How hCaptcha and Cloudflare Turnstile verify you are human', sel: { [INTERACTIVE]: form } }).run().blocker).toBe('')
     expect(makePage({ body: 'Incident ID 4711 resolved', sel: { [INTERACTIVE]: form } }).run().blocker).toBe('')
-    // The same wording on a wall (nothing to interact with) or with a challenge status is a block.
+    // A readable article about challenge pages, even with few controls, is not a wall.
+    expect(makePage({ body: 'How Cloudflare Turnstile can verify you are human. ' + 'Long article prose. '.repeat(150), sel: { [INTERACTIVE]: [el({ tag: 'a' })] } }).run().blocker).toBe('')
+    // The same wording on a wall (nothing to interact with, a few hundred chars) or with a challenge status is a block.
     expect(makePage({ body: 'Verify you are human by completing the action below.', sel: { [INTERACTIVE]: [el({ tag: 'button' })] } }).run().blocker).toBe('Cloudflare')
     expect(makePage({ body: 'Verify you are human by completing the action below.', status: 403, sel: { [INTERACTIVE]: form } }).run().blocker).toBe('Cloudflare')
     expect(makePage({ body: "This site can't be reached ERR_NAME_NOT_RESOLVED", errorPage: true }).run().netError).toBe('ERR_NAME_NOT_RESOLVED')

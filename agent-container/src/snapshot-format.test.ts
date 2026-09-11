@@ -148,6 +148,56 @@ describe('compactWithText', () => {
     ])
   })
 
+  it('puts a space between runs that meet without one — the whitespace between inline elements is its own dropped node', () => {
+    const tree = [
+      '- paragraph',
+      '  - strong',
+      '    - StaticText "Never"',
+      '  - StaticText " "',
+      '  - emphasis',
+      '    - StaticText "delete"',
+      '  - StaticText " "',
+      '  - code',
+      '    - StaticText "backups"',
+      '  - StaticText "."',
+    ].join('\n')
+    expect(compactWithText(tree).split('\n')).toEqual(['- paragraph', '  - StaticText "Never delete backups."'])
+    // Runs that already carry their boundary whitespace are joined as they are;
+    // punctuation and currency attach to their neighbour.
+    const spaced = ['- paragraph', '  - StaticText "Total "', '  - strong', '    - StaticText "$42"', '  - StaticText ".00 due ("', '  - emphasis', '    - StaticText "incl. tax"', '  - StaticText ")"'].join('\n')
+    expect(compactWithText(spaced).split('\n')).toEqual(['- paragraph', '  - StaticText "Total $42.00 due (incl. tax)"'])
+  })
+
+  it('keeps a multi-line textarea value on its node and does not repeat it as text', () => {
+    // Captured from agent-browser 0.27.2: the value renders with raw newlines,
+    // and the lines repeat beneath as text with LineBreak nodes between them.
+    const tree = [
+      '- LabelText',
+      '  - StaticText "Notes "',
+      '  - textbox "Notes " [ref=e3]: line one',
+      'line two',
+      'line three',
+      '    - generic',
+      '      - StaticText "line one"',
+      '      - LineBreak "\\n"',
+      '      - StaticText "line two"',
+      '      - LineBreak "\\n"',
+      '      - StaticText "line three"',
+      '- paragraph',
+      '  - StaticText "First"',
+      '  - LineBreak "\\n"',
+      '  - StaticText "second"',
+    ].join('\n')
+    expect(compactWithText(tree)).toBe([
+      '- LabelText',
+      '  - textbox "Notes " [ref=e3]: line one',
+      'line two',
+      'line three',
+      '- paragraph',
+      '  - StaticText "First\\nsecond"',
+    ].join('\n'))
+  })
+
   it('keeps a wrapper that also contains a control', () => {
     const tree = ['- strong', '  - StaticText "Go "', '  - link "here" [ref=e1]'].join('\n')
     expect(compactWithText(tree).split('\n')).toEqual(['- strong', '  - StaticText "Go "', '  - link "here" [ref=e1]'])
