@@ -83,12 +83,16 @@ interface Walk {
 }
 
 /** One file through `write`, with the source's mode. */
+async function streamHostFile(files: FileOps, srcPath: string, destPath: string): Promise<{ size: number }> {
+  const stat = await fs.promises.stat(srcPath)
+  return files.write(destPath, Readable.toWeb(fs.createReadStream(srcPath)) as ReadableStream<Uint8Array>, {
+    mode: stat.mode & 0o777,
+  })
+}
+
 function streamFile(files: FileOps): Walk['copyFile'] {
   return async (srcPath, destPath) => {
-    const stat = await fs.promises.stat(srcPath)
-    await files.write(destPath, Readable.toWeb(fs.createReadStream(srcPath)) as ReadableStream<Uint8Array>, {
-      mode: stat.mode & 0o777,
-    })
+    await streamHostFile(files, srcPath, destPath)
   }
 }
 
@@ -148,7 +152,7 @@ export async function copyHostFileIntoWorkspace(files: FileOps, hostPath: string
     await files.copyHostFile(hostPath, workspacePath)
     return
   }
-  await files.write(workspacePath, Readable.toWeb(fs.createReadStream(hostPath)) as ReadableStream<Uint8Array>)
+  await streamHostFile(files, hostPath, workspacePath)
 }
 
 /**
@@ -162,7 +166,7 @@ export async function moveHostFileIntoWorkspace(
   workspacePath: string,
 ): Promise<{ size: number }> {
   if (files instanceof LocalFileOps) return files.moveHostFile(hostPath, workspacePath)
-  const result = await files.write(workspacePath, Readable.toWeb(fs.createReadStream(hostPath)) as ReadableStream<Uint8Array>)
+  const result = await streamHostFile(files, hostPath, workspacePath)
   await fs.promises.unlink(hostPath)
   return result
 }
