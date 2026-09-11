@@ -1,8 +1,10 @@
 import { apiFetch, apiJson } from '@renderer/lib/api'
 import { useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { useNavigate } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useDraftsStore, snapshotSessionDraft, seedSessionDraft } from '@renderer/context/drafts-context'
+import { useSendMessage } from '@renderer/hooks/use-messages'
 import { useAgents, resolveRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
 import { applySessionActivityStatus, patchSessionInCaches } from '@renderer/lib/agent-cache'
 import type { ApiSession } from '@shared/lib/types/api'
@@ -266,6 +268,7 @@ export function useClearSessionUnread() {
 export function useForkSession() {
   const queryClient = useQueryClient()
   const draftsStore = useDraftsStore()
+  const navigate = useNavigate()
   const { track } = useAnalyticsTracking()
 
   return useMutation({
@@ -286,6 +289,7 @@ export function useForkSession() {
     },
     onMutate: ({ sessionId }) => ({ draft: snapshotSessionDraft(draftsStore, sessionId) }),
     onError: (error) => {
+      console.error('Failed to fork session:', error)
       track('session_fork_failed', { reason: error instanceof Error ? error.message : 'unknown' })
     },
     onSuccess: (fork, variables, context) => {
@@ -295,6 +299,31 @@ export function useForkSession() {
       queryClient.invalidateQueries({
         queryKey: ['sessions', resolveAgentSlugFromCache(queryClient, variables.agentSlug)],
       })
+      // Open the copy. Returned so the mutation resolves only once the route
+      // transition is done and a caller that acts next does so from inside it.
+      return navigate({
+        to: '/agents/$slug/sessions/$sessionId',
+        params: { slug: variables.agentSlug, sessionId: fork.id },
+      })
+    },
+  })
+}
+
+/**
+ * Fork, open the copy, then compact the copy. The source is never mutated.
+ * useForkSession opens the copy before it resolves, so the user watches the
+ * compaction from inside the copy.
+ */
+export function useForkAndCompact() {
+  const forkSession = useForkSession()
+  const sendMessage = useSendMessage()
+  return useMutation({
+    // Both inner mutations already log and toast their own failures; this
+    // one adds nothing, so callers use `mutate` and let it settle quietly.
+    meta: { skipGlobalErrorToast: true },
+    mutationFn: async ({ sessionId, agentSlug }: { sessionId: string; agentSlug: string }) => {
+      const fork = await forkSession.mutateAsync({ sessionId, agentSlug })
+      await sendMessage.mutateAsync({ sessionId: fork.id, agentSlug: fork.agentSlug, content: '/compact' })
     },
   })
 }
