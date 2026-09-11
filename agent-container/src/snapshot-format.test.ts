@@ -10,6 +10,7 @@ import {
   pageWarnings,
   countRefs,
   landedElsewhere,
+  waitForDocumentReady,
   pageProbeScript,
   PAGE_PROBE_SCRIPT,
   EMPTY_PROBE,
@@ -265,6 +266,50 @@ describe('pageWarnings / formatStatusHeader', () => {
     expect(pageWarnings({ ...healthy, httpStatus: 401 }, 1)[0]).toContain('login or permission required')
     expect(pageWarnings({ ...healthy, httpStatus: 404 }, 1)[0]).toContain('not found')
     expect(pageWarnings({ ...healthy, contentType: 'application/json' }, 1)[0]).toContain('raw application/json document')
+  })
+})
+
+describe('waitForDocumentReady', () => {
+  function clock() {
+    let t = 0
+    return { now: () => t, sleep: async (ms: number) => { t += ms } }
+  }
+
+  it('returns at once when the document is already complete', async () => {
+    const c = clock()
+    const reads: string[] = []
+    const out = await waitForDocumentReady(async () => { reads.push('r'); return 'complete' }, { ...c, timeoutMs: 2000, pollMs: 150 })
+    expect(out).toEqual({ readyState: 'complete', waitedMs: 0 })
+    expect(reads).toHaveLength(1)
+  })
+
+  it('polls until complete and reports how long it waited', async () => {
+    const c = clock()
+    const states = ['loading', 'loading', 'interactive', 'complete']
+    const out = await waitForDocumentReady(async () => states.shift() ?? 'complete', { ...c, timeoutMs: 2000, pollMs: 150 })
+    expect(out).toEqual({ readyState: 'complete', waitedMs: 450 })
+  })
+
+  it('gives up at the timeout and returns the last state', async () => {
+    const c = clock()
+    const out = await waitForDocumentReady(async () => 'loading', { ...c, timeoutMs: 2000, pollMs: 150 })
+    expect(out.readyState).toBe('loading')
+    expect(out.waitedMs).toBeGreaterThanOrEqual(2000)
+  })
+
+  it('stops when the read fails (dead page) instead of spinning', async () => {
+    const c = clock()
+    let n = 0
+    const out = await waitForDocumentReady(async () => { n++; return null }, { ...c })
+    expect(out).toEqual({ readyState: null, waitedMs: 0 })
+    expect(n).toBe(1)
+  })
+
+  it('names the wait in the still-loading warning', () => {
+    const loading = { ...EMPTY_PROBE, url: 'https://a.com', readyState: 'loading' }
+    expect(pageWarnings(loading, 0, { waitedMs: 2010 })[0]).toMatch(/^page still loading after waiting 2\.0s — /)
+    expect(pageWarnings(loading, 0, { waitedMs: 30 })[0]).toMatch(/^page still loading — /)
+    expect(formatStatusHeader(loading, 0, { waitedMs: 2010 })).toContain('after waiting 2.0s')
   })
 })
 

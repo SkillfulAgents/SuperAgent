@@ -224,7 +224,7 @@ export function parsePageProbe(stdout: string): PageProbe {
  * or content is still arriving. Ordered by how completely each one
  * invalidates what follows. Empty for a healthy page.
  */
-export function pageWarnings(probe: PageProbe, refCount: number | null): string[] {
+export function pageWarnings(probe: PageProbe, refCount: number | null, opts: { waitedMs?: number } = {}): string[] {
   const warns: string[] = []
   if (probe.netError) {
     const code = probe.netError === 'net error' ? '' : ` (${probe.netError})`
@@ -244,7 +244,8 @@ export function pageWarnings(probe: PageProbe, refCount: number | null): string[
     warns.push(`raw ${probe.contentType} document, not a web page — the tree shows Chrome's viewer. Read the body with fullText:true or browser_eval.`)
   }
   if (probe.readyState && probe.readyState !== 'complete') {
-    warns.push(`page still ${probe.readyState} — content may be incomplete. browser_wait for the element you need, then re-snapshot.`)
+    const waited = opts.waitedMs && opts.waitedMs >= 100 ? ` after waiting ${(opts.waitedMs / 1000).toFixed(1)}s` : ''
+    warns.push(`page still ${probe.readyState}${waited} — content may be incomplete. browser_wait for the element you need, then re-snapshot.`)
   }
   if (probe.busy > 0) {
     warns.push(`${probe.busy} loading indicator${probe.busy === 1 ? '' : 's'} visible (aria-busy/progressbar/skeleton) — content still arriving. browser_wait for the element you need, then re-snapshot.`)
@@ -261,7 +262,7 @@ export function pageWarnings(probe: PageProbe, refCount: number | null): string[
  * and how many refs the tree holds — followed by any warnings. '' when the
  * probe could not run (no URL), so a dead browser does not get a fake header.
  */
-export function formatStatusHeader(probe: PageProbe, refCount: number | null): string {
+export function formatStatusHeader(probe: PageProbe, refCount: number | null, opts: { waitedMs?: number } = {}): string {
   if (!probe.url) return ''
   const facts = [
     probe.url,
@@ -270,8 +271,36 @@ export function formatStatusHeader(probe: PageProbe, refCount: number | null): s
   if (probe.httpStatus > 0) facts.push(`HTTP ${probe.httpStatus}`)
   if (probe.readyState) facts.push(probe.readyState)
   if (refCount !== null) facts.push(`${refCount} ref${refCount === 1 ? '' : 's'}`)
-  const warns = pageWarnings(probe, refCount)
+  const warns = pageWarnings(probe, refCount, opts)
   return `[page] ${facts.join(' · ')}` + warns.map(w => `\n⚠ ${w}`).join('')
+}
+
+/** How long a snapshot waits for a loading document before giving up and reporting it as loading. */
+export const SNAPSHOT_READY_WAIT_MS = 2000
+export const SNAPSHOT_READY_POLL_MS = 150
+
+/**
+ * Wait for document.readyState to reach "complete", polling `read` until
+ * `timeoutMs`. A snapshot taken right after a navigation (Enter on a search
+ * box, a link click) came back as `loading · 0 refs` 7ms later; the header
+ * said so, but the agent still paid a round trip to wait and ask again. A
+ * read that fails (null) ends the wait — the header will show the truth.
+ */
+export async function waitForDocumentReady(
+  read: () => Promise<string | null>,
+  opts: { timeoutMs?: number; pollMs?: number; sleep?: (ms: number) => Promise<void>; now?: () => number } = {},
+): Promise<{ readyState: string | null; waitedMs: number }> {
+  const timeoutMs = opts.timeoutMs ?? SNAPSHOT_READY_WAIT_MS
+  const pollMs = opts.pollMs ?? SNAPSHOT_READY_POLL_MS
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)))
+  const now = opts.now ?? (() => Date.now())
+  const start = now()
+  let readyState = await read()
+  while (readyState !== null && readyState !== 'complete' && now() - start < timeoutMs) {
+    await sleep(pollMs)
+    readyState = await read()
+  }
+  return { readyState, waitedMs: now() - start }
 }
 
 /** Count the refs a rendered tree exposes (`[ref=e12]`, `[level=1, ref=e2]`). */

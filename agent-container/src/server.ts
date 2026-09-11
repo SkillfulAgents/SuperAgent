@@ -817,7 +817,7 @@ import { resolveCommittedValue } from './field-value-readback';
 import { capBrowserOutput, redactCdpUrls, MAX_BROWSER_OUTPUT_CHARS, MAX_BROWSER_ERROR_CHARS } from './browser-output';
 import {
   capSnapshot, compactWithText, countRefs, formatIframePlaceholders, formatStatusHeader, formatTextFooter,
-  pageProbeScript, parsePageProbe, EMPTY_PROBE, THIN_TREE_PREVIEW_CHARS, THIN_TREE_REFS,
+  pageProbeScript, parsePageProbe, waitForDocumentReady, EMPTY_PROBE, THIN_TREE_PREVIEW_CHARS, THIN_TREE_REFS,
 } from './snapshot-format';
 import { diffFingerprints, fingerprintScript, parseFingerprint, HOVER_SETTLE_MS, type ActionEffect } from './action-effect';
 import {
@@ -1496,6 +1496,16 @@ app.post('/browser/snapshot', async (c) => {
     if (body.scope) snapshotArgs.push('-s', body.scope);
     if (body.includeUrls) snapshotArgs.push('--urls');
 
+    // A snapshot right after a navigation used to return `loading · 0 refs`;
+    // wait briefly for the document to finish loading before reading it, so
+    // the common "press Enter, snapshot" sequence lands on the real page.
+    const { waitedMs } = await waitForDocumentReady(async () => {
+      const r = await execBrowser(['eval', 'document.readyState'], browserState.cdpUrl || undefined);
+      if (r.exitCode !== 0) return null;
+      const s = r.stdout.trim().replace(/^"|"$/g, '');
+      return s || null;
+    });
+
     const result = await execBrowser(snapshotArgs, browserState.cdpUrl || undefined);
 
     if (result.exitCode !== 0) {
@@ -1529,7 +1539,7 @@ app.post('/browser/snapshot', async (c) => {
     const fullText = Boolean(body.fullText);
     const tree = fullText && body.compact !== false ? compactWithText(result.stdout) : result.stdout;
 
-    const header = formatStatusHeader(probe, refCount);
+    const header = formatStatusHeader(probe, refCount, { waitedMs });
     return c.json({
       snapshot:
         (header ? `${header}\n\n` : '') +
