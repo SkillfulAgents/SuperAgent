@@ -96,6 +96,23 @@ describe('LocalFileOps — symbolic links', () => {
     expect(await fs.promises.readFile(path.join(outside, 'secret.txt'), 'utf-8')).toBe('secret')
   })
 
+  it('delete never reaches through a linked ancestor, even to remove a link', async () => {
+    await fs.promises.symlink(outside, path.join(root, 'escape'))
+    await fs.promises.symlink(path.join(outside, 'secret.txt'), path.join(outside, 'important-link'))
+
+    expect(await codeOf(files.delete('escape/important-link'))).toBe('outside-workspace')
+    expect(await codeOf(files.delete('escape/secret.txt'))).toBe('outside-workspace')
+    expect(fs.existsSync(path.join(outside, 'important-link'))).toBe(true)
+    expect(await fs.promises.readFile(path.join(outside, 'secret.txt'), 'utf-8')).toBe('secret')
+
+    // The escaping link itself sits inside the workspace: deleting it removes
+    // the link and nothing behind it.
+    await files.delete('escape', { recursive: true })
+    expect(fs.existsSync(path.join(root, 'escape'))).toBe(false)
+    expect(fs.existsSync(path.join(outside, 'important-link'))).toBe(true)
+    expect(await fs.promises.readFile(path.join(outside, 'secret.txt'), 'utf-8')).toBe('secret')
+  })
+
   it('a link that stays inside the workspace is followed', async () => {
     await fs.promises.mkdir(path.join(root, 'real'))
     await fs.promises.writeFile(path.join(root, 'real', 'x.txt'), 'x')

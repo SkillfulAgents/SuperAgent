@@ -26,7 +26,7 @@ import { Readable } from 'stream'
 import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 import { writeFileAtomicStream } from '@shared/lib/utils/file-storage'
 import type { ByteRange, FileEntry, FileOps, FileStat } from './types'
-import { WorkspaceFileError, normalizeWorkspacePath } from './workspace-path'
+import { WorkspaceFileError, normalizeWorkspacePath, workspaceDirname } from './workspace-path'
 
 export interface LocalFileOpsDeps {
   getAgentWorkspaceDir: (slug: string) => string
@@ -301,24 +301,27 @@ export class LocalFileOps implements FileOps {
   async delete(workspacePath: string, options?: { recursive?: boolean }): Promise<void> {
     const { rel, abs } = this.absolute(workspacePath)
     if (rel === '') throw new WorkspaceFileError('invalid-path', 'The workspace root cannot be deleted')
-    const stat = await lstatOrNull(abs)
+    // The parent is contained for real before the leaf is touched. A link at
+    // the leaf is removed as a link, never followed, but only when the
+    // directory holding it really is inside the workspace: reached through a
+    // link that leaves the workspace, the leaf is someone else's entry.
+    const parent = await this.existing(workspaceDirname(rel))
+    if (!parent) return
+    const leaf = path.join(parent.real, path.basename(abs))
+    const stat = await lstatOrNull(leaf)
     if (!stat) return
     if (stat.isSymbolicLink()) {
-      // Remove the link itself, never what it points at.
-      await fs.promises.unlink(abs).catch(fromFsError)
+      await fs.promises.unlink(leaf).catch(fromFsError)
       return
     }
-    // The link check above covers the leaf; a linked ancestor is an escape.
-    const found = await this.existing(workspacePath)
-    if (!found) return
     if (stat.isDirectory()) {
       if (!options?.recursive) {
         throw new WorkspaceFileError('not-a-file', 'Path is a directory; delete it with recursive')
       }
-      await fs.promises.rm(found.real, { recursive: true, force: true }).catch(fromFsError)
+      await fs.promises.rm(leaf, { recursive: true, force: true }).catch(fromFsError)
       return
     }
-    await fs.promises.rm(found.real, { force: true }).catch(fromFsError)
+    await fs.promises.rm(leaf, { force: true }).catch(fromFsError)
   }
 
   async mkdir(workspacePath: string): Promise<void> {
