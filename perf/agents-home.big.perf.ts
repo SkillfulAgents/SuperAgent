@@ -11,10 +11,12 @@ import { defineHomeScenarios } from './home-scenarios'
 // bounded by the per-agent critical path: the agent list, artifact lookups
 // and per-request DB reads overlap.
 defineHomeScenarios('big', {
-  agentsCold: { totalOps: 5021, ops: { stat: 5009 }, wallMs: 10_400 },
-  agentsWarm: { totalOps: 15, ops: { stat: 4 }, wallMs: 110 },
-  homeCold: { totalOps: 5028, ops: { stat: 5010 }, wallMs: 10_500 },
-  homeWarm: { totalOps: 22, ops: { stat: 5 }, wallMs: 260 },
+  // One realpath per artifact listing and per manifest probe: the actor's
+  // file operations check each path's real location against the workspace.
+  agentsCold: { totalOps: 5028, ops: { stat: 5009, realpath: 10 }, wallMs: 10_400 },
+  agentsWarm: { totalOps: 22, ops: { stat: 4, realpath: 10 }, wallMs: 110 },
+  homeCold: { totalOps: 5035, ops: { stat: 5010, realpath: 10 }, wallMs: 10_500 },
+  homeWarm: { totalOps: 29, ops: { stat: 5, realpath: 10 }, wallMs: 260 },
   sessionsPage: { totalOps: 3, ops: { stat: 2 }, wallMs: 100 },
   sessionsNotable: { totalOps: 1, ops: { stat: 1 }, wallMs: 40 },
 })
