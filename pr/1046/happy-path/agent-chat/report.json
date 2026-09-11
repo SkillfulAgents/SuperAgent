@@ -1,24 +1,27 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "All test steps executed successfully. Agent responded to math question with correct answer \"4\".",
+  "reason": "Tested agent message send and response verification - agent correctly received \"Hello! What is 2+2?\" and responded with \"4\"",
   "steps": [
-    "Navigate to http://localhost:47891 — Page loaded successfully with sidebar showing available agents",
-    "Find and click \"QA-20260911-175328-l788\" agent in sidebar — Agent page opened, showing agent home with message input",
-    "Verify agent status is \"running\" or \"idle\" — Agent status is \"idle\", requirement met",
-    "Send message \"Hello! What is 2+2?\" — Message typed into input field and send button clicked",
-    "Wait up to 3 minutes for response — Response arrived within seconds (status changed to idle after \"working\" state)",
-    "Verify response mentions \"4\" and take screenshot — Response message shows \"4\" as the answer, screenshot captured confirming successful chat exchange"
+    "Step 1: Navigate to http://localhost:47891 — Page loaded successfully with agent list visible",
+    "Step 2: Take screenshot to verify page loaded — Screenshot confirmed page loaded with agent \"QA-20260911-182130-ccz7\" in sidebar",
+    "Step 3: Find and click agent \"QA-20260911-182130-ccz7\" in sidebar — Agent page opened successfully to agent detail view",
+    "Step 4: Verify agent status is \"running\" or \"idle\" — Agent status confirmed as \"idle\" via data-testid='agent-status'",
+    "Step 5: Find the message input field — Located input field with data-testid='home-message-input' and placeholder text visible",
+    "Step 6: Type message \"Hello! What is 2+2?\" — Message typed successfully into input field",
+    "Step 7: Click the send button — Send button (data-testid='home-send-button') clicked successfully, agent transitioned to \"working\" state",
+    "Step 8: Wait for response containing \"4\" — Response received immediately with correct answer \"4\", agent returned to \"idle\" state",
+    "Step 9: Take final screenshot confirming response — Screenshot confirmed response message containing \"4\" displays in message list on left side"
   ],
   "bugs": [],
-  "durationMs": 56726,
-  "sessionId": "daf6c003-12a4-4c46-8a41-367e15b0da45",
+  "durationMs": 117927,
+  "sessionId": "4f649a32-aa7a-443f-b3a8-94756c73a1bf",
   "cost": {
-    "inputTokens": 358,
-    "outputTokens": 8859,
-    "cacheCreationTokens": 108189,
-    "cacheReadTokens": 986038,
+    "inputTokens": 50,
+    "outputTokens": 3859,
+    "cacheCreationTokens": 66576,
+    "cacheReadTokens": 42224,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.278493
+    "totalCostUsd": 0.106787
   }
 }
