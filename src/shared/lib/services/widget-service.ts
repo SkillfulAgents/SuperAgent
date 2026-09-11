@@ -210,9 +210,12 @@ export async function listWidgetsFromFilesystem(agentSlug: string): Promise<ApiA
   try {
     entries = await agentRegistry.get(agentSlug).files.list(artifactsDirFor(agentSlug))
   } catch (error) {
-    // No artifacts directory yet: nothing to list.
-    if (isMissingDirectoryError(error)) return []
-    throw error
+    // No artifacts directory yet: nothing to list. Any other failure reads the
+    // same way, for the reason isMissingDirectoryError gives.
+    if (!isMissingDirectoryError(error)) {
+      console.warn(`[widget-service] Could not list widgets for ${agentSlug}; treating as none:`, error)
+    }
+    return []
   }
   const limit = pLimit(8)
   const now = Date.now()

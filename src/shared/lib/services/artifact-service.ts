@@ -62,9 +62,13 @@ async function scanArtifacts(
   try {
     entries = await files.list(artifactsDirFor(agentSlug))
   } catch (error) {
-    // No artifacts directory yet: nothing to list.
-    if (isMissingDirectoryError(error)) return { dashboards: [], widgets: [] }
-    throw error
+    // No artifacts directory yet: nothing to list. Any other failure reads the
+    // same way: this runs for every agent on every agents-list poll, and one
+    // agent's unreadable directory must not take the whole list down.
+    if (!isMissingDirectoryError(error)) {
+      console.warn(`[artifact-service] Could not list artifacts for ${agentSlug}; treating as none:`, error)
+    }
+    return { dashboards: [], widgets: [] }
   }
 
   // Three independent lookups per artifact, artifacts independent of each
