@@ -431,12 +431,13 @@ export interface FileStat {
   size: number
   mtimeMs: number
   /**
-   * True when the path reaches its target through a symbolic link that stays
-   * inside the workspace. Such a target is readable, but a caller scoping
-   * access to a sub-tree (a shared folder bookmark) must not let a link widen
-   * that scope. Always false where there are no links.
+   * The workspace path of what is really there: the path asked for, unless a
+   * symbolic link on the way was followed to somewhere else inside the
+   * workspace. A caller scoping access to a sub-tree (a shared folder
+   * bookmark) compares this, not the asked-for path, so a link cannot widen
+   * that scope. A store without links always echoes the path.
    */
-  throughLink: boolean
+  resolvedPath: string
 }
 
 /** A closed byte range: both ends inclusive, as in an HTTP Range header. */

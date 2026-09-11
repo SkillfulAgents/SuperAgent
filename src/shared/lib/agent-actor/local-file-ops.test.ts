@@ -102,10 +102,50 @@ describe('LocalFileOps — symbolic links', () => {
     await fs.promises.symlink(path.join(root, 'real'), path.join(root, 'alias'))
     expect(new TextDecoder().decode((await files.getDoc('alias/x.txt')) ?? new Uint8Array())).toBe('x')
     expect((await files.list('alias')).map((entry) => entry.name)).toEqual(['x.txt'])
-    // …but a caller scoping access to a sub-tree can tell it went through a link.
-    expect((await files.stat('alias'))?.throughLink).toBe(true)
-    expect((await files.stat('alias/x.txt'))?.throughLink).toBe(true)
-    expect((await files.stat('real/x.txt'))?.throughLink).toBe(false)
+    // …but a caller scoping access to a sub-tree can tell where it really went.
+    expect((await files.stat('alias'))?.resolvedPath).toBe('real')
+    expect((await files.stat('alias/x.txt'))?.resolvedPath).toBe('real/x.txt')
+    expect((await files.stat('real/x.txt'))?.resolvedPath).toBe('real/x.txt')
+  })
+
+  it('a link that loops reads as absent, not as a failure', async () => {
+    await fs.promises.symlink('loop', path.join(root, 'loop'))
+    expect(await files.stat('loop')).toBeNull()
+    expect(await files.getDoc('loop')).toBeNull()
+    expect(await codeOf(files.list('loop'))).toBe('not-found')
+  })
+
+  it('putDoc keeps the mode of the file it replaces', async () => {
+    await fs.promises.writeFile(path.join(root, 'run.sh'), '#!/bin/sh\n', { mode: 0o755 })
+    await files.putDoc('run.sh', '#!/bin/sh\necho hi\n')
+    expect((await fs.promises.stat(path.join(root, 'run.sh'))).mode & 0o777).toBe(0o755)
+    expect(await fs.promises.readFile(path.join(root, 'run.sh'), 'utf-8')).toBe('#!/bin/sh\necho hi\n')
+  })
+
+  it('write leaves the previous file intact when the source fails', async () => {
+    await fs.promises.writeFile(path.join(root, 'data.bin'), 'old')
+    const failing = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('partial'))
+        controller.error(new Error('source broke'))
+      },
+    })
+    await expect(files.write('data.bin', failing)).rejects.toThrow('source broke')
+    expect(await fs.promises.readFile(path.join(root, 'data.bin'), 'utf-8')).toBe('old')
+    expect((await fs.promises.readdir(root)).filter((name) => name.includes('.tmp'))).toEqual([])
+  })
+
+  it('write cancels the source when the destination is refused', async () => {
+    await fs.promises.symlink(path.join(outside, 'secret.txt'), path.join(root, 'leak.txt'))
+    let cancelled = false
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true
+      },
+    })
+    expect(await codeOf(files.write('leak.txt', body))).toBe('outside-workspace')
+    expect(cancelled).toBe(true)
+    expect(await fs.promises.readFile(path.join(outside, 'secret.txt'), 'utf-8')).toBe('secret')
   })
 })
 
