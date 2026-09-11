@@ -80,8 +80,8 @@ export function capSnapshot(text: string, scopeUsed: boolean): string {
 
 /**
  * What one page-probe eval tells us alongside the a11y tree. Runs once per
- * snapshot (it replaced the iframe-only probe) so the text facts below cost
- * no extra round trip.
+ * snapshot and once per open (it replaced the iframe-only probe and the
+ * discarded `get url` read) so none of this costs an extra round trip.
  */
 export interface PageProbe {
   iframes: IframeInfo[]
@@ -89,56 +89,206 @@ export interface PageProbe {
   textChars: number
   /** Visible text of live regions: role=alert/status, aria-live (not "off"), <output>. */
   liveRegions: string[]
-  /** First ~240 chars of <main> (or body) text — the page's gist. */
+  /** Opening text of <main> (or body) — the page's gist. Longer when the tree is nearly empty. */
   preview: string
+  /** location.href — '' when the probe could not run (dead browser, no page). */
+  url: string
+  title: string
+  /** document.readyState: loading | interactive | complete. */
+  readyState: string
+  /** Navigation response status from PerformanceNavigationTiming (Chrome 109+); 0 when unknown (cache, file:, old Chrome). */
+  httpStatus: number
+  /** document.contentType, e.g. text/html, application/json, application/pdf. */
+  contentType: string
+  /** Visible loading indicators: aria-busy=true, role=progressbar, skeleton classes. */
+  busy: number
+  /** Bot-challenge vendor detected from title/body signatures, or ''. */
+  blocker: string
+  /** Chrome net-error code (ERR_NAME_NOT_RESOLVED …) when the document is Chrome's error page, or ''. */
+  netError: string
 }
 
-export const EMPTY_PROBE: PageProbe = { iframes: [], textChars: 0, liveRegions: [], preview: '' }
+export const EMPTY_PROBE: PageProbe = {
+  iframes: [], textChars: 0, liveRegions: [], preview: '',
+  url: '', title: '', readyState: '', httpStatus: 0, contentType: '', busy: 0, blocker: '', netError: '',
+}
 
 /** Below this much visible text the "text not shown" footer is noise (blank/loading pages). */
 export const TEXT_FOOTER_MIN_CHARS = 200
 export const PREVIEW_CHARS = 240
+/** Preview length when the tree has fewer than THIN_TREE_REFS refs — the text is all the agent has. */
+export const THIN_TREE_PREVIEW_CHARS = 1500
+export const THIN_TREE_REFS = 5
 const LIVE_REGION_MAX = 8
 const LIVE_REGION_CHARS = 300
+
+/**
+ * Bot-challenge signatures, matched case-insensitively against title + the
+ * first 3k chars of body text (and the URL for Google's /sorry/). Kept to
+ * vendor-specific phrases: a generic "access denied" is often the app's own
+ * auth wall, which the HTTP status and the text already convey.
+ */
+const BLOCKER_SIGNATURES: Array<[string, string]> = [
+  ['Cloudflare', 'just a moment|checking your browser|verify you are human|cloudflare ray id|attention required.{0,40}cloudflare|cf-browser-verification'],
+  ['Imperva/Incapsula', 'incapsula|imperva|incident id|request unsuccessful\\.'],
+  ['Akamai', 'reference #\\d+\\.[0-9a-f]+\\.\\d+|access denied.{0,120}permission to access'],
+  ['Google', '/sorry/|unusual traffic from your computer network'],
+  ['PerimeterX', 'press (&|and) hold|px-captcha|perimeterx'],
+  ['DataDome', 'datadome'],
+  ['CAPTCHA', 'hcaptcha|recaptcha|arkose|funcaptcha'],
+]
 
 /**
  * One eval, one JSON object: cross-origin iframes (their fields are invisible
  * to the a11y tree), how much text the page has (the interactive view drops
  * all of it), what the live regions currently say (validation errors, toasts,
- * status lines), and the opening words of <main>. Each part is wrapped in its
- * own try so a hostile page cannot blank the others. Visibility uses
+ * status lines), the opening words of <main>, and the page's identity and
+ * readiness (URL, title, HTTP status, readyState, content type, loading
+ * indicators, bot-challenge and net-error signatures). Each part is wrapped
+ * in its own try so a hostile page cannot blank the others. Visibility uses
  * getClientRects, not offsetParent — offsetParent is null for position:fixed
  * toasts, which are exactly the live regions we want.
  */
-export const PAGE_PROBE_SCRIPT =
-  '(function(){var o={iframes:[],textChars:0,live:[],preview:""};' +
-  'var ws=function(s){return String(s||"").replace(/\\s+/g," ").trim()};' +
-  'try{o.iframes=[...document.querySelectorAll("iframe")].filter(function(f){return f.offsetParent!==null})' +
-  '.map(function(f){var host="";try{host=new URL(f.src).host}catch(e){}var same=false;try{same=!!f.contentDocument}catch(e){}' +
-  'return{title:f.title||"",host:host,sameOrigin:same}})}catch(e){}' +
-  'try{o.textChars=ws(document.body&&document.body.innerText).length}catch(e){}' +
-  'try{var seen={};var els=document.querySelectorAll(\'[role="alert"],[role="status"],[aria-live]:not([aria-live="off"]),output\');' +
-  'for(var i=0;i<els.length&&o.live.length<' + LIVE_REGION_MAX + ';i++){var el=els[i];if(!el.getClientRects().length)continue;' +
-  'var s=ws(el.innerText);if(!s||seen[s])continue;seen[s]=1;o.live.push(s.slice(0,' + LIVE_REGION_CHARS + '))}}catch(e){}' +
-  'try{var m=document.querySelector("main,[role=main]")||document.body;o.preview=ws(m&&m.innerText).slice(0,' + PREVIEW_CHARS + ')}catch(e){}' +
-  'return JSON.stringify(o)})()'
+export function pageProbeScript(opts: { previewChars?: number } = {}): string {
+  const previewChars = opts.previewChars ?? PREVIEW_CHARS
+  const sigs = JSON.stringify(BLOCKER_SIGNATURES)
+  return (
+    '(function(){var o={iframes:[],textChars:0,live:[],preview:"",url:"",title:"",readyState:"",http:0,contentType:"",busy:0,blocker:"",netError:""};' +
+    'var ws=function(s){return String(s||"").replace(/\\s+/g," ").trim()};var body="";' +
+    'try{o.url=String(location.href||"")}catch(e){}' +
+    'try{o.title=ws(document.title).slice(0,200);o.readyState=String(document.readyState||"");o.contentType=String(document.contentType||"")}catch(e){}' +
+    'try{var nav=performance.getEntriesByType("navigation")[0];o.http=(nav&&nav.responseStatus)|0}catch(e){}' +
+    'try{o.iframes=[...document.querySelectorAll("iframe")].filter(function(f){return f.offsetParent!==null})' +
+    '.map(function(f){var host="";try{host=new URL(f.src).host}catch(e){}var same=false;try{same=!!f.contentDocument}catch(e){}' +
+    'return{title:f.title||"",host:host,sameOrigin:same}})}catch(e){}' +
+    'try{body=ws(document.body&&document.body.innerText);o.textChars=body.length}catch(e){}' +
+    'try{var seen={};var els=document.querySelectorAll(\'[role="alert"],[role="status"],[aria-live]:not([aria-live="off"]),output\');' +
+    'for(var i=0;i<els.length&&o.live.length<' + LIVE_REGION_MAX + ';i++){var el=els[i];if(!el.getClientRects().length)continue;' +
+    'var s=ws(el.innerText);if(!s||seen[s])continue;seen[s]=1;o.live.push(s.slice(0,' + LIVE_REGION_CHARS + '))}}catch(e){}' +
+    'try{var m=document.querySelector("main,[role=main]")||document.body;o.preview=ws(m&&m.innerText).slice(0,' + previewChars + ')}catch(e){}' +
+    'try{var bs=document.querySelectorAll(\'[aria-busy="true"],[role="progressbar"],[class*="skeleton"]\');' +
+    'for(var b=0;b<bs.length;b++){if(bs[b].getClientRects().length)o.busy++}}catch(e){}' +
+    // Chrome's error document: full Chrome renders #main-frame-error with the
+    // ERR_ code in its text; the headless shell shows an empty page whose only
+    // tell is the chrome-error:// URL (verified in the container image).
+    'try{if(document.getElementById("main-frame-error")||/^chrome-error:/.test(o.url)){var em=/\\bERR_[A-Z_]{3,}\\b/.exec(body);o.netError=em?em[0]:"net error"}}catch(e){}' +
+    'try{var hay=(o.title+" "+body.slice(0,3000)).toLowerCase();var sg=' + sigs + ';' +
+    'for(var k=0;k<sg.length&&!o.blocker;k++){if(new RegExp(sg[k][1],"i").test(sg[k][0]==="Google"?hay+" "+o.url:hay))o.blocker=sg[k][0]}}catch(e){}' +
+    'return JSON.stringify(o)})()'
+  )
+}
 
-/** Parse PAGE_PROBE_SCRIPT output (CLI double-JSON-encodes). Never throws; missing parts default empty. */
+export const PAGE_PROBE_SCRIPT = pageProbeScript()
+
+/** Parse page-probe output (CLI double-JSON-encodes). Never throws; missing parts default empty. */
 export function parsePageProbe(stdout: string): PageProbe {
   try {
     let parsed: unknown = JSON.parse(stdout.trim())
     if (typeof parsed === 'string') parsed = JSON.parse(parsed)
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return EMPTY_PROBE
     const p = parsed as Record<string, unknown>
+    const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+    const num = (v: unknown): number => (typeof v === 'number' && v > 0 ? Math.floor(v) : 0)
     return {
       iframes: parseIframeInfo(JSON.stringify(p.iframes ?? [])),
-      textChars: typeof p.textChars === 'number' && p.textChars > 0 ? Math.floor(p.textChars) : 0,
+      textChars: num(p.textChars),
       liveRegions: Array.isArray(p.live) ? p.live.filter((s): s is string => typeof s === 'string' && s.length > 0) : [],
-      preview: typeof p.preview === 'string' ? p.preview : '',
+      preview: str(p.preview),
+      url: str(p.url),
+      title: str(p.title),
+      readyState: str(p.readyState),
+      httpStatus: num(p.http),
+      contentType: str(p.contentType),
+      busy: num(p.busy),
+      blocker: str(p.blocker),
+      netError: str(p.netError),
     }
   } catch {
     return EMPTY_PROBE
   }
+}
+
+/**
+ * Warnings the agent must act on before reading the tree: the site did not
+ * load, a bot wall is up, the server refused, the document is not a web page,
+ * or content is still arriving. Ordered by how completely each one
+ * invalidates what follows. Empty for a healthy page.
+ */
+export function pageWarnings(probe: PageProbe, refCount: number | null): string[] {
+  const warns: string[] = []
+  if (probe.netError) {
+    const code = probe.netError === 'net error' ? '' : ` (${probe.netError})`
+    warns.push(`site unreachable${code} — this is Chrome's error page, not the site. Check the URL or retry.`)
+  }
+  if (probe.blocker) {
+    warns.push(`bot-block: ${probe.blocker} — the site is challenging automated access. Hand it to the user with request_browser_input; more scraping will not get past it.`)
+  }
+  if (probe.httpStatus >= 400) {
+    const why =
+      probe.httpStatus === 401 || probe.httpStatus === 403 ? ' (login or permission required)' :
+      probe.httpStatus === 404 ? ' (not found — check the URL)' :
+      probe.httpStatus === 429 ? ' (rate limited — slow down or ask the user)' : ''
+    warns.push(`HTTP ${probe.httpStatus}${why} — the server refused this page; what follows is the error response, not the content you asked for.`)
+  }
+  if (probe.contentType && !/html/i.test(probe.contentType)) {
+    warns.push(`raw ${probe.contentType} document, not a web page — the tree shows Chrome's viewer. Read the body with fullText:true or browser_eval.`)
+  }
+  if (probe.readyState && probe.readyState !== 'complete') {
+    warns.push(`page still ${probe.readyState} — content may be incomplete. browser_wait for the element you need, then re-snapshot.`)
+  }
+  if (probe.busy > 0) {
+    warns.push(`${probe.busy} loading indicator${probe.busy === 1 ? '' : 's'} visible (aria-busy/progressbar/skeleton) — content still arriving. browser_wait for the element you need, then re-snapshot.`)
+  }
+  if (refCount === 0 && warns.length === 0) {
+    warns.push('no interactive elements — read the page text below before concluding the page is empty; an overlay, a login wall or a plain-text body all look like this.')
+  }
+  return warns
+}
+
+/**
+ * The status line every snapshot starts with: where the browser is, what the
+ * page calls itself, whether the server said yes, whether it finished loading,
+ * and how many refs the tree holds — followed by any warnings. '' when the
+ * probe could not run (no URL), so a dead browser does not get a fake header.
+ */
+export function formatStatusHeader(probe: PageProbe, refCount: number | null): string {
+  if (!probe.url) return ''
+  const facts = [
+    probe.url,
+    probe.title ? JSON.stringify(probe.title.slice(0, 120)) : 'untitled',
+  ]
+  if (probe.httpStatus > 0) facts.push(`HTTP ${probe.httpStatus}`)
+  if (probe.readyState) facts.push(probe.readyState)
+  if (refCount !== null) facts.push(`${refCount} ref${refCount === 1 ? '' : 's'}`)
+  const warns = pageWarnings(probe, refCount)
+  return `[page] ${facts.join(' · ')}` + warns.map(w => `\n⚠ ${w}`).join('')
+}
+
+/** Count the refs a rendered tree exposes (`[ref=e12]`, `[level=1, ref=e2]`). */
+export function countRefs(tree: string): number {
+  return (tree.match(/\bref=e\d+/g) ?? []).length
+}
+
+/**
+ * True when the browser landed somewhere other than what was asked for —
+ * ignoring the differences a normal load introduces (scheme added, http→https
+ * upgrade, trailing slash, fragment, case of the host).
+ */
+export function landedElsewhere(requested: string, landed: string): boolean {
+  const norm = (u: string): string | null => {
+    try {
+      const withScheme = /^[a-z][a-z0-9+.-]*:/i.test(u) ? u : `https://${u}`
+      const p = new URL(withScheme)
+      const path = p.pathname.replace(/\/+$/, '')
+      return `${p.host.toLowerCase()}${path}${p.search}`
+    } catch {
+      return null
+    }
+  }
+  const a = norm(requested)
+  const b = norm(landed)
+  if (a === null || b === null) return false
+  return a !== b
 }
 
 /**

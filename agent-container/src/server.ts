@@ -815,7 +815,10 @@ import { prepareEvalScript, finalizeEvalOutput, evalErrorHint } from './eval-scr
 import { judgeSelectCommit, SELECT_COMMIT_SETTLE_MS } from './select-verify';
 import { resolveCommittedValue } from './field-value-readback';
 import { capBrowserOutput, redactCdpUrls, MAX_BROWSER_OUTPUT_CHARS, MAX_BROWSER_ERROR_CHARS } from './browser-output';
-import { capSnapshot, compactWithText, formatIframePlaceholders, formatTextFooter, parsePageProbe, EMPTY_PROBE, PAGE_PROBE_SCRIPT } from './snapshot-format';
+import {
+  capSnapshot, compactWithText, countRefs, formatIframePlaceholders, formatStatusHeader, formatTextFooter,
+  pageProbeScript, parsePageProbe, EMPTY_PROBE, THIN_TREE_PREVIEW_CHARS, THIN_TREE_REFS,
+} from './snapshot-format';
 import {
   observeUrl, resetUrlTracking,
   CLICK_SETTLE_MS, FILL_SETTLE_MS, PRESS_ENTER_SETTLE_MS, PRESS_SETTLE_MS,
@@ -1288,16 +1291,23 @@ app.post('/browser/open', async (c) => {
     _setBrowserState({ active: true, sessionId: body.sessionId, cdpUrl: cdpUrl || null, location });
     tabManager.resetTabCount();
     resetUrlTracking();
-    // Seed the URL baseline so the FIRST post-action digest can distinguish
-    // "navigated" from "unchanged" (validation found a click that navigated
-    // away from the opened page being reported as "URL unchanged").
-    const landed = await execBrowser(['get', 'url'], cdpUrl);
-    if (landed.exitCode === 0 && landed.stdout.trim()) {
-      observeUrl(landed.stdout.trim());
+    // Read the landing page once: it seeds the URL baseline so the FIRST
+    // post-action digest can distinguish "navigated" from "unchanged", and it
+    // tells the tool where the browser actually ended up — final URL, title,
+    // HTTP status, bot wall, net error — instead of echoing the requested URL
+    // (transcript-mining theme 2: a 429, a login redirect and about:blank all
+    // used to read "Browser opened and navigating to <url>").
+    const landed = await execBrowser(['eval', pageProbeScript({ previewChars: THIN_TREE_PREVIEW_CHARS })], cdpUrl);
+    const page = landed.exitCode === 0 ? parsePageProbe(landed.stdout) : EMPTY_PROBE;
+    if (page.url) {
+      observeUrl(page.url);
+    } else {
+      const fallback = await execBrowser(['get', 'url'], cdpUrl);
+      if (fallback.exitCode === 0 && fallback.stdout.trim()) observeUrl(fallback.stdout.trim());
     }
     broadcastBrowserEvent(true);
 
-    return c.json({ success: true, location, switchedFrom });
+    return c.json({ success: true, location, switchedFrom, page });
   } catch (error: any) {
     console.error('[Browser] Error opening browser:', error);
     return c.json({ error: error.message || 'Failed to open browser' }, 500);
@@ -1464,10 +1474,14 @@ app.post('/browser/snapshot', async (c) => {
     }
 
     // One probe eval per snapshot: cross-origin iframes (fields the a11y tree
-    // cannot see — audit P2), plus how much page text the interactive view
-    // dropped and what the live regions say, so the default view never
-    // silently hides a price, an error or a toast (transcript-mining theme 1).
-    const probeResult = await execBrowser(['eval', PAGE_PROBE_SCRIPT], browserState.cdpUrl || undefined);
+    // cannot see — audit P2), how much page text the interactive view dropped
+    // and what the live regions say (transcript-mining theme 1), and the
+    // page's identity/readiness for the status header (theme 2). A thin tree
+    // gets a long text preview: `(no interactive elements)` looks the same
+    // for a 401 body, a bot wall and a hydrating SPA — the text tells them apart.
+    const refCount = countRefs(result.stdout);
+    const probeScript = pageProbeScript({ previewChars: refCount < THIN_TREE_REFS ? THIN_TREE_PREVIEW_CHARS : undefined });
+    const probeResult = await execBrowser(['eval', probeScript], browserState.cdpUrl || undefined);
     const probe = probeResult.exitCode === 0 ? parsePageProbe(probeResult.stdout) : EMPTY_PROBE;
     const iframes = probe.iframes;
 
@@ -1486,12 +1500,15 @@ app.post('/browser/snapshot', async (c) => {
     const fullText = Boolean(body.fullText);
     const tree = fullText && body.compact !== false ? compactWithText(result.stdout) : result.stdout;
 
+    const header = formatStatusHeader(probe, refCount);
     return c.json({
       snapshot:
+        (header ? `${header}\n\n` : '') +
         capSnapshot(tree, Boolean(body.scope)) +
         formatTextFooter(probe, { fullText, scoped: Boolean(body.scope) }) +
         formatIframePlaceholders(iframes),
       iframes,
+      page: probe,
       tabCount: tabManager.getTabCount(),
     });
   } catch (error: any) {

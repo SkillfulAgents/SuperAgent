@@ -17,6 +17,7 @@ import {
 import { hostAuthHeaders } from '../host-auth'
 import { tabManager } from '../tab-manager'
 import { formatUrlDigest, formatUrlDigestBrief, formatFillReadback, formatScrollDigest, type UrlDigest, type ScrollInfo } from '../browser-digest'
+import { landedElsewhere, pageWarnings, parsePageProbe, EMPTY_PROBE } from '../snapshot-format'
 
 const CONTAINER_URL = `http://localhost:${process.env.PORT || '3000'}`
 // Conditional on purpose: it has to agree with the prompt, which tells a parent
@@ -140,11 +141,29 @@ Omit location to keep using the current browser where it is; when no browser is 
       }
     }
 
+    // Report where the browser landed, not what was asked for. The server's
+    // page probe is the source; when it could not run (dead page, eval
+    // blocked) fall back to the old intent-shaped text and say so.
+    const page = data?.page ? parsePageProbe(JSON.stringify(data.page)) : EMPTY_PROBE
+    if (page.url) {
+      const title = page.title ? JSON.stringify(page.title.slice(0, 120)) : 'an untitled page'
+      const redirect = landedElsewhere(args.url, page.url) ? ` (redirected from ${args.url})` : ''
+      const http = page.httpStatus > 0 ? ` · HTTP ${page.httpStatus}` : ''
+      const warns = pageWarnings(page, null)
+      const severe = Boolean(page.netError || page.blocker || page.httpStatus >= 400)
+      const text =
+        `Loaded ${title} at ${page.url}${redirect}${http} in ${locationText}.${switchText}` +
+        warns.map(w => `\n⚠ ${w}`).join('') +
+        (severe && page.preview ? `\nPage text: ${JSON.stringify(page.preview.slice(0, 400))}` : '') +
+        ` The user can see the browser live. Use browser_snapshot to see the page content.${localhostWarning}\n\n${BROWSER_USE_GUIDANCE_HINT}`
+      return { content: [{ type: 'text' as const, text }], ...(severe ? { isError: true } : {}) }
+    }
+
     return {
       content: [
         {
           type: 'text' as const,
-          text: `Browser opened in ${locationText} and navigating to ${args.url}.${switchText} The user can see the browser live. Use browser_snapshot to see the page content.${localhostWarning}\n\n${BROWSER_USE_GUIDANCE_HINT}`,
+          text: `Browser opened in ${locationText} and navigating to ${args.url}.${switchText} The landing page could not be read — take a browser_snapshot to see where you are; its status line shows the URL, title and HTTP status.${localhostWarning}\n\n${BROWSER_USE_GUIDANCE_HINT}`,
         },
       ],
     }
@@ -321,7 +340,7 @@ const browserScrollTool = tool(
 
 const browserWaitTool = tool(
   'browser_wait',
-  `Wait for a CSS selector to appear on the page. Only use this when you need to wait for a specific element to render (e.g. after triggering dynamic content). Do NOT use for "networkidle", "load", or "domcontentloaded" — browser_open already waits for the page to load.`,
+  `Wait for a CSS selector to appear on the page. Use it after triggering dynamic content, or when a snapshot's status line says the page is still loading or shows loading indicators — wait for the element you need instead of re-snapshotting in a loop. Do NOT pass "networkidle", "load", or "domcontentloaded" — browser_open already waits for the page to load and reports the landing page.`,
   {
     for: z
       .string()

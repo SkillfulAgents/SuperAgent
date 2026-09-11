@@ -6,8 +6,14 @@ import {
   parsePageProbe,
   compactWithText,
   formatTextFooter,
+  formatStatusHeader,
+  pageWarnings,
+  countRefs,
+  landedElsewhere,
+  pageProbeScript,
   PAGE_PROBE_SCRIPT,
   EMPTY_PROBE,
+  THIN_TREE_PREVIEW_CHARS,
   SNAPSHOT_SOFT_CAP_CHARS,
   TEXT_FOOTER_MIN_CHARS,
   PREVIEW_CHARS,
@@ -86,6 +92,7 @@ describe('parsePageProbe', () => {
       preview: 'Welcome back',
     }))
     expect(parsePageProbe(raw)).toEqual({
+      ...EMPTY_PROBE,
       iframes: [{ title: 'pay', host: 'js.stripe.com', sameOrigin: false }],
       textChars: 4200,
       liveRegions: ['Password must be at least 8 characters'],
@@ -93,9 +100,20 @@ describe('parsePageProbe', () => {
     })
   })
 
+  it('parses the identity and readiness fields', () => {
+    const out = parsePageProbe(JSON.stringify({
+      url: 'https://a.com/x', title: 'A', readyState: 'complete', http: 429, contentType: 'text/html',
+      busy: 2, blocker: 'Cloudflare', netError: '',
+    }))
+    expect(out).toMatchObject({
+      url: 'https://a.com/x', title: 'A', readyState: 'complete', httpStatus: 429, contentType: 'text/html',
+      busy: 2, blocker: 'Cloudflare', netError: '',
+    })
+  })
+
   it('defaults missing or malformed parts', () => {
-    expect(parsePageProbe('{"textChars":"x","live":[1,"ok",""],"preview":null}')).toEqual({
-      iframes: [], textChars: 0, liveRegions: ['ok'], preview: '',
+    expect(parsePageProbe('{"textChars":"x","live":[1,"ok",""],"preview":null,"http":"200"}')).toEqual({
+      ...EMPTY_PROBE, liveRegions: ['ok'],
     })
   })
 
@@ -122,14 +140,25 @@ describe('PAGE_PROBE_SCRIPT', () => {
     }
   }
   const LIVE_SELECTOR = '[role="alert"],[role="status"],[aria-live]:not([aria-live="off"]),output'
-  function run(sel: Record<string, unknown[]>, body: { innerText: string }, main: unknown = null) {
+  const BUSY_SELECTOR = '[aria-busy="true"],[role="progressbar"],[class*="skeleton"]'
+  type FakeDoc = {
+    title?: string; readyState?: string; contentType?: string; errorPage?: boolean
+    href?: string; status?: number; script?: string
+  }
+  function run(sel: Record<string, unknown[]>, body: { innerText: string }, main: unknown = null, doc: FakeDoc = {}) {
     const document = {
       body,
+      title: doc.title ?? '',
+      readyState: doc.readyState ?? 'complete',
+      contentType: doc.contentType ?? 'text/html',
       querySelectorAll: (q: string) => sel[q] ?? [],
       querySelector: (q: string) => (q === 'main,[role=main]' ? main : null),
+      getElementById: (id: string) => (id === 'main-frame-error' && doc.errorPage ? {} : null),
     }
-    const fn = new Function('document', 'URL', `return ${PAGE_PROBE_SCRIPT}`)
-    return JSON.parse(fn(document, URL))
+    const location = { href: doc.href ?? 'https://example.com/page' }
+    const performance = { getEntriesByType: () => [{ responseStatus: doc.status ?? 200 }] }
+    const fn = new Function('document', 'URL', 'location', 'performance', `return ${doc.script ?? PAGE_PROBE_SCRIPT}`)
+    return JSON.parse(fn(document, URL, location, performance))
   }
 
   it('reports text length, live regions, preview and iframes in one object', () => {
@@ -153,6 +182,38 @@ describe('PAGE_PROBE_SCRIPT', () => {
     expect(out.preview.length).toBe(PREVIEW_CHARS)
   })
 
+  it('reports identity and readiness: url, title, readyState, HTTP status, content type', () => {
+    const out = run({}, { innerText: 'x' }, null, { title: ' Acme  Shop ', readyState: 'interactive', status: 404, href: 'https://acme.com/a?b=1' })
+    expect(out).toMatchObject({ url: 'https://acme.com/a?b=1', title: 'Acme Shop', readyState: 'interactive', http: 404, contentType: 'text/html', busy: 0, blocker: '', netError: '' })
+  })
+
+  it('counts visible loading indicators only', () => {
+    const out = run({ [BUSY_SELECTOR]: [el({ text: 'a' }), el({ text: 'b', visible: false }), el({ text: 'c' })] }, { innerText: 'x' })
+    expect(out.busy).toBe(2)
+  })
+
+  it('recognises bot walls by vendor signature, including Google via the URL', () => {
+    expect(run({}, { innerText: 'Checking your browser before accessing example.com. Ray ID: 8f3' }, null, { title: 'Just a moment...' }).blocker).toBe('Cloudflare')
+    expect(run({}, { innerText: 'Access denied. Error 15. Incident ID: 123-456' }).blocker).toBe('Imperva/Incapsula')
+    expect(run({}, { innerText: "You don't have permission to access \"/\" on this server. Reference #18.4f2e1cb8.1725" }).blocker).toBe('Akamai')
+    expect(run({}, { innerText: 'To continue, please type the characters below' }, null, { href: 'https://www.google.com/sorry/index?continue=x' }).blocker).toBe('Google')
+    expect(run({}, { innerText: 'Please Press & Hold to confirm you are a human' }).blocker).toBe('PerimeterX')
+    expect(run({}, { innerText: 'Welcome to our store. Prices in USD.' }, null, { title: 'Store' }).blocker).toBe('')
+  })
+
+  it("names Chrome's net error page by its ERR_ code", () => {
+    const out = run({}, { innerText: "This site can't be reached. example.com's server IP address could not be found. ERR_NAME_NOT_RESOLVED" }, null, { errorPage: true })
+    expect(out.netError).toBe('ERR_NAME_NOT_RESOLVED')
+    expect(run({}, { innerText: 'fine' }).netError).toBe('')
+    // Headless shell: empty error document, only the URL gives it away (captured in the container image).
+    expect(run({}, { innerText: '' }, null, { href: 'chrome-error://chromewebdata/' }).netError).toBe('net error')
+  })
+
+  it('takes a longer preview when asked (thin trees)', () => {
+    const out = run({}, { innerText: 'y'.repeat(3000) }, null, { script: pageProbeScript({ previewChars: THIN_TREE_PREVIEW_CHARS }) })
+    expect(out.preview.length).toBe(THIN_TREE_PREVIEW_CHARS)
+  })
+
   it('falls back to body for the preview and survives a broken part', () => {
     const document = {
       body: { innerText: 'Body text here' },
@@ -164,6 +225,64 @@ describe('PAGE_PROBE_SCRIPT', () => {
     expect(out.iframes).toEqual([])
     expect(out.textChars).toBe(14)
     expect(out.preview).toBe('Body text here')
+    expect(out.url).toBe('')
+    expect(out.http).toBe(0)
+  })
+})
+
+describe('pageWarnings / formatStatusHeader', () => {
+  const healthy = { ...EMPTY_PROBE, url: 'https://acme.com/checkout', title: 'Checkout — Acme', readyState: 'complete', httpStatus: 200, contentType: 'text/html' }
+
+  it('is one clean line for a healthy page', () => {
+    expect(pageWarnings(healthy, 84)).toEqual([])
+    expect(formatStatusHeader(healthy, 84)).toBe('[page] https://acme.com/checkout · "Checkout — Acme" · HTTP 200 · complete · 84 refs')
+  })
+
+  it('omits HTTP when unknown and refs when not counted, and is empty without a URL', () => {
+    expect(formatStatusHeader({ ...healthy, httpStatus: 0, title: '' }, null)).toBe('[page] https://acme.com/checkout · untitled · complete')
+    expect(formatStatusHeader(EMPTY_PROBE, 3)).toBe('')
+  })
+
+  it('warns, most invalidating first, with the action to take', () => {
+    const bad = { ...healthy, httpStatus: 429, blocker: 'Cloudflare', readyState: 'loading', busy: 3 }
+    const warns = pageWarnings(bad, 0)
+    expect(warns.map(w => w.split(' ')[0])).toEqual(['bot-block:', 'HTTP', 'page', '3'])
+    expect(warns[0]).toContain('request_browser_input')
+    expect(warns[1]).toContain('rate limited')
+    const header = formatStatusHeader(bad, 0)
+    expect(header.split('\n')).toHaveLength(5)
+    expect(header).toContain('\n⚠ bot-block: Cloudflare')
+  })
+
+  it('explains an empty tree only when nothing else does', () => {
+    expect(pageWarnings(healthy, 0)[0]).toContain('no interactive elements')
+    expect(pageWarnings({ ...healthy, netError: 'ERR_CONNECTION_REFUSED' }, 0)).toHaveLength(1)
+    expect(pageWarnings({ ...healthy, netError: 'ERR_CONNECTION_REFUSED' }, 0)[0]).toContain('site unreachable (ERR_CONNECTION_REFUSED)')
+    expect(pageWarnings({ ...healthy, netError: 'net error' }, 0)[0]).toMatch(/^site unreachable — /)
+  })
+
+  it('flags 401/403/404 and non-HTML documents', () => {
+    expect(pageWarnings({ ...healthy, httpStatus: 401 }, 1)[0]).toContain('login or permission required')
+    expect(pageWarnings({ ...healthy, httpStatus: 404 }, 1)[0]).toContain('not found')
+    expect(pageWarnings({ ...healthy, contentType: 'application/json' }, 1)[0]).toContain('raw application/json document')
+  })
+})
+
+describe('countRefs / landedElsewhere', () => {
+  it('counts ref tokens in any attribute position', () => {
+    expect(countRefs('- link "a" [ref=e1]\n- heading "b" [level=1, ref=e2]\n- StaticText "ref=e3 in text"')).toBe(3)
+    expect(countRefs('(no interactive elements)')).toBe(0)
+  })
+
+  it('ignores scheme, trailing slash, fragment and host case', () => {
+    expect(landedElsewhere('example.com', 'https://example.com/')).toBe(false)
+    expect(landedElsewhere('http://Example.com/a/', 'https://example.com/a#top')).toBe(false)
+  })
+
+  it('detects redirects to another path or host', () => {
+    expect(landedElsewhere('https://app.com/dashboard', 'https://app.com/login?next=%2Fdashboard')).toBe(true)
+    expect(landedElsewhere('https://a.com', 'https://b.com')).toBe(true)
+    expect(landedElsewhere('not a url', 'https://b.com')).toBe(false)
   })
 })
 

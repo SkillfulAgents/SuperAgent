@@ -39,6 +39,15 @@ such as `@e1` and, in the default interactive view, no static text at all. A
 footer reports how much page text was dropped and what the live regions
 (alerts, status, toasts) currently say.
 
+Every snapshot starts with a status line: `[page] URL · "title" · HTTP status ·
+readyState · N refs`, followed by `⚠` warnings when the site is unreachable, a
+bot challenge is up, the server answered 4xx/5xx, the document is a raw file, or
+content is still loading. `browser_open` reports the same facts for the page it
+actually landed on (final URL, redirect, HTTP status) and is marked as an error
+when that page is a net error, a bot wall or an HTTP error. Act on a warning
+before reading the tree: a bot wall or login page needs the user, a loading page
+needs `browser_wait` for the element you need.
+
 Useful snapshot options:
 
 - `fullText: true`: add the page's static text (prices, prose, validation
