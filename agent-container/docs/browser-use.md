@@ -42,8 +42,10 @@ footer reports how much page text was dropped and what the live regions
 Every snapshot starts with a status line: `[page] URL · "title" · HTTP status ·
 readyState · N refs`, followed by `⚠` warnings when the site is unreachable, a
 bot challenge is up, the server answered 4xx/5xx, the document is a raw file, or
-content is still loading (a snapshot first waits up to 2s for a loading
-document, so "still loading" means the page is genuinely slow). `browser_open` reports the same facts for the page it
+content is still loading or the page is still busy — spinners, top bars,
+skeletons, requests in flight (a snapshot first waits up to 2s for the page to
+go quiet, so "still loading" or "still busy" means it is genuinely slow).
+`browser_open` reports the same facts for the page it
 actually landed on (final URL, redirect, HTTP status) and is marked as an error
 when that page is a net error, a bot wall or an HTTP error. Act on a warning
 before reading the tree: a bot wall or login page needs the user, a loading page
@@ -80,13 +82,17 @@ Use the most specific tool:
 - `browser_hover` for hover menus and tooltips;
 - `browser_scroll` for page or container scrolling.
 
-Trust the action result. Click, key, select and hover results report
+Trust the action result. Click, key, select, hover and scroll results report
 navigation plus an `Effect:` line — dialogs opened or closed, live-region
 announcements (toasts, validation errors), failed requests since the action,
-and the change in the number of interactive elements. `Effect: no DOM change
-within 300ms` means the page did not react: the element is probably disabled,
-covered, or the wrong target, so check its state or `browser_wait` for what you
-expect instead of clicking again. Fill results report the value the page
+typed field values, and the change in the number of interactive elements. The
+harness waits for the page to stop working before reporting (spinners, top
+bars, requests in flight; up to 2s), so `Effect: no DOM change within 1200ms`
+means the page did not react: the element is probably disabled, covered, or
+the wrong target, so check its state or `browser_wait` for what you expect
+instead of clicking again. `Effect: still busy after 2.0s (spinner, 1 request
+in flight)` means the page is slow: wait for the element you expect, then
+re-snapshot. Fill results report the value the page
 actually committed. A fill warning means the page kept a different value—fix it
 before moving on.
 

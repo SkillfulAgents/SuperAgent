@@ -17,14 +17,15 @@ import {
 import { hostAuthHeaders } from '../host-auth'
 import { tabManager } from '../tab-manager'
 import { formatUrlDigest, formatUrlDigestBrief, formatFillReadback, formatScrollDigest, type UrlDigest, type ScrollInfo } from '../browser-digest'
-import { landedElsewhere, pageWarnings, parsePageProbe, EMPTY_PROBE } from '../snapshot-format'
-import { formatActionEffect, type ActionEffect, type EffectFormatOptions } from '../action-effect'
+import { parseObservation, EMPTY_OBSERVATION } from '../page-observer'
+import { landedElsewhere, pageWarnings } from '../page-status'
+import { formatActionEffect, type ActionEffect, type ActionVerb } from '../action-settle'
 
-/** The effect line for a mutating action's result, from the server's fingerprint diff. */
-function effectText(data: Record<string, unknown> | undefined, verb: EffectFormatOptions['verb'], fallbackSettleMs: number): string {
+/** The effect line for a mutating action's result, from the server's settle-and-diff. */
+function effectText(data: Record<string, unknown> | undefined, verb: ActionVerb, fallbackSettleMs: number): string {
   const effect = (data?.effect as ActionEffect | undefined) ?? null
   const settleMs = typeof data?.settleMs === 'number' ? data.settleMs : fallbackSettleMs
-  return formatActionEffect(effect, { settleMs, verb })
+  return formatActionEffect(effect, { settleMs, verb, stillBusy: data?.stillBusy === true })
 }
 
 const CONTAINER_URL = `http://localhost:${process.env.PORT || '3000'}`
@@ -152,7 +153,7 @@ Omit location to keep using the current browser where it is; when no browser is 
     // Report where the browser landed, not what was asked for. The server's
     // page probe is the source; when it could not run (dead page, eval
     // blocked) fall back to the old intent-shaped text and say so.
-    const page = data?.page ? parsePageProbe(JSON.stringify(data.page)) : EMPTY_PROBE
+    const page = (data?.page ? parseObservation(JSON.stringify(data.page)) : null) ?? EMPTY_OBSERVATION
     if (page.url) {
       const title = page.title ? JSON.stringify(page.title.slice(0, 120)) : 'an untitled page'
       const redirect = landedElsewhere(args.url, page.url) ? ` (redirected from ${args.url})` : ''
@@ -333,7 +334,7 @@ const browserScrollTool = tool(
     if (!result.success) return errorResult(result.error!)
     const data = result.data as Record<string, unknown> | undefined
     const scrollInfo = (data?.scrollInfo as ScrollInfo | undefined) ?? null
-    let text = `Scrolled ${args.direction}${args.amount ? ` by ${args.amount}px` : ''}.${formatScrollDigest(scrollInfo)}`
+    let text = `Scrolled ${args.direction}${args.amount ? ` by ${args.amount}px` : ''}.${formatScrollDigest(scrollInfo)}${effectText(data, 'scroll', 300)}`
     text += getTabWarning()
     return {
       content: [

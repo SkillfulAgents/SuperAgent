@@ -815,14 +815,13 @@ import { prepareEvalScript, finalizeEvalOutput, evalErrorHint } from './eval-scr
 import { judgeSelectCommit, SELECT_COMMIT_SETTLE_MS } from './select-verify';
 import { resolveCommittedValue } from './field-value-readback';
 import { capBrowserOutput, redactCdpUrls, MAX_BROWSER_OUTPUT_CHARS, MAX_BROWSER_ERROR_CHARS } from './browser-output';
-import {
-  capSnapshot, compactWithText, countRefs, formatIframePlaceholders, formatStatusHeader, formatTextFooter,
-  pageProbeScript, parsePageProbe, waitForDocumentReady, EMPTY_PROBE, THIN_TREE_PREVIEW_CHARS, THIN_TREE_REFS,
-} from './snapshot-format';
-import { diffFingerprints, effectHasChange, fingerprintScript, parseFingerprint, HOVER_SETTLE_MS, NO_CHANGE_RECHECK_MS, type ActionEffect } from './action-effect';
+import { capSnapshot, compactWithText, countRefs, formatIframePlaceholders, formatTextFooter, THIN_TREE_REFS } from './snapshot-format';
+import { observerScript, parseObservation, EMPTY_OBSERVATION, PREVIEW_CHARS, THIN_TREE_PREVIEW_CHARS, type PageObservation } from './page-observer';
+import { formatStatusLine, waitForQuiet } from './page-status';
+import { observeAction, ACTION_POLICIES, type ActionEffect, type ActionPolicy } from './action-settle';
 import {
   observeUrl, resetUrlTracking,
-  CLICK_SETTLE_MS, FILL_SETTLE_MS, PRESS_ENTER_SETTLE_MS, PRESS_SETTLE_MS,
+  FILL_SETTLE_MS, PRESS_ENTER_SETTLE_MS, PRESS_SETTLE_MS,
   type UrlDigest, type ScrollInfo, parseScrollInfo,
 } from './browser-digest';
 
@@ -918,48 +917,39 @@ async function observeUrlDigest(): Promise<UrlDigest | null> {
   return observeUrl(r.stdout.trim());
 }
 
+/** Run a page-observer script in the active page; null when the page cannot be read. */
+async function observePage(script: string): Promise<string | null> {
+  const r = await execBrowser(['eval', script], browserState.cdpUrl || undefined);
+  return r.exitCode === 0 ? r.stdout : null;
+}
+
+/** One observation of the current page (no `since`: busy = the last few seconds). */
+async function observeNow(opts: { previewChars?: number } = {}): Promise<PageObservation> {
+  const out = await observePage(observerScript(opts));
+  return (out === null ? null : parseObservation(out)) ?? EMPTY_OBSERVATION;
+}
+
 /**
- * Run a mutating action between two DOM fingerprints so the result can say
- * what the action did (dialog opened, toast announced, request failed,
- * interactive elements added) rather than only whether the URL moved
- * (transcript-mining theme 3). The "after" read also supplies the URL, so
- * this replaces the post-action `get url` at no extra round trip; a failed
- * eval falls back to it. No effect is reported across a navigation — the
- * two documents are not comparable.
+ * Run a mutating action through the settle primitive (action-settle.ts) so
+ * the result can say what the action did rather than only whether the URL
+ * moved. The "after" observation also supplies the URL, so this replaces the
+ * post-action `get url` at no extra round trip; a failed read falls back to
+ * it. No effect is reported across a navigation.
  */
 async function runWithEffect(
   action: () => Promise<{ exitCode: number; stdout: string }>,
-  settleMs: number,
-  verb: 'click' | 'press' | 'select' | 'hover',
-): Promise<{ result: { exitCode: number; stdout: string }; digest: UrlDigest | null; effect: ActionEffect | null; settleMs: number }> {
-  const cdp = browserState.cdpUrl || undefined;
-  const beforeRun = await execBrowser(['eval', fingerprintScript()], cdp);
-  const before = beforeRun.exitCode === 0 ? parseFingerprint(beforeRun.stdout) : null;
-
-  const result = await action();
-  if (result.exitCode !== 0) return { result, digest: null, effect: null, settleMs };
-
-  const actedAt = Date.now();
-  await sleep(settleMs);
-  let afterRun = await execBrowser(['eval', fingerprintScript(before?.t)], cdp);
-  let after = afterRun.exitCode === 0 ? parseFingerprint(afterRun.stdout) : null;
-  let effect = before && after && after.url === before.url ? diffFingerprints(before, after) : null;
-  let waited = settleMs;
-  // Nothing moved yet: a late effect (ajax cart drawer, animated panel) is the
-  // other explanation, so read once more before reporting "no DOM change".
-  if (effect && !effectHasChange(effect, { countFocus: verb === 'press' }) && settleMs < NO_CHANGE_RECHECK_MS) {
-    await sleep(Math.max(0, NO_CHANGE_RECHECK_MS - (Date.now() - actedAt)));
-    afterRun = await execBrowser(['eval', fingerprintScript(before?.t)], cdp);
-    const again = afterRun.exitCode === 0 ? parseFingerprint(afterRun.stdout) : null;
-    if (again) {
-      after = again;
-      effect = before && again.url === before.url ? diffFingerprints(before, again) : null;
-    }
-    waited = Math.max(NO_CHANGE_RECHECK_MS, Date.now() - actedAt);
-  }
-  const digest = after?.url ? observeUrl(after.url) : await observeUrlDigest();
-  if (digest?.navigated) effect = null;
-  return { result, digest, effect, settleMs: waited };
+  policy: ActionPolicy,
+): Promise<{ result: { exitCode: number; stdout: string }; digest: UrlDigest | null; effect: ActionEffect | null; settleMs: number; stillBusy: boolean }> {
+  const settled = await observeAction({
+    exec: action,
+    isFailure: r => r.exitCode !== 0,
+    evalScript: observePage,
+    policy,
+  });
+  if (settled.result.exitCode !== 0) return { result: settled.result, digest: null, effect: null, settleMs: 0, stillBusy: false };
+  const digest = settled.after?.url ? observeUrl(settled.after.url) : await observeUrlDigest();
+  const effect = digest?.navigated ? null : settled.effect;
+  return { result: settled.result, digest, effect, settleMs: settled.waitedMs, stillBusy: settled.stillBusy };
 }
 
 /**
@@ -1342,8 +1332,7 @@ app.post('/browser/open', async (c) => {
     // HTTP status, bot wall, net error — instead of echoing the requested URL
     // (transcript-mining theme 2: a 429, a login redirect and about:blank all
     // used to read "Browser opened and navigating to <url>").
-    const landed = await execBrowser(['eval', pageProbeScript({ previewChars: THIN_TREE_PREVIEW_CHARS })], cdpUrl);
-    const page = landed.exitCode === 0 ? parsePageProbe(landed.stdout) : EMPTY_PROBE;
+    const page = await observeNow({ previewChars: THIN_TREE_PREVIEW_CHARS });
     if (page.url) {
       observeUrl(page.url);
     } else {
@@ -1512,15 +1501,16 @@ app.post('/browser/snapshot', async (c) => {
     if (body.scope) snapshotArgs.push('-s', body.scope);
     if (body.includeUrls) snapshotArgs.push('--urls');
 
-    // A snapshot right after a navigation used to return `loading · 0 refs`;
-    // wait briefly for the document to finish loading before reading it, so
-    // the common "press Enter, snapshot" sequence lands on the real page.
-    const { waitedMs } = await waitForDocumentReady(async () => {
-      const r = await execBrowser(['eval', 'document.readyState'], browserState.cdpUrl || undefined);
-      if (r.exitCode !== 0) return null;
-      const s = r.stdout.trim().replace(/^"|"$/g, '');
-      return s || null;
+    // Observe the page and hold briefly while it is loading or still working
+    // (a snapshot right after `Enter` used to return `loading · 0 refs`). The
+    // last observation feeds the status line and the text footer, so this is
+    // the snapshot's only page-side read. The long preview is taken every
+    // time and trimmed below unless the tree turns out to be thin.
+    const { obs: observed, waitedMs } = await waitForQuiet(async () => {
+      const out = await observePage(observerScript({ previewChars: THIN_TREE_PREVIEW_CHARS }));
+      return out === null ? null : parseObservation(out);
     });
+    const probe = observed ?? EMPTY_OBSERVATION;
 
     const result = await execBrowser(snapshotArgs, browserState.cdpUrl || undefined);
 
@@ -1528,16 +1518,11 @@ app.post('/browser/snapshot', async (c) => {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
-    // One probe eval per snapshot: cross-origin iframes (fields the a11y tree
-    // cannot see — audit P2), how much page text the interactive view dropped
-    // and what the live regions say (transcript-mining theme 1), and the
-    // page's identity/readiness for the status header (theme 2). A thin tree
-    // gets a long text preview: `(no interactive elements)` looks the same
-    // for a 401 body, a bot wall and a hydrating SPA — the text tells them apart.
+    // A thin tree keeps the long text preview: `(no interactive elements)`
+    // looks the same for a 401 body, a bot wall and a hydrating SPA — the text
+    // tells them apart (transcript-mining themes 1 and 2).
     const refCount = countRefs(result.stdout);
-    const probeScript = pageProbeScript({ previewChars: refCount < THIN_TREE_REFS ? THIN_TREE_PREVIEW_CHARS : undefined });
-    const probeResult = await execBrowser(['eval', probeScript], browserState.cdpUrl || undefined);
-    const probe = probeResult.exitCode === 0 ? parsePageProbe(probeResult.stdout) : EMPTY_PROBE;
+    const previewChars = refCount < THIN_TREE_REFS ? THIN_TREE_PREVIEW_CHARS : PREVIEW_CHARS;
     const iframes = probe.iframes;
 
     if (body.json) {
@@ -1555,15 +1540,15 @@ app.post('/browser/snapshot', async (c) => {
     const fullText = Boolean(body.fullText);
     const tree = fullText && body.compact !== false ? compactWithText(result.stdout) : result.stdout;
 
-    const header = formatStatusHeader(probe, refCount, { waitedMs });
+    const header = formatStatusLine(probe, refCount, { waitedMs });
     return c.json({
       snapshot:
         (header ? `${header}\n\n` : '') +
         capSnapshot(tree, Boolean(body.scope)) +
-        formatTextFooter(probe, { fullText, scoped: Boolean(body.scope) }) +
+        formatTextFooter(probe, { fullText, scoped: Boolean(body.scope), previewChars }) +
         formatIframePlaceholders(iframes),
       iframes,
-      page: probe,
+      page: { ...probe, preview: probe.preview.slice(0, previewChars) },
       tabCount: tabManager.getTabCount(),
     });
   } catch (error: any) {
@@ -1590,10 +1575,9 @@ app.post('/browser/click', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const { result, digest, effect, settleMs } = await runWithEffect(
+    const { result, digest, effect, settleMs, stillBusy } = await runWithEffect(
       () => execBrowser(['click', body.ref], browserState.cdpUrl || undefined),
-      CLICK_SETTLE_MS,
-      'click',
+      ACTION_POLICIES.click,
     );
 
     if (result.exitCode !== 0) {
@@ -1605,6 +1589,7 @@ app.post('/browser/click', async (c) => {
     return c.json({
       success: true,
       settleMs,
+      stillBusy,
       ...(digest && { digest }),
       ...(effect && { effect }),
       ...(tabInfo && { tabInfo }),
@@ -1674,7 +1659,13 @@ app.post('/browser/scroll', async (c) => {
     const scrollArgs = ['scroll', body.direction];
     if (body.amount !== undefined) scrollArgs.push(String(body.amount));
 
-    const result = await execBrowser(scrollArgs, browserState.cdpUrl || undefined);
+    // Settle-and-diff around the scroll: infinite-scroll pages load more rows
+    // after the viewport moves, and "+24 interactive elements" (or "nothing
+    // new loaded") is what the agent needs to decide whether to keep going.
+    const { result, effect, settleMs, stillBusy } = await runWithEffect(
+      () => execBrowser(scrollArgs, browserState.cdpUrl || undefined),
+      ACTION_POLICIES.scroll,
+    );
 
     if (result.exitCode !== 0) {
       return c.json({ error: result.stdout, success: false }, 500);
@@ -1687,7 +1678,7 @@ app.post('/browser/scroll', async (c) => {
     const scrollInfo: ScrollInfo | null = probe.exitCode === 0 ? parseScrollInfo(probe.stdout) : null;
 
     notifyBrowserAction();
-    return c.json({ success: true, ...(scrollInfo && { scrollInfo }) });
+    return c.json({ success: true, settleMs, stillBusy, ...(effect && { effect }), ...(scrollInfo && { scrollInfo }) });
   } catch (error: any) {
     console.error('[Browser] Error scrolling:', error);
     return c.json({ error: error.message || 'Failed to scroll' }, 500);
@@ -1761,10 +1752,9 @@ app.post('/browser/press', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const { result, digest, effect, settleMs } = await runWithEffect(
+    const { result, digest, effect, settleMs, stillBusy } = await runWithEffect(
       () => execBrowser(['press', body.key], browserState.cdpUrl || undefined),
-      body.key.trim() === 'Enter' ? PRESS_ENTER_SETTLE_MS : PRESS_SETTLE_MS,
-      'press',
+      { ...ACTION_POLICIES.press, settleMs: body.key.trim() === 'Enter' ? PRESS_ENTER_SETTLE_MS : PRESS_SETTLE_MS },
     );
 
     if (result.exitCode !== 0) {
@@ -1776,6 +1766,7 @@ app.post('/browser/press', async (c) => {
     return c.json({
       success: true,
       settleMs,
+      stillBusy,
       ...(digest && { digest }),
       ...(effect && { effect }),
       ...(tabInfo && { tabInfo }),
@@ -1849,10 +1840,9 @@ app.post('/browser/select', async (c) => {
 
     const before = await readValue();
 
-    const { result, effect, settleMs } = await runWithEffect(
+    const { result, effect, settleMs, stillBusy } = await runWithEffect(
       () => execBrowser(['select', body.ref, body.value], browserState.cdpUrl || undefined),
-      SELECT_COMMIT_SETTLE_MS,
-      'select',
+      { ...ACTION_POLICIES.select, settleMs: SELECT_COMMIT_SETTLE_MS },
     );
 
     if (result.exitCode !== 0) {
@@ -1867,7 +1857,7 @@ app.post('/browser/select', async (c) => {
     }
 
     notifyBrowserAction();
-    return c.json({ success: true, committedValue: judgement.committed, settleMs, ...(effect && { effect }) });
+    return c.json({ success: true, committedValue: judgement.committed, settleMs, stillBusy, ...(effect && { effect }) });
   } catch (error: any) {
     console.error('[Browser] Error selecting:', error);
     return c.json({ error: error.message || 'Failed to select' }, 500);
@@ -1892,10 +1882,9 @@ app.post('/browser/hover', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const { result, effect, settleMs } = await runWithEffect(
+    const { result, effect, settleMs, stillBusy } = await runWithEffect(
       () => execBrowser(['hover', body.ref], browserState.cdpUrl || undefined),
-      HOVER_SETTLE_MS,
-      'hover',
+      ACTION_POLICIES.hover,
     );
 
     if (result.exitCode !== 0) {
@@ -1903,7 +1892,7 @@ app.post('/browser/hover', async (c) => {
     }
 
     notifyBrowserAction();
-    return c.json({ success: true, settleMs, ...(effect && { effect }) });
+    return c.json({ success: true, settleMs, stillBusy, ...(effect && { effect }) });
   } catch (error: any) {
     console.error('[Browser] Error hovering:', error);
     return c.json({ error: error.message || 'Failed to hover' }, 500);
