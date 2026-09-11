@@ -7,11 +7,19 @@ import { buildBillingEmbedUrl, platformOriginFromBaseUrl, type BillingEmbedView 
 import { openExternalUrl } from '@renderer/lib/open-external'
 
 export const BILLING_EMBED_MESSAGE_TYPE = 'gamut-billing-embed'
-type BillingEmbedEvent = 'ready' | 'billing-updated' | 'session-expired' | 'resize' | 'open-billing' | 'cta-state'
+type BillingEmbedEvent = 'ready' | 'billing-updated' | 'session-expired' | 'resize' | 'open-billing' | 'close' | 'cta-state'
 const FRAME_MIN_HEIGHT = 64
 const FRAME_MAX_HEIGHT = 640
 const FRAME_DEFAULT_HEIGHT = 300
+const MAX_SEATS = 10_000
+const MAX_SEAT_PRICE_CENTS = 100_000_00
 export const FRAME_READY_TIMEOUT_MS = 15_000
+
+/** The subscribe quote the platform CTA reports, so the host can draw the price block. */
+export interface SubscribePlan {
+  seats: number
+  seatPriceCents: number
+}
 
 interface EmbedMessage {
   event: BillingEmbedEvent
@@ -19,15 +27,25 @@ interface EmbedMessage {
   height?: number
   hint?: string
   label?: string
+  plan?: SubscribePlan
+}
+
+function readPlan(seats: unknown, seatPriceCents: unknown): SubscribePlan | undefined {
+  if (typeof seats !== 'number' || !Number.isInteger(seats) || seats < 1 || seats > MAX_SEATS) return undefined
+  if (typeof seatPriceCents !== 'number' || !Number.isInteger(seatPriceCents) || seatPriceCents < 0 || seatPriceCents > MAX_SEAT_PRICE_CENTS) return undefined
+  return { seats, seatPriceCents }
 }
 
 function readEmbedMessage(data: unknown): EmbedMessage | null {
   if (typeof data !== 'object' || data === null) return null
-  const record = data as { type?: unknown; event?: unknown; orgId?: unknown; height?: unknown; hint?: unknown; label?: unknown }
+  const record = data as {
+    type?: unknown; event?: unknown; orgId?: unknown; height?: unknown; hint?: unknown; label?: unknown
+    seats?: unknown; seatPriceCents?: unknown
+  }
   if (record.type !== BILLING_EMBED_MESSAGE_TYPE) return null
   if (
     record.event !== 'ready' && record.event !== 'billing-updated' && record.event !== 'session-expired' &&
-    record.event !== 'resize' && record.event !== 'open-billing' && record.event !== 'cta-state'
+    record.event !== 'resize' && record.event !== 'open-billing' && record.event !== 'close' && record.event !== 'cta-state'
   ) return null
   return {
     event: record.event,
@@ -35,6 +53,7 @@ function readEmbedMessage(data: unknown): EmbedMessage | null {
     height: typeof record.height === 'number' && Number.isFinite(record.height) ? record.height : undefined,
     hint: typeof record.hint === 'string' && record.hint.length <= 300 ? record.hint : undefined,
     label: typeof record.label === 'string' && record.label.length <= 40 ? record.label : undefined,
+    plan: readPlan(record.seats, record.seatPriceCents),
   }
 }
 
@@ -48,9 +67,17 @@ export interface BillingEmbedFrameProps {
   launcher?: boolean
   // Launcher only: the frame now shows a panel, so it takes the full width and its reported height.
   expanded?: boolean
+  // Launcher only: fill the column the host puts the CTA in (the subscribe price block).
+  stretch?: boolean
+  // Launcher only: the platform draws the CTA in brand blue; the host's size reference matches it.
+  tone?: 'default' | 'brand'
   label?: string
   onOpenBilling?: () => void
+  /** The platform panel asked to collapse back to the banner (its close control). */
+  onClose?: () => void
   onHintChange?: (hint: string) => void
+  /** Subscribe CTA only: the seat count and per-seat price the platform will bill. */
+  onPlanChange?: (plan: SubscribePlan) => void
   view: BillingEmbedView
   orgId: string | null
   platformBaseUrl: string | null
@@ -66,8 +93,11 @@ const FAILURE_MESSAGE: Record<Failure, string> = {
   timeout: 'Billing is taking too long to load.',
 }
 
+export const BRAND_BUTTON_CLASS = 'bg-brand text-white hover:bg-brand/90'
+
 export function BillingEmbedFrame({
-  intent, cta, launcher = false, expanded = false, label = 'Open billing', onOpenBilling, onHintChange,
+  intent, cta, launcher = false, expanded = false, stretch = false, tone = 'default', label = 'Open billing',
+  onOpenBilling, onClose, onHintChange, onPlanChange,
   view, orgId, platformBaseUrl, fallbackHref, onBillingUpdated, onOpenExternal,
 }: BillingEmbedFrameProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
@@ -120,17 +150,19 @@ export function BillingEmbedFrame({
       if (!message || message.orgId !== orgId) return
       if (message.event === 'ready') { setFrameReady(true); sendTheme() }
       else if (message.event === 'open-billing' && launcher && view === 'topup') onOpenBilling?.()
+      else if (message.event === 'close' && launcher) onClose?.()
       else if (message.event === 'billing-updated') onBillingUpdated()
       else if (message.event === 'session-expired') setFailure('expired')
       else if (message.event === 'resize' && (!launcher || expanded) && message.height !== undefined) setHeight(clampHeight(message.height))
       else if (message.event === 'cta-state' && launcher) {
         if (message.hint !== undefined) setHint(message.hint)
         if (message.label) setFrameLabel(message.label)
+        if (message.plan && view === 'subscribe') onPlanChange?.(message.plan)
       }
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [orgId, platformOrigin, onBillingUpdated, launcher, expanded, onOpenBilling, view, sendTheme])
+  }, [orgId, platformOrigin, onBillingUpdated, launcher, expanded, onOpenBilling, onClose, onPlanChange, view, sendTheme])
 
   useEffect(() => {
     if (frameReady || failure) return
@@ -146,13 +178,19 @@ export function BillingEmbedFrame({
 
   // Same iframe element in both layouts; only the box around it changes.
   if (launcher) return (
-    <div className={cn('flex min-w-0 flex-col gap-1', expanded ? 'w-full items-stretch' : 'items-end')}>
+    <div className={cn('flex min-w-0 flex-col gap-1', expanded || stretch ? 'w-full items-stretch' : 'items-end')}>
       {!onHintChange && (hint || failure) && <p className="max-w-xs text-right text-xs text-muted-foreground" data-testid="billing-cta-hint">{failure ? FAILURE_MESSAGE[failure] : hint}</p>}
       {failure ? (
         <Button size="sm" title={FAILURE_MESSAGE[failure]} disabled={!fallbackHref} onClick={openFallback}>Open billing in a new tab</Button>
       ) : (
-        <div className={cn('relative', expanded ? 'w-full' : 'shrink-0')} style={expanded ? { height } : undefined} data-testid="billing-cta-body" data-expanded={expanded}>
-          <Button size="sm" className={expanded ? 'hidden' : frameReady ? 'invisible' : ''} disabled tabIndex={-1} aria-hidden="true" data-testid="billing-cta-size-reference">{frameLabel}</Button>
+        <div className={cn('relative', expanded || stretch ? 'w-full' : 'shrink-0')} style={expanded ? { height } : undefined} data-testid="billing-cta-body" data-expanded={expanded}>
+          <Button
+            size="sm"
+            className={cn(expanded ? 'hidden' : frameReady ? 'invisible' : '', stretch && 'w-full', tone === 'brand' && BRAND_BUTTON_CLASS)}
+            disabled tabIndex={-1} aria-hidden="true" data-testid="billing-cta-size-reference"
+          >
+            {frameLabel}
+          </Button>
           {src && <iframe key={attempt} ref={iframeRef} title="Open workspace billing" src={src} onLoad={sendTheme}
             className="absolute inset-0 block h-full w-full border-0 bg-transparent" style={{ visibility: frameReady ? 'visible' : 'hidden' }}
             referrerPolicy="strict-origin" data-testid="billing-cta-frame" />}

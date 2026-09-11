@@ -498,17 +498,41 @@ describe('PlatformPaywallCard', () => {
       expect(screen.queryByTestId('billing-cta-hint')).not.toBeInTheDocument()
     })
 
-    it('shows an authorized upgrade quote on the card and never expands the subscribe CTA', async () => {
+    it('draws the subscribe quote from the platform CTA and never expands the subscribe CTA', async () => {
       renderCard('API Error: 402 {"error":"insufficient_balance","subscription_required":true}')
       await screen.findByTestId('billing-cta-frame')
-      postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', { label: 'Subscribe', hint: '2 seats · $400/mo. Cancel anytime.' })
-      expect(screen.getByTestId('billing-cta-hint')).toHaveTextContent('2 seats · $400/mo. Cancel anytime.')
+      expect(screen.getByTestId('paywall-subscribe')).toBeInTheDocument()
+      expect(screen.getByText('Your trial has ended.')).toBeInTheDocument()
+      expect(screen.getByText('Upgrade to Pro to keep going.')).toBeInTheDocument()
+      expect(screen.getByText('Team cloud + private desktop workspaces')).toBeInTheDocument()
+      expect(screen.queryByTestId('paywall-plan')).not.toBeInTheDocument()
+      postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', { label: 'Upgrade to Pro', hint: '', seats: 2, seatPriceCents: 20000 })
+      expect(screen.getByTestId('paywall-plan')).toHaveTextContent('$400/mo')
+      expect(screen.getByTestId('paywall-plan')).toHaveTextContent(/2 seats\s*×\s*\$200\/mo/)
+      expect(screen.queryByTestId('billing-cta-hint')).not.toBeInTheDocument()
+      expect(screen.getByTestId('billing-cta-size-reference')).toHaveClass('w-full')
       postEmbedMessage(PLATFORM_ORIGIN, 'open-billing')
       expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-expanded', 'false')
       fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
       postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated')
       await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Billing updated. You can continue.'))
       expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument()
+    })
+
+    it('ignores a forged or malformed subscribe quote', async () => {
+      renderCard('API Error: 402 {"error":"insufficient_balance","subscription_required":true}')
+      await screen.findByTestId('billing-cta-frame')
+      postEmbedMessage(HOSTILE_ORIGIN, 'cta-state', { seats: 2, seatPriceCents: 20000 })
+      postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', { seats: 2, seatPriceCents: 20000 }, window)
+      postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', { seats: 2.5, seatPriceCents: 20000 })
+      postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', { seats: 2, seatPriceCents: '20000' })
+      postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', { seats: 0, seatPriceCents: 20000 })
+      expect(screen.queryByTestId('paywall-plan')).not.toBeInTheDocument()
+      postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', { seats: 1, seatPriceCents: 20000 })
+      expect(screen.getByTestId('paywall-plan')).toHaveTextContent('$200/mo')
+      expect(screen.getByTestId('paywall-plan')).toHaveTextContent(/1 seat\s*×\s*\$200\/mo/)
+      postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', { seats: 12, seatPriceCents: 20000 })
+      expect(screen.getByTestId('paywall-plan')).toHaveTextContent('$2,400/mo')
     })
 
     it('sends theme changes only to the configured platform iframe', async () => {
@@ -538,6 +562,23 @@ describe('PlatformPaywallCard', () => {
       expect(screen.getByTestId('billing-cta-size-reference')).toHaveClass('hidden')
       expect(screen.getByTestId('paywall-actions')).toHaveAttribute('data-expanded', 'true')
       expect(screen.queryByRole('button', { name: 'Dismiss' })).not.toBeInTheDocument()
+    })
+
+    it('collapses back to the banner on a validated close event, keeping the same iframe document', async () => {
+      renderCard()
+      const frame = await expandCta()
+      const srcBefore = embedFrame().src
+      postEmbedMessage(HOSTILE_ORIGIN, 'close')
+      postEmbedMessage(PLATFORM_ORIGIN, 'close', {}, window)
+      postEmbedMessage(PLATFORM_ORIGIN, 'close', { orgId: 'org_other' })
+      expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-expanded', 'true')
+      postEmbedMessage(PLATFORM_ORIGIN, 'close')
+      expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-expanded', 'false')
+      expect(screen.getByTestId('paywall-card')).not.toHaveClass('max-w-md')
+      expect(embedFrame()).toBe(frame)
+      expect(embedFrame().src).toBe(srcBefore)
+      expect(screen.getByText('You need more usage credit to continue')).toBeInTheDocument()
+      expect(screen.getByTestId('billing-cta-body')).not.toHaveClass('w-full')
     })
 
     it('shows Dismiss when dismissible, including while expanded', async () => {
@@ -703,7 +744,9 @@ describe('PlatformPaywallCard', () => {
       renderCard('API Error: 402 {"error":"insufficient_balance","subscription_required":true}')
       await screen.findByTestId('billing-cta-frame')
       expectEmbedUrl({ view: 'subscribe', surface: 'cta' })
-      expect(screen.queryByRole('button', { name: 'Subscribe' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Upgrade to Pro' })).not.toBeInTheDocument()
+      expect(screen.getByTestId('billing-cta-size-reference')).toHaveTextContent('Upgrade to Pro')
+      expect(screen.getByTestId('billing-cta-size-reference')).toHaveClass('bg-brand')
       postEmbedMessage(PLATFORM_ORIGIN, 'open-billing')
       expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-expanded', 'false')
     })
@@ -729,9 +772,23 @@ describe('PlatformPaywallCard', () => {
       ;(window as { electronAPI?: unknown }).electronAPI = {}
       renderCard()
       const button = await screen.findByRole('button', { name: 'Add usage' })
+      expect(button).toHaveClass('bg-brand')
+      expect(screen.getByText('Add usage credit to resume this answer.')).toHaveClass('text-[11px]')
       expect(screen.queryByTestId('billing-embed-body')).not.toBeInTheDocument()
       act(() => { button.click() })
       expect(openExternalUrl).toHaveBeenCalledTimes(1)
+      expect(screen.getByRole('button', { name: 'Recheck' })).toBeInTheDocument()
+    })
+
+    it('hands off the subscribe card in Electron with the blue button and no quote', async () => {
+      ;(window as { electronAPI?: unknown }).electronAPI = {}
+      renderCard('API Error: 402 {"error":"insufficient_balance","subscription_required":true}')
+      const button = await screen.findByRole('button', { name: 'Upgrade to Pro' })
+      expect(button).toHaveClass('bg-brand')
+      expect(screen.getByTestId('paywall-subscribe')).toBeInTheDocument()
+      expect(screen.queryByTestId('paywall-plan')).not.toBeInTheDocument()
+      act(() => { button.click() })
+      expect(openExternalUrl).toHaveBeenCalledWith(BILLING_URL)
       expect(screen.getByRole('button', { name: 'Recheck' })).toBeInTheDocument()
     })
 
