@@ -12,6 +12,7 @@ import crypto from 'crypto'
 import path from 'path'
 import fs from 'fs'
 import yaml from 'js-yaml'
+import pLimit from 'p-limit'
 import { getCacheDir } from '@shared/lib/config/data-dir'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-provider/helpers'
@@ -272,22 +273,31 @@ async function readSkillPackageFiles(skillDir: string): Promise<SkillPackageFile
  */
 async function readWorkspaceSkillPackageFiles(files: FileOps, skillDir: string): Promise<SkillPackageFile[]> {
   const packageFiles: SkillPackageFile[] = []
+  // Each read is a round trip through the actor (the path check, then the
+  // bytes); reading a directory's files one after another made an install
+  // wait on every file in turn. The result is sorted, so order is free.
+  const limit = pLimit(8)
 
   async function walk(dir: string, relativeBase: string): Promise<void> {
+    const subdirs: Array<{ path: string; relativePath: string }> = []
+    const reads: Promise<void>[] = []
     for (const entry of await files.list(dir)) {
       if (SKILL_PACKAGE_EXCLUDED.has(entry.name)) continue
 
       const relativePath = relativeBase ? path.join(relativeBase, entry.name) : entry.name
 
       if (entry.kind === 'directory') {
-        await walk(entry.path, relativePath)
+        subdirs.push({ path: entry.path, relativePath })
         continue
       }
 
-      const content = await readWorkspaceText(files, entry.path)
-      if (content === null) continue
-      packageFiles.push({ relativePath, content })
+      reads.push(limit(async () => {
+        const content = await readWorkspaceText(files, entry.path)
+        if (content !== null) packageFiles.push({ relativePath, content })
+      }))
     }
+    await Promise.all(reads)
+    for (const subdir of subdirs) await walk(subdir.path, subdir.relativePath)
   }
 
   await walk(skillDir, '')
