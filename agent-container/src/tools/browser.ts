@@ -17,6 +17,8 @@ import {
 import { hostAuthHeaders } from '../host-auth'
 import { tabManager } from '../tab-manager'
 import { formatUrlDigest, formatUrlDigestBrief, formatFillReadback, formatScrollDigest, type UrlDigest, type ScrollInfo } from '../browser-digest'
+import { parseObservation, EMPTY_OBSERVATION } from '../page-observer'
+import { landedElsewhere, pageWarnings } from '../page-status'
 
 const CONTAINER_URL = `http://localhost:${process.env.PORT || '3000'}`
 // Conditional on purpose: it has to agree with the prompt, which tells a parent
@@ -140,11 +142,31 @@ Omit location to keep using the current browser where it is; when no browser is 
       }
     }
 
+    // Report where the browser landed, not what was asked for. The server's
+    // page probe is the source; when it could not run (dead page, eval
+    // blocked) fall back to the old intent-shaped text and say so. The result
+    // is an error only for Chrome's own error page — everything else is a
+    // fact the agent weighs itself.
+    const page = (data?.page ? parseObservation(JSON.stringify(data.page)) : null) ?? EMPTY_OBSERVATION
+    if (page.url) {
+      const title = page.title ? JSON.stringify(page.title.slice(0, 120)) : 'an untitled page'
+      const redirect = landedElsewhere(args.url, page.url) ? ` (redirected from ${args.url})` : ''
+      const http = page.httpStatus > 0 ? ` · HTTP ${page.httpStatus}` : ''
+      const warns = pageWarnings(page, null)
+      const unreachable = Boolean(page.netError)
+      const text =
+        `Loaded ${title} at ${page.url}${redirect}${http} in ${locationText}.${switchText}` +
+        warns.map(w => `\n⚠ ${w}`).join('') +
+        (warns.length > 0 && page.preview ? `\nPage text: ${JSON.stringify(page.preview.slice(0, 400))}` : '') +
+        ` The user can see the browser live. Use browser_snapshot to see the page content.${localhostWarning}\n\n${BROWSER_USE_GUIDANCE_HINT}`
+      return { content: [{ type: 'text' as const, text }], ...(unreachable ? { isError: true } : {}) }
+    }
+
     return {
       content: [
         {
           type: 'text' as const,
-          text: `Browser opened in ${locationText} and navigating to ${args.url}.${switchText} The user can see the browser live. Use browser_snapshot to see the page content.${localhostWarning}\n\n${BROWSER_USE_GUIDANCE_HINT}`,
+          text: `Browser opened in ${locationText} and navigating to ${args.url}.${switchText} The landing page could not be read — take a browser_snapshot to see where you are; its status line shows the URL, title and HTTP status.${localhostWarning}\n\n${BROWSER_USE_GUIDANCE_HINT}`,
         },
       ],
     }
@@ -170,9 +192,9 @@ const browserSnapshotTool = tool(
   'browser_snapshot',
   `Get an accessibility tree snapshot of the current page. Returns interactive elements with refs (like @e1, @e2) that you can use with browser_click and browser_fill.
 
-The default view shows interactive elements only. Two knobs handle the cases that view misses:
-- scope: limit the snapshot to a CSS-selected region (e.g. "form", "#main", ".modal", a dialog selector). Use this on large pages — it slashes output and avoids truncation. Refs stay valid for the rest of the page.
-- fullText=true: include STATIC text the interactive view drops — validation errors, prices, instructions, toasts, char counters. Reach for this when an action seemed to fail but no error showed, or when you need on-page copy.
+The default view shows interactive elements only — it drops ALL static text (prices, prose, error messages, table values). A footer says how much text was dropped and what the page's live regions (alerts, status, toasts) currently say. Two knobs handle what the default view misses:
+- fullText=true: THE way to read a page. Adds the static text to the same compact tree; refs are identical in both views. Use it to extract data, read results or errors, or check on-page copy — not browser_eval innerText scrapers, not screenshots.
+- scope: limit the snapshot to a CSS-selected region (e.g. "form", "#main", ".modal", a dialog selector). Combine with fullText on large pages — it slashes output and avoids truncation. Refs stay valid for the rest of the page.
 
 Cross-origin iframes (e.g. Stripe payment frames) are listed as placeholders below the tree — their fields are NOT in the snapshot; fill them via coordinate click + browser_type.
 Very large snapshots are truncated with a note rather than failing — scope to recover the rest.`,
@@ -200,7 +222,7 @@ Very large snapshots are truncated with a note rather than failing — scope to 
       .boolean()
       .optional()
       .default(false)
-      .describe('Include static text (validation errors, prices, instructions) that the interactive view omits (default: false).'),
+      .describe('Add the page\'s static text (prices, prose, validation errors, table values) to the compact interactive tree. Same refs as the default view (default: false).'),
     includeUrls: z
       .boolean()
       .optional()
@@ -634,13 +656,39 @@ Available commands:
 
 const browserGetStateTool = tool(
   'browser_get_state',
-  `Get the current state of the browser in one call. Returns the current URL, a screenshot image, and an accessibility snapshot. Use this to quickly check what the browser is showing without needing multiple tool calls.`,
-  {},
-  async () => {
+  `Get the current state of the browser in one call. Returns the current URL, a screenshot image, and an accessibility snapshot. Use this to quickly check what the browser is showing without needing multiple tool calls. Takes the snapshot tool's scope/fullText/includeUrls knobs; pass screenshot=false to skip the image and get just URL + snapshot.`,
+  {
+    scope: z
+      .string()
+      .optional()
+      .describe('CSS selector to limit the snapshot to one region (same as browser_snapshot).'),
+    fullText: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe('Include the page\'s static text in the snapshot (same as browser_snapshot; default: false).'),
+    includeUrls: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe('Inline link URLs in the snapshot (default: false).'),
+    screenshot: z
+      .boolean()
+      .optional()
+      .default(true)
+      .describe('Capture and return a screenshot image (default: true). Set false when you only need URL + snapshot.'),
+  },
+  async (args) => {
     const [urlResult, screenshotResult, snapshotResult] = await Promise.all([
       browserFetch('run', { command: 'get url' }),
-      browserFetch('screenshot', { full: false }),
-      browserFetch('snapshot', { interactive: true, compact: true }),
+      args.screenshot === false ? Promise.resolve(null) : browserFetch('screenshot', { full: false }),
+      browserFetch('snapshot', {
+        interactive: true,
+        compact: true,
+        scope: args.scope,
+        fullText: args.fullText,
+        includeUrls: args.includeUrls,
+      }),
     ])
 
     const content: Array<{ type: 'image'; data: string; mimeType: string } | { type: 'text'; text: string }> = []
@@ -653,7 +701,9 @@ const browserGetStateTool = tool(
       parts.push(`**Current URL:** Error - ${urlResult.error}`)
     }
 
-    if (screenshotResult.success) {
+    if (screenshotResult === null) {
+      // screenshot=false: nothing to report
+    } else if (screenshotResult.success) {
       const data = screenshotResult.data as Record<string, unknown>
       const rawOutput = data.output ? String(data.output) : ''
       const filePath = rawOutput ? extractScreenshotPath(rawOutput) : ''

@@ -102,6 +102,71 @@ describe('browser_open location', () => {
     expect(result.content[0].text).toContain(BROWSER_USE_GUIDANCE_HINT)
   })
 
+  it('reports the landing page — final URL, redirect, HTTP status — when the server probed it', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      success: true,
+      location: 'host',
+      page: { url: 'https://app.com/login?next=%2Fdashboard', title: 'Sign in', readyState: 'complete', httpStatus: 200, contentType: 'text/html' },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
+
+    const openTool = createBrowserTools(() => 'session-4')
+      .find(candidate => candidate.name === 'browser_open') as any
+    const result = await openTool.handler({ url: 'https://app.com/dashboard' })
+
+    expect(result.isError).toBeUndefined()
+    expect(result.content[0].text).toContain('Loaded "Sign in" at https://app.com/login?next=%2Fdashboard (redirected from https://app.com/dashboard) · HTTP 200')
+    expect(result.content[0].text).not.toContain('navigating to')
+  })
+
+  it('reports an HTTP error status and a raw document as facts, with the page text, without making the open an error', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      success: true,
+      location: 'host',
+      page: { url: 'https://drinkolipop.com/', title: '', readyState: 'complete', httpStatus: 429, contentType: 'text/plain', preview: 'local_rate_limited' },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
+
+    const openTool = createBrowserTools(() => 'session-5')
+      .find(candidate => candidate.name === 'browser_open') as any
+    const result = await openTool.handler({ url: 'https://drinkolipop.com' })
+
+    expect(result.isError).toBeUndefined()
+    expect(result.content[0].text).toContain('Loaded an untitled page at https://drinkolipop.com/ · HTTP 429')
+    expect(result.content[0].text).not.toContain('⚠ HTTP')
+    expect(result.content[0].text).toContain('⚠ raw text/plain document')
+    expect(result.content[0].text).toContain('Page text: "local_rate_limited"')
+  })
+
+  it('is not an error for an error status on a page with a real tree (an SPA served from a 404 fallback)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      success: true,
+      location: 'host',
+      page: { url: 'https://app.com/orders/123', title: 'Orders', readyState: 'complete', httpStatus: 404, contentType: 'text/html', interactive: 61 },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
+
+    const openTool = createBrowserTools(() => 'session-5b')
+      .find(candidate => candidate.name === 'browser_open') as any
+    const result = await openTool.handler({ url: 'https://app.com/orders/123' })
+
+    expect(result.isError).toBeUndefined()
+    expect(result.content[0].text).toContain('Loaded "Orders" at https://app.com/orders/123 · HTTP 404')
+    expect(result.content[0].text).not.toContain('⚠')
+  })
+
+  it('falls back to intent-shaped text, and says so, when the probe could not run', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      success: true,
+      location: 'host',
+      page: { url: '' },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
+
+    const openTool = createBrowserTools(() => 'session-6')
+      .find(candidate => candidate.name === 'browser_open') as any
+    const result = await openTool.handler({ url: 'https://example.com' })
+
+    expect(result.content[0].text).toContain('navigating to https://example.com')
+    expect(result.content[0].text).toContain('landing page could not be read')
+  })
+
   it('omits location so the server can preserve the current browser', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({
       success: true,
