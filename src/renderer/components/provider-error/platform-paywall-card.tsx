@@ -315,7 +315,16 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
 
   return (
     <>
-      <div className={cn('relative px-4', billing.blocked ? 'pb-5' : 'pb-2')}>
+      <div
+        className={cn(
+          'relative px-4',
+          billing.blocked ? 'pb-5' : 'pb-2',
+          // Subscribe needs ~436px for its longest benefit row; once the 740px column
+          // is at full width, drop the gutter and bleed 16px so nothing wraps.
+          subscribeLayout && 'min-[800px]:-mx-4 min-[800px]:px-0',
+        )}
+        data-testid="paywall-card-frame"
+      >
         <HomeEmptyClouds masked={false} fill={0.6} />
         <div
           data-testid="paywall-card"

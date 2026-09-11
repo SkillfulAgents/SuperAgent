@@ -519,6 +519,19 @@ describe('PlatformPaywallCard', () => {
       expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument()
     })
 
+    it('widens only the subscribe card past the gutter at full column width', async () => {
+      renderCard('API Error: 402 {"error":"insufficient_balance","subscription_required":true}')
+      await screen.findByTestId('billing-cta-frame')
+      expect(screen.getByTestId('paywall-card-frame')).toHaveClass('min-[800px]:-mx-4', 'min-[800px]:px-0')
+    })
+
+    it('keeps the top-up card inside the gutter', async () => {
+      renderCard()
+      await screen.findByTestId('billing-cta-frame')
+      expect(screen.getByTestId('paywall-card-frame')).toHaveClass('px-4')
+      expect(screen.getByTestId('paywall-card-frame')).not.toHaveClass('min-[800px]:-mx-4')
+    })
+
     it('ignores a forged or malformed subscribe quote', async () => {
       renderCard('API Error: 402 {"error":"insufficient_balance","subscription_required":true}')
       await screen.findByTestId('billing-cta-frame')
