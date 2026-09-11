@@ -1,4 +1,7 @@
 {
+  "perf/harness.ts": [
+    "@shared/lib/services/session-summary-cache"
+  ],
   "src/api/routes/agent-bootstrap.ts": [
     "@shared/lib/container/message-persister"
   ],
