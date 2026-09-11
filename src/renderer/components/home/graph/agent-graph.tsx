@@ -62,18 +62,20 @@ const edgeTypes = { elbow: ElbowEdge }
 const EDGE_DASH = '6 4'
 
 // Count-chip unit (singular) by the edge's target kind. Resource edges are
-// always built agent → resource; agent targets mean invocation edges.
+// always built agent → resource. Agent↔agent edges carry no count: they are
+// permissions, drawn solid, not a tally of sessions.
 const EDGE_UNIT: Record<string, string> = {
   account: 'call',
   mcp: 'tool call',
   chat: 'session',
   webhook: 'fire',
   cron: 'run',
-  agent: 'invocation',
 }
 
 function edgeStyle(e: GraphEdgeSpec): CSSProperties {
-  const exercised = (e.weight ?? 0) > 0
+  // A permission edge is solid because it exists; a resource edge is solid
+  // once it has recorded traffic and dashed while connected-but-unused.
+  const exercised = e.variant === 'permission' || (e.weight ?? 0) > 0
   return {
     // Broken endpoint (expired auth, errored server, disconnected chat) —
     // red-500, matching the error status dot.
@@ -569,7 +571,8 @@ export function AgentGraph() {
         deletable: !!e.deletable,
         data: {
           geometry: { ...savedEdgeGeometry?.[e.id], ...draggedEdgeGeometry[e.id] },
-          count: e.weight ?? 0,
+          // No chip on a permission edge: there is nothing to count.
+          count: e.variant === 'permission' ? undefined : (e.weight ?? 0),
           unit: EDGE_UNIT[nodeKind(e.target)] ?? 'run',
           hovered,
           showDetails,
