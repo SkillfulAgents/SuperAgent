@@ -12,6 +12,12 @@ import { pickDeltaAnchor, mergeDeltaMessages } from '@shared/lib/messages-delta'
 // Re-export for convenience
 export type { ApiMessage, ApiMessageOrBoundary }
 
+// How many consecutive older pages one fetchOlder call walks through when
+// they add nothing visible (all-duplicate pages from a replayed transcript).
+// Bounds a single gesture's work; the cursor still advances, so the next
+// scroll-up resumes from where this one stopped.
+const MAX_EMPTY_OLDER_PAGE_HOPS = 25
+
 /**
  * Thrown when the session's JSONL transcript is absent (HTTP 404) — e.g. it was
  * deleted by the CLI's retention cleanup while the metadata entry lingers in the
@@ -255,24 +261,39 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
     olderAbortRef.current = controller
     setIsFetchingOlder(true)
     try {
-      const page = await fetchMessagesPage(agentSlug, sessionId, {
-        limit: MESSAGES_PAGE_OLDER_LIMIT,
-        cursor,
-        signal: controller.signal,
-      })
-      // Older-history state was reset while this page was in flight (resync
-      // or session switch): the response belongs to the previous transcript
-      // generation and must not commit.
-      if (gen !== olderGenRef.current) return false
-      const existing = new Set(older.map((m) => m.id))
-      const prepended = page.messages.filter((m) => !existing.has(m.id) && !deleted.has(m.id))
-      if (prepended.length > 0) onBeforePrepend?.()
+      // Items already on screen: in the older buffer, or in the trailing page
+      // (`data` drops older items that also appear in latest, so those add
+      // nothing visible either). A page consisting only of these is skipped
+      // and the walk continues in the same gesture — a transcript whose
+      // history was replayed verbatim serves the copy and then the
+      // originals, and a bounded hop keeps the reader from having to scroll
+      // once per empty page.
+      const seen = new Set([...older, ...latestMessages].map((m) => m.id))
+      let fresh: ApiMessageOrBoundary[] = []
+      let nextCursor: string | null = cursor
+      for (let hop = 0; hop < MAX_EMPTY_OLDER_PAGE_HOPS && nextCursor; hop++) {
+        const page = await fetchMessagesPage(agentSlug, sessionId, {
+          limit: MESSAGES_PAGE_OLDER_LIMIT,
+          cursor: nextCursor,
+          signal: controller.signal,
+        })
+        // Older-history state was reset while this page was in flight (resync
+        // or session switch): the response belongs to the previous transcript
+        // generation and must not commit.
+        if (gen !== olderGenRef.current) return false
+        const added = page.messages.filter((m) => !seen.has(m.id) && !deleted.has(m.id))
+        for (const m of added) seen.add(m.id)
+        fresh = [...added, ...fresh]
+        nextCursor = page.nextCursor
+        if (added.length > 0) break
+      }
+      if (fresh.length > 0) onBeforePrepend?.()
       setOlder((cur) => {
-        const seen = new Set(cur.map((m) => m.id))
-        return [...page.messages.filter((m) => !seen.has(m.id) && !deleted.has(m.id)), ...cur]
+        const have = new Set(cur.map((m) => m.id))
+        return [...fresh.filter((m) => !have.has(m.id)), ...cur]
       })
-      setOlderCursor(page.nextCursor)
-      return prepended.length > 0
+      setOlderCursor(nextCursor)
+      return fresh.length > 0
     } catch (error) {
       // Rejection caused by our own generation reset (abort) — not an error.
       if (gen !== olderGenRef.current) return false
