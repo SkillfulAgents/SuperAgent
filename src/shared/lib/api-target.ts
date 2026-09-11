@@ -18,6 +18,12 @@ export interface ResolvedApiTarget {
   /** Base URL every call site prefixes — loopback in both cases (see cloud-proxy.ts). */
   baseUrl: string
   fallback: TargetFallbackReason
+  /**
+   * The cloud proxy door, handed to every window so cross-target reads have
+   * one address. Null when the proxy is not enabled (web, auth-mode
+   * deployment).
+   */
+  cloudBaseUrl: string | null
 }
 
 /**

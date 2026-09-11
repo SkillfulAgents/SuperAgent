@@ -16,7 +16,7 @@ export function useTargetSwitch() {
   const [switching, setSwitching] = useState(false)
   const queryClient = useQueryClient()
 
-  const { data: platform } = usePlatformAuthStatus()
+  const { data: platform, isLoading: platformLoading } = usePlatformAuthStatus()
 
   // Only ask about cloud availability from the LOCAL side. In cloud mode every
   // request goes through the proxy to the deployment, and `getCloudWorkspace`
@@ -24,10 +24,14 @@ export function useTargetSwitch() {
   // "no cloud workspace" about itself, and the control would hide exactly when
   // the user needs it to get back. Being in cloud mode is its own proof.
   const canAsk = isElectron() && current === 'local' && platform?.connected === true
-  const { data: workspace } = useCloudWorkspace(canAsk, platform?.orgId)
+  const { data: workspace, isLoading: workspaceLoading } = useCloudWorkspace(canAsk, platform?.orgId)
 
   const cloudReachable =
     current === 'cloud' || (workspace?.found === true && workspace.hasValidToken === true)
+  // Local cannot treat "not yet asked" as "no workspace": that is the
+  // cloud→local first paint, and it would flash the single-number chip.
+  const availabilityPending =
+    isElectron() && current === 'local' && (platformLoading || (canAsk && workspaceLoading))
 
   const switchTo = useCallback(
     async (target: ApiTarget) => {
@@ -60,6 +64,8 @@ export function useTargetSwitch() {
     switching,
     /** Whether to offer the control at all. */
     available: isElectron() && cloudReachable,
+    /** Local side has not yet settled whether a workspace is reachable. */
+    availabilityPending,
     switchTo,
   }
 }

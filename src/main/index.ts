@@ -474,15 +474,25 @@ ipcMain.handle('get-api-url', () => {
   return `http://localhost:${actualApiPort}`
 })
 
+/** The cloud proxy door, or null when the proxy is not enabled. */
+function cloudProxyBaseUrl(): string | null {
+  if (!isCloudProxyEnabled()) return null
+  return `http://localhost:${actualApiPort}${CLOUD_PROXY_PREFIX}/${getCloudProxyKey()}`
+}
+
 /** The cloud proxy's base URL, or null when there is no workspace to drive. */
 function cloudApiBaseUrl(): string | null {
-  if (!isCloudProxyEnabled() || !resolveCloudProxyTarget()) return null
-  return `http://localhost:${actualApiPort}${CLOUD_PROXY_PREFIX}/${getCloudProxyKey()}`
+  if (!resolveCloudProxyTarget()) return null
+  return cloudProxyBaseUrl()
 }
 
 /** Which Superagent this app is driving, and the base URL that reaches it. */
 function activeApiTarget() {
-  return resolveApiTargetForRenderer(`http://localhost:${actualApiPort}`, cloudApiBaseUrl())
+  return resolveApiTargetForRenderer(
+    `http://localhost:${actualApiPort}`,
+    cloudApiBaseUrl(),
+    cloudProxyBaseUrl(),
+  )
 }
 
 // Which Superagent this renderer drives, settled in main rather than in the
