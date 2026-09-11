@@ -3,6 +3,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import yauzl from 'yauzl'
+import yazl from 'yazl'
 import {
   openZipFromBuffer,
   openZipFromFile,
@@ -289,6 +290,64 @@ describe('readEntry', () => {
 // ============================================================================
 // extractEntry
 // ============================================================================
+
+describe('openEntryStream', () => {
+  async function collect(stream: NodeJS.ReadableStream): Promise<Buffer> {
+    const chunks: Buffer[] = []
+    for await (const chunk of stream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+    return Buffer.concat(chunks)
+  }
+
+  it('streams an entry', async () => {
+    const content = 'y'.repeat(70_000)
+    const buf = await createZipBuffer({ 'big.txt': content })
+    const reader = await openZipFromBuffer(buf)
+    try {
+      expect((await collect(await reader.openEntryStream('big.txt'))).toString('utf-8')).toBe(content)
+      expect((await collect(await reader.openEntryStream('big.txt', 70_000))).toString('utf-8')).toBe(content)
+    } finally {
+      reader.close()
+    }
+  })
+
+  it('fails the stream with ZipExtractionSizeError past maxBytes', async () => {
+    const buf = await createZipBuffer({ 'big.txt': 'x'.repeat(1000) })
+    const reader = await openZipFromBuffer(buf)
+    try {
+      await expect(collect(await reader.openEntryStream('big.txt', 500))).rejects.toThrow(ZipExtractionSizeError)
+    } finally {
+      reader.close()
+    }
+  })
+
+  it('throws for nonexistent entry', async () => {
+    const buf = await createZipBuffer({ 'a.txt': 'content' })
+    const reader = await openZipFromBuffer(buf)
+    try {
+      await expect(reader.openEntryStream('nonexistent.txt')).rejects.toThrow('Entry not found')
+    } finally {
+      reader.close()
+    }
+  })
+})
+
+describe('entry modes', () => {
+  it('reports the mode of an entry written with one, and none otherwise', async () => {
+    const zipFile = new yazl.ZipFile()
+    zipFile.addBuffer(Buffer.from('#!/bin/sh\n'), 'run.sh', { mode: 0o100755 })
+    zipFile.addBuffer(Buffer.from('n'), 'notes.txt', { mode: 0o100644 })
+    zipFile.end()
+    const chunks: Buffer[] = []
+    for await (const chunk of zipFile.outputStream) chunks.push(chunk as Buffer)
+    const reader = await openZipFromBuffer(Buffer.concat(chunks))
+    try {
+      expect(reader.entries.find((e) => e.fileName === 'run.sh')?.mode).toBe(0o755)
+      expect(reader.entries.find((e) => e.fileName === 'notes.txt')?.mode).toBe(0o644)
+    } finally {
+      reader.close()
+    }
+  })
+})
 
 describe('extractEntry', () => {
   it('extracts file to disk', async () => {

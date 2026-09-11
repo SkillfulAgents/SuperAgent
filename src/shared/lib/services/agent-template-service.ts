@@ -505,6 +505,9 @@ function createWorkspaceZipStream(
     archive.append(source, {
       name: workspacePath,
       date: new Date(stat.mtimeMs),
+      // With its mode: a script that is executable in the workspace is
+      // executable where the zip is extracted.
+      mode: stat.mode,
     })
   }
 
@@ -739,19 +742,23 @@ export async function importAgentFromTemplate(
         if (baseName === '.env' || baseName === 'session-metadata.json') continue
       }
 
-      const bytes = await reader.readEntry(entry.fileName, MAX_UNCOMPRESSED_SIZE - totalExtracted)
+      // Streamed, never held whole: an entry is as large as the whole
+      // template may be. The size limit fails the stream, and with it the
+      // write and the import, the way the buffered read used to.
+      const entryStream = await reader.openEntryStream(entry.fileName, MAX_UNCOMPRESSED_SIZE - totalExtracted)
+      let size: number
       try {
-        await actor.files.write(entryName, bytes)
+        ;({ size } = await actor.files.write(entryName, Readable.toWeb(entryStream) as ReadableStream<Uint8Array>))
       } catch (error) {
         // validateTemplateEntries already rejects `..`/absolute entries
         // upfront; the actor refuses anything else that would land outside
-        // the workspace, and such an entry is skipped as before.
-        if (error instanceof WorkspaceFileError && (error.code === 'invalid-path' || error.code === 'outside-workspace')) {
-          continue
-        }
+        // the workspace, and such an entry is skipped as before. Any other
+        // failure (a name the filesystem rejects, a full disk) fails the
+        // import: an entry that validated must not go missing in silence.
+        if (error instanceof WorkspaceFileError && error.code === 'outside-workspace') continue
         throw error
       }
-      totalExtracted += bytes.length
+      totalExtracted += size
     }
 
     if (nameOverride?.trim()) {

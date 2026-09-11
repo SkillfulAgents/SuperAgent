@@ -825,6 +825,23 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
     }
   }
 
+  it('keeps a file executable in both exports', async () => {
+    const workspaceDir = createWorkspace('test-agent', {
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'skills/run.sh': '#!/bin/sh\n',
+    })
+    fs.chmodSync(path.join(workspaceDir, 'skills', 'run.sh'), 0o755)
+
+    for (const buf of [await exportAgentTemplate('test-agent'), await exportAgentFull('test-agent')]) {
+      const reader = await openZipFromBuffer(buf)
+      try {
+        expect(reader.entries.find((e) => e.fileName === 'skills/run.sh')?.mode).toBe(0o755)
+      } finally {
+        reader.close()
+      }
+    }
+  })
+
   it('exports a basic agent template', async () => {
     createWorkspace('test-agent', {
       'CLAUDE.md': MINIMAL_CLAUDE_MD,
@@ -2435,6 +2452,20 @@ describe('importAgentFromTemplate (full mode)', () => {
     const envPath = path.join(workspaceDir, '.env')
     expect(fs.existsSync(envPath)).toBe(true)
     expect(fs.readFileSync(envPath, 'utf-8')).toBe('SECRET=abc')
+  })
+
+  it('imports a file whose name is as long as the filesystem allows', async () => {
+    const workspaceDir = setupAgentMock('import-long-name-agent')
+    // 240 bytes: accepted by the filesystem, with no room for a suffix on it.
+    const long = `${'n'.repeat(236)}.txt`
+    const zipBuffer = await makeZip({
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      [`docs/${long}`]: 'kept',
+    })
+
+    await importAgentFromTemplate(zipBuffer, undefined, 'full')
+
+    expect(fs.readFileSync(path.join(workspaceDir, 'docs', long), 'utf-8')).toBe('kept')
   })
 
   it('strips .env in template mode', async () => {
