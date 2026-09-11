@@ -148,9 +148,21 @@ describe('compactWithText', () => {
     ])
   })
 
-  it('puts a space between runs that meet without one — the whitespace between inline elements is its own dropped node', () => {
+  it('merges runs exactly as the page has them — the whitespace between inline elements is its own node and is kept', () => {
+    // Captured from agent-browser 0.27.2 for
+    // `Visit example.<strong>com</strong> and never run <code>rm</code> <code>-rf</code> there. <strong>Never</strong> <em>delete</em> <code>backups</code>.`
     const tree = [
       '- paragraph',
+      '  - StaticText "Visit example."',
+      '  - strong',
+      '    - StaticText "com"',
+      '  - StaticText " and never run "',
+      '  - code',
+      '    - StaticText "rm"',
+      '  - StaticText " "',
+      '  - code',
+      '    - StaticText "-rf"',
+      '  - StaticText " there. "',
       '  - strong',
       '    - StaticText "Never"',
       '  - StaticText " "',
@@ -161,11 +173,9 @@ describe('compactWithText', () => {
       '    - StaticText "backups"',
       '  - StaticText "."',
     ].join('\n')
-    expect(compactWithText(tree).split('\n')).toEqual(['- paragraph', '  - StaticText "Never delete backups."'])
-    // Runs that already carry their boundary whitespace are joined as they are;
-    // punctuation and currency attach to their neighbour.
-    const spaced = ['- paragraph', '  - StaticText "Total "', '  - strong', '    - StaticText "$42"', '  - StaticText ".00 due ("', '  - emphasis', '    - StaticText "incl. tax"', '  - StaticText ")"'].join('\n')
-    expect(compactWithText(spaced).split('\n')).toEqual(['- paragraph', '  - StaticText "Total $42.00 due (incl. tax)"'])
+    expect(compactWithText(tree).split('\n')).toEqual(['- paragraph', '  - StaticText "Visit example.com and never run rm -rf there. Never delete backups."'])
+    // A blank text node under an otherwise empty container is not prose.
+    expect(compactWithText(['- generic', '  - StaticText " "', '- link "x" [ref=e1]'].join('\n'))).toBe('- link "x" [ref=e1]')
   })
 
   it('keeps a multi-line textarea value on its node and does not repeat it as text', () => {

@@ -99,11 +99,12 @@ export function countRefs(tree: string): number {
  * Named images are kept for their alt text. Bare structural lines (generic,
  * list, …) with nothing kept beneath them go. Then a prose pass re-joins what
  * the a11y tree splits: an inline wrapper (strong, emphasis, code…) whose only
- * children are text collapses into its parent, whitespace-only text and text
- * that merely repeats a sibling control's name or the parent's value are
- * dropped, and adjacent text siblings merge into one line — so
- * `Your order total is ` / strong / `$42.00` / ` including tax.` reads as one
- * sentence. (Upstream already merges runs that were split without a wrapper.)
+ * children are text collapses into its parent, text that merely repeats a
+ * sibling control's name or the parent's value is dropped, and adjacent text
+ * siblings merge into one line exactly as the page has them — the whitespace
+ * between inline elements is its own node and is kept — so `Your order total
+ * is ` / strong / `$42.00` / ` including tax.` reads as one sentence.
+ * (Upstream already merges runs that were split without a wrapper.)
  */
 export function compactWithText(tree: string): string {
   const lines = logicalLines(tree)
@@ -114,7 +115,7 @@ export function compactWithText(tree: string): string {
     const st = staticTextOf(line)
     const isContent =
       line.includes('ref=') ||
-      (st !== null && st.trim().length > 0) ||
+      (st !== null && (st.trim().length > 0 || isProseWhitespace(lines, i))) ||
       /^\s*- image "/.test(line) ||
       LINE_BREAK.test(line) ||
       line.includes(': ')
@@ -155,6 +156,33 @@ function logicalLines(tree: string): string[] {
 
 const INLINE_WRAPPER = /^\s*- (strong|emphasis|code|mark|superscript|subscript|deletion|insertion|time|generic)$/
 const LINE_BREAK = /^(\s*)- LineBreak\b/
+
+/**
+ * A whitespace-only text node is prose when it sits between two inline
+ * siblings — the space in `<code>rm</code> <code>-rf</code>` is its own node
+ * in the tree, and the only record of the space. It is kept when a sibling
+ * at the same depth (skipping deeper lines) is content or an inline wrapper;
+ * a lone blank text under an empty container is not.
+ */
+function isProseWhitespace(lines: string[], i: number): boolean {
+  const depth = indentOf(lines[i])
+  const contentLike = (line: string): boolean => {
+    const st = staticTextOf(line)
+    return line.includes('ref=') || (st !== null && st.trim().length > 0) || INLINE_WRAPPER.test(line) || LINE_BREAK.test(line)
+  }
+  let found = false
+  for (let j = i - 1; j >= 0 && !found; j--) {
+    const d = indentOf(lines[j])
+    if (d < depth) break
+    if (d === depth) { found = contentLike(lines[j]); break }
+  }
+  for (let j = i + 1; j < lines.length && !found; j++) {
+    const d = indentOf(lines[j])
+    if (d < depth) break
+    if (d === depth) { found = contentLike(lines[j]); break }
+  }
+  return found
+}
 const STATIC_TEXT = /^(\s*)- StaticText ("(?:[^"\\]|\\.)*")$/
 const NAMED_LINE = /^\s*- \S+ ("(?:[^"\\]|\\.)*")/
 
@@ -186,19 +214,6 @@ function nameOf(line: string): string | null {
   } catch {
     return null
   }
-}
-
-/**
- * What goes between two text runs the tree split at an element boundary: a
- * space, unless one side already carries whitespace, the next run opens with
- * punctuation that attaches to the previous word (`.00`, `,`, `)`), or the
- * previous run ends with something the next word attaches to (`(`, `$`, `/`).
- */
-function glueBetween(prev: string, next: string): string {
-  if (/\s$/.test(prev) || /^\s/.test(next)) return ''
-  if (/^[.,;:!?%)\]}'"’”…/-]/.test(next)) return ''
-  if (/[([{$€£"'‘“/-]$/.test(prev)) return ''
-  return ' '
 }
 
 /** Drop text that adds nothing: the parent's value, or a sibling control's name. */
@@ -251,30 +266,27 @@ function joinInlineRuns(input: string[]): string[] {
     lines = out
     if (!changed) break
   }
-  // 2. Drop text that adds nothing: blank (a line break excepted), the
-  // parent's value, or a sibling control's name.
-  lines = dropsRedundantText(lines.filter(line => {
-    const text = staticTextOf(line)
-    return text === null || text === '\n' || text.trim().length > 0
-  }))
-  // 3. Merge adjacent text siblings into one line. The tree splits prose at
-  // element boundaries and the whitespace between two inline elements is its
-  // own (dropped) node, so two runs that meet without a space on either side
-  // get one — `Never` + `delete` is two words, not "Neverdelete". A run that
-  // is split mid-word by markup is far rarer than a run split at a word.
+  // 2. Drop text that adds nothing: the parent's value, or a sibling
+  // control's name. Whitespace-only runs stay: they are the spaces between
+  // inline elements and are merged exactly in the next step.
+  lines = dropsRedundantText(lines)
+  // 3. Merge adjacent text siblings into one line, exactly as the page has
+  // them: the tree splits prose at element boundaries and keeps the whitespace
+  // between elements as its own node, so `Never` + ` ` + `delete` is "Never
+  // delete" and `example.` + `com` is "example.com" — nothing is guessed.
   const merged: string[] = []
   for (const line of lines) {
     const text = staticTextOf(line)
     const prev = merged.length > 0 ? merged[merged.length - 1] : null
     const prevText = prev !== null ? staticTextOf(prev) : null
     if (text !== null && prev !== null && prevText !== null && indentOf(prev) === indentOf(line)) {
-      merged[merged.length - 1] = staticTextLine(indentOf(line), prevText + glueBetween(prevText, text) + text)
+      merged[merged.length - 1] = staticTextLine(indentOf(line), prevText + text)
     } else {
       merged.push(line)
     }
   }
   // 4. A merged run can now equal the parent's value (a textarea's lines
-  // re-joined) — drop it the same way; and a run that is only line breaks.
+  // re-joined) — drop it the same way; and a run that is only whitespace.
   return dropsRedundantText(merged).filter(line => {
     const text = staticTextOf(line)
     return text === null || text.trim().length > 0

@@ -55,6 +55,8 @@ type Page = {
   sel?: Record<string, unknown[]>; body?: string; main?: unknown; active?: unknown
   title?: string; readyState?: string; contentType?: string; href?: string; status?: number
   errorPage?: boolean
+  /** Selectors that document.querySelector resolves (challenge-wall DOM markers). */
+  markers?: string[]
 }
 
 const LIVE = '[role="alert"],[role="status"],[aria-live]:not([aria-live="off"]),output'
@@ -70,7 +72,7 @@ function makePage(page: Page) {
     contentType: page.contentType ?? 'text/html',
     activeElement: page.active ?? body,
     getElementById: (id: string) => (id === 'main-frame-error' && page.errorPage ? {} : null),
-    querySelector: (q: string) => (q === 'main,[role=main]' ? page.main ?? null : null),
+    querySelector: (q: string) => (q === 'main,[role=main]' ? page.main ?? null : (page.markers ?? []).some(m => q.split(',').includes(m)) ? {} : null),
     querySelectorAll: (q: string) => page.sel?.[q] ?? [],
   }
   const performance = {
@@ -138,7 +140,7 @@ describe('observerScript', () => {
   })
 
   it('describes focus by role (explicit or implied) with its name and value', () => {
-    expect(makePage({ active: el({ tag: 'input', labels: [{ innerText: 'Search' }], value: '  clay run gtm ' }) }).run()).toMatchObject({ focus: 'textbox "Search"', focusValue: 'clay run gtm' })
+    expect(makePage({ active: el({ tag: 'input', labels: [{ innerText: 'Search' }], value: '  clay run gtm ' }) }).run()).toMatchObject({ focus: 'textbox "Search"', focusValue: '  clay run gtm ', focusValueChars: 15 })
     expect(makePage({ active: el({ tag: 'a', text: 'Wikipedia' }) }).run().focus).toBe('link "Wikipedia"')
     expect(makePage({ active: el({ tag: 'div', role: 'textbox', label: 'Message', text: 'Hi', isContentEditable: true }) }).run()).toMatchObject({ focus: 'textbox "Message"', focusValue: 'Hi' })
     expect(makePage({}).run().focus).toBe('nothing focused')
@@ -176,19 +178,22 @@ describe('observerScript', () => {
     expect(run().iframes).toEqual([{ title: 'Secure payment', host: 'js.stripe.com', sameOrigin: false }, { title: '', host: 'app.com', sameOrigin: true }])
   })
 
-  it('recognises challenge walls only by their own wording on a page with nothing to interact with, and Chrome error pages', () => {
-    expect(makePage({ body: 'Checking your browser before accessing example.com', title: 'Just a moment...' }).run().blocker).toBe('Cloudflare')
-    expect(makePage({ body: 'To continue, type the characters', href: 'https://www.google.com/sorry/index?x' }).run().blocker).toBe('Google')
+  it('recognises a challenge wall by the vendor\'s own DOM or a challenge status with its wording — never by wording alone', () => {
     const form = [el({ tag: 'input' }), el({ tag: 'input', type: 'password' }), el({ tag: 'button' }), el({ tag: 'a' }), el({ tag: 'a' })]
-    // The reCAPTCHA disclosure on an ordinary login form, a help article about CAPTCHAs, a status page with incident ids.
+    // The real thing: Cloudflare's interstitial (its DOM, or its 403/503 with its wording), Google's /sorry/, an Akamai 403.
+    expect(makePage({ body: 'Checking your browser before accessing example.com', title: 'Just a moment...', markers: ['#challenge-running'] }).run().blocker).toBe('Cloudflare')
+    expect(makePage({ body: 'Performing security verification', title: 'Just a moment...', status: 403, sel: { [INTERACTIVE]: [el({ tag: 'button' })] } }).run().blocker).toBe('Cloudflare')
+    expect(makePage({ body: 'To continue, type the characters', href: 'https://www.google.com/sorry/index?x' }).run().blocker).toBe('Google')
+    expect(makePage({ body: "Access Denied. You don't have permission to access /x on this server. Reference #18.4f1d.1700000000.abc", status: 403 }).run().blocker).toBe('Akamai')
+    expect(makePage({ markers: ['#px-captcha'] }).run().blocker).toBe('PerimeterX')
+    // Not a wall: the reCAPTCHA disclosure on a login form; a short 200 article about Turnstile with one link;
+    // challenge wording on a 200 page with no challenge DOM; a challenge marker on a page full of controls.
     expect(makePage({ body: 'Sign in. This site is protected by reCAPTCHA and the Google Privacy Policy apply.', sel: { [INTERACTIVE]: form } }).run().blocker).toBe('')
-    expect(makePage({ body: 'How hCaptcha and Cloudflare Turnstile verify you are human', sel: { [INTERACTIVE]: form } }).run().blocker).toBe('')
+    expect(makePage({ title: 'How Cloudflare Turnstile can verify you are human', body: 'Turnstile can verify you are human without a puzzle. Read on. More', sel: { [INTERACTIVE]: [el({ tag: 'a' })] } }).run().blocker).toBe('')
+    expect(makePage({ body: 'Verify you are human by completing the action below.', sel: { [INTERACTIVE]: [el({ tag: 'button' })] } }).run().blocker).toBe('')
     expect(makePage({ body: 'Incident ID 4711 resolved', sel: { [INTERACTIVE]: form } }).run().blocker).toBe('')
-    // A readable article about challenge pages, even with few controls, is not a wall.
-    expect(makePage({ body: 'How Cloudflare Turnstile can verify you are human. ' + 'Long article prose. '.repeat(150), sel: { [INTERACTIVE]: [el({ tag: 'a' })] } }).run().blocker).toBe('')
-    // The same wording on a wall (nothing to interact with, a few hundred chars) or with a challenge status is a block.
-    expect(makePage({ body: 'Verify you are human by completing the action below.', sel: { [INTERACTIVE]: [el({ tag: 'button' })] } }).run().blocker).toBe('Cloudflare')
-    expect(makePage({ body: 'Verify you are human by completing the action below.', status: 403, sel: { [INTERACTIVE]: form } }).run().blocker).toBe('Cloudflare')
+    expect(makePage({ markers: ['#challenge-form'], sel: { [INTERACTIVE]: form } }).run().blocker).toBe('')
+    // Chrome's own error page.
     expect(makePage({ body: "This site can't be reached ERR_NAME_NOT_RESOLVED", errorPage: true }).run().netError).toBe('ERR_NAME_NOT_RESOLVED')
     expect(makePage({ href: 'chrome-error://chromewebdata/' }).run().netError).toBe('net error')
   })

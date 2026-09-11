@@ -69,7 +69,7 @@ export const pageObservationSchema = z.object({
    * unnamed inputs, or two fields with the same label, are told apart.
    */
   focusId: z.string().default(''),
-  /** The focused field's value, whitespace-collapsed and capped at FOCUS_VALUE_PREVIEW_CHARS for display. '' for password and other secret fields. */
+  /** The focused field's value as the page holds it (whitespace intact), capped at FOCUS_VALUE_PREVIEW_CHARS for display. '' for password and other secret fields. */
   focusValue: z.string().default(''),
   /** Length and hash of the full (uncapped) value: change detection uses these, not the preview. */
   focusValueChars: z.number().default(0),
@@ -124,27 +124,34 @@ const STATE_ATTRS = ['checked', 'aria-checked', 'aria-pressed', 'aria-expanded',
 const SECRET_AUTOCOMPLETE = 'current-password|new-password|one-time-code|cc-number|cc-csc|cc-exp|cc-exp-month|cc-exp-year'
 
 /**
- * Bot-challenge signatures: the wording of the challenge page itself, matched
- * case-insensitively against title + the first 3k chars of body text (and the
- * URL for Google's /sorry/). Product names are deliberately absent — "This
- * site is protected by reCAPTCHA" is printed on ordinary login forms, and a
- * page can mention Imperva or DataDome in prose. A match only counts on a
- * page that looks like a wall — at most BLOCKER_MAX_CONTROLS visible controls
- * and at most BLOCKER_MAX_CHARS of text — or on a 403/429/503 response: a
- * challenge page is a few hundred characters with nothing to click, an
- * article about challenge pages is neither.
+ * Challenge-wall detection needs evidence that a challenge is being served,
+ * not that one is talked about. Two kinds count:
+ *
+ * - the vendor's own challenge DOM (BLOCKER_MARKERS): element ids and frame
+ *   sources that exist only on the interstitial — never the embedded widget a
+ *   login form may carry, never a script every protected page loads — on a
+ *   page with at most BLOCKER_MAX_CONTROLS visible controls;
+ * - a 403/429/503 response whose text carries the challenge's own wording
+ *   (BLOCKER_SIGNATURES), or Google's /sorry/ URL.
+ *
+ * Wording alone on a 200 page proves nothing: an article about how Turnstile
+ * can "verify you are human" is an article.
  */
+const BLOCKER_MARKERS: Array<[string, string]> = [
+  ['Cloudflare', '#challenge-form,#challenge-running,#challenge-stage,#challenge-error-text,#challenge-success-text'],
+  ['Imperva/Incapsula', 'iframe[src*="_Incapsula_Resource"]'],
+  ['PerimeterX', '#px-captcha'],
+  ['DataDome', '#datadome-captcha,iframe[src*="captcha-delivery.com"]'],
+]
 const BLOCKER_SIGNATURES: Array<[string, string]> = [
   ['Cloudflare', 'checking your browser before accessing|verify you are human|confirm you are human|cloudflare ray id|attention required.{0,40}cloudflare|cf-browser-verification|performing security verification'],
   ['Imperva/Incapsula', 'request unsuccessful\\. incapsula incident id|incapsula incident id'],
   ['Akamai', 'access denied.{0,160}permission to access.{0,200}reference #\\d+\\.[0-9a-f]+\\.\\d+'],
-  ['Google', 'google\\.[a-z.]+/sorry/|unusual traffic from your computer network'],
+  ['Google', 'unusual traffic from your computer network'],
   ['PerimeterX', 'press (&|and) hold to confirm you are a human|press (&|and) hold the button'],
   ['CAPTCHA', 'complete the security check to access|please verify you are a human|prove you are human|are you a robot'],
 ]
-/** A challenge page has (almost) nothing to interact with; more than this and the match is prose on a real page. */
 const BLOCKER_MAX_CONTROLS = 3
-const BLOCKER_MAX_CHARS = 2000
 const BLOCKER_STATUSES = [403, 429, 503]
 
 export interface ObserverOptions {
@@ -158,6 +165,7 @@ export interface ObserverOptions {
 export function observerScript(opts: ObserverOptions = {}): string {
   const previewChars = opts.previewChars ?? PREVIEW_CHARS
   const sigs = JSON.stringify(BLOCKER_SIGNATURES)
+  const markers = JSON.stringify(BLOCKER_MARKERS)
   return (
     '(function(){' +
     'var o={url:"",title:"",readyState:"",httpStatus:0,contentType:"",textChars:0,contentChars:0,contentHash:0,preview:"",liveRegions:[],iframes:[],interactive:0,stateHash:0,top:[],focus:"",focusId:"",focusValue:"",focusValueChars:0,focusValueHash:0,blocker:"",netError:""};' +
@@ -207,13 +215,16 @@ export function observerScript(opts: ObserverOptions = {}): string {
     // Never the value of a secret field: the app autofills passwords the model must not see.
     'var acs=String(a.getAttribute("autocomplete")||"").toLowerCase().split(/\\s+/);var secret=String(a.type||"").toLowerCase()==="password";' +
     'for(var s1=0;s1<acs.length&&!secret;s1++){if(/^(' + SECRET_AUTOCOMPLETE + ')$/.test(acs[s1]))secret=true}' +
-    'var fv=secret?"":ws(typeof a.value==="string"?a.value:(a.isContentEditable?a.innerText:""));o.focusValue=fv.slice(0,' + FOCUS_VALUE_PREVIEW_CHARS + ');o.focusValueChars=fv.length;o.focusValueHash=hash(fv)}}catch(e){}' +
+    // The value as the page holds it — newlines and indentation included; the preview is escaped for display by the consumer.
+    'var fv=secret?"":String(typeof a.value==="string"?a.value:(a.isContentEditable?a.innerText:"")||"");o.focusValue=fv.slice(0,' + FOCUS_VALUE_PREVIEW_CHARS + ');o.focusValueChars=fv.length;o.focusValueHash=hash(fv)}}catch(e){}' +
     // Chrome's error document: full Chrome renders #main-frame-error with the ERR_
     // code in its text; the headless shell shows an empty page whose only tell is
     // the chrome-error:// URL (verified in the container image).
     'try{if(document.getElementById("main-frame-error")||/^chrome-error:/.test(o.url)){var em=/\\bERR_[A-Z_]{3,}\\b/.exec(body);o.netError=em?em[0]:"net error"}}catch(e){}' +
-    'try{if((o.interactive<=' + BLOCKER_MAX_CONTROLS + '&&body.length<=' + BLOCKER_MAX_CHARS + ')||' + JSON.stringify(BLOCKER_STATUSES) + '.indexOf(o.httpStatus)>=0){var hay=(o.title+" "+body.slice(0,3000)).toLowerCase();var sg=' + sigs + ';' +
-    'for(var g=0;g<sg.length&&!o.blocker;g++){if(new RegExp(sg[g][1],"i").test(sg[g][0]==="Google"?o.url+" "+hay:hay))o.blocker=sg[g][0]}}}catch(e){}' +
+    'try{if(/^https?:\\/\\/[^\\/]*google\\.[a-z.]+\\/sorry\\//i.test(o.url))o.blocker="Google";' +
+    'if(!o.blocker&&o.interactive<=' + BLOCKER_MAX_CONTROLS + '){var mk=' + markers + ';for(var g0=0;g0<mk.length&&!o.blocker;g0++){try{if(document.querySelector(mk[g0][1]))o.blocker=mk[g0][0]}catch(e){}}}' +
+    'if(!o.blocker&&' + JSON.stringify(BLOCKER_STATUSES) + '.indexOf(o.httpStatus)>=0){var hay=(o.title+" "+body.slice(0,3000)).toLowerCase();var sg=' + sigs + ';' +
+    'for(var g=0;g<sg.length&&!o.blocker;g++){if(new RegExp(sg[g][1],"i").test(hay))o.blocker=sg[g][0]}}}catch(e){}' +
     'return JSON.stringify(o)})()'
   )
 }
