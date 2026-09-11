@@ -13,13 +13,13 @@ import { defineHomeScenarios } from './home-scenarios'
 //
 // Every workspace read goes through the actor's file operations, which check
 // each path's real location against the workspace: one realpath per artifact
-// listing and per manifest or widget probe (7 per agent here). The scan used
+// listing and per manifest or widget probe (8 per agent here: the agent's CLAUDE.md, its artifact listing and the probes under it). The scan used
 // to read those paths with no containment at all.
 defineHomeScenarios('small', {
-  agentsCold: { totalOps: 342, ops: { stat: 275, realpath: 35 }, wallMs: 240 },
-  agentsWarm: { totalOps: 77, ops: { stat: 15, realpath: 35 }, wallMs: 180 },
-  homeCold: { totalOps: 377, ops: { stat: 280, realpath: 35 }, wallMs: 370 },
-  homeWarm: { totalOps: 112, ops: { stat: 20, realpath: 35 }, wallMs: 240 },
+  agentsCold: { totalOps: 347, ops: { stat: 275, realpath: 40 }, wallMs: 240 },
+  agentsWarm: { totalOps: 82, ops: { stat: 15, realpath: 40 }, wallMs: 180 },
+  homeCold: { totalOps: 382, ops: { stat: 280, realpath: 40 }, wallMs: 370 },
+  homeWarm: { totalOps: 117, ops: { stat: 20, realpath: 40 }, wallMs: 240 },
   sessionsPage: { totalOps: 3, ops: { stat: 2 }, wallMs: 70 },
   sessionsNotable: { totalOps: 1, ops: { stat: 1 }, wallMs: 40 },
 })
