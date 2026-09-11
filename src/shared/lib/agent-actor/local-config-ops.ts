@@ -36,7 +36,10 @@ export function createLocalConfigOps(deps: LocalConfigOpsDeps): ConfigOps {
       if (mode === undefined) return
       const hostPath = hostPathOf(id)
       try {
-        const stat = await fs.promises.stat(hostPath)
+        // Never through a link: the agent can plant one here, and chmod follows
+        // links, so the heal would change the mode of whatever it points at.
+        const stat = await fs.promises.lstat(hostPath)
+        if (stat.isSymbolicLink()) return
         if ((stat.mode & 0o777) !== mode) {
           await fs.promises.chmod(hostPath, mode)
           console.warn(`[agent-actor] Healed ${hostPath} permissions back to ${mode.toString(8)}`)
