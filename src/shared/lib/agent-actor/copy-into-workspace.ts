@@ -18,20 +18,30 @@
  *   copied; `exclude` names more entries to skip, at any depth.
  * - With `followSymlinks`, a link is copied as what it points at (a file's
  *   bytes, a directory's tree) and the source root may itself be a link to a
- *   directory. Without it, a link is skipped with a warning, and a source
- *   root that is not a real directory is skipped whole.
- * - An empty directory is created as such; a file is streamed, not buffered.
+ *   directory. A directory reached twice through links is copied once.
+ *   Without it, a link is skipped with a warning, and a source root that is
+ *   not a real directory is skipped whole.
+ * - An empty directory is created as such. A file keeps its mode, so a
+ *   script that was executable in the source is executable in the workspace.
  * - Nothing at the destination is removed first: files with the same name are
  *   replaced, others are left in place.
+ *
+ * The files of one directory are copied concurrently, as the plain copy was.
+ * A workspace on this machine takes each file in one filesystem copy; any
+ * other workspace has each file streamed through `write`.
  */
 import fs from 'fs'
 import path from 'path'
 import { Readable } from 'stream'
+import pLimit from 'p-limit'
 import { LocalFileOps } from './local-file-ops'
 import type { FileOps } from './types'
 import { joinWorkspacePath } from './workspace-path'
 
 const ALWAYS_EXCLUDED = ['.git', '.skillset-metadata.json', '.skillset-original.md']
+
+/** Files of one directory in flight at once. */
+const FILE_CONCURRENCY = 8
 
 export interface CopyIntoWorkspaceOptions {
   /** Entry names to skip anywhere in the tree, in addition to the built-in ones. */
@@ -46,13 +56,40 @@ export async function copyHostDirIntoWorkspace(
   workspaceDir: string,
   options: CopyIntoWorkspaceOptions = {},
 ): Promise<void> {
-  const rootStat = options.followSymlinks ? await fs.promises.stat(hostDir) : await fs.promises.lstat(hostDir)
+  const followSymlinks = options.followSymlinks === true
+  const rootStat = followSymlinks ? await fs.promises.stat(hostDir) : await fs.promises.lstat(hostDir)
   if (!rootStat.isDirectory()) {
     console.warn(`copyHostDirIntoWorkspace: skipped non-directory source ${hostDir}`)
     return
   }
-  const excluded = new Set([...ALWAYS_EXCLUDED, ...(options.exclude ?? [])])
-  await copyTree(files, hostDir, joinWorkspacePath(workspaceDir), excluded, options.followSymlinks === true)
+  const walk: Walk = {
+    files,
+    copyFile: files instanceof LocalFileOps ? (src, dest) => files.copyHostFile(src, dest) : streamFile(files),
+    excluded: new Set([...ALWAYS_EXCLUDED, ...(options.exclude ?? [])]),
+    followSymlinks,
+    // Directories already copied, by real location, so a link back into the
+    // tree does not recurse until the path is too long.
+    visited: new Set(followSymlinks ? [await fs.promises.realpath(hostDir)] : []),
+  }
+  await copyTree(walk, hostDir, joinWorkspacePath(workspaceDir))
+}
+
+interface Walk {
+  files: FileOps
+  copyFile: (srcPath: string, destPath: string) => Promise<void>
+  excluded: Set<string>
+  followSymlinks: boolean
+  visited: Set<string>
+}
+
+/** One file through `write`, with the source's mode. */
+function streamFile(files: FileOps): Walk['copyFile'] {
+  return async (srcPath, destPath) => {
+    const stat = await fs.promises.stat(srcPath)
+    await files.write(destPath, Readable.toWeb(fs.createReadStream(srcPath)) as ReadableStream<Uint8Array>, {
+      mode: stat.mode & 0o777,
+    })
+  }
 }
 
 type EntryKind = 'file' | 'directory' | null
@@ -72,27 +109,36 @@ async function kindOf(entry: fs.Dirent, hostPath: string, followSymlinks: boolea
   return null
 }
 
-async function copyTree(
-  files: FileOps,
-  srcDir: string,
-  destDir: string,
-  excluded: Set<string>,
-  followSymlinks: boolean,
-): Promise<void> {
-  await files.mkdir(destDir)
+async function copyTree(walk: Walk, srcDir: string, destDir: string): Promise<void> {
+  await walk.files.mkdir(destDir)
   const entries = await fs.promises.readdir(srcDir, { withFileTypes: true })
+  const limit = pLimit(FILE_CONCURRENCY)
+  const fileCopies: Promise<void>[] = []
+  const subdirs: Array<{ srcPath: string; destPath: string }> = []
   for (const entry of entries) {
-    if (excluded.has(entry.name)) continue
+    if (walk.excluded.has(entry.name)) continue
     const srcPath = path.join(srcDir, entry.name)
     const destPath = joinWorkspacePath(destDir, entry.name)
-    const kind = await kindOf(entry, srcPath, followSymlinks)
+    const kind = await kindOf(entry, srcPath, walk.followSymlinks)
     if (kind === 'directory') {
-      await copyTree(files, srcPath, destPath, excluded, followSymlinks)
+      subdirs.push({ srcPath, destPath })
     } else if (kind === 'file') {
-      await files.write(destPath, Readable.toWeb(fs.createReadStream(srcPath)) as ReadableStream<Uint8Array>)
+      fileCopies.push(limit(() => walk.copyFile(srcPath, destPath)))
     } else {
       console.warn(`copyHostDirIntoWorkspace: skipped ${srcPath}`)
     }
+  }
+  await Promise.all(fileCopies)
+  for (const { srcPath, destPath } of subdirs) {
+    if (walk.followSymlinks) {
+      const real = await fs.promises.realpath(srcPath)
+      if (walk.visited.has(real)) {
+        console.warn(`copyHostDirIntoWorkspace: skipped ${srcPath}, already copied through a link`)
+        continue
+      }
+      walk.visited.add(real)
+    }
+    await copyTree(walk, srcPath, destPath)
   }
 }
 

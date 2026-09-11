@@ -238,7 +238,7 @@ export class LocalFileOps implements FileOps {
    * Copy a file from this machine into the workspace in one filesystem copy,
    * keeping its mode. Not part of `FileOps`: the source is a host path, which
    * only a workspace on this machine can reach directly. A bulk import (a
-   * folder upload, a skillset install) uses it instead of streaming each
+   * folder upload, a skillset install, a template checkout) uses it instead of streaming each
    * file through `write`, which costs several operations per file. The copy
    * itself is not atomic, like the plain copy it replaces; the containment
    * check on the destination is the same one every write gets.
