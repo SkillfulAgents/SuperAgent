@@ -81,7 +81,15 @@ Use the most specific tool:
 - `browser_hover` for hover menus and tooltips;
 - `browser_scroll` for page or container scrolling.
 
-Trust the action result. Click and key results report navigation; fill results
+Trust a reported change. Click, key, select and hover results report
+navigation plus an `Effect:` line of what was observed — dialogs opened or
+closed, live-region announcements (toasts, validation errors), control state
+changes (checked, pressed, expanded), typed field values, the change in the
+number of interactive elements, and focus. `Effect: none observed within Nms
+(…)` states only that nothing in that scope changed — not that the click
+failed: a highlight, a change inside an iframe or canvas, or a slow server
+all look like this. Snapshot or screenshot if you need to know; do not click
+again on that basis, which would undo a toggle. Fill results
 report the value the page actually committed. A fill warning means the page
 kept a different value—fix it before moving on.
 
