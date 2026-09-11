@@ -113,6 +113,25 @@ vi.mock('@shared/lib/platform-auth/config', () => ({
   getPlatformProxyBaseUrl: vi.fn(() => undefined),
 }))
 
+// The service reaches an agent's skills tree through the agent actor's
+// `files`. The real registry drags the container layer in at import time,
+// which this suite has no use for; hand it the same `LocalFileOps` the real
+// actor uses, rooted at the temp data dir, so fixtures written to disk and
+// assertions read from disk keep meaning what they always did.
+vi.mock('@shared/lib/agent-actor', async () => {
+  const workspacePath = await import('@shared/lib/agent-actor/workspace-path')
+  const { createLocalFileOps } = await import('@shared/lib/agent-actor/local-file-ops')
+  const { createLocalAgentCatalog } = await import('@shared/lib/agent-actor/local-agent-catalog')
+  const { getAgentWorkspaceDir } = await import('@shared/lib/utils/file-storage')
+  return {
+    ...workspacePath,
+    agentCatalog: createLocalAgentCatalog(),
+    agentRegistry: {
+      get: (slug: string) => ({ slug, files: createLocalFileOps(slug, { getAgentWorkspaceDir }) }),
+    },
+  }
+})
+
 import {
   contentHash,
   parseSkillFrontmatter,
