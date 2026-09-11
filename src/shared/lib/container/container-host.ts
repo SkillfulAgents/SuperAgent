@@ -94,9 +94,21 @@ export class ContainerHost {
 
   // Forget every runtime (e.g., when the container runner setting changes).
   // Does NOT stop running containers — call stopAll() first if needed.
+  //
+  // A runtime whose container is starting is kept: the start records its
+  // outcome on the runtime it began on, and dropping that runtime would leave
+  // the container it brings up running but unknown to the host, so nothing
+  // would count it as running or stop it on quit. Only its client is dropped,
+  // so the next one is built for the runner configured now.
   clearRuntimes(): void {
-    for (const runtime of this.runtimes.values()) runtime.dispose()
-    this.runtimes.clear()
+    for (const [slug, runtime] of this.runtimes) {
+      if (runtime.isStarting()) {
+        runtime.resetClient()
+        continue
+      }
+      runtime.dispose()
+      this.runtimes.delete(slug)
+    }
   }
 
   // Check if any agents have running containers (uses cached status)

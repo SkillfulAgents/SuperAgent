@@ -128,6 +128,15 @@ export class ContainerRuntime {
     return this.client !== null
   }
 
+  /**
+   * Forget the client and nothing else: the next getClient() builds one for
+   * the runner configured then. A start in flight keeps the client it was
+   * handed and still records its outcome here.
+   */
+  resetClient(): void {
+    this.client = null
+  }
+
   isStopping(): boolean {
     return this.stopping
   }
