@@ -659,6 +659,41 @@ describe('PlatformPaywallCard', () => {
       expect(toastSuccess).toHaveBeenCalledWith('Billing updated. You can continue.')
     })
 
+    it('keeps the expanded panel and holds the toast while a settings save is pending, then releases on the settled update', async () => {
+      renderCard()
+      const frame = await expandCta()
+      fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
+      postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated', { pending: true })
+      // The allowed snapshot lands (composer unblocked) but the card stays.
+      await waitFor(() => expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-blocked', 'false'))
+
+      expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-expanded', 'true')
+      expect(screen.getByTestId('billing-cta-frame')).toBe(frame)
+      expect(screen.getByTestId('composer')).toBeInTheDocument()
+      expect(toastSuccess).not.toHaveBeenCalled()
+      expect(mocks.track).not.toHaveBeenCalledWith('paywall_cleared', expect.anything())
+
+      // A non-boolean `pending` reads as settled.
+      postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated', { pending: 'yes' })
+      await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
+      expect(screen.getByTestId('composer')).toBeInTheDocument()
+      expect(toastSuccess).toHaveBeenCalledTimes(1)
+      expect(mocks.track).toHaveBeenCalledWith('paywall_cleared', { ctaKind: 'topup', handedOff: false })
+    })
+
+    it('releases a pending settings hold when the panel closes', async () => {
+      renderCard()
+      await expandCta()
+      fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
+      postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated', { pending: true })
+      await waitFor(() => expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-blocked', 'false'))
+      expect(toastSuccess).not.toHaveBeenCalled()
+
+      postEmbedMessage(PLATFORM_ORIGIN, 'close')
+      await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
+      expect(toastSuccess).toHaveBeenCalledTimes(1)
+    })
+
     it('keeps the same iframe document when saving a card flips the CTA from add_card to topup', async () => {
       fetchBilling.mockResolvedValue(billing({ hasPaymentMethod: false }))
       renderCard()

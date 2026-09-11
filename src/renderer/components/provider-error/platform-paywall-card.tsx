@@ -214,6 +214,9 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
   const [dismissed, setDismissed] = useState(false)
   const [handedOff, setHandedOff] = useState(false)
   const [expanded, setExpanded] = useState(false)
+  // The panel charged the card but still shows a settings error: keep it mounted, even
+  // once billing clears, until the platform settles it (plain billing-updated or close).
+  const [pendingSettings, setPendingSettings] = useState(false)
   const [ctaHint, setCtaHint] = useState('')
   const [plan, setPlan] = useState<SubscribePlan | null>(null)
   const billingChanged = useRef(false)
@@ -232,20 +235,25 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
   const view = billing.cta ? EMBED_VIEW[billing.cta.kind] : undefined
   const embedded = inApp && view !== undefined
   const { recheck } = billing
-  const handleBillingUpdated = useCallback(() => {
+  const handleBillingUpdated = useCallback(({ pending }: { pending: boolean }) => {
     billingChanged.current = true
+    setPendingSettings(pending)
     recheck()
   }, [recheck])
-  const collapse = useCallback(() => setExpanded(false), [])
+  const collapse = useCallback(() => {
+    setExpanded(false)
+    setPendingSettings(false)
+  }, [])
+  const holding = embedded && pendingSettings
   // Only the top-up panel expands in place; a view change remounts the frame anyway.
   useEffect(() => {
     if (expanded && view !== 'topup') setExpanded(false)
   }, [expanded, view])
   useEffect(() => {
-    if (!billing.cleared || !inApp || !billingChanged.current || successShown.current) return
+    if (!billing.cleared || holding || !inApp || !billingChanged.current || successShown.current) return
     successShown.current = true
     toast.success('Billing updated. You can continue.')
-  }, [billing.cleared, inApp])
+  }, [billing.cleared, holding, inApp])
 
   const ctaKind = billing.cta?.kind ?? 'none'
   const shownRef = useRef(false)
@@ -255,11 +263,11 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
     track('paywall_shown', { ctaKind, blocked: billing.blocked, placement: presentation?.placement ?? 'unknown' })
   }, [billing.loading, billing.cleared, billing.blocked, dismissed, ctaKind, presentation?.placement, track])
   useEffect(() => {
-    if (!shownRef.current || !billing.cleared) return
+    if (!shownRef.current || !billing.cleared || holding) return
     track('paywall_cleared', { ctaKind, handedOff })
-  }, [billing.cleared, ctaKind, handedOff, track])
+  }, [billing.cleared, holding, ctaKind, handedOff, track])
 
-  if (billing.cleared || dismissed) return <>{children}</>
+  if ((billing.cleared && !holding) || dismissed) return <>{children}</>
 
   const fallback = splitMessage(presentation?.message ?? message)
   const panelOpen = embedded && expanded

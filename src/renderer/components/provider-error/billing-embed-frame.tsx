@@ -31,6 +31,9 @@ interface EmbedMessage {
   hint?: string
   label?: string
   plan?: SubscribePlan
+  // billing-updated only: the charge went through but the panel still shows an unresolved
+  // settings error; it settles with a plain billing-updated or a close.
+  pending: boolean
 }
 
 function readPlan(seats: unknown, seatPriceCents: unknown): SubscribePlan | undefined {
@@ -43,7 +46,7 @@ function readEmbedMessage(data: unknown): EmbedMessage | null {
   if (typeof data !== 'object' || data === null) return null
   const record = data as {
     type?: unknown; event?: unknown; orgId?: unknown; height?: unknown; hint?: unknown; label?: unknown
-    seats?: unknown; seatPriceCents?: unknown
+    seats?: unknown; seatPriceCents?: unknown; pending?: unknown
   }
   if (record.type !== BILLING_EMBED_MESSAGE_TYPE) return null
   if (
@@ -57,6 +60,7 @@ function readEmbedMessage(data: unknown): EmbedMessage | null {
     hint: typeof record.hint === 'string' && record.hint.length <= 300 ? record.hint : undefined,
     label: typeof record.label === 'string' && record.label.length <= 40 ? record.label : undefined,
     plan: readPlan(record.seats, record.seatPriceCents),
+    pending: record.pending === true,
   }
 }
 
@@ -85,7 +89,8 @@ export interface BillingEmbedFrameProps {
   orgId: string | null
   platformBaseUrl: string | null
   fallbackHref: string | null
-  onBillingUpdated: () => void
+  /** `pending`: keep the frame; the panel still has a settings error the user must resolve or skip. */
+  onBillingUpdated: (update: { pending: boolean }) => void
   onOpenExternal: () => void
 }
 
@@ -154,7 +159,7 @@ export function BillingEmbedFrame({
       if (message.event === 'ready') { setFrameReady(true); sendTheme() }
       else if (message.event === 'open-billing' && launcher && view === 'topup') onOpenBilling?.()
       else if (message.event === 'close' && launcher) onClose?.()
-      else if (message.event === 'billing-updated') onBillingUpdated()
+      else if (message.event === 'billing-updated') onBillingUpdated({ pending: message.pending })
       else if (message.event === 'session-expired') setFailure('expired')
       else if (message.event === 'resize' && (!launcher || expanded) && message.height !== undefined) setHeight(clampHeight(message.height))
       else if (message.event === 'cta-state' && launcher) {
