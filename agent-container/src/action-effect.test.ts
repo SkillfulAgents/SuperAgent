@@ -13,6 +13,8 @@ type FakeEl = {
   tag?: string; role?: string | null; text?: string; visible?: boolean; label?: string | null
   labelledby?: string | null; heading?: string | null; matchesPopover?: boolean
   placeholder?: string | null; name?: string | null; labels?: Array<{ innerText: string }>
+  /** Simulate a browser with checkVisibility(): true/false, or undefined for the getClientRects fallback. */
+  checkVisibility?: boolean; type?: string
 }
 function el(o: FakeEl) {
   const attrs: Record<string, string | null> = {
@@ -21,8 +23,10 @@ function el(o: FakeEl) {
   }
   return {
     tagName: (o.tag ?? 'div').toUpperCase(),
+    type: o.type,
     innerText: o.text ?? '',
     labels: o.labels,
+    ...(o.checkVisibility !== undefined ? { checkVisibility: () => o.checkVisibility } : {}),
     getAttribute: (k: string) => attrs[k] ?? null,
     getClientRects: () => (o.visible === false ? [] : [{}]),
     querySelector: (q: string) => (q.startsWith('h1') && o.heading ? { innerText: o.heading } : null),
@@ -81,10 +85,20 @@ describe('fingerprintScript', () => {
     expect(out.t).toBe(1000)
   })
 
-  it('describes the focused element by role or tag and its accessible name', () => {
-    expect(run({ active: el({ tag: 'input', labels: [{ innerText: 'Search' }] }) }).out.focus).toBe('input "Search"')
+  it('describes the focused element by role (explicit or implied by tag) and its accessible name', () => {
+    expect(run({ active: el({ tag: 'input', labels: [{ innerText: 'Search' }] }) }).out.focus).toBe('textbox "Search"')
+    expect(run({ active: el({ tag: 'input', type: 'checkbox', label: 'Remember me' }) }).out.focus).toBe('checkbox "Remember me"')
+    expect(run({ active: el({ tag: 'a', text: 'Wikipedia' }) }).out.focus).toBe('link "Wikipedia"')
     expect(run({ active: el({ tag: 'div', role: 'textbox', label: 'Message' }) }).out.focus).toBe('textbox "Message"')
     expect(run({ active: el({ tag: 'button', text: 'Pay now' }) }).out.focus).toBe('button "Pay now"')
+  })
+
+  it('uses checkVisibility when the browser has it, so visibility:hidden menus do not count', () => {
+    // Wikipedia's Vector dropdown keeps layout boxes for its closed menu: getClientRects says visible, checkVisibility says hidden.
+    const { out } = run({
+      sel: { [INTERACTIVE]: [el({ tag: 'a', checkVisibility: false }), el({ tag: 'a', checkVisibility: true }), el({ tag: 'a' })] },
+    })
+    expect(out.interactive).toBe(2)
   })
 
   it('clears resource timings on the before read and collects failures since t0 on the after read', () => {
@@ -156,10 +170,14 @@ describe('diffFingerprints + formatActionEffect', () => {
     )
   })
 
-  it('does not re-announce a live region that was already showing', () => {
+  it('does not re-announce a live region that was already showing, and sizes a bare text change', () => {
     const before: Fingerprint = { ...base, live: ['Saved'] }
-    const after: Fingerprint = { ...base, live: ['Saved'], textHash: 9 }
-    expect(formatActionEffect(diffFingerprints(before, after), { settleMs: 300, verb: 'click' })).toBe('\nEffect: page text changed')
+    const same: Fingerprint = { ...base, live: ['Saved'], textHash: 9 }
+    expect(formatActionEffect(diffFingerprints(before, same), { settleMs: 300, verb: 'click' })).toBe('\nEffect: page text changed (same length, different content)')
+    const grew: Fingerprint = { ...base, live: ['Saved'], textHash: 9, textLen: 1734 }
+    expect(formatActionEffect(diffFingerprints(before, grew), { settleMs: 300, verb: 'click' })).toBe('\nEffect: page text changed (+1,234 chars)')
+    const shrank: Fingerprint = { ...base, live: ['Saved'], textHash: 9, textLen: 310 }
+    expect(formatActionEffect(diffFingerprints(before, shrank), { settleMs: 300, verb: 'click' })).toBe('\nEffect: page text changed (−190 chars)')
   })
 
   it('says no DOM change, with the window and a verb-specific hint, when nothing moved', () => {

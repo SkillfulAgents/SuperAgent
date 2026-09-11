@@ -63,7 +63,12 @@ export function fingerprintScript(since?: number): string {
   return (
     '(function(){var o={t:0,url:"",interactive:0,top:[],live:[],textLen:0,textHash:0,focus:"",failed:[]};' +
     'var ws=function(s){return String(s||"").replace(/\\s+/g," ").trim()};' +
-    'var vis=function(el){try{return el.getClientRects().length>0}catch(e){return false}};' +
+    // checkVisibility covers visibility:hidden / opacity:0, which is how many
+    // dropdowns hide their closed state (Wikipedia's Vector menu keeps layout
+    // boxes for hidden links, so getClientRects alone counted them as visible
+    // and the menu opening read as "+0 interactive elements"). Both option
+    // spellings are passed: Chrome renamed them in 2024.
+    'var vis=function(el){try{if(typeof el.checkVisibility==="function")return el.checkVisibility({visibilityProperty:true,opacityProperty:true,checkVisibilityCSS:true,checkOpacity:true});return el.getClientRects().length>0}catch(e){return false}};' +
     'var since=' + sinceExpr + ';' +
     'try{o.t=performance.now()}catch(e){}' +
     'try{o.url=String(location.href||"")}catch(e){}' +
@@ -87,7 +92,8 @@ export function fingerprintScript(since?: number): string {
     'for(var q=0;q<lim;q++){hsh=((hsh<<5)+hsh+txt.charCodeAt(q))|0}o.textHash=hsh}catch(e){}' +
     'try{var a=document.activeElement;if(!a||a===document.body){o.focus="nothing focused"}else{' +
     'var tag=a.tagName.toLowerCase();var role=a.getAttribute("role");var an=a.getAttribute("aria-label")||(a.labels&&a.labels[0]&&a.labels[0].innerText)||a.getAttribute("placeholder")||a.getAttribute("name")||a.innerText||"";' +
-    'o.focus=(role||tag)+(an?" "+JSON.stringify(ws(an).slice(0,60)):"")}}catch(e){}' +
+    'var implied={a:"link",input:a.type==="checkbox"||a.type==="radio"||a.type==="submit"||a.type==="button"?a.type:"textbox",select:"combobox",textarea:"textbox"};' +
+    'o.focus=(role||implied[tag]||tag)+(an?" "+JSON.stringify(ws(an).slice(0,60)):"")}}catch(e){}' +
     'return JSON.stringify(o)})()'
   )
 }
@@ -135,6 +141,8 @@ export interface ActionEffect {
   interactiveDelta: number
   announced: string[]
   textChanged: boolean
+  /** after.textLen − before.textLen; a size for "page text changed". */
+  textDelta: number
   focus: string
   focusChanged: boolean
   failed: FailedRequest[]
@@ -153,6 +161,7 @@ export function diffFingerprints(before: Fingerprint, after: Fingerprint): Actio
     interactiveDelta: after.interactive - before.interactive,
     announced: after.live.filter(s => !beforeLive.has(s)),
     textChanged: after.textHash !== before.textHash || after.textLen !== before.textLen,
+    textDelta: after.textLen - before.textLen,
     focus: after.focus,
     focusChanged: after.focus !== before.focus,
     failed: after.failed,
@@ -191,7 +200,9 @@ export function formatActionEffect(effect: ActionEffect | null, opts: EffectForm
   if (effect.interactiveDelta !== 0) {
     parts.push(`${effect.interactiveDelta > 0 ? '+' : ''}${effect.interactiveDelta} interactive elements`)
   } else if (parts.length === 0 && effect.textChanged) {
-    parts.push('page text changed')
+    const d = effect.textDelta
+    const size = d === 0 ? 'same length, different content' : `${d > 0 ? '+' : '−'}${Math.abs(d).toLocaleString('en-US')} chars`
+    parts.push(`page text changed (${size})`)
   }
   const focusNote = opts.verb === 'press' && effect.focus ? `focus: ${effect.focus}` : ''
   if (parts.length === 0 && !(opts.verb === 'press' && effect.focusChanged)) {
