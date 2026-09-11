@@ -10,11 +10,16 @@ import { defineHomeScenarios } from './home-scenarios'
 // reads (the iOS poll) and the sessions page come from the cache. Wall is
 // bounded by the per-agent critical path, not the agent count: the agent
 // list, artifact lookups and per-request DB reads overlap.
+//
+// Every workspace read goes through the actor's file operations, which check
+// each path's real location against the workspace: one realpath per artifact
+// listing and per manifest or widget probe (7 per agent here). The scan used
+// to read those paths with no containment at all.
 defineHomeScenarios('small', {
-  agentsCold: { totalOps: 317, ops: { stat: 275 }, wallMs: 240 },
-  agentsWarm: { totalOps: 52, ops: { stat: 15 }, wallMs: 110 },
-  homeCold: { totalOps: 352, ops: { stat: 280 }, wallMs: 370 },
-  homeWarm: { totalOps: 87, ops: { stat: 20 }, wallMs: 240 },
+  agentsCold: { totalOps: 342, ops: { stat: 275, realpath: 35 }, wallMs: 240 },
+  agentsWarm: { totalOps: 77, ops: { stat: 15, realpath: 35 }, wallMs: 110 },
+  homeCold: { totalOps: 377, ops: { stat: 280, realpath: 35 }, wallMs: 370 },
+  homeWarm: { totalOps: 112, ops: { stat: 20, realpath: 35 }, wallMs: 240 },
   sessionsPage: { totalOps: 3, ops: { stat: 2 }, wallMs: 70 },
   sessionsNotable: { totalOps: 1, ops: { stat: 1 }, wallMs: 40 },
 })
