@@ -12,6 +12,13 @@ describe('getToolkitSlugFromProviderSlug', () => {
     expect(getToolkitSlugFromProviderSlug('slack', 'composio')).toBe('slack')
   })
 
+  it('maps the bridge-hosted custom_plaid toolkit to plaid and back', () => {
+    expect(getToolkitSlugFromProviderSlug('custom_plaid', 'composio')).toBe('plaid')
+    expect(getProviderSlug('plaid', 'composio')).toBe('custom_plaid')
+    expect(isProviderSupported('plaid', 'composio')).toBe(true)
+    expect(isProviderSupported('plaid', 'nango')).toBe(false)
+  })
+
   it('returns undefined for unknown provider slug', () => {
     expect(getToolkitSlugFromProviderSlug('nonexistent-service', 'nango')).toBeUndefined()
     expect(getToolkitSlugFromProviderSlug('nonexistent-service', 'composio')).toBeUndefined()

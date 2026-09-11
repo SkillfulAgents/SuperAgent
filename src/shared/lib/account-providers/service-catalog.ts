@@ -329,6 +329,15 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     composioSlug: 'xero',
     nangoSlug: 'xero',
   },
+  {
+    slug: 'plaid',
+    displayName: 'Plaid',
+    icon: 'landmark',
+    description: 'Bank accounts, balances, and transactions',
+    // Plaid Link is not OAuth: the platform's toolkit bridge hosts it as a custom toolkit.
+    composioSlug: 'custom_plaid',
+    platformOnly: true,
+  },
 
   // Marketing
   {

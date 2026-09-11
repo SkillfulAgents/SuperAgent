@@ -321,11 +321,12 @@ describe('generateSystemPrompt rendering', () => {
     const promptSlugs = [...line!.matchAll(/`([a-z_0-9]+)`/g)].map(match => match[1])
     expect(new Set(promptSlugs).size, 'prompt lists a slug twice').toBe(promptSlugs.length)
     expect(promptSlugs).not.toContain('twitter')
+    expect(promptSlugs).not.toContain('plaid')
     expect(promptSlugs.sort()).toEqual(SERVICES.map(service => service.slug).sort())
   })
 
   // The catalog reads the env at import, so platform mode needs a fresh import.
-  it('lists X in both the prompt and the catalog on Gamut\'s Composio', async () => {
+  it('lists X and Plaid in both the prompt and the catalog on Gamut\'s Composio', async () => {
     process.env.COMPOSIO_PLATFORM_MODE = 'true'
     vi.resetModules()
     const { SERVICES: platformServices } = await import('./tools/search-connected-account-services')
@@ -334,6 +335,7 @@ describe('generateSystemPrompt rendering', () => {
       .find(candidate => candidate.startsWith('**Supported services include:**'))
     const promptSlugs = [...line!.matchAll(/`([a-z_0-9]+)`/g)].map(match => match[1])
     expect(promptSlugs).toContain('twitter')
+    expect(promptSlugs).toContain('plaid')
     expect(promptSlugs.sort()).toEqual(platformServices.map(service => service.slug).sort())
   })
 
