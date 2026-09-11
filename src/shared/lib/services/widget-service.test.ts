@@ -232,6 +232,24 @@ describe('widget-service', () => {
     expect(await listArtifactsAndWidgets(AGENT)).toEqual({ dashboards: [], widgets: [] })
   })
 
+  it('a filesystem failure the actor does not map also reads as an empty listing', async () => {
+    // Descriptor exhaustion, an I/O error: not the actor's error type, but the
+    // agents list must still come back with this agent's artifacts as none.
+    seed('macros', { 'package.json': manifest({ script: 'bun run widget.ts' }) })
+    const { files } = agentRegistry.get(AGENT)
+    const failure = Object.assign(new Error('too many open files'), { code: 'EMFILE' })
+    const list = vi.spyOn(files, 'list').mockRejectedValue(failure)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      expect(await listWidgetsFromFilesystem(AGENT)).toEqual([])
+      expect(await listArtifactsAndWidgets(AGENT)).toEqual({ dashboards: [], widgets: [] })
+      expect(warn).toHaveBeenCalledTimes(2)
+    } finally {
+      list.mockRestore()
+      warn.mockRestore()
+    }
+  })
+
   it('carries the policy inside the document the app inlines', () => {
     // The app cannot frame the URL (the renderer is file:// in a packaged
     // build), so the restrictions have to travel in the document itself.
