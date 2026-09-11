@@ -217,9 +217,10 @@ export class LocalFileOps implements FileOps {
    * Copy a file from this machine into the workspace in one filesystem copy,
    * keeping its mode. Not part of `FileOps`: the source is a host path, which
    * only a workspace on this machine can reach directly. A bulk import (a
-   * folder upload, a skillset install) uses it instead of streaming each
-   * file through `write`; the caller creates the directories, as the plain
-   * copy it replaces did once per directory rather than once per file.
+   * folder upload, a skillset install, a template checkout) uses it instead
+   * of streaming each file through `write`; the caller creates the
+   * directories, as the plain copy it replaces did once per directory rather
+   * than once per file.
    */
   async copyHostFile(hostPath: string, workspacePath: string): Promise<void> {
     const { rel, abs } = this.absolute(workspacePath)
