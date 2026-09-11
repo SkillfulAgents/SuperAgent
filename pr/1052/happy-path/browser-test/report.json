@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser use feature - agent successfully opened browser, navigated to https://example.com, retrieved page title \"Example Domain\", and reported back with correct result.",
+  "steps": [
+    "Navigated to http://localhost:47891 - Page loaded successfully, showing SuperAgent home page with \"Your Agents\" section containing the QA-20260911-180802-71cq agent.",
+    "Clicked on \"QA-20260911-180802-71cq\" agent in sidebar - Successfully opened the agent chat interface at URL /agents/qa-20260911-180802-71cq-i1dqdkrejt with agent status showing \"idle\".",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into message input field - Message successfully entered in the textbox and send button became enabled.",
+    "Clicked send message button - Message sent successfully, agent status changed to \"working\", URL changed to session URL, and page title updated to \"Browser Page Title Lookup — QA-20260911-180802-71cq\".",
+    "Waited for agent response with \"Example Domain\" text - Agent completed task in 6 seconds, showing all tool calls (ToolSearch, Open Browser, Close Browser) with success checkmarks.",
+    "Verified final response contains \"Example Domain\" and captured screenshot - Response clearly displays: \"The page title is \"Example Domain\" (HTTP 200). Browser closed.\" Agent returned to idle status. Screenshot confirms successful completion of browser use task with correct page title retrieved."
+  ],
+  "bugs": [],
+  "durationMs": 139907,
+  "sessionId": "cdd19fb5-0e85-48df-ab8c-cc9ac0b1a625",
+  "cost": {
+    "inputTokens": 512,
+    "outputTokens": 14492,
+    "cacheCreationTokens": 89221,
+    "cacheReadTokens": 1606425,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.345141
+  }
+}
