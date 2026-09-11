@@ -747,6 +747,73 @@ describe('ContainerHost — hasRunningAgents / getRunningAgentIds', () => {
 })
 
 // ============================================================================
+// clearRuntimes while a container is starting
+//
+// The settings route clears the runtimes when the container runner changes.
+// A start already in flight finishes on the runtime it began on; that runtime
+// has to stay known to the host, or the container it brings up is running
+// with nothing counting it as running or stopping it on quit.
+// ============================================================================
+
+describe('ContainerHost.clearRuntimes', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    containerHost.clearRuntimes()
+    mockDbInnerJoin.mockReturnValue({ where: mockDbWhere })
+    mockDbWhere.mockResolvedValue([])
+    mockMcpInnerJoin.mockReturnValue({ where: mockMcpWhere })
+    mockMcpWhere.mockResolvedValue([])
+    mockGetMountsWithHealth.mockReturnValue([])
+    mockGetOrCreateProxyToken.mockResolvedValue('test-token')
+    mockGetContainerHostUrl.mockReturnValue('127.0.0.1')
+    mockGetAppPort.mockReturnValue(3000)
+  })
+
+  it('keeps a runtime whose container is starting and records the start on it', async () => {
+    let finishStart!: () => void
+    mockStart.mockReturnValue(new Promise<void>((resolve) => { finishStart = resolve }))
+    mockGetInfoFromRuntime.mockResolvedValue({ status: 'running', port: 4001 })
+    const runtime = containerHost.runtime('agent-1')
+    const started = runtime.ensureRunning()
+    await vi.waitFor(() => expect(mockStart).toHaveBeenCalledOnce())
+
+    containerHost.clearRuntimes()
+
+    expect(containerHost.peekRuntime('agent-1')).toBe(runtime)
+    finishStart()
+    await started
+    expect(containerHost.hasRunningAgents()).toBe(true)
+    expect(containerHost.runtime('agent-1').getCachedInfo()).toEqual({ status: 'running', port: 4001 })
+  })
+
+  it('drops the kept runtime\'s client so the next one is built for the new runner', async () => {
+    let finishStart!: () => void
+    mockStart.mockReturnValue(new Promise<void>((resolve) => { finishStart = resolve }))
+    mockGetInfoFromRuntime.mockResolvedValue({ status: 'running', port: 4001 })
+    const runtime = containerHost.runtime('agent-1')
+    const started = runtime.ensureRunning()
+    await vi.waitFor(() => expect(mockStart).toHaveBeenCalledOnce())
+
+    containerHost.clearRuntimes()
+    expect(runtime.hasClient()).toBe(false)
+
+    finishStart()
+    await started
+    expect(runtime.hasClient()).toBe(false)
+  })
+
+  it('drops a runtime whose container is not starting (control)', () => {
+    const runtime = containerHost.runtime('agent-1')
+    runtime.updateCachedStatus('running', 4001)
+
+    containerHost.clearRuntimes()
+
+    expect(containerHost.peekRuntime('agent-1')).toBeUndefined()
+    expect(containerHost.hasRunningAgents()).toBe(false)
+  })
+})
+
+// ============================================================================
 // Health warning change detection
 // ============================================================================
 
