@@ -160,7 +160,7 @@ function createSessionOps(slug: AgentSlug, deps: LocalActorDeps): SessionOps {
       deps.sessionService.getSessionForScheduledExecution(slug, taskId, executionAt),
     recordActivity: (...args) => deps.recordSessionActivity(slug, ...args),
 
-    subagents: (sessionId) => deps.transcripts.listSubagents(slug, sessionId),
+    subagents: (sessionId, options) => deps.transcripts.listSubagents(slug, sessionId, options),
     subagentTranscript: (sessionId, subagentId) => deps.transcripts.readSubagentTranscript(slug, sessionId, subagentId),
     workflowTree: (sessionId, runId) => deps.transcripts.readWorkflowTree(slug, sessionId, runId),
     workflowAgentTranscript: (sessionId, runId, workflowAgentId) =>

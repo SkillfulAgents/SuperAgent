@@ -1,7 +1,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { listSubagents, readSubagentTranscript, readWorkflowAgentTranscript } from './local-transcript-ops'
 import { WorkspaceFileError } from './workspace-path'
 
@@ -59,6 +59,18 @@ describe('local transcript ops — containment', () => {
 
     expect(await readSubagentTranscript(AGENT, SESSION, 'x')).toEqual([{ type: 'assistant', n: 1 }])
     expect(await listSubagents(AGENT, SESSION)).toEqual([{ id: 'x', toolUseId: 'tu-1' }])
+  })
+
+  it('does not read the sidecars of the subagents the caller already knows', async () => {
+    await fs.promises.writeFile(path.join(subagentsDir, 'agent-known.meta.json'), JSON.stringify({ toolUseId: 'tu-1' }))
+    await fs.promises.writeFile(path.join(subagentsDir, 'agent-new.meta.json'), JSON.stringify({ toolUseId: 'tu-2' }))
+    const reads = vi.spyOn(fs.promises, 'readFile')
+    try {
+      expect(await listSubagents(AGENT, SESSION, { except: new Set(['known']) })).toEqual([{ id: 'new', toolUseId: 'tu-2' }])
+      expect(reads.mock.calls.map(([file]) => path.basename(String(file)))).toEqual(['agent-new.meta.json'])
+    } finally {
+      reads.mockRestore()
+    }
   })
 
   it("a link planted in the subagents directory does not read another agent's transcript", async () => {

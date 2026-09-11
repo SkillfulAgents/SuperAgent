@@ -208,8 +208,13 @@ export interface SessionOps {
   // Files derived from a session's transcript: subagent and workflow
   // transcripts live beside it. Read by the routes that render them.
 
-  /** The subagents a session launched, from their sidecar metadata. */
-  subagents(sessionId: string): Promise<SubagentRef[]>
+  /**
+   * The subagents a session launched, from their sidecar metadata. `except`
+   * names the ones the caller already knows: their sidecars are not read and
+   * they are not returned, so resolving one interrupted launch in a history
+   * of a hundred settled ones reads one sidecar, not a hundred.
+   */
+  subagents(sessionId: string, options?: { except?: ReadonlySet<string> }): Promise<SubagentRef[]>
   /** One subagent's transcript entries; empty when there is none. */
   subagentTranscript(sessionId: string, subagentId: string): Promise<JsonlEntry[]>
   /** `buildWorkflowTree` (workflow-tree) for one dynamic-workflow run, or null when the run is unknown. */
