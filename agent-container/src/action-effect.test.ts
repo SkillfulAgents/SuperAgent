@@ -173,6 +173,12 @@ describe('focused field value', () => {
   it('effectHasChange is false for an identical fingerprint', () => {
     expect(effectHasChange(diffFingerprints(base, { ...base }))).toBe(false)
   })
+
+  it('a focus move counts as a change for press but not for click (the click itself moves focus)', () => {
+    const moved = diffFingerprints(base, { ...base, focus: 'button "Add to cart"' })
+    expect(effectHasChange(moved, { countFocus: true })).toBe(true)
+    expect(effectHasChange(moved, { countFocus: false })).toBe(false)
+  })
 })
 
 describe('diffFingerprints + formatActionEffect', () => {

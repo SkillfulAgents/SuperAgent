@@ -155,11 +155,17 @@ export interface ActionEffect {
   failed: FailedRequest[]
 }
 
-/** True when the diff found anything at all — used to decide on a second, later read. */
-export function effectHasChange(e: ActionEffect): boolean {
+/**
+ * True when the diff found anything the result will report — used to decide
+ * on a second, later read. Focus only counts for press: a click moves focus
+ * to the clicked element, which the click result does not treat as an effect,
+ * so counting it there skipped the re-read and still printed "no DOM change".
+ */
+export function effectHasChange(e: ActionEffect, opts: { countFocus?: boolean } = {}): boolean {
+  const countFocus = opts.countFocus ?? true
   return (
     e.opened.length > 0 || e.closed.length > 0 || e.announced.length > 0 || e.failed.length > 0 ||
-    e.interactiveDelta !== 0 || e.textChanged || e.focusChanged || e.focusValueChanged
+    e.interactiveDelta !== 0 || e.textChanged || (countFocus && (e.focusChanged || e.focusValueChanged))
   )
 }
 
