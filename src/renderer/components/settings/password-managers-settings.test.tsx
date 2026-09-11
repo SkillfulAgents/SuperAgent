@@ -27,7 +27,7 @@ describe('PasswordManagersSettings', () => {
     })
   })
 
-  it('configures a provider with a square checkbox card without pairing it', async () => {
+  it('configures a provider with a radio card without pairing it', async () => {
     const user = userEvent.setup()
     mockApiFetch
       .mockResolvedValueOnce(response({
@@ -44,9 +44,18 @@ describe('PasswordManagersSettings', () => {
         provider: 'apple-passwords',
         configured: true,
       }))
+      .mockResolvedValueOnce(response({
+        providers: [{
+          provider: 'apple-passwords',
+          providerLabel: 'Apple Passwords',
+          configured: true,
+          installable: true,
+          status: 'disconnected',
+        }],
+      }))
 
     render(<PasswordManagersSettings />)
-    const option = await screen.findByRole('checkbox', { name: /Apple Passwords/i })
+    const option = await screen.findByRole('radio', { name: /Apple Passwords/i })
     expect(screen.getByText('Experimental')).toBeInTheDocument()
     expect(option).toHaveAttribute('aria-checked', 'false')
     await user.click(option)
@@ -58,7 +67,8 @@ describe('PasswordManagersSettings', () => {
     )
     expect(mockApiFetch.mock.calls[1][1].method).toBe('PUT')
     expect(JSON.parse(mockApiFetch.mock.calls[1][1].body)).toEqual({ configured: true })
-    expect(mockApiFetch).toHaveBeenCalledTimes(2)
+    expect(mockApiFetch.mock.calls[2][0]).toBe('/api/settings/password-managers')
+    expect(mockApiFetch).toHaveBeenCalledTimes(3)
   })
 
   it('shows prerequisite instructions and opens the extension directly in Chrome', async () => {
@@ -89,8 +99,91 @@ describe('PasswordManagersSettings', () => {
 
     render(<PasswordManagersSettings />)
     expect(await screen.findByText('Install the iCloud Passwords extension in Chrome')).toBeInTheDocument()
-    expect(screen.getByRole('checkbox', { name: /Apple Passwords/i })).toBeDisabled()
+    expect(screen.getByRole('radio', { name: /Apple Passwords/i })).toBeDisabled()
     await user.click(screen.getByRole('button', { name: 'Install in Chrome' }))
     expect(mockOpenApplePasswordsExtension).toHaveBeenCalledOnce()
+  })
+
+  it('refetches after enabling one provider so the other card unchecks', async () => {
+    const user = userEvent.setup()
+    mockApiFetch
+      .mockResolvedValueOnce(response({
+        providers: [{
+          provider: 'apple-passwords',
+          providerLabel: 'Apple Passwords',
+          configured: true,
+          installable: true,
+          status: 'disconnected',
+        }, {
+          provider: 'onepassword',
+          providerLabel: '1Password',
+          configured: false,
+          installable: true,
+          status: 'disconnected',
+        }],
+      }))
+      .mockResolvedValueOnce(response({
+        success: true,
+        provider: 'onepassword',
+        configured: true,
+      }))
+      .mockResolvedValueOnce(response({
+        providers: [{
+          provider: 'apple-passwords',
+          providerLabel: 'Apple Passwords',
+          configured: false,
+          installable: true,
+          status: 'disconnected',
+        }, {
+          provider: 'onepassword',
+          providerLabel: '1Password',
+          configured: true,
+          installable: true,
+          status: 'disconnected',
+        }],
+      }))
+
+    render(<PasswordManagersSettings />)
+    const apple = await screen.findByRole('radio', { name: /Apple Passwords/i })
+    const one = screen.getByRole('radio', { name: /1Password/i })
+    expect(apple).toHaveAttribute('aria-checked', 'true')
+    expect(one).toHaveAttribute('aria-checked', 'false')
+    await user.click(one)
+    expect(one).toHaveAttribute('aria-checked', 'true')
+    expect(apple).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('shows 1Password copy and combined remediation', async () => {
+    mockApiFetch.mockResolvedValueOnce(response({
+      providers: [{
+        provider: 'onepassword',
+        providerLabel: '1Password',
+        configured: false,
+        installable: true,
+        status: 'disconnected',
+      }, {
+        provider: 'onepassword-missing',
+        providerLabel: '1Password setup',
+        configured: false,
+        installable: true,
+        status: 'unavailable',
+        remediation: {
+          code: 'onepassword_missing',
+          title: 'Set up 1Password',
+          instructions: [
+            'Download and install the 1Password desktop app, then sign in.',
+            'Install the 1Password command-line tool (op).',
+            'In 1Password, turn on Settings → Developer → Integrate with 1Password CLI.',
+            'Return here and refresh.',
+          ],
+        },
+      }],
+    }))
+
+    render(<PasswordManagersSettings />)
+    expect(await screen.findByText('Fill logins saved in 1Password during browser tasks.')).toBeInTheDocument()
+    expect(screen.getByText('You’ll approve access in the 1Password app when needed.')).toBeInTheDocument()
+    expect(screen.getByText('Set up 1Password')).toBeInTheDocument()
+    expect(screen.getByText('Install the 1Password command-line tool (op).')).toBeInTheDocument()
   })
 })

@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto'
 import { ApplePasswordsProvider } from './apple-passwords-provider'
+import { OnePasswordProvider } from './onepassword-provider'
 import type {
   CredentialLookupContext,
   CredentialProviderConnection,
@@ -10,13 +11,19 @@ import type {
   RetrievedCredential,
 } from './types'
 import { CredentialBrokerError } from './types'
-import { isManagedCredentialProvider, isPairableCredentialProvider } from './types'
+import {
+  isManagedCredentialProvider,
+  isPairableCredentialProvider,
+  isSearchableCredentialProvider,
+} from './types'
 
 const DEFAULT_SELECTION_TTL_MS = 5 * 60 * 1000
 
 interface PendingSelection {
   scopeKey: string
   provider: CredentialProvider
+  providerId: string
+  kind: 'suggestion' | 'search'
   context: CredentialLookupContext
   item: CredentialProviderItem
   expiresAt: number
@@ -42,9 +49,10 @@ export function normalizeCredentialContext(rawUrl: string): CredentialLookupCont
 
 export class CredentialBroker {
   private readonly selections = new Map<string, PendingSelection>()
+  private epoch = 0
 
   constructor(
-    private readonly providers: CredentialProvider[] = [new ApplePasswordsProvider()],
+    private readonly providers: CredentialProvider[] = [new ApplePasswordsProvider(), new OnePasswordProvider()],
     private readonly selectionTtlMs = DEFAULT_SELECTION_TTL_MS,
     private readonly now: () => number = Date.now,
   ) {}
@@ -53,19 +61,19 @@ export class CredentialBroker {
     scope: CredentialRequestScope,
     rawUrl: string,
     configuredProviderIds?: string[],
+    query?: string,
   ): Promise<CredentialSuggestionsResponse> {
     const context = normalizeCredentialContext(rawUrl)
     const key = scopeKey(scope)
-    this.prune(key)
+    const suggestEpoch = this.epoch
+    this.prune(key, query === undefined ? 'suggestion' : 'search')
 
-    // MVP uses the first configured provider. The broker contract deliberately
-    // keeps this choice out of the renderer so additional providers can be
-    // combined later without widening the secret boundary. Omitting the list
-    // retains the old all-providers behavior for broker-only consumers; the
-    // product route always passes the durable user configuration explicitly.
+    // Single-select: the configured list holds at most one id. Omitting the
+    // list retains the old all-providers behavior for broker-only consumers.
     const provider = configuredProviderIds === undefined
       ? this.providers[0]
       : this.providers.find((candidate) => configuredProviderIds.includes(candidate.id))
+    const searchable = provider ? isSearchableCredentialProvider(provider) : false
     if (!provider) {
       const installable = (await this.connectionStatuses())
         .some((connection) => connection.installable)
@@ -74,38 +82,43 @@ export class CredentialBroker {
         providerLabel: 'Password manager',
         status: 'unconfigured',
         installable,
+        searchable,
         origin: context.origin,
         message: 'Connect a password manager to fill saved logins',
         suggestions: [],
       }
     }
 
-    const result = await provider.list(context)
-    const suggestions = result.items.map((item) => {
-      const id = randomUUID()
-      this.selections.set(id, {
-        scopeKey: key,
-        provider,
-        context,
-        item,
-        expiresAt: this.now() + this.selectionTtlMs,
-      })
-      return {
-        id,
-        username: item.username,
-        domain: item.domain,
-        ...(item.title ? { title: item.title } : {}),
+    if (query !== undefined) {
+      if (!isSearchableCredentialProvider(provider)) {
+        throw new CredentialBrokerError('provider_error', 'This password manager does not support search')
       }
-    })
+      const items = await provider.search(query)
+      return {
+        provider: provider.id,
+        providerLabel: provider.label,
+        status: 'ready',
+        installable: true,
+        searchable,
+        origin: context.origin,
+        suggestions: suggestEpoch === this.epoch
+          ? this.mint(key, provider, context, items, 'search')
+          : [],
+      }
+    }
 
+    const result = await provider.list(context)
     return {
       provider: provider.id,
       providerLabel: provider.label,
       status: result.status,
       installable: true,
+      searchable,
       origin: context.origin,
       ...(result.message ? { message: result.message } : {}),
-      suggestions,
+      suggestions: suggestEpoch === this.epoch
+        ? this.mint(key, provider, context, result.items, 'suggestion')
+        : [],
     }
   }
 
@@ -113,10 +126,14 @@ export class CredentialBroker {
     scope: CredentialRequestScope,
     selectionId: string,
     currentUrl: string,
+    configuredProviderIds?: string[],
   ): Promise<{ credential: RetrievedCredential; expectedOrigin: string }> {
     this.prune()
     const selection = this.selections.get(selectionId)
     if (!selection || selection.scopeKey !== scopeKey(scope)) {
+      throw new CredentialBrokerError('selection_not_found', 'Refresh the available credentials and try again')
+    }
+    if (configuredProviderIds && !configuredProviderIds.includes(selection.providerId)) {
       throw new CredentialBrokerError('selection_not_found', 'Refresh the available credentials and try again')
     }
 
@@ -142,6 +159,17 @@ export class CredentialBroker {
     return this.providers.some((provider) => provider.id === providerId)
   }
 
+  warmingProviderId(configuredProviderIds: string[]): string | null {
+    const provider = this.providers.find((candidate) => configuredProviderIds.includes(candidate.id))
+    if (!provider) return null
+    const candidate = provider as CredentialProvider & { isWarming?: () => boolean }
+    return typeof candidate.isWarming === 'function' && candidate.isWarming() ? provider.id : null
+  }
+
+  providerLabel(providerId: string): string {
+    return this.providers.find((candidate) => candidate.id === providerId)?.label ?? 'Password manager'
+  }
+
   async beginPairing(providerId: string): Promise<{ status: 'ready' | 'pin_required' }> {
     const provider = this.providers.find((candidate) => candidate.id === providerId)
     if (!provider || !isPairableCredentialProvider(provider)) {
@@ -158,12 +186,18 @@ export class CredentialBroker {
     await provider.completePairing(pin)
   }
 
-  /** Shut down every provider-owned process/session and invalidate selections. */
-  async shutdown(): Promise<void> {
-    this.selections.clear()
-    const results = await Promise.allSettled(this.providers.flatMap((provider) =>
-      isManagedCredentialProvider(provider) ? [provider.shutdown()] : [],
-    ))
+  /** Shut down managed providers and invalidate matching selections. */
+  async shutdown(providerId?: string): Promise<void> {
+    this.epoch++
+    for (const [id, selection] of this.selections) {
+      if (!providerId || selection.providerId === providerId) {
+        this.selections.delete(id)
+      }
+    }
+    const targets = this.providers
+      .filter(isManagedCredentialProvider)
+      .filter((provider) => !providerId || provider.id === providerId)
+    const results = await Promise.allSettled(targets.map((provider) => provider.shutdown()))
     for (const result of results) {
       if (result.status === 'rejected') {
         console.error('[CredentialBroker] Provider shutdown failed:', result.reason)
@@ -171,10 +205,40 @@ export class CredentialBroker {
     }
   }
 
-  private prune(scopeToReplace?: string): void {
+  private mint(
+    key: string,
+    provider: CredentialProvider,
+    context: CredentialLookupContext,
+    items: CredentialProviderItem[],
+    kind: 'suggestion' | 'search',
+  ) {
+    return items.map((item) => {
+      const id = randomUUID()
+      this.selections.set(id, {
+        scopeKey: key,
+        provider,
+        providerId: provider.id,
+        kind,
+        context,
+        item,
+        expiresAt: this.now() + this.selectionTtlMs,
+      })
+      return {
+        id,
+        ...(item.username ? { username: item.username } : {}),
+        ...(item.domain ? { domain: item.domain } : {}),
+        ...(item.title ? { title: item.title } : {}),
+      }
+    })
+  }
+
+  private prune(scopeToReplace?: string, kind?: 'suggestion' | 'search'): void {
     const now = this.now()
     for (const [id, selection] of this.selections) {
-      if (selection.expiresAt <= now || selection.scopeKey === scopeToReplace) {
+      const expired = selection.expiresAt <= now
+      const scopeMatched = scopeToReplace !== undefined && selection.scopeKey === scopeToReplace
+      const kindMatched = kind === undefined || selection.kind === kind
+      if (expired || (scopeMatched && kindMatched)) {
         this.selections.delete(id)
       }
     }

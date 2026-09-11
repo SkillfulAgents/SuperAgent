@@ -222,6 +222,9 @@ export class ApplePasswordsProvider implements PairableCredentialProvider {
 
   async retrieve(context: CredentialLookupContext, item: CredentialProviderItem): Promise<RetrievedCredential> {
     try {
+      if (!item.username) {
+        throw new CredentialBrokerError('provider_error', 'The selected login has no username')
+      }
       const entries = entriesFromPayload(await this.runtime.retrieve(lookupHostname(context), item.username))
       const entry = entries.find((candidate) => candidate.USR === item.username && candidate.PWD !== 'Not Included')
       if (!entry?.PWD) {
