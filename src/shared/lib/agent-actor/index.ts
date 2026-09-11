@@ -1,5 +1,7 @@
 export { agentRegistry } from './registry'
 export { containerHost, type ContainerHost } from './host'
+export { agentCatalog } from './local-agent-catalog'
+export { CONFIG_DOCS, ConfigDocError, type ConfigDoc, type ConfigDocErrorCode, type ConfigDocId } from './config-schema'
 // Pure helpers of the fenced transcript modules that routes still need: how a
 // media reference is spelled in a URL, how session lists are ordered and
 // capped, and the one-time storage migration startup runs over every agent.
@@ -21,10 +23,12 @@ export {
 } from './workspace-path'
 export type {
   AgentActor,
+  AgentCatalog,
   AgentRegistry,
   AgentSlug,
   ByteRange,
   ComputerUseOps,
+  ConfigOps,
   ContainerOps,
   FileEntry,
   FileKind,
@@ -39,4 +43,5 @@ export type {
   ReviewOps,
   SessionOps,
   UsageOps,
+  WriteOptions,
 } from './types'

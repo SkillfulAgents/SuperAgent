@@ -1,12 +1,15 @@
-import fs from 'fs'
-import path from 'path'
-import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
+import { agentRegistry, WorkspaceFileError, type FileEntry } from '@shared/lib/agent-actor'
 
 export interface Skill {
   name: string
   description: string
   path: string
 }
+
+/** Workspace directory that holds one sub-directory per skill. */
+const SKILLS_DIR = '.claude/skills'
+
+const decoder = new TextDecoder()
 
 /**
  * Parse YAML frontmatter from a SKILL.md file.
@@ -38,46 +41,41 @@ function getDisplayName(dirName: string): string {
 }
 
 /**
- * Read all skills for an agent from their workspace directory.
+ * Read all skills for an agent from their workspace.
  */
 export async function getAgentSkills(agentId: string): Promise<Skill[]> {
-  const workspaceDir = getAgentWorkspaceDir(agentId)
-  const skillsDir = path.join(workspaceDir, '.claude', 'skills')
+  const { files } = agentRegistry.get(agentId)
 
-  // Check if skills directory exists
-  if (!fs.existsSync(skillsDir)) {
+  let entries: FileEntry[]
+  try {
+    entries = await files.list(SKILLS_DIR)
+  } catch (error) {
+    // No skills directory yet (or a file in its place) is simply no skills.
+    if (error instanceof WorkspaceFileError && (error.code === 'not-found' || error.code === 'not-a-directory')) {
+      return []
+    }
+    console.error(`Failed to read skills directory for agent ${agentId}:`, error)
     return []
   }
 
   const skills: Skill[] = []
+  for (const entry of entries) {
+    if (entry.kind !== 'directory') continue
 
-  try {
-    const entries = fs.readdirSync(skillsDir, { withFileTypes: true })
+    try {
+      const bytes = await files.getDoc(`${SKILLS_DIR}/${entry.name}/SKILL.md`)
+      // A skill directory without a SKILL.md is not a skill.
+      if (bytes === null) continue
 
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue
-
-      const skillPath = path.join(skillsDir, entry.name)
-      const skillMdPath = path.join(skillPath, 'SKILL.md')
-
-      // Check if SKILL.md exists
-      if (!fs.existsSync(skillMdPath)) continue
-
-      try {
-        const content = fs.readFileSync(skillMdPath, 'utf-8')
-        const { description } = parseFrontmatter(content)
-
-        skills.push({
-          name: getDisplayName(entry.name),
-          description: description || 'No description provided',
-          path: entry.name,
-        })
-      } catch (error) {
-        console.error(`Failed to read skill ${entry.name}:`, error)
-      }
+      const { description } = parseFrontmatter(decoder.decode(bytes))
+      skills.push({
+        name: getDisplayName(entry.name),
+        description: description || 'No description provided',
+        path: entry.name,
+      })
+    } catch (error) {
+      console.error(`Failed to read skill ${entry.name}:`, error)
     }
-  } catch (error) {
-    console.error(`Failed to read skills directory for agent ${agentId}:`, error)
   }
 
   // Sort alphabetically by name
