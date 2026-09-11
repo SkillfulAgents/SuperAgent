@@ -84,6 +84,14 @@ export class ContainerRuntime {
   private stopping = false
   /** In-flight ensureRunning promise — deduplicates concurrent start requests */
   private starting: Promise<ContainerClient> | null = null
+  /**
+   * Dropped by the host. The client this runtime handed out may still be held
+   * elsewhere (the persister's stream subscriptions, a stop in flight) and its
+   * callbacks land here; a disposed runtime answers none of them, so a
+   * container dying after the eviction cannot start recovery through a runtime
+   * the host no longer knows about.
+   */
+  private disposed = false
 
   constructor(
     readonly slug: string,
@@ -96,6 +104,7 @@ export class ContainerRuntime {
       const config: ContainerConfig = {
         agentId: this.slug,
         onConnectionError: () => {
+          if (this.disposed) return
           if (this.stopping) return
           if (this.starting) return
           // No pre-snapshot here: the orchestrator snapshots synchronously, and
@@ -105,7 +114,7 @@ export class ContainerRuntime {
         },
         // MicroVM dead-generation replace (and similar) must restart through the
         // runtime so starts share the in-flight promise and rebuild env from the DB.
-        restartAgent: () => this.restartAgent(),
+        restartAgent: () => (this.disposed ? Promise.resolve() : this.restartAgent()),
       }
 
       this.client = createContainerClient(config)
@@ -128,6 +137,7 @@ export class ContainerRuntime {
   }
 
   handleUnexpectedDeath(restrictToSessionIds?: string[]): void {
+    if (this.disposed) return
     const slug = this.slug
     void recoverFromUnexpectedDeath({
       agentId: slug,
@@ -641,6 +651,7 @@ export class ContainerRuntime {
    * stop the container.
    */
   dispose(): void {
+    this.disposed = true
     this.client = null
     this.cached = null
     this.startedAt = undefined

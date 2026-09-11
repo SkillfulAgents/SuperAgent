@@ -1443,8 +1443,9 @@ agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
       return c.json({ error: 'Agent not found' }, 404)
     }
 
-    // Stop/forget the running container before tearing anything down.
-    agentRegistry.evict(slug)
+    // The container is stopped, and its runtime forgotten, inside deleteAgent
+    // below: forgetting it here first would leave the stop to a fresh runtime
+    // while the old client's callbacks still pointed at the dropped one.
 
     // Clean up proxy token (best-effort — a revoked token is harmless on its own).
     try {
