@@ -1,25 +1,24 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "Successfully navigated to agent, sent a math question, and received correct response within timeout",
+  "reason": "All test steps executed successfully. Agent responded correctly to the math question \"What is 2+2?\" with the answer \"4\".",
   "steps": [
-    "Navigated to http://localhost:47891 — page loaded successfully with sidebar showing available agents",
-    "Clicked on \"QA-20260911-213140-cs6b\" agent in sidebar — agent page opened with status \"idle\"",
-    "Verified agent status is \"idle\" — status confirmed in header (idle is an acceptable state per requirements)",
-    "Typed message \"Hello! What is 2+2?\" in the message input field — message entered successfully",
-    "Clicked \"Send message\" button — message sent and session created titled \"Basic Math Question Session\"",
-    "Waited for agent response — agent responded with \"4\" in approximately 11 seconds (well under 3-minute timeout)",
-    "Verified response mentions \"4\" and took screenshot — response clearly displays \"4\" as the answer to 2+2"
+    "Step 1: Navigated to http://localhost:47891 — Success. Page loaded showing \"Your Agents\" with two agents listed in sidebar.",
+    "Step 2: Clicked on agent \"QA-20260911-215849-kdcs\" in the sidebar — Success. Agent page opened and agent home view displayed.",
+    "Step 3: Verified agent status is \"running\" or \"idle\" — Success. Agent status shows \"idle\" in the top right status indicator.",
+    "Step 4: Sent message \"Hello! What is 2+2?\" — Success. Message typed into input box and send button clicked. Page navigated to session view showing message was submitted.",
+    "Step 5: Waited up to 3 minutes for response — Success. Agent processed the message and responded within seconds. Activity indicator showed \"working\" then completed.",
+    "Step 6: Verified response mentions \"4\" — Success. Agent response displays \"4\" as the answer to the math question \"What is 2+2?\". Screenshot taken showing complete conversation with user message on right side and agent response \"4\" on left side."
   ],
   "bugs": [],
-  "durationMs": 75134,
-  "sessionId": "b4fddc83-11bb-41b1-a2c8-a333491b2010",
+  "durationMs": 257390,
+  "sessionId": "a9433ad4-5f8c-41fe-86ef-d7e1250730a2",
   "cost": {
-    "inputTokens": 344,
-    "outputTokens": 12004,
-    "cacheCreationTokens": 76946,
-    "cacheReadTokens": 1028644,
+    "inputTokens": 390,
+    "outputTokens": 10619,
+    "cacheCreationTokens": 128710,
+    "cacheReadTokens": 1194849,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.259411
+    "totalCostUsd": 0.333857
   }
 }
