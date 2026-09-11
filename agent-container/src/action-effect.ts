@@ -39,6 +39,8 @@ export interface Fingerprint {
   textLen: number
   textHash: number
   focus: string
+  /** Value of the focused field (input/textarea/contenteditable), capped — typing changes this, not the page text. */
+  focusValue: string
   failed: FailedRequest[]
 }
 
@@ -61,7 +63,7 @@ const MAX_FAILED = 5
 export function fingerprintScript(since?: number): string {
   const sinceExpr = typeof since === 'number' && Number.isFinite(since) ? String(since) : 'null'
   return (
-    '(function(){var o={t:0,url:"",interactive:0,top:[],live:[],textLen:0,textHash:0,focus:"",failed:[]};' +
+    '(function(){var o={t:0,url:"",interactive:0,top:[],live:[],textLen:0,textHash:0,focus:"",focusValue:"",failed:[]};' +
     'var ws=function(s){return String(s||"").replace(/\\s+/g," ").trim()};' +
     // checkVisibility covers visibility:hidden / opacity:0, which is how many
     // dropdowns hide their closed state (Wikipedia's Vector menu keeps layout
@@ -93,7 +95,8 @@ export function fingerprintScript(since?: number): string {
     'try{var a=document.activeElement;if(!a||a===document.body){o.focus="nothing focused"}else{' +
     'var tag=a.tagName.toLowerCase();var role=a.getAttribute("role");var an=a.getAttribute("aria-label")||(a.labels&&a.labels[0]&&a.labels[0].innerText)||a.getAttribute("placeholder")||a.getAttribute("name")||a.innerText||"";' +
     'var implied={a:"link",input:a.type==="checkbox"||a.type==="radio"||a.type==="submit"||a.type==="button"?a.type:"textbox",select:"combobox",textarea:"textbox"};' +
-    'o.focus=(role||implied[tag]||tag)+(an?" "+JSON.stringify(ws(an).slice(0,60)):"")}}catch(e){}' +
+    'o.focus=(role||implied[tag]||tag)+(an?" "+JSON.stringify(ws(an).slice(0,60)):"");' +
+    'var fv=typeof a.value==="string"?a.value:(a.isContentEditable?a.innerText:"");o.focusValue=ws(fv).slice(0,120)}}catch(e){}' +
     'return JSON.stringify(o)})()'
   )
 }
@@ -128,6 +131,7 @@ export function parseFingerprint(stdout: string): Fingerprint | null {
       textLen: num(p.textLen),
       textHash: num(p.textHash),
       focus: str(p.focus),
+      focusValue: str(p.focusValue),
       failed,
     }
   } catch {
@@ -145,7 +149,18 @@ export interface ActionEffect {
   textDelta: number
   focus: string
   focusChanged: boolean
+  /** The focused field's value after the action, when it changed (typing, select-all-then-type, clear). */
+  focusValueChanged: boolean
+  focusValue: string
   failed: FailedRequest[]
+}
+
+/** True when the diff found anything at all — used to decide on a second, later read. */
+export function effectHasChange(e: ActionEffect): boolean {
+  return (
+    e.opened.length > 0 || e.closed.length > 0 || e.announced.length > 0 || e.failed.length > 0 ||
+    e.interactiveDelta !== 0 || e.textChanged || e.focusChanged || e.focusValueChanged
+  )
 }
 
 const topKey = (e: TopLayerEntry): string => `${e.kind}|${e.name}`
@@ -164,6 +179,8 @@ export function diffFingerprints(before: Fingerprint, after: Fingerprint): Actio
     textDelta: after.textLen - before.textLen,
     focus: after.focus,
     focusChanged: after.focus !== before.focus,
+    focusValueChanged: after.focus === before.focus && after.focusValue !== before.focusValue,
+    focusValue: after.focusValue,
     failed: after.failed,
   }
 }
@@ -177,7 +194,7 @@ export interface EffectFormatOptions {
 
 const NO_CHANGE_HINT: Record<EffectFormatOptions['verb'], string> = {
   click: 'the element may not be handling clicks (disabled, covered, or needs a different target). Check its state, or browser_wait for what you expect to appear.',
-  press: 'the key may have been ignored by the focused element. Check what is focused, or browser_wait for what you expect to appear.',
+  press: 'nothing visible moved — normal for a modifier combo like Control+a or a key the page consumes silently; otherwise the key may have been ignored by the focused element. browser_wait for what you expect to appear.',
   select: 'the page may not have reacted to the new value yet. browser_wait for what you expect to appear.',
   hover: 'nothing opened on hover. Try browser_click on the element instead.',
 }
@@ -204,6 +221,9 @@ export function formatActionEffect(effect: ActionEffect | null, opts: EffectForm
     const size = d === 0 ? 'same length, different content' : `${d > 0 ? '+' : '−'}${Math.abs(d).toLocaleString('en-US')} chars`
     parts.push(`page text changed (${size})`)
   }
+  if (effect.focusValueChanged) {
+    parts.push(`field value now ${JSON.stringify(effect.focusValue)}`)
+  }
   const focusNote = opts.verb === 'press' && effect.focus ? `focus: ${effect.focus}` : ''
   if (parts.length === 0 && !(opts.verb === 'press' && effect.focusChanged)) {
     return `\nEffect: no DOM change within ${opts.settleMs}ms — ${NO_CHANGE_HINT[opts.verb]}${focusNote ? ` (${focusNote})` : ''}`
@@ -211,6 +231,15 @@ export function formatActionEffect(effect: ActionEffect | null, opts: EffectForm
   if (focusNote) parts.push(focusNote)
   return `\nEffect: ${parts.join(' · ')}`
 }
+
+/**
+ * When the first read after the settle finds nothing, wait this much longer
+ * (from the action) and read once more before claiming "no DOM change".
+ * A Shopify add-to-cart opened its drawer after the 300ms read and the
+ * result said the click did nothing; the second read costs only the cases
+ * that would otherwise be reported as inert.
+ */
+export const NO_CHANGE_RECHECK_MS = 1200
 
 /** Settle before the "after" read on hover (menus animate open). */
 export const HOVER_SETTLE_MS = 300

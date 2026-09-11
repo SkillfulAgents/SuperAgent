@@ -3,6 +3,7 @@ import {
   fingerprintScript,
   parseFingerprint,
   diffFingerprints,
+  effectHasChange,
   formatActionEffect,
   type Fingerprint,
 } from './action-effect'
@@ -134,7 +135,7 @@ describe('parseFingerprint', () => {
     }))
     expect(parseFingerprint(raw)).toEqual({
       t: 12.5, url: 'https://a.com', interactive: 3, top: [{ kind: 'dialog', name: 'X' }],
-      live: ['ok'], textLen: 10, textHash: -5, focus: 'button "Go"',
+      live: ['ok'], textLen: 10, textHash: -5, focus: 'button "Go"', focusValue: '',
       failed: [{ url: '/a', status: 500, initiator: 'fetch' }],
     })
   })
@@ -146,8 +147,33 @@ describe('parseFingerprint', () => {
 })
 
 const base: Fingerprint = {
-  t: 0, url: 'https://a.com', interactive: 40, top: [], live: [], textLen: 500, textHash: 1, focus: 'nothing focused', failed: [],
+  t: 0, url: 'https://a.com', interactive: 40, top: [], live: [], textLen: 500, textHash: 1, focus: 'nothing focused', focusValue: '', failed: [],
 }
+
+describe('focused field value', () => {
+  it('is read from inputs and contenteditables', () => {
+    expect(run({ active: { ...el({ tag: 'input', label: 'Search' }), value: '  clay run gtm ' } }).out.focusValue).toBe('clay run gtm')
+    expect(run({ active: { ...el({ tag: 'div', role: 'textbox', label: 'Message', text: 'Hello there' }), isContentEditable: true } }).out.focusValue).toBe('Hello there')
+  })
+
+  it('reports typing into the focused field as an effect, which the page text cannot see', () => {
+    const before: Fingerprint = { ...base, focus: 'textbox "Search"', focusValue: '' }
+    const after: Fingerprint = { ...base, focus: 'textbox "Search"', focusValue: 'monday' }
+    const effect = diffFingerprints(before, after)
+    expect(effectHasChange(effect)).toBe(true)
+    expect(formatActionEffect(effect, { settleMs: 50, verb: 'press' })).toBe('\nEffect: field value now "monday" · focus: textbox "Search"')
+  })
+
+  it('does not count a value difference when focus moved to another field', () => {
+    const effect = diffFingerprints({ ...base, focus: 'textbox "A"', focusValue: 'x' }, { ...base, focus: 'textbox "B"', focusValue: '' })
+    expect(effect.focusValueChanged).toBe(false)
+    expect(effect.focusChanged).toBe(true)
+  })
+
+  it('effectHasChange is false for an identical fingerprint', () => {
+    expect(effectHasChange(diffFingerprints(base, { ...base }))).toBe(false)
+  })
+})
 
 describe('diffFingerprints + formatActionEffect', () => {
   it('reports a dialog opening with its census and announcement', () => {
@@ -191,7 +217,7 @@ describe('diffFingerprints + formatActionEffect', () => {
     expect(formatActionEffect(moved, { settleMs: 50, verb: 'press' })).toBe('\nEffect: focus: textbox "Search"')
     const stayed = diffFingerprints({ ...base, focus: 'textbox "Search"' }, { ...base, focus: 'textbox "Search"' })
     expect(formatActionEffect(stayed, { settleMs: 50, verb: 'press' })).toBe(
-      '\nEffect: no DOM change within 50ms — the key may have been ignored by the focused element. Check what is focused, or browser_wait for what you expect to appear. (focus: textbox "Search")',
+      '\nEffect: no DOM change within 50ms — nothing visible moved — normal for a modifier combo like Control+a or a key the page consumes silently; otherwise the key may have been ignored by the focused element. browser_wait for what you expect to appear. (focus: textbox "Search")',
     )
     const typed = diffFingerprints({ ...base, focus: 'textbox "Search"' }, { ...base, focus: 'textbox "Search"', interactive: 45 })
     expect(formatActionEffect(typed, { settleMs: 50, verb: 'press' })).toBe('\nEffect: +5 interactive elements · focus: textbox "Search"')

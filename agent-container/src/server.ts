@@ -819,7 +819,7 @@ import {
   capSnapshot, compactWithText, countRefs, formatIframePlaceholders, formatStatusHeader, formatTextFooter,
   pageProbeScript, parsePageProbe, waitForDocumentReady, EMPTY_PROBE, THIN_TREE_PREVIEW_CHARS, THIN_TREE_REFS,
 } from './snapshot-format';
-import { diffFingerprints, fingerprintScript, parseFingerprint, HOVER_SETTLE_MS, type ActionEffect } from './action-effect';
+import { diffFingerprints, effectHasChange, fingerprintScript, parseFingerprint, HOVER_SETTLE_MS, NO_CHANGE_RECHECK_MS, type ActionEffect } from './action-effect';
 import {
   observeUrl, resetUrlTracking,
   CLICK_SETTLE_MS, FILL_SETTLE_MS, PRESS_ENTER_SETTLE_MS, PRESS_SETTLE_MS,
@@ -930,20 +930,35 @@ async function observeUrlDigest(): Promise<UrlDigest | null> {
 async function runWithEffect(
   action: () => Promise<{ exitCode: number; stdout: string }>,
   settleMs: number,
-): Promise<{ result: { exitCode: number; stdout: string }; digest: UrlDigest | null; effect: ActionEffect | null }> {
+): Promise<{ result: { exitCode: number; stdout: string }; digest: UrlDigest | null; effect: ActionEffect | null; settleMs: number }> {
   const cdp = browserState.cdpUrl || undefined;
   const beforeRun = await execBrowser(['eval', fingerprintScript()], cdp);
   const before = beforeRun.exitCode === 0 ? parseFingerprint(beforeRun.stdout) : null;
 
   const result = await action();
-  if (result.exitCode !== 0) return { result, digest: null, effect: null };
+  if (result.exitCode !== 0) return { result, digest: null, effect: null, settleMs };
 
+  const actedAt = Date.now();
   await sleep(settleMs);
-  const afterRun = await execBrowser(['eval', fingerprintScript(before?.t)], cdp);
-  const after = afterRun.exitCode === 0 ? parseFingerprint(afterRun.stdout) : null;
+  let afterRun = await execBrowser(['eval', fingerprintScript(before?.t)], cdp);
+  let after = afterRun.exitCode === 0 ? parseFingerprint(afterRun.stdout) : null;
+  let effect = before && after && after.url === before.url ? diffFingerprints(before, after) : null;
+  let waited = settleMs;
+  // Nothing moved yet: a late effect (ajax cart drawer, animated panel) is the
+  // other explanation, so read once more before reporting "no DOM change".
+  if (effect && !effectHasChange(effect) && settleMs < NO_CHANGE_RECHECK_MS) {
+    await sleep(Math.max(0, NO_CHANGE_RECHECK_MS - (Date.now() - actedAt)));
+    afterRun = await execBrowser(['eval', fingerprintScript(before?.t)], cdp);
+    const again = afterRun.exitCode === 0 ? parseFingerprint(afterRun.stdout) : null;
+    if (again) {
+      after = again;
+      effect = before && again.url === before.url ? diffFingerprints(before, again) : null;
+    }
+    waited = Math.max(NO_CHANGE_RECHECK_MS, Date.now() - actedAt);
+  }
   const digest = after?.url ? observeUrl(after.url) : await observeUrlDigest();
-  const effect = before && after && !digest?.navigated ? diffFingerprints(before, after) : null;
-  return { result, digest, effect };
+  if (digest?.navigated) effect = null;
+  return { result, digest, effect, settleMs: waited };
 }
 
 /**
@@ -1574,7 +1589,7 @@ app.post('/browser/click', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const { result, digest, effect } = await runWithEffect(
+    const { result, digest, effect, settleMs } = await runWithEffect(
       () => execBrowser(['click', body.ref], browserState.cdpUrl || undefined),
       CLICK_SETTLE_MS,
     );
@@ -1587,7 +1602,7 @@ app.post('/browser/click', async (c) => {
     notifyBrowserAction();
     return c.json({
       success: true,
-      settleMs: CLICK_SETTLE_MS,
+      settleMs,
       ...(digest && { digest }),
       ...(effect && { effect }),
       ...(tabInfo && { tabInfo }),
@@ -1744,10 +1759,9 @@ app.post('/browser/press', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const settleMs = body.key.trim() === 'Enter' ? PRESS_ENTER_SETTLE_MS : PRESS_SETTLE_MS;
-    const { result, digest, effect } = await runWithEffect(
+    const { result, digest, effect, settleMs } = await runWithEffect(
       () => execBrowser(['press', body.key], browserState.cdpUrl || undefined),
-      settleMs,
+      body.key.trim() === 'Enter' ? PRESS_ENTER_SETTLE_MS : PRESS_SETTLE_MS,
     );
 
     if (result.exitCode !== 0) {
@@ -1832,7 +1846,7 @@ app.post('/browser/select', async (c) => {
 
     const before = await readValue();
 
-    const { result, effect } = await runWithEffect(
+    const { result, effect, settleMs } = await runWithEffect(
       () => execBrowser(['select', body.ref, body.value], browserState.cdpUrl || undefined),
       SELECT_COMMIT_SETTLE_MS,
     );
@@ -1849,7 +1863,7 @@ app.post('/browser/select', async (c) => {
     }
 
     notifyBrowserAction();
-    return c.json({ success: true, committedValue: judgement.committed, settleMs: SELECT_COMMIT_SETTLE_MS, ...(effect && { effect }) });
+    return c.json({ success: true, committedValue: judgement.committed, settleMs, ...(effect && { effect }) });
   } catch (error: any) {
     console.error('[Browser] Error selecting:', error);
     return c.json({ error: error.message || 'Failed to select' }, 500);
@@ -1874,7 +1888,7 @@ app.post('/browser/hover', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const { result, effect } = await runWithEffect(
+    const { result, effect, settleMs } = await runWithEffect(
       () => execBrowser(['hover', body.ref], browserState.cdpUrl || undefined),
       HOVER_SETTLE_MS,
     );
@@ -1884,7 +1898,7 @@ app.post('/browser/hover', async (c) => {
     }
 
     notifyBrowserAction();
-    return c.json({ success: true, settleMs: HOVER_SETTLE_MS, ...(effect && { effect }) });
+    return c.json({ success: true, settleMs, ...(effect && { effect }) });
   } catch (error: any) {
     console.error('[Browser] Error hovering:', error);
     return c.json({ error: error.message || 'Failed to hover' }, 500);
