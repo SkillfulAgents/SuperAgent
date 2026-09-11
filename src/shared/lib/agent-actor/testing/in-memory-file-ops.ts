@@ -85,9 +85,9 @@ export class InMemoryFileOps implements FileOps {
 
   async stat(workspacePath: string): Promise<FileStat | null> {
     const rel = normalizeWorkspacePath(workspacePath)
-    if (this.dirs.has(rel)) return { kind: 'directory', size: 0, mtimeMs: this.mtimes.get(rel) ?? 0, throughLink: false }
+    if (this.dirs.has(rel)) return { kind: 'directory', size: 0, mtimeMs: this.mtimes.get(rel) ?? 0, resolvedPath: rel }
     const bytes = this.files.get(rel)
-    if (bytes) return { kind: 'file', size: bytes.byteLength, mtimeMs: this.mtimes.get(rel) ?? 0, throughLink: false }
+    if (bytes) return { kind: 'file', size: bytes.byteLength, mtimeMs: this.mtimes.get(rel) ?? 0, resolvedPath: rel }
     return null
   }
 

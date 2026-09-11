@@ -274,6 +274,11 @@ class WorkspaceFolderAccessError extends Error {
   }
 }
 
+/** The container spelling of a workspace path the actor resolved (`''` is the root). */
+function toContainerPath(workspacePath: string): string {
+  return workspacePath === '' ? '/workspace' : `/workspace/${workspacePath}`
+}
+
 function normalizeWorkspaceContainerPath(rawPath: string): string | null {
   if (!rawPath.startsWith('/') || rawPath.includes('\0')) return null
   const normalizedPath = path.posix.normalize(rawPath)
@@ -350,18 +355,27 @@ async function resolveBookmarkedWorkspacePath(
   // operations accept as workspace paths; containment against the workspace
   // itself is theirs to enforce. What the actor cannot know is the bookmark
   // root: a link inside the shared sub-tree that points elsewhere in the
-  // workspace would widen what a viewer can reach, so a path reached through a
-  // link is refused here, and an escaping link is the same 400 it always was.
+  // workspace would widen what a viewer can reach. So the check is on where
+  // the two really are: the entry's resolved location has to stay under the
+  // root's, which lets a link that stays inside the shared tree be browsed and
+  // refuses one that leaves it. An escaping link is the same 400 it always was.
+  const files = agentRegistry.get(agentSlug).files
+  let rootStat: FileStat | null
   let stat: FileStat | null
   try {
-    stat = await agentRegistry.get(agentSlug).files.stat(currentPath)
+    // The workspace root is where it is; only a bookmarked sub-tree can itself
+    // sit behind a link, so only that root is resolved.
+    rootStat = rootPath === '/workspace'
+      ? { kind: 'directory', size: 0, mtimeMs: 0, resolvedPath: '' }
+      : await files.stat(rootPath)
+    stat = await files.stat(currentPath)
   } catch (error) {
     if (error instanceof WorkspaceFileError) {
       throw new WorkspaceFolderAccessError(error.status === 400 ? 'Invalid folder path' : error.message, error.status)
     }
     throw error
   }
-  if (stat?.throughLink) {
+  if (stat && (!rootStat || !isContainerPathWithin(toContainerPath(rootStat.resolvedPath), toContainerPath(stat.resolvedPath)))) {
     throw new WorkspaceFolderAccessError('Invalid folder path', 400)
   }
 

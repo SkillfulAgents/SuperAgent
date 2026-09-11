@@ -6,13 +6,25 @@
  * resolved path) and for real (the path's existing prefix is resolved through
  * symlinks and checked against the real root). Links are not followed out of
  * the workspace: an entry whose real location is outside reads as an escape,
- * a dangling link reads as absent, and writes never go through a link.
+ * a dangling or looping link reads as absent, and writes never go through a
+ * link.
+ *
+ * The root's real location is resolved once per root path and kept: it is the
+ * same string for the life of the workspace, and resolving it on every call
+ * doubled the filesystem operations of every read on the agents-list path. A
+ * path that looks like an escape re-resolves the root once before it is
+ * called one, so a root replaced underneath the cache heals itself.
+ *
+ * Writes go through the same temp-file, fsync, rename core as every other
+ * atomic write in the app: a crash never leaves a torn or empty file, a
+ * reader (the container included) never sees a half-written one, and an
+ * existing file keeps its mode and owner.
  */
 import fs from 'fs'
 import path from 'path'
 import { Readable } from 'stream'
-import { pipeline } from 'stream/promises'
 import { isPathWithinDir } from '@shared/lib/utils/path-safety'
+import { writeFileAtomicStream } from '@shared/lib/utils/file-storage'
 import type { ByteRange, FileEntry, FileOps, FileStat } from './types'
 import { WorkspaceFileError, normalizeWorkspacePath } from './workspace-path'
 
@@ -34,11 +46,15 @@ function errnoCode(error: unknown): string | undefined {
 /** Translate a filesystem error into the contract's error, or rethrow it. */
 function fromFsError(error: unknown): never {
   switch (errnoCode(error)) {
+    // A link that loops (ELOOP) resolves to nothing trustworthy: the same as nothing there.
     case 'ENOENT':
     case 'ENOTDIR':
+    case 'ELOOP':
       throw new WorkspaceFileError('not-found')
     case 'EISDIR':
       throw new WorkspaceFileError('not-a-file')
+    case 'ENAMETOOLONG':
+      throw new WorkspaceFileError('invalid-path')
     case 'EACCES':
     case 'EPERM':
       throw new WorkspaceFileError('not-accessible')
@@ -47,12 +63,17 @@ function fromFsError(error: unknown): never {
   }
 }
 
+/** True for the errors that mean "nothing is there": absent, a file in a directory's place, a link loop. */
+function isAbsence(error: unknown): boolean {
+  const code = errnoCode(error)
+  return code === 'ENOENT' || code === 'ENOTDIR' || code === 'ELOOP'
+}
+
 async function realpathOrNull(p: string): Promise<string | null> {
   try {
     return await fs.promises.realpath(p)
   } catch (error) {
-    const code = errnoCode(error)
-    if (code === 'ENOENT' || code === 'ENOTDIR') return null
+    if (isAbsence(error)) return null
     return fromFsError(error)
   }
 }
@@ -61,10 +82,14 @@ async function lstatOrNull(p: string): Promise<fs.Stats | null> {
   try {
     return await fs.promises.lstat(p)
   } catch (error) {
-    const code = errnoCode(error)
-    if (code === 'ENOENT' || code === 'ENOTDIR') return null
+    if (isAbsence(error)) return null
     return fromFsError(error)
   }
+}
+
+/** A host-relative path in workspace spelling: posix separators, `''` for the root. */
+function toWorkspacePath(relative: string): string {
+  return relative.split(path.sep).join('/')
 }
 
 interface Located {
@@ -74,11 +99,13 @@ interface Located {
   abs: string
   /** The real absolute path, inside the real root. */
   real: string
-  /** Whether resolving the path went through a link (that stayed inside the root). */
-  throughLink: boolean
+  /** The workspace path of `real`: `rel` unless a link on the way was followed. */
+  resolved: string
 }
 
 export class LocalFileOps implements FileOps {
+  private realRootCache: { root: string; real: string } | null = null
+
   constructor(private readonly rootDir: () => string) {}
 
   workspacePath(): string {
@@ -94,20 +121,39 @@ export class LocalFileOps implements FileOps {
     return { rel, abs, root }
   }
 
+  /** The root's real location, resolved once per root path; null while the root does not exist. */
+  private async realRoot(root: string, refresh = false): Promise<string | null> {
+    if (!refresh && this.realRootCache?.root === root) return this.realRootCache.real
+    const real = await realpathOrNull(root)
+    this.realRootCache = real ? { root, real } : null
+    return real
+  }
+
+  /**
+   * The real root that contains `real`. A miss re-resolves the root once, so
+   * a root replaced underneath the cache is not mistaken for an escape; a
+   * miss against the fresh root is one.
+   */
+  private async containingRoot(root: string, realRoot: string, real: string): Promise<string> {
+    if (isPathWithinDir(realRoot, real)) return realRoot
+    const fresh = await this.realRoot(root, true)
+    if (fresh && isPathWithinDir(fresh, real)) return fresh
+    throw new WorkspaceFileError('outside-workspace')
+  }
+
   /**
    * An existing path's real location, or null when nothing is there (a
-   * dangling link counts as nothing). Throws `outside-workspace` when the
-   * real location has left the real root.
+   * dangling or looping link counts as nothing). Throws `outside-workspace`
+   * when the real location has left the real root.
    */
   private async existing(workspacePath: string): Promise<Located | null> {
     const { rel, abs, root } = this.absolute(workspacePath)
-    const realRoot = await realpathOrNull(root)
-    if (!realRoot) return null
+    const cachedRoot = await this.realRoot(root)
+    if (!cachedRoot) return null
     const real = await realpathOrNull(abs)
     if (!real) return null
-    if (!isPathWithinDir(realRoot, real)) throw new WorkspaceFileError('outside-workspace')
-    const direct = rel === '' ? realRoot : path.join(realRoot, ...rel.split('/'))
-    return { rel, abs, real, throughLink: real !== direct }
+    const realRoot = await this.containingRoot(root, cachedRoot, real)
+    return { rel, abs, real, resolved: toWorkspacePath(path.relative(realRoot, real)) }
   }
 
   /**
@@ -119,8 +165,12 @@ export class LocalFileOps implements FileOps {
   private async forWrite(workspacePath: string): Promise<{ rel: string; abs: string }> {
     const { rel, abs, root } = this.absolute(workspacePath)
     if (rel === '') throw new WorkspaceFileError('invalid-path', 'The workspace root is not a file')
-    await fs.promises.mkdir(root, { recursive: true })
-    const realRoot = await fs.promises.realpath(root)
+    let realRoot = await this.realRoot(root)
+    if (!realRoot) {
+      await fs.promises.mkdir(root, { recursive: true }).catch(fromFsError)
+      realRoot = await fs.promises.realpath(root).catch(fromFsError)
+      this.realRootCache = { root, real: realRoot }
+    }
 
     const targetStat = await lstatOrNull(abs)
     if (targetStat?.isSymbolicLink()) {
@@ -137,7 +187,7 @@ export class LocalFileOps implements FileOps {
     }
     const realExisting = await fs.promises.realpath(existing).catch(fromFsError)
     const realTarget = path.join(realExisting, ...tail)
-    if (!isPathWithinDir(realRoot, realTarget)) throw new WorkspaceFileError('outside-workspace')
+    await this.containingRoot(root, realRoot, realTarget)
 
     try {
       await fs.promises.mkdir(path.dirname(realTarget), { recursive: true })
@@ -178,13 +228,13 @@ export class LocalFileOps implements FileOps {
     const found = await this.existing(workspacePath)
     if (!found) {
       return normalizeWorkspacePath(workspacePath) === ''
-        ? { kind: 'directory', size: 0, mtimeMs: 0, throughLink: false }
+        ? { kind: 'directory', size: 0, mtimeMs: 0, resolvedPath: '' }
         : null
     }
     const stat = await fs.promises.stat(found.real).catch(fromFsError)
-    const { throughLink } = found
-    if (stat.isDirectory()) return { kind: 'directory', size: stat.size, mtimeMs: stat.mtimeMs, throughLink }
-    if (stat.isFile()) return { kind: 'file', size: stat.size, mtimeMs: stat.mtimeMs, throughLink }
+    const resolvedPath = found.resolved
+    if (stat.isDirectory()) return { kind: 'directory', size: stat.size, mtimeMs: stat.mtimeMs, resolvedPath }
+    if (stat.isFile()) return { kind: 'file', size: stat.size, mtimeMs: stat.mtimeMs, resolvedPath }
     return null
   }
 
@@ -206,8 +256,7 @@ export class LocalFileOps implements FileOps {
     try {
       return new Uint8Array(await fs.promises.readFile(found.real))
     } catch (error) {
-      const code = errnoCode(error)
-      if (code === 'ENOENT' || code === 'ENOTDIR') return null
+      if (isAbsence(error)) return null
       return fromFsError(error)
     }
   }
@@ -215,30 +264,24 @@ export class LocalFileOps implements FileOps {
   async putDoc(workspacePath: string, bytes: Uint8Array | string): Promise<void> {
     const { abs } = await this.forWrite(workspacePath)
     const data = typeof bytes === 'string' ? Buffer.from(bytes, 'utf-8') : Buffer.from(bytes)
-    const tmp = `${abs}.${process.pid}.${Date.now()}.tmp`
-    try {
-      await fs.promises.writeFile(tmp, data)
-      await fs.promises.rename(tmp, abs)
-    } catch (error) {
-      await fs.promises.unlink(tmp).catch(() => {})
-      return fromFsError(error)
-    }
+    await writeFileAtomicStream(abs, [data]).catch(fromFsError)
   }
 
   async write(workspacePath: string, body: ReadableStream<Uint8Array> | Uint8Array): Promise<{ size: number }> {
-    const { abs } = await this.forWrite(workspacePath)
-    const source =
-      body instanceof Uint8Array
-        ? Readable.from([Buffer.from(body)])
-        : Readable.fromWeb(body as import('stream/web').ReadableStream<Uint8Array>)
+    let target: { rel: string; abs: string }
     try {
-      await pipeline(source, fs.createWriteStream(abs))
+      target = await this.forWrite(workspacePath)
     } catch (error) {
-      // Don't leave a partial file behind (pipeline already closed the fd).
-      await fs.promises.unlink(abs).catch(() => {})
-      return fromFsError(error)
+      // The caller may already hold the source open; a refused destination
+      // must not leave it dangling.
+      if (!(body instanceof Uint8Array)) await body.cancel().catch(() => {})
+      throw error
     }
-    const stat = await fs.promises.stat(abs).catch(fromFsError)
+    const chunks = body instanceof Uint8Array
+      ? [Buffer.from(body)]
+      : Readable.fromWeb(body as import('stream/web').ReadableStream<Uint8Array>)
+    await writeFileAtomicStream(target.abs, chunks).catch(fromFsError)
+    const stat = await fs.promises.stat(target.abs).catch(fromFsError)
     return { size: stat.size }
   }
 

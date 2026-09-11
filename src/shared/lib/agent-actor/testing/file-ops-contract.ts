@@ -52,8 +52,8 @@ export function describeFileOpsContract(name: string, make: () => Promise<FileOp
 
       expect(decode(await files.getDoc('notes/today.txt'))).toBe('hello')
       expect(Array.from((await files.getDoc('bin/blob')) ?? [])).toEqual([0, 1, 2, 255])
-      expect(await files.stat('notes')).toMatchObject({ kind: 'directory', throughLink: false })
-      expect(await files.stat('notes/today.txt')).toMatchObject({ kind: 'file', size: 5, throughLink: false })
+      expect(await files.stat('notes')).toMatchObject({ kind: 'directory', resolvedPath: 'notes' })
+      expect(await files.stat('notes/today.txt')).toMatchObject({ kind: 'file', size: 5, resolvedPath: 'notes/today.txt' })
     })
 
     it('putDoc replaces the whole document', async () => {

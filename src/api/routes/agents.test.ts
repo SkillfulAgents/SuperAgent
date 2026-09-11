@@ -4,6 +4,7 @@ import { Hono } from 'hono'
 import { runInNewContext } from 'node:vm'
 import { Readable, Writable } from 'node:stream'
 import { createHash } from 'node:crypto'
+import { agentRegistry } from '@shared/lib/agent-actor'
 
 // ============================================================================
 // Mocks — must be declared before import
@@ -196,6 +197,7 @@ vi.mock('@shared/lib/container/container-host', async () => {
     ensureRunning: (...args: unknown[]) => mockEnsureRunning(...args),
     getCachedInfo: () => mockGetCachedInfo(),
     removeClient: vi.fn(),
+    clearClients: vi.fn(),
     keepAlive: (...args: unknown[]) => mockKeepAlive(...args),
   })
   // Where an agent's workspace lives on this machine — the host capability the
@@ -617,6 +619,15 @@ vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => ({
   writeJsonFileAtomicSync: vi.fn(() => {}),
   writeFileAtomic: vi.fn(async () => {}),
   writeFileAtomicSync: vi.fn(() => {}),
+  // The actor's putDoc and write go through the atomic writer. Here it drains
+  // the chunks into the in-memory sink the upload tests already read, so the
+  // bytes and the destination stay observable through mockCreateWriteStream.
+  writeFileAtomicStream: vi.fn(
+    async (filePath: string, chunks: Iterable<Buffer | string> | AsyncIterable<Buffer | string>) => {
+      const { pipeline } = await import('node:stream/promises')
+      await pipeline(Readable.from(chunks), mockCreateWriteStream(filePath) as Writable)
+    },
+  ),
   withFileLock: vi.fn(async (_path: string, fn: () => Promise<unknown>) => fn()),
   withCrossProcessFileLock: vi.fn(async (_path: string, fn: () => Promise<unknown>) => fn()),
   CorruptFileError: class CorruptFileError extends Error {},
@@ -695,6 +706,9 @@ function createApp() {
 }
 
 beforeEach(() => {
+  // Fresh actor handles: the file operations cache the workspace root's real
+  // path per handle, and these tests script realpath answers per test.
+  agentRegistry.evictAll()
   vi.mocked(getUserSummaries).mockReturnValue(new Map())
   vi.mocked(userExists).mockReturnValue(true)
   mockAuthorizedAgentRole = 'owner'
@@ -2384,6 +2398,8 @@ describe('bookmarked workspace folder listing', () => {
     mockFsReadFile.mockResolvedValueOnce(jsonDoc([
       { name: 'Reports', folder: '/workspace/reports' },
     ]))
+    // One stat resolves the bookmarked root, one the listed path.
+    mockFsStat.mockResolvedValueOnce({ isDirectory: () => true })
     mockFsStat.mockResolvedValueOnce({ isDirectory: () => true })
     mockFsReaddir.mockResolvedValueOnce([
       dirent('z-last.txt', 'file'),
@@ -2411,6 +2427,8 @@ describe('bookmarked workspace folder listing', () => {
     mockFsReadFile.mockResolvedValueOnce(jsonDoc([
       { name: 'Reports', folder: '/workspace/reports' },
     ]))
+    // Root, then the descendant.
+    mockFsStat.mockResolvedValueOnce({ isDirectory: () => true })
     mockFsStat.mockResolvedValueOnce({ isDirectory: () => true })
     mockFsReaddir.mockResolvedValueOnce([])
 
@@ -2481,6 +2499,8 @@ describe('bookmarked workspace folder listing', () => {
       if (value === '/mock/workspace/reports/linked') return '/private/outside'
       return value
     })
+    // The root resolves fine; the escape is caught on the descendant before its stat.
+    mockFsStat.mockResolvedValueOnce({ isDirectory: () => true })
 
     const res = await getReq(app, folderUrl('/workspace/reports', '/workspace/reports/linked'))
 
@@ -2491,6 +2511,8 @@ describe('bookmarked workspace folder listing', () => {
   it('round-trips special characters and Unicode names', async () => {
     const root = '/workspace/Reports & 2026'
     mockFsReadFile.mockResolvedValueOnce(jsonDoc([{ name: 'Reports', folder: root }]))
+    // The root is also the listed path: it is resolved once as root, once as path.
+    mockFsStat.mockResolvedValueOnce({ isDirectory: () => true })
     mockFsStat.mockResolvedValueOnce({ isDirectory: () => true })
     mockFsReaddir.mockResolvedValueOnce([dirent('résumé #1.md', 'file')])
 
@@ -2508,6 +2530,8 @@ describe('bookmarked workspace folder listing', () => {
     mockFsReadFile.mockResolvedValueOnce(jsonDoc([
       { name: 'Reports', folder: '/workspace/reports' },
     ]))
+    // Root, then the listed path (the same directory here).
+    mockFsStat.mockResolvedValueOnce({ isDirectory: () => true })
     mockFsStat.mockResolvedValueOnce({ isDirectory: () => true })
     mockFsReaddir.mockResolvedValueOnce(
       Array.from({ length: 1_001 }, (_, index) => dirent(`file-${index}.txt`, 'file')),
@@ -2835,11 +2859,10 @@ describe('bookmark validation', () => {
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual(bookmarks)
-    // putDoc writes a temp file beside the target and renames it into place.
-    const [tmpPath, written] = mockFsWriteFile.mock.calls[0] as [string, Buffer]
-    expect(tmpPath).toContain('/mock/workspace/bookmarks.json')
-    expect(JSON.parse(written.toString('utf-8'))).toEqual(bookmarks)
-    expect(mockFsRename).toHaveBeenCalledWith(tmpPath, '/mock/workspace/bookmarks.json')
+    // putDoc hands the whole document to the atomic writer, aimed at the target.
+    expect(mockCreateWriteStream).toHaveBeenCalledWith('/mock/workspace/bookmarks.json')
+    const sink = mockCreateWriteStream.mock.results[0]!.value as InstanceType<typeof MemoryWriteStream>
+    expect(JSON.parse(Buffer.concat(sink.chunks).toString('utf-8'))).toEqual(bookmarks)
   })
 
   it('rejects a folder bookmark outside /workspace', async () => {
@@ -3046,11 +3069,10 @@ describe('path traversal security — skill file endpoints', () => {
       const body = await res.json()
       expect(body.saved).toBe(true)
 
-      // putDoc writes a temp file beside the target and renames it into place.
-      expect(mockFsWriteFile).toHaveBeenCalledWith(expect.stringContaining('my-skill'), expect.any(Buffer))
-      const [tmpPath, written] = mockFsWriteFile.mock.calls[0] as [string, Buffer]
-      expect(written.toString('utf-8')).toBe('const y = 2;')
-      expect(mockFsRename).toHaveBeenCalledWith(tmpPath, '/mock/workspace/.claude/skills/my-skill/index.ts')
+      // putDoc hands the whole document to the atomic writer, aimed at the target.
+      expect(mockCreateWriteStream).toHaveBeenCalledWith('/mock/workspace/.claude/skills/my-skill/index.ts')
+      const sink = mockCreateWriteStream.mock.results[0]!.value as InstanceType<typeof MemoryWriteStream>
+      expect(Buffer.concat(sink.chunks).toString('utf-8')).toBe('const y = 2;')
     })
 
     it('writes to nested paths within skill directory', async () => {
@@ -3601,20 +3623,22 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
     expect(mockFsUnlink).not.toHaveBeenCalled()
   })
 
-  it('removes the partial file when the disk write fails mid-stream', async () => {
+  it('answers 500 when the disk write fails and never touches the target path', async () => {
+    // The write is atomic (temp file, fsync, rename), so a failure mid-stream
+    // leaves the destination as it was and nothing there to unlink; the
+    // real-filesystem test on LocalFileOps pins the temp-file cleanup.
     mockCreateWriteStream.mockImplementationOnce(() => {
       const failing = new MemoryWriteStream()
       failing._write = (_chunk, _enc, cb) => cb(new Error('disk full'))
       return failing
     })
-    mockFsUnlink.mockResolvedValue(undefined)
 
     const formData = new FormData()
     formData.append('file', new File(['payload'], 'doomed.txt', { type: 'text/plain' }))
 
     const res = await postFormData(app, '/api/agents/test-agent/upload-file', formData)
     expect(res.status).toBe(500)
-    expect(mockFsUnlink).toHaveBeenCalledWith(expect.stringContaining('uploads'))
+    expect(mockFsUnlink).not.toHaveBeenCalled()
   })
 
   it('uploads file without relativePath uses timestamped name', async () => {
