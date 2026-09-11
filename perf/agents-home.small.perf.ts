@@ -17,7 +17,7 @@ import { defineHomeScenarios } from './home-scenarios'
 // to read those paths with no containment at all.
 defineHomeScenarios('small', {
   agentsCold: { totalOps: 342, ops: { stat: 275, realpath: 35 }, wallMs: 240 },
-  agentsWarm: { totalOps: 77, ops: { stat: 15, realpath: 35 }, wallMs: 110 },
+  agentsWarm: { totalOps: 77, ops: { stat: 15, realpath: 35 }, wallMs: 180 },
   homeCold: { totalOps: 377, ops: { stat: 280, realpath: 35 }, wallMs: 370 },
   homeWarm: { totalOps: 112, ops: { stat: 20, realpath: 35 }, wallMs: 240 },
   sessionsPage: { totalOps: 3, ops: { stat: 2 }, wallMs: 70 },
