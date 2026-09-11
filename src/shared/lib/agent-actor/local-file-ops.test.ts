@@ -1,6 +1,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import { Readable } from 'stream'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { LocalFileOps, createLocalFileOps } from './local-file-ops'
 import { describeFileOpsContract } from './testing/file-ops-contract'
@@ -168,6 +169,62 @@ describe('LocalFileOps — symbolic links', () => {
     expect(await codeOf(files.write('leak.txt', body))).toBe('outside-workspace')
     expect(cancelled).toBe(true)
     expect(await fs.promises.readFile(path.join(outside, 'secret.txt'), 'utf-8')).toBe('secret')
+  })
+
+  it('write cancels the source when the destination cannot be opened', async () => {
+    // A read-only directory: the destination passes containment, then the
+    // temp file cannot be created. The source is a file on this machine, the
+    // way an upload assembled in the temp dir is; it must not stay open.
+    await fs.promises.mkdir(path.join(root, 'sealed'), { mode: 0o500 })
+    await fs.promises.writeFile(path.join(outside, 'upload.bin'), 'payload')
+    const source = fs.createReadStream(path.join(outside, 'upload.bin'))
+    try {
+      expect(await codeOf(files.write('sealed/upload.bin', Readable.toWeb(source) as ReadableStream<Uint8Array>))).toBe('not-accessible')
+      await new Promise((resolve) => setImmediate(resolve))
+      expect(source.destroyed).toBe(true)
+    } finally {
+      await fs.promises.chmod(path.join(root, 'sealed'), 0o700)
+    }
+  })
+
+  it('stat reports the permission bits', async () => {
+    await fs.promises.writeFile(path.join(root, 'run.sh'), '#!/bin/sh\n', { mode: 0o755 })
+    await fs.promises.writeFile(path.join(root, 'notes.txt'), 'n', { mode: 0o644 })
+    expect((await files.stat('run.sh'))?.mode).toBe(0o755)
+    expect((await files.stat('notes.txt'))?.mode).toBe(0o644)
+  })
+
+  it('getDoc hands back the bytes it read, not a copy', async () => {
+    await fs.promises.writeFile(path.join(root, 'doc.bin'), Buffer.from([1, 2, 3]))
+    const bytes = await files.getDoc('doc.bin')
+    expect(Buffer.isBuffer(bytes)).toBe(true)
+  })
+
+  it('copyHostFile keeps the mode of the file it copies', async () => {
+    await fs.promises.writeFile(path.join(outside, 'tool.sh'), '#!/bin/sh\n', { mode: 0o755 })
+    await files.copyHostFile(path.join(outside, 'tool.sh'), 'bin/tool.sh')
+    expect((await fs.promises.stat(path.join(root, 'bin', 'tool.sh'))).mode & 0o777).toBe(0o755)
+    expect(await fs.promises.readFile(path.join(outside, 'tool.sh'), 'utf-8')).toBe('#!/bin/sh\n')
+  })
+
+  it('moveHostFile renames the file into the workspace and reports its size', async () => {
+    await fs.promises.writeFile(path.join(outside, 'assembled'), 'twelve bytes')
+    const { ino } = await fs.promises.stat(path.join(outside, 'assembled'))
+
+    expect(await files.moveHostFile(path.join(outside, 'assembled'), 'uploads/report.pdf')).toEqual({ size: 12 })
+
+    expect(fs.existsSync(path.join(outside, 'assembled'))).toBe(false)
+    const moved = await fs.promises.stat(path.join(root, 'uploads', 'report.pdf'))
+    expect(moved.ino).toBe(ino) // the same file, not a copy of it
+    expect(await fs.promises.readFile(path.join(root, 'uploads', 'report.pdf'), 'utf-8')).toBe('twelve bytes')
+  })
+
+  it('moveHostFile never lands outside the workspace', async () => {
+    await fs.promises.symlink(outside, path.join(root, 'leakdir'))
+    await fs.promises.writeFile(path.join(outside, 'assembled'), 'x')
+    expect(await codeOf(files.moveHostFile(path.join(outside, 'assembled'), 'leakdir/report.pdf'))).toBe('outside-workspace')
+    expect(fs.existsSync(path.join(outside, 'assembled'))).toBe(true)
+    expect(fs.existsSync(path.join(outside, 'report.pdf'))).toBe(false)
   })
 })
 

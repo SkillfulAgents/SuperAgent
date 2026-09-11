@@ -40,6 +40,7 @@ import {
   normalizeWorkspacePath,
   type FileStat,
 } from '@shared/lib/agent-actor'
+import { copyHostFileIntoWorkspace, moveHostFileIntoWorkspace } from '@shared/lib/agent-actor/copy-into-workspace'
 import { parseRuntimeOptions, resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import {
   sessionDashboardDispatchSchema,
@@ -298,7 +299,7 @@ async function readWorkspaceBookmarks(agentSlug: string): Promise<WorkspaceBookm
   const bytes = await agentRegistry.get(agentSlug).files.getDoc(BOOKMARKS_FILE).catch(() => null)
   if (!bytes || bytes.byteLength === 0) return []
   try {
-    const parsed = JSON.parse(Buffer.from(bytes).toString('utf-8'))
+    const parsed = JSON.parse(new TextDecoder().decode(bytes))
     if (!Array.isArray(parsed)) return []
     return parsed.flatMap((entry): WorkspaceBookmark[] => {
       const result = WorkspaceBookmarkSchema.safeParse(entry)
@@ -5965,7 +5966,7 @@ agents.get('/:id/skills/:dir/files/content', AgentAdmin(), async (c) => {
     if (!bytes) {
       return c.json({ error: 'File not found' }, 404)
     }
-    return c.json({ content: Buffer.from(bytes).toString('utf-8'), path: filePath })
+    return c.json({ content: new TextDecoder().decode(bytes), path: filePath })
   } catch (error) {
     if (error instanceof WorkspaceFileError) {
       return c.json({ error: error.status === 400 ? 'Invalid file path' : error.message }, error.status)
@@ -6084,11 +6085,9 @@ function resolveUploadDestPath(filename: string, relativePath?: string): string 
 async function writeUploadedFileFromPath(agentSlug: string, filename: string, srcPath: string, relativePath?: string) {
   const uploadPath = resolveUploadDestPath(filename, relativePath)
   // `srcPath` is the assembled chunk file in this machine's temp dir, not a
-  // workspace file; stream it into the workspace through the actor.
-  const { size } = await agentRegistry.get(agentSlug).files.write(
-    uploadPath,
-    Readable.toWeb(fs.createReadStream(srcPath)) as ReadableStream<Uint8Array>,
-  )
+  // workspace file: it is moved into the workspace, a rename when the two
+  // share a filesystem, so the bytes are not written a second time.
+  const { size } = await moveHostFileIntoWorkspace(agentRegistry.get(agentSlug).files, srcPath, uploadPath)
   return {
     success: true,
     path: `/workspace/${uploadPath}`,
@@ -6227,7 +6226,7 @@ agents.post('/:id/sessions/:sessionId/upload-file', AgentUser(), uploadRequestBo
 
 async function handleFolderUpload(agentSlug: string, sourcePath: string) {
   // `sourcePath` is a folder on this machine, chosen in the Electron file
-  // picker. Walk it with fs and stream each regular file into the workspace;
+  // picker. Walk it with fs and copy each regular file into the workspace;
   // symbolic links are skipped rather than followed.
   const stat = await fs.promises.stat(sourcePath)
   if (!stat.isDirectory()) {
@@ -6253,7 +6252,7 @@ async function handleFolderUpload(agentSlug: string, sourcePath: string) {
       if (entry.isDirectory()) {
         await copyDirectory(hostEntry, destEntry)
       } else if (entry.isFile()) {
-        await actor.files.write(destEntry, Readable.toWeb(fs.createReadStream(hostEntry)) as ReadableStream<Uint8Array>)
+        await copyHostFileIntoWorkspace(actor.files, hostEntry, destEntry)
       }
     }
   }
@@ -6984,9 +6983,8 @@ agents.get('/:id/artifacts/:artifactSlug/widget/snapshot', AgentRead(), async (c
   try {
     const png = await agentRegistry.get(slug).files.getDoc(pngPath)
     if (png === null) return c.json({ error: 'No snapshot rendered yet' }, 404)
-    // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins
-    const body = new Uint8Array(png)
-    return new Response(body, {
+    // The bytes as read, not a copy: a typed view is all Response needs.
+    return new Response(png as Uint8Array<ArrayBuffer>, {
       status: 200,
       headers: {
         'content-type': 'image/png',
@@ -7021,9 +7019,8 @@ agents.get('/:id/artifacts/:artifactSlug/screenshot.png', AgentRead(), async (c)
     if (png === null) {
       return c.json({ error: 'No screenshot available' }, 404)
     }
-    // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins
-    const body = new Uint8Array(png)
-    return new Response(body, {
+    // The bytes as read, not a copy: a typed view is all Response needs.
+    return new Response(png as Uint8Array<ArrayBuffer>, {
       status: 200,
       headers: {
         'content-type': 'image/png',
