@@ -818,10 +818,10 @@ import { capBrowserOutput, redactCdpUrls, MAX_BROWSER_OUTPUT_CHARS, MAX_BROWSER_
 import { capSnapshot, compactWithText, countRefs, formatIframePlaceholders, formatTextFooter, THIN_TREE_REFS } from './snapshot-format';
 import { observerScript, parseObservation, EMPTY_OBSERVATION, PREVIEW_CHARS, THIN_TREE_PREVIEW_CHARS, type PageObservation } from './page-observer';
 import { formatStatusLine, waitForQuiet } from './page-status';
-import { observeAction, ACTION_POLICIES, type ActionEffect, type ActionPolicy } from './action-settle';
+import { observeAction, pressPolicy, ACTION_POLICIES, type ActionEffect, type ActionPolicy } from './action-settle';
 import {
   observeUrl, resetUrlTracking,
-  FILL_SETTLE_MS, PRESS_ENTER_SETTLE_MS, PRESS_SETTLE_MS,
+  FILL_SETTLE_MS,
   type UrlDigest, type ScrollInfo, parseScrollInfo,
 } from './browser-digest';
 
@@ -1754,7 +1754,7 @@ app.post('/browser/press', async (c) => {
 
     const { result, digest, effect, settleMs, stillBusy } = await runWithEffect(
       () => execBrowser(['press', body.key], browserState.cdpUrl || undefined),
-      { ...ACTION_POLICIES.press, settleMs: body.key.trim() === 'Enter' ? PRESS_ENTER_SETTLE_MS : PRESS_SETTLE_MS },
+      pressPolicy(body.key),
     );
 
     if (result.exitCode !== 0) {

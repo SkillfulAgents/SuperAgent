@@ -7,6 +7,7 @@ import {
   effectIsBusy,
   formatActionEffect,
   observeAction,
+  pressPolicy,
 } from './action-settle'
 
 const base: PageObservation = {
@@ -218,5 +219,50 @@ describe('observeAction', () => {
     expect(out.waitedMs).toBe(50)
     expect(out.effect?.focusChanged).toBe(true)
     expect(h.evals.map(e => e.at)).toEqual([0, 50])
+  })
+
+  it('skips the recheck where a late effect is implausible: a click that landed focus in a text field', async () => {
+    const h = harness([base, { ...base, t: 1300, focus: 'textbox "Email"' }])
+    const out = await h.run(ACTION_POLICIES.click)
+    expect(out.waitedMs).toBe(300)
+    expect(h.evals.map(e => e.at)).toEqual([0, 300])
+    expect(formatActionEffect(out.effect, { settleMs: out.waitedMs, verb: 'click' })).toBe('\nEffect: focus: textbox "Email"')
+    // A click that landed focus on a button still gets the recheck: a drawer may follow.
+    const h2 = harness([base, { ...base, t: 1300, focus: 'button "Add to cart"' }, { ...base, t: 2200, focus: 'button "Add to cart"', top: [{ kind: 'dialog', name: 'Cart' }] }])
+    const out2 = await h2.run(ACTION_POLICIES.click)
+    expect(h2.evals.map(e => e.at)).toEqual([0, 300, 1200])
+    expect(out2.effect?.opened).toEqual([{ kind: 'dialog', name: 'Cart' }])
+  })
+
+  it('never rechecks a hover or a scroll', async () => {
+    for (const policy of [ACTION_POLICIES.hover, ACTION_POLICIES.scroll]) {
+      const h = harness([base, { ...base, t: 1300 }])
+      const out = await h.run(policy)
+      expect(out.waitedMs).toBe(300)
+      expect(h.evals.map(e => e.at)).toEqual([0, 300])
+    }
+  })
+
+  it('rechecks a press only for keys that submit or activate', async () => {
+    for (const key of ['Enter', ' Return ', 'Space']) {
+      const h = harness([base, { ...base, t: 1300 }, { ...base, t: 2200, interactive: 52 }])
+      const out = await h.run(pressPolicy(key))
+      expect(h.evals.map(e => e.at)).toEqual([0, 300, 1200])
+      expect(out.effect?.interactiveDelta).toBe(12)
+    }
+    for (const key of ['Tab', 'Escape', 'ArrowDown', 'Control+a', 'a']) {
+      const h = harness([base, { ...base, t: 1050 }])
+      const out = await h.run(pressPolicy(key))
+      expect(out.waitedMs).toBe(50)
+      expect(h.evals.map(e => e.at)).toEqual([0, 50])
+    }
+  })
+
+  it('still polls a busy page to the cap whatever the verb', async () => {
+    const busy = { ...base, t: 1300, pending: 1 }
+    const h = harness([base, busy, busy, busy, busy, busy, busy, busy, busy, busy, busy, busy])
+    const out = await h.run(ACTION_POLICIES.hover)
+    expect(out.stillBusy).toBe(true)
+    expect(out.waitedMs).toBe(2000)
   })
 })

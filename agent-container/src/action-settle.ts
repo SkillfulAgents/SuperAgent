@@ -12,9 +12,10 @@
  * Settling is the affordance a person gets from the browser's spinner. After
  * the verb's settle, if the page is still working (requests in flight, a
  * spinner or top bar that started after the action) the poll continues until
- * it stops or a cap; if nothing at all changed, one later read guards
- * against effects that land just after the settle (a Shopify cart drawer
- * opened after 300ms). Every clause is a before-versus-after diff.
+ * it stops or a cap; if nothing at all changed and a late effect is plausible
+ * for that verb (policy.recheck), one later read guards against effects that
+ * land just after the settle (a Shopify cart drawer opened after 300ms).
+ * Every clause is a before-versus-after diff.
  *
  * The line states observations only. When nothing was seen it says so and
  * names what was looked at; it never concludes that the click was swallowed,
@@ -28,6 +29,7 @@ import {
   busyKey, describeBusy, observerScript, parseObservation, transientBusy,
   type BusyIndicator, type FailedRequest, type PageObservation, type TopLayerEntry,
 } from './page-observer'
+import { PRESS_ENTER_SETTLE_MS, PRESS_SETTLE_MS } from './browser-digest'
 
 export type ActionVerb = 'click' | 'press' | 'select' | 'hover' | 'scroll'
 
@@ -47,18 +49,42 @@ export interface ActionPolicy {
    * hide a late effect. The focus is still reported either way.
    */
   countFocus: boolean
+  /**
+   * Given silence at the settle, is a late effect plausible enough to pay for
+   * the recheck? The recheck exists for a drawer that opens 900ms after a
+   * click; it is wasted after a click that merely landed focus in a text
+   * field, a Tab, an Escape, or a hover that opened nothing.
+   */
+  recheck: (effect: ActionEffect) => boolean
 }
 
 const base = { recheckMs: 1200, pollMs: 200, capMs: 2000 }
 
+/** Focus roles that take typing: a click landing here is complete in itself. */
+const TEXT_FIELD_FOCUS = /^(textbox|searchbox|combobox|textarea|input)\b/
+const focusedTextField = (e: ActionEffect): boolean => e.focusChanged && TEXT_FIELD_FOCUS.test(e.focus)
+/** Keys that submit or activate — the ones whose effect can arrive late. */
+const ACTIVATING_KEYS = new Set(['enter', 'return', 'space', ' '])
+
 export const ACTION_POLICIES: Record<ActionVerb, ActionPolicy> = {
-  click: { ...base, verb: 'click', settleMs: 300, countFocus: false },
-  press: { ...base, verb: 'press', settleMs: 50, countFocus: true },
-  select: { ...base, verb: 'select', settleMs: 300, countFocus: false },
-  hover: { ...base, verb: 'hover', settleMs: 300, countFocus: false },
+  click: { ...base, verb: 'click', settleMs: 300, countFocus: false, recheck: e => !focusedTextField(e) },
+  press: { ...base, verb: 'press', settleMs: 50, countFocus: true, recheck: () => false },
+  select: { ...base, verb: 'select', settleMs: 300, countFocus: false, recheck: () => true },
+  // A menu opens within the settle or not at all.
+  hover: { ...base, verb: 'hover', settleMs: 300, countFocus: false, recheck: () => false },
   // A scroll on a static page changes nothing in the DOM by design; the
-  // viewport line already says where the page is, so no recheck.
-  scroll: { ...base, verb: 'scroll', settleMs: 300, recheckMs: 300, countFocus: false },
+  // viewport line already says where the page is.
+  scroll: { ...base, verb: 'scroll', settleMs: 300, countFocus: false, recheck: () => false },
+}
+
+/**
+ * The press policy for one key: Enter and Space submit or activate, so they
+ * get a click-sized settle and the recheck; every other key (Tab, Escape,
+ * arrows, modifier combos) acts at once or not at all.
+ */
+export function pressPolicy(key: string): ActionPolicy {
+  const activating = ACTIVATING_KEYS.has(key.trim().toLowerCase())
+  return { ...ACTION_POLICIES.press, settleMs: activating ? PRESS_ENTER_SETTLE_MS : PRESS_SETTLE_MS, recheck: () => activating }
 }
 
 export interface ActionEffect {
@@ -184,7 +210,7 @@ export async function observeAction<R>(opts: ObserveActionOptions<R>): Promise<{
   let effect = diff(after)
   let stillBusy = false
 
-  if (effect && !effectIsBusy(effect) && !effectHasChange(effect, { countFocus: policy.countFocus }) && elapsed() < policy.recheckMs) {
+  if (effect && !effectIsBusy(effect) && !effectHasChange(effect, { countFocus: policy.countFocus }) && policy.recheck(effect) && elapsed() < policy.recheckMs) {
     // Silence at the settle: a late effect is the other explanation.
     await sleep(Math.max(0, policy.recheckMs - elapsed()))
     const again = await readAfter()

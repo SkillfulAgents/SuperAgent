@@ -90,7 +90,7 @@ requests since the action, control state changes (checked, pressed, expanded),
 typed field values, the change in the number of interactive elements, and
 focus. The harness waits for the page to stop working before reporting
 (spinners, top bars, requests in flight; up to 2s). `Effect: none observed
-within 1200ms (…)` states only that nothing in that scope changed — not that
+within Nms (…)` states only that nothing in that scope changed — not that
 the click failed: a toggle, a highlight, a change inside an iframe or canvas,
 or a slow server all look like this. Snapshot or screenshot if you need to
 know; do not click again on that basis, which would undo a toggle. `Effect:
