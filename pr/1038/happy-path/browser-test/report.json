@@ -1,23 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser-use feature successfully opened a real browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and returned the correct result to the user in the chat interface.",
+  "reason": "Browser-use feature successfully executed: agent opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and returned the result in the chat.",
   "steps": [
-    "Step 1: Navigated to http://localhost:47891 — Page loaded successfully showing Gamut agent interface with sidebar containing multiple agents and home view.",
-    "Step 2: Found and clicked the \"QA-20260911-173616-8dcg\" agent in the sidebar — Agent page opened successfully, displaying the agent configuration interface and chat input area.",
-    "Step 3: Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully entered into the input field and sent via the Send button. Agent transitioned to \"working\" status.",
-    "Step 4: Waited for agent response (up to 3 minutes) — Agent completed work in 7 seconds, executing 4 tool calls and using 185,484 tokens.",
-    "Step 5: Verified response mentions \"Example Domain\" and took screenshot — Response confirmed successful browser navigation. Agent returned: \"The page title is \"Example Domain\" — the page has a single heading of the same name and a \"Learn more\" link. Browser is closed.\" Screenshot captured showing the full response in the chat interface."
+    "Step 1: Navigated to http://localhost:47891 — Page loaded successfully showing the Gamut interface with agent sidebar.",
+    "Step 2: Found and clicked \"QA-20260911-222821-glvq\" agent in sidebar — Agent page opened, displaying chat interface with \"How can I help?\" input field.",
+    "Step 3: Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in input field — Message appeared in textbox and was ready to send.",
+    "Step 4: Clicked \"Send message\" button — Message was sent successfully, session created (URL changed to session URL), agent status changed to \"working\".",
+    "Step 5: Waited up to 3 minutes for response — Response arrived within ~10 seconds with message: \"The page title is Example Domain — a placeholder page reserved for use in documentation examples. Browser is closed.\"",
+    "Step 5: Took screenshot of response — Screenshot captured showing agent response clearly displaying \"Example Domain\" in the chat message, along with metadata showing \"Worked for 10s · 4 tool calls · 185,474 tokens\"."
   ],
   "bugs": [],
-  "durationMs": 80035,
-  "sessionId": "c3d8d32b-033a-43da-9afc-d70d255544e2",
+  "durationMs": 249055,
+  "sessionId": "cc342fe1-98ec-49c3-b2ec-0d8829162afa",
   "cost": {
-    "inputTokens": 404,
-    "outputTokens": 13102,
-    "cacheCreationTokens": 86828,
-    "cacheReadTokens": 1270144,
+    "inputTokens": 320,
+    "outputTokens": 10765,
+    "cacheCreationTokens": 71309,
+    "cacheReadTokens": 896769,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.301463
+    "totalCostUsd": 0.232958
   }
 }
