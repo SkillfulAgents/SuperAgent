@@ -271,7 +271,7 @@ describe('observerScript — busy signals', () => {
   it('reports semantic indicators: indeterminate progressbar, aria-busy, loading status text, wait cursor', () => {
     const { run } = makePage({
       sel: {
-        [PROGRESS]: [el({ role: 'progressbar', label: 'Loading results' }), el({ role: 'progressbar', visible: false })],
+        [PROGRESS]: [el({ role: 'progressbar', label: 'Loading results' }), el({ role: 'progressbar', visible: false }), el({ role: 'progressbar', checkVisibility: false })],
         [ARIA_BUSY]: [el({}), el({})],
         [LIVE]: [el({ text: 'Loading your cart…' })],
       },
@@ -283,6 +283,12 @@ describe('observerScript — busy signals', () => {
       { kind: 'status', name: 'Loading your cart…', count: 1 },
       { kind: 'cursor', name: 'wait', count: 1 },
     ])
+  })
+
+  it('counts several indeterminate progress bars as one indicator (a feed of loading cards is "6 progressbars", not six entries)', () => {
+    const { run } = makePage({ sel: { [PROGRESS]: [1, 2, 3, 4, 5, 6].map(() => el({ role: 'progressbar' })) } })
+    expect(run().busy).toEqual([{ kind: 'progressbar', name: '', count: 6 }])
+    expect(describeBusy(run().busy, 0)).toBe('6 progressbars')
   })
 
   it('classifies new infinite animations by geometry and ignores ones already running at the baseline', () => {

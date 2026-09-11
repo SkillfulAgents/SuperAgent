@@ -247,7 +247,7 @@ export function observerScript(opts: ObserverOptions = {}): string {
     'var rs=performance.getEntriesByType("resource");for(var r=0;r<rs.length;r++){var re=rs[r];if(re.startTime>=cut&&re.responseStatus>=400)addF(re.name,re.responseStatus,String(re.initiatorType||""))}}catch(e){}' +
     // Busy: semantic indicators first.
     'try{var addB=function(kind,nm,count){if(o.busy.length>=' + MAX_BUSY + ')return;o.busy.push({kind:kind,name:ws(nm||"").slice(0,60),count:count||1})};' +
-    'var pbs=document.querySelectorAll(\'[role="progressbar"]:not([aria-valuenow]),progress:not([value])\');for(var b1=0;b1<pbs.length;b1++){if(vis(pbs[b1]))addB("progressbar",pbs[b1].getAttribute("aria-label")||"")}' +
+    'var pbs=document.querySelectorAll(\'[role="progressbar"]:not([aria-valuenow]),progress:not([value])\');var npb=0,pbn="";for(var b1=0;b1<pbs.length;b1++){if(vis(pbs[b1])){npb++;pbn=pbn||pbs[b1].getAttribute("aria-label")||""}}if(npb)addB("progressbar",npb===1?pbn:"",npb);' +
     'var abs=document.querySelectorAll(\'[aria-busy="true"]\');var nab=0;for(var b2=0;b2<abs.length;b2++){if(vis(abs[b2]))nab++}if(nab)addB("aria-busy","",nab);' +
     'for(var b3=0;b3<o.liveRegions.length;b3++){if(/\\b(' + LOADING_TEXT + ')\\b/i.test(o.liveRegions[b3])){addB("status",o.liveRegions[b3]);break}}' +
     'var cur=getComputedStyle(document.body).cursor;if(cur==="wait"||cur==="progress")addB("cursor",cur)}catch(e){}' +

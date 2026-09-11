@@ -95,8 +95,8 @@ the click failed: a toggle, a highlight, a change inside an iframe or canvas,
 or a slow server all look like this. Snapshot or screenshot if you need to
 know; do not click again on that basis, which would undo a toggle. `Effect:
 page still active after 2.0s (spinner, 1 request in flight)` lists what was
-still going on and what had landed so far: wait for the element you expect,
-then re-snapshot. Fill results report the value the page actually committed. A
+still going on and what had landed so far: re-snapshot to see where it landed,
+and use `browser_wait` only for a selector you already know, never a guess. Fill results report the value the page actually committed. A
 fill warning means the page kept a different value—fix it before moving on.
 
 Navigation makes existing refs stale. Re-snapshot when a result reports
