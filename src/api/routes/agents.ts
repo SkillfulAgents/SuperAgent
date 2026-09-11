@@ -862,13 +862,15 @@ export async function resolveInterruptedSubagents(
 
   if (unresolvedTaskCalls.length === 0) return
 
-  // The subagent sidecars carry the toolUseId that launched each one.
-  const subagents = await agentRegistry.get(agentSlug).sessions.subagents(sessionId)
+  // The subagent sidecars carry the toolUseId that launched each one. The
+  // subagents already resolved are not read: an already-completed one must
+  // not be re-marked cancelled, and its sidecar is one read saved.
+  const subagents = await agentRegistry.get(agentSlug).sessions.subagents(sessionId, { except: resolvedAgentIds })
 
   // Build toolUseId → agentId map (deterministic, no FIFO)
   const toolUseToAgentId = new Map<string, string>()
   for (const { id, toolUseId } of subagents) {
-    if (!toolUseId || resolvedAgentIds.has(id)) continue
+    if (!toolUseId) continue
     toolUseToAgentId.set(toolUseId, id)
   }
 

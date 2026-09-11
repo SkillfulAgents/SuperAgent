@@ -1,3 +1,4 @@
+import path from 'path'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { TransformedItem, TransformedMessage } from '@shared/lib/utils/message-transform'
 
@@ -342,6 +343,8 @@ describe('resolveInterruptedSubagents', () => {
     // it must not overwrite a completed subagent with a cancelled one.
     expect(resolvedTc.subagent).toEqual({ agentId: 'already-resolved', status: 'completed' })
     expect(unresolvedTc.subagent).toEqual({ agentId: 'new-one', status: 'cancelled' })
+    // Its sidecar was not read at all: only the unresolved one's was.
+    expect(mockReadFile.mock.calls.map(([file]) => path.basename(String(file)))).toEqual(['agent-new-one.meta.json'])
   })
 
   // --------------------------------------------------------------------------
