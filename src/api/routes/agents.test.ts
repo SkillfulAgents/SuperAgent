@@ -3543,26 +3543,36 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
   })
 
   it('uploads file with relativePath preserving directory structure', async () => {
-    const formData = new FormData()
-    formData.append('file', new File(['hello'], 'test.txt', { type: 'text/plain' }))
-    formData.append('relativePath', 'myfolder/sub/test.txt')
+    // The write resolves the parent's real path first and only walks up when
+    // that is missing; the nested folders do not exist yet.
+    mockFsRealpath.mockImplementation(async (value: unknown) => {
+      if (String(value).includes('myfolder')) throw enoent()
+      return value
+    })
+    try {
+      const formData = new FormData()
+      formData.append('file', new File(['hello'], 'test.txt', { type: 'text/plain' }))
+      formData.append('relativePath', 'myfolder/sub/test.txt')
 
-    const res = await postFormData(app, '/api/agents/test-agent/upload-file', formData)
-    expect(res.status).toBe(200)
-    const body = await res.json()
-    expect(body.path).toBe('/workspace/uploads/myfolder/sub/test.txt')
-    expect(body.success).toBe(true)
-    expect(body.filename).toBe('test.txt')
+      const res = await postFormData(app, '/api/agents/test-agent/upload-file', formData)
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.path).toBe('/workspace/uploads/myfolder/sub/test.txt')
+      expect(body.success).toBe(true)
+      expect(body.filename).toBe('test.txt')
 
-    // Verify mkdir was called with the parent directory
-    expect(mockFsMkdir).toHaveBeenCalledWith(
-      expect.stringContaining('myfolder/sub'),
-      { recursive: true }
-    )
-    // Verify the file was streamed to the destination path
-    expect(mockCreateWriteStream).toHaveBeenCalledWith(
-      expect.stringContaining('myfolder/sub/test.txt'),
-    )
+      // Verify mkdir was called with the parent directory
+      expect(mockFsMkdir).toHaveBeenCalledWith(
+        expect.stringContaining('myfolder/sub'),
+        { recursive: true }
+      )
+      // Verify the file was streamed to the destination path
+      expect(mockCreateWriteStream).toHaveBeenCalledWith(
+        expect.stringContaining('myfolder/sub/test.txt'),
+      )
+    } finally {
+      mockFsRealpath.mockReset()
+    }
   })
 
   it('writes the uploaded bytes to disk unchanged (hash-identical)', async () => {

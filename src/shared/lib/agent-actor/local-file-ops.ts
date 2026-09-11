@@ -63,6 +63,12 @@ function fromFsError(error: unknown): never {
   }
 }
 
+/** A write's filesystem error: a file where a parent directory should be is `not-a-directory`; the rest as for reads. */
+function fromWriteError(error: unknown): never {
+  if (errnoCode(error) === 'ENOTDIR') throw new WorkspaceFileError('not-a-directory', 'A file is in the way')
+  return fromFsError(error)
+}
+
 /** True for the errors that mean "nothing is there": absent, a file in a directory's place, a link loop. */
 function isAbsence(error: unknown): boolean {
   const code = errnoCode(error)
@@ -177,26 +183,33 @@ export class LocalFileOps implements FileOps {
       throw new WorkspaceFileError('outside-workspace', 'Refusing to write through a link')
     }
 
+    // The common case, the parent in place, is one call: resolve it. Only a
+    // missing parent walks up to the deepest existing ancestor, and only then
+    // is anything created. A file where the parent should be resolves too;
+    // the write that follows fails on it and reports `not-a-directory`.
     let existing = path.dirname(abs)
     const tail = [path.basename(abs)]
-    while (!(await lstatOrNull(existing))) {
+    let realExisting = await realpathOrNull(existing)
+    while (realExisting === null) {
       tail.unshift(path.basename(existing))
       const parent = path.dirname(existing)
       if (parent === existing) throw new WorkspaceFileError('outside-workspace')
       existing = parent
+      realExisting = await realpathOrNull(existing)
     }
-    const realExisting = await fs.promises.realpath(existing).catch(fromFsError)
     const realTarget = path.join(realExisting, ...tail)
     await this.containingRoot(root, realRoot, realTarget)
 
-    try {
-      await fs.promises.mkdir(path.dirname(realTarget), { recursive: true })
-    } catch (error) {
-      // A file where a parent directory should be.
-      if (errnoCode(error) === 'EEXIST' || errnoCode(error) === 'ENOTDIR') {
-        throw new WorkspaceFileError('not-a-directory', 'A file is in the way')
+    if (tail.length > 1) {
+      try {
+        await fs.promises.mkdir(path.dirname(realTarget), { recursive: true })
+      } catch (error) {
+        // A file where a parent directory should be.
+        if (errnoCode(error) === 'EEXIST' || errnoCode(error) === 'ENOTDIR') {
+          throw new WorkspaceFileError('not-a-directory', 'A file is in the way')
+        }
+        return fromFsError(error)
       }
-      return fromFsError(error)
     }
     return { rel, abs: realTarget }
   }
@@ -264,7 +277,7 @@ export class LocalFileOps implements FileOps {
   async putDoc(workspacePath: string, bytes: Uint8Array | string): Promise<void> {
     const { abs } = await this.forWrite(workspacePath)
     const data = typeof bytes === 'string' ? Buffer.from(bytes, 'utf-8') : Buffer.from(bytes)
-    await writeFileAtomicStream(abs, [data]).catch(fromFsError)
+    await writeFileAtomicStream(abs, [data]).catch(fromWriteError)
   }
 
   async write(workspacePath: string, body: ReadableStream<Uint8Array> | Uint8Array): Promise<{ size: number }> {
@@ -280,7 +293,7 @@ export class LocalFileOps implements FileOps {
     const chunks = body instanceof Uint8Array
       ? [Buffer.from(body)]
       : Readable.fromWeb(body as import('stream/web').ReadableStream<Uint8Array>)
-    await writeFileAtomicStream(target.abs, chunks).catch(fromFsError)
+    await writeFileAtomicStream(target.abs, chunks).catch(fromWriteError)
     const stat = await fs.promises.stat(target.abs).catch(fromFsError)
     return { size: stat.size }
   }
