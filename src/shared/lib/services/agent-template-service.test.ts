@@ -836,6 +836,67 @@ describe('walkTemplateFiles (via exportAgentTemplate)', () => {
     expect(entries).toContain('skills/tool.py')
   })
 
+  // ---------- Source ownership ----------
+  // archiver reads the sources it is handed but neither listens on them nor
+  // ends them when it stops; the export owns both.
+
+  it('a source that fails mid-read fails the export and releases the host lock', async () => {
+    createWorkspace('test-agent', { 'CLAUDE.md': MINIMAL_CLAUDE_MD, 'skills/tool.py': 'print("hi")' })
+    const { agentRegistry } = await import('@shared/lib/agent-actor')
+    const files = agentRegistry.get('test-agent').files
+    const read = vi.spyOn(files, 'read').mockImplementation(async () => new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('partial'))
+      },
+      pull(controller) {
+        controller.error(new Error('disk went away'))
+      },
+    }))
+    try {
+      const archive = await exportAgentTemplateStream('test-agent')
+      const failure = await new Promise<Error>((resolve) => {
+        archive.on('error', resolve)
+        archive.resume()
+      })
+      expect(failure.message).toBe('disk went away')
+      await waitUntil(() => !isHostExportBusy())
+    } finally {
+      read.mockRestore()
+    }
+  })
+
+  it('destroying the archive cancels the sources it had opened', async () => {
+    createWorkspace('test-agent', { 'CLAUDE.md': MINIMAL_CLAUDE_MD, 'a.txt': 'a', 'b.txt': 'b', 'c.txt': 'c' })
+    const { agentRegistry } = await import('@shared/lib/agent-actor')
+    const files = agentRegistry.get('test-agent').files
+    let opened = 0
+    let cancelled = 0
+    const read = vi.spyOn(files, 'read').mockImplementation(async () => {
+      opened += 1
+      return new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('x'))
+        },
+        // A slow remote read: never delivers the next chunk.
+        pull: () => new Promise(() => {}),
+        cancel() {
+          cancelled += 1
+        },
+      })
+    })
+    try {
+      const archive = await exportAgentTemplateStream('test-agent')
+      archive.resume()
+      await waitUntil(() => opened >= 1)
+      archive.destroy()
+      await waitUntil(() => cancelled === opened)
+      await waitUntil(() => !isHostExportBusy())
+      expect(cancelled).toBeGreaterThanOrEqual(1)
+    } finally {
+      read.mockRestore()
+    }
+  })
+
   // ---------- Exclusion by name ----------
 
   it('excludes node_modules at any depth', async () => {
