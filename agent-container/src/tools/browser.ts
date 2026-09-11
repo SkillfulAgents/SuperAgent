@@ -18,6 +18,14 @@ import { hostAuthHeaders } from '../host-auth'
 import { tabManager } from '../tab-manager'
 import { formatUrlDigest, formatUrlDigestBrief, formatFillReadback, formatScrollDigest, type UrlDigest, type ScrollInfo } from '../browser-digest'
 import { landedElsewhere, pageWarnings, parsePageProbe, EMPTY_PROBE } from '../snapshot-format'
+import { formatActionEffect, type ActionEffect, type EffectFormatOptions } from '../action-effect'
+
+/** The effect line for a mutating action's result, from the server's fingerprint diff. */
+function effectText(data: Record<string, unknown> | undefined, verb: EffectFormatOptions['verb'], fallbackSettleMs: number): string {
+  const effect = (data?.effect as ActionEffect | undefined) ?? null
+  const settleMs = typeof data?.settleMs === 'number' ? data.settleMs : fallbackSettleMs
+  return formatActionEffect(effect, { settleMs, verb })
+}
 
 const CONTAINER_URL = `http://localhost:${process.env.PORT || '3000'}`
 // Conditional on purpose: it has to agree with the prompt, which tells a parent
@@ -264,7 +272,7 @@ const browserClickTool = tool(
     const tabInfo = data?.tabInfo as { activeId: string; activeUrl: string; tabCount: number } | undefined
     const digest = (data?.digest as UrlDigest | undefined) ?? null
 
-    let text = `Clicked ${args.ref}.${formatUrlDigest(digest)}`
+    let text = `Clicked ${args.ref}.${formatUrlDigest(digest)}${effectText(data, 'click', 300)}`
     if (tabInfo) {
       text += tabManager.formatTabNotification(tabInfo)
     } else {
@@ -374,7 +382,7 @@ This cannot type text — multi-character strings are rejected. To type into the
     const tabInfo = data?.tabInfo as { activeId: string; activeUrl: string; tabCount: number } | undefined
     const digest = (data?.digest as UrlDigest | undefined) ?? null
 
-    let text = `Pressed "${args.key}".${formatUrlDigestBrief(digest)}`
+    let text = `Pressed "${args.key}".${formatUrlDigestBrief(digest)}${effectText(data, 'press', 50)}`
     if (tabInfo) {
       text += tabManager.formatTabNotification(tabInfo)
     } else {
@@ -447,7 +455,7 @@ Custom dropdowns (divs with role=combobox/listbox) will NOT work with this tool.
     const committed = data?.committedValue
     return {
       content: [
-        { type: 'text' as const, text: `Selected "${args.value}" in ${args.ref} — committed value verified: "${committed}".` },
+        { type: 'text' as const, text: `Selected "${args.value}" in ${args.ref} — committed value verified: "${committed}".${effectText(data, 'select', 300)}` },
       ],
     }
   }
@@ -462,9 +470,11 @@ const browserHoverTool = tool(
   async (args) => {
     const result = await browserFetch('hover', { ref: args.ref })
     if (!result.success) return errorResult(result.error!)
+    const data = result.data as Record<string, unknown> | undefined
+    const effect = effectText(data, 'hover', 300)
     return {
       content: [
-        { type: 'text' as const, text: `Hovered over ${args.ref}. Use browser_snapshot to see any changes.` },
+        { type: 'text' as const, text: `Hovered over ${args.ref}.${effect || ' Use browser_snapshot to see any changes.'}` },
       ],
     }
   }

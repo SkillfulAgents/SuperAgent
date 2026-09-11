@@ -79,9 +79,15 @@ Use the most specific tool:
 - `browser_hover` for hover menus and tooltips;
 - `browser_scroll` for page or container scrolling.
 
-Trust the action result. Click and key results report navigation; fill results
-report the value the page actually committed. A fill warning means the page
-kept a different value—fix it before moving on.
+Trust the action result. Click, key, select and hover results report
+navigation plus an `Effect:` line — dialogs opened or closed, live-region
+announcements (toasts, validation errors), failed requests since the action,
+and the change in the number of interactive elements. `Effect: no DOM change
+within 300ms` means the page did not react: the element is probably disabled,
+covered, or the wrong target, so check its state or `browser_wait` for what you
+expect instead of clicking again. Fill results report the value the page
+actually committed. A fill warning means the page kept a different value—fix it
+before moving on.
 
 Navigation makes existing refs stale. Re-snapshot when a result reports
 navigation, when a dialog or dynamic view changes the relevant controls, or
