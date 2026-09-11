@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the agent can open a browser, navigate to https://example.com, retrieve the page title, and report back with the correct result mentioning \"Example Domain\"",
+  "steps": [
+    "Step 1: Navigated to http://localhost:47891 — Home page loaded successfully showing Gamut app with sidebar containing two agents including \"QA-20260911-202628-ivq3\"",
+    "Step 2: Found and clicked the \"QA-20260911-202628-ivq3\" agent in the sidebar — Agent page opened, displaying chat interface with message input field and agent configuration panels on the right",
+    "Step 3: Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Message successfully entered in the textbox and Send button became enabled",
+    "Step 4: Clicked Send message button — Message sent successfully, session created with ID, agent status changed to \"working\", and browser tool call initiated (3 tool calls total)",
+    "Step 5: Waited up to 3 minutes for agent response — Agent completed execution in approximately 8 seconds, returning response: \"The page title is \"Example Domain\". Browser closed.\"",
+    "Step 6: Verified response mentions \"Example Domain\" and took final screenshot — Response confirmed with exact text showing the correct page title was retrieved from https://example.com, demonstrating successful browser automation capability"
+  ],
+  "bugs": [],
+  "durationMs": 76764,
+  "sessionId": "7f3f1572-ad80-435c-919a-4aca43537977",
+  "cost": {
+    "inputTokens": 440,
+    "outputTokens": 13242,
+    "cacheCreationTokens": 92064,
+    "cacheReadTokens": 1399921,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.321722
+  }
+}
