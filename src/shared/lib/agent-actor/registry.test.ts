@@ -313,8 +313,9 @@ describe('createAgentRegistry', () => {
 
     it('transcript-adjacent reads bind the slug and forward the rest', async () => {
       const actor = createAgentRegistry(fake.deps).get('a')
-      await expect(actor.sessions.subagents('s1')).resolves.toEqual([{ id: 'sub-1', toolUseId: 'tu-1' }])
-      expect(fake.transcripts.listSubagents).toHaveBeenCalledWith('a', 's1')
+      const except = new Set(['known'])
+      await expect(actor.sessions.subagents('s1', { except })).resolves.toEqual([{ id: 'sub-1', toolUseId: 'tu-1' }])
+      expect(fake.transcripts.listSubagents).toHaveBeenCalledWith('a', 's1', { except })
       await actor.sessions.workflowAgentTranscript('s1', 'wf_1', 'agent-x')
       expect(fake.transcripts.readWorkflowAgentTranscript).toHaveBeenCalledWith('a', 's1', 'wf_1', 'agent-x')
       await actor.sessions.copyDerivedFiles('s1', 's2')

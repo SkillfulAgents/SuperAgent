@@ -9,6 +9,7 @@
 import fs from 'fs'
 import path from 'path'
 import { Readable } from 'stream'
+import pLimit from 'p-limit'
 import { z } from 'zod'
 import {
   copyDirectoryFiltered,
@@ -54,7 +55,11 @@ function sessionFile(slug: string, ...segments: string[]): string {
   return target
 }
 
-export async function listSubagents(slug: string, sessionId: string): Promise<SubagentRef[]> {
+export async function listSubagents(
+  slug: string,
+  sessionId: string,
+  options?: { except?: ReadonlySet<string> },
+): Promise<SubagentRef[]> {
   const subagentsDir = sessionFile(slug, sessionId, 'subagents')
   let files: string[]
   try {
@@ -62,19 +67,28 @@ export async function listSubagents(slug: string, sessionId: string): Promise<Su
   } catch {
     return [] // No subagents directory
   }
-  const refs: SubagentRef[] = []
+  const ids: string[] = []
   for (const file of files) {
     if (!file.startsWith('agent-') || !file.endsWith('.meta.json')) continue
     const id = file.slice('agent-'.length, -'.meta.json'.length)
-    try {
-      const raw = await fs.promises.readFile(path.join(subagentsDir, file), 'utf8')
-      const meta = subagentMetaSchema.parse(JSON.parse(raw))
-      refs.push(meta.toolUseId ? { id, toolUseId: meta.toolUseId } : { id })
-    } catch {
-      refs.push({ id }) // an unreadable sidecar still names a subagent
-    }
+    if (!options?.except?.has(id)) ids.push(id)
   }
-  return refs
+  // The sidecars are independent small files: read a few at a time rather
+  // than one after another, in the listing's order.
+  const limit = pLimit(8)
+  return Promise.all(
+    ids.map((id) =>
+      limit(async (): Promise<SubagentRef> => {
+        try {
+          const raw = await fs.promises.readFile(path.join(subagentsDir, `agent-${id}.meta.json`), 'utf8')
+          const meta = subagentMetaSchema.parse(JSON.parse(raw))
+          return meta.toolUseId ? { id, toolUseId: meta.toolUseId } : { id }
+        } catch {
+          return { id } // an unreadable sidecar still names a subagent
+        }
+      }),
+    ),
+  )
 }
 
 export async function readSubagentTranscript(slug: string, sessionId: string, subagentId: string): Promise<JsonlEntry[]> {
