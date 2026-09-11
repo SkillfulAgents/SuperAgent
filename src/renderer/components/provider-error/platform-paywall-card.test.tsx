@@ -681,6 +681,63 @@ describe('PlatformPaywallCard', () => {
       expect(mocks.track).toHaveBeenCalledWith('paywall_cleared', { ctaKind: 'topup', handedOff: false })
     })
 
+    it('keeps the open panel when the 5s poll clears billing before the platform reports the outcome, then holds through a late pending failure', async () => {
+      vi.useFakeTimers({ toFake: ['setInterval'] })
+      try {
+        renderCard()
+        const frame = await expandCta()
+        // The charge landed but the panel is still saving settings: no message yet.
+        fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(PAYWALL_RECHECK_INTERVAL_MS)
+        })
+        await waitFor(() => expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-blocked', 'false'))
+        expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-expanded', 'true')
+        expect(screen.getByTestId('billing-cta-frame')).toBe(frame)
+        expect(screen.getByTestId('composer')).toBeInTheDocument()
+        expect(toastSuccess).not.toHaveBeenCalled()
+
+        // The settings save fails after the poll already cleared: the frame must still be there.
+        postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated', { pending: true })
+        await act(async () => { await new Promise((r) => setTimeout(r, 20)) })
+        expect(screen.getByTestId('billing-cta-frame')).toBe(frame)
+        expect(toastSuccess).not.toHaveBeenCalled()
+
+        postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated')
+        await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
+        expect(toastSuccess).toHaveBeenCalledTimes(1)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('keeps the open panel when a focus refresh clears billing, until the platform reports the outcome', async () => {
+      renderCard()
+      const frame = await expandCta()
+      fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
+      act(() => { window.dispatchEvent(new Event('focus')) })
+      await waitFor(() => expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-blocked', 'false'))
+      expect(screen.getByTestId('billing-cta-frame')).toBe(frame)
+      expect(toastSuccess).not.toHaveBeenCalled()
+
+      postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated')
+      await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
+      expect(toastSuccess).toHaveBeenCalledTimes(1)
+    })
+
+    it('releases the open-panel hold on close even when billing cleared with no platform update', async () => {
+      renderCard()
+      await expandCta()
+      fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
+      act(() => { window.dispatchEvent(new Event('focus')) })
+      await waitFor(() => expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-blocked', 'false'))
+
+      postEmbedMessage(PLATFORM_ORIGIN, 'close')
+      await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
+      // Nothing was purchased in-panel, so no "billing updated" toast.
+      expect(toastSuccess).not.toHaveBeenCalled()
+    })
+
     it('releases a pending settings hold when the panel closes', async () => {
       renderCard()
       await expandCta()

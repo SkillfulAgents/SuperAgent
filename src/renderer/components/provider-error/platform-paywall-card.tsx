@@ -214,9 +214,10 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
   const [dismissed, setDismissed] = useState(false)
   const [handedOff, setHandedOff] = useState(false)
   const [expanded, setExpanded] = useState(false)
-  // The panel charged the card but still shows a settings error: keep it mounted, even
-  // once billing clears, until the platform settles it (plain billing-updated or close).
-  const [pendingSettings, setPendingSettings] = useState(false)
+  // An open panel's outcome is unknown until the platform reports it: a background poll
+  // can see the charge before the panel finishes saving settings, so only a settled
+  // billing-updated or close may release the frame (a pending update keeps holding).
+  const [panelHold, setPanelHold] = useState(false)
   const [ctaHint, setCtaHint] = useState('')
   const [plan, setPlan] = useState<SubscribePlan | null>(null)
   const billingChanged = useRef(false)
@@ -237,18 +238,22 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
   const { recheck } = billing
   const handleBillingUpdated = useCallback(({ pending }: { pending: boolean }) => {
     billingChanged.current = true
-    setPendingSettings(pending)
+    setPanelHold(pending)
     recheck()
   }, [recheck])
+  const expand = useCallback(() => {
+    setExpanded(true)
+    setPanelHold(true)
+  }, [])
   const collapse = useCallback(() => {
     setExpanded(false)
-    setPendingSettings(false)
+    setPanelHold(false)
   }, [])
-  const holding = embedded && pendingSettings
+  const holding = embedded && panelHold
   // Only the top-up panel expands in place; a view change remounts the frame anyway.
   useEffect(() => {
-    if (expanded && view !== 'topup') setExpanded(false)
-  }, [expanded, view])
+    if (expanded && view !== 'topup') collapse()
+  }, [expanded, view, collapse])
   useEffect(() => {
     if (!billing.cleared || holding || !inApp || !billingChanged.current || successShown.current) return
     successShown.current = true
@@ -304,9 +309,9 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
           platformBaseUrl={platformAuth?.platformBaseUrl ?? null}
           fallbackHref={ctaHref(billing.cta)}
           onBillingUpdated={handleBillingUpdated}
-          onOpenBilling={() => setExpanded(true)}
+          onOpenBilling={expand}
           onClose={collapse}
-          onOpenExternal={() => { setExpanded(false); setHandedOff(true) }}
+          onOpenExternal={() => { collapse(); setHandedOff(true) }}
         />
       ) : null}
       onDismiss={(kind) => {
