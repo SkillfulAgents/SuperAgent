@@ -11,12 +11,12 @@ import { defineHomeScenarios } from './home-scenarios'
 // bounded by the per-agent critical path: the agent list, artifact lookups
 // and per-request DB reads overlap.
 defineHomeScenarios('big', {
-  // One realpath per artifact listing and per manifest probe: the actor's
-  // file operations check each path's real location against the workspace.
-  agentsCold: { totalOps: 5028, ops: { stat: 5009, realpath: 10 }, wallMs: 10_400 },
-  agentsWarm: { totalOps: 22, ops: { stat: 4, realpath: 10 }, wallMs: 240 },
-  homeCold: { totalOps: 5035, ops: { stat: 5010, realpath: 10 }, wallMs: 10_500 },
-  homeWarm: { totalOps: 29, ops: { stat: 5, realpath: 10 }, wallMs: 330 },
+  // The actor's file operations cost what the plain reads they replace cost:
+  // an existence probe is a stat where it used to be an access call.
+  agentsCold: { totalOps: 5021, ops: { stat: 5012 }, wallMs: 10_400 },
+  agentsWarm: { totalOps: 15, ops: { stat: 7 }, wallMs: 110 },
+  homeCold: { totalOps: 5028, ops: { stat: 5013 }, wallMs: 10_500 },
+  homeWarm: { totalOps: 22, ops: { stat: 8 }, wallMs: 260 },
   sessionsPage: { totalOps: 3, ops: { stat: 2 }, wallMs: 100 },
   sessionsNotable: { totalOps: 1, ops: { stat: 1 }, wallMs: 40 },
 })
