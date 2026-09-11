@@ -150,7 +150,7 @@ describe('account reauthentication replacement', () => {
     expect(mappedAccounts('other-agent')).toEqual(['old'])
     expect(testDb.select().from(schema.connectedAccounts).where(eq(schema.connectedAccounts.id, 'old')).get()).toEqual(oldRecord)
     expect(userInputRequestManager.getOpenRequest(other.id)).not.toBeNull()
-    expect(syncEnvironment).toHaveBeenCalledWith('shared-agent', 'connected-accounts')
+    expect(syncEnvironment).toHaveBeenCalledWith('shared-agent', 'connected-accounts', expect.objectContaining({ slug: 'shared-agent' }))
   })
 
   it.each(['viewer', 'stranger'])('rejects a %s through the real agent ACL check', async (userId) => {
