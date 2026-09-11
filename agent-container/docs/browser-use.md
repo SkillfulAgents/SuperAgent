@@ -34,19 +34,34 @@ available.
 
 ## Observe Efficiently
 
-Use `browser_snapshot(interactive: true, compact: true)` for normal observation.
-It returns actionable refs such as `@e1`.
+Use `browser_snapshot()` for normal observation. It returns actionable refs
+such as `@e1` and, in the default interactive view, no static text at all. A
+footer reports how much page text was dropped and what the live regions
+(alerts, status, toasts) currently say.
+
+Every snapshot starts with a status line: `[page] URL · "title" · HTTP status ·
+readyState · N refs`, followed by `⚠` lines when the site is unreachable, a
+challenge wall is up, the document is a raw file, or the page is still loading
+(a snapshot first waits up to 2s for the document to finish loading, so "still
+loading" means it is genuinely slow). `browser_open` reports the same facts
+for the page it actually landed on (final URL, redirect, HTTP status) and is
+marked as an error only when that page is Chrome's own error page. These are
+observations, not verdicts: weigh them before reading the tree — a challenge
+wall or login page needs the user; an HTTP 404 on a page with a full tree may
+be a single-page app served from a fallback.
 
 Useful snapshot options:
 
+- `fullText: true`: add the page's static text (prices, prose, validation
+  errors, table values) to the same compact tree. This is the way to read a
+  page; refs are identical in both views;
 - `scope`: restrict a large page to a form, dialog, or other CSS-selected
-  region without invalidating refs elsewhere;
-- `fullText: true`: include static text such as validation errors, prices,
-  instructions, and toasts;
+  region without invalidating refs elsewhere. Combine with `fullText`;
 - `includeUrls: true`: inline link URLs when labels are ambiguous.
 
 Use `browser_get_state` when the URL, screenshot, and accessibility snapshot
-are all useful together. Use `browser_screenshot` only for pixel-level facts
+are all useful together; it takes the same `scope`/`fullText` knobs and
+`screenshot: false` skips the image. Use `browser_screenshot` only for pixel-level facts
 that the accessibility tree cannot express, such as visual layout, charts,
 images, or color.
 
@@ -66,7 +81,15 @@ Use the most specific tool:
 - `browser_hover` for hover menus and tooltips;
 - `browser_scroll` for page or container scrolling.
 
-Trust the action result. Click and key results report navigation; fill results
+Trust a reported change. Click, key, select and hover results report
+navigation plus an `Effect:` line of what was observed — dialogs opened or
+closed, live-region announcements (toasts, validation errors), control state
+changes (checked, pressed, expanded), typed field values, the change in the
+number of interactive elements, and focus. `Effect: none observed within Nms
+(…)` states only that nothing in that scope changed — not that the click
+failed: a highlight, a change inside an iframe or canvas, or a slow server
+all look like this. Snapshot or screenshot if you need to know; do not click
+again on that basis, which would undo a toggle. Fill results
 report the value the page actually committed. A fill warning means the page
 kept a different value—fix it before moving on.
 

@@ -12,7 +12,9 @@
  * The tree-diff part of the original design is deliberately deferred: running
  * a snapshot per action would rotate the CLI's ref registry and fire the
  * stale-ref renumbering trap (upstream vercel-labs/agent-browser#1443) after
- * every single action.
+ * every single action. The DOM effect (dialogs, announcements, control state,
+ * interactive census) comes from action-settle.ts instead, via two evals that
+ * never touch the ref registry.
  */
 
 /** Settle delays before reading post-action state (React/async effects). */
@@ -60,7 +62,7 @@ export function formatUrlDigest(digest: UrlDigest | null): string {
   if (digest.firstObservation) {
     return `\nNow at ${digest.url}.`
   }
-  return `\nURL unchanged (${digest.url}). Re-snapshot only if you need to see resulting DOM changes.`
+  return `\nURL unchanged (${digest.url}).`
 }
 
 /** Render the URL digest for press results (quiet unless something moved). */
