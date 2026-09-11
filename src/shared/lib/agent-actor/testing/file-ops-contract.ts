@@ -56,6 +56,15 @@ export function describeFileOpsContract(name: string, make: () => Promise<FileOp
       expect(await files.stat('notes/today.txt')).toMatchObject({ kind: 'file', size: 5, resolvedPath: 'notes/today.txt' })
     })
 
+    it('accepts a file name as long as a filesystem allows', async () => {
+      // 240 bytes: a name the filesystem takes, with no room for a suffix.
+      const long = `${'n'.repeat(236)}.txt`
+      await files.putDoc(`docs/${long}`, 'doc')
+      expect(await files.write(`uploads/${long}`, text('upload'))).toEqual({ size: 6 })
+      expect(decode(await files.getDoc(`docs/${long}`))).toBe('doc')
+      expect((await files.list('uploads')).map((entry) => entry.name)).toEqual([long])
+    })
+
     it('putDoc replaces the whole document', async () => {
       await files.putDoc('doc.json', '{"a":1}')
       await files.putDoc('doc.json', '{"b":2}')
