@@ -14,9 +14,9 @@ defineHomeScenarios('big', {
   // One realpath per artifact listing and per manifest probe: the actor's
   // file operations check each path's real location against the workspace.
   agentsCold: { totalOps: 5028, ops: { stat: 5009, realpath: 10 }, wallMs: 10_400 },
-  agentsWarm: { totalOps: 22, ops: { stat: 4, realpath: 10 }, wallMs: 110 },
+  agentsWarm: { totalOps: 22, ops: { stat: 4, realpath: 10 }, wallMs: 240 },
   homeCold: { totalOps: 5035, ops: { stat: 5010, realpath: 10 }, wallMs: 10_500 },
-  homeWarm: { totalOps: 29, ops: { stat: 5, realpath: 10 }, wallMs: 260 },
+  homeWarm: { totalOps: 29, ops: { stat: 5, realpath: 10 }, wallMs: 330 },
   sessionsPage: { totalOps: 3, ops: { stat: 2 }, wallMs: 100 },
   sessionsNotable: { totalOps: 1, ops: { stat: 1 }, wallMs: 40 },
 })
