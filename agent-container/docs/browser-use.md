@@ -34,19 +34,23 @@ available.
 
 ## Observe Efficiently
 
-Use `browser_snapshot(interactive: true, compact: true)` for normal observation.
-It returns actionable refs such as `@e1`.
+Use `browser_snapshot()` for normal observation. It returns actionable refs
+such as `@e1` and, in the default interactive view, no static text at all. A
+footer reports how much page text was dropped and what the live regions
+(alerts, status, toasts) currently say.
 
 Useful snapshot options:
 
+- `fullText: true`: add the page's static text (prices, prose, validation
+  errors, table values) to the same compact tree. This is the way to read a
+  page; refs are identical in both views;
 - `scope`: restrict a large page to a form, dialog, or other CSS-selected
-  region without invalidating refs elsewhere;
-- `fullText: true`: include static text such as validation errors, prices,
-  instructions, and toasts;
+  region without invalidating refs elsewhere. Combine with `fullText`;
 - `includeUrls: true`: inline link URLs when labels are ambiguous.
 
 Use `browser_get_state` when the URL, screenshot, and accessibility snapshot
-are all useful together. Use `browser_screenshot` only for pixel-level facts
+are all useful together; it takes the same `scope`/`fullText` knobs and
+`screenshot: false` skips the image. Use `browser_screenshot` only for pixel-level facts
 that the accessibility tree cannot express, such as visual layout, charts,
 images, or color.
 

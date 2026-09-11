@@ -815,7 +815,7 @@ import { prepareEvalScript, finalizeEvalOutput, evalErrorHint } from './eval-scr
 import { judgeSelectCommit, SELECT_COMMIT_SETTLE_MS } from './select-verify';
 import { resolveCommittedValue } from './field-value-readback';
 import { capBrowserOutput, redactCdpUrls, MAX_BROWSER_OUTPUT_CHARS, MAX_BROWSER_ERROR_CHARS } from './browser-output';
-import { capSnapshot, formatIframePlaceholders, parseIframeInfo, IFRAME_ENUM_SCRIPT } from './snapshot-format';
+import { capSnapshot, compactWithText, formatIframePlaceholders, formatTextFooter, parsePageProbe, EMPTY_PROBE, PAGE_PROBE_SCRIPT } from './snapshot-format';
 import {
   observeUrl, resetUrlTracking,
   CLICK_SETTLE_MS, FILL_SETTLE_MS, PRESS_ENTER_SETTLE_MS, PRESS_SETTLE_MS,
@@ -1463,10 +1463,13 @@ app.post('/browser/snapshot', async (c) => {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
-    // Enumerate cross-origin iframes so the agent knows about fields the a11y
-    // tree cannot see (e.g. Stripe payment frames — audit P2).
-    const iframeProbe = await execBrowser(['eval', IFRAME_ENUM_SCRIPT], browserState.cdpUrl || undefined);
-    const iframes = iframeProbe.exitCode === 0 ? parseIframeInfo(iframeProbe.stdout) : [];
+    // One probe eval per snapshot: cross-origin iframes (fields the a11y tree
+    // cannot see — audit P2), plus how much page text the interactive view
+    // dropped and what the live regions say, so the default view never
+    // silently hides a price, an error or a toast (transcript-mining theme 1).
+    const probeResult = await execBrowser(['eval', PAGE_PROBE_SCRIPT], browserState.cdpUrl || undefined);
+    const probe = probeResult.exitCode === 0 ? parsePageProbe(probeResult.stdout) : EMPTY_PROBE;
+    const iframes = probe.iframes;
 
     if (body.json) {
       // Try to parse JSON output
@@ -1478,8 +1481,16 @@ app.post('/browser/snapshot', async (c) => {
       }
     }
 
+    // fullText fetches the unfiltered tree (the CLI's -i and -c each strip
+    // static text), so compaction has to happen here to stay text-preserving.
+    const fullText = Boolean(body.fullText);
+    const tree = fullText && body.compact !== false ? compactWithText(result.stdout) : result.stdout;
+
     return c.json({
-      snapshot: capSnapshot(result.stdout, Boolean(body.scope)) + formatIframePlaceholders(iframes),
+      snapshot:
+        capSnapshot(tree, Boolean(body.scope)) +
+        formatTextFooter(probe, { fullText, scoped: Boolean(body.scope) }) +
+        formatIframePlaceholders(iframes),
       iframes,
       tabCount: tabManager.getTabCount(),
     });
