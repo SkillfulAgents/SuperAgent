@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto'
-import { containerManager } from './container-manager'
+import { containerHost } from './container-host'
 import { messagePersister } from './message-persister'
 import { syncAgentConnectionEnvironment, type ConnectionRuntimeKind } from './connection-runtime-sync'
 import type { ContainerClient } from './types'
@@ -26,14 +26,15 @@ export async function finishConnectionReplacement(
   let sessionNotification = true
   const ready: Array<{ sessionId: string; client: ContainerClient }> = []
   try {
+    const runtime = containerHost.runtime(agentSlug)
     const sessionIds = messagePersister.getActiveSessionIdsForAgent(agentSlug)
-    liveRefresh = await syncAgentConnectionEnvironment(agentSlug, change.kind)
+    liveRefresh = await syncAgentConnectionEnvironment(agentSlug, change.kind, runtime)
     if (!liveRefresh) return { liveRefresh: false, sessionNotification: false }
-    if (sessionIds.length === 0 || containerManager.getCachedInfo(agentSlug).status !== 'running') {
+    if (sessionIds.length === 0 || runtime.getCachedInfo().status !== 'running') {
       return { liveRefresh: true, sessionNotification: true }
     }
 
-    const client = containerManager.getClient(agentSlug)
+    const client = runtime.getClient()
     const interrupted = await Promise.allSettled(sessionIds.map(async (sessionId) => {
       // A user may have stopped a session while the projection was being updated.
       if (!messagePersister.isSessionActive(agentSlug, sessionId)) return null

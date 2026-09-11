@@ -7,10 +7,12 @@ const mocks = vi.hoisted(() => ({
 vi.mock('./connection-runtime-sync', () => ({
   syncAgentConnectionEnvironment: mocks.sync,
 }))
-vi.mock('./container-manager', () => ({
-  containerManager: {
-    getCachedInfo: () => ({ status: mocks.status }),
-    getClient: () => ({ interruptSession: mocks.interrupt, sendMessage: mocks.send }),
+vi.mock('./container-host', () => ({
+  containerHost: {
+    runtime: () => ({
+      getCachedInfo: () => ({ status: mocks.status }),
+      getClient: () => ({ interruptSession: mocks.interrupt, sendMessage: mocks.send }),
+    }),
   },
 }))
 vi.mock('./message-persister', () => ({
@@ -52,7 +54,11 @@ describe('connection replacement notification', () => {
     expect(await finishConnectionReplacement({ ...change, kind }, release))
       .toEqual({ liveRefresh: true, sessionNotification: true })
     expect(mocks.active).toHaveBeenCalledWith('shared-agent')
-    expect(mocks.sync).toHaveBeenCalledWith('shared-agent', kind)
+    expect(mocks.sync).toHaveBeenCalledWith(
+      'shared-agent',
+      kind,
+      expect.objectContaining({ getCachedInfo: expect.any(Function), getClient: expect.any(Function) }),
+    )
     for (const sessionId of ['session-1', 'session-2']) {
       expect(mocks.interrupt).toHaveBeenCalledWith(sessionId, { scope: 'turn' })
       expect(mocks.markInterrupted).toHaveBeenCalledWith('shared-agent', sessionId, {
