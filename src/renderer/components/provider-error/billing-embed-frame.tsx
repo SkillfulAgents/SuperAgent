@@ -11,6 +11,9 @@ type BillingEmbedEvent = 'ready' | 'billing-updated' | 'session-expired' | 'resi
 const FRAME_MIN_HEIGHT = 64
 const FRAME_MAX_HEIGHT = 640
 const FRAME_DEFAULT_HEIGHT = 300
+// The expanded launcher sits in the bottom-pinned composer footer, so it must fit the
+// viewport minus the app header and card chrome; the embed document scrolls past this.
+export const LAUNCHER_MAX_HEIGHT = 'calc(100dvh - 160px)'
 const MAX_SEATS = 10_000
 const MAX_SEAT_PRICE_CENTS = 100_000_00
 export const FRAME_READY_TIMEOUT_MS = 15_000
@@ -183,7 +186,7 @@ export function BillingEmbedFrame({
       {failure ? (
         <Button size="sm" title={FAILURE_MESSAGE[failure]} disabled={!fallbackHref} onClick={openFallback}>Open billing in a new tab</Button>
       ) : (
-        <div className={cn('relative', expanded || stretch ? 'w-full' : 'shrink-0')} style={expanded ? { height } : undefined} data-testid="billing-cta-body" data-expanded={expanded}>
+        <div className={cn('relative', expanded || stretch ? 'w-full' : 'shrink-0')} style={expanded ? { height, maxHeight: LAUNCHER_MAX_HEIGHT } : undefined} data-testid="billing-cta-body" data-expanded={expanded}>
           <Button
             size="sm"
             className={cn(expanded ? 'hidden' : frameReady ? 'invisible' : '', stretch && 'w-full', tone === 'brand' && BRAND_BUTTON_CLASS)}

@@ -501,7 +501,10 @@ describe('PlatformPaywallCard', () => {
     it('draws the subscribe quote from the platform CTA and never expands the subscribe CTA', async () => {
       renderCard('API Error: 402 {"error":"insufficient_balance","subscription_required":true}')
       await screen.findByTestId('billing-cta-frame')
-      expect(screen.getByTestId('paywall-subscribe')).toBeInTheDocument()
+      expect(screen.getByTestId('paywall-subscribe')).toHaveClass('flex-col', 'sm:flex-row')
+      expect(screen.getByTestId('paywall-subscribe-aside')).toHaveClass('border-t', 'sm:border-l', 'sm:min-w-[200px]')
+      expect(screen.getByTestId('paywall-subscribe-aside')).not.toHaveClass('min-w-[200px]', 'shrink-0')
+      expect(screen.getByTestId('paywall-card')).toHaveClass('px-4', 'sm:px-6')
       expect(screen.getByText('Your trial has ended.')).toBeInTheDocument()
       expect(screen.getByText('Upgrade to Pro to keep going.')).toBeInTheDocument()
       expect(screen.getByText('Team cloud + private desktop workspaces')).toBeInTheDocument()
@@ -615,10 +618,13 @@ describe('PlatformPaywallCard', () => {
       expect(screen.queryByTestId('billing-embed-frame')).not.toBeInTheDocument()
     })
 
-    it('sizes the expanded CTA frame from the platform resize event, clamped', async () => {
+    it('sizes the expanded CTA frame from the platform resize event, clamped and capped to the viewport', async () => {
       renderCard()
+      await screen.findByTestId('billing-cta-frame')
+      expect(screen.getByTestId('billing-cta-body').style.maxHeight).toBe('')
       await expandCta()
       const body = screen.getByTestId('billing-cta-body')
+      expect(body.style.maxHeight).toBe('calc(100dvh - 160px)')
       postEmbedMessage(PLATFORM_ORIGIN, 'resize', { height: 312.4 })
       expect(body.style.height).toBe('313px')
       postEmbedMessage(PLATFORM_ORIGIN, 'resize', { height: 5000 })

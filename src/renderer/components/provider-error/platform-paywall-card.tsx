@@ -165,12 +165,12 @@ function PaywallActions({
   )
 }
 
-// The subscribe card: why to upgrade on the left, the quote and the action on the right.
-// The quote comes from the platform CTA (seat count and per-seat price it will bill), so
-// it is absent until that arrives and on Electron, where the CTA opens the browser.
+// The subscribe card: why to upgrade on the left, the quote and the action on the right;
+// below `sm` the quote stacks under the benefits. The quote comes from the platform CTA
+// (seat count and per-seat price), so it is absent until that arrives and on Electron.
 function SubscribeBody({ plan, hint, actions }: { plan: SubscribePlan | null; hint: string; actions: ReactNode }) {
   return (
-    <div className="flex items-center gap-6 py-1.5" data-testid="paywall-subscribe">
+    <div className="flex flex-col gap-4 py-1.5 sm:flex-row sm:items-center sm:gap-6" data-testid="paywall-subscribe">
       <div className="min-w-0 flex-1">
         <p className="text-base font-medium leading-6 text-muted-foreground">Your trial has ended.</p>
         <p className="text-base font-medium leading-6 text-foreground">Upgrade to Pro to keep going.</p>
@@ -184,7 +184,10 @@ function SubscribeBody({ plan, hint, actions }: { plan: SubscribePlan | null; hi
         </ul>
         {hint && <p className="mt-3 text-[11px] leading-4 text-muted-foreground" data-testid="billing-cta-hint">{hint}</p>}
       </div>
-      <div className="flex min-w-[200px] shrink-0 flex-col items-start justify-center gap-3 self-stretch border-l border-border/70 py-1 pl-10 pr-3">
+      <div
+        className="flex flex-col items-start justify-center gap-3 border-t border-border/70 pt-4 sm:min-w-[200px] sm:shrink-0 sm:self-stretch sm:border-l sm:border-t-0 sm:py-1 sm:pl-10 sm:pr-3"
+        data-testid="paywall-subscribe-aside"
+      >
         {plan && (
           <div data-testid="paywall-plan">
             <p className="text-xl font-medium leading-6 text-foreground">
@@ -334,7 +337,7 @@ export function PlatformPaywallCard({ message, presentation, children, live = tr
           className={cn(
             'relative flex flex-col gap-3 rounded-xl border',
             PAYWALL_GLASS_CLASS,
-            subscribeLayout ? 'px-6 py-5' : 'px-5 py-4',
+            subscribeLayout ? 'px-4 py-4 sm:px-6 sm:py-5' : 'px-5 py-4',
             // West's purchase dialog was max-w-md; keep the collapsed banner full-width.
             panelOpen && 'mx-auto w-full max-w-md',
           )}
