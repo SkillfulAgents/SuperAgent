@@ -7,19 +7,13 @@
  * persister, and session-service is already in that import graph.
  */
 
-import * as path from 'path'
 import { and, eq, inArray } from 'drizzle-orm'
 import { agentRegistry } from '@shared/lib/agent-actor'
+import type { AgentActor } from '@shared/lib/agent-actor'
 import { ContainerConflictError, ContainerNotFoundError } from '@shared/lib/container/types'
 import { db } from '@shared/lib/db'
 import { messageAuthor } from '@shared/lib/db/schema'
 import type { SessionInfo, SessionMetadata } from '@shared/lib/types/agent'
-import {
-  copyDirectoryFiltered,
-  getAgentSessionsDir,
-  getSessionJsonlPath,
-  streamJsonlFile,
-} from '@shared/lib/utils/file-storage'
 import { insertMessageAuthorsBestEffort } from '@/api/routes/message-author'
 import { forkedUserLineSchema } from '@/api/routes/fork-attribution-schema'
 
@@ -129,16 +123,12 @@ export async function forkSession(
     throw error
   }
 
-  const sessionsDir = getAgentSessionsDir(slug)
   await Promise.all([
-    copyDirectoryFiltered(path.join(sessionsDir, sourceId), path.join(sessionsDir, newId)).catch(
-      (error) => {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
-        console.error(`fork: subagent/workflow copy for ${newId} failed (non-fatal)`, error)
-      },
-    ),
+    actor.sessions.copyDerivedFiles(sourceId, newId).catch((error) => {
+      console.error(`fork: subagent/workflow copy for ${newId} failed (non-fatal)`, error)
+    }),
     opts.copyAttribution
-      ? copyForkAttribution(slug, sourceId, newId).catch((error) => {
+      ? copyForkAttribution(actor, sourceId, newId).catch((error) => {
           console.error(`fork: attribution copy for ${newId} failed (non-fatal)`, error)
         })
       : Promise.resolve(),
@@ -163,9 +153,10 @@ export async function forkSession(
  * `forkedFrom.messageUuid` (the old uuid) on each line. Attribution rows are
  * keyed by uuid, so re-key the source's rows onto the fork's user messages.
  */
-async function copyForkAttribution(slug: string, sourceId: string, newId: string): Promise<void> {
+async function copyForkAttribution(actor: AgentActor, sourceId: string, newId: string): Promise<void> {
+  const slug = actor.slug
   const pairs: { newUuid: string; oldUuid: string }[] = []
-  for await (const raw of streamJsonlFile(getSessionJsonlPath(slug, newId))) {
+  for await (const raw of actor.messages.rawEntries(newId)) {
     const parsed = forkedUserLineSchema.safeParse(raw)
     if (parsed.success) pairs.push({ newUuid: parsed.data.uuid, oldUuid: parsed.data.forkedFrom.messageUuid })
   }

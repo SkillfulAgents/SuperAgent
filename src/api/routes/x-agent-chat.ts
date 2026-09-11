@@ -1,7 +1,4 @@
 import { Hono } from 'hono'
-import { randomUUID } from 'crypto'
-import * as fs from 'fs'
-import * as path from 'path'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import {
@@ -24,9 +21,7 @@ import {
   imessageSetupSchema,
   type ChatProvider,
 } from '@shared/lib/chat-integrations/config-schema'
-import { getSessionJsonlPath } from '@shared/lib/utils/file-storage'
 import { SYSTEM_MESSAGE_PREFIX } from '@shared/lib/utils/system-message'
-import { recordSessionActivity } from '@shared/lib/services/session-summary-cache'
 import { captureException } from '@shared/lib/error-reporting'
 import { isChatAllowed } from '@shared/lib/services/chat-integration-access-service'
 
@@ -446,35 +441,19 @@ async function notifySessionOfOutboundMessage(
     : `${SYSTEM_MESSAGE_PREFIX}A message was sent to the user on your behalf via chat integration:\n${message}`
 
   // Try the SDK-aware path (appends to transcript without triggering a response).
-  // Falls back to raw JSONL if the container isn't running or the session doesn't
-  // exist on the container yet (e.g. ensureSession just created a lightweight session).
+  // Falls back to a direct transcript append if the container isn't running or
+  // the session doesn't exist on the container yet (e.g. ensureSession just
+  // created a lightweight session).
+  const actor = agentRegistry.get(agentSlug)
   try {
-    const actor = agentRegistry.get(agentSlug)
     await actor.container.start()
     await actor.messages.send(sessionId, notificationText, undefined, { shouldQuery: false })
   } catch {
-    appendAssistantMessage(agentSlug, sessionId, notificationText)
+    actor.messages.appendAssistant(sessionId, notificationText)
   }
   // Both paths advance the transcript without emitting the stream frames the
   // message persister watches, so the warm summary must be told directly.
-  recordSessionActivity(agentSlug, sessionId)
-}
-
-function appendAssistantMessage(agentSlug: string, sessionId: string, text: string): void {
-  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
-  const dir = path.dirname(jsonlPath)
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true })
-  }
-  const entry = {
-    type: 'assistant',
-    message: { content: [{ type: 'text', text }] },
-    uuid: randomUUID(),
-    parentUuid: null,
-    sessionId,
-    timestamp: new Date().toISOString(),
-  }
-  fs.appendFileSync(jsonlPath, JSON.stringify(entry) + '\n')
+  actor.sessions.recordActivity(sessionId)
 }
 
 export default xAgentChat
