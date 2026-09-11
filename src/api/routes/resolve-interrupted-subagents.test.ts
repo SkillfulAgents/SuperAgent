@@ -330,9 +330,9 @@ describe('resolveInterruptedSubagents', () => {
 
     await resolveInterruptedSubagents(items, 'my-agent', 'session-1')
 
-    // readFile should NOT have been called for the already-resolved agent
-    const readFileCalls = mockReadFile.mock.calls.map((c: unknown[]) => c[0] as string)
-    expect(readFileCalls.some((p: string) => p.includes('already-resolved'))).toBe(false)
+    // The already-resolved call keeps its own outcome: the sidecar that names
+    // it must not overwrite a completed subagent with a cancelled one.
+    expect(resolvedTc.subagent).toEqual({ agentId: 'already-resolved', status: 'completed' })
     expect(unresolvedTc.subagent).toEqual({ agentId: 'new-one', status: 'cancelled' })
   })
 

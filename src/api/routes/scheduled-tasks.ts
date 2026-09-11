@@ -23,7 +23,6 @@ import {
   resumeScheduledTask,
 } from '@shared/lib/services/scheduled-task-service'
 import { promptUpdateSchema } from './trigger-prompt-schema'
-import { getSessionsByScheduledTask } from '@shared/lib/services/session-service'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { messagePersister } from '@shared/lib/container/message-persister'
@@ -62,10 +61,11 @@ scheduledTasksRouter.get('/:taskId', TaskAgentRole('viewer'), async (c) => {
 scheduledTasksRouter.get('/:taskId/sessions', TaskAgentRole('viewer'), async (c) => {
   try {
     const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
-    const sessions = await getSessionsByScheduledTask(task!.agentSlug, task!.id)
+    const actor = agentRegistry.get(task!.agentSlug)
+    const sessions = await actor.sessions.byScheduledTask(task!.id)
     const sessionsWithStatus = sessions.map((session) => ({
       ...session,
-      isActive: agentRegistry.get(task!.agentSlug).sessions.isActive(session.id),
+      isActive: actor.sessions.isActive(session.id),
     }))
     return c.json(sessionsWithStatus)
   } catch (error) {

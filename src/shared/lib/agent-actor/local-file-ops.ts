@@ -127,10 +127,6 @@ export class LocalFileOps implements FileOps {
 
   constructor(private readonly rootDir: () => string) {}
 
-  workspacePath(): string {
-    return this.rootDir()
-  }
-
   /** Resolve a workspace path lexically and check it stays under the root. */
   private absolute(workspacePath: string): { rel: string; abs: string; root: string } {
     const rel = normalizeWorkspacePath(workspacePath)

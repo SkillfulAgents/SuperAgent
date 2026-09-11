@@ -38,7 +38,11 @@ import {
   WorkspaceFileError,
   joinWorkspacePath,
   normalizeWorkspacePath,
+  decodeMediaRef,
+  sortSessionsNewestFirst,
+  SESSIONS_LIST_MAX_LIMIT,
   type FileStat,
+  type SessionSortBy,
 } from '@shared/lib/agent-actor'
 import { copyHostFileIntoWorkspace, moveHostFileIntoWorkspace } from '@shared/lib/agent-actor/copy-into-workspace'
 import { parseRuntimeOptions, resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
@@ -55,7 +59,6 @@ import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
 import { parseByteRange } from '@shared/lib/utils/http-range'
 import { messagePersister } from '@shared/lib/container/message-persister'
-import { recordSessionActivity } from '@shared/lib/services/session-summary-cache'
 import { isSystemMessageText } from '@shared/lib/utils/system-message'
 import { repairLegacySlashCommands } from '@shared/lib/container/slash-commands'
 import { credentialBroker } from '../credentials/credential-broker'
@@ -64,14 +67,8 @@ import type {
   UserInputRequestKind,
   UserInputRequestScope,
 } from '@shared/lib/user-input/request-schema'
-import {
-  sortSessionsNewestFirst,
-  SESSIONS_LIST_MAX_LIMIT,
-  type SessionSortBy,
-} from '@shared/lib/services/session-service'
 import { forkSession, ForkSessionError, type ForkSessionOpts } from '@shared/lib/services/session-fork-service'
-import { decodeMediaRef, openMediaBlob } from '@shared/lib/services/session-media'
-import { getSessionJsonlPath, getAgentSessionsDir, readJsonlFile, displaySlug, createJsonArrayStringifyTransform } from '@shared/lib/utils/file-storage'
+import { displaySlug, createJsonArrayStringifyTransform } from '@shared/lib/utils/file-storage'
 import {
   MAX_UPLOAD_TOTAL_SIZE,
   UploadTooLargeError,
@@ -187,7 +184,7 @@ import { resolveTargetApp } from '@shared/lib/computer-use/types'
 import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-provider/helpers'
 import { getActiveLlmProvider, resolveActiveProviderModel } from '@shared/lib/llm-provider'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
-import { isPathWithinDir, isRealPathWithinDir, sanitizeUploadFilename, withUploadTimestamp } from '@shared/lib/utils/path-safety'
+import { sanitizeUploadFilename, withUploadTimestamp } from '@shared/lib/utils/path-safety'
 import { AGENT_PACKAGE_EXTENSION, SKILL_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
 import { readAgentPreferences, updateAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { agentPreferencesUpdateSchema } from '@shared/lib/types/agent-preferences'
@@ -201,7 +198,7 @@ import { Readable, pipeline } from 'stream'
 import pLimit from 'p-limit'
 import * as path from 'path'
 import type { ApiAgent } from '@shared/lib/types/api'
-import type { SessionInfo, SessionMetadata, SessionMetadataMap } from '@shared/lib/types/agent'
+import type { JsonlEntry, JsonlMessageEntry, SessionInfo, SessionMetadata, SessionMetadataMap } from '@shared/lib/types/agent'
 import { toPublicChatIntegration } from '@shared/lib/chat-integrations/public'
 import { toPublicWebhookTrigger } from '@shared/lib/webhook-triggers/public'
 import {
@@ -846,31 +843,14 @@ export async function resolveInterruptedSubagents(
 
   if (unresolvedTaskCalls.length === 0) return
 
-  // Scan the subagents directory for .meta.json files which carry toolUseId
-  const sessionsDir = getAgentSessionsDir(agentSlug)
-  const subagentsDir = path.join(sessionsDir, sessionId, 'subagents')
-  let files: string[]
-  try {
-    files = await fs.promises.readdir(subagentsDir)
-  } catch {
-    return // No subagents directory
-  }
+  // The subagent sidecars carry the toolUseId that launched each one.
+  const subagents = await agentRegistry.get(agentSlug).sessions.subagents(sessionId)
 
-  // Build toolUseId → agentId map from .meta.json files (deterministic, no FIFO)
+  // Build toolUseId → agentId map (deterministic, no FIFO)
   const toolUseToAgentId = new Map<string, string>()
-  for (const file of files) {
-    if (!file.endsWith('.meta.json')) continue
-    const id = file.replace('agent-', '').replace('.meta.json', '')
-    if (resolvedAgentIds.has(id)) continue
-    try {
-      const raw = await fs.promises.readFile(path.join(subagentsDir, file), 'utf8')
-      const meta = JSON.parse(raw) as { toolUseId?: string }
-      if (meta.toolUseId) {
-        toolUseToAgentId.set(meta.toolUseId, id)
-      }
-    } catch {
-      // skip unreadable files
-    }
+  for (const { id, toolUseId } of subagents) {
+    if (!toolUseId || resolvedAgentIds.has(id)) continue
+    toolUseToAgentId.set(toolUseId, id)
   }
 
   // Match unresolved Task calls by toolUseId (deterministic)
@@ -2489,14 +2469,14 @@ agents.get('/:id/sessions/:sessionId/media/:ref', AgentRead(), async (c) => {
     // Ownership only. There is deliberately no existence preflight here:
     // fileExists() answers false for any stat failure, so EIO/EACCES/EMFILE
     // would 404 — telling the client the image is gone when the truth is that
-    // this machine could not look. openMediaBlob distinguishes the two, and a
-    // genuinely missing transcript surfaces there as 410.
-    // sessionIsKnown is satisfied by a metadata entry alone, and openMediaBlob
-    // below opens the transcript by path — so a planted symlink whose metadata
-    // the agent also forged would be FOLLOWED to another agent's transcript.
-    // The realpath guard (unlike sessionIsKnown) refuses that link while still
-    // admitting a legitimately deleted transcript, whose bytes are gone and
-    // which openMediaBlob answers with a 410.
+    // this machine could not look. The media read distinguishes the two, and
+    // a genuinely missing transcript surfaces there as 410.
+    // isKnown is satisfied by a metadata entry alone, and the media read below
+    // opens the transcript by path — so a planted symlink whose metadata the
+    // agent also forged would be FOLLOWED to another agent's transcript. The
+    // realpath guard (unlike isKnown) refuses that link while still admitting
+    // a legitimately deleted transcript, whose bytes are gone and which the
+    // media read answers with a 410.
     if (
       !(await actor.sessions.isKnown(sessionId)) ||
       !actor.sessions.fileRealPathWithinAgent(sessionId)
@@ -2507,13 +2487,13 @@ agents.get('/:id/sessions/:sessionId/media/:ref', AgentRead(), async (c) => {
     const ref = decodeMediaRef(c.req.param('ref'))
     if (!ref) return c.json({ error: 'Invalid media reference' }, 400)
 
-    const blob = await openMediaBlob(getSessionJsonlPath(agentSlug, sessionId), ref, c.req.raw.signal)
+    const blob = await actor.messages.media(sessionId, ref, c.req.raw.signal)
     // Deletion and retention rewrite transcripts in place, so a ref the client
     // still holds can address bytes that have moved or gone. Gone for good —
     // the client shows a placeholder rather than retrying.
     if (!blob) return c.json({ error: 'Media no longer available' }, 410)
 
-    return c.body(Readable.toWeb(blob.stream) as ReadableStream, 200, {
+    return c.body(blob.stream, 200, {
       'Content-Type': blob.mimeType,
       'Content-Length': String(blob.bytes),
       // A ref names an immutable byte span: any edit to the transcript
@@ -2579,26 +2559,20 @@ agents.get('/:id/sessions/:sessionId/subagent/:agentId/messages', AgentRead(), a
     const sessionId = c.req.param('sessionId')
     const subagentId = c.req.param('agentId')
 
-    const sessionsDir = getAgentSessionsDir(agentSlug)
-    const subagentJsonlPath = path.join(sessionsDir, sessionId, 'subagents', `agent-${subagentId}.jsonl`)
-
-    // sessionId and subagentId are unvalidated URL segments spliced into a
-    // path, so keep the read inside this agent's own workspace: reject a
-    // traversal id lexically, and a symlinked component that resolves out of
-    // the tree via the real path. The realpath check is anchored on the
-    // WORKSPACE (the bind-mount point the container can't replace), not the
-    // attacker-writable session dir — a symlinked `-workspace` would otherwise
-    // resolve base and candidate to the same escaped location and pass.
-    if (
-      !isPathWithinDir(sessionsDir, subagentJsonlPath) ||
-      !isRealPathWithinDir(agentRegistry.get(agentSlug).files.workspacePath(), subagentJsonlPath)
-    ) {
-      return c.json({ error: 'Subagent transcript not found' }, 404)
+    // sessionId and subagentId are unvalidated URL segments; the actor keeps
+    // the read inside this agent's own sessions directory and refuses an id
+    // that cannot name a transcript. Either refusal is "no such transcript".
+    let entries: JsonlEntry[]
+    try {
+      entries = await agentRegistry.get(agentSlug).sessions.subagentTranscript(sessionId, subagentId)
+    } catch (error) {
+      if (error instanceof WorkspaceFileError) {
+        return c.json({ error: 'Subagent transcript not found' }, 404)
+      }
+      throw error
     }
-
-    const entries = await readJsonlFile(subagentJsonlPath) as any[]
     const messageEntries = entries.filter(
-      (e) => e.type === 'user' || e.type === 'assistant'
+      (e): e is JsonlMessageEntry => e.type === 'user' || e.type === 'assistant'
     )
     const transformed = transformMessages(messageEntries)
     attachProviderErrorPresentations(transformed)
@@ -2620,57 +2594,29 @@ agents.get('/:id/sessions/:sessionId/raw-log', AgentRead(), async (c) => {
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
 
-    // Ownership + containment first: this route opens the transcript by path
-    // directly, so without the gate a traversal-shaped id throws into the
-    // catch (500, not 404) and a planted symlink is followed to another
-    // agent's transcript. sessionExists is non-throwing and symlink-aware.
-    if (!(await agentRegistry.get(agentSlug).sessions.exists(sessionId))) {
+    const actor = agentRegistry.get(agentSlug)
+
+    // Ownership + containment first: the transcript is opened by path below,
+    // so without the gate a traversal-shaped id throws into the catch (500,
+    // not 404) and a planted symlink is followed to another agent's
+    // transcript. exists is non-throwing and symlink-aware.
+    if (!(await actor.sessions.exists(sessionId))) {
       return c.json({ error: 'Session log not found' }, 404)
     }
 
-    const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
-
-    // Transcripts routinely reach tens of MB, so stream the file instead of
-    // buffering it whole. Open before committing to a 200 so a missing file
-    // still returns the 404 below (ENOENT → null, mirroring readFileOrNull).
-    const fileHandle = await fs.promises.open(jsonlPath, 'r').catch((error: unknown) => {
-      if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return null
-      throw error
-    })
-    if (fileHandle === null) {
+    // Transcripts routinely reach tens of MB, so the actor streams the file
+    // instead of buffering it whole, bounded to its size at open so the byte
+    // count always matches the Content-Length advertised here even while the
+    // live transcript keeps growing. Null means the file is gone.
+    const raw = await actor.messages.rawLog(sessionId)
+    if (raw === null) {
       return c.json({ error: 'Session log not found' }, 404)
     }
 
-    // Bound the read to the size at open so the byte count always matches the
-    // Content-Length we advertise, even if the live transcript keeps growing.
-    const { size } = await fileHandle.stat().catch(async (error: unknown) => {
-      await fileHandle.close().catch(() => {})
-      throw error
-    })
-    // An empty-at-open file must answer with an empty body even if the live
-    // transcript gains its first append before the read starts — an unbounded
-    // stream there would overrun the advertised Content-Length of 0.
-    if (size === 0) {
-      await fileHandle.close().catch(() => {})
-      return c.body('', 200, {
-        'Content-Type': 'text/plain; charset=UTF-8',
-        'Content-Length': '0',
-      })
-    }
-    // autoClose (default) closes the handle on end/destroy.
-    const source = fileHandle.createReadStream({ end: size - 1 })
-    source.on('error', (err) => {
-      // Client disconnects surface here as stream aborts and are routine on a
-      // multi-MB endpoint; only report real read failures.
-      const code = (err as NodeJS.ErrnoException)?.code
-      if (code === 'ABORT_ERR' || code === 'ERR_STREAM_PREMATURE_CLOSE') return
-      console.error('Failed to stream raw log:', err)
-      captureException(err, { tags: { component: 'agents', operation: 'stream-raw-log' } })
-    })
     // Same headers the buffered c.text() response carried on the wire.
-    return c.body(Readable.toWeb(source) as ReadableStream, 200, {
+    return c.body(raw.stream, 200, {
       'Content-Type': 'text/plain; charset=UTF-8',
-      'Content-Length': String(size),
+      'Content-Length': String(raw.size),
     })
   } catch (error) {
     console.error('Failed to fetch raw log:', error)
@@ -2806,7 +2752,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       })
       await actor.messages.send(sessionId, text, messageUuid, { shouldQuery: false })
       // No stream frames follow an append, so the warm summary is told directly.
-      recordSessionActivity(agentSlug, sessionId)
+      actor.sessions.recordActivity(sessionId)
       return c.json({ success: true, uuid: messageUuid, queued: false }, 201)
     }
 

@@ -5,7 +5,9 @@ import type { reviewManager } from '@shared/lib/proxy/review-manager'
 import type { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import type { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
 import type * as sessionService from '@shared/lib/services/session-service'
-import type { appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
+import type { appendAssistantEntry, appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
+import type { recordSessionActivity } from '@shared/lib/services/session-summary-cache'
+import type * as transcriptOps from './local-transcript-ops'
 import type {
   getAgentClaudeConfigDir,
   getAgentWorkspaceDir,
@@ -51,7 +53,10 @@ export interface LocalActorDeps {
   readonly computerUsePermissionManager: typeof computerUsePermissionManager
   readonly mcpReauthManager: typeof mcpReauthManager
   readonly sessionService: typeof sessionService
+  readonly transcripts: typeof transcriptOps
   readonly appendInformationalEntry: typeof appendInformationalEntry
+  readonly appendAssistantEntry: typeof appendAssistantEntry
+  readonly recordSessionActivity: typeof recordSessionActivity
   readonly getAgentWorkspaceDir: typeof getAgentWorkspaceDir
   readonly getAgentClaudeConfigDir: typeof getAgentClaudeConfigDir
   readonly getSessionJsonlPath: typeof getSessionJsonlPath
@@ -149,6 +154,18 @@ function createSessionOps(slug: AgentSlug, deps: LocalActorDeps): SessionOps {
     fileRealPathWithinAgent: (sessionId) => deps.sessionService.sessionFileRealPathWithinAgent(slug, sessionId),
     usage: (sessionId, options) =>
       deps.loadSessionUsageTotals({ sessionPath: deps.getSessionJsonlPath(slug, sessionId), ...options }),
+    byScheduledTask: (taskId) => deps.sessionService.getSessionsByScheduledTask(slug, taskId),
+    byWebhookTrigger: (triggerId) => deps.sessionService.getSessionsByWebhookTrigger(slug, triggerId),
+    forScheduledExecution: (taskId, executionAt) =>
+      deps.sessionService.getSessionForScheduledExecution(slug, taskId, executionAt),
+    recordActivity: (...args) => deps.recordSessionActivity(slug, ...args),
+
+    subagents: (sessionId) => deps.transcripts.listSubagents(slug, sessionId),
+    subagentTranscript: (sessionId, subagentId) => deps.transcripts.readSubagentTranscript(slug, sessionId, subagentId),
+    workflowTree: (sessionId, runId) => deps.transcripts.readWorkflowTree(slug, sessionId, runId),
+    workflowAgentTranscript: (sessionId, runId, workflowAgentId) =>
+      deps.transcripts.readWorkflowAgentTranscript(slug, sessionId, runId, workflowAgentId),
+    copyDerivedFiles: (sourceId, targetId) => deps.transcripts.copyDerivedSessionFiles(slug, sourceId, targetId),
 
     create: (options) => client().createSession(options),
     fork: (sessionId) => client().forkSession(sessionId),
@@ -203,6 +220,10 @@ function createMessageOps(slug: AgentSlug, deps: LocalActorDeps): MessageOps {
     remove: (sessionId, messageUuid) => deps.sessionService.removeMessage(slug, sessionId, messageUuid),
     removeToolCall: (sessionId, toolCallId) => deps.sessionService.removeToolCall(slug, sessionId, toolCallId),
     appendInformational: (sessionId, entry) => deps.appendInformationalEntry(slug, sessionId, entry),
+    appendAssistant: (sessionId, text) => deps.appendAssistantEntry(slug, sessionId, text),
+    rawEntries: (sessionId) => deps.transcripts.streamRawEntries(slug, sessionId),
+    rawLog: (sessionId) => deps.transcripts.openRawLog(slug, sessionId),
+    media: (...args) => deps.transcripts.openMedia(slug, ...args),
 
     subscribe: (sessionId, listener) => deps.messagePersister.addSSEClient(slug, sessionId, listener),
     broadcastEvent: (sessionId, data) => deps.messagePersister.broadcastSessionEvent(slug, sessionId, data),
