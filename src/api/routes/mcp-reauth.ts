@@ -5,9 +5,7 @@ import { db } from '@shared/lib/db'
 import { agentRemoteMcps, remoteMcpServers } from '@shared/lib/db/schema'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { isOwnedByCaller, ownerScope } from '@shared/lib/auth/ownership'
-import { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
-import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { finishConnectionReplacement } from '@shared/lib/container/connection-replacement'
 import { sameMcpEndpoint } from '@shared/lib/mcp/endpoint'
 import { COMMON_MCP_SERVERS } from '@shared/lib/mcp/common-servers'
@@ -18,8 +16,9 @@ const mcpReauth = new Hono()
 const replacementSchema = z.object({ remoteMcpIds: z.array(z.string().min(1)).length(1) })
 
 function loadRequestedMcp(requestId: string, agentSlug: string) {
-  const request = userInputRequestManager.getOpenRequest(requestId)
-  if (request?.kind !== 'mcp_reauth_required' || request.scope.agentSlug !== agentSlug || !request.payload.mcpId) return null
+  // The actor only hands back this agent's requests; another agent's reads as absent.
+  const request = agentRegistry.get(agentSlug).inputs.get(requestId)
+  if (request?.kind !== 'mcp_reauth_required' || !request.payload.mcpId) return null
   return db.select({ mapping: agentRemoteMcps, mcp: remoteMcpServers })
     .from(agentRemoteMcps).innerJoin(remoteMcpServers, eq(agentRemoteMcps.remoteMcpId, remoteMcpServers.id))
     .where(and(eq(agentRemoteMcps.agentSlug, agentSlug), eq(remoteMcpServers.id, request.payload.mcpId)))
@@ -69,9 +68,10 @@ mcpReauth.post('/:id/reauth-request/:requestId/replace-mcp', AgentUser(), async 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: result.previousId, action: 'unassigned', details: { agentSlug } })
     logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: result.replacementId, action: 'assigned', details: { agentSlug } })
     const recovery = await finishConnectionReplacement({ agentSlug, kind: 'remote-mcps', ...result }, () => {
-      if (!mcpReauthManager.replaceMcp(requestId, agentSlug, result.replacementId)) {
-        userInputRequestManager.resolve(requestId, 'answered')
-        messagePersister.syncAgentSessionsAwaiting(agentSlug)
+      const actor = agentRegistry.get(agentSlug)
+      if (!actor.inputs.mcpReauth.replace(requestId, result.replacementId)) {
+        actor.inputs.resolve(requestId, 'answered')
+        actor.sessions.syncAwaiting()
       }
     })
     return c.json({ success: true, ...recovery })
