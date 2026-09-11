@@ -23,7 +23,12 @@ vi.mock('../middleware/auth', () => ({
 }))
 vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@shared/lib/utils/file-storage')>()
-  return { ...actual, getAgentSessionsDir: () => mockSessionsDir.value }
+  return {
+    ...actual,
+    getAgentSessionsDir: () => mockSessionsDir.value,
+    // The sessions directory sits inside the workspace; the real-path check is anchored there.
+    getAgentWorkspaceDir: () => path.dirname(mockSessionsDir.value),
+  }
 })
 
 import { workflowRoutes } from './workflows'

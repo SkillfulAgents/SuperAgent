@@ -21,13 +21,21 @@ vi.mock('fs', () => ({
   },
 }))
 
+// This suite mocks `fs` wholesale, so the real-path containment check, which
+// walks the real filesystem, cannot run here; it has its own real-directory
+// test beside the transcript operations.
+vi.mock('@shared/lib/utils/path-safety', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/utils/path-safety')>()),
+  isRealPathWithinDir: () => true,
+}))
+
 vi.mock('@shared/lib/utils/file-storage', () => ({
   getAgentSessionsDir: () => '/mock/sessions',
   // Stub other exports that agents.ts pulls in
   getSessionJsonlPath: vi.fn(),
   readFileOrNull: vi.fn(),
   readJsonlFile: vi.fn(),
-  getAgentWorkspaceDir: vi.fn(),
+  getAgentWorkspaceDir: () => '/mock',
 }))
 
 // Stub every heavy dependency that `agents.ts` imports so the module loads
