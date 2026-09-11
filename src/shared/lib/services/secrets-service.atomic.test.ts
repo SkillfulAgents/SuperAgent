@@ -7,6 +7,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+// Imported statically: the service reaches the .env through the agent actor,
+// whose module graph is heavy, and a dynamic import inside the first test
+// counted against that test's timeout. The data dir is read per call, so the
+// per-test SUPERAGENT_DATA_DIR still applies.
+import { setSecret, deleteSecret, listSecrets, getSecretEnvVars } from './secrets-service'
 
 let tmpDir: string
 
@@ -24,13 +29,8 @@ afterEach(() => {
   delete process.env.SUPERAGENT_DATA_DIR
 })
 
-async function importService() {
-  return import('./secrets-service')
-}
-
 describe('serialized .env writes (no lost secrets)', () => {
   it('many concurrent setSecret calls with distinct keys ALL survive', async () => {
-    const { setSecret, listSecrets } = await importService()
     const keys = Array.from({ length: 30 }, (_, i) => `KEY_${i}`)
 
     await Promise.all(
@@ -44,7 +44,6 @@ describe('serialized .env writes (no lost secrets)', () => {
   })
 
   it('concurrent set + delete on different keys do not clobber each other', async () => {
-    const { setSecret, deleteSecret, listSecrets } = await importService()
     // Seed two secrets.
     await setSecret('agent', { envVar: 'KEEP', key: 'KEEP', value: 'keep' })
     await setSecret('agent', { envVar: 'DROP', key: 'DROP', value: 'drop' })
@@ -61,7 +60,6 @@ describe('serialized .env writes (no lost secrets)', () => {
 
 describe('atomic .env writes', () => {
   it('setSecret leaves no temp/lock file behind and writes a parseable file', async () => {
-    const { setSecret, listSecrets } = await importService()
     await setSecret('agent', { envVar: 'API_KEY', key: 'My API Key', value: 'sk-123' })
 
     const dir = path.dirname(envPath('agent'))
@@ -74,7 +72,6 @@ describe('atomic .env writes', () => {
   })
 
   it.runIf(process.platform !== 'win32')('creates the .env world-writable (exact 0o666) so the container — a different uid — can write it', async () => {
-    const { setSecret } = await importService()
     await setSecret('agent', { envVar: 'X', key: 'X', value: '1' })
     expect(fs.statSync(envPath('agent')).mode & 0o777).toBe(0o666)
   })
@@ -84,7 +81,6 @@ describe('atomic .env writes', () => {
     // preserved a stray 0o600 (left by the old container create-mode), the
     // container could no longer even READ the file — its next POST /env would
     // fail with EACCES (or, before the fail-closed fix, wipe the file).
-    const { setSecret } = await importService()
     await setSecret('agent', { envVar: 'A', key: 'A', value: '1' })
     fs.chmodSync(envPath('agent'), 0o600)
 
@@ -94,7 +90,6 @@ describe('atomic .env writes', () => {
   })
 
   it('deleteSecret returns false and writes nothing for an unknown key', async () => {
-    const { setSecret, deleteSecret } = await importService()
     await setSecret('agent', { envVar: 'A', key: 'A', value: '1' })
     const before = fs.readFileSync(envPath('agent'), 'utf-8')
 
@@ -106,7 +101,6 @@ describe('atomic .env writes', () => {
     // If the under-lock re-read errors (NFS ESTALE, EIO — anything but a true
     // ENOENT), setSecret must abort, NOT treat the file as empty: merging into
     // "empty" and writing back atomically wipes every other secret.
-    const { setSecret } = await importService()
     await setSecret('agent', { envVar: 'SUPABASE_URL', key: 'SUPABASE_URL', value: 'https://x' })
     await setSecret('agent', { envVar: 'STRIPE_KEY', key: 'STRIPE_KEY', value: 'sk-1' })
     const before = fs.readFileSync(envPath('agent'), 'utf-8')
@@ -134,7 +128,6 @@ describe('atomic .env writes', () => {
   })
 
   it.runIf(process.platform !== 'win32')('getSecretEnvVars heals a poisoned 0o600 .env on session start', async () => {
-    const { setSecret, getSecretEnvVars } = await importService()
     await setSecret('agent', { envVar: 'SUPABASE_URL', key: 'SUPABASE_URL', value: 'https://x' })
     fs.chmodSync(envPath('agent'), 0o600)
 
@@ -149,7 +142,6 @@ describe('atomic .env writes', () => {
     // (owner-only) nor read it. Session creation must proceed with no secret
     // names — the container heals the file it owns on boot — instead of 500ing
     // forever (an unstartable session means the heal never runs: a hard wedge).
-    const { setSecret, getSecretEnvVars } = await importService()
     await setSecret('agent', { envVar: 'SUPABASE_URL', key: 'SUPABASE_URL', value: 'https://x' })
     const before = fs.readFileSync(envPath('agent'), 'utf-8')
 
@@ -181,7 +173,6 @@ describe('atomic .env writes', () => {
     // The agent's workspace dir doesn't exist, so opening the cross-process
     // lockfile would ENOENT. deleteSecret must short-circuit to false (→ route
     // 404) instead of letting the ENOENT bubble up (→ route 500).
-    const { deleteSecret } = await importService()
     expect(fs.existsSync(path.dirname(envPath('ghost-agent')))).toBe(false)
     await expect(deleteSecret('ghost-agent', 'ANY_VAR')).resolves.toBe(false)
     // And it didn't create the workspace dir or a stray lockfile as a side effect.

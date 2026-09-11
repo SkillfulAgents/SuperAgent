@@ -3,20 +3,22 @@ import os from 'os'
 import fs from 'fs'
 import crypto from 'crypto'
 import {
-  getAgentDir,
   readJsonFileStrict,
   writeJsonFileAtomic,
   withFileLock,
   directoryExists,
   CorruptFileError,
 } from '@shared/lib/utils/file-storage'
+import { containerHost } from '@shared/lib/agent-actor'
 import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 import { captureException } from '@shared/lib/error-reporting'
 import type { AgentMount, AgentMountWithHealth } from '@shared/lib/types/mount'
 import { agentMountsSchema } from './mount-schema'
 
+// Mounts are host folders bind-mounted into the container — a host-only feature,
+// so the file sits at the agent's host path (from the container host, not the actor).
 function getMountsFilePath(slug: string): string {
-  return path.join(getAgentDir(slug), 'mounts.json')
+  return path.join(containerHost.agentHostPath(slug), 'mounts.json')
 }
 
 /**

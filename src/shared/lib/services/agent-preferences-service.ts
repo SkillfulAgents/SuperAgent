@@ -1,10 +1,4 @@
-import {
-  getAgentPreferencesPath,
-  readJsonFileStrict,
-  writeJsonFileAtomic,
-  withFileLock,
-  CorruptFileError,
-} from '@shared/lib/utils/file-storage'
+import { agentRegistry, ConfigDocError } from '@shared/lib/agent-actor'
 import { captureException } from '@shared/lib/error-reporting'
 import {
   agentPreferencesSchema,
@@ -12,22 +6,22 @@ import {
 } from '@shared/lib/types/agent-preferences'
 
 /**
- * Strict read: returns `{}` only when the file is absent; a corrupt/torn file
- * THROWS so the read-modify-write aborts instead of overwriting.
+ * Strict read: returns `{}` only when the document is absent; a corrupt/torn
+ * document THROWS (`ConfigDocError`) so the read-modify-write aborts instead of
+ * overwriting.
  */
 async function readAgentPreferencesStrict(agentSlug: string): Promise<AgentPreferences> {
-  const prefsPath = getAgentPreferencesPath(agentSlug)
-  return readJsonFileStrict(prefsPath, agentPreferencesSchema, {})
+  return (await agentRegistry.get(agentSlug).config.get('preferences')) ?? {}
 }
 
 /**
  * Read prefs for READ-ONLY consumers. Fail-open: ANY read failure — corrupt
- * file, EACCES after a container-side ownership flip, transient FS errors —
+ * document, EACCES after a container-side ownership flip, transient FS errors —
  * degrades to `{}` (logged + captured) rather than throwing. Preferences only
  * supply defaults, and every session-spawn site reads them, so a throw here
  * would take down session creation for the agent. This never writes — only the
  * serialized {@link updateAgentPreferences} writes, and its strict read still
- * aborts on any failure so a broken file is never overwritten.
+ * aborts on any failure so a broken document is never overwritten.
  */
 export async function readAgentPreferences(
   agentSlug: string
@@ -35,7 +29,7 @@ export async function readAgentPreferences(
   try {
     return await readAgentPreferencesStrict(agentSlug)
   } catch (error) {
-    const kind = error instanceof CorruptFileError ? 'Corrupt' : 'Unreadable'
+    const kind = error instanceof ConfigDocError ? 'Corrupt' : 'Unreadable'
     console.error(`${kind} agent preferences for ${agentSlug}; using empty (NOT overwriting)`, error)
     captureException(error, { tags: { area: 'agent-preferences', op: 'read' }, extra: { agentSlug } })
     return {}
@@ -47,21 +41,17 @@ export async function writeAgentPreferences(
   prefs: AgentPreferences
 ): Promise<void> {
   const validated = agentPreferencesSchema.parse(prefs)
-  const prefsPath = getAgentPreferencesPath(agentSlug)
-  await writeJsonFileAtomic(prefsPath, validated)
+  await agentRegistry.get(agentSlug).config.put('preferences', validated)
 }
 
 export async function updateAgentPreferences(
   agentSlug: string,
   updates: Record<string, unknown>
 ): Promise<AgentPreferences> {
-  const prefsPath = getAgentPreferencesPath(agentSlug)
-  // Serialized read-modify-write: fresh STRICT read (throws on corrupt → aborts,
-  // never synthesizes {} from a parse error), merge, atomic write.
-  return withFileLock(prefsPath, async () => {
-    const current = await readAgentPreferencesStrict(agentSlug)
-
-    const merged: Record<string, unknown> = { ...current }
+  // Serialized read-modify-write: fresh STRICT read (a corrupt document aborts
+  // the update, never synthesizes {} from a parse error), merge, atomic write.
+  return agentRegistry.get(agentSlug).config.update('preferences', (current) => {
+    const merged: Record<string, unknown> = { ...(current ?? {}) }
     for (const [key, value] of Object.entries(updates)) {
       if (value === null || value === undefined) {
         delete merged[key]
@@ -69,9 +59,6 @@ export async function updateAgentPreferences(
         merged[key] = value
       }
     }
-
-    const validated = agentPreferencesSchema.parse(merged)
-    await writeJsonFileAtomic(prefsPath, validated)
-    return validated
+    return agentPreferencesSchema.parse(merged)
   })
 }
