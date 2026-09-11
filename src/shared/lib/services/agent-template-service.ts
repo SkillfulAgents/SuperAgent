@@ -403,7 +403,17 @@ function createWorkspaceZipStream(
   const archive = archiver('zip', { zlib: { level: zlibLevel } })
   archive.once('close', release)
 
+  // Every source archiver is reading. archiver's abort() drops its queues
+  // but leaves a source it has opened reading on, so a stop ends them here;
+  // destroying a source made from a web stream cancels that stream.
+  const sources = new Set<Readable>()
+  const stopSources = () => {
+    for (const source of sources) source.destroy()
+    sources.clear()
+  }
+
   const stopArchive = (err?: Error) => {
+    stopSources()
     if (archive.destroyed) return
     archive.abort()
     archive.destroy(err)
@@ -460,6 +470,7 @@ function createWorkspaceZipStream(
   // was already aborted.
   archive.on('close', () => {
     archive.abort()
+    stopSources()
   })
 
   const add = async (workspacePath: string): Promise<void> => {
@@ -478,8 +489,20 @@ function createWorkspaceZipStream(
       await body.cancel().catch(() => undefined)
       return
     }
+    const source = Readable.fromWeb(body as import('stream/web').ReadableStream<Uint8Array>)
+    sources.add(source)
+    source.once('close', () => sources.delete(source))
+    // archiver does not listen on a source it is handed: a read that fails
+    // mid-way would otherwise be an unhandled stream error, with the export
+    // lock held and a valid-looking but incomplete zip on the way. Fail the
+    // whole export instead, the way the archive's own errors do.
+    source.once('error', (err) => {
+      release()
+      stopAppending()
+      stopArchive(err)
+    })
     inFlight += 1
-    archive.append(Readable.fromWeb(body as import('stream/web').ReadableStream<Uint8Array>), {
+    archive.append(source, {
       name: workspacePath,
       date: new Date(stat.mtimeMs),
     })
