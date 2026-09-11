@@ -10,8 +10,15 @@ import fs from 'fs'
 import path from 'path'
 import { Readable } from 'stream'
 import { z } from 'zod'
-import { copyDirectoryFiltered, getAgentSessionsDir, getSessionJsonlPath, readJsonlFile, streamJsonlFile } from '@shared/lib/utils/file-storage'
-import { isPathWithinDir } from '@shared/lib/utils/path-safety'
+import {
+  copyDirectoryFiltered,
+  getAgentSessionsDir,
+  getAgentWorkspaceDir,
+  getSessionJsonlPath,
+  readJsonlFile,
+  streamJsonlFile,
+} from '@shared/lib/utils/file-storage'
+import { isPathWithinDir, isRealPathWithinDir } from '@shared/lib/utils/path-safety'
 import { openMediaBlob, type MediaRef } from '@shared/lib/services/session-media'
 import { buildWorkflowTree } from '@shared/lib/workflows/workflow-tree'
 import type { WorkflowTree } from '@shared/lib/workflows/workflow-schemas'
@@ -26,11 +33,24 @@ const WORKFLOW_RUN_ID = /^wf_[\w-]+$/
 /** The sidecar the container writes beside each subagent transcript. */
 const subagentMetaSchema = z.object({ toolUseId: z.string().optional() }).loose()
 
-/** A transcript-relative path that stays inside the agent's sessions directory. */
+/**
+ * A transcript-relative path that stays inside the agent's sessions directory.
+ *
+ * The segments are unvalidated URL parts spliced into a path, and the sessions
+ * directory sits inside the workspace the container bind-mounts, so the agent
+ * can plant links there. A traversal is rejected lexically; a component that
+ * resolves out of the tree through a link is rejected by its real path. That
+ * check is anchored on the WORKSPACE, the mount point the container cannot
+ * replace, not on the sessions directory itself: a link swapped in for the
+ * sessions directory would otherwise resolve base and candidate to the same
+ * escaped location and pass. An escaped link reads as not found, so nothing
+ * about the target is disclosed.
+ */
 function sessionFile(slug: string, ...segments: string[]): string {
   const sessionsDir = getAgentSessionsDir(slug)
   const target = path.join(sessionsDir, ...segments)
   if (!isPathWithinDir(sessionsDir, target)) throw new WorkspaceFileError('invalid-path')
+  if (!isRealPathWithinDir(getAgentWorkspaceDir(slug), target)) throw new WorkspaceFileError('not-found')
   return target
 }
 
@@ -65,9 +85,9 @@ export async function readSubagentTranscript(slug: string, sessionId: string, su
 
 export async function readWorkflowTree(slug: string, sessionId: string, runId: string): Promise<WorkflowTree | null> {
   if (!WORKFLOW_RUN_ID.test(runId)) throw new WorkspaceFileError('invalid-path')
-  // The tree builder resolves its own paths below the sessions directory; the
-  // session id is checked here the same way every other read checks it.
-  sessionFile(slug, sessionId)
+  // The tree builder reads below the run's directory; that directory is
+  // checked here the same way every other read checks its path.
+  sessionFile(slug, sessionId, 'subagents', 'workflows', runId)
   return buildWorkflowTree({ sessionsDir: getAgentSessionsDir(slug), sessionId, runId })
 }
 
