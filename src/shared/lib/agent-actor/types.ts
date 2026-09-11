@@ -431,14 +431,6 @@ export interface FileStat {
   size: number
   mtimeMs: number
   /**
-   * The workspace path of what is really there: the path asked for, unless a
-   * symbolic link on the way was followed to somewhere else inside the
-   * workspace. A caller scoping access to a sub-tree (a shared folder
-   * bookmark) compares this, not the asked-for path, so a link cannot widen
-   * that scope. A store without links always echoes the path.
-   */
-  resolvedPath: string
-  /**
    * The permission bits (`0o777`-masked), so a copy or an export can carry
    * them: a script that is executable in the workspace stays executable
    * where it lands. Absent from a store that keeps no modes.
@@ -455,16 +447,25 @@ export interface ByteRange {
 /**
  * Workspace files, by operation. Every path is a workspace path (see
  * `workspace-path.ts`): relative to the workspace root, posix, `/workspace/…`
- * accepted. Containment lives inside the implementation — a path that would
- * leave the workspace, lexically or through a link, throws
- * `WorkspaceFileError` and touches nothing. Symbolic links are never listed
- * and never followed out of the workspace.
+ * accepted. Containment is lexical and lives inside the implementation: a
+ * path that would leave the workspace (`..`, an absolute path) throws
+ * `WorkspaceFileError` and touches nothing. Links are followed the way the
+ * store follows them; `resolve` tells a caller where a path really leads.
+ * Symbolic links are never listed.
  */
 export interface FileOps {
   /** Immediate children of a directory (`''` is the root). Absent → `not-found`; a file → `not-a-directory`. */
   list(dir: string): Promise<FileEntry[]>
   /** What is at a path, or null when nothing is. */
   stat(path: string): Promise<FileStat | null>
+  /**
+   * The workspace path of what is really at `path`, links followed: null
+   * when nothing is there, `outside-workspace` when it leads out of the
+   * workspace. A store without links echoes the normalized path. For a
+   * caller that serves a file by its real location or scopes a shared
+   * sub-tree by it.
+   */
+  resolve(path: string): Promise<string | null>
   /** A file's bytes as a stream, optionally one closed byte range. Absent → `not-found`; a directory → `not-a-file`. */
   read(path: string, range?: ByteRange): Promise<ReadableStream<Uint8Array>>
   /** A whole small file, or null when absent. A directory → `not-a-file`. */

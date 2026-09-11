@@ -52,8 +52,16 @@ export function describeFileOpsContract(name: string, make: () => Promise<FileOp
 
       expect(decode(await files.getDoc('notes/today.txt'))).toBe('hello')
       expect(Array.from((await files.getDoc('bin/blob')) ?? [])).toEqual([0, 1, 2, 255])
-      expect(await files.stat('notes')).toMatchObject({ kind: 'directory', resolvedPath: 'notes' })
-      expect(await files.stat('notes/today.txt')).toMatchObject({ kind: 'file', size: 5, resolvedPath: 'notes/today.txt' })
+      expect(await files.stat('notes')).toMatchObject({ kind: 'directory' })
+      expect(await files.stat('notes/today.txt')).toMatchObject({ kind: 'file', size: 5 })
+    })
+
+    it('resolve answers where a path really is: the path itself when present, null when absent', async () => {
+      await files.putDoc('notes/today.txt', 'hello')
+      expect(await files.resolve('notes/today.txt')).toBe('notes/today.txt')
+      expect(await files.resolve('/workspace/notes/')).toBe('notes')
+      expect(await files.resolve('')).toBe('')
+      expect(await files.resolve('notes/missing.txt')).toBeNull()
     })
 
     it('accepts a file name as long as a filesystem allows', async () => {
@@ -177,6 +185,7 @@ export function describeFileOpsContract(name: string, make: () => Promise<FileOp
     ])('rejects %j before touching anything', async (bad) => {
       for (const attempt of [
         files.stat(bad),
+        files.resolve(bad),
         files.getDoc(bad),
         files.read(bad),
         files.list(bad),

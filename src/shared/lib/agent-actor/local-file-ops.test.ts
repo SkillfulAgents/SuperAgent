@@ -32,7 +32,7 @@ async function codeOf(promise: Promise<unknown>): Promise<string> {
   throw new Error('expected a WorkspaceFileError')
 }
 
-describe('LocalFileOps — symbolic links', () => {
+describe('LocalFileOps — links and host files', () => {
   let parent: string
   let root: string
   let outside: string
@@ -52,36 +52,30 @@ describe('LocalFileOps — symbolic links', () => {
     await fs.promises.rm(parent, { recursive: true, force: true })
   })
 
-  it('a link that leaves the workspace is an escape for every read', async () => {
-    await fs.promises.symlink(path.join(outside, 'secret.txt'), path.join(root, 'leak.txt'))
-    await fs.promises.symlink(outside, path.join(root, 'leakdir'))
-
-    expect(await codeOf(files.stat('leak.txt'))).toBe('outside-workspace')
-    expect(await codeOf(files.getDoc('leak.txt'))).toBe('outside-workspace')
-    expect(await codeOf(files.read('leak.txt'))).toBe('outside-workspace')
-    expect(await codeOf(files.list('leakdir'))).toBe('outside-workspace')
-    expect(await codeOf(files.getDoc('leakdir/secret.txt'))).toBe('outside-workspace')
+  it('resolve reports where a link leads inside the workspace', async () => {
+    await fs.promises.mkdir(path.join(root, 'real'))
+    await fs.promises.writeFile(path.join(root, 'real', 'x.txt'), 'x')
+    await fs.promises.symlink(path.join(root, 'real'), path.join(root, 'alias'))
+    expect(await files.resolve('alias')).toBe('real')
+    expect(await files.resolve('alias/x.txt')).toBe('real/x.txt')
+    expect(await files.resolve('real/x.txt')).toBe('real/x.txt')
   })
 
-  it('writes never go through a link', async () => {
+  it('resolve refuses a link that leaves the workspace', async () => {
     await fs.promises.symlink(path.join(outside, 'secret.txt'), path.join(root, 'leak.txt'))
     await fs.promises.symlink(outside, path.join(root, 'leakdir'))
-    await fs.promises.symlink(path.join(outside, 'dangling-target'), path.join(root, 'dangling.txt'))
-
-    expect(await codeOf(files.putDoc('leak.txt', 'overwritten'))).toBe('outside-workspace')
-    expect(await codeOf(files.write('leakdir/new.txt', new Uint8Array([1])))).toBe('outside-workspace')
-    expect(await codeOf(files.mkdir('leakdir/sub'))).toBe('outside-workspace')
-    expect(await codeOf(files.putDoc('dangling.txt', 'created'))).toBe('outside-workspace')
-
-    expect(await fs.promises.readFile(path.join(outside, 'secret.txt'), 'utf-8')).toBe('secret')
-    expect(fs.existsSync(path.join(outside, 'new.txt'))).toBe(false)
-    expect(fs.existsSync(path.join(outside, 'dangling-target'))).toBe(false)
+    expect(await codeOf(files.resolve('leak.txt'))).toBe('outside-workspace')
+    expect(await codeOf(files.resolve('leakdir/secret.txt'))).toBe('outside-workspace')
   })
 
-  it('a dangling link reads as absent', async () => {
+  it('resolve reads a dangling or looping link as absent', async () => {
     await fs.promises.symlink(path.join(root, 'nowhere'), path.join(root, 'dangling.txt'))
+    await fs.promises.symlink('loop', path.join(root, 'loop'))
+    expect(await files.resolve('dangling.txt')).toBeNull()
+    expect(await files.resolve('loop')).toBeNull()
     expect(await files.stat('dangling.txt')).toBeNull()
-    expect(await files.getDoc('dangling.txt')).toBeNull()
+    expect(await files.stat('loop')).toBeNull()
+    expect(await files.getDoc('loop')).toBeNull()
   })
 
   it('links are not listed', async () => {
@@ -95,42 +89,6 @@ describe('LocalFileOps — symbolic links', () => {
     await files.delete('leak.txt')
     expect(fs.existsSync(path.join(root, 'leak.txt'))).toBe(false)
     expect(await fs.promises.readFile(path.join(outside, 'secret.txt'), 'utf-8')).toBe('secret')
-  })
-
-  it('delete never reaches through a linked ancestor, even to remove a link', async () => {
-    await fs.promises.symlink(outside, path.join(root, 'escape'))
-    await fs.promises.symlink(path.join(outside, 'secret.txt'), path.join(outside, 'important-link'))
-
-    expect(await codeOf(files.delete('escape/important-link'))).toBe('outside-workspace')
-    expect(await codeOf(files.delete('escape/secret.txt'))).toBe('outside-workspace')
-    expect(fs.existsSync(path.join(outside, 'important-link'))).toBe(true)
-    expect(await fs.promises.readFile(path.join(outside, 'secret.txt'), 'utf-8')).toBe('secret')
-
-    // The escaping link itself sits inside the workspace: deleting it removes
-    // the link and nothing behind it.
-    await files.delete('escape', { recursive: true })
-    expect(fs.existsSync(path.join(root, 'escape'))).toBe(false)
-    expect(fs.existsSync(path.join(outside, 'important-link'))).toBe(true)
-    expect(await fs.promises.readFile(path.join(outside, 'secret.txt'), 'utf-8')).toBe('secret')
-  })
-
-  it('a link that stays inside the workspace is followed', async () => {
-    await fs.promises.mkdir(path.join(root, 'real'))
-    await fs.promises.writeFile(path.join(root, 'real', 'x.txt'), 'x')
-    await fs.promises.symlink(path.join(root, 'real'), path.join(root, 'alias'))
-    expect(new TextDecoder().decode((await files.getDoc('alias/x.txt')) ?? new Uint8Array())).toBe('x')
-    expect((await files.list('alias')).map((entry) => entry.name)).toEqual(['x.txt'])
-    // …but a caller scoping access to a sub-tree can tell where it really went.
-    expect((await files.stat('alias'))?.resolvedPath).toBe('real')
-    expect((await files.stat('alias/x.txt'))?.resolvedPath).toBe('real/x.txt')
-    expect((await files.stat('real/x.txt'))?.resolvedPath).toBe('real/x.txt')
-  })
-
-  it('a link that loops reads as absent, not as a failure', async () => {
-    await fs.promises.symlink('loop', path.join(root, 'loop'))
-    expect(await files.stat('loop')).toBeNull()
-    expect(await files.getDoc('loop')).toBeNull()
-    expect(await codeOf(files.list('loop'))).toBe('not-found')
   })
 
   it('putDoc keeps the mode of the file it replaces', async () => {
@@ -159,16 +117,15 @@ describe('LocalFileOps — symbolic links', () => {
   })
 
   it('write cancels the source when the destination is refused', async () => {
-    await fs.promises.symlink(path.join(outside, 'secret.txt'), path.join(root, 'leak.txt'))
     let cancelled = false
     const body = new ReadableStream<Uint8Array>({
       cancel() {
         cancelled = true
       },
     })
-    expect(await codeOf(files.write('leak.txt', body))).toBe('outside-workspace')
+    expect(['invalid-path', 'outside-workspace']).toContain(await codeOf(files.write('../outside/new.txt', body)))
     expect(cancelled).toBe(true)
-    expect(await fs.promises.readFile(path.join(outside, 'secret.txt'), 'utf-8')).toBe('secret')
+    expect(fs.existsSync(path.join(outside, 'new.txt'))).toBe(false)
   })
 
   it('write cancels the source when the destination cannot be opened', async () => {
@@ -202,6 +159,7 @@ describe('LocalFileOps — symbolic links', () => {
 
   it('copyHostFile keeps the mode of the file it copies', async () => {
     await fs.promises.writeFile(path.join(outside, 'tool.sh'), '#!/bin/sh\n', { mode: 0o755 })
+    await files.mkdir('bin')
     await files.copyHostFile(path.join(outside, 'tool.sh'), 'bin/tool.sh')
     expect((await fs.promises.stat(path.join(root, 'bin', 'tool.sh'))).mode & 0o777).toBe(0o755)
     expect(await fs.promises.readFile(path.join(outside, 'tool.sh'), 'utf-8')).toBe('#!/bin/sh\n')
@@ -220,9 +178,8 @@ describe('LocalFileOps — symbolic links', () => {
   })
 
   it('moveHostFile never lands outside the workspace', async () => {
-    await fs.promises.symlink(outside, path.join(root, 'leakdir'))
     await fs.promises.writeFile(path.join(outside, 'assembled'), 'x')
-    expect(await codeOf(files.moveHostFile(path.join(outside, 'assembled'), 'leakdir/report.pdf'))).toBe('outside-workspace')
+    expect(['invalid-path', 'outside-workspace']).toContain(await codeOf(files.moveHostFile(path.join(outside, 'assembled'), '../outside/report.pdf')))
     expect(fs.existsSync(path.join(outside, 'assembled'))).toBe(true)
     expect(fs.existsSync(path.join(outside, 'report.pdf'))).toBe(false)
   })

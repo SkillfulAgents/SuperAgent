@@ -357,27 +357,26 @@ async function resolveBookmarkedWorkspacePath(
   // itself is theirs to enforce. What the actor cannot know is the bookmark
   // root: a link inside the shared sub-tree that points elsewhere in the
   // workspace would widen what a viewer can reach. So the check is on where
-  // the two really are: the entry's resolved location has to stay under the
-  // root's, which lets a link that stays inside the shared tree be browsed and
-  // refuses one that leaves it. An escaping link is the same 400 it always was.
+  // the two really are, as it always was: the entry's real location has to
+  // stay under the root's, which lets a link that stays inside the shared
+  // tree be browsed and refuses one that leaves it. An escaping link is the
+  // same 400 it always was.
   const files = agentRegistry.get(agentSlug).files
-  let rootStat: FileStat | null
   let stat: FileStat | null
   try {
     // The workspace root is where it is; only a bookmarked sub-tree can itself
     // sit behind a link, so only that root is resolved.
-    rootStat = rootPath === '/workspace'
-      ? { kind: 'directory', size: 0, mtimeMs: 0, resolvedPath: '' }
-      : await files.stat(rootPath)
-    stat = await files.stat(currentPath)
+    const rootResolved = rootPath === '/workspace' ? '' : await files.resolve(rootPath)
+    const resolved = await files.resolve(currentPath)
+    if (resolved !== null && (rootResolved === null || !isContainerPathWithin(toContainerPath(rootResolved), toContainerPath(resolved)))) {
+      throw new WorkspaceFolderAccessError('Invalid folder path', 400)
+    }
+    stat = resolved === null ? null : await files.stat(resolved)
   } catch (error) {
     if (error instanceof WorkspaceFileError) {
       throw new WorkspaceFolderAccessError(error.status === 400 ? 'Invalid folder path' : error.message, error.status)
     }
     throw error
-  }
-  if (stat && (!rootStat || !isContainerPathWithin(toContainerPath(rootStat.resolvedPath), toContainerPath(stat.resolvedPath)))) {
-    throw new WorkspaceFolderAccessError('Invalid folder path', 400)
   }
 
   return { rootPath, currentPath, stat }
@@ -6624,12 +6623,15 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
       return c.json({ error: 'File path is required' }, 400)
     }
 
-    // Security: containment is the actor's. A path that would leave the
-    // workspace — lexically, as an absolute path, or through a link — fails
-    // as a WorkspaceFileError, answered as 400 in the catch below.
+    // Security: lexical containment is the actor's; a path that would leave
+    // the workspace fails as a WorkspaceFileError, answered as 400 in the
+    // catch below. The file is then served by its real location, as it
+    // always was: a link is followed only while it stays inside the
+    // workspace, and one that leaves it is the same 400.
     const actor = agentRegistry.get(agentSlug)
-    const stat = await actor.files.stat(filePath)
-    if (!stat || stat.kind !== 'file') {
+    const resolved = await actor.files.resolve(filePath)
+    const stat = resolved === null ? null : await actor.files.stat(resolved)
+    if (resolved === null || !stat || stat.kind !== 'file') {
       return c.json({ error: 'File not found' }, 404)
     }
 
@@ -6689,13 +6691,13 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
       c.header('Content-Range', `bytes ${start}-${end}/${size}`)
       c.header('Content-Length', (end - start + 1).toString())
       if (bodyless) return c.body(null, 206)
-      const chunk = await actor.files.read(filePath, { start, end })
+      const chunk = await actor.files.read(resolved, { start, end })
       return c.body(chunk, 206)
     }
 
     c.header('Content-Length', size.toString())
     if (bodyless) return c.body(null)
-    const webStream = await actor.files.read(filePath)
+    const webStream = await actor.files.read(resolved)
     return c.body(webStream)
   } catch (error) {
     if (error instanceof WorkspaceFileError) {
