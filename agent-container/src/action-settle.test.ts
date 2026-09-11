@@ -10,8 +10,12 @@ import {
 } from './action-settle'
 
 const base: PageObservation = {
-  ...EMPTY_OBSERVATION, url: 'https://a.com', readyState: 'complete', interactive: 40, textChars: 500, contentChars: 500, contentHash: 1, stateHash: 7, focus: 'nothing focused',
+  ...EMPTY_OBSERVATION, url: 'https://a.com', readyState: 'complete', interactive: 40, textChars: 500, contentChars: 500, contentHash: 1, stateHash: 7, focus: 'nothing focused', focusId: 'body@-1',
 }
+/** A focused field with a value, the way the observer reports it: preview, length, hash of the whole value. */
+const field = (focus: string, focusId: string, value: string): PageObservation => ({
+  ...base, focus, focusId, focusValue: value.slice(0, 120), focusValueChars: value.length, focusValueHash: value.split('').reduce((h, c) => ((h << 5) + h + c.charCodeAt(0)) | 0, 5381),
+})
 
 describe('diffObservations', () => {
   it('reports dialogs, announcements, census, control state, text size and typed values', () => {
@@ -32,6 +36,7 @@ describe('diffObservations', () => {
       focusChanged: false,
       focusValueChanged: false,
       focusValue: '',
+      focusValueChars: 0,
     })
   })
 
@@ -41,9 +46,21 @@ describe('diffObservations', () => {
     expect(diffObservations(base, { ...base, contentHash: 2, contentChars: 512 })).toMatchObject({ textChanged: true, textDelta: 12 })
   })
 
-  it('counts a typed value only when focus stayed on the same field', () => {
-    expect(diffObservations({ ...base, focus: 'textbox "A"', focusValue: '' }, { ...base, focus: 'textbox "A"', focusValue: 'monday' })).toMatchObject({ focusValueChanged: true, focusValue: 'monday', focusChanged: false })
-    expect(diffObservations({ ...base, focus: 'textbox "A"', focusValue: 'x' }, { ...base, focus: 'textbox "B"', focusValue: '' })).toMatchObject({ focusValueChanged: false, focusChanged: true })
+  it('counts a typed value only when focus stayed on the same element — by identity, not by name', () => {
+    expect(diffObservations(field('textbox "A"', 'input#a@3', ''), field('textbox "A"', 'input#a@3', 'monday'))).toMatchObject({ focusValueChanged: true, focusValue: 'monday', focusChanged: false })
+    expect(diffObservations(field('textbox "A"', 'input#a@3', 'x'), field('textbox "B"', 'input#b@4', ''))).toMatchObject({ focusValueChanged: false, focusChanged: true })
+    // Tab between two unnamed inputs holding "first" and "second": a focus move, not an edit.
+    expect(diffObservations(field('textbox', 'input@0', 'first'), field('textbox', 'input@1', 'second'))).toMatchObject({ focusValueChanged: false, focusChanged: true })
+  })
+
+  it('detects an edit beyond the preview and says the preview is one', () => {
+    const before = field('textbox "Notes"', 'textarea#n@2', 'x'.repeat(165))
+    const after = field('textbox "Notes"', 'textarea#n@2', 'x'.repeat(164))
+    expect(before.focusValue).toBe(after.focusValue) // the preview did not change…
+    const e = diffObservations(before, after)
+    expect(e.focusValueChanged).toBe(true) // …the value did
+    expect(formatActionEffect(e, { settleMs: 50, verb: 'press' })).toBe(`\nEffect: field value now ${JSON.stringify('x'.repeat(120))} (164 chars, first 120 shown) · focus: textbox "Notes"`)
+    expect(formatActionEffect(diffObservations(field('textbox "S"', 'input@0', ''), field('textbox "S"', 'input@0', 'monday')), { settleMs: 50, verb: 'press' })).toBe('\nEffect: field value now "monday" · focus: textbox "S"')
   })
 })
 
@@ -66,7 +83,7 @@ describe('formatActionEffect', () => {
   it('sizes a text change, reports control state and typed values', () => {
     expect(formatActionEffect(diffObservations(base, { ...base, contentHash: 9, contentChars: 1734 }), { settleMs: 300, verb: 'click' })).toBe('\nEffect: page text changed (+1,234 chars)')
     expect(formatActionEffect(diffObservations(base, { ...base, stateHash: 9 }), { settleMs: 300, verb: 'click' })).toBe('\nEffect: control state changed (checked/pressed/expanded/selected)')
-    const typed = diffObservations({ ...base, focus: 'textbox "Search"' }, { ...base, focus: 'textbox "Search"', focusValue: 'monday' })
+    const typed = diffObservations(field('textbox "Search"', 'input#q@0', ''), field('textbox "Search"', 'input#q@0', 'monday'))
     expect(formatActionEffect(typed, { settleMs: 50, verb: 'press' })).toBe('\nEffect: field value now "monday" · focus: textbox "Search"')
   })
 

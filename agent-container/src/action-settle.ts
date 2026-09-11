@@ -87,10 +87,13 @@ export interface ActionEffect {
   /** after.contentChars − before.contentChars; a size for "page text changed". */
   textDelta: number
   focus: string
+  /** Focus is on a different element — by identity, not only by display name (two unnamed inputs are two elements). */
   focusChanged: boolean
-  /** The focused field's value after the action, when it changed with focus unchanged (typing, clear). */
+  /** The focused field's full value differs, with focus on the same element (typing, clear). Detected on a hash of the whole value, not the preview. */
   focusValueChanged: boolean
+  /** Preview of the value (capped by the observer) and the full value's length. */
   focusValue: string
+  focusValueChars: number
 }
 
 const topKey = (e: TopLayerEntry): string => `${e.kind}|${e.name}`
@@ -109,9 +112,10 @@ export function diffObservations(before: PageObservation, after: PageObservation
     textChanged: after.contentHash !== before.contentHash && after.contentChars !== before.contentChars,
     textDelta: after.contentChars - before.contentChars,
     focus: after.focus,
-    focusChanged: after.focus !== before.focus,
-    focusValueChanged: after.focus === before.focus && after.focusValue !== before.focusValue,
+    focusChanged: after.focus !== before.focus || after.focusId !== before.focusId,
+    focusValueChanged: after.focus === before.focus && after.focusId === before.focusId && after.focusValueHash !== before.focusValueHash,
     focusValue: after.focusValue,
+    focusValueChars: after.focusValueChars,
   }
 }
 
@@ -208,7 +212,10 @@ export function formatActionEffect(effect: ActionEffect | null, opts: EffectForm
     parts.push(`page text changed (${d > 0 ? '+' : '−'}${Math.abs(d).toLocaleString('en-US')} chars)`)
   }
   if (effect.stateChanged) parts.push('control state changed (checked/pressed/expanded/selected)')
-  if (effect.focusValueChanged) parts.push(`field value now ${JSON.stringify(effect.focusValue)}`)
+  if (effect.focusValueChanged) {
+    const preview = effect.focusValue.length < effect.focusValueChars
+    parts.push(`field value now ${JSON.stringify(effect.focusValue)}${preview ? ` (${effect.focusValueChars} chars, first ${effect.focusValue.length} shown)` : ''}`)
+  }
   // Focus is a fact worth a few chars: for a press it is where the next key
   // goes; for a click it shows which element took the click.
   const focusNote = effect.focus && (opts.verb === 'press' || (opts.verb === 'click' && effect.focusChanged)) ? `focus: ${effect.focus}` : ''
