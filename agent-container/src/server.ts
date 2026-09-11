@@ -818,9 +818,10 @@ import { capBrowserOutput, redactCdpUrls, MAX_BROWSER_OUTPUT_CHARS, MAX_BROWSER_
 import { capSnapshot, compactWithText, countRefs, formatIframePlaceholders, formatTextFooter, THIN_TREE_REFS } from './snapshot-format';
 import { observerScript, parseObservation, EMPTY_OBSERVATION, PREVIEW_CHARS, THIN_TREE_PREVIEW_CHARS, type PageObservation } from './page-observer';
 import { formatStatusLine, waitForLoaded } from './page-status';
+import { observeAction, pressPolicy, ACTION_POLICIES, type ActionEffect, type ActionPolicy } from './action-settle';
 import {
   observeUrl, resetUrlTracking,
-  CLICK_SETTLE_MS, FILL_SETTLE_MS, PRESS_ENTER_SETTLE_MS, PRESS_SETTLE_MS,
+  FILL_SETTLE_MS,
   type UrlDigest, type ScrollInfo, parseScrollInfo,
 } from './browser-digest';
 
@@ -926,6 +927,29 @@ async function observePage(script: string): Promise<string | null> {
 async function observeNow(opts: { previewChars?: number } = {}): Promise<PageObservation> {
   const out = await observePage(observerScript(opts));
   return (out === null ? null : parseObservation(out)) ?? EMPTY_OBSERVATION;
+}
+
+/**
+ * Run a mutating action through the settle primitive (action-settle.ts) so
+ * the result can say what the action did rather than only whether the URL
+ * moved. The "after" observation also supplies the URL, so this replaces the
+ * post-action `get url` at no extra round trip; a failed read falls back to
+ * it. No effect is reported across a navigation.
+ */
+async function runWithEffect(
+  action: () => Promise<{ exitCode: number; stdout: string }>,
+  policy: ActionPolicy,
+): Promise<{ result: { exitCode: number; stdout: string }; digest: UrlDigest | null; effect: ActionEffect | null; settleMs: number }> {
+  const settled = await observeAction({
+    exec: action,
+    isFailure: r => r.exitCode !== 0,
+    evalScript: observePage,
+    policy,
+  });
+  if (settled.result.exitCode !== 0) return { result: settled.result, digest: null, effect: null, settleMs: 0 };
+  const digest = settled.after?.url ? observeUrl(settled.after.url) : await observeUrlDigest();
+  const effect = digest?.navigated ? null : settled.effect;
+  return { result: settled.result, digest, effect, settleMs: settled.waitedMs };
 }
 
 /**
@@ -1552,18 +1576,18 @@ app.post('/browser/click', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const result = await execBrowser(['click', body.ref], browserState.cdpUrl || undefined);
+    const { result, digest, effect, settleMs } = await runWithEffect(
+      () => execBrowser(['click', body.ref], browserState.cdpUrl || undefined),
+      ACTION_POLICIES.click,
+    );
 
     if (result.exitCode !== 0) {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
-    await sleep(CLICK_SETTLE_MS);
-    const digest = await observeUrlDigest();
-
     const tabInfo = await tabManager.detectNewTab();
     notifyBrowserAction();
-    return c.json({ success: true, ...(digest && { digest }), ...(tabInfo && { tabInfo }) });
+    return c.json({ success: true, settleMs, ...(digest && { digest }), ...(effect && { effect }), ...(tabInfo && { tabInfo }) });
   } catch (error: any) {
     console.error('[Browser] Error clicking:', error);
     return c.json({ error: error.message || 'Failed to click' }, 500);
@@ -1716,18 +1740,18 @@ app.post('/browser/press', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const result = await execBrowser(['press', body.key], browserState.cdpUrl || undefined);
+    const { result, digest, effect, settleMs } = await runWithEffect(
+      () => execBrowser(['press', body.key], browserState.cdpUrl || undefined),
+      pressPolicy(body.key),
+    );
 
     if (result.exitCode !== 0) {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
-    await sleep(body.key.trim() === 'Enter' ? PRESS_ENTER_SETTLE_MS : PRESS_SETTLE_MS);
-    const digest = await observeUrlDigest();
-
     const tabInfo = await tabManager.detectNewTab();
     notifyBrowserAction();
-    return c.json({ success: true, ...(digest && { digest }), ...(tabInfo && { tabInfo }) });
+    return c.json({ success: true, settleMs, ...(digest && { digest }), ...(effect && { effect }), ...(tabInfo && { tabInfo }) });
   } catch (error: any) {
     console.error('[Browser] Error pressing key:', error);
     return c.json({ error: error.message || 'Failed to press key' }, 500);
@@ -1797,13 +1821,15 @@ app.post('/browser/select', async (c) => {
 
     const before = await readValue();
 
-    const result = await execBrowser(['select', body.ref, body.value], browserState.cdpUrl || undefined);
+    const { result, effect, settleMs } = await runWithEffect(
+      () => execBrowser(['select', body.ref, body.value], browserState.cdpUrl || undefined),
+      { ...ACTION_POLICIES.select, settleMs: SELECT_COMMIT_SETTLE_MS },
+    );
 
     if (result.exitCode !== 0) {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
-    await new Promise(resolve => setTimeout(resolve, SELECT_COMMIT_SETTLE_MS));
     const after = await readValue();
 
     const judgement = judgeSelectCommit(body.value, before, after);
@@ -1812,7 +1838,7 @@ app.post('/browser/select', async (c) => {
     }
 
     notifyBrowserAction();
-    return c.json({ success: true, committedValue: judgement.committed });
+    return c.json({ success: true, committedValue: judgement.committed, settleMs, ...(effect && { effect }) });
   } catch (error: any) {
     console.error('[Browser] Error selecting:', error);
     return c.json({ error: error.message || 'Failed to select' }, 500);
@@ -1837,14 +1863,17 @@ app.post('/browser/hover', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const result = await execBrowser(['hover', body.ref], browserState.cdpUrl || undefined);
+    const { result, effect, settleMs } = await runWithEffect(
+      () => execBrowser(['hover', body.ref], browserState.cdpUrl || undefined),
+      ACTION_POLICIES.hover,
+    );
 
     if (result.exitCode !== 0) {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
     notifyBrowserAction();
-    return c.json({ success: true });
+    return c.json({ success: true, settleMs, ...(effect && { effect }) });
   } catch (error: any) {
     console.error('[Browser] Error hovering:', error);
     return c.json({ error: error.message || 'Failed to hover' }, 500);
