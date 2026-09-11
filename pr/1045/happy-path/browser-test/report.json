@@ -1,0 +1,26 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser-use feature successfully enables the agent to open a browser, navigate to a specified URL, retrieve the page title, and return the result in chat.",
+  "steps": [
+    "Navigated to http://localhost:47891 using browser_run_code — Successfully loaded the Gamut application with page title \"Gamut\"",
+    "Found and clicked the \"QA-20260911-005033-j5fk\" agent in the sidebar — Successfully navigated to the agent's page at http://localhost:47891/agents/qa-20260911-005033-j5fk-dhs99lhx7h",
+    "Located the message input field with placeholder \"How can I help? Press cmd+enter to send\" — Found at position (341, 165) with size 454x60",
+    "Clicked the message input field and typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully entered in the input field",
+    "Sent the message using Ctrl+Enter keyboard shortcut — Message sent successfully, created a new session at /sessions/be43e74c-358f-481d-b8c0-abfc358a5c58 with page title \"Browser Page Title Retrieval — QA-20260911-005033-j5fk\"",
+    "Waited for agent response (up to 3 minutes) — Agent completed processing in 6 seconds (well within time limit), status changed from \"working\" to \"idle\"",
+    "Verified response content for \"Example Domain\" mention — Response displayed: \"The page title is \"Example Domain\". Browser closed.\" (exactly matching requirement)",
+    "Confirmed browser-use tool calls executed successfully — Agent performed 3 tool calls, worked for 6s, used 146,699 tokens, and successfully opened browser, navigated to URL, and retrieved page title"
+  ],
+  "bugs": [],
+  "durationMs": 159033,
+  "sessionId": "15fbc664-4abc-4517-a64b-5affa20f6981",
+  "cost": {
+    "inputTokens": 514,
+    "outputTokens": 15272,
+    "cacheCreationTokens": 50274,
+    "cacheReadTokens": 1348212,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.274538
+  }
+}
