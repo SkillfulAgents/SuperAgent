@@ -90,41 +90,42 @@ describe('buildGraph', () => {
     expect(graph.nodes.filter((n) => n.data.kind !== 'agent')).toHaveLength(3)
   })
 
-  it('merges bidirectional invocations into one activity edge with summed weight', () => {
+  it('draws one permission edge per permitted pair, merging both directions, with no count', () => {
     const graph = buildGraph({
       agents: [agent('a'), agent('b')],
       accounts: [],
       mcps: [],
       topology: {
         ...emptyTopology,
-        invocations: [
-          { caller: 'a', target: 'b', count: 3 },
-          { caller: 'b', target: 'a', count: 2 },
+        permissions: [
+          { caller: 'a', target: 'b' },
+          { caller: 'b', target: 'a' },
         ],
       },
     })
-    const activity = graph.edges.filter((e) => e.variant === 'activity')
-    expect(activity).toHaveLength(1)
-    expect(activity[0].weight).toBe(5)
+    const agentEdges = graph.edges.filter((e) => e.variant === 'permission')
+    expect(agentEdges).toHaveLength(1)
+    expect(agentEdges[0].weight).toBeUndefined()
+    expect(agentEdges[0].policyCallers).toEqual(['a', 'b'])
   })
 
-  it('suppresses the permission edge when the pair has activity in EITHER direction', () => {
+  it('the invocations field is ignored: agent edges come from permissions alone', () => {
     const graph = buildGraph({
       agents: [agent('a'), agent('b'), agent('c')],
       accounts: [],
       mcps: [],
       topology: {
         ...emptyTopology,
-        // b→a activity must hide the a→b permission line: both render as the
-        // same undirected straight segment.
+        // A previous build reported session counts here. They no longer add
+        // or remove edges; only permission rows do.
         invocations: [{ caller: 'b', target: 'a', count: 1 }],
         permissions: [
-          { caller: 'a', target: 'b' },
           { caller: 'a', target: 'c' },
           { caller: 'c', target: 'a' }, // same pair as above — deduped
         ],
       },
     })
+    expect(graph.edges.filter((e) => e.variant === 'activity')).toHaveLength(0)
     const permissions = graph.edges.filter((e) => e.variant === 'permission')
     expect(permissions).toHaveLength(1)
     const pair = [permissions[0].source, permissions[0].target].sort()
@@ -188,18 +189,17 @@ describe('buildGraph', () => {
     expect(edge).toMatchObject({ deletable: true, policyAgentSlug: 'a', policyCallers: ['a', 'b'] })
   })
 
-  it('ignores invocations and permissions that reference unknown or self agents', () => {
+  it('ignores permissions that reference unknown or self agents', () => {
     const graph = buildGraph({
       agents: [agent('a')],
       accounts: [],
       mcps: [],
       topology: {
         ...emptyTopology,
-        invocations: [
-          { caller: 'ghost', target: 'a', count: 1 },
-          { caller: 'a', target: 'a', count: 9 },
+        permissions: [
+          { caller: 'a', target: 'ghost' },
+          { caller: 'a', target: 'a' },
         ],
-        permissions: [{ caller: 'a', target: 'ghost' }],
       },
     })
     expect(graph.edges).toEqual([])

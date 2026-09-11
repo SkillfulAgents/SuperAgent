@@ -52,7 +52,12 @@ export const homeGraphSchema = z.object({
   crons: z.array(homeGraphCronSchema),
   /** x-agent invoke permissions (non-block, concrete target) */
   permissions: z.array(z.object({ caller: z.string(), target: z.string() })),
-  /** Actual agent→agent session invocations, from session metadata */
+  /**
+   * Always empty. Agent↔agent edges are a projection of the invoke
+   * permissions above; the graph no longer counts sessions. Kept for one
+   * release so a renderer cached from the previous build keeps working;
+   * remove afterwards.
+   */
   invocations: z.array(z.object({ caller: z.string(), target: z.string(), count: z.number() })),
   /** Proxied API calls per "agentSlug:accountId" (proxy audit log) */
   accountUsage: z.record(z.string(), z.number()),
