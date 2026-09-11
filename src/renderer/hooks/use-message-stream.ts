@@ -433,6 +433,8 @@ function getOrCreateEventSource(
           sessionSlashCommands.set(sessionId, data.slashCommands)
         }
         // Initial connection - get isActive from server
+        const snapshotWaitingBackground =
+          data.isWaitingBackground === true && Array.isArray(data.backgroundTasks) && data.backgroundTasks.length > 0
         streamStates.set(sessionId, {
           isActive: data.isActive ?? false,
           isStreaming: false,
@@ -445,7 +447,12 @@ function getOrCreateEventSource(
           computerUseApp: current?.computerUseApp ?? null,
           computerUseAppIcon: current?.computerUseAppIcon ?? null,
           activeStartTime: current?.activeStartTime ?? null,
-          isCompacting: current?.isCompacting ?? false,
+          // The snapshot carries it for a stream that opened after compact_start.
+          // An older host omits it: the local value stands in while the turn is
+          // still running, and a turn whose output ended cannot be compacting.
+          isCompacting: typeof data.isCompacting === 'boolean'
+            ? data.isCompacting
+            : ((data.isActive ?? false) && !snapshotWaitingBackground && (current?.isCompacting ?? false)),
           contextUsage: current?.contextUsage ?? null,
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
@@ -455,8 +462,7 @@ function getOrCreateEventSource(
           backgroundTasks: Array.isArray(data.backgroundTasks) ? data.backgroundTasks : (current?.backgroundTasks ?? []),
           // The snapshot says whether the turn's output has ended; a task in
           // the list can still belong to a turn that is streaming.
-          isWaitingBackground:
-            data.isWaitingBackground === true && Array.isArray(data.backgroundTasks) && data.backgroundTasks.length > 0,
+          isWaitingBackground: snapshotWaitingBackground,
           discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
         // Reconcile against the persisted transcript on every (re)connect. A client
@@ -615,7 +621,8 @@ function getOrCreateEventSource(
             })
             invalidateMessagesThrottled(queryClient, sessionId)
           } else {
-            streamStates.set(sessionId, { ...current, isWaitingBackground: true })
+            // The turn's output ended, so its compaction did too.
+            streamStates.set(sessionId, { ...current, isWaitingBackground: true, isCompacting: false })
           }
         }
       }
@@ -1340,6 +1347,18 @@ function getOrCreateEventSource(
           invalidateMessagesThrottled(queryClient, sessionId)
           queryClient.invalidateQueries({ queryKey: ['sessions'] })
         }
+        // Same for compaction: compact_start and compact_complete are one-shot
+        // frames, so the ping's word corrects a missed one. An older host omits
+        // the field, but an idle session cannot be compacting. Re-read the
+        // state: the block above may have replaced it.
+        const pingCompacting: boolean | undefined =
+          typeof data.isCompacting === 'boolean' ? data.isCompacting : (data.isActive === false ? false : undefined)
+        const latest = streamStates.get(sessionId)
+        if (latest && pingCompacting !== undefined && latest.isCompacting !== pingCompacting) {
+          streamStates.set(sessionId, { ...latest, isCompacting: pingCompacting })
+          // A finished compaction has a boundary in the transcript to show.
+          if (!pingCompacting) invalidateMessagesThrottled(queryClient, sessionId)
+        }
       }
       // Note: os_notification events are handled by GlobalNotificationHandler, not here
 
@@ -1437,15 +1456,6 @@ export function clearPeerUserMessages(sessionId: string): void {
   const current = streamStates.get(sessionId)
   if (current && current.peerUserMessages.length > 0) {
     streamStates.set(sessionId, { ...current, peerUserMessages: [] })
-    streamListeners.get(sessionId)?.forEach((listener) => listener())
-  }
-}
-
-// Helper to clear isCompacting state (used when persisted messages already show the boundary)
-export function clearCompacting(sessionId: string): void {
-  const current = streamStates.get(sessionId)
-  if (current && current.isCompacting) {
-    streamStates.set(sessionId, { ...current, isCompacting: false })
     streamListeners.get(sessionId)?.forEach((listener) => listener())
   }
 }

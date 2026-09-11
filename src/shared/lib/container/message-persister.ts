@@ -623,7 +623,9 @@ class MessagePersister {
       waitingBackground: prior?.waitingBackground ?? false,
       isRecovering: prior?.isRecovering ?? false,
       coalescedUserMessages: prior?.coalescedUserMessages,
-      isCompacting: false,
+      // Turn-scoped like the assistant ids below: a transport reattach to the
+      // same live turn keeps it, a replaced process starts clean.
+      isCompacting: priorIsActive ? (prior?.isCompacting ?? false) : false,
       agentSlug,
       lastContextWindow: 200_000,
       lastAssistantUsage: null,
@@ -1025,6 +1027,30 @@ class MessagePersister {
   isSessionAwaitingInput(agentSlug: string, sessionId: string): boolean {
     const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
     return state?.isAwaitingInput ?? false
+  }
+
+  /**
+   * True while the current turn is compacting; a late-joining client gets it
+   * in the `connected` snapshot. The raw flag is turn-scoped: a stop, a
+   * replaced process and every turn start reset it, while an error result
+   * only ends the turn and leaves it for the next start to clear. So it is
+   * read only while the session is active. The client keeps its own copy
+   * across an input request, so this does not gate on one.
+   */
+  isSessionCompacting(agentSlug: string, sessionId: string): boolean {
+    const state = this.streamingStates.get(sessionKeyOf(agentSlug, sessionId))
+    return !!state && state.isActive && state.isCompacting
+  }
+
+  /**
+   * End a compaction the summary will never close (the turn was stopped or
+   * its process replaced). Connected clients only reset on compact_complete
+   * or a turn boundary, so tell them when no boundary frame follows.
+   */
+  private abandonCompaction(agentSlug: string, sessionId: string, state: StreamingState): void {
+    if (!state.isCompacting) return
+    state.isCompacting = false
+    this.broadcastToSSE(agentSlug, sessionId, { type: 'compact_complete' })
   }
 
   /**
@@ -1540,6 +1566,9 @@ class MessagePersister {
       state.isInterrupted = true
       state.isStreaming = false
       state.isAwaitingInput = false
+      // The stopped turn's compaction died with it; the client clears its own
+      // flag off the idle / waiting-background frame below.
+      state.isCompacting = false
       state.lastResultCleanSuccess = false
       state.currentText = ''
       state.currentToolUse = null
@@ -2670,6 +2699,9 @@ class MessagePersister {
             this.resetSessionCompleteResponse(state)
             state.queuedTurnCount = 0
             state.resetAssistantBeforeNextTurnOutput = false
+            // Turn-scoped, like markSessionActive: the client resets it off
+            // the session_active frame below.
+            state.isCompacting = false
             // Preserve the prior result guard. Some runtimes emit a stray
             // running → idle pair without another result; clearing the guard
             // here would leave isActive stuck until disconnect. The response
@@ -2781,6 +2813,8 @@ class MessagePersister {
           this.containerClients.get(sessionKeyOf(agentSlug, sessionId))?.onFatalResult('oom_sigkill') === 'defer_for_recovery'
         ) {
           this.recordLastFatal(state.agentSlug, 'oom_sigkill')
+          // The dead process's compaction ends here, not when recovery lands.
+          this.abandonCompaction(agentSlug, sessionId, state)
           this.onUnexpectedDeathRequested?.(state.agentSlug)
           break
         }
@@ -2794,11 +2828,16 @@ class MessagePersister {
           // markSessionInterrupted settles the session if the process was in
           // fact replaced, and process_restarted drops the tasks otherwise.
           state.isAwaitingInput = false
+          this.abandonCompaction(agentSlug, sessionId, state)
         } else if (state.stateEventsAuthority || this.openBackgroundWorkCount(state) > 0) {
           this.syncSessionAwaiting(agentSlug, sessionId)
         } else {
           state.isAwaitingInput = false // finalizeIdle below settles the turn
         }
+        // The compact summary always precedes the result, so a compaction
+        // cannot outlive its turn. A summary missed across a container
+        // reattach would otherwise leave the flag set until the next turn.
+        state.isCompacting = false
         state.currentText = ''
         state.lastResultSubtype = typeof content.subtype === 'string' ? content.subtype : null
 
@@ -3346,6 +3385,8 @@ class MessagePersister {
       this.clearBackgroundTask(agentSlug, sessionId, state, taskId)
     }
     state.bgTasksSnapshot = null
+    // A compaction in flight died with the process too.
+    this.abandonCompaction(agentSlug, sessionId, state)
   }
 
   private clearBackgroundTask(agentSlug: string, sessionId: string, state: StreamingState, taskId: string): boolean {
