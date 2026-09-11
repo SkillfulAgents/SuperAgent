@@ -34,6 +34,7 @@ class MemoryWriteStream extends Writable {
 const mockCreateWriteStream = vi.fn((..._args: unknown[]) => new MemoryWriteStream())
 const mockFsRealpath = vi.fn(async (value: unknown) => value)
 const mockFsRename = vi.fn()
+const mockFsCopyFile = vi.fn()
 const mockFsUnlink = vi.fn()
 const mockFsRm = vi.fn()
 
@@ -80,6 +81,7 @@ vi.mock('fs', () => ({
       cp: (...args: unknown[]) => mockFsCp(...args),
       realpath: (...args: unknown[]) => mockFsRealpath(args[0]),
       rename: (...args: unknown[]) => mockFsRename(...args),
+      copyFile: (...args: unknown[]) => mockFsCopyFile(...args),
       unlink: (...args: unknown[]) => mockFsUnlink(...args),
       rm: (...args: unknown[]) => mockFsRm(...args),
       open: (...args: unknown[]) => mockFsOpen(...args),
@@ -98,6 +100,7 @@ vi.mock('fs', () => ({
     cp: (...args: unknown[]) => mockFsCp(...args),
     realpath: (...args: unknown[]) => mockFsRealpath(args[0]),
     rename: (...args: unknown[]) => mockFsRename(...args),
+    copyFile: (...args: unknown[]) => mockFsCopyFile(...args),
     unlink: (...args: unknown[]) => mockFsUnlink(...args),
     rm: (...args: unknown[]) => mockFsRm(...args),
     open: (...args: unknown[]) => mockFsOpen(...args),
@@ -3713,10 +3716,10 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
     }
   })
 
-  it('streams the assembled chunked upload from the host temp file into the workspace', async () => {
+  it('moves the assembled chunked upload from the host temp file into the workspace', async () => {
     const assembledPath = '/mock/tmp/uploads/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.assembled'
     mockStoreUploadChunk.mockResolvedValue({ status: 'assembled', filePath: assembledPath })
-    mockCreateReadStream.mockReturnValueOnce(Readable.from([Buffer.from('hello world')]))
+    mockFsRename.mockResolvedValue(undefined)
     mockFsStat.mockResolvedValue({ isFile: () => true, isDirectory: () => false, size: 11 })
     mockFsUnlink.mockResolvedValue(undefined)
 
@@ -3733,15 +3736,12 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
     expect(body.success).toBe(true)
     expect(body.filename).toBe('report.pdf')
     expect(body.size).toBe(11)
-    // Read from the assembled temp file, written under the workspace's uploads/,
-    // byte for byte, and the temp file removed afterwards.
-    expect(mockCreateReadStream).toHaveBeenCalledWith(assembledPath)
-    expect(mockCreateWriteStream).toHaveBeenCalledWith(
-      expect.stringContaining('/mock/workspace/uploads/'),
-    )
-    const sink = mockCreateWriteStream.mock.results[0]!.value as InstanceType<typeof MemoryWriteStream>
-    expect(Buffer.concat(sink.chunks).toString('utf-8')).toBe('hello world')
-    expect(mockFsUnlink).toHaveBeenCalledWith(assembledPath)
+    // The assembled temp file is renamed under the workspace's uploads/, not
+    // read and written again; the rename consumed it, so nothing is copied.
+    expect(mockFsRename).toHaveBeenCalledWith(assembledPath, expect.stringContaining('/mock/workspace/uploads/'))
+    expect(mockCreateReadStream).not.toHaveBeenCalled()
+    expect(mockCreateWriteStream).not.toHaveBeenCalled()
+    expect(mockFsCopyFile).not.toHaveBeenCalled()
     expect(mockStoreUploadChunk).toHaveBeenCalledWith(
       'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
       0,
@@ -3781,7 +3781,7 @@ describe('folder upload — POST /:id/upload-folder', () => {
     mockFsReaddir
       .mockResolvedValueOnce([dirent('README.md', 'file'), dirent('src', 'directory'), dirent('linked', 'symlink')])
       .mockResolvedValueOnce([dirent('index.ts', 'file')])
-    mockCreateReadStream.mockImplementation(() => Readable.from([Buffer.from('x')]))
+    mockFsCopyFile.mockResolvedValue(undefined)
 
     const res = await postJson(app, '/api/agents/test-agent/upload-folder', {
       sourcePath: '/Users/joe/Desktop/my-project',
@@ -3792,16 +3792,15 @@ describe('folder upload — POST /:id/upload-folder', () => {
     expect(body.path).toBe('/workspace/uploads/my-project/')
     expect(body.folderName).toBe('my-project')
 
-    // Every regular file is streamed from the host folder into uploads/<folder>/,
-    // its directories are created, and the symlink is skipped rather than followed.
-    expect(mockCreateReadStream.mock.calls.map(([source]) => source)).toEqual([
-      '/Users/joe/Desktop/my-project/README.md',
-      '/Users/joe/Desktop/my-project/src/index.ts',
+    // Every regular file is copied from the host folder into uploads/<folder>/
+    // in one filesystem copy (which keeps its mode), its directories are
+    // created, and the symlink is skipped rather than followed.
+    expect(mockFsCopyFile.mock.calls).toEqual([
+      ['/Users/joe/Desktop/my-project/README.md', '/mock/workspace/uploads/my-project/README.md'],
+      ['/Users/joe/Desktop/my-project/src/index.ts', '/mock/workspace/uploads/my-project/src/index.ts'],
     ])
-    expect(mockCreateWriteStream.mock.calls.map(([dest]) => dest)).toEqual([
-      '/mock/workspace/uploads/my-project/README.md',
-      '/mock/workspace/uploads/my-project/src/index.ts',
-    ])
+    expect(mockCreateReadStream).not.toHaveBeenCalled()
+    expect(mockCreateWriteStream).not.toHaveBeenCalled()
     expect(mockFsMkdir).toHaveBeenCalledWith('/mock/workspace/uploads/my-project/src', { recursive: true })
     expect(mockFsCp).not.toHaveBeenCalled()
   })

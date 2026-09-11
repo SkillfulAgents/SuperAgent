@@ -18,7 +18,10 @@
  * Writes go through the same temp-file, fsync, rename core as every other
  * atomic write in the app: a crash never leaves a torn or empty file, a
  * reader (the container included) never sees a half-written one, and an
- * existing file keeps its mode and owner.
+ * existing file keeps its mode and owner. A document (`putDoc`) is flushed to
+ * disk before the write returns; bulk content (`write`: uploads, imports) is
+ * renamed into place whole but not flushed, as it never was, because a flush
+ * per file is what makes a thousand-file import slow.
  */
 import fs from 'fs'
 import path from 'path'
@@ -96,6 +99,16 @@ async function lstatOrNull(p: string): Promise<fs.Stats | null> {
 /** A host-relative path in workspace spelling: posix separators, `''` for the root. */
 function toWorkspacePath(relative: string): string {
   return relative.split(path.sep).join('/')
+}
+
+/** The same bytes as a Buffer, without copying them. */
+function asBuffer(bytes: Uint8Array): Buffer {
+  return Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+}
+
+/** The permission bits of a stat, the part a caller may keep or carry. */
+function modeBits(stat: fs.Stats): number {
+  return stat.mode & 0o777
 }
 
 interface Located {
@@ -214,6 +227,41 @@ export class LocalFileOps implements FileOps {
     return { rel, abs: realTarget }
   }
 
+  /**
+   * Copy a file from this machine into the workspace in one filesystem copy,
+   * keeping its mode. Not part of `FileOps`: the source is a host path, which
+   * only a workspace on this machine can reach directly. A bulk import (a
+   * folder upload, a skillset install) uses it instead of streaming each
+   * file through `write`, which costs several operations per file. The copy
+   * itself is not atomic, like the plain copy it replaces; the containment
+   * check on the destination is the same one every write gets.
+   */
+  async copyHostFile(hostPath: string, workspacePath: string): Promise<void> {
+    const { abs } = await this.forWrite(workspacePath)
+    await fs.promises.copyFile(hostPath, abs).catch(fromWriteError)
+  }
+
+  /**
+   * Move a file from this machine into the workspace: one rename when the
+   * two are on the same filesystem, a copy and a delete otherwise. Not part
+   * of `FileOps` for the same reason as `copyHostFile`. An assembled chunked
+   * upload arrives this way: the temp dir usually shares the data dir's
+   * filesystem, so a file that was already written in full is not written a
+   * second time.
+   */
+  async moveHostFile(hostPath: string, workspacePath: string): Promise<{ size: number }> {
+    const { abs } = await this.forWrite(workspacePath)
+    try {
+      await fs.promises.rename(hostPath, abs)
+    } catch (error) {
+      if (errnoCode(error) !== 'EXDEV') fromWriteError(error)
+      await fs.promises.copyFile(hostPath, abs).catch(fromWriteError)
+      await fs.promises.unlink(hostPath)
+    }
+    const stat = await fs.promises.stat(abs).catch(fromFsError)
+    return { size: stat.size }
+  }
+
   async list(dir: string): Promise<FileEntry[]> {
     const found = await this.existing(dir)
     if (!found) {
@@ -246,8 +294,9 @@ export class LocalFileOps implements FileOps {
     }
     const stat = await fs.promises.stat(found.real).catch(fromFsError)
     const resolvedPath = found.resolved
-    if (stat.isDirectory()) return { kind: 'directory', size: stat.size, mtimeMs: stat.mtimeMs, resolvedPath }
-    if (stat.isFile()) return { kind: 'file', size: stat.size, mtimeMs: stat.mtimeMs, resolvedPath }
+    const mode = modeBits(stat)
+    if (stat.isDirectory()) return { kind: 'directory', size: stat.size, mtimeMs: stat.mtimeMs, resolvedPath, mode }
+    if (stat.isFile()) return { kind: 'file', size: stat.size, mtimeMs: stat.mtimeMs, resolvedPath, mode }
     return null
   }
 
@@ -267,7 +316,9 @@ export class LocalFileOps implements FileOps {
     const found = await this.existing(workspacePath)
     if (!found) return null
     try {
-      return new Uint8Array(await fs.promises.readFile(found.real))
+      // The Buffer itself: a copy into a plain Uint8Array would double the
+      // memory of every document read.
+      return await fs.promises.readFile(found.real)
     } catch (error) {
       if (isAbsence(error)) return null
       return fromFsError(error)
@@ -276,7 +327,7 @@ export class LocalFileOps implements FileOps {
 
   async putDoc(workspacePath: string, bytes: Uint8Array | string): Promise<void> {
     const { abs } = await this.forWrite(workspacePath)
-    const data = typeof bytes === 'string' ? Buffer.from(bytes, 'utf-8') : Buffer.from(bytes)
+    const data = typeof bytes === 'string' ? Buffer.from(bytes, 'utf-8') : asBuffer(bytes)
     await writeFileAtomicStream(abs, [data]).catch(fromWriteError)
   }
 
@@ -290,10 +341,17 @@ export class LocalFileOps implements FileOps {
       if (!(body instanceof Uint8Array)) await body.cancel().catch(() => {})
       throw error
     }
-    const chunks = body instanceof Uint8Array
-      ? [Buffer.from(body)]
+    const source = body instanceof Uint8Array
+      ? null
       : Readable.fromWeb(body as import('stream/web').ReadableStream<Uint8Array>)
-    await writeFileAtomicStream(target.abs, chunks).catch(fromWriteError)
+    try {
+      await writeFileAtomicStream(target.abs, source ?? [asBuffer(body as Uint8Array)], { fsync: false })
+    } catch (error) {
+      // A destination that could not be opened (or written) leaves the
+      // source unread; end it, or the file behind it stays open.
+      source?.destroy()
+      fromWriteError(error)
+    }
     const stat = await fs.promises.stat(target.abs).catch(fromFsError)
     return { size: stat.size }
   }

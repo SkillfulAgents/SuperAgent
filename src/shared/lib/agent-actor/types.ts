@@ -438,6 +438,12 @@ export interface FileStat {
    * that scope. A store without links always echoes the path.
    */
   resolvedPath: string
+  /**
+   * The permission bits (`0o777`-masked), so a copy or an export can carry
+   * them: a script that is executable in the workspace stays executable
+   * where it lands. Absent from a store that keeps no modes.
+   */
+  mode?: number
 }
 
 /** A closed byte range: both ends inclusive, as in an HTTP Range header. */
