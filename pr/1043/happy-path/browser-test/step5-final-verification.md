@@ -1,0 +1,138 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e8]:
+        - generic [ref=e9]: Gamut
+        - button "Search" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+      - generic [ref=e15]:
+        - list [ref=e18]:
+          - listitem [ref=e19]:
+            - link "Home" [ref=e20] [cursor=pointer]:
+              - /url: /
+              - img [ref=e21]
+              - generic [ref=e26]: Home
+          - listitem [ref=e27]:
+            - link "Notifications" [ref=e28] [cursor=pointer]:
+              - /url: /notifications
+              - img [ref=e29]
+              - generic [ref=e32]: Notifications
+          - listitem [ref=e156]:
+            - link "Discover New Agents New" [ref=e157] [cursor=pointer]:
+              - /url: /explore
+              - img [ref=e158]
+              - generic [ref=e161]: Discover New Agents
+              - generic [ref=e162]: New
+          - listitem [ref=e33]:
+            - button "New Agent" [ref=e34] [cursor=pointer]:
+              - img [ref=e35]
+              - generic [ref=e36]: New Agent
+        - list [ref=e39]:
+          - listitem [ref=e40]:
+            - button "Your Agents" [ref=e41] [cursor=pointer]:
+              - button "Your Agents" [expanded] [ref=e42]:
+                - generic [ref=e43]: Your Agents
+            - button "New folder" [ref=e45] [cursor=pointer]:
+              - img [ref=e46]
+            - list [ref=e49]:
+              - button "QA-20260911-003625-pidk Open QA-20260911-003625-pidk Collapse Browser Navigation and Page Title Check" [ref=e578] [cursor=pointer]:
+                - generic [ref=e51]:
+                  - link "QA-20260911-003625-pidk" [ref=e52]:
+                    - /url: /agents/qa-20260911-003625-pidk-c9oulhy9yw
+                    - generic [ref=e53]: QA-20260911-003625-pidk
+                  - link "Open QA-20260911-003625-pidk" [ref=e54]:
+                    - /url: /agents/qa-20260911-003625-pidk-c9oulhy9yw
+                    - img "idle" [ref=e579]:
+                      - img [ref=e580]
+                  - button "Collapse" [expanded] [ref=e353]:
+                    - img [ref=e354]
+                - list [ref=e357]:
+                  - listitem [ref=e358]:
+                    - link "Browser Navigation and Page Title Check" [ref=e589]:
+                      - /url: /agents/c9oulhy9yw/sessions/ec425195-8e5f-42bd-b896-4906ff828925
+                      - generic [ref=e361]: Browser Navigation and Page Title Check
+              - button "QA-20260911-003624-tng3 Open QA-20260911-003624-tng3 Expand" [ref=e367] [cursor=pointer]:
+                - generic [ref=e66]:
+                  - link "QA-20260911-003624-tng3" [ref=e67]:
+                    - /url: /agents/qa-20260911-003624-tng3-zf1715ru9d
+                    - generic [ref=e68]: QA-20260911-003624-tng3
+                  - link "Open QA-20260911-003624-tng3" [ref=e69]:
+                    - /url: /agents/qa-20260911-003624-tng3-zf1715ru9d
+                    - img "sleeping" [ref=e618]:
+                      - img [ref=e619]
+                  - button "Expand" [ref=e377]:
+                    - img [ref=e378]
+          - status [ref=e163]
+      - generic [ref=e81]:
+        - button "Settings" [ref=e82] [cursor=pointer]:
+          - img [ref=e83]
+          - generic [ref=e86]: Settings
+        - button "0.5.21-rc.1" [ref=e87] [cursor=pointer]:
+          - generic [ref=e88]: 0.5.21-rc.1
+      - button "Toggle Sidebar" [ref=e89]
+    - main [ref=e90]:
+      - generic [ref=e168]:
+        - generic [ref=e169]:
+          - button "Toggle Sidebar" [ref=e170] [cursor=pointer]:
+            - img
+            - generic [ref=e171]: Toggle Sidebar
+          - generic [ref=e174]:
+            - link "QA-20260911-003625-pidk" [ref=e381]:
+              - /url: /agents/qa-20260911-003625-pidk-c9oulhy9yw
+            - text: /Browser Navigation and Page Title Check
+          - generic [ref=e175]:
+            - generic [ref=e176]:
+              - img [ref=e590]
+              - generic [ref=e186]: idle
+            - button "Stop Agent" [ref=e188] [cursor=pointer]:
+              - img
+        - generic [ref=e388]:
+          - region "Messages" [ref=e390]:
+            - log [ref=e392]:
+              - time [ref=e394]: Today at 12:37 AM
+              - paragraph [ref=e399]:
+                - text: Open a browser and go to
+                - link "https://example.com" [ref=e400] [cursor=pointer]:
+                  - /url: https://example.com
+                - text: . Tell me the page title.
+              - button "Expand completed turn work" [ref=e600] [cursor=pointer]:
+                - generic [ref=e601]: Worked for 8s
+                - generic [ref=e602]: ·
+                - generic [ref=e603]: 4 tool calls
+                - generic [ref=e604]: ·
+                - generic [ref=e605]: 184,224 tokens
+                - img [ref=e606]
+              - paragraph [ref=e612]:
+                - text: The page title is
+                - strong [ref=e613]: "\"Example Domain\""
+                - text: — the page just has that heading, a line about the domain being for documentation examples, and a "Learn more" link. Browser is closed.
+          - generic [ref=e432]:
+            - generic [ref=e434]:
+              - textbox "Type a message..." [ref=e614]:
+                - text: Type a message...
+                - paragraph [ref=e438]
+              - generic [ref=e439]:
+                - generic [ref=e440]:
+                  - button "Add files" [ref=e441] [cursor=pointer]:
+                    - img
+                  - 'button "Model and effort: Opus 5 · Medium. Click to change." [ref=e615] [cursor=pointer]':
+                    - generic [ref=e616]:
+                      - text: Opus 5
+                      - generic [ref=e617]: · Medium
+                    - img
+                - generic [ref=e442]:
+                  - button "Set up voice input" [ref=e443] [cursor=pointer]:
+                    - img
+                  - button "Send message" [disabled]:
+                    - img
+            - generic [ref=e447]:
+              - generic [ref=e448]:
+                - generic [ref=e449]: Context Usage
+                - img [ref=e451]
+              - generic [ref=e454]:
+                - generic [ref=e455]: ↵
+                - generic [ref=e456]: Send
+                - generic [ref=e457]: ·
+                - generic [ref=e458]: ⇧↵
+                - generic [ref=e459]: New line
+  - region "Notifications alt+T"
