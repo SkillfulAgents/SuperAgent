@@ -14,7 +14,21 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({ reviewManager: {} }))
 vi.mock('@shared/lib/computer-use/permission-manager', () => ({ computerUsePermissionManager: {} }))
 vi.mock('@shared/lib/proxy/mcp-reauth-manager', () => ({ mcpReauthManager: {} }))
 vi.mock('@shared/lib/services/session-service', () => ({}))
-vi.mock('@shared/lib/services/session-transcript-append', () => ({ appendInformationalEntry: vi.fn() }))
+vi.mock('@shared/lib/services/session-transcript-append', () => ({
+  appendInformationalEntry: vi.fn(),
+  appendAssistantEntry: vi.fn(),
+}))
+vi.mock('@shared/lib/services/session-summary-cache', () => ({ recordSessionActivity: vi.fn() }))
+vi.mock('./local-transcript-ops', () => ({
+  listSubagents: vi.fn(),
+  readSubagentTranscript: vi.fn(),
+  readWorkflowTree: vi.fn(),
+  readWorkflowAgentTranscript: vi.fn(),
+  copyDerivedSessionFiles: vi.fn(),
+  streamRawEntries: vi.fn(),
+  openRawLog: vi.fn(),
+  openMedia: vi.fn(),
+}))
 vi.mock('@shared/lib/utils/file-storage', () => ({
   getAgentWorkspaceDir: vi.fn(),
   getAgentClaudeConfigDir: vi.fn(),
@@ -110,6 +124,18 @@ function fakeDeps() {
   const loadDailyUsageData = vi.fn().mockResolvedValue([])
   const loadSessionUsageTotals = vi.fn().mockResolvedValue({ totalCost: 0, totalTokens: 0, priceMissing: false })
   const syncAgentConnectionEnvironment = vi.fn().mockResolvedValue(true)
+  const transcripts = {
+    listSubagents: vi.fn().mockResolvedValue([{ id: 'sub-1', toolUseId: 'tu-1' }]),
+    readSubagentTranscript: vi.fn().mockResolvedValue([]),
+    readWorkflowTree: vi.fn().mockResolvedValue(null),
+    readWorkflowAgentTranscript: vi.fn().mockResolvedValue([]),
+    copyDerivedSessionFiles: vi.fn().mockResolvedValue(undefined),
+    streamRawEntries: vi.fn(),
+    openRawLog: vi.fn().mockResolvedValue(null),
+    openMedia: vi.fn().mockResolvedValue(undefined),
+  }
+  const appendAssistantEntry = vi.fn()
+  const recordSessionActivity = vi.fn()
   const deps = {
     containerHost,
     messagePersister: {},
@@ -118,7 +144,10 @@ function fakeDeps() {
     computerUsePermissionManager: {},
     mcpReauthManager: {},
     sessionService: {},
+    transcripts,
     appendInformationalEntry: vi.fn(),
+    appendAssistantEntry,
+    recordSessionActivity,
     getAgentWorkspaceDir: vi.fn((slug: string) => `/workspaces/${slug}`),
     getAgentClaudeConfigDir: vi.fn((slug: string) => `/workspaces/${slug}/.claude`),
     getSessionJsonlPath: vi.fn((slug: string, sessionId: string) => `/workspaces/${slug}/sessions/${sessionId}.jsonl`),
@@ -136,6 +165,9 @@ function fakeDeps() {
     loadDailyUsageData,
     loadSessionUsageTotals,
     syncAgentConnectionEnvironment,
+    transcripts,
+    appendAssistantEntry,
+    recordSessionActivity,
   }
 }
 
@@ -279,9 +311,27 @@ describe('createAgentRegistry', () => {
       expect(fake.reviewManager.requestReview).toHaveBeenCalledWith({ ...details, agentSlug: 'a' })
     })
 
-    it('files.workspacePath resolves the agent workspace by slug', () => {
+    it('transcript-adjacent reads bind the slug and forward the rest', async () => {
       const actor = createAgentRegistry(fake.deps).get('a')
-      expect(actor.files.workspacePath()).toBe('/workspaces/a')
+      await expect(actor.sessions.subagents('s1')).resolves.toEqual([{ id: 'sub-1', toolUseId: 'tu-1' }])
+      expect(fake.transcripts.listSubagents).toHaveBeenCalledWith('a', 's1')
+      await actor.sessions.workflowAgentTranscript('s1', 'wf_1', 'agent-x')
+      expect(fake.transcripts.readWorkflowAgentTranscript).toHaveBeenCalledWith('a', 's1', 'wf_1', 'agent-x')
+      await actor.sessions.copyDerivedFiles('s1', 's2')
+      expect(fake.transcripts.copyDerivedSessionFiles).toHaveBeenCalledWith('a', 's1', 's2')
+      const signal = new AbortController().signal
+      await actor.messages.media('s1', { kind: 'x' } as never, signal)
+      expect(fake.transcripts.openMedia).toHaveBeenCalledWith('a', 's1', { kind: 'x' }, signal)
+    })
+
+    it('appendAssistant and recordActivity reach the transcript writers with the slug', () => {
+      const actor = createAgentRegistry(fake.deps).get('a')
+      actor.messages.appendAssistant('s1', 'delivered elsewhere')
+      expect(fake.appendAssistantEntry).toHaveBeenCalledWith('a', 's1', 'delivered elsewhere')
+      actor.sessions.recordActivity('s1')
+      expect(fake.recordSessionActivity).toHaveBeenCalledWith('a', 's1')
+      actor.sessions.recordActivity('s1', 1234)
+      expect(fake.recordSessionActivity).toHaveBeenCalledWith('a', 's1', 1234)
     })
   })
 

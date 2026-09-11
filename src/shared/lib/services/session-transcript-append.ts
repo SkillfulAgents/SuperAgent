@@ -1,5 +1,6 @@
 import * as fs from 'fs'
 import * as path from 'path'
+import { randomUUID } from 'crypto'
 import { getSessionJsonlPath } from '@shared/lib/utils/file-storage'
 import type { JsonlSystemEntry } from '@shared/lib/types/agent'
 import { recordSessionActivity } from './session-summary-cache'
@@ -79,4 +80,28 @@ export async function appendInformationalEntry(
   await fs.promises.mkdir(path.dirname(jsonlPath), { recursive: true })
   await fs.promises.appendFile(jsonlPath, JSON.stringify(jsonlEntry) + '\n', 'utf-8')
   recordSessionActivity(agentSlug, sessionId)
+}
+
+/**
+ * Record an assistant message that reached the user out of band (a chat
+ * notification the container never produced) so the transcript shows what was
+ * said. Synchronous on purpose: the caller is answering a webhook and must not
+ * lose the line to a dropped promise. Does not record activity; the caller does,
+ * since it also has a path that goes through the container.
+ */
+export function appendAssistantEntry(agentSlug: string, sessionId: string, text: string): void {
+  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+  const dir = path.dirname(jsonlPath)
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true })
+  }
+  const entry = {
+    type: 'assistant',
+    message: { content: [{ type: 'text', text }] },
+    uuid: randomUUID(),
+    parentUuid: null,
+    sessionId,
+    timestamp: new Date().toISOString(),
+  }
+  fs.appendFileSync(jsonlPath, JSON.stringify(entry) + '\n')
 }
