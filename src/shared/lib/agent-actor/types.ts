@@ -404,6 +404,8 @@ export interface McpReauthOps {
   request(details: Omit<McpReauthDetails, 'agentSlug'>, signal?: AbortSignal): Promise<void>
   /** `mcpReauthManager.dismiss` */
   dismiss(entryId: string, reason?: string): boolean
+  /** `mcpReauthManager.replaceMcp` with this agent as the expected owner — settle the wait with a different connection. */
+  replace(entryId: string, replacementMcpId: string): boolean
 }
 
 /** Model usage read from this agent's Claude data directory — usage-service. */

@@ -284,5 +284,6 @@ function createMcpReauthOps(slug: AgentSlug, deps: LocalActorDeps): McpReauthOps
   return {
     request: (details, ...rest) => deps.mcpReauthManager.requestReauth({ ...details, agentSlug: slug }, ...rest),
     dismiss: (entryId, ...rest) => deps.mcpReauthManager.dismiss(entryId, slug, ...rest),
+    replace: (entryId, replacementMcpId) => deps.mcpReauthManager.replaceMcp(entryId, slug, replacementMcpId),
   }
 }
