@@ -41,6 +41,7 @@ test.describe('Fork Session', () => {
     const row = page.locator(`[data-testid="session-item-${session.id}"]`)
     await expect(row).toBeVisible({ timeout: 15000 })
     await row.click({ button: 'right' })
+    await page.locator('[data-testid="fork-session-trigger"]').hover()
     await page.locator('[data-testid="fork-session-item"]').click()
 
     // Landed in the fork: URL changed, name carries the suffix, banner present.
@@ -79,6 +80,7 @@ test.describe('Fork Session', () => {
 
     const row = page.locator(`[data-testid="session-item-${session.id}"]`)
     await row.click({ button: 'right' })
+    await page.locator('[data-testid="fork-session-trigger"]').hover()
     await page.locator('[data-testid="fork-session-item"]').click()
 
     await expect(page).not.toHaveURL(new RegExp(`/sessions/${session.id}$`), { timeout: 15000 })
@@ -87,5 +89,31 @@ test.describe('Fork Session', () => {
     await page.locator('[data-testid="fork-session-back-button"]').click()
     await expect(page).toHaveURL(new RegExp(`/sessions/${session.id}$`), { timeout: 15000 })
     await expect(page.locator('[data-testid="message-input"]')).toHaveText(draft)
+  })
+
+  test('Fork & Summarize sends /compact into the copy and leaves the source alone', async ({ page, request }, testInfo) => {
+    const { agent, session: created } = await fixture(page, request, testInfo)
+    const session = (await listSessions(request, agent)).find((s) => s.id === created.id)!
+    const sourceBefore = await listSessionMessages(request, agent, session)
+
+    const row = page.locator(`[data-testid="session-item-${session.id}"]`)
+    await expect(row).toBeVisible({ timeout: 15000 })
+    await row.click({ button: 'right' })
+    await page.locator('[data-testid="fork-session-trigger"]').hover()
+    await page.locator('[data-testid="fork-summarize-session-item"]').click()
+
+    await expect(page).not.toHaveURL(new RegExp(`/sessions/${session.id}$`), { timeout: 15000 })
+    await expect(page.locator('[data-testid="session-breadcrumb"]')).toContainText('(fork)')
+
+    // The mock echoes what it receives, so the copy's transcript shows the send
+    // landed there; the source never sees it.
+    let fork: TestSession | undefined
+    await expect.poll(async () => {
+      fork = (await listSessions(request, agent)).find((s) => s.name === `${session.name} (fork)`)
+      if (!fork) return false
+      const msgs = await listSessionMessages(request, agent, fork)
+      return msgs.some((m) => messageContentIncludes(m, '/compact'))
+    }, { timeout: 15000 }).toBe(true)
+    expect(await listSessionMessages(request, agent, session)).toEqual(sourceBefore)
   })
 })

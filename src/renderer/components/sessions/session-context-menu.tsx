@@ -5,6 +5,9 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@renderer/components/ui/context-menu'
 import {
@@ -27,11 +30,11 @@ import {
 } from '@renderer/components/ui/dialog'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { useDeleteSession, useUpdateSessionName, useSetSessionMarkedUnread, useForkSession } from '@renderer/hooks/use-sessions'
+import { useDeleteSession, useUpdateSessionName, useSetSessionMarkedUnread, useForkSession, useForkAndCompact } from '@renderer/hooks/use-sessions'
 import { useNavigate } from '@tanstack/react-router'
 import { useRouteLocation } from '@renderer/router/use-route-location'
 import { useUser } from '@renderer/context/user-context'
-import { Trash2, ClipboardCopy, Pencil, Eye, Split } from 'lucide-react'
+import { Trash2, ClipboardCopy, Pencil, Eye, Split, Minimize2 } from 'lucide-react'
 import { apiFetch } from '@renderer/lib/api'
 import type { SessionUsageTotals } from '@shared/lib/types/usage'
 
@@ -94,10 +97,11 @@ export function SessionContextMenu({
   const isOwner = canAdminAgent(agentSlug)
   const canUse = canUseAgent(agentSlug)
   const forkSession = useForkSession()
+  const forkAndCompact = useForkAndCompact()
   // Unread dots are suppressed while working or awaiting. Fork is refused
   // while the transcript is open (active or still streaming).
   const hideUnread = activity.isActive || activity.isAwaitingInput
-  const forkDisabled = activity.isActive || activity.isStreaming || forkSession.isPending
+  const forkDisabled = activity.isActive || activity.isStreaming || forkSession.isPending || forkAndCompact.isPending
 
   const handleDelete = async () => {
     setIsDeleting(true)
@@ -114,8 +118,9 @@ export function SessionContextMenu({
     }
   }
 
-  // The hook opens the copy and logs its own failures; `mutate` settles without throwing.
+  // Both hooks log their own failures; `mutate` settles without throwing.
   const handleFork = () => forkSession.mutate({ sessionId, agentSlug })
+  const handleForkAndCompact = () => forkAndCompact.mutate({ sessionId, agentSlug })
 
   const handleRename = async () => {
     const trimmed = newName.trim()
@@ -194,14 +199,32 @@ export function SessionContextMenu({
             </ContextMenuItem>
           )}
           {canUse && (
-            <ContextMenuItem
-              data-testid="fork-session-item"
-              disabled={forkDisabled}
-              onClick={handleFork}
-            >
-              <Split className="h-4 w-4 mr-2" />
-              Fork Session
-            </ContextMenuItem>
+            <ContextMenuSub>
+              {/* The item wrapper dims a disabled row; the sub-trigger wrapper does not. */}
+              <ContextMenuSubTrigger
+                disabled={forkDisabled}
+                className="data-[disabled]:opacity-50"
+                data-testid="fork-session-trigger"
+              >
+                <Split className="h-4 w-4 mr-2" />
+                Fork Session
+              </ContextMenuSubTrigger>
+              <ContextMenuSubContent className="rounded-xl p-2" data-testid="fork-session-menu">
+                {/* Also on the rows: the source can go active while the submenu is open. */}
+                <ContextMenuItem data-testid="fork-session-item" disabled={forkDisabled} onClick={handleFork}>
+                  <Split className="h-4 w-4 mr-2" />
+                  Fork
+                </ContextMenuItem>
+                <ContextMenuItem
+                  data-testid="fork-summarize-session-item"
+                  disabled={forkDisabled}
+                  onClick={handleForkAndCompact}
+                >
+                  <Minimize2 className="h-4 w-4 mr-2" />
+                  Fork &amp; Summarize
+                </ContextMenuItem>
+              </ContextMenuSubContent>
+            </ContextMenuSub>
           )}
           {/* Not permission-gated, unlike rename/delete: a mark is scoped to
               the acting user, so it is only ever a note to yourself. */}
