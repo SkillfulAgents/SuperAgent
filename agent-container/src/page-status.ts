@@ -14,6 +14,7 @@
  * bounded, so the common "press Enter, snapshot" lands on the real page.
  */
 import { describeBusy, transientBusy, type PageObservation } from './page-observer'
+import { THIN_TREE_REFS } from './snapshot-format'
 
 /** How long a snapshot waits for a loading or busy page before reporting it as such. */
 export const QUIET_WAIT_MS = 2000
@@ -46,11 +47,21 @@ export async function waitForQuiet(
   return { obs, waitedMs: now() - start, quiet: obs !== null && isQuiet(obs) }
 }
 
+/** A tree too thin to be the page the agent asked for — the observer's census stands in when no snapshot was taken. */
+export function isThinPage(obs: PageObservation, refCount: number | null): boolean {
+  return (refCount ?? obs.interactive) < THIN_TREE_REFS
+}
+
 /**
  * Warnings the agent must act on before reading the tree, ordered by how
  * completely each one invalidates what follows: the site did not load, a bot
  * wall is up, the server refused, the document is not a web page, it is still
  * loading or still working, or the tree is empty for none of those reasons.
+ *
+ * Each one states an observation. Advice appears only where the observation
+ * leaves no doubt (Chrome's own error page, a challenge wall); an HTTP error
+ * status is reported as a fact on any page and as a warning only when the tree
+ * is thin — a single-page app served from a 404 fallback is not an error page.
  */
 export function pageWarnings(obs: PageObservation, refCount: number | null, opts: { waitedMs?: number } = {}): string[] {
   const warns: string[] = []
@@ -62,22 +73,24 @@ export function pageWarnings(obs: PageObservation, refCount: number | null, opts
   if (obs.blocker) {
     warns.push(`bot-block: ${obs.blocker} — the site is challenging automated access. Hand it to the user with request_browser_input; more scraping will not get past it.`)
   }
-  if (obs.httpStatus >= 400) {
+  if (obs.httpStatus >= 400 && isThinPage(obs, refCount)) {
     const why =
-      obs.httpStatus === 401 || obs.httpStatus === 403 ? ' (login or permission required)' :
-      obs.httpStatus === 404 ? ' (not found — check the URL)' :
-      obs.httpStatus === 429 ? ' (rate limited — slow down or ask the user)' : ''
-    warns.push(`HTTP ${obs.httpStatus}${why} — the server refused this page; what follows is the error response, not the content you asked for.`)
+      obs.httpStatus === 401 ? ' (authentication required)' :
+      obs.httpStatus === 404 ? ' (not found)' :
+      obs.httpStatus === 429 ? ' (rate limited)' : ''
+    warns.push(`HTTP ${obs.httpStatus}${why} — the server answered with an error status and almost nothing to interact with; what follows is that response.`)
   }
   if (obs.contentType && !/html/i.test(obs.contentType)) {
-    warns.push(`raw ${obs.contentType} document, not a web page — the tree shows Chrome's viewer. Read the body with fullText:true or browser_eval.`)
+    warns.push(/pdf/i.test(obs.contentType)
+      ? `PDF document, not a web page — the tree is Chrome's viewer, not the text. browser_download it and Read the file.`
+      : `raw ${obs.contentType} document, not a web page — the body is plain text; read it with fullText:true.`)
   }
   if (obs.readyState && obs.readyState !== 'complete') {
-    warns.push(`page still ${obs.readyState}${waited} — content may be incomplete. browser_wait for the element you need, then re-snapshot.`)
+    warns.push(`page still ${obs.readyState}${waited} — content may be incomplete.`)
   }
   const busy = describeBusy(obs.busy, obs.pending)
   if (busy) {
-    warns.push(`still busy${waited}: ${busy} — content still arriving. browser_wait for the element you need, then re-snapshot.`)
+    warns.push(`page still active${waited}: ${busy}.`)
   }
   if (refCount === 0 && warns.length === 0) {
     warns.push('no interactive elements — read the page text below before concluding the page is empty; an overlay, a login wall or a plain-text body all look like this.')

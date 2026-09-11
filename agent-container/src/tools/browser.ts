@@ -18,7 +18,7 @@ import { hostAuthHeaders } from '../host-auth'
 import { tabManager } from '../tab-manager'
 import { formatUrlDigest, formatUrlDigestBrief, formatFillReadback, formatScrollDigest, type UrlDigest, type ScrollInfo } from '../browser-digest'
 import { parseObservation, EMPTY_OBSERVATION } from '../page-observer'
-import { landedElsewhere, pageWarnings } from '../page-status'
+import { isThinPage, landedElsewhere, pageWarnings } from '../page-status'
 import { formatActionEffect, type ActionEffect, type ActionVerb } from '../action-settle'
 
 /** The effect line for a mutating action's result, from the server's settle-and-diff. */
@@ -159,7 +159,9 @@ Omit location to keep using the current browser where it is; when no browser is 
       const redirect = landedElsewhere(args.url, page.url) ? ` (redirected from ${args.url})` : ''
       const http = page.httpStatus > 0 ? ` · HTTP ${page.httpStatus}` : ''
       const warns = pageWarnings(page, null)
-      const severe = Boolean(page.netError || page.blocker || page.httpStatus >= 400)
+      // An error result only when the landing page is certainly not usable: Chrome's
+      // error page, a challenge wall, or an error status with nothing to interact with.
+      const severe = Boolean(page.netError || page.blocker || (page.httpStatus >= 400 && isThinPage(page, null)))
       const text =
         `Loaded ${title} at ${page.url}${redirect}${http} in ${locationText}.${switchText}` +
         warns.map(w => `\n⚠ ${w}`).join('') +
@@ -273,7 +275,9 @@ const browserClickTool = tool(
     const tabInfo = data?.tabInfo as { activeId: string; activeUrl: string; tabCount: number } | undefined
     const digest = (data?.digest as UrlDigest | undefined) ?? null
 
-    let text = `Clicked ${args.ref}.${formatUrlDigest(digest)}${effectText(data, 'click', 300)}`
+    // A click that opened a new tab did its work there; the effect line is about
+    // this tab and would only read as "nothing happened".
+    let text = `Clicked ${args.ref}.${formatUrlDigest(digest)}${tabInfo ? '' : effectText(data, 'click', 300)}`
     if (tabInfo) {
       text += tabManager.formatTabNotification(tabInfo)
     } else {
@@ -383,7 +387,7 @@ This cannot type text — multi-character strings are rejected. To type into the
     const tabInfo = data?.tabInfo as { activeId: string; activeUrl: string; tabCount: number } | undefined
     const digest = (data?.digest as UrlDigest | undefined) ?? null
 
-    let text = `Pressed "${args.key}".${formatUrlDigestBrief(digest)}${effectText(data, 'press', 50)}`
+    let text = `Pressed "${args.key}".${formatUrlDigestBrief(digest)}${tabInfo ? '' : effectText(data, 'press', 50)}`
     if (tabInfo) {
       text += tabManager.formatTabNotification(tabInfo)
     } else {

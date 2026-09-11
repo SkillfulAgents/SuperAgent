@@ -10,14 +10,14 @@ import {
 } from './action-settle'
 
 const base: PageObservation = {
-  ...EMPTY_OBSERVATION, t: 1000, url: 'https://a.com', readyState: 'complete', interactive: 40, textChars: 500, textHash: 1, focus: 'nothing focused',
+  ...EMPTY_OBSERVATION, t: 1000, url: 'https://a.com', readyState: 'complete', interactive: 40, textChars: 500, contentChars: 500, contentHash: 1, stateHash: 7, focus: 'nothing focused',
 }
 
 describe('diffObservations', () => {
   it('reports dialogs, announcements, census, text size, typed values, failed requests and new busy signals', () => {
     const before: PageObservation = { ...base, top: [{ kind: 'dialog', name: 'Cart' }], liveRegions: ['Saved'], busy: [{ kind: 'progressbar', name: 'Upload', count: 1 }] }
     const after: PageObservation = {
-      ...base, interactive: 52, textChars: 620, textHash: 2,
+      ...base, interactive: 52, contentChars: 620, contentHash: 2,
       top: [{ kind: 'dialog', name: 'Create new app' }], liveRegions: ['Saved', 'Tags updated'],
       failed: [{ url: '/cart/add.json', status: 422, initiator: 'fetch' }], pending: 1,
       busy: [{ kind: 'progressbar', name: 'Upload', count: 1 }, { kind: 'spinner', name: '', count: 1 }],
@@ -26,6 +26,7 @@ describe('diffObservations', () => {
       opened: [{ kind: 'dialog', name: 'Create new app' }],
       closed: [{ kind: 'dialog', name: 'Cart' }],
       interactiveDelta: 12,
+      stateChanged: false,
       announced: ['Tags updated'],
       textChanged: true,
       textDelta: 120,
@@ -39,6 +40,12 @@ describe('diffObservations', () => {
     })
   })
 
+  it('reports a control state change, and ignores a same-length text change (a clock, a counter)', () => {
+    expect(diffObservations(base, { ...base, stateHash: 8 })).toMatchObject({ stateChanged: true, textChanged: false })
+    expect(diffObservations(base, { ...base, contentHash: 2 })).toMatchObject({ textChanged: false, textDelta: 0 })
+    expect(diffObservations(base, { ...base, contentHash: 2, contentChars: 512 })).toMatchObject({ textChanged: true, textDelta: 12 })
+  })
+
   it('counts a typed value only when focus stayed on the same field', () => {
     expect(diffObservations({ ...base, focus: 'textbox "A"', focusValue: '' }, { ...base, focus: 'textbox "A"', focusValue: 'monday' })).toMatchObject({ focusValueChanged: true, focusValue: 'monday', focusChanged: false })
     expect(diffObservations({ ...base, focus: 'textbox "A"', focusValue: 'x' }, { ...base, focus: 'textbox "B"', focusValue: '' })).toMatchObject({ focusValueChanged: false, focusChanged: true })
@@ -46,10 +53,11 @@ describe('diffObservations', () => {
 })
 
 describe('effectHasChange / effectIsBusy', () => {
-  it('a focus move counts for press but not for click, which moves focus itself', () => {
+  it('a focus move counts for press but not for click, which moves focus itself; a state change always counts', () => {
     const moved = diffObservations(base, { ...base, focus: 'button "Add to cart"' })
     expect(effectHasChange(moved, { countFocus: true })).toBe(true)
     expect(effectHasChange(moved, { countFocus: false })).toBe(false)
+    expect(effectHasChange(diffObservations(base, { ...base, stateHash: 1 }), { countFocus: false })).toBe(true)
     expect(effectHasChange(diffObservations(base, { ...base }))).toBe(false)
   })
 
@@ -72,31 +80,44 @@ describe('formatActionEffect', () => {
     expect(formatActionEffect(effect, { settleMs: 300, verb: 'click' })).toBe('\nEffect: failed request: fetch 10.255.255.1/x → network error')
   })
 
-  it('sizes a bare text change and reports typed values', () => {
-    expect(formatActionEffect(diffObservations(base, { ...base, textHash: 9, textChars: 1734 }), { settleMs: 300, verb: 'click' })).toBe('\nEffect: page text changed (+1,234 chars)')
-    expect(formatActionEffect(diffObservations(base, { ...base, textHash: 9 }), { settleMs: 300, verb: 'click' })).toBe('\nEffect: page text changed (same length, different content)')
+  it('sizes a text change, reports control state and typed values', () => {
+    expect(formatActionEffect(diffObservations(base, { ...base, contentHash: 9, contentChars: 1734 }), { settleMs: 300, verb: 'click' })).toBe('\nEffect: page text changed (+1,234 chars)')
+    expect(formatActionEffect(diffObservations(base, { ...base, stateHash: 9 }), { settleMs: 300, verb: 'click' })).toBe('\nEffect: control state changed (checked/pressed/expanded/selected)')
     const typed = diffObservations({ ...base, focus: 'textbox "Search"' }, { ...base, focus: 'textbox "Search"', focusValue: 'monday' })
     expect(formatActionEffect(typed, { settleMs: 50, verb: 'press' })).toBe('\nEffect: field value now "monday" · focus: textbox "Search"')
   })
 
-  it('says no DOM change with the real window and a verb-specific hint', () => {
+  it('states that nothing was observed, and what was looked at, with no verdict on why', () => {
     const none = diffObservations(base, { ...base })
-    expect(formatActionEffect(none, { settleMs: 1206, verb: 'click' })).toBe(`\nEffect: no DOM change within 1206ms — ${ACTION_POLICIES.click.noChangeHint}`)
-    expect(formatActionEffect(none, { settleMs: 300, verb: 'hover' })).toContain('nothing opened on hover')
-    expect(formatActionEffect(none, { settleMs: 300, verb: 'scroll' })).toContain('nothing new loaded')
-    expect(formatActionEffect(none, { settleMs: 300, verb: 'select' })).toContain('may not have reacted')
-    expect(formatActionEffect(diffObservations({ ...base, focus: 'textbox "S"' }, { ...base, focus: 'textbox "S"' }), { settleMs: 50, verb: 'press' })).toMatch(/^\nEffect: no DOM change within 50ms — nothing visible moved.*\(focus: textbox "S"\)$/)
-    expect(formatActionEffect(diffObservations(base, { ...base, focus: 'link "Wikipedia"' }), { settleMs: 50, verb: 'press' })).toBe('\nEffect: focus: link "Wikipedia"')
+    const scope = '(dialogs, live regions, page text, control state, focus)'
+    expect(formatActionEffect(none, { settleMs: 1206, verb: 'click' })).toBe(`\nEffect: none observed within 1206ms ${scope}`)
+    expect(formatActionEffect(none, { settleMs: 300, verb: 'hover' })).toBe(`\nEffect: none observed within 300ms ${scope}`)
+    expect(formatActionEffect(none, { settleMs: 300, verb: 'select' })).toBe(`\nEffect: none observed within 300ms ${scope}`)
+    expect(formatActionEffect(none, { settleMs: 300, verb: 'click' })).not.toMatch(/may|probably|swallowed|disabled/)
+    // A same-length text change is a ticker, not an effect.
+    expect(formatActionEffect(diffObservations(base, { ...base, contentHash: 9 }), { settleMs: 300, verb: 'click' })).toBe(`\nEffect: none observed within 300ms ${scope}`)
   })
 
-  it('says still busy, with what is busy and what changed so far, when the cap was hit', () => {
+  it('says nothing for a scroll that changed nothing — the viewport line is the fact', () => {
+    expect(formatActionEffect(diffObservations(base, { ...base }), { settleMs: 300, verb: 'scroll' })).toBe('')
+    expect(formatActionEffect(diffObservations(base, { ...base, interactive: 64 }), { settleMs: 300, verb: 'scroll' })).toBe('\nEffect: +24 interactive elements')
+  })
+
+  it('reports focus: where the next key goes after a press, which element took a click', () => {
+    expect(formatActionEffect(diffObservations({ ...base, focus: 'textbox "S"' }, { ...base, focus: 'textbox "S"' }), { settleMs: 50, verb: 'press' })).toMatch(/^\nEffect: none observed within 50ms \(.*\) — focus: textbox "S"$/)
+    expect(formatActionEffect(diffObservations(base, { ...base, focus: 'link "Wikipedia"' }), { settleMs: 50, verb: 'press' })).toBe('\nEffect: focus: link "Wikipedia"')
+    expect(formatActionEffect(diffObservations(base, { ...base, focus: 'textbox "Password"' }), { settleMs: 1200, verb: 'click' })).toBe('\nEffect: focus: textbox "Password"')
+    expect(formatActionEffect(diffObservations({ ...base, focus: 'button "Go"' }, { ...base, focus: 'button "Go"', interactive: 41 }), { settleMs: 300, verb: 'click' })).toBe('\nEffect: +1 interactive elements')
+  })
+
+  it('says the page was still active at the cap, with what was going on and what had landed so far', () => {
     const busy = diffObservations(base, { ...base, interactive: 43, pending: 2, busy: [{ kind: 'spinner', name: '', count: 1 }] })
     expect(formatActionEffect(busy, { settleMs: 2004, verb: 'click', stillBusy: true })).toBe(
-      '\nEffect: still busy after 2.0s (spinner, 2 requests in flight) — the page is still working. So far: +3 interactive elements. browser_wait for what you expect, then re-snapshot.',
+      '\nEffect: page still active after 2.0s (spinner, 2 requests in flight). So far: +3 interactive elements.',
     )
     const nothingYet = diffObservations(base, { ...base, pending: 1 })
     expect(formatActionEffect(nothingYet, { settleMs: 2001, verb: 'press', stillBusy: true })).toBe(
-      '\nEffect: still busy after 2.0s (1 request in flight) — the page is still working. browser_wait for what you expect, then re-snapshot. (focus: nothing focused)',
+      '\nEffect: page still active after 2.0s (1 request in flight). (focus: nothing focused)',
     )
   })
 
@@ -173,7 +194,7 @@ describe('observeAction', () => {
     expect(out.stillBusy).toBe(true)
     expect(out.effect?.interactiveDelta).toBe(3)
     expect(out.waitedMs).toBe(2000)
-    expect(formatActionEffect(out.effect, { settleMs: out.waitedMs, verb: 'click', stillBusy: out.stillBusy })).toContain('still busy after 2.0s (1 request in flight)')
+    expect(formatActionEffect(out.effect, { settleMs: out.waitedMs, verb: 'click', stillBusy: out.stillBusy })).toContain('page still active after 2.0s (1 request in flight)')
   })
 
   it('reports nothing across a navigation, after a failed action, or when the page cannot be read', async () => {

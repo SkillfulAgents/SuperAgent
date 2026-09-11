@@ -14,6 +14,11 @@
  * an after observation into the effect line that closes every action result.
  * A fact learned for one is available to the other for free.
  *
+ * Everything here is an observation, never a verdict: the consumers state what
+ * was seen (or that nothing was), and give advice only where the observation
+ * leaves no doubt — a hint the agent could not have reached on its own is a
+ * shortcut; a wrong one turns a recoverable run into a failed one.
+ *
  * Instrumentation is installed once per document on the first read: a
  * transparent counter around fetch and XMLHttpRequest (in-flight and
  * completed, with status), and a baseline of the animations already running,
@@ -45,9 +50,15 @@ export const pageObservationSchema = z.object({
   /** Navigation response status (Chrome 109+); 0 when unknown (cache, file:, old Chrome). */
   httpStatus: z.number().default(0),
   contentType: z.string().default(''),
-  /** Visible text length (body.innerText, whitespace-collapsed) and a hash of it. */
+  /** Visible text length of the whole page (body.innerText, whitespace-collapsed) — the footer's "text dropped" count. */
   textChars: z.number().default(0),
-  textHash: z.number().default(0),
+  /**
+   * Length and hash of the content region's text: <main> (or role=main) when
+   * the page has one, else body. Diffs use this rather than the whole body so a
+   * header clock or footer ticker does not read as "the page changed".
+   */
+  contentChars: z.number().default(0),
+  contentHash: z.number().default(0),
   /** Opening words of <main> (or body). */
   preview: z.string().default(''),
   /** Visible role=alert/status, aria-live (not off), <output> texts. */
@@ -55,13 +66,19 @@ export const pageObservationSchema = z.object({
   iframes: z.array(iframeInfoSchema).default([]),
   /** Visible interactive elements (DOM census, not refs — no snapshot involved). */
   interactive: z.number().default(0),
+  /**
+   * Hash of the visible controls' state — checked, aria-checked/pressed/
+   * expanded/selected, disabled, a select's chosen option — so a click that only
+   * ticks a box or toggles a button is an observed change, not silence.
+   */
+  stateHash: z.number().default(0),
   /** Visible dialogs, alertdialogs, aria-modal containers and open popovers, with accessible names. */
   top: z.array(topLayerEntrySchema).default([]),
   /** Focused element as `role "name"`, or "nothing focused". */
   focus: z.string().default(''),
-  /** Value of the focused field, capped — typing changes this, not the page text. */
+  /** Value of the focused field, capped — typing changes this, not the page text. '' for password and other secret fields. */
   focusValue: z.string().default(''),
-  /** Requests (fetch/XHR/resources) since `since` — or the last 5s — that failed. */
+  /** Same-site requests (fetch/XHR/resources) since `since` — or the last few seconds — that failed. Third-party hosts (analytics, ads) are not the page's business. */
   failed: z.array(failedRequestSchema).default([]),
   /** fetch/XHR requests started since `since` (or the last 5s) that have not completed. */
   pending: z.number().default(0),
@@ -113,22 +130,31 @@ const INTERACTIVE_SELECTOR =
   '[role="combobox"],[role="textbox"],[role="switch"],[role="slider"],[contenteditable="true"],[tabindex]:not([tabindex="-1"])'
 const TOP_LAYER_SELECTOR = 'dialog[open],[role="dialog"],[role="alertdialog"],[aria-modal="true"]'
 const LOADING_TEXT = 'loading|please wait|fetching|saving|processing|one moment'
+/** Selectors whose state attributes feed `stateHash` — visible controls only. */
+const STATE_ATTRS = ['checked', 'aria-checked', 'aria-pressed', 'aria-expanded', 'aria-selected', 'aria-disabled', 'disabled', 'open']
+/** A focused field whose value must never be reported. */
+const SECRET_AUTOCOMPLETE = 'current-password|new-password|one-time-code|cc-number|cc-csc|cc-exp'
 
 /**
- * Bot-challenge signatures, matched case-insensitively against title + the
- * first 3k chars of body text (and the URL for Google's /sorry/). Kept to
- * vendor-specific phrases: a generic "access denied" is often the app's own
- * auth wall, which the HTTP status and the text already convey.
+ * Bot-challenge signatures: the wording of the challenge page itself, matched
+ * case-insensitively against title + the first 3k chars of body text (and the
+ * URL for Google's /sorry/). Product names are deliberately absent — "This
+ * site is protected by reCAPTCHA" is printed on ordinary login forms, and a
+ * page can mention Imperva or DataDome in prose. A match only counts on a
+ * page with at most BLOCKER_MAX_CONTROLS visible controls or a 403/429/503
+ * response: a challenge page is a wall, not a form.
  */
 const BLOCKER_SIGNATURES: Array<[string, string]> = [
-  ['Cloudflare', 'just a moment|checking your browser|verify you are human|cloudflare ray id|attention required.{0,40}cloudflare|cf-browser-verification'],
-  ['Imperva/Incapsula', 'incapsula|imperva|incident id|request unsuccessful\\.'],
-  ['Akamai', 'reference #\\d+\\.[0-9a-f]+\\.\\d+|access denied.{0,120}permission to access'],
-  ['Google', '/sorry/|unusual traffic from your computer network'],
-  ['PerimeterX', 'press (&|and) hold|px-captcha|perimeterx'],
-  ['DataDome', 'datadome'],
-  ['CAPTCHA', 'hcaptcha|recaptcha|arkose|funcaptcha'],
+  ['Cloudflare', 'checking your browser before accessing|verify you are human|confirm you are human|cloudflare ray id|attention required.{0,40}cloudflare|cf-browser-verification|performing security verification'],
+  ['Imperva/Incapsula', 'request unsuccessful\\. incapsula incident id|incapsula incident id'],
+  ['Akamai', 'access denied.{0,160}permission to access.{0,200}reference #\\d+\\.[0-9a-f]+\\.\\d+'],
+  ['Google', 'google\\.[a-z.]+/sorry/|unusual traffic from your computer network'],
+  ['PerimeterX', 'press (&|and) hold to confirm you are a human|press (&|and) hold the button'],
+  ['CAPTCHA', 'complete the security check to access|please verify you are a human|prove you are human|are you a robot'],
 ]
+/** A challenge page has (almost) nothing to interact with; more than this and the match is prose on a real page. */
+const BLOCKER_MAX_CONTROLS = 3
+const BLOCKER_STATUSES = [403, 429, 503]
 
 export interface ObserverOptions {
   /** performance.now() of the "before" read: requests/animations count only from then. */
@@ -163,8 +189,9 @@ export function observerScript(opts: ObserverOptions = {}): string {
     'try{performance.setResourceTimingBufferSize(2000)}catch(e){}}' +
     'if(O.done.length>500)O.done.splice(0,O.done.length-500);' +
     'var now=performance.now();var since=' + since + ';var cut=since===null?now-' + RECENT_MS + ':since;' +
-    'var o={t:now,url:"",title:"",readyState:"",httpStatus:0,contentType:"",textChars:0,textHash:0,preview:"",liveRegions:[],iframes:[],interactive:0,top:[],focus:"",focusValue:"",failed:[],pending:0,busy:[],blocker:"",netError:""};' +
+    'var o={t:now,url:"",title:"",readyState:"",httpStatus:0,contentType:"",textChars:0,contentChars:0,contentHash:0,preview:"",liveRegions:[],iframes:[],interactive:0,stateHash:0,top:[],focus:"",focusValue:"",failed:[],pending:0,busy:[],blocker:"",netError:""};' +
     'var ws=function(s){return String(s||"").replace(/\\s+/g," ").trim()};var body="";' +
+    'var hash=function(s){var h=5381;var lim=Math.min(s.length,' + TEXT_HASH_CAP + ');for(var q=0;q<lim;q++){h=((h<<5)+h+s.charCodeAt(q))|0}return h};' +
     // checkVisibility covers visibility:hidden / opacity:0 — how many dropdowns hide
     // their closed state (Wikipedia's Vector menu keeps layout boxes for hidden
     // links, so getClientRects alone counted them). Both option spellings: Chrome
@@ -175,18 +202,21 @@ export function observerScript(opts: ObserverOptions = {}): string {
     'try{o.url=String(location.href||"")}catch(e){}' +
     'try{o.title=ws(document.title).slice(0,200);o.readyState=String(document.readyState||"");o.contentType=String(document.contentType||"")}catch(e){}' +
     'var loadEnd=0;try{var nav=performance.getEntriesByType("navigation")[0];o.httpStatus=(nav&&nav.responseStatus)|0;loadEnd=(nav&&(nav.loadEventEnd||nav.domContentLoadedEventEnd))||0}catch(e){}' +
-    // Text.
-    'try{body=ws(document.body&&document.body.innerText);o.textChars=body.length;var hsh=5381;var lim=Math.min(body.length,' + TEXT_HASH_CAP + ');' +
-    'for(var q=0;q<lim;q++){hsh=((hsh<<5)+hsh+body.charCodeAt(q))|0}o.textHash=hsh}catch(e){}' +
-    'try{var m=document.querySelector("main,[role=main]")||document.body;o.preview=ws(m&&m.innerText).slice(0,' + previewChars + ')}catch(e){}' +
+    // Text: the whole page for the footer's count; the content region for diffs and the preview.
+    'try{body=ws(document.body&&document.body.innerText);o.textChars=body.length}catch(e){}' +
+    'try{var m=document.querySelector("main,[role=main]");var ct=m?ws(m.innerText):body;o.contentChars=ct.length;o.contentHash=hash(ct);o.preview=ct.slice(0,' + previewChars + ')}catch(e){}' +
     // Live regions.
     'try{var seenL={};var ls=document.querySelectorAll(' + JSON.stringify(LIVE_SELECTOR) + ');' +
     'for(var i=0;i<ls.length&&o.liveRegions.length<' + LIVE_REGION_MAX + ';i++){if(!vis(ls[i]))continue;var s=ws(ls[i].innerText);if(!s||seenL[s])continue;seenL[s]=1;o.liveRegions.push(s.slice(0,' + LIVE_REGION_CHARS + '))}}catch(e){}' +
     // Iframes (offsetParent is fine here: frames are never position:fixed toasts).
     'try{o.iframes=[].slice.call(document.querySelectorAll("iframe")).filter(function(f){return f.offsetParent!==null})' +
     '.map(function(f){var host="";try{host=new URL(f.src).host}catch(e){}var same=false;try{same=!!f.contentDocument}catch(e){}return{title:f.title||"",host:host,sameOrigin:same}})}catch(e){}' +
-    // Interactive census.
-    'try{var els=document.querySelectorAll(' + JSON.stringify(INTERACTIVE_SELECTOR) + ');for(var j=0;j<els.length;j++){if(vis(els[j]))o.interactive++}}catch(e){}' +
+    // Interactive census, and the state of every visible control.
+    'try{var els=document.querySelectorAll(' + JSON.stringify(INTERACTIVE_SELECTOR) + ');var sa=' + JSON.stringify(STATE_ATTRS) + ';var st="";' +
+    'for(var j=0;j<els.length;j++){var ce=els[j];if(!vis(ce))continue;o.interactive++;' +
+    'for(var j2=0;j2<sa.length;j2++){var av=ce.getAttribute(sa[j2]);if(av!==null)st+=sa[j2]+"="+av+";"}' +
+    'if(typeof ce.checked==="boolean")st+="c="+(ce.checked?1:0)+";";if(typeof ce.selectedIndex==="number")st+="s="+ce.selectedIndex+";";st+="|"}' +
+    'o.stateHash=hash(st)}catch(e){}' +
     // Top layer.
     'try{var name=function(el){var n=el.getAttribute("aria-label")||"";' +
     'if(!n){var lb=el.getAttribute("aria-labelledby");if(lb){var le=document.getElementById(lb.split(" ")[0]);if(le)n=le.innerText}}' +
@@ -202,9 +232,16 @@ export function observerScript(opts: ObserverOptions = {}): string {
     'var tag=a.tagName.toLowerCase();var role=a.getAttribute("role");var an=a.getAttribute("aria-label")||(a.labels&&a.labels[0]&&a.labels[0].innerText)||a.getAttribute("placeholder")||a.getAttribute("name")||a.innerText||"";' +
     'var implied={a:"link",input:a.type==="checkbox"||a.type==="radio"||a.type==="submit"||a.type==="button"?a.type:"textbox",select:"combobox",textarea:"textbox"};' +
     'o.focus=(role||implied[tag]||tag)+(an?" "+JSON.stringify(ws(an).slice(0,60)):"");' +
-    'var fv=typeof a.value==="string"?a.value:(a.isContentEditable?a.innerText:"");o.focusValue=ws(fv).slice(0,120)}}catch(e){}' +
-    // Network: in flight and failed since the cut, from the counters plus resource timing.
-    'try{var seenF={};var addF=function(u,st,kind){if(o.failed.length>=' + MAX_FAILED + ')return;var su=shortUrl(u);var fk=su+"|"+st;if(seenF[fk])return;seenF[fk]=1;o.failed.push({url:su,status:st,initiator:kind})};' +
+    // Never the value of a secret field: the app autofills passwords the model must not see.
+    'var secret=String(a.type||"").toLowerCase()==="password"||/^(' + SECRET_AUTOCOMPLETE + ')$/i.test(String(a.getAttribute("autocomplete")||""));' +
+    'var fv=secret?"":typeof a.value==="string"?a.value:(a.isContentEditable?a.innerText:"");o.focusValue=ws(fv).slice(0,120)}}catch(e){}' +
+    // Network: in flight and failed since the cut, from the counters plus resource
+    // timing. Failures count only on the site's own hosts (same registrable
+    // domain, approximated by the last two labels): a blocked analytics beacon
+    // is not the page reacting to the action.
+    'try{var seenF={};var site=location.host.split(".").slice(-2).join(".");' +
+    'var sameSite=function(u){try{var h=new URL(u,location.href).host;return h===location.host||h===site||h.slice(-site.length-1)==="."+site}catch(e){return true}};' +
+    'var addF=function(u,st,kind){if(o.failed.length>=' + MAX_FAILED + '||!sameSite(u))return;var su=shortUrl(u);var fk=su+"|"+st;if(seenF[fk])return;seenF[fk]=1;o.failed.push({url:su,status:st,initiator:kind})};' +
     'O.inflight.forEach(function(e){if(e.start>=cut)o.pending++});' +
     'for(var d=0;d<O.done.length;d++){var de=O.done[d];if(de.start>=cut&&(de.error||de.status>=400))addF(de.url,de.status|0,de.kind)}' +
     'var rs=performance.getEntriesByType("resource");for(var r=0;r<rs.length;r++){var re=rs[r];if(re.startTime>=cut&&re.responseStatus>=400)addF(re.name,re.responseStatus,String(re.initiatorType||""))}}catch(e){}' +
@@ -221,7 +258,7 @@ export function observerScript(opts: ObserverOptions = {}): string {
     // Without `since` (status line): young, and not part of the page as it loaded —
     // a decorative always-on animation started at load time is not a spinner.
     // With `since`: started after the action, or hidden at the baseline and visible now.
-    'var age=an1.currentTime;var fresh=since===null?(age!==null&&age<=' + RECENT_MS + '&&(loadEnd===0||now-age>loadEnd+500)):((age!==null&&age<=now-since+50)||base.indexOf(tg)<0);if(!fresh)continue;' +
+    'var age=an1.currentTime;var fresh=since===null?(age!==null&&age<=' + RECENT_MS + '&&(loadEnd===0||now-age>loadEnd+500)):((age!==null&&age<=now-since)||base.indexOf(tg)<0);if(!fresh)continue;' +
     'var rc=tg.getBoundingClientRect();var pb=tg.closest?tg.closest(\'[role="progressbar"]\'):null;' +
     'if(pb){continue}' +  // already reported as progressbar
     // A thin strip pinned to the top is a progress bar whatever its current width
@@ -234,8 +271,8 @@ export function observerScript(opts: ObserverOptions = {}): string {
     // code in its text; the headless shell shows an empty page whose only tell is
     // the chrome-error:// URL (verified in the container image).
     'try{if(document.getElementById("main-frame-error")||/^chrome-error:/.test(o.url)){var em=/\\bERR_[A-Z_]{3,}\\b/.exec(body);o.netError=em?em[0]:"net error"}}catch(e){}' +
-    'try{var hay=(o.title+" "+body.slice(0,3000)).toLowerCase();var sg=' + sigs + ';' +
-    'for(var g=0;g<sg.length&&!o.blocker;g++){if(new RegExp(sg[g][1],"i").test(sg[g][0]==="Google"?hay+" "+o.url:hay))o.blocker=sg[g][0]}}catch(e){}' +
+    'try{if(o.interactive<=' + BLOCKER_MAX_CONTROLS + '||' + JSON.stringify(BLOCKER_STATUSES) + '.indexOf(o.httpStatus)>=0){var hay=(o.title+" "+body.slice(0,3000)).toLowerCase();var sg=' + sigs + ';' +
+    'for(var g=0;g<sg.length&&!o.blocker;g++){if(new RegExp(sg[g][1],"i").test(sg[g][0]==="Google"?o.url+" "+hay:hay))o.blocker=sg[g][0]}}}catch(e){}' +
     'return JSON.stringify(o)})()'
   )
 }

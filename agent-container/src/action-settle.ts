@@ -16,6 +16,12 @@
  * against effects that land just after the settle (a Shopify cart drawer
  * opened after 300ms). Every clause is a before-versus-after diff.
  *
+ * The line states observations only. When nothing was seen it says so and
+ * names what was looked at; it never concludes that the click was swallowed,
+ * the element disabled or the page finished — the agent can establish those
+ * with a snapshot or a screenshot, and a wrong verdict here costs more than
+ * the step it would have saved.
+ *
  * Attaching to a new action is one policy row plus one `observeAction` call.
  */
 import {
@@ -35,44 +41,36 @@ export interface ActionPolicy {
   pollMs: number
   /** …until this long after the action. */
   capMs: number
-  /** Whether a focus move or a typed value counts as an effect (press) — a click moves focus to its own target. */
+  /**
+   * Whether a focus move or a typed value decides "something changed" for the
+   * recheck (press) — a click moves focus to its own target, which must not
+   * hide a late effect. The focus is still reported either way.
+   */
   countFocus: boolean
-  /** What to say when nothing changed. */
-  noChangeHint: string
 }
 
 const base = { recheckMs: 1200, pollMs: 200, capMs: 2000 }
 
 export const ACTION_POLICIES: Record<ActionVerb, ActionPolicy> = {
-  click: {
-    ...base, verb: 'click', settleMs: 300, countFocus: false,
-    noChangeHint: 'the element may not be handling clicks (disabled, covered, or needs a different target). Check its state, or browser_wait for what you expect to appear.',
-  },
-  press: {
-    ...base, verb: 'press', settleMs: 50, countFocus: true,
-    noChangeHint: 'nothing visible moved — normal for a modifier combo like Control+a or a key the page consumes silently; otherwise the key may have been ignored by the focused element. browser_wait for what you expect to appear.',
-  },
-  select: {
-    ...base, verb: 'select', settleMs: 300, countFocus: false,
-    noChangeHint: 'the page may not have reacted to the new value yet. browser_wait for what you expect to appear.',
-  },
-  hover: {
-    ...base, verb: 'hover', settleMs: 300, countFocus: false,
-    noChangeHint: 'nothing opened on hover. Try browser_click on the element instead.',
-  },
-  scroll: {
-    ...base, verb: 'scroll', settleMs: 300, countFocus: false,
-    noChangeHint: 'nothing new loaded — you are at the end of the content, or it loads inside a container that needs its own scroll.',
-  },
+  click: { ...base, verb: 'click', settleMs: 300, countFocus: false },
+  press: { ...base, verb: 'press', settleMs: 50, countFocus: true },
+  select: { ...base, verb: 'select', settleMs: 300, countFocus: false },
+  hover: { ...base, verb: 'hover', settleMs: 300, countFocus: false },
+  // A scroll on a static page changes nothing in the DOM by design; the
+  // viewport line already says where the page is, so no recheck.
+  scroll: { ...base, verb: 'scroll', settleMs: 300, recheckMs: 300, countFocus: false },
 }
 
 export interface ActionEffect {
   opened: TopLayerEntry[]
   closed: TopLayerEntry[]
   interactiveDelta: number
+  /** A visible control's state changed (checked, pressed, expanded, selected, disabled, chosen option). */
+  stateChanged: boolean
   announced: string[]
+  /** The content region's text differs in length and in content — a same-length change (a clock, a counter) is not reported. */
   textChanged: boolean
-  /** after.textChars − before.textChars; a size for "page text changed". */
+  /** after.contentChars − before.contentChars; a size for "page text changed". */
   textDelta: number
   focus: string
   focusChanged: boolean
@@ -98,9 +96,10 @@ export function diffObservations(before: PageObservation, after: PageObservation
     opened: after.top.filter(e => !beforeTop.has(topKey(e))),
     closed: before.top.filter(e => !afterTop.has(topKey(e))),
     interactiveDelta: after.interactive - before.interactive,
+    stateChanged: after.stateHash !== before.stateHash,
     announced: after.liveRegions.filter(s => !beforeLive.has(s)),
-    textChanged: after.textHash !== before.textHash || after.textChars !== before.textChars,
-    textDelta: after.textChars - before.textChars,
+    textChanged: after.contentHash !== before.contentHash && after.contentChars !== before.contentChars,
+    textDelta: after.contentChars - before.contentChars,
     focus: after.focus,
     focusChanged: after.focus !== before.focus,
     focusValueChanged: after.focus === before.focus && after.focusValue !== before.focusValue,
@@ -116,7 +115,7 @@ export function effectHasChange(e: ActionEffect, opts: { countFocus?: boolean } 
   const countFocus = opts.countFocus ?? true
   return (
     e.opened.length > 0 || e.closed.length > 0 || e.announced.length > 0 || e.failed.length > 0 ||
-    e.interactiveDelta !== 0 || e.textChanged || (countFocus && (e.focusChanged || e.focusValueChanged))
+    e.interactiveDelta !== 0 || e.stateChanged || e.textChanged || (countFocus && (e.focusChanged || e.focusValueChanged))
   )
 }
 
@@ -128,7 +127,7 @@ export function effectIsBusy(e: ActionEffect): boolean {
 /** Two reads that agree on everything the effect line reports. */
 function sameState(a: PageObservation, b: PageObservation): boolean {
   return (
-    a.textHash === b.textHash && a.textChars === b.textChars && a.interactive === b.interactive &&
+    a.contentHash === b.contentHash && a.contentChars === b.contentChars && a.interactive === b.interactive && a.stateHash === b.stateHash &&
     a.top.map(topKey).join('\n') === b.top.map(topKey).join('\n') &&
     a.liveRegions.join('\n') === b.liveRegions.join('\n') &&
     a.focus === b.focus && a.focusValue === b.focusValue
@@ -218,15 +217,19 @@ export interface EffectFormatOptions {
   stillBusy?: boolean
 }
 
+/** What the observer looks at — named when nothing was seen, so the agent knows the scope of that silence. */
+const OBSERVED_SCOPE = 'dialogs, live regions, page text, control state, focus'
+
 /**
  * One line describing the effect. Leads with what a person would notice
- * (dialog opened, announcement, failed request), then the census delta and
- * typed values; when nothing changed, says so with the real time window; when
- * the page was still working at the cap, says that instead of guessing.
+ * (dialog opened, announcement, failed request), then the census delta,
+ * control state, typed values and focus. When nothing was seen it says so
+ * and names what was looked at — no verdict on why. When the page was still
+ * active at the cap, it says what was still going and what had landed so far.
+ * A scroll that changed nothing gets no line: the viewport line is the fact.
  */
 export function formatActionEffect(effect: ActionEffect | null, opts: EffectFormatOptions): string {
   if (!effect) return ''
-  const policy = ACTION_POLICIES[opts.verb]
   const parts: string[] = []
   for (const e of effect.opened) parts.push(`${e.kind}${e.name ? ` ${JSON.stringify(e.name)}` : ''} opened`)
   for (const e of effect.closed) parts.push(`${e.kind}${e.name ? ` ${JSON.stringify(e.name)}` : ''} closed`)
@@ -238,19 +241,23 @@ export function formatActionEffect(effect: ActionEffect | null, opts: EffectForm
     parts.push(`${effect.interactiveDelta > 0 ? '+' : ''}${effect.interactiveDelta} interactive elements`)
   } else if (parts.length === 0 && effect.textChanged) {
     const d = effect.textDelta
-    const size = d === 0 ? 'same length, different content' : `${d > 0 ? '+' : '−'}${Math.abs(d).toLocaleString('en-US')} chars`
-    parts.push(`page text changed (${size})`)
+    parts.push(`page text changed (${d > 0 ? '+' : '−'}${Math.abs(d).toLocaleString('en-US')} chars)`)
   }
+  if (effect.stateChanged) parts.push('control state changed (checked/pressed/expanded/selected)')
   if (effect.focusValueChanged) parts.push(`field value now ${JSON.stringify(effect.focusValue)}`)
-  const focusNote = opts.verb === 'press' && effect.focus ? `focus: ${effect.focus}` : ''
+  // Focus is a fact worth a few chars: for a press it is where the next key
+  // goes; for a click it shows which element took the click.
+  const focusNote = effect.focus && (opts.verb === 'press' || (opts.verb === 'click' && effect.focusChanged)) ? `focus: ${effect.focus}` : ''
   const busy = opts.stillBusy ? describeBusy(effect.busy, effect.pending) : ''
   const window = `${(opts.settleMs / 1000).toFixed(1)}s`
   if (busy) {
     const so_far = parts.length > 0 ? ` So far: ${parts.join(' · ')}.` : ''
-    return `\nEffect: still busy after ${window} (${busy}) — the page is still working.${so_far} browser_wait for what you expect, then re-snapshot.${focusNote ? ` (${focusNote})` : ''}`
+    return `\nEffect: page still active after ${window} (${busy}).${so_far}${focusNote ? ` (${focusNote})` : ''}`
   }
-  if (parts.length === 0 && !(opts.verb === 'press' && effect.focusChanged)) {
-    return `\nEffect: no DOM change within ${opts.settleMs}ms — ${policy.noChangeHint}${focusNote ? ` (${focusNote})` : ''}`
+  if (parts.length === 0) {
+    if (opts.verb === 'scroll') return ''
+    if (focusNote && effect.focusChanged) return `\nEffect: ${focusNote}`
+    return `\nEffect: none observed within ${opts.settleMs}ms (${OBSERVED_SCOPE})${focusNote ? ` — ${focusNote}` : ''}`
   }
   if (focusNote) parts.push(focusNote)
   return `\nEffect: ${parts.join(' · ')}`

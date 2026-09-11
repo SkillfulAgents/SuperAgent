@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { EMPTY_OBSERVATION, type PageObservation } from './page-observer'
-import { formatStatusLine, isQuiet, landedElsewhere, pageWarnings, waitForQuiet } from './page-status'
+import { formatStatusLine, isQuiet, isThinPage, landedElsewhere, pageWarnings, waitForQuiet } from './page-status'
 
 const healthy: PageObservation = { ...EMPTY_OBSERVATION, url: 'https://acme.com/checkout', title: 'Checkout — Acme', readyState: 'complete', httpStatus: 200, contentType: 'text/html' }
 
@@ -49,19 +49,21 @@ describe('pageWarnings / formatStatusLine', () => {
     expect(formatStatusLine(EMPTY_OBSERVATION, 3)).toBe('')
   })
 
-  it('warns, most invalidating first, with the action to take', () => {
+  it('warns, most invalidating first, as observations', () => {
     const bad = { ...healthy, httpStatus: 429, blocker: 'Cloudflare', readyState: 'loading', busy: [{ kind: 'spinner', name: '', count: 1 }], pending: 2 }
     const warns = pageWarnings(bad, 0)
-    expect(warns.map(w => w.split(' ')[0])).toEqual(['bot-block:', 'HTTP', 'page', 'still'])
+    expect(warns.map(w => w.split(' ')[0])).toEqual(['bot-block:', 'HTTP', 'page', 'page'])
     expect(warns[0]).toContain('request_browser_input')
     expect(warns[1]).toContain('rate limited')
-    expect(warns[3]).toBe('still busy: spinner, 2 requests in flight — content still arriving. browser_wait for the element you need, then re-snapshot.')
+    expect(warns[2]).toBe('page still loading — content may be incomplete.')
+    expect(warns[3]).toBe('page still active: spinner, 2 requests in flight.')
+    expect(warns.join('\n')).not.toMatch(/browser_wait|check the URL/)
     expect(formatStatusLine(bad, 0).split('\n')).toHaveLength(5)
   })
 
-  it('names the wait when the snapshot held for a loading or busy page', () => {
+  it('names the wait when the snapshot held for a loading or active page', () => {
     expect(pageWarnings({ ...healthy, readyState: 'loading' }, 0, { waitedMs: 2010 })[0]).toMatch(/^page still loading after waiting 2\.0s — /)
-    expect(pageWarnings({ ...healthy, pending: 1 }, 5, { waitedMs: 2010 })[0]).toMatch(/^still busy after waiting 2\.0s: 1 request in flight/)
+    expect(pageWarnings({ ...healthy, pending: 1 }, 5, { waitedMs: 2010 })[0]).toMatch(/^page still active after waiting 2\.0s: 1 request in flight/)
     expect(pageWarnings({ ...healthy, readyState: 'loading' }, 0, { waitedMs: 30 })[0]).toMatch(/^page still loading — /)
   })
 
@@ -69,9 +71,19 @@ describe('pageWarnings / formatStatusLine', () => {
     expect(pageWarnings(healthy, 0)[0]).toContain('no interactive elements')
     expect(pageWarnings({ ...healthy, netError: 'ERR_CONNECTION_REFUSED' }, 0)).toHaveLength(1)
     expect(pageWarnings({ ...healthy, netError: 'net error' }, 0)[0]).toMatch(/^site unreachable — /)
-    expect(pageWarnings({ ...healthy, httpStatus: 401 }, 1)[0]).toContain('login or permission required')
+    expect(pageWarnings({ ...healthy, httpStatus: 401 }, 1)[0]).toContain('authentication required')
     expect(pageWarnings({ ...healthy, httpStatus: 404 }, 1)[0]).toContain('not found')
     expect(pageWarnings({ ...healthy, contentType: 'application/json' }, 1)[0]).toContain('raw application/json document')
+    expect(pageWarnings({ ...healthy, contentType: 'application/pdf' }, 1)[0]).toMatch(/^PDF document.*browser_download/)
+  })
+
+  it('treats an error status as a fact, not a warning, when the page has a real tree (an SPA on a 404 fallback)', () => {
+    expect(pageWarnings({ ...healthy, httpStatus: 404 }, 61)).toEqual([])
+    expect(formatStatusLine({ ...healthy, httpStatus: 404 }, 61)).toBe('[page] https://acme.com/checkout · "Checkout — Acme" · HTTP 404 · complete · 61 refs')
+    // Without a ref count (browser_open), the observer's own census decides.
+    expect(isThinPage({ ...healthy, interactive: 40 }, null)).toBe(false)
+    expect(isThinPage({ ...healthy, interactive: 2 }, null)).toBe(true)
+    expect(pageWarnings({ ...healthy, httpStatus: 403, interactive: 40 }, null)).toEqual([])
   })
 })
 

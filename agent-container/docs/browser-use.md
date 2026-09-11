@@ -41,15 +41,16 @@ footer reports how much page text was dropped and what the live regions
 
 Every snapshot starts with a status line: `[page] URL · "title" · HTTP status ·
 readyState · N refs`, followed by `⚠` warnings when the site is unreachable, a
-bot challenge is up, the server answered 4xx/5xx, the document is a raw file, or
-content is still loading or the page is still busy — spinners, top bars,
-skeletons, requests in flight (a snapshot first waits up to 2s for the page to
-go quiet, so "still loading" or "still busy" means it is genuinely slow).
-`browser_open` reports the same facts for the page it
-actually landed on (final URL, redirect, HTTP status) and is marked as an error
-when that page is a net error, a bot wall or an HTTP error. Act on a warning
-before reading the tree: a bot wall or login page needs the user, a loading page
-needs `browser_wait` for the element you need.
+bot challenge is up, the server answered 4xx/5xx with nothing to interact with,
+the document is a raw file, or content is still loading or the page is still
+active — spinners, top bars, skeletons, requests in flight (a snapshot first
+waits up to 2s for the page to go quiet, so "still loading" or "still active"
+means it was genuinely still working). `browser_open` reports the same facts
+for the page it actually landed on (final URL, redirect, HTTP status) and is
+marked as an error only when that page is certainly unusable: a net error, a
+bot wall, or an error status on an empty page. Weigh a warning before reading
+the tree: a bot wall or login page needs the user; a still-loading page needs
+a moment or `browser_wait` for a selector you know.
 
 Useful snapshot options:
 
@@ -82,19 +83,21 @@ Use the most specific tool:
 - `browser_hover` for hover menus and tooltips;
 - `browser_scroll` for page or container scrolling.
 
-Trust the action result. Click, key, select, hover and scroll results report
-navigation plus an `Effect:` line — dialogs opened or closed, live-region
-announcements (toasts, validation errors), failed requests since the action,
-typed field values, and the change in the number of interactive elements. The
-harness waits for the page to stop working before reporting (spinners, top
-bars, requests in flight; up to 2s), so `Effect: no DOM change within 1200ms`
-means the page did not react: the element is probably disabled, covered, or
-the wrong target, so check its state or `browser_wait` for what you expect
-instead of clicking again. `Effect: still busy after 2.0s (spinner, 1 request
-in flight)` means the page is slow: wait for the element you expect, then
-re-snapshot. Fill results report the value the page
-actually committed. A fill warning means the page kept a different value—fix it
-before moving on.
+Trust a reported change. Click, key, select, hover and scroll results report
+navigation plus an `Effect:` line of what was observed — dialogs opened or
+closed, live-region announcements (toasts, validation errors), failed same-site
+requests since the action, control state changes (checked, pressed, expanded),
+typed field values, the change in the number of interactive elements, and
+focus. The harness waits for the page to stop working before reporting
+(spinners, top bars, requests in flight; up to 2s). `Effect: none observed
+within 1200ms (…)` states only that nothing in that scope changed — not that
+the click failed: a toggle, a highlight, a change inside an iframe or canvas,
+or a slow server all look like this. Snapshot or screenshot if you need to
+know; do not click again on that basis, which would undo a toggle. `Effect:
+page still active after 2.0s (spinner, 1 request in flight)` lists what was
+still going on and what had landed so far: wait for the element you expect,
+then re-snapshot. Fill results report the value the page actually committed. A
+fill warning means the page kept a different value—fix it before moving on.
 
 Navigation makes existing refs stale. Re-snapshot when a result reports
 navigation, when a dialog or dynamic view changes the relevant controls, or
