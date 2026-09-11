@@ -36,6 +36,23 @@ describe('LocalConfigOps — what is local about it', () => {
     }
   })
 
+  it('never heals through a link the agent planted as .env', async () => {
+    const h = await harness()
+    try {
+      await fs.promises.mkdir(h.root, { recursive: true })
+      const target = path.join(path.dirname(h.root), 'not-the-agents.txt')
+      await fs.promises.writeFile(target, 'host-only', { mode: 0o600 })
+      await fs.promises.symlink(target, path.join(h.root, '.env'))
+
+      // The read itself is refused (the link leaves the workspace)…
+      await expect(h.config.get('secrets')).rejects.toThrow()
+      // …and the mode of what the link points at is untouched.
+      expect((await fs.promises.stat(target)).mode & 0o777).toBe(0o600)
+    } finally {
+      await h.dispose()
+    }
+  })
+
   it('serializes .env updates with the on-disk lock the container honours', async () => {
     const h = await harness()
     try {
