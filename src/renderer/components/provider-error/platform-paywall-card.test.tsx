@@ -711,6 +711,47 @@ describe('PlatformPaywallCard', () => {
       }
     })
 
+    it('keeps holding through the card-saved update, so a poll clearing the later purchase cannot drop a settings failure', async () => {
+      vi.useFakeTimers({ toFake: ['setInterval'] })
+      try {
+        fetchBilling.mockResolvedValue(billing({ hasPaymentMethod: false }))
+        renderCard()
+        await screen.findByTestId('billing-cta-frame')
+        expectEmbedUrl({ view: 'topup', surface: 'cta', cta: 'add_card' })
+
+        // Card setup finished: the platform opens the purchase panel and reports the saved
+        // card as a pending update (the purchase itself is still to come).
+        fetchBilling.mockResolvedValue(billing())
+        const frame = await expandCta()
+        const before = fetchBilling.mock.calls.length
+        postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated', { pending: true })
+        await waitFor(() => expect(fetchBilling.mock.calls.length).toBeGreaterThan(before))
+        await waitFor(() => expect(screen.queryByText('Add a payment method')).not.toBeInTheDocument())
+        expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-blocked', 'true')
+        expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-expanded', 'true')
+        expect(screen.getByTestId('billing-cta-frame')).toBe(frame)
+
+        // Purchase charged; settings save still in flight when the poll sees the credit.
+        fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(PAYWALL_RECHECK_INTERVAL_MS)
+        })
+        await waitFor(() => expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-blocked', 'false'))
+        expect(screen.getByTestId('billing-cta-frame')).toBe(frame)
+        expect(toastSuccess).not.toHaveBeenCalled()
+
+        postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated', { pending: true })
+        await act(async () => { await new Promise((r) => setTimeout(r, 20)) })
+        expect(screen.getByTestId('billing-cta-frame')).toBe(frame)
+
+        postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated')
+        await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
+        expect(toastSuccess).toHaveBeenCalledTimes(1)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
     it('keeps the open panel when a focus refresh clears billing, until the platform reports the outcome', async () => {
       renderCard()
       const frame = await expandCta()

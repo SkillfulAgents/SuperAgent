@@ -89,7 +89,7 @@ export interface BillingEmbedFrameProps {
   orgId: string | null
   platformBaseUrl: string | null
   fallbackHref: string | null
-  /** `pending`: keep the frame; the panel still has a settings error the user must resolve or skip. */
+  /** `pending`: keep the frame; the panel's transaction is not finished (card saved, or a settings error to resolve). */
   onBillingUpdated: (update: { pending: boolean }) => void
   onOpenExternal: () => void
 }
