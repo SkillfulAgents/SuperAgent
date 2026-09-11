@@ -951,13 +951,22 @@ export class CorruptFileError extends Error {
 
 let tmpWriteCounter = 0
 
+/** The longest file name every filesystem here accepts, in bytes. */
+const FILE_NAME_MAX_BYTES = 255
+
 /** Sibling temp path in the same directory as `filePath` (so rename is atomic —
  *  same filesystem). Leading dot + pid + counter + random keeps it unique and
- *  out of the way of glob/dir listings. */
+ *  out of the way of glob/dir listings. The target's name is kept for
+ *  forensics but cut so the temp name fits the filesystem's limit: a name
+ *  the filesystem accepts must never fail to write because its temp name is
+ *  longer. */
 function tempPathFor(filePath: string): string {
   const dir = path.dirname(filePath)
-  const base = path.basename(filePath)
-  return path.join(dir, `.${base}.${process.pid}.${++tmpWriteCounter}.${generateRandomSuffix(8)}.tmp`)
+  const suffix = `.${process.pid}.${++tmpWriteCounter}.${generateRandomSuffix(8)}.tmp`
+  const budget = FILE_NAME_MAX_BYTES - 1 - Buffer.byteLength(suffix)
+  const base = Array.from(path.basename(filePath))
+  while (base.length > 0 && Buffer.byteLength(base.join('')) > budget) base.pop()
+  return path.join(dir, `.${base.join('')}${suffix}`)
 }
 
 /**
