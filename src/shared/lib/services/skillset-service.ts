@@ -16,15 +16,19 @@ import { getCacheDir } from '@shared/lib/config/data-dir'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-provider/helpers'
 import { resolveActiveProviderModel } from '@shared/lib/llm-provider'
-import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 import {
-  getAgentWorkspaceDir,
   readFileOrNull,
   ensureDirectory,
   directoryExists,
   fileExists,
-  removeDirectory,
 } from '@shared/lib/utils/file-storage'
+import {
+  agentRegistry,
+  joinWorkspacePath,
+  WorkspaceFileError,
+  type FileOps,
+} from '@shared/lib/agent-actor'
+import { copyHostDirIntoWorkspace } from '@shared/lib/agent-actor/copy-into-workspace'
 import type {
   SkillsetIndex,
   SkillsetConfig,
@@ -38,10 +42,6 @@ import type {
 } from '@shared/lib/types/skillset'
 import { InstalledSkillMetadataSchema, parseSkillsetIndex } from '@shared/lib/types/skillset-schema'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
-import {
-  copyDirectoryFiltered,
-  writeJsonFile,
-} from '@shared/lib/utils/file-storage'
 import { captureException } from '@shared/lib/error-reporting'
 import { pruneInstalledSkillIfInvalid } from './skillset-reconcile'
 
@@ -90,12 +90,44 @@ export function getSkillsetRepoDir(skillsetId: string): string {
   return path.join(getSkillsetCacheDir(), safeName)
 }
 
-function getAgentSkillsDir(agentSlug: string): string {
-  return path.join(getAgentWorkspaceDir(agentSlug), '.claude', 'skills')
+// The agent's installed skills live in its workspace, so everything under
+// this path is read and written through the agent actor's `files`. These are
+// workspace paths (relative to the workspace root); the cache paths above are
+// host paths.
+const SKILLS_WORKSPACE_DIR = '.claude/skills'
+
+function skillWorkspacePath(...segments: string[]): string {
+  return joinWorkspacePath(SKILLS_WORKSPACE_DIR, ...segments)
 }
 
-function getSkillMetadataPath(agentSlug: string, skillDirName: string): string {
-  return path.join(getAgentSkillsDir(agentSlug), sanitizeDirName(skillDirName), '.skillset-metadata.json')
+function getSkillMetadataPath(skillDirName: string): string {
+  return skillWorkspacePath(sanitizeDirName(skillDirName), '.skillset-metadata.json')
+}
+
+function agentFiles(agentSlug: string): FileOps {
+  return agentRegistry.get(agentSlug).files
+}
+
+/** A workspace text file, or null when there is nothing (or not a file) at the path. */
+async function readWorkspaceText(files: FileOps, workspacePath: string): Promise<string | null> {
+  let bytes: Uint8Array | null
+  try {
+    bytes = await files.getDoc(workspacePath)
+  } catch (error) {
+    if (error instanceof WorkspaceFileError && error.code === 'not-a-file') return null
+    throw error
+  }
+  // Decoded the way `fs.readFile(path, 'utf-8')` decodes the cache side, so a
+  // package hashes the same whichever side it is read from.
+  return bytes === null ? null : Buffer.from(bytes).toString('utf-8')
+}
+
+async function workspaceDirExists(files: FileOps, workspacePath: string): Promise<boolean> {
+  return (await files.stat(workspacePath))?.kind === 'directory'
+}
+
+async function writeWorkspaceJson(files: FileOps, workspacePath: string, data: unknown): Promise<void> {
+  await files.putDoc(workspacePath, JSON.stringify(data, null, 2))
 }
 
 /**
@@ -202,6 +234,7 @@ const SKILL_PACKAGE_EXCLUDED = new Set([
   '.skillset-original.md',
 ])
 
+/** The files of a skill package in a host directory (a skillset cache clone). */
 async function readSkillPackageFiles(skillDir: string): Promise<SkillPackageFile[]> {
   const files: SkillPackageFile[] = []
 
@@ -232,6 +265,35 @@ async function readSkillPackageFiles(skillDir: string): Promise<SkillPackageFile
   return files.sort((a, b) => a.relativePath.localeCompare(b.relativePath))
 }
 
+/**
+ * The files of a skill package in an agent's workspace, read through the
+ * actor. Same exclusions, same relative paths and same decoding as the host
+ * variant, so the two hash alike.
+ */
+async function readWorkspaceSkillPackageFiles(files: FileOps, skillDir: string): Promise<SkillPackageFile[]> {
+  const packageFiles: SkillPackageFile[] = []
+
+  async function walk(dir: string, relativeBase: string): Promise<void> {
+    for (const entry of await files.list(dir)) {
+      if (SKILL_PACKAGE_EXCLUDED.has(entry.name)) continue
+
+      const relativePath = relativeBase ? path.join(relativeBase, entry.name) : entry.name
+
+      if (entry.kind === 'directory') {
+        await walk(entry.path, relativePath)
+        continue
+      }
+
+      const content = await readWorkspaceText(files, entry.path)
+      if (content === null) continue
+      packageFiles.push({ relativePath, content })
+    }
+  }
+
+  await walk(skillDir, '')
+  return packageFiles.sort((a, b) => a.relativePath.localeCompare(b.relativePath))
+}
+
 function hashSkillPackageFiles(files: SkillPackageFile[]): string {
   const hash = crypto.createHash('sha256')
 
@@ -245,8 +307,8 @@ function hashSkillPackageFiles(files: SkillPackageFile[]): string {
   return hash.digest('hex')
 }
 
-async function getSkillPackageHash(skillDir: string): Promise<string> {
-  return hashSkillPackageFiles(await readSkillPackageFiles(skillDir))
+async function getWorkspaceSkillPackageHash(files: FileOps, skillDir: string): Promise<string> {
+  return hashSkillPackageFiles(await readWorkspaceSkillPackageFiles(files, skillDir))
 }
 
 function upsertSkillMdInPackageFiles(
@@ -989,29 +1051,29 @@ export async function installSkillFromSkillset(
     await ensureSkillsetCached(skillsetRef)
   }
 
-  // Determine source and destination directories
+  // Source is the host cache; destination is the agent's workspace.
   const skillDirInRepo = path.join(repoDir, path.dirname(skillPath))
   const skillDirName = sanitizeDirName(skillPathToDirName(skillPath))
-  const destDir = path.join(getAgentSkillsDir(agentSlug), skillDirName)
+  const files = agentFiles(agentSlug)
+  const destDir = skillWorkspacePath(skillDirName)
 
   if (!(await directoryExists(skillDirInRepo))) {
     throw new Error(`Skill directory not found in skillset: ${path.dirname(skillPath)}`)
   }
 
   // Create destination directory
-  await ensureDirectory(destDir)
+  await files.mkdir(destDir)
 
   // Copy all files from the skill directory
-  await copyDirectoryFiltered(skillDirInRepo, destDir, undefined, { followSymlinks: true })
+  await copyHostDirIntoWorkspace(files, skillDirInRepo, destDir, { followSymlinks: true })
 
   // Read the installed SKILL.md to compute hash and parse metadata
-  const skillMdPath = path.join(destDir, 'SKILL.md')
-  const skillContent = await readFileOrNull(skillMdPath)
+  const skillContent = await readWorkspaceText(files, joinWorkspacePath(destDir, 'SKILL.md'))
   if (!skillContent) {
     throw new Error('SKILL.md not found after installation')
   }
 
-  const hash = await getSkillPackageHash(destDir)
+  const hash = await getWorkspaceSkillPackageHash(files, destDir)
 
   // Write metadata file
   const metadata: InstalledSkillMetadata = {
@@ -1027,18 +1089,10 @@ export async function installSkillFromSkillset(
     skillsetName: skillsetRef.skillsetName,
   }
 
-  await fs.promises.writeFile(
-    path.join(destDir, '.skillset-metadata.json'),
-    JSON.stringify(metadata, null, 2),
-    'utf-8'
-  )
+  await writeWorkspaceJson(files, joinWorkspacePath(destDir, '.skillset-metadata.json'), metadata)
 
   // Store original content for diff generation (used by PR suggestions)
-  await fs.promises.writeFile(
-    path.join(destDir, '.skillset-original.md'),
-    skillContent,
-    'utf-8'
-  )
+  await files.putDoc(joinWorkspacePath(destDir, '.skillset-original.md'), skillContent)
 }
 
 /**
@@ -1050,8 +1104,7 @@ export async function updateSkillFromSkillset(
 ): Promise<{ updated: boolean }> {
   sanitizeDirName(skillDirName)
 
-  const metadataPath = getSkillMetadataPath(agentSlug, skillDirName)
-  const metaContent = await readFileOrNull(metadataPath)
+  const metaContent = await readWorkspaceText(agentFiles(agentSlug), getSkillMetadataPath(skillDirName))
   if (!metaContent) {
     return { updated: false }
   }
@@ -1099,8 +1152,9 @@ export async function getInstalledSkillMetadata(
   agentSlug: string,
   skillDirName: string,
 ): Promise<InstalledSkillMetadata | null> {
-  const metadataPath = getSkillMetadataPath(agentSlug, skillDirName)
-  const content = await readFileOrNull(metadataPath)
+  const metadataPath = getSkillMetadataPath(skillDirName)
+  const files = agentFiles(agentSlug)
+  const content = await readWorkspaceText(files, metadataPath)
   if (!content) return null
 
   let raw: unknown
@@ -1117,8 +1171,7 @@ export async function getInstalledSkillMetadata(
     return null
   }
 
-  const skillDir = path.dirname(metadataPath)
-  const pruned = await pruneInstalledSkillIfInvalid(parsed.data, skillDir)
+  const pruned = await pruneInstalledSkillIfInvalid(parsed.data, files, skillWorkspacePath(skillDirName))
   if (pruned) return null
 
   return parsed.data as InstalledSkillMetadata
@@ -1138,9 +1191,10 @@ export async function getAgentSkillsWithStatus(
   agentSlug: string,
   skillsets: SkillsetConfig[],
 ): Promise<SkillWithStatus[]> {
-  const skillsDir = getAgentSkillsDir(agentSlug)
+  const files = agentFiles(agentSlug)
+  const skillsDir = skillWorkspacePath()
 
-  if (!(await directoryExists(skillsDir))) {
+  if (!(await workspaceDirExists(files, skillsDir))) {
     return []
   }
 
@@ -1157,12 +1211,13 @@ export async function getAgentSkillsWithStatus(
     skillsetConfigMap.set(ss.id, ss)
   }
 
-  const entries = await fs.promises.readdir(skillsDir, { withFileTypes: true })
+  const entries = await files.list(skillsDir)
 
   // First pass: collect metadata + pending queue IDs per provider. This lets
   // us ask each provider for *all* its queue statuses in one request.
   type Prepared = {
     entryName: string
+    /** The skill directory's workspace path. */
     skillPath: string
     meta: InstalledSkillMetadata | null
     skillMdContent: string | null
@@ -1171,11 +1226,10 @@ export async function getAgentSkillsWithStatus(
   const pendingIdsByProvider = new Map<SkillProvider, string[]>()
 
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue
+    if (entry.kind !== 'directory') continue
 
-    const skillPath = path.join(skillsDir, entry.name)
-    const skillMdPath = path.join(skillPath, 'SKILL.md')
-    const skillMdContent = await readFileOrNull(skillMdPath)
+    const skillPath = entry.path
+    const skillMdContent = await readWorkspaceText(files, joinWorkspacePath(skillPath, 'SKILL.md'))
     if (!skillMdContent) continue
 
     const meta = await getInstalledSkillMetadata(agentSlug, entry.name)
@@ -1224,7 +1278,7 @@ export async function getAgentSkillsWithStatus(
         const sourceLabel = info.sourceLabel
 
         // Compute current package hash, with legacy single-file detection.
-        const currentPackageFiles = await readSkillPackageFiles(skillPath)
+        const currentPackageFiles = await readWorkspaceSkillPackageFiles(files, skillPath)
         const currentHash = hashSkillPackageFiles(currentPackageFiles)
         const currentSkillMdHash = contentHash(skillMdContent!)
         const isSingleFileLegacySkill = currentPackageFiles.length === 1
@@ -1306,10 +1360,11 @@ export async function refreshAgentSkills(
     }
   }
 
-  const skillsDir = getAgentSkillsDir(agentSlug)
-  if (!(await directoryExists(skillsDir))) return
+  const files = agentFiles(agentSlug)
+  const skillsDir = skillWorkspacePath()
+  if (!(await workspaceDirExists(files, skillsDir))) return
 
-  const entries = await fs.promises.readdir(skillsDir, { withFileTypes: true })
+  const entries = await files.list(skillsDir)
 
   // Coalesce queue lookups by provider.
   type PendingCheck = { entryName: string; meta: InstalledSkillMetadata }
@@ -1317,7 +1372,7 @@ export async function refreshAgentSkills(
   const metaByEntry = new Map<string, InstalledSkillMetadata>()
 
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue
+    if (entry.kind !== 'directory') continue
     const meta = await getInstalledSkillMetadata(agentSlug, entry.name)
     if (!meta) continue
     metaByEntry.set(entry.name, meta)
@@ -1341,8 +1396,9 @@ export async function refreshAgentSkills(
   }))
 
   for (const [entryName, meta] of metaByEntry) {
-    const skillDir = path.join(skillsDir, entryName)
-    const skillMdContent = await readFileOrNull(path.join(skillDir, 'SKILL.md'))
+    const skillDir = skillWorkspacePath(entryName)
+    const originalMdPath = joinWorkspacePath(skillDir, '.skillset-original.md')
+    const skillMdContent = await readWorkspaceText(files, joinWorkspacePath(skillDir, 'SKILL.md'))
     if (!skillMdContent) continue
 
     const ssConfig = configMap.get(meta.skillsetId)
@@ -1365,23 +1421,23 @@ export async function refreshAgentSkills(
           }
           const mergedFiles = await getRepoSkillPackageFiles(skillRepoDir, meta.skillPath)
           if (mergedFiles) {
-            await copyDirectoryFiltered(path.join(skillRepoDir, path.dirname(meta.skillPath)), skillDir, undefined, { followSymlinks: true })
+            await copyHostDirIntoWorkspace(files, path.join(skillRepoDir, path.dirname(meta.skillPath)), skillDir, { followSymlinks: true })
             meta.originalContentHash = hashSkillPackageFiles(mergedFiles)
             const mergedContent = getSkillMdFromPackageFiles(mergedFiles)
-            await fs.promises.writeFile(path.join(skillDir, '.skillset-original.md'), mergedContent, 'utf-8')
+            await files.putDoc(originalMdPath, mergedContent)
           } else {
-            meta.originalContentHash = await getSkillPackageHash(skillDir)
+            meta.originalContentHash = await getWorkspaceSkillPackageHash(files, skillDir)
           }
         }
         meta.pendingQueueItemId = undefined
         meta.openPrUrl = undefined
-        await writeJsonFile(getSkillMetadataPath(agentSlug, entryName), meta)
+        await writeWorkspaceJson(files, getSkillMetadataPath(entryName), meta)
         continue
       }
     }
 
     // Step 2: legacy hash migration (persist this time).
-    const currentPackageFiles = await readSkillPackageFiles(skillDir)
+    const currentPackageFiles = await readWorkspaceSkillPackageFiles(files, skillDir)
     const currentHash = hashSkillPackageFiles(currentPackageFiles)
     const currentSkillMdHash = contentHash(skillMdContent)
     const isSingleFileLegacySkill = currentPackageFiles.length === 1
@@ -1390,7 +1446,7 @@ export async function refreshAgentSkills(
         && currentSkillMdHash === meta.originalContentHash
         && isSingleFileLegacySkill) {
       meta.originalContentHash = currentHash
-      await writeJsonFile(getSkillMetadataPath(agentSlug, entryName), meta)
+      await writeWorkspaceJson(files, getSkillMetadataPath(entryName), meta)
     }
 
     // Step 3: reconcile against upstream cache.
@@ -1401,12 +1457,8 @@ export async function refreshAgentSkills(
       // Local matches upstream — clear any PR marker, adopt as new baseline.
       meta.originalContentHash = currentHash
       meta.openPrUrl = undefined
-      await writeJsonFile(getSkillMetadataPath(agentSlug, entryName), meta)
-      await fs.promises.writeFile(
-        path.join(skillDir, '.skillset-original.md'),
-        skillMdContent,
-        'utf-8',
-      )
+      await writeWorkspaceJson(files, getSkillMetadataPath(entryName), meta)
+      await files.putDoc(originalMdPath, skillMdContent)
       continue
     }
 
@@ -1416,17 +1468,13 @@ export async function refreshAgentSkills(
         && cacheHash !== currentHash
         && cacheHash !== meta.originalContentHash) {
       const skillDirInRepo = path.join(skillRepoDir, path.dirname(meta.skillPath))
-      await copyDirectoryFiltered(skillDirInRepo, skillDir, undefined, { followSymlinks: true })
-      const freshContent = await readFileOrNull(path.join(skillDir, 'SKILL.md'))
+      await copyHostDirIntoWorkspace(files, skillDirInRepo, skillDir, { followSymlinks: true })
+      const freshContent = await readWorkspaceText(files, joinWorkspacePath(skillDir, 'SKILL.md'))
       meta.originalContentHash = cacheHash
       meta.openPrUrl = undefined
-      await writeJsonFile(getSkillMetadataPath(agentSlug, entryName), meta)
+      await writeWorkspaceJson(files, getSkillMetadataPath(entryName), meta)
       if (freshContent) {
-        await fs.promises.writeFile(
-          path.join(skillDir, '.skillset-original.md'),
-          freshContent,
-          'utf-8',
-        )
+        await files.putDoc(originalMdPath, freshContent)
       }
     }
   }
@@ -1440,13 +1488,13 @@ export async function getDiscoverableSkills(
   skillsets: SkillsetConfig[],
 ): Promise<DiscoverableSkill[]> {
   // Get set of already-installed skill directory names
-  const skillsDir = getAgentSkillsDir(agentSlug)
+  const files = agentFiles(agentSlug)
+  const skillsDir = skillWorkspacePath()
   const installedDirs = new Set<string>()
 
-  if (await directoryExists(skillsDir)) {
-    const entries = await fs.promises.readdir(skillsDir, { withFileTypes: true })
-    for (const entry of entries) {
-      if (entry.isDirectory()) installedDirs.add(entry.name)
+  if (await workspaceDirExists(files, skillsDir)) {
+    for (const entry of await files.list(skillsDir)) {
+      if (entry.kind === 'directory') installedDirs.add(entry.name)
     }
   }
 
@@ -1490,12 +1538,13 @@ async function generatePRSuggestions(
     suggestedVersion: meta.installedVersion,
   }
 
-  const skillDir = path.join(getAgentSkillsDir(agentSlug), skillDirName)
+  const files = agentFiles(agentSlug)
+  const skillDir = skillWorkspacePath(skillDirName)
   const repoDir = getSkillsetRepoDirForRef(toSkillsetRefFromMeta(meta))
-  const modifiedPackageFiles = await readSkillPackageFiles(skillDir)
+  const modifiedPackageFiles = await readWorkspaceSkillPackageFiles(files, skillDir)
 
   // Read original SKILL.md: prefer stored copy, fall back to git history
-  let originalContent = await readFileOrNull(path.join(skillDir, '.skillset-original.md'))
+  let originalContent = await readWorkspaceText(files, joinWorkspacePath(skillDir, '.skillset-original.md'))
   if (!originalContent) {
     originalContent = await getOriginalFromGitHistory(
       repoDir, meta.skillPath, meta.originalContentHash
@@ -1640,8 +1689,9 @@ export async function createSkillPR(
     throw new Error('Skill has no skillset metadata - cannot create PR')
   }
 
-  const skillDir = path.join(getAgentSkillsDir(agentSlug), skillDirName)
-  let packageFiles = await readSkillPackageFiles(skillDir)
+  const files = agentFiles(agentSlug)
+  const skillDir = skillWorkspacePath(skillDirName)
+  let packageFiles = await readWorkspaceSkillPackageFiles(files, skillDir)
   let modifiedContent = getSkillMdFromPackageFiles(packageFiles)
 
   if (options.newVersion) {
@@ -1679,19 +1729,15 @@ export async function createSkillPR(
     await refreshSkillset(metaRef)
     meta.originalContentHash = modifiedHash
     meta.pendingQueueItemId = undefined
-    await fs.promises.writeFile(path.join(skillDir, 'SKILL.md'), modifiedContent, 'utf-8')
-    await fs.promises.writeFile(
-      path.join(getAgentSkillsDir(agentSlug), skillDirName, '.skillset-original.md'),
-      modifiedContent,
-      'utf-8',
-    )
+    await files.putDoc(joinWorkspacePath(skillDir, 'SKILL.md'), modifiedContent)
+    await files.putDoc(joinWorkspacePath(skillDir, '.skillset-original.md'), modifiedContent)
   }
 
   if (result.prUrl) {
     meta.openPrUrl = result.prUrl
   }
 
-  await writeJsonFile(getSkillMetadataPath(agentSlug, skillDirName), meta)
+  await writeWorkspaceJson(files, getSkillMetadataPath(skillDirName), meta)
 
   return { prUrl: result.prUrl, successMessage: result.successMessage }
 }
@@ -1825,8 +1871,7 @@ export async function getSkillPublishInfo(
     throw new Error('Skill already belongs to a skillset — use Open PR instead')
   }
 
-  const skillMdPath = path.join(getAgentSkillsDir(agentSlug), skillDirName, 'SKILL.md')
-  const skillContent = await readFileOrNull(skillMdPath)
+  const skillContent = await readWorkspaceText(agentFiles(agentSlug), skillWorkspacePath(skillDirName, 'SKILL.md'))
   if (!skillContent) {
     throw new Error('SKILL.md not found')
   }
@@ -1860,8 +1905,9 @@ export async function publishSkillToSkillset(
 ): Promise<{ prUrl?: string; successMessage: string }> {
   sanitizeDirName(skillDirName)
 
-  const skillDir = path.join(getAgentSkillsDir(agentSlug), skillDirName)
-  let packageFiles = await readSkillPackageFiles(skillDir)
+  const files = agentFiles(agentSlug)
+  const skillDir = skillWorkspacePath(skillDirName)
+  let packageFiles = await readWorkspaceSkillPackageFiles(files, skillDir)
   let skillContent = getSkillMdFromPackageFiles(packageFiles)
 
   if (options.newVersion) {
@@ -1935,20 +1981,16 @@ export async function publishSkillToSkillset(
     metadata.pendingQueueItemId = result.queueItem.id
   } else if (result.status === 'merged') {
     metadata.originalContentHash = hashSkillPackageFiles(packageFiles)
-    await fs.promises.writeFile(path.join(skillDir, 'SKILL.md'), skillContent, 'utf-8')
+    await files.putDoc(joinWorkspacePath(skillDir, 'SKILL.md'), skillContent)
   }
 
   if (result.prUrl) {
     metadata.openPrUrl = result.prUrl
   }
 
-  await writeJsonFile(getSkillMetadataPath(agentSlug, skillDirName), metadata)
+  await writeWorkspaceJson(files, getSkillMetadataPath(skillDirName), metadata)
 
-  await fs.promises.writeFile(
-    path.join(getAgentSkillsDir(agentSlug), skillDirName, '.skillset-original.md'),
-    skillContent,
-    'utf-8'
-  )
+  await files.putDoc(joinWorkspacePath(skillDir, '.skillset-original.md'), skillContent)
 
   return { prUrl: result.prUrl, successMessage: result.successMessage }
 }
@@ -1977,27 +2019,27 @@ export async function exportSkill(
   skillDirName: string,
 ): Promise<{ zipBuffer: Buffer; skillName: string | null }> {
   sanitizeDirName(skillDirName)
-  const skillDir = path.join(getAgentSkillsDir(agentSlug), skillDirName)
+  const files = agentFiles(agentSlug)
+  const skillDir = skillWorkspacePath(skillDirName)
 
-  if (!(await directoryExists(skillDir))) {
+  if (!(await workspaceDirExists(files, skillDir))) {
     throw new Error('Skill directory not found')
   }
 
-  const skillMdPath = path.join(skillDir, 'SKILL.md')
-  const skillContent = await readFileOrNull(skillMdPath)
+  const skillContent = await readWorkspaceText(files, joinWorkspacePath(skillDir, 'SKILL.md'))
   if (!skillContent) {
     throw new Error('SKILL.md not found in skill directory')
   }
 
-  const packageFiles = await readSkillPackageFiles(skillDir)
-  const files: Record<string, string> = {}
+  const packageFiles = await readWorkspaceSkillPackageFiles(files, skillDir)
+  const zipEntries: Record<string, string> = {}
   for (const f of packageFiles) {
-    files[`${skillDirName}/${f.relativePath}`] = f.content
+    zipEntries[`${skillDirName}/${f.relativePath}`] = f.content
   }
 
   const { createZipBuffer } = await import('@shared/lib/utils/zip')
   return {
-    zipBuffer: await createZipBuffer(files),
+    zipBuffer: await createZipBuffer(zipEntries),
     skillName: parseSkillFrontmatter(skillContent).name || null,
   }
 }
@@ -2007,13 +2049,14 @@ export async function exportSkill(
  */
 export async function deleteSkill(agentSlug: string, skillDirName: string): Promise<void> {
   sanitizeDirName(skillDirName)
-  const skillDir = path.join(getAgentSkillsDir(agentSlug), skillDirName)
+  const files = agentFiles(agentSlug)
+  const skillDir = skillWorkspacePath(skillDirName)
 
-  if (!(await directoryExists(skillDir))) {
+  if (!(await workspaceDirExists(files, skillDir))) {
     throw new Error('Skill directory not found')
   }
 
-  await removeDirectory(skillDir)
+  await files.delete(skillDir, { recursive: true })
 }
 
 export interface SkillValidationResult {
@@ -2027,6 +2070,21 @@ export interface SkillValidationResult {
 /** `my-skill/` → `my-skill`; '' when the package has no single wrapper folder. */
 function wrapperDirName(stripPrefix: string): string {
   return stripPrefix.replace(/\/$/, '')
+}
+
+/**
+ * Where a zip entry lands under the skill directory, or null when its name
+ * would not resolve to a file strictly inside that directory.
+ */
+function zipEntryWorkspacePath(skillDir: string, entryName: string): string | null {
+  let destPath: string
+  try {
+    destPath = joinWorkspacePath(skillDir, entryName)
+  } catch (error) {
+    if (error instanceof WorkspaceFileError) return null
+    throw error
+  }
+  return destPath.startsWith(`${skillDir}/`) ? destPath : null
 }
 
 /**
@@ -2128,17 +2186,17 @@ export async function importSkillFromZip(
       .replace(/^-+|-+$/g, '') || 'imported-skill'
 
     // Ensure unique directory name
-    const skillsDir = getAgentSkillsDir(agentSlug)
-    await ensureDirectory(skillsDir)
+    const files = agentFiles(agentSlug)
+    await files.mkdir(skillWorkspacePath())
     let dirName = baseDirName
     let suffix = 1
-    while (await directoryExists(path.join(skillsDir, dirName))) {
+    while ((await files.stat(skillWorkspacePath(dirName))) !== null) {
       dirName = `${baseDirName}-${suffix}`
       suffix++
     }
 
-    const destDir = path.join(skillsDir, dirName)
-    await ensureDirectory(destDir)
+    const destDir = skillWorkspacePath(dirName)
+    await files.mkdir(destDir)
 
     let totalExtracted = 0
     for (const entry of reader.entries) {
@@ -2152,21 +2210,18 @@ export async function importSkillFromZip(
 
       if (!entryName) continue
 
-      const baseName = path.basename(entryName)
+      const baseName = path.posix.basename(entryName)
       if (baseName === '.skillset-metadata.json' || baseName === '.skillset-original.md') continue
 
-      const destPath = path.resolve(destDir, entryName)
       // Defense-in-depth: validateSkillZip already rejects `..`/absolute entries
-      // upfront, but confirm genuine containment here too (prefix-safe).
-      if (!isPathWithinDir(destDir, destPath)) continue
+      // upfront, but confirm the entry lands inside the new skill directory
+      // (the actor keeps it inside the workspace; this keeps it inside the skill).
+      const destPath = zipEntryWorkspacePath(destDir, entryName)
+      if (destPath === null) continue
 
-      await ensureDirectory(path.dirname(destPath))
-      const bytesWritten = await reader.extractEntry(
-        entry.fileName,
-        destPath,
-        SKILL_MAX_UNCOMPRESSED_SIZE - totalExtracted,
-      )
-      totalExtracted += bytesWritten
+      const bytes = await reader.readEntry(entry.fileName, SKILL_MAX_UNCOMPRESSED_SIZE - totalExtracted)
+      await files.write(destPath, new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength))
+      totalExtracted += bytes.byteLength
     }
 
     return {

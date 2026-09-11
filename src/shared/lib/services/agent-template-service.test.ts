@@ -2278,13 +2278,13 @@ describe('exportAgentFull', () => {
 
     // Template export enumerates the workspace before the stream is created,
     // so the file removed here is guaranteed to be enumerated but not yet
-    // lstat'd by archiver's async queue — the shape of a file deleted
-    // between enumeration and read. Without warning escalation this
+    // opened by the append loop — the shape of a file deleted between
+    // enumeration and read. Without that check failing the stream this
     // finalizes a valid-looking zip missing the deleted file, zero errors.
     const archive = await exportAgentTemplateStream('full-agent')
     fs.rmSync(path.join(workspaceDir, 'data-39.txt'))
 
-    await expect(readableToBuffer(archive)).rejects.toThrow(/ENOENT/)
+    await expect(readableToBuffer(archive)).rejects.toThrow(/data-39\.txt.*not found/i)
     await waitUntil(() => !isHostExportBusy())
   })
 
