@@ -13,17 +13,18 @@
  * Writes go through the same temp-file, fsync, rename core as every other
  * atomic write in the app: a crash never leaves a torn or empty file, a
  * reader (the container included) never sees a half-written one, and an
- * existing file keeps its mode and owner. A document (`putDoc`) is flushed to
- * disk before the write returns; bulk content (`write`: uploads, imports) is
- * renamed into place whole but not flushed, as it never was, because a flush
- * per file is what makes a thousand-file import slow.
+ * existing file keeps its mode and owner unless a mode is asked for. A
+ * document (`putDoc`) is flushed to disk before the write returns; bulk
+ * content (`write`: uploads, imports) is renamed into place whole but not
+ * flushed, as it never was, because a flush per file is what makes a
+ * thousand-file import slow.
  */
 import fs from 'fs'
 import path from 'path'
 import { Readable } from 'stream'
 import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 import { writeFileAtomicStream } from '@shared/lib/utils/file-storage'
-import type { ByteRange, FileEntry, FileOps, FileStat } from './types'
+import type { ByteRange, FileEntry, FileOps, FileStat, WriteOptions } from './types'
 import { WorkspaceFileError, normalizeWorkspacePath } from './workspace-path'
 
 export interface LocalFileOpsDeps {
@@ -109,6 +110,16 @@ async function statOrNull(p: string): Promise<fs.Stats | null> {
     if (isAbsence(error)) return null
     return fromFsError(error)
   }
+}
+
+/**
+ * A mode the caller asks for is applied whatever the file had before: the
+ * rename transfers ownership to this process, and a preserved restrictive
+ * mode would leave a file another uid (the container) can no longer read.
+ * With no mode asked for, an existing file keeps its mode and owner.
+ */
+function atomicWriteOptions(options?: WriteOptions): { mode: number; forceMode: true } | undefined {
+  return options?.mode === undefined ? undefined : { mode: options.mode, forceMode: true }
 }
 
 /** A host-relative path in workspace spelling: posix separators, `''` for the root. */
@@ -290,13 +301,17 @@ export class LocalFileOps implements FileOps {
     }
   }
 
-  async putDoc(workspacePath: string, bytes: Uint8Array | string): Promise<void> {
+  async putDoc(workspacePath: string, bytes: Uint8Array | string, options?: WriteOptions): Promise<void> {
     const { abs } = this.forWrite(workspacePath)
     const data = typeof bytes === 'string' ? Buffer.from(bytes, 'utf-8') : asBuffer(bytes)
-    await this.writing(abs, () => writeFileAtomicStream(abs, [data])).catch(fromWriteError)
+    await this.writing(abs, () => writeFileAtomicStream(abs, [data], atomicWriteOptions(options))).catch(fromWriteError)
   }
 
-  async write(workspacePath: string, body: ReadableStream<Uint8Array> | Uint8Array): Promise<{ size: number }> {
+  async write(
+    workspacePath: string,
+    body: ReadableStream<Uint8Array> | Uint8Array,
+    options?: WriteOptions,
+  ): Promise<{ size: number }> {
     let target: { rel: string; abs: string }
     try {
       target = this.forWrite(workspacePath)
@@ -317,7 +332,9 @@ export class LocalFileOps implements FileOps {
     source?.on('error', () => {})
     const chunks = source ?? [asBuffer(body as Uint8Array)]
     try {
-      await this.writing(target.abs, () => writeFileAtomicStream(target.abs, chunks, { fsync: false }))
+      await this.writing(target.abs, () =>
+        writeFileAtomicStream(target.abs, chunks, { ...atomicWriteOptions(options), fsync: false }),
+      )
     } catch (error) {
       // A destination that could not be opened (or written) leaves the
       // source unread; end it, or the file behind it stays open.
