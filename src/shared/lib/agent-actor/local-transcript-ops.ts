@@ -36,21 +36,27 @@ const subagentMetaSchema = z.object({ toolUseId: z.string().optional() }).loose(
 
 /**
  * A transcript-relative path that stays inside the agent's sessions directory.
- *
- * The segments are unvalidated URL parts spliced into a path, and the sessions
- * directory sits inside the workspace the container bind-mounts, so the agent
- * can plant links there. A traversal is rejected lexically; a component that
- * resolves out of the tree through a link is rejected by its real path. That
- * check is anchored on the WORKSPACE, the mount point the container cannot
- * replace, not on the sessions directory itself: a link swapped in for the
- * sessions directory would otherwise resolve base and candidate to the same
- * escaped location and pass. An escaped link reads as not found, so nothing
- * about the target is disclosed.
+ * The segments are unvalidated URL parts spliced into a path, so a traversal
+ * is rejected lexically, as the routes these reads come from always did.
  */
 function sessionFile(slug: string, ...segments: string[]): string {
   const sessionsDir = getAgentSessionsDir(slug)
   const target = path.join(sessionsDir, ...segments)
   if (!isPathWithinDir(sessionsDir, target)) throw new WorkspaceFileError('invalid-path')
+  return target
+}
+
+/**
+ * The one transcript read that also checks its real location, as its route
+ * always did: the sessions directory sits inside the workspace the container
+ * bind-mounts, so the agent can plant links there. The check is anchored on
+ * the WORKSPACE, the mount point the container cannot replace, not on the
+ * sessions directory itself: a link swapped in for the sessions directory
+ * would otherwise resolve base and candidate to the same escaped location
+ * and pass. An escaped link reads as not found, so nothing about the target
+ * is disclosed. Doing the same for every read here is tracked separately.
+ */
+function reallyInsideWorkspace(slug: string, target: string): string {
   if (!isRealPathWithinDir(getAgentWorkspaceDir(slug), target)) throw new WorkspaceFileError('not-found')
   return target
 }
@@ -93,7 +99,7 @@ export async function listSubagents(
 
 export async function readSubagentTranscript(slug: string, sessionId: string, subagentId: string): Promise<JsonlEntry[]> {
   if (!SUBAGENT_ID.test(subagentId)) throw new WorkspaceFileError('invalid-path')
-  const jsonlPath = sessionFile(slug, sessionId, 'subagents', `agent-${subagentId}.jsonl`)
+  const jsonlPath = reallyInsideWorkspace(slug, sessionFile(slug, sessionId, 'subagents', `agent-${subagentId}.jsonl`))
   return readJsonlFile<JsonlEntry>(jsonlPath)
 }
 
