@@ -93,7 +93,7 @@ export function SessionChatColumn({
       pendingUserMessages={pendingUserMessages}
       pendingRequestCount={pendingRequestCount}
       onPendingMessageAppeared={onPendingMessageAppeared}
-      suppressScrollToBottom={staleSession.learnMoreOpen}
+      suppressScrollToBottom={staleSession.popoverOpen}
       overlayFooter
       footerClassName="max-w-[740px] mx-auto w-full"
       footer={
@@ -136,7 +136,7 @@ export function SessionChatColumn({
                   onIgnore={staleSession.ignore}
                   onContinueCompacted={staleSession.continueCompacted}
                   onStartFresh={staleSession.startFresh}
-                  onLearnMoreOpenChange={staleSession.setLearnMoreOpen}
+                  onPopoverOpenChange={staleSession.setPopoverOpen}
                 />
               )}
               <MessageInput

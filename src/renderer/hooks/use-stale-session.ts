@@ -41,7 +41,7 @@ export function useStaleSession({
   const draftsStore = useDraftsStore()
   const forkAndCompact = useForkAndCompact()
   const [ignored, setIgnored] = useState(false)
-  const [learnMoreOpen, setLearnMoreOpen] = useState(false)
+  const [popoverOpen, setPopoverOpen] = useState(false)
   const [liveActivityAt, setLiveActivityAt] = useState<number | null>(null)
   const wasActiveRef = useRef(isActive)
   const composerSnapshotRef = useRef<(() => ComposerSnapshot) | null>(null)
@@ -57,7 +57,7 @@ export function useStaleSession({
   // state must be scoped explicitly to the current session.
   useEffect(() => {
     setIgnored(false)
-    setLearnMoreOpen(false)
+    setPopoverOpen(false)
     setLiveActivityAt(null)
     wasActiveRef.current = isActive
   }, [sessionId]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -93,8 +93,8 @@ export function useStaleSession({
   return {
     showNotice: shouldPrompt && !isActive && !isViewOnly && !ignored,
     ignore: useCallback(() => setIgnored(true), []),
-    learnMoreOpen,
-    setLearnMoreOpen,
+    popoverOpen,
+    setPopoverOpen,
     registerSnapshot,
     startFresh,
     continueCompacted,
