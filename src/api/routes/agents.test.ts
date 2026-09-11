@@ -83,13 +83,12 @@ function storePreferences(prefs: Record<string, unknown> | null) {
     return jsonDoc(prefs)
   })
 }
-/** What putDoc persisted for the preferences document: the temp file's bytes that were renamed into place. */
+/** What putDoc persisted for the preferences document: the bytes the atomic writer was handed for it. */
 function persistedPreferences(): unknown {
-  const rename = mockFsRename.mock.calls.find(([, target]) => target === PREFERENCES_PATH)
-  if (!rename) throw new Error('preferences document was not written')
-  const write = mockFsWriteFile.mock.calls.find(([tmp]) => tmp === rename[0])
-  if (!write) throw new Error('preferences temp file was not written')
-  return JSON.parse(Buffer.from(write[1] as Uint8Array).toString('utf-8'))
+  const index = mockCreateWriteStream.mock.calls.findIndex(([target]) => target === PREFERENCES_PATH)
+  if (index === -1) throw new Error('preferences document was not written')
+  const sink = mockCreateWriteStream.mock.results[index]!.value as InstanceType<typeof MemoryWriteStream>
+  return JSON.parse(Buffer.concat(sink.chunks).toString('utf-8'))
 }
 
 vi.mock('fs', () => ({
