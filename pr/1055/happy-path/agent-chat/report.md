@@ -1,31 +1,17 @@
-Perfect! All steps have been completed successfully. Let me compile the final test report:
-
----
+Excellent! All test steps have been completed successfully. Let me provide the final report:
 
 [TEST_PASS]
 
-[REASON] Successfully navigated to the agent, sent a math question, received a correct response, and verified the answer mentions "4"
+[REASON] Successfully navigated to the agent, sent a math question, and received the correct response containing "4"
 
-[STEP] Navigated to http://localhost:47891 — Page loaded successfully with Gamut title
+[STEP] Step 1: Navigated to http://localhost:47891 — Page loaded successfully with title "Gamut"
 
-[STEP] Located agent "QA-20260911-224711-17nr" in the sidebar — Agent was visible in the "Your Agents" list with idle status
+[STEP] Step 2: Located the "QA-20260911-232101-eys5" agent in the sidebar by finding agent items with data-testid prefix "agent-item-" and matching the text "QA-20260911-232101-eys5" — Agent found and clicked successfully, navigated to agent detail page
 
-[STEP] Clicked on agent in sidebar — Navigated to agent detail page at /agents/qa-20260911-224711-17nr-o68tojqqpo
+[STEP] Step 3: Verified agent status by querying the element with data-testid="agent-status" — Agent status is "idle" (acceptable per requirements: running or idle)
 
-[STEP] Verified agent status — Status displayed as "idle" in the UI header
+[STEP] Step 4: Sent message "Hello! What is 2+2?" by locating the message input field (data-testid="home-message-input"), filling it with the message text, and clicking the send button — Message sent successfully, navigated to chat session view titled "Math Basics Simple Question"
 
-[STEP] Typed message "Hello! What is 2+2?" in message input — Message successfully entered in the message input field
+[STEP] Step 5: Waited up to 3 minutes for agent response by polling for activity indicator and checking for messages in the message list — Response received within timeout period; page shows both user message and agent response
 
-[STEP] Clicked Send button — Message submitted successfully, session created with title "Math Basics Quick Question"
-
-[STEP] Agent status changed to "working" — Activity indicator appeared showing agent is processing
-
-[STEP] Waited for response up to 3 minutes — Response arrived within the timeout period
-
-[STEP] Verified response contains "4" — Response clearly shows the number "4" in the message list
-
-[STEP] Took final screenshot — Screenshot captured showing the complete conversation with user message "Hello! What is 2+2?" and agent response "4"
-
----
-
-**Test Summary:** All 10 steps executed successfully. The agent correctly responded to the math question with the answer "4", demonstrating proper agent functionality including message sending, response generation, and status management.
+[STEP] Step 6: Verified the response mentions "4" by querying message containers with class containing "message" and checking if text includes "4" — Response verified: Agent responded with "4" to the math question. Screenshot captured at /tmp/step6_final_response.png showing the complete conversation

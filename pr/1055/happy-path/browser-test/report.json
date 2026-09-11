@@ -1,24 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the agent successfully opened a browser, navigated to https://example.com, and correctly reported the page title as \"Example Domain\"",
+  "reason": "Browser-use feature successfully opened a browser, navigated to https://example.com, retrieved the page title, and reported \"Example Domain\" in the response.",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully with Gamut application showing sidebar with agents list",
-    "Clicked on \"QA-20260911-224712-k59o\" agent in the sidebar — Agent page loaded successfully with message input field visible",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in input field — Message appeared in the input field",
-    "Clicked Send message button — Message was sent and a new session was created (URL changed to include session ID)",
-    "Waited up to 3 minutes for agent response — Agent completed work in 6 seconds and finished processing",
-    "Verified the response mentions \"Example Domain\" and took screenshot — Response clearly states: \"The page title is \"Example Domain\" (HTTP 200). Browser closed.\""
+    "Navigated to http://localhost:47891 — Page loaded successfully with title \"Gamut\" showing the home page with agent list.",
+    "Found and clicked the \"QA-20260911-232102-lbm1\" agent in the sidebar — Agent page loaded with chat interface and URL changed to /agents/qa-20260911-232102-lbm1-ezqml807wd.",
+    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Message appeared in the input field correctly formatted.",
+    "Sent the message by pressing Ctrl+Enter — Message sent successfully, creating a new session titled \"Browser Page Title Lookup Session\".",
+    "Waited for the response to complete (up to 3 minutes) — Agent processed the request in 6 seconds using 3 tool calls and 146,722 tokens. The \"Working...\" indicator disappeared, indicating completion.",
+    "Verified the response mentions \"Example Domain\" and took a screenshot — Response displayed: \"The page title is \"Example Domain\" (HTTP 200). Browser closed.\" confirming successful browser use feature operation."
   ],
   "bugs": [],
-  "durationMs": 61132,
-  "sessionId": "c062da7a-f2e5-4aa7-8287-cf1e7bcc425a",
+  "durationMs": 163655,
+  "sessionId": "82dbc6ff-d3f9-4037-8f90-303921b14153",
   "cost": {
-    "inputTokens": 320,
-    "outputTokens": 8975,
-    "cacheCreationTokens": 70348,
-    "cacheReadTokens": 893009,
+    "inputTokens": 458,
+    "outputTokens": 12603,
+    "cacheCreationTokens": 62142,
+    "cacheReadTokens": 1251867,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.222431
+    "totalCostUsd": 0.266337
   }
 }
