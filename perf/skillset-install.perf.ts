@@ -92,12 +92,7 @@ describe('skillset install', () => {
     )
     expectWithinBudget('skillset installAgentFromSkillset', measurement, {
       totalOps: 10_000,
-      // Every file the install writes into the workspace pays a link check and a
-      // parent resolution, and every file the hash reads back a real-path check:
-      // about 140 operations over the plain copy this replaced, which did none of
-      // that. A bulk import that resolves the destination directory once and a
-      // batched read for the hash would bring this back under 500 ms.
-      wallMs: 900,
+      wallMs: 500,
     })
   })
 })
