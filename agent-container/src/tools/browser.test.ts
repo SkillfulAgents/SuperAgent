@@ -315,3 +315,101 @@ describe('browser_wait result carries the page URL', () => {
     expect(result.content[0].text).toBe('Selector "#dash" matched after 900 ms. Page: https://a.com/dashboard')
   })
 })
+
+describe('browser_get_state coherence', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
+
+  it('takes the URL from the snapshot it shows, and never calls get url', async () => {
+    const calls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      calls.push(String(url))
+      if (String(url).endsWith('/browser/snapshot')) {
+        return json({
+          snapshot: '[page] https://b.com/results · "Results" · HTTP 200 · complete · 3 refs\n\n- button "Go" [ref=e1]',
+          page: { url: 'https://b.com/results', title: 'Results', readyState: 'complete', httpStatus: 200, contentType: 'text/html' },
+          tabCount: 1,
+        })
+      }
+      return json({ output: 'Screenshot saved to: /nonexistent/shot.png' })
+    }))
+    const tool = createBrowserTools(() => 's').find(t => t.name === 'browser_get_state') as any
+    const result = await tool.handler({})
+    const text = String(result.content.find((c: any) => c.type === 'text').text)
+    expect(text).toContain('**Current URL:** https://b.com/results')
+    expect(text).toContain('**Accessibility Snapshot:**')
+    expect(calls.some(u => u.endsWith('/browser/run'))).toBe(false)
+    expect(calls.indexOf(calls.find(u => u.endsWith('/browser/snapshot'))!)).toBeLessThan(calls.indexOf(calls.find(u => u.endsWith('/browser/screenshot'))!))
+    expect(result.isError).toBeUndefined()
+  })
+
+  it('collapses one cause that failed every leg into one error line and marks the result an error', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => json({ error: '✗ Auto-launch failed: CDP WebSocket connect failed: HTTP error: 410 Gone' }, 500)))
+    const tool = createBrowserTools(() => 's').find(t => t.name === 'browser_get_state') as any
+    const result = await tool.handler({})
+    const text = String(result.content[0].text)
+    expect(text.match(/410 Gone/g)).toHaveLength(1)
+    expect(text).toContain('**Error (snapshot and screenshot):**')
+    expect(text).not.toContain('Current URL')
+    expect(result.isError).toBe(true)
+  })
+
+  it('keeps a partial failure as a section error without marking the whole result an error', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (String(url).endsWith('/browser/snapshot')) {
+        return json({ snapshot: '[page] https://b.com/ · "B" · HTTP 200 · complete · 1 refs\n\n- link "x" [ref=e1]', page: { url: 'https://b.com/', title: 'B', readyState: 'complete', httpStatus: 200, contentType: 'text/html' }, tabCount: 1 })
+      }
+      return json({ error: 'screenshot timed out' }, 500)
+    }))
+    const tool = createBrowserTools(() => 's').find(t => t.name === 'browser_get_state') as any
+    const result = await tool.handler({})
+    const text = String(result.content[0].text)
+    expect(text).toContain('**Error (screenshot):** screenshot timed out')
+    expect(text).toContain('**Current URL:** https://b.com/')
+    expect(result.isError).toBeUndefined()
+  })
+
+  it('omits the screenshot leg entirely when screenshot=false, so a single failure is total', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => json({ error: 'Browser is not active' }, 400)))
+    const tool = createBrowserTools(() => 's').find(t => t.name === 'browser_get_state') as any
+    const result = await tool.handler({ screenshot: false })
+    expect(String(result.content[0].text)).toBe('**Error (snapshot):** Browser is not active')
+    expect(result.isError).toBe(true)
+  })
+})
+
+describe('browser_get_state screenshot delivery', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
+
+  it('counts an unreadable screenshot file as a failed leg, so snapshot failure + unreadable file is a total failure', async () => {
+    // review: snapshot failed and the screenshot file could not be read/resized — nothing delivered, isError absent
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (String(url).endsWith('/browser/snapshot')) return json({ error: 'Browser is not active' }, 400)
+      return json({ output: 'Screenshot saved to: /nonexistent/dir/shot.png' })
+    }))
+    const tool = createBrowserTools(() => 's').find(t => t.name === 'browser_get_state') as any
+    const result = await tool.handler({})
+    const text = String(result.content[0].text)
+    expect(result.content.some((c: any) => c.type === 'image')).toBe(false)
+    expect(text).toContain('**Error (snapshot):** Browser is not active')
+    expect(text).toContain('**Error (screenshot):** screenshot file could not be read: /nonexistent/dir/shot.png')
+    expect(text).not.toContain('**Screenshot:**')
+    expect(result.isError).toBe(true)
+  })
+
+  it('treats a missing screenshot path as a failed leg too', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (String(url).endsWith('/browser/snapshot')) return json({ snapshot: '[page] https://b.com/ · "B" · HTTP 200 · complete · 1 refs\n- link "x" [ref=e1]', page: { url: 'https://b.com/', title: 'B', readyState: 'complete', httpStatus: 200, contentType: 'text/html' }, tabCount: 1 })
+      return json({ output: '' })
+    }))
+    const tool = createBrowserTools(() => 's').find(t => t.name === 'browser_get_state') as any
+    const result = await tool.handler({})
+    expect(String(result.content[0].text)).toContain('**Error (screenshot):** no screenshot path returned')
+    expect(result.isError).toBeUndefined()
+  })
+})
