@@ -4387,6 +4387,63 @@ describe('MessagePersister', () => {
       expect(messagePersister.getSessionActivity(AGENT_SLUG, SESSION_ID)).toBe('streaming')
     })
 
+    it('isSessionCompacting reads the flag while active, keeps it across an input request, and is false once idle', () => {
+      // The connected snapshot carries this to late-joining clients, which
+      // clear their own flag on session_idle and keep it across an input request.
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      const st = (messagePersister as any).streamingStates.get(sessionKeyOf(AGENT_SLUG, SESSION_ID))
+      st.isCompacting = true
+      expect(messagePersister.isSessionCompacting(AGENT_SLUG, SESSION_ID)).toBe(true)
+      st.isAwaitingInput = true
+      expect(messagePersister.isSessionCompacting(AGENT_SLUG, SESSION_ID)).toBe(true)
+      st.isAwaitingInput = false; st.isActive = false
+      expect(messagePersister.isSessionCompacting(AGENT_SLUG, SESSION_ID)).toBe(false)
+    })
+
+    it('a turn result ends a compaction whose summary was missed, and does not re-announce one the summary ended', () => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      const st = (messagePersister as any).streamingStates.get(sessionKeyOf(AGENT_SLUG, SESSION_ID))
+      st.isCompacting = true
+      sseEvents.length = 0
+      // The summary was lost across a reattach: the result is the last frame
+      // that can tell connected clients the spinner is over.
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      expect(st.isCompacting).toBe(false)
+      expect(sseEvents.filter(e => e.type === 'compact_complete')).toHaveLength(1)
+
+      // The ordinary turn: the summary ends the compaction, the result adds nothing.
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      st.isCompacting = true
+      sseEvents.length = 0
+      mockClient._sendMessage({
+        type: 'user', isCompactSummary: true, message: { role: 'user', content: [{ type: 'text', text: 'Summary.' }] },
+      })
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      expect(sseEvents.filter(e => e.type === 'compact_complete')).toHaveLength(1)
+    })
+
+    it('a stop clears the raw compaction flag, so a later wake does not resurrect it', async () => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      const st = (messagePersister as any).streamingStates.get(sessionKeyOf(AGENT_SLUG, SESSION_ID))
+      st.isCompacting = true
+      await messagePersister.markSessionInterrupted(AGENT_SLUG, SESSION_ID, { processKept: true })
+      expect(st.isCompacting).toBe(false)
+    })
+
+    it('a transport reattach mid-turn keeps isCompacting; a reattach to an idle session starts clean', async () => {
+      await messagePersister.subscribeToSession(AGENT_SLUG, SESSION_ID, mockClient, SESSION_ID)
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      const key = sessionKeyOf(AGENT_SLUG, SESSION_ID)
+      ;(messagePersister as any).streamingStates.get(key).isCompacting = true
+
+      await messagePersister.subscribeToSession(AGENT_SLUG, SESSION_ID, mockClient, SESSION_ID)
+      expect(messagePersister.isSessionCompacting(AGENT_SLUG, SESSION_ID)).toBe(true)
+
+      ;(messagePersister as any).streamingStates.get(key).isActive = false
+      await messagePersister.subscribeToSession(AGENT_SLUG, SESSION_ID, mockClient, SESSION_ID)
+      expect((messagePersister as any).streamingStates.get(key).isCompacting).toBe(false)
+    })
+
     it('a new turn (markSessionActive) clears a stale isCompacting/currentThinking from an abnormally-ended prior turn', () => {
       // The desktop app resets these on session_active/idle/error; chat must too, or a
       // turn that ended mid-compaction (error/interrupt before the compact summary)
@@ -8429,6 +8486,98 @@ describe('MessagePersister', () => {
       expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
     })
 
+    it('a handshake from the same process keeps a compaction in flight; a new process instance drops it', () => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      mockClient._sendMessage({
+        type: 'system', subtype: 'capabilities', session_state_events: true, process_instance: 'proc-1',
+      })
+      const st = (messagePersister as any).streamingStates.get(sessionKeyOf(AGENT_SLUG, SESSION_ID))
+      st.isCompacting = true
+
+      // A transport reattach re-announces the same process mid-compaction.
+      mockClient._sendMessage({
+        type: 'system', subtype: 'capabilities', session_state_events: true, process_instance: 'proc-1',
+      })
+      expect(messagePersister.isSessionCompacting(AGENT_SLUG, SESSION_ID)).toBe(true)
+
+      // The CLI was replaced: its compaction died with it and no summary will
+      // land, so connected clients are told to drop their indicator too.
+      sseEvents.length = 0
+      mockClient._sendMessage({
+        type: 'system', subtype: 'capabilities', session_state_events: true, process_instance: 'proc-2',
+      })
+      expect(messagePersister.isSessionCompacting(AGENT_SLUG, SESSION_ID)).toBe(false)
+      expect(sseEvents.filter(e => e.type === 'compact_complete')).toHaveLength(1)
+    })
+
+    it('a stopped turn that leaves background work running tells clients its compaction is over', () => {
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'background_tasks_changed',
+        tasks: [{ task_id: 'bg-1', task_type: 'local_bash', description: 'Sleep' }],
+      })
+      const st = (messagePersister as any).streamingStates.get(sessionKeyOf(AGENT_SLUG, SESSION_ID))
+      st.isCompacting = true
+      sseEvents.length = 0
+
+      // The interrupt result spares the task, so the session stays active and
+      // no idle frame follows to reset the client.
+      mockClient._sendMessage({ type: 'result', subtype: 'success', terminal_reason: 'aborted_tools' })
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionCompacting(AGENT_SLUG, SESSION_ID)).toBe(false)
+      expect(sseEvents.filter(e => e.type === 'compact_complete')).toHaveLength(1)
+    })
+
+    it('a tool result that lands while a missed summary left the flag set still settles, and ends the compaction', () => {
+      // compact_start seen, transport dropped, summary missed, same process
+      // reattached with the flag kept: the next user frame is a tool result,
+      // not the summary, and it must reach the tool-result path.
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      // A deliver_file call is in flight; its result has to reach chat.
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: 'deliver-1', name: 'mcp__user-input__deliver_file' },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json: '{"filePath":"/workspace/out.txt"}' } },
+      })
+      mockClient._sendMessage({ type: 'stream_event', event: { type: 'content_block_stop' } })
+      const st = (messagePersister as any).streamingStates.get(sessionKeyOf(AGENT_SLUG, SESSION_ID))
+      st.isCompacting = true
+      sseEvents.length = 0
+      mockClient._sendMessage({
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'deliver-1', content: 'delivered' }] },
+      })
+      expect(st.isCompacting).toBe(false)
+      expect(sseEvents.filter(e => e.type === 'compact_complete')).toHaveLength(1)
+      expect(sseEvents.filter(e => e.type === 'tool_result' && e.toolUseId === 'deliver-1')).toHaveLength(1)
+      const ready = sseEvents.filter(e => e.type === 'tool_result_ready')
+      expect(ready).toHaveLength(1)
+      expect(ready[0].filePath).toBe('/workspace/out.txt')
+      expect(sseEvents.filter(e => e.type === 'messages_updated')).toHaveLength(1)
+    })
+
+    it('a runtime-started turn resets a compaction left over from a turn that ended without its summary', () => {
+      mockClient._sendMessage({
+        type: 'system', subtype: 'capabilities', session_state_events: true, process_instance: 'proc-1',
+      })
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      const st = (messagePersister as any).streamingStates.get(sessionKeyOf(AGENT_SLUG, SESSION_ID))
+      st.isCompacting = true
+      st.isActive = false
+
+      // A background-task wake starts a turn the host never POSTed.
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+      expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionCompacting(AGENT_SLUG, SESSION_ID)).toBe(false)
+    })
+
     it('a capabilities handshake naming a new process instance drops the stale snapshot', () => {
       // The cold-resume path: the CLI is replaced while nothing is attached
       // (idle eviction + --resume, container restart), so the live
@@ -9097,6 +9246,27 @@ describe('MessagePersister mid-turn recovery snapshot', () => {
     expect(onDeath).toHaveBeenCalledWith(AGENT_SLUG)
     expect(messagePersister.consumeLastFatal(AGENT_SLUG)).toBe('oom_sigkill')
     messagePersister.setUnexpectedDeathCallback(null)
+  })
+
+  it('a deferred fatal SIGKILL ends the dead process\'s compaction before recovery starts', async () => {
+    const onDeath = vi.fn()
+    messagePersister.setUnexpectedDeathCallback(onDeath)
+    mockClient.onFatalResult = vi.fn(() => 'defer_for_recovery' as const)
+    messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+    const st = (messagePersister as any).streamingStates.get(sessionKeyOf(AGENT_SLUG, SESSION_ID))
+    st.isCompacting = true
+
+    mockClient._sendMessage({
+      type: 'result',
+      subtype: 'error',
+      fatal: true,
+      error: 'The agent process was killed due to running out of memory.',
+    })
+
+    expect(onDeath).toHaveBeenCalledWith(AGENT_SLUG)
+    expect(st.isCompacting).toBe(false)
+    messagePersister.setUnexpectedDeathCallback(null)
+    messagePersister.consumeLastFatal(AGENT_SLUG)
   })
 
   it('does not snapshot a fatal SIGKILL when no recovery callback is registered', async () => {
