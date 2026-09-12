@@ -7,6 +7,7 @@ import {
   isMissingDirectoryError,
   isWidgetOnlyArtifact,
   isWidgetSlug,
+  containedArtifactPath,
 } from './widget-service'
 
 const ARTIFACT_MANIFEST_FILENAME = 'package.json'
@@ -58,9 +59,13 @@ async function scanArtifacts(
 ): Promise<ArtifactListing> {
   const files = agentRegistry.get(agentSlug).files
 
+  // Where the artifacts really are: a link the agent planted in place of the
+  // directory reads as no artifacts, as it always has.
+  const artifactsDir = await containedArtifactPath(agentSlug, artifactsDirFor(agentSlug))
+  if (artifactsDir === null) return { dashboards: [], widgets: [] }
   let entries: FileEntry[]
   try {
-    entries = await files.list(artifactsDirFor(agentSlug))
+    entries = await files.list(artifactsDir)
   } catch (error) {
     // No artifacts directory yet: nothing to list. Any other failure reads the
     // same way: this runs for every agent on every agents-list poll, and one
@@ -86,14 +91,18 @@ async function scanArtifacts(
       .filter((entry) => entry.kind === 'directory')
       .map(async (entry): Promise<{ dashboard: ArtifactInfo | null; widget: ApiAgentWidget | null }> => {
         const nothing = { dashboard: null, widget: null }
+        // One artifact dir at a time, as it really is; a link out of the
+        // workspace is no artifact.
+        const dir = await limit(() => containedArtifactPath(agentSlug, entry.path))
+        if (dir === null) return nothing
         let pkg: { name?: unknown; description?: unknown }
         let hasScreenshot: boolean
         let hasNodeModules: boolean
         try {
           const [manifest, screenshot, nodeModules] = await Promise.all([
-            limit(() => files.getDoc(joinWorkspacePath(entry.path, ARTIFACT_MANIFEST_FILENAME))),
-            limit(() => files.stat(joinWorkspacePath(entry.path, ARTIFACT_SCREENSHOT_FILENAME))),
-            limit(() => files.stat(joinWorkspacePath(entry.path, 'node_modules'))),
+            limit(() => files.getDoc(joinWorkspacePath(dir, ARTIFACT_MANIFEST_FILENAME))),
+            limit(() => files.stat(joinWorkspacePath(dir, ARTIFACT_SCREENSHOT_FILENAME))),
+            limit(() => files.stat(joinWorkspacePath(dir, 'node_modules'))),
           ])
           if (manifest === null) return nothing
           pkg = JSON.parse(new TextDecoder().decode(manifest))

@@ -2914,8 +2914,8 @@ describe('path traversal security — skill file endpoints', () => {
     // are the reliable route-level tests for this security check.
 
     it('returns 404 when skill directory does not exist', async () => {
-      // realpath resolves the workspace root, then fails on the skill directory.
-      mockFsRealpath.mockResolvedValueOnce('/mock/workspace').mockRejectedValueOnce(enoent())
+      // The skill directory is absent.
+      mockFsStat.mockRejectedValueOnce(enoent())
 
       const res = await getReq(app, '/api/agents/test-agent/skills/my-skill/files')
       expect(res.status).toBe(404)
