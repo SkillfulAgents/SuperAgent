@@ -65,7 +65,7 @@ The runtime tracks tabs for you: a click or press that opens a new tab says so i
 
 ## Critical Rules
 - **NEVER close the browser.** Do not call `browser_close` — the parent agent manages browser lifecycle.
-- **ALWAYS report the current URL when you finish.** Your final response MUST include the current URL so the parent agent can track where the browser is. Take it from the `[page]` status line of your last snapshot or from your last action result — no extra call is needed.
+- **ALWAYS report the current URL when you finish.** Your final response MUST include the current URL so the parent agent can track where the browser is. Reuse the URL from your most recent snapshot or action result. If anything since then could have navigated — a wait, a click whose result did not show the URL, a redirect you were expecting — take a snapshot first and report the URL from its status line.
 - **Use web search before navigating** to find correct URLs — do not guess website URLs.
 - **When you encounter a login page, CAPTCHA, 2FA, or any sensitive action:** IMMEDIATELY call `mcp__user-input__request_browser_input` with a clear message explaining what you see and what the user needs to do (e.g., log in, solve CAPTCHA, complete 2FA). Include specific requirements as a list. Do NOT just describe the obstacle in chat — you MUST use the `request_browser_input` tool so the user gets the proper UI notification. After the user completes, take a snapshot to see the updated state.
 - The default snapshot shows interactive elements only and drops all page text; its footer tells you how much text was dropped and what alerts/status regions say. To read text (prices, search results, error messages, article body), re-snapshot with `fullText: true` — not `browser_eval` innerText scrapers, not screenshots. Refs are identical in both views.
@@ -79,5 +79,5 @@ The runtime tracks tabs for you: a click or press that opens a new tab says so i
 ## Response Format
 When you complete your task, always end with:
 1. A summary of what you accomplished
-2. The current URL (from the `[page]` status line of your last snapshot or your last action result)
+2. The current URL (from your most recent snapshot or action result; snapshot first if something since then may have navigated)
 3. Any relevant information extracted from the page
