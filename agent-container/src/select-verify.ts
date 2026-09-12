@@ -12,9 +12,10 @@
  * have asked by visible LABEL. When the requested label's option was already
  * selected, value-before equals value-after and neither equals the request —
  * which used to be reported as "did not commit" ("requested California,
- * element value is still CA"; mining theme 24). The route now checks the
- * page for a <select> holding that value whose option with that value
- * carries the requested label, and passes the result in as `labelMatches`.
+ * element value is still CA"; mining theme 24). In that one case the route
+ * focuses the target (`focus @ref`) and reads the focused element's own
+ * value and selected label — the target itself, not any <select> on the
+ * page — and passes the result in as `labelMatches`.
  */
 
 export const SELECT_COMMIT_SETTLE_MS = 300
@@ -30,40 +31,44 @@ export type SelectJudgement =
   | { ok: false; reason: string }
 
 /**
- * In-page script: is there a <select> whose current value is `value` and
- * whose option with that value has the visible label `requested`? Strings
- * are JSON-embedded, so agent input cannot break out of the script.
+ * In-page script, run after `focus @ref`: the focused element's value and
+ * selected option label, or null when the focused element is not a select.
+ * Only the element the CLI focused is inspected — never a sibling dropdown.
  */
-export function selectLabelMatchScript(requested: string, value: string): string {
-  const r = JSON.stringify(requested.trim())
-  const v = JSON.stringify(value)
-  return (
-    'JSON.stringify([].some.call(document.querySelectorAll("select"),function(s){' +
-    `if(s.value!==${v})return false;` +
-    `return [].some.call(s.options,function(o){return o.value===${v}&&String(o.text||"").trim()===${r}})}))`
-  )
-}
+export const FOCUSED_SELECT_STATE_SCRIPT =
+  'JSON.stringify((function(){var a=document.activeElement;if(!a||a.tagName!=="SELECT")return null;' +
+  'var o=a.selectedOptions&&a.selectedOptions[0];return{value:String(a.value),label:o?String(o.text||"").trim():""}})())'
 
-/** Parse the (possibly double-JSON-encoded) output of selectLabelMatchScript. */
-export function parseLabelMatch(stdout: string): boolean {
+export interface FocusedSelectState { value: string; label: string }
+
+/** Parse the (possibly double-JSON-encoded) output of FOCUSED_SELECT_STATE_SCRIPT. */
+export function parseFocusedSelectState(stdout: string): FocusedSelectState | null {
   try {
     let parsed: unknown = JSON.parse(stdout.trim())
     if (typeof parsed === 'string') parsed = JSON.parse(parsed)
-    return parsed === true
+    if (!parsed || typeof parsed !== 'object') return null
+    const o = parsed as Record<string, unknown>
+    if (typeof o.value !== 'string' || typeof o.label !== 'string') return null
+    return { value: o.value, label: o.label }
   } catch {
-    return false
+    return null
   }
+}
+
+/** Does the focused target hold `value` under the requested label? */
+export function focusedTargetMatches(state: FocusedSelectState | null, requested: string, value: string): boolean {
+  return state !== null && state.value === value && state.label === requested.trim()
 }
 
 /**
  * Judge whether a select committed, from the element's value read before and
- * after the select call (null = the read failed, e.g. no value property).
+ * after the select call (null = the read failed).
  *
  * Selecting by visible label is supported by the CLI, so a successful commit
  * may land on a value different from the requested string — any post-select
  * change counts as a commit, and the committed value is reported back. When
- * nothing changed, `labelMatches` (the requested label names the option that
- * holds the current value) also counts as committed: the request was already
+ * nothing changed, `labelMatches` (the target's selected option carries the
+ * requested label) also counts as committed: the request was already
  * satisfied.
  */
 export function judgeSelectCommit(
@@ -73,10 +78,13 @@ export function judgeSelectCommit(
   labelMatches = false
 ): SelectJudgement {
   if (after === null) {
+    // A failed `get value` has many causes (navigation, detached ref, a
+    // connection drop, an element with no value property). None is known
+    // here, so none is named.
     return {
       ok: false,
       reason:
-        `select reported success but the target has no value property to read back, so it is not a native <select>. ${CUSTOM_DROPDOWN_RECIPE}`,
+        `select reported success but the element's value could not be read back afterwards, so the selection is unverified. ${CUSTOM_DROPDOWN_RECIPE}`,
     }
   }
   if (after === requested) {

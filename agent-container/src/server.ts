@@ -812,7 +812,7 @@ const execFileAsync = promisify(execFile);
 import { resolveRunCommandArgs } from './browser-command-args';
 import { validatePressKey } from './press-key';
 import { prepareEvalScript, finalizeEvalOutput, evalErrorHint } from './eval-script';
-import { judgeSelectCommit, selectLabelMatchScript, parseLabelMatch, SELECT_COMMIT_SETTLE_MS } from './select-verify';
+import { judgeSelectCommit, FOCUSED_SELECT_STATE_SCRIPT, parseFocusedSelectState, focusedTargetMatches, SELECT_COMMIT_SETTLE_MS } from './select-verify';
 import { resolveCommittedValue } from './field-value-readback';
 import { capBrowserOutput, redactCdpUrls, MAX_BROWSER_OUTPUT_CHARS, MAX_BROWSER_ERROR_CHARS } from './browser-output';
 import { capSnapshot, compactWithText, countRefs, formatIframePlaceholders, formatTextFooter, THIN_TREE_REFS } from './snapshot-format';
@@ -1833,12 +1833,16 @@ app.post('/browser/select', async (c) => {
     const after = await readValue();
 
     // Unchanged value that is not the requested string: the agent may have
-    // asked by label for the option that was already selected. Check the
-    // page before calling it a failure.
+    // asked by label for the option that was already selected. Focus the
+    // target and read ITS selected option — a probe over every <select> on
+    // the page could be satisfied by a different dropdown.
     let labelMatches = false;
     if (after !== null && after === before && after !== body.value) {
-      const probe = await execBrowser(['eval', selectLabelMatchScript(body.value, after)], browserState.cdpUrl || undefined);
-      labelMatches = probe.exitCode === 0 && parseLabelMatch(probe.stdout);
+      const focused = await execBrowser(['focus', body.ref], browserState.cdpUrl || undefined);
+      if (focused.exitCode === 0) {
+        const probe = await execBrowser(['eval', FOCUSED_SELECT_STATE_SCRIPT], browserState.cdpUrl || undefined);
+        labelMatches = probe.exitCode === 0 && focusedTargetMatches(parseFocusedSelectState(probe.stdout), body.value, after);
+      }
     }
 
     const judgement = judgeSelectCommit(body.value, before, after, labelMatches);

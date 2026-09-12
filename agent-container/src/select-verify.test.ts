@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { judgeSelectCommit, selectLabelMatchScript, parseLabelMatch } from './select-verify'
+import { judgeSelectCommit, FOCUSED_SELECT_STATE_SCRIPT, parseFocusedSelectState, focusedTargetMatches } from './select-verify'
 
 describe('judgeSelectCommit', () => {
   it('passes when the value committed exactly (select by value)', () => {
@@ -16,7 +16,7 @@ describe('judgeSelectCommit', () => {
     expect(judgeSelectCommit('us', 'us', 'us')).toEqual({ ok: true, committed: 'us' })
   })
 
-  it('passes when the requested LABEL names the option that was already selected', () => {
+  it('passes when the requested LABEL names the option the target already holds', () => {
     // mining theme 24: 'requested "California", element value is still "CA"' — CA is California
     expect(judgeSelectCommit('California', 'CA', 'CA', true)).toEqual({ ok: true, committed: 'CA' })
   })
@@ -32,11 +32,14 @@ describe('judgeSelectCommit', () => {
     }
   })
 
-  it('fails when the target has no readable value (custom dropdown div)', () => {
+  it('reports an unreadable value as unverified, without diagnosing the element', () => {
     const r = judgeSelectCommit('AI Tools', null, null)
     expect(r.ok).toBe(false)
     if (!r.ok) {
-      expect(r.reason).toContain('not a native <select>')
+      expect(r.reason).toContain('could not be read back')
+      expect(r.reason).toContain('unverified')
+      expect(r.reason).not.toContain('so it is not a native')
+      expect(r.reason).not.toContain('probably')
       expect(r.reason).toContain('Recipe:')
     }
   })
@@ -48,18 +51,26 @@ describe('judgeSelectCommit', () => {
   })
 })
 
-describe('selectLabelMatchScript', () => {
-  it('embeds the request and value as JSON so quotes cannot break the script', () => {
-    const script = selectLabelMatchScript(' Kids" Menu ', 'k"1')
-    expect(script).toContain('"Kids\\" Menu"')
-    expect(script).toContain('"k\\"1"')
-    expect(script).toContain('querySelectorAll("select")')
+describe('focused-target label check', () => {
+  it('inspects only the focused element, and only when it is a select', () => {
+    expect(FOCUSED_SELECT_STATE_SCRIPT).toContain('document.activeElement')
+    expect(FOCUSED_SELECT_STATE_SCRIPT).toContain('tagName!=="SELECT"')
+    expect(FOCUSED_SELECT_STATE_SCRIPT).not.toContain('querySelectorAll')
   })
 
-  it('parses the CLI double-encoded boolean', () => {
-    expect(parseLabelMatch('"true"')).toBe(true)
-    expect(parseLabelMatch('true')).toBe(true)
-    expect(parseLabelMatch('"false"')).toBe(false)
-    expect(parseLabelMatch('garbage')).toBe(false)
+  it('parses the CLI double-encoded state and rejects anything else', () => {
+    expect(parseFocusedSelectState(JSON.stringify(JSON.stringify({ value: 'CA', label: 'California' })))).toEqual({ value: 'CA', label: 'California' })
+    expect(parseFocusedSelectState('{"value":"CA","label":"California"}')).toEqual({ value: 'CA', label: 'California' })
+    expect(parseFocusedSelectState('null')).toBeNull()
+    expect(parseFocusedSelectState('"null"')).toBeNull()
+    expect(parseFocusedSelectState('garbage')).toBeNull()
+  })
+
+  it('matches only when the TARGET holds the value under the requested label', () => {
+    expect(focusedTargetMatches({ value: 'CA', label: 'California' }, 'California', 'CA')).toBe(true)
+    expect(focusedTargetMatches({ value: 'CA', label: 'California' }, ' California ', 'CA')).toBe(true)
+    // the reviewer's case: target reverted to New York while another dropdown holds California
+    expect(focusedTargetMatches({ value: 'NY', label: 'New York' }, 'California', 'NY')).toBe(false)
+    expect(focusedTargetMatches(null, 'California', 'CA')).toBe(false)
   })
 })
