@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { renderWithProviders } from '@renderer/test/test-utils'
 
 const useSettingsMock = vi.fn()
 const mutateMock = vi.fn()
@@ -54,6 +55,7 @@ function renderWithSettings(options?: {
   catalog?: ModelDefinition[]
   providerId?: TestProvider
   modelSearch?: boolean
+  runningAgentIds?: string[]
 }) {
   // Default to a self-managed provider so the catalog editor is rendered (the
   // platform provider intentionally hides it).
@@ -82,11 +84,12 @@ function renderWithSettings(options?: {
         dashboardBuilderModel: 'gpt',
         agentEffort: 'medium',
       },
-      hasRunningAgents: false,
+      hasRunningAgents: Boolean(options?.runningAgentIds?.length),
+      runningAgentIds: options?.runningAgentIds ?? [],
       enableToolSearch: true,
     },
   })
-  return render(<LlmTab />)
+  return renderWithProviders(<LlmTab />)
 }
 
 /** The catalog editor is collapsed by default; open it before touching rows. */
@@ -98,7 +101,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   apiFetchMock.mockResolvedValue({
     ok: true,
-    json: async () => ({}),
+    json: async () => [],
   })
   useProviderModelSearchMock.mockReturnValue({
     data: undefined,
@@ -109,6 +112,17 @@ beforeEach(() => {
 })
 
 describe('LlmTab model catalog editor', () => {
+  it('shows the running-agent restart warning before provider settings', () => {
+    renderWithSettings({ runningAgentIds: ['agent-1', 'agent-2'] })
+
+    const warning = screen.getByTestId('running-agents-warning')
+    const providerSettings = screen.getByRole('radiogroup', { name: 'LLM provider' })
+    expect(warning.compareDocumentPosition(providerSettings) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.getByRole('list', { name: 'Running agents' })).toHaveTextContent('agent-1')
+    expect(screen.getByRole('list', { name: 'Running agents' })).toHaveTextContent('agent-2')
+    expect(screen.getByRole('button', { name: 'Restart now' })).toBeInTheDocument()
+  })
+
   it('keeps the catalog collapsed until the disclosure is opened', async () => {
     const user = userEvent.setup()
     renderWithSettings()
