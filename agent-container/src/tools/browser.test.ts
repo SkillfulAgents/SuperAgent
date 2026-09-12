@@ -241,3 +241,28 @@ describe('browser_eval return note', () => {
     expect(await evalWith('', false)).toBe('(no output)')
   })
 })
+
+describe('browser_run empty output', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('reports "(no output)" instead of a success acknowledgment when the CLI printed nothing', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ success: true, output: '' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })))
+    const runTool = createBrowserTools(() => 'session-r').find(t => t.name === 'browser_run') as any
+    const result = await runTool.handler({ command: 'errors' })
+    expect(String(result.content[0].text)).toMatch(/^\(no output\)/)
+    expect(String(result.content[0].text)).not.toContain('Command executed')
+  })
+
+  it('passes real output through', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ success: true, output: '[error] TypeError: x is null' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })))
+    const runTool = createBrowserTools(() => 'session-r').find(t => t.name === 'browser_run') as any
+    const result = await runTool.handler({ command: 'errors' })
+    expect(String(result.content[0].text)).toMatch(/^\[error\] TypeError/)
+  })
+})
