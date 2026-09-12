@@ -48,17 +48,62 @@ function decodeEntities(s: string): string {
   })
 }
 
-function attr(attrs: string, name: string): string | null {
-  const m = new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'>]+))`, 'i').exec(attrs)
-  if (!m) return null
-  return decodeEntities(m[1] ?? m[2] ?? m[3] ?? '')
+/**
+ * Tokenize a start tag's attributes from `src[i]` (just after the tag
+ * name) to its closing `>`. Walks the text character by character so a
+ * quoted value can contain `>`, `=`, or text that looks like another
+ * attribute (review: `title="Search label='California'"` was read as a
+ * label attribute by a regex). The first occurrence of a name wins, as in
+ * the DOM. Returns the attributes and the index just past `>`.
+ */
+function parseAttributes(src: string, i: number): { attrs: Record<string, string>; end: number } {
+  const attrs: Record<string, string> = {}
+  const n = src.length
+  while (i < n) {
+    while (i < n && /[\s/]/.test(src[i])) i++
+    if (i >= n) break
+    if (src[i] === '>') return { attrs, end: i + 1 }
+    let j = i
+    while (j < n && !/[\s=>/]/.test(src[j])) j++
+    const name = src.slice(i, j).toLowerCase()
+    i = j
+    while (i < n && /\s/.test(src[i])) i++
+    let value = ''
+    if (src[i] === '=') {
+      i++
+      while (i < n && /\s/.test(src[i])) i++
+      const q = src[i]
+      if (q === '"' || q === "'") {
+        const close = src.indexOf(q, i + 1)
+        value = close === -1 ? src.slice(i + 1) : src.slice(i + 1, close)
+        i = close === -1 ? n : close + 1
+      } else {
+        j = i
+        while (j < n && !/[\s>]/.test(src[j])) j++
+        value = src.slice(i, j)
+        i = j
+      }
+    }
+    if (name && !(name in attrs)) attrs[name] = decodeEntities(value)
+  }
+  return { attrs, end: n }
+}
+
+/** Index of the next `<option`, `<optgroup`, `</optgroup`, `</select` or `</option` tag at or after `from`. */
+function nextOptionBoundary(src: string, from: number): number {
+  const re = /<\/?(option|optgroup|select)\b/gi
+  re.lastIndex = from
+  const m = re.exec(src)
+  return m ? m.index : src.length
 }
 
 /**
  * The options of a <select>, from its innerHTML as `get html @ref` returns
  * it. `label` follows the DOM's option.label: the label attribute when
  * present, else the text; `value` follows option.value: the value attribute
- * when present, else the text.
+ * when present, else the text. Tags are tokenized, not regex-matched, and
+ * an option's text ends at the next option/optgroup/select tag, so the
+ * `</option>` HTML lets authors omit is not required.
  */
 export function parseSelectOptions(html: string): SelectOption[] {
   const out: SelectOption[] = []
@@ -68,13 +113,14 @@ export function parseSelectOptions(html: string): SelectOption[] {
   const live = html
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/<(template|script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
-  const re = /<option\b([^>]*)>([\s\S]*?)<\/option>/gi
+  const open = /<option\b/gi
   let m: RegExpExecArray | null
-  while ((m = re.exec(live)) !== null) {
-    const text = decodeEntities(m[2].replace(/<[^>]*>/g, '')).replace(/\s+/g, ' ').trim()
-    const value = attr(m[1], 'value')
-    const label = attr(m[1], 'label')
-    out.push({ value: value ?? text, label: (label ?? text).trim() })
+  while ((m = open.exec(live)) !== null) {
+    const { attrs, end } = parseAttributes(live, m.index + '<option'.length)
+    const stop = nextOptionBoundary(live, end)
+    const text = decodeEntities(live.slice(end, stop).replace(/<[^>]*>/g, '')).replace(/\s+/g, ' ').trim()
+    out.push({ value: 'value' in attrs ? attrs.value : text, label: ('label' in attrs ? attrs.label : text).trim() })
+    open.lastIndex = Math.max(end, stop)
   }
   return out
 }

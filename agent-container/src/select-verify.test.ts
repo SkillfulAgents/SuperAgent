@@ -118,3 +118,30 @@ describe('option-list edge cases from review', () => {
     expect(targetOptionMatches(parseSelectOptions(html), 'California', 'CA')).toBe(false)
   })
 })
+
+describe('attribute boundaries', () => {
+  it('does not read label= inside another attribute\'s quoted value', () => {
+    // review: title="Search label='California'" verified California while the target stayed New York
+    const options = parseSelectOptions('<option title="Search label=\'California\'" value="0">New York</option>')
+    expect(options).toEqual([{ value: '0', label: 'New York' }])
+    expect(targetOptionMatches(options, 'California', '0')).toBe(false)
+    expect(parseSelectOptions('<option data-x=\'value="ZZ"\' value="CA">California</option>')).toEqual([{ value: 'CA', label: 'California' }])
+  })
+
+  it('tolerates > and = inside quoted values, unquoted values, and repeated attributes (first wins)', () => {
+    expect(parseSelectOptions('<option title="a>b=c" value=CA value="XX">California</option>')).toEqual([{ value: 'CA', label: 'California' }])
+    expect(parseSelectOptions('<option selected disabled value="">-- pick --</option>')).toEqual([{ value: '', label: '-- pick --' }])
+  })
+
+  it('does not treat attribute-looking text content as attributes', () => {
+    expect(parseSelectOptions('<option value="0">label=\'X\' value="Y"</option>')).toEqual([{ value: '0', label: "label='X' value=\"Y\"" }])
+  })
+
+  it('handles options whose closing tag is omitted, as HTML allows', () => {
+    expect(parseSelectOptions('<option value="a">A<option value="b">B<optgroup label="G"><option value="c">C</optgroup>')).toEqual([
+      { value: 'a', label: 'A' },
+      { value: 'b', label: 'B' },
+      { value: 'c', label: 'C' },
+    ])
+  })
+})
