@@ -1283,6 +1283,9 @@ app.post('/browser/open', async (c) => {
       }
     }
 
+    // A net-new browser (none active, or the location switch above closed the
+    // old one) is the one moment the browser-guide hint belongs on the result.
+    const launched = !browserState.active;
     const hostBrowser = await launchHostBrowserIfNeeded(location);
     const cdpUrl = hostBrowser?.cdpUrl;
     const profile = process.env.AGENT_BROWSER_PROFILE || '/workspace/.browser-profile';
@@ -1341,7 +1344,7 @@ app.post('/browser/open', async (c) => {
     }
     broadcastBrowserEvent(true);
 
-    return c.json({ success: true, location, switchedFrom, page });
+    return c.json({ success: true, location, switchedFrom, page, launched });
   } catch (error: any) {
     console.error('[Browser] Error opening browser:', error);
     return c.json({ error: error.message || 'Failed to open browser' }, 500);
