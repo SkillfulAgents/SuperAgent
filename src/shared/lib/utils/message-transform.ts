@@ -50,6 +50,8 @@ export interface TransformedMessage {
   errorPresentation?: ProviderErrorPresentation
   /** User message delivered mid-turn (queued/steering input) — does not end the turn it appears in */
   queued?: boolean
+  /** Copied into this session by a fork; the thread marks the fork point after the last one */
+  forked?: boolean
   /**
    * Summarized extended-thinking blocks, in order. Only present when the
    * transcript carries non-empty text (CLI 2.1.181+ — older transcripts persist
@@ -73,6 +75,7 @@ export interface TransformedCompactBoundary {
   trigger: string
   preTokens?: number
   createdAt: Date
+  forked?: boolean
 }
 
 export interface TransformedMemoryRecall {
@@ -80,6 +83,7 @@ export interface TransformedMemoryRecall {
   type: 'memory_recall'
   memoryPaths: string[]
   createdAt: Date
+  forked?: boolean
 }
 
 /**
@@ -93,6 +97,7 @@ export interface TransformedInformational {
   content: string
   level?: string
   createdAt: Date
+  forked?: boolean
 }
 
 export type TransformedItem = TransformedMessage | TransformedCompactBoundary | TransformedMemoryRecall | TransformedInformational
@@ -443,6 +448,7 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
       trigger: boundary.compactMetadata?.trigger || 'auto',
       preTokens: boundary.compactMetadata?.preTokens,
       createdAt: new Date(boundary.timestamp),
+      ...(boundary.forkedFrom && { forked: true }),
     }
 
     // Find the next non-skipped message entry after this boundary
@@ -469,6 +475,7 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
       type: 'memory_recall',
       memoryPaths: sysEntry.memory_paths || [],
       createdAt: new Date(sysEntry.timestamp),
+      ...(sysEntry.forkedFrom && { forked: true }),
     }
 
     let nextUuid: string | null = null
@@ -497,6 +504,7 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
       content: sysEntry.content || '',
       level: sysEntry.level,
       createdAt: new Date(sysEntry.timestamp),
+      ...(sysEntry.forkedFrom && { forked: true }),
     }
 
     let nextUuid: string | null = null
@@ -614,6 +622,7 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
       createdAt: new Date(entry.timestamp),
       ...(entry.error && { apiError: entry.error }),
       ...(entry.isQueuedCommand && { queued: true }),
+      ...(entry.forkedFrom && { forked: true }),
       ...(thinking && thinking.length > 0 && { thinking }),
       ...(entry.message.usage && {
         usage: {

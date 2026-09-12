@@ -147,27 +147,10 @@ describe('SessionView widget repair provenance', () => {
 })
 
 describe('SessionView fork provenance', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-  })
-
-  it('shows Forked from with a Back link to the source', () => {
+  it('draws no header bar for a fork; the thread marks the fork point instead', () => {
     mocks.session = { id: 'fork-1', agentSlug: 'agent-a', name: 'Pricing (fork)', forkedFromSessionId: 'src-1', forkedFromSessionName: 'Pricing' }
     render(<SessionView agentSlug="agent-a" sessionId="fork-1" />)
 
-    expect(screen.getByTestId('fork-session-banner')).toHaveTextContent('Forked from "Pricing"')
-    fireEvent.click(screen.getByTestId('fork-session-back-button'))
-    expect(mocks.navigate).toHaveBeenCalledWith({
-      to: '/agents/$slug/sessions/$sessionId',
-      params: { slug: 'agent-a', sessionId: 'src-1' },
-    })
-  })
-
-  it('degrades to plain text without a Back link when the source is gone', () => {
-    mocks.session = { id: 'fork-1', agentSlug: 'agent-a', name: 'Pricing (fork)', forkedFromSessionId: 'src-1' }
-    render(<SessionView agentSlug="agent-a" sessionId="fork-1" />)
-
-    expect(screen.getByTestId('fork-session-banner')).toHaveTextContent('Forked from a deleted session')
-    expect(screen.queryByTestId('fork-session-back-button')).toBeNull()
+    expect(screen.queryByTestId('fork-session-banner')).toBeNull()
   })
 })
