@@ -51,3 +51,25 @@ describe('formatWaitResult', () => {
     expect(formatWaitResult(classifyWaitTarget('load'), 120, false)).toBe('Load state "load" reached after 120 ms.')
   })
 })
+
+describe('classifyWaitTarget respects quoted strings', () => {
+  it('accepts valid CSS whose quoted value contains Playwright-looking text', () => {
+    // review: button[data-note="a>>b"] works in the pinned CLI
+    expect(classifyWaitTarget('button[data-note="a>>b"]').kind).toBe('selector')
+    expect(classifyWaitTarget("[title=':has-text(x)']").kind).toBe('selector')
+    expect(classifyWaitTarget('[data-x="say \\"hi\\" >> there"]').kind).toBe('selector')
+  })
+
+  it('still refuses Playwright syntax outside quotes', () => {
+    expect(classifyWaitTarget('div >> text=Hi').kind).toBe('rejected')
+    expect(classifyWaitTarget('button:has-text("Save")').kind).toBe('rejected')
+    expect(classifyWaitTarget('[data-x="ok"] >> span').kind).toBe('rejected')
+  })
+})
+
+describe('formatWaitResult page line', () => {
+  it('appends the page URL when the route supplied one', () => {
+    expect(formatWaitResult(classifyWaitTarget('.loaded'), 1840, false, 'https://a.com/done')).toBe('Selector ".loaded" matched after 1840 ms. Page: https://a.com/done')
+    expect(formatWaitResult(classifyWaitTarget('.loaded'), 1840, false)).toBe('Selector ".loaded" matched after 1840 ms.')
+  })
+})

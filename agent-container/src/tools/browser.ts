@@ -373,7 +373,7 @@ Playwright locator syntax (text=…, role=…, :has-text(…)) is not CSS and is
     const elapsedMs = typeof data?.elapsedMs === 'number' ? data.elapsedMs : 0
     return {
       content: [
-        { type: 'text' as const, text: formatWaitResult(target, elapsedMs, data?.timedOut === true) },
+        { type: 'text' as const, text: formatWaitResult(target, elapsedMs, data?.timedOut === true, typeof data?.url === 'string' ? data.url : undefined) },
       ],
     }
   }

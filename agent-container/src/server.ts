@@ -813,7 +813,10 @@ import { resolveRunCommandArgs } from './browser-command-args';
 import { validatePressKey } from './press-key';
 import { prepareEvalScript, finalizeEvalOutput, evalErrorHint } from './eval-script';
 import { judgeSelectCommit, parseSelectOptions, targetOptionMatches, SELECT_COMMIT_SETTLE_MS } from './select-verify';
-import { classifyWaitTarget } from './wait-target';
+import { classifyWaitTarget, WAIT_PAGE_PROBE_SCRIPT, parseWaitPageProbe } from './wait-target';
+
+/** Budget for the page probe around a wait — independent of the exec ceiling. */
+const WAIT_PAGE_PROBE_TIMEOUT_MS = 3000;
 import { resolveCommittedValue } from './field-value-readback';
 import { capBrowserOutput, redactCdpUrls, describeExecFailure, BROWSER_EXEC_TIMEOUT_MS, MAX_BROWSER_OUTPUT_CHARS, MAX_BROWSER_ERROR_CHARS } from './browser-output';
 import { capSnapshot, compactWithText, countRefs, formatIframePlaceholders, formatTextFooter, THIN_TREE_REFS } from './snapshot-format';
@@ -876,12 +879,16 @@ function cleanupAgentBrowserDaemon(): void {
 
 // Execute an agent-browser CLI command and return the result.
 // Uses execFile (no shell) to prevent command injection.
-async function execBrowser(args: string[], cdpUrl?: string): Promise<{ stdout: string; exitCode: number }> {
+async function execBrowser(
+  args: string[],
+  cdpUrl?: string,
+  opts: { timeoutMs?: number } = {},
+): Promise<{ stdout: string; exitCode: number }> {
   const started = Date.now();
   try {
     const fullArgs = cdpUrl ? ['--cdp', cdpUrl, ...args] : args;
     const { stdout } = await execFileAsync('agent-browser', fullArgs, {
-      timeout: BROWSER_EXEC_TIMEOUT_MS,
+      timeout: opts.timeoutMs ?? BROWSER_EXEC_TIMEOUT_MS,
       // Large-but-legitimate outputs must not THROW (the throw path used to
       // stuff up to 1 MiB of partial output into an error string);
       // capBrowserOutput below bounds what the model actually sees.
@@ -1701,6 +1708,15 @@ app.post('/browser/wait', async (c) => {
     const result = await execBrowser(target.args, browserState.cdpUrl || undefined);
     const elapsedMs = Date.now() - started;
 
+    // Where the page is now, read through a short budget of its own: a wait
+    // that hung the exec ceiling must not be followed by a probe that hangs
+    // it again (review: one hang could cost ~60 s). A browser that does not
+    // answer in time simply yields no page line.
+    const probePage = async (): Promise<{ url: string; readyState: string } | null> => {
+      const probe = await execBrowser(['eval', WAIT_PAGE_PROBE_SCRIPT], browserState.cdpUrl || undefined, { timeoutMs: WAIT_PAGE_PROBE_TIMEOUT_MS });
+      return probe.exitCode === 0 ? parseWaitPageProbe(probe.stdout) : null;
+    };
+
     if (result.exitCode !== 0) {
       // Load state waits (especially networkidle) often time out on real-world
       // pages with continuous ad/analytics traffic. browser_open already waited
@@ -1709,14 +1725,17 @@ app.post('/browser/wait', async (c) => {
       if (target.kind === 'load') {
         return c.json({ success: true, elapsedMs, timedOut: true });
       }
-      // A timeout is a fact about this page at this moment: say where the
-      // browser was and whether the document had finished loading.
-      const page = await observeNow({ previewChars: 0 });
-      const where = page.url ? `\nPage: ${page.url} · readyState ${page.readyState || 'unknown'}` : '';
+      // Only when the CLI itself reported the timeout (so the browser was
+      // answering) is it worth asking where the page is and whether the
+      // document had finished loading — a fact about this page at this moment.
+      const cliTimedOut = /wait timed out/i.test(result.stdout);
+      const page = cliTimedOut ? await probePage() : null;
+      const where = page?.url ? `\nPage: ${page.url} · readyState ${page.readyState || 'unknown'}` : '';
       return c.json({ error: `${result.stdout}${where}`, success: false }, 500);
     }
 
-    return c.json({ success: true, elapsedMs });
+    const page = await probePage();
+    return c.json({ success: true, elapsedMs, ...(page?.url && { url: page.url }) });
   } catch (error: any) {
     console.error('[Browser] Error waiting:', error);
     return c.json({ error: error.message || 'Failed to wait' }, 500);
