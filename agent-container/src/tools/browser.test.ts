@@ -266,3 +266,52 @@ describe('browser_run empty output', () => {
     expect(String(result.content[0].text)).toMatch(/^\[error\] TypeError/)
   })
 })
+
+describe('browser_wait result', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('reports the measured elapsed time, not a constant "satisfied"', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ success: true, elapsedMs: 4 }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })))
+    const waitTool = createBrowserTools(() => 'session-w').find(t => t.name === 'browser_wait') as any
+    const result = await waitTool.handler({ for: 'body' })
+    expect(result.content[0].text).toBe('Selector "body" matched after 4 ms.')
+  })
+
+  it('refuses Playwright syntax before calling the server', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const waitTool = createBrowserTools(() => 'session-w').find(t => t.name === 'browser_wait') as any
+    const result = await waitTool.handler({ for: 'text=Trigger' })
+    expect(result.isError).toBe(true)
+    expect(result.content[0].text).toContain('--text')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('says a load state was not reached instead of reporting success silently', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ success: true, elapsedMs: 25010, timedOut: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })))
+    const waitTool = createBrowserTools(() => 'session-w').find(t => t.name === 'browser_wait') as any
+    const result = await waitTool.handler({ for: 'networkidle' })
+    expect(result.isError).toBeUndefined()
+    expect(result.content[0].text).toBe('Load state "networkidle" was not reached within 25010 ms.')
+  })
+})
+
+describe('browser_wait result carries the page URL', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('shows where the page is after the wait, so a navigation that finished meanwhile is visible', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ success: true, elapsedMs: 900, url: 'https://a.com/dashboard' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })))
+    const waitTool = createBrowserTools(() => 'session-w').find(t => t.name === 'browser_wait') as any
+    const result = await waitTool.handler({ for: '#dash' })
+    expect(result.content[0].text).toBe('Selector "#dash" matched after 900 ms. Page: https://a.com/dashboard')
+  })
+})

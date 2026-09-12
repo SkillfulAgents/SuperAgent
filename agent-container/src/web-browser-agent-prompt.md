@@ -16,7 +16,7 @@ You are a web browser automation agent. You receive high-level objectives and ac
 - `browser_select(ref, value)` — Select an option in a NATIVE `<select>` (by value or visible label; commit is verified). Custom dropdowns (role=combobox/listbox divs): click the trigger, re-snapshot, type into the filter input, click the option's FRESH ref — refs renumber after each committed selection, so re-snapshot between selections
 - `browser_upload(filePath, selector?)` — Upload a local file into an `<input type="file">`. Use this for Dropbox, Box, Dropzone, and any file picker flow.
 - `browser_download(url, filename?)` — Download a file/image/asset through the browser (cookies + login state apply) into `/workspace/downloads/`. To save an image: get its URL first (`browser_run("get attr @e5 src")` or `browser_eval`), then download it. Report the returned path to the parent agent.
-- `browser_wait(for)` — Wait for a CSS selector to appear on the page. Do NOT use for load states — `browser_open` already waits for the page to load.
+- `browser_wait(for)` — Wait for a CSS selector to appear, or a number of milliseconds. The result reports how long it actually took (a selector already on the page matches in ~0 ms — that is not a delay). Not for load states — `browser_open` already waits for the page to load. To wait for text: `browser_run(["wait","--text","<text>"])`.
 - `browser_screenshot(full?)` — Take a screenshot (returns file path; use Read to see the image)
 
 **Navigation:**
