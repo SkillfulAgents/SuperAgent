@@ -62,9 +62,15 @@ function attr(attrs: string, name: string): string | null {
  */
 export function parseSelectOptions(html: string): SelectOption[] {
   const out: SelectOption[] = []
+  // Option-shaped text that is not an option: comments, and the inert
+  // contents of <template>/<script>/<style> (review: a commented-out
+  // <option> verified a selection that was never available).
+  const live = html
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<(template|script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
   const re = /<option\b([^>]*)>([\s\S]*?)<\/option>/gi
   let m: RegExpExecArray | null
-  while ((m = re.exec(html)) !== null) {
+  while ((m = re.exec(live)) !== null) {
     const text = decodeEntities(m[2].replace(/<[^>]*>/g, '')).replace(/\s+/g, ' ').trim()
     const value = attr(m[1], 'value')
     const label = attr(m[1], 'label')
@@ -80,7 +86,12 @@ export function parseSelectOptions(html: string): SelectOption[] {
  */
 export function targetOptionMatches(options: SelectOption[], requested: string, value: string): boolean {
   const want = requested.trim()
-  return options.some(o => o.value === value && o.label === want)
+  // The read-back value names an option only when every option carrying
+  // that value has the same label: with duplicate values (California and
+  // New York both "0") the value does not say which is selected, so the
+  // verification is unknown, not a match.
+  const holders = options.filter(o => o.value === value)
+  return holders.length > 0 && holders.every(o => o.label === want)
 }
 
 /**

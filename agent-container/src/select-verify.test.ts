@@ -96,3 +96,25 @@ describe('target option list from `get html @ref`', () => {
     expect(targetOptionMatches([], 'California', 'CA')).toBe(false)
   })
 })
+
+describe('option-list edge cases from review', () => {
+  it('leaves verification unknown when options with the read-back value carry conflicting labels', () => {
+    // review: California and New York both value "0" — the value does not say which is selected
+    const options = parseSelectOptions('<option value="0">California</option><option value="0" selected>New York</option>')
+    expect(targetOptionMatches(options, 'California', '0')).toBe(false)
+    expect(targetOptionMatches(options, 'New York', '0')).toBe(false)
+    // duplicate values that agree on the label still verify
+    expect(targetOptionMatches(parseSelectOptions('<option value="0">Same</option><option value="0">Same</option>'), 'Same', '0')).toBe(true)
+  })
+
+  it('ignores option-shaped text that is not a live option: comments, template, script, style', () => {
+    const html = [
+      '<!-- <option value="CA">California</option> -->',
+      '<template><option value="CA">California</option></template>',
+      '<script>var s = "<option value=\\"CA\\">California</option>"</script>',
+      '<option value="NY" selected>New York</option>',
+    ].join('')
+    expect(parseSelectOptions(html)).toEqual([{ value: 'NY', label: 'New York' }])
+    expect(targetOptionMatches(parseSelectOptions(html), 'California', 'CA')).toBe(false)
+  })
+})
