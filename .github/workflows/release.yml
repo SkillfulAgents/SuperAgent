@@ -244,6 +244,25 @@ jobs:
           PLATFORM_AUTH_ISSUER_URL: ${{ secrets.PLATFORM_AUTH_ISSUER_URL }}
         run: npm run dist:mac
 
+      - name: Enforce release artifact size limit
+        shell: bash
+        run: |
+          # Wrangler (Cloudflare R2 feed upload) rejects single objects over
+          # 300 MiB. Fail here, in the build job, rather than discovering it
+          # after the GitHub release is already published.
+          limit=$((280 * 1024 * 1024))
+          bad=0
+          for f in release/*.exe release/*.dmg release/*.zip; do
+            [ -e "$f" ] || continue
+            size=$(wc -c < "$f")
+            printf '%6d MiB  %s\n' "$((size / 1048576))" "$(basename "$f")"
+            if [ "$size" -gt "$limit" ]; then
+              echo "::error file=$f::$(basename "$f") is $((size / 1048576)) MiB, over the 280 MiB release-artifact limit (R2 upload cap is 300 MiB)"
+              bad=1
+            fi
+          done
+          [ "$bad" -eq 0 ] || exit 1
+
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -309,6 +328,25 @@ jobs:
           AZURE_CODE_SIGNING_PUBLISHER: ${{ secrets.AZURE_CODE_SIGNING_PUBLISHER }}
         run: npm run dist:win
 
+      - name: Enforce release artifact size limit
+        shell: bash
+        run: |
+          # Wrangler (Cloudflare R2 feed upload) rejects single objects over
+          # 300 MiB. Fail here, in the build job, rather than discovering it
+          # after the GitHub release is already published.
+          limit=$((280 * 1024 * 1024))
+          bad=0
+          for f in release/*.exe release/*.dmg release/*.zip; do
+            [ -e "$f" ] || continue
+            size=$(wc -c < "$f")
+            printf '%6d MiB  %s\n' "$((size / 1048576))" "$(basename "$f")"
+            if [ "$size" -gt "$limit" ]; then
+              echo "::error file=$f::$(basename "$f") is $((size / 1048576)) MiB, over the 280 MiB release-artifact limit (R2 upload cap is 300 MiB)"
+              bad=1
+            fi
+          done
+          [ "$bad" -eq 0 ] || exit 1
+
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -364,26 +402,56 @@ jobs:
         run: gh release edit "$GITHUB_REF_NAME" --draft=false --repo "$GITHUB_REPOSITORY"
 
       # Dual-publish bridge (SUP-286): populate the owned R2 feed
-      # (updates.gamutagents.com) AFTER the GitHub release is published, so a
-      # transient R2 hiccup can never block the primary (GitHub) feed during the
-      # bridge. continue-on-error keeps a failed upload from failing the release —
-      # generic-feed builds update from R2; pre-generic clients keep updating from
-      # GitHub until the cutover subtask (SUP-287) retires the GitHub feed. Skipped
-      # if the Cloudflare credentials aren't configured. Uses the same
-      # CLOUDFLARE_API_TOKEN as the gamut-releases Worker deploy — no separate R2
-      # S3 keys to manage.
+      # (updates.gamutagents.com) AFTER the GitHub release is published, so an
+      # R2 failure can never block the primary (GitHub) feed during the bridge.
+      # It DOES fail this job: from 0.5.21 to 0.5.22 the Windows installer was
+      # over wrangler's 300 MiB cap, the loop died on its first file, nothing
+      # (not even latest.yml) reached R2, and continue-on-error hid it — the
+      # generic feed silently stopped updating. Binaries go first and the feed
+      # metadata (latest*.yml) last, so R2 never advertises a version whose
+      # binaries are missing. Skipped if the Cloudflare credentials aren't
+      # configured. Uses the same CLOUDFLARE_API_TOKEN as the gamut-releases
+      # Worker deploy — no separate R2 S3 keys to manage.
       - name: Upload release feed to Cloudflare R2
         if: ${{ env.CLOUDFLARE_ACCOUNT_ID != '' }}
-        continue-on-error: true
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           shopt -s nullglob
+          failed=()
+          binaries=()
+          feeds=()
           for f in ./release-artifacts/*; do
             name="$(basename "$f")"
             # builder-debug.yml is electron-builder's debug dump, not a feed file.
             [ "$name" = "builder-debug.yml" ] && continue
-            echo "→ R2: $name"
-            npx --yes wrangler@4 r2 object put "gamut-releases/$name" --file "$f" --remote
+            case "$name" in
+              *.yml|*.yaml) feeds+=("$f") ;;
+              *)            binaries+=("$f") ;;
+            esac
           done
+
+          upload() {
+            local f="$1" name
+            name="$(basename "$f")"
+            echo "→ R2: $name ($(( $(wc -c < "$f") / 1048576 )) MiB)"
+            if ! npx --yes wrangler@4 r2 object put "gamut-releases/$name" --file "$f" --remote; then
+              echo "::error::R2 upload failed for $name"
+              failed+=("$name")
+            fi
+          }
+
+          for f in "${binaries[@]}"; do upload "$f"; done
+
+          if [ "${#failed[@]}" -ne 0 ]; then
+            echo "::error::Not uploading feed metadata: ${#failed[@]} binary upload(s) failed (${failed[*]}). The R2 feed still points at the previous version."
+            exit 1
+          fi
+
+          for f in "${feeds[@]}"; do upload "$f"; done
+
+          if [ "${#failed[@]}" -ne 0 ]; then
+            echo "::error::Feed metadata upload failed (${failed[*]}); clients on the R2 feed will not see this release."
+            exit 1
+          fi
