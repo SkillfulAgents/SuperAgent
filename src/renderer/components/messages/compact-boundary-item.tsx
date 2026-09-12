@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { ChevronDown, ChevronRight, Loader2, Minimize2 } from 'lucide-react'
 import type { ApiCompactBoundary } from '@shared/lib/types/api'
+import { ThreadDivider } from './thread-divider'
 
 interface CompactBoundaryItemProps {
   boundary?: ApiCompactBoundary
@@ -13,14 +14,12 @@ export function CompactBoundaryItem({ boundary, isCompacting }: CompactBoundaryI
   // Real-time compacting indicator
   if (isCompacting) {
     return (
-      <div className="flex items-center gap-2 py-3 px-4">
-        <div className="flex-1 border-t border-dashed border-muted-foreground/30" />
+      <ThreadDivider className="py-3">
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <Loader2 className="h-3 w-3 animate-spin" />
           <span>Compacting conversation...</span>
         </div>
-        <div className="flex-1 border-t border-dashed border-muted-foreground/30" />
-      </div>
+      </ThreadDivider>
     )
   }
 
@@ -28,9 +27,7 @@ export function CompactBoundaryItem({ boundary, isCompacting }: CompactBoundaryI
 
   return (
     <div className="py-2">
-      {/* Dotted line with label */}
-      <div className="flex items-center gap-2 px-4">
-        <div className="flex-1 border-t border-dashed border-muted-foreground/30" />
+      <ThreadDivider>
         <button
           onClick={() => setExpanded(!expanded)}
           className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
@@ -43,8 +40,7 @@ export function CompactBoundaryItem({ boundary, isCompacting }: CompactBoundaryI
             <ChevronRight className="h-3 w-3" />
           )}
         </button>
-        <div className="flex-1 border-t border-dashed border-muted-foreground/30" />
-      </div>
+      </ThreadDivider>
 
       {/* Expanded summary */}
       {expanded && boundary.summary && (

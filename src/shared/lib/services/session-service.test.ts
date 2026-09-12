@@ -915,6 +915,33 @@ describe('session-service', () => {
       expect(queued.timestamp).toBe('2025-01-01T00:01:00.000Z')
       expect(queued.message.content).toEqual([{ type: 'text', text: 'Queued mid-turn message' }])
     })
+
+    it('keeps the fork stamp on a queued_command copied into a fork', async () => {
+      const entries = [
+        ...SAMPLE_JSONL_ENTRIES,
+        {
+          type: 'attachment',
+          uuid: 'attachment-entry-uuid',
+          parentUuid: null,
+          sessionId: 'forked-session',
+          timestamp: '2025-01-01T00:01:00.000Z',
+          attachment: {
+            type: 'queued_command',
+            prompt: 'Queued before the fork',
+            source_uuid: 'queue-source-uuid',
+            commandMode: 'prompt',
+          },
+          forkedFrom: { sessionId: 'source-session', messageUuid: 'old-attachment-uuid' },
+        },
+      ]
+      await createSessionFile('test-agent', 'forked-session', entries)
+
+      const messages = await getSessionMessages('test-agent', 'forked-session')
+
+      const queued = messages[messages.length - 1]
+      expect(queued.type).toBe('user')
+      expect(queued.forkedFrom).toEqual({ sessionId: 'source-session', messageUuid: 'old-attachment-uuid' })
+    })
   })
 
   describe('getSessionMessagesPage', () => {

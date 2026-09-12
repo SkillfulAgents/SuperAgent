@@ -46,7 +46,7 @@ test.describe('Fork Session', () => {
     // Landed in the fork: URL changed, name carries the suffix, banner present.
     await expect(page).not.toHaveURL(new RegExp(`/sessions/${session.id}$`), { timeout: 15000 })
     await expect(page.locator('[data-testid="session-breadcrumb"]')).toContainText('(fork)')
-    await expect(page.locator('[data-testid="fork-session-banner"]')).toContainText(`Forked from "${session.name}"`)
+    await expect(page.locator('[data-testid="fork-boundary"]')).toContainText(`Branched from ${session.name}`)
 
     // History carried, source unchanged.
     let fork: TestSession | undefined
@@ -68,6 +68,10 @@ test.describe('Fork Session', () => {
       return msgs.some((m) => messageContentIncludes(m, 'continue in the fork'))
     }, { timeout: 15000 }).toBe(true)
     expect(await listSessionMessages(request, agent, session)).toEqual(sourceBefore)
+    // The fork line now sits between the copied history and the new message.
+    await expect(
+      page.locator('[data-testid="fork-boundary"]').locator('xpath=following::*[contains(text(), "continue in the fork")]'),
+    ).toBeVisible()
   })
 
   test('carries the source composer draft and leaves the source draft in place', async ({ page, request }, testInfo) => {
@@ -84,7 +88,7 @@ test.describe('Fork Session', () => {
     await expect(page).not.toHaveURL(new RegExp(`/sessions/${session.id}$`), { timeout: 15000 })
     await expect(page.locator('[data-testid="message-input"]')).toHaveText(draft)
 
-    await page.locator('[data-testid="fork-session-back-button"]').click()
+    await page.locator('[data-testid="fork-boundary-link"]').click()
     await expect(page).toHaveURL(new RegExp(`/sessions/${session.id}$`), { timeout: 15000 })
     await expect(page.locator('[data-testid="message-input"]')).toHaveText(draft)
   })

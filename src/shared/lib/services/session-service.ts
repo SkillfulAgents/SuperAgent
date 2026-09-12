@@ -357,7 +357,7 @@ function isMessageEntry(entry: JsonlEntry): entry is JsonlMessageEntry {
  */
 function normalizeQueuedCommandEntry(entry: JsonlEntry): JsonlEntry {
   if (entry.type !== 'attachment') return entry
-  const { attachment } = entry as JsonlAttachmentEntry
+  const { attachment, forkedFrom } = entry as JsonlAttachmentEntry
   if (
     !attachment ||
     attachment.type !== 'queued_command' ||
@@ -380,6 +380,8 @@ function normalizeQueuedCommandEntry(entry: JsonlEntry): JsonlEntry {
       content: attachment.prompt,
     },
     isQueuedCommand: true,
+    // The fork stamp sits on the attachment line; the rebuilt message keeps it.
+    ...(forkedFrom && { forkedFrom }),
   } satisfies JsonlMessageEntry
 }
 
