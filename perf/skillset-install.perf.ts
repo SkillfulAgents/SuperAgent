@@ -91,7 +91,11 @@ describe('skillset install', () => {
       ),
     )
     expectWithinBudget('skillset installAgentFromSkillset', measurement, {
-      totalOps: 10_000,
+      // Pinned exactly: 41 copies and 43 hash reads as the plain copy did,
+      // plus the atomic writer's temp file and rename for the three documents
+      // the install writes (main wrote two of them in place) and one realpath
+      // for the cycle guard on the source tree.
+      totalOps: 106,
       wallMs: 500,
     })
   })
