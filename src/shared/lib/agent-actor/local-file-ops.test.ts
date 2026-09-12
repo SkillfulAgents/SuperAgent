@@ -2,7 +2,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { Readable } from 'stream'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LocalFileOps, createLocalFileOps } from './local-file-ops'
 import { describeFileOpsContract } from './testing/file-ops-contract'
 import { WorkspaceFileError } from './workspace-path'
@@ -141,6 +141,25 @@ describe('LocalFileOps — links and host files', () => {
       expect(source.destroyed).toBe(true)
     } finally {
       await fs.promises.chmod(path.join(root, 'sealed'), 0o700)
+    }
+  })
+
+  it('creates a write\'s parent directories only when the write finds them missing', async () => {
+    const mkdir = vi.spyOn(fs.promises, 'mkdir')
+    try {
+      await files.putDoc('top.txt', 'in the root')
+      expect(mkdir).not.toHaveBeenCalled()
+
+      await files.putDoc('deep/er/doc.txt', 'nested')
+      expect(mkdir).toHaveBeenCalledTimes(1)
+      expect(await fs.promises.readFile(path.join(root, 'deep', 'er', 'doc.txt'), 'utf-8')).toBe('nested')
+
+      mkdir.mockClear()
+      await files.write('deep/er/blob.bin', new Uint8Array([1]))
+      await files.moveHostFile(path.join(outside, 'secret.txt'), 'deep/er/moved.txt')
+      expect(mkdir).not.toHaveBeenCalled()
+    } finally {
+      mkdir.mockRestore()
     }
   })
 
