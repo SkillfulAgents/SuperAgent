@@ -4400,12 +4400,26 @@ describe('MessagePersister', () => {
       expect(messagePersister.isSessionCompacting(AGENT_SLUG, SESSION_ID)).toBe(false)
     })
 
-    it('a turn result clears the raw compaction flag, bounding a summary missed across a reattach', () => {
+    it('a turn result ends a compaction whose summary was missed, and does not re-announce one the summary ended', () => {
       messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
       const st = (messagePersister as any).streamingStates.get(sessionKeyOf(AGENT_SLUG, SESSION_ID))
       st.isCompacting = true
+      sseEvents.length = 0
+      // The summary was lost across a reattach: the result is the last frame
+      // that can tell connected clients the spinner is over.
       mockClient._sendMessage({ type: 'result', subtype: 'success' })
       expect(st.isCompacting).toBe(false)
+      expect(sseEvents.filter(e => e.type === 'compact_complete')).toHaveLength(1)
+
+      // The ordinary turn: the summary ends the compaction, the result adds nothing.
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      st.isCompacting = true
+      sseEvents.length = 0
+      mockClient._sendMessage({
+        type: 'user', isCompactSummary: true, message: { role: 'user', content: [{ type: 'text', text: 'Summary.' }] },
+      })
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      expect(sseEvents.filter(e => e.type === 'compact_complete')).toHaveLength(1)
     })
 
     it('a stop clears the raw compaction flag, so a later wake does not resurrect it', async () => {
@@ -8513,6 +8527,40 @@ describe('MessagePersister', () => {
       expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(true)
       expect(messagePersister.isSessionCompacting(AGENT_SLUG, SESSION_ID)).toBe(false)
       expect(sseEvents.filter(e => e.type === 'compact_complete')).toHaveLength(1)
+    })
+
+    it('a tool result that lands while a missed summary left the flag set still settles, and ends the compaction', () => {
+      // compact_start seen, transport dropped, summary missed, same process
+      // reattached with the flag kept: the next user frame is a tool result,
+      // not the summary, and it must reach the tool-result path.
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      // A deliver_file call is in flight; its result has to reach chat.
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: 'deliver-1', name: 'mcp__user-input__deliver_file' },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json: '{"filePath":"/workspace/out.txt"}' } },
+      })
+      mockClient._sendMessage({ type: 'stream_event', event: { type: 'content_block_stop' } })
+      const st = (messagePersister as any).streamingStates.get(sessionKeyOf(AGENT_SLUG, SESSION_ID))
+      st.isCompacting = true
+      sseEvents.length = 0
+      mockClient._sendMessage({
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'deliver-1', content: 'delivered' }] },
+      })
+      expect(st.isCompacting).toBe(false)
+      expect(sseEvents.filter(e => e.type === 'compact_complete')).toHaveLength(1)
+      expect(sseEvents.filter(e => e.type === 'tool_result' && e.toolUseId === 'deliver-1')).toHaveLength(1)
+      const ready = sseEvents.filter(e => e.type === 'tool_result_ready')
+      expect(ready).toHaveLength(1)
+      expect(ready[0].filePath).toBe('/workspace/out.txt')
+      expect(sseEvents.filter(e => e.type === 'messages_updated')).toHaveLength(1)
     })
 
     it('a runtime-started turn resets a compaction left over from a turn that ended without its summary', () => {

@@ -2435,8 +2435,9 @@ class MessagePersister {
           state.isCompacting = false
           // Compaction complete — broadcast so frontend transitions from spinner to boundary
           this.broadcastToSSE(agentSlug, sessionId, { type: 'compact_complete' })
-          this.broadcastToSSE(agentSlug, sessionId, { type: 'messages_updated' })
-          break
+          // No early exit: a summary missed across a transport reattach leaves
+          // the flag set, so the frame that clears it can be a tool result that
+          // still has to settle its request below.
         }
         // Tool results come as 'user' type messages. handleToolResults settles
         // each answered request in the registry and recomputes awaiting from
@@ -2828,7 +2829,6 @@ class MessagePersister {
           // markSessionInterrupted settles the session if the process was in
           // fact replaced, and process_restarted drops the tasks otherwise.
           state.isAwaitingInput = false
-          this.abandonCompaction(agentSlug, sessionId, state)
         } else if (state.stateEventsAuthority || this.openBackgroundWorkCount(state) > 0) {
           this.syncSessionAwaiting(agentSlug, sessionId)
         } else {
@@ -2836,8 +2836,10 @@ class MessagePersister {
         }
         // The compact summary always precedes the result, so a compaction
         // cannot outlive its turn. A summary missed across a container
-        // reattach would otherwise leave the flag set until the next turn.
-        state.isCompacting = false
+        // reattach would otherwise leave the flag set until the next turn,
+        // and the result paths with no idle frame after them (a graceful
+        // interrupt, a runtime-authority success) need the broadcast.
+        this.abandonCompaction(agentSlug, sessionId, state)
         state.currentText = ''
         state.lastResultSubtype = typeof content.subtype === 'string' ? content.subtype : null
 
