@@ -814,7 +814,7 @@ import { validatePressKey } from './press-key';
 import { prepareEvalScript, finalizeEvalOutput, evalErrorHint } from './eval-script';
 import { judgeSelectCommit, SELECT_COMMIT_SETTLE_MS } from './select-verify';
 import { resolveCommittedValue } from './field-value-readback';
-import { capBrowserOutput, redactCdpUrls, MAX_BROWSER_OUTPUT_CHARS, MAX_BROWSER_ERROR_CHARS } from './browser-output';
+import { capBrowserOutput, redactCdpUrls, describeExecFailure, BROWSER_EXEC_TIMEOUT_MS, MAX_BROWSER_OUTPUT_CHARS, MAX_BROWSER_ERROR_CHARS } from './browser-output';
 import { capSnapshot, compactWithText, countRefs, formatIframePlaceholders, formatTextFooter, THIN_TREE_REFS } from './snapshot-format';
 import { observerScript, parseObservation, EMPTY_OBSERVATION, PREVIEW_CHARS, THIN_TREE_PREVIEW_CHARS, type PageObservation } from './page-observer';
 import { formatStatusLine, waitForLoaded } from './page-status';
@@ -879,7 +879,7 @@ async function execBrowser(args: string[], cdpUrl?: string): Promise<{ stdout: s
   try {
     const fullArgs = cdpUrl ? ['--cdp', cdpUrl, ...args] : args;
     const { stdout } = await execFileAsync('agent-browser', fullArgs, {
-      timeout: 30000,
+      timeout: BROWSER_EXEC_TIMEOUT_MS,
       // Large-but-legitimate outputs must not THROW (the throw path used to
       // stuff up to 1 MiB of partial output into an error string);
       // capBrowserOutput below bounds what the model actually sees.
@@ -898,11 +898,10 @@ async function execBrowser(args: string[], cdpUrl?: string): Promise<{ stdout: s
     if (error.stderr) {
       console.error('[Browser] agent-browser stderr:', error.stderr);
     }
-    const parts = [
-      error.stdout?.trim(),
-      error.stderr?.trim(),
-    ].filter(Boolean);
-    const rawDetail = parts.length > 0 ? parts.join('\n') : (error.message || 'Command failed');
+    // error.message carries the full argv (the agent's own script or text)
+    // and stands in for a cause it does not name — describeExecFailure
+    // reports the verb and the failure class the exec layer can vouch for.
+    const rawDetail = describeExecFailure(error, args[0] || 'command', BROWSER_EXEC_TIMEOUT_MS);
     return {
       stdout: redactCdpUrls(capBrowserOutput(rawDetail, MAX_BROWSER_ERROR_CHARS)),
       exitCode: typeof error.code === 'number' ? error.code : 1,
