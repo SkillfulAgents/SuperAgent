@@ -598,9 +598,14 @@ const browserEvalTool = tool(
     const result = await browserFetch('eval', { script: args.script })
     if (!result.success) return errorResult(result.error!)
     const data = result.data as Record<string, unknown>
-    let text = data.output ? String(data.output) : '(no output)'
-    if (data.wrapped) {
-      text += '\n(note: ran in a fresh function scope — add `return` if you expected a value back)'
+    const output = data.output ? String(data.output) : ''
+    let text = output || '(no output)'
+    // A statement body runs inside an async IIFE, and the CLI prints `null`
+    // for a body that completes without `return` (undefined → JSON null).
+    // The note is only informative in that case; on any other output it was
+    // a 100% false positive in the mined sessions (theme 4).
+    if (data.wrapped && (output === '' || output === 'null')) {
+      text += '\n(note: a statement body that does not `return` also yields null — add `return` if you expected a value back)'
     }
     text += getTabWarning()
     return {

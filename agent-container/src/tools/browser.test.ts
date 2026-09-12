@@ -205,3 +205,39 @@ describe('browser_open location', () => {
     expect(result.content[0].text).toContain(BROWSER_USE_GUIDANCE_HINT)
   })
 })
+
+describe('browser_eval return note', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  const evalWith = async (output: string, wrapped: boolean) => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ success: true, output, wrapped }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })))
+    const evalTool = createBrowserTools(() => 'session-e').find(t => t.name === 'browser_eval') as any
+    const result = await evalTool.handler({ script: 'ignored' })
+    return String(result.content[0].text)
+  }
+
+  it('does not attach the note when a wrapped script returned a value', async () => {
+    const text = await evalWith('{"rows":18}', true)
+    expect(text).toContain('{"rows":18}')
+    expect(text).not.toContain('add `return`')
+  })
+
+  it('does not attach the note to falsy-but-real values', async () => {
+    for (const out of ['0', 'false', '""', '{}', '[]']) {
+      expect(await evalWith(out, true)).not.toContain('add `return`')
+    }
+  })
+
+  it('attaches the note only when a wrapped body produced null or nothing', async () => {
+    expect(await evalWith('null', true)).toContain('add `return`')
+    expect(await evalWith('', true)).toContain('add `return`')
+  })
+
+  it('never attaches the note to an unwrapped expression', async () => {
+    expect(await evalWith('null', false)).not.toContain('add `return`')
+    expect(await evalWith('', false)).toBe('(no output)')
+  })
+})
