@@ -1,23 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified browser use feature works correctly - agent successfully opened a browser, navigated to example.com, retrieved the page title \"Example Domain\", and returned the result",
+  "reason": "Browser use feature successfully executed: Agent opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported results back in the chat interface.",
   "steps": [
-    "Navigated to http://localhost:47891 — page loaded successfully showing Gamut interface with agent list in sidebar",
-    "Clicked on agent \"QA-20260912-003618-f0lo\" in sidebar — agent page opened with chat interface",
-    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — message sent to agent and session created",
-    "Waited for agent to complete (up to 3 minutes) — agent finished working in 5 seconds",
-    "Verified response mentions \"Example Domain\" — response displayed: \"The page title is 'Example Domain' (https://example.com/, HTTP 200). Browser closed.\" — TEST PASSED"
+    "Navigate to http://localhost:47891 — Result: Successfully navigated to Gamut home page. Sidebar displays available agents including \"QA-20260912-182838-a31m\".",
+    "Click on \"QA-20260912-182838-a31m\" agent in sidebar — Result: Successfully opened the agent page. Chat interface loaded with message input field and configuration panels visible.",
+    "Type message in chat input — Result: Successfully typed \"Open a browser and go to https://example.com. Tell me the page title.\" into the message input field.",
+    "Click Send message button — Result: Message sent successfully. New session created titled \"Browser Navigation and Page Title\". Agent status changed to \"working\" with 3 tool calls initiated.",
+    "Wait up to 3 minutes for response containing \"Example Domain\" — Result: Response received within 6 seconds. Agent successfully reported: \"The page title is \"Example Domain\". Browser closed.\" Task metrics show: Worked for 6s, 3 tool calls, 146,663 tokens used.",
+    "Take screenshot to verify response — Result: Screenshot captured showing complete chat conversation with agent's response clearly displaying \"Example Domain\" in the response text."
   ],
   "bugs": [],
-  "durationMs": 73076,
-  "sessionId": "0bba7b88-9f07-4a71-93a4-ee2f5fdddea5",
+  "durationMs": 88840,
+  "sessionId": "8af4d485-9dec-431d-ac0b-bfffe9b5be61",
   "cost": {
-    "inputTokens": 374,
-    "outputTokens": 13010,
-    "cacheCreationTokens": 78434,
-    "cacheReadTokens": 1140682,
+    "inputTokens": 320,
+    "outputTokens": 9376,
+    "cacheCreationTokens": 67532,
+    "cacheReadTokens": 864444,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.277535
+    "totalCostUsd": 0.218059
   }
 }
