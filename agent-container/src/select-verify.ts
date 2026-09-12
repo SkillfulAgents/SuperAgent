@@ -13,12 +13,13 @@
  * selected, value-before equals value-after and neither equals the request —
  * which used to be reported as "did not commit" ("requested California,
  * element value is still CA"; mining theme 24). In that one case the route
- * reads the target's own selected option. The CLI resolves refs, not page
- * scripts, so the target is identified geometrically: `get box @ref` gives
- * its rectangle and the in-page script takes the <select> at that point
- * whose rectangle matches — never document.activeElement (a page's onfocus
- * handler can move focus to another dropdown) and never a page-wide search
- * (a sibling dropdown can hold the requested label).
+ * reads the target's own option list with `get html @ref` — a second read
+ * the CLI resolves against the same ref as the select and the value read —
+ * and checks whether the option holding the read-back value carries the
+ * requested label. No page script is involved: a page-wide search can be
+ * satisfied by a sibling dropdown, focus can be redirected by an onfocus
+ * handler, and elementFromPoint returns whichever control covers the
+ * target — all three verified the wrong element in review.
  */
 
 export const SELECT_COMMIT_SETTLE_MS = 300
@@ -33,63 +34,53 @@ export type SelectJudgement =
   | { ok: true; committed: string }
   | { ok: false; reason: string }
 
-export interface ElementBox { x: number; y: number; width: number; height: number }
+export interface SelectOption { value: string; label: string }
 
-/** Parse `get box @ref --json` ({"success":true,"data":{x,y,width,height}}) or the bare data object. */
-export function parseElementBox(stdout: string): ElementBox | null {
-  try {
-    let parsed: unknown = JSON.parse(stdout.trim())
-    if (typeof parsed === 'string') parsed = JSON.parse(parsed)
-    const o = parsed as Record<string, unknown> | null
-    const d = (o && typeof o.data === 'object' && o.data !== null ? o.data : o) as Record<string, unknown> | null
-    if (!d) return null
-    const n = (k: string): number | null => (typeof d[k] === 'number' && Number.isFinite(d[k] as number) ? (d[k] as number) : null)
-    const x = n('x'), y = n('y'), width = n('width'), height = n('height')
-    if (x === null || y === null || width === null || height === null) return null
-    return { x, y, width, height }
-  } catch {
-    return null
-  }
+const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' }
+
+function decodeEntities(s: string): string {
+  return s.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e: string) => {
+    if (e[0] === '#') {
+      const code = e[1].toLowerCase() === 'x' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10)
+      return Number.isFinite(code) ? String.fromCodePoint(code) : m
+    }
+    return ENTITIES[e.toLowerCase()] ?? m
+  })
+}
+
+function attr(attrs: string, name: string): string | null {
+  const m = new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'>]+))`, 'i').exec(attrs)
+  if (!m) return null
+  return decodeEntities(m[1] ?? m[2] ?? m[3] ?? '')
 }
 
 /**
- * In-page script: the <select> whose rectangle is `box`, read at the box's
- * centre. The CLI's box may be viewport- or document-relative, so both
- * interpretations are tried and a hit must also match the box's size and
- * position (±2px). Returns {value,label} — `label` is option.label, which
- * honours a `label` attribute and falls back to the text — or null when no
- * <select> with that rectangle is at that point.
+ * The options of a <select>, from its innerHTML as `get html @ref` returns
+ * it. `label` follows the DOM's option.label: the label attribute when
+ * present, else the text; `value` follows option.value: the value attribute
+ * when present, else the text.
  */
-export function selectTargetStateScript(box: ElementBox): string {
-  const b = JSON.stringify({ x: box.x, y: box.y, w: box.width, h: box.height })
-  return (
-    'JSON.stringify((function(){var b=' + b + ';var cands=[[b.x+b.w/2,b.y+b.h/2,0,0],[b.x+b.w/2-window.scrollX,b.y+b.h/2-window.scrollY,window.scrollX,window.scrollY]];' +
-    'for(var i=0;i<cands.length;i++){var c=cands[i];var e=document.elementFromPoint(c[0],c[1]);' +
-    'if(!e||e.tagName!=="SELECT")continue;var r=e.getBoundingClientRect();' +
-    'if(Math.abs(r.width-b.w)>2||Math.abs(r.height-b.h)>2||Math.abs(r.left+c[2]-b.x)>2||Math.abs(r.top+c[3]-b.y)>2)continue;' +
-    'var o=e.selectedOptions&&e.selectedOptions[0];return{value:String(e.value),label:o?String(o.label||o.text||"").trim():""}}return null})())'
-  )
-}
-
-export interface SelectTargetState { value: string; label: string }
-
-/** Parse the (possibly double-JSON-encoded) output of selectTargetStateScript. */
-export function parseSelectTargetState(stdout: string): SelectTargetState | null {
-  try {
-    let parsed: unknown = JSON.parse(stdout.trim())
-    if (typeof parsed === 'string') parsed = JSON.parse(parsed)
-    if (!parsed || typeof parsed !== 'object') return null
-    const o = parsed as Record<string, unknown>
-    if (typeof o.value !== 'string' || typeof o.label !== 'string') return null
-    return { value: o.value, label: o.label }
-  } catch {
-    return null
+export function parseSelectOptions(html: string): SelectOption[] {
+  const out: SelectOption[] = []
+  const re = /<option\b([^>]*)>([\s\S]*?)<\/option>/gi
+  let m: RegExpExecArray | null
+  while ((m = re.exec(html)) !== null) {
+    const text = decodeEntities(m[2].replace(/<[^>]*>/g, '')).replace(/\s+/g, ' ').trim()
+    const value = attr(m[1], 'value')
+    const label = attr(m[1], 'label')
+    out.push({ value: value ?? text, label: (label ?? text).trim() })
   }
+  return out
 }
 
-/** Does the target hold `value` under the requested label? */
-export function targetMatches(state: SelectTargetState | null, requested: string, value: string): boolean {
-  return state !== null && state.value === value && state.label === requested.trim()
+/**
+ * Does the target's option holding `value` carry the requested label? Read
+ * from the target's own option list, so a sibling dropdown, a redirected
+ * focus or a covering control cannot answer for it.
+ */
+export function targetOptionMatches(options: SelectOption[], requested: string, value: string): boolean {
+  const want = requested.trim()
+  return options.some(o => o.value === value && o.label === want)
 }
 
 /**
@@ -99,9 +90,9 @@ export function targetMatches(state: SelectTargetState | null, requested: string
  * Selecting by visible label is supported by the CLI, so a successful commit
  * may land on a value different from the requested string — any post-select
  * change counts as a commit, and the committed value is reported back. When
- * nothing changed, `labelMatches` (the target's selected option carries the
- * requested label) also counts as committed: the request was already
- * satisfied.
+ * nothing changed, `labelMatches` (the target's option holding the current
+ * value carries the requested label) also counts as committed: the request
+ * was already satisfied.
  */
 export function judgeSelectCommit(
   requested: string,

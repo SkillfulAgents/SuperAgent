@@ -1,11 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import {
-  judgeSelectCommit,
-  parseElementBox,
-  selectTargetStateScript,
-  parseSelectTargetState,
-  targetMatches,
-} from './select-verify'
+import { judgeSelectCommit, parseSelectOptions, targetOptionMatches } from './select-verify'
 
 describe('judgeSelectCommit', () => {
   it('passes when the value committed exactly (select by value)', () => {
@@ -57,41 +51,48 @@ describe('judgeSelectCommit', () => {
   })
 })
 
-describe('target identification by rectangle', () => {
-  it('parses the CLI box JSON envelope and a bare box', () => {
-    expect(parseElementBox('{"success":true,"data":{"height":19,"width":85,"x":55,"y":81.875},"error":null}')).toEqual({ x: 55, y: 81.875, width: 85, height: 19 })
-    expect(parseElementBox('{"x":1,"y":2,"width":3,"height":4}')).toEqual({ x: 1, y: 2, width: 3, height: 4 })
-    expect(parseElementBox('{"success":false,"data":null}')).toBeNull()
-    expect(parseElementBox('x:      55')).toBeNull()
+describe('target option list from `get html @ref`', () => {
+  // Captured from agent-browser 0.27.2: `get html @e2` on a <select>.
+  const cliHtml = '<option value="AL">Alabama</option><option value="CA">California</option><option value="NY" selected="">New York</option>'
+
+  it('parses the CLI output into value/label pairs', () => {
+    expect(parseSelectOptions(cliHtml)).toEqual([
+      { value: 'AL', label: 'Alabama' },
+      { value: 'CA', label: 'California' },
+      { value: 'NY', label: 'New York' },
+    ])
   })
 
-  it('reads the <select> AT the box, checks its rectangle, and never consults focus or searches the page', () => {
-    const script = selectTargetStateScript({ x: 55, y: 81.875, width: 85, height: 19 })
-    expect(script).toContain('document.elementFromPoint')
-    expect(script).toContain('getBoundingClientRect')
-    expect(script).toContain('tagName!=="SELECT"')
-    expect(script).not.toContain('activeElement')
-    expect(script).not.toContain('querySelectorAll')
-    // review: <option value="CA" label="California">CA</option> displays California — option.label, not .text
-    expect(script).toContain('o.label||o.text')
-    // both viewport- and document-relative interpretations of the CLI box are tried
-    expect(script).toContain('window.scrollX')
+  it('follows option.label (label attribute over text) and option.value (value attribute over text)', () => {
+    // review: <option value="CA" label="California">CA</option> displays California
+    expect(parseSelectOptions('<option value="CA" label="California">CA</option><option>Texas</option>')).toEqual([
+      { value: 'CA', label: 'California' },
+      { value: 'Texas', label: 'Texas' },
+    ])
   })
 
-  it('parses the CLI double-encoded state and rejects anything else', () => {
-    expect(parseSelectTargetState(JSON.stringify(JSON.stringify({ value: 'CA', label: 'California' })))).toEqual({ value: 'CA', label: 'California' })
-    expect(parseSelectTargetState('{"value":"CA","label":"California"}')).toEqual({ value: 'CA', label: 'California' })
-    expect(parseSelectTargetState('null')).toBeNull()
-    expect(parseSelectTargetState('"null"')).toBeNull()
-    expect(parseSelectTargetState('garbage')).toBeNull()
+  it('handles attribute order, quoting styles, entities, whitespace and optgroups', () => {
+    const html = [
+      '<optgroup label="West"><option selected value=\'WA\'>  Washington\n</option>',
+      "<option value=OR label='Oregon &amp; Coast'>OR</option></optgroup>",
+      '<option value="TX">Texas &#39;n&#39; more</option>',
+    ].join('')
+    expect(parseSelectOptions(html)).toEqual([
+      { value: 'WA', label: 'Washington' },
+      { value: 'OR', label: 'Oregon & Coast' },
+      { value: 'TX', label: "Texas 'n' more" },
+    ])
+    expect(parseSelectOptions('')).toEqual([])
+    expect(parseSelectOptions('✗ Unknown ref: e31')).toEqual([])
   })
 
-  it('matches only when the TARGET holds the value under the requested label', () => {
-    expect(targetMatches({ value: 'CA', label: 'California' }, 'California', 'CA')).toBe(true)
-    expect(targetMatches({ value: 'CA', label: 'California' }, ' California ', 'CA')).toBe(true)
-    // the reviewer's case: target reverted to New York while another dropdown holds California
-    expect(targetMatches({ value: 'NY', label: 'New York' }, 'California', 'NY')).toBe(false)
-    // no <select> with the target's rectangle at that point: unknown, so no match
-    expect(targetMatches(null, 'California', 'CA')).toBe(false)
+  it('matches only when the TARGET option holding the value carries the requested label', () => {
+    const options = parseSelectOptions(cliHtml)
+    expect(targetOptionMatches(options, 'California', 'CA')).toBe(true)
+    expect(targetOptionMatches(options, ' California ', 'CA')).toBe(true)
+    // the reviewer's cases: the target still holds NY — whatever a sibling, a focused or a
+    // covering dropdown holds, this target's NY option is "New York", not "California"
+    expect(targetOptionMatches(options, 'California', 'NY')).toBe(false)
+    expect(targetOptionMatches([], 'California', 'CA')).toBe(false)
   })
 })

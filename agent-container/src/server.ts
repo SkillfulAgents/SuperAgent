@@ -812,7 +812,7 @@ const execFileAsync = promisify(execFile);
 import { resolveRunCommandArgs } from './browser-command-args';
 import { validatePressKey } from './press-key';
 import { prepareEvalScript, finalizeEvalOutput, evalErrorHint } from './eval-script';
-import { judgeSelectCommit, parseElementBox, selectTargetStateScript, parseSelectTargetState, targetMatches, SELECT_COMMIT_SETTLE_MS } from './select-verify';
+import { judgeSelectCommit, parseSelectOptions, targetOptionMatches, SELECT_COMMIT_SETTLE_MS } from './select-verify';
 import { resolveCommittedValue } from './field-value-readback';
 import { capBrowserOutput, redactCdpUrls, MAX_BROWSER_OUTPUT_CHARS, MAX_BROWSER_ERROR_CHARS } from './browser-output';
 import { capSnapshot, compactWithText, countRefs, formatIframePlaceholders, formatTextFooter, THIN_TREE_REFS } from './snapshot-format';
@@ -1838,15 +1838,12 @@ app.post('/browser/select', async (c) => {
     // the page could be satisfied by a different dropdown.
     let labelMatches = false;
     if (after !== null && after === before && after !== body.value) {
-      // Identify the target by its rectangle (the CLI resolves the ref), then
-      // read the <select> at that point whose rectangle matches. Focus is not
-      // identity: a page's onfocus handler can move it to another dropdown.
-      const boxRead = await execBrowser(['get', 'box', body.ref, '--json'], browserState.cdpUrl || undefined);
-      const box = boxRead.exitCode === 0 ? parseElementBox(boxRead.stdout) : null;
-      if (box) {
-        const probe = await execBrowser(['eval', selectTargetStateScript(box)], browserState.cdpUrl || undefined);
-        labelMatches = probe.exitCode === 0 && targetMatches(parseSelectTargetState(probe.stdout), body.value, after);
-      }
+      // Read the target's own option list through the same ref the select
+      // and the value read used. No page script: a page-wide search, a
+      // focused element or the element at the target's rectangle can all be
+      // a different dropdown (each verified the wrong one in review).
+      const html = await execBrowser(['get', 'html', body.ref], browserState.cdpUrl || undefined);
+      labelMatches = html.exitCode === 0 && targetOptionMatches(parseSelectOptions(html.stdout), body.value, after);
     }
 
     const judgement = judgeSelectCommit(body.value, before, after, labelMatches);
