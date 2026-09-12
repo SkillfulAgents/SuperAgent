@@ -498,7 +498,7 @@ describe('PlatformPaywallCard', () => {
       expect(screen.queryByTestId('billing-cta-hint')).not.toBeInTheDocument()
     })
 
-    it('draws the subscribe quote from the platform CTA and never expands the subscribe CTA', async () => {
+    it('draws the subscribe quote from the platform CTA and clears on billing-updated', async () => {
       renderCard('API Error: 402 {"error":"insufficient_balance","subscription_required":true}')
       await screen.findByTestId('billing-cta-frame')
       expect(screen.getByTestId('paywall-subscribe')).toHaveClass('flex-col', 'sm:flex-row')
@@ -514,12 +514,58 @@ describe('PlatformPaywallCard', () => {
       expect(screen.getByTestId('paywall-plan')).toHaveTextContent(/2 seats\s*×\s*\$200\/mo/)
       expect(screen.queryByTestId('billing-cta-hint')).not.toBeInTheDocument()
       expect(screen.getByTestId('billing-cta-size-reference')).toHaveClass('w-full')
-      postEmbedMessage(PLATFORM_ORIGIN, 'open-billing')
-      expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-expanded', 'false')
       fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
       postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated')
       await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Billing updated. You can continue.'))
       expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument()
+    })
+
+    it('sizes the subscribe CTA box for the promo line the platform draws under the button', async () => {
+      renderCard('API Error: 402 {"error":"insufficient_balance","subscription_required":true}')
+      await screen.findByTestId('billing-cta-frame')
+      const promoLine = screen.getByTestId('billing-cta-promo-reference')
+      expect(promoLine).toHaveTextContent('Have a promo code?')
+      expect(promoLine).toHaveClass('mt-1.5', 'h-4')
+      expect(promoLine).toHaveAttribute('aria-hidden', 'true')
+      postEmbedMessage(PLATFORM_ORIGIN, 'ready')
+      expect(promoLine).toHaveClass('invisible')
+      expect(screen.getByTestId('billing-cta-size-reference')).toHaveClass('invisible')
+    })
+
+    it('does not draw a promo line for the top-up or payment CTA', async () => {
+      renderCard()
+      await screen.findByTestId('billing-cta-frame')
+      expect(screen.queryByTestId('billing-cta-promo-reference')).not.toBeInTheDocument()
+    })
+
+    it('expands the subscribe CTA under both columns for the promo form and collapses on close, keeping the iframe', async () => {
+      renderCard('API Error: 402 {"error":"insufficient_balance","subscription_required":true}')
+      const frame = await screen.findByTestId('billing-cta-frame')
+      postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', { label: 'Upgrade to Pro', hint: 'Promo HALF3 applied.', seats: 1, seatPriceCents: 20000 })
+      expect(screen.getByTestId('billing-cta-hint')).toHaveTextContent('Promo HALF3 applied.')
+
+      await expandCta()
+      const aside = screen.getByTestId('paywall-subscribe-aside')
+      expect(aside).toHaveAttribute('data-expanded', 'true')
+      expect(aside).toHaveClass('w-full', 'sm:basis-full', 'items-stretch')
+      expect(aside).not.toHaveClass('sm:border-l', 'sm:min-w-[200px]')
+      expect(screen.getByTestId('paywall-subscribe')).toHaveClass('sm:flex-wrap')
+      expect(screen.getByTestId('paywall-card')).not.toHaveClass('max-w-md')
+      expect(screen.getByTestId('paywall-plan')).toHaveTextContent('$200/mo')
+      expect(screen.getByTestId('billing-cta-size-reference')).toHaveClass('hidden')
+      expect(screen.getByTestId('billing-cta-promo-reference')).toHaveClass('hidden')
+      expect(screen.queryByTestId('billing-cta-hint')).not.toBeInTheDocument()
+      postEmbedMessage(PLATFORM_ORIGIN, 'resize', { height: 180 })
+      expect(screen.getByTestId('billing-cta-body').style.height).toBe('180px')
+      expect(screen.getByTestId('billing-cta-frame')).toBe(frame)
+
+      postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', { label: 'Upgrade to Pro', hint: 'Promo HALF3 applied.', seats: 1, seatPriceCents: 10000 })
+      postEmbedMessage(PLATFORM_ORIGIN, 'close')
+      expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-expanded', 'false')
+      expect(aside).toHaveClass('sm:border-l', 'sm:min-w-[200px]')
+      expect(screen.getByTestId('paywall-plan')).toHaveTextContent('$100/mo')
+      expect(screen.getByTestId('billing-cta-hint')).toHaveTextContent('Promo HALF3 applied.')
+      expect(screen.getByTestId('billing-cta-frame')).toBe(frame)
     })
 
     it('widens only the subscribe card past the gutter at full column width', async () => {
@@ -899,8 +945,6 @@ describe('PlatformPaywallCard', () => {
       expect(screen.queryByRole('button', { name: 'Upgrade to Pro' })).not.toBeInTheDocument()
       expect(screen.getByTestId('billing-cta-size-reference')).toHaveTextContent('Upgrade to Pro')
       expect(screen.getByTestId('billing-cta-size-reference')).toHaveClass('bg-brand')
-      postEmbedMessage(PLATFORM_ORIGIN, 'open-billing')
-      expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-expanded', 'false')
     })
 
     it('embeds the payment CTA when the payment is past due', async () => {
