@@ -137,12 +137,28 @@ export class LocalFileOps implements FileOps {
     return { rel, abs, root }
   }
 
-  /** A path to write at: not the root, and its parent directories in place. */
-  private async forWrite(workspacePath: string): Promise<{ rel: string; abs: string }> {
+  /** A path to write at: any workspace path but the root. */
+  private forWrite(workspacePath: string): { rel: string; abs: string } {
     const { rel, abs } = this.absolute(workspacePath)
     if (rel === '') throw new WorkspaceFileError('invalid-path', 'The workspace root is not a file')
-    await ensureDirectory(path.dirname(abs))
     return { rel, abs }
+  }
+
+  /**
+   * Run a write, creating the target's parent directories only when the
+   * write finds them missing: the common case, the parent in place, costs
+   * the write alone, as the plain writes did. The attempt must not have
+   * consumed its source when it fails to open the target, which the atomic
+   * writer and a rename guarantee.
+   */
+  private async writing<T>(abs: string, attempt: () => Promise<T>): Promise<T> {
+    try {
+      return await attempt()
+    } catch (error) {
+      if (errnoCode(error) !== 'ENOENT') throw error
+      await ensureDirectory(path.dirname(abs))
+      return attempt()
+    }
   }
 
   /** The root's real location, resolved once per root path; null while the root does not exist. */
@@ -193,9 +209,9 @@ export class LocalFileOps implements FileOps {
    * second time.
    */
   async moveHostFile(hostPath: string, workspacePath: string): Promise<{ size: number }> {
-    const { abs } = await this.forWrite(workspacePath)
+    const { abs } = this.forWrite(workspacePath)
     try {
-      await fs.promises.rename(hostPath, abs)
+      await this.writing(abs, () => fs.promises.rename(hostPath, abs))
     } catch (error) {
       if (errnoCode(error) !== 'EXDEV') fromWriteError(error)
       await fs.promises.copyFile(hostPath, abs).catch(fromWriteError)
@@ -259,15 +275,15 @@ export class LocalFileOps implements FileOps {
   }
 
   async putDoc(workspacePath: string, bytes: Uint8Array | string): Promise<void> {
-    const { abs } = await this.forWrite(workspacePath)
+    const { abs } = this.forWrite(workspacePath)
     const data = typeof bytes === 'string' ? Buffer.from(bytes, 'utf-8') : asBuffer(bytes)
-    await writeFileAtomicStream(abs, [data]).catch(fromWriteError)
+    await this.writing(abs, () => writeFileAtomicStream(abs, [data])).catch(fromWriteError)
   }
 
   async write(workspacePath: string, body: ReadableStream<Uint8Array> | Uint8Array): Promise<{ size: number }> {
     let target: { rel: string; abs: string }
     try {
-      target = await this.forWrite(workspacePath)
+      target = this.forWrite(workspacePath)
     } catch (error) {
       // The caller may already hold the source open; a refused destination
       // must not leave it dangling.
@@ -277,8 +293,9 @@ export class LocalFileOps implements FileOps {
     const source = body instanceof Uint8Array
       ? null
       : Readable.fromWeb(body as import('stream/web').ReadableStream<Uint8Array>)
+    const chunks = source ?? [asBuffer(body as Uint8Array)]
     try {
-      await writeFileAtomicStream(target.abs, source ?? [asBuffer(body as Uint8Array)], { fsync: false })
+      await this.writing(target.abs, () => writeFileAtomicStream(target.abs, chunks, { fsync: false }))
     } catch (error) {
       // A destination that could not be opened (or written) leaves the
       // source unread; end it, or the file behind it stays open.

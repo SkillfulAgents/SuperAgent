@@ -694,7 +694,7 @@ import { computerUsePermissionManager } from '@shared/lib/computer-use/permissio
 import { listUserSecrets, setSecret, updateSecret, getSecret, getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { keyToEnvVar } from '@shared/lib/utils/secrets'
 import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
-import { readJsonFileStrict, readJsonlFile, streamJsonlFile, writeJsonFileAtomic, readFileOrNull } from '@shared/lib/utils/file-storage'
+import { readJsonFileStrict, readJsonlFile, streamJsonlFile, writeJsonFileAtomic, writeFileAtomicStream, readFileOrNull } from '@shared/lib/utils/file-storage'
 import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
 import { listWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 
@@ -3546,13 +3546,10 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
   })
 
   it('uploads file with relativePath preserving directory structure', async () => {
-    // The write resolves the parent's real path first and only walks up when
-    // that is missing; the nested folders do not exist yet.
-    mockFsRealpath.mockImplementation(async (value: unknown) => {
-      if (String(value).includes('myfolder')) throw enoent()
-      return value
-    })
-    try {
+    // The nested folders do not exist yet: the write's first attempt finds
+    // them missing, creates them, and writes again.
+    vi.mocked(writeFileAtomicStream).mockRejectedValueOnce(enoent())
+    {
       const formData = new FormData()
       formData.append('file', new File(['hello'], 'test.txt', { type: 'text/plain' }))
       formData.append('relativePath', 'myfolder/sub/test.txt')
@@ -3573,8 +3570,6 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
       expect(mockCreateWriteStream).toHaveBeenCalledWith(
         expect.stringContaining('myfolder/sub/test.txt'),
       )
-    } finally {
-      mockFsRealpath.mockReset()
     }
   })
 
