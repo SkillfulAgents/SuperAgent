@@ -656,7 +656,11 @@ Available commands:
     const result = await browserFetch('run', { command: args.command, args: args.args })
     if (!result.success) return errorResult(result.error!)
     const data = result.data as Record<string, unknown>
-    let text = data.output ? String(data.output) : 'Command executed.'
+    // Read verbs (console, errors, cookies, get value/attr, network requests)
+    // legitimately return nothing. "Command executed." read as a clean
+    // result — three mined sessions laundered it into "no console errors"
+    // verdicts. Say what came back: nothing.
+    let text = data.output ? String(data.output) : '(no output)'
     const tabInfo = data.tabInfo as { activeId: string; activeUrl: string; tabCount: number } | undefined
     if (tabInfo) {
       text += tabManager.formatTabNotification(tabInfo)
