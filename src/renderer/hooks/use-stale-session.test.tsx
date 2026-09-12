@@ -10,11 +10,14 @@ import {
 import type { SessionUsage } from '@shared/lib/types/agent'
 import { useStaleSession } from './use-stale-session'
 
-const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }))
+const { navigate, forkAndCompact } = vi.hoisted(() => ({ navigate: vi.fn(), forkAndCompact: vi.fn() }))
 vi.mock('@tanstack/react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-router')>()
   return { ...actual, useNavigate: () => navigate }
 })
+vi.mock('@renderer/hooks/use-sessions', () => ({
+  useForkAndCompact: () => ({ mutate: forkAndCompact, isPending: false }),
+}))
 
 const staleUsage: SessionUsage = {
   inputTokens: 10_000,
@@ -44,7 +47,7 @@ function renderStale(overrides: Partial<Parameters<typeof useStaleSession>[0]> =
 }
 
 describe('useStaleSession', () => {
-  beforeEach(() => navigate.mockClear())
+  beforeEach(() => [navigate, forkAndCompact].forEach((mock) => mock.mockReset()))
 
   it('shows for an old, large session at rest and hides when ignored', () => {
     const { result } = renderStale()
@@ -82,4 +85,13 @@ describe('useStaleSession', () => {
       params: { slug: 'friendly-agent-abc123def4' },
     })
   })
+
+  it('continues in a compacted copy through the shared fork-and-compact chain', () => {
+    const { result } = renderStale()
+    act(() => result.current.stale.continueCompacted())
+
+    // The display slug goes to the fork so the copy's URL keeps it, as startFresh does.
+    expect(forkAndCompact).toHaveBeenCalledWith({ sessionId: 'session-1', agentSlug: 'friendly-agent-abc123def4' })
+  })
+
 })

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useDraftsStore } from '@renderer/context/drafts-context'
+import { useForkAndCompact } from '@renderer/hooks/use-sessions'
 import {
   newSessionCarryoverKey,
   splitComposerSnapshot,
@@ -38,8 +39,9 @@ export function useStaleSession({
 }: UseStaleSessionArgs) {
   const navigate = useNavigate()
   const draftsStore = useDraftsStore()
+  const forkAndCompact = useForkAndCompact()
   const [ignored, setIgnored] = useState(false)
-  const [learnMoreOpen, setLearnMoreOpen] = useState(false)
+  const [popoverOpen, setPopoverOpen] = useState(false)
   const [liveActivityAt, setLiveActivityAt] = useState<number | null>(null)
   const wasActiveRef = useRef(isActive)
   const composerSnapshotRef = useRef<(() => ComposerSnapshot) | null>(null)
@@ -55,7 +57,7 @@ export function useStaleSession({
   // state must be scoped explicitly to the current session.
   useEffect(() => {
     setIgnored(false)
-    setLearnMoreOpen(false)
+    setPopoverOpen(false)
     setLiveActivityAt(null)
     wasActiveRef.current = isActive
   }, [sessionId]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -82,12 +84,19 @@ export function useStaleSession({
     void navigate({ to: '/agents/$slug', params: { slug: routeAgentSlug ?? agentSlug } })
   }, [agentSlug, draftsStore, navigate, routeAgentSlug, sessionId])
 
+  // Continue in a compacted copy. The display slug goes to the fork so the
+  // copy's URL keeps it, as startFresh does.
+  const continueCompacted = useCallback(() => {
+    forkAndCompact.mutate({ sessionId, agentSlug: routeAgentSlug ?? agentSlug })
+  }, [agentSlug, forkAndCompact, routeAgentSlug, sessionId])
+
   return {
     showNotice: shouldPrompt && !isActive && !isViewOnly && !ignored,
     ignore: useCallback(() => setIgnored(true), []),
-    learnMoreOpen,
-    setLearnMoreOpen,
+    popoverOpen,
+    setPopoverOpen,
     registerSnapshot,
     startFresh,
+    continueCompacted,
   }
 }
