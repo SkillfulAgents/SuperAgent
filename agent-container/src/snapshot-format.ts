@@ -79,18 +79,20 @@ function treeIframes(tree: string): Array<{ title: string; hasChildren: boolean 
  * every cross-origin frame as "contents NOT in this snapshot" directly under
  * that frame's own refs, then prescribed a coordinate click that has no CLI
  * command; agents believed the prose over the tree (mining theme 11). Now a
- * frame is listed only when the claim is unambiguous: it has a name (the
- * accessible name, as the tree prints it), no `Iframe` node with that name
- * carries children, and the tree holds fewer child-bearing `Iframe` nodes
- * than the page has visible frames. If every visible frame is accounted for
- * by a merged node, a name mismatch is a matching problem, not the tree's,
- * and nothing is printed. Unnamed frames never produce a line.
+ * frame is listed only when the identification is complete: it has a name
+ * (the accessible name, as the tree prints it), no `Iframe` node carries
+ * that name with children, AND every `Iframe` node in the tree is matched
+ * by name to some visible frame — so no unmatched tree node could be this
+ * frame under a name the observer failed to compute. One unaccounted-for
+ * tree node suppresses every claim (a count of child-bearing nodes says
+ * some frame lacks children, not which). Unnamed frames never produce a
+ * line.
  */
 export function formatIframePlaceholders(iframes: IframeInfo[], tree = ''): string {
   const inTree = treeIframes(tree)
   const visible = iframes.filter(f => f.host)
-  const mergedCount = inTree.filter(t => t.hasChildren).length
-  if (mergedCount >= visible.length) return ''
+  const names = new Set(visible.map(f => f.title.trim()).filter(Boolean))
+  if (inTree.some(t => !names.has(t.title))) return ''
   const unreadable = visible.filter(f => {
     const title = f.title.trim()
     if (!title) return false

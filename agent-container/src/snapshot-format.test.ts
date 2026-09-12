@@ -58,7 +58,7 @@ describe('formatIframePlaceholders', () => {
     }
   })
 
-  it('lists a frame that is in the tree but empty', () => {
+  it('lists a frame whose own node is in the tree but empty', () => {
     const emptyTree = '- Iframe "Secure payment input frame" [ref=e2]\n- button "Submit" [ref=e4]'
     expect(formatIframePlaceholders([stripe], emptyTree)).toContain('iframe "Secure payment input frame" (js.stripe.com)')
   })
@@ -82,14 +82,31 @@ describe('formatIframePlaceholders', () => {
     expect(formatIframePlaceholders([{ title: 'Card "main" frame', host: 'js.stripe.com', sameOrigin: false }], tree)).toBe('')
   })
 
-  it('says nothing when every visible frame is accounted for by a merged node, even if the names do not match', () => {
-    // review: aria-label overrides title in the accessible name; the observer now reports aria-label, but
-    // any residual mismatch (aria-labelledby, whitespace) must not become a false "not in this tree".
+  it('says nothing when any tree Iframe node is not accounted for by a visible frame name', () => {
+    // review: a name the observer could not compute (e.g. aria-labelledby) must not turn into
+    // "not in this tree" for a frame that has working refs right above the line.
     const tree = '- Iframe "Payment details" [ref=e2]\n  - textbox "Card number" [ref=e7]'
-    expect(formatIframePlaceholders([{ title: 'Secure payment input frame', host: 'js.stripe.com', sameOrigin: false }], tree)).toBe('')
+    expect(formatIframePlaceholders([stripe], tree)).toBe('')
+    // ...even when a genuinely empty frame is on the page too: which frame is missing is unknown.
+    const two = '- Iframe "Billing card" [ref=e2]\n  - textbox "Card number" [ref=e7]\n- Iframe "Empty one" [ref=e3]'
+    expect(formatIframePlaceholders([
+      { title: 'Different name', host: '127.0.0.1', sameOrigin: false },
+      { title: 'Empty one', host: '127.0.0.1', sameOrigin: false },
+    ], two)).toBe('')
   })
 
-  it('lists a named frame only when the tree holds fewer merged frames than the page has', () => {
+  it('lists exactly the empty frame when every tree node is matched by name', () => {
+    // the reviewer's scenario with the accessible name computed correctly
+    const two = '- Iframe "Billing card" [ref=e2]\n  - textbox "Card number" [ref=e7]\n- Iframe "Empty one" [ref=e3]'
+    const out = formatIframePlaceholders([
+      { title: 'Billing card', host: '127.0.0.1', sameOrigin: false },
+      { title: 'Empty one', host: '127.0.0.1', sameOrigin: false },
+    ], two)
+    expect(out).toContain('iframe "Empty one" (127.0.0.1)')
+    expect(out).not.toContain('Billing card')
+  })
+
+  it('lists a named frame with no node only when the tree holds nothing unmatched', () => {
     const tree = '- Iframe "Chat" [ref=e2]\n  - button "Open chat" [ref=e3]'
     const frames: IframeInfo[] = [
       { title: 'Chat', host: 'chat.example', sameOrigin: false },
