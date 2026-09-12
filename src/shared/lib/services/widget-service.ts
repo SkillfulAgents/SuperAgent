@@ -56,10 +56,10 @@ function isPlainSegment(segment: string): boolean {
  * Every route that touches an artifact's files goes through here.
  *
  * This is domain validation only: a slug like `../x` is a bad slug and is
- * answered as one. Containment — lexical and through links the agent can plant
- * in its bind-mounted workspace — is the actor's job. The path returned here
- * is handed to `agentRegistry.get(agentSlug).files`, which refuses anything
- * that leaves the workspace, and nothing here knows where that workspace is.
+ * answered as one. Lexical containment is the actor's, and the readers below
+ * ask it where the path really is before reading it (`containedArtifactPath`),
+ * the link check this service always made; nothing here knows where the
+ * workspace is.
  */
 export function resolveWidgetPath(agentSlug: string, artifactSlug: string, ...segments: string[]): string | null {
   if (!WIDGET_SLUG_REGEX.test(artifactSlug)) return null
@@ -78,14 +78,35 @@ export function widgetSnapshotPngPath(
 }
 
 /**
- * A whole file from the agent's workspace, or null when there is none. A path
- * the actor refuses (a link out of the workspace, a directory where a file
- * should be) reads as absent too, as it always has on these read paths.
+ * Where an artifact path really is, or null when nothing is there or it leads
+ * out of the workspace. The artifact dir lives in the workspace the agent's
+ * container bind-mounts, so the agent can plant a link there: a string-only
+ * check passes `widget.html -> /etc/passwd` and the host serves whatever it
+ * points at, under the caller's permission to read their own agent. This is
+ * the check every artifact read here always made, anchored on the workspace
+ * (which the agent cannot swap from inside the container, so a swapped
+ * `artifacts` is caught too), now asked of the actor.
  */
-async function readArtifactDoc(agentSlug: string, workspacePath: string | null): Promise<Uint8Array | null> {
+export async function containedArtifactPath(agentSlug: string, workspacePath: string | null): Promise<string | null> {
   if (workspacePath === null) return null
   try {
-    return await agentRegistry.get(agentSlug).files.getDoc(workspacePath)
+    return await agentRegistry.get(agentSlug).files.resolve(workspacePath)
+  } catch (error) {
+    if (error instanceof WorkspaceFileError) return null
+    throw error
+  }
+}
+
+/**
+ * A whole file from the agent's workspace, or null when there is none. A path
+ * that leads out of the workspace, or a directory where a file should be,
+ * reads as absent too, as it always has on these read paths.
+ */
+export async function readArtifactDoc(agentSlug: string, workspacePath: string | null): Promise<Uint8Array | null> {
+  const real = await containedArtifactPath(agentSlug, workspacePath)
+  if (real === null) return null
+  try {
+    return await agentRegistry.get(agentSlug).files.getDoc(real)
   } catch {
     return null
   }
@@ -206,9 +227,11 @@ export async function readWidgetFromFilesystem(
  * through listArtifactsAndWidgets, which shares one scan with the dashboards.
  */
 export async function listWidgetsFromFilesystem(agentSlug: string): Promise<ApiAgentWidget[]> {
+  const dir = await containedArtifactPath(agentSlug, artifactsDirFor(agentSlug))
+  if (dir === null) return []
   let entries: FileEntry[]
   try {
-    entries = await agentRegistry.get(agentSlug).files.list(artifactsDirFor(agentSlug))
+    entries = await agentRegistry.get(agentSlug).files.list(dir)
   } catch (error) {
     // No artifacts directory yet: nothing to list. Any other failure reads the
     // same way, for the reason isMissingDirectoryError gives.

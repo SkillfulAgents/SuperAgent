@@ -19,13 +19,14 @@ const {
   listWidgetsFromFilesystem,
   readWidgetFromFilesystem,
   readWidgetHtml,
+  readArtifactDoc,
   readWidgetLogTail,
   renderWidgetDocument,
   resolveWidgetPath,
   widgetSnapshotPngPath,
 } = await import('./widget-service')
 const { listArtifactsFromFilesystem, listArtifactsAndWidgets } = await import('./artifact-service')
-const { WorkspaceFileError, agentRegistry } = await import('@shared/lib/agent-actor')
+const { agentRegistry } = await import('@shared/lib/agent-actor')
 
 const AGENT = 'agent-1'
 
@@ -189,7 +190,8 @@ describe('widget-service', () => {
   it('refuses a file the agent symlinked out of its own workspace', async () => {
     // The artifact dir is inside the workspace the container bind-mounts, so
     // the agent can plant the link itself. The paths are fine — valid slug,
-    // workspace-relative — and it is the actor that refuses to follow them.
+    // workspace-relative — and the readers ask the actor where they really
+    // lead before reading, as this service always did.
     const secret = path.join(tmpRoot, 'outside-secret.txt')
     fs.writeFileSync(secret, 'host-only')
     const dir = seed('macros', { 'package.json': manifest({ script: 'bun run widget.ts' }) })
@@ -197,13 +199,12 @@ describe('widget-service', () => {
     fs.symlinkSync(secret, path.join(dir, 'widget.log'))
     fs.symlinkSync(secret, path.join(dir, 'snapshots', 'small-dark@3x.png'))
 
-    const { files } = agentRegistry.get(AGENT)
     const htmlPath = resolveWidgetPath(AGENT, 'macros', 'widget.html')
     expect(htmlPath).toBe('artifacts/macros/widget.html')
-    await expect(files.getDoc(htmlPath!)).rejects.toBeInstanceOf(WorkspaceFileError)
+    expect(await readArtifactDoc(AGENT, htmlPath)).toBeNull()
     const pngPath = widgetSnapshotPngPath(AGENT, 'macros', 'small', 'dark', 3)
-    await expect(files.getDoc(pngPath!)).rejects.toBeInstanceOf(WorkspaceFileError)
-    // The readers turn that refusal into "absent", as they always have.
+    expect(await readArtifactDoc(AGENT, pngPath)).toBeNull()
+    // The readers answer "absent", as they always have.
     expect(await readWidgetHtml(AGENT, 'macros')).toBeNull()
     expect(await readWidgetLogTail(AGENT, 'macros')).toBeNull()
   })

@@ -135,6 +135,7 @@ import {
   readWidgetHtml,
   resolveWidgetPath,
   widgetSnapshotPngPath,
+  containedArtifactPath,
 } from '@shared/lib/services/widget-service'
 import { widgetRefreshService } from '@shared/lib/services/widget-refresh-service'
 import { widgetSchemeSchema, widgetSizeSchema } from '@shared/lib/widgets/widget-schema'
@@ -6983,7 +6984,10 @@ agents.get('/:id/artifacts/:artifactSlug/widget/snapshot', AgentRead(), async (c
   const pngPath = widgetSnapshotPngPath(slug, artifactSlug, family, scheme, scale)
   if (!pngPath) return c.json({ error: 'Invalid artifact slug' }, 400)
   try {
-    const png = await agentRegistry.get(slug).files.getDoc(pngPath)
+    // Where the file really is, the check this route always made; an
+    // unexpected read failure is still this route's 500, not an absence.
+    const realPngPath = await containedArtifactPath(slug, pngPath)
+    const png = realPngPath === null ? null : await agentRegistry.get(slug).files.getDoc(realPngPath)
     if (png === null) return c.json({ error: 'No snapshot rendered yet' }, 404)
     // The bytes as read, not a copy: a typed view is all Response needs.
     return new Response(png as Uint8Array<ArrayBuffer>, {
@@ -7017,7 +7021,8 @@ agents.get('/:id/artifacts/:artifactSlug/screenshot.png', AgentRead(), async (c)
   }
 
   try {
-    const png = await agentRegistry.get(agentSlug).files.getDoc(screenshotPath)
+    const realScreenshotPath = await containedArtifactPath(agentSlug, screenshotPath)
+    const png = realScreenshotPath === null ? null : await agentRegistry.get(agentSlug).files.getDoc(realScreenshotPath)
     if (png === null) {
       return c.json({ error: 'No screenshot available' }, 404)
     }
