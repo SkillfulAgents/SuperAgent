@@ -13,9 +13,12 @@
  * selected, value-before equals value-after and neither equals the request —
  * which used to be reported as "did not commit" ("requested California,
  * element value is still CA"; mining theme 24). In that one case the route
- * focuses the target (`focus @ref`) and reads the focused element's own
- * value and selected label — the target itself, not any <select> on the
- * page — and passes the result in as `labelMatches`.
+ * reads the target's own selected option. The CLI resolves refs, not page
+ * scripts, so the target is identified geometrically: `get box @ref` gives
+ * its rectangle and the in-page script takes the <select> at that point
+ * whose rectangle matches — never document.activeElement (a page's onfocus
+ * handler can move focus to another dropdown) and never a page-wide search
+ * (a sibling dropdown can hold the requested label).
  */
 
 export const SELECT_COMMIT_SETTLE_MS = 300
@@ -30,19 +33,48 @@ export type SelectJudgement =
   | { ok: true; committed: string }
   | { ok: false; reason: string }
 
+export interface ElementBox { x: number; y: number; width: number; height: number }
+
+/** Parse `get box @ref --json` ({"success":true,"data":{x,y,width,height}}) or the bare data object. */
+export function parseElementBox(stdout: string): ElementBox | null {
+  try {
+    let parsed: unknown = JSON.parse(stdout.trim())
+    if (typeof parsed === 'string') parsed = JSON.parse(parsed)
+    const o = parsed as Record<string, unknown> | null
+    const d = (o && typeof o.data === 'object' && o.data !== null ? o.data : o) as Record<string, unknown> | null
+    if (!d) return null
+    const n = (k: string): number | null => (typeof d[k] === 'number' && Number.isFinite(d[k] as number) ? (d[k] as number) : null)
+    const x = n('x'), y = n('y'), width = n('width'), height = n('height')
+    if (x === null || y === null || width === null || height === null) return null
+    return { x, y, width, height }
+  } catch {
+    return null
+  }
+}
+
 /**
- * In-page script, run after `focus @ref`: the focused element's value and
- * selected option label, or null when the focused element is not a select.
- * Only the element the CLI focused is inspected — never a sibling dropdown.
+ * In-page script: the <select> whose rectangle is `box`, read at the box's
+ * centre. The CLI's box may be viewport- or document-relative, so both
+ * interpretations are tried and a hit must also match the box's size and
+ * position (±2px). Returns {value,label} — `label` is option.label, which
+ * honours a `label` attribute and falls back to the text — or null when no
+ * <select> with that rectangle is at that point.
  */
-export const FOCUSED_SELECT_STATE_SCRIPT =
-  'JSON.stringify((function(){var a=document.activeElement;if(!a||a.tagName!=="SELECT")return null;' +
-  'var o=a.selectedOptions&&a.selectedOptions[0];return{value:String(a.value),label:o?String(o.text||"").trim():""}})())'
+export function selectTargetStateScript(box: ElementBox): string {
+  const b = JSON.stringify({ x: box.x, y: box.y, w: box.width, h: box.height })
+  return (
+    'JSON.stringify((function(){var b=' + b + ';var cands=[[b.x+b.w/2,b.y+b.h/2,0,0],[b.x+b.w/2-window.scrollX,b.y+b.h/2-window.scrollY,window.scrollX,window.scrollY]];' +
+    'for(var i=0;i<cands.length;i++){var c=cands[i];var e=document.elementFromPoint(c[0],c[1]);' +
+    'if(!e||e.tagName!=="SELECT")continue;var r=e.getBoundingClientRect();' +
+    'if(Math.abs(r.width-b.w)>2||Math.abs(r.height-b.h)>2||Math.abs(r.left+c[2]-b.x)>2||Math.abs(r.top+c[3]-b.y)>2)continue;' +
+    'var o=e.selectedOptions&&e.selectedOptions[0];return{value:String(e.value),label:o?String(o.label||o.text||"").trim():""}}return null})())'
+  )
+}
 
-export interface FocusedSelectState { value: string; label: string }
+export interface SelectTargetState { value: string; label: string }
 
-/** Parse the (possibly double-JSON-encoded) output of FOCUSED_SELECT_STATE_SCRIPT. */
-export function parseFocusedSelectState(stdout: string): FocusedSelectState | null {
+/** Parse the (possibly double-JSON-encoded) output of selectTargetStateScript. */
+export function parseSelectTargetState(stdout: string): SelectTargetState | null {
   try {
     let parsed: unknown = JSON.parse(stdout.trim())
     if (typeof parsed === 'string') parsed = JSON.parse(parsed)
@@ -55,8 +87,8 @@ export function parseFocusedSelectState(stdout: string): FocusedSelectState | nu
   }
 }
 
-/** Does the focused target hold `value` under the requested label? */
-export function focusedTargetMatches(state: FocusedSelectState | null, requested: string, value: string): boolean {
+/** Does the target hold `value` under the requested label? */
+export function targetMatches(state: SelectTargetState | null, requested: string, value: string): boolean {
   return state !== null && state.value === value && state.label === requested.trim()
 }
 
