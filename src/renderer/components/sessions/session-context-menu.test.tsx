@@ -16,8 +16,10 @@ const {
   mockNavigate,
   mockStore,
   mockCanUse,
+  mockForkPending,
 } = vi.hoisted(() => {
   const mockCanUse = { value: true }
+  const mockForkPending = { value: false }
   return {
     mockFork: vi.fn(),
     mockForkAndCompact: vi.fn(),
@@ -27,6 +29,7 @@ const {
     mockNavigate: vi.fn(),
     mockStore: { get: vi.fn(), set: vi.fn() },
     mockCanUse,
+    mockForkPending,
   }
 })
 
@@ -124,7 +127,7 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
   useUpdateSessionName: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useSetSessionMarkedUnread: () => ({ mutateAsync: mockSetMarkedUnread, isPending: false }),
   useForkSession: () => ({ mutate: mockFork, isPending: false }),
-  useForkAndCompact: () => ({ mutate: mockForkAndCompact, isPending: false }),
+  useForkAndCompact: () => ({ mutate: mockForkAndCompact, isPending: mockForkPending.value }),
 }))
 
 const mockCanAdminAgent = vi.fn(() => true)
@@ -363,6 +366,7 @@ describe('Fork Session item', () => {
     mockSetQueryData.mockReset()
     mockNavigate.mockReset()
     mockCanUse.value = true
+    mockForkPending.value = false
     mockCanAdminAgent.mockReturnValue(true)
     mockCanUseAgent.mockReturnValue(true)
   })
@@ -396,6 +400,16 @@ describe('Fork Session item', () => {
   it('disables the submenu while the source is streaming', () => {
     renderMenu({ isStreaming: true })
     expect(screen.getByTestId('fork-session-trigger')).toHaveAttribute('data-disabled')
+  })
+
+  it('disables the submenu and both rows while a fork-and-compact is in flight', () => {
+    mockForkPending.value = true
+    renderMenu()
+    expect(screen.getByTestId('fork-session-trigger')).toHaveAttribute('data-disabled')
+    expect(screen.getByTestId('fork-session-item')).toHaveAttribute('data-disabled')
+    expect(screen.getByTestId('fork-summarize-session-item')).toHaveAttribute('data-disabled')
+    fireEvent.click(screen.getByTestId('fork-summarize-session-item'))
+    expect(mockForkAndCompact).not.toHaveBeenCalled()
   })
 
   it('disables both rows too when the source goes active with the submenu open', () => {
