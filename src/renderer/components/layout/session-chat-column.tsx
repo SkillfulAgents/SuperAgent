@@ -134,6 +134,7 @@ export function SessionChatColumn({
               {staleSession.showNotice && (
                 <StaleSessionNotice
                   onIgnore={staleSession.ignore}
+                  onContinueCompacted={staleSession.continueCompacted}
                   onStartFresh={staleSession.startFresh}
                   onLearnMoreOpenChange={staleSession.setLearnMoreOpen}
                 />

@@ -1,9 +1,11 @@
 import { useEffect, useState, type ReactNode } from 'react'
+import { X } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 
 export interface StaleSessionNoticeProps {
   onIgnore: () => void
+  onContinueCompacted: () => void
   onStartFresh: () => void
   onLearnMoreOpenChange?: (open: boolean) => void
 }
@@ -20,6 +22,7 @@ function TeachingPoint({ lead, children }: { lead: string; children: ReactNode }
 /** Non-blocking prompt shown above the composer for an old, large conversation. */
 export function StaleSessionNotice({
   onIgnore,
+  onContinueCompacted,
   onStartFresh,
   onLearnMoreOpenChange,
 }: StaleSessionNoticeProps) {
@@ -33,7 +36,7 @@ export function StaleSessionNotice({
   return (
     <div data-testid="stale-toast" className="mx-auto mb-2 w-full max-w-[740px] px-4">
       <div
-        className="flex items-center justify-between gap-4 rounded-2xl border bg-card p-4"
+        className="relative flex items-center justify-between gap-4 rounded-2xl border bg-card p-4"
         data-testid="stale-toast-card"
       >
         <div className="flex min-w-0 max-w-[60%] flex-col gap-1.5">
@@ -68,26 +71,37 @@ export function StaleSessionNotice({
                   That&apos;s why long conversations slow down and get expensive. Start fresh to keep the
                   agent fast and sharp.
                 </TeachingPoint>
+                <TeachingPoint lead="Summarize &amp; continue keeps the thread, not the bulk.">
+                  Copies this conversation, condenses the history, and picks up there. The original
+                  stays as it is.
+                </TeachingPoint>
               </PopoverContent>
             </Popover>
           </p>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        {/* Dismiss is an icon in the corner, not a button in the row — same shape as
+            the install banner, which leaves the row for the two real choices. */}
+        <button
+          type="button"
+          aria-label="Dismiss"
+          onClick={onIgnore}
+          data-testid="stale-toast-ignore"
+          className="absolute right-2 top-2 rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        >
+          <X className="h-4 w-4" />
+        </button>
+        {/* pr-7 keeps the buttons clear of the dismiss icon above them. */}
+        <div className="flex shrink-0 items-center gap-2 pr-7">
           <Button
             type="button"
             variant="outline"
             size="sm"
-            onClick={onIgnore}
-            data-testid="stale-toast-ignore"
+            onClick={onContinueCompacted}
+            data-testid="stale-summarize-continue"
           >
-            Ignore
+            Summarize &amp; continue
           </Button>
-          <Button
-            type="button"
-            size="sm"
-            onClick={onStartFresh}
-            data-testid="stale-new-chat"
-          >
+          <Button type="button" size="sm" onClick={onStartFresh} data-testid="stale-new-chat">
             New conversation
           </Button>
         </div>
