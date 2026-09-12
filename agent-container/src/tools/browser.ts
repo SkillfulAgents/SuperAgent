@@ -732,21 +732,30 @@ const browserGetStateTool = tool(
       parts.push(`**Current URL:** ${page.url}`)
     }
 
+    // The screenshot leg delivered something only when an image reached the
+    // result. A route success whose file cannot be read or resized is a
+    // failure like any other (review: it used to leave isError unset with
+    // nothing delivered).
+    let screenshotFailure: string | null = null
     if (screenshotResult === null) {
       // screenshot=false: nothing to report
     } else if (screenshotResult.success) {
       const data = screenshotResult.data as Record<string, unknown>
       const rawOutput = data.output ? String(data.output) : ''
       const filePath = rawOutput ? extractScreenshotPath(rawOutput) : ''
-      if (filePath) {
+      if (!filePath) {
+        screenshotFailure = 'no screenshot path returned'
+      } else {
         const image = await readScreenshotAsBase64(filePath)
         if (image) {
           content.push({ type: 'image' as const, data: image.data, mimeType: image.mimeType })
+          parts.push(`**Screenshot:** ${filePath}`)
+        } else {
+          screenshotFailure = `screenshot file could not be read: ${filePath}`
         }
-        parts.push(`**Screenshot:** ${filePath}`)
-      } else {
-        parts.push(`**Screenshot:** No screenshot path returned`)
       }
+    } else {
+      screenshotFailure = screenshotResult.error ?? 'unknown error'
     }
 
     if (snapshotData) {
@@ -760,7 +769,7 @@ const browserGetStateTool = tool(
     }
 
     if (!snapshotData) failures.push(`snapshot: ${snapshotResult.error}`)
-    if (screenshotResult !== null && !screenshotResult.success) failures.push(`screenshot: ${screenshotResult.error}`)
+    if (screenshotFailure !== null) failures.push(`screenshot: ${screenshotFailure}`)
 
     // One line per distinct cause: a dead browser fails every leg with the
     // same message, which is one fact, not two.
