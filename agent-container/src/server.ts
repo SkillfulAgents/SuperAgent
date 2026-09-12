@@ -876,6 +876,7 @@ function cleanupAgentBrowserDaemon(): void {
 // Execute an agent-browser CLI command and return the result.
 // Uses execFile (no shell) to prevent command injection.
 async function execBrowser(args: string[], cdpUrl?: string): Promise<{ stdout: string; exitCode: number }> {
+  const started = Date.now();
   try {
     const fullArgs = cdpUrl ? ['--cdp', cdpUrl, ...args] : args;
     const { stdout } = await execFileAsync('agent-browser', fullArgs, {
@@ -901,7 +902,7 @@ async function execBrowser(args: string[], cdpUrl?: string): Promise<{ stdout: s
     // error.message carries the full argv (the agent's own script or text)
     // and stands in for a cause it does not name — describeExecFailure
     // reports the verb and the failure class the exec layer can vouch for.
-    const rawDetail = describeExecFailure(error, args[0] || 'command', BROWSER_EXEC_TIMEOUT_MS);
+    const rawDetail = describeExecFailure(error, args[0] || 'command', Date.now() - started);
     return {
       stdout: redactCdpUrls(capBrowserOutput(rawDetail, MAX_BROWSER_ERROR_CHARS)),
       exitCode: typeof error.code === 'number' ? error.code : 1,

@@ -55,15 +55,24 @@ export interface ExecFailure {
  * That message is for the container log. The agent gets the verb and the
  * cause the exec layer can actually vouch for.
  */
-export function describeExecFailure(err: ExecFailure, verb: string, timeoutMs: number): string {
+export function describeExecFailure(err: ExecFailure, verb: string, elapsedMs: number): string {
   const detail = [err.stdout?.trim(), err.stderr?.trim()].filter(Boolean).join('\n')
-  const stopped = err.killed === true || err.signal === 'SIGTERM' || err.signal === 'SIGKILL'
-  if (stopped && /maxBuffer/i.test(err.message ?? '')) {
-    return `agent-browser ${verb} was stopped: its output exceeded the buffer limit.${detail ? `\n${detail}` : ''}`
+  const tail = detail ? `\n${detail}` : ''
+  const ms = Math.max(0, Math.round(elapsedMs))
+  // Stopping the CLI client says nothing about the page: an eval it started
+  // keeps running in the browser. Say so rather than imply cancellation.
+  const unknown = ' The CLI call was stopped; whether the page-side action completed is not known.'
+  // Node sets `killed` only when execFile itself stopped the child (its
+  // timeout or maxBuffer). A signal without it came from outside and is
+  // reported as that — not as the exec ceiling.
+  if (err.killed === true && /maxBuffer/i.test(err.message ?? '')) {
+    return `agent-browser ${verb} was stopped after ${ms} ms: its output exceeded the buffer limit.${unknown}${tail}`
   }
-  if (stopped) {
-    const seconds = Math.round(timeoutMs / 1000)
-    return `agent-browser ${verb} produced no result within ${seconds}s and was stopped.${detail ? `\n${detail}` : ''}`
+  if (err.killed === true) {
+    return `agent-browser ${verb} produced no result within ${ms} ms and was stopped.${unknown}${tail}`
+  }
+  if (err.signal) {
+    return `agent-browser ${verb} was terminated by ${err.signal} after ${ms} ms${detail ? '.' : ' with no output.'}${unknown}${tail}`
   }
   if (detail) return detail
   const code = err.code === null || err.code === undefined ? 'unknown' : String(err.code)
