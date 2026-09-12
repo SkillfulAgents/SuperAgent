@@ -18,6 +18,7 @@ function capitalize(s: string): string {
 const FAMILY_LABELS: Record<string, string> = {
   gpt: 'GPT',
   glm: 'GLM',
+  deepseek: 'DeepSeek',
   muse: 'Muse Spark',
   'muse-contributor': 'Muse Spark Contributor',
 }
@@ -35,6 +36,7 @@ const VENDOR_LABELS: Record<string, string> = {
   zai: 'Z.AI',
   xai: 'xAI',
   kimi: 'Moonshot AI',
+  deepseek: 'DeepSeek',
 }
 
 const NO_VENDOR = 'other'
