@@ -90,6 +90,13 @@ function displayValue(value: string): string {
  * programmatically and reports success regardless of what the page kept —
  * maxlength truncation, JS reformatting, and keystroke-only widgets all
  * silently diverged in the audit (F6).
+ *
+ * On divergence the line states the two values and nothing else. The old
+ * text asserted a cause ("The site reformatted, truncated (maxlength), or
+ * rejected the input") that the read-back never established — a rebound
+ * ref reading a neighbouring element produced the same line, and agents
+ * carried the invented site behaviour for hundreds of calls (mining theme
+ * 24). The agent can see the difference; what it means is its call.
  */
 export function formatFillReadback(requested: string, committed: string | null): string {
   if (committed === null) {
@@ -98,7 +105,7 @@ export function formatFillReadback(requested: string, committed: string | null):
   if (committed === requested) {
     return `\nField value verified: "${displayValue(committed)}".`
   }
-  return `\n⚠ Field value is now "${displayValue(committed)}" — differs from the requested "${displayValue(requested)}". The site reformatted, truncated (maxlength), or rejected the input. If this matters, fix it before moving on; keystroke-listening widgets may need browser_type instead.`
+  return `\n⚠ Field value is now "${displayValue(committed)}" — differs from the "${displayValue(requested)}" you sent.`
 }
 
 // --- Scroll position ---------------------------------------------------------

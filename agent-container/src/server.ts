@@ -812,7 +812,7 @@ const execFileAsync = promisify(execFile);
 import { resolveRunCommandArgs } from './browser-command-args';
 import { validatePressKey } from './press-key';
 import { prepareEvalScript, finalizeEvalOutput, evalErrorHint } from './eval-script';
-import { judgeSelectCommit, SELECT_COMMIT_SETTLE_MS } from './select-verify';
+import { judgeSelectCommit, selectLabelMatchScript, parseLabelMatch, SELECT_COMMIT_SETTLE_MS } from './select-verify';
 import { resolveCommittedValue } from './field-value-readback';
 import { capBrowserOutput, redactCdpUrls, MAX_BROWSER_OUTPUT_CHARS, MAX_BROWSER_ERROR_CHARS } from './browser-output';
 import { capSnapshot, compactWithText, countRefs, formatIframePlaceholders, formatTextFooter, THIN_TREE_REFS } from './snapshot-format';
@@ -1832,7 +1832,16 @@ app.post('/browser/select', async (c) => {
 
     const after = await readValue();
 
-    const judgement = judgeSelectCommit(body.value, before, after);
+    // Unchanged value that is not the requested string: the agent may have
+    // asked by label for the option that was already selected. Check the
+    // page before calling it a failure.
+    let labelMatches = false;
+    if (after !== null && after === before && after !== body.value) {
+      const probe = await execBrowser(['eval', selectLabelMatchScript(body.value, after)], browserState.cdpUrl || undefined);
+      labelMatches = probe.exitCode === 0 && parseLabelMatch(probe.stdout);
+    }
+
+    const judgement = judgeSelectCommit(body.value, before, after, labelMatches);
     if (!judgement.ok) {
       return c.json({ error: judgement.reason, success: false }, 500);
     }
