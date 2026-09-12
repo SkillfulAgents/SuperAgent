@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { capBrowserOutput, redactCdpUrls, describeExecFailure, MAX_BROWSER_ERROR_CHARS } from './browser-output'
+import { capBrowserOutput, redactCdpUrls, describeExecFailure, MAX_BROWSER_ERROR_CHARS, MAX_BROWSER_OUTPUT_CHARS, MAX_SNAPSHOT_RAW_CHARS } from './browser-output'
+import { SNAPSHOT_SOFT_CAP_CHARS } from './snapshot-format'
 
 describe('capBrowserOutput', () => {
   it('passes short output through unchanged', () => {
@@ -83,5 +84,15 @@ describe('describeExecFailure', () => {
     expect(text).toContain('exceeded the buffer limit')
     expect(text).toContain('after 1200 ms')
     expect(text).not.toContain('within')
+  })
+})
+
+describe('output caps', () => {
+  it('keeps every browser result under the SDK tool-result limit, and above the snapshot soft cap', () => {
+    // ~25k tokens fires around 62k chars of token-dense CLI text; the exec cap
+    // must stay below that or a capped result still hard-errors at the SDK.
+    expect(MAX_BROWSER_OUTPUT_CHARS).toBeLessThanOrEqual(60_000)
+    expect(MAX_BROWSER_OUTPUT_CHARS).toBeGreaterThan(SNAPSHOT_SOFT_CAP_CHARS)
+    expect(MAX_SNAPSHOT_RAW_CHARS).toBeGreaterThan(MAX_BROWSER_OUTPUT_CHARS)
   })
 })

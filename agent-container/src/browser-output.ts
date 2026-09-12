@@ -11,9 +11,25 @@
  *   leaked connection internals into agent-visible errors.
  */
 
-/** Generous backstop for successful output (~25k tokens). Tool-level caps
- * (e.g. browser_eval's 8k) apply on top of this. */
-export const MAX_BROWSER_OUTPUT_CHARS = 100_000
+/**
+ * Backstop for successful output. The SDK's tool-result limit is ~25k
+ * tokens, which token-dense CLI text (a11y trees, request logs, URLs) hits
+ * around 62–74k chars — nondeterministically at the edge. The old 100k cap
+ * sat above that, so a busy `network requests` or `console` dump was capped
+ * to 100k and then hard-errored anyway, leaving the agent nothing
+ * (transcript-mining theme 22). 50k stays under the limit even for the
+ * densest output. Tool-level caps (browser_eval's 8k, the snapshot soft
+ * cap) apply on top of this.
+ */
+export const MAX_BROWSER_OUTPUT_CHARS = 50_000
+
+/**
+ * Raw ceiling for the snapshot route only. Its own capSnapshot truncates to
+ * SNAPSHOT_SOFT_CAP_CHARS and reports the true total; capping earlier would
+ * make that total the exec cap's, not the tree's. fullText also fetches the
+ * unfiltered tree and compacts it here, which needs the whole thing.
+ */
+export const MAX_SNAPSHOT_RAW_CHARS = 2_000_000
 
 /** Errors are for reading, not dumping — keep them tight. */
 export const MAX_BROWSER_ERROR_CHARS = 4_000

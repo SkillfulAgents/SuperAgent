@@ -818,7 +818,7 @@ import { classifyWaitTarget, WAIT_PAGE_PROBE_SCRIPT, parseWaitPageProbe } from '
 /** Budget for the page probe around a wait — independent of the exec ceiling. */
 const WAIT_PAGE_PROBE_TIMEOUT_MS = 3000;
 import { resolveCommittedValue } from './field-value-readback';
-import { capBrowserOutput, redactCdpUrls, describeExecFailure, BROWSER_EXEC_TIMEOUT_MS, MAX_BROWSER_OUTPUT_CHARS, MAX_BROWSER_ERROR_CHARS } from './browser-output';
+import { capBrowserOutput, redactCdpUrls, describeExecFailure, BROWSER_EXEC_TIMEOUT_MS, MAX_BROWSER_OUTPUT_CHARS, MAX_SNAPSHOT_RAW_CHARS, MAX_BROWSER_ERROR_CHARS } from './browser-output';
 import { capSnapshot, compactWithText, countRefs, formatIframePlaceholders, formatTextFooter, THIN_TREE_REFS } from './snapshot-format';
 import { observerScript, parseObservation, EMPTY_OBSERVATION, PREVIEW_CHARS, THIN_TREE_PREVIEW_CHARS, type PageObservation } from './page-observer';
 import { formatStatusLine, waitForLoaded } from './page-status';
@@ -882,9 +882,10 @@ function cleanupAgentBrowserDaemon(): void {
 async function execBrowser(
   args: string[],
   cdpUrl?: string,
-  opts: { timeoutMs?: number } = {},
+  opts: { timeoutMs?: number; outputCap?: number } = {},
 ): Promise<{ stdout: string; exitCode: number }> {
   const started = Date.now();
+  const outputCap = opts.outputCap ?? MAX_BROWSER_OUTPUT_CHARS;
   try {
     const fullArgs = cdpUrl ? ['--cdp', cdpUrl, ...args] : args;
     const { stdout } = await execFileAsync('agent-browser', fullArgs, {
@@ -899,7 +900,7 @@ async function execBrowser(
         AGENT_BROWSER_ARGS: process.env.AGENT_BROWSER_ARGS || '--no-sandbox,--disable-blink-features=AutomationControlled',
       },
     });
-    return { stdout: capBrowserOutput(stdout.trim(), MAX_BROWSER_OUTPUT_CHARS), exitCode: 0 };
+    return { stdout: capBrowserOutput(stdout.trim(), outputCap), exitCode: 0 };
   } catch (error: any) {
     // Full, unsanitized detail (incl. the command line with the CDP URL) goes
     // to container logs for connectivity debugging — never to the model.
@@ -1524,7 +1525,9 @@ app.post('/browser/snapshot', async (c) => {
     });
     const probe = observed ?? EMPTY_OBSERVATION;
 
-    const result = await execBrowser(snapshotArgs, browserState.cdpUrl || undefined);
+    // The snapshot has its own cap (capSnapshot) that reports the true size;
+    // the exec-level cap must not truncate first.
+    const result = await execBrowser(snapshotArgs, browserState.cdpUrl || undefined, { outputCap: MAX_SNAPSHOT_RAW_CHARS });
 
     if (result.exitCode !== 0) {
       return c.json({ error: result.stdout, success: false }, 500);
