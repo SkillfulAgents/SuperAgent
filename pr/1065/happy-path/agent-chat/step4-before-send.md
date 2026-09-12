@@ -1,0 +1,209 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e8]:
+        - generic [ref=e9]: Gamut
+        - button "Search" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+      - generic [ref=e15]:
+        - list [ref=e18]:
+          - listitem [ref=e19]:
+            - link "Home" [ref=e20] [cursor=pointer]:
+              - /url: /
+              - img [ref=e21]
+              - generic [ref=e26]: Home
+          - listitem [ref=e27]:
+            - link "Notifications 1 unread" [ref=e353] [cursor=pointer]:
+              - /url: /notifications
+              - img [ref=e29]
+              - generic [ref=e32]: Notifications
+              - generic "1 unread" [ref=e354]
+          - listitem [ref=e156]:
+            - link "Discover New Agents New" [ref=e157] [cursor=pointer]:
+              - /url: /explore
+              - img [ref=e158]
+              - generic [ref=e161]: Discover New Agents
+              - generic [ref=e162]: New
+          - listitem [ref=e33]:
+            - button "New Agent" [ref=e34] [cursor=pointer]:
+              - img [ref=e35]
+              - generic [ref=e36]: New Agent
+        - list [ref=e39]:
+          - listitem [ref=e40]:
+            - button "Your Agents" [ref=e41] [cursor=pointer]:
+              - button "Your Agents" [expanded] [ref=e42]:
+                - generic [ref=e43]: Your Agents
+            - button "New folder" [ref=e45] [cursor=pointer]:
+              - img [ref=e46]
+            - list [ref=e49]:
+              - button "QA-20260912-003830-2ebv Open QA-20260912-003830-2ebv Expand" [ref=e355] [cursor=pointer]:
+                - generic [ref=e51]:
+                  - link "QA-20260912-003830-2ebv" [ref=e52]:
+                    - /url: /agents/qa-20260912-003830-2ebv-rgv2mhoi7g
+                    - generic [ref=e53]: QA-20260912-003830-2ebv
+                  - link "Open QA-20260912-003830-2ebv" [ref=e54]:
+                    - /url: /agents/qa-20260912-003830-2ebv-rgv2mhoi7g
+                    - img "unread notifications" [ref=e356]
+                  - button "Expand" [ref=e358]:
+                    - img [ref=e359]
+              - button "QA-20260912-003828-bgt7 Open QA-20260912-003828-bgt7" [ref=e65] [cursor=pointer]:
+                - generic [ref=e66]:
+                  - link "QA-20260912-003828-bgt7" [ref=e67]:
+                    - /url: /agents/qa-20260912-003828-bgt7-f5dt3y41vy
+                    - generic [ref=e68]: QA-20260912-003828-bgt7
+                  - link "Open QA-20260912-003828-bgt7" [ref=e69]:
+                    - /url: /agents/qa-20260912-003828-bgt7-f5dt3y41vy
+                    - img "idle" [ref=e70]:
+                      - img [ref=e71]
+          - status [ref=e163]
+      - generic [ref=e81]:
+        - button "Settings" [ref=e82] [cursor=pointer]:
+          - img [ref=e83]
+          - generic [ref=e86]: Settings
+        - button "0.5.22" [ref=e87] [cursor=pointer]:
+          - generic [ref=e88]: 0.5.22
+      - button "Toggle Sidebar" [ref=e89]
+    - main [ref=e90]:
+      - generic [ref=e168]:
+        - generic [ref=e169]:
+          - button "Toggle Sidebar" [ref=e170] [cursor=pointer]:
+            - img
+            - generic [ref=e171]: Toggle Sidebar
+          - generic [ref=e174]:
+            - generic:
+              - link:
+                - /url: /agents/qa-20260912-003828-bgt7-f5dt3y41vy
+                - text: QA-20260912-003828-bgt7
+          - generic [ref=e175]:
+            - generic [ref=e176]:
+              - img [ref=e177]
+              - generic [ref=e186]: idle
+            - button "Stop Agent" [ref=e188] [cursor=pointer]:
+              - img
+        - generic [ref=e191]:
+          - generic [ref=e192]:
+            - generic [ref=e193]:
+              - button "Rename agent" [ref=e195] [cursor=pointer]: QA-20260912-003828-bgt7
+              - button "Share agent" [ref=e196] [cursor=pointer]: Share
+              - button "Agent menu" [ref=e197] [cursor=pointer]:
+                - img
+            - generic [ref=e199]:
+              - button "Expand input" [ref=e201] [cursor=pointer]:
+                - img
+              - textbox "How can I help? Press cmd+enter to send" [active] [ref=e204]:
+                - paragraph [ref=e205]: Hello! What is 2+2?
+              - generic [ref=e206]:
+                - generic [ref=e207]:
+                  - button "Add files" [ref=e208] [cursor=pointer]:
+                    - img
+                  - 'button "Model and effort: Opus 5 · Medium. Click to change." [ref=e209] [cursor=pointer]':
+                    - generic [ref=e210]:
+                      - text: Opus 5
+                      - generic [ref=e211]: · Medium
+                    - img
+                - generic [ref=e212]:
+                  - button "Set up voice input" [ref=e213] [cursor=pointer]:
+                    - img
+                  - button "Send message" [ref=e352] [cursor=pointer]:
+                    - img
+            - generic [ref=e217]:
+              - paragraph [ref=e218]: Other ways to get started
+              - generic [ref=e219]:
+                - button "Browse Templates — Opens the agent template marketplace" [ref=e220] [cursor=pointer]:
+                  - img [ref=e221]
+                  - generic [ref=e225]: Browse Templates
+                - button "Import an Agent — Import an agent from a .agent or .zip template file" [ref=e226] [cursor=pointer]:
+                  - img [ref=e227]
+                  - generic [ref=e229]: Import an Agent
+          - generic [ref=e230]:
+            - generic [ref=e232]:
+              - button "Triggers" [expanded] [ref=e233] [cursor=pointer]:
+                - generic [ref=e234]: Triggers
+                - img [ref=e235]
+              - generic [ref=e238]:
+                - paragraph [ref=e239]: No triggers yet
+                - paragraph [ref=e240]: Triggers fire your agent — on a schedule (crons) or in response to events (webhooks). Your agent will create them as needed.
+            - generic [ref=e242]:
+              - button "Connections" [expanded] [ref=e243] [cursor=pointer]:
+                - generic [ref=e244]: Connections
+                - img [ref=e245]
+              - generic [ref=e247]:
+                - generic [ref=e248]:
+                  - paragraph [ref=e249]: No connections yet
+                  - paragraph [ref=e250]: Connect APIs or MCP servers to give your agent access to external services like Gmail or Slack.
+                - generic [ref=e251]:
+                  - generic [ref=e261]: 70+
+                  - button "Add Connection" [ref=e263] [cursor=pointer]:
+                    - img
+                    - text: Add Connection
+            - generic [ref=e265]:
+              - button "Skills" [expanded] [ref=e266] [cursor=pointer]:
+                - generic [ref=e267]: Skills
+                - img [ref=e268]
+              - generic [ref=e270]:
+                - generic [ref=e271]:
+                  - paragraph [ref=e272]: No skills yet
+                  - paragraph [ref=e273]: Skills teach your agent how to do specific tasks, like triaging emails. Your agent builds skills for you as it works.
+                - button "Import" [ref=e275] [cursor=pointer]:
+                  - img
+                  - text: Import
+            - generic [ref=e277]:
+              - button "Remote Chat" [expanded] [ref=e278] [cursor=pointer]:
+                - generic [ref=e279]: Remote Chat
+                - img [ref=e280]
+              - generic [ref=e283]:
+                - paragraph [ref=e284]: Not configured yet
+                - paragraph [ref=e285]: Connect messaging to chat with this agent from anywhere.
+                - generic [ref=e286]:
+                  - button "Chat via Telegram" [ref=e287] [cursor=pointer]:
+                    - img [ref=e289]
+                    - generic [ref=e290]:
+                      - generic [ref=e291]: Chat via
+                      - generic [ref=e292]: Telegram
+                  - button "Chat via Slack" [ref=e293] [cursor=pointer]:
+                    - img [ref=e295]
+                    - generic [ref=e296]:
+                      - generic [ref=e297]: Chat via
+                      - generic [ref=e298]: Slack
+                  - button "Chat via iMessage" [ref=e299] [cursor=pointer]:
+                    - img [ref=e301]
+                    - generic [ref=e302]:
+                      - generic [ref=e303]: Chat via
+                      - generic [ref=e304]: iMessage
+            - generic [ref=e306]:
+              - generic [ref=e307]:
+                - generic [ref=e308]: Agent Default Model
+                - 'button "Model: Opus · latest. Click to change." [ref=e309] [cursor=pointer]':
+                  - generic [ref=e310]:
+                    - text: Opus · latest
+                    - generic [ref=e311]: · Medium
+                  - img
+              - generic [ref=e312]:
+                - generic [ref=e313]: Session Auto-Delete
+                - 'button "Session Auto-Delete: Never. Click to change." [ref=e314] [cursor=pointer]':
+                  - generic [ref=e315]: Never
+                  - img
+              - generic [ref=e316]:
+                - generic [ref=e317]: API Log Auto-Delete
+                - 'button "API Log Auto-Delete: 30d. Click to change." [ref=e318] [cursor=pointer]':
+                  - generic [ref=e319]: 30d
+                  - img
+            - generic [ref=e321]:
+              - button "Agent-to-agent connections" [ref=e322] [cursor=pointer]:
+                - generic [ref=e323]: Agent-to-agent connections
+                - img [ref=e324]
+              - button "System Prompt" [ref=e326] [cursor=pointer]:
+                - generic [ref=e327]: System Prompt
+                - img [ref=e328]
+              - button "Agent Directory" [ref=e330] [cursor=pointer]:
+                - generic [ref=e331]: Agent Directory
+                - generic [ref=e332]:
+                  - img [ref=e333]
+                  - img [ref=e336]
+              - button "Secrets" [ref=e339] [cursor=pointer]:
+                - generic [ref=e340]: Secrets
+                - img [ref=e341]
+              - button "API Logs" [ref=e343] [cursor=pointer]:
+                - generic [ref=e344]: API Logs
+                - img [ref=e345]
+  - region "Notifications alt+T"
