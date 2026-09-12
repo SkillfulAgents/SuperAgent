@@ -77,6 +77,7 @@ describe('browser_open location', () => {
       success: true,
       location: 'container',
       switchedFrom: 'host',
+      launched: true,
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -171,6 +172,7 @@ describe('browser_open location', () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({
       success: true,
       location: 'container',
+      launched: true,
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -186,7 +188,7 @@ describe('browser_open location', () => {
     expect(result.content[0].text).toContain('/opt/gamut/docs/browser-use.md')
   })
 
-  it('returns the browser guide hint when switching to an existing tab', async () => {
+  it('omits the browser guide hint when switching to an existing tab', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
       success: true,
       location: 'container',
@@ -202,7 +204,33 @@ describe('browser_open location', () => {
       .find(candidate => candidate.name === 'browser_open') as any
     const result = await openTool.handler({ url: 'https://example.com' })
 
-    expect(result.content[0].text).toContain(BROWSER_USE_GUIDANCE_HINT)
+    expect(result.content[0].text).not.toContain(BROWSER_USE_GUIDANCE_HINT)
+  })
+})
+
+describe('browser guide hint frequency', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  const open = async (body: Record<string, unknown>) => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })))
+    const openTool = createBrowserTools(() => 'session-h').find(t => t.name === 'browser_open') as any
+    const result = await openTool.handler({ url: 'https://example.com/a' })
+    return String(result.content[0].text)
+  }
+  const page = { url: 'https://example.com/a', title: 'A', readyState: 'complete', httpStatus: 200, contentType: 'text/html' }
+
+  it('attaches the hint when the open launched a browser', async () => {
+    expect(await open({ success: true, location: 'host', page, launched: true })).toContain(BROWSER_USE_GUIDANCE_HINT)
+    expect(await open({ success: true, location: 'host', launched: true })).toContain(BROWSER_USE_GUIDANCE_HINT)
+  })
+
+  it('omits the hint for an open inside an already-running browser', async () => {
+    expect(await open({ success: true, location: 'host', page })).not.toContain(BROWSER_USE_GUIDANCE_HINT)
+    expect(await open({ success: true, location: 'host', page, launched: false })).not.toContain(BROWSER_USE_GUIDANCE_HINT)
+    expect(await open({ success: true, location: 'host' })).not.toContain(BROWSER_USE_GUIDANCE_HINT)
   })
 })
 

@@ -34,7 +34,10 @@ const CONTAINER_URL = `http://localhost:${process.env.PORT || '3000'}`
 // with a web-browser subagent to delegate rather than read. An unconditional
 // "required" here would either undo that saving or train the model to ignore
 // these hints — including in the no-subagent case where the read is the only
-// source of browsing guidance.
+// source of browsing guidance. It is attached once per browser launch (the
+// open that started a browser), never on tab switches or navigations inside
+// a live browser: repeated on every open, it told the web-browser subagent
+// up to 50 times a session to consider delegating to itself (mining theme 31).
 export const BROWSER_USE_GUIDANCE_HINT =
   'Guidance: if you will drive the browser yourself rather than delegate to the web-browser agent, read `/opt/gamut/docs/browser-use.md` before interacting (unless you already read it in this conversation).'
 
@@ -139,13 +142,14 @@ Omit location to keep using the current browser where it is; when no browser is 
     const localhostWarning = isLoopbackBrowserUrl(args.url) && activeLocation === 'host'
       ? '\n\nWARNING: This URL points at the host browser\'s own loopback interface. If you meant a service inside the agent container, reopen it with location="container".'
       : ''
+    const guide = data?.launched === true ? `\n\n${BROWSER_USE_GUIDANCE_HINT}` : ''
 
     if (data?.switchedToExisting) {
       return {
         content: [
           {
             type: 'text' as const,
-            text: `Switched to existing tab ${data.tabId} in ${locationText}, which already has ${data.url} open. Use browser_snapshot to see the page content.${localhostWarning}\n\n${BROWSER_USE_GUIDANCE_HINT}`,
+            text: `Switched to existing tab ${data.tabId} in ${locationText}, which already has ${data.url} open. Use browser_snapshot to see the page content.${localhostWarning}`,
           },
         ],
       }
@@ -167,7 +171,7 @@ Omit location to keep using the current browser where it is; when no browser is 
         `Loaded ${title} at ${page.url}${redirect}${http} in ${locationText}.${switchText}` +
         warns.map(w => `\n⚠ ${w}`).join('') +
         (warns.length > 0 && page.preview ? `\nPage text: ${JSON.stringify(page.preview.slice(0, 400))}` : '') +
-        ` The user can see the browser live. Use browser_snapshot to see the page content.${localhostWarning}\n\n${BROWSER_USE_GUIDANCE_HINT}`
+        ` The user can see the browser live. Use browser_snapshot to see the page content.${localhostWarning}${guide}`
       return { content: [{ type: 'text' as const, text }], ...(unreachable ? { isError: true } : {}) }
     }
 
@@ -175,7 +179,7 @@ Omit location to keep using the current browser where it is; when no browser is 
       content: [
         {
           type: 'text' as const,
-          text: `Browser opened in ${locationText} and navigating to ${args.url}.${switchText} The landing page could not be read — take a browser_snapshot to see where you are; its status line shows the URL, title and HTTP status.${localhostWarning}\n\n${BROWSER_USE_GUIDANCE_HINT}`,
+          text: `Browser opened in ${locationText} and navigating to ${args.url}.${switchText} The landing page could not be read — take a browser_snapshot to see where you are; its status line shows the URL, title and HTTP status.${localhostWarning}${guide}`,
         },
       ],
     }
