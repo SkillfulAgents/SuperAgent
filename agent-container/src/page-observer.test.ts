@@ -57,6 +57,8 @@ type Page = {
   errorPage?: boolean
   /** Selectors that document.querySelector resolves (challenge-wall DOM markers). */
   markers?: string[]
+  /** Elements document.getElementById resolves (aria-labelledby targets). */
+  byId?: Record<string, unknown>
 }
 
 const LIVE = '[role="alert"],[role="status"],[aria-live]:not([aria-live="off"]),output'
@@ -71,7 +73,7 @@ function makePage(page: Page) {
     readyState: page.readyState ?? 'complete',
     contentType: page.contentType ?? 'text/html',
     activeElement: page.active ?? body,
-    getElementById: (id: string) => (id === 'main-frame-error' && page.errorPage ? {} : null),
+    getElementById: (id: string) => (id === 'main-frame-error' && page.errorPage ? {} : (page.byId?.[id] ?? null)),
     querySelector: (q: string) => (q === 'main,[role=main]' ? page.main ?? null : (page.markers ?? []).some(m => q.split(',').includes(m)) ? {} : null),
     querySelectorAll: (q: string) => page.sel?.[q] ?? [],
   }
@@ -176,6 +178,25 @@ describe('observerScript', () => {
   it('lists visible iframes with host and origin', () => {
     const { run } = makePage({ sel: { iframe: [el({ src: 'https://js.stripe.com/v3/elements', title: 'Secure payment' }), el({ src: 'https://app.com/inner', sameOrigin: true }), el({ src: 'https://x.com', visible: false })] } })
     expect(run().iframes).toEqual([{ title: 'Secure payment', host: 'js.stripe.com', sameOrigin: false }, { title: '', host: 'app.com', sameOrigin: true }])
+  })
+
+  it('reports the accessible name — aria-label, then aria-labelledby, then title — since that is what the tree prints', () => {
+    const { run } = makePage({
+      byId: { lbl: el({ text: 'Billing card' }) },
+      sel: { iframe: [
+        el({ src: 'https://js.stripe.com/v3/elements', title: 'Secure payment input frame', label: 'Payment details' }),
+        el({ src: 'https://js.stripe.com/y', title: 'Ignored title', labelledby: 'lbl' }),
+        el({ src: 'https://js.stripe.com/x', title: 'Only title' }),
+      ] },
+    })
+    expect(run().iframes.map(f => f.title)).toEqual(['Payment details', 'Billing card', 'Only title'])
+  })
+
+  it('treats a frame on the page\'s own origin as same-origin even when its document is not readable (sandboxed)', () => {
+    // contentDocument is null/throws for a sandboxed frame without allow-same-origin;
+    // the URL still says it is the page's own host (mining theme 11: reported cross-origin).
+    const { run } = makePage({ href: 'https://app.com/checkout', sel: { iframe: [el({ src: 'https://app.com/widget', title: 'Widget' }), el({ src: '/relative', title: 'Rel' })] } })
+    expect(run().iframes).toEqual([{ title: 'Widget', host: 'app.com', sameOrigin: true }, { title: 'Rel', host: '', sameOrigin: true }])
   })
 
   it('recognises a challenge wall by the vendor\'s own DOM or a challenge status with its wording — never by wording alone', () => {

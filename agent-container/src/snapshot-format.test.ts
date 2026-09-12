@@ -35,25 +35,94 @@ describe('parseIframeInfo', () => {
 })
 
 describe('formatIframePlaceholders', () => {
-  it('lists cross-origin frames with the payment recipe', () => {
-    const frames: IframeInfo[] = [{ title: 'Secure payment input frame', host: 'js.stripe.com', sameOrigin: false }]
-    const out = formatIframePlaceholders(frames)
-    expect(out).toContain('js.stripe.com')
-    expect(out).toContain('Secure payment input frame')
-    expect(out).toContain('browser_type')
+  const stripe: IframeInfo = { title: 'Secure payment input frame', host: 'js.stripe.com', sameOrigin: false }
+  // Real CLI tree (agent-browser 0.27.2): a cross-origin frame merged with refs.
+  const mergedTree = [
+    '- textbox "Name " [ref=e5]',
+    '- Iframe "Secure payment input frame" [ref=e2]',
+    '  - textbox "Card number " [ref=e7]',
+    '  - button "Pay" [ref=e6]',
+    '- button "Submit" [ref=e4]',
+  ].join('\n')
+
+  it('says nothing about a frame whose contents are in the tree, cross-origin or not', () => {
+    expect(formatIframePlaceholders([stripe], mergedTree)).toBe('')
   })
 
-  it('omits same-origin frames (already merged into the tree)', () => {
-    const frames: IframeInfo[] = [{ title: 'inner', host: 'self.com', sameOrigin: true }]
-    expect(formatIframePlaceholders(frames)).toBe('')
+  it('lists a frame the tree does not carry, as a fact and without a recipe', () => {
+    const out = formatIframePlaceholders([stripe], '- textbox "Name " [ref=e5]\n- button "Submit" [ref=e4]')
+    expect(out).toContain('whose contents are not in this tree')
+    expect(out).toContain('iframe "Secure payment input frame" (js.stripe.com) · cross-origin')
+    for (const claim of ['NOT in this snapshot', 'coordinates', 'browser_type', 'card number']) {
+      expect(out).not.toContain(claim)
+    }
+  })
+
+  it('lists a frame whose own node is in the tree but empty', () => {
+    const emptyTree = '- Iframe "Secure payment input frame" [ref=e2]\n- button "Submit" [ref=e4]'
+    expect(formatIframePlaceholders([stripe], emptyTree)).toContain('iframe "Secure payment input frame" (js.stripe.com)')
+  })
+
+  it('marks a same-origin frame the tree could not read without the cross-origin label', () => {
+    const out = formatIframePlaceholders([{ title: 'inner', host: 'self.com', sameOrigin: true }], '')
+    expect(out).toContain('iframe "inner" (self.com)')
+    expect(out).not.toContain('cross-origin')
+  })
+
+  it('never claims anything about an unnamed frame', () => {
+    const tree = '- Iframe [ref=e2]\n  - button "Go" [ref=e3]'
+    expect(formatIframePlaceholders([{ title: '', host: 'ads.example', sameOrigin: false }], tree)).toBe('')
+    expect(formatIframePlaceholders([{ title: '', host: 'ads.example', sameOrigin: false }], '- Iframe [ref=e2]')).toBe('')
+    expect(formatIframePlaceholders([{ title: '', host: 'ads.example', sameOrigin: false }], '')).toBe('')
+  })
+
+  it('matches a name the tree escaped (quotes in the title)', () => {
+    // review: 'Card "main" frame' printed as Iframe "Card \"main\" frame"
+    const tree = '- Iframe "Card \\"main\\" frame" [ref=e2]\n  - textbox "Card number" [ref=e7]'
+    expect(formatIframePlaceholders([{ title: 'Card "main" frame', host: 'js.stripe.com', sameOrigin: false }], tree)).toBe('')
+  })
+
+  it('says nothing when any tree Iframe node is not accounted for by a visible frame name', () => {
+    // review: a name the observer could not compute (e.g. aria-labelledby) must not turn into
+    // "not in this tree" for a frame that has working refs right above the line.
+    const tree = '- Iframe "Payment details" [ref=e2]\n  - textbox "Card number" [ref=e7]'
+    expect(formatIframePlaceholders([stripe], tree)).toBe('')
+    // ...even when a genuinely empty frame is on the page too: which frame is missing is unknown.
+    const two = '- Iframe "Billing card" [ref=e2]\n  - textbox "Card number" [ref=e7]\n- Iframe "Empty one" [ref=e3]'
+    expect(formatIframePlaceholders([
+      { title: 'Different name', host: '127.0.0.1', sameOrigin: false },
+      { title: 'Empty one', host: '127.0.0.1', sameOrigin: false },
+    ], two)).toBe('')
+  })
+
+  it('lists exactly the empty frame when every tree node is matched by name', () => {
+    // the reviewer's scenario with the accessible name computed correctly
+    const two = '- Iframe "Billing card" [ref=e2]\n  - textbox "Card number" [ref=e7]\n- Iframe "Empty one" [ref=e3]'
+    const out = formatIframePlaceholders([
+      { title: 'Billing card', host: '127.0.0.1', sameOrigin: false },
+      { title: 'Empty one', host: '127.0.0.1', sameOrigin: false },
+    ], two)
+    expect(out).toContain('iframe "Empty one" (127.0.0.1)')
+    expect(out).not.toContain('Billing card')
+  })
+
+  it('lists a named frame with no node only when the tree holds nothing unmatched', () => {
+    const tree = '- Iframe "Chat" [ref=e2]\n  - button "Open chat" [ref=e3]'
+    const frames: IframeInfo[] = [
+      { title: 'Chat', host: 'chat.example', sameOrigin: false },
+      { title: 'Secure payment input frame', host: 'js.stripe.com', sameOrigin: false },
+    ]
+    const out = formatIframePlaceholders(frames, tree)
+    expect(out).toContain('iframe "Secure payment input frame" (js.stripe.com) · cross-origin')
+    expect(out).not.toContain('"Chat"')
   })
 
   it('omits srcless/blank frames (no host)', () => {
-    expect(formatIframePlaceholders([{ title: '', host: '', sameOrigin: false }])).toBe('')
+    expect(formatIframePlaceholders([{ title: '', host: '', sameOrigin: false }], '')).toBe('')
   })
 
-  it('returns empty string when there are no opaque frames', () => {
-    expect(formatIframePlaceholders([])).toBe('')
+  it('returns empty string when there are no frames', () => {
+    expect(formatIframePlaceholders([], '')).toBe('')
   })
 })
 

@@ -128,9 +128,10 @@ Do not ask the user to paste credentials into chat. The browser profile retains
 successful sessions. Follow the system prompt's confirmation rules for
 submissions with financial, legal, destructive, or externally visible impact.
 
-Cross-origin iframe content is unavailable to `browser_eval` and may not appear
-as actionable snapshot fields. For embedded payment fields, click the iframe
-field by the available mechanism and use `browser_type`.
+Cross-origin iframe content is unavailable to `browser_eval`, but the snapshot
+normally merges frames — payment frames included — with working refs. Use those
+refs; for keystroke-driven fields, click the ref and use `browser_type`. A frame
+the tree could not read is listed under the snapshot.
 
 ## Uploads and Downloads
 

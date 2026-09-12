@@ -1561,7 +1561,7 @@ app.post('/browser/snapshot', async (c) => {
         (header ? `${header}\n\n` : '') +
         capSnapshot(tree, Boolean(body.scope)) +
         formatTextFooter(probe, { fullText, scoped: Boolean(body.scope), previewChars }) +
-        formatIframePlaceholders(iframes),
+        formatIframePlaceholders(iframes, tree),
       iframes,
       page: { ...probe, preview: probe.preview.slice(0, previewChars) },
       tabCount: tabManager.getTabCount(),
