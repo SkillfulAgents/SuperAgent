@@ -90,8 +90,9 @@ number of interactive elements, and focus. `Effect: none observed within Nms
 failed: a highlight, a change inside an iframe or canvas, or a slow server
 all look like this. Snapshot or screenshot if you need to know; do not click
 again on that basis, which would undo a toggle. Fill results
-report the value the page actually committed. A fill warning means the page
-kept a different value—fix it before moving on.
+report the value the page actually committed. A fill warning means the field
+now holds a different value than you sent; both are shown and the cause is
+not known—check the field before moving on.
 
 Navigation makes existing refs stale. Re-snapshot when a result reports
 navigation, when a dialog or dynamic view changes the relevant controls, or

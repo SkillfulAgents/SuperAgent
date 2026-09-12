@@ -812,7 +812,7 @@ const execFileAsync = promisify(execFile);
 import { resolveRunCommandArgs } from './browser-command-args';
 import { validatePressKey } from './press-key';
 import { prepareEvalScript, finalizeEvalOutput, evalErrorHint } from './eval-script';
-import { judgeSelectCommit, SELECT_COMMIT_SETTLE_MS } from './select-verify';
+import { judgeSelectCommit, parseSelectOptions, targetOptionMatches, SELECT_COMMIT_SETTLE_MS } from './select-verify';
 import { resolveCommittedValue } from './field-value-readback';
 import { capBrowserOutput, redactCdpUrls, describeExecFailure, BROWSER_EXEC_TIMEOUT_MS, MAX_BROWSER_OUTPUT_CHARS, MAX_BROWSER_ERROR_CHARS } from './browser-output';
 import { capSnapshot, compactWithText, countRefs, formatIframePlaceholders, formatTextFooter, THIN_TREE_REFS } from './snapshot-format';
@@ -1832,7 +1832,21 @@ app.post('/browser/select', async (c) => {
 
     const after = await readValue();
 
-    const judgement = judgeSelectCommit(body.value, before, after);
+    // Unchanged value that is not the requested string: the agent may have
+    // asked by label for the option that was already selected. Focus the
+    // target and read ITS selected option — a probe over every <select> on
+    // the page could be satisfied by a different dropdown.
+    let labelMatches = false;
+    if (after !== null && after === before && after !== body.value) {
+      // Read the target's own option list through the same ref the select
+      // and the value read used. No page script: a page-wide search, a
+      // focused element or the element at the target's rectangle can all be
+      // a different dropdown (each verified the wrong one in review).
+      const html = await execBrowser(['get', 'html', body.ref], browserState.cdpUrl || undefined);
+      labelMatches = html.exitCode === 0 && targetOptionMatches(parseSelectOptions(html.stdout), body.value, after);
+    }
+
+    const judgement = judgeSelectCommit(body.value, before, after, labelMatches);
     if (!judgement.ok) {
       return c.json({ error: judgement.reason, success: false }, 500);
     }

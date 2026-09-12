@@ -460,7 +460,7 @@ Custom dropdowns (divs with role=combobox/listbox) will NOT work with this tool.
     const committed = data?.committedValue
     return {
       content: [
-        { type: 'text' as const, text: `Selected "${args.value}" in ${args.ref} — committed value verified: "${committed}".${effectText(data, 'select', 300)}` },
+        { type: 'text' as const, text: `Selected "${args.value}" in ${args.ref} — the element's value is now "${committed}".${effectText(data, 'select', 300)}` },
       ],
     }
   }
