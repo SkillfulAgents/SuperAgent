@@ -178,6 +178,11 @@ describe('observerScript', () => {
     expect(run().iframes).toEqual([{ title: 'Secure payment', host: 'js.stripe.com', sameOrigin: false }, { title: '', host: 'app.com', sameOrigin: true }])
   })
 
+  it('reports the accessible name — aria-label over title — since that is what the tree prints', () => {
+    const { run } = makePage({ sel: { iframe: [el({ src: 'https://js.stripe.com/v3/elements', title: 'Secure payment input frame', label: 'Payment details' }), el({ src: 'https://js.stripe.com/x', title: 'Only title' })] } })
+    expect(run().iframes.map(f => f.title)).toEqual(['Payment details', 'Only title'])
+  })
+
   it('treats a frame on the page\'s own origin as same-origin even when its document is not readable (sandboxed)', () => {
     // contentDocument is null/throws for a sandboxed frame without allow-same-origin;
     // the URL still says it is the page's own host (mining theme 11: reported cross-origin).

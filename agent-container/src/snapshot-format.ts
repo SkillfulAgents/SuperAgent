@@ -64,7 +64,8 @@ function treeIframes(tree: string): Array<{ title: string; hasChildren: boolean 
       hasChildren = childIndent > indent
       break
     }
-    out.push({ title: (m[2] ?? '').trim(), hasChildren })
+    // The tree escapes quotes and backslashes inside the quoted name.
+    out.push({ title: (m[2] ?? '').replace(/\\(.)/g, '$1').trim(), hasChildren })
   }
   return out
 }
@@ -78,20 +79,22 @@ function treeIframes(tree: string): Array<{ title: string; hasChildren: boolean 
  * every cross-origin frame as "contents NOT in this snapshot" directly under
  * that frame's own refs, then prescribed a coordinate click that has no CLI
  * command; agents believed the prose over the tree (mining theme 11). Now a
- * frame is listed only when the tree has no `Iframe` node with that name
- * carrying children — i.e. when the tree really could not read it — and the
- * line states that and nothing else.
+ * frame is listed only when the claim is unambiguous: it has a name (the
+ * accessible name, as the tree prints it), no `Iframe` node with that name
+ * carries children, and the tree holds fewer child-bearing `Iframe` nodes
+ * than the page has visible frames. If every visible frame is accounted for
+ * by a merged node, a name mismatch is a matching problem, not the tree's,
+ * and nothing is printed. Unnamed frames never produce a line.
  */
 export function formatIframePlaceholders(iframes: IframeInfo[], tree = ''): string {
   const inTree = treeIframes(tree)
-  const unreadable = iframes.filter(f => {
-    if (!f.host) return false
+  const visible = iframes.filter(f => f.host)
+  const mergedCount = inTree.filter(t => t.hasChildren).length
+  if (mergedCount >= visible.length) return ''
+  const unreadable = visible.filter(f => {
     const title = f.title.trim()
-    const matches = inTree.filter(t => t.title === title)
-    if (matches.length === 0) return true
-    // An untitled DOM frame with any untitled tree frame carrying children
-    // is taken as merged; a titled frame must match by name.
-    return !matches.some(t => t.hasChildren)
+    if (!title) return false
+    return !inTree.some(t => t.title === title && t.hasChildren)
   })
   if (unreadable.length === 0) return ''
   const lines = unreadable.map(f => {

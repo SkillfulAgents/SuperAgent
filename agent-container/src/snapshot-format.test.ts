@@ -69,10 +69,35 @@ describe('formatIframePlaceholders', () => {
     expect(out).not.toContain('cross-origin')
   })
 
-  it('takes an untitled DOM frame as merged when the tree has an untitled Iframe with children', () => {
+  it('never claims anything about an unnamed frame', () => {
     const tree = '- Iframe [ref=e2]\n  - button "Go" [ref=e3]'
     expect(formatIframePlaceholders([{ title: '', host: 'ads.example', sameOrigin: false }], tree)).toBe('')
-    expect(formatIframePlaceholders([{ title: '', host: 'ads.example', sameOrigin: false }], '- Iframe [ref=e2]')).toContain('(ads.example)')
+    expect(formatIframePlaceholders([{ title: '', host: 'ads.example', sameOrigin: false }], '- Iframe [ref=e2]')).toBe('')
+    expect(formatIframePlaceholders([{ title: '', host: 'ads.example', sameOrigin: false }], '')).toBe('')
+  })
+
+  it('matches a name the tree escaped (quotes in the title)', () => {
+    // review: 'Card "main" frame' printed as Iframe "Card \"main\" frame"
+    const tree = '- Iframe "Card \\"main\\" frame" [ref=e2]\n  - textbox "Card number" [ref=e7]'
+    expect(formatIframePlaceholders([{ title: 'Card "main" frame', host: 'js.stripe.com', sameOrigin: false }], tree)).toBe('')
+  })
+
+  it('says nothing when every visible frame is accounted for by a merged node, even if the names do not match', () => {
+    // review: aria-label overrides title in the accessible name; the observer now reports aria-label, but
+    // any residual mismatch (aria-labelledby, whitespace) must not become a false "not in this tree".
+    const tree = '- Iframe "Payment details" [ref=e2]\n  - textbox "Card number" [ref=e7]'
+    expect(formatIframePlaceholders([{ title: 'Secure payment input frame', host: 'js.stripe.com', sameOrigin: false }], tree)).toBe('')
+  })
+
+  it('lists a named frame only when the tree holds fewer merged frames than the page has', () => {
+    const tree = '- Iframe "Chat" [ref=e2]\n  - button "Open chat" [ref=e3]'
+    const frames: IframeInfo[] = [
+      { title: 'Chat', host: 'chat.example', sameOrigin: false },
+      { title: 'Secure payment input frame', host: 'js.stripe.com', sameOrigin: false },
+    ]
+    const out = formatIframePlaceholders(frames, tree)
+    expect(out).toContain('iframe "Secure payment input frame" (js.stripe.com) · cross-origin')
+    expect(out).not.toContain('"Chat"')
   })
 
   it('omits srcless/blank frames (no host)', () => {

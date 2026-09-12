@@ -192,7 +192,8 @@ export function observerScript(opts: ObserverOptions = {}): string {
     // document check alone is null for a sandboxed frame on the page's own
     // host, which used to be reported as cross-origin (mining theme 11).
     '.map(function(f){var host="";try{host=new URL(f.src).host}catch(e){}var same=false;try{same=!!f.contentDocument}catch(e){}' +
-    'if(!same){try{same=new URL(f.src||"",location.href).origin===new URL(location.href).origin}catch(e){}}return{title:f.title||"",host:host,sameOrigin:same}})}catch(e){}' +
+    // title: the frame's accessible name as the tree prints it (aria-label wins over title).
+    'if(!same){try{same=new URL(f.src||"",location.href).origin===new URL(location.href).origin}catch(e){}}return{title:String(f.getAttribute("aria-label")||f.title||""),host:host,sameOrigin:same}})}catch(e){}' +
     // Interactive census, and the state of every visible control.
     'var act=null;try{act=document.activeElement}catch(e){}var actIx=-1;' +
     'try{var els=document.querySelectorAll(' + JSON.stringify(INTERACTIVE_SELECTOR) + ');var sa=' + JSON.stringify(STATE_ATTRS) + ';var st="";' +
