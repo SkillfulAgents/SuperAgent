@@ -707,63 +707,89 @@ const browserGetStateTool = tool(
       .describe('Capture and return a screenshot image (default: true). Set false when you only need URL + snapshot.'),
   },
   async (args) => {
-    const [urlResult, screenshotResult, snapshotResult] = await Promise.all([
-      browserFetch('run', { command: 'get url' }),
-      args.screenshot === false ? Promise.resolve(null) : browserFetch('screenshot', { full: false }),
-      browserFetch('snapshot', {
-        interactive: true,
-        compact: true,
-        scope: args.scope,
-        fullText: args.fullText,
-        includeUrls: args.includeUrls,
-      }),
-    ])
+    // One observation, in order: the snapshot first (its page probe carries
+    // the URL, so no separate `get url`), then the screenshot. The old version
+    // fired `get url`, screenshot and snapshot in parallel with no shared
+    // instant, so "Current URL" could name a different page than the snapshot
+    // beside it, and a dead browser printed the same CDP error three times
+    // inside a success-shaped result (transcript-mining theme 23).
+    const snapshotResult = await browserFetch('snapshot', {
+      interactive: true,
+      compact: true,
+      scope: args.scope,
+      fullText: args.fullText,
+      includeUrls: args.includeUrls,
+    })
+    const screenshotResult = args.screenshot === false ? null : await browserFetch('screenshot', { full: false })
 
     const content: Array<{ type: 'image'; data: string; mimeType: string } | { type: 'text'; text: string }> = []
     const parts: string[] = []
+    const failures: string[] = []
 
-    if (urlResult.success) {
-      const data = urlResult.data as Record<string, unknown>
-      parts.push(`**Current URL:** ${data.output || 'unknown'}`)
-    } else {
-      parts.push(`**Current URL:** Error - ${urlResult.error}`)
+    const snapshotData = snapshotResult.success ? (snapshotResult.data as Record<string, unknown>) : null
+    const page = snapshotData?.page ? parseObservation(JSON.stringify(snapshotData.page)) : null
+    if (page?.url) {
+      parts.push(`**Current URL:** ${page.url}`)
     }
 
+    // The screenshot leg delivered something only when an image reached the
+    // result. A route success whose file cannot be read or resized is a
+    // failure like any other (review: it used to leave isError unset with
+    // nothing delivered).
+    let screenshotFailure: string | null = null
     if (screenshotResult === null) {
       // screenshot=false: nothing to report
     } else if (screenshotResult.success) {
       const data = screenshotResult.data as Record<string, unknown>
       const rawOutput = data.output ? String(data.output) : ''
       const filePath = rawOutput ? extractScreenshotPath(rawOutput) : ''
-      if (filePath) {
+      if (!filePath) {
+        screenshotFailure = 'no screenshot path returned'
+      } else {
         const image = await readScreenshotAsBase64(filePath)
         if (image) {
           content.push({ type: 'image' as const, data: image.data, mimeType: image.mimeType })
+          parts.push(`**Screenshot:** ${filePath}`)
+        } else {
+          screenshotFailure = `screenshot file could not be read: ${filePath}`
         }
-        parts.push(`**Screenshot:** ${filePath}`)
-      } else {
-        parts.push(`**Screenshot:** No screenshot path returned`)
       }
     } else {
-      parts.push(`**Screenshot:** Error - ${screenshotResult.error}`)
+      screenshotFailure = screenshotResult.error ?? 'unknown error'
     }
 
-    if (snapshotResult.success) {
-      const data = snapshotResult.data as Record<string, unknown>
-      const tabCount = typeof data.tabCount === 'number' ? data.tabCount : 0
-      const snapshot = data.snapshot
-        ? String(data.snapshot)
-        : JSON.stringify(data, null, 2)
+    if (snapshotData) {
+      const tabCount = typeof snapshotData.tabCount === 'number' ? snapshotData.tabCount : 0
+      const snapshot = snapshotData.snapshot
+        ? String(snapshotData.snapshot)
+        : JSON.stringify(snapshotData, null, 2)
       parts.push(`**Accessibility Snapshot:**\n${snapshot}`)
       const tabStatus = tabManager.formatTabStatus(tabCount)
       if (tabStatus) parts.push(tabStatus.trim())
-    } else {
-      parts.push(`**Accessibility Snapshot:** Error - ${snapshotResult.error}`)
+    }
+
+    if (!snapshotData) failures.push(`snapshot: ${snapshotResult.error}`)
+    if (screenshotFailure !== null) failures.push(`screenshot: ${screenshotFailure}`)
+
+    // One line per distinct cause: a dead browser fails every leg with the
+    // same message, which is one fact, not two.
+    const requested = screenshotResult === null ? 1 : 2
+    const allFailed = failures.length === requested
+    if (failures.length > 0) {
+      const causes = new Map<string, string[]>()
+      for (const f of failures) {
+        const [leg, ...rest] = f.split(': ')
+        const cause = rest.join(': ')
+        causes.set(cause, [...(causes.get(cause) ?? []), leg])
+      }
+      for (const [cause, legs] of causes) {
+        parts.push(`**Error (${legs.join(' and ')}):** ${cause}`)
+      }
     }
 
     content.push({ type: 'text' as const, text: parts.join('\n\n') })
 
-    return { content }
+    return allFailed ? { content, isError: true } : { content }
   }
 )
 
