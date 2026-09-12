@@ -178,6 +178,13 @@ describe('observerScript', () => {
     expect(run().iframes).toEqual([{ title: 'Secure payment', host: 'js.stripe.com', sameOrigin: false }, { title: '', host: 'app.com', sameOrigin: true }])
   })
 
+  it('treats a frame on the page\'s own origin as same-origin even when its document is not readable (sandboxed)', () => {
+    // contentDocument is null/throws for a sandboxed frame without allow-same-origin;
+    // the URL still says it is the page's own host (mining theme 11: reported cross-origin).
+    const { run } = makePage({ href: 'https://app.com/checkout', sel: { iframe: [el({ src: 'https://app.com/widget', title: 'Widget' }), el({ src: '/relative', title: 'Rel' })] } })
+    expect(run().iframes).toEqual([{ title: 'Widget', host: 'app.com', sameOrigin: true }, { title: 'Rel', host: '', sameOrigin: true }])
+  })
+
   it('recognises a challenge wall by the vendor\'s own DOM or a challenge status with its wording — never by wording alone', () => {
     const form = [el({ tag: 'input' }), el({ tag: 'input', type: 'password' }), el({ tag: 'button' }), el({ tag: 'a' }), el({ tag: 'a' })]
     // The real thing: Cloudflare's interstitial (its DOM, or its 403/503 with its wording), Google's /sorry/, an Akamai 403.

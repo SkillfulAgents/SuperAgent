@@ -49,22 +49,57 @@ export function parseIframeInfo(stdout: string): IframeInfo[] {
   }
 }
 
+/** An `Iframe` node in the CLI's tree: its accessible name and whether it has children. */
+function treeIframes(tree: string): Array<{ title: string; hasChildren: boolean }> {
+  const lines = tree.split('\n')
+  const out: Array<{ title: string; hasChildren: boolean }> = []
+  for (let i = 0; i < lines.length; i++) {
+    const m = /^(\s*)- iframe(?: "((?:[^"\\]|\\.)*)")?/i.exec(lines[i])
+    if (!m) continue
+    const indent = m[1].length
+    let hasChildren = false
+    for (let j = i + 1; j < lines.length; j++) {
+      if (lines[j].trim() === '') continue
+      const childIndent = (/^(\s*)/.exec(lines[j]) ?? ['', ''])[1].length
+      hasChildren = childIndent > indent
+      break
+    }
+    out.push({ title: (m[2] ?? '').trim(), hasChildren })
+  }
+  return out
+}
+
 /**
- * Render placeholders for cross-origin iframes (whose fields the a11y snapshot
- * cannot see). Same-origin frames are already merged into the tree, so they
- * are omitted. Returns '' when there is nothing the agent is blind to.
+ * List the visible iframes whose contents the tree does NOT carry.
+ *
+ * The CLI merges frames — cross-origin ones included — into the tree with
+ * working refs (verified on agent-browser 0.27.2: a card field inside a
+ * cross-origin frame fills and reads back by ref). The old footer listed
+ * every cross-origin frame as "contents NOT in this snapshot" directly under
+ * that frame's own refs, then prescribed a coordinate click that has no CLI
+ * command; agents believed the prose over the tree (mining theme 11). Now a
+ * frame is listed only when the tree has no `Iframe` node with that name
+ * carrying children — i.e. when the tree really could not read it — and the
+ * line states that and nothing else.
  */
-export function formatIframePlaceholders(iframes: IframeInfo[]): string {
-  const opaque = iframes.filter(f => !f.sameOrigin && f.host)
-  if (opaque.length === 0) return ''
-  const lines = opaque.map(f => {
-    const label = f.title ? `"${f.title}" ` : ''
-    return `  - iframe ${label}(${f.host}) — contents NOT in this snapshot (cross-origin)`
+export function formatIframePlaceholders(iframes: IframeInfo[], tree = ''): string {
+  const inTree = treeIframes(tree)
+  const unreadable = iframes.filter(f => {
+    if (!f.host) return false
+    const title = f.title.trim()
+    const matches = inTree.filter(t => t.title === title)
+    if (matches.length === 0) return true
+    // An untitled DOM frame with any untitled tree frame carrying children
+    // is taken as merged; a titled frame must match by name.
+    return !matches.some(t => t.hasChildren)
   })
-  return (
-    `\n\nFrames on this page whose fields are not captured above:\n${lines.join('\n')}\n` +
-    `If you need to fill a field inside one (e.g. card number in a payment frame), click into it by coordinates, then use browser_type.`
-  )
+  if (unreadable.length === 0) return ''
+  const lines = unreadable.map(f => {
+    const label = f.title ? `"${f.title}" ` : ''
+    const origin = f.sameOrigin ? '' : ' · cross-origin'
+    return `  - iframe ${label}(${f.host})${origin}`
+  })
+  return `\n\nFrames on this page whose contents are not in this tree:\n${lines.join('\n')}`
 }
 
 /**

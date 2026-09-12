@@ -204,7 +204,7 @@ The default view shows interactive elements only — it drops ALL static text (p
 - fullText=true: THE way to read a page. Adds the static text to the same compact tree; refs are identical in both views. Use it to extract data, read results or errors, or check on-page copy — not browser_eval innerText scrapers, not screenshots.
 - scope: limit the snapshot to a CSS-selected region (e.g. "form", "#main", ".modal", a dialog selector). Combine with fullText on large pages — it slashes output and avoids truncation. Refs stay valid for the rest of the page.
 
-Cross-origin iframes (e.g. Stripe payment frames) are listed as placeholders below the tree — their fields are NOT in the snapshot; fill them via coordinate click + browser_type.
+Frames — cross-origin ones such as Stripe payment frames included — are normally merged into the tree with working refs; use those refs like any other. A frame whose contents the tree could not read is listed below the tree.
 Very large snapshots are truncated with a note rather than failing — scope to recover the rest.`,
   {
     interactive: z
@@ -558,7 +558,7 @@ const browserTypeTool = tool(
   `Type text with REAL keystrokes into the currently focused element — or pass a ref to focus that element first.
 
 Use this when browser_fill cannot work:
-- Fields inside cross-origin payment iframes (Stripe card number/expiry/CVC): click into the field first (by ref if available, else by coordinates via browser_run mouse), then call browser_type WITHOUT a ref. Verify with a screenshot — the field is not readable from outside the iframe.
+- Fields inside payment iframes (Stripe card number/expiry/CVC) normally have refs in the snapshot: pass the ref, or browser_click it first and type without a ref. If the snapshot lists the frame as unreadable, focus the field with browser_run mouse (move x y, down, up) and type without a ref; verify with a screenshot.
 - Keystroke-listening widgets that ignore programmatic fill: OTP digit boxes, typeaheads, autocomplete inputs.
 
 Notes: this APPENDS to existing content (it does not clear first — use browser_fill to replace, or browser_press "Control+a" then type). When a ref is provided, the field's value is read back and returned.`,
@@ -589,7 +589,7 @@ const browserEvalTool = tool(
 
 - A single expression returns its value (e.g. document.title). A multi-line/statement body runs in a fresh scope — use \`return\` to produce a value (top-level return and await are supported; const/let won't collide across calls). Bare function expressions are auto-invoked.
 - Return JSON-serializable data — for structured results, end with JSON.stringify(...).
-- TOP FRAME ONLY: elements inside cross-origin iframes (e.g. Stripe payment frames) are unreachable from JavaScript. For those, click the field by coordinates and type with browser_type.
+- TOP FRAME ONLY: elements inside cross-origin iframes (e.g. Stripe payment frames) are unreachable from JavaScript. Use their refs from browser_snapshot (browser_click / browser_fill / browser_type) instead.
 - Output is capped at ~8000 chars — query only the fields you need instead of dumping HTML.`,
   {
     script: z.string().describe('JavaScript to evaluate. An expression (document.title) returns its value; a statement body should use return, e.g. "const n = document.querySelectorAll(\'a\').length; return n;"'),

@@ -188,7 +188,11 @@ export function observerScript(opts: ObserverOptions = {}): string {
     'for(var i=0;i<ls.length&&o.liveRegions.length<' + LIVE_REGION_MAX + ';i++){if(!vis(ls[i]))continue;var s=ws(ls[i].innerText);if(!s||seenL[s])continue;seenL[s]=1;o.liveRegions.push(s.slice(0,' + LIVE_REGION_CHARS + '))}}catch(e){}' +
     // Iframes (offsetParent is fine here: frames are never position:fixed toasts).
     'try{o.iframes=[].slice.call(document.querySelectorAll("iframe")).filter(function(f){return f.offsetParent!==null})' +
-    '.map(function(f){var host="";try{host=new URL(f.src).host}catch(e){}var same=false;try{same=!!f.contentDocument}catch(e){}return{title:f.title||"",host:host,sameOrigin:same}})}catch(e){}' +
+    // sameOrigin: a readable contentDocument, or the same origin by URL. The
+    // document check alone is null for a sandboxed frame on the page's own
+    // host, which used to be reported as cross-origin (mining theme 11).
+    '.map(function(f){var host="";try{host=new URL(f.src).host}catch(e){}var same=false;try{same=!!f.contentDocument}catch(e){}' +
+    'if(!same){try{same=new URL(f.src||"",location.href).origin===new URL(location.href).origin}catch(e){}}return{title:f.title||"",host:host,sameOrigin:same}})}catch(e){}' +
     // Interactive census, and the state of every visible control.
     'var act=null;try{act=document.activeElement}catch(e){}var actIx=-1;' +
     'try{var els=document.querySelectorAll(' + JSON.stringify(INTERACTIVE_SELECTOR) + ');var sa=' + JSON.stringify(STATE_ATTRS) + ';var st="";' +
