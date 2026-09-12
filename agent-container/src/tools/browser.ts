@@ -20,6 +20,7 @@ import { formatUrlDigest, formatUrlDigestBrief, formatFillReadback, formatScroll
 import { parseObservation, EMPTY_OBSERVATION } from '../page-observer'
 import { landedElsewhere, pageWarnings } from '../page-status'
 import { formatActionEffect, type ActionEffect, type ActionVerb } from '../action-settle'
+import { classifyWaitTarget, formatWaitResult } from '../wait-target'
 
 /** The effect line for a mutating action's result, from the server's settle-and-diff. */
 function effectText(data: Record<string, unknown> | undefined, verb: ActionVerb, fallbackSettleMs: number): string {
@@ -353,20 +354,26 @@ const browserScrollTool = tool(
 
 const browserWaitTool = tool(
   'browser_wait',
-  `Wait for a CSS selector to appear on the page. Only use this when you need to wait for a specific element to render (e.g. after triggering dynamic content). Do NOT use for "networkidle", "load", or "domcontentloaded" — browser_open already waits for the page to load.`,
+  `Wait for a CSS selector to appear on the page, or for a number of milliseconds. The result says how long it actually took — a selector that is already present matches in ~0 ms, which is not a delay.
+
+Playwright locator syntax (text=…, role=…, :has-text(…)) is not CSS and is refused. To wait for text use browser_run(["wait","--text","<text>"]); for a URL, browser_run(["wait","--url","<pattern>"]). "networkidle"/"load"/"domcontentloaded" are accepted but rarely useful — browser_open already waits for the page to load.`,
   {
     for: z
       .string()
       .describe(
-        'CSS selector to wait for (e.g. "#results", ".loaded"). Avoid "networkidle"/"load"/"domcontentloaded" — browser_open already handles page load.'
+        'CSS selector to wait for (e.g. "#results", ".loaded"), or a number of milliseconds to sleep (e.g. "1500").'
       ),
   },
   async (args) => {
+    const target = classifyWaitTarget(args.for)
+    if (target.kind === 'rejected') return errorResult(target.reason)
     const result = await browserFetch('wait', { for: args.for })
     if (!result.success) return errorResult(result.error!)
+    const data = result.data as Record<string, unknown> | undefined
+    const elapsedMs = typeof data?.elapsedMs === 'number' ? data.elapsedMs : 0
     return {
       content: [
-        { type: 'text' as const, text: `Wait condition "${args.for}" satisfied.` },
+        { type: 'text' as const, text: formatWaitResult(target, elapsedMs, data?.timedOut === true) },
       ],
     }
   }

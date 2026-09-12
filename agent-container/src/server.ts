@@ -813,6 +813,7 @@ import { resolveRunCommandArgs } from './browser-command-args';
 import { validatePressKey } from './press-key';
 import { prepareEvalScript, finalizeEvalOutput, evalErrorHint } from './eval-script';
 import { judgeSelectCommit, parseSelectOptions, targetOptionMatches, SELECT_COMMIT_SETTLE_MS } from './select-verify';
+import { classifyWaitTarget } from './wait-target';
 import { resolveCommittedValue } from './field-value-readback';
 import { capBrowserOutput, redactCdpUrls, describeExecFailure, BROWSER_EXEC_TIMEOUT_MS, MAX_BROWSER_OUTPUT_CHARS, MAX_BROWSER_ERROR_CHARS } from './browser-output';
 import { capSnapshot, compactWithText, countRefs, formatIframePlaceholders, formatTextFooter, THIN_TREE_REFS } from './snapshot-format';
@@ -1691,24 +1692,31 @@ app.post('/browser/wait', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const loadStates = ['networkidle', 'load', 'domcontentloaded'];
-    const isLoadState = loadStates.includes(body.for);
-    const waitArgs = isLoadState
-      ? ['wait', '--load', body.for]
-      : ['wait', body.for];
-    const result = await execBrowser(waitArgs, browserState.cdpUrl || undefined);
-
-    if (result.exitCode !== 0) {
-      // Load state waits (especially networkidle) often time out on real-world pages
-      // with continuous ad/analytics traffic. Since browser_open already waits for the
-      // 'load' event, the page is usable — treat load state timeouts as success.
-      if (isLoadState) {
-        return c.json({ success: true });
-      }
-      return c.json({ error: result.stdout, success: false }, 500);
+    const target = classifyWaitTarget(body.for);
+    if (target.kind === 'rejected') {
+      return c.json({ error: target.reason, success: false }, 400);
     }
 
-    return c.json({ success: true });
+    const started = Date.now();
+    const result = await execBrowser(target.args, browserState.cdpUrl || undefined);
+    const elapsedMs = Date.now() - started;
+
+    if (result.exitCode !== 0) {
+      // Load state waits (especially networkidle) often time out on real-world
+      // pages with continuous ad/analytics traffic. browser_open already waited
+      // for 'load', so the page is usable — not an error, but the result says
+      // the state was not reached rather than pretending it was.
+      if (target.kind === 'load') {
+        return c.json({ success: true, elapsedMs, timedOut: true });
+      }
+      // A timeout is a fact about this page at this moment: say where the
+      // browser was and whether the document had finished loading.
+      const page = await observeNow({ previewChars: 0 });
+      const where = page.url ? `\nPage: ${page.url} · readyState ${page.readyState || 'unknown'}` : '';
+      return c.json({ error: `${result.stdout}${where}`, success: false }, 500);
+    }
+
+    return c.json({ success: true, elapsedMs });
   } catch (error: any) {
     console.error('[Browser] Error waiting:', error);
     return c.json({ error: error.message || 'Failed to wait' }, 500);
