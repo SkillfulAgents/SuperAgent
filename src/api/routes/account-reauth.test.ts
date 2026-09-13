@@ -25,10 +25,13 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     withSessionSend: async (_agent: string, _session: string, _client: unknown, deliver: () => Promise<void>) => deliver(),
   },
 }))
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    getCachedInfo: () => ({ status: 'running' }),
-    getClient: () => ({ interruptSession: interrupt, sendMessage: send }),
+vi.mock('@shared/lib/container/container-host', () => ({
+  containerHost: {
+    runtime: () => ({
+      slug: 'shared-agent',
+      getCachedInfo: () => ({ status: 'running' }),
+      getClient: () => ({ interruptSession: interrupt, sendMessage: send }),
+    }),
   },
 }))
 vi.mock('@shared/lib/container/connection-runtime-sync', () => ({
@@ -150,7 +153,7 @@ describe('account reauthentication replacement', () => {
     expect(mappedAccounts('other-agent')).toEqual(['old'])
     expect(testDb.select().from(schema.connectedAccounts).where(eq(schema.connectedAccounts.id, 'old')).get()).toEqual(oldRecord)
     expect(userInputRequestManager.getOpenRequest(other.id)).not.toBeNull()
-    expect(syncEnvironment).toHaveBeenCalledWith('shared-agent', 'connected-accounts')
+    expect(syncEnvironment).toHaveBeenCalledWith('shared-agent', 'connected-accounts', expect.objectContaining({ slug: 'shared-agent' }))
   })
 
   it.each(['viewer', 'stranger'])('rejects a %s through the real agent ACL check', async (userId) => {

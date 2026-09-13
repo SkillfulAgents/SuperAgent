@@ -33,9 +33,10 @@ vi.mock('@shared/lib/services/chat-integration-service', () => ({
   updateChatIntegrationStatus: vi.fn(),
 }))
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: { ensureRunning: vi.fn() },
-}))
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return { containerHost: hostFromManagerMock({ ensureRunning: vi.fn() }) }
+})
 
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: { submitDecision: vi.fn() },

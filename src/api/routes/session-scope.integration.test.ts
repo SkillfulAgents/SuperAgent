@@ -31,25 +31,28 @@ const mockInterruptSession = vi.fn((..._args: unknown[]) => Promise.resolve({ in
 const mockSendMessage = vi.fn((..._args: unknown[]) => Promise.resolve(undefined))
 const mockContainerFetch = vi.fn((..._args: unknown[]) => Promise.resolve({ ok: true, json: async () => ({}) }))
 const mockCreateSession = vi.fn((..._args: unknown[]) => Promise.resolve({ id: 'container-session', slashCommands: [] }))
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    getClient: () => ({
-      fetch: (...args: unknown[]) => mockContainerFetch(...args),
-      sendMessage: (...args: unknown[]) => mockSendMessage(...args),
-      interruptSession: (...args: unknown[]) => mockInterruptSession(...args),
-      createSession: (...args: unknown[]) => mockCreateSession(...args),
-      getSession: () => Promise.resolve(null),
-      deleteSession: vi.fn(),
-      subscribeToStream: vi.fn(() => ({ unsubscribe: vi.fn(), ready: Promise.resolve() })),
-      start: vi.fn(),
-      stop: vi.fn(),
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      getClient: () => ({
+        fetch: (...args: unknown[]) => mockContainerFetch(...args),
+        sendMessage: (...args: unknown[]) => mockSendMessage(...args),
+        interruptSession: (...args: unknown[]) => mockInterruptSession(...args),
+        createSession: (...args: unknown[]) => mockCreateSession(...args),
+        getSession: () => Promise.resolve(null),
+        deleteSession: vi.fn(),
+        subscribeToStream: vi.fn(() => ({ unsubscribe: vi.fn(), ready: Promise.resolve() })),
+        start: vi.fn(),
+        stop: vi.fn(),
+      }),
+      ensureRunning: vi.fn(() => Promise.resolve({ status: 'running', port: 8080 })),
+      getCachedInfo: () => ({ status: 'running', port: 8080 }),
+      removeClient: vi.fn(),
+      keepAlive: vi.fn(),
     }),
-    ensureRunning: vi.fn(() => Promise.resolve({ status: 'running', port: 8080 })),
-    getCachedInfo: () => ({ status: 'running', port: 8080 }),
-    removeClient: vi.fn(),
-    keepAlive: vi.fn(),
-  },
-}))
+  }
+})
 
 const mockAuthUser = { id: 'test-user-id', name: 'Test User', email: 'test@example.com' }
 vi.mock('../middleware/auth', () => ({

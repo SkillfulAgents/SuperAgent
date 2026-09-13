@@ -38,7 +38,8 @@ const ALLOWLIST_PATH = path.join(__dirname, 'agent-internals-allowlist.json')
 
 // Whole modules that only the actor may import.
 const FENCED_MODULES = new Set([
-  'src/shared/lib/container/container-manager',
+  'src/shared/lib/container/container-host',
+  'src/shared/lib/container/container-runtime',
   'src/shared/lib/container/message-persister',
   'src/shared/lib/container/connection-runtime-sync',
   'src/shared/lib/user-input/request-manager',
@@ -122,7 +123,7 @@ module.exports = {
     type: 'problem',
     docs: {
       description:
-        'Agent internals (container manager, message persister, input/review/permission registries, session storage and transcript modules, agent path helpers, usage loaders) may only be imported by the actor package; everything else goes through agentRegistry.get(slug)',
+        'Agent internals (container host and runtime, message persister, input/review/permission registries, session storage and transcript modules, agent path helpers, usage loaders) may only be imported by the actor package; everything else goes through agentRegistry.get(slug)',
     },
     schema: [],
     messages: {

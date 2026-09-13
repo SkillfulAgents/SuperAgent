@@ -66,7 +66,7 @@ class AutoSleepMonitor {
       if (timeoutMinutes <= 0) return
 
       // Running agents come from cached status (no docker process spawned)
-      const runningAgents = agentRegistry.all()
+      const runningAgents = agentRegistry.running()
       if (runningAgents.length === 0) return
 
       const now = Date.now()

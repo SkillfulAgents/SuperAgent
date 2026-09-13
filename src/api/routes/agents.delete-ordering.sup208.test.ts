@@ -74,15 +74,18 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
 }))
 
 const mockRemoveClient = vi.fn()
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    getClient: () => ({ fetch: vi.fn(), sendMessage: vi.fn(), start: vi.fn(), stop: vi.fn() }),
-    ensureRunning: vi.fn(),
-    getCachedInfo: () => ({ status: 'running', port: 8080 }),
-    removeClient: (...args: unknown[]) => mockRemoveClient(...args),
-    keepAlive: vi.fn(),
-  },
-}))
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      getClient: () => ({ fetch: vi.fn(), sendMessage: vi.fn(), start: vi.fn(), stop: vi.fn() }),
+      ensureRunning: vi.fn(),
+      getCachedInfo: () => ({ status: 'running', port: 8080 }),
+      removeClient: (...args: unknown[]) => mockRemoveClient(...args),
+      keepAlive: vi.fn(),
+    }),
+  }
+})
 
 const mockLogAuditEvent = vi.fn()
 vi.mock('@shared/lib/services/audit-log-service', () => ({

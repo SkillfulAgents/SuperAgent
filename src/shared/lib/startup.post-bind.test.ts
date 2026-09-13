@@ -29,18 +29,21 @@ vi.mock('./auth/clear-pending-approval-bans', () => ({
 vi.mock('./services/agent-service', () => ({
   listAgents: () => listAgents(),
 }))
-vi.mock('./container/container-manager', () => ({
-  containerManager: {
-    initializeAgents: (...args: unknown[]) => initializeAgents(...args),
-    ensureImageReady: () => ensureImageReady(),
-    startStatusSync: vi.fn(),
-    startHealthMonitor: vi.fn(),
-    onBeforeContainerStop: null,
-    stopStatusSync: vi.fn(),
-    stopHealthMonitor: vi.fn(),
-    stopAll: () => Promise.resolve(),
-  },
-}))
+vi.mock('./container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      initializeAgents: (...args: unknown[]) => initializeAgents(...args),
+      ensureImageReady: () => ensureImageReady(),
+      startStatusSync: vi.fn(),
+      startHealthMonitor: vi.fn(),
+      onBeforeContainerStop: null,
+      stopStatusSync: vi.fn(),
+      stopHealthMonitor: vi.fn(),
+      stopAll: () => Promise.resolve(),
+    }),
+  }
+})
 vi.mock('./config/settings', () => ({
   getSettings: () => getSettings(),
 }))

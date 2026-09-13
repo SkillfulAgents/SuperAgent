@@ -328,22 +328,22 @@ interface StreamingState {
   isRetrying: boolean // True while an API retry is in progress, cleared when the next message starts
 }
 
-// Lazy import to break circular dependency: container-manager -> message-persister
+// Lazy import to break circular dependency: container-host -> container-runtime -> message-persister
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-let _containerManagerModule: any = null
+let _containerHostModule: any = null
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-let _containerManagerImport: Promise<any> | null = null
-async function getContainerManager() {
-  if (!_containerManagerModule) {
+let _containerHostImport: Promise<any> | null = null
+async function getContainerHost() {
+  if (!_containerHostModule) {
     // Cache the in-flight import promise, not just the resolved module: concurrent
     // callers (e.g. a fire-and-forget tool handler resolving while cancelAwaitingInput
     // rejects) would otherwise each see a null module and start their own
-    // import('./container-manager'), racing redundant dynamic imports of a module
-    // that sits on the container-manager <-> message-persister circular edge.
-    if (!_containerManagerImport) _containerManagerImport = import('./container-manager')
-    _containerManagerModule = await _containerManagerImport
+    // import('./container-host'), racing redundant dynamic imports of a module
+    // that sits on the container-host <-> message-persister circular edge.
+    if (!_containerHostImport) _containerHostImport = import('./container-host')
+    _containerHostModule = await _containerHostImport
   }
-  return _containerManagerModule.containerManager
+  return _containerHostModule.containerHost
 }
 
 // Tool inputs whose streamed JSON may carry an HMAC signing secret in a
@@ -419,7 +419,7 @@ class MessagePersister {
   private globalNotificationClients: Set<(data: unknown) => void> = new Set()
   // Track container clients per session for reconnection
   private containerClients: Map<SessionKey, ContainerClient> = new Map()
-  // Callback to request stopping a container (registered by container-manager)
+  // Callback to request stopping a container (registered by the container host)
   private onStopContainerRequested: ((agentSlug: string) => void) | null = null
   private onUnexpectedDeathRequested: ((agentSlug: string, sessionId?: string) => void) | null = null
   private lastFatalByAgent: Map<string, RuntimeFatalKind> = new Map()
@@ -4633,8 +4633,7 @@ ${continuation}`
    * Resolve a blocking tool in the container with a string value.
    */
   private async resolveContainerInput(agentSlug: string, toolUseId: string, value: string): Promise<void> {
-    const cm = await getContainerManager()
-    const client = cm.getClient(agentSlug)
+    const client = (await getContainerHost()).runtime(agentSlug).getClient()
     await client.fetch(`/inputs/${encodeURIComponent(toolUseId)}/resolve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -4646,8 +4645,7 @@ ${continuation}`
    * Reject a blocking tool in the container with an error message.
    */
   private async rejectContainerInput(agentSlug: string, toolUseId: string, reason: string): Promise<void> {
-    const cm = await getContainerManager()
-    const client = cm.getClient(agentSlug)
+    const client = (await getContainerHost()).runtime(agentSlug).getClient()
     await client.fetch(`/inputs/${encodeURIComponent(toolUseId)}/reject`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -4673,8 +4671,7 @@ ${continuation}`
   }
 
   private async interruptContainerSession(agentSlug: string, sessionId: string): Promise<{ processKept: boolean }> {
-    const cm = await getContainerManager()
-    const client = cm.getClient(agentSlug)
+    const client = (await getContainerHost()).runtime(agentSlug).getClient()
     // Same escalation as the interrupt route: a turn stop cannot settle a
     // session whose only background work is untracked, so stop everything.
     const scope = this.hasOnlyUntrackedBackgroundWork(agentSlug, sessionId) ? 'all' : 'turn'
@@ -5633,8 +5630,8 @@ ${continuation}`
   /** Auto-reject a pending input request on the container with a reason message. */
   private autoRejectInput(agentSlug: string | undefined, toolUseId: string, reason: string): void {
     if (!agentSlug) return
-    getContainerManager().then((cm) =>
-      cm.getClient(agentSlug)
+    getContainerHost().then((host) =>
+      host.runtime(agentSlug).getClient()
         .fetch(`/inputs/${encodeURIComponent(toolUseId)}/reject`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -5827,8 +5824,8 @@ ${continuation}`
       .catch((err: Error) => {
         clearTimeout(timeout)
         console.error('[MessagePersister] Failed to auto-execute script run:', err)
-        getContainerManager().then((cm) =>
-          cm.getClient(agentSlug)
+        getContainerHost().then((host) =>
+          host.runtime(agentSlug).getClient()
             .fetch(`/inputs/${encodeURIComponent(toolUseId)}/reject`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -5890,8 +5887,8 @@ ${continuation}`
       .catch((err: Error) => {
         clearTimeout(timeout)
         console.error('[MessagePersister] Failed to auto-execute computer use command:', err)
-        getContainerManager().then((cm) =>
-          cm.getClient(agentSlug)
+        getContainerHost().then((host) =>
+          host.runtime(agentSlug).getClient()
             .fetch(`/inputs/${encodeURIComponent(toolUseId)}/reject`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },

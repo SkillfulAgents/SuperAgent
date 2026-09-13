@@ -1,5 +1,5 @@
 export { agentRegistry } from './registry'
-export type { ContainerHost } from './host'
+export { containerHost, type ContainerHost } from './host'
 export type {
   AgentActor,
   AgentRegistry,
