@@ -293,6 +293,12 @@ export class LocalFileOps implements FileOps {
     const source = body instanceof Uint8Array
       ? null
       : Readable.fromWeb(body as import('stream/web').ReadableStream<Uint8Array>)
+    // The source can fail before the writer reads it: a zip entry that
+    // inflates past its declared size is failed by the reader at once, while
+    // the writer is still opening its temp file. A stream failing with no
+    // listener is fatal to the process; with one, the failure reaches the
+    // writer's iteration and rejects the write like any other.
+    source?.on('error', () => {})
     const chunks = source ?? [asBuffer(body as Uint8Array)]
     try {
       await this.writing(target.abs, () => writeFileAtomicStream(target.abs, chunks, { fsync: false }))
