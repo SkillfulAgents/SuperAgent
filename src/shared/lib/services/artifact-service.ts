@@ -8,6 +8,7 @@ import {
   isWidgetOnlyArtifact,
   isWidgetSlug,
   containedArtifactPath,
+  resolveArtifactPath,
 } from './widget-service'
 
 const ARTIFACT_MANIFEST_FILENAME = 'package.json'
@@ -153,8 +154,9 @@ async function scanArtifacts(
  * than handed to the actor as a path.
  */
 function artifactDirFor(agentSlug: string, artifactSlug: string): string {
-  if (!isWidgetSlug(artifactSlug)) throw new Error('Invalid artifact slug')
-  return joinWorkspacePath(artifactsDirFor(agentSlug), artifactSlug)
+  const dir = resolveArtifactPath(agentSlug, artifactSlug)
+  if (dir === null) throw new Error('Invalid artifact slug')
+  return dir
 }
 
 /**

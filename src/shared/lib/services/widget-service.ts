@@ -67,6 +67,18 @@ export function resolveWidgetPath(agentSlug: string, artifactSlug: string, ...se
   return joinWorkspacePath(artifactsDirFor(agentSlug), artifactSlug, ...segments)
 }
 
+/**
+ * The same for any artifact, not only a widget: an artifact is whatever
+ * directory under artifacts/ carries a manifest, and the listing shows it
+ * under the name it has, so its thumbnail, rename and delete accept that
+ * name too. One plain directory name is the whole rule; the widget slug
+ * rule applies only where the container's widget code made the directory.
+ */
+export function resolveArtifactPath(agentSlug: string, artifactSlug: string, ...segments: string[]): string | null {
+  if (![artifactSlug, ...segments].every(isPlainSegment)) return null
+  return joinWorkspacePath(artifactsDirFor(agentSlug), artifactSlug, ...segments)
+}
+
 export function widgetSnapshotPngPath(
   agentSlug: string,
   artifactSlug: string,
