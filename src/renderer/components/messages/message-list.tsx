@@ -7,7 +7,6 @@ import { useIsVoiceReading } from '@renderer/hooks/use-read-aloud'
 import { VoiceAgentFeedbackDialog } from './voice-agent-feedback-dialog'
 import {
   useMessageStream,
-  clearCompacting,
   removePeerUserMessage,
   clearPeerUserMessages,
   consumeDiscardedCommand,
@@ -485,23 +484,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       lastAssistantAt,
     }
   }, [visibleMessages, hasOlder])
-
-  // Safety net: if isCompacting is true but a NEW compact boundary appears in fetched
-  // messages, compaction is done and the SSE compact_complete event was missed.
-  // Track the boundary count baseline when not compacting, then detect increases.
-  const boundaryCountRef = useRef(0)
-  const boundaryCount = useMemo(
-    () => messages?.filter(m => m.type === 'compact_boundary').length ?? 0,
-    [messages]
-  )
-  useEffect(() => {
-    if (isCompacting && boundaryCount > boundaryCountRef.current) {
-      clearCompacting(sessionId)
-    }
-    if (!isCompacting) {
-      boundaryCountRef.current = boundaryCount
-    }
-  }, [isCompacting, boundaryCount, sessionId])
 
   // The one row (streaming or persisted) whose provider error a ProviderErrorPlacement shows right now.
   const currentRoutedError = useMemo(

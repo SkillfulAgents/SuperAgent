@@ -3228,11 +3228,15 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
       // A background task can run while the turn is still streaming, so the
       // task list alone does not say whether the turn's output has ended.
       const isWaitingBackground = messagePersister.isSessionWaitingBackground(agentSlug, sessionId)
+      // compact_start is a one-shot broadcast, so a stream that opens after it
+      // (a fresh fork, a reload) learns the state from the snapshot instead.
+      const isCompacting = messagePersister.isSessionCompacting(agentSlug, sessionId)
       await stream.writeSSE({
         data: JSON.stringify({
           type: 'connected',
           isActive,
           isWaitingBackground,
+          isCompacting,
           slashCommands: slashCommands.length > 0 ? slashCommands : undefined,
           backgroundTasks: backgroundTasks.length > 0 ? backgroundTasks : undefined,
         }),
@@ -3255,8 +3259,9 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
       pingInterval = setInterval(async () => {
         try {
           const currentIsActive = messagePersister.isSessionActive(agentSlug, sessionId)
+          const currentIsCompacting = messagePersister.isSessionCompacting(agentSlug, sessionId)
           await stream.writeSSE({
-            data: JSON.stringify({ type: 'ping', isActive: currentIsActive }),
+            data: JSON.stringify({ type: 'ping', isActive: currentIsActive, isCompacting: currentIsCompacting }),
             event: 'message',
           })
         } catch {

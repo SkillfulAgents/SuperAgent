@@ -75,14 +75,12 @@ const mockStreamState = {
   errorPresentation: null as ProviderErrorPresentation | null,
 }
 
-const mockClearCompacting = vi.fn()
 const mockRemovePeerUserMessage = vi.fn()
 const mockClearPeerUserMessages = vi.fn()
 const mockConsumeDiscardedCommand = vi.fn()
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
   useMessageStream: () => mockStreamState,
-  clearCompacting: (...args: unknown[]) => mockClearCompacting(...args),
   removePeerUserMessage: (...args: unknown[]) => mockRemovePeerUserMessage(...args),
   clearPeerUserMessages: (...args: unknown[]) => mockClearPeerUserMessages(...args),
   consumeDiscardedCommand: (...args: unknown[]) => mockConsumeDiscardedCommand(...args),
@@ -954,44 +952,6 @@ describe('MessageList', () => {
     expect(screen.getByText('Delete me')).toBeInTheDocument()
     // The actual delete flow is tested via MessageItem's own test
     // Here we verify the message renders (the callback is passed as a prop)
-  })
-
-  // ---- Compaction boundary safety net ----
-
-  it('calls clearCompacting when new boundary appears during compaction', () => {
-    mockStreamState.isCompacting = true
-    // Start with no boundaries
-    mockMessagesData.data = []
-
-    const { rerender } = renderWithProviders(
-      <MessageList sessionId="s-1" agentSlug="agent-1" />
-    )
-
-    // Now a boundary appears (compaction finished, SSE event was missed)
-    mockMessagesData.data = [createCompactBoundary({ summary: 'New boundary' }) as any]
-    rerender(
-      <MessageList sessionId="s-1" agentSlug="agent-1" />
-    )
-
-    expect(mockClearCompacting).toHaveBeenCalledWith('s-1')
-  })
-
-  it('does not call clearCompacting when boundary count unchanged during compaction', () => {
-    // Pre-existing boundary before compaction started
-    mockMessagesData.data = [createCompactBoundary({ summary: 'Old boundary' }) as any]
-    mockStreamState.isCompacting = false
-
-    const { rerender } = renderWithProviders(
-      <MessageList sessionId="s-1" agentSlug="agent-1" />
-    )
-
-    // Now compaction starts (same boundary count)
-    mockStreamState.isCompacting = true
-    rerender(
-      <MessageList sessionId="s-1" agentSlug="agent-1" />
-    )
-
-    expect(mockClearCompacting).not.toHaveBeenCalled()
   })
 
   // ---- Pending message detection ----

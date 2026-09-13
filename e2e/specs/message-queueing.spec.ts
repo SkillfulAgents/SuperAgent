@@ -78,11 +78,9 @@ test.describe('Message queueing while agent is working', () => {
     // "Compacting..." status must survive it, with the ghost below the line —
     // the queued message is picked up on the far side of the boundary.
 
-    // Settle a first turn before starting the one that compacts. compact_start
-    // is a one-shot broadcast and the connected frame carries no compaction
-    // snapshot, so a client that subscribes late never learns compaction began.
-    // The first message is what creates the session and navigates to it — under
-    // CI load that hand-off outran the mock's compacting status and the whole
+    // Settle a first turn before starting the one that compacts. The first
+    // message is what creates the session and navigates to it — under CI load
+    // that hand-off outran the mock's compacting status and the whole
     // compaction came and went before the stream was listening.
     await sessionPage.sendMessage('hello there')
     await expect(
@@ -118,6 +116,32 @@ test.describe('Message queueing while agent is working', () => {
     await expect(
       sessionPage.getAssistantMessages().filter({ hasText: 'Compacted the conversation.' })
     ).toBeVisible({ timeout: 15000 })
+  })
+
+  test('a stream opened mid-compaction learns the state from the connected snapshot', async ({ page }) => {
+    // The mock holds compaction open for 10s, long enough to reload inside it.
+    test.setTimeout(60000)
+    // SUP-822: compact_start is a one-shot broadcast. A page that opens its
+    // stream after it (a reload here, a fresh fork in the product) used to show
+    // "Working" until the summary landed; the connected frame now carries the
+    // state, so the indicator says "Compacting" from the first paint.
+    await sessionPage.sendMessage('hello there')
+    await expect(
+      sessionPage.getAssistantMessages().filter({ hasText: 'This is a mock response from the E2E test container.' })
+    ).toBeVisible({ timeout: 15000 })
+    await expect(sessionPage.getStopButton()).not.toBeVisible({ timeout: 15000 })
+
+    await sessionPage.sendMessage('please compact slowly for this test')
+    await expect(sessionPage.getActivityIndicator()).toContainText('Compacting', { timeout: 15000 })
+
+    await page.reload()
+    await expect(sessionPage.getActivityIndicator()).toContainText('Compacting', { timeout: 15000 })
+
+    // Compaction finishes on its own after the reload, and the boundary shows.
+    await expect(
+      sessionPage.getAssistantMessages().filter({ hasText: 'Compacted the conversation.' })
+    ).toBeVisible({ timeout: 25000 })
+    await expect(sessionPage.getStopButton()).not.toBeVisible({ timeout: 15000 })
   })
 
   test('a queued message can be cancelled before pickup', async ({ page }) => {

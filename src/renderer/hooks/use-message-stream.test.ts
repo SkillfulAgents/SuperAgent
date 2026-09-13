@@ -166,6 +166,133 @@ describe('useMessageStream', () => {
     expect(result.current.isWaitingBackground).toBe(true)
   })
 
+  it('takes isCompacting from the connected snapshot, keeping the local value when absent', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    // A stream that opens after compact_start learns the state from the snapshot.
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true, isCompacting: true })
+    })
+    expect(result.current.isCompacting).toBe(true)
+
+    // A host that predates the field leaves the local value alone.
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+    expect(result.current.isCompacting).toBe(true)
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: false, isCompacting: false })
+    })
+    expect(result.current.isCompacting).toBe(false)
+  })
+
+  it('takes isCompacting from the ping, so a missed compact_start or compact_complete is corrected', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+    expect(result.current.isCompacting).toBe(false)
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'ping', isActive: true, isCompacting: true })
+    })
+    expect(result.current.isCompacting).toBe(true)
+
+    // An older host's ping carries no field and changes nothing.
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'ping', isActive: true })
+    })
+    expect(result.current.isCompacting).toBe(true)
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'ping', isActive: true, isCompacting: false })
+    })
+    expect(result.current.isCompacting).toBe(false)
+  })
+
+  it('an older host that omits isCompacting still clears it when its snapshot or ping says the session is idle', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      MockEventSource.instances[0].simulateMessage({ type: 'compact_start' })
+    })
+    expect(result.current.isCompacting).toBe(true)
+
+    // Reconnect after the compaction and the turn both ended unseen.
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: false })
+    })
+    expect(result.current.isCompacting).toBe(false)
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      MockEventSource.instances[0].simulateMessage({ type: 'compact_start' })
+    })
+    expect(result.current.isCompacting).toBe(true)
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'ping', isActive: false })
+    })
+    expect(result.current.isCompacting).toBe(false)
+  })
+
+  it('an older host snapshot that says the turn is waiting on background work ends a local compaction', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+    const backgroundTasks = [{ taskId: 'bg-1', startedAt: Date.now() }]
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      MockEventSource.instances[0].simulateMessage({ type: 'compact_start' })
+    })
+    expect(result.current.isCompacting).toBe(true)
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'connected', isActive: true, isWaitingBackground: true, backgroundTasks,
+      })
+    })
+    expect(result.current.isCompacting).toBe(false)
+
+    // The live frame for the same transition clears it as well.
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'compact_start' })
+      MockEventSource.instances[0].simulateMessage({ type: 'session_waiting_background', backgroundTasks })
+    })
+    expect(result.current.isCompacting).toBe(false)
+  })
+
+  it('an idle ping from an older host clears a compaction even when the session was already thought idle', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: false })
+      MockEventSource.instances[0].simulateMessage({ type: 'compact_start' })
+    })
+    expect(result.current.isCompacting).toBe(true)
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'ping', isActive: false })
+    })
+    expect(result.current.isCompacting).toBe(false)
+  })
+
   it('handles session_active event', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(
@@ -1706,28 +1833,6 @@ describe('useMessageStream', () => {
   })
 
   // ---- Remove helpers ----
-
-  it('handles clearCompacting helper', async () => {
-    const { useMessageStream, clearCompacting } = await getHookModule()
-    const { result } = renderHook(
-      () => useMessageStream('session-1', 'agent-1'),
-      { wrapper: createWrapper() }
-    )
-
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
-    })
-    act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'compact_start' })
-    })
-    expect(result.current.isCompacting).toBe(true)
-
-    act(() => {
-      clearCompacting('session-1')
-    })
-
-    expect(result.current.isCompacting).toBe(false)
-  })
 
   it('handles clearBrowserActive helper', async () => {
     const { useMessageStream, clearBrowserActive } = await getHookModule()

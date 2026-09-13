@@ -538,8 +538,8 @@ export class SlowCompactionScenario implements MockScenario {
 
     // Well clear of the echo above (the persister ends compaction at the first
     // user message that FOLLOWS the compacting status) and of any subscribe
-    // hand-off: compact_start is one-shot, so a client that is not listening
-    // yet never learns compaction began.
+    // hand-off. compact_start is one-shot; a client that opens its stream
+    // later learns the state from the connected snapshot instead.
     setTimeout(() => {
       client.emitStreamMessage(sessionId, {
         type: 'system',
