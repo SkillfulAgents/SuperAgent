@@ -19,7 +19,7 @@ import { RuntimeOptionsPatchSchema } from '@shared/lib/container/runtime-options
 import {
   getSessionsByWebhookTrigger,
 } from '@shared/lib/services/session-service'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { toPublicWebhookTrigger } from '@shared/lib/webhook-triggers/public'
@@ -54,7 +54,7 @@ webhookTriggersRouter.get('/:triggerId/sessions', TriggerAgentRole('viewer'), as
     const sessions = await getSessionsByWebhookTrigger(trigger!.agentSlug, trigger!.id)
     const sessionsWithStatus = sessions.map((session) => ({
       ...session,
-      isActive: messagePersister.isSessionActive(trigger!.agentSlug, session.id),
+      isActive: agentRegistry.get(trigger!.agentSlug).sessions.isActive(session.id),
     }))
     return c.json(sessionsWithStatus)
   } catch (error) {

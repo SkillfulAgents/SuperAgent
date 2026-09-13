@@ -1,4 +1,5 @@
 import { inArray } from 'drizzle-orm'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { db } from '@shared/lib/db'
 import { agentAcl } from '@shared/lib/db/schema'
 import type { ApiAgent } from '@shared/lib/types/api'
@@ -6,7 +7,6 @@ import type { AgentRole, SessionMetadataMap } from '@shared/lib/types/agent'
 import { hasMinRole } from '@shared/lib/types/agent'
 import type { InboundXAgentDetails, InboundXAgentSession } from '@shared/lib/types/inbound-x-agent-schema'
 import { listAgentsWithStatus } from './agent-service'
-import { readSessionMetadata } from './session-service'
 import {
   evaluate as evaluateXAgentPolicy,
   type XAgentDecision,
@@ -117,7 +117,7 @@ export async function getInboundXAgentDetails(
   options: { authMode: boolean; viewerUserId?: string; viewerCanAccessAll?: boolean },
 ): Promise<InboundXAgentDetails> {
   const [metadata, agents] = await Promise.all([
-    readSessionMetadata(targetSlug),
+    agentRegistry.get(targetSlug).sessions.readMetadata(),
     listAgentsWithStatus(),
   ])
 

@@ -20,7 +20,7 @@ import { requestCardFromRegistry, reviewCardFromRegistry } from './request-card'
 import { buildAgentContactCard, resolveAgentWebUrl } from './contact-card'
 import { getAgent } from '@shared/lib/services/agent-service'
 import { displaySlug } from '@shared/lib/utils/file-storage'
-import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { agentRegistry, type AgentActor } from '@shared/lib/agent-actor'
 import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
 import { consumeOrCancelAwaitingInput } from './resolve-awaiting-input'
 import {
@@ -42,7 +42,6 @@ import {
 } from '@shared/lib/services/chat-integration-session-service'
 import { assertPathWithinDir, isPathWithinDir, sanitizeUploadFilename, withUploadTimestamp } from '@shared/lib/utils/path-safety'
 import { isHostOrSubdomain, tryParseUrl } from '@shared/lib/utils/url-safety'
-import type { ContainerClient } from '@shared/lib/container/types'
 import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 import { messagePersister } from '@shared/lib/container/message-persister'
@@ -392,7 +391,7 @@ class ChatIntegrationManager {
     )
     if (existing) return existing.sessionId
 
-    const { registerSession, updateSessionMetadata } = await import('@shared/lib/services/session-service')
+    const actor = agentRegistry.get(integration.agentSlug)
 
     const displayName = getLastDisplayName(integrationId, chatId)
     const sessionId = crypto.randomUUID()
@@ -403,8 +402,8 @@ class ChatIntegrationManager {
       integration.sessionTimeout,
     )
 
-    await registerSession(integration.agentSlug, sessionId, sessionName)
-    await updateSessionMetadata(integration.agentSlug, sessionId, {
+    await actor.sessions.register(sessionId, sessionName)
+    await actor.sessions.updateMetadata(sessionId, {
       isChatIntegrationSession: true,
       chatIntegrationId: integrationId,
       ...(integration.createdByUserId ? { createdByUserId: integration.createdByUserId } : {}),
@@ -704,13 +703,14 @@ class ChatIntegrationManager {
     session.sseUnsubscribe?.()
     stopIndicatorTick(session)
 
-    const unsubscribe = messagePersister.addSSEClient(agentSlug, sessionId, (event: unknown) => {
+    const actor = agentRegistry.get(agentSlug)
+    const unsubscribe = actor.messages.subscribe(sessionId, (event: unknown) => {
       // Wake on a BUSY snapshot: an event means something changed, so re-arm the tick if the
       // session is now busy (and it had slept), painting immediately on a cold arm. A non-busy
       // event is ignored — it must NOT arm a tick that nothing would sleep, nor cancel a pending
       // sleep. Synchronous and BEFORE the serialization queue, so a backed-up handler can't
       // delay the wake. The tick — not this — keeps painting.
-      armIndicatorIfBusy(session, sessionId, messagePersister.getSessionActivity(agentSlug, sessionId))
+      armIndicatorIfBusy(session, sessionId, actor.sessions.activity(sessionId))
       // Serialize SSE event processing per chat session to prevent race conditions
       // (e.g. session_idle arriving while stream_delta's sendStreamingUpdate is still in-flight)
       this.enqueueSSEEvent(integrationId, chatId, event, sessionId)
@@ -723,7 +723,7 @@ class ChatIntegrationManager {
     // this snapshot is what arms the tick; we never depend on a future event to start it. The
     // tick is alive for the subscription, not the turn.
     session.sessionId = sessionId
-    const coldActivity = messagePersister.getSessionActivity(agentSlug, sessionId)
+    const coldActivity = actor.sessions.activity(sessionId)
     armIndicatorIfBusy(session, sessionId, coldActivity)
     if (!BUSY_ACTIVITIES.has(coldActivity)) clearIndicator(session)
   }
@@ -752,7 +752,7 @@ class ChatIntegrationManager {
     for (const session of this.chatSessions.values()) {
       const sessionId = session.sessionId
       if (!sessionId || session.indicatorTickTimer) continue
-      armIndicatorIfBusy(session, sessionId, messagePersister.getSessionActivity(session.integration.agentSlug, sessionId))
+      armIndicatorIfBusy(session, sessionId, agentRegistry.get(session.integration.agentSlug).sessions.activity(sessionId))
     }
 
     await this.reconcileIntegrations({ force: false })
@@ -968,8 +968,7 @@ class ChatIntegrationManager {
       return
     }
 
-    // Lazy imports to avoid circular dependencies
-    const { containerManager } = await import('@shared/lib/container/container-manager')
+    // Lazy import to avoid circular dependencies
     const { agentExists } = await import('@shared/lib/services/agent-service')
 
     // Verify agent exists
@@ -985,9 +984,9 @@ class ChatIntegrationManager {
     if (!isChatAllowed(integrationId, chatId)) return
 
     // Ensure container is running
-    let client: Awaited<ReturnType<typeof containerManager.ensureRunning>>
+    const actor = agentRegistry.get(integration.agentSlug)
     try {
-      client = await containerManager.ensureRunning(integration.agentSlug)
+      await actor.container.start()
     } catch (err) {
       console.error(`[ChatIntegrationManager] Container startup failed for ${integration.agentSlug}:`, err)
       reportError(err, 'container-startup', { integrationId, agentSlug: integration.agentSlug, provider: integration.provider })
@@ -1027,7 +1026,7 @@ class ChatIntegrationManager {
         // Revoke can land mid-flight (during the awaits above). Re-check before spending.
         if (!isChatAllowed(integrationId, chatId)) return
 
-        await this.startNewChatSession(integration, client, chatId, message, messageText)
+        await this.startNewChatSession(integration, actor, chatId, message, messageText)
         return // initialMessage already sent via createSession
       } catch (err) {
         console.error(`[ChatIntegrationManager] Failed to create new session for ${integrationId}:`, err)
@@ -1052,8 +1051,8 @@ class ChatIntegrationManager {
     // Hoisted so the catch can reuse it for self-heal without re-downloading.
     let messageText = ''
     try {
-      if (!messagePersister.isSubscribed(integration.agentSlug, sessionId)) {
-        await messagePersister.subscribeToSession(integration.agentSlug, sessionId, client, sessionId)
+      if (!actor.sessions.isStreamSubscribed(sessionId)) {
+        await actor.sessions.subscribeStream(sessionId, sessionId)
       }
 
       // Ensure SSE → chat forwarding is active (may have been torn down by reconnect)
@@ -1093,15 +1092,19 @@ class ChatIntegrationManager {
         // prefixed messageText is only for the fresh-turn forward below.
         answerText: message.text ?? '',
         hasFiles: !!(message.files && message.files.length > 0),
-        persister: messagePersister,
-        registry: userInputRequestManager,
+        // The helper is written against slug-taking reads; this actor is that slug's.
+        persister: {
+          isSessionAwaitingInput: (_agentSlug, id) => actor.sessions.isAwaitingInput(id),
+          cancelAwaitingInput: (_agentSlug, id) => actor.inputs.cancelAwaiting(id),
+        },
+        registry: {
+          getOpenRequestsForSession: (_agentSlug, id) => actor.inputs.open(id),
+        },
         connector: conn.connector,
       })
       if (consumed) return
 
-      await messagePersister.withSessionSend(integration.agentSlug, sessionId, client, () =>
-        client.sendMessage(sessionId, messageText),
-      )
+      await actor.messages.withSend(sessionId, () => actor.messages.send(sessionId, messageText))
       const now = Date.now()
       const lastTouch = this.lastSessionTouch.get(chatSession.id) ?? 0
       if (now - lastTouch > 60_000) {
@@ -1127,7 +1130,7 @@ class ChatIntegrationManager {
           }
           // Revoke can land mid-flight (during the awaits above). Re-check before spending.
           if (!isChatAllowed(integrationId, chatId)) return
-          await this.startNewChatSession(integration, client, chatId, message, messageText)
+          await this.startNewChatSession(integration, actor, chatId, message, messageText)
           return
         } catch (healErr) {
           console.error(`[ChatIntegrationManager] Self-heal failed for ${integrationId}/${chatId}:`, healErr)
@@ -1165,14 +1168,13 @@ class ChatIntegrationManager {
    */
   private async startNewChatSession(
     integration: ChatIntegration,
-    client: ContainerClient,
+    actor: AgentActor,
     chatId: string,
     message: IncomingMessage,
     messageText: string,
   ): Promise<void> {
     const { getEffectiveModels } = await import('@shared/lib/config/settings')
     const { getSecretEnvVars } = await import('@shared/lib/services/secrets-service')
-    const { registerSession, updateSessionMetadata } = await import('@shared/lib/services/session-service')
     const { readAgentPreferences } = await import('@shared/lib/services/agent-preferences-service')
 
     const availableEnvVars = await getSecretEnvVars(integration.agentSlug)
@@ -1188,7 +1190,7 @@ class ChatIntegrationManager {
       models,
     )
 
-    const containerSession = await client.createSession({
+    const containerSession = await actor.sessions.create({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: messageText,
       model: resolved.model,
@@ -1210,8 +1212,8 @@ class ChatIntegrationManager {
       integration.sessionTimeout,
     )
 
-    await registerSession(integration.agentSlug, sessionId, sessionName)
-    await updateSessionMetadata(integration.agentSlug, sessionId, {
+    await actor.sessions.register(sessionId, sessionName)
+    await actor.sessions.updateMetadata(sessionId, {
       isChatIntegrationSession: true,
       chatIntegrationId: integration.id,
       ...(integration.createdByUserId ? { createdByUserId: integration.createdByUserId } : {}),
@@ -1226,9 +1228,9 @@ class ChatIntegrationManager {
 
     // createSession already started this turn. Observe it and wire chat delivery
     // before attaching, so even a fast turn's replay is consumed and forwarded.
-    messagePersister.markSessionActive(integration.agentSlug, sessionId)
+    actor.sessions.markActive(sessionId)
     this.subscribeChatSession(integration.id, chatId, sessionId)
-    await messagePersister.subscribeToSession(integration.agentSlug, sessionId, client, sessionId)
+    await actor.sessions.subscribeStream(sessionId, sessionId)
   }
 
   /**
@@ -1536,7 +1538,6 @@ class ChatIntegrationManager {
 
   /** Write a file to the agent's workspace uploads directory. */
   private async writeToWorkspace(agentSlug: string, filename: string, data: Buffer): Promise<string> {
-    const { getAgentWorkspaceDir } = await import('@shared/lib/config/data-dir')
     const path = await import('path')
     const fs = await import('fs')
 
@@ -1544,7 +1545,7 @@ class ChatIntegrationManager {
     // basename so `../` segments cannot escape the uploads directory (SUP-231).
     const safeName = sanitizeUploadFilename(filename)
     const uploadName = withUploadTimestamp(safeName)
-    const workspaceDir = getAgentWorkspaceDir(agentSlug)
+    const workspaceDir = agentRegistry.get(agentSlug).files.workspacePath()
     const uploadsDir = path.resolve(workspaceDir, 'uploads')
     const fullPath = path.resolve(uploadsDir, uploadName)
 
@@ -1560,11 +1561,9 @@ class ChatIntegrationManager {
 
   /** Pre-warm the agent container so it's ready when the user's message arrives. */
   private preWarmContainer(agentSlug: string): void {
-    import('@shared/lib/container/container-manager').then(({ containerManager }) => {
-      containerManager.ensureRunning(agentSlug).catch(() => {
-        // Best-effort — if it fails, the normal message flow will handle the error
-      })
-    }).catch(() => {})
+    agentRegistry.get(agentSlug).container.start().catch(() => {
+      // Best-effort — if it fails, the normal message flow will handle the error
+    })
   }
 
   /** Try to transcribe an audio buffer using the configured STT provider. Returns null on failure. */
@@ -1620,7 +1619,7 @@ class ChatIntegrationManager {
     // notification uses, and it is what gives the card's link a live session
     // to open rather than the agent home.
     const sessionId =
-      request.scope.sessionId ?? messagePersister.getActiveSessionIdsForAgent(agentSlug)[0]
+      request.scope.sessionId ?? agentRegistry.get(agentSlug).sessions.activeIds()[0]
 
     // If we know the sessionId, send only to the chat session that owns it
     if (sessionId) {
@@ -1693,11 +1692,10 @@ class ChatIntegrationManager {
       const decision = answer.includes('allow') ? 'allow' : 'deny'
 
       try {
-        const { reviewManager } = await import('@shared/lib/proxy/review-manager')
         // Bound to this integration's agent: the id rides in from a chat
-        // client, and submitDecision returns false for a review that is
+        // client, and submit returns false for a review that is
         // settled, of another kind, or another agent's.
-        const settled = reviewManager.submitDecision(reviewId, decision as 'allow' | 'deny', integration.agentSlug)
+        const settled = agentRegistry.get(integration.agentSlug).inputs.reviews.submit(reviewId, decision as 'allow' | 'deny')
         if (!settled) await this.replyAlreadyHandled(integrationId, chatId)
       } catch (err) {
         console.error(`[ChatIntegrationManager] Failed to submit review decision:`, err)
@@ -1720,17 +1718,17 @@ class ChatIntegrationManager {
     // open?" read is check-then-act — a second press observes the same open
     // request and both proceed. claimRequest is a synchronous check-and-mark,
     // so exactly one presser wins.
-    const open = userInputRequestManager.claimRequest(toolUseId)
+    const actor = agentRegistry.get(integration.agentSlug)
+    const open = actor.inputs.claim(toolUseId)
     if (!open || open.scope.agentSlug !== integration.agentSlug) {
       // Wrong agent: release immediately, we never had the right to hold it.
-      if (open) userInputRequestManager.releaseClaim(toolUseId)
+      if (open) actor.inputs.releaseClaim(toolUseId)
       await this.replyAlreadyHandled(integrationId, chatId)
       return
     }
 
     try {
-      const { containerManager } = await import('@shared/lib/container/container-manager')
-      const client = await containerManager.ensureRunning(integration.agentSlug)
+      await actor.container.start()
 
       // Re-check with NO await between here and the container call. The claim
       // only excludes another chat press; a decision on another surface settles
@@ -1739,7 +1737,7 @@ class ChatIntegrationManager {
       // earlyResult nothing will ever collect, which is the phantom this gate
       // exists to prevent. What remains after this is the container round trip
       // itself, which only the container can arbitrate.
-      if (!userInputRequestManager.getOpenRequest(toolUseId)) {
+      if (!actor.inputs.get(toolUseId)) {
         await this.replyAlreadyHandled(integrationId, chatId)
         return
       }
@@ -1749,7 +1747,7 @@ class ChatIntegrationManager {
         const answers: Record<string, string> = responseObj.answers
           ? responseObj.answers as Record<string, string>
           : { [responseObj.question as string]: responseObj.answer as string }
-        const resolveResponse = await client.fetch(
+        const resolveResponse = await actor.container.fetch(
           `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
           {
             method: 'POST',
@@ -1765,12 +1763,12 @@ class ChatIntegrationManager {
           // Settle immediately — parallel tool calls hold the transcript
           // tool_result until every sibling resolves. The registry entry's
           // scope supplies the session.
-          messagePersister.completeInputRequest(undefined, undefined, toolUseId, 'answered')
+          actor.inputs.complete(undefined, toolUseId, 'answered')
         }
         return
       }
 
-      const resolveResponse = await client.fetch(
+      const resolveResponse = await actor.container.fetch(
         `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
         {
           method: 'POST',
@@ -1783,7 +1781,7 @@ class ChatIntegrationManager {
         console.error(`[ChatIntegrationManager] Failed to resolve input ${toolUseId}:`, text)
         reportError(new Error(`Resolve input failed: ${resolveResponse.status}`), 'resolve-input', { integrationId, toolUseId, status: resolveResponse.status })
       } else {
-        messagePersister.completeInputRequest(undefined, undefined, toolUseId, 'answered')
+        actor.inputs.complete(undefined, toolUseId, 'answered')
       }
     } catch (err) {
       console.error(`[ChatIntegrationManager] Failed to handle interactive response:`, err)
@@ -1794,7 +1792,7 @@ class ChatIntegrationManager {
       // — a container that never came up, a failed resolve, a settle that beat
       // us. A leaked claim would make the request undecidable forever, which is
       // worse than the race it guards.
-      userInputRequestManager.releaseClaim(toolUseId)
+      actor.inputs.releaseClaim(toolUseId)
     }
   }
 
@@ -1934,7 +1932,7 @@ export function startIndicatorTick(managed: ManagedConnector, sessionId: string)
   cancelIndicatorSleep(managed)
   if (managed.indicatorTickTimer) return false
   managed.indicatorTickTimer = setInterval(() => {
-    const activity = messagePersister.getSessionActivity(managed.integration.agentSlug, sessionId)
+    const activity = agentRegistry.get(managed.integration.agentSlug).sessions.activity(sessionId)
     reconcileIndicator(managed, activity)
     // The tick owns its own sleep: a busy read keeps it awake (cancel any pending stop), the
     // first of a sustained non-busy run starts the debounce. scheduleIndicatorSleep is arm-once,
@@ -1997,7 +1995,7 @@ export function scheduleIndicatorSleep(managed: ManagedConnector): void {
   if (!sessionId) return
   managed.sleepTimer = setTimeout(() => {
     managed.sleepTimer = null
-    if (!BUSY_ACTIVITIES.has(messagePersister.getSessionActivity(managed.integration.agentSlug, sessionId))) {
+    if (!BUSY_ACTIVITIES.has(agentRegistry.get(managed.integration.agentSlug).sessions.activity(sessionId))) {
       // Clear before stopping: stopIndicatorTick only drops timers, so stopping a tick that
       // is somehow still showing a draft would strand it. Clearing first makes the guard
       // self-defending regardless of how the caller left indicatorShown.
@@ -2245,13 +2243,12 @@ async function sendDeliveredFile(
   filePath: string,
   description?: string,
 ): Promise<void> {
-  const { getAgentWorkspaceDir } = await import('@shared/lib/config/data-dir')
   const path = await import('path')
   const fs = await import('fs')
 
   // filePath is like /workspace/output.png — resolve to host filesystem
   const relativePath = filePath.replace(/^\/workspace\//, '')
-  const workspaceDir = getAgentWorkspaceDir(managed.integration.agentSlug)
+  const workspaceDir = agentRegistry.get(managed.integration.agentSlug).files.workspacePath()
   const fullPath = path.resolve(workspaceDir, relativePath)
 
   // Security: ensure path doesn't escape workspace. A bare startsWith() check is

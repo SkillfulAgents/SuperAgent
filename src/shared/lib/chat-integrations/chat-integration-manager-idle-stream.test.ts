@@ -15,7 +15,11 @@ vi.mock('@shared/lib/container/message-persister', () => ({
   },
 }))
 vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: { ensureRunning: async () => ({ sendMessage: mocks.send }) },
+  containerManager: {
+    ensureRunning: async () => ({ sendMessage: mocks.send }),
+    // The actor reaches the client through getClient after start().
+    getClient: () => ({ sendMessage: mocks.send }),
+  },
 }))
 vi.mock('@shared/lib/services/agent-service', () => ({ agentExists: async () => true }))
 vi.mock('@shared/lib/services/chat-integration-access-service', () => ({

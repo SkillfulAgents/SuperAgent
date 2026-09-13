@@ -12,7 +12,7 @@
  *    delivers (deliberate v1 scope).
  */
 
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import {
   createNotification,
   getAgentAccessUserIds,
@@ -21,7 +21,6 @@ import {
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getAgent } from '@shared/lib/services/agent-service'
-import { getSessionMetadata } from '@shared/lib/services/session-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { captureException } from '@shared/lib/error-reporting'
 import { getNotificationChannels } from './channels'
@@ -129,7 +128,7 @@ class NotificationManager {
     // and before the settings check: visibility isn't a notification pref.
     if (type === 'session_waiting') {
       try {
-        await messagePersister.promoteAutomatedSession(agentSlug, sessionId)
+        await agentRegistry.get(agentSlug).sessions.promoteAutomated(sessionId)
       } catch (error) {
         console.error('[NotificationManager] Failed to promote automated session:', error)
       }
@@ -221,7 +220,7 @@ class NotificationManager {
     agentSlug: string,
     options: SessionCompleteNotificationOptions,
   ): Promise<void> {
-    const meta = await getSessionMetadata(agentSlug, sessionId)
+    const meta = await agentRegistry.get(agentSlug).sessions.metadata(sessionId)
     if (isHiddenAutomatedSession(meta)) {
       return
     }

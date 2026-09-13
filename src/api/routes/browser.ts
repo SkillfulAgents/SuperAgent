@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { getActiveProvider, setOnExternalClose } from '../../main/host-browser'
 import { getSettings } from '@shared/lib/config/settings'
-import { containerManager } from '@shared/lib/container/container-manager'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { IsAgent } from '../middleware/auth'
 import { captureException } from '@shared/lib/error-reporting'
@@ -143,8 +143,7 @@ setOnExternalClose(async (instanceId: string) => {
 
   // Notify the affected container to clean up its internal browser state.
   try {
-    const client = containerManager.getClient(instanceId)
-    await client.fetch('/browser/notify-closed', { method: 'POST' })
+    await agentRegistry.get(instanceId).container.fetch('/browser/notify-closed', { method: 'POST' })
   } catch {
     // Non-critical — frontend is already notified
   }

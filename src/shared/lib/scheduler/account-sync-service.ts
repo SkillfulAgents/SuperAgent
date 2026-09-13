@@ -7,7 +7,7 @@ import type { BaseAccountProvider } from '@shared/lib/account-providers'
 import { getProvider } from '@shared/lib/account-providers/service-catalog'
 import { getAccountProviderUserId } from '@shared/lib/config/settings'
 import { attribution, runWithRequestUser } from '@shared/lib/platform-attribution'
-import { syncAgentsAssignedConnectedAccount } from '@shared/lib/container/connection-runtime-sync'
+import { syncAgentsAssignedConnectedAccount } from '@shared/lib/services/connection-sync-service'
 
 type LocalStatus = 'active' | 'revoked' | 'expired'
 

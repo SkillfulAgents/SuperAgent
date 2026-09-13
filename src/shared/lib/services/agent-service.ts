@@ -8,7 +8,6 @@
 import {
   getAgentsDir,
   getAgentDir,
-  getAgentWorkspaceDir,
   getAgentClaudeMdPath,
   listDirectories,
   directoryExists,
@@ -31,10 +30,7 @@ import {
   DEFAULT_AGENT_INSTRUCTIONS,
 } from '@shared/lib/types/agent'
 import type { ApiAgent } from '@shared/lib/types/api'
-import { containerManager } from '@shared/lib/container/container-manager'
-import { messagePersister } from '@shared/lib/container/message-persister'
-import { reviewManager } from '@shared/lib/proxy/review-manager'
-import { getSessionSummary } from './session-service'
+import { agentRegistry } from '@shared/lib/agent-actor'
 
 // ============================================================================
 // Internal to API Type Conversion
@@ -48,7 +44,7 @@ function toApiAgent(
   status: 'running' | 'stopped',
   containerPort: number | null
 ): ApiAgent {
-  const healthWarnings = containerManager.getHealthWarnings(agent.slug)
+  const healthWarnings = agentRegistry.get(agent.slug).container.health()
   return {
     slug: agent.slug,
     displaySlug: displaySlug(agent.frontmatter.name, agent.slug),
@@ -148,8 +144,9 @@ export async function getAgentWithStatus(
     return null
   }
 
+  const actor = agentRegistry.get(slug)
   // Use cached status to avoid spawning docker processes
-  const info = containerManager.getCachedInfo(slug)
+  const info = actor.container.status()
   const base = toApiAgent(agent, info.status, info.port)
 
   // Routes that either discard the body (/start) or immediately run the richer
@@ -158,20 +155,20 @@ export async function getAgentWithStatus(
   if (options.includeSummary === false) return base
 
   // Compute session activity flags (same logic as the list endpoint)
-  const sessionSummary = await getSessionSummary(slug)
+  const sessionSummary = await actor.sessions.summary()
   let hasActiveSessions = false
   let hasSessionsAwaitingInput = false
   for (const sessionId of sessionSummary.sessionIds) {
-    if (messagePersister.isSessionActive(slug, sessionId)) hasActiveSessions = true
-    if (messagePersister.isSessionAwaitingInput(slug, sessionId)) hasSessionsAwaitingInput = true
+    if (actor.sessions.isActive(sessionId)) hasActiveSessions = true
+    if (actor.sessions.isAwaitingInput(sessionId)) hasSessionsAwaitingInput = true
   }
   if (!hasActiveSessions) {
-    hasActiveSessions = messagePersister.hasActiveSessionsForAgent(slug)
+    hasActiveSessions = actor.sessions.hasActive()
   }
   if (!hasSessionsAwaitingInput) {
-    hasSessionsAwaitingInput = messagePersister.hasSessionsAwaitingInputForAgent(slug)
+    hasSessionsAwaitingInput = actor.sessions.hasAwaitingInput()
   }
-  if (reviewManager.getPendingReviewsForAgent(slug).length > 0) {
+  if (actor.inputs.reviews.pending().length > 0) {
     hasSessionsAwaitingInput = true
   }
 
@@ -221,7 +218,7 @@ export async function listAgentsWithStatus(): Promise<ApiAgent[]> {
 
   // Use cached status to avoid spawning docker processes
   const agentsWithStatus = agents.map((agent) => {
-    const info = containerManager.getCachedInfo(agent.slug)
+    const info = agentRegistry.get(agent.slug).container.status()
     return toApiAgent(agent, info.status, info.port)
   })
 
@@ -244,7 +241,7 @@ export async function createAgent(input: CreateAgentInput): Promise<ApiAgent> {
   const slug = await generateAgentId()
 
   // Create directory structure
-  const workspaceDir = getAgentWorkspaceDir(slug)
+  const workspaceDir = agentRegistry.get(slug).files.workspacePath()
   await ensureDirectory(workspaceDir)
 
   // Create CLAUDE.md
@@ -308,8 +305,7 @@ export async function updateAgent(
   await writeFileAtomic(claudeMdPath, content)
 
   // Get container status
-  const client = containerManager.getClient(slug)
-  const info = await client.getInfo()
+  const info = await agentRegistry.get(slug).container.info()
 
   return {
     slug,
@@ -364,7 +360,7 @@ export async function deleteAgent(slug: string): Promise<boolean> {
   // typed error so the API/UI can surface an actionable failure; removeDirectory
   // below never runs, so the workspace is preserved and the delete is retryable.
   try {
-    await containerManager.stopContainer(slug)
+    await agentRegistry.get(slug).container.stop()
   } catch (error) {
     throw new AgentContainerStopError(slug, error)
   }
@@ -387,7 +383,7 @@ export async function createAgentFromExistingWorkspace(rawName: string): Promise
   const name = String(rawName)
   const slug = await generateAgentId()
 
-  const workspaceDir = getAgentWorkspaceDir(slug)
+  const workspaceDir = agentRegistry.get(slug).files.workspacePath()
   await ensureDirectory(workspaceDir)
 
   // Create a basic CLAUDE.md (may be overwritten by template)
