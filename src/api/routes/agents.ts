@@ -384,6 +384,24 @@ async function resolveBookmarkedWorkspacePath(
   return { rootPath, currentPath, stat }
 }
 
+/**
+ * The same, for an operation on the entry itself. The rename and delete are
+ * carried out by the container, which has to be running for it; a path with
+ * nothing at it is answered here first, so a stale browser acting on an
+ * entry that is already gone does not start the container for nothing.
+ */
+async function resolveBookmarkedWorkspaceEntry(
+  agentSlug: string,
+  rawRoot: string,
+  rawPath: string,
+): Promise<{ rootPath: string; currentPath: string; stat: FileStat }> {
+  const resolved = await resolveBookmarkedWorkspacePath(agentSlug, rawRoot, rawPath)
+  if (!resolved.stat) {
+    throw new WorkspaceFolderAccessError('Folder or file not found', 404)
+  }
+  return { ...resolved, stat: resolved.stat }
+}
+
 async function requestContainerWorkspaceMutation<T>(
   agentSlug: string,
   method: 'PATCH' | 'DELETE',
@@ -6430,7 +6448,7 @@ agents.patch('/:id/folders/file', AgentAdmin(), async (c) => {
 
   const agentSlug = getAgentId(c)
   try {
-    const resolved = await resolveBookmarkedWorkspacePath(
+    const resolved = await resolveBookmarkedWorkspaceEntry(
       agentSlug,
       parsed.data.root,
       parsed.data.path,
@@ -6468,7 +6486,7 @@ agents.delete('/:id/folders/file', AgentAdmin(), async (c) => {
 
   const agentSlug = getAgentId(c)
   try {
-    const resolved = await resolveBookmarkedWorkspacePath(
+    const resolved = await resolveBookmarkedWorkspaceEntry(
       agentSlug,
       parsed.data.root,
       parsed.data.path,
@@ -6498,7 +6516,7 @@ agents.patch('/:id/folders/directory', AgentAdmin(), async (c) => {
 
   const agentSlug = getAgentId(c)
   try {
-    const resolved = await resolveBookmarkedWorkspacePath(
+    const resolved = await resolveBookmarkedWorkspaceEntry(
       agentSlug,
       parsed.data.root,
       parsed.data.path,
@@ -6540,7 +6558,7 @@ agents.delete('/:id/folders/directory', AgentAdmin(), async (c) => {
 
   const agentSlug = getAgentId(c)
   try {
-    const resolved = await resolveBookmarkedWorkspacePath(
+    const resolved = await resolveBookmarkedWorkspaceEntry(
       agentSlug,
       parsed.data.root,
       parsed.data.path,
