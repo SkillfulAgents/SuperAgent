@@ -86,6 +86,9 @@ vi.mock('fs', () => ({
       rm: (...args: unknown[]) => mockFsRm(...args),
       open: (...args: unknown[]) => mockFsOpen(...args),
     },
+    // The flag the workspace copy passes so an existing entry is refused, not
+    // written through; the value fs assigns it.
+    constants: { COPYFILE_EXCL: 1 },
     existsSync: (...args: unknown[]) => mockFsExistsSync(...args),
     createReadStream: (...args: unknown[]) => mockCreateReadStream(...args),
     createWriteStream: (...args: unknown[]) => mockCreateWriteStream(...args),
@@ -3790,9 +3793,12 @@ describe('folder upload — POST /:id/upload-folder', () => {
     // Every regular file is copied from the host folder into uploads/<folder>/
     // in one filesystem copy (which keeps its mode), its directories are
     // created, and the symlink is skipped rather than followed.
+    // Each file is one exclusive copy: an entry already there (a link the
+    // agent planted, say) is refused rather than written through.
+    const exclusive = 1 // fs.constants.COPYFILE_EXCL, as mocked
     expect(mockFsCopyFile.mock.calls).toEqual([
-      ['/Users/joe/Desktop/my-project/README.md', '/mock/workspace/uploads/my-project/README.md'],
-      ['/Users/joe/Desktop/my-project/src/index.ts', '/mock/workspace/uploads/my-project/src/index.ts'],
+      ['/Users/joe/Desktop/my-project/README.md', '/mock/workspace/uploads/my-project/README.md', exclusive],
+      ['/Users/joe/Desktop/my-project/src/index.ts', '/mock/workspace/uploads/my-project/src/index.ts', exclusive],
     ])
     expect(mockCreateReadStream).not.toHaveBeenCalled()
     expect(mockCreateWriteStream).not.toHaveBeenCalled()

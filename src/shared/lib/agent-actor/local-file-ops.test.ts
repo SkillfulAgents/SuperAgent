@@ -227,6 +227,54 @@ describe('LocalFileOps — links and host files', () => {
       process.off('uncaughtException', record)
     }
   })
+
+  it('copyHostFile replaces a link at the destination instead of writing through it', async () => {
+    // The agent can plant a link in uploads/ from inside the container; the
+    // next folder upload with that entry name must not follow it.
+    await files.mkdir('uploads')
+    await fs.promises.symlink(path.join(outside, 'secret.txt'), path.join(root, 'uploads', 'exist.txt'))
+    await fs.promises.writeFile(path.join(outside, 'exist.txt'), 'uploaded')
+
+    await files.copyHostFile(path.join(outside, 'exist.txt'), 'uploads/exist.txt')
+
+    expect(await fs.promises.readFile(path.join(outside, 'secret.txt'), 'utf-8')).toBe('secret')
+    expect((await fs.promises.lstat(path.join(root, 'uploads', 'exist.txt'))).isSymbolicLink()).toBe(false)
+    expect(await fs.promises.readFile(path.join(root, 'uploads', 'exist.txt'), 'utf-8')).toBe('uploaded')
+  })
+
+  it('copyHostFile replaces a dangling link and overwrites an existing file', async () => {
+    await files.mkdir('uploads')
+    await fs.promises.symlink(path.join(outside, 'nowhere.txt'), path.join(root, 'uploads', 'dangling.txt'))
+    await fs.promises.writeFile(path.join(root, 'uploads', 'old.txt'), 'old')
+    await fs.promises.writeFile(path.join(outside, 'new.txt'), 'new')
+
+    await files.copyHostFile(path.join(outside, 'new.txt'), 'uploads/dangling.txt')
+    await files.copyHostFile(path.join(outside, 'new.txt'), 'uploads/old.txt')
+
+    expect(fs.existsSync(path.join(outside, 'nowhere.txt'))).toBe(false)
+    expect((await fs.promises.lstat(path.join(root, 'uploads', 'dangling.txt'))).isSymbolicLink()).toBe(false)
+    expect(await fs.promises.readFile(path.join(root, 'uploads', 'dangling.txt'), 'utf-8')).toBe('new')
+    expect(await fs.promises.readFile(path.join(root, 'uploads', 'old.txt'), 'utf-8')).toBe('new')
+  })
+
+  it('moveHostFile replaces a link at the destination when the move has to copy', async () => {
+    await files.mkdir('uploads')
+    await fs.promises.symlink(path.join(outside, 'secret.txt'), path.join(root, 'uploads', 'report.pdf'))
+    await fs.promises.writeFile(path.join(outside, 'assembled'), 'moved')
+    // The temp dir and the workspace on different devices: the rename is
+    // refused and the move falls back to a copy.
+    const rename = vi.spyOn(fs.promises, 'rename').mockRejectedValueOnce(Object.assign(new Error('EXDEV'), { code: 'EXDEV' }))
+    try {
+      expect(await files.moveHostFile(path.join(outside, 'assembled'), 'uploads/report.pdf')).toEqual({ size: 5 })
+    } finally {
+      rename.mockRestore()
+    }
+
+    expect(await fs.promises.readFile(path.join(outside, 'secret.txt'), 'utf-8')).toBe('secret')
+    expect((await fs.promises.lstat(path.join(root, 'uploads', 'report.pdf'))).isSymbolicLink()).toBe(false)
+    expect(await fs.promises.readFile(path.join(root, 'uploads', 'report.pdf'), 'utf-8')).toBe('moved')
+    expect(fs.existsSync(path.join(outside, 'assembled'))).toBe(false)
+  })
 })
 
 describe('createLocalFileOps', () => {

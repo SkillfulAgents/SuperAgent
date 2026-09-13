@@ -67,6 +67,26 @@ function fromWriteError(error: unknown): never {
   return fromFsError(error)
 }
 
+/**
+ * Copy a file onto `to`, replacing whatever is there rather than writing
+ * through it. A plain copy follows a link at the destination, and the agent
+ * can plant one in the workspace from inside the container, so the copy
+ * would land on the file the link points at. The exclusive create refuses
+ * any existing entry, link or file; that entry is removed and the create
+ * tried once more, so a link planted in between is refused, not followed.
+ * In the common case, a fresh destination, this is the one copy it was.
+ */
+async function copyFileReplacing(from: string, to: string): Promise<void> {
+  const exclusive = fs.constants.COPYFILE_EXCL
+  try {
+    await fs.promises.copyFile(from, to, exclusive)
+  } catch (error) {
+    if (errnoCode(error) !== 'EEXIST') throw error
+    await fs.promises.unlink(to)
+    await fs.promises.copyFile(from, to, exclusive)
+  }
+}
+
 /** True for the errors that mean "nothing is there": absent, a file in a directory's place, a link loop. */
 function isAbsence(error: unknown): boolean {
   const code = errnoCode(error)
@@ -197,7 +217,7 @@ export class LocalFileOps implements FileOps {
   async copyHostFile(hostPath: string, workspacePath: string): Promise<void> {
     const { rel, abs } = this.absolute(workspacePath)
     if (rel === '') throw new WorkspaceFileError('invalid-path', 'The workspace root is not a file')
-    await fs.promises.copyFile(hostPath, abs).catch(fromWriteError)
+    await copyFileReplacing(hostPath, abs).catch(fromWriteError)
   }
 
   /**
@@ -214,7 +234,7 @@ export class LocalFileOps implements FileOps {
       await this.writing(abs, () => fs.promises.rename(hostPath, abs))
     } catch (error) {
       if (errnoCode(error) !== 'EXDEV') fromWriteError(error)
-      await fs.promises.copyFile(hostPath, abs).catch(fromWriteError)
+      await copyFileReplacing(hostPath, abs).catch(fromWriteError)
       await fs.promises.unlink(hostPath)
     }
     const stat = await fs.promises.stat(abs).catch(fromFsError)
