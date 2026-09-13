@@ -4804,6 +4804,16 @@ describe('GET /:id/sessions/:sessionId/subagent/:agentId/messages', () => {
     expect(res.status).toBe(500)
     expect(await res.json()).toEqual({ error: 'Failed to fetch subagent messages' })
   })
+
+  it('404s a subagent id that cannot name a transcript, without reading anything', async () => {
+    // The id is a raw URL segment; the actor refuses one that would leave the
+    // session's subagents directory and the route answers as if there were
+    // no such transcript, not with a 500 from the failed read.
+    const res = await getReq(app, '/api/agents/test-agent/sessions/sess-1/subagent/..%2Fsibling/messages')
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Subagent transcript not found' })
+    expect(readJsonlFile).not.toHaveBeenCalled()
+  })
 })
 
 describe('DELETE /:id/sessions/:sessionId', () => {

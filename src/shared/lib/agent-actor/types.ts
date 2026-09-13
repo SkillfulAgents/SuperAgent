@@ -34,6 +34,7 @@ import type { ConnectionRuntimeKind } from '@shared/lib/container/connection-run
 import type { CommonLoadOptions, DailyUsageData } from '@shared/lib/services/usage-service'
 import type { SessionUsageTotals } from '@shared/lib/types/usage'
 import type {
+  JsonlEntry,
   JsonlMessageEntry,
   JsonlSystemEntry,
   SessionActivity,
@@ -41,6 +42,8 @@ import type {
   SessionMetadata,
   SessionMetadataMap,
 } from '@shared/lib/types/agent'
+import type { MediaRef } from '@shared/lib/services/session-media'
+import type { WorkflowTree } from '@shared/lib/workflows/workflow-schemas'
 import type {
   AutomationStatusResult,
   ListSessionsOptions,
@@ -193,6 +196,33 @@ export interface SessionOps {
   fileRealPathWithinAgent(sessionId: string): boolean
   /** `loadSessionUsageTotals` (usage-service) over this session's transcript files. */
   usage(sessionId: string, options?: Pick<CommonLoadOptions, 'providerId'>): Promise<SessionUsageTotals>
+  /** `getSessionsByScheduledTask` */
+  byScheduledTask(scheduledTaskId: string): Promise<SessionInfo[]>
+  /** `getSessionsByWebhookTrigger` */
+  byWebhookTrigger(webhookTriggerId: string): Promise<SessionInfo[]>
+  /** `getSessionForScheduledExecution` */
+  forScheduledExecution(scheduledTaskId: string, scheduledExecutionAt: Date): Promise<SessionInfo | null>
+  /** `recordSessionActivity` (session-summary-cache) — a transcript write happened that no stream frame will report. */
+  recordActivity(sessionId: string, activityAt?: Date | number): void
+
+  // Files derived from a session's transcript: subagent and workflow
+  // transcripts live beside it. Read by the routes that render them.
+
+  /**
+   * The subagents a session launched, from their sidecar metadata. `except`
+   * names the ones the caller already knows: their sidecars are not read and
+   * they are not returned, so resolving one interrupted launch in a history
+   * of a hundred settled ones reads one sidecar, not a hundred.
+   */
+  subagents(sessionId: string, options?: { except?: ReadonlySet<string> }): Promise<SubagentRef[]>
+  /** One subagent's transcript entries; empty when there is none. */
+  subagentTranscript(sessionId: string, subagentId: string): Promise<JsonlEntry[]>
+  /** `buildWorkflowTree` (workflow-tree) for one dynamic-workflow run, or null when the run is unknown. */
+  workflowTree(sessionId: string, runId: string): Promise<WorkflowTree | null>
+  /** One workflow agent's transcript entries; empty when there is none. */
+  workflowAgentTranscript(sessionId: string, runId: string, workflowAgentId: string): Promise<JsonlEntry[]>
+  /** Copy the derived files (subagent and workflow transcripts) of one session to another; nothing to copy is a no-op. */
+  copyDerivedFiles(sourceSessionId: string, targetSessionId: string): Promise<void>
 
   // Live sessions — ContainerClient. Needs the container.
 
@@ -301,6 +331,14 @@ export interface MessageOps {
   removeToolCall(sessionId: string, toolCallId: string): Promise<boolean>
   /** `appendInformationalEntry` (session-transcript-append) */
   appendInformational(sessionId: string, entry: { uuid: string; content: string; level?: string }): Promise<void>
+  /** `appendAssistantEntry` (session-transcript-append) — an assistant message delivered out of band, recorded so the transcript shows it. */
+  appendAssistant(sessionId: string, text: string): void
+  /** `streamJsonlFile` over the transcript — every raw entry, in order. */
+  rawEntries(sessionId: string): AsyncIterable<unknown>
+  /** The transcript file's bytes for the debug view, or null when there is no transcript. */
+  rawLog(sessionId: string): Promise<{ size: number; stream: ReadableStream<Uint8Array> } | null>
+  /** `openMediaBlob` (session-media) — one media item referenced from the transcript, or undefined when it is gone. */
+  media(sessionId: string, ref: MediaRef, signal?: AbortSignal): Promise<MediaBlob | undefined>
 
   // Fan-out and recovery — messagePersister.
 
@@ -417,6 +455,20 @@ export interface UsageOps {
   daily(options?: CommonLoadOptions): Promise<DailyUsageData[]>
 }
 
+/** A subagent a session launched, as its sidecar metadata describes it. */
+export interface SubagentRef {
+  id: string
+  /** The Task tool call that launched it, when the sidecar recorded one. */
+  toolUseId?: string
+}
+
+/** One media item from a transcript, ready to serve. */
+export interface MediaBlob {
+  stream: ReadableStream<Uint8Array>
+  mimeType: string
+  bytes: number
+}
+
 export type FileKind = 'file' | 'directory'
 
 /** One entry of a directory listing. `path` is the entry's own workspace path. */
@@ -478,10 +530,4 @@ export interface FileOps {
   delete(path: string, options?: { recursive?: boolean }): Promise<void>
   /** Create a directory and any missing parents. */
   mkdir(path: string): Promise<void>
-  /**
-   * `getAgentWorkspaceDir` — the one remaining path-returning escape hatch,
-   * local runtime only, counted by the lint fence. Its last caller is a
-   * transcript read that the next PR moves behind the actor; it goes then.
-   */
-  workspacePath(): string
 }

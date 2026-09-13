@@ -279,10 +279,20 @@ describe('LocalFileOps — links and host files', () => {
 
 describe('createLocalFileOps', () => {
   it('reads the workspace directory for the slug at call time', async () => {
-    let dir = '/tmp/first'
-    const files = createLocalFileOps('agent-a', { getAgentWorkspaceDir: (slug) => `${dir}/${slug}` })
-    expect(files.workspacePath()).toBe('/tmp/first/agent-a')
-    dir = '/tmp/second'
-    expect(files.workspacePath()).toBe('/tmp/second/agent-a')
+    const parent = await tempRoot()
+    try {
+      let generation = 'first'
+      const files = createLocalFileOps('agent-a', {
+        getAgentWorkspaceDir: (slug) => path.join(parent, generation, slug),
+      })
+      await files.putDoc('note.txt', 'one')
+      expect(fs.existsSync(path.join(parent, 'first', 'agent-a', 'note.txt'))).toBe(true)
+
+      generation = 'second'
+      await files.putDoc('note.txt', 'two')
+      expect(fs.existsSync(path.join(parent, 'second', 'agent-a', 'note.txt'))).toBe(true)
+    } finally {
+      await fs.promises.rm(parent, { recursive: true, force: true })
+    }
   })
 })

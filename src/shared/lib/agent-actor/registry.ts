@@ -5,7 +5,9 @@ import { reviewManager } from '@shared/lib/proxy/review-manager'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
 import * as sessionService from '@shared/lib/services/session-service'
-import { appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
+import { appendAssistantEntry, appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
+import { recordSessionActivity } from '@shared/lib/services/session-summary-cache'
+import * as transcriptOps from './local-transcript-ops'
 import { getAgentClaudeConfigDir, getAgentWorkspaceDir, getSessionJsonlPath } from '@shared/lib/utils/file-storage'
 import {
   syncAgentConnectionEnvironment,
@@ -74,8 +76,17 @@ export const agentRegistry: AgentRegistry = createAgentRegistry({
   get sessionService() {
     return sessionService
   },
+  get transcripts() {
+    return transcriptOps
+  },
   get appendInformationalEntry() {
     return appendInformationalEntry
+  },
+  get appendAssistantEntry() {
+    return appendAssistantEntry
+  },
+  get recordSessionActivity() {
+    return recordSessionActivity
   },
   get getAgentWorkspaceDir() {
     return getAgentWorkspaceDir

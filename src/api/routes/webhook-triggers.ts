@@ -16,9 +16,6 @@ import {
 } from '@shared/lib/services/webhook-trigger-service'
 import { promptUpdateSchema } from './trigger-prompt-schema'
 import { RuntimeOptionsPatchSchema } from '@shared/lib/container/runtime-options'
-import {
-  getSessionsByWebhookTrigger,
-} from '@shared/lib/services/session-service'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
@@ -51,10 +48,11 @@ webhookTriggersRouter.get('/:triggerId', TriggerAgentRole('viewer'), async (c) =
 webhookTriggersRouter.get('/:triggerId/sessions', TriggerAgentRole('viewer'), async (c) => {
   try {
     const trigger = c.get('webhookTrigger' as never) as Awaited<ReturnType<typeof getWebhookTrigger>>
-    const sessions = await getSessionsByWebhookTrigger(trigger!.agentSlug, trigger!.id)
+    const actor = agentRegistry.get(trigger!.agentSlug)
+    const sessions = await actor.sessions.byWebhookTrigger(trigger!.id)
     const sessionsWithStatus = sessions.map((session) => ({
       ...session,
-      isActive: agentRegistry.get(trigger!.agentSlug).sessions.isActive(session.id),
+      isActive: actor.sessions.isActive(session.id),
     }))
     return c.json(sessionsWithStatus)
   } catch (error) {

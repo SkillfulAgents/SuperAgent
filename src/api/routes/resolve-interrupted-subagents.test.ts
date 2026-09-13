@@ -1,3 +1,4 @@
+import path from 'path'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { TransformedItem, TransformedMessage } from '@shared/lib/utils/message-transform'
 
@@ -21,13 +22,21 @@ vi.mock('fs', () => ({
   },
 }))
 
+// This suite mocks `fs` wholesale, so the real-path containment check, which
+// walks the real filesystem, cannot run here; it has its own real-directory
+// test beside the transcript operations.
+vi.mock('@shared/lib/utils/path-safety', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/utils/path-safety')>()),
+  isRealPathWithinDir: () => true,
+}))
+
 vi.mock('@shared/lib/utils/file-storage', () => ({
   getAgentSessionsDir: () => '/mock/sessions',
   // Stub other exports that agents.ts pulls in
   getSessionJsonlPath: vi.fn(),
   readFileOrNull: vi.fn(),
   readJsonlFile: vi.fn(),
-  getAgentWorkspaceDir: vi.fn(),
+  getAgentWorkspaceDir: () => '/mock',
 }))
 
 // Stub every heavy dependency that `agents.ts` imports so the module loads
@@ -330,10 +339,12 @@ describe('resolveInterruptedSubagents', () => {
 
     await resolveInterruptedSubagents(items, 'my-agent', 'session-1')
 
-    // readFile should NOT have been called for the already-resolved agent
-    const readFileCalls = mockReadFile.mock.calls.map((c: unknown[]) => c[0] as string)
-    expect(readFileCalls.some((p: string) => p.includes('already-resolved'))).toBe(false)
+    // The already-resolved call keeps its own outcome: the sidecar that names
+    // it must not overwrite a completed subagent with a cancelled one.
+    expect(resolvedTc.subagent).toEqual({ agentId: 'already-resolved', status: 'completed' })
     expect(unresolvedTc.subagent).toEqual({ agentId: 'new-one', status: 'cancelled' })
+    // Its sidecar was not read at all: only the unresolved one's was.
+    expect(mockReadFile.mock.calls.map(([file]) => path.basename(String(file)))).toEqual(['agent-new-one.meta.json'])
   })
 
   // --------------------------------------------------------------------------
