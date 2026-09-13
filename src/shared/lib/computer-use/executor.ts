@@ -6,7 +6,7 @@
  */
 
 import { AC, formatOutput } from '@skillful-agents/agent-computer'
-import { COMPUTER_RUN_METHOD, unwrapComputerRun } from './types'
+import { COMPUTER_RUN_METHOD, unwrapComputerRun } from './computer-run'
 import * as fs from 'fs'
 import { createRequire } from 'module'
 import * as path from 'path'
