@@ -151,6 +151,29 @@ async function makeZip(files: Record<string, string>): Promise<Buffer> {
   return createZipBuffer(files)
 }
 
+/**
+ * The same archive with one entry's uncompressed size overwritten in its
+ * local header and its central directory record: what a corrupted or
+ * crafted archive declares, at odds with what its data inflates to.
+ */
+function declareUncompressedSize(zip: Buffer, entryName: string, size: number): Buffer {
+  const out = Buffer.from(zip)
+  const name = Buffer.from(entryName)
+  for (let i = 0; i + 46 <= out.length; i++) {
+    const signature = out.readUInt32LE(i)
+    if (signature === 0x04034b50) {
+      // Local file header: uncompressed size at 22, name length at 26, name at 30.
+      const nameLength = out.readUInt16LE(i + 26)
+      if (out.subarray(i + 30, i + 30 + nameLength).equals(name)) out.writeUInt32LE(size, i + 22)
+    } else if (signature === 0x02014b50) {
+      // Central directory record: uncompressed size at 24, name length at 28, name at 46.
+      const nameLength = out.readUInt16LE(i + 28)
+      if (out.subarray(i + 46, i + 46 + nameLength).equals(name)) out.writeUInt32LE(size, i + 24)
+    }
+  }
+  return out
+}
+
 // ============================================================================
 // validateAgentTemplate
 // ============================================================================
@@ -2439,6 +2462,33 @@ describe('importAgentFromTemplate (full mode)', () => {
     fs.mkdirSync(workspaceDir, { recursive: true })
     return workspaceDir
   }
+
+  it('fails the import, without taking the process down, when an entry inflates past its declared size', async () => {
+    // A crafted or merely corrupted archive: the entry's header says 1000
+    // bytes, the deflate stream holds far more. The reader fails the entry's
+    // stream the moment it sees the excess, which is before the write has
+    // opened its destination; that failure has to reach the import as a
+    // rejection, not the process as an unhandled error.
+    setupAgentMock('import-lying-size-agent')
+    const honest = await makeZip({
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'big.bin': 'a'.repeat(300 * 1024),
+    })
+    const lying = declareUncompressedSize(honest, 'big.bin', 1000)
+
+    const uncaught: unknown[] = []
+    const record = (error: unknown) => {
+      uncaught.push(error)
+    }
+    process.on('uncaughtException', record)
+    try {
+      await expect(importAgentFromTemplate(lying, undefined, 'template')).rejects.toThrow(/too many bytes/)
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(uncaught).toEqual([])
+    } finally {
+      process.off('uncaughtException', record)
+    }
+  })
 
   it('imports .env in full mode', async () => {
     const workspaceDir = setupAgentMock('import-full-agent')
