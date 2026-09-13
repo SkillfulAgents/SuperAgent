@@ -1,24 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Successfully tested browser use feature by having the agent open a browser, navigate to https://example.com, retrieve the page title \"Example Domain\", and report it back in the chat.",
+  "reason": "Browser-use feature successfully navigated to https://example.com, retrieved the page title \"Example Domain\", and reported the result back to the user",
   "steps": [
-    "Navigated to http://localhost:47891 - successfully loaded the Gamut home page displaying available agents in the sidebar including \"QA-20260912-003309-hugb\".",
-    "Clicked on the \"QA-20260912-003309-hugb\" agent in the sidebar - successfully navigated to the agent's chat page with title \"QA-20260912-003309-hugb · Gamut\".",
-    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" in the message input box - the text appeared in the input field and the Send button became enabled.",
-    "Clicked the Send message button - the message was transmitted and the agent status changed to \"working\", showing the session title as \"Browser Navigation and Page Title Check\".",
-    "Waited up to 3 minutes for a response - the agent completed processing within ~8 seconds and returned a response stating: \"The page title is \"Example Domain\" — the page just has that heading, a short paragraph about the domain being for documentation examples, and a \"Learn more\" link. Browser is closed.\"",
-    "Verified the response mentions \"Example Domain\" and took a screenshot - the response clearly contains the text \"Example Domain\" and the screenshot was successfully captured showing the complete agent interaction."
+    "Navigated to http://localhost:47891 — page loaded successfully with Gamut app showing home view with agent list",
+    "Found and clicked \"QA-20260913-015741-tvmz\" agent in sidebar — agent chat interface opened successfully with session title \"Browser Navigation and Page Title Test\"",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in input field — message displayed in input field with Send button enabled",
+    "Clicked Send message button — message was sent and agent began processing (status changed to \"working\")",
+    "Waited for agent response (up to 3 minutes) — agent completed task in 6 seconds with 3 tool calls and 146,714 tokens used",
+    "Verified response mentions \"Example Domain\" — agent response clearly states: \"The page title is \"Example Domain\" (HTTP 200). Browser closed.\""
   ],
   "bugs": [],
-  "durationMs": 109237,
-  "sessionId": "a45f90d0-6319-4a5a-89dd-30a1974293dc",
+  "durationMs": 71316,
+  "sessionId": "48cb95ef-50ec-4c19-8bc2-440a6aa16b66",
   "cost": {
-    "inputTokens": 310,
-    "outputTokens": 10023,
-    "cacheCreationTokens": 56324,
-    "cacheReadTokens": 790597,
+    "inputTokens": 426,
+    "outputTokens": 15015,
+    "cacheCreationTokens": 89262,
+    "cacheReadTokens": 1322418,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.19989
+    "totalCostUsd": 0.31932
   }
 }
