@@ -1,3 +1,5 @@
+import { resolveComputerUseMethodName } from './computer-run'
+
 /**
  * Computer Use Permission & Request Types
  *
@@ -84,7 +86,7 @@ const COMPUTER_USE_METHODS: Record<string, string> = {
 
 export function computerUseMethodFromToolName(toolName: string): string {
   const suffix = toolName.replace('mcp__computer-use__computer_', '')
-  return COMPUTER_USE_METHODS[suffix] ?? suffix
+  return COMPUTER_USE_METHODS[suffix] ?? resolveComputerUseMethodName(suffix)
 }
 
 /** Duration of "timed" permission grants in milliseconds (15 minutes) */

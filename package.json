@@ -62,7 +62,7 @@
     "@hono/node-server": "^1.13.7",
     "@hono/zod-validator": "^0.8.0",
     "@sentry/node": "^10.48.0",
-    "@skillful-agents/agent-computer": "^0.0.12",
+    "@skillful-agents/agent-computer": "^0.0.13",
     "@slack/bolt": "^4.7.0",
     "archiver": "^7.0.1",
     "better-sqlite3": "^12.8.0",
@@ -297,7 +297,10 @@
             ]
           }
         ]
-      }
+      },
+      "files": [
+        "!node_modules/@skillful-agents/agent-computer/bin/ac-core-win32-*"
+      ]
     },
     "win": {
       "target": [
@@ -377,7 +380,11 @@
         "certificateProfileName": "gamut-windows",
         "codeSigningAccountName": "Gamut",
         "publisherName": "Datawizz Inc."
-      }
+      },
+      "files": [
+        "!node_modules/@skillful-agents/agent-computer/bin/ac-core-darwin-*",
+        "!node_modules/@skillful-agents/agent-computer/bin/ac-core-win32-!(${arch}).exe"
+      ]
     },
     "nsis": {
       "oneClick": false,
