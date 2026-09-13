@@ -6,6 +6,7 @@
  */
 
 import { AC, formatOutput } from '@skillful-agents/agent-computer'
+import { COMPUTER_RUN_METHOD, unwrapComputerRun } from './types'
 import * as fs from 'fs'
 import { createRequire } from 'module'
 import * as path from 'path'
@@ -44,9 +45,25 @@ export async function executeComputerUseCommand(
   method: string,
   params: Record<string, unknown>,
 ): Promise<string> {
+  // Requests are normally unwrapped when they arrive from the container, but
+  // this is the last stop for every path, so be safe here too.
+  ;({ method, params } = unwrapComputerRun(method, params))
   const ac = getAC()
   const result = await dispatchMethod(ac, method, params)
   return formatResult(method, result)
+}
+
+/**
+ * The SDK keeps its JSON-RPC bridge private, but the daemon understands far
+ * more methods than the SDK wraps (clipboard_read, drag, wait, box, children,
+ * ...). The container's `computer_run` escape hatch exists precisely to reach
+ * those, so forward anything without a wrapper straight to the bridge.
+ */
+type RawBridge = { send(method: string, params?: Record<string, unknown>): Promise<unknown> }
+
+function rawBridge(ac: AC): RawBridge | undefined {
+  const bridge = (ac as unknown as { bridge?: unknown }).bridge
+  return bridge && typeof (bridge as RawBridge).send === 'function' ? (bridge as RawBridge) : undefined
 }
 
 /**
@@ -213,8 +230,15 @@ async function dispatchMethod(
       }
     }
 
-    default:
-      throw new Error(`Unknown computer use method: ${method}`)
+    default: {
+      const bridge = rawBridge(ac)
+      // `run` is the escape hatch itself; reaching here means it carried no
+      // usable `command`, and it is never a daemon method.
+      if (!bridge || method === COMPUTER_RUN_METHOD || !/^[a-z][a-z0-9_]*$/.test(method)) {
+        throw new Error(`Unknown computer use method: ${method}`)
+      }
+      return bridge.send(method, params)
+    }
   }
 }
 

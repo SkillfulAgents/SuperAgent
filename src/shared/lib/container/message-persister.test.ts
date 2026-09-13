@@ -109,6 +109,7 @@ vi.mock('@shared/lib/computer-use/types', () => ({
       : 'use_application'
   )),
   resolveTargetApp: vi.fn(() => undefined),
+  unwrapComputerRun: vi.fn((method: string, params: Record<string, unknown>) => ({ method, params })),
   READ_ONLY_METHODS: new Set(['apps', 'windows', 'status', 'displays', 'permissions']),
   TIMED_GRANT_DURATION_MS: 15 * 60 * 1000,
 }))

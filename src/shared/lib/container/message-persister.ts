@@ -92,7 +92,7 @@ import { sessionCapabilityGrantsResponseSchema } from '@shared/lib/config/capabi
 import { getActiveLlmProvider, getModelContextWindow } from '@shared/lib/llm-provider'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { resolveAppFromWindowRef } from '@shared/lib/computer-use/executor'
-import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp, type ComputerUsePermissionLevel } from '@shared/lib/computer-use/types'
+import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp, unwrapComputerRun, type ComputerUsePermissionLevel } from '@shared/lib/computer-use/types'
 import { getAgentSessionsDir, getSessionJsonlPath } from '@shared/lib/utils/file-storage'
 import { makeThinkingBlockId } from '@shared/lib/utils/thinking-block-id'
 import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
@@ -5724,7 +5724,7 @@ ${continuation}`
   ): Promise<void> {
     try {
       // Extract AC method from tool name: mcp__computer-use__computer_launch -> launch.
-      const method = computerUseMethodFromToolName(toolName)
+      let method = computerUseMethodFromToolName(toolName)
 
       // The toolInput is the raw MCP tool input (e.g., { name: "Calculator" } for computer_launch)
       // Empty input is valid for tools like screenshot, apps, ungrab that take no required params
@@ -5735,6 +5735,10 @@ ${continuation}`
         console.error('[MessagePersister] Failed to parse computer use request:', toolInput)
         return
       }
+
+      // computer_run("clipboard_read", {...}) is really a clipboard_read request:
+      // unwrap it so the permission level, approval card and executor see that.
+      ;({ method, params } = unwrapComputerRun(method, params))
 
       // Check platform support — computer use requires macOS or Windows (skip in E2E mock mode)
       if (process.env.E2E_MOCK !== 'true' && process.platform !== 'darwin' && process.platform !== 'win32') {
