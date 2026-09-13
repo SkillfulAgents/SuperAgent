@@ -113,13 +113,19 @@ export class AgentPage {
    * expansion — so callers that need to reach session sub-items must
    * expand explicitly.
    *
-   * No-op if the agent is already expanded.
+   * The chevron renders once the agent has something to expand. A session
+   * created through the API a moment ago is listed by the sessions endpoint
+   * as soon as its metadata is written but counted by the agents endpoint
+   * only once its transcript lands, so the chevron can appear a beat after
+   * the row does: wait for it rather than probe once. No-op if the agent is
+   * already expanded.
    */
   async expandAgent(name: string) {
     const li = this.getAgentLi(name)
-    const expandChevron = li.locator('button[aria-label="Expand"]').first()
-    if (await expandChevron.isVisible({ timeout: 500 }).catch(() => false)) {
-      await expandChevron.click()
+    const chevron = li.locator('button[aria-label="Expand"], button[aria-label="Collapse"]').first()
+    await chevron.waitFor({ state: 'visible', timeout: 15000 })
+    if ((await chevron.getAttribute('aria-label')) === 'Expand') {
+      await chevron.click()
     }
   }
 
