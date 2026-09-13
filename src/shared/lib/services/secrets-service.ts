@@ -246,7 +246,7 @@ export async function updateSecret(
   // A missing .env means there cannot be a source secret. Check before taking
   // the lock so a direct service call for an unknown agent does not create an
   // otherwise-empty agents/<slug>/workspace directory as a side effect.
-  if (!(await agentRegistry.get(agentSlug).files.stat('.env'))) {
+  if ((await agentRegistry.get(agentSlug).files.stat('.env'))?.kind !== 'file') {
     return { status: 'not_found' }
   }
 
@@ -285,7 +285,7 @@ export async function deleteSecret(agentSlug: string, envVar: string): Promise<b
   // BEFORE the locked update — it creates the workspace dir for its lock file, so
   // a call for an unknown agent would otherwise leave an empty workspace behind
   // instead of answering false (→ the route's 404 "Secret not found").
-  if (!(await agentRegistry.get(agentSlug).files.stat('.env'))) {
+  if ((await agentRegistry.get(agentSlug).files.stat('.env'))?.kind !== 'file') {
     return false
   }
   return updateSecrets(agentSlug, (secrets, current) => {
@@ -308,7 +308,7 @@ export async function deleteSecret(agentSlug: string, envVar: string): Promise<b
  * Check if any secrets exist for an agent
  */
 export async function hasSecrets(agentSlug: string): Promise<boolean> {
-  if (!(await agentRegistry.get(agentSlug).files.stat('.env'))) {
+  if ((await agentRegistry.get(agentSlug).files.stat('.env'))?.kind !== 'file') {
     return false
   }
 

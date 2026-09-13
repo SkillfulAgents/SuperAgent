@@ -11,7 +11,7 @@ import * as os from 'os'
 // whose module graph is heavy, and a dynamic import inside the first test
 // counted against that test's timeout. The data dir is read per call, so the
 // per-test SUPERAGENT_DATA_DIR still applies.
-import { setSecret, deleteSecret, listSecrets, getSecretEnvVars } from './secrets-service'
+import { setSecret, deleteSecret, updateSecret, listSecrets, getSecretEnvVars } from './secrets-service'
 
 let tmpDir: string
 
@@ -177,5 +177,17 @@ describe('atomic .env writes', () => {
     await expect(deleteSecret('ghost-agent', 'ANY_VAR')).resolves.toBe(false)
     // And it didn't create the workspace dir or a stray lockfile as a side effect.
     expect(fs.existsSync(path.dirname(envPath('ghost-agent')))).toBe(false)
+  })
+
+  it('a directory in place of .env holds no secret: update answers not_found and delete false', async () => {
+    // Something is there, but it is not the file: for a secret lookup that is
+    // the same as nothing (→ route 404), not a failure to read it (→ 500).
+    fs.mkdirSync(envPath('dir-agent'), { recursive: true, mode: 0o755 })
+    fs.writeFileSync(path.join(envPath('dir-agent'), 'inner.txt'), 'x')
+
+    await expect(updateSecret('dir-agent', 'NOPE', { value: '1' })).resolves.toEqual({ status: 'not_found' })
+    await expect(deleteSecret('dir-agent', 'NOPE')).resolves.toBe(false)
+    expect(fs.statSync(envPath('dir-agent')).mode & 0o777).toBe(0o755)
+    expect(fs.readFileSync(path.join(envPath('dir-agent'), 'inner.txt'), 'utf-8')).toBe('x')
   })
 })
