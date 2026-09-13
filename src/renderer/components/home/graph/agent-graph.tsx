@@ -49,7 +49,7 @@ import {
 import { AgentGraphNode, ResourceGraphNode, openGraphNode } from './graph-nodes'
 import { ElbowEdge, type EdgeGeometryOverride, type GraphEdge } from './graph-edges'
 import { computeLayout, type XY } from './layout'
-import { useGraphData, type GraphEdgeSpec, type GraphNodeData } from './use-graph-data'
+import { useGraphData, savedEdgeGeometryFor, type GraphEdgeSpec, type GraphNodeData } from './use-graph-data'
 
 type RfNode = Node<GraphNodeData>
 
@@ -538,12 +538,13 @@ export function AgentGraph() {
       seen.add(e.id)
       const hovered = e.id === hoveredEdgeId
       const selected = selectedEdgeIds.has(e.id)
+      const savedGeometry = savedEdgeGeometryFor(savedEdgeGeometry, e)
       // Everything this edge's output is derived from, compared by identity.
       const deps = [
         e,
         hovered,
         selected,
-        savedEdgeGeometry?.[e.id],
+        savedGeometry,
         draggedEdgeGeometry[e.id],
         showDetails,
         commitEdgeGeometry,
@@ -570,7 +571,7 @@ export function AgentGraph() {
         // Gates the Delete/Backspace path (React Flow skips non-deletables).
         deletable: !!e.deletable,
         data: {
-          geometry: { ...savedEdgeGeometry?.[e.id], ...draggedEdgeGeometry[e.id] },
+          geometry: { ...savedGeometry, ...draggedEdgeGeometry[e.id] },
           // No chip on a permission edge: there is nothing to count.
           count: e.variant === 'permission' ? undefined : (e.weight ?? 0),
           unit: EDGE_UNIT[nodeKind(e.target)] ?? 'run',
