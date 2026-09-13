@@ -2670,21 +2670,16 @@ describe('bookmarked workspace folder file actions', () => {
     expect(mockFsUnlink).not.toHaveBeenCalled()
   })
 
-  it('propagates a container-side leaf symlink rejection', async () => {
+  it('answers a dangling link at the leaf as not found without asking the container', async () => {
     mockFsReadFile.mockResolvedValueOnce(jsonDoc([
       { name: 'Reports', folder: '/workspace/reports' },
     ]))
     // A dangling link: the host sees nothing at the leaf (its realpath fails;
-    // every other path, the bookmarks file included, resolves to itself), so
-    // the container is left to refuse it.
+    // every other path, the bookmarks file included, resolves to itself).
     mockFsRealpath.mockImplementation(async (value: unknown) => {
       if (value === '/mock/workspace/reports/linked.txt') throw enoent()
       return value
     })
-    mockContainerFetch.mockResolvedValueOnce(new Response(
-      JSON.stringify({ error: 'File not found' }),
-      { status: 404, headers: { 'Content-Type': 'application/json' } },
-    ))
 
     const res = await app.request('http://localhost/api/agents/test-agent/folders/file', {
       method: 'DELETE',
@@ -2696,7 +2691,35 @@ describe('bookmarked workspace folder file actions', () => {
     })
 
     expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Folder or file not found' })
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+    expect(mockEnsureRunning).not.toHaveBeenCalled()
     expect(mockFsUnlink).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['DELETE', { root: '/workspace/reports', path: '/workspace/reports/gone.txt' }],
+    ['PATCH', { root: '/workspace/reports', path: '/workspace/reports/gone.txt', name: 'renamed.txt' }],
+  ] as const)('%s of an entry that is not there is answered here, without waking the container', async (method, body) => {
+    // The container does the rename or delete, so it has to be running for
+    // one; a stale browser acting on an entry that is already gone must not
+    // boot it for nothing.
+    seedBookmarkedFile()
+    mockFsRealpath.mockImplementation(async (value: unknown) => {
+      if (value === '/mock/workspace/reports/gone.txt') throw enoent()
+      return value
+    })
+
+    const res = await app.request('http://localhost/api/agents/test-agent/folders/file', {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Folder or file not found' })
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+    expect(mockEnsureRunning).not.toHaveBeenCalled()
   })
 })
 
