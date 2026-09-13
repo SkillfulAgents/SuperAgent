@@ -5934,6 +5934,10 @@ agents.get('/:id/skills/:dir/files', AgentAdmin(), async (c) => {
 
     const files: Array<{ path: string; type: 'file' | 'directory' }> = []
 
+    // The actor never lists a symbolic link, so one inside a skill does not
+    // appear here (the plain directory read listed it as a file). A link
+    // only gets into a skill by hand or by the agent: a zip import and a
+    // skillset install both write the linked file itself in its place.
     const walk = async (currentDir: string, prefix: string) => {
       for (const entry of await actor.files.list(currentDir)) {
         const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name
