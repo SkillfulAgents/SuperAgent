@@ -241,8 +241,7 @@ export async function createAgent(input: CreateAgentInput): Promise<ApiAgent> {
   const slug = await generateAgentId()
 
   // Create directory structure
-  const workspaceDir = agentRegistry.get(slug).files.workspacePath()
-  await ensureDirectory(workspaceDir)
+  await agentRegistry.get(slug).files.mkdir('')
 
   // Create CLAUDE.md
   const claudeMdPath = getAgentClaudeMdPath(slug)
@@ -383,8 +382,7 @@ export async function createAgentFromExistingWorkspace(rawName: string): Promise
   const name = String(rawName)
   const slug = await generateAgentId()
 
-  const workspaceDir = agentRegistry.get(slug).files.workspacePath()
-  await ensureDirectory(workspaceDir)
+  await agentRegistry.get(slug).files.mkdir('')
 
   // Create a basic CLAUDE.md (may be overwritten by template)
   const claudeMdPath = getAgentClaudeMdPath(slug)

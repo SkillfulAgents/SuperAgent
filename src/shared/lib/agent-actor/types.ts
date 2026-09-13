@@ -417,12 +417,71 @@ export interface UsageOps {
   daily(options?: CommonLoadOptions): Promise<DailyUsageData[]>
 }
 
+export type FileKind = 'file' | 'directory'
+
+/** One entry of a directory listing. `path` is the entry's own workspace path. */
+export interface FileEntry {
+  name: string
+  path: string
+  kind: FileKind
+}
+
+export interface FileStat {
+  kind: FileKind
+  size: number
+  mtimeMs: number
+  /**
+   * The permission bits (`0o777`-masked), so a copy or an export can carry
+   * them: a script that is executable in the workspace stays executable
+   * where it lands. Absent from a store that keeps no modes.
+   */
+  mode?: number
+}
+
+/** A closed byte range: both ends inclusive, as in an HTTP Range header. */
+export interface ByteRange {
+  start: number
+  end: number
+}
+
 /**
- * Workspace files. The `/files/*` route bodies (list, stat, read, write,
- * delete, mkdir) move in here when that route is ported; until then this
- * group only answers where the workspace is.
+ * Workspace files, by operation. Every path is a workspace path (see
+ * `workspace-path.ts`): relative to the workspace root, posix, `/workspace/…`
+ * accepted. Containment is lexical and lives inside the implementation: a
+ * path that would leave the workspace (`..`, an absolute path) throws
+ * `WorkspaceFileError` and touches nothing. Links are followed the way the
+ * store follows them; `resolve` tells a caller where a path really leads.
+ * Symbolic links are never listed.
  */
 export interface FileOps {
-  /** `getAgentWorkspaceDir` — escape hatch, local runtime only; counted by the lint fence. */
+  /** Immediate children of a directory (`''` is the root). Absent → `not-found`; a file → `not-a-directory`. */
+  list(dir: string): Promise<FileEntry[]>
+  /** What is at a path, or null when nothing is. */
+  stat(path: string): Promise<FileStat | null>
+  /**
+   * The workspace path of what is really at `path`, links followed: null
+   * when nothing is there, `outside-workspace` when it leads out of the
+   * workspace. A store without links echoes the normalized path. For a
+   * caller that serves a file by its real location or scopes a shared
+   * sub-tree by it.
+   */
+  resolve(path: string): Promise<string | null>
+  /** A file's bytes as a stream, optionally one closed byte range. Absent → `not-found`; a directory → `not-a-file`. */
+  read(path: string, range?: ByteRange): Promise<ReadableStream<Uint8Array>>
+  /** A whole small file, or null when absent. A directory → `not-a-file`. */
+  getDoc(path: string): Promise<Uint8Array | null>
+  /** Replace a whole file atomically; missing parent directories are created. */
+  putDoc(path: string, bytes: Uint8Array | string): Promise<void>
+  /** Write a file of any size from a stream; parents are created; nothing is left behind on failure. */
+  write(path: string, body: ReadableStream<Uint8Array> | Uint8Array): Promise<{ size: number }>
+  /** Remove a file, or a directory tree with `recursive`. An absent path is a no-op. */
+  delete(path: string, options?: { recursive?: boolean }): Promise<void>
+  /** Create a directory and any missing parents. */
+  mkdir(path: string): Promise<void>
+  /**
+   * `getAgentWorkspaceDir` — the one remaining path-returning escape hatch,
+   * local runtime only, counted by the lint fence. Its last caller is a
+   * transcript read that the next PR moves behind the actor; it goes then.
+   */
   workspacePath(): string
 }

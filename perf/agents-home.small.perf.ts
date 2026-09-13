@@ -10,11 +10,19 @@ import { defineHomeScenarios } from './home-scenarios'
 // reads (the iOS poll) and the sessions page come from the cache. Wall is
 // bounded by the per-agent critical path, not the agent count: the agent
 // list, artifact lookups and per-request DB reads overlap.
+//
+// Every workspace read goes through the actor's file operations, which cost
+// what the plain reads they replace cost: an existence probe is a stat
+// where it used to be an access call. The realpath calls are the artifact
+// readers asking where the artifacts directory and each artifact really
+// are, the link check the widget service always made; it used to make it
+// synchronously (realpathSync, twice per path), which this harness does not
+// count, and now asks the actor once per directory, which it does.
 defineHomeScenarios('small', {
-  agentsCold: { totalOps: 317, ops: { stat: 275 }, wallMs: 240 },
-  agentsWarm: { totalOps: 52, ops: { stat: 15 }, wallMs: 110 },
-  homeCold: { totalOps: 352, ops: { stat: 280 }, wallMs: 370 },
-  homeWarm: { totalOps: 87, ops: { stat: 20 }, wallMs: 240 },
+  agentsCold: { totalOps: 332, ops: { stat: 285, realpath: 15 }, wallMs: 240 },
+  agentsWarm: { totalOps: 67, ops: { stat: 25, realpath: 15 }, wallMs: 160 },
+  homeCold: { totalOps: 367, ops: { stat: 290, realpath: 15 }, wallMs: 370 },
+  homeWarm: { totalOps: 102, ops: { stat: 30, realpath: 15 }, wallMs: 260 },
   sessionsPage: { totalOps: 3, ops: { stat: 2 }, wallMs: 70 },
   sessionsNotable: { totalOps: 1, ops: { stat: 1 }, wallMs: 40 },
 })

@@ -20,7 +20,7 @@ import { requestCardFromRegistry, reviewCardFromRegistry } from './request-card'
 import { buildAgentContactCard, resolveAgentWebUrl } from './contact-card'
 import { getAgent } from '@shared/lib/services/agent-service'
 import { displaySlug } from '@shared/lib/utils/file-storage'
-import { agentRegistry, type AgentActor } from '@shared/lib/agent-actor'
+import { agentRegistry, WorkspaceFileError, workspaceBasename, type AgentActor } from '@shared/lib/agent-actor'
 import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
 import { consumeOrCancelAwaitingInput } from './resolve-awaiting-input'
 import {
@@ -40,7 +40,7 @@ import {
   resolveActiveSession,
   getLastDisplayName,
 } from '@shared/lib/services/chat-integration-session-service'
-import { assertPathWithinDir, isPathWithinDir, sanitizeUploadFilename, withUploadTimestamp } from '@shared/lib/utils/path-safety'
+import { sanitizeUploadFilename, withUploadTimestamp } from '@shared/lib/utils/path-safety'
 import { isHostOrSubdomain, tryParseUrl } from '@shared/lib/utils/url-safety'
 import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import type { ChatIntegration } from '@shared/lib/db/schema'
@@ -1538,23 +1538,13 @@ class ChatIntegrationManager {
 
   /** Write a file to the agent's workspace uploads directory. */
   private async writeToWorkspace(agentSlug: string, filename: string, data: Buffer): Promise<string> {
-    const path = await import('path')
-    const fs = await import('fs')
-
     // External attachment names are attacker-controlled — sanitize to a safe
-    // basename so `../` segments cannot escape the uploads directory (SUP-231).
+    // basename so `../` segments cannot leave the uploads directory. The
+    // actor's containment keeps the write inside the workspace, but it does
+    // not stop a name from landing one level up, so the basename is still ours.
     const safeName = sanitizeUploadFilename(filename)
     const uploadName = withUploadTimestamp(safeName)
-    const workspaceDir = agentRegistry.get(agentSlug).files.workspacePath()
-    const uploadsDir = path.resolve(workspaceDir, 'uploads')
-    const fullPath = path.resolve(uploadsDir, uploadName)
-
-    // Defense in depth: never write outside uploads even if sanitization is
-    // weakened in the future. Throws on escape.
-    assertPathWithinDir(uploadsDir, fullPath, 'Resolved upload path escapes the uploads directory')
-
-    await fs.promises.mkdir(uploadsDir, { recursive: true })
-    await fs.promises.writeFile(fullPath, data)
+    await agentRegistry.get(agentSlug).files.putDoc(`uploads/${uploadName}`, data)
 
     return `/workspace/uploads/${uploadName}`
   }
@@ -2243,40 +2233,33 @@ async function sendDeliveredFile(
   filePath: string,
   description?: string,
 ): Promise<void> {
-  const path = await import('path')
-  const fs = await import('fs')
-
-  // filePath is like /workspace/output.png — resolve to host filesystem
-  const relativePath = filePath.replace(/^\/workspace\//, '')
-  const workspaceDir = agentRegistry.get(managed.integration.agentSlug).files.workspacePath()
-  const fullPath = path.resolve(workspaceDir, relativePath)
-
-  // Security: ensure path doesn't escape workspace. A bare startsWith() check is
-  // unsafe — a sibling workspace sharing the path prefix (agent vs agent-victim)
-  // would pass — so use prefix-safe isPathWithinDir (path.relative based).
-  if (!isPathWithinDir(workspaceDir, fullPath)) {
-    console.error('[ChatIntegrationManager] deliver_file path escapes workspace:', filePath)
-    reportError(new Error('Path traversal attempt in deliver_file'), 'deliver-file-security', { filePath, agentSlug: managed.integration.agentSlug }, 'warning')
-    return
-  }
-
   try {
-    const fileData = await fs.promises.readFile(fullPath)
-    const filename = path.basename(fullPath)
-    await managed.connector.sendFile(managed.chatId, fileData, filename, description)
-  } catch (err) {
-    console.error('[ChatIntegrationManager] Failed to send delivered file:', err)
-    // ENOENT is benign: the file isn't host-visible (e.g. a not-yet-flushed
-    // write across the VM file-share). The text fallback below still reaches the
-    // user, so don't page Sentry — log everything else at 'warning'.
-    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
-      reportError(err, 'send-delivered-file', { integrationId: managed.integration.id, provider: managed.integration.provider, filePath }, 'warning')
+    // filePath is a workspace path as the agent wrote it (`/workspace/output.png`).
+    // The actor keeps it inside the workspace: a path that would leave it —
+    // through `..` or a link — is refused (status 400) before anything is read.
+    const fileData = await agentRegistry.get(managed.integration.agentSlug).files.getDoc(filePath)
+    if (fileData === null) {
+      // Benign: the file isn't host-visible (e.g. a not-yet-flushed write across
+      // the VM file-share). The text fallback below still reaches the user, so
+      // don't page Sentry.
+      console.error('[ChatIntegrationManager] Delivered file not found:', filePath)
+    } else {
+      await managed.connector.sendFile(managed.chatId, Buffer.from(fileData), workspaceBasename(filePath), description)
+      return
     }
-    // Fall back to a text message with the file path
-    await managed.connector.sendMessage(managed.chatId, {
-      text: `📎 File ready: \`${filePath}\`${description ? ` — ${description}` : ''}\n(File delivery to chat not available — download from the UI)`,
-    })
+  } catch (err) {
+    if (err instanceof WorkspaceFileError && err.status === 400) {
+      console.error('[ChatIntegrationManager] deliver_file path escapes workspace:', filePath)
+      reportError(new Error('Path traversal attempt in deliver_file'), 'deliver-file-security', { filePath, agentSlug: managed.integration.agentSlug }, 'warning')
+      return
+    }
+    console.error('[ChatIntegrationManager] Failed to send delivered file:', err)
+    reportError(err, 'send-delivered-file', { integrationId: managed.integration.id, provider: managed.integration.provider, filePath }, 'warning')
   }
+  // Fall back to a text message with the file path
+  await managed.connector.sendMessage(managed.chatId, {
+    text: `📎 File ready: \`${filePath}\`${description ? ` — ${description}` : ''}\n(File delivery to chat not available — download from the UI)`,
+  })
 }
 
 // ── Exported pure functions (testable) ────────────────────────────────
