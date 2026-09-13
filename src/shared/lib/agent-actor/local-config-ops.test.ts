@@ -54,6 +54,24 @@ describe('LocalConfigOps — what is local about it', () => {
     }
   })
 
+  it('never heals the mode of a directory planted as .env', async () => {
+    const h = await harness()
+    try {
+      // The heal is for the file the container writes; anything else at that
+      // name is not ours to touch. A directory losing its execute bits would
+      // make everything inside it unreachable, on every secrets read.
+      const envDir = path.join(h.root, '.env')
+      await fs.promises.mkdir(envDir, { recursive: true, mode: 0o755 })
+      await fs.promises.writeFile(path.join(envDir, 'inner.txt'), 'x')
+
+      await expect(h.config.get('secrets')).rejects.toMatchObject({ code: 'not-a-file' })
+      expect((await fs.promises.stat(envDir)).mode & 0o777).toBe(0o755)
+      expect(await fs.promises.readFile(path.join(envDir, 'inner.txt'), 'utf-8')).toBe('x')
+    } finally {
+      await h.dispose()
+    }
+  })
+
   it('serializes .env updates with the on-disk lock the container honours', async () => {
     const h = await harness()
     try {
