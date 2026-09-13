@@ -44,6 +44,7 @@ import type {
 } from '@shared/lib/types/agent'
 import type { MediaRef } from '@shared/lib/services/session-media'
 import type { WorkflowTree } from '@shared/lib/workflows/workflow-schemas'
+import type { ConfigDoc, ConfigDocId } from './config-schema'
 import type {
   AutomationStatusResult,
   ListSessionsOptions,
@@ -88,6 +89,25 @@ export interface AgentActor {
   readonly inputs: InputOps
   readonly usage: UsageOps
   readonly files: FileOps
+  readonly config: ConfigOps
+}
+
+/**
+ * Which agents exist. Host level, like `ContainerHost`: an actor is about one
+ * agent, this is about the set, and creating or removing an agent is an
+ * operation on the set. Reading or writing an agent's contents goes through
+ * its actor.
+ */
+export interface AgentCatalog {
+  /** Every agent id on this host. Not filtered for validity; callers check what they need. */
+  list(): Promise<AgentSlug[]>
+  exists(slug: AgentSlug): Promise<boolean>
+  /** A fresh, unused agent id. Nothing is created until the actor writes to it. */
+  mint(): Promise<AgentSlug>
+  /** The agent id for a display slug or an id, or null when there is no such agent. */
+  resolve(input: string): Promise<AgentSlug | null>
+  /** Remove an agent and everything it owns. The caller stops its container first. */
+  remove(slug: AgentSlug): Promise<void>
 }
 
 export interface ContainerOps {
@@ -496,6 +516,35 @@ export interface ByteRange {
   end: number
 }
 
+export interface WriteOptions {
+  /**
+   * File mode to apply. Advisory: a filesystem implementation applies it (the
+   * container must be able to read `.env`), anything else ignores it.
+   */
+  mode?: number
+}
+
+/**
+ * The agent's configuration documents (see `config-schema.ts`), typed and
+ * validated. A JSON document that does not parse or fit its schema is
+ * `corrupt`: `get` throws `ConfigDocError` and an `update` aborts before
+ * writing, so a broken file is never silently replaced.
+ */
+export interface ConfigOps {
+  /** The document, or null when it does not exist yet. */
+  get<K extends ConfigDocId>(id: K): Promise<ConfigDoc<K> | null>
+  /** Validate and store a whole document atomically. */
+  put<K extends ConfigDocId>(id: K, doc: ConfigDoc<K>): Promise<void>
+  /**
+   * Read-modify-write, serialized per document: no two updates interleave,
+   * and for a document another process also writes, neither do theirs.
+   */
+  update<K extends ConfigDocId>(
+    id: K,
+    mutate: (current: ConfigDoc<K> | null) => ConfigDoc<K> | Promise<ConfigDoc<K>>,
+  ): Promise<ConfigDoc<K>>
+}
+
 /**
  * Workspace files, by operation. Every path is a workspace path (see
  * `workspace-path.ts`): relative to the workspace root, posix, `/workspace/…`
@@ -523,9 +572,9 @@ export interface FileOps {
   /** A whole small file, or null when absent. A directory → `not-a-file`. */
   getDoc(path: string): Promise<Uint8Array | null>
   /** Replace a whole file atomically; missing parent directories are created. */
-  putDoc(path: string, bytes: Uint8Array | string): Promise<void>
+  putDoc(path: string, bytes: Uint8Array | string, options?: WriteOptions): Promise<void>
   /** Write a file of any size from a stream; parents are created; nothing is left behind on failure. */
-  write(path: string, body: ReadableStream<Uint8Array> | Uint8Array): Promise<{ size: number }>
+  write(path: string, body: ReadableStream<Uint8Array> | Uint8Array, options?: WriteOptions): Promise<{ size: number }>
   /** Remove a file, or a directory tree with `recursive`. An absent path is a no-op. */
   delete(path: string, options?: { recursive?: boolean }): Promise<void>
   /** Create a directory and any missing parents. */

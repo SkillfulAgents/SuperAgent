@@ -31,7 +31,8 @@ import { ensureLimaReady } from './lima-container-client'
 import type { ImagePullProgress, RuntimeReadiness } from './types'
 import { messagePersister } from './message-persister'
 import { getSettings, mutateSettings } from '@shared/lib/config/settings'
-import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
+import path from 'path'
+import { getAgentWorkspaceDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 
 /** Interval for syncing container status with reality (in ms). Default: 300 seconds */
@@ -101,6 +102,14 @@ export class ContainerHost {
    */
   workspaceHostPath(slug: string): string {
     return getAgentWorkspaceDir(slug)
+  }
+
+  /**
+   * The agent's directory on this machine, above its workspace. Host-only, for
+   * the one thing kept there: the host folders bind-mounted into the container.
+   */
+  agentHostPath(slug: string): string {
+    return path.join(getAgentsDataDir(), slug)
   }
 
   // Forget every runtime (e.g., when the container runner setting changes).

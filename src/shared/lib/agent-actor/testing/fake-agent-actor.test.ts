@@ -11,6 +11,14 @@ describe('createFakeAgentActor', () => {
     expect(actor.sessions.exists).not.toHaveBeenCalled()
   })
 
+  it('covers every group of the contract, config included', async () => {
+    const actor = createFakeAgentActor('a')
+    await actor.config.get('instructions')
+    expect(actor.config.get).toHaveBeenCalledWith('instructions')
+    expect(actor.usage.daily).not.toHaveBeenCalled()
+    expect(await actor.files.stat('x')).toBeUndefined()
+  })
+
   it('honours overrides, including nested input groups', async () => {
     const exists = vi.fn().mockResolvedValue(true)
     const submit = vi.fn().mockReturnValue(true)
