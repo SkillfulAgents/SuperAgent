@@ -384,6 +384,26 @@ export function buildGraph(input: {
   return { nodes, edges }
 }
 
+/**
+ * The geometry saved for an edge: under its id, or under the id an earlier
+ * build gave the same agent pair. Agent↔agent edges used to be two kinds, a
+ * permission line (`a~b`) that a recorded invocation turned into an activity
+ * line (`a=b`), and a route or anchor the user dragged was saved under
+ * whichever id the pair had at the time. There is one kind now, so a pair's
+ * saved geometry is looked up under both; the next drag saves it under the
+ * current id, and the persist prunes the old one.
+ */
+export function savedEdgeGeometryFor<T>(
+  saved: Record<string, T> | undefined,
+  edge: Pick<GraphEdgeSpec, 'id' | 'variant'>,
+): T | undefined {
+  if (!saved) return undefined
+  const own = saved[edge.id]
+  if (own !== undefined) return own
+  if (edge.variant !== 'permission') return undefined
+  return saved[edge.id.replace('~', '=')]
+}
+
 // ── Hook ─────────────────────────────────────────────────────────────────
 
 export function useGraphData(): GraphModel & { isLoading: boolean; topologyFailed: boolean } {

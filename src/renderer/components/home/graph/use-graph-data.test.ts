@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildGraph, nodeId } from './use-graph-data'
+import { buildGraph, nodeId, savedEdgeGeometryFor } from './use-graph-data'
 import type { ApiAgent } from '@shared/lib/types/api'
 import type { ConnectedAccount } from '@renderer/hooks/use-connected-accounts'
 import type { RemoteMcpServer } from '@renderer/hooks/use-remote-mcps'
@@ -25,6 +25,28 @@ const emptyTopology: HomeGraphData = {
   accountUsage: {},
   mcpUsage: {},
 }
+
+describe('savedEdgeGeometryFor', () => {
+  const pair = { id: 'agent:a~agent:b', variant: 'permission' as const }
+  const legacy = { 'agent:a=agent:b': { sourceAngle: 270 } }
+
+  it('answers the geometry saved under the edge\'s own id', () => {
+    const own = { sourceAngle: 90 }
+    expect(savedEdgeGeometryFor({ 'agent:a~agent:b': own, ...legacy }, pair)).toBe(own)
+  })
+
+  it('falls back to the id the pair had when its invocations drew it as an activity line', () => {
+    // A route the user dragged before the graph drew every agent pair as one
+    // permission line must not snap back to the auto route after upgrade.
+    expect(savedEdgeGeometryFor(legacy, pair)).toEqual({ sourceAngle: 270 })
+  })
+
+  it('does not reach for the old id on any other kind of edge, or with nothing saved', () => {
+    expect(savedEdgeGeometryFor({ 'agent:a=trigger:t': { sourceAngle: 1 } }, { id: 'agent:a~trigger:t', variant: 'trigger' })).toBeUndefined()
+    expect(savedEdgeGeometryFor({}, pair)).toBeUndefined()
+    expect(savedEdgeGeometryFor(undefined, pair)).toBeUndefined()
+  })
+})
 
 describe('buildGraph', () => {
   it('renders nodes without edges while the topology is still loading', () => {
