@@ -202,6 +202,31 @@ describe('LocalFileOps — links and host files', () => {
     expect(fs.existsSync(path.join(outside, 'assembled'))).toBe(true)
     expect(fs.existsSync(path.join(outside, 'report.pdf'))).toBe(false)
   })
+
+  it('write rejects, without an unhandled error, when the source fails before the destination is open', async () => {
+    // The zip reader fails an entry's stream the moment it inflates past its
+    // declared size, which can be before the writer has opened its temp file.
+    // A stream failing with nobody listening takes the whole process down.
+    const uncaught: unknown[] = []
+    const record = (error: unknown) => {
+      uncaught.push(error)
+    }
+    process.on('uncaughtException', record)
+    try {
+      const failing = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.error(new Error('entry inflated past its declared size'))
+        },
+      })
+      await expect(files.write('imported.bin', failing)).rejects.toThrow('entry inflated past its declared size')
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(uncaught).toEqual([])
+      expect(await files.stat('imported.bin')).toBeNull()
+      expect((await fs.promises.readdir(root)).filter((name) => name.includes('.tmp'))).toEqual([])
+    } finally {
+      process.off('uncaughtException', record)
+    }
+  })
 })
 
 describe('createLocalFileOps', () => {
