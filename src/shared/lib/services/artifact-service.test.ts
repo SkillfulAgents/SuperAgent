@@ -317,7 +317,18 @@ describe('artifact-service', () => {
     it('rejects a slug that is not a plain artifact directory name', async () => {
       createArtifactDir('test-agent', 'sales', { name: 'Sales' })
       await expect(renameArtifactOnFilesystem('test-agent', '../sales', 'x')).rejects.toThrow('Invalid artifact slug')
-      await expect(renameArtifactOnFilesystem('test-agent', 'Sales', 'x')).rejects.toThrow('Invalid artifact slug')
+      await expect(renameArtifactOnFilesystem('test-agent', 'sales/..', 'x')).rejects.toThrow('Invalid artifact slug')
+    })
+
+    it('renames an artifact whose directory name is not a widget slug, as the listing shows it', async () => {
+      // A directory the agent made by hand: listed like any other artifact,
+      // so it has to be manageable like any other.
+      const dir = createArtifactDir('test-agent', 'Bad_Slug', { name: 'Hand made' })
+      expect((await listArtifactsFromFilesystem('test-agent')).map((a) => a.slug)).toEqual(['Bad_Slug'])
+
+      await renameArtifactOnFilesystem('test-agent', 'Bad_Slug', 'Renamed')
+
+      expect(JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf-8')).name).toBe('Renamed')
     })
 
     it('throws when the artifact has no manifest', async () => {
@@ -347,6 +358,16 @@ describe('artifact-service', () => {
       await expect(deleteArtifactFromFilesystem('test-agent', '../sales')).rejects.toThrow('Invalid artifact slug')
       await expect(deleteArtifactFromFilesystem('test-agent', '.')).rejects.toThrow('Invalid artifact slug')
       expect(await listArtifactsFromFilesystem('test-agent')).toHaveLength(1)
+    })
+
+    it('deletes an artifact whose directory name is not a widget slug, as the listing shows it', async () => {
+      const dir = createArtifactDir('test-agent', 'Bad_Slug', { name: 'Hand made' })
+      expect((await listArtifactsFromFilesystem('test-agent')).map((a) => a.slug)).toEqual(['Bad_Slug'])
+
+      await deleteArtifactFromFilesystem('test-agent', 'Bad_Slug')
+
+      expect(fs.existsSync(dir)).toBe(false)
+      expect(await listArtifactsFromFilesystem('test-agent')).toEqual([])
     })
   })
 })

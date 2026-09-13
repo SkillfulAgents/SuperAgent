@@ -7671,6 +7671,16 @@ describe('GET /:id/artifacts/:slug/screenshot.png', () => {
     expect(res.status).toBe(404)
   })
 
+  it('serves the screenshot of an artifact whose directory name is not a widget slug', async () => {
+    // The listing shows every artifact directory with a manifest, whatever
+    // its name; its card must be able to show a thumbnail.
+    mockFsReadFile.mockResolvedValueOnce(Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+
+    const res = await getReq(app, '/api/agents/my-agent/artifacts/Bad_Slug/screenshot.png')
+    expect(res.status).toBe(200)
+    expect(mockFsReadFile.mock.calls[0][0]).toBe('/mock/workspace/artifacts/Bad_Slug/screenshot.png')
+  })
+
   it('returns 400 for a slug that would escape the artifacts dir', async () => {
     // `..` in the path would resolve above /mock/workspace/artifacts.
     // Hono may normalize `..` segments before the handler sees them, but the

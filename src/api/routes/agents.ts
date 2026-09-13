@@ -134,6 +134,7 @@ import {
   readWidgetFromFilesystem,
   readWidgetHtml,
   resolveWidgetPath,
+  resolveArtifactPath,
   widgetSnapshotPngPath,
   containedArtifactPath,
 } from '@shared/lib/services/widget-service'
@@ -7015,7 +7016,9 @@ agents.get('/:id/artifacts/:artifactSlug/screenshot.png', AgentRead(), async (c)
   const artifactSlug = c.req.param('artifactSlug')
 
   // A bad slug is answered here; containment of the path is the actor's job.
-  const screenshotPath = resolveWidgetPath(agentSlug, artifactSlug, 'screenshot.png')
+  // Any artifact the listing shows can have a thumbnail, whatever its
+  // directory is called, so this is the artifact rule, not the widget one.
+  const screenshotPath = resolveArtifactPath(agentSlug, artifactSlug, 'screenshot.png')
   if (!screenshotPath) {
     return c.json({ error: 'Invalid artifact slug' }, 400)
   }
