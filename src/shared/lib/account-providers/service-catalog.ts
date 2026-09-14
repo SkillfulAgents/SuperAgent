@@ -7,6 +7,12 @@ export interface Provider {
   description: string
   composioSlug?: string
   nangoSlug?: string
+  /**
+   * Exists only through Gamut's Composio (a custom auth config on Gamut's own
+   * developer app). Hidden on a local Composio key, and always sent through
+   * the platform hop so the platform can meter it.
+   */
+  platformOnly?: true
 }
 
 export const SUPPORTED_PROVIDERS: Provider[] = [
@@ -288,6 +294,14 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     description: 'Photo and video sharing',
     composioSlug: 'instagram',
     nangoSlug: 'instagram',
+  },
+  {
+    slug: 'twitter',
+    displayName: 'X',
+    icon: 'at-sign',
+    description: 'Posts, timelines, and direct messages',
+    composioSlug: 'twitter',
+    platformOnly: true,
   },
 
   // Finance
