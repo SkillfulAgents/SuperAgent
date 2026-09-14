@@ -1,24 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser-use feature successfully navigated to https://example.com, retrieved the page title \"Example Domain\", and reported the result back to the user",
+  "reason": "Browser use feature successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and returned the result via chat",
   "steps": [
-    "Navigated to http://localhost:47891 — page loaded successfully with Gamut app showing home view with agent list",
-    "Found and clicked \"QA-20260913-015741-tvmz\" agent in sidebar — agent chat interface opened successfully with session title \"Browser Navigation and Page Title Test\"",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in input field — message displayed in input field with Send button enabled",
-    "Clicked Send message button — message was sent and agent began processing (status changed to \"working\")",
-    "Waited for agent response (up to 3 minutes) — agent completed task in 6 seconds with 3 tool calls and 146,714 tokens used",
-    "Verified response mentions \"Example Domain\" — agent response clearly states: \"The page title is \"Example Domain\" (HTTP 200). Browser closed.\""
+    "Navigated to http://localhost:47891 — Application loaded successfully showing the home page with agent list",
+    "Found and clicked the \"QA-20260914-194455-pifh\" agent in the sidebar — Agent page opened, displaying the chat interface and agent configuration panels",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the chat input — Message was entered into the textbox successfully",
+    "Clicked the \"Send message\" button — Message was sent, agent status changed to \"working\", and a new session was created with title \"Browser Page Title Lookup\"",
+    "Waited up to 3 minutes for response (with \"Working...\" indicator) — Agent completed processing in 8 seconds with 3 tool calls using 146,729 tokens",
+    "Verified response mentions \"Example Domain\" and took screenshot — Response confirmed: \"The page title is \"Example Domain\" (https://example.com/, HTTP 200). Browser closed.\" Screenshot captured showing the complete interaction"
   ],
   "bugs": [],
-  "durationMs": 71316,
-  "sessionId": "48cb95ef-50ec-4c19-8bc2-440a6aa16b66",
+  "durationMs": 79516,
+  "sessionId": "5db93a7c-5dac-4e63-b3e7-9738c033ed2e",
   "cost": {
-    "inputTokens": 426,
-    "outputTokens": 15015,
-    "cacheCreationTokens": 89262,
-    "cacheReadTokens": 1322418,
+    "inputTokens": 340,
+    "outputTokens": 8280,
+    "cacheCreationTokens": 62669,
+    "cacheReadTokens": 920095,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.31932
+    "totalCostUsd": 0.212086
   }
 }
