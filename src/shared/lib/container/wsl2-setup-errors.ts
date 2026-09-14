@@ -3,6 +3,21 @@
  * render a remediation panel and Sentry can bucket events by cause.
  */
 
+const WSL_DIAGNOSTIC_MAX_CHARS = 512
+
+export function sanitizeWSLDiagnostic(raw: string): string {
+  return raw
+    .replace(/\0/g, '')
+    .replace(/[A-Za-z]:[\\/][^\s"']+/g, '<path>')
+    .replace(/\/(?:home|mnt)\/[^\s"']+/g, '<path>')
+    .replace(/\b(?:[A-Za-z0-9+/]{24,}={0,2}|[A-Fa-f0-9]{32,})\b/g, '<redacted>')
+    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, '<ip>')
+    .replace(/\b[0-9a-f:]{3,}:[0-9a-f:]+\b/gi, '<ip>')
+    .replace(/[ \t]+/g, ' ')
+    .trim()
+    .slice(0, WSL_DIAGNOSTIC_MAX_CHARS)
+}
+
 export type RunnerSetupErrorKind =
   | 'virt-disabled-in-bios'
   | 'vmp-feature-missing'

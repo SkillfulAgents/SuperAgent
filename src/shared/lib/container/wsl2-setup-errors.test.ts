@@ -4,6 +4,7 @@ import {
   extractStderr,
   unknownRunnerSetupError,
   RunnerSetupError,
+  sanitizeWSLDiagnostic,
 } from './wsl2-setup-errors'
 
 // Real stderr strings from WSL — the values actually observed or documented by
@@ -45,6 +46,18 @@ Error: ERROR_FILE_NOT_FOUND`,
   // Something we don't know how to handle.
   unknown: `Some completely novel WSL failure that we haven't seen before.`,
 }
+
+describe('sanitizeWSLDiagnostic', () => {
+  it('bounds diagnostics and removes paths, IPs, and token-shaped values', () => {
+    const raw = `failed C:\\Users\\alice\\AppData\\secret.txt /home/alice/.env 10.2.3.4 2001:db8::1 ${'a'.repeat(64)} ${'x'.repeat(1000)}`
+    const sanitized = sanitizeWSLDiagnostic(raw)
+    expect(sanitized.length).toBeLessThanOrEqual(512)
+    expect(sanitized).not.toMatch(/alice|10\.2\.3\.4|2001:db8|a{32}|x{600}/)
+    expect(sanitized).toContain('<path>')
+    expect(sanitized).toContain('<ip>')
+    expect(sanitized).toContain('<redacted>')
+  })
+})
 
 describe('classifyWSL2Stderr', () => {
   it('classifies ELECTRON-C style HCS_E_HYPERV_NOT_INSTALLED as hyperv-not-installed', () => {
