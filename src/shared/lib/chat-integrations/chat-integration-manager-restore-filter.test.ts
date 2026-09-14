@@ -1,3 +1,4 @@
+import { mockChatIntegration } from './test-helpers'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
@@ -28,7 +29,7 @@ vi.mock('../db', () => ({
 }))
 
 vi.mock('@shared/lib/services/chat-integration-service', () => ({
-  getChatIntegration: vi.fn(),
+  getChatIntegration: vi.fn(() => fakeIntegration()),
   listStartupChatIntegrations: vi.fn().mockReturnValue([]),
   updateChatIntegrationStatus: vi.fn(),
 }))
@@ -77,7 +78,7 @@ function fakeIntegration() {
 }
 
 function fakeConnector(): ChatClientConnector {
-  return {
+  return mockChatIntegration({
     connect: vi.fn().mockResolvedValue(undefined),
     disconnect: vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn(),
@@ -85,7 +86,7 @@ function fakeConnector(): ChatClientConnector {
     onInteractiveResponse: vi.fn().mockReturnValue(() => {}),
     onError: vi.fn().mockReturnValue(() => {}),
     onTypingHint: vi.fn().mockReturnValue(() => {}),
-  } as unknown as ChatClientConnector
+  }) as unknown as ChatClientConnector
 }
 
 function seedIntegration(): void {

@@ -12,8 +12,10 @@ import {
   listChatIntegrationSessions,
   getChatIntegrationSessionBySessionId,
 } from '@shared/lib/services/chat-integration-session-service'
-import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
-import type { ChatClientConnector, ChatDiscoveryCapability } from '@shared/lib/chat-integrations/base-connector'
+import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
+import type { AgentIntegration } from '@shared/lib/agent-integrations/agent-integration'
+import type { IntegrationTool } from '@shared/lib/agent-integrations/types'
+import { z } from 'zod'
 import {
   validateChatIntegrationConfig,
   CHAT_PROVIDERS,
@@ -56,24 +58,24 @@ xAgentChat.post('/list', async (c) => {
       // Static (per-provider) lookups: label each chat with its conversation
       // type where the provider's ids encode one, and advertise discovery
       // capabilities so agents know which discovery tools apply here.
-      const connectorClass = await chatIntegrationManager.getConnectorClass(i.provider)
+      const connectorClass = await agentIntegrationManager.getDefinition(i.provider)
       const sessions = listChatIntegrationSessions(i.id)
-      const activeChats = sessions
+      const activeChats = await Promise.all(sessions
         .filter((s) => !s.archivedAt)
-        .map((s) => {
-          const type = connectorClass?.classifyChatId?.({ chatId: s.externalChatId })
+        .map(async (s) => {
+          const { type } = await agentIntegrationManager.describeTarget(i.provider, s.externalChatId)
           return {
             chatId: s.externalChatId,
             displayName: s.displayName,
             ...(type ? { type } : {}),
           }
-        })
+        }))
       return {
         id: i.id,
         provider: i.provider,
         name: i.name,
         status: i.status,
-        capabilities: connectorClass?.discoveryCapabilities ?? [],
+        capabilities: connectorClass?.capabilities.filter(capability => capability !== 'send_message') ?? [],
         chats: activeChats,
       }
     }))
@@ -152,7 +154,7 @@ xAgentChat.post('/add', async (c) => {
     }
 
     try {
-      await chatIntegrationManager.addIntegration(id)
+      await agentIntegrationManager.addIntegration(id)
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err)
       updateChatIntegrationStatus(id, 'error', errMsg)
@@ -160,7 +162,7 @@ xAgentChat.post('/add', async (c) => {
 
     // Outside the connect try/catch: a contact-card failure is cosmetic and must
     // never surface as a connect error.
-    void chatIntegrationManager.sendContactCard(id)
+    void agentIntegrationManager.integrationCreated(id)
 
     const created = getChatIntegration(id)
     if (!created) {
@@ -204,8 +206,8 @@ xAgentChat.post('/send', async (c) => {
     // "unsupported" answer without the connector ever being touched (a
     // reconnect attempt could otherwise resurrect it or mask the real error).
     if (user_id) {
-      const connectorClass = await chatIntegrationManager.getConnectorClass(integration.provider)
-      if (!connectorClass?.discoveryCapabilities?.includes('dm_by_user_id')) {
+      const connectorClass = await agentIntegrationManager.getDefinition(integration.provider)
+      if (!connectorClass?.capabilities?.includes('dm_by_user_id')) {
         return c.json({
           error: `The ${integration.provider} provider does not support messaging by user_id. Pass a chat_id instead (see list_chat_integrations).`,
         }, 400)
@@ -222,13 +224,14 @@ xAgentChat.post('/send', async (c) => {
     // a DM addressed by user id can still land in the caller's own chat.
     let resolvedChatId: string | undefined = chat_id
     if (user_id) {
-      if (typeof connector.resolveDirectChat !== 'function') {
+      const directChat = connector.getTools({ integration, externalId: '' }).find(tool => tool.name === 'dm_by_user_id')
+      if (!directChat) {
         return c.json({
           error: `The ${integration.provider} provider does not support messaging by user_id. Pass a chat_id instead (see list_chat_integrations).`,
         }, 400)
       }
       try {
-        resolvedChatId = await connector.resolveDirectChat(user_id)
+        resolvedChatId = z.string().min(1).parse(await directChat.execute({ userId: user_id }))
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         return c.json({ error: `Could not open a direct chat with user ${user_id}: ${msg}` }, 400)
@@ -285,14 +288,9 @@ xAgentChat.post('/send', async (c) => {
       return c.json({ error: 'This conversation is not approved for this integration.' }, 403)
     }
 
-    // Send through connector (with a brief "working" indicator first)
-    const typingDelay = 100 + Math.random() * 1100
-    await connector.startWorking(resolvedChatId, 'working').catch(() => {})
-    await new Promise((resolve) => setTimeout(resolve, typingDelay))
-
-    await connector.sendMessage(resolvedChatId, { text: message })
-    // One-shot send (no streaming follow-up), so clear the indicator we started.
-    await connector.stopWorking(resolvedChatId).catch(() => {})
+    const send = connector.getTools({ integration, externalId: resolvedChatId }).find(tool => tool.name === 'send_message')
+    if (!send) return c.json({ error: 'Integration does not support sending messages.' }, 400)
+    await send.execute({ text: message })
 
     // Notify the chat session's agent so it knows a message was sent on its behalf.
     // Uses shouldQuery: false so the message enters the agent's context without
@@ -320,7 +318,7 @@ xAgentChat.post('/users', async (c) => {
   try {
     const directory = await resolveDirectoryConnector(c, 'listChatUsers')
     if ('response' in directory) return directory.response
-    const page = await directory.connector.listChatUsers!()
+    const page = directoryPage.parse(await directory.tool.execute({}))
     return c.json({ provider: directory.provider, users: page.items, truncated: page.truncated })
   } catch (error) {
     captureException(error, { tags: { component: 'x-agent-chat', operation: 'users' } })
@@ -333,7 +331,7 @@ xAgentChat.post('/channels', async (c) => {
   try {
     const directory = await resolveDirectoryConnector(c, 'listChatChannels')
     if ('response' in directory) return directory.response
-    const page = await directory.connector.listChatChannels!()
+    const page = directoryPage.parse(await directory.tool.execute({}))
     return c.json({ provider: directory.provider, channels: page.items, truncated: page.truncated })
   } catch (error) {
     captureException(error, { tags: { component: 'x-agent-chat', operation: 'channels' } })
@@ -350,13 +348,14 @@ xAgentChat.post('/channels', async (c) => {
 async function resolveLiveConnector(
   integrationId: string,
   integrationStatus: string,
-): Promise<ChatClientConnector | undefined> {
-  let connector = chatIntegrationManager.getConnector(integrationId)
+): Promise<AgentIntegration | undefined> {
+  if (integrationStatus === 'paused') return undefined
+  let connector = agentIntegrationManager.getConnector(integrationId)
   if (!connector) {
-    console.warn(`[x-agent-chat] getConnector returned undefined for ${integrationId} (status: ${integrationStatus}), active IDs: [${chatIntegrationManager.getActiveIntegrationIds().join(', ')}]. Attempting reconnect.`)
+    console.warn(`[x-agent-chat] getConnector returned undefined for ${integrationId} (status: ${integrationStatus}), active IDs: [${agentIntegrationManager.getActiveIntegrationIds().join(', ')}]. Attempting reconnect.`)
     try {
-      await chatIntegrationManager.addIntegration(integrationId)
-      connector = chatIntegrationManager.getConnector(integrationId)
+      await agentIntegrationManager.addIntegration(integrationId)
+      connector = agentIntegrationManager.getConnector(integrationId)
     } catch {
       // reconnection failed
     }
@@ -364,10 +363,12 @@ async function resolveLiveConnector(
   return connector
 }
 
+const directoryPage = z.object({ items: z.array(z.unknown()), truncated: z.boolean() })
+
 const DIRECTORY_CAPABILITIES = {
   listChatUsers: { label: 'listing users', capability: 'list_users' },
   listChatChannels: { label: 'listing channels', capability: 'list_channels' },
-} as const satisfies Record<string, { label: string; capability: ChatDiscoveryCapability }>
+} as const
 
 /**
  * Shared preamble for the directory endpoints: auth/ownership checks, the
@@ -377,7 +378,7 @@ const DIRECTORY_CAPABILITIES = {
 async function resolveDirectoryConnector(
   c: { get: (k: 'callerSlug') => string; req: { json: () => Promise<unknown> }; json: (body: unknown, status?: 400 | 403 | 404) => Response },
   capability: keyof typeof DIRECTORY_CAPABILITIES,
-): Promise<{ response: Response } | { connector: ChatClientConnector; provider: string }> {
+): Promise<{ response: Response } | { tool: IntegrationTool; provider: string }> {
   const callerSlug = getCallerSlug(c)
   const body = await c.req.json() as { integration_id?: string }
   const integrationId = body?.integration_id
@@ -398,8 +399,8 @@ async function resolveDirectoryConnector(
   // answer (never a connection error) and, crucially, no integration is
   // reconnected just to discover it can't serve the request.
   const { label, capability: capabilityName } = DIRECTORY_CAPABILITIES[capability]
-  const connectorClass = await chatIntegrationManager.getConnectorClass(integration.provider)
-  if (!connectorClass?.discoveryCapabilities?.includes(capabilityName)) {
+  const connectorClass = await agentIntegrationManager.getDefinition(integration.provider)
+  if (!connectorClass?.capabilities?.includes(capabilityName)) {
     return {
       response: c.json({
         error: `The ${integration.provider} provider does not support ${label}.`,
@@ -417,14 +418,15 @@ async function resolveDirectoryConnector(
   }
   // Defensive: the static declaration and the instance implementation come
   // from the same class, so this only fires on a connector/class mismatch.
-  if (typeof connector[capability] !== 'function') {
+  const tool = connector.getTools({ integration, externalId: '' }).find(tool => tool.name === capabilityName)
+  if (!tool) {
     return {
       response: c.json({
         error: `The ${integration.provider} provider does not support ${label}.`,
       }, 400),
     }
   }
-  return { connector, provider: integration.provider }
+  return { tool, provider: integration.provider }
 }
 
 async function notifySessionOfOutboundMessage(
@@ -434,7 +436,7 @@ async function notifySessionOfOutboundMessage(
   message: string,
   context?: string,
 ): Promise<void> {
-  const sessionId = await chatIntegrationManager.ensureSession(integrationId, chatId)
+  const sessionId = await agentIntegrationManager.ensureSession(integrationId, chatId)
 
   const notificationText = context
     ? `${SYSTEM_MESSAGE_PREFIX}A message was sent to the user on your behalf via chat integration:\n[Internal context: ${context}]\n\n${message}`

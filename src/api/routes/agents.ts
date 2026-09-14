@@ -54,7 +54,7 @@ import { getDashboardViewDispatchHostJs } from '../dashboard-view-dispatch-host'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
-import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
+import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
 import { parseByteRange } from '@shared/lib/utils/http-range'
@@ -4697,7 +4697,7 @@ agents.get('/:id/chat-integrations', AgentRead(), async (c) => {
     // of guessing from persisted status alone.
     const withConnection = integrations.map((integration) => ({
       ...toPublicChatIntegration(integration),
-      connected: chatIntegrationManager.isIntegrationConnected(integration.id),
+      connected: agentIntegrationManager.isIntegrationConnected(integration.id),
     }))
     return c.json(withConnection)
   } catch (error) {

@@ -94,8 +94,8 @@ vi.mock('./scheduler/trigger-manager', () => ({
 vi.mock('./scheduler/platform-notifications-manager', () => ({
   platformNotificationsManager: { start: () => platformNotificationsStart(), stop: vi.fn() },
 }))
-vi.mock('./chat-integrations/chat-integration-manager', () => ({
-  chatIntegrationManager: { start: () => chatIntegrationStart(), stop: vi.fn() },
+vi.mock('./agent-integrations/agent-integration-manager', () => ({
+  agentIntegrationManager: { start: () => chatIntegrationStart(), stop: vi.fn() },
 }))
 vi.mock('./scheduler/auto-sleep-monitor', () => ({
   autoSleepMonitor: { start: () => Promise.resolve(), stop: vi.fn() },

@@ -1,0 +1,175 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { AgentIntegration } from './agent-integration'
+import { AgentIntegrationManager } from './agent-integration-manager'
+import { AgentIntegrationRegistry } from './registry'
+import type { AgentIntegrationRecord, IntegrationInputEvent, IntegrationOutput, IntegrationSessionContext } from './types'
+
+const state = vi.hoisted(() => ({
+  rows: [] as AgentIntegrationRecord[],
+  mappings: new Map<string, { id: string; integrationId: string; externalChatId: string; sessionId: string; displayName?: string }>(),
+  streams: new Map<string, (event: unknown) => void>(),
+  create: vi.fn(), start: vi.fn(), send: vi.fn(), subscribeStream: vi.fn(), register: vi.fn(), metadata: vi.fn(),
+}))
+vi.mock('@shared/lib/services/chat-integration-service', () => ({
+  listStartupChatIntegrations: () => state.rows,
+  getChatIntegration: (id: string) => state.rows.find(row => row.id === id),
+  updateChatIntegrationStatus: vi.fn(),
+}))
+vi.mock('@shared/lib/services/chat-integration-session-service', () => ({
+  resolveActiveSession: (id: string, externalId: string) => state.mappings.get(`${id}:${externalId}`),
+  createChatIntegrationSession: (mapping: { integrationId: string; externalChatId: string; sessionId: string }) => {
+    state.mappings.set(`${mapping.integrationId}:${mapping.externalChatId}`, { id: `mapping-${mapping.sessionId}`, ...mapping })
+  },
+  listActiveChatIntegrationSessions: (id: string) => [...state.mappings.values()].filter(mapping => mapping.integrationId === id),
+  getChatIntegrationSession: (id: string, externalId: string) => state.mappings.get(`${id}:${externalId}`),
+  getChatIntegrationSessionBySessionId: vi.fn(),
+  listChatIntegrationSessions: vi.fn(() => []),
+  archiveChatIntegrationSession: vi.fn(), updateChatIntegrationSessionName: vi.fn(), touchChatIntegrationSession: vi.fn(), getLastDisplayName: vi.fn(),
+}))
+vi.mock('@shared/lib/agent-actor', () => ({
+  agentCatalog: { exists: async () => true },
+  agentRegistry: { get: () => ({
+    container: { start: state.start },
+    sessions: {
+      create: state.create, register: state.register, updateMetadata: state.metadata,
+      markActive: vi.fn(), subscribeStream: state.subscribeStream, isStreamSubscribed: () => false,
+    },
+    messages: {
+      send: state.send,
+      withSend: (_session: string, callback: () => Promise<void>) => callback(),
+      subscribe: (session: string, callback: (event: unknown) => void) => {
+        state.streams.set(session, callback)
+        return () => { state.streams.delete(session) }
+      },
+    },
+  }) },
+}))
+vi.mock('@shared/lib/services/agent-service', () => ({ agentExists: async () => true }))
+vi.mock('@shared/lib/config/settings', () => ({ getEffectiveModels: () => ({ agentModel: 'test-model' }) }))
+vi.mock('@shared/lib/services/agent-preferences-service', () => ({ readAgentPreferences: async () => ({}) }))
+vi.mock('@shared/lib/services/secrets-service', () => ({ getSecretEnvVars: async () => [] }))
+vi.mock('@shared/lib/container/message-persister', () => ({ messagePersister: { addGlobalNotificationClient: () => () => {} } }))
+vi.mock('@shared/lib/notifications/notification-manager', () => ({ notificationManager: { triggerChatIntegrationEvent: async () => {} } }))
+vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn(), addErrorBreadcrumb: vi.fn() }))
+
+/** Deliberately has no messaging, typing, streaming, or other chat methods. */
+class ObjectIntegration extends AgentIntegration {
+  readonly provider = 'test-objects'
+  readonly definition = { provider: this.provider, name: 'Objects', family: 'objects', capabilities: [], settings: [], setup: { kind: 'test', credentialFields: [] } }
+  connected = false
+  allowed = true
+  outputs: Array<{ context: IntegrationSessionContext; output: IntegrationOutput }> = []
+  released: IntegrationSessionContext[] = []
+  prepareInput = vi.fn(async (event: IntegrationInputEvent) => ({ text: `Object context: ${(event.payload as { text: string }).text}` }))
+  async connect() { this.connected = true }
+  async disconnect() { this.connected = false }
+  isConnected() { return this.connected }
+  resolveRoute(event: IntegrationInputEvent) {
+    return { externalId: (event.payload as { objectId: string }).objectId, interactionId: event.id, replyTarget: { comment: event.externalId }, action: 'run' as const }
+  }
+  async authorize() { return this.allowed }
+  isAllowed() { return this.allowed }
+  sessionPolicy() { return { name: 'Object session', timeoutHours: null, metadata: {} } }
+  async deliver(context: IntegrationSessionContext, output: IntegrationOutput) { this.outputs.push({ context, output }) }
+  releaseSession(context: IntegrationSessionContext) { this.released.push(context) }
+  input(comment: string, text = 'hello') {
+    return this.emitEvent({ type: 'input', externalId: comment, id: comment, timestamp: new Date(), payload: { objectId: 'object-7', text } })
+  }
+}
+
+function record(id: string): AgentIntegrationRecord {
+  return { id, agentSlug: id, provider: 'test-objects', name: null, config: '{}', status: 'active', errorMessage: null,
+    model: null, effort: null, speed: null, createdByUserId: null, createdAt: new Date(), updatedAt: new Date() }
+}
+
+let manager: AgentIntegrationManager
+let adapter: ObjectIntegration
+let registry: AgentIntegrationRegistry
+beforeEach(() => {
+  vi.clearAllMocks()
+  state.rows = [record('installation-a')]
+  state.mappings.clear()
+  state.streams.clear()
+  state.create.mockImplementation(async () => ({ id: `session-${state.create.mock.calls.length}` }))
+  state.subscribeStream.mockResolvedValue(undefined)
+  state.start.mockResolvedValue(undefined)
+  state.send.mockResolvedValue(undefined)
+  adapter = new ObjectIntegration()
+  registry = new AgentIntegrationRegistry([{ definition: adapter.definition, create: async () => adapter }])
+  manager = new AgentIntegrationManager(registry)
+})
+afterEach(() => manager.stop())
+
+describe('AgentIntegration host contract', () => {
+  it('creates a session and routes subsequent events by the provider logical key', async () => {
+    await manager.start()
+    await adapter.input('comment-one')
+    await vi.waitFor(() => expect(state.mappings.size).toBe(1))
+    await adapter.input('comment-two', 'follow-up')
+    await vi.waitFor(() => expect(state.send).toHaveBeenCalledWith('session-1', 'Object context: follow-up'))
+    expect(state.create).toHaveBeenCalledOnce()
+    expect(state.mappings.get('installation-a:object-7')?.sessionId).toBe('session-1')
+    expect(state.metadata).toHaveBeenCalledWith('session-1', {})
+    expect('sendMessage' in adapter).toBe(false)
+    expect(adapter.prepareInput).toHaveBeenCalledTimes(2)
+  })
+
+  it('delivers fast replay with the reply target, distinguishing a segment from turn completion', async () => {
+    state.subscribeStream.mockImplementation(async (id: string) => {
+      state.streams.get(id)?.({ type: 'stream_end' })
+      state.streams.get(id)?.({ type: 'session_idle' })
+    })
+    await manager.start()
+    await adapter.input('comment-one')
+    await vi.waitFor(() => expect(adapter.outputs.some(item => item.output.type === 'turn-completed')).toBe(true))
+    const completed = adapter.outputs.filter(item => item.output.type === 'turn-completed')
+    expect(completed).toHaveLength(1)
+    expect(completed[0].context).toMatchObject({ integration: { id: 'installation-a' }, externalId: 'object-7', sessionId: 'session-1', interactionId: 'comment-one', replyTarget: { comment: 'comment-one' } })
+    expect(adapter.outputs.some(item => item.output.type === 'runtime' && (item.output.event as { type: string }).type === 'stream_end')).toBe(true)
+  })
+
+  it('blocks input before preparation or runtime startup and blocks output after revocation', async () => {
+    await manager.start()
+    adapter.allowed = false
+    await adapter.input('blocked')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(adapter.prepareInput).not.toHaveBeenCalled()
+    expect(state.start).not.toHaveBeenCalled()
+    adapter.allowed = true
+    await adapter.input('allowed')
+    await vi.waitFor(() => expect(state.streams.size).toBe(1))
+    adapter.outputs = []
+    adapter.allowed = false
+    state.streams.get('session-1')?.({ type: 'session_idle' })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(adapter.outputs).toEqual([])
+  })
+
+  it('keeps installations isolated and releases subscriptions and sessions on stop', async () => {
+    const second = new ObjectIntegration()
+    state.rows.push(record('installation-b'))
+    const isolated = new AgentIntegrationRegistry([{ definition: adapter.definition, create: async row => row.id === 'installation-a' ? adapter : second }])
+    manager = new AgentIntegrationManager(isolated)
+    await manager.start()
+    await Promise.all([adapter.input('first'), second.input('second')])
+    await vi.waitFor(() => expect(state.streams.size).toBe(2))
+    expect(state.mappings.size).toBe(2)
+    manager.stop()
+    expect(state.streams.size).toBe(0)
+    expect(adapter.connected).toBe(false)
+    expect(second.connected).toBe(false)
+    expect(adapter.released).toHaveLength(1)
+    expect(second.released).toHaveLength(1)
+    await adapter.input('after-stop')
+    expect(state.create).toHaveBeenCalledTimes(2)
+  })
+
+  it('exposes provider metadata without creating a connection and rejects duplicate registration', () => {
+    const create = vi.fn()
+    const metadataOnly = new AgentIntegrationRegistry([{ definition: adapter.definition, create }])
+    expect(metadataOnly.getDefinition('test-objects')?.family).toBe('objects')
+    expect(metadataOnly.listDefinitions()).toEqual([adapter.definition])
+    expect(create).not.toHaveBeenCalled()
+    expect(() => metadataOnly.register({ definition: adapter.definition, create })).toThrow('Duplicate integration provider')
+  })
+})

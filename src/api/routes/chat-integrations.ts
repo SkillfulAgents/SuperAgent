@@ -24,7 +24,7 @@ import {
 } from '@shared/lib/services/chat-integration-access-service'
 import type { ChatAccessStatus } from '@shared/lib/services/chat-integration-access-service'
 import { listChatIntegrationSessions, archiveChatIntegrationSession, getChatIntegrationSessionById, deleteChatIntegrationSessionsByIntegration } from '@shared/lib/services/chat-integration-session-service'
-import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
+import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { validateChatIntegrationConfig, CHAT_PROVIDERS, IMESSAGE_GATEWAY_URL, imessageSetupSchema } from '@shared/lib/chat-integrations/config-schema'
 import { toPublicChatIntegration } from '@shared/lib/chat-integrations/public'
 import { getCurrentUserId } from '@shared/lib/auth/config'
@@ -227,7 +227,7 @@ chatIntegrationsRouter.post('/:id', ResolveAgent(), AgentUser(), async (c) => {
 
     // Start the integration
     try {
-      await chatIntegrationManager.addIntegration(id)
+      await agentIntegrationManager.addIntegration(id)
     } catch (err) {
       // Integration was created but failed to connect — update status to error
       const errMsg = err instanceof Error ? err.message : String(err)
@@ -242,7 +242,7 @@ chatIntegrationsRouter.post('/:id', ResolveAgent(), AgentUser(), async (c) => {
     // Outside the connect try/catch: a contact-card failure is cosmetic and must
     // never surface as a connect error. Not awaited either — the upload has its
     // own 30s timeout and setup must not block on it.
-    void chatIntegrationManager.sendContactCard(id)
+    void agentIntegrationManager.integrationCreated(id)
 
     const integration = getChatIntegration(id)
     if (!integration) throw new Error('Chat integration disappeared after creation')
@@ -284,13 +284,13 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
 
     // Step 2: Handle lifecycle changes (pause/resume/reconnect)
     if (status === 'paused') {
-      await chatIntegrationManager.pauseIntegration(id)
+      await agentIntegrationManager.pauseIntegration(id)
     } else if (status === 'active') {
-      await chatIntegrationManager.resumeIntegration(id)
+      await agentIntegrationManager.resumeIntegration(id)
     } else if (config !== undefined && status !== 'paused') {
       // Config changed while active — reconnect to pick up new credentials
-      await chatIntegrationManager.removeIntegration(id)
-      await chatIntegrationManager.addIntegration(id)
+      await agentIntegrationManager.removeIntegration(id)
+      await agentIntegrationManager.addIntegration(id)
     }
 
     const updated = getChatIntegration(id)
@@ -335,7 +335,7 @@ chatIntegrationsRouter.patch('/:integrationId/require-approval', IntegrationAgen
     // Secure-by-default: enabling approval must gate already-running sessions whose
     // chat is not explicitly allowed (previously-public conversations).
     if (requireApproval === true) {
-      await chatIntegrationManager.reconcileAccess(id)
+      await agentIntegrationManager.reconcileAccess(id)
     }
     const updated = getChatIntegration(id)
     if (!updated) throw new Error('Chat integration disappeared after approval update')
@@ -353,7 +353,7 @@ chatIntegrationsRouter.delete('/:integrationId', IntegrationAgentRole('user'), a
     const id = c.req.param('integrationId')
 
     // Disconnect first
-    await chatIntegrationManager.removeIntegration(id)
+    await agentIntegrationManager.removeIntegration(id)
 
     // Clean up session mappings
     deleteChatIntegrationSessionsByIntegration(id)
@@ -382,7 +382,7 @@ chatIntegrationsRouter.post('/:integrationId/test', IntegrationAgentRole('user')
     }
 
     // Test by attempting to connect and immediately disconnect
-    const isConnected = chatIntegrationManager.isIntegrationConnected(integration.id)
+    const isConnected = agentIntegrationManager.isIntegrationConnected(integration.id)
     return c.json({ connected: isConnected, provider: integration.provider })
   } catch (error) {
     console.error('Failed to test chat integration:', error)
@@ -399,7 +399,7 @@ chatIntegrationsRouter.get('/:integrationId/status', IntegrationAgentRole('viewe
       return c.json({ error: 'Chat integration not found' }, 404)
     }
 
-    const connected = chatIntegrationManager.isIntegrationConnected(integration.id)
+    const connected = agentIntegrationManager.isIntegrationConnected(integration.id)
     return c.json({
       status: integration.status,
       connected,
@@ -441,7 +441,7 @@ chatIntegrationsRouter.delete('/:integrationId/sessions/:sessionId', Integration
       return c.json({ error: 'Session not found' }, 404)
     }
     // Notify the manager to clean up SSE subscriptions
-    chatIntegrationManager.clearChatSessionById(sessionId)
+    agentIntegrationManager.clearSessionById(sessionId)
 
     // Archive the session mapping (keeps it visible in sidebar as archived)
     archiveChatIntegrationSession(sessionId)
@@ -492,8 +492,8 @@ for (const verb of ['approve', 'deny', 'revoke'] as const) {
       const ok = accessActions[verb](accessId, getCurrentUserId(c))
       if (ok) {
         logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: integrationId, action: 'updated', details: { access: verb, accessId } })
-        if (verb === 'approve') void chatIntegrationManager.notifyChatApproved(integrationId, row.externalChatId)
-        if (verb === 'revoke' || verb === 'deny') await chatIntegrationManager.tearDownChatSession(integrationId, row.externalChatId)
+        if (verb === 'approve') void agentIntegrationManager.notifyAccessApproved(integrationId, row.externalChatId)
+        if (verb === 'revoke' || verb === 'deny') await agentIntegrationManager.releaseExternalSession(integrationId, row.externalChatId)
       }
       return c.json({ ok })
     } catch (error) {

@@ -11,7 +11,7 @@ import { App as SlackApp, SocketModeReceiver } from '@slack/bolt'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import {
-  ChatClientConnector,
+  ChatAgentIntegration,
   isMultiPartyChatType,
   type ChatConversationType,
   type ChatDirectoryChannel,
@@ -20,7 +20,7 @@ import {
   type ChatClassifyContext,
   type OutgoingMessage,
   type SystemPromptContext,
-} from './base-connector'
+} from './chat-agent-integration'
 import { buildSessionContextPrompt } from './chat-session-context'
 import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage, withSessionUrl, type AppLinkContext } from './utils'
 import { isUnrecoverableSlackError } from './slack-error'
@@ -311,7 +311,7 @@ export function reactionsForChat(activeReactions: Set<string>, chatId: string): 
 
 // ── Connector ───────────────────────────────────────────────────────────
 
-export class SlackConnector extends ChatClientConnector {
+export class SlackConnector extends ChatAgentIntegration {
   readonly provider = 'slack' as const
 
   static generateSystemPrompt = buildSlackSystemPrompt

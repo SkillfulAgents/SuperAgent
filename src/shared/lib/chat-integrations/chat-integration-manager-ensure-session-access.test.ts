@@ -1,3 +1,4 @@
+import { MockChatClientConnector } from './mock-connector'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
@@ -112,9 +113,11 @@ describe('ChatIntegrationManager.ensureSession — outbound access gate', () => 
 
     vi.clearAllMocks()
     mockGetChatIntegration.mockReturnValue(fakeIntegration())
+    ;(chatIntegrationManager as any).connections.set(INT, { connector: new MockChatClientConnector(), integration: fakeIntegration() })
   })
 
   afterEach(() => {
+    ;(chatIntegrationManager as any).connections.clear()
     testSqlite?.close()
   })
 
@@ -155,9 +158,11 @@ describe('ChatIntegrationManager.handleSSEEvent — outbound access gate', () =>
       .run(INT, now, now)
     vi.clearAllMocks()
     mockGetChatIntegration.mockReturnValue(fakeIntegration())
+    ;(chatIntegrationManager as any).connections.set(INT, { connector: new MockChatClientConnector(), integration: fakeIntegration() })
   })
 
   afterEach(() => {
+    ;(chatIntegrationManager as any).connections.clear()
     testSqlite?.close()
   })
 
@@ -176,7 +181,7 @@ describe('ChatIntegrationManager.handleSSEEvent — outbound access gate', () =>
     await mgr.handleSSEEvent(INT, 'chat-denied', { type: 'assistant' }, 'sess-test')
 
     // The fail-closed guard returns before reading integration config or forwarding.
-    expect(mockGetChatIntegration).not.toHaveBeenCalled()
+    expect((chatIntegrationManager as any).connections.get(INT).connector.sentMessages).toHaveLength(0)
     mgr.chatSessions.delete(key)
   })
 })
@@ -195,9 +200,11 @@ describe('ChatIntegrationManager.reconcileAccess — gate sessions after approva
       .run(INT, now, now)
     vi.clearAllMocks()
     mockGetChatIntegration.mockReturnValue(fakeIntegration())
+    ;(chatIntegrationManager as any).connections.set(INT, { connector: new MockChatClientConnector(), integration: fakeIntegration() })
   })
 
   afterEach(() => {
+    ;(chatIntegrationManager as any).connections.clear()
     testSqlite?.close()
   })
 
