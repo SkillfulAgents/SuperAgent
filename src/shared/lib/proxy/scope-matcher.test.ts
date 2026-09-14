@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { matchScopes, isValidApiScope } from './scope-matcher'
+import { getScopeLabel } from './scope-metadata'
 
 describe('matchScopes', () => {
   it('exact match: gmail GET /gmail/v1/users/me/messages returns correct scopes', () => {
@@ -41,6 +42,43 @@ describe('matchScopes', () => {
     expect(post.matched).toBe(true)
     expect(get.scopes).toContain('channels:history')
     expect(get.scopes.sort()).toEqual(post.scopes.sort())
+  })
+
+  it('matches a Google Sheets batch update action', () => {
+    const result = matchScopes(
+      'googlesheets',
+      'POST',
+      '/v4/spreadsheets/spreadsheet-123:batchUpdate',
+    )
+
+    expect(result.matched).toBe(true)
+    expect(result.scopes).toEqual(['drive', 'drive.file', 'spreadsheets'])
+    expect(result.scopes.map((scope) => getScopeLabel('googlesheets', scope))).toEqual([
+      'destructive',
+      'write',
+      'write',
+    ])
+    expect(result.endpointDescription).toMatch(/Applies one or more updates/)
+  })
+
+  it.each([
+    ['googlesheets', '/v4/spreadsheets/spreadsheet-123:getByDataFilter', 'spreadsheets'],
+    ['googlesheets', '/v4/spreadsheets/spreadsheet-123/values/Sheet1!A1:B2:append', 'spreadsheets'],
+    ['googlesheets', '/v4/spreadsheets/spreadsheet-123/values/Sheet1!A1:B2:clear', 'spreadsheets'],
+    ['googlesheets', '/v4/spreadsheets/spreadsheet-123/sheets/sheet-456:copyTo', 'spreadsheets'],
+    ['googledocs', '/v1/documents/document-123:batchUpdate', 'documents'],
+    ['googleslides', '/v1/presentations/presentation-123:batchUpdate', 'presentations'],
+    ['googledrive', '/drive/v3/files/file-123/accessproposals/proposal-456:resolve', 'drive'],
+  ])('matches %s action path %s', (toolkit, path, expectedScope) => {
+    const result = matchScopes(toolkit, 'POST', path)
+
+    expect(result.matched).toBe(true)
+    expect(result.scopes).toContain(expectedScope)
+  })
+
+  it('does not let a partial-segment wildcard match an empty or different action', () => {
+    expect(matchScopes('googlesheets', 'POST', '/v4/spreadsheets/:batchUpdate').matched).toBe(false)
+    expect(matchScopes('googlesheets', 'POST', '/v4/spreadsheets/id:notBatchUpdate').matched).toBe(false)
   })
 
   it('unknown endpoint: gmail GET /gmail/v1/unknown/path returns matched: false', () => {
