@@ -49,7 +49,7 @@ import {
 import { AgentGraphNode, ResourceGraphNode, openGraphNode } from './graph-nodes'
 import { ElbowEdge, type EdgeGeometryOverride, type GraphEdge } from './graph-edges'
 import { computeLayout, type XY } from './layout'
-import { useGraphData, type GraphEdgeSpec, type GraphNodeData } from './use-graph-data'
+import { useGraphData, savedEdgeGeometryFor, type GraphEdgeSpec, type GraphNodeData } from './use-graph-data'
 
 type RfNode = Node<GraphNodeData>
 
@@ -62,18 +62,20 @@ const edgeTypes = { elbow: ElbowEdge }
 const EDGE_DASH = '6 4'
 
 // Count-chip unit (singular) by the edge's target kind. Resource edges are
-// always built agent → resource; agent targets mean invocation edges.
+// always built agent → resource. Agent↔agent edges carry no count: they are
+// permissions, drawn solid, not a tally of sessions.
 const EDGE_UNIT: Record<string, string> = {
   account: 'call',
   mcp: 'tool call',
   chat: 'session',
   webhook: 'fire',
   cron: 'run',
-  agent: 'invocation',
 }
 
 function edgeStyle(e: GraphEdgeSpec): CSSProperties {
-  const exercised = (e.weight ?? 0) > 0
+  // A permission edge is solid because it exists; a resource edge is solid
+  // once it has recorded traffic and dashed while connected-but-unused.
+  const exercised = e.variant === 'permission' || (e.weight ?? 0) > 0
   return {
     // Broken endpoint (expired auth, errored server, disconnected chat) —
     // red-500, matching the error status dot.
@@ -536,12 +538,13 @@ export function AgentGraph() {
       seen.add(e.id)
       const hovered = e.id === hoveredEdgeId
       const selected = selectedEdgeIds.has(e.id)
+      const savedGeometry = savedEdgeGeometryFor(savedEdgeGeometry, e)
       // Everything this edge's output is derived from, compared by identity.
       const deps = [
         e,
         hovered,
         selected,
-        savedEdgeGeometry?.[e.id],
+        savedGeometry,
         draggedEdgeGeometry[e.id],
         showDetails,
         commitEdgeGeometry,
@@ -568,8 +571,9 @@ export function AgentGraph() {
         // Gates the Delete/Backspace path (React Flow skips non-deletables).
         deletable: !!e.deletable,
         data: {
-          geometry: { ...savedEdgeGeometry?.[e.id], ...draggedEdgeGeometry[e.id] },
-          count: e.weight ?? 0,
+          geometry: { ...savedGeometry, ...draggedEdgeGeometry[e.id] },
+          // No chip on a permission edge: there is nothing to count.
+          count: e.variant === 'permission' ? undefined : (e.weight ?? 0),
           unit: EDGE_UNIT[nodeKind(e.target)] ?? 'run',
           hovered,
           showDetails,
