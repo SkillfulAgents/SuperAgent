@@ -502,10 +502,17 @@ export async function readJsonlTailLines(
  *
  * Missing file yields nothing. `signal` aborts between chunk reads (throws the
  * abort reason), same contract as readJsonlTailLines.
+ *
+ * `opts.end` starts the walk at that byte position instead of EOF (clamped to
+ * the file size): the first line yielded is the one ending just below it. It
+ * must be a line boundary — the byte after a `\n`, or EOF — so a caller that
+ * knows where a row ends (an offset-carrying page cursor) skips everything
+ * above it. An `end` inside a row would yield that row's truncated head.
  */
 export async function* iterateJsonlLinesBackward(
   filePath: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  opts?: { end?: number }
 ): AsyncGenerator<{ line: Buffer; offset: number }> {
   signal?.throwIfAborted()
   let fileHandle: fs.promises.FileHandle
@@ -518,7 +525,7 @@ export async function* iterateJsonlLinesBackward(
 
   try {
     const stat = await fileHandle.stat()
-    let pos = stat.size
+    let pos = opts?.end === undefined ? stat.size : Math.max(0, Math.min(opts.end, stat.size))
     // Fragments (in file order) of the line whose start lies in a chunk not
     // yet read — the bytes below the lowest newline processed so far. Kept as
     // an array and concatenated ONCE at the line boundary: re-concatenating
@@ -576,6 +583,63 @@ export async function* iterateJsonlLinesBackward(
       carryBytes = 0
       yield { line: firstLine, offset: 0 }
     }
+  } finally {
+    await fileHandle.close()
+  }
+}
+
+/**
+ * The single raw line that STARTS at byte `offset` (newline excluded), or
+ * undefined when `offset` is at or past EOF. Reads only that line's bytes plus
+ * chunk slack. `offset` must be a line boundary — a mid-row offset returns the
+ * row's tail, which a JSONL consumer rejects as malformed (the property an
+ * offset-carrying page cursor's validation relies on).
+ */
+export async function readLineAt(
+  filePath: string,
+  offset: number,
+  signal?: AbortSignal
+): Promise<Buffer | undefined> {
+  for await (const line of streamFileLines(filePath, { start: offset }, signal)) {
+    return line
+  }
+  return undefined
+}
+
+/**
+ * Smallest line-start offset at or past `target` — the byte after the first
+ * `\n` at or beyond `target - 1` — or undefined when no newline lies there
+ * (the region runs to EOF, read to EOF). `target` ≤ 0 answers 0. Reads
+ * forward from `target` in chunks, so the cost is the distance to the next
+ * newline, not the file. Missing file answers undefined.
+ */
+export async function findLineStartAtOrAfter(
+  filePath: string,
+  target: number,
+  signal?: AbortSignal
+): Promise<number | undefined> {
+  signal?.throwIfAborted()
+  if (target <= 0) return 0
+  let fileHandle: fs.promises.FileHandle
+  try {
+    fileHandle = await fs.promises.open(filePath, 'r')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw error
+  }
+  try {
+    const { size } = await fileHandle.stat()
+    let pos = target - 1
+    while (pos < size) {
+      signal?.throwIfAborted()
+      const buf = Buffer.allocUnsafe(Math.min(TAIL_READ_CHUNK, size - pos))
+      const filled = await readFileRangeFully(fileHandle, buf, pos, signal)
+      if (filled === 0) return undefined
+      const idx = buf.subarray(0, filled).indexOf(NEWLINE_BYTE)
+      if (idx !== -1) return pos + idx + 1
+      pos += filled
+    }
+    return undefined
   } finally {
     await fileHandle.close()
   }

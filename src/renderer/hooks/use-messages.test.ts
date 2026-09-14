@@ -405,6 +405,70 @@ describe('useMessages forward delta', () => {
     expect(inflight[4].url).toContain('cursor=c2')
   })
 
+  it('walks past all-duplicate older pages in one gesture and lands the first page that adds something', async () => {
+    // A transcript whose history was replayed verbatim serves the copy and
+    // then the originals: pages whose every item is already on screen add
+    // nothing, so the fetch keeps walking instead of handing the reader an
+    // empty scroll-up.
+    const wrapper = createWrapper()
+    const { result } = renderHook(() => useMessages('s1', 'agent-1'), { wrapper })
+    await settleInitialPage(wrapper, result, [user('u5'), assistant('a5')])
+
+    const onBeforePrepend = vi.fn()
+    let olderDone: Promise<boolean>
+    act(() => {
+      olderDone = result.current.fetchOlder(onBeforePrepend)
+    })
+    await waitFor(() => expect(inflight).toHaveLength(2))
+    expect(inflight[1].url).toContain('cursor=older-cursor')
+    // Duplicates of the trailing page — nothing new.
+    inflight[1].resolve({ messages: [user('u5'), assistant('a5')], nextCursor: 'c2' })
+    await waitFor(() => expect(inflight).toHaveLength(3))
+    expect(inflight[2].url).toContain('cursor=c2')
+    expect(onBeforePrepend).not.toHaveBeenCalled()
+    // Still nothing new (the copy of an item the client also has).
+    inflight[2].resolve({ messages: [assistant('a5')], nextCursor: 'c3' })
+    await waitFor(() => expect(inflight).toHaveLength(4))
+    expect(inflight[3].url).toContain('cursor=c3')
+    inflight[3].resolve({ messages: [user('u4'), assistant('a4'), user('u5')], nextCursor: 'c4' })
+
+    await act(async () => {
+      expect(await olderDone).toBe(true)
+    })
+    expect(onBeforePrepend).toHaveBeenCalledTimes(1)
+    expect(result.current.data?.map((m) => m.id)).toEqual(['u4', 'a4', 'u5', 'a5'])
+    expect(result.current.hasOlder).toBe(true)
+    expect(result.current.isFetchingOlder).toBe(false)
+
+    // The next gesture resumes from the last cursor the walk reached.
+    act(() => {
+      void result.current.fetchOlder()
+    })
+    await waitFor(() => expect(inflight).toHaveLength(5))
+    expect(inflight[4].url).toContain('cursor=c4')
+  })
+
+  it('an all-duplicate terminal page ends older history without a prepend', async () => {
+    const wrapper = createWrapper()
+    const { result } = renderHook(() => useMessages('s1', 'agent-1'), { wrapper })
+    await settleInitialPage(wrapper, result, [user('u1'), assistant('a1')])
+
+    const onBeforePrepend = vi.fn()
+    let olderDone: Promise<boolean>
+    act(() => {
+      olderDone = result.current.fetchOlder(onBeforePrepend)
+    })
+    await waitFor(() => expect(inflight).toHaveLength(2))
+    inflight[1].resolve({ messages: [user('u1')], nextCursor: null })
+    await act(async () => {
+      expect(await olderDone).toBe(false)
+    })
+    expect(onBeforePrepend).not.toHaveBeenCalled()
+    expect(result.current.data?.map((m) => m.id)).toEqual(['u1', 'a1'])
+    expect(result.current.hasOlder).toBe(false)
+    expect(result.current.isFetchingOlder).toBe(false)
+  })
+
   it('drops an item deleted remotely from within the covered range on a periodic full fetch', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     try {
