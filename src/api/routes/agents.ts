@@ -7046,8 +7046,9 @@ agents.get('/:id/artifacts/:artifactSlug/screenshot.png', AgentRead(), async (c)
   }
 
   try {
-    const realScreenshotPath = await containedArtifactPath(agentSlug, screenshotPath)
-    const png = realScreenshotPath === null ? null : await agentRegistry.get(agentSlug).files.getDoc(realScreenshotPath)
+    // Read as named, the way the plain read did; a real-location check for
+    // dashboard files is part of the containment work tracked separately.
+    const png = await agentRegistry.get(agentSlug).files.getDoc(screenshotPath)
     if (png === null) {
       return c.json({ error: 'No screenshot available' }, 404)
     }

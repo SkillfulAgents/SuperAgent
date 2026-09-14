@@ -95,9 +95,11 @@ export function widgetSnapshotPngPath(
  * container bind-mounts, so the agent can plant a link there: a string-only
  * check passes `widget.html -> /etc/passwd` and the host serves whatever it
  * points at, under the caller's permission to read their own agent. This is
- * the check every artifact read here always made, anchored on the workspace
- * (which the agent cannot swap from inside the container, so a swapped
- * `artifacts` is caught too), now asked of the actor.
+ * the check the widget reads always made, anchored on the workspace (which
+ * the agent cannot swap from inside the container, so a swapped `artifacts`
+ * is caught too), now asked of the actor. The dashboard listing and the
+ * dashboard screenshot read as named, as they always did; extending the
+ * check to them is part of the containment work tracked separately.
  */
 export async function containedArtifactPath(agentSlug: string, workspacePath: string | null): Promise<string | null> {
   if (workspacePath === null) return null
@@ -181,6 +183,11 @@ export async function describeWidgetFromManifest(
   }
   const dir = resolveWidgetPath(agentSlug, artifactSlug)
   if (!dir) return null
+  // A widget's directory is checked by real location before its files are
+  // read, as the widget reads always were; a link out of the workspace is no
+  // widget. Dashboards are not held to this (the containment work tracked
+  // separately covers them), so the check costs only widget artifacts.
+  if ((await containedArtifactPath(agentSlug, dir)) === null) return null
 
   // Scripted or static is a manifest fact (`scripts.widget`, run as
   // `bun run widget` in the container), so answering it costs no reads.
@@ -239,8 +246,9 @@ export async function readWidgetFromFilesystem(
  * through listArtifactsAndWidgets, which shares one scan with the dashboards.
  */
 export async function listWidgetsFromFilesystem(agentSlug: string): Promise<ApiAgentWidget[]> {
-  const dir = await containedArtifactPath(agentSlug, artifactsDirFor(agentSlug))
-  if (dir === null) return []
+  // The directory as named, the way the plain listing read it; each widget's
+  // own files are checked by real location when they are read.
+  const dir = artifactsDirFor(agentSlug)
   let entries: FileEntry[]
   try {
     entries = await agentRegistry.get(agentSlug).files.list(dir)

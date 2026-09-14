@@ -7,7 +7,6 @@ import {
   isMissingDirectoryError,
   isWidgetOnlyArtifact,
   isWidgetSlug,
-  containedArtifactPath,
   resolveArtifactPath,
 } from './widget-service'
 
@@ -60,10 +59,9 @@ async function scanArtifacts(
 ): Promise<ArtifactListing> {
   const files = agentRegistry.get(agentSlug).files
 
-  // Where the artifacts really are: a link the agent planted in place of the
-  // directory reads as no artifacts, as it always has.
-  const artifactsDir = await containedArtifactPath(agentSlug, artifactsDirFor(agentSlug))
-  if (artifactsDir === null) return { dashboards: [], widgets: [] }
+  // The directory as named, the way the plain listing read it; checking where
+  // it really leads is part of the containment work tracked separately.
+  const artifactsDir = artifactsDirFor(agentSlug)
   let entries: FileEntry[]
   try {
     entries = await files.list(artifactsDir)
@@ -92,10 +90,7 @@ async function scanArtifacts(
       .filter((entry) => entry.kind === 'directory')
       .map(async (entry): Promise<{ dashboard: ArtifactInfo | null; widget: ApiAgentWidget | null }> => {
         const nothing = { dashboard: null, widget: null }
-        // One artifact dir at a time, as it really is; a link out of the
-        // workspace is no artifact.
-        const dir = await limit(() => containedArtifactPath(agentSlug, entry.path))
-        if (dir === null) return nothing
+        const dir = entry.path
         let pkg: { name?: unknown; description?: unknown }
         let hasScreenshot: boolean
         let hasNodeModules: boolean
