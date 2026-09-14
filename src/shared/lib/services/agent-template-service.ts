@@ -3,6 +3,12 @@
  *
  * Handles exporting/importing agents as ZIP templates and
  * managing agents from skillset repositories (install, update, publish, PR).
+ *
+ * Two kinds of storage meet here. The skillset cache (a git clone under the
+ * data dir) is a directory on this machine, read and written with `fs`. The
+ * agent workspace is reached only through the agent actor: its files by
+ * operation (`files`) and its `CLAUDE.md` and template metadata as
+ * configuration documents (`config`), all addressed by workspace path.
  */
 
 import crypto from 'crypto'
@@ -19,18 +25,24 @@ import {
   type ZipReader,
 } from '@shared/lib/utils/zip'
 import {
-  getAgentWorkspaceDir,
-  getAgentClaudeMdPath,
-  readFileOrNull,
-  ensureDirectory,
   directoryExists,
   parseMarkdownWithFrontmatter,
   serializeMarkdownWithFrontmatter,
 } from '@shared/lib/utils/file-storage'
+import {
+  agentCatalog,
+  agentRegistry,
+  CONFIG_DOCS,
+  ConfigDocError,
+  WorkspaceFileError,
+  type AgentActor,
+  type FileEntry,
+  type FileOps,
+} from '@shared/lib/agent-actor'
+import { copyHostDirIntoWorkspace } from '@shared/lib/agent-actor/copy-into-workspace'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-provider/helpers'
 import { resolveActiveProviderModel } from '@shared/lib/llm-provider'
-import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 import {
   readIndexJson,
   ensureSkillsetCached,
@@ -50,11 +62,6 @@ import type {
 } from '@shared/lib/types/skillset'
 import type { ApiAgent } from '@shared/lib/types/api'
 import type { AgentFrontmatter } from '@shared/lib/types/agent'
-import {
-  copyDirectoryFiltered,
-  writeJsonFile,
-} from '@shared/lib/utils/file-storage'
-import { InstalledAgentMetadataSchema } from '@shared/lib/types/skillset-schema'
 import { captureException } from '@shared/lib/error-reporting'
 import { pruneInstalledTemplateIfInvalid } from './skillset-reconcile'
 
@@ -117,11 +124,32 @@ const CLAUDE_DIR_ALLOWLIST = new Set([
 
 
 // ============================================================================
-// Metadata Path Helpers
+// Metadata Helpers
 // ============================================================================
 
-function getAgentMetadataPath(agentSlug: string): string {
-  return path.join(getAgentWorkspaceDir(agentSlug), '.skillset-agent-metadata.json')
+/** Workspace path of the template metadata document. */
+const SKILLSET_METADATA_PATH = CONFIG_DOCS.skillsetMetadata.path
+
+/**
+ * Store the template metadata document. Spread so the schema receives an
+ * object literal: the interface has no index signature, the loose document
+ * type does.
+ */
+async function putInstalledAgentMetadata(actor: AgentActor, meta: InstalledAgentMetadata): Promise<void> {
+  await actor.config.put('skillsetMetadata', { ...meta })
+}
+
+/** Decode file bytes the way `fs.readFile(path, 'utf-8')` did, so hashes and text round-trips are unchanged. */
+function bytesToUtf8(bytes: Uint8Array): string {
+  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('utf-8')
+}
+
+async function readStreamToBuffer(stream: ReadableStream<Uint8Array>): Promise<Buffer> {
+  const chunks: Buffer[] = []
+  for await (const chunk of Readable.fromWeb(stream as import('stream/web').ReadableStream<Uint8Array>)) {
+    chunks.push(chunk as Buffer)
+  }
+  return Buffer.concat(chunks)
 }
 
 type SkillsetRef = {
@@ -166,8 +194,51 @@ function getSkillsetRepoDirForRef(ref: Pick<SkillsetRef, 'skillsetId' | 'provide
 // ============================================================================
 
 /**
- * Walk the agent workspace and return paths of all template-eligible files.
- * Paths are relative to the workspace directory.
+ * A read-only view of a file tree the template rules apply to: the agent
+ * workspace through the actor, or a directory of the skillset cache on this
+ * machine. Paths are relative to the tree's root, posix, `''` for the root.
+ */
+interface TemplateTree {
+  /** Immediate children of a directory. Throws when it cannot be listed. */
+  list(dir: string): Promise<Array<Pick<FileEntry, 'name' | 'kind'>>>
+  /** A whole file, or null when it cannot be read. */
+  read(relativePath: string): Promise<Uint8Array | null>
+}
+
+function workspaceTree(files: FileOps): TemplateTree {
+  return {
+    list: (dir) => files.list(dir),
+    read: (relativePath) => files.getDoc(relativePath),
+  }
+}
+
+/**
+ * A directory of the skillset cache. Anything that is not a directory (a link
+ * included) lists as a file, as `readdir` reports it.
+ */
+function hostTree(rootDir: string): TemplateTree {
+  return {
+    async list(dir) {
+      const entries = await fs.promises.readdir(path.join(rootDir, dir), { withFileTypes: true })
+      return entries.map((entry) => ({ name: entry.name, kind: entry.isDirectory() ? 'directory' : 'file' }))
+    },
+    async read(relativePath) {
+      try {
+        return new Uint8Array(await fs.promises.readFile(path.join(rootDir, relativePath)))
+      } catch {
+        return null
+      }
+    },
+  }
+}
+
+function joinTreePath(dir: string, name: string): string {
+  return dir === '' ? name : `${dir}/${name}`
+}
+
+/**
+ * Walk a tree and return the paths of all template-eligible files, relative
+ * to its root.
  *
  * Inclusion rules:
  * - `CLAUDE.md` and other non-excluded root files are included
@@ -176,30 +247,30 @@ function getSkillsetRepoDirForRef(ref: Pick<SkillsetRef, 'skillsetId' | 'provide
  * - `.browser-profile/`, `uploads/` are excluded entirely
  * - `.DS_Store`, `.env`, session files are excluded at any level
  */
-async function walkTemplateFiles(workspaceDir: string): Promise<string[]> {
+async function walkTemplateFiles(tree: TemplateTree): Promise<string[]> {
   const files: string[] = []
 
-  async function walk(dir: string, relativeBase: string, depth: number): Promise<void> {
-    const entries = await fs.promises.readdir(dir, { withFileTypes: true })
+  async function walk(dir: string, depth: number): Promise<void> {
+    const entries = await tree.list(dir)
 
     for (const entry of entries) {
-      const relativePath = path.join(relativeBase, entry.name)
+      const relativePath = joinTreePath(dir, entry.name)
 
       // Skip excluded files at any level
       if (TEMPLATE_EXCLUDE.has(entry.name)) continue
 
-      if (entry.isDirectory()) {
+      if (entry.kind === 'directory') {
         // Skip top-level excluded directories
         if (depth === 0 && TEMPLATE_EXCLUDE_TOP_DIRS.has(entry.name)) continue
 
         // For .claude/ directory, only recurse into allowlisted subdirs
         if (depth === 0 && entry.name === '.claude') {
           // Walk .claude/ but only include allowlisted subdirectories
-          await walkClaudeDir(path.join(dir, entry.name), '.claude')
+          await walkClaudeDir(relativePath)
           continue
         }
 
-        await walk(path.join(dir, entry.name), relativePath, depth + 1)
+        await walk(relativePath, depth + 1)
       } else {
         if (!TEMPLATE_EXCLUDE_EXTENSIONS.has(path.extname(entry.name))) {
           files.push(relativePath)
@@ -208,10 +279,10 @@ async function walkTemplateFiles(workspaceDir: string): Promise<string[]> {
     }
   }
 
-  async function walkClaudeDir(claudeDir: string, relativeBase: string): Promise<void> {
-    let entries: fs.Dirent[]
+  async function walkClaudeDir(claudeDir: string): Promise<void> {
+    let entries: Array<Pick<FileEntry, 'name' | 'kind'>>
     try {
-      entries = await fs.promises.readdir(claudeDir, { withFileTypes: true })
+      entries = await tree.list(claudeDir)
     } catch {
       return
     }
@@ -219,32 +290,32 @@ async function walkTemplateFiles(workspaceDir: string): Promise<string[]> {
     for (const entry of entries) {
       if (TEMPLATE_EXCLUDE.has(entry.name)) continue
 
-      if (entry.isDirectory()) {
+      if (entry.kind === 'directory') {
         // Only recurse into allowlisted subdirectories of .claude/
         if (!CLAUDE_DIR_ALLOWLIST.has(entry.name)) continue
-        const relativePath = path.join(relativeBase, entry.name)
-        await walk(path.join(claudeDir, entry.name), relativePath, 2)
+        await walk(joinTreePath(claudeDir, entry.name), 2)
       }
       // Skip files directly in .claude/ (e.g., .claude.json, stats-cache.json, backups)
     }
   }
 
-  await walk(workspaceDir, '', 0)
+  await walk('', 0)
   return files
 }
 
-// Visitor walk (not glob — glob hangs on Windows broken symlinks). No path list in RAM.
+// Visitor walk over the workspace. No path list in RAM. The actor never lists
+// a symbolic link, so a broken or escaping link cannot reach the archive.
 async function walkFullExportFiles(
-  workspaceDir: string,
-  onFile: (relativePath: string) => void,
+  files: FileOps,
+  onFile: (workspacePath: string) => Promise<void>,
   signal?: AbortSignal,
 ): Promise<void> {
-  async function walk(dir: string, relativeBase: string): Promise<void> {
+  async function walk(dir: string): Promise<void> {
     if (signal?.aborted) return
 
-    let entries: fs.Dirent[]
+    let entries: FileEntry[]
     try {
-      entries = await fs.promises.readdir(dir, { withFileTypes: true })
+      entries = await files.list(dir)
     } catch {
       return // skip directories we can't read
     }
@@ -253,20 +324,15 @@ async function walkFullExportFiles(
       if (signal?.aborted) return
       if (FULL_EXPORT_EXCLUDE.has(entry.name)) continue
 
-      const relativePath = relativeBase ? path.join(relativeBase, entry.name) : entry.name
-
-      // Skip symlinks — they may be broken or point outside the workspace
-      if (entry.isSymbolicLink()) continue
-
-      if (entry.isDirectory()) {
-        await walk(path.join(dir, entry.name), relativePath)
-      } else if (entry.isFile()) {
-        onFile(relativePath)
+      if (entry.kind === 'directory') {
+        await walk(entry.path)
+      } else {
+        await onFile(entry.path)
       }
     }
   }
 
-  await walk(workspaceDir, '')
+  await walk('')
 }
 
 // ============================================================================
@@ -310,10 +376,20 @@ async function withHostExportLock<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+/** Entries queued in archiver ahead of the one it is writing: enough to keep it busy, few enough to bound open files. */
+const ZIP_APPEND_WINDOW = 4
+
 // Queue files into an archiver and return it immediately so the HTTP response
 // can start flushing. zlibLevel is per-call: full export uses 1, templates stay at 9.
+//
+// `addFiles` receives `add`, which opens one workspace file through the actor
+// and appends it. archiver starts reading a source the moment it is appended,
+// so `add` waits for the queue to drain below a small window before opening
+// the next file: a ten-thousand-file workspace never has ten thousand files
+// open at once.
 function createWorkspaceZipStream(
-  addFiles: (archive: ReturnType<typeof archiver>) => Promise<void>,
+  files: FileOps,
+  addFiles: (add: (workspacePath: string) => Promise<void>) => Promise<void>,
   signal: AbortSignal | undefined,
   zlibLevel: number,
 ): Readable {
@@ -326,23 +402,61 @@ function createWorkspaceZipStream(
 
   const archive = archiver('zip', { zlib: { level: zlibLevel } })
   archive.once('close', release)
-  // on(), not once(): a workspace that changes under the walk (agent deleted
-  // mid-export) makes archiver emit an ENOENT per queued file, and the first
-  // listener would be the only one. Zero listeners on the second error is an
-  // uncaughtException, which quits the app. release() is idempotent.
-  archive.on('error', release)
+
+  // Every source archiver is reading. archiver's abort() drops its queues
+  // but leaves a source it has opened reading on, so a stop ends them here;
+  // destroying a source made from a web stream cancels that stream.
+  const sources = new Set<Readable>()
+  const stopSources = () => {
+    for (const source of sources) source.destroy()
+    sources.clear()
+  }
 
   const stopArchive = (err?: Error) => {
+    stopSources()
     if (archive.destroyed) return
     archive.abort()
     archive.destroy(err)
   }
 
-  // Archiver reports a source file that disappears between enumeration and
-  // read (its lstat fails) as a non-fatal 'warning' and would finalize a
-  // valid-looking but INCOMPLETE zip. Every append here is an explicit
-  // archive.file() of an enumerated path, so a warning always means a file
-  // was silently dropped — escalate it to a stream error.
+  // Backpressure for `add`: how many appended entries archiver has not
+  // written yet, and a waiter for the next one it finishes. `add` is called
+  // sequentially by the walk, so one waiter suffices.
+  let inFlight = 0
+  let stopped = false
+  let wake: (() => void) | undefined
+  const notify = () => {
+    const resume = wake
+    wake = undefined
+    resume?.()
+  }
+  const stopAppending = () => {
+    stopped = true
+    notify()
+  }
+  archive.on('entry', () => {
+    inFlight -= 1
+    notify()
+  })
+  archive.once('close', stopAppending)
+
+  // on(), not once(): a workspace that changes under the walk (agent deleted
+  // mid-export) can make archiver emit one error per queued entry, and the
+  // first listener would be the only one. Zero listeners on the second error
+  // is an uncaughtException, which quits the app. release() is idempotent,
+  // and stopArchive() is a no-op once the archive is destroyed. A source
+  // stream that fails mid-read surfaces here too; archiver would otherwise
+  // carry on and finalize a valid-looking but INCOMPLETE zip.
+  archive.on('error', (err) => {
+    release()
+    stopAppending()
+    stopArchive(err)
+  })
+
+  // A warning is what archiver emits when it drops an entry on its own (a
+  // path it could not lstat). Every entry here is a stream `add` opened
+  // itself, so a warning always means something was silently dropped —
+  // escalate it to a stream error.
   archive.on('warning', (warning) => {
     stopArchive(warning)
     release()
@@ -356,7 +470,46 @@ function createWorkspaceZipStream(
   // was already aborted.
   archive.on('close', () => {
     archive.abort()
+    stopSources()
   })
+
+  const add = async (workspacePath: string): Promise<void> => {
+    while (inFlight >= ZIP_APPEND_WINDOW && !stopped) {
+      await new Promise<void>((resolve) => {
+        wake = resolve
+      })
+    }
+    if (stopped || signal?.aborted) return
+    // Enumerated a moment ago; gone now means the workspace changed under the
+    // export. Fail the stream rather than finalize a zip missing the file.
+    const stat = await files.stat(workspacePath)
+    if (!stat || stat.kind !== 'file') throw new WorkspaceFileError('not-found', `${workspacePath}: File not found`)
+    const body = await files.read(workspacePath)
+    if (stopped) {
+      await body.cancel().catch(() => undefined)
+      return
+    }
+    const source = Readable.fromWeb(body as import('stream/web').ReadableStream<Uint8Array>)
+    sources.add(source)
+    source.once('close', () => sources.delete(source))
+    // archiver does not listen on a source it is handed: a read that fails
+    // mid-way would otherwise be an unhandled stream error, with the export
+    // lock held and a valid-looking but incomplete zip on the way. Fail the
+    // whole export instead, the way the archive's own errors do.
+    source.once('error', (err) => {
+      release()
+      stopAppending()
+      stopArchive(err)
+    })
+    inFlight += 1
+    archive.append(source, {
+      name: workspacePath,
+      date: new Date(stat.mtimeMs),
+      // With its mode: a script that is executable in the workspace is
+      // executable where the zip is extracted.
+      mode: stat.mode,
+    })
+  }
 
   const onAbort = () => {
     release()
@@ -370,7 +523,7 @@ function createWorkspaceZipStream(
         onAbort()
         return
       }
-      await addFiles(archive)
+      await addFiles(add)
       if (signal?.aborted || archive.destroyed) return
       await archive.finalize()
     } catch (err) {
@@ -386,23 +539,21 @@ function createWorkspaceZipStream(
 
 export async function exportAgentTemplate(agentSlug: string, signal?: AbortSignal): Promise<Readable> {
   return withHostExportLock(async () => {
-    const workspaceDir = getAgentWorkspaceDir(agentSlug)
-
-    if (!(await directoryExists(workspaceDir))) {
+    if (!(await agentCatalog.exists(agentSlug))) {
       throw new Error('Agent workspace not found')
     }
 
-    const claudeMdPath = getAgentClaudeMdPath(agentSlug)
-    const claudeMdContent = await readFileOrNull(claudeMdPath)
+    const actor = agentRegistry.get(agentSlug)
+    const claudeMdContent = await actor.config.get('instructions')
     if (!claudeMdContent) {
       throw new Error('CLAUDE.md not found in agent workspace')
     }
 
-    const templateFiles = await walkTemplateFiles(workspaceDir)
-    return createWorkspaceZipStream(async (archive) => {
-      for (const relativePath of templateFiles) {
+    const templateFiles = await walkTemplateFiles(workspaceTree(actor.files))
+    return createWorkspaceZipStream(actor.files, async (add) => {
+      for (const workspacePath of templateFiles) {
         if (signal?.aborted) return
-        archive.file(path.join(workspaceDir, relativePath), { name: relativePath })
+        await add(workspacePath)
       }
     }, signal, 9) // shareable .agent — size over host CPU
   })
@@ -410,17 +561,17 @@ export async function exportAgentTemplate(agentSlug: string, signal?: AbortSigna
 
 export async function exportAgentFull(agentSlug: string, signal?: AbortSignal): Promise<Readable> {
   return withHostExportLock(async () => {
-    const workspaceDir = getAgentWorkspaceDir(agentSlug)
-
-    if (!(await directoryExists(workspaceDir))) {
+    if (!(await agentCatalog.exists(agentSlug))) {
       throw new Error('Agent workspace not found')
     }
 
-    return createWorkspaceZipStream(async (archive) => {
-      await walkFullExportFiles(workspaceDir, (relativePath) => {
-        archive.file(path.join(workspaceDir, relativePath), { name: relativePath })
-      }, signal)
-    }, signal, 1) // large workspaces — level 9 pegs 0.5 vCPU hosts
+    const { files } = agentRegistry.get(agentSlug)
+    return createWorkspaceZipStream(
+      files,
+      (add) => walkFullExportFiles(files, add, signal),
+      signal,
+      1, // large workspaces — level 9 pegs 0.5 vCPU hosts
+    )
   })
 }
 
@@ -567,7 +718,7 @@ export async function importAgentFromTemplate(
     const effectiveName = nameOverride?.trim() || agentName
 
     const agent = await createAgentFromExistingWorkspace(effectiveName || 'Imported Agent')
-    const workspaceDir = getAgentWorkspaceDir(agent.slug)
+    const actor = agentRegistry.get(agent.slug)
 
     const stripPrefix = validation.stripPrefix
     let totalExtracted = 0
@@ -591,29 +742,33 @@ export async function importAgentFromTemplate(
         if (baseName === '.env' || baseName === 'session-metadata.json') continue
       }
 
-      const destPath = path.resolve(workspaceDir, entryName)
-      // Defense-in-depth: validateEntries already rejects `..`/absolute entries
-      // upfront, but confirm genuine containment here too (prefix-safe).
-      if (!isPathWithinDir(workspaceDir, destPath)) continue
-
-      await ensureDirectory(path.dirname(destPath))
-      const bytesWritten = await reader.extractEntry(
-        entry.fileName,
-        destPath,
-        MAX_UNCOMPRESSED_SIZE - totalExtracted,
-      )
-      totalExtracted += bytesWritten
+      // Streamed, never held whole: an entry is as large as the whole
+      // template may be. The size limit fails the stream, and with it the
+      // write and the import, the way the buffered read used to.
+      const entryStream = await reader.openEntryStream(entry.fileName, MAX_UNCOMPRESSED_SIZE - totalExtracted)
+      let size: number
+      try {
+        ;({ size } = await actor.files.write(entryName, Readable.toWeb(entryStream) as ReadableStream<Uint8Array>))
+      } catch (error) {
+        // validateTemplateEntries already rejects `..`/absolute entries
+        // upfront; the actor refuses anything else that would land outside
+        // the workspace, and such an entry is skipped as before. Any other
+        // failure (a name the filesystem rejects, a full disk) fails the
+        // import: an entry that validated must not go missing in silence.
+        if (error instanceof WorkspaceFileError && error.code === 'outside-workspace') continue
+        throw error
+      }
+      totalExtracted += size
     }
 
     if (nameOverride?.trim()) {
-      const claudeMdPath = getAgentClaudeMdPath(agent.slug)
-      let content = await readFileOrNull(claudeMdPath)
+      let content = await actor.config.get('instructions')
       if (content) {
         content = content.replace(
           /^(---\s*\n[\s\S]*?)(name:\s*).+$/m,
           `$1$2${nameOverride.trim()}`
         )
-        await fs.promises.writeFile(claudeMdPath, content, 'utf-8')
+        await actor.config.put('instructions', content)
       }
     }
 
@@ -652,24 +807,23 @@ export async function installAgentFromSkillset(
 
   // Create a new agent
   const agent = await createAgentFromExistingWorkspace(agentName)
-  const workspaceDir = getAgentWorkspaceDir(agent.slug)
+  const actor = agentRegistry.get(agent.slug)
 
   // Copy template files from repo to workspace
-  await copyDirectoryFiltered(agentDirInRepo, workspaceDir, undefined, { followSymlinks: true })
+  await copyHostDirIntoWorkspace(actor.files, agentDirInRepo, '', { followSymlinks: true })
 
   // The template's CLAUDE.md overwrites the one createAgentFromExistingWorkspace
   // wrote, so patch the frontmatter name and createdAt to the install time.
-  const claudeMdPath = getAgentClaudeMdPath(agent.slug)
-  const claudeMdContent = await readFileOrNull(claudeMdPath)
+  const claudeMdContent = await actor.config.get('instructions')
   if (claudeMdContent) {
     const { frontmatter, body } = parseMarkdownWithFrontmatter<AgentFrontmatter>(claudeMdContent)
     frontmatter.name = agentName
     frontmatter.createdAt = agent.createdAt.toISOString()
-    await fs.promises.writeFile(claudeMdPath, serializeMarkdownWithFrontmatter(frontmatter, body), 'utf-8')
+    await actor.config.put('instructions', serializeMarkdownWithFrontmatter(frontmatter, body))
   }
 
   // Compute hash of template files
-  const hash = await computeAgentTemplateHash(workspaceDir)
+  const hash = await computeWorkspaceTemplateHash(actor.files)
 
   // Write agent metadata
   const metadata: InstalledAgentMetadata = {
@@ -685,11 +839,7 @@ export async function installAgentFromSkillset(
     skillsetName: skillsetRef.skillsetName,
   }
 
-  await fs.promises.writeFile(
-    getAgentMetadataPath(agent.slug),
-    JSON.stringify(metadata, null, 2),
-    'utf-8'
-  )
+  await putInstalledAgentMetadata(actor, metadata)
 
   // Re-read the agent
   const result = await getAgentWithStatus(agent.slug)
@@ -730,13 +880,13 @@ export async function updateAgentFromSkillset(
     return { updated: false }
   }
 
-  const workspaceDir = getAgentWorkspaceDir(agentSlug)
+  const actor = agentRegistry.get(agentSlug)
 
   // Walk the template source and copy files, preserving .env/session-metadata
-  await copyTemplateFiles(agentDirInRepo, workspaceDir)
+  await copyTemplateFiles(agentDirInRepo, actor.files)
 
   // Recompute hash
-  const hash = await computeAgentTemplateHash(workspaceDir)
+  const hash = await computeWorkspaceTemplateHash(actor.files)
 
   // Update metadata
   const updatedMeta: InstalledAgentMetadata = {
@@ -747,17 +897,14 @@ export async function updateAgentFromSkillset(
     openPrUrl: undefined,
   }
 
-  await fs.promises.writeFile(
-    getAgentMetadataPath(agentSlug),
-    JSON.stringify(updatedMeta, null, 2),
-    'utf-8'
-  )
+  await putInstalledAgentMetadata(actor, updatedMeta)
 
   return { updated: true }
 }
 
-async function copyTemplateFiles(src: string, dest: string): Promise<void> {
-  return copyDirectoryFiltered(src, dest, ['.skillset-agent-metadata.json'], { followSymlinks: true })
+/** Copy a template directory of the skillset cache into the workspace, leaving the agent's own metadata alone. */
+async function copyTemplateFiles(src: string, files: FileOps): Promise<void> {
+  return copyHostDirIntoWorkspace(files, src, '', { exclude: [SKILLSET_METADATA_PATH], followSymlinks: true })
 }
 
 // ============================================================================
@@ -775,29 +922,28 @@ async function copyTemplateFiles(src: string, dest: string): Promise<void> {
 export async function getInstalledAgentMetadata(
   agentSlug: string,
 ): Promise<InstalledAgentMetadata | null> {
-  const metadataPath = getAgentMetadataPath(agentSlug)
-  const content = await readFileOrNull(metadataPath)
-  if (!content) return null
+  const actor = agentRegistry.get(agentSlug)
 
-  let raw: unknown
+  let meta: InstalledAgentMetadata | null
   try {
-    raw = JSON.parse(content)
+    meta = (await actor.config.get('skillsetMetadata')) as InstalledAgentMetadata | null
   } catch (error) {
-    captureException(error, { tags: { area: 'agent-template-metadata', op: 'json-parse' }, extra: { agentSlug } })
+    // A metadata file that is not JSON, or does not fit its schema, reads as
+    // "not installed" — the agent shows as local rather than failing.
+    if (!(error instanceof ConfigDocError)) throw error
+    captureException(error, { tags: { area: 'agent-template-metadata', op: 'decode' }, extra: { agentSlug } })
     return null
   }
+  if (!meta) return null
 
-  const parsed = InstalledAgentMetadataSchema.safeParse(raw)
-  if (!parsed.success) {
-    captureException(parsed.error, { tags: { area: 'agent-template-metadata', op: 'schema' }, extra: { agentSlug } })
-    return null
-  }
-
-  const pruned = await pruneInstalledTemplateIfInvalid(parsed.data, metadataPath)
+  const pruned = await pruneInstalledTemplateIfInvalid(meta, actor.files, SKILLSET_METADATA_PATH)
   if (pruned) return null
 
-  return parsed.data as InstalledAgentMetadata
+  return meta
 }
+
+/** Workspace path of the onboarding skill. */
+const ONBOARDING_SKILL_PATH = '.claude/skills/agent-onboarding/SKILL.md'
 
 /**
  * Probe the onboarding skill (`.claude/skills/agent-onboarding/SKILL.md`).
@@ -807,38 +953,22 @@ export async function hasOnboardingSkill(agentSlug: string): Promise<{
   hasOnboarding: boolean
   firstPrompt?: string
 }> {
-  const onboardingPath = path.join(
-    getAgentWorkspaceDir(agentSlug),
-    '.claude',
-    'skills',
-    'agent-onboarding',
-    'SKILL.md',
-  )
-  let handle: Awaited<ReturnType<typeof fs.promises.open>> | undefined
+  const { files } = agentRegistry.get(agentSlug)
   try {
-    handle = await fs.promises.open(onboardingPath, 'r')
-    const stats = await handle.stat()
-    if (!stats.isFile()) return { hasOnboarding: false }
-    if (stats.size === 0) return { hasOnboarding: true }
+    const stat = await files.stat(ONBOARDING_SKILL_PATH)
+    if (!stat || stat.kind !== 'file') return { hasOnboarding: false }
+    if (stat.size === 0) return { hasOnboarding: true }
 
-    // Frontmatter is at the top. Do not load a 500MB skill body into the heap.
-    const readLen = Math.min(stats.size, ONBOARDING_SKILL_READ_LIMIT)
-    const buffer = Buffer.alloc(readLen)
-    let bytesRead = 0
-    while (bytesRead < buffer.length) {
-      const result = await handle.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead)
-      if (result.bytesRead === 0) break
-      bytesRead += result.bytesRead
-    }
-    const content = buffer.subarray(0, bytesRead).toString('utf8')
+    // Frontmatter is at the top. Do not load a 500MB skill body into the heap:
+    // read only the leading bytes.
+    const readLen = Math.min(stat.size, ONBOARDING_SKILL_READ_LIMIT)
+    const head = await readStreamToBuffer(await files.read(ONBOARDING_SKILL_PATH, { start: 0, end: readLen - 1 }))
     const firstPrompt = onboardingFirstPromptFromValue(
-      parseMarkdownWithFrontmatter(content).frontmatter.first_prompt,
+      parseMarkdownWithFrontmatter(head.toString('utf8')).frontmatter.first_prompt,
     )
     return firstPrompt ? { hasOnboarding: true, firstPrompt } : { hasOnboarding: true }
   } catch {
     return { hasOnboarding: false }
-  } finally {
-    await handle?.close().catch(() => undefined)
   }
 }
 
@@ -859,30 +989,20 @@ function onboardingFirstPromptFromValue(value: unknown): string | undefined {
  * so this best-effort probe can never fail an otherwise successful install.
  */
 export async function getAgentTemplatePrompt(agentSlug: string): Promise<string | undefined> {
-  const workspaceDir = getAgentWorkspaceDir(agentSlug)
+  const { files } = agentRegistry.get(agentSlug)
   for (const fileName of TEMPLATE_PROMPT_FILE_NAMES) {
-    let handle: Awaited<ReturnType<typeof fs.promises.open>> | undefined
     try {
-      handle = await fs.promises.open(path.join(workspaceDir, fileName), 'r')
-      const stats = await handle.stat()
-      if (!stats.isFile() || stats.size === 0 || stats.size > MAX_TEMPLATE_PROMPT_SIZE) continue
+      const stat = await files.stat(fileName)
+      if (!stat || stat.kind !== 'file' || stat.size === 0 || stat.size > MAX_TEMPLATE_PROMPT_SIZE) continue
 
-      // Allocate only after the size check and keep the read bounded even if
-      // the file grows between stat() and read().
-      const buffer = Buffer.alloc(stats.size)
-      let bytesRead = 0
-      while (bytesRead < buffer.length) {
-        const result = await handle.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead)
-        if (result.bytesRead === 0) break
-        bytesRead += result.bytesRead
-      }
-      const prompt = buffer.subarray(0, bytesRead).toString('utf8').trim()
+      // Read only after the size check, and only the bytes the check saw.
+      const prompt = (await readStreamToBuffer(await files.read(fileName, { start: 0, end: stat.size - 1 })))
+        .toString('utf8')
+        .trim()
       if (prompt) return prompt
     } catch {
-      // PROMPT.md is an optional handoff. Filesystem errors must not strand an
+      // PROMPT.md is an optional handoff. Storage errors must not strand an
       // agent after its workspace and owner ACL have already been created.
-    } finally {
-      await handle?.close().catch(() => undefined)
     }
   }
   return undefined
@@ -915,7 +1035,7 @@ export async function getAgentTemplateStatus(
   const info = hostingProvider.getSourceInfo(metaRef, skillsetConfig)
   const skillsetName = info.skillsetName
   const sourceLabel = info.sourceLabel
-  const workspaceDir = getAgentWorkspaceDir(agentSlug)
+  const { files } = agentRegistry.get(agentSlug)
 
   // Queue status — single request, surfaces as optimistic "up_to_date" while
   // the actual file adoption waits for refreshAgentTemplates.
@@ -929,7 +1049,7 @@ export async function getAgentTemplateStatus(
     }
   }
 
-  const currentHash = await computeAgentTemplateHash(workspaceDir)
+  const currentHash = await computeWorkspaceTemplateHash(files)
 
   if (!pendingTerminal && (currentHash !== meta.originalContentHash || meta.openPrUrl)) {
     return { type: 'locally_modified', skillsetId: meta.skillsetId, skillsetName, sourceLabel, openPrUrl: meta.openPrUrl }
@@ -961,17 +1081,28 @@ export async function getAgentTemplateStatus(
 }
 
 /**
- * Compute SHA-256 hash of all template-eligible files in a workspace.
+ * Compute SHA-256 hash of all template-eligible files in a directory on this
+ * machine — a template in the skillset cache.
  */
-export async function computeAgentTemplateHash(workspaceDir: string): Promise<string> {
-  const files = await walkTemplateFiles(workspaceDir)
+export async function computeAgentTemplateHash(hostDir: string): Promise<string> {
+  return computeTemplateHash(hostTree(hostDir))
+}
+
+/** The same digest over an agent's workspace, so the two compare. */
+export async function computeWorkspaceTemplateHash(files: FileOps): Promise<string> {
+  return computeTemplateHash(workspaceTree(files))
+}
+
+async function computeTemplateHash(tree: TemplateTree): Promise<string> {
+  const files = await walkTemplateFiles(tree)
   files.sort() // Ensure deterministic order
 
   const limit = pLimit(8)
   const contents = new Map<string, string>()
   await Promise.all(files.map((relativePath) => limit(async () => {
     try {
-      contents.set(relativePath, await fs.promises.readFile(path.join(workspaceDir, relativePath), 'utf-8'))
+      const bytes = await tree.read(relativePath)
+      if (bytes !== null) contents.set(relativePath, bytesToUtf8(bytes))
     } catch {
       // Skip unreadable files
     }
@@ -997,22 +1128,22 @@ function updateAgentFrontmatterVersion(content: string, newVersion: string): str
 }
 
 async function collectAgentFilesForPlatform(
-  workspaceDir: string,
+  files: FileOps,
   agentPathInRepo: string,
   options?: { claudeMdContent?: string },
 ): Promise<Array<{ path: string; content: string }>> {
-  const templateFiles = await walkTemplateFiles(workspaceDir)
+  const templateFiles = await walkTemplateFiles(workspaceTree(files))
   const normalizedRoot = agentPathInRepo.replace(/\/$/, '')
 
-  return await Promise.all(templateFiles.map(async (relativePath) => {
-    const repoPath = `${normalizedRoot}/${relativePath.replace(/\\/g, '/')}`
-    if (relativePath === 'CLAUDE.md' && options?.claudeMdContent !== undefined) {
+  return await Promise.all(templateFiles.map(async (workspacePath) => {
+    const repoPath = `${normalizedRoot}/${workspacePath}`
+    if (workspacePath === 'CLAUDE.md' && options?.claudeMdContent !== undefined) {
       return { path: repoPath, content: options.claudeMdContent }
     }
 
-    const fullPath = path.join(workspaceDir, relativePath)
-    const content = await fs.promises.readFile(fullPath, 'utf-8')
-    return { path: repoPath, content }
+    const bytes = await files.getDoc(workspacePath)
+    if (bytes === null) throw new WorkspaceFileError('not-found', `${workspacePath}: File not found`)
+    return { path: repoPath, content: bytesToUtf8(bytes) }
   }))
 }
 
@@ -1125,7 +1256,7 @@ export async function refreshAgentTemplates(
   }))
 
   for (const [slug, meta] of metaByAgent) {
-    const workspaceDir = getAgentWorkspaceDir(slug)
+    const actor = agentRegistry.get(slug)
     const repoDir = getSkillsetRepoDirForRef(toSkillsetRefFromMeta(meta))
     const agentDirInRepo = path.join(repoDir, meta.agentPath.replace(/\/$/, ''))
 
@@ -1140,20 +1271,20 @@ export async function refreshAgentTemplates(
             captureException(error, { tags: { area: 'template-refresh', op: 'queue-merged-pull' }, extra: { agentSlug: slug } })
           }
           if (await directoryExists(agentDirInRepo)) {
-            await copyTemplateFiles(agentDirInRepo, workspaceDir)
-            meta.originalContentHash = await computeAgentTemplateHash(workspaceDir)
+            await copyTemplateFiles(agentDirInRepo, actor.files)
+            meta.originalContentHash = await computeWorkspaceTemplateHash(actor.files)
           }
         }
         meta.pendingQueueItemId = undefined
         meta.openPrUrl = undefined
-        await writeJsonFile(getAgentMetadataPath(slug), meta)
+        await putInstalledAgentMetadata(actor, meta)
         continue
       }
     }
 
     if (!(await directoryExists(agentDirInRepo))) continue
 
-    const currentHash = await computeAgentTemplateHash(workspaceDir)
+    const currentHash = await computeWorkspaceTemplateHash(actor.files)
     const repoHash = await computeAgentTemplateHash(agentDirInRepo)
 
     // Local matches remote — clear any stale PR link.
@@ -1161,7 +1292,7 @@ export async function refreshAgentTemplates(
       if (meta.openPrUrl || currentHash !== meta.originalContentHash) {
         meta.originalContentHash = currentHash
         meta.openPrUrl = undefined
-        await writeJsonFile(getAgentMetadataPath(slug), meta)
+        await putInstalledAgentMetadata(actor, meta)
       }
       continue
     }
@@ -1170,7 +1301,7 @@ export async function refreshAgentTemplates(
     if (meta.openPrUrl
         && currentHash !== meta.originalContentHash
         && repoHash !== meta.originalContentHash) {
-      await copyTemplateFiles(agentDirInRepo, workspaceDir)
+      await copyTemplateFiles(agentDirInRepo, actor.files)
       meta.originalContentHash = repoHash
       meta.openPrUrl = undefined
 
@@ -1184,7 +1315,7 @@ export async function refreshAgentTemplates(
         captureException(error, { tags: { area: 'template-refresh', op: 'read-index' }, extra: { agentSlug: slug } })
       }
 
-      await writeJsonFile(getAgentMetadataPath(slug), meta)
+      await putInstalledAgentMetadata(actor, meta)
     }
   }
 }
@@ -1203,8 +1334,7 @@ async function generateAgentPRSuggestions(
     suggestedVersion: meta.installedVersion,
   }
 
-  const claudeMdPath = getAgentClaudeMdPath(agentSlug)
-  const modifiedContent = await readFileOrNull(claudeMdPath)
+  const modifiedContent = await agentRegistry.get(agentSlug).config.get('instructions')
   if (!modifiedContent) return fallback
 
   let client
@@ -1381,9 +1511,8 @@ export async function createAgentPR(
     throw new Error('Agent has no skillset metadata - cannot create PR')
   }
 
-  const workspaceDir = getAgentWorkspaceDir(agentSlug)
-  const claudeMdPath = getAgentClaudeMdPath(agentSlug)
-  const claudeMdContent = await readFileOrNull(claudeMdPath)
+  const actor = agentRegistry.get(agentSlug)
+  const claudeMdContent = await actor.config.get('instructions')
   if (!claudeMdContent) {
     throw new Error('CLAUDE.md not found')
   }
@@ -1396,7 +1525,7 @@ export async function createAgentPR(
   const hostingProvider = getSkillsetProvider(meta.provider)
   const repoDir = getSkillsetRepoDirForRef(metaRef)
 
-  const files = await collectAgentFilesForPlatform(workspaceDir, meta.agentPath, {
+  const files = await collectAgentFilesForPlatform(actor.files, meta.agentPath, {
     claudeMdContent: nextClaudeMdContent,
   })
 
@@ -1432,11 +1561,11 @@ export async function createAgentPR(
     await refreshSkillset(metaRef)
     const agentDirInRepo = path.join(repoDir, meta.agentPath.replace(/\/$/, ''))
     if (await directoryExists(agentDirInRepo)) {
-      await copyTemplateFiles(agentDirInRepo, workspaceDir)
+      await copyTemplateFiles(agentDirInRepo, actor.files)
     } else {
-      await fs.promises.writeFile(claudeMdPath, nextClaudeMdContent, 'utf-8')
+      await actor.config.put('instructions', nextClaudeMdContent)
     }
-    meta.originalContentHash = await computeAgentTemplateHash(workspaceDir)
+    meta.originalContentHash = await computeWorkspaceTemplateHash(actor.files)
     meta.pendingQueueItemId = undefined
   }
 
@@ -1444,7 +1573,7 @@ export async function createAgentPR(
     meta.openPrUrl = result.prUrl
   }
 
-  await writeJsonFile(getAgentMetadataPath(agentSlug), meta)
+  await putInstalledAgentMetadata(actor, meta)
   return { prUrl: result.prUrl, successMessage: result.successMessage }
 }
 
@@ -1472,7 +1601,7 @@ export async function getAgentPublishInfo(
     throw new Error('Agent already belongs to a skillset - use Open PR instead')
   }
 
-  const claudeMdContent = await readFileOrNull(getAgentClaudeMdPath(agentSlug))
+  const claudeMdContent = await agentRegistry.get(agentSlug).config.get('instructions')
   if (!claudeMdContent) {
     throw new Error('CLAUDE.md not found')
   }
@@ -1500,9 +1629,8 @@ export async function publishAgentToSkillset(
   skillsetConfig: SkillsetConfig,
   options: { title: string; body: string; newVersion?: string },
 ): Promise<{ prUrl?: string; successMessage: string }> {
-  const workspaceDir = getAgentWorkspaceDir(agentSlug)
-  const claudeMdPath = getAgentClaudeMdPath(agentSlug)
-  let claudeMdContent = await readFileOrNull(claudeMdPath)
+  const actor = agentRegistry.get(agentSlug)
+  let claudeMdContent = await actor.config.get('instructions')
   if (!claudeMdContent) {
     throw new Error('CLAUDE.md not found')
   }
@@ -1538,7 +1666,7 @@ export async function publishAgentToSkillset(
   const hostingProvider = getSkillsetProvider(skillsetConfig.provider)
 
   // Prepare agent template files + updated index.json
-  const files = await collectAgentFilesForPlatform(workspaceDir, agentPathInRepo, {
+  const files = await collectAgentFilesForPlatform(actor.files, agentPathInRepo, {
     claudeMdContent,
   })
   if (!index.agents) {
@@ -1569,7 +1697,7 @@ export async function publishAgentToSkillset(
     agentPath: agentPathInRepo,
     installedVersion: version,
     installedAt: new Date().toISOString(),
-    originalContentHash: await computeAgentTemplateHash(workspaceDir),
+    originalContentHash: await computeWorkspaceTemplateHash(actor.files),
     provider: skillsetConfig.provider,
     providerData: skillsetRef.providerData,
     skillsetName: skillsetConfig.name,
@@ -1582,17 +1710,17 @@ export async function publishAgentToSkillset(
     const repoDirAfter = getSkillsetRepoDirForRef(skillsetRef)
     const agentDirInRepo = path.join(repoDirAfter, agentPathInRepo.replace(/\/$/, ''))
     if (await directoryExists(agentDirInRepo)) {
-      await copyTemplateFiles(agentDirInRepo, workspaceDir)
+      await copyTemplateFiles(agentDirInRepo, actor.files)
     } else {
-      await fs.promises.writeFile(claudeMdPath, claudeMdContent, 'utf-8')
+      await actor.config.put('instructions', claudeMdContent)
     }
-    metadata.originalContentHash = await computeAgentTemplateHash(workspaceDir)
+    metadata.originalContentHash = await computeWorkspaceTemplateHash(actor.files)
   }
 
   if (result.prUrl) {
     metadata.openPrUrl = result.prUrl
   }
 
-  await writeJsonFile(getAgentMetadataPath(agentSlug), metadata)
+  await putInstalledAgentMetadata(actor, metadata)
   return { prUrl: result.prUrl, successMessage: result.successMessage }
 }

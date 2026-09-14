@@ -7,6 +7,14 @@
 import type { z } from 'zod'
 import { agentPreferencesSchema } from '@shared/lib/types/agent-preferences'
 import { claudeSettingsWithHooksSchema } from '@shared/lib/services/agent-hooks-schema'
+import { InstalledAgentMetadataSchema } from '@shared/lib/types/skillset-schema'
+
+/**
+ * Which skillset template an agent was installed from. Strict on the fields
+ * the template service reads; a key this build does not know survives a
+ * read-modify-write instead of being dropped.
+ */
+const installedAgentMetadataSchema = InstalledAgentMetadataSchema.loose()
 
 interface TextDocSpec {
   kind: 'text'
@@ -40,6 +48,8 @@ export const CONFIG_DOCS = {
   preferences: { kind: 'json', path: 'agent-preferences.json', shared: false, schema: agentPreferencesSchema },
   /** Claude Code settings, which is where hooks live. Unknown keys pass through. */
   claudeSettings: { kind: 'json', path: '.claude/settings.json', shared: false, schema: claudeSettingsWithHooksSchema },
+  /** Which skillset template this agent came from and the hash of what was installed. Absent for a local agent. */
+  skillsetMetadata: { kind: 'json', path: '.skillset-agent-metadata.json', shared: false, schema: installedAgentMetadataSchema },
 } as const satisfies Record<string, ConfigDocSpec>
 
 export type ConfigDocId = keyof typeof CONFIG_DOCS

@@ -91,8 +91,18 @@ describe('skillset install', () => {
       ),
     )
     expectWithinBudget('skillset installAgentFromSkillset', measurement, {
-      totalOps: 10_000,
-      wallMs: 500,
+      // Pinned exactly: 41 copies and 43 hash reads as the plain copy did,
+      // plus the atomic writer's temp file and rename for the three documents
+      // the install writes (main wrote two of them in place), one realpath
+      // for the cycle guard on the source tree, and the one file the copy
+      // replaces: the skillset's CLAUDE.md lands on the one the agent was
+      // created with, and a copy that refuses to write through an existing
+      // entry unlinks it and copies again.
+      totalOps: 108,
+      // Recorded 430–490 ms on an idle machine; ~2× that, as the home
+      // profiles are budgeted, so runner load cannot trip it while a
+      // serialised copy path still would.
+      wallMs: 950,
     })
   })
 })

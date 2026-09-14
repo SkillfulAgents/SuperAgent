@@ -42,19 +42,8 @@
   "src/shared/lib/scheduler/wake-delivery.ts": [
     "@shared/lib/container/message-persister"
   ],
-  "src/shared/lib/services/agent-template-service.ts": [
-    "@shared/lib/utils/file-storage#getAgentClaudeMdPath",
-    "@shared/lib/utils/file-storage#getAgentWorkspaceDir"
-  ],
   "src/shared/lib/services/home-graph-service.ts": [
     "@shared/lib/utils/file-storage#getAgentSessionMetadataPath"
-  ],
-  "src/shared/lib/services/skillset-reconcile.ts": [
-    "@shared/lib/utils/file-storage#getAgentWorkspaceDir",
-    "@shared/lib/utils/file-storage#getAgentsDir"
-  ],
-  "src/shared/lib/services/skillset-service.ts": [
-    "@shared/lib/utils/file-storage#getAgentWorkspaceDir"
   ],
   "src/shared/lib/services/widget-refresh-service.ts": [
     "@shared/lib/container/message-persister"
