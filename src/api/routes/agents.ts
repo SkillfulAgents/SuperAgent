@@ -4706,6 +4706,13 @@ agents.get('/:id/chat-integrations', AgentRead(), async (c) => {
   }
 })
 
+function secretsErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof WorkspaceFileError && error.code === 'not-a-file') {
+    return 'Cannot access secrets: workspace .env is a directory; a regular file is required.'
+  }
+  return fallback
+}
+
 // GET /api/agents/:id/secrets - List secrets for an agent
 agents.get('/:id/secrets', AgentRead(), async (c) => {
   try {
@@ -4725,7 +4732,7 @@ agents.get('/:id/secrets', AgentRead(), async (c) => {
     return c.json(response)
   } catch (error) {
     console.error('Failed to fetch secrets:', error)
-    return c.json({ error: 'Failed to fetch secrets' }, 500)
+    return c.json({ error: secretsErrorMessage(error, 'Failed to fetch secrets') }, 500)
   }
 })
 
@@ -4776,7 +4783,7 @@ agents.get('/:id/secrets/:secretId/value', AgentAdmin(), async (c) => {
         { 'Retry-After': '1' },
       )
     }
-    return c.json({ error: 'Failed to reveal secret' }, 500)
+    return c.json({ error: secretsErrorMessage(error, 'Failed to reveal secret') }, 500)
   }
 })
 
@@ -4826,7 +4833,7 @@ agents.post('/:id/secrets', AgentUser(), async (c) => {
     return c.json({ id: envVar, key: key.trim(), envVar, hasValue: true }, 201)
   } catch (error) {
     console.error('Failed to create secret:', error)
-    return c.json({ error: 'Failed to create secret' }, 500)
+    return c.json({ error: secretsErrorMessage(error, 'Failed to create secret') }, 500)
   }
 })
 
@@ -4868,7 +4875,7 @@ agents.put('/:id/secrets/:secretId', AgentUser(), async (c) => {
     return c.json({ id: updated.envVar, key: updated.key, envVar: updated.envVar, hasValue: true })
   } catch (error) {
     console.error('Failed to update secret:', error)
-    return c.json({ error: 'Failed to update secret' }, 500)
+    return c.json({ error: secretsErrorMessage(error, 'Failed to update secret') }, 500)
   }
 })
 
@@ -4889,7 +4896,7 @@ agents.delete('/:id/secrets/:secretId', AgentUser(), async (c) => {
     return c.body(null, 204)
   } catch (error) {
     console.error('Failed to delete secret:', error)
-    return c.json({ error: 'Failed to delete secret' }, 500)
+    return c.json({ error: secretsErrorMessage(error, 'Failed to delete secret') }, 500)
   }
 })
 

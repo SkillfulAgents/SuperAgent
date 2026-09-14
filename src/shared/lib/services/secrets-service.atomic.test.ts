@@ -11,7 +11,7 @@ import * as os from 'os'
 // whose module graph is heavy, and a dynamic import inside the first test
 // counted against that test's timeout. The data dir is read per call, so the
 // per-test SUPERAGENT_DATA_DIR still applies.
-import { setSecret, deleteSecret, updateSecret, listSecrets, getSecretEnvVars } from './secrets-service'
+import { setSecret, deleteSecret, updateSecret, listSecrets, getSecret, hasSecrets, getSecretEnvVars } from './secrets-service'
 
 let tmpDir: string
 
@@ -179,15 +179,23 @@ describe('atomic .env writes', () => {
     expect(fs.existsSync(path.dirname(envPath('ghost-agent')))).toBe(false)
   })
 
-  it('a directory in place of .env holds no secret: update answers not_found and delete false', async () => {
-    // Something is there, but it is not the file: for a secret lookup that is
-    // the same as nothing (→ route 404), not a failure to read it (→ 500).
+  it.each([
+    ['list', () => listSecrets('dir-agent')],
+    ['reveal', () => getSecret('dir-agent', 'NOPE')],
+    ['create', () => setSecret('dir-agent', { key: 'New', envVar: 'NEW', value: 'synthetic' })],
+    ['update', () => updateSecret('dir-agent', 'NOPE', { value: '1' })],
+    ['delete', () => deleteSecret('dir-agent', 'NOPE')],
+    ['hasSecrets', () => hasSecrets('dir-agent')],
+    ['session env names', () => getSecretEnvVars('dir-agent')],
+  ] as const)('%s rejects a directory at .env and preserves its contents and permissions', async (_name, operation) => {
     fs.mkdirSync(envPath('dir-agent'), { recursive: true, mode: 0o755 })
-    fs.writeFileSync(path.join(envPath('dir-agent'), 'inner.txt'), 'x')
+    fs.writeFileSync(path.join(envPath('dir-agent'), 'inner.txt'), 'PRESERVE_ME')
+    const beforeMode = fs.statSync(envPath('dir-agent')).mode
 
-    await expect(updateSecret('dir-agent', 'NOPE', { value: '1' })).resolves.toEqual({ status: 'not_found' })
-    await expect(deleteSecret('dir-agent', 'NOPE')).resolves.toBe(false)
-    expect(fs.statSync(envPath('dir-agent')).mode & 0o777).toBe(0o755)
-    expect(fs.readFileSync(path.join(envPath('dir-agent'), 'inner.txt'), 'utf-8')).toBe('x')
+    await expect(operation()).rejects.toMatchObject({ code: 'not-a-file' })
+
+    expect(fs.statSync(envPath('dir-agent')).mode).toBe(beforeMode)
+    expect(fs.readdirSync(envPath('dir-agent'))).toEqual(['inner.txt'])
+    expect(fs.readFileSync(path.join(envPath('dir-agent'), 'inner.txt'), 'utf-8')).toBe('PRESERVE_ME')
   })
 })
