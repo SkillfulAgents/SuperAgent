@@ -47,19 +47,23 @@ export function parseEnvFile(content: string): Map<string, { value: string; comm
 
     const key = trimmed.substring(0, equalsIndex).trim()
 
-    // Get value and optional comment
-    let rest = trimmed.substring(equalsIndex + 1)
-    let value: string
-    let comment: string | undefined
-
-    // Check for inline comment (but not inside quotes)
-    const commentMatch = rest.match(/^(".*?"|'.*?'|[^#]*?)\s*#\s*(.*)$/)
-    if (commentMatch) {
-      value = commentMatch[1].trim()
-      comment = commentMatch[2].trim()
-    } else {
-      value = rest.trim()
+    // A # starts a comment only outside the value's surrounding quotes.
+    // Skip escaped characters in double quotes so an escaped quote cannot
+    // end the value early. Backslashes in single quotes stay literal.
+    const rest = trimmed.substring(equalsIndex + 1).trim()
+    let quote = rest[0] === '"' || rest[0] === "'" ? rest[0] : undefined
+    let commentIndex = -1
+    for (let i = quote ? 1 : 0; i < rest.length; i++) {
+      if (quote) {
+        if (quote === '"' && rest[i] === '\\') i++
+        else if (rest[i] === quote) quote = undefined
+      } else if (rest[i] === '#') {
+        commentIndex = i
+        break
+      }
     }
+    let value = commentIndex < 0 ? rest : rest.slice(0, commentIndex).trim()
+    const comment = commentIndex < 0 ? undefined : rest.slice(commentIndex + 1).trim()
 
     // Remove surrounding quotes. Double-quoted values also unescape the
     // sequences serializeEnvFile writes (\\ , \" , \n) — without this, a value
