@@ -247,6 +247,20 @@ describe('createAgentRegistry', () => {
       expect(fake.client.sendMessage).toHaveBeenCalledWith('s1', 'hi', 'u1', { isAutomated: true })
     })
 
+    it('sessions.broadcastUpdate and syncAwaiting reach the persister scoped to this agent', () => {
+      const broadcastSessionUpdate = vi.fn()
+      const syncAgentSessionsAwaiting = vi.fn()
+      const deps = {
+        ...fake.deps,
+        messagePersister: { broadcastSessionUpdate, syncAgentSessionsAwaiting },
+      } as unknown as LocalActorDeps
+      const actor = createAgentRegistry(deps).get('a')
+      actor.sessions.broadcastUpdate('s1')
+      actor.sessions.syncAwaiting()
+      expect(broadcastSessionUpdate).toHaveBeenCalledWith('a', 's1')
+      expect(syncAgentSessionsAwaiting).toHaveBeenCalledWith('a')
+    })
+
     it('container.openWebSocket targets this agent\'s container and adds its auth headers last', () => {
       const actor = createAgentRegistry(fake.deps).get('a')
       expect(fake.containerHost.runtime).not.toHaveBeenCalled()

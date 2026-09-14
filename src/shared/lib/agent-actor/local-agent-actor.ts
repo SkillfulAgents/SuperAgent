@@ -192,6 +192,7 @@ function createSessionOps(slug: AgentSlug, deps: LocalActorDeps): SessionOps {
     hasAwaitingInput: () => deps.messagePersister.hasSessionsAwaitingInputForAgent(slug),
     markAllInactive: (...args) => deps.messagePersister.markAllSessionsInactiveForAgent(slug, ...args),
     syncAwaiting: () => deps.messagePersister.syncAgentSessionsAwaiting(slug),
+    broadcastUpdate: (sessionId) => deps.messagePersister.broadcastSessionUpdate(slug, sessionId),
     recoverAwaitingInput: (sessionId, unresolved) =>
       deps.messagePersister.recoverSessionAwaitingInput(slug, sessionId, unresolved),
     promoteAutomated: (sessionId) => deps.messagePersister.promoteAutomatedSession(slug, sessionId),

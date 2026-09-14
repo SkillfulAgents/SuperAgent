@@ -133,7 +133,7 @@ export async function deliverSessionWake(
       sessionId,
       agentSlug: task.agentSlug,
     })
-    messagePersister.broadcastSessionUpdate(task.agentSlug, sessionId)
+    actor.sessions.broadcastUpdate(sessionId)
 
     return { outcome: 'delivered', sessionId }
   } finally {

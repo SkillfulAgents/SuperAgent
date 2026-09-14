@@ -290,6 +290,12 @@ export interface SessionOps {
   markAllInactive(options?: { settleRecovering?: boolean }): void
   /** `messagePersister.syncAgentSessionsAwaiting` */
   syncAwaiting(): void
+  /**
+   * `messagePersister.broadcastSessionUpdate`: tell the session's stream
+   * listeners that its metadata changed (a rename, a model or effort change)
+   * so they refetch before their next send.
+   */
+  broadcastUpdate(sessionId: string): void
   /** `messagePersister.recoverSessionAwaitingInput` */
   recoverAwaitingInput(sessionId: string, unresolved: Array<{ toolUseId: string; toolName: string }>): void
   /** `messagePersister.promoteAutomatedSession` */
