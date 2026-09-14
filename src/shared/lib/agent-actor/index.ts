@@ -4,12 +4,11 @@ export { agentCatalog } from './local-agent-catalog'
 export { copyHostDirIntoWorkspace } from './copy-into-workspace'
 export { CONFIG_DOCS, ConfigDocError, type ConfigDoc, type ConfigDocErrorCode, type ConfigDocId } from './config-schema'
 // Pure helpers of the fenced transcript modules that routes still need: how a
-// media reference is spelled in a URL, how session lists are ordered and
-// capped, and the one-time storage migration startup runs over every agent.
+// media reference is spelled in a URL, and how session lists are ordered and
+// capped.
 export { decodeMediaRef, encodeMediaRef, type MediaRef } from '@shared/lib/services/session-media'
 export {
   SESSIONS_LIST_MAX_LIMIT,
-  removeLegacySessionOwnershipIndex,
   sortSessionsNewestFirst,
   type ListSessionsOptions,
   type SessionSortBy,

@@ -1,6 +1,6 @@
 import type { ServerType } from '@hono/node-server'
 import pLimit from 'p-limit'
-import { containerHost, removeLegacySessionOwnershipIndex } from './agent-actor'
+import { containerHost } from './agent-actor'
 import { shutdownActiveRunner } from './container/client-factory'
 import { reviewManager } from './proxy/review-manager'
 import { accountReauthManager } from './proxy/account-reauth-manager'
@@ -123,16 +123,6 @@ async function initializeServicesInner() {
 
   // Initialize server-side analytics version
   setServerAnalyticsVersion(APP_VERSION)
-
-  // One-time removal of the legacy session-ownership index. This build derives
-  // ownership structurally, so the file is dead here — but leaving it would
-  // strand every new session's ownership on a rollback to a build that reads
-  // it. Deleting it lets that older build re-run its discovery migration.
-  try {
-    await removeLegacySessionOwnershipIndex()
-  } catch (error) {
-    captureException(error, { tags: { component: 'startup', operation: 'remove-legacy-ownership-index' } })
-  }
 
   // Register account providers (Composio, Nango if configured)
   registerAllAccountProviders()

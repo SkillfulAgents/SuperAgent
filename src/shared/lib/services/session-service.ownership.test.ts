@@ -272,17 +272,4 @@ describe('sessionIsKnown', () => {
     await expect(sessionExists('agent-a', 'victim')).resolves.toBe(false)
     await expect(sessionIsKnown('agent-a', 'victim')).resolves.toBe(false)
   })
-
-  it('removeLegacySessionOwnershipIndex deletes a stale index and is a no-op when absent', async () => {
-    const { removeLegacySessionOwnershipIndex } = await importService()
-    // The index lived one directory above the agents dir — i.e. the data dir.
-    const legacyPath = path.join(tmpDir, 'session-ownership.json')
-    fs.writeFileSync(legacyPath, JSON.stringify({ 'some-session': 'agent-a' }))
-
-    await removeLegacySessionOwnershipIndex()
-    expect(fs.existsSync(legacyPath)).toBe(false)
-
-    // Idempotent: a second call with the file already gone must not throw.
-    await expect(removeLegacySessionOwnershipIndex()).resolves.toBeUndefined()
-  })
 })
