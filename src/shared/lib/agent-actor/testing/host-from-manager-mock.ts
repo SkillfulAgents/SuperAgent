@@ -62,6 +62,7 @@ const HOST_METHODS = [
   'stopHealthMonitor',
   'stopAll',
   'stopAllSync',
+  'workspaceHostPath',
 ] as const
 
 /** Host-level methods whose manager counterpart had a different name. */

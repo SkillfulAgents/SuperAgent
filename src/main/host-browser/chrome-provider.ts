@@ -3,9 +3,9 @@ import fs from 'fs'
 import path from 'path'
 import net from 'net'
 import os from 'os'
-import { getDataDir, getAgentDownloadsDir } from '@shared/lib/config/data-dir'
+import { getDataDir } from '@shared/lib/config/data-dir'
 import { listChromeProfiles, copyChromeProfileData } from '@shared/lib/browser/chrome-profile'
-import { agentRegistry } from '@shared/lib/agent-actor'
+import { agentRegistry, containerHost } from '@shared/lib/agent-actor'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo } from './types'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { readJsonFileStrictSync, writeFileAtomicSync, CorruptFileError } from '@shared/lib/utils/file-storage'
@@ -328,8 +328,11 @@ export class ChromeProvider implements HostBrowserProvider {
     }
 
     // Set Chrome download preferences so files go to the agent's workspace
-    // instead of the user's ~/Downloads folder.
-    const downloadDir = getAgentDownloadsDir(instanceId)
+    // instead of the user's ~/Downloads folder. The host browser runs on this
+    // machine, so this is a host-only feature: it takes the workspace's host
+    // path from the container host rather than asking the actor.
+    const downloadDir = path.join(containerHost.workspaceHostPath(instanceId), 'downloads')
+    fs.mkdirSync(downloadDir, { recursive: true })
     const prefsDir = path.join(userDataDir, 'Default')
     const prefsPath = path.join(prefsDir, 'Preferences')
     fs.mkdirSync(prefsDir, { recursive: true })

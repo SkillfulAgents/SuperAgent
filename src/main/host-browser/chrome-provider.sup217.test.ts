@@ -186,7 +186,6 @@ vi.mock('fs', () => {
 
 vi.mock('@shared/lib/config/data-dir', () => ({
   getDataDir: () => '/tmp/sa-sup217-data',
-  getAgentDownloadsDir: () => '/tmp/sa-sup217-downloads',
 }))
 
 vi.mock('@shared/lib/browser/chrome-profile', () => ({
@@ -206,12 +205,16 @@ vi.mock('@shared/lib/error-reporting', () => ({
 vi.mock('@shared/lib/container/container-host', async () => {
   const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
   return {
-    containerHost: hostFromManagerMock({
-      getClient: () => ({
-        getHostBridgeIp: h.getHostBridgeIp,
-        probeHostPortFromRunner: h.probeHostPortFromRunner,
+    containerHost: Object.assign(
+      hostFromManagerMock({
+        getClient: () => ({
+          getHostBridgeIp: h.getHostBridgeIp,
+          probeHostPortFromRunner: h.probeHostPortFromRunner,
+        }),
       }),
-    }),
+      // Chrome's download directory lives under the agent's workspace on this machine.
+      { workspaceHostPath: (slug: string) => `/tmp/sa-sup217-workspaces/${slug}` },
+    ),
   }
 })
 

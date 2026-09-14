@@ -951,13 +951,22 @@ export class CorruptFileError extends Error {
 
 let tmpWriteCounter = 0
 
+/** The longest file name every filesystem here accepts, in bytes. */
+const FILE_NAME_MAX_BYTES = 255
+
 /** Sibling temp path in the same directory as `filePath` (so rename is atomic —
  *  same filesystem). Leading dot + pid + counter + random keeps it unique and
- *  out of the way of glob/dir listings. */
+ *  out of the way of glob/dir listings. The target's name is kept for
+ *  forensics but cut so the temp name fits the filesystem's limit: a name
+ *  the filesystem accepts must never fail to write because its temp name is
+ *  longer. */
 function tempPathFor(filePath: string): string {
   const dir = path.dirname(filePath)
-  const base = path.basename(filePath)
-  return path.join(dir, `.${base}.${process.pid}.${++tmpWriteCounter}.${generateRandomSuffix(8)}.tmp`)
+  const suffix = `.${process.pid}.${++tmpWriteCounter}.${generateRandomSuffix(8)}.tmp`
+  const budget = FILE_NAME_MAX_BYTES - 1 - Buffer.byteLength(suffix)
+  const base = Array.from(path.basename(filePath))
+  while (base.length > 0 && Buffer.byteLength(base.join('')) > budget) base.pop()
+  return path.join(dir, `.${base.join('')}${suffix}`)
 }
 
 /**
@@ -1049,6 +1058,19 @@ export async function writeFileAtomic(
   await writeFileAtomicWith(filePath, (handle) => handle.writeFile(content, 'utf-8'), options)
 }
 
+export interface AtomicWriteOptions {
+  mode?: number
+  forceMode?: boolean
+  /**
+   * Flush the file and its directory to disk before returning (the default).
+   * `false` keeps the write atomic — a reader sees the old file or the whole
+   * new one — but not durable across a crash, for bulk content (uploads,
+   * imports) that was never flushed before and where a flush per file is the
+   * dominant cost.
+   */
+  fsync?: boolean
+}
+
 /**
  * Streaming variant of {@link writeFileAtomic}: the content is produced by an
  * iterable of chunks (written verbatim, in order) instead of one string, so a
@@ -1059,7 +1081,7 @@ export async function writeFileAtomic(
 export async function writeFileAtomicStream(
   filePath: string,
   chunks: AsyncIterable<Buffer | string> | Iterable<Buffer | string>,
-  options?: { mode?: number; forceMode?: boolean }
+  options?: AtomicWriteOptions
 ): Promise<void> {
   // Batch small chunks (transcript lines) into ~1MB writes so a many-line file
   // doesn't pay one syscall per line.
@@ -1098,7 +1120,7 @@ export async function writeFileAtomicStream(
 async function writeFileAtomicWith(
   filePath: string,
   writeContent: (handle: fs.promises.FileHandle) => Promise<void>,
-  options?: { mode?: number; forceMode?: boolean }
+  options?: AtomicWriteOptions
 ): Promise<void> {
   const dir = path.dirname(filePath)
   const tmpPath = tempPathFor(filePath)
@@ -1140,7 +1162,7 @@ async function writeFileAtomicWith(
         await handle.chown(existing.uid, existing.gid).catch(() => {})
         await handle.chmod(existing.mode).catch(() => {})
       }
-      await handle.sync()
+      if (options?.fsync !== false) await handle.sync()
     } finally {
       await handle.close()
     }
@@ -1149,7 +1171,7 @@ async function writeFileAtomicWith(
     await fs.promises.rm(tmpPath, { force: true }).catch(() => {})
     throw err
   }
-  await fsyncDir(dir)
+  if (options?.fsync !== false) await fsyncDir(dir)
 }
 
 /** Synchronous twin of {@link writeFileAtomic}. */
