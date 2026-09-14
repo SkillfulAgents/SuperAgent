@@ -29,6 +29,8 @@ vi.mock('@shared/lib/container/container-host', async () => {
       getCachedInfo: mockGetCachedInfo,
       stopContainer: mockStopContainer,
       getHealthWarnings: vi.fn(() => []),
+      // deleteAgent evicts the handle once the agent is gone (dropRuntime).
+      removeClient: vi.fn(),
     }),
   }
 })
@@ -131,9 +133,11 @@ describe('agent-service', () => {
 
     it('still surfaces a real read error on an existing agent directory', async () => {
       // CLAUDE.md is a directory: the agent exists, its config is unreadable.
+      // The workspace layer reports EISDIR as its own `not-a-file` error; what
+      // matters here is that it propagates instead of reading as "no agent".
       await fs.promises.mkdir(path.join(testDir, 'agents', 'broken', 'workspace', 'CLAUDE.md'), { recursive: true })
 
-      await expect(getAgent('broken')).rejects.toMatchObject({ code: 'EISDIR' })
+      await expect(getAgent('broken')).rejects.toMatchObject({ name: 'WorkspaceFileError', code: 'not-a-file' })
     })
 
     it('returns agent config for existing agent', async () => {

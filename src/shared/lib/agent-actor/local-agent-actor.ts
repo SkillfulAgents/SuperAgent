@@ -21,11 +21,13 @@ import type {
 import type { loadDailyUsageData, loadSessionUsageTotals } from '@shared/lib/services/usage-service'
 import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
 import { WebSocket } from 'ws'
+import { createLocalConfigOps } from './local-config-ops'
 import { createLocalFileOps } from './local-file-ops'
 import type {
   AgentActor,
   AgentSlug,
   ComputerUseOps,
+  ConfigOps,
   ContainerOps,
   FileOps,
   InputOps,
@@ -81,6 +83,7 @@ export class LocalAgentActor implements AgentActor {
   readonly inputs: InputOps
   readonly usage: UsageOps
   readonly files: FileOps
+  readonly config: ConfigOps
 
   constructor(readonly slug: AgentSlug, deps: LocalActorDeps) {
     this.container = createContainerOps(slug, deps)
@@ -89,6 +92,7 @@ export class LocalAgentActor implements AgentActor {
     this.inputs = createInputOps(slug, deps)
     this.usage = createUsageOps(slug, deps)
     this.files = createLocalFileOps(slug, deps)
+    this.config = createLocalConfigOps({ files: this.files, workspaceHostPath: () => deps.getAgentWorkspaceDir(slug) })
   }
 }
 

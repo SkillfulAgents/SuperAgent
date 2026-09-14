@@ -63,6 +63,7 @@ const HOST_METHODS = [
   'stopAll',
   'stopAllSync',
   'workspaceHostPath',
+  'agentHostPath',
 ] as const
 
 /** Host-level methods whose manager counterpart had a different name. */

@@ -1,24 +1,14 @@
 /**
  * Agent Service
  *
- * File-based CRUD operations for agents.
- * Agents are stored as directories with CLAUDE.md files.
+ * CRUD operations for agents. An agent is a CLAUDE.md (frontmatter plus
+ * instructions) in its workspace, read and written through the agent actor's
+ * `config` document `instructions`; which agents exist is the catalog's.
  */
 
 import {
-  getAgentsDir,
-  getAgentDir,
-  getAgentClaudeMdPath,
-  listDirectories,
-  directoryExists,
-  ensureDirectory,
-  removeDirectory,
-  readFileOrNull,
-  fileExists,
-  writeFileAtomic,
   parseMarkdownWithFrontmatter,
   serializeMarkdownWithFrontmatter,
-  generateAgentId,
   displaySlug,
 } from '@shared/lib/utils/file-storage'
 import pLimit from 'p-limit'
@@ -30,7 +20,7 @@ import {
   DEFAULT_AGENT_INSTRUCTIONS,
 } from '@shared/lib/types/agent'
 import type { ApiAgent } from '@shared/lib/types/api'
-import { agentRegistry } from '@shared/lib/agent-actor'
+import { agentCatalog, agentRegistry } from '@shared/lib/agent-actor'
 
 // ============================================================================
 // Internal to API Type Conversion
@@ -66,8 +56,7 @@ function toApiAgent(
  * Parse CLAUDE.md file into AgentConfig
  */
 async function parseAgentClaudeMd(slug: string): Promise<AgentConfig | null> {
-  const claudeMdPath = getAgentClaudeMdPath(slug)
-  const content = await readFileOrNull(claudeMdPath)
+  const content = await agentRegistry.get(slug).config.get('instructions')
 
   if (content === null) {
     return null
@@ -101,11 +90,17 @@ async function parseAgentClaudeMd(slug: string): Promise<AgentConfig | null> {
  * CLAUDE.md sequentially, which is too heavy to run per request.
  */
 export async function listAgentSlugs(): Promise<string[]> {
-  const agentsDir = getAgentsDir()
-  await ensureDirectory(agentsDir)
-  const slugs = await listDirectories(agentsDir)
+  const slugs = await agentCatalog.list()
+  const limit = pLimit(10)
   const checks = await Promise.all(
-    slugs.map(async (slug) => ((await fileExists(getAgentClaudeMdPath(slug))) ? slug : null)),
+    slugs.map((slug) =>
+      limit(async () => {
+        // Anything that is not a readable regular file — absent, a directory,
+        // a link that leaves the workspace — is "no CLAUDE.md", never a throw.
+        const stat = await agentRegistry.get(slug).files.stat('CLAUDE.md').catch(() => null)
+        return stat?.kind === 'file' ? slug : null
+      }),
+    ),
   )
   return checks.filter((slug): slug is string => slug !== null)
 }
@@ -115,8 +110,8 @@ export async function listAgentSlugs(): Promise<string[]> {
  */
 export async function getAgent(slug: string): Promise<AgentConfig | null> {
   // No directory pre-check on the happy path: a missing agent surfaces as a
-  // missing CLAUDE.md (readFileOrNull → null), and every stat is a round trip
-  // on network filesystems. This runs once per agent on the auth-mode list.
+  // missing CLAUDE.md (config.get → null), and every stat is a round trip on
+  // network filesystems. This runs once per agent on the auth-mode list.
   //
   // The contract is still "null unless this is an agent directory": slugs
   // reach here from request bodies and stored policy rows, not only from
@@ -126,7 +121,7 @@ export async function getAgent(slug: string): Promise<AgentConfig | null> {
   try {
     return await parseAgentClaudeMd(slug)
   } catch (error) {
-    if (await directoryExists(getAgentDir(slug)).catch(() => false)) throw error
+    if (await agentCatalog.exists(slug).catch(() => false)) throw error
     return null
   }
 }
@@ -185,12 +180,7 @@ export async function getAgentWithStatus(
  * List all agents by scanning directories
  */
 export async function listAgents(): Promise<AgentConfig[]> {
-  const agentsDir = getAgentsDir()
-
-  // Ensure agents directory exists
-  await ensureDirectory(agentsDir)
-
-  const slugs = await listDirectories(agentsDir)
+  const slugs = await agentCatalog.list()
 
   // One CLAUDE.md read per agent; concurrent, bounded. Sequential reads made
   // the agents list cost N round trips before any per-agent summary work
@@ -238,13 +228,13 @@ export async function createAgent(input: CreateAgentInput): Promise<ApiAgent> {
 
   // Mint an opaque id — the name no longer feeds the folder, so the "Untitled"
   // promptless-create flow can't poison it.
-  const slug = await generateAgentId()
+  const slug = await agentCatalog.mint()
+  const actor = agentRegistry.get(slug)
 
   // Create directory structure
-  await agentRegistry.get(slug).files.mkdir('')
+  await actor.files.mkdir('')
 
   // Create CLAUDE.md
-  const claudeMdPath = getAgentClaudeMdPath(slug)
   const frontmatter: AgentFrontmatter = {
     name,
     createdAt: new Date().toISOString(),
@@ -255,7 +245,7 @@ export async function createAgent(input: CreateAgentInput): Promise<ApiAgent> {
 
   const body = instructions || DEFAULT_AGENT_INSTRUCTIONS
   const content = serializeMarkdownWithFrontmatter(frontmatter, body)
-  await writeFileAtomic(claudeMdPath, content)
+  await actor.config.put('instructions', content)
 
   // Return in API format (new agents are always stopped)
   return {
@@ -299,12 +289,12 @@ export async function updateAgent(
     updates.instructions !== undefined ? updates.instructions : agent.instructions
 
   // Write back to file
-  const claudeMdPath = getAgentClaudeMdPath(slug)
+  const actor = agentRegistry.get(slug)
   const content = serializeMarkdownWithFrontmatter(newFrontmatter, newInstructions)
-  await writeFileAtomic(claudeMdPath, content)
+  await actor.config.put('instructions', content)
 
   // Get container status
-  const info = await agentRegistry.get(slug).container.info()
+  const info = await actor.container.info()
 
   return {
     slug,
@@ -341,9 +331,7 @@ export class AgentContainerStopError extends Error {
  * Delete an agent and all its data
  */
 export async function deleteAgent(slug: string): Promise<boolean> {
-  const agentDir = getAgentDir(slug)
-
-  if (!(await directoryExists(agentDir))) {
+  if (!(await agentCatalog.exists(slug))) {
     return false
   }
 
@@ -356,16 +344,19 @@ export async function deleteAgent(slug: string): Promise<boolean> {
   // case the container may still be running or be in an unknown stop state.
   //
   // We must NOT delete the host workspace in that situation. Re-throw as a
-  // typed error so the API/UI can surface an actionable failure; removeDirectory
-  // below never runs, so the workspace is preserved and the delete is retryable.
+  // typed error so the API/UI can surface an actionable failure; the catalog
+  // removal below never runs, so the workspace is preserved and the delete is
+  // retryable.
   try {
     await agentRegistry.get(slug).container.stop()
   } catch (error) {
     throw new AgentContainerStopError(slug, error)
   }
 
-  // Remove directory only after the container has been confirmed stopped.
-  await removeDirectory(agentDir)
+  // Remove the agent only after the container has been confirmed stopped, then
+  // forget the handle and runtime the stop above created for it.
+  await agentCatalog.remove(slug)
+  agentRegistry.evict(slug)
 
   return true
 }
@@ -380,12 +371,12 @@ export async function deleteAgent(slug: string): Promise<boolean> {
  */
 export async function createAgentFromExistingWorkspace(rawName: string): Promise<ApiAgent> {
   const name = String(rawName)
-  const slug = await generateAgentId()
+  const slug = await agentCatalog.mint()
+  const actor = agentRegistry.get(slug)
 
-  await agentRegistry.get(slug).files.mkdir('')
+  await actor.files.mkdir('')
 
   // Create a basic CLAUDE.md (may be overwritten by template)
-  const claudeMdPath = getAgentClaudeMdPath(slug)
   const frontmatter: AgentFrontmatter = {
     name,
     createdAt: new Date().toISOString(),
@@ -393,7 +384,7 @@ export async function createAgentFromExistingWorkspace(rawName: string): Promise
 
   const body = DEFAULT_AGENT_INSTRUCTIONS
   const content = serializeMarkdownWithFrontmatter(frontmatter, body)
-  await writeFileAtomic(claudeMdPath, content)
+  await actor.config.put('instructions', content)
 
   return {
     slug,
@@ -409,16 +400,14 @@ export async function createAgentFromExistingWorkspace(rawName: string): Promise
  * Check if an agent exists
  */
 export async function agentExists(slug: string): Promise<boolean> {
-  const agentDir = getAgentDir(slug)
-  return directoryExists(agentDir)
+  return agentCatalog.exists(slug)
 }
 
 /**
  * Get raw CLAUDE.md content (for editor)
  */
 export async function getAgentClaudeMdContent(slug: string): Promise<string | null> {
-  const claudeMdPath = getAgentClaudeMdPath(slug)
-  return readFileOrNull(claudeMdPath)
+  return agentRegistry.get(slug).config.get('instructions')
 }
 
 /**
@@ -428,6 +417,5 @@ export async function setAgentClaudeMdContent(
   slug: string,
   content: string
 ): Promise<void> {
-  const claudeMdPath = getAgentClaudeMdPath(slug)
-  await writeFileAtomic(claudeMdPath, content)
+  await agentRegistry.get(slug).config.put('instructions', content)
 }

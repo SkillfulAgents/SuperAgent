@@ -73,6 +73,16 @@ export function describeFileOpsContract(name: string, make: () => Promise<FileOp
       expect((await files.list('uploads')).map((entry) => entry.name)).toEqual([long])
     })
 
+    it('a mode asked for on a write is what stat reports, and a rewrite without one keeps it', async () => {
+      await files.putDoc('bin/tool', '#!/bin/sh\n', { mode: 0o755 })
+      expect((await files.stat('bin/tool'))?.mode).toBe(0o755)
+      await files.putDoc('bin/tool', '#!/bin/sh\necho hi\n')
+      expect((await files.stat('bin/tool'))?.mode).toBe(0o755)
+
+      await files.write('bin/other', text('x'), { mode: 0o700 })
+      expect((await files.stat('bin/other'))?.mode).toBe(0o700)
+    })
+
     it('putDoc replaces the whole document', async () => {
       await files.putDoc('doc.json', '{"a":1}')
       await files.putDoc('doc.json', '{"b":2}')

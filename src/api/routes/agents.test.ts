@@ -69,6 +69,28 @@ function answerStatForPaths(entries: Record<string, 'file' | 'directory'>) {
 /** The bytes fs.readFile hands back for a JSON document. */
 const jsonDoc = (value: unknown) => Buffer.from(JSON.stringify(value))
 
+/**
+ * The agent's preferences document as the actor reads it off the mocked fs
+ * (the workspace is `/mock/workspace` for every slug). `null` = no file yet.
+ * Every other path keeps the default answer. Implementations survive
+ * vi.clearAllMocks, so a suite that calls this resets mockFsReadFile after.
+ */
+const PREFERENCES_PATH = '/mock/workspace/agent-preferences.json'
+function storePreferences(prefs: Record<string, unknown> | null) {
+  mockFsReadFile.mockImplementation(async (p: unknown) => {
+    if (String(p) !== PREFERENCES_PATH) return undefined
+    if (prefs === null) throw enoent()
+    return jsonDoc(prefs)
+  })
+}
+/** What putDoc persisted for the preferences document: the bytes the atomic writer was handed for it. */
+function persistedPreferences(): unknown {
+  const index = mockCreateWriteStream.mock.calls.findIndex(([target]) => target === PREFERENCES_PATH)
+  if (index === -1) throw new Error('preferences document was not written')
+  const sink = mockCreateWriteStream.mock.results[index]!.value as InstanceType<typeof MemoryWriteStream>
+  return JSON.parse(Buffer.concat(sink.chunks).toString('utf-8'))
+}
+
 vi.mock('fs', () => ({
   default: {
     promises: {
@@ -697,7 +719,7 @@ import { computerUsePermissionManager } from '@shared/lib/computer-use/permissio
 import { listUserSecrets, setSecret, updateSecret, getSecret, getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { keyToEnvVar } from '@shared/lib/utils/secrets'
 import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
-import { readJsonFileStrict, readJsonlFile, streamJsonlFile, writeJsonFileAtomic, writeFileAtomicStream, readFileOrNull } from '@shared/lib/utils/file-storage'
+import { readJsonlFile, streamJsonlFile, writeFileAtomicStream, readFileOrNull } from '@shared/lib/utils/file-storage'
 import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
 import { listWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 
@@ -8339,7 +8361,6 @@ describe('agent preferences — PUT /:id/preferences', () => {
   let app: ReturnType<typeof createApp>
 
   const PREFS_URL = '/api/agents/test-agent/preferences'
-  const PREFS_PATH = '/mock/workspace/test-agent/agent-preferences.json'
 
   async function putJson(url: string, body: unknown): Promise<Response> {
     return app.request(`http://localhost${url}`, {
@@ -8352,10 +8373,15 @@ describe('agent preferences — PUT /:id/preferences', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     app = createApp()
-    // The real agent-preferences-service runs against the file-storage mocks:
-    // readJsonFileStrict supplies the stored prefs (default: no file yet) and
-    // writeJsonFileAtomic captures what gets persisted.
-    vi.mocked(readJsonFileStrict).mockResolvedValue({} as never)
+    // The real agent-preferences-service runs through the actor on the mocked
+    // fs: readFile supplies the stored document (default: no file yet) and
+    // putDoc's writeFile + rename capture what gets persisted.
+    answerLstatForWorkspaceWrites()
+    storePreferences(null)
+  })
+
+  afterEach(() => {
+    mockFsReadFile.mockReset()
   })
 
   it('sets defaultModel and defaultEffort and persists them', async () => {
@@ -8363,7 +8389,7 @@ describe('agent preferences — PUT /:id/preferences', () => {
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ defaultModel: 'claude-opus-4', defaultEffort: 'high' })
-    expect(writeJsonFileAtomic).toHaveBeenCalledWith(PREFS_PATH, {
+    expect(persistedPreferences()).toEqual({
       defaultModel: 'claude-opus-4',
       defaultEffort: 'high',
     })
@@ -8376,14 +8402,14 @@ describe('agent preferences — PUT /:id/preferences', () => {
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ autoDeleteInactiveDays: 0 })
-    expect(writeJsonFileAtomic).toHaveBeenCalledWith(PREFS_PATH, { autoDeleteInactiveDays: 0 })
+    expect(persistedPreferences()).toEqual({ autoDeleteInactiveDays: 0 })
   })
 
   it('rejects a negative autoDeleteInactiveDays with 400', async () => {
     const res = await putJson(PREFS_URL, { autoDeleteInactiveDays: -1 })
 
     expect(res.status).toBe(400)
-    expect(writeJsonFileAtomic).not.toHaveBeenCalled()
+    expect(mockFsWriteFile).not.toHaveBeenCalled()
   })
 
   it('rejects an unknown defaultEffort with 400 and never writes', async () => {
@@ -8392,7 +8418,7 @@ describe('agent preferences — PUT /:id/preferences', () => {
     expect(res.status).toBe(400)
     const body = await res.json()
     expect(body.error).toContain('defaultEffort')
-    expect(writeJsonFileAtomic).not.toHaveBeenCalled()
+    expect(mockFsWriteFile).not.toHaveBeenCalled()
   })
 
   it('rejects an empty defaultModel with 400', async () => {
@@ -8401,7 +8427,7 @@ describe('agent preferences — PUT /:id/preferences', () => {
     expect(res.status).toBe(400)
     const body = await res.json()
     expect(body.error).toContain('defaultModel')
-    expect(writeJsonFileAtomic).not.toHaveBeenCalled()
+    expect(mockFsWriteFile).not.toHaveBeenCalled()
   })
 
   it('rejects a whitespace-only defaultModel with 400', async () => {
@@ -8410,7 +8436,7 @@ describe('agent preferences — PUT /:id/preferences', () => {
     expect(res.status).toBe(400)
     const body = await res.json()
     expect(body.error).toContain('defaultModel')
-    expect(writeJsonFileAtomic).not.toHaveBeenCalled()
+    expect(mockFsWriteFile).not.toHaveBeenCalled()
   })
 
   it('returns 400 (not 500) for a null body', async () => {
@@ -8419,7 +8445,7 @@ describe('agent preferences — PUT /:id/preferences', () => {
     expect(res.status).toBe(400)
     const body = await res.json()
     expect(body.error).toContain('Invalid preferences')
-    expect(writeJsonFileAtomic).not.toHaveBeenCalled()
+    expect(mockFsWriteFile).not.toHaveBeenCalled()
   })
 
   it('returns 400 (not 500) for a string body', async () => {
@@ -8428,7 +8454,7 @@ describe('agent preferences — PUT /:id/preferences', () => {
     expect(res.status).toBe(400)
     const body = await res.json()
     expect(body.error).toContain('Invalid preferences')
-    expect(writeJsonFileAtomic).not.toHaveBeenCalled()
+    expect(mockFsWriteFile).not.toHaveBeenCalled()
   })
 
   it('returns 400 (not 500) for an array body', async () => {
@@ -8437,20 +8463,20 @@ describe('agent preferences — PUT /:id/preferences', () => {
     expect(res.status).toBe(400)
     const body = await res.json()
     expect(body.error).toContain('Invalid preferences')
-    expect(writeJsonFileAtomic).not.toHaveBeenCalled()
+    expect(mockFsWriteFile).not.toHaveBeenCalled()
   })
 
   it('null clears a previously-set field back to the app-wide default', async () => {
-    vi.mocked(readJsonFileStrict).mockResolvedValue({
+    storePreferences({
       defaultModel: 'claude-sonnet-4',
       defaultEffort: 'high',
-    } as never)
+    })
 
     const res = await putJson(PREFS_URL, { defaultModel: null })
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ defaultEffort: 'high' })
-    expect(writeJsonFileAtomic).toHaveBeenCalledWith(PREFS_PATH, { defaultEffort: 'high' })
+    expect(persistedPreferences()).toEqual({ defaultEffort: 'high' })
   })
 
   it('trims surrounding whitespace before storing defaultModel', async () => {
@@ -8459,7 +8485,7 @@ describe('agent preferences — PUT /:id/preferences', () => {
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.defaultModel).toBe('opus')
-    expect(writeJsonFileAtomic).toHaveBeenCalledWith(PREFS_PATH, { defaultModel: 'opus' })
+    expect(persistedPreferences()).toEqual({ defaultModel: 'opus' })
   })
 
   it('strips unknown keys from the stored prefs and the response', async () => {
@@ -8467,7 +8493,7 @@ describe('agent preferences — PUT /:id/preferences', () => {
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ defaultModel: 'opus' })
-    expect(writeJsonFileAtomic).toHaveBeenCalledWith(PREFS_PATH, { defaultModel: 'opus' })
+    expect(persistedPreferences()).toEqual({ defaultModel: 'opus' })
   })
 })
 
@@ -8484,9 +8510,9 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     app = createApp()
-    // Agent prefs come from the real service reading through the file-storage
-    // mock; default = no prefs file.
-    vi.mocked(readJsonFileStrict).mockResolvedValue({} as never)
+    // Agent prefs come from the real service reading the actor's document off
+    // the mocked fs; default = no prefs file.
+    storePreferences(null)
     vi.mocked(getAgent).mockResolvedValue({
       slug: 'test-agent',
       frontmatter: { name: 'Test Agent' },
@@ -8503,6 +8529,10 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
       dashboardBuilderModel: 'dashboard-model',
       agentEffort: 'medium',
     })
+  })
+
+  afterEach(() => {
+    mockFsReadFile.mockReset()
   })
 
   it('a session opened by a system notice is named by the first message a person sends, not the notice', async () => {
@@ -8539,11 +8569,11 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
   })
 
   it('falls back to agent preference defaults when the request has no model/effort', async () => {
-    vi.mocked(readJsonFileStrict).mockResolvedValue({
+    storePreferences({
       defaultModel: 'haiku',
       defaultEffort: 'high',
       defaultSpeed: 'fast',
-    } as never)
+    })
 
     const res = await postJson(app, SESSIONS_URL, { message: 'hello' })
 
@@ -8564,10 +8594,10 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
   })
 
   it('explicit per-session model/effort win over agent preference defaults', async () => {
-    vi.mocked(readJsonFileStrict).mockResolvedValue({
+    storePreferences({
       defaultModel: 'haiku',
       defaultEffort: 'high',
-    } as never)
+    })
 
     const res = await postJson(app, SESSIONS_URL, {
       message: 'hello',

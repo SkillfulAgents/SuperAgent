@@ -38,6 +38,7 @@ export type FakeAgentActor = {
   readonly inputs: FakeOps<AgentActor['inputs']>
   readonly usage: FakeOps<AgentActor['usage']>
   readonly files: FakeOps<AgentActor['files']>
+  readonly config: FakeOps<AgentActor['config']>
 }
 
 type DeepPartial<T> = { [K in keyof T]?: T[K] extends Fn ? T[K] : T[K] extends object ? DeepPartial<T[K]> : T[K] }
@@ -97,6 +98,7 @@ export function createFakeAgentActor(slug: AgentSlug, overrides: FakeActorOverri
     ) as FakeAgentActor['inputs'],
     usage: fakeGroup(overrides.usage as Record<string, unknown>) as FakeAgentActor['usage'],
     files: fakeGroup(overrides.files as Record<string, unknown>) as FakeAgentActor['files'],
+    config: fakeGroup(overrides.config as Record<string, unknown>) as FakeAgentActor['config'],
   }
 }
 

@@ -40,6 +40,8 @@ vi.mock('@shared/lib/container/container-host', async () => {
       getCachedInfo: mockGetCachedInfo,
       stopContainer: mockStopContainer,
       getHealthWarnings: vi.fn(() => []),
+      // deleteAgent evicts the handle once the agent is gone (dropRuntime).
+      removeClient: vi.fn(),
     }),
   }
 })
