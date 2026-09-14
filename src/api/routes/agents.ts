@@ -1304,7 +1304,7 @@ Respond with ONLY the session name, nothing else. No quotes, no explanation.`,
       : message.trim().split(/\s+/).slice(0, 6).join(' ').substring(0, 60)
     if (finalName) {
       await agentRegistry.get(agentSlug).sessions.rename(sessionId, finalName)
-      messagePersister.broadcastSessionUpdate(agentSlug, sessionId)
+      agentRegistry.get(agentSlug).sessions.broadcastUpdate(sessionId)
     }
   } catch (error) {
     console.error('Failed to update session name:', error)
@@ -2842,7 +2842,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
           // Other windows/devices may already have seeded their composer from
           // the previous session metadata. Tell both the local session stream
           // and the global event stream to refresh before their next send.
-          messagePersister.broadcastSessionUpdate(agentSlug, sessionId)
+          agentRegistry.get(agentSlug).sessions.broadcastUpdate(sessionId)
           messagePersister.broadcastGlobal({ type: 'session_updated', sessionId, agentSlug })
         }
       } catch (error) {

@@ -93,7 +93,7 @@ scheduledTasksRouter.delete('/:taskId', TaskAgentRole('user'), async (c) => {
         sessionId: task!.resumeSessionId,
         agentSlug: task!.agentSlug,
       })
-      messagePersister.broadcastSessionUpdate(task!.agentSlug, task!.resumeSessionId)
+      agentRegistry.get(task!.agentSlug).sessions.broadcastUpdate(task!.resumeSessionId)
     }
 
     return c.body(null, 204)
