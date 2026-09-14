@@ -7,7 +7,7 @@ import type { LocalActorDeps } from './local-agent-actor'
 // The singleton registry wires the real manager, persister, and input
 // registries. These tests build their own registry from fakes, so the real
 // modules are stubbed to keep the import side-effect free.
-vi.mock('@shared/lib/container/container-manager', () => ({ containerManager: {} }))
+vi.mock('@shared/lib/container/container-host', () => ({ containerHost: {} }))
 vi.mock('@shared/lib/container/message-persister', () => ({ messagePersister: {} }))
 vi.mock('@shared/lib/user-input/request-manager', () => ({ userInputRequestManager: {} }))
 vi.mock('@shared/lib/proxy/review-manager', () => ({ reviewManager: {} }))
@@ -82,13 +82,26 @@ function fakeDeps() {
     getHostAuthHeaders: vi.fn().mockReturnValue({ 'x-host': '1' }),
     getWebSocketBaseUrl: vi.fn().mockReturnValue('ws://127.0.0.1:4321'),
   }
-  const containerManager = {
+  // One fake runtime per slug, created the way the real host creates them: on first use.
+  const fakeRuntime = (slug: string) => ({
+    slug,
     getClient: vi.fn().mockReturnValue(client),
     ensureRunning: vi.fn().mockResolvedValue(client),
     getCachedInfo: vi.fn().mockReturnValue({ status: 'running', port: 4321 }),
+  })
+  const runtimes = new Map<string, ReturnType<typeof fakeRuntime>>()
+  const containerHost = {
+    runtime: vi.fn((slug: string) => {
+      let runtime = runtimes.get(slug)
+      if (!runtime) {
+        runtime = fakeRuntime(slug)
+        runtimes.set(slug, runtime)
+      }
+      return runtime
+    }),
     getRunningAgentIds: vi.fn().mockReturnValue([]),
-    removeClient: vi.fn(),
-    clearClients: vi.fn(),
+    dropRuntime: vi.fn(),
+    clearRuntimes: vi.fn(),
   }
   const reviewManager = {
     requestReview: vi.fn().mockResolvedValue('allow'),
@@ -98,7 +111,7 @@ function fakeDeps() {
   const loadSessionUsageTotals = vi.fn().mockResolvedValue({ totalCost: 0, totalTokens: 0, priceMissing: false })
   const syncAgentConnectionEnvironment = vi.fn().mockResolvedValue(true)
   const deps = {
-    containerManager,
+    containerHost,
     messagePersister: {},
     userInputRequestManager: inputManager,
     reviewManager,
@@ -115,7 +128,8 @@ function fakeDeps() {
   }
   return {
     deps: deps as unknown as LocalActorDeps,
-    containerManager,
+    containerHost,
+    runtimes,
     client,
     reviewManager,
     inputManager,
@@ -144,63 +158,66 @@ describe('createAgentRegistry', () => {
     expect(registry.get('a')).toBe(a)
     expect(registry.peek('a')).toBe(a)
     expect(registry.get('b')).not.toBe(a)
-    expect(fake.containerManager.getClient).not.toHaveBeenCalled()
+    // A handle does not touch the container host until an op runs.
+    expect(fake.containerHost.runtime).not.toHaveBeenCalled()
   })
 
-  it('evict drops the handle and the container client for that slug only', () => {
+  it('evict drops the handle and forgets the runtime for that slug only', () => {
     const registry = createAgentRegistry(fake.deps)
     const a = registry.get('a')
     const b = registry.get('b')
 
     registry.evict('a')
 
-    expect(fake.containerManager.removeClient).toHaveBeenCalledWith('a')
+    expect(fake.containerHost.dropRuntime).toHaveBeenCalledWith('a')
     expect(registry.peek('a')).toBeUndefined()
     expect(registry.peek('b')).toBe(b)
     expect(registry.get('a')).not.toBe(a)
   })
 
-  it('evictAll clears every handle and every client', () => {
+  it('evictAll clears every handle and every runtime', () => {
     const registry = createAgentRegistry(fake.deps)
     registry.get('a')
     registry.get('b')
 
     registry.evictAll()
 
-    expect(fake.containerManager.clearClients).toHaveBeenCalledTimes(1)
+    expect(fake.containerHost.clearRuntimes).toHaveBeenCalledTimes(1)
     expect(registry.peek('a')).toBeUndefined()
     expect(registry.peek('b')).toBeUndefined()
   })
 
-  it('all() is the running agents, reusing handles already handed out', () => {
+  it('running() is the agents whose container is up, reusing handles already handed out', () => {
     const registry = createAgentRegistry(fake.deps)
     const a = registry.get('a')
-    fake.containerManager.getRunningAgentIds.mockReturnValue(['a', 'c'])
+    fake.containerHost.getRunningAgentIds.mockReturnValue(['a', 'c'])
 
-    const all = registry.all()
+    const running = registry.running()
 
-    expect(all.map((actor) => actor.slug)).toEqual(['a', 'c'])
-    expect(all[0]).toBe(a)
-    expect(registry.peek('c')).toBe(all[1])
+    expect(running.map((actor) => actor.slug)).toEqual(['a', 'c'])
+    expect(running[0]).toBe(a)
+    expect(registry.peek('c')).toBe(running[1])
   })
 
-  describe('passthroughs supply the slug and keep the client inside', () => {
+  describe('passthroughs reach this agent\'s runtime and keep the client inside', () => {
     it('container.start resolves to nothing even though ensureRunning returns the client', async () => {
       const actor = createAgentRegistry(fake.deps).get('a')
       await expect(actor.container.start()).resolves.toBeUndefined()
-      expect(fake.containerManager.ensureRunning).toHaveBeenCalledWith('a')
+      expect(fake.containerHost.runtime).toHaveBeenCalledWith('a')
+      expect(fake.runtimes.get('a')?.ensureRunning).toHaveBeenCalledTimes(1)
     })
 
     it('messages.send goes to this agent\'s client', async () => {
       const actor = createAgentRegistry(fake.deps).get('a')
       await actor.messages.send('s1', 'hi', 'u1', { isAutomated: true })
-      expect(fake.containerManager.getClient).toHaveBeenCalledWith('a')
+      expect(fake.containerHost.runtime).toHaveBeenCalledWith('a')
+      expect(fake.runtimes.get('a')?.getClient).toHaveBeenCalledTimes(1)
       expect(fake.client.sendMessage).toHaveBeenCalledWith('s1', 'hi', 'u1', { isAutomated: true })
     })
 
     it('container.openWebSocket targets this agent\'s container and adds its auth headers last', () => {
       const actor = createAgentRegistry(fake.deps).get('a')
-      expect(fake.containerManager.getClient).not.toHaveBeenCalled()
+      expect(fake.containerHost.runtime).not.toHaveBeenCalled()
 
       actor.container.openWebSocket('/browser/stream', {
         search: '?since=1',
@@ -208,7 +225,7 @@ describe('createAgentRegistry', () => {
         headers: { 'x-forwarded': 'yes', 'x-host': 'spoofed' },
       })
 
-      expect(fake.containerManager.getCachedInfo).toHaveBeenCalledWith('a')
+      expect(fake.runtimes.get('a')?.getCachedInfo).toHaveBeenCalledTimes(1)
       expect(fake.client.getWebSocketBaseUrl).toHaveBeenCalledWith(4321)
       expect(vi.mocked(WebSocket)).toHaveBeenCalledWith('ws://127.0.0.1:4321/browser/stream?since=1', ['p1'], {
         headers: { 'x-forwarded': 'yes', 'x-host': '1' },
@@ -216,16 +233,16 @@ describe('createAgentRegistry', () => {
     })
 
     it('container.openWebSocket refuses while the container is not running', () => {
-      fake.containerManager.getCachedInfo.mockReturnValue({ status: 'stopped', port: null })
+      fake.containerHost.runtime('a').getCachedInfo.mockReturnValue({ status: 'stopped', port: null })
       const actor = createAgentRegistry(fake.deps).get('a')
       expect(() => actor.container.openWebSocket('/browser/stream')).toThrow(/not running/)
       expect(vi.mocked(WebSocket)).not.toHaveBeenCalled()
     })
 
-    it('container.syncConnectionEnvironment pushes one projection for this agent', async () => {
+    it('container.syncConnectionEnvironment pushes one projection through this agent\'s runtime', async () => {
       const actor = createAgentRegistry(fake.deps).get('a')
       await expect(actor.container.syncConnectionEnvironment('remote-mcps')).resolves.toBe(true)
-      expect(fake.syncAgentConnectionEnvironment).toHaveBeenCalledWith('a', 'remote-mcps')
+      expect(fake.syncAgentConnectionEnvironment).toHaveBeenCalledWith('a', 'remote-mcps', fake.runtimes.get('a'))
     })
 
     it('usage.daily reads this agent\'s Claude data directory', async () => {

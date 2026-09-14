@@ -5,7 +5,7 @@
  * fails with a genuine runtime error (wedged VM, unexpected stop error). The
  * underlying container client is idempotent for already-stopped/missing
  * containers (it silently ignores "no such container"), so any rejection out of
- * containerManager.stopContainer is abnormal and must abort the deletion,
+ * the runtime's stopContainer is abnormal and must abort the deletion,
  * preserving the workspace and surfacing the failure to the API/UI.
  *
  * Dedicated file (not folded into agent-service.test.ts) to avoid cross-branch
@@ -17,7 +17,7 @@ import * as path from 'path'
 import * as os from 'os'
 import { SAMPLE_CLAUDE_MD } from './__fixtures__/test-data'
 
-// Mock containerManager before importing the service.
+// Mock the container host before importing the service.
 // Use vi.hoisted so mock variables exist when vi.mock is hoisted.
 const { mockGetCachedInfo, mockStopContainer, mockGetClient, mockGetPendingReviewsForAgent } =
   vi.hoisted(() => {
@@ -32,14 +32,17 @@ const { mockGetCachedInfo, mockStopContainer, mockGetClient, mockGetPendingRevie
     return { mockGetCachedInfo, mockStopContainer, mockGetClient, mockGetPendingReviewsForAgent }
   })
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    getClient: mockGetClient,
-    getCachedInfo: mockGetCachedInfo,
-    stopContainer: mockStopContainer,
-    getHealthWarnings: vi.fn(() => []),
-  },
-}))
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      getClient: mockGetClient,
+      getCachedInfo: mockGetCachedInfo,
+      stopContainer: mockStopContainer,
+      getHealthWarnings: vi.fn(() => []),
+    }),
+  }
+})
 
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: {

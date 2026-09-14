@@ -132,11 +132,13 @@ vi.mock('../middleware/auth', () => ({
   getAuthorizedAgentRole: (c: any) => c.get('authorizedAgentRole') ?? null,
 }))
 
-// Container manager
+// Container host — a manager-shaped mock (slug as first argument) adapted into
+// the per-agent runtime shape the actor reads through containerHost.runtime(slug).
 const mockContainerFetch = vi.fn()
 const mockSendMessage = vi.fn()
 const mockCancelQueuedMessage = vi.fn()
 const mockKeepAlive = vi.fn()
+const mockEnsureRunning = vi.fn()
 const mockInterruptSession = vi.fn()
 const mockStopTask = vi.fn()
 const mockForkSession = vi.fn()
@@ -145,26 +147,29 @@ const mockGetCachedInfo = vi.fn(() => ({ status: 'running', port: 8080 }))
 // The actor reaches the client through getClient after start(), so the
 // create-session fake lives here rather than on ensureRunning's resolved value.
 const mockClientCreateSession = vi.fn()
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    getClient: () => ({
-      fetch: (...args: unknown[]) => mockContainerFetch(...args),
-      createSession: (...args: unknown[]) => mockClientCreateSession(...args),
-      sendMessage: (...args: unknown[]) => mockSendMessage(...args),
-      cancelQueuedMessage: (...args: unknown[]) => mockCancelQueuedMessage(...args),
-      interruptSession: (...args: unknown[]) => mockInterruptSession(...args),
-      stopTask: (...args: unknown[]) => mockStopTask(...args),
-      forkSession: (...args: unknown[]) => mockForkSession(...args),
-      deleteSession: (...args: unknown[]) => mockClientDeleteSession(...args),
-      start: vi.fn(),
-      stop: vi.fn(),
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      getClient: () => ({
+        fetch: (...args: unknown[]) => mockContainerFetch(...args),
+        createSession: (...args: unknown[]) => mockClientCreateSession(...args),
+        sendMessage: (...args: unknown[]) => mockSendMessage(...args),
+        cancelQueuedMessage: (...args: unknown[]) => mockCancelQueuedMessage(...args),
+        interruptSession: (...args: unknown[]) => mockInterruptSession(...args),
+        stopTask: (...args: unknown[]) => mockStopTask(...args),
+        forkSession: (...args: unknown[]) => mockForkSession(...args),
+        deleteSession: (...args: unknown[]) => mockClientDeleteSession(...args),
+        start: vi.fn(),
+        stop: vi.fn(),
+      }),
+      ensureRunning: (...args: unknown[]) => mockEnsureRunning(...args),
+      getCachedInfo: () => mockGetCachedInfo(),
+      removeClient: vi.fn(),
+      keepAlive: (...args: unknown[]) => mockKeepAlive(...args),
     }),
-    ensureRunning: vi.fn(),
-    getCachedInfo: () => mockGetCachedInfo(),
-    removeClient: vi.fn(),
-    keepAlive: (...args: unknown[]) => mockKeepAlive(...args),
-  },
-}))
+  }
+})
 
 // Message persister
 vi.mock('@shared/lib/container/message-persister', () => ({
@@ -641,7 +646,6 @@ import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSe
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
-import { containerManager } from '@shared/lib/container/container-manager'
 import { listUserSecrets, setSecret, updateSecret, getSecret, getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { keyToEnvVar } from '@shared/lib/utils/secrets'
 import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
@@ -1347,12 +1351,12 @@ describe('agent startup — POST /:id/start', () => {
   afterEach(() => {
     // Restore the file-level default so a pending/rejected mock from these
     // tests doesn't leak into later describe blocks.
-    vi.mocked(containerManager.ensureRunning).mockReset()
+    mockEnsureRunning.mockReset()
   })
 
   it('does not resolve until the container has become healthy', async () => {
     let resolveStart!: (value: unknown) => void
-    vi.mocked(containerManager.ensureRunning).mockReturnValue(new Promise((resolve) => {
+    mockEnsureRunning.mockReturnValue(new Promise((resolve) => {
       resolveStart = resolve
     }) as never)
 
@@ -1364,7 +1368,7 @@ describe('agent startup — POST /:id/start', () => {
         return response
       })
 
-    await vi.waitFor(() => expect(containerManager.ensureRunning).toHaveBeenCalledWith('test-agent'))
+    await vi.waitFor(() => expect(mockEnsureRunning).toHaveBeenCalledWith('test-agent'))
     expect(settled).toBe(false)
     // The identity read must wait for health so the response reflects the
     // post-start status.
@@ -1383,7 +1387,7 @@ describe('agent startup — POST /:id/start', () => {
   })
 
   it('returns the startup error when container health never succeeds', async () => {
-    vi.mocked(containerManager.ensureRunning).mockRejectedValue(new Error('Container failed to become healthy'))
+    mockEnsureRunning.mockRejectedValue(new Error('Container failed to become healthy'))
 
     const response = await createApp().request(
       'http://localhost/api/agents/test-agent/start',
@@ -7517,7 +7521,7 @@ describe('POST /api/agents/:id/keep-alive', () => {
     app = createApp()
   })
 
-  it('calls containerManager.keepAlive and returns ok', async () => {
+  it('records the keep-alive on the runtime and returns ok', async () => {
     const res = await app.request('http://localhost/api/agents/my-agent/keep-alive', {
       method: 'POST',
     })
@@ -8265,7 +8269,7 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     } as never)
     vi.mocked(getSecretEnvVars).mockResolvedValue([])
     mockCreateSession.mockResolvedValue({ id: 'session-123' })
-    vi.mocked(containerManager.ensureRunning).mockResolvedValue({
+    mockEnsureRunning.mockResolvedValue({
       createSession: mockCreateSession,
     } as never)
     mockGetEffectiveModels.mockReturnValue({
@@ -8845,7 +8849,7 @@ describe('POST /api/agents/:id/sessions/:sessionId/fork', () => {
     const res = await fork()
     expect(res.status).toBe(404)
     expect(mockForkSession).not.toHaveBeenCalled()
-    expect(containerManager.ensureRunning).not.toHaveBeenCalled()
+    expect(mockEnsureRunning).not.toHaveBeenCalled()
   })
 
   it('409s while the source is active', async () => {

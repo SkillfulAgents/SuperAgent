@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // ============================================================================
-// SUP-210 — Custom env vars must not override reserved agent runtime env vars
+// Custom env vars must not override reserved agent runtime env vars
 //
-// Standalone harness (separate from container-manager.test.ts) so it can mock
+// Standalone harness (separate from container-host.test.ts) so it can mock
 // getSettings to return `customEnvVars` containing reserved keys. The shared
 // test file's getSettings mock returns app:{} with no customEnvVars hook.
 // ============================================================================
@@ -163,19 +163,19 @@ vi.mock('@shared/lib/services/mount-service', () => ({
   getMountsWithHealth: (...args: unknown[]) => mockGetMountsWithHealth(...args),
 }))
 
-import { containerManager } from './container-manager'
+import { containerHost } from './container-host'
 
-describe('SUP-210 — customEnvVars cannot override reserved runtime env vars', () => {
+describe('ContainerRuntime.ensureRunning — customEnvVars cannot override reserved runtime env vars', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    containerManager.removeClient('test-agent')
+    containerHost.dropRuntime('test-agent')
 
     mockGetOrCreateProxyToken.mockResolvedValue('real-proxy-token')
     mockGetContainerHostUrl.mockReturnValue('192.168.1.100')
     mockGetAppPort.mockReturnValue(3000)
     mockGetMountsWithHealth.mockReturnValue([])
 
-    containerManager.updateCachedStatus('test-agent', 'stopped', null)
+    containerHost.runtime('test-agent').updateCachedStatus('stopped', null)
     mockStart.mockResolvedValue(undefined)
     mockGetInfoFromRuntime.mockResolvedValue({ status: 'running', port: 8080 })
 
@@ -206,7 +206,7 @@ describe('SUP-210 — customEnvVars cannot override reserved runtime env vars', 
   })
 
   it('keeps PROXY_TOKEN from getOrCreateProxyToken, not the custom override', async () => {
-    await containerManager.ensureRunning('test-agent')
+    await containerHost.runtime('test-agent').ensureRunning()
 
     expect(mockStart).toHaveBeenCalledOnce()
     const envVars = mockStart.mock.calls[0][0].envVars
@@ -214,7 +214,7 @@ describe('SUP-210 — customEnvVars cannot override reserved runtime env vars', 
   })
 
   it('keeps computed PROXY_BASE_URL / SUPERAGENT_* / CONNECTED_ACCOUNTS', async () => {
-    await containerManager.ensureRunning('test-agent')
+    await containerHost.runtime('test-agent').ensureRunning()
 
     const envVars = mockStart.mock.calls[0][0].envVars
     expect(envVars.PROXY_BASE_URL).toBe('http://192.168.1.100:3000/api/proxy/test-agent')
@@ -226,7 +226,7 @@ describe('SUP-210 — customEnvVars cannot override reserved runtime env vars', 
   })
 
   it('keeps computed TZ / HOST_PLATFORM / CLAUDE_CODE_ATTRIBUTION_HEADER', async () => {
-    await containerManager.ensureRunning('test-agent')
+    await containerHost.runtime('test-agent').ensureRunning()
 
     const envVars = mockStart.mock.calls[0][0].envVars
     expect(envVars.TZ).toBe('America/New_York')
@@ -235,7 +235,7 @@ describe('SUP-210 — customEnvVars cannot override reserved runtime env vars', 
   })
 
   it('still passes non-reserved custom env vars through unchanged', async () => {
-    await containerManager.ensureRunning('test-agent')
+    await containerHost.runtime('test-agent').ensureRunning()
 
     const envVars = mockStart.mock.calls[0][0].envVars
     expect(envVars.MY_CUSTOM).toBe('foo')

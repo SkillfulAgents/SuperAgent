@@ -43,13 +43,18 @@ vi.mock('@shared/lib/platform-attribution', () => ({
   runWithOptionalUser: (_userId: string | undefined, fn: () => unknown) => fn(),
 }))
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    ensureRunning: vi.fn(),
-    // The actor reaches the client through getClient after start().
-    getClient: () => mockContainerClient,
-  },
+// Manager-shaped mock behind the container host: the actor reaches an agent's
+// runtime through containerHost.runtime(slug), and the adapter forwards each
+// runtime method here with the slug prepended.
+const containerManager = vi.hoisted(() => ({
+  ensureRunning: vi.fn(),
+  // The actor reaches the client through getClient after start().
+  getClient: () => mockContainerClient,
 }))
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return { containerHost: hostFromManagerMock(containerManager) }
+})
 
 vi.mock('@shared/lib/services/agent-service', () => ({
   agentExists: vi.fn().mockResolvedValue(true),
@@ -134,7 +139,6 @@ import {
 } from './telegram-connector'
 import { buildIMessageSystemPrompt, classifyIMessageChat } from './imessage-connector'
 import { createChatIntegration } from '@shared/lib/services/chat-integration-service'
-import { containerManager } from '@shared/lib/container/container-manager'
 import { MockContainerClient } from '@shared/lib/container/mock-container-client'
 
 class PromptTestContainerClient extends MockContainerClient {

@@ -253,12 +253,12 @@ export class BrowserScenario implements MockScenario {
       }
     })
 
-    // 10. Update container manager cached status to point to the mock WS server's port.
-    //     browser-stream-proxy reads getCachedInfo() to know where to connect.
-    //     Dynamic import to avoid circular dependency (mock-container-client ← client-factory ← container-manager).
-    const { containerManager } = await import('./container-manager')
+    // 10. Update the runtime's cached status to point to the mock WS server's port.
+    //     browser-stream-proxy reads the cached status to know where to connect.
+    //     Dynamic import to avoid a circular dependency (mock-container-client ← client-factory ← container-host).
+    const { containerHost } = await import('./container-host')
     const agentId = client.getAgentId()
-    containerManager.updateCachedStatus(agentId, 'running', mockPort)
+    containerHost.runtime(agentId).updateCachedStatus('running', mockPort)
 
     // 11. Track active browser on the mock client (for /browser/status responses)
     client.setActiveBrowserSession(sessionId)

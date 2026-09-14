@@ -48,16 +48,19 @@ vi.mock('@shared/lib/config/settings', () => ({
 
 const mockStopAll = vi.fn().mockResolvedValue(undefined)
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    hasRunningAgents: vi.fn().mockReturnValue(false),
-    getRunningAgentIds: vi.fn().mockResolvedValue([]),
-    clearClients: vi.fn(),
-    ensureImageReady: vi.fn().mockResolvedValue(undefined),
-    getReadiness: vi.fn().mockReturnValue({ ready: true }),
-    stopAll: (...args: unknown[]) => mockStopAll(...args),
-  },
-}))
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      hasRunningAgents: vi.fn().mockReturnValue(false),
+      getRunningAgentIds: vi.fn().mockResolvedValue([]),
+      clearClients: vi.fn(),
+      ensureImageReady: vi.fn().mockResolvedValue(undefined),
+      getReadiness: vi.fn().mockReturnValue({ ready: true }),
+      stopAll: (...args: unknown[]) => mockStopAll(...args),
+    }),
+  }
+})
 
 vi.mock('@shared/lib/container/client-factory', () => ({
   checkAllRunnersAvailability: vi.fn().mockResolvedValue([]),
