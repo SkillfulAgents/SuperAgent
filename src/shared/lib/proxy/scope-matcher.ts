@@ -70,21 +70,21 @@ export function matchScopes(
   )
 
   // Glob-match each entry's pathPattern against the target path
-  type ScoredMatch = { entry: ScopeMapEntry; wildcardCount: number }
+  type ScoredMatch = { entry: ScopeMapEntry; wildcardScore: number }
   const matches: ScoredMatch[] = []
 
   for (const entry of methodMatches) {
-    const wc = globMatch(entry.pathPattern, normalizedPath)
-    if (wc !== null) {
-      matches.push({ entry, wildcardCount: wc })
+    const wildcardScore = globMatch(entry.pathPattern, normalizedPath)
+    if (wildcardScore !== null) {
+      matches.push({ entry, wildcardScore })
     }
   }
 
   if (matches.length === 0) return empty
 
-  // Keep the most specific matches (fewest wildcards)
-  const minWildcards = Math.min(...matches.map((m) => m.wildcardCount))
-  const bestMatches = matches.filter((m) => m.wildcardCount === minWildcards)
+  // Keep the most specific matches (lowest wildcard score)
+  const minWildcardScore = Math.min(...matches.map((m) => m.wildcardScore))
+  const bestMatches = matches.filter((m) => m.wildcardScore === minWildcardScore)
 
   // Collect union of scopes and descriptions
   const scopeSet = new Set<string>()
@@ -119,29 +119,37 @@ export function matchScopes(
 
 /**
  * Glob-match a path pattern against a target path.
- * Returns the number of wildcard segments used, or null if no match.
+ * Returns a wildcard specificity score, or null if no match.
  *
  * Rules:
  *  - Split both by '/', compare segment-by-segment
- *  - '*' matches any single non-empty segment
- *  - Segments must match exactly otherwise
+ *  - '*' matches one or more characters within a single segment
+ *  - Segments without wildcards must match exactly
  */
 function globMatch(pattern: string, path: string): number | null {
-  // Normalize leading slashes
   const patternSegs = pattern.replace(/^\//, '').split('/')
   const pathSegs = path.replace(/^\//, '').split('/')
 
   if (patternSegs.length !== pathSegs.length) return null
 
-  let wildcardCount = 0
+  let wildcardScore = 0
   for (let i = 0; i < patternSegs.length; i++) {
-    if (patternSegs[i] === '*') {
-      if (!pathSegs[i]) return null // * must match non-empty
-      wildcardCount++
-    } else if (patternSegs[i] !== pathSegs[i]) {
-      return null
+    const patternSegment = patternSegs[i]
+    const pathSegment = pathSegs[i]
+
+    if (!patternSegment.includes('*')) {
+      if (patternSegment !== pathSegment) return null
+      continue
     }
+
+    const expression = patternSegment
+      .split('*')
+      .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join('.+')
+    if (!new RegExp(`^${expression}$`).test(pathSegment)) return null
+
+    wildcardScore += patternSegment === '*' ? 2 : 1
   }
 
-  return wildcardCount
+  return wildcardScore
 }
