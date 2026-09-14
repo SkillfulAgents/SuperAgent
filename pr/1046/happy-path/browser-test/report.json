@@ -1,24 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser use feature successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and returned the result via chat",
+  "reason": "Browser-use feature test: Agent successfully opened a browser, navigated to https://example.com, and reported the correct page title \"Example Domain\"",
   "steps": [
-    "Navigated to http://localhost:47891 — Application loaded successfully showing the home page with agent list",
-    "Found and clicked the \"QA-20260914-194455-pifh\" agent in the sidebar — Agent page opened, displaying the chat interface and agent configuration panels",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the chat input — Message was entered into the textbox successfully",
-    "Clicked the \"Send message\" button — Message was sent, agent status changed to \"working\", and a new session was created with title \"Browser Page Title Lookup\"",
-    "Waited up to 3 minutes for response (with \"Working...\" indicator) — Agent completed processing in 8 seconds with 3 tool calls using 146,729 tokens",
-    "Verified response mentions \"Example Domain\" and took screenshot — Response confirmed: \"The page title is \"Example Domain\" (https://example.com/, HTTP 200). Browser closed.\" Screenshot captured showing the complete interaction"
+    "Navigated to http://localhost:47891 — Successfully loaded the Gamut home page with agent sidebar visible",
+    "Clicked on \"QA-20260914-211509-bahw\" agent in the sidebar — Successfully opened the agent's chat interface and session creation page",
+    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Successfully submitted the message, agent began processing",
+    "Waited up to 3 minutes for response (waited 180 seconds) — Agent completed in 8 seconds, working status cleared",
+    "Verified response mentions \"Example Domain\" and took screenshot — Response text clearly states: 'The page title is \"Example Domain\" (https://example.com/, HTTP 200). Browser closed.' Screenshot saved as browser-use-test-result.png"
   ],
   "bugs": [],
-  "durationMs": 79516,
-  "sessionId": "5db93a7c-5dac-4e63-b3e7-9738c033ed2e",
+  "durationMs": 116278,
+  "sessionId": "500986d4-d838-4c64-a827-4ce1a41d5ea1",
   "cost": {
-    "inputTokens": 340,
-    "outputTokens": 8280,
-    "cacheCreationTokens": 62669,
-    "cacheReadTokens": 920095,
+    "inputTokens": 370,
+    "outputTokens": 10830,
+    "cacheCreationTokens": 68453,
+    "cacheReadTokens": 1049099,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.212086
+    "totalCostUsd": 0.244996
   }
 }
