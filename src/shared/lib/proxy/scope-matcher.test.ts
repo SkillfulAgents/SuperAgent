@@ -142,6 +142,13 @@ describe('matchScopes', () => {
     expect(result.scopes).toContain('drive.readonly')
   })
 
+  it('matches Google Drive file uploads under /upload/drive/v3', () => {
+    const result = matchScopes('googledrive', 'POST', '/upload/drive/v3/files')
+    expect(result.matched).toBe(true)
+    expect(result.scopes).toEqual(['drive', 'drive.appdata', 'drive.file'])
+    expect(result.endpointDescription).toMatch(/Creates a file/)
+  })
+
   it('matches Canva Connect paths under /rest/v1', () => {
     const list = matchScopes('canva', 'GET', '/rest/v1/designs')
     expect(list.matched).toBe(true)
