@@ -9,8 +9,7 @@
 
 import * as path from 'path'
 import { and, eq, inArray } from 'drizzle-orm'
-import { containerManager } from '@shared/lib/container/container-manager'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { ContainerConflictError, ContainerNotFoundError } from '@shared/lib/container/types'
 import { db } from '@shared/lib/db'
 import { messageAuthor } from '@shared/lib/db/schema'
@@ -23,13 +22,6 @@ import {
 } from '@shared/lib/utils/file-storage'
 import { insertMessageAuthorsBestEffort } from '@/api/routes/message-author'
 import { forkedUserLineSchema } from '@/api/routes/fork-attribution-schema'
-import {
-  deleteSession,
-  getSession,
-  registerSession,
-  readSessionMetadata,
-  sessionIsKnown,
-} from './session-service'
 
 export class ForkSessionError extends Error {
   constructor(
@@ -72,13 +64,14 @@ export async function forkSession(
   sourceId: string,
   opts: ForkSessionOpts = {},
 ): Promise<ForkedSession> {
-  if (messagePersister.isSessionActive(slug, sourceId)) {
+  const actor = agentRegistry.get(slug)
+  if (actor.sessions.isActive(sourceId)) {
     throw new ForkSessionError(409, 'Session is currently running')
   }
 
   const [known, metadataMap] = await Promise.all([
-    sessionIsKnown(slug, sourceId),
-    readSessionMetadata(slug),
+    actor.sessions.isKnown(sourceId),
+    actor.sessions.readMetadata(),
   ])
   const metadata = Object.hasOwn(metadataMap, sourceId) ? metadataMap[sourceId] : null
   if (!known) {
@@ -86,17 +79,16 @@ export async function forkSession(
   }
 
   const [source] = await Promise.all([
-    getSession(slug, sourceId, { metadata }),
-    containerManager.ensureRunning(slug),
+    actor.sessions.get(sourceId, { metadata }),
+    actor.container.start(),
   ])
   if (!source) {
     throw new ForkSessionError(404, 'Session not found')
   }
-  const client = containerManager.getClient(slug)
 
   let forked: { id: string } | null
   try {
-    forked = await client.forkSession(sourceId)
+    forked = await actor.sessions.fork(sourceId)
   } catch (error) {
     if (error instanceof ContainerConflictError) {
       throw new ForkSessionError(409, error.message)
@@ -125,14 +117,14 @@ export async function forkSession(
   }
 
   try {
-    await registerSession(slug, newId, name, initialMetadata)
+    await actor.sessions.register(newId, name, initialMetadata)
   } catch (error) {
     try {
-      await deleteSession(slug, newId)
+      await actor.sessions.delete(newId)
     } catch (cleanupError) {
       console.error(`fork: host delete of ${newId} failed`, cleanupError)
     } finally {
-      await client.deleteSession(newId).catch(console.error)
+      await actor.sessions.deleteLive(newId).catch(console.error)
     }
     throw error
   }
