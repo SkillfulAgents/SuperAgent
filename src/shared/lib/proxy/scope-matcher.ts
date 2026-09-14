@@ -61,13 +61,6 @@ export function matchScopes(
   if (!normalizedPath || normalizedPath.trim() === '') return empty
   if (!normalizedPath.startsWith('/')) normalizedPath = '/' + normalizedPath
 
-  if (toolkit === 'googledrive' && provider.basePath) {
-    const uploadBasePath = `/upload${provider.basePath}`
-    if (normalizedPath === uploadBasePath || normalizedPath.startsWith(`${uploadBasePath}/`)) {
-      normalizedPath = normalizedPath.slice('/upload'.length)
-    }
-  }
-
   // Filter by method. An entry with method "*" is method-agnostic and matches
   // any HTTP verb — used for RPC-style APIs (e.g. Slack) where the path alone
   // identifies the operation and the same scope applies whether the agent calls
