@@ -99,7 +99,10 @@ describe('skillset install', () => {
       // created with, and a copy that refuses to write through an existing
       // entry unlinks it and copies again.
       totalOps: 108,
-      wallMs: 500,
+      // Recorded 430–490 ms on an idle machine; ~2× that, as the home
+      // profiles are budgeted, so runner load cannot trip it while a
+      // serialised copy path still would.
+      wallMs: 950,
     })
   })
 })
