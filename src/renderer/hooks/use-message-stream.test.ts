@@ -141,6 +141,60 @@ describe('useMessageStream', () => {
     expect(result.current.isStreaming).toBe(false)
   })
 
+  it('restores and clears active subagents from connected snapshots', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+    const activeSubagents = [{
+      parentToolId: 'nested-agent-tool',
+      agentId: 'nested-agent-id',
+      streamingMessage: null,
+      streamingToolUse: null,
+      progressSummary: 'Inspecting tests',
+      subagentType: 'code-reviewer',
+      description: 'Review the changes',
+      usage: null,
+      lastToolName: 'Read',
+      status: 'running',
+    }]
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'connected',
+        isActive: true,
+        activeSubagents,
+      })
+    })
+    expect(result.current.activeSubagents).toEqual(activeSubagents)
+    expect(result.current.completedSubagents).toEqual(new Set())
+
+    const completedSubagents = activeSubagents.map((subagent) => ({
+      ...subagent,
+      status: 'completed',
+    }))
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'connected',
+        isActive: true,
+        activeSubagents: completedSubagents,
+      })
+    })
+    expect(result.current.activeSubagents).toEqual(completedSubagents)
+    expect(result.current.completedSubagents).toEqual(new Set(['nested-agent-tool']))
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'connected',
+        isActive: true,
+        activeSubagents: [],
+      })
+    })
+    expect(result.current.activeSubagents).toHaveLength(0)
+    expect(result.current.completedSubagents).toEqual(new Set())
+  })
+
   it('reads waiting-background from the connected snapshot, not from the task list alone', async () => {
     // A late-joining client can find a background task that a still-streaming
     // turn launched. Only the snapshot's own word marks the turn as over.

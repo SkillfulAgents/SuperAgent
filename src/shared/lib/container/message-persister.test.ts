@@ -1371,6 +1371,226 @@ describe('MessagePersister', () => {
   // ============================================================================
 
   describe('subagent completion detection', () => {
+    it('broadcasts lifecycle events for a background subagent launched inside a Skill', () => {
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: 'skill-tool', name: 'Skill' },
+        },
+      })
+      mockClient._sendMessage({ type: 'stream_event', event: { type: 'content_block_stop' } })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        parent_tool_use_id: 'skill-tool',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: 'nested-agent-tool', name: 'Agent' },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        parent_tool_use_id: 'skill-tool',
+        event: {
+          type: 'content_block_delta',
+          delta: {
+            type: 'input_json_delta',
+            partial_json: '{"subagent_type":"code-reviewer"}',
+          },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        parent_tool_use_id: 'skill-tool',
+        event: { type: 'content_block_stop' },
+      })
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_started',
+        parent_tool_use_id: 'skill-tool',
+        task_id: 'nested-agent-id',
+        tool_use_id: 'nested-agent-tool',
+        task_type: 'local_agent',
+        subagent_type: 'code-reviewer',
+        description: 'Review the changes',
+      })
+      mockClient._sendMessage({
+        type: 'user',
+        parent_tool_use_id: 'skill-tool',
+        tool_use_result: {
+          status: 'async_launched',
+          isAsync: true,
+          agentId: 'nested-agent-id',
+        },
+        message: {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'nested-agent-tool',
+            content: 'Agent launched successfully. agentId: nested-agent-id',
+          }],
+        },
+      })
+      expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toEqual([
+        expect.objectContaining({
+          taskId: 'nested-agent-id',
+          isSubagent: true,
+        }),
+      ])
+
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_progress',
+        parent_tool_use_id: 'skill-tool',
+        task_id: 'nested-agent-id',
+        tool_use_id: 'nested-agent-tool',
+        subagent_type: 'code-reviewer',
+        summary: 'Inspecting tests',
+        usage: { total_tokens: 100, tool_uses: 2, duration_ms: 500 },
+        last_tool_name: 'Read',
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        parent_tool_use_id: 'nested-agent-tool',
+        event: {
+          type: 'content_block_start',
+          content_block: {
+            type: 'tool_use',
+            id: 'webhook-tool',
+            name: 'mcp__user-input__create_webhook_endpoint',
+          },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        parent_tool_use_id: 'nested-agent-tool',
+        event: {
+          type: 'content_block_delta',
+          delta: {
+            type: 'input_json_delta',
+            partial_json: '{"verification":{"secret":"whsec_supersecret","header":"x-sig"}}',
+          },
+        },
+      })
+      const activeSubagents = messagePersister.getActiveSubagents(AGENT_SLUG, SESSION_ID)
+      expect(activeSubagents).toEqual([
+        expect.objectContaining({
+          parentToolId: 'nested-agent-tool',
+          agentId: 'nested-agent-id',
+          subagentType: 'code-reviewer',
+          description: 'Review the changes',
+          progressSummary: 'Inspecting tests',
+          usage: { total_tokens: 100, tool_uses: 2, duration_ms: 500 },
+          lastToolName: 'Read',
+          streamingToolUse: expect.objectContaining({
+            id: 'webhook-tool',
+            name: 'mcp__user-input__create_webhook_endpoint',
+          }),
+        }),
+      ])
+      expect(activeSubagents[0].streamingToolUse?.partialInput).not.toContain('whsec_supersecret')
+      expect(activeSubagents[0].streamingToolUse?.partialInput).toContain('"secret":"***"')
+
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_notification',
+        parent_tool_use_id: 'skill-tool',
+        task_id: 'nested-agent-id',
+        tool_use_id: 'nested-agent-tool',
+        status: 'completed',
+        summary: 'Review complete',
+      })
+
+      expect(sseEvents.filter(e => e.type === 'subagent_started')).toEqual([
+        expect.objectContaining({
+          parentToolId: 'nested-agent-tool',
+          agentId: 'nested-agent-id',
+          subagentType: 'code-reviewer',
+          description: 'Review the changes',
+        }),
+      ])
+      expect(sseEvents.filter(e => e.type === 'subagent_progress')).toEqual([
+        expect.objectContaining({
+          parentToolId: 'nested-agent-tool',
+          summary: 'Inspecting tests',
+        }),
+      ])
+      expect(sseEvents.filter(e => e.type === 'subagent_completed')).toEqual([
+        expect.objectContaining({
+          parentToolId: 'nested-agent-tool',
+          agentId: 'nested-agent-id',
+          resultText: 'Review complete',
+        }),
+      ])
+      expect(messagePersister.getActiveBackgroundTasks(AGENT_SLUG, SESSION_ID)).toHaveLength(0)
+      expect(messagePersister.getActiveSubagents(AGENT_SLUG, SESSION_ID)).toEqual([
+        expect.objectContaining({
+          parentToolId: 'nested-agent-tool',
+          status: 'completed',
+        }),
+      ])
+
+      messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
+      expect(messagePersister.getActiveSubagents(AGENT_SLUG, SESSION_ID)).toHaveLength(0)
+    })
+
+    it('completes a foreground subagent from its Skill sidechain tool result', () => {
+      mockClient._sendMessage({
+        type: 'assistant',
+        parent_tool_use_id: 'skill-tool',
+        message: {
+          role: 'assistant',
+          content: [{
+            type: 'tool_use',
+            id: 'foreground-agent-tool',
+            name: 'Agent',
+            input: { subagent_type: 'Explore', description: 'Inspect files' },
+          }],
+        },
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_started',
+        parent_tool_use_id: 'skill-tool',
+        task_id: 'foreground-agent-id',
+        tool_use_id: 'foreground-agent-tool',
+        task_type: 'local_agent',
+        subagent_type: 'Explore',
+        description: 'Inspect files',
+      })
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'user',
+        parent_tool_use_id: 'skill-tool',
+        tool_use_result: { status: 'completed', agentId: 'foreground-agent-id' },
+        message: {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'foreground-agent-tool',
+            content: 'Inspection complete',
+          }],
+        },
+      })
+
+      expect(sseEvents.filter(e => e.type === 'subagent_completed')).toEqual([
+        expect.objectContaining({
+          parentToolId: 'foreground-agent-tool',
+          agentId: 'foreground-agent-id',
+          resultText: 'Inspection complete',
+        }),
+      ])
+      expect(messagePersister.getActiveSubagents(AGENT_SLUG, SESSION_ID)).toEqual([
+        expect.objectContaining({
+          parentToolId: 'foreground-agent-tool',
+          status: 'completed',
+        }),
+      ])
+    })
+
     it('broadcasts subagent_completed when tool_result matches pendingTaskToolId', async () => {
       // Set up Task tool tracking
       mockClient._sendMessage({
@@ -1460,7 +1680,7 @@ describe('MessagePersister', () => {
     it('fires subagent completion exactly once when task_updated is followed by task_notification', () => {
       startBackgroundSubagent()
       // The real capture emits task_updated then task_notification for the same
-      // subagent — the second must not double-fire (the first removes it).
+      // subagent — the second must not double-fire.
       mockClient._sendMessage({
         type: 'system', subtype: 'task_updated', task_id: 'bgsub', patch: { status: 'completed' },
       })
@@ -1468,6 +1688,40 @@ describe('MessagePersister', () => {
         type: 'system', subtype: 'task_notification', task_id: 'bgsub', tool_use_id: 'bg-tool', status: 'completed',
       })
       expect(sseEvents.filter(e => e.type === 'subagent_completed')).toHaveLength(1)
+    })
+
+    it('does not let a completed background run shadow a resumed run completion', () => {
+      startBackgroundSubagent()
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_updated',
+        task_id: 'bgsub',
+        patch: { status: 'completed' },
+      })
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'bgsub',
+        tool_use_id: 'send-tool',
+        task_type: 'local_agent',
+        subagent_type: 'general-purpose',
+        description: 'Resume background agent',
+      })
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_updated',
+        task_id: 'bgsub',
+        patch: { status: 'completed' },
+      })
+
+      expect(sseEvents.filter(e => e.type === 'subagent_completed')).toEqual([
+        expect.objectContaining({
+          parentToolId: 'send-tool',
+          agentId: 'bgsub',
+        }),
+      ])
     })
 
     it('completes an errored background launch instead of treating it as an async ack', () => {

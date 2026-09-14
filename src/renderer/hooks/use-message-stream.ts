@@ -25,6 +25,7 @@ export interface SubagentInfo {
   usage: { total_tokens: number; tool_uses: number; duration_ms: number } | null
   lastToolName: string | null
   resultText?: string | null
+  status?: 'running' | 'completed'
 }
 
 interface ApiRetryInfo {
@@ -432,6 +433,16 @@ function getOrCreateEventSource(
         if (Array.isArray(data.slashCommands)) {
           sessionSlashCommands.set(sessionId, data.slashCommands)
         }
+        const connectedSubagents = Array.isArray(data.activeSubagents)
+          ? data.activeSubagents as SubagentInfo[]
+          : null
+        const connectedCompletedSubagents = connectedSubagents
+          ? new Set(
+              connectedSubagents
+                .filter((subagent) => subagent.status === 'completed' && subagent.parentToolId)
+                .map((subagent) => subagent.parentToolId!),
+            )
+          : (current?.completedSubagents ?? null)
         // Initial connection - get isActive from server
         streamStates.set(sessionId, {
           isActive: data.isActive ?? false,
@@ -447,8 +458,8 @@ function getOrCreateEventSource(
           activeStartTime: current?.activeStartTime ?? null,
           isCompacting: current?.isCompacting ?? false,
           contextUsage: current?.contextUsage ?? null,
-          activeSubagents: current?.activeSubagents ?? [],
-          completedSubagents: current?.completedSubagents ?? null,
+          activeSubagents: connectedSubagents ?? (current?.activeSubagents ?? []),
+          completedSubagents: connectedCompletedSubagents,
           typingUser: current?.typingUser ?? null,
           peerUserMessages: current?.peerUserMessages ?? [],
           apiRetry: current?.apiRetry ?? null,
