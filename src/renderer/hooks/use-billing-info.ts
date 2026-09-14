@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 
 import { apiFetch } from '@renderer/lib/api'
+import { deploymentUnavailableFromResponse } from '@renderer/lib/deployment-unavailable'
 import type { ParsedPlatformBillingInfo } from '@shared/lib/types/skillset-schema'
 
 export interface BillingInfoResponse {
@@ -26,7 +27,8 @@ export function useBillingInfo(enabled: boolean) {
       const res = await apiFetch('/api/platform-auth/billing')
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
-        throw new Error(err.error || 'Failed to load billing')
+        throw deploymentUnavailableFromResponse(res.status, err)
+          ?? new Error(err.error || 'Failed to load billing')
       }
       return res.json()
     },

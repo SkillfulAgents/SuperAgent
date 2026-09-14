@@ -9,6 +9,7 @@ const { mockCapture } = vi.hoisted(() => ({ mockCapture: vi.fn() }))
 vi.mock('./error-reporting', () => ({ captureRendererException: mockCapture }))
 
 import { handleMutationError, handleQueryError, createAppQueryClient } from './query-client'
+import { DeploymentUnavailableError } from './deployment-unavailable'
 
 beforeEach(() => {
   mockToastError.mockClear()
@@ -62,6 +63,18 @@ describe('handleQueryError', () => {
     handleQueryError(new CancelledError())
     expect(mockCapture).not.toHaveBeenCalled()
     expect(mockToastError).not.toHaveBeenCalled()
+  })
+
+  it('does not report a DeploymentUnavailableError to Sentry', () => {
+    handleQueryError(new DeploymentUnavailableError('waking'))
+    expect(mockCapture).not.toHaveBeenCalled()
+    expect(mockToastError).not.toHaveBeenCalled()
+  })
+
+  it('still toasts a DeploymentUnavailableError when the query opted in', () => {
+    handleQueryError(new DeploymentUnavailableError('sleeping'), { showErrorToast: true })
+    expect(mockCapture).not.toHaveBeenCalled()
+    expect(mockToastError).toHaveBeenCalledWith('Workspace is asleep. Wake it to continue.')
   })
 })
 

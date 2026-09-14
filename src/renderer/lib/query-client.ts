@@ -22,6 +22,7 @@ import { QueryClient, QueryCache, MutationCache, CancelledError } from '@tanstac
 import type { MutationMeta, QueryMeta } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { captureRendererException } from './error-reporting'
+import { DeploymentUnavailableError } from './deployment-unavailable'
 
 // Type the meta fields the global handlers read. Augmenting `Register` makes
 // `mutation.options.meta` / `query.meta` strongly typed everywhere.
@@ -67,7 +68,10 @@ export function handleMutationError(error: unknown, meta?: MutationMeta): void {
 export function handleQueryError(error: unknown, meta?: QueryMeta): void {
   // A cancelled fetch (navigation / unmount / refetch supersede) is not a failure.
   if (error instanceof CancelledError) return
-  captureRendererException(error, { tags: { source: 'query' } })
+  // A sleeping/waking cloud workspace is expected; surface it, don't report it.
+  if (!(error instanceof DeploymentUnavailableError)) {
+    captureRendererException(error, { tags: { source: 'query' } })
+  }
   if (meta?.showErrorToast) toast.error(meta.errorMessage ?? messageFromError(error))
 }
 
