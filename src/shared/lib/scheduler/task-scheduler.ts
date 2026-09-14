@@ -19,7 +19,6 @@ import {
 import type { ScheduledTask } from '@shared/lib/services/scheduled-task-service'
 import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import { getNextCronTime } from '@shared/lib/services/schedule-parser'
-import { getSessionForScheduledExecution } from '@shared/lib/services/session-service'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentExists } from '@shared/lib/services/agent-service'
 import { captureException } from '@shared/lib/error-reporting'
@@ -185,11 +184,9 @@ class TaskScheduler {
       return
     }
 
-    const existingSession = await getSessionForScheduledExecution(
-      task.agentSlug,
-      task.id,
-      task.nextExecutionAt,
-    )
+    const actor = agentRegistry.get(task.agentSlug)
+
+    const existingSession = await actor.sessions.forScheduledExecution(task.id, task.nextExecutionAt)
 
     if (existingSession) {
       console.log(
@@ -207,8 +204,6 @@ class TaskScheduler {
       await markTaskFailed(task.id, 'Agent no longer exists')
       return
     }
-
-    const actor = agentRegistry.get(task.agentSlug)
 
     // Start the container if not running
     await actor.container.start()

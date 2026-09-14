@@ -54,10 +54,6 @@ export class InMemoryFileOps implements FileOps {
     return Object.fromEntries(this.files)
   }
 
-  workspacePath(): string {
-    throw new Error('An in-memory workspace has no host path')
-  }
-
   private ensureDirs(rel: string): void {
     for (const ancestor of [...ancestorsOf(rel), rel]) {
       if (this.files.has(ancestor)) throw new WorkspaceFileError('not-a-directory', 'A file is in the way')
