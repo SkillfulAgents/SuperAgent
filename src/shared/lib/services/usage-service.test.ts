@@ -1291,6 +1291,15 @@ describe('usage-service', () => {
       expect(await costOf('glm-5.3-flash', { speed: 'fast' }, 'platform')).toBeCloseTo(glmBase, 9)
     })
 
+    it('bills platform DeepSeek V4.1 Flash at Fireworks list rates with no speed tier', async () => {
+      const deepseekBase = (100_000 * 0.22 + 1_000 * 0.66) / 1_000_000
+      expect(await costOf('deepseek-v4.1-flash', {}, 'platform')).toBeCloseTo(deepseekBase, 9)
+      expect(await costOf('deepseek-v4.1-flash', { speed: 'fast' }, 'platform')).toBeCloseTo(
+        deepseekBase,
+        9,
+      )
+    })
+
     it('prefers the local computation over tier-blind costUSD when a multiplier applies', async () => {
       expect(await costOf('gpt-5.4', { speed: 'fast', costUSD: 9.99 }, 'platform')).toBeCloseTo(
         GPT54_BASE * 2,
