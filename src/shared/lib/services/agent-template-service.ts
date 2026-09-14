@@ -123,6 +123,19 @@ const CLAUDE_DIR_ALLOWLIST = new Set([
 ])
 
 
+/** Apply the template export policy to an archive path after stripping its wrapper. */
+function isTemplateEntry(entryPath: string): boolean {
+  const normalized = entryPath.replace(/^\.\//, '')
+  const parts = normalized.split('/')
+  if (parts.some((part) => TEMPLATE_EXCLUDE.has(part))) return false
+  if (TEMPLATE_EXCLUDE_EXTENSIONS.has(path.extname(normalized))) return false
+  if (TEMPLATE_EXCLUDE_TOP_DIRS.has(parts[0])) return false
+  // Session transcripts, subagents, workflows, and derived runtime state live
+  // under .claude/. Only installed skills belong in a reusable template.
+  if (parts[0] === '.claude' && !CLAUDE_DIR_ALLOWLIST.has(parts[1])) return false
+  return true
+}
+
 // ============================================================================
 // Metadata Helpers
 // ============================================================================
@@ -608,12 +621,12 @@ export function validateTemplateEntries(
   entries: ZipEntryMeta[],
   mode: 'template' | 'full',
 ): Omit<TemplateValidationResult, 'agentName'> {
+  const stripPrefix = detectZipPrefix(entries)
   const realEntries = entries.filter((e) => {
     if (e.fileName.startsWith('__MACOSX/')) return false
     if (mode === 'template') {
-      const parts = e.fileName.split('/')
-      if (parts.some((p) => TEMPLATE_EXCLUDE.has(p))) return false
-      if (!e.isDirectory && TEMPLATE_EXCLUDE_EXTENSIONS.has(path.extname(e.fileName))) return false
+      const entryPath = stripPrefix ? e.fileName.replace(stripPrefix, '') : e.fileName
+      if (!isTemplateEntry(entryPath)) return false
     }
     return true
   })
@@ -635,8 +648,6 @@ export function validateTemplateEntries(
       return { valid: false, error: `Invalid path in template: ${entry.fileName}`, fileCount: realEntries.length, stripPrefix: '' }
     }
   }
-
-  const stripPrefix = detectZipPrefix(entries)
 
   const claudeMdEntry = realEntries.find((e) => {
     const name = stripPrefix ? e.fileName.replace(stripPrefix, '') : e.fileName
@@ -733,14 +744,7 @@ export async function importAgentFromTemplate(
 
       if (!entryName) continue
 
-      if (mode === 'template') {
-        const entryParts = entry.fileName.split('/')
-        if (entryParts.some((p) => TEMPLATE_EXCLUDE.has(p))) continue
-        if (TEMPLATE_EXCLUDE_EXTENSIONS.has(path.extname(entry.fileName))) continue
-
-        const baseName = path.basename(entryName)
-        if (baseName === '.env' || baseName === 'session-metadata.json') continue
-      }
+      if (mode === 'template' && !isTemplateEntry(entryName)) continue
 
       // Streamed, never held whole: an entry is as large as the whole
       // template may be. The size limit fails the stream, and with it the
