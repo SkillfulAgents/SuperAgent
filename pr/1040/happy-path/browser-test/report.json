@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser-use feature successfully executed: Agent opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported back the correct result with HTTP 200 status.",
+  "reason": "Verified that the agent can successfully use browser tools to navigate to a URL and retrieve the page title, with the response correctly identifying \"Example Domain\" as the page title from https://example.com.",
   "steps": [
-    "Step 1: Navigated to http://localhost:47891 — Successfully loaded the home page showing agents in the sidebar, confirming application is running.",
-    "Step 2: Found and clicked the \"QA-20260913-015805-ma7q\" agent in the sidebar — Successfully clicked the agent button, which navigated to the agent's configuration page (URL: /agents/qa-20260913-015805-ma7q-y71q3mwmud).",
-    "Step 3: Filled and sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Successfully typed the message into the input field and clicked the send button. The page navigated to the session page and the agent status changed to \"working\".",
-    "Step 4: Waited up to 3 minutes for the agent to respond — Agent completed its work in 7 seconds. The \"Working...\" indicator disappeared, confirming task completion.",
-    "Step 5: Verified the response mentions \"Example Domain\" and took screenshot — The agent's response clearly states: \"The page title is \"Example Domain\" (https://example.com/, HTTP 200). Browser closed.\" The response includes all required information: correct page title, URL, HTTP status, and browser closed confirmation."
+    "Step 1: Navigated to http://localhost:47891 — Page loaded successfully, showing Gamut application with sidebar containing agents list.",
+    "Step 2: Clicked on \"QA-20260914-194452-dqba\" agent in the sidebar — Agent page opened successfully, displaying the chat interface with message input field.",
+    "Step 3: Typed and sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully submitted and visible in the chat.",
+    "Step 4: Waited for agent response (up to 3 minutes) — Agent completed processing in approximately 8 seconds and returned a response.",
+    "Step 5: Verified the response mentions \"Example Domain\" and took a screenshot — Response successfully displayed: \"The page title is \"Example Domain\" (HTTP 200). Browser closed.\" The screenshot clearly shows the successful completion of the task."
   ],
   "bugs": [],
-  "durationMs": 85390,
-  "sessionId": "ba9a79bb-fccb-412e-9593-b439e6df5b95",
+  "durationMs": 61793,
+  "sessionId": "6437b03a-ab4b-44b1-a0d6-1351bb4abe56",
   "cost": {
-    "inputTokens": 436,
-    "outputTokens": 12586,
-    "cacheCreationTokens": 88302,
-    "cacheReadTokens": 1387220,
+    "inputTokens": 344,
+    "outputTokens": 11024,
+    "cacheCreationTokens": 72838,
+    "cacheReadTokens": 1006678,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.312465
+    "totalCostUsd": 0.247179
   }
 }
