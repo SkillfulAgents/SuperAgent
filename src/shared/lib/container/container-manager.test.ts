@@ -13,8 +13,6 @@ const mockIsHealthy = vi.fn()
 
 const mockClearRunnerAvailabilityCache = vi.fn()
 
-const mockBuildVolumeFlag = vi.fn((hostPath: string, containerPath: string) => `"${hostPath}:${containerPath}"`)
-
 vi.mock('./client-factory', () => ({
   createContainerClient: () => ({
     start: mockStart,
@@ -28,7 +26,6 @@ vi.mock('./client-factory', () => ({
     getRuntimeGenerationId: () => null,
     fetch: vi.fn(),
     getHostApiBaseUrl: () => `http://${mockGetContainerHostUrl()}:${mockGetAppPort()}`,
-    buildVolumeFlag: (...args: unknown[]) => mockBuildVolumeFlag(...args as [string, string]),
   }),
   getContainerClientClass: () => ({ requiresLocalImage: true }),
   checkAllRunnersAvailability: vi.fn().mockResolvedValue([]),
@@ -473,55 +470,26 @@ describe('containerManager.ensureRunning — mount volumes', () => {
     mockMcpWhere.mockResolvedValue([])
   })
 
-  it('passes additionalVolumes from healthy mounts to client.start()', async () => {
-    mockGetMountsWithHealth.mockReturnValue([
-      { id: 'm1', hostPath: '/host/project', containerPath: '/mounts/project', folderName: 'project', addedAt: '2025-01-01', health: 'ok' },
-    ])
+  const ok = { id: 'm1', hostPath: '/host/ok', containerPath: '/mounts/ok', folderName: 'ok', addedAt: '2025-01-01' }
+  const gone = { id: 'm2', hostPath: '/host/gone', containerPath: '/mounts/gone', folderName: 'gone', addedAt: '2025-01-01' }
+
+  it('hands healthy records to client.start() and leaves SUPERAGENT_MOUNTS to the runtime', async () => {
+    mockGetMountsWithHealth.mockReturnValue([{ ...ok, health: 'ok' }, { ...gone, health: 'missing' }])
 
     await containerManager.ensureRunning('test-agent')
 
     expect(mockStart).toHaveBeenCalledOnce()
     const opts = mockStart.mock.calls[0][0]
-    expect(opts.additionalVolumes).toHaveLength(1)
-    // The volume flag is produced by buildVolumeFlag which we can't inspect exactly
-    // since the client is mocked, but it should be an array of strings
-    expect(typeof opts.additionalVolumes[0]).toBe('string')
-  })
-
-  it('tells the agent about mounted folders through SUPERAGENT_MOUNTS, healthy ones only', async () => {
-    mockGetMountsWithHealth.mockReturnValue([
-      { id: 'm1', hostPath: '/host/ok', containerPath: '/mounts/ok', folderName: 'ok', addedAt: '2025-01-01', health: 'ok' },
-      { id: 'm2', hostPath: '/host/gone', containerPath: '/mounts/gone', folderName: 'gone', addedAt: '2025-01-01', health: 'missing' },
-    ])
-
-    await containerManager.ensureRunning('test-agent')
-
-    const opts = mockStart.mock.calls[0][0]
-    expect(opts.envVars.SUPERAGENT_MOUNTS).toBe(JSON.stringify(['/mounts/ok']))
-  })
-
-  it('sets no SUPERAGENT_MOUNTS when nothing is mounted', async () => {
-    mockGetMountsWithHealth.mockReturnValue([])
-
-    await containerManager.ensureRunning('test-agent')
-
-    const opts = mockStart.mock.calls[0][0]
+    expect(opts.mounts).toEqual([{ ...ok, health: 'ok' }])
     expect(opts.envVars).not.toHaveProperty('SUPERAGENT_MOUNTS')
+    expect(opts).not.toHaveProperty('additionalVolumes')
   })
 
   it('skips missing mounts and broadcasts warning', async () => {
-    mockGetMountsWithHealth.mockReturnValue([
-      { id: 'm1', hostPath: '/host/ok', containerPath: '/mounts/ok', folderName: 'ok', addedAt: '2025-01-01', health: 'ok' },
-      { id: 'm2', hostPath: '/host/gone', containerPath: '/mounts/gone', folderName: 'gone', addedAt: '2025-01-01', health: 'missing' },
-    ])
+    mockGetMountsWithHealth.mockReturnValue([{ ...ok, health: 'ok' }, { ...gone, health: 'missing' }])
 
     await containerManager.ensureRunning('test-agent')
 
-    const opts = mockStart.mock.calls[0][0]
-    // Only healthy mount should be in volumes
-    expect(opts.additionalVolumes).toHaveLength(1)
-
-    // Should broadcast mount health warning
     const broadcasts = vi.mocked(messagePersister.broadcastGlobal).mock.calls
     const mountWarnings = broadcasts.filter(([msg]: any) => msg.type === 'mount_health_warning')
     expect(mountWarnings).toHaveLength(1)
@@ -532,13 +500,55 @@ describe('containerManager.ensureRunning — mount volumes', () => {
     })
   })
 
-  it('passes empty additionalVolumes when no mounts exist', async () => {
+  it('shows every record the runtime dropped together with the missing ones in one banner', async () => {
+    const ok2 = { ...ok, id: 'm3', hostPath: '/host/ok2', containerPath: '/mounts/ok2', folderName: 'ok2' }
+    mockGetMountsWithHealth.mockReturnValue([{ ...ok, health: 'ok' }, { ...ok2, health: 'ok' }, { ...gone, health: 'missing' }])
+    mockStart.mockImplementationOnce(async (opts: { onMountDropped: (m: unknown) => void }) => {
+      opts.onMountDropped({ ...ok, health: 'ok' })
+      opts.onMountDropped({ ...ok2, health: 'ok' })
+      return { status: 'running', port: 3000 }
+    })
+
+    await containerManager.ensureRunning('test-agent')
+
+    const broadcasts = vi.mocked(messagePersister.broadcastGlobal).mock.calls
+    const mountWarnings = broadcasts.filter(([msg]: any) => msg.type === 'mount_health_warning')
+    // The renderer keeps only the latest banner, so the last one carries everything.
+    expect(mountWarnings).toHaveLength(2)
+    expect(mountWarnings[1][0]).toMatchObject({
+      missingMounts: [
+        { folderName: 'gone', hostPath: '/host/gone' },
+        { folderName: 'ok', hostPath: '/host/ok' },
+        { folderName: 'ok2', hostPath: '/host/ok2' },
+      ],
+    })
+  })
+
+  it('still reports what the runtime dropped when the start then fails', async () => {
+    mockGetMountsWithHealth.mockReturnValue([{ ...ok, health: 'ok' }])
+    mockStart.mockImplementationOnce(async (opts: { onMountDropped: (m: unknown) => void }) => {
+      opts.onMountDropped({ ...ok, health: 'ok' })
+      throw new Error('health check timed out')
+    })
+
+    await expect(containerManager.ensureRunning('test-agent')).rejects.toThrow('health check timed out')
+
+    const broadcasts = vi.mocked(messagePersister.broadcastGlobal).mock.calls
+    const mountWarnings = broadcasts.filter(([msg]: any) => msg.type === 'mount_health_warning')
+    expect(mountWarnings).toHaveLength(1)
+    expect(mountWarnings[0][0]).toMatchObject({
+      missingMounts: [{ folderName: 'ok', hostPath: '/host/ok' }],
+    })
+  })
+
+  it('passes an empty mounts list when no mounts exist', async () => {
     mockGetMountsWithHealth.mockReturnValue([])
 
     await containerManager.ensureRunning('test-agent')
 
     const opts = mockStart.mock.calls[0][0]
-    expect(opts.additionalVolumes).toEqual([])
+    expect(opts.mounts).toEqual([])
+    expect(opts.envVars).not.toHaveProperty('SUPERAGENT_MOUNTS')
   })
 })
 

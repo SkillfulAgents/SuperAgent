@@ -6,8 +6,13 @@ import { EventEmitter } from 'events'
 
 const mockGetSettings = vi.fn()
 const mockCaptureException = vi.fn()
+const { mockStorageSubPath } = vi.hoisted(() => ({ mockStorageSubPath: vi.fn((_p: string): string | null => null) }))
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: (...args: unknown[]) => mockGetSettings(...args),
+}))
+vi.mock('@shared/lib/config/data-dir', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/config/data-dir')>()),
+  storageSubPath: (p: string) => mockStorageSubPath(p),
 }))
 
 vi.mock('@shared/lib/llm-provider', () => ({
@@ -37,6 +42,12 @@ import {
   type KubeConfig,
   type OwnerReference,
 } from './platform-k8s-runtime'
+import { acceptCloudMounts } from './cloud-mounts'
+import type { AgentMount } from '@shared/lib/types/mount'
+
+const record = (over: Partial<AgentMount>): AgentMount => ({
+  id: 'v1', hostPath: '/data/volumes/v1', containerPath: '/volumes/team-brain', folderName: 'Team brain', addedAt: '2026-01-01', ...over,
+})
 
 const kube: KubeConfig = {
   namespace: 'org-abc123',
@@ -247,6 +258,46 @@ describe('PlatformK8sRuntimeClient manifests', () => {
     const pod = buildAgentPodManifest(kube, 'superagent-a', { agentId: 'a', envVars: {} }, {}, null)
     expect(pod.metadata.ownerReferences).toBeUndefined()
   })
+
+  it('mounts accepted records as PVC subPaths beside the workspace', () => {
+    mockStorageSubPath.mockImplementation((p) => p.startsWith('/data/') ? p.slice('/data/'.length) : null)
+    const { accepted } = acceptCloudMounts([record({})])
+    const pod = buildAgentPodManifest(kube, 'superagent-a', { agentId: 'a', envVars: {} }, {}, null, accepted)
+    const container = (pod.spec?.containers as Array<{ volumeMounts: Array<{ name: string; mountPath: string; subPath: string }> }>)[0]
+    expect(container.volumeMounts).toEqual([
+      { name: 'workspaces', mountPath: '/workspace', subPath: 'staging-usw2/org-abc123/superagent-data/agents/a/workspace' },
+      { name: 'workspaces', mountPath: '/volumes/team-brain', subPath: 'volumes/v1' },
+    ])
+  })
+
+  it('acceptCloudMounts keeps /volumes records on the disk and drops the rest', () => {
+    mockStorageSubPath.mockImplementation((p) => p.startsWith('/data/') ? p.slice('/data/'.length) : null)
+    const folder = record({ id: 'm1', hostPath: '/data/agents/other/workspace', containerPath: '/mounts/other', folderName: 'other' })
+    const offDisk = record({ id: 'v2', hostPath: '/sqlite/x', containerPath: '/volumes/x', folderName: 'x' })
+    // A /volumes/ claim on another agent's workspace: the host path is on the
+    // disk and under the data dir, but not in the volumes area.
+    const stolen = record({ id: 'v3', hostPath: '/data/agents/other/workspace', containerPath: '/volumes/stolen', folderName: 'stolen' })
+    // A name the MicroVM supervisor refuses (it would reject the whole list).
+    const badName = record({ id: 'v4', hostPath: '/data/volumes/v4', containerPath: '/volumes/Team Brain', folderName: 'Team Brain' })
+    const { accepted, dropped } = acceptCloudMounts([record({}), folder, offDisk, stolen, badName])
+    expect(accepted.map((m) => m.subPath)).toEqual(['volumes/v1'])
+    expect(dropped).toEqual([folder, offDisk, stolen, badName])
+  })
+
+  it('acceptCloudMounts applies the rest of the supervisor list rules: sub-path charset, unique names, count', () => {
+    mockStorageSubPath.mockImplementation((p) => p.startsWith('/data/') ? p.slice('/data/'.length) : null)
+    const spaced = record({ id: 'v5', hostPath: '/data/volumes/team brain', containerPath: '/volumes/team', folderName: 'team' })
+    const dup = record({ id: 'v6', hostPath: '/data/volumes/v6', containerPath: '/volumes/team-brain', folderName: 'again' })
+    const many = Array.from({ length: 33 }, (_, i) => record({ id: `n${i}`, hostPath: `/data/volumes/n${i}`, containerPath: `/volumes/n${i}`, folderName: `n${i}` }))
+
+    expect(acceptCloudMounts([spaced]).dropped).toEqual([spaced])
+    const { accepted, dropped } = acceptCloudMounts([record({}), dup])
+    expect(accepted.map((m) => m.id)).toEqual(['v1'])
+    expect(dropped).toEqual([dup])
+    const capped = acceptCloudMounts(many)
+    expect(capped.accepted).toHaveLength(32)
+    expect(capped.dropped).toEqual([many[32]])
+  })
 })
 
 describe('withRetry', () => {
@@ -427,6 +478,49 @@ describe('PlatformK8sRuntimeClient operability', () => {
     const client = new PlatformK8sRuntimeClient({ agentId: 'agent-a', envVars: {} })
 
     await expect(client.start()).resolves.toEqual({ status: 'running', port: 3000 })
+  })
+
+  it('start() reports dropped records and creates the pod with only the accepted mounts and SUPERAGENT_MOUNTS', async () => {
+    mockStorageSubPath.mockImplementation((p) => p.startsWith('/data/') ? p.slice('/data/'.length) : null)
+    mockGetSettings.mockReturnValue({ container: { agentImage: 'img', resourceLimits: { cpu: 1, memory: '1g' } }, enableToolSearch: true })
+    const bodies: string[] = []
+    vi.spyOn(https, 'request').mockImplementation(((_opts, callback) => {
+      const res = new EventEmitter() as EventEmitter & { statusCode: number; setEncoding: ReturnType<typeof vi.fn> }
+      res.statusCode = 200
+      res.setEncoding = vi.fn()
+      const req = new EventEmitter() as EventEmitter & { write: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn> }
+      req.write = vi.fn((chunk: unknown) => { bodies.push(String(chunk)) })
+      req.end = vi.fn(() => {
+        process.nextTick(() => {
+          res.emit('data', JSON.stringify({ status: { phase: 'Running', containerStatuses: [{ name: 'agent', ready: true }] } }))
+          res.emit('end')
+        })
+      })
+      if (typeof callback === 'function') callback(res as any)
+      return req as any
+    }) as typeof https.request)
+    const client = new PlatformK8sRuntimeClient({ agentId: 'agent-a', envVars: {} })
+    // Not running yet, so start() creates the pod instead of returning early;
+    // health is the agent's own HTTP probe, out of scope here.
+    vi.spyOn(client, 'getInfoFromRuntime')
+      .mockResolvedValueOnce({ status: 'stopped', port: null })
+      .mockResolvedValue({ status: 'running', port: 3000 })
+    vi.spyOn(client, 'waitForHealthy').mockResolvedValue(true)
+
+    const dropped: AgentMount[] = []
+    const folder = record({ id: 'm1', hostPath: '/data/agents/other/workspace', containerPath: '/mounts/other', folderName: 'other' })
+    await client.start({
+      envVars: { SUPERAGENT_MOUNTS: JSON.stringify(['/mounts/stale']) },
+      mounts: [record({}), folder],
+      onMountDropped: (m) => dropped.push(m),
+    })
+
+    expect(dropped).toEqual([folder])
+    const pod = bodies.map((b) => { try { return JSON.parse(b) } catch { return null } }).find((b) => b?.kind === 'Pod')
+    expect(pod).toBeTruthy()
+    const container = pod.spec.containers[0] as { volumeMounts: Array<{ mountPath: string }>; env: Array<{ name: string; value: string }> }
+    expect(container.volumeMounts.map((v) => v.mountPath)).toEqual(['/workspace', '/volumes/team-brain'])
+    expect(container.env).toContainEqual({ name: 'SUPERAGENT_MOUNTS', value: JSON.stringify(['/volumes/team-brain']) })
   })
 
   it('fetches pod logs via the Kubernetes log API', async () => {

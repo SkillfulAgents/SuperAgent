@@ -4,6 +4,8 @@ import https from 'https'
 import { z } from 'zod'
 import { BaseContainerClient, CONTAINER_INTERNAL_PORT } from './base-container-client'
 import type { ContainerConfig, ContainerInfo, ContainerStats, StartOptions, StopOptions, StopResult } from './types'
+import type { AgentMount } from '@shared/lib/types/mount'
+import { acceptCloudMounts } from './cloud-mounts'
 import { getSettings } from '@shared/lib/config/settings'
 import { captureException } from '@shared/lib/error-reporting'
 import { isRunningInKubernetes } from './runtime-env'
@@ -116,8 +118,11 @@ export class PlatformK8sRuntimeClient extends BaseContainerClient {
     const ownerRef = await resolveOwnerReference(kube.namespace)
     await deleteResource(`/api/v1/namespaces/${kube.namespace}/pods/${this.podName()}`)
     await deleteResource(`/api/v1/namespaces/${kube.namespace}/services/${this.serviceName()}`)
+    const { accepted, dropped } = acceptCloudMounts(options?.mounts ?? [])
+    dropped.forEach((m) => options?.onMountDropped?.(m))
+    const env = this.buildAgentEnv(this.withMountsEnv(options?.envVars, accepted))
     await createResource(`/api/v1/namespaces/${kube.namespace}/services`, buildAgentServiceManifest(kube, this.serviceName(), this.podName(), ownerRef))
-    await createResource(`/api/v1/namespaces/${kube.namespace}/pods`, buildAgentPodManifest(kube, this.podName(), this.config, this.buildAgentEnv(options?.envVars), ownerRef))
+    await createResource(`/api/v1/namespaces/${kube.namespace}/pods`, buildAgentPodManifest(kube, this.podName(), this.config, env, ownerRef, accepted))
 
     await waitForPodReady(kube.namespace, this.podName(), 300_000)
 
@@ -227,10 +232,6 @@ export class PlatformK8sRuntimeClient extends BaseContainerClient {
     }
   }
 
-  public buildVolumeFlag(_hostPath: string, _containerPath: string): string {
-    return ''
-  }
-
   protected getBaseUrl(port: number): string {
     const { namespace } = getKubeConfig()
     return `http://${this.serviceName()}.${namespace}.svc.cluster.local:${port}`
@@ -283,6 +284,7 @@ export function buildAgentPodManifest(
   config: ContainerConfig,
   envVars: Record<string, string>,
   ownerRef?: OwnerReference | null,
+  mounts?: Array<AgentMount & { subPath: string }>,
 ): KubeResource {
   const settings = getSettings()
   const image = process.env.K8S_AGENT_IMAGE || settings.container.agentImage
@@ -314,11 +316,18 @@ export function buildAgentPodManifest(
         allowPrivilegeEscalation: false,
         capabilities: { drop: ['ALL'] },
       },
-      volumeMounts: [{
-        name: 'workspaces',
-        mountPath: '/workspace',
-        subPath: workspaceSubPath(kube.workspaceSubPathPrefix, config.agentId),
-      }],
+      volumeMounts: [
+        {
+          name: 'workspaces',
+          mountPath: '/workspace',
+          subPath: workspaceSubPath(kube.workspaceSubPathPrefix, config.agentId),
+        },
+        ...(mounts ?? []).map((mount) => ({
+          name: 'workspaces',
+          mountPath: mount.containerPath,
+          subPath: mount.subPath,
+        })),
+      ],
     }],
     volumes: [{
       name: 'workspaces',

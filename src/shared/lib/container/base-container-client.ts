@@ -6,6 +6,7 @@ import WebSocket from 'ws'
 import * as fs from 'fs'
 import os from 'os'
 import net from 'net'
+import type { AgentMount } from '@shared/lib/types/mount'
 import type {
   ContainerClient,
   ContainerConfig,
@@ -459,6 +460,20 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   /**
+   * The agent's prompt lists exactly the mounts this runtime bound. The
+   * runtime sets the variable, not the caller, because only the runtime knows
+   * what it could realise.
+   */
+  protected withMountsEnv(envVars: Record<string, string> | undefined, accepted: AgentMount[]): Record<string, string> {
+    const env = { ...(envVars ?? {}) }
+    delete env.SUPERAGENT_MOUNTS
+    if (accepted.length > 0) {
+      env.SUPERAGENT_MOUNTS = JSON.stringify(accepted.map((m) => m.containerPath))
+    }
+    return env
+  }
+
+  /**
    * Returns resource limit flags for the container.
    * Subclasses can override if the runtime uses different flag syntax.
    */
@@ -741,18 +756,20 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       // Find an available port
       let port = await this.findAvailablePort()
 
-      // Write env vars to a temp file (avoids command length limits on Windows)
-      const { flag: envFileFlag, cleanup: cleanupEnvFile } = this.buildEnvFile(options?.envVars)
+      // Every mount the caller asked for. An inaccessible one (e.g. a
+      // cloud-synced folder the VM helper is denied) is dropped from this list
+      // on retry so the container can still start without it.
+      let mounts = [...(options?.mounts ?? [])]
+
+      // The env file (a temp file, to dodge command length limits on Windows)
+      // carries SUPERAGENT_MOUNTS for the bound list, so it is rewritten
+      // whenever that list shrinks.
+      let envFile = this.buildEnvFile(this.withMountsEnv(options?.envVars, mounts))
       const containerName = this.getContainerName()
 
       // Build resource limit flags
       const resourceFlags = this.getResourceFlags(cpu, memory)
       const additionalFlags = this.getAdditionalRunFlags()
-
-      // Mutable copy of bind-mount flags — an inaccessible mount (e.g. a
-      // cloud-synced folder the VM helper is denied) is dropped from this list
-      // on retry so the container can still start without it.
-      let volumes = [...(options?.additionalVolumes || [])]
 
       const buildRunCmd = () =>
         [
@@ -760,10 +777,10 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           '--name', containerName,
           '-p', `${port}:${CONTAINER_INTERNAL_PORT}`,
           '-v', shellEscape(`${this.hostPathForRuntime(workspaceDir)}:/workspace${this.getVolumeMountSuffix()}`),
-          ...volumes.flatMap(v => ['-v', v]),
+          ...mounts.flatMap((m) => ['-v', this.buildVolumeFlag(m.hostPath, m.containerPath)]),
           resourceFlags,
           additionalFlags,
-          envFileFlag,
+          envFile.flag,
           image,
         ].filter(Boolean).join(' ')
 
@@ -789,17 +806,21 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
             ({ stdout } = await execWithPath(buildRunCmd(), { timeoutMs: this.getRunExecTimeoutMs() }))
           } catch (runError: any) {
             // 1. Inaccessible bind mount (e.g. iCloud/File Provider path the VM
-            //    can't stat). Drop that one mount and retry without it.
+            //    can't stat). The runtime reports the path in the form it was
+            //    given (hostPathForRuntime), so compare that form. Drop that
+            //    one mount, rewrite the env so the prompt matches, and retry.
             const badMountPath = this.extractInaccessibleMountPath(runError)
-            if (badMountPath) {
-              const before = volumes.length
-              volumes = volumes.filter((v) => !v.includes(badMountPath))
-              if (volumes.length < before) {
-                console.warn(`[Container] Dropping inaccessible mount and retrying: ${badMountPath}`)
-                addErrorBreadcrumb({ category: 'container', message: 'Dropped inaccessible mount, retrying', data: { hostPath: badMountPath, agentId: this.config.agentId } })
-                options?.onMountDropped?.(badMountPath)
-                continue
-              }
+            const dropped = badMountPath
+              ? mounts.find((m) => this.hostPathForRuntime(m.hostPath) === badMountPath)
+              : undefined
+            if (dropped) {
+              mounts = mounts.filter((m) => m !== dropped)
+              envFile.cleanup()
+              envFile = this.buildEnvFile(this.withMountsEnv(options?.envVars, mounts))
+              console.warn(`[Container] Dropping inaccessible mount and retrying: ${dropped.hostPath}`)
+              addErrorBreadcrumb({ category: 'container', message: 'Dropped inaccessible mount, retrying', data: { hostPath: dropped.hostPath, agentId: this.config.agentId } })
+              options?.onMountDropped?.(dropped)
+              continue
             }
 
             // 2. Host-port allocation race — re-pick a port (bounded).
@@ -916,7 +937,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           throw healthError
         }
       } finally {
-        cleanupEnvFile()
+        envFile.cleanup()
       }
 
       console.log(`Container ${containerName} is now running on port ${port}`)
