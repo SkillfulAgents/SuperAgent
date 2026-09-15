@@ -52,7 +52,7 @@ import {
   refreshSkillset,
 } from '@shared/lib/services/skillset-service'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
-import { createAgentFromExistingWorkspace, getAgentWithStatus, listAgents } from '@shared/lib/services/agent-service'
+import { createAgentFromExistingWorkspace, deleteAgent, getAgentWithStatus, listAgents } from '@shared/lib/services/agent-service'
 import type {
   SkillsetConfig,
   InstalledAgentMetadata,
@@ -700,6 +700,7 @@ export async function importAgentFromTemplate(
   mode: 'template' | 'full' = 'template',
 ): Promise<ApiAgent> {
   const reader = await openZipSource(zip)
+  let createdAgentSlug: string | undefined
   try {
     const validation = validateTemplateEntries(reader.entries, mode)
     if (!validation.valid) {
@@ -718,6 +719,7 @@ export async function importAgentFromTemplate(
     const effectiveName = nameOverride?.trim() || agentName
 
     const agent = await createAgentFromExistingWorkspace(effectiveName || 'Imported Agent')
+    createdAgentSlug = agent.slug
     const actor = agentRegistry.get(agent.slug)
 
     const stripPrefix = validation.stripPrefix
@@ -774,6 +776,22 @@ export async function importAgentFromTemplate(
 
     const result = await getAgentWithStatus(agent.slug)
     return result || agent
+  } catch (error) {
+    if (createdAgentSlug) {
+      // Creation is provisional until extraction and post-processing succeed.
+      // Use normal deletion so a concurrently started container is stopped
+      // before removing the partial workspace and evicting its actor.
+      try {
+        await deleteAgent(createdAgentSlug)
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          `Import failed and cleanup of agent "${createdAgentSlug}" failed`,
+          { cause: error },
+        )
+      }
+    }
+    throw error
   } finally {
     reader.close()
   }

@@ -36,6 +36,7 @@ vi.mock('@shared/lib/services/skillset-service', async (importOriginal) => {
 
 vi.mock('@shared/lib/services/agent-service', () => ({
   createAgentFromExistingWorkspace: vi.fn(),
+  deleteAgent: vi.fn(),
   getAgentWithStatus: vi.fn(),
 }))
 
