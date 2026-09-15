@@ -127,6 +127,30 @@ export function describeFileOpsContract(name: string, make: () => Promise<FileOp
       expect(await codeOf(files.append('', 'x'))).toBe('invalid-path')
     })
 
+    it('concurrent appends larger than one write land whole, never interleaved', async () => {
+      // A filesystem writes a large buffer in several calls; two appends in
+      // flight at once must still each be one contiguous line, or a JSONL
+      // reader silently drops both as malformed.
+      const payloads = [0, 1, 2, 3].map(
+        (i) => JSON.stringify({ i, pad: String.fromCharCode(65 + i).repeat(2 * 1024 * 1024) }) + '\n',
+      )
+      await Promise.all(payloads.map((payload) => files.append('big.jsonl', payload)))
+
+      const lines = decode(await files.getDoc('big.jsonl'))!.split('\n').filter((line) => line !== '')
+      expect(lines).toHaveLength(4)
+      const parsed = lines.map((line) => {
+        try {
+          return JSON.parse(line) as { i: number; pad: string }
+        } catch {
+          throw new Error(`a line is not one whole payload: ${line.slice(0, 40)}…`)
+        }
+      })
+      expect(parsed.map((entry) => entry.i).sort()).toEqual([0, 1, 2, 3])
+      for (const entry of parsed) {
+        expect(entry.pad).toBe(String.fromCharCode(65 + entry.i).repeat(2 * 1024 * 1024))
+      }
+    })
+
     it('open reads at byte offsets, sees the file grow, and streams a range', async () => {
       await files.putDoc('t.jsonl', '0123456789')
       const file = await files.open('t.jsonl')

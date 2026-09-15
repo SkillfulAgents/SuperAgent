@@ -138,6 +138,25 @@ function modeBits(stat: fs.Stats): number {
 }
 
 /**
+ * Appends in flight, by host path. The filesystem writes a large buffer in
+ * several calls, so two appends to the same file at once would interleave
+ * their bytes; an append waits for the one before it. Module level, not per
+ * instance: every `LocalFileOps` over the same workspace shares the file.
+ */
+const appendsInFlight = new Map<string, Promise<void>>()
+
+async function appendSerialized(abs: string, write: () => Promise<void>): Promise<void> {
+  const previous = appendsInFlight.get(abs) ?? Promise.resolve()
+  const run = previous.then(write, write)
+  appendsInFlight.set(abs, run)
+  try {
+    await run
+  } finally {
+    if (appendsInFlight.get(abs) === run) appendsInFlight.delete(abs)
+  }
+}
+
+/**
  * A file handle for reads at byte offsets. Each call is the one filesystem
  * call it names: `size` a stat of the handle, `readAt` positional reads until
  * the buffer is full or the file ends (a network filesystem may fill it in
@@ -434,6 +453,6 @@ export class LocalFileOps implements FileOps {
   async append(workspacePath: string, bytes: Uint8Array | string): Promise<void> {
     const { abs } = this.forWrite(workspacePath)
     const data = typeof bytes === 'string' ? Buffer.from(bytes, 'utf-8') : asBuffer(bytes)
-    await this.writing(abs, () => fs.promises.appendFile(abs, data)).catch(fromWriteError)
+    await appendSerialized(abs, () => this.writing(abs, () => fs.promises.appendFile(abs, data))).catch(fromWriteError)
   }
 }

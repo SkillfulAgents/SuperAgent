@@ -500,35 +500,34 @@ function metadataOnlySession(
 
 /**
  * Drop the metadata of sessions a listing found orphaned. Runs after the
- * listing has answered, and re-checks every id under the document's
- * serialization: an entry is removed only when its transcript is still
- * absent and it is still older than the grace window, so a transcript that
- * appeared in between, or a re-registration, survives. Failures are reported
- * and otherwise ignored: the next listing finds the same orphans.
+ * listing has answered, and decides every id under the document's
+ * serialization, transcript check included: an entry is removed only when
+ * its transcript is still absent and it is still older than the grace
+ * window at that moment, so a transcript that appeared while the prune
+ * waited for the document, or a re-registration, survives. Failures are
+ * reported and otherwise ignored: the next listing finds the same orphans.
  */
 function pruneOrphanedMetadata(store: SessionStore, sessionIds: string[]): void {
   if (sessionIds.length === 0) return
-  void (async () => {
-    const stillOrphaned: string[] = []
-    for (const sessionId of sessionIds) {
-      if ((await store.files.stat(transcriptPath(store, sessionId))) === null) stillOrphaned.push(sessionId)
-    }
-    if (stillOrphaned.length === 0) return
-    const now = Date.now()
-    await mutateSessionMetadata(store, (metadata) => {
+  void store.config
+    .update('sessionMetadata', async (current) => {
+      const metadata = { ...(current ?? {}) } as SessionMetadataMap
+      const now = Date.now()
       let changed = false
-      for (const sessionId of stillOrphaned) {
+      for (const sessionId of sessionIds) {
         if (!Object.hasOwn(metadata, sessionId)) continue
         if (metadataOnlySession(metadata[sessionId], now) !== 'orphaned') continue
+        if ((await store.files.stat(transcriptPath(store, sessionId))) !== null) continue
         delete metadata[sessionId]
         changed = true
       }
-      return changed
+      return changed ? (metadata as ConfigDoc<'sessionMetadata'>) : null
     })
-  })().catch((error) => {
-    console.warn(`Could not prune orphaned session metadata for agent ${store.slug}:`, error)
-    captureException(error, { tags: { area: 'session-metadata', op: 'prune-orphans' }, extra: { agentSlug: store.slug } })
-  })
+    .then(() => undefined)
+    .catch((error) => {
+      console.warn(`Could not prune orphaned session metadata for agent ${store.slug}:`, error)
+      captureException(error, { tags: { area: 'session-metadata', op: 'prune-orphans' }, extra: { agentSlug: store.slug } })
+    })
 }
 
 // Prefer metadata createdAt; birthtime is unsupported (epoch 0) on network

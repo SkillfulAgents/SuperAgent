@@ -356,6 +356,35 @@ describe('session-service', () => {
       })
     })
 
+    it('keeps an orphaned entry whose transcript appears while the prune waits for the document', async () => {
+      await createSessionsDir('test-agent')
+      await createSessionMetadata('test-agent', {
+        'late': { name: 'Named before streaming', starred: true, createdAt: '2026-01-24T10:00:00.000Z' },
+      })
+      nowIs('2026-01-24T13:30:00.000Z')
+      const store = createLocalSessionStore('test-agent')
+
+      // Another update holds the document; the prune the listing starts has
+      // to wait behind it, and in the meantime the transcript arrives.
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => { release = resolve })
+      const held = store.config.update('sessionMetadata', async (current) => {
+        await gate
+        return current
+      })
+      expect((await listSessions(store)).map((s) => s.id)).toEqual([])
+      await createSessionFile('test-agent', 'late', SAMPLE_JSONL_ENTRIES)
+      release()
+      await held
+      // Queued after the prune's own update, so it has run by the time this resolves.
+      await store.config.update('sessionMetadata', (current) => current)
+
+      expect(await readSessionMetadata(store)).toMatchObject({
+        late: { name: 'Named before streaming', starred: true },
+      })
+      expect((await listSessions(store)).map((s) => s.id)).toEqual(['late'])
+    })
+
     it('ignores an unparsable metadata createdAt and keeps a real list date', async () => {
       await createSessionFile('test-agent', 'test-session', SAMPLE_JSONL_ENTRIES)
       await createSessionMetadata('test-agent', {
