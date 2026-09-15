@@ -23,6 +23,7 @@ import {
 } from '@shared/lib/types/agent'
 import type { ApiAgent } from '@shared/lib/types/api'
 import {
+  CONFIG_DOCS,
   agentCatalog,
   agentRegistry,
   identityFromInstructions,
@@ -140,7 +141,10 @@ async function commitIdentity(
   try {
     return await agentCatalog.update(record.slug, changes)
   } catch (error) {
+    // Put the document back as it was: its old text, or its absence, so the
+    // rejected identity is not left behind in a file the row does not match.
     if (document) await actor.config.put('instructions', document.raw).catch(() => undefined)
+    else await actor.files.delete(CONFIG_DOCS.instructions.path).catch(() => undefined)
     throw error
   }
 }

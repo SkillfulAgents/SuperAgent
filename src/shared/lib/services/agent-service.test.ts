@@ -574,6 +574,17 @@ Instructions`
       expect(await getAgentClaudeMdContent('test-agent')).toBe(before)
     })
 
+    it('leaves no document behind when the row update fails for an agent that had none', async () => {
+      const created = await createAgent({ name: 'Bare' })
+      await fs.promises.rm(path.join(testDir, 'agents', created.slug, 'workspace', 'CLAUDE.md'))
+      vi.spyOn(agentCatalog, 'update').mockRejectedValueOnce(new Error('database is locked'))
+
+      await expect(updateAgent(created.slug, { name: 'Half Renamed' })).rejects.toThrow('database is locked')
+
+      expect((await getAgentRecord(created.slug))?.name).toBe('Bare')
+      expect(await getAgentClaudeMdContent(created.slug)).toBeNull()
+    })
+
     it('serializes overlapping renames so the last one completed wins in the row and the document', async () => {
       await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
       const config = agentRegistry.get('test-agent').config
