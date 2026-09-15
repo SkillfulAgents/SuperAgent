@@ -1,8 +1,6 @@
 import type { ServerType } from '@hono/node-server'
 import pLimit from 'p-limit'
-import { agentRegistry, containerHost } from './agent-actor'
-import { seedBrowserProfileFromChrome } from './browser/seed-browser-profile'
-import { displayNameFromInstructions } from './utils/agent-display-name'
+import { containerHost } from './agent-actor'
 import { shutdownActiveRunner } from './container/client-factory'
 import { reviewManager } from './proxy/review-manager'
 import { accountReauthManager } from './proxy/account-reauth-manager'
@@ -101,14 +99,6 @@ export async function afterBindInitialize(options: AfterBindInitOptions = {}): P
 }
 
 async function initializeServicesInner() {
-  // What a container start needs from the agent's workspace goes through the
-  // agent's actor: the container runtime has no view of the files. Assigned
-  // before the first await, because the API is already bound and a request
-  // may start a container while the rest of this function is still running.
-  containerHost.onBeforeContainerStart = (agentId) => seedBrowserProfileFromChrome(agentRegistry.get(agentId))
-  containerHost.resolveAgentName = async (agentId) =>
-    displayNameFromInstructions(await agentRegistry.get(agentId).config.get('instructions'))
-
   // Initialize error reporting for non-Electron environments (Electron inits in main/index.ts).
   // initErrorReporting is a no-op if already initialized, so this is safe.
   // Skip in dev mode — dev errors are too noisy and pollute Sentry.

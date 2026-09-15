@@ -35,6 +35,14 @@ export function createAgentRegistry(deps: LocalActorDeps): AgentRegistry {
     return actor
   }
 
+  // The container layer reaches an agent's workspace only through its actor;
+  // this is where it gets the way in. Wired here, by the package that owns
+  // the actors, so no entry point has to remember to.
+  deps.containerHost.attachAgentWorkspaces({
+    files: (slug) => get(slug).files,
+    instructions: (slug) => get(slug).config.get('instructions'),
+  })
+
   return {
     get,
     peek: (slug) => handles.get(slug),

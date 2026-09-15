@@ -107,6 +107,9 @@ export function hostFromManagerMock(manager: ManagerShapedMock): Record<string, 
     const fn = manager[managerName]
     if (typeof fn === 'function') host[hostName] = (...args: unknown[]) => (fn as AnyFn).call(manager, ...args)
   }
+  // The registry attaches the agents' workspaces when it is created; a mock
+  // host has no runtimes that would read them, so it only has to accept them.
+  if (typeof host.attachAgentWorkspaces !== 'function') host.attachAgentWorkspaces = () => {}
   // `onBeforeContainerStop` is a property the app assigns; share it with the mock.
   Object.defineProperty(host, 'onBeforeContainerStop', {
     get: () => manager.onBeforeContainerStop,

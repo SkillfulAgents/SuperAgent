@@ -10,6 +10,7 @@
  * `containerHost` from `@shared/lib/agent-actor` for the host-level calls.
  */
 import { ContainerRuntime, type RuntimeHost } from './container-runtime'
+import type { AgentWorkspaceAccess } from './agent-workspace-access'
 import {
   checkAllRunnersAvailability,
   checkImageExists,
@@ -53,16 +54,17 @@ export class ContainerHost {
   private isSyncing = false
   private healthCheckIntervalId: NodeJS.Timeout | null = null
 
-  /**
-   * Runs before every container start, the runtime's own restarts included.
-   * The app assigns it to do what needs the agent's workspace (seeding the
-   * container browser from the selected Chrome profile) through the agent's
-   * actor, since nothing in this package has a view of the files.
-   */
-  onBeforeContainerStart: ((agentId: string) => Promise<void>) | null = null
+  /** The agents' workspaces, attached by the agent registry when it is created. */
+  private agentWorkspaces: AgentWorkspaceAccess | null = null
 
-  /** The agent's display name for the container env, read through the agent's actor. */
-  resolveAgentName: ((agentId: string) => Promise<string | undefined>) | null = null
+  /**
+   * Give runtimes access to the agents' workspaces. Called once by the agent
+   * registry; a start before that (only possible in a test without a
+   * registry) runs without the workspace-dependent steps.
+   */
+  attachAgentWorkspaces(access: AgentWorkspaceAccess | null): void {
+    this.agentWorkspaces = access
+  }
 
   /** Optional callback invoked before a container is stopped (e.g. to close host browser) */
   onBeforeContainerStop: ((agentId: string) => Promise<void>) | null = null
@@ -76,12 +78,9 @@ export class ContainerHost {
   private readonly hooks: RuntimeHost = (() => {
     const self = this
     return {
-      // Getters, so a hook assigned after the first runtime exists still applies.
-      get onBeforeContainerStart() {
-        return self.onBeforeContainerStart
-      },
-      get resolveAgentName() {
-        return self.resolveAgentName
+      // Getters, so what is attached after the first runtime exists still applies.
+      get agentWorkspaces() {
+        return self.agentWorkspaces
       },
       get onBeforeContainerStop() {
         return self.onBeforeContainerStop

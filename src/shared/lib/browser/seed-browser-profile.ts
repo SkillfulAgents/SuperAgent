@@ -1,18 +1,17 @@
 /**
  * Seeding an agent's built-in browser from the Chrome profile selected in
  * settings, before its container starts. The profile is on this machine; the
- * destination is the agent's workspace, reached through its actor, so the
- * same code serves a workspace on this machine and one anywhere else.
+ * destination is the agent's workspace, reached through its file operations,
+ * so the same code serves a workspace on this machine and one anywhere else.
+ *
+ * Imported by the container runtime, so this reaches the actor package by
+ * module rather than through its index: the index leads to the registry,
+ * which leads back to the container host.
  */
 import { getSettings } from '@shared/lib/config/settings'
-import {
-  WorkspaceFileError,
-  copyHostFileIntoWorkspace,
-  joinWorkspacePath,
-  workspaceDirname,
-  type AgentActor,
-  type FileOps,
-} from '@shared/lib/agent-actor'
+import { copyHostFileIntoWorkspace } from '@shared/lib/agent-actor/copy-into-workspace'
+import type { FileOps } from '@shared/lib/agent-actor/types'
+import { WorkspaceFileError, joinWorkspacePath, workspaceDirname } from '@shared/lib/agent-actor/workspace-path'
 import { PROFILE_SYNC_MANIFEST, copyChromeProfileData, type ProfileSyncDestination } from './chrome-profile'
 
 /** Where the container browser keeps its profile, relative to the workspace root. */
@@ -56,11 +55,11 @@ export function workspaceProfileDestination(files: FileOps, workspaceDir: string
  * provider uses its own dedicated profile, so the copy is skipped for it;
  * with no profile selected there is nothing to do.
  */
-export async function seedBrowserProfileFromChrome(actor: Pick<AgentActor, 'slug' | 'files'>): Promise<void> {
+export async function seedBrowserProfileFromChrome(slug: string, files: FileOps): Promise<void> {
   const settings = getSettings()
   const chromeProfileId = settings.app?.chromeProfileId
   if (!chromeProfileId || settings.app?.hostBrowserProvider) return
-  if (await copyChromeProfileData(chromeProfileId, workspaceProfileDestination(actor.files, BROWSER_PROFILE_DIR))) {
-    console.log(`[BrowserProfile] Synchronized Chrome profile "${chromeProfileId}" into the workspace of ${actor.slug}`)
+  if (await copyChromeProfileData(chromeProfileId, workspaceProfileDestination(files, BROWSER_PROFILE_DIR))) {
+    console.log(`[BrowserProfile] Synchronized Chrome profile "${chromeProfileId}" into the workspace of ${slug}`)
   }
 }

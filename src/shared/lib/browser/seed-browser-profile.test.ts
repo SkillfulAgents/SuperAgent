@@ -21,10 +21,10 @@ describe('seedBrowserProfileFromChrome', () => {
     settingsState.hostBrowserProvider = undefined
   })
 
-  it('syncs the selected profile into the workspace through the actor', async () => {
+  it('syncs the selected profile into the workspace through its file operations', async () => {
     settingsState.chromeProfileId = 'Default'
     const files = new InMemoryFileOps()
-    await seedBrowserProfileFromChrome({ slug: 'a', files })
+    await seedBrowserProfileFromChrome('a', files)
 
     expect(copyChromeProfileData).toHaveBeenCalledTimes(1)
     const [profileId, destination] = copyChromeProfileData.mock.calls[0] as [string, { writeManifest(text: string): Promise<void> }]
@@ -35,14 +35,14 @@ describe('seedBrowserProfileFromChrome', () => {
   })
 
   it('does nothing without a selected profile', async () => {
-    await seedBrowserProfileFromChrome({ slug: 'a', files: new InMemoryFileOps() })
+    await seedBrowserProfileFromChrome('a', new InMemoryFileOps())
     expect(copyChromeProfileData).not.toHaveBeenCalled()
   })
 
   it('does not copy a local profile into a workspace that uses the host browser', async () => {
     settingsState.chromeProfileId = 'Default'
     settingsState.hostBrowserProvider = 'chrome'
-    await seedBrowserProfileFromChrome({ slug: 'a', files: new InMemoryFileOps() })
+    await seedBrowserProfileFromChrome('a', new InMemoryFileOps())
     expect(copyChromeProfileData).not.toHaveBeenCalled()
   })
 })

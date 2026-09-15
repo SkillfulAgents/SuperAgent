@@ -23,6 +23,9 @@ import { eq } from 'drizzle-orm'
 import { getOrCreateProxyToken } from '@shared/lib/proxy/token-store'
 import { getOrCreateHostToken } from '@shared/lib/container/host-token-store'
 import { getSettings } from '@shared/lib/config/settings'
+import { seedBrowserProfileFromChrome } from '@shared/lib/browser/seed-browser-profile'
+import { displayNameFromInstructions } from '@shared/lib/utils/agent-display-name'
+import type { AgentWorkspaceAccess } from './agent-workspace-access'
 import { messagePersister } from './message-persister'
 import { ungrabAC } from '@shared/lib/computer-use/executor'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
@@ -60,17 +63,11 @@ interface CachedContainerStatus {
 /** What a runtime needs from the host it belongs to. */
 export interface RuntimeHost {
   /**
-   * Runs before a container is started, on every start including the
-   * runtime's own restarts: the place for work that needs the agent's
-   * workspace (seeding the browser profile), which the runtime itself has no
-   * view of. A failure fails the start.
+   * The agents' workspaces, for what a start needs from them: the browser
+   * profile seeding and the display name. Null only before the agent
+   * registry attached it, which in the app is never.
    */
-  readonly onBeforeContainerStart: ((slug: string) => Promise<void>) | null
-  /**
-   * The agent's display name for the container env, read through the agent's
-   * actor. A failure or a null hook starts the container without a name.
-   */
-  readonly resolveAgentName: ((slug: string) => Promise<string | undefined>) | null
+  readonly agentWorkspaces: AgentWorkspaceAccess | null
   /** Runs before a container is stopped (e.g. to close the host browser). */
   readonly onBeforeContainerStop: ((slug: string) => Promise<void>) | null
   /**
@@ -537,17 +534,18 @@ export class ContainerRuntime {
       envVars['AGENT_ID'] = slug
     }
 
-    // Work that needs the agent's workspace before the container comes up
-    // (seeding the container browser from the selected Chrome profile) is the
-    // host's, through the agent's actor; the runtime has no view of the files.
-    const beforeStart = this.host.onBeforeContainerStart
-    if (beforeStart) await beforeStart(slug)
-
+    // What the start needs from the agent's workspace goes through the
+    // agent's file operations, never a host path: the workspace is wherever
+    // the agent's actor says it is.
     let agentName: string | undefined
-    const resolveAgentName = this.host.resolveAgentName
-    if (resolveAgentName) {
+    const workspaces = this.host.agentWorkspaces
+    if (workspaces) {
+      // Seed the built-in container browser from the selected Chrome profile.
+      // A failure fails the start, as a failed copy always did.
+      await seedBrowserProfileFromChrome(slug, workspaces.files(slug))
+      // The display name is attribution only; a start without it is still a start.
       try {
-        agentName = await resolveAgentName(slug)
+        agentName = displayNameFromInstructions(await workspaces.instructions(slug))
       } catch (error) {
         console.warn(`[ContainerRuntime] Could not read the display name for ${slug}; starting without it:`, error)
       }

@@ -9,6 +9,7 @@ vi.mock('./connection-runtime-sync', () => ({
 }))
 vi.mock('./container-host', () => ({
   containerHost: {
+    attachAgentWorkspaces: () => {},
     runtime: () => ({
       getCachedInfo: () => ({ status: mocks.status }),
       getClient: () => ({ interruptSession: mocks.interrupt, sendMessage: mocks.send }),
