@@ -122,6 +122,18 @@ describe('subscribeToStream unsubscribe', () => {
     unsubscribe()
   })
 
+  it('rejects ready with the guest error when it refuses the session before the acknowledgement', async () => {
+    FakeWebSocket.autoHandshake = false
+    const { ready, unsubscribe } = makeClient().subscribeToStream('sess-1', () => {})
+    const rejection = expect(ready).rejects.toThrow('Session not found')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    // What the container sends for a session it does not have; it closes after.
+    sockets[0].receive({ type: 'error', message: 'Session not found' })
+    await rejection
+    sockets[0].close()
+    unsubscribe()
+  })
+
   it('cancels an attachment before port discovery finishes without opening a socket', async () => {
     const client = makeClient()
     let resolvePort!: (info: ContainerInfo) => void
