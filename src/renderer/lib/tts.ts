@@ -1,4 +1,4 @@
-import type { TtsConnection } from '@shared/lib/voice/tts-types'
+import type { TtsSession } from '@shared/lib/voice/tts-types'
 import { HttpTtsAdapter } from './tts-http'
 
 // --- Types ---
@@ -37,7 +37,7 @@ export type TtsEventCallback = (event: TtsEvent) => void
 export interface TtsAdapter {
   /** Sample rate of the returned int16 mono PCM. */
   readonly sampleRate: number
-  connect(connection: TtsConnection, options: TtsVoiceOptions): Promise<void>
+  connect(options: TtsVoiceOptions): Promise<void>
   /** Queue text for synthesis. May be called repeatedly with partial text. */
   speak(text: string): void
   /**
@@ -71,9 +71,9 @@ export class DeepgramTtsAdapter implements TtsAdapter {
   private audioCb: TtsAudioCallback | null = null
   private eventCb: TtsEventCallback | null = null
 
-  connect(connection: TtsConnection, { voice, speed }: TtsVoiceOptions): Promise<void> {
-    if (connection.transport !== 'websocket') return Promise.reject(new Error('Expected a WebSocket speech connection.'))
-    const { token } = connection
+  constructor(private readonly token: string) {}
+
+  connect({ voice, speed }: TtsVoiceOptions): Promise<void> {
     return new Promise((resolve, reject) => {
       const params = new URLSearchParams({
         model: voice,
@@ -82,7 +82,7 @@ export class DeepgramTtsAdapter implements TtsAdapter {
       })
       if (speed !== undefined && speed !== 1) params.set('speed', String(speed))
       const url = `wss://api.deepgram.com/v1/speak?${params.toString()}`
-      const ws = new WebSocket(url, ['bearer', token])
+      const ws = new WebSocket(url, ['bearer', this.token])
       ws.binaryType = 'arraybuffer'
       this.ws = ws
 
@@ -194,14 +194,9 @@ export class DeepgramTtsAdapter implements TtsAdapter {
 
 // --- Factory ---
 
-export function createTtsAdapter(provider: VoiceProvider): TtsAdapter {
-  switch (provider) {
-    case 'deepgram':
-    case 'platform':
-      return new DeepgramTtsAdapter()
-    case 'openai':
-      return new HttpTtsAdapter(provider)
-    default:
-      throw new Error(`Text-to-speech not supported by ${provider}`)
+export function createTtsAdapter({ provider, connection }: Pick<TtsSession, 'provider' | 'connection'>): TtsAdapter {
+  switch (connection.transport) {
+    case 'websocket': return new DeepgramTtsAdapter(connection.token)
+    case 'http': return new HttpTtsAdapter(provider)
   }
 }

@@ -305,7 +305,6 @@ export class OpenAILiveConversation {
     window.removeEventListener('pagehide', this.onPageHide)
     clearTimeout(this.disconnectTimer)
     clearTimeout(this.expiryWarningTimer)
-    this.events.onClosed?.()
     this.events.onSpeaking(false)
     this.clearInputSpeech()
     this.bridge.close()
@@ -315,6 +314,7 @@ export class OpenAILiveConversation {
     clearInterval(this.inputSpeechTimer)
     this.microphone?.getTracks().forEach((track) => track.stop())
     if (this.audio) this.audio.muted = true
+    this.events.onClosed?.()
     if (this.ready && this.channel?.readyState === 'open') {
       this.channel.send(JSON.stringify({ type: 'session.close' }))
       this.closingTimer = setTimeout(() => { this.releaseSession(); this.cleanup() }, 1500)

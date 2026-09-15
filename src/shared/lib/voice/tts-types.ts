@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { VoiceProvider } from '../config/settings'
+import { VOICE_PROVIDERS, type VoiceProvider } from './provider-types'
 import { ttsSpeedSchema } from './tts-preferences'
 
 export type TtsConnection = { transport: 'websocket'; token: string } | { transport: 'http' }
@@ -11,7 +11,7 @@ export interface TtsSession {
 }
 
 export const ttsSynthesisSchema = z.object({
-  provider: z.enum(['openai', 'deepgram', 'platform']),
+  provider: z.enum(VOICE_PROVIDERS),
   text: z.string().trim().min(1).max(4096),
   voice: z.string().min(1).max(100),
   speed: ttsSpeedSchema.default(1),

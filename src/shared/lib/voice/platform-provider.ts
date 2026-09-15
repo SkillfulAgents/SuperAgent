@@ -1,3 +1,4 @@
+import { VoiceProviderError } from './provider-error'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { BaseVoiceProvider } from './voice-provider'
@@ -104,8 +105,10 @@ export class PlatformVoiceProvider extends BaseVoiceProvider {
       body: JSON.stringify({ ttl_seconds: 600 }),
     })
     if (!res.ok) {
-      const text = await res.text()
-      throw new Error(`Deepgram token grant via proxy failed (${res.status}): ${text}`)
+      void res.body?.cancel().catch(() => {})
+      throw new VoiceProviderError(res.status === 401 || res.status === 403
+        ? 'Platform voice authentication failed. Sign in again and check your voice access.'
+        : `Platform voice token grant failed (${res.status}). Please try again.`)
     }
     const data = await res.json()
     if (!data.access_token || typeof data.access_token !== 'string') {

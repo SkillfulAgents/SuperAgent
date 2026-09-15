@@ -1,4 +1,3 @@
-import type { TtsConnection } from '@shared/lib/voice/tts-types'
 import { pcm16ToFloat32 } from '@renderer/lib/stt'
 import type { TtsAdapter, TtsEvent, TtsVoiceOptions } from '@renderer/lib/tts'
 import { SpeechSegmenter, type SpeechSegment } from './speech-segmenter'
@@ -8,7 +7,6 @@ export type SpeechPlayerStatus = 'connecting' | 'speaking' | 'paused' | 'done' |
 
 export interface SpeechPlayerOptions {
   adapter: TtsAdapter
-  connection: TtsConnection
   voice: TtsVoiceOptions
   onStatus?: (status: SpeechPlayerStatus, error?: Error) => void
   /**
@@ -113,7 +111,6 @@ const LEVEL_HOLD_MAX_S = 0.5
  */
 export class SpeechPlayer {
   private readonly adapter: TtsAdapter
-  private readonly connection: TtsConnection
   private readonly voice: TtsVoiceOptions
   private readonly onStatus?: SpeechPlayerOptions['onStatus']
   private readonly createAudioContext: (sampleRate: number) => AudioContext
@@ -150,7 +147,6 @@ export class SpeechPlayer {
 
   constructor(options: SpeechPlayerOptions) {
     this.adapter = options.adapter
-    this.connection = options.connection
     this.voice = options.voice
     this.onStatus = options.onStatus
     this.firstWordIndex = options.firstWordIndex ?? 0
@@ -200,7 +196,7 @@ export class SpeechPlayer {
     }
     this.adapter.onAudio((chunk) => this.handleAudio(chunk))
     this.adapter.onEvent((event) => this.handleEvent(event))
-    this.adapter.connect(this.connection, this.voice).catch((err: unknown) => {
+    this.adapter.connect(this.voice).catch((err: unknown) => {
       this.fail(err instanceof Error ? err : new Error('Failed to connect to text-to-speech'))
     })
     // Neither the socket nor the audio graph promises to report its death;

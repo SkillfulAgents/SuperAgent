@@ -1,9 +1,10 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { HttpTtsAdapter } from './tts-http'
 import type { TtsEvent } from './tts'
 const fetchMock = vi.hoisted(() => vi.fn())
 vi.mock('./api', () => ({ apiFetch: fetchMock }))
-beforeEach(() => fetchMock.mockReset())
+beforeEach(() => { fetchMock.mockReset() })
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 
 function setup() {
   const adapter = new HttpTtsAdapter('openai')
@@ -28,7 +29,7 @@ describe('server-streamed TTS adapter', () => {
     adapter.speak('Hello '); adapter.speak('world.'); adapter.flush()
     adapter.speak('Next.'); adapter.flush()
     expect(fetchMock).not.toHaveBeenCalled()
-    await adapter.connect({ transport: 'http' }, { voice: 'marin', speed: 1.2 })
+    await adapter.connect({ voice: 'marin', speed: 1.2 })
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ provider: 'openai', text: 'Hello world.', voice: 'marin', speed: 1.2 })
     first.stream.enqueue(new Uint8Array([1, 2, 3]))
     await settle()
@@ -44,11 +45,38 @@ describe('server-streamed TTS adapter', () => {
     adapter.close()
   })
 
+  it('finishes slow synthesis that continues delivering audio past thirty seconds', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation(ms => {
+      const abort = new AbortController()
+      setTimeout(() => abort.abort(new DOMException('Timeout', 'TimeoutError')), ms)
+      return abort.signal
+    })
+    const source = audioStream()
+    fetchMock.mockImplementation(async (_url: string, init: RequestInit) => {
+      init.signal!.addEventListener('abort', () => source.stream.error(init.signal!.reason))
+      return source.response
+    })
+    const { adapter, output } = setup()
+    await adapter.connect({ voice: 'marin', speed: 0.7 })
+    adapter.speak('Long slow speech'); adapter.flush()
+    for (let i = 0; i < 8; i++) {
+      await vi.advanceTimersByTimeAsync(5_000)
+      source.stream.enqueue(new Uint8Array([1, 0]))
+      await settle()
+    }
+    source.stream.close()
+    await settle()
+    expect(output.filter(Array.isArray)).toHaveLength(8)
+    expect(output.at(-1)).toEqual({ type: 'flushed', sequenceId: 0 })
+    adapter.close()
+  })
+
   it('aborts an active stream and drops all queued work on close', async () => {
     const source = audioStream()
     fetchMock.mockResolvedValue(source.response)
     const { adapter, output } = setup()
-    await adapter.connect({ transport: 'http' }, { voice: 'marin' })
+    await adapter.connect({ voice: 'marin' })
     adapter.speak('First.'); adapter.flush(); adapter.speak('Never sent.'); adapter.flush()
     await settle()
     adapter.close()
@@ -64,7 +92,7 @@ describe('server-streamed TTS adapter', () => {
     fetchMock.mockReturnValueOnce(new Promise<Response>(r => { resolve = r }))
       .mockResolvedValueOnce(new Response(new Uint8Array([9, 0])))
     const { adapter, output } = setup()
-    await adapter.connect({ transport: 'http' }, { voice: 'cedar' })
+    await adapter.connect({ voice: 'cedar' })
     adapter.speak('Old'); adapter.flush(); adapter.clear()
     adapter.speak('New'); adapter.flush()
     await settle()
@@ -79,7 +107,7 @@ describe('server-streamed TTS adapter', () => {
   it('splits oversized batches within the API limit without splitting a surrogate pair', async () => {
     fetchMock.mockImplementation(async () => new Response(new Uint8Array([1, 0])))
     const { adapter, output } = setup()
-    await adapter.connect({ transport: 'http' }, { voice: 'marin' })
+    await adapter.connect({ voice: 'marin' })
     const text = 'x'.repeat(4095) + '🌍' + 'y'.repeat(4100)
     adapter.speak(text); adapter.flush()
     await settle()
@@ -93,7 +121,7 @@ describe('server-streamed TTS adapter', () => {
   it.each([new Response('proxy error', { status: 502 }), Response.json({ error: 'Voice provider changed. Restart read-aloud.' }, { status: 409 })])('surfaces HTTP failures once and does not synthesize queued text', async response => {
     fetchMock.mockResolvedValue(response)
     const { adapter, output } = setup()
-    await adapter.connect({ transport: 'http' }, { voice: 'marin' })
+    await adapter.connect({ voice: 'marin' })
     adapter.speak('First'); adapter.flush(); adapter.speak('Second'); adapter.flush()
     await settle()
     expect(output).toHaveLength(1)
@@ -105,7 +133,7 @@ describe('server-streamed TTS adapter', () => {
     const source = audioStream()
     fetchMock.mockResolvedValue(source.response)
     const { adapter, output } = setup()
-    await adapter.connect({ transport: 'http' }, { voice: 'marin' })
+    await adapter.connect({ voice: 'marin' })
     adapter.speak('Hello'); adapter.flush()
     source.stream.enqueue(new Uint8Array([1, 0]))
     await settle()

@@ -1,6 +1,6 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { ttsSynthesisSchema } from '@shared/lib/voice/tts-types'
-import { HTTPException } from 'hono/http-exception'
+import { VoiceProviderError } from '@shared/lib/voice/provider-error'
 import { LiveSessionRegistry } from '@shared/lib/voice/live-session-registry'
 import { z } from 'zod'
 import { limitJsonBody, type LimitedJsonBodyEnv } from '../middleware/limit-json-body'
@@ -43,21 +43,25 @@ voice.get('/configured', (c) => {
 // Resolve capability through the configured provider; transport and mapping
 // behavior stay in its implementation.
 voice.use('/live/*', limitJsonBody(128 * 1024))
-function requireLiveConversation(operation: string) {
-  const selected = getVoiceSettings().sttProvider
-  if (!selected) {
-    throw new HTTPException(400, { res: Response.json({
-      error: 'No voice provider configured. Set one in Settings > Voice.',
-    }, { status: 400 }) })
-  }
-  const provider = getVoiceProvider(selected)
+function requireConfiguredProvider(c: Context<LimitedJsonBodyEnv>, selected = getVoiceSettings().sttProvider) {
+  if (!selected) return c.json({ error: 'No voice provider configured. Set one in Settings > Voice.' }, 400)
+  return getVoiceProvider(selected)
+}
+
+function requireLiveConversation(c: Context<LimitedJsonBodyEnv>, operation: string) {
+  const provider = requireConfiguredProvider(c)
+  if (provider instanceof Response) return provider
   const conversation = provider.getLiveConversation()
-  if (!conversation) {
-    throw new HTTPException(400, { res: Response.json({
-      error: `${operation} not supported with current configured voice provider: ${provider.name}`,
-    }, { status: 400 }) })
-  }
+  if (!conversation) return c.json({
+    error: `${operation} not supported with current configured voice provider: ${provider.name}`,
+  }, 400)
   return conversation
+}
+
+function ttsError(c: Context<LimitedJsonBodyEnv>, error: unknown, fallback: string) {
+  if (error instanceof VoiceProviderError && error.status === 400) return c.json({ error: error.message }, 400)
+  console.error(fallback, error)
+  return c.json({ error: error instanceof VoiceProviderError ? error.message : fallback }, 502)
 }
 // Each owned handle retains its creating provider's cleanup operation, including
 // retries and expiry after the configured provider changes.
@@ -65,7 +69,8 @@ const liveSessions = new LiveSessionRegistry()
 const pendingLiveStarts = new Map<string, number>()
 const liveSessionSchema = z.object({ sdp: z.string().min(1).max(64000), history: voiceHistorySchema })
 voice.post('/live/session', async (c) => {
-  const conversation = requireLiveConversation('Live session creation')
+  const conversation = requireLiveConversation(c, 'Live session creation')
+  if (conversation instanceof Response) return conversation
   const parsed = liveSessionSchema.safeParse(c.get('limitedJsonBody'))
   if (!parsed.success) return c.json({ error: 'Invalid Live session request.' }, 400)
   const owner = getCurrentUserId(c)
@@ -96,7 +101,8 @@ voice.delete('/live/session/:handle', async (c) => {
   return c.json({ closed: result === 'closed', closing: result === 'closing' }, result === 'closed' ? 200 : 202)
 })
 voice.post('/live/map', async (c) => {
-  const conversation = requireLiveConversation('Live conversation mapping')
+  const conversation = requireLiveConversation(c, 'Live conversation mapping')
+  if (conversation instanceof Response) return conversation
   const parsed = liveMappingSchema.safeParse(c.get('limitedJsonBody'))
   if (!parsed.success) return c.json({ error: 'Invalid Live mapping request.' }, 400)
   try {
@@ -117,11 +123,9 @@ voice.get('/token', async (c) => {
     const voiceSettings = getVoiceSettings()
     provider = (providerParam as VoiceProvider) || voiceSettings.sttProvider
 
-    if (!provider) {
-      return c.json({ error: 'No voice provider configured. Set one in Settings > Voice.' }, 400)
-    }
-
-    const result = await getVoiceProvider(provider).getEphemeralToken()
+    const configured = requireConfiguredProvider(c, provider)
+    if (configured instanceof Response) return configured
+    const result = await configured.getEphemeralToken()
     return c.json(result)
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Failed to get STT credentials'
@@ -159,11 +163,8 @@ voice.get('/voice-agent-token', async (c) => {
     const voiceSettings = getVoiceSettings()
     const provider: VoiceProvider | undefined = (providerParam as VoiceProvider) || voiceSettings.sttProvider
 
-    if (!provider) {
-      return c.json({ error: 'No voice provider configured. Set one in Settings > Voice.' }, 400)
-    }
-
-    const sttProvider = getVoiceProvider(provider)
+    const sttProvider = requireConfiguredProvider(c, provider)
+    if (sttProvider instanceof Response) return sttProvider
     if (!sttProvider.supportsVoiceAgent()) {
       return c.json({ error: `Voice Agent not supported by ${provider}` }, 400)
     }
@@ -177,32 +178,36 @@ voice.get('/voice-agent-token', async (c) => {
   }
 })
 
-// Transport-neutral initialization. API keys never reach the renderer.
-voice.get('/tts-session', async (c) => {
-  const selected = getVoiceSettings().sttProvider
-  if (!selected) return c.json({ error: 'No voice provider configured. Set one in Settings > Voice.' }, 400)
-  const provider = getVoiceProvider(selected)
-  if (!provider.supportsTts()) return c.json({ error: `Text-to-speech not supported with current configured voice provider: ${provider.name}` }, 400)
+// Keep the old response shape for cached/remote renderers, using the same setup path.
+async function initializeTts(c: Context<LimitedJsonBodyEnv>, legacy = false) {
+  const provider = requireConfiguredProvider(c)
+  if (provider instanceof Response) return provider
   try {
     const connection = await provider.getTtsConnection()
     const own = getUserSettings(getCurrentUserId(c)).voice
-    return c.json({ provider: selected, connection,
+    const preferences = { provider: provider.id,
       voice: provider.resolveTtsVoice(own?.ttsVoice, getVoiceSettings().ttsVoice),
       speed: resolveTtsSpeed(own?.ttsSpeed),
-    })
-  } catch {
-    return c.json({ error: 'Could not initialize text-to-speech. Check the configured voice provider and API key.' }, 502)
+    }
+    if (!legacy) return c.json({ ...preferences, connection })
+    if (connection.transport !== 'websocket') return c.json({ error: 'This voice provider requires an updated client. Reload the app to use read-aloud.' }, 400)
+    return c.json({ ...preferences, token: connection.token })
+  } catch (error) {
+    return ttsError(c, error, `Could not initialize ${provider.name} text-to-speech. Please try again.`)
   }
-})
+}
+
+// Transport-neutral initialization. API keys never reach the renderer.
+voice.get('/tts-session', (c) => initializeTts(c))
+voice.get('/tts-token', (c) => initializeTts(c, true))
 
 voice.post('/tts', limitJsonBody(32 * 1024), async (c) => {
   const parsed = ttsSynthesisSchema.safeParse(c.get('limitedJsonBody'))
   if (!parsed.success) return c.json({ error: 'Invalid speech synthesis request.' }, 400)
-  const selected = getVoiceSettings().sttProvider
-  if (!selected) return c.json({ error: 'No voice provider configured. Set one in Settings > Voice.' }, 400)
+  const provider = requireConfiguredProvider(c)
+  if (provider instanceof Response) return provider
   // An already-open reader must not silently synthesize against a different account/provider.
-  if (parsed.data.provider !== selected) return c.json({ error: 'Voice provider changed. Restart read-aloud.' }, 409)
-  const provider = getVoiceProvider(selected)
+  if (parsed.data.provider !== provider.id) return c.json({ error: 'Voice provider changed. Restart read-aloud.' }, 409)
   const synthesis = provider.getTtsSynthesis()
   if (!synthesis) return c.json({ error: `Server-side speech synthesis not supported with current configured voice provider: ${provider.name}` }, 400)
   if (!provider.hasTtsVoice(parsed.data.voice)) return c.json({ error: 'Invalid voice for the configured provider.' }, 400)
@@ -210,41 +215,8 @@ voice.post('/tts', limitJsonBody(32 * 1024), async (c) => {
     const { text, voice: selectedVoice, speed } = parsed.data
     const audio = await synthesis.synthesizeSpeech({ text, voice: selectedVoice, speed }, c.req.raw.signal)
     return new Response(audio, { headers: { 'Content-Type': 'audio/pcm', 'Cache-Control': 'no-store' } })
-  } catch {
-    return c.json({ error: 'Speech synthesis failed. Check your voice provider access and try again.' }, 502)
-  }
-})
-
-// GET /api/voice/tts-token - Credentials for a client-side text-to-speech session,
-// plus the voice and speed to speak with: the caller's own preferences, then
-// the deployment default (so the client needs no settings round-trip).
-voice.get('/tts-token', async (c) => {
-  try {
-    const voiceSettings = getVoiceSettings()
-    const provider = voiceSettings.sttProvider
-    if (!provider) {
-      return c.json({ error: 'No voice provider configured. Set one in Settings > Voice.' }, 400)
-    }
-
-    const sttProvider = getVoiceProvider(provider)
-    if (!sttProvider.supportsTts()) {
-      return c.json({ error: `Text-to-speech not supported by ${provider}` }, 400)
-    }
-
-    if (sttProvider.getTtsSynthesis()) {
-      return c.json({ error: 'This provider uses server-side synthesis. Initialize it through /api/voice/tts-session.' }, 400)
-    }
-    const result = await sttProvider.getTtsToken()
-    const own = getUserSettings(getCurrentUserId(c)).voice
-    return c.json({
-      ...result,
-      voice: sttProvider.resolveTtsVoice(own?.ttsVoice, voiceSettings.ttsVoice),
-      speed: resolveTtsSpeed(own?.ttsSpeed),
-    })
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Failed to get text-to-speech credentials'
-    console.error('Failed to get text-to-speech credentials:', error)
-    return c.json({ error: message }, 500)
+  } catch (error) {
+    return ttsError(c, error, 'Speech synthesis failed. Check your voice provider access and try again.')
   }
 })
 

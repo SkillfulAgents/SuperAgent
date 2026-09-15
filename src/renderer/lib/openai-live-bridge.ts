@@ -1,3 +1,4 @@
+import { splitSpeechText } from '@shared/lib/voice/text-chunks'
 import { liveRequestSchema, type LiveMappingInput, type LiveRequest, type VoiceHistory, type VoiceTranscriptEntry } from '@shared/lib/voice/live-types'
 
 export interface LiveBridgeEvents {
@@ -12,18 +13,7 @@ export interface LiveBridgeEvents {
 
 /** Each append is limited to 500 tokens. A UTF-8 byte bound also bounds tokens. */
 export function liveTextChunks(text: string): string[] {
-  const chunks: string[] = []
-  let chunk = ''
-  let bytes = 0
-  const encoder = new TextEncoder()
-  for (const character of text) {
-    const size = encoder.encode(character).length
-    if (bytes + size > 400) { chunks.push(chunk); chunk = ''; bytes = 0 }
-    chunk += character
-    bytes += size
-  }
-  if (chunk) chunks.push(chunk)
-  return chunks
+  return splitSpeechText(text, 400, 'utf8')
 }
 
 /** Live-specific mapping. Neither the session hook nor the agent sees protocol events. */

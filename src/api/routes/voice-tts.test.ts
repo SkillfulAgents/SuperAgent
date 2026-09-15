@@ -1,3 +1,4 @@
+import { VoiceProviderError } from '@shared/lib/voice/provider-error'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({
   selected: 'openai' as string | undefined, authenticated: true,
@@ -9,7 +10,7 @@ vi.mock('@shared/lib/config/settings', () => ({ getVoiceSettings: () => ({ sttPr
 vi.mock('@shared/lib/auth/config', () => ({ getCurrentUserId: () => 'member' }))
 vi.mock('@shared/lib/services/user-settings-service', () => ({ getUserSettings: () => ({ voice: mocks.preferences }) }))
 vi.mock('@shared/lib/voice', () => ({ getVoiceProvider: (id: string) => ({
-  name: id === 'openai' ? 'OpenAI' : 'Deepgram', supportsTts: () => true,
+  id, name: id === 'openai' ? 'OpenAI' : 'Deepgram', supportsTts: () => true,
   getTtsConnection: mocks.connection,
   getTtsSynthesis: () => id === 'openai' ? { synthesizeSpeech: mocks.synthesize } : null,
   hasTtsVoice: (voice: string) => ['marin', 'cedar'].includes(voice),
@@ -39,6 +40,35 @@ describe('provider-neutral TTS routes', () => {
     mocks.selected = 'deepgram'
     mocks.connection.mockResolvedValue({ transport: 'websocket', token: 'ephemeral' })
     expect(await (await voice.request('/tts-session')).json()).toMatchObject({ provider: 'deepgram', connection: { transport: 'websocket', token: 'ephemeral' } })
+  })
+  it('keeps the legacy token response as a compatibility wrapper', async () => {
+    mocks.selected = 'deepgram'
+    mocks.connection.mockResolvedValue({ transport: 'websocket', token: 'ephemeral' })
+    expect(await (await voice.request('/tts-token')).json()).toEqual({ provider: 'deepgram', token: 'ephemeral', voice: 'cedar', speed: 1.2 })
+  })
+  it.each([
+    [400, 'No API key configured for Deepgram. Add one in Settings > Voice.'],
+    [400, 'Text-to-speech not supported by Deepgram'],
+    [502, 'Deepgram rejected the API key. Update it in Settings > Voice.'],
+  ] as const)('preserves safe provider errors (%s)', async (status, message) => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      mocks.connection.mockRejectedValue(new VoiceProviderError(message, status))
+      const response = await voice.request('/tts-session')
+      expect(response.status).toBe(status)
+      expect(await response.json()).toEqual({ error: message })
+      expect(log).toHaveBeenCalledTimes(status === 502 ? 1 : 0)
+    } finally { log.mockRestore() }
+  })
+  it('logs unexpected setup failures without exposing upstream details', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      mocks.connection.mockRejectedValue(new Error('private upstream detail'))
+      const response = await voice.request('/tts-session')
+      expect(response.status).toBe(502)
+      expect(await response.text()).not.toContain('private upstream detail')
+      expect(log).toHaveBeenCalledOnce()
+    } finally { log.mockRestore() }
   })
   it('falls back from a voice saved for another provider', async () => {
     mocks.preferences.ttsVoice = 'aura-2-thalia-en'

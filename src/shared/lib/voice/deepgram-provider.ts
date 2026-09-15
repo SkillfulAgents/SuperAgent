@@ -1,3 +1,4 @@
+import { VoiceProviderError } from './provider-error'
 import { BaseVoiceProvider } from './voice-provider'
 import { DEEPGRAM_TTS_VOICES } from './deepgram-voices'
 import type { TtsVoiceInfo } from './tts-preferences'
@@ -98,10 +99,13 @@ export class DeepgramVoiceProvider extends BaseVoiceProvider {
     })
     if (!res.ok) {
       if (res.status === 403) {
-        throw new Error('Deepgram API key lacks permission to create temporary tokens. Ensure the key has at least Member-level access.')
+        void res.body?.cancel().catch(() => {})
+        throw new VoiceProviderError('Deepgram API key lacks permission to create temporary tokens. Ensure the key has at least Member-level access.')
       }
-      const text = await res.text()
-      throw new Error(`Deepgram token grant failed (${res.status}): ${text}`)
+      void res.body?.cancel().catch(() => {})
+      throw new VoiceProviderError(res.status === 401
+        ? 'Deepgram rejected the API key. Update it in Settings > Voice.'
+        : `Deepgram token grant failed (${res.status}). Please try again.`)
     }
     const data = await res.json()
     if (!data.access_token || typeof data.access_token !== 'string') {

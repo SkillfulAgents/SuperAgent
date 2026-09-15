@@ -1,5 +1,4 @@
 import { useEffect, useRef } from 'react'
-import { readAloud } from './use-read-aloud'
 import { holdSound } from '@renderer/lib/speech/hold-sound'
 
 /** How often to check whether the reply is audible. */
@@ -52,14 +51,8 @@ export function useHoldSound({ enabled, agentTurn, working, speaking = false, de
       return
     }
     if (!enabled || !agentTurn) return
-    let silentSince = Date.now()
+    const silentSince = Date.now()
     const check = () => {
-      // Standalone read-aloud can run alongside either conversation engine.
-      if (readAloud.isAudible()) {
-        holdSound.stopImmediately()
-        silentSince = Date.now()
-        return
-      }
       const delay = delayRef.current ?? (workingRef.current ? HOLD_DELAY_MS : HOLD_DELAY_BEFORE_TOOLS_MS)
       if (Date.now() - silentSince >= delay) holdSound.start()
     }

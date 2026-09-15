@@ -1,3 +1,5 @@
+import { Hono } from 'hono'
+import { OPENAI_TTS_VOICES } from '@shared/lib/voice/openai-voices'
 import { createServer, request as httpRequest } from 'node:http'
 import { once } from 'node:events'
 import { getRequestListener } from '@hono/node-server'
@@ -17,15 +19,19 @@ vi.mock('@shared/lib/voice', () => ({
       : mocks.alternateEnabled
         ? { createLiveSession: mocks.alternateCreate, mapLiveConversation: mocks.alternateMap, closeLiveSession: mocks.alternateClose }
         : null,
-    getApiKeyStatus: () => ({ isConfigured: true }), supportsTts: () => false, supportsVoiceAgent: () => true, getConversationEngine: () => 'openai-live',
+    getApiKeyStatus: () => ({ isConfigured: true }), supportsTts: () => true, getTtsVoices: () => OPENAI_TTS_VOICES, resolveTtsVoice: () => 'marin', supportsVoiceAgent: () => true, getConversationEngine: () => 'openai-live',
   }),
 }))
 vi.mock('@shared/lib/auth/config', () => ({ getCurrentUserId: () => mocks.user }))
 vi.mock('@shared/lib/services/user-settings-service', () => ({ getUserSettings: () => ({}) }))
 import voice from './voice'
 
+// Exercise the same error boundary as the production API.
+const app = new Hono().route('/api/voice', voice)
+app.onError((_error, c) => c.json({ error: 'Internal server error' }, 500))
+
 function request(path: string, body: unknown) {
-  return voice.request(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+  return app.request(`/api/voice${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
 }
 // Match Vite's real Node adapter: native globals, adapter-owned Request objects.
 async function chunkedRequest(path: string, chunks: Buffer[]) {
@@ -63,8 +69,8 @@ beforeEach(() => {
 })
 
 describe('Live voice routes', () => {
-  it('advertises Live separately from unsupported standalone TTS', async () => {
-    expect(await (await voice.request('/configured')).json()).toMatchObject({ conversationEngine: 'openai-live', supportsTts: false })
+  it('advertises Live alongside OpenAI read-aloud voices', async () => {
+    expect(await (await voice.request('/configured')).json()).toMatchObject({ conversationEngine: 'openai-live', supportsTts: true, defaultVoice: 'marin', voices: OPENAI_TTS_VOICES })
   })
   it('requires authentication before calling a provider', async () => {
     mocks.authenticated = false

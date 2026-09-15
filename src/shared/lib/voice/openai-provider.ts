@@ -1,3 +1,5 @@
+import { fetchWithIdleTimeout } from './streaming-fetch'
+import { VoiceProviderError } from './provider-error'
 import { OPENAI_TTS_VOICES } from './openai-voices'
 import type { TtsSynthesisInput, TtsSynthesisProvider } from './tts-types'
 import { BaseVoiceProvider } from './voice-provider'
@@ -34,18 +36,19 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
 
   async synthesizeSpeech(input: TtsSynthesisInput, signal?: AbortSignal): Promise<ReadableStream<Uint8Array>> {
     const apiKey = this.getEffectiveApiKey()
-    if (!apiKey) throw new Error('Add your OpenAI API key in Settings > Voice.')
-    const deadline = AbortSignal.timeout(30_000)
-    const response = await fetch('https://api.openai.com/v1/audio/speech', {
+    if (!apiKey) throw new VoiceProviderError('Add your OpenAI API key in Settings > Voice.', 400)
+    const response = await fetchWithIdleTimeout(fetch, 'https://api.openai.com/v1/audio/speech', {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
+      signal,
       body: JSON.stringify({ model: 'gpt-4o-mini-tts', input: input.text, voice: input.voice,
         speed: input.speed, response_format: 'pcm' }),
     })
     if (!response.ok || !response.body) {
       void response.body?.cancel().catch(() => {})
-      throw new Error(`OpenAI speech synthesis failed (${response.status}).`)
+      throw new VoiceProviderError(response.status === 401 || response.status === 403
+        ? 'OpenAI rejected speech synthesis access. Check your API key and permissions in Settings > Voice.'
+        : `OpenAI speech synthesis failed (${response.status}). Please try again.`)
     }
     return response.body
   }
@@ -61,7 +64,7 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
   /** The project key stays on the host; the renderer receives only an SDP answer. */
   async createLiveSession(sdp: string, history: VoiceHistory): Promise<LiveSessionAnswer> {
     const apiKey = this.getEffectiveApiKey()
-    if (!apiKey) throw new Error('Add your OpenAI API key in Settings > Voice.')
+    if (!apiKey) throw new VoiceProviderError('Add your OpenAI API key in Settings > Voice.', 400)
     // Check the mapping dependency before creating a billable voice session.
     getConfiguredLlmClient()
     const res = await fetch('https://api.openai.com/v1/live/sessions', {

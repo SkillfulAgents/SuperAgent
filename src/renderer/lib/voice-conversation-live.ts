@@ -1,3 +1,4 @@
+import { readAloud } from '@renderer/hooks/use-read-aloud'
 import { OpenAILiveConversation } from './voice-conversation-openai'
 import type { VoiceTranscriptEntry } from '@shared/lib/voice/conversation-types'
 import type { VoiceAgentEvent, VoiceAgentState, VoiceConversationAdapter, VoiceConversationContext, VoiceConversationEvents } from './voice-conversation'
@@ -7,6 +8,7 @@ export class OpenAILiveConversationAdapter implements VoiceConversationAdapter {
   readonly capabilities = { speechSpeed: false, spokenTranscript: true }
   private conversation: OpenAILiveConversation
   private state: VoiceAgentState = { active: false, awaiting: false, toolsUsed: false }
+  private releaseAudio: (() => void) | null = null
   private ready = false
   private segment: number | null = null
   private paused = false
@@ -19,7 +21,7 @@ export class OpenAILiveConversationAdapter implements VoiceConversationAdapter {
   constructor(context: VoiceConversationContext, private events: VoiceConversationEvents) {
     this.conversation = new OpenAILiveConversation({
       onReady: () => { this.ready = true; this.publish() },
-      onClosed: () => { this.ready = false; this.publish() },
+      onClosed: () => { this.releaseAudio?.(); this.releaseAudio = null; this.ready = false; this.publish() },
       onUtterance: (text) => { this.utterance = text; this.publish() },
       onTranscript: (entries) => { this.transcript = entries; this.publish() },
       onSpeaking: (value) => { this.assistantSpeaking = value; this.publish() },
@@ -36,7 +38,11 @@ export class OpenAILiveConversationAdapter implements VoiceConversationAdapter {
   }
 
   get analyser() { return this.conversation.analyser }
-  async start() { await this.conversation.start() }
+  async start() {
+    if (this.closed) return
+    this.releaseAudio ??= readAloud.suspend()
+    try { await this.conversation.start() } catch (error) { this.close(); throw error }
+  }
 
   acceptAgentEvent(event: VoiceAgentEvent) {
     if (this.closed) return
@@ -59,7 +65,7 @@ export class OpenAILiveConversationAdapter implements VoiceConversationAdapter {
 
   setPaused(paused: boolean) { this.paused = paused; this.conversation.setPaused(paused); this.publish() }
   pressMic() { if (!this.closed && !this.paused) this.conversation.pressMic(this.state.active || this.assistantSpeaking) }
-  close() { this.closed = true; this.conversation.close() }
+  close() { this.closed = true; this.conversation.close(); this.releaseAudio?.(); this.releaseAudio = null }
 
   private publish() {
     if (this.closed) return

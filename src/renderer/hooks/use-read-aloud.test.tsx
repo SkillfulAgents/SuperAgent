@@ -6,11 +6,11 @@ import { useRef } from 'react'
 const apiFetch = vi.fn()
 vi.mock('@renderer/lib/api', () => ({ apiFetch: (...args: unknown[]) => apiFetch(...args) }))
 
-const createTtsAdapter = vi.fn((_provider: string) => ({ fake: 'adapter' }))
-vi.mock('@renderer/lib/tts', () => ({ createTtsAdapter: (provider: string) => createTtsAdapter(provider) }))
+const createTtsAdapter = vi.fn((session: unknown) => ({ session }))
+vi.mock('@renderer/lib/tts', () => ({ createTtsAdapter: (provider: unknown) => createTtsAdapter(provider) }))
 
 interface FakePlayer {
-  options: { adapter: unknown; connection: { transport: 'websocket'; token: string } | { transport: 'http' }; voice: { voice: string; speed?: number }; firstWordIndex?: number; onStatus?: (s: string, e?: Error) => void }
+  options: { adapter: { session: unknown }; voice: { voice: string; speed?: number }; firstWordIndex?: number; onStatus?: (s: string, e?: Error) => void }
   status: string
   start: ReturnType<typeof vi.fn>
   append: ReturnType<typeof vi.fn>
@@ -44,7 +44,7 @@ vi.mock('@renderer/lib/speech/speech-player', () => ({
   },
 }))
 
-import { readAloud, useReadAloud, useSpokenWordHighlight, useIsVoiceReading, voiceStreamId } from './use-read-aloud'
+import { readAloud, useIsReadAloudAvailable, useReadAloud, useSpokenWordHighlight, useIsVoiceReading, voiceStreamId } from './use-read-aloud'
 
 function tokenResponse(body: unknown, ok = true) {
   return { ok, json: async () => body }
@@ -65,9 +65,9 @@ describe('readAloud controller', () => {
     await speaking
 
     expect(apiFetch).toHaveBeenCalledWith('/api/voice/tts-session')
-    expect(createTtsAdapter).toHaveBeenCalledWith('deepgram')
+    expect(createTtsAdapter).toHaveBeenCalledWith(expect.objectContaining({ provider: 'deepgram', connection: { transport: 'websocket', token: 'jwt' } }))
     const player = players[0]
-    expect(player.options).toMatchObject({ connection: { transport: 'websocket', token: 'jwt' }, voice: { voice: 'aura-2-luna-en', speed: 1.2 } })
+    expect(player.options).toMatchObject({ adapter: { session: { connection: { transport: 'websocket', token: 'jwt' } } }, voice: { voice: 'aura-2-luna-en', speed: 1.2 } })
     expect(player.start).toHaveBeenCalledTimes(1)
     expect(player.append.mock.calls[0][0].map((w: { text: string }) => w.text)).toEqual(['Hello', 'world.', 'Bye.'])
     expect(player.end).toHaveBeenCalledTimes(1)
@@ -83,9 +83,42 @@ describe('readAloud controller', () => {
   it('uses server-side OpenAI synthesis without a browser token', async () => {
     apiFetch.mockResolvedValue(tokenResponse({ provider: 'openai', connection: { transport: 'http' }, voice: 'marin', speed: 1 }))
     await readAloud.speak('m1', 'Hello there.')
-    expect(createTtsAdapter).toHaveBeenCalledWith('openai')
-    expect(players[0].options.connection).toEqual({ transport: 'http' })
+    expect(createTtsAdapter).toHaveBeenCalledWith(expect.objectContaining({ provider: 'openai', connection: { transport: 'http' } }))
+    expect(players[0].options.adapter.session).toMatchObject({ connection: { transport: 'http' } })
     expect(players[0].options).not.toHaveProperty('token')
+  })
+
+  it('stops playback and blocks new reads until every Live owner releases audio', async () => {
+    apiFetch.mockResolvedValue(tokenResponse({ provider: 'openai', connection: { transport: 'http' }, voice: 'marin', speed: 1 }))
+    await readAloud.speak('m1', 'Hello.')
+    const availability = renderHook(() => useIsReadAloudAvailable())
+    let release!: () => void
+    act(() => { release = readAloud.suspend() })
+    const second = readAloud.suspend()
+    expect(availability.result.current).toBe(false)
+    expect(players[0].stop).toHaveBeenCalledOnce()
+    await readAloud.speak('m2', 'Blocked.')
+    readAloud.beginStream('blocked-stream')
+    expect(apiFetch).toHaveBeenCalledTimes(1)
+    expect(readAloud.getSnapshot().activeId).toBeNull()
+    act(() => { release(); release() })
+    expect(availability.result.current).toBe(false)
+    act(() => second())
+    expect(availability.result.current).toBe(true)
+    await readAloud.speak('m2', 'Allowed.')
+    expect(players).toHaveLength(2)
+    availability.unmount()
+  })
+
+  it('invalidates credential fetches already in flight when Live acquires audio', async () => {
+    let resolve!: (value: unknown) => void
+    apiFetch.mockReturnValue(new Promise(r => { resolve = r }))
+    const pending = readAloud.speak('m1', 'Must not start.')
+    const release = readAloud.suspend()
+    resolve(tokenResponse({ provider: 'openai', connection: { transport: 'http' }, voice: 'marin', speed: 1 }))
+    await pending
+    expect(players).toHaveLength(0)
+    release()
   })
 
   it('stop() halts the player and goes idle', async () => {
@@ -141,7 +174,7 @@ describe('readAloud controller', () => {
     await new Promise((r) => setTimeout(r, 0))
     expect(players[0].stop).toHaveBeenCalledTimes(1)
     const next = players[1]
-    expect(next.options).toMatchObject({ connection: { transport: 'websocket', token: 'jwt2' }, voice: { voice: 'v', speed: 1.3 }, firstWordIndex: 3 })
+    expect(next.options).toMatchObject({ adapter: { session: { connection: { transport: 'websocket', token: 'jwt2' } } }, voice: { voice: 'v', speed: 1.3 }, firstWordIndex: 3 })
     expect(next.append.mock.calls[0][0].map((w: { text: string }) => w.text)).toEqual(['Four', 'five', 'six.'])
     expect(readAloud.getSnapshot().activeId).toBe('m1')
     // nothing to restart once stopped
@@ -459,7 +492,7 @@ describe('readAloud streaming', () => {
     expect(readAloud.getStreamWordCursor()).toBe(3)
     await tick()
     expect(players).toHaveLength(2)
-    expect(players[1].options.connection).toEqual({ transport: 'websocket', token: 'fresh' })
+    expect(players[1].options.adapter.session).toMatchObject({ connection: { transport: 'websocket', token: 'fresh' } })
     expect(spoken(players[1])).toEqual(['five', 'six.', 'Seven', 'eight', 'nine.'])
     players[1].getWordCursor.mockReturnValue(2)
     expect(readAloud.getStreamWordCursor()).toBe(6)
@@ -518,7 +551,7 @@ describe('readAloud streaming restart (a speed change)', () => {
     expect(readAloud.getStreamWordCursor()).toBe(1)
     await tick()
     expect(players).toHaveLength(2)
-    expect(players[1].options).toMatchObject({ connection: { transport: 'websocket', token: 'jwt2' }, voice: { speed: 1.3 } })
+    expect(players[1].options).toMatchObject({ adapter: { session: { connection: { transport: 'websocket', token: 'jwt2' } } }, voice: { speed: 1.3 } })
     // The word being spoken is said again, then the rest.
     expect(spoken(players[1])).toEqual(['three.', 'Four', 'five', 'six.'])
     players[1].getWordCursor.mockReturnValue(1)
@@ -556,7 +589,7 @@ describe('readAloud streaming restart (a speed change)', () => {
     readAloud.pushStream('v', 'Seven eight nine. ')
     await tick()
     expect(apiFetch).toHaveBeenCalledTimes(1)
-    expect(players[2].options).toMatchObject({ connection: { transport: 'websocket', token: 'jwt2' }, voice: { speed: 1.3 } })
+    expect(players[2].options).toMatchObject({ adapter: { session: { connection: { transport: 'websocket', token: 'jwt2' } } }, voice: { speed: 1.3 } })
   })
 
   it('a restart while credentials are in flight keeps the stale ones out of the cache', async () => {
@@ -578,7 +611,7 @@ describe('readAloud streaming restart (a speed change)', () => {
     readAloud.beginStream('v')
     readAloud.pushStream('v', 'Four five six. ')
     await tick()
-    expect(players[1].options).toMatchObject({ connection: { transport: 'websocket', token: 'new' }, voice: { speed: 1.3 } })
+    expect(players[1].options).toMatchObject({ adapter: { session: { connection: { transport: 'websocket', token: 'new' } } }, voice: { speed: 1.3 } })
   })
 
   it('places a message that started on the old player, and one still pending', async () => {
@@ -617,7 +650,7 @@ describe('readAloud streaming restart (a speed change)', () => {
     expect(players).toHaveLength(1)
     readAloud.pushStream('v', 'One two. Three four. ')
     await tick()
-    expect(players[1].options).toMatchObject({ connection: { transport: 'websocket', token: 'jwt3' }, voice: { speed: 0.9 } })
+    expect(players[1].options).toMatchObject({ adapter: { session: { connection: { transport: 'websocket', token: 'jwt3' } } }, voice: { speed: 0.9 } })
     expect(spoken(players[1])).toEqual(['Three', 'four.'])
   })
 

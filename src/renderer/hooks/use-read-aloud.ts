@@ -102,6 +102,20 @@ class ReadAloudController {
   // Bumped by every speak()/stop() so a token round-trip that resolves after
   // the user moved on doesn't start a stale player.
   private generation = 0
+  private readonly outputOwners = new Set<symbol>()
+  isAvailable = (): boolean => this.outputOwners.size === 0
+
+  /** Live media owns speaker and microphone together, including while connecting or paused. */
+  suspend(): () => void {
+    const owner = Symbol()
+    this.outputOwners.add(owner)
+    this.stop()
+    for (const listener of this.listeners) listener()
+    return () => {
+      if (!this.outputOwners.delete(owner)) return
+      for (const listener of this.listeners) listener()
+    }
+  }
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener)
@@ -125,6 +139,7 @@ class ReadAloudController {
    * mid-reply keeps the words before it lit).
    */
   async speak(id: string, markdown: string, fromWord = 0, options: { paused?: boolean } = {}): Promise<void> {
+    if (!this.isAvailable()) return
     this.stop()
     const generation = ++this.generation
     this.current = { id, markdown }
@@ -154,8 +169,7 @@ class ReadAloudController {
 
     let startPaused = options.paused ?? false
     const player = new SpeechPlayer({
-      adapter: createTtsAdapter(credentials.provider),
-      connection: credentials.connection,
+      adapter: createTtsAdapter(credentials),
       voice: { voice: credentials.voice, speed: credentials.speed },
       firstWordIndex: fromWord,
       ...(ctx ? { createAudioContext: () => ctx } : {}),
@@ -280,6 +294,7 @@ class ReadAloudController {
    * message ends and another begins, and endStream() when the turn is over.
    */
   beginStream(id: string): void {
+    if (!this.isAvailable()) return
     this.stop()
     this.stream = {
       id,
@@ -413,8 +428,7 @@ class ReadAloudController {
     }
 
     const player = new SpeechPlayer({
-      adapter: createTtsAdapter(credentials.provider),
-      connection: credentials.connection,
+      adapter: createTtsAdapter(credentials),
       voice: { voice: credentials.voice, speed: credentials.speed },
       finishOnIdleClose: true,
       ...(ctx ? { createAudioContext: () => ctx } : {}),
@@ -516,6 +530,10 @@ class ReadAloudController {
 }
 
 export const readAloud = new ReadAloudController()
+
+export function useIsReadAloudAvailable(): boolean {
+  return useSyncExternalStore(readAloud.subscribe, readAloud.isAvailable, readAloud.isAvailable)
+}
 
 /**
  * Whether `id` is the message being read. Selects a boolean so the many

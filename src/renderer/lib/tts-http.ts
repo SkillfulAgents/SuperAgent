@@ -1,6 +1,7 @@
+import { splitSpeechText } from '@shared/lib/voice/text-chunks'
 import { apiFetch } from './api'
 import type { VoiceProvider } from '@shared/lib/config/settings'
-import type { TtsConnection } from '@shared/lib/voice/tts-types'
+import { fetchWithIdleTimeout } from '@shared/lib/voice/streaming-fetch'
 import type { TtsAdapter, TtsAudioCallback, TtsEventCallback, TtsVoiceOptions } from './tts'
 
 /** Adapt finite HTTP audio streams to the player's ordered Speak/Flush batches. */
@@ -19,8 +20,7 @@ export class HttpTtsAdapter implements TtsAdapter {
 
   constructor(private readonly provider: VoiceProvider) {}
 
-  async connect(connection: TtsConnection, options: TtsVoiceOptions) {
-    if (connection.transport !== 'http') throw new Error('Expected a server-side speech connection.')
+  async connect(options: TtsVoiceOptions) {
     if (this.closed) return
     this.options = options
     void this.pump()
@@ -64,21 +64,14 @@ export class HttpTtsAdapter implements TtsAdapter {
     this.active = controller
     const current = () => !this.closed && generation === this.generation
     try {
-      let remaining = batch.text
-      while (remaining && current()) {
-        // The provider's input limit also applies to unusually long words/URLs.
-        let end = Math.min(4096, remaining.length)
-        if (end < remaining.length) {
-          const space = remaining.lastIndexOf(' ', end)
-          if (space > 0) end = space
-          else if (/[\uD800-\uDBFF]/.test(remaining[end - 1])) end--
-        }
-        const text = remaining.slice(0, end)
-        remaining = remaining.slice(end).trimStart()
-        const response = await apiFetch('/api/voice/tts', {
+      for (const chunk of splitSpeechText(batch.text, 4096, 'utf16', true)) {
+        if (!current()) return
+        const text = chunk.trim()
+        if (!text) continue
+        const response = await fetchWithIdleTimeout(apiFetch, '/api/voice/tts', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ provider: this.provider, text, voice: options.voice, speed: options.speed ?? 1 }),
-          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]),
+          signal: controller.signal,
         })
         if (!current()) { void response.body?.cancel().catch(() => {}); return }
         if (!response.ok) {
