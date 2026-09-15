@@ -2519,6 +2519,50 @@ describe('importAgentFromTemplate (full mode)', () => {
     expect(fs.readFileSync(path.join(workspaceDir, 'docs', long), 'utf-8')).toBe('kept')
   })
 
+  it.each([
+    [undefined, ''], ['template', ''], ['full', ''],
+    [undefined, 'Agent archive/'], ['template', 'Agent archive/'], ['full', 'Agent archive/'],
+  ] as const)('filters full archive history for mode %s with prefix %s', async (mode, prefix) => {
+    const workspaceDir = setupAgentMock('import-history-agent')
+    const keep = {
+      'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'PROMPT.md': 'Start a new conversation.',
+      '.claude/skills/helper/SKILL.md': '# Helper',
+      '.claude/skills/helper/references/projects/guide.txt': 'Skill reference',
+      'docs/projects/readme.md': 'Ordinary project documentation',
+    }
+    const history = {
+      '.claude/projects/-workspace/session.jsonl': '{"type":"user"}\n',
+      '.claude/projects/-workspace/session/subagents/agent-child.jsonl': 'child history',
+      '.claude/projects/-workspace/session/subagents/workflows/run/agent-worker.jsonl': 'workflow history',
+      '.claude/projects/-workspace/session/media/image.png': 'derived media',
+      '.claude/todos/session.json': '[]',
+      '.claude/history.jsonl': 'history index',
+      '.claude/settings.local.json': '{}',
+      'session-metadata.json': '{}',
+      '.superagent-sessions.json': '{}',
+      'uploads/attachment.txt': 'old attachment',
+      'downloads/output.txt': 'old download',
+    }
+    const files = Object.fromEntries(Object.entries({ ...keep, ...history }).map(([name, content]) => [prefix + name, content]))
+    const zip = await makeZip(files)
+    const validation = await validateAgentTemplate(zip, mode)
+    expect(validation.valid).toBe(true)
+    expect(validation.stripPrefix).toBe(prefix)
+    expect(validation.fileCount).toBe(Object.keys(keep).length + (mode === 'full' ? Object.keys(history).length : 0))
+
+    await importAgentFromTemplate(zip, undefined, mode)
+
+    for (const [name, content] of Object.entries(keep)) {
+      expect(fs.readFileSync(path.join(workspaceDir, name), 'utf8')).toBe(content)
+    }
+    for (const [name, content] of Object.entries(history)) {
+      if (mode === 'full') expect(fs.readFileSync(path.join(workspaceDir, name), 'utf8')).toBe(content)
+      else expect(fs.existsSync(path.join(workspaceDir, name))).toBe(false)
+    }
+    if (mode !== 'full') expect(fs.existsSync(path.join(workspaceDir, '.claude', 'projects'))).toBe(false)
+  })
+
   it('strips .env in template mode', async () => {
     const workspaceDir = setupAgentMock('import-template-agent')
     const zipBuffer = await makeZip({
