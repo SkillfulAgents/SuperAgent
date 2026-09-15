@@ -20,7 +20,7 @@ import {
 } from '@shared/lib/services/notification-service'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
-import { getAgent } from '@shared/lib/services/agent-service'
+import { getAgentRecord } from '@shared/lib/services/agent-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { captureException } from '@shared/lib/error-reporting'
 import { getAgentOwnerUserId } from '@shared/lib/services/agent-owner'
@@ -53,8 +53,8 @@ class NotificationManager {
    */
   private async getAgentDisplayName(agentSlug: string): Promise<string> {
     try {
-      const agent = await getAgent(agentSlug)
-      return agent?.frontmatter?.name || agentSlug
+      const agent = await getAgentRecord(agentSlug)
+      return agent?.name || agentSlug
     } catch {
       return agentSlug
     }

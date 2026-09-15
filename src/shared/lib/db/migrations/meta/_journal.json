@@ -295,6 +295,20 @@
       "when": 1789080776897,
       "tag": "0041_user_avatar_lookup_index",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "6",
+      "when": 1789438768720,
+      "tag": "0042_agents",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "6",
+      "when": 1789495471204,
+      "tag": "0043_data_migrations",
+      "breakpoints": true
     }
   ]
 }

@@ -4,11 +4,8 @@ import * as path from 'path'
 import * as os from 'os'
 import {
   nameToSlugBase,
-  generateAgentId,
   displaySlug,
-  resolveAgentId,
   isMintedAgentId,
-  AGENT_ID_LENGTH,
   parseMarkdownWithFrontmatter,
   serializeMarkdownWithFrontmatter,
   listDirectories,
@@ -110,77 +107,6 @@ describe('displaySlug', () => {
     expect(displaySlug('Renamed Agent', 'untitled-h45k3n')).toBe('untitled-h45k3n')
     expect(displaySlug('Renamed Agent', 'abc123')).toBe('abc123')
   })
-})
-
-describe('generateAgentId + resolveAgentId (filesystem-backed)', () => {
-  // Point the data dir at the per-test temp dir so getAgentDir() lands there.
-  let prevDataDir: string | undefined
-
-  beforeEach(async () => {
-    prevDataDir = process.env.SUPERAGENT_DATA_DIR
-    process.env.SUPERAGENT_DATA_DIR = testDir
-    await ensureDirectory(getAgentsDir())
-  })
-
-  afterEach(() => {
-    if (prevDataDir === undefined) delete process.env.SUPERAGENT_DATA_DIR
-    else process.env.SUPERAGENT_DATA_DIR = prevDataDir
-  })
-
-  const makeAgentFolder = (id: string) => ensureDirectory(getAgentDir(id))
-
-  it('mints a bare [a-z0-9]{10} id, not derived from any name', async () => {
-    const id = await generateAgentId()
-    expect(id).toMatch(new RegExp(`^[a-z0-9]{${AGENT_ID_LENGTH}}$`))
-  })
-
-  it('mints distinct ids across calls', async () => {
-    expect(await generateAgentId()).not.toBe(await generateAgentId())
-  })
-
-  it('resolves a bare minted id (exact folder match)', async () => {
-    const id = await generateAgentId()
-    await makeAgentFolder(id)
-    expect(await resolveAgentId(id)).toBe(id)
-  })
-
-  it('resolves a {name}-{id} display slug to the id', async () => {
-    const id = await generateAgentId()
-    await makeAgentFolder(id)
-    expect(await resolveAgentId(`gpt-4-bot-${id}`)).toBe(id)
-  })
-
-  it('resolves a wrong-prefix {anything}-{id} to the same id (prefix is decorative)', async () => {
-    const id = await generateAgentId()
-    await makeAgentFolder(id)
-    expect(await resolveAgentId(`literally-anything-${id}`)).toBe(id)
-    expect(await resolveAgentId(`beta-${id}`)).toBe(id)
-  })
-
-  it('resolves a legacy compound folder id to itself', async () => {
-    await makeAgentFolder('untitled-h45k3n')
-    expect(await resolveAgentId('untitled-h45k3n')).toBe('untitled-h45k3n')
-  })
-
-  it('resolves a bare legacy id to itself', async () => {
-    await makeAgentFolder('abc123')
-    expect(await resolveAgentId('abc123')).toBe('abc123')
-  })
-
-  it('returns null for an unknown slug', async () => {
-    expect(await resolveAgentId('does-not-exist')).toBeNull()
-  })
-
-  it('returns null for a well-formed but non-existent minted id', async () => {
-    expect(await resolveAgentId('zzzzzzzzzz')).toBeNull()
-  })
-
-  it.each(['../foo', 'a/b', 'a_b', '..', '.', 'foo/../bar', 'UPPER', ''])(
-    'rejects unsafe / out-of-charset input %j with no filesystem access',
-    async (bad) => {
-      expect(await resolveAgentId(bad)).toBeNull()
-    },
-  )
 })
 
 // ============================================================================

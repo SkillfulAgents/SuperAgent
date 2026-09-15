@@ -184,6 +184,8 @@ vi.mock('@shared/lib/db/schema', () => ({
   mcpAuditLog: {},
   mcpToolPolicies: {},
   agentAcl: {},
+  agents: {},
+  dataMigrations: {},
   messageAuthor: {},
   xAgentPolicies: {},
   apiScopePolicies: {},

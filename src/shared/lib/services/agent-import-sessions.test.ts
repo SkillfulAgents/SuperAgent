@@ -23,9 +23,11 @@ import crypto from 'crypto'
 import { createZipBuffer } from '@shared/lib/utils/zip'
 
 vi.mock('@shared/lib/services/agent-service', () => ({
+  adoptAgentIdentityFromWorkspace: vi.fn(),
   createAgentFromExistingWorkspace: vi.fn(),
   getAgentWithStatus: vi.fn(),
   listAgents: vi.fn(async () => []),
+  writeAgentIdentityProjection: vi.fn(),
 }))
 
 vi.mock('@shared/lib/services/skillset-service', async (importOriginal) => {

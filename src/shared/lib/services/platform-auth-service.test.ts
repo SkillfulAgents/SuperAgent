@@ -12,6 +12,19 @@ import {
   type JSONWebKeySet,
 } from 'jose'
 
+// Skillset reconciliation walks the agents this suite writes to the temp data
+// dir; those directories are the agents that exist.
+vi.mock('@shared/lib/agent-actor/agent-catalog', async () => {
+  const { directoryExists, getAgentDir, getAgentsDir, listDirectories } = await import('@shared/lib/utils/file-storage')
+  return {
+    agentCatalog: {
+      list: () => listDirectories(getAgentsDir()),
+      exists: (slug: string) => directoryExists(getAgentDir(slug)),
+    },
+    identityFromInstructions: () => ({}),
+  }
+})
+
 const mockDbGet = vi.fn()
 vi.mock('@shared/lib/db', () => ({
   db: {

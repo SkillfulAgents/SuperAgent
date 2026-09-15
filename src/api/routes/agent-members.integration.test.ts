@@ -47,7 +47,11 @@ beforeAll(async () => {
     const result = await authModule.getAuth().api.signUpEmail({ body: { name, email: `${name}@example.test`, password: 'MemberTesting123!' } })
     people[name] = { id: result.user.id, token: result.token! }
   }
-  const { agentAcl } = await import('@shared/lib/db/schema')
+  const { agentAcl, agents } = await import('@shared/lib/db/schema')
+  // Which agents exist is the agents table; the directories above are their workspaces.
+  db.db.insert(agents).values(
+    [agentSlug, secondAgent, privateAgent, emptyAgent].map((slug) => ({ slug, name: slug, createdAt: new Date(0), runtime: 'local' })),
+  ).run()
   for (const [index, role] of ['owner', 'user', 'viewer'].entries()) {
     db.db.insert(agentAcl).values({ id: randomUUID(), userId: people[role].id, agentSlug, role: role as 'owner' | 'user' | 'viewer', createdAt: new Date(index * 1000) }).run()
   }

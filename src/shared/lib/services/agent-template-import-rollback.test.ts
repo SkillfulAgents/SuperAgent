@@ -2,6 +2,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import Database from 'better-sqlite3'
+import { drizzle } from 'drizzle-orm/better-sqlite3'
+import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
+import * as schema from '@shared/lib/db/schema'
+
+// Which agents exist is the agents table: one in-memory database per test,
+// matching the per-test data dir, so a rolled-back import is judged against
+// this test's agents only.
+let testDb: ReturnType<typeof drizzle>
+let sqlite: InstanceType<typeof Database>
+vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
+
 import { agentCatalog, agentRegistry } from '@shared/lib/agent-actor'
 import { createZipBuffer } from '@shared/lib/utils/zip'
 import { createAgentFromExistingWorkspace } from './agent-service'
@@ -27,10 +39,14 @@ let testDir: string
 beforeEach(() => {
   testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'import-rollback-'))
   vi.stubEnv('SUPERAGENT_DATA_DIR', testDir)
+  sqlite = new Database(':memory:')
+  testDb = drizzle(sqlite, { schema })
+  migrate(testDb, { migrationsFolder: 'src/shared/lib/db/migrations' })
   vi.clearAllMocks()
 })
 afterEach(async () => {
   for (const slug of await agentCatalog.list()) agentRegistry.evict(slug)
+  sqlite.close()
   vi.unstubAllEnvs()
   fs.rmSync(testDir, { recursive: true, force: true })
 })

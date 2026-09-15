@@ -67,9 +67,22 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
 const mockGetAgent = vi.fn()
 const mockListAgents = vi.fn()
 const mockCreateAgent = vi.fn()
+// The route reads identity from the catalog record; the fixtures below are
+// still written as CLAUDE.md-shaped agents and projected here.
+type AgentFixture = { slug: string; frontmatter: { name: string; description?: string; createdAt?: string } }
+const recordOf = (agent: AgentFixture | null | undefined) =>
+  agent
+    ? {
+        slug: agent.slug,
+        name: agent.frontmatter.name,
+        description: agent.frontmatter.description,
+        createdAt: new Date(agent.frontmatter.createdAt ?? 0),
+        placement: { runtime: 'local', workspaceHandle: null },
+      }
+    : null
 vi.mock('@shared/lib/services/agent-service', () => ({
-  getAgent: (...args: unknown[]) => mockGetAgent(...args),
-  listAgents: (...args: unknown[]) => mockListAgents(...args),
+  getAgentRecord: async (...args: unknown[]) => recordOf(await mockGetAgent(...args)),
+  listAgents: async (...args: unknown[]) => ((await mockListAgents(...args)) as AgentFixture[]).map(recordOf),
   createAgent: (...args: unknown[]) => mockCreateAgent(...args),
 }))
 
@@ -246,11 +259,16 @@ async function grantCallerOwnerTargetAccess() {
   })
 }
 
+async function seedAgentRows(slugs: string[]) {
+  await testDb.insert(schema.agents).values(
+    slugs.map((slug) => ({ slug, name: slug, createdAt: new Date(), runtime: 'local' })),
+  )
+}
+
 beforeEach(async () => {
   testDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'xagent-test-'))
-  // Point the data dir at testDir so the REAL resolveAgentId (not mocked) finds
-  // agent folders on disk. Caller/target are seeded as bare folders matching the
-  // legacy-style test slugs (resolveAgentId returns them via exact-folder match).
+  // Point the data dir at testDir so workspace writes land there. Caller/target
+  // are seeded as bare folders matching the legacy-style test slugs.
   prevDataDir = process.env.SUPERAGENT_DATA_DIR
   process.env.SUPERAGENT_DATA_DIR = testDir
   await fs.promises.mkdir(path.join(testDir, 'agents', CALLER_SLUG), { recursive: true })
@@ -260,6 +278,8 @@ beforeEach(async () => {
   testDb = drizzle(testSqlite, { schema })
   const migrationsFolder = path.join(process.cwd(), 'src/shared/lib/db/migrations')
   migrate(testDb, { migrationsFolder })
+  // The catalog (which agents exist, and slug resolution) is the agents table.
+  await seedAgentRows([CALLER_SLUG, TARGET_SLUG])
 
   // Seed users + caller token (proxyTokens has unique constraint on agentSlug)
   await testDb.insert(schema.user).values([
@@ -1889,6 +1909,7 @@ describe('display-slug resolution', () => {
 
   beforeEach(async () => {
     await fs.promises.mkdir(path.join(testDir, 'agents', TARGET_ID), { recursive: true })
+    await seedAgentRows([TARGET_ID])
     mockGetAgent.mockResolvedValue({
       slug: TARGET_ID,
       frontmatter: { name: 'Pretty Target', createdAt: '2024-01-01' },

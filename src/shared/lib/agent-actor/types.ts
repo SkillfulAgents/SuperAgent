@@ -93,19 +93,56 @@ export interface AgentActor {
   readonly config: ConfigOps
 }
 
+/** Where an agent's workspace lives. */
+export interface AgentPlacement {
+  /** 'local' for a directory under the agents data directory; a provider name otherwise. */
+  runtime: string
+  /** The provider's handle for a workspace held elsewhere; null for a local one. */
+  workspaceHandle: string | null
+}
+
+/** One agent as the catalog knows it: identity and placement, never contents. */
+export interface AgentRecord {
+  slug: AgentSlug
+  name: string
+  description?: string
+  createdAt: Date
+  placement: AgentPlacement
+}
+
+export interface AgentIdentityChanges {
+  name?: string
+  /** Null clears the description. */
+  description?: string | null
+}
+
 /**
- * Which agents exist. Host level, like `ContainerHost`: an actor is about one
- * agent, this is about the set, and creating or removing an agent is an
- * operation on the set. Reading or writing an agent's contents goes through
- * its actor.
+ * Which agents exist and what they are called. Host level, like
+ * `ContainerHost`: an actor is about one agent, this is about the set, and
+ * creating or removing an agent is an operation on the set. Reading or
+ * writing an agent's contents goes through its actor.
+ *
+ * The catalog is the authority for an agent's name and description. The
+ * agent's `CLAUDE.md` carries a frontmatter projection of them, written by
+ * the host, so the agent still sees who it is and exports still carry it.
  */
 export interface AgentCatalog {
-  /** Every agent id on this host. Not filtered for validity; callers check what they need. */
+  /** Every agent slug on this host, newest first. */
   list(): Promise<AgentSlug[]>
+  /** Every agent, newest first. */
+  records(): Promise<AgentRecord[]>
+  /** The agent for a slug, or null when there is no such agent. */
+  get(slug: AgentSlug): Promise<AgentRecord | null>
+  /** The agents for these slugs, newest first; unknown slugs are skipped. */
+  getMany(slugs: AgentSlug[]): Promise<AgentRecord[]>
   exists(slug: AgentSlug): Promise<boolean>
-  /** A fresh, unused agent id. Nothing is created until the actor writes to it. */
+  /** A fresh, unused agent slug. Nothing exists until `insert` records it. */
   mint(): Promise<AgentSlug>
-  /** The agent id for a display slug or an id, or null when there is no such agent. */
+  /** Record a new local agent. The caller has written its workspace already. */
+  insert(record: { slug: AgentSlug; name: string; description?: string; createdAt: Date }): Promise<AgentRecord>
+  /** Change an agent's name or description; null when there is no such agent. */
+  update(slug: AgentSlug, changes: AgentIdentityChanges): Promise<AgentRecord | null>
+  /** The agent slug for a display slug or a slug, or null when there is no such agent. */
   resolve(input: string): Promise<AgentSlug | null>
   /** Remove an agent and everything it owns. The caller stops its container first. */
   remove(slug: AgentSlug): Promise<void>
