@@ -72,6 +72,7 @@ import {
   mcpAuditLog,
   mcpToolPolicies,
   agentAcl,
+  agents,
   messageAuthor,
   xAgentPolicies,
   apiScopePolicies,
@@ -183,6 +184,8 @@ const FACTORY_RESET_TABLES: SQLiteTable[] = [
   agentAcl,
   xAgentPolicies,
   webhookTriggers,
+  // the agent catalog itself, once the per-agent rows above are gone
+  agents,
   notifications,
   sessionUnreadMarks,
   scheduledTasks,

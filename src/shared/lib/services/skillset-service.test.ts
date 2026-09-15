@@ -121,11 +121,15 @@ vi.mock('@shared/lib/platform-auth/config', () => ({
 vi.mock('@shared/lib/agent-actor', async () => {
   const workspacePath = await import('@shared/lib/agent-actor/workspace-path')
   const { createLocalFileOps } = await import('@shared/lib/agent-actor/local-file-ops')
-  const { createLocalAgentCatalog } = await import('@shared/lib/agent-actor/local-agent-catalog')
+  const { directoryExists, getAgentDir, getAgentsDir, listDirectories } = await import('@shared/lib/utils/file-storage')
   const { getAgentWorkspaceDir } = await import('@shared/lib/utils/file-storage')
   return {
     ...workspacePath,
-    agentCatalog: createLocalAgentCatalog(),
+    // The agents this suite writes to disk are the agents that exist.
+    agentCatalog: {
+      list: () => listDirectories(getAgentsDir()),
+      exists: (slug: string) => directoryExists(getAgentDir(slug)),
+    },
     agentRegistry: {
       get: (slug: string) => ({ slug, files: createLocalFileOps(slug, { getAgentWorkspaceDir }) }),
     },

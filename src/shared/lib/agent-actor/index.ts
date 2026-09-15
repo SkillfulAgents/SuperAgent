@@ -1,6 +1,6 @@
 export { agentRegistry } from './registry'
 export { containerHost, type ContainerHost } from './host'
-export { agentCatalog } from './local-agent-catalog'
+export { agentCatalog, identityFromInstructions } from './agent-catalog'
 export { copyHostDirIntoWorkspace } from './copy-into-workspace'
 export { CONFIG_DOCS, ConfigDocError, type ConfigDoc, type ConfigDocErrorCode, type ConfigDocId } from './config-schema'
 // Pure helpers of the fenced transcript modules that routes still need: how a
@@ -24,6 +24,10 @@ export {
 export type {
   AgentActor,
   AgentCatalog,
+  AgentIdentityChanges,
+  AgentPlacement,
+  AgentReconcileResult,
+  AgentRecord,
   AgentRegistry,
   AgentSlug,
   ByteRange,

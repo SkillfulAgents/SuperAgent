@@ -3,7 +3,7 @@ import { AgentRead, getAgentId, getReadableAgentIds } from '../middleware/auth'
 import { bodyLimit } from 'hono/body-limit'
 import { zValidator } from '@hono/zod-validator'
 import { agentMembersBatchRequestSchema, agentMembersBatchResponseSchema } from '@shared/lib/agent-members-schema'
-import { resolveAgentId } from '@shared/lib/utils/file-storage'
+import { agentCatalog } from '@shared/lib/agent-actor'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { listAgentMembers, listAgentMembersByAgent } from '@shared/lib/services/agent-members-service'
 
@@ -22,7 +22,7 @@ export const agentMembersBatch = new Hono().post('/',
   async (c) => {
     if (!isAuthMode()) return c.notFound()
     const slugs = [...new Set(c.req.valid('json').agentSlugs)]
-    const resolved = await Promise.all(slugs.map(async slug => [slug, await resolveAgentId(slug)] as const))
+    const resolved = await Promise.all(slugs.map(async slug => [slug, await agentCatalog.resolve(slug)] as const))
     const ids = [...new Set(resolved.flatMap(([, id]) => id ? [id] : []))]
     const readable = getReadableAgentIds(c, ids)
     const members = listAgentMembersByAgent([...readable])

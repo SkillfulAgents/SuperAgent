@@ -35,10 +35,25 @@ vi.mock('@shared/lib/services/skillset-service', async (importOriginal) => {
 })
 
 vi.mock('@shared/lib/services/agent-service', () => ({
+  adoptAgentIdentityFromWorkspace: vi.fn(),
   createAgentFromExistingWorkspace: vi.fn(),
   deleteAgent: vi.fn(),
   getAgentWithStatus: vi.fn(),
+  writeAgentIdentityProjection: vi.fn(),
 }))
+
+// This suite writes agent workspaces straight to the temp data dir; those
+// directories are the agents that exist.
+vi.mock('@shared/lib/agent-actor/agent-catalog', async () => {
+  const { directoryExists, getAgentDir, getAgentsDir, listDirectories } = await import('@shared/lib/utils/file-storage')
+  return {
+    agentCatalog: {
+      list: () => listDirectories(getAgentsDir()),
+      exists: (slug: string) => directoryExists(getAgentDir(slug)),
+    },
+    identityFromInstructions: () => ({}),
+  }
+})
 
 vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveAnthropicApiKey: vi.fn(() => undefined),
@@ -79,7 +94,7 @@ import {
   MAX_TEMPLATE_PROMPT_SIZE,
   getDiscoverableAgents,
 } from './agent-template-service'
-import { createAgentFromExistingWorkspace, getAgentWithStatus } from '@shared/lib/services/agent-service'
+import { adoptAgentIdentityFromWorkspace, createAgentFromExistingWorkspace, getAgentWithStatus } from '@shared/lib/services/agent-service'
 import { getSkillsetIndex } from '@shared/lib/services/skillset-service'
 
 // ============================================================================
@@ -2706,7 +2721,7 @@ describe('installAgentFromSkillset', () => {
     await fs.promises.rm(testDir, { recursive: true, force: true })
   })
 
-  it('preserves install-time createdAt when template has an older timestamp', async () => {
+  it('adopts the chosen name over the template frontmatter after copying it in', async () => {
     const slug = 'install-test-agent'
     const installTime = new Date()
     const oldTemplateTime = '2020-01-01T00:00:00.000Z'
@@ -2738,11 +2753,12 @@ describe('installAgentFromSkillset', () => {
         '1.0.0',
       )
 
-      // Read the resulting CLAUDE.md and verify createdAt is the install time, not the template's
+      // The template's CLAUDE.md is in place; the identity (the chosen name,
+      // the template's description, the install-time createdAt) is adopted
+      // and projected back by agent-service, which is covered in its own suite.
       const claudeMd = fs.readFileSync(path.join(workspaceDir, 'CLAUDE.md'), 'utf-8')
-      expect(claudeMd).toContain(installTime.toISOString())
-      expect(claudeMd).not.toContain(oldTemplateTime)
-      expect(claudeMd).toContain('name: My Agent')
+      expect(claudeMd).toContain(oldTemplateTime)
+      expect(adoptAgentIdentityFromWorkspace).toHaveBeenCalledWith(slug, { name: 'My Agent' })
     } finally {
       fs.rmSync(repoDir, { recursive: true, force: true })
     }

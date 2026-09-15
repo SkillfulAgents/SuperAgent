@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
   createSummarizerText: vi.fn(),
   resolveActiveProviderModel: vi.fn(() => 'resolved-summarizer'),
   getEffectiveModels: vi.fn(() => ({ summarizerModel: 'configured-summarizer' })),
-  getAgent: vi.fn(async () => ({ frontmatter: { name: 'Demo Agent' } })),
+  getAgentRecord: vi.fn(async () => ({ name: 'Demo Agent' })),
   getUserSettings: vi.fn((_userId: string) => ({
     notifications: {
       enabled: true,
@@ -46,7 +46,7 @@ vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveModels: mocks.getEffectiveModels,
 }))
 vi.mock('@shared/lib/services/agent-service', () => ({
-  getAgent: mocks.getAgent,
+  getAgentRecord: mocks.getAgentRecord,
 }))
 vi.mock('@shared/lib/services/user-settings-service', () => ({
   getUserSettings: mocks.getUserSettings,

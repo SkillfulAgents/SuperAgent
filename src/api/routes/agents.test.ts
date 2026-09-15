@@ -390,9 +390,20 @@ vi.mock('@shared/lib/services/agent-service', () => ({
   createAgent: vi.fn(),
   getAgentWithStatus: vi.fn(),
   getAgent: vi.fn(),
+  getAgentRecord: vi.fn(),
   updateAgent: vi.fn(),
   deleteAgent: vi.fn(),
   agentExists: (...args: unknown[]) => mockAgentExists(...args),
+}))
+
+// ResolveAgent() resolves the :id param through the agent catalog. Delegate to
+// the existing agentExists mock so the legacy 404-on-missing behavior is
+// preserved: returns the slug verbatim when it "exists", else null.
+vi.mock('@shared/lib/agent-actor/agent-catalog', () => ({
+  agentCatalog: {
+    resolve: async (slug: string) => ((await mockAgentExists(slug)) ? slug : null),
+  },
+  identityFromInstructions: () => ({}),
 }))
 
 vi.mock('@shared/lib/services/session-media', () => ({
@@ -627,10 +638,6 @@ vi.mock('@shared/lib/agent-actor/jsonl-files', async (importOriginal) => ({
 }))
 vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@shared/lib/utils/file-storage')>()),
-  // ResolveAgent() resolves the :id param via resolveAgentId. Delegate to the
-  // existing agentExists mock so the legacy 404-on-missing behavior is preserved:
-  // returns the slug verbatim when it "exists", else null.
-  resolveAgentId: async (slug: string) => ((await mockAgentExists(slug)) ? slug : null),
   displaySlug: (_name: string, id: string) => id,
   getSessionJsonlPath: (...args: [string, string]) => mockGetSessionJsonlPath(...args),
   readFileOrNull: vi.fn(),
@@ -6968,7 +6975,7 @@ describe('GET /api/agents (enriched summary)', () => {
     mockDbSelectFrom.mockReturnValue({
       where: vi.fn().mockResolvedValue([{ agentSlug: 'agent-1' }]),
     })
-    vi.mocked(getAgentWithStatus).mockResolvedValue(baseAgent)
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
     vi.mocked(listSessionsFromSummary).mockResolvedValue([sessionInfo('visible-session')])
     vi.mocked(getSessionMessagesPage).mockResolvedValue({
       messages: [],
@@ -6984,6 +6991,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
     expect(body).toHaveLength(1)
     expect(body[0].slug).toBe('agent-1')
+    expect(listAgentsWithStatus).toHaveBeenCalledWith({ slugs: ['agent-1'] })
     expect(listSessionsFromSummary).toHaveBeenCalledTimes(1)
     expect(listSessionsFromSummary).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-1' }), expect.any(Object))
     expect(getSessionMessagesPage).toHaveBeenCalledWith(
@@ -7251,8 +7259,7 @@ describe('GET /api/agents (enriched summary)', () => {
     mockDbSelectFrom.mockReturnValue({
       where: vi.fn().mockResolvedValue([{ agentSlug: 'agent-1' }]),
     })
-    const { getAgentWithStatus } = await import('@shared/lib/services/agent-service')
-    vi.mocked(getAgentWithStatus).mockResolvedValue(baseAgent)
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
 
     const res = await getReq(app, '/api/agents')
     expect(res.status).toBe(200)
@@ -7262,7 +7269,8 @@ describe('GET /api/agents (enriched summary)', () => {
     // Summary fields should be present even in auth mode
     expect(body[0]).toHaveProperty('hasActiveSessions')
     expect(body[0]).toHaveProperty('dashboards')
-    expect(getAgentWithStatus).toHaveBeenCalledWith('agent-1', { includeSummary: false })
+    // One listing restricted to the ACL rows, not a lookup per agent
+    expect(listAgentsWithStatus).toHaveBeenCalledWith({ slugs: ['agent-1'] })
   })
 
   it('loads a single agent without a redundant service summary pass', async () => {
@@ -7286,12 +7294,11 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(getSessionSummary).toHaveBeenCalledTimes(1)
   })
 
-  it('sorts the auth-mode list newest-first', async () => {
+  it('keeps the listing order in auth mode: the catalog sorts, the route does not', async () => {
     mockIsAuthMode.mockReturnValue(true)
     // The ACL query has no ORDER BY, so rows arrive in index-scan order — i.e. by
-    // the opaque agent slug, NOT by createdAt. Feed them slug-sorted (a, m, z) with
-    // a different creation order so the response order can only be right if the
-    // route sorts: without the sort this returns the slug order and the test fails.
+    // the opaque agent slug, NOT by createdAt. The listing is asked for exactly
+    // those slugs and answers newest first; the route passes that order through.
     mockDbSelectFrom.mockReturnValue({
       where: vi.fn().mockResolvedValue([
         { agentSlug: 'aaaaaaaaaa' },
@@ -7299,17 +7306,16 @@ describe('GET /api/agents (enriched summary)', () => {
         { agentSlug: 'zzzzzzzzzz' },
       ]),
     })
-    const bySlug: Record<string, typeof baseAgent> = {
-      aaaaaaaaaa: { ...baseAgent, slug: 'aaaaaaaaaa', createdAt: new Date('2026-01-01') }, // oldest
-      mmmmmmmmmm: { ...baseAgent, slug: 'mmmmmmmmmm', createdAt: new Date('2026-01-03') }, // newest
-      zzzzzzzzzz: { ...baseAgent, slug: 'zzzzzzzzzz', createdAt: new Date('2026-01-02') },
-    }
-    const { getAgentWithStatus } = await import('@shared/lib/services/agent-service')
-    vi.mocked(getAgentWithStatus).mockImplementation(async (slug: string) => bySlug[slug])
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([
+      { ...baseAgent, slug: 'mmmmmmmmmm', createdAt: new Date('2026-01-03') }, // newest
+      { ...baseAgent, slug: 'zzzzzzzzzz', createdAt: new Date('2026-01-02') },
+      { ...baseAgent, slug: 'aaaaaaaaaa', createdAt: new Date('2026-01-01') }, // oldest
+    ])
 
     const res = await getReq(app, '/api/agents')
     expect(res.status).toBe(200)
 
+    expect(listAgentsWithStatus).toHaveBeenCalledWith({ slugs: ['aaaaaaaaaa', 'mmmmmmmmmm', 'zzzzzzzzzz'] })
     const body = await res.json()
     expect(body.map((a: { slug: string }) => a.slug)).toEqual([
       'mmmmmmmmmm', // 2026-01-03 newest

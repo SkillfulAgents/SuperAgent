@@ -26,6 +26,10 @@ vi.mock('./auth/mode', () => ({
 vi.mock('./auth/clear-pending-approval-bans', () => ({
   clearPendingApprovalBans: () => clearPendingApprovalBans(),
 }))
+vi.mock('./agent-actor/agent-catalog', () => ({
+  agentCatalog: { reconcile: async () => ({ imported: [], removed: [] }) },
+  identityFromInstructions: () => ({}),
+}))
 vi.mock('./services/agent-service', () => ({
   listAgents: () => listAgents(),
 }))

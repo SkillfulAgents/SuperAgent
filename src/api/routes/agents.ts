@@ -27,6 +27,7 @@ import {
   createAgent,
   getAgentWithStatus,
   getAgent,
+  getAgentRecord,
   updateAgent,
   deleteAgent,
   agentExists,
@@ -1340,20 +1341,10 @@ agents.get('/', async (c) => {
         .select({ agentSlug: agentAcl.agentSlug })
         .from(agentAcl)
         .where(eq(agentAcl.userId, userId))
-      const agentLimit = pLimit(10)
-      const agents = await Promise.all(
-        rows.map((r) => agentLimit(() => getAgentWithStatus(
-          r.agentSlug,
-          { includeSummary: false },
-        )))
-      )
-      agentList = agents.filter((a): a is ApiAgent => a !== null)
-      // The ACL query has no ORDER BY, so rows arrive in index-scan order — i.e.
-      // by agentSlug, which is now an opaque random id (it used to embed the name,
-      // so the scan was incidentally name-ish). Sort newest-first to match the
-      // non-auth listAgentsWithStatus() ordering, so a freshly created agent lands
-      // at the top of the sidebar (the client's applyAgentOrder floats new agents up).
-      agentList.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      // One catalog query for the visible slugs, newest first like the
+      // non-auth listing, so a freshly created agent lands at the top of the
+      // sidebar (the client's applyAgentOrder floats new agents up).
+      agentList = await listAgentsWithStatus({ slugs: rows.map((r) => r.agentSlug) })
     } else {
       agentList = await listAgentsWithStatus()
     }
@@ -7036,7 +7027,7 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
   const basePath = `/api/agents/${agentSlug}`
   // For the dispatch-consent dialog: resolved at render time so the wrapper
   // never needs a client-side agent-info fetch (removed by the fast-path work).
-  const agentName = (await getAgent(agentSlug))?.frontmatter.name ?? null
+  const agentName = (await getAgentRecord(agentSlug))?.name ?? null
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -7730,8 +7721,8 @@ agents.get('/:id/x-agent-policies', AgentRead(), async (c) => {
   const nameMap = new Map<string, string>()
   for (const targetSlug of targetSlugs) {
     if (visibleTargets && !visibleTargets.has(targetSlug)) continue
-    const target = await getAgent(targetSlug)
-    if (target) nameMap.set(targetSlug, target.frontmatter.name)
+    const target = await getAgentRecord(targetSlug)
+    if (target) nameMap.set(targetSlug, target.name)
   }
   return c.json({
     policies: rows
@@ -7752,7 +7743,7 @@ agents.get('/:id/x-agent-policies', AgentRead(), async (c) => {
 // edits never race through the whole-list replacement endpoint below.
 agents.patch('/:id/x-agent-policies', AgentAdmin(), async (c) => {
   const slug = getAgentId(c)
-  const callerAgent = await getAgent(slug)
+  const callerAgent = await getAgentRecord(slug)
   if (!callerAgent) {
     return c.json({ error: 'Agent not found' }, 404)
   }
@@ -7775,7 +7766,7 @@ agents.patch('/:id/x-agent-policies', AgentAdmin(), async (c) => {
     return c.json({ error: 'Cannot set a policy targeting the same agent' }, 400)
   }
   if (targetSlug !== null) {
-    const targetAgent = await getAgent(targetSlug)
+    const targetAgent = await getAgentRecord(targetSlug)
     if (!targetAgent || !(await callerCanSeeAgent(c, targetSlug))) {
       return c.json({ error: 'Agent not found' }, 404)
     }
@@ -7794,7 +7785,7 @@ agents.put('/:id/x-agent-policies', AgentAdmin(), async (c) => {
   const slug = getAgentId(c)
   // AgentAdmin checks role but not existence (and is a no-op in non-auth mode);
   // assert here so a typo'd slug doesn't write phantom rows that nothing references.
-  const callerAgent = await getAgent(slug)
+  const callerAgent = await getAgentRecord(slug)
   if (!callerAgent) {
     return c.json({ error: 'Agent not found' }, 404)
   }
@@ -7828,7 +7819,7 @@ agents.put('/:id/x-agent-policies/invoke/:target', AgentAdmin(), async (c) => {
   // target must also be VISIBLE to the caller (same anti-topology-leak rule
   // the GET route enforces) — and an invisible target returns the SAME 404 as
   // a nonexistent one, so this can't be used as an agent-existence oracle.
-  const [callerAgent, targetAgent] = await Promise.all([getAgent(slug), getAgent(targetSlug)])
+  const [callerAgent, targetAgent] = await Promise.all([getAgentRecord(slug), getAgentRecord(targetSlug)])
   if (!callerAgent || !targetAgent || !(await callerCanSeeAgent(c, targetSlug))) {
     return c.json({ error: 'Agent not found' }, 404)
   }

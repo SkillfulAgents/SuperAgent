@@ -1,9 +1,12 @@
 /**
  * Agent Service
  *
- * CRUD operations for agents. An agent is a CLAUDE.md (frontmatter plus
- * instructions) in its workspace, read and written through the agent actor's
- * `config` document `instructions`; which agents exist is the catalog's.
+ * CRUD operations for agents. Which agents exist and what they are called is
+ * the catalog's (the `agents` table); an agent's instructions are the body of
+ * the `CLAUDE.md` in its workspace, read and written through the agent
+ * actor's `config` document `instructions`. The frontmatter of that document
+ * is a projection of the catalog row that the host writes on create and
+ * rename, so the agent still sees who it is and exports still carry it.
  */
 
 import {
@@ -11,7 +14,6 @@ import {
   serializeMarkdownWithFrontmatter,
   displaySlug,
 } from '@shared/lib/utils/file-storage'
-import pLimit from 'p-limit'
 import {
   AgentFrontmatter,
   AgentConfig,
@@ -20,32 +22,61 @@ import {
   DEFAULT_AGENT_INSTRUCTIONS,
 } from '@shared/lib/types/agent'
 import type { ApiAgent } from '@shared/lib/types/api'
-import { agentCatalog, agentRegistry } from '@shared/lib/agent-actor'
+import {
+  agentCatalog,
+  agentRegistry,
+  identityFromInstructions,
+  type AgentIdentityChanges,
+  type AgentRecord,
+} from '@shared/lib/agent-actor'
 
 // ============================================================================
 // Internal to API Type Conversion
 // ============================================================================
 
 /**
- * Convert internal AgentConfig to API format
+ * Convert a catalog record to API format. Instructions are only carried by
+ * the single-agent responses; the list never reads a workspace.
  */
 function toApiAgent(
-  agent: AgentConfig,
+  record: AgentRecord,
   status: 'running' | 'stopped',
-  containerPort: number | null
+  containerPort: number | null,
+  instructions?: string,
 ): ApiAgent {
-  const healthWarnings = agentRegistry.get(agent.slug).container.health()
+  const healthWarnings = agentRegistry.get(record.slug).container.health()
   return {
-    slug: agent.slug,
-    displaySlug: displaySlug(agent.frontmatter.name, agent.slug),
-    name: agent.frontmatter.name,
-    description: agent.frontmatter.description,
-    instructions: agent.instructions,
-    createdAt: new Date(agent.frontmatter.createdAt),
+    slug: record.slug,
+    displaySlug: displaySlug(record.name, record.slug),
+    name: record.name,
+    description: record.description,
+    ...(instructions === undefined ? {} : { instructions }),
+    createdAt: record.createdAt,
     status,
     containerPort,
     ...(healthWarnings.length > 0 ? { healthWarnings } : {}),
   }
+}
+
+/**
+ * The frontmatter the host projects into `CLAUDE.md`: the row's identity over
+ * whatever other keys the document carries (a template version, say).
+ */
+function projectedFrontmatter(record: AgentRecord, carried: Record<string, unknown>): AgentFrontmatter {
+  const frontmatter = {
+    ...carried,
+    name: record.name,
+    createdAt: record.createdAt.toISOString(),
+  } as AgentFrontmatter
+  if (record.description === undefined) delete frontmatter.description
+  else frontmatter.description = record.description
+  return frontmatter
+}
+
+async function readInstructionsDocument(slug: string): Promise<{ frontmatter: Record<string, unknown>; body: string } | null> {
+  const content = await agentRegistry.get(slug).config.get('instructions')
+  if (content === null) return null
+  return parseMarkdownWithFrontmatter<Record<string, unknown>>(content)
 }
 
 // ============================================================================
@@ -53,76 +84,31 @@ function toApiAgent(
 // ============================================================================
 
 /**
- * Parse CLAUDE.md file into AgentConfig
+ * An agent's identity and placement, from the catalog alone. For callers that
+ * need a name, a description or a creation date and never the instructions.
  */
-async function parseAgentClaudeMd(slug: string): Promise<AgentConfig | null> {
-  const content = await agentRegistry.get(slug).config.get('instructions')
-
-  if (content === null) {
-    return null
-  }
-
-  const { frontmatter, body } = parseMarkdownWithFrontmatter<AgentFrontmatter>(content)
-
-  // Validate required fields
-  if (!frontmatter.name) {
-    console.warn(`Agent ${slug} has invalid CLAUDE.md: missing name`)
-    frontmatter.name = slug
-  }
-  frontmatter.name = String(frontmatter.name)
-
-  if (!frontmatter.createdAt) {
-    // Use directory creation time as fallback
-    frontmatter.createdAt = new Date().toISOString()
-  }
-
-  return {
-    slug,
-    frontmatter,
-    instructions: body,
-  }
+export async function getAgentRecord(slug: string): Promise<AgentRecord | null> {
+  return agentCatalog.get(slug)
 }
 
-/**
- * List agent slugs only — a directory listing plus a CLAUDE.md existence
- * check per entry, no frontmatter parsing. For callers that need scope
- * (which agents exist), not identity; listAgents() reads every agent's
- * CLAUDE.md sequentially, which is too heavy to run per request.
- */
+/** Every agent slug on this host, newest first. */
 export async function listAgentSlugs(): Promise<string[]> {
-  const slugs = await agentCatalog.list()
-  const limit = pLimit(10)
-  const checks = await Promise.all(
-    slugs.map((slug) =>
-      limit(async () => {
-        // Anything that is not a readable regular file — absent, a directory,
-        // a link that leaves the workspace — is "no CLAUDE.md", never a throw.
-        const stat = await agentRegistry.get(slug).files.stat('CLAUDE.md').catch(() => null)
-        return stat?.kind === 'file' ? slug : null
-      }),
-    ),
-  )
-  return checks.filter((slug): slug is string => slug !== null)
+  return agentCatalog.list()
 }
 
 /**
- * Get a single agent by slug
+ * Get a single agent by slug: its identity from the catalog, its instructions
+ * from the workspace. Null when there is no such agent; a workspace whose
+ * `CLAUDE.md` cannot be read is an error, not a missing agent.
  */
 export async function getAgent(slug: string): Promise<AgentConfig | null> {
-  // No directory pre-check on the happy path: a missing agent surfaces as a
-  // missing CLAUDE.md (config.get → null), and every stat is a round trip on
-  // network filesystems. This runs once per agent on the auth-mode list.
-  //
-  // The contract is still "null unless this is an agent directory": slugs
-  // reach here from request bodies and stored policy rows, not only from
-  // ResolveAgent, so a path that is a regular file (ENOTDIR), too long
-  // (ENAMETOOLONG) or malformed (a NUL byte) must be null, not a throw. Only
-  // that failure path pays the stat.
-  try {
-    return await parseAgentClaudeMd(slug)
-  } catch (error) {
-    if (await agentCatalog.exists(slug).catch(() => false)) throw error
-    return null
+  const record = await agentCatalog.get(slug)
+  if (!record) return null
+  const document = await readInstructionsDocument(slug)
+  return {
+    slug,
+    frontmatter: projectedFrontmatter(record, document?.frontmatter ?? {}),
+    instructions: document?.body ?? '',
   }
 }
 
@@ -142,7 +128,8 @@ export async function getAgentWithStatus(
   const actor = agentRegistry.get(slug)
   // Use cached status to avoid spawning docker processes
   const info = actor.container.status()
-  const base = toApiAgent(agent, info.status, info.port)
+  const record = (await agentCatalog.get(slug))!
+  const base = toApiAgent(record, info.status, info.port, agent.instructions)
 
   // Routes that either discard the body (/start) or immediately run the richer
   // enrichAgentsWithSummary pass (list/detail) skip this otherwise-duplicate
@@ -176,43 +163,24 @@ export async function getAgentWithStatus(
   }
 }
 
-/**
- * List all agents by scanning directories
- */
-export async function listAgents(): Promise<AgentConfig[]> {
-  const slugs = await agentCatalog.list()
-
-  // One CLAUDE.md read per agent; concurrent, bounded. Sequential reads made
-  // the agents list cost N round trips before any per-agent summary work
-  // could start.
-  const limit = pLimit(10)
-  const parsed = await Promise.all(slugs.map((slug) => limit(() => parseAgentClaudeMd(slug))))
-  const agents = parsed.filter((agent): agent is AgentConfig => agent !== null)
-
-  // Sort by creation date, newest first
-  agents.sort((a, b) => {
-    const dateA = new Date(a.frontmatter.createdAt).getTime()
-    const dateB = new Date(b.frontmatter.createdAt).getTime()
-    return dateB - dateA
-  })
-
-  return agents
+/** Every agent, newest first. One query; no workspace is read. */
+export async function listAgents(): Promise<AgentRecord[]> {
+  return agentCatalog.records()
 }
 
 /**
- * List all agents with container status (returns API format)
+ * List agents with container status (returns API format), newest first.
+ * `slugs` restricts the listing to those agents, for the ACL-scoped list.
  * Uses cached container status to avoid spawning docker processes.
  */
-export async function listAgentsWithStatus(): Promise<ApiAgent[]> {
-  const agents = await listAgents()
+export async function listAgentsWithStatus(options: { slugs?: string[] } = {}): Promise<ApiAgent[]> {
+  const records = options.slugs ? await agentCatalog.getMany(options.slugs) : await agentCatalog.records()
 
   // Use cached status to avoid spawning docker processes
-  const agentsWithStatus = agents.map((agent) => {
-    const info = agentRegistry.get(agent.slug).container.status()
-    return toApiAgent(agent, info.status, info.port)
+  return records.map((record) => {
+    const info = agentRegistry.get(record.slug).container.status()
+    return toApiAgent(record, info.status, info.port)
   })
-
-  return agentsWithStatus
 }
 
 // ============================================================================
@@ -225,39 +193,35 @@ export async function listAgentsWithStatus(): Promise<ApiAgent[]> {
 export async function createAgent(input: CreateAgentInput): Promise<ApiAgent> {
   const { name: rawName, description, instructions } = input
   const name = String(rawName)
+  const body = instructions || DEFAULT_AGENT_INSTRUCTIONS
+  const record = await writeNewAgent({ name, description: description || undefined }, body)
+  return toApiAgent(record, 'stopped', null, body)
+}
 
+/**
+ * Mint a slug, write the workspace, then record the agent. The row is written
+ * last so a workspace that failed to write never shows as an agent; a
+ * workspace whose row failed to write is imported at the next boot.
+ */
+async function writeNewAgent(
+  identity: { name: string; description?: string },
+  body: string,
+): Promise<AgentRecord> {
   // Mint an opaque id — the name no longer feeds the folder, so the "Untitled"
   // promptless-create flow can't poison it.
   const slug = await agentCatalog.mint()
   const actor = agentRegistry.get(slug)
+  const createdAt = new Date()
 
-  // Create directory structure
   await actor.files.mkdir('')
 
-  // Create CLAUDE.md
-  const frontmatter: AgentFrontmatter = {
-    name,
-    createdAt: new Date().toISOString(),
+  const frontmatter: AgentFrontmatter = { name: identity.name, createdAt: createdAt.toISOString() }
+  if (identity.description) {
+    frontmatter.description = identity.description
   }
-  if (description) {
-    frontmatter.description = description
-  }
+  await actor.config.put('instructions', serializeMarkdownWithFrontmatter(frontmatter, body))
 
-  const body = instructions || DEFAULT_AGENT_INSTRUCTIONS
-  const content = serializeMarkdownWithFrontmatter(frontmatter, body)
-  await actor.config.put('instructions', content)
-
-  // Return in API format (new agents are always stopped)
-  return {
-    slug,
-    displaySlug: displaySlug(name, slug),
-    name,
-    description,
-    instructions: body,
-    createdAt: new Date(frontmatter.createdAt),
-    status: 'stopped',
-    containerPort: null,
-  }
+  return agentCatalog.insert({ slug, name: identity.name, description: identity.description, createdAt })
 }
 
 /**
@@ -267,45 +231,81 @@ export async function updateAgent(
   slug: string,
   updates: UpdateAgentInput
 ): Promise<ApiAgent | null> {
-  const agent = await getAgent(slug)
-  if (!agent) {
+  const record = await agentCatalog.get(slug)
+  if (!record) {
     return null
   }
 
-  // Update frontmatter
-  const newFrontmatter: AgentFrontmatter = {
-    ...agent.frontmatter,
-  }
-
+  const changes: AgentIdentityChanges = {}
   if (updates.name !== undefined) {
-    newFrontmatter.name = String(updates.name)
+    changes.name = String(updates.name)
   }
   if (updates.description !== undefined) {
-    newFrontmatter.description = updates.description || undefined
+    changes.description = updates.description || null
   }
+  const updated = (await agentCatalog.update(slug, changes)) ?? record
 
-  // Update instructions
-  const newInstructions =
-    updates.instructions !== undefined ? updates.instructions : agent.instructions
-
-  // Write back to file
+  // Rewrite the document: the new body if given, and the identity projection
+  // either way, so the agent sees its new name.
   const actor = agentRegistry.get(slug)
-  const content = serializeMarkdownWithFrontmatter(newFrontmatter, newInstructions)
-  await actor.config.put('instructions', content)
+  const document = await readInstructionsDocument(slug)
+  const body = updates.instructions !== undefined ? updates.instructions : document?.body ?? ''
+  await actor.config.put(
+    'instructions',
+    serializeMarkdownWithFrontmatter(projectedFrontmatter(updated, document?.frontmatter ?? {}), body),
+  )
 
   // Get container status
   const info = await actor.container.info()
 
-  return {
-    slug,
-    displaySlug: displaySlug(newFrontmatter.name, slug),
-    name: newFrontmatter.name,
-    description: newFrontmatter.description,
-    instructions: newInstructions,
-    createdAt: new Date(newFrontmatter.createdAt),
-    status: info.status,
-    containerPort: info.port,
+  return toApiAgent(updated, info.status, info.port, body)
+}
+
+/**
+ * Rewrite the identity projection in an agent's `CLAUDE.md` from its catalog
+ * row, keeping the document's other frontmatter keys and its body. For after
+ * something else has replaced the document, such as a template update.
+ */
+export async function writeAgentIdentityProjection(slug: string): Promise<void> {
+  const record = await agentCatalog.get(slug)
+  if (!record) return
+  const document = await readInstructionsDocument(slug)
+  if (!document) return
+  await writeProjection(record, document)
+}
+
+async function writeProjection(
+  record: AgentRecord,
+  document: { frontmatter: Record<string, unknown>; body: string },
+): Promise<void> {
+  await agentRegistry.get(record.slug).config.put(
+    'instructions',
+    serializeMarkdownWithFrontmatter(projectedFrontmatter(record, document.frontmatter), document.body),
+  )
+}
+
+/**
+ * Take an agent's name and description from the `CLAUDE.md` its workspace
+ * now holds (an imported template, an installed skillset agent), then write
+ * the projection back. `name` overrides whatever the document carries; a
+ * document without a name keeps the row's. The creation date stays the row's.
+ */
+export async function adoptAgentIdentityFromWorkspace(
+  slug: string,
+  overrides: { name?: string } = {},
+): Promise<AgentRecord | null> {
+  const record = await agentCatalog.get(slug)
+  if (!record) return null
+  const content = await agentRegistry.get(slug).config.get('instructions')
+  const carried = content === null ? {} : identityFromInstructions(content)
+  const name = overrides.name?.trim() || carried.name || record.name
+  const description = carried.description ?? record.description ?? null
+  const updated = (await agentCatalog.update(slug, { name, description })) ?? record
+  // One read of the document serves both the adoption and the projection.
+  if (content !== null) {
+    await writeProjection(updated, parseMarkdownWithFrontmatter<Record<string, unknown>>(content))
   }
+  return updated
 }
 
 /**
@@ -367,33 +367,14 @@ export async function deleteAgent(slug: string): Promise<boolean> {
 
 /**
  * Create a new agent with an empty workspace, ready for files to be placed into it.
- * Used by template import/install which populates the workspace after creation.
+ * Used by template import/install which populates the workspace after creation
+ * and then adopts the identity the template carries.
  */
 export async function createAgentFromExistingWorkspace(rawName: string): Promise<ApiAgent> {
   const name = String(rawName)
-  const slug = await agentCatalog.mint()
-  const actor = agentRegistry.get(slug)
-
-  await actor.files.mkdir('')
-
-  // Create a basic CLAUDE.md (may be overwritten by template)
-  const frontmatter: AgentFrontmatter = {
-    name,
-    createdAt: new Date().toISOString(),
-  }
-
-  const body = DEFAULT_AGENT_INSTRUCTIONS
-  const content = serializeMarkdownWithFrontmatter(frontmatter, body)
-  await actor.config.put('instructions', content)
-
-  return {
-    slug,
-    displaySlug: displaySlug(name, slug),
-    name,
-    createdAt: new Date(frontmatter.createdAt),
-    status: 'stopped',
-    containerPort: null,
-  }
+  // A basic CLAUDE.md (may be overwritten by template)
+  const record = await writeNewAgent({ name }, DEFAULT_AGENT_INSTRUCTIONS)
+  return toApiAgent(record, 'stopped', null)
 }
 
 /**

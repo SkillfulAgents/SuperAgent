@@ -482,6 +482,21 @@ export const mcpAuditLog = sqliteTable('mcp_audit_log', {
   mcpAgentIdx: index('mcp_audit_log_mcp_agent_idx').on(table.remoteMcpId, table.agentSlug),
 }))
 
+// Agents - which agents exist and what they are called. The row is the
+// authority for name and description; the agent's CLAUDE.md keeps a
+// frontmatter projection of them that the host writes on create and rename.
+// Placement says where the workspace lives: `runtime` is 'local' for a
+// directory under the agents data directory, and `workspace_handle` is the
+// provider's handle for a workspace held elsewhere (null for a local one).
+export const agents = sqliteTable('agents', {
+  slug: text('slug').primaryKey(),
+  name: text('name').notNull(),
+  description: text('description'),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  runtime: text('runtime').notNull().default('local'),
+  workspaceHandle: text('workspace_handle'),
+})
+
 // Agent ACLs - maps users to agents with roles (auth mode only)
 export const agentAcl = sqliteTable('agent_acl', {
   id: text('id').primaryKey(),
@@ -727,6 +742,8 @@ export type AgentRemoteMcp = typeof agentRemoteMcps.$inferSelect
 export type NewAgentRemoteMcp = typeof agentRemoteMcps.$inferInsert
 export type McpAuditLogEntry = typeof mcpAuditLog.$inferSelect
 export type NewMcpAuditLogEntry = typeof mcpAuditLog.$inferInsert
+export type AgentRow = typeof agents.$inferSelect
+export type NewAgentRow = typeof agents.$inferInsert
 export type AgentAcl = typeof agentAcl.$inferSelect
 export type NewAgentAcl = typeof agentAcl.$inferInsert
 export type UserSettingsRow = typeof userSettings.$inferSelect

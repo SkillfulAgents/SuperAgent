@@ -52,7 +52,14 @@ import {
   refreshSkillset,
 } from '@shared/lib/services/skillset-service'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
-import { createAgentFromExistingWorkspace, deleteAgent, getAgentWithStatus, listAgents } from '@shared/lib/services/agent-service'
+import {
+  adoptAgentIdentityFromWorkspace,
+  createAgentFromExistingWorkspace,
+  deleteAgent,
+  getAgentWithStatus,
+  listAgents,
+  writeAgentIdentityProjection,
+} from '@shared/lib/services/agent-service'
 import type {
   SkillsetConfig,
   InstalledAgentMetadata,
@@ -767,16 +774,10 @@ export async function importAgentFromTemplate(
       totalExtracted += size
     }
 
-    if (nameOverride?.trim()) {
-      let content = await actor.config.get('instructions')
-      if (content) {
-        content = content.replace(
-          /^(---\s*\n[\s\S]*?)(name:\s*).+$/m,
-          `$1$2${nameOverride.trim()}`
-        )
-        await actor.config.put('instructions', content)
-      }
-    }
+    // The template's CLAUDE.md replaced the one the agent was created with:
+    // take the name (unless overridden) and description it carries, and
+    // write the identity back into it.
+    await adoptAgentIdentityFromWorkspace(agent.slug, { name: nameOverride })
 
     const result = await getAgentWithStatus(agent.slug)
     return result || agent
@@ -835,14 +836,9 @@ export async function installAgentFromSkillset(
   await copyHostDirIntoWorkspace(actor.files, agentDirInRepo, '', { followSymlinks: true })
 
   // The template's CLAUDE.md overwrites the one createAgentFromExistingWorkspace
-  // wrote, so patch the frontmatter name and createdAt to the install time.
-  const claudeMdContent = await actor.config.get('instructions')
-  if (claudeMdContent) {
-    const { frontmatter, body } = parseMarkdownWithFrontmatter<AgentFrontmatter>(claudeMdContent)
-    frontmatter.name = agentName
-    frontmatter.createdAt = agent.createdAt.toISOString()
-    await actor.config.put('instructions', serializeMarkdownWithFrontmatter(frontmatter, body))
-  }
+  // wrote: keep the chosen name and the install time, take the description
+  // the template carries, and write the identity back into the document.
+  await adoptAgentIdentityFromWorkspace(agent.slug, { name: agentName })
 
   // Compute hash of template files
   const hash = await computeWorkspaceTemplateHash(actor.files)
@@ -906,6 +902,8 @@ export async function updateAgentFromSkillset(
 
   // Walk the template source and copy files, preserving .env/session-metadata
   await copyTemplateFiles(agentDirInRepo, actor.files)
+  // The template's CLAUDE.md replaced the projection; the agent keeps its name.
+  await writeAgentIdentityProjection(agentSlug)
 
   // Recompute hash
   const hash = await computeWorkspaceTemplateHash(actor.files)

@@ -1,6 +1,6 @@
 import type { ServerType } from '@hono/node-server'
 import pLimit from 'p-limit'
-import { containerHost } from './agent-actor'
+import { agentCatalog, containerHost } from './agent-actor'
 import { shutdownActiveRunner } from './container/client-factory'
 import { reviewManager } from './proxy/review-manager'
 import { accountReauthManager } from './proxy/account-reauth-manager'
@@ -159,7 +159,18 @@ async function initializeServicesInner() {
         captureException(error, { tags: { component: 'startup', operation: 'install-fetch-interceptor' } })
       }
     })(),
-    listAgents(),
+    (async () => {
+      // The catalog is rebuilt from the agent directories before anything
+      // lists it: a database that was lost still finds every local agent, and
+      // a workspace removed by hand no longer shows.
+      const reconciled = await agentCatalog.reconcile()
+      if (reconciled.imported.length > 0 || reconciled.removed.length > 0) {
+        console.log(
+          `[startup] Agent catalog reconciled: ${reconciled.imported.length} imported, ${reconciled.removed.length} removed`,
+        )
+      }
+      return listAgents()
+    })(),
   ])
   markBoot('dbReady')
   const slugs = agents.map((a) => a.slug)

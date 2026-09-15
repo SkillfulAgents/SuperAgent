@@ -6,7 +6,9 @@ import { db } from '@shared/lib/db'
 import { agentAcl, connectedAccounts, remoteMcpServers, notifications } from '@shared/lib/db/schema'
 import { getAgentOwnerUserId } from '@shared/lib/services/agent-owner'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
-import { resolveAgentId } from '@shared/lib/utils/file-storage'
+// The catalog leaf, not the actor package index: the index loads the
+// container layer, which every route test would then have to mock.
+import { agentCatalog } from '@shared/lib/agent-actor/agent-catalog'
 
 // Lazy import to avoid pulling in better-auth ESM at import time
 let _getAuth: (() => ReturnType<typeof import('@shared/lib/auth/index').getAuth>) | null = null
@@ -116,7 +118,7 @@ function isAdmin(user: { role?: string }): boolean {
  */
 export function ResolveAgent(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
-    const id = await resolveAgentId(c.req.param('id') ?? '')
+    const id = await agentCatalog.resolve(c.req.param('id') ?? '')
     if (!id) return c.json({ error: 'Agent not found' }, 404)
     c.set('agentId' as never, id as never)
     return next()
