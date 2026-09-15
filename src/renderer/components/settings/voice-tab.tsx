@@ -22,7 +22,8 @@ import { readAloud, useReadAloud } from '@renderer/hooks/use-read-aloud'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import type { ApiKeyStatus, VoiceProvider } from '@shared/lib/config/settings'
-import { TTS_SPEEDS, resolveHoldSound, resolveTtsSpeed, type TtsVoiceInfo } from '@shared/lib/voice/tts-preferences'
+import { TTS_SPEEDS, resolveHoldSound, resolveTtsSpeed, resolveUserMusic, type TtsVoiceInfo } from '@shared/lib/voice/tts-preferences'
+import { userMusicSupported } from '@renderer/hooks/use-user-music'
 
 const VOICE_PROVIDERS = [
   {
@@ -384,6 +385,7 @@ function PersonalVoiceSection({ heading, offerWorkspaceDefault }: { heading: str
   const ownVoice = stored && voices.some((v) => v.id === stored) ? stored : null
   const speedOption = TTS_SPEEDS.find((s) => s.value === speed)
   const holdSound = resolveHoldSound(userSettings?.voice?.holdSound)
+  const userMusic = resolveUserMusic(userSettings?.voice?.userMusic)
 
   return (
     <div className="space-y-4" data-testid="personal-voice-section">
@@ -433,6 +435,22 @@ function PersonalVoiceSection({ heading, offerWorkspaceDefault }: { heading: str
           onCheckedChange={(holdSound) => updateUserSettings.mutate({ voice: { holdSound } })}
         />
       </div>
+      {userMusicSupported() && (
+        <div className="flex items-center justify-between gap-4 pt-2">
+          <div className="space-y-1">
+            <Label htmlFor="voice-user-music">Use my music as the hold sound</Label>
+            <p className="text-xs text-muted-foreground">
+              When Spotify, Music or a browser is already playing, voice mode pauses it while anyone speaks and, with the hold sound on, lets it play while the agent works.
+            </p>
+          </div>
+          <Switch
+            id="voice-user-music"
+            checked={userMusic}
+            disabled={isLoading}
+            onCheckedChange={(userMusic) => updateUserSettings.mutate({ voice: { userMusic } })}
+          />
+        </div>
+      )}
     </div>
   )
 }

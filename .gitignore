@@ -10,6 +10,7 @@ release/
 agent-container/dist/
 build/lima/
 build/wsl2/
+build/mediaremote-adapter/
 
 # Test coverage
 coverage/

@@ -91,6 +91,20 @@ describe('useHoldSound', () => {
     expect(sound.start).toHaveBeenCalled()
   })
 
+  it('drives whichever source it is handed, and hands the old one back when it changes', () => {
+    const music = { start: vi.fn(), stop: vi.fn(), stopImmediately: vi.fn(), prime: vi.fn() }
+    const { rerender } = renderHook(({ source }) => useHoldSound({ enabled: true, agentTurn: true, working: true, source }), { initialProps: { source: music } })
+    expect(music.prime).toHaveBeenCalledOnce()
+    expect(sound.prime).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(HOLD_DELAY_MS + 200)
+    expect(music.start).toHaveBeenCalled()
+    expect(sound.start).not.toHaveBeenCalled()
+    rerender({ source: sound })
+    expect(music.stop).toHaveBeenCalled()
+    vi.advanceTimersByTime(HOLD_DELAY_MS + 200)
+    expect(sound.start).toHaveBeenCalled()
+  })
+
   it('takes an explicit delay policy without knowing the provider', () => {
     renderHook(() => useHoldSound({ enabled: true, agentTurn: true, working: true, delayMs: 2000 }))
     vi.advanceTimersByTime(1800)

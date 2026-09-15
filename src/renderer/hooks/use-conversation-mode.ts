@@ -4,6 +4,7 @@ import { useInterruptSession } from './use-messages'
 import { createVoiceConversation } from '@renderer/lib/voice-conversation-factory'
 import { VoiceAgentCoordinator } from '@renderer/lib/voice-agent-coordinator'
 import { holdSound } from '@renderer/lib/speech/hold-sound'
+import { userMusic } from '@renderer/lib/speech/user-music'
 import type { VoiceHistory } from '@shared/lib/voice/conversation-types'
 import type { VoiceAgentSnapshot, VoiceAgentState, VoiceConversationAdapter, VoiceConversationEngine, VoiceConversationSnapshot } from '@renderer/lib/voice-conversation'
 
@@ -74,7 +75,10 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
       onSnapshot: (next) => {
         if (disposed) return
         const talking = next.userSpeaking || next.assistantSpeaking
-        if (talking && !speechActive) holdSound.stopImmediately()
+        if (talking && !speechActive) {
+          holdSound.stopImmediately()
+          userMusic.stopImmediately()
+        }
         speechActive = talking
         setSnapshot(previous => previous.phase === next.phase && previous.ready === next.ready
           && previous.userSpeaking === next.userSpeaking && previous.assistantSpeaking === next.assistantSpeaking
