@@ -240,6 +240,28 @@ describe('triggerSessionComplete — automated-session gating', () => {
     expect(scopeAtSummarize).toBeUndefined()
   })
 
+  it('falls back to the plain body when the owner lookup throws', async () => {
+    mocks.getAgentOwnerUserId.mockImplementationOnce(() => {
+      throw new Error('acl unavailable')
+    })
+
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x', {
+      responseText: 'x'.repeat(241),
+    })
+
+    expect(mocks.createSummarizerText).not.toHaveBeenCalled()
+    expect(mockCreateNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'session_complete',
+        body: 'Demo Agent has finished running',
+      }),
+    )
+    expect(mocks.captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({ tags: { area: 'notifications', op: 'session-complete-body' } }),
+    )
+  })
+
   it('preserves per-session notification order when an earlier summary is slow', async () => {
     let resolveFirstSummary: ((value: string) => void) | undefined
     mocks.createSummarizerText.mockImplementationOnce(

@@ -238,17 +238,20 @@ class NotificationManager {
       body: {
         fallback: fallbackBody,
         // The summarizer is a host-direct proxy call fired from the container
-        // event stream, outside any request scope. Attribute it to the agent owner.
-        resolve: async () => runWithOptionalUser(getAgentOwnerUserId(agentSlug), async () => {
+        // event stream, outside any request scope. Attribute it to the agent
+        // owner. The owner lookup is a DB read, so it stays inside the guard.
+        resolve: async () => {
           try {
-            return await buildSessionCompleteBody({
-              sessionId,
-              agentSlug,
-              responseText: options.responseText,
-              responseTranscriptEndOffset:
-                await options.responseTranscriptEndOffset,
-              fallbackBody,
-            })
+            return await runWithOptionalUser(getAgentOwnerUserId(agentSlug), async () =>
+              buildSessionCompleteBody({
+                sessionId,
+                agentSlug,
+                responseText: options.responseText,
+                responseTranscriptEndOffset:
+                  await options.responseTranscriptEndOffset,
+                fallbackBody,
+              }),
+            )
           } catch (error) {
             // Body enrichment must never turn a successful session into a lost
             // notification. The helper is defensive too; this is the last guard.
@@ -259,7 +262,7 @@ class NotificationManager {
             })
             return fallbackBody
           }
-        }),
+        },
       },
     })
   }
