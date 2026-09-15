@@ -616,7 +616,8 @@ class ChatIntegrationManager {
       }
       case 'slack': {
         const { SlackConnector } = await import('./slack-connector')
-        return new SlackConnector(config as import('./slack-connector').SlackConfig, appLink)
+        const { createSlackThreadStateStore } = await import('./slack-thread-state')
+        return new SlackConnector(config as import('./slack-connector').SlackConfig, appLink, createSlackThreadStateStore(integration.id))
       }
       case 'imessage': {
         const { IMessageConnector } = await import('./imessage-connector')
