@@ -45,7 +45,7 @@ const VOICE_PROVIDERS = [
     label: 'OpenAI',
     model: 'GPT-4o Mini Transcribe · GPT-Live',
     docsUrl: 'https://platform.openai.com/docs/guides/speech-to-text#supported-languages',
-    note: 'Dictation and in-conversation voice with GPT-Live. Uses your OpenAI API key and the app’s configured summarizer.',
+    note: 'Dictation and read-aloud use your OpenAI API key. Conversation voice uses GPT-Live and the app’s configured summarizer.',
   },
 ]
 
@@ -418,7 +418,7 @@ function PersonalVoiceSection({ heading, offerWorkspaceDefault }: { heading: str
         </Select>
       </div>
       <p className="text-xs text-muted-foreground">
-        Used by the speaker button under agent replies and in voice mode. Only you hear these choices.
+        Used when reading agent replies aloud. Only you hear these choices.
       </p>
       <VoicePreviewButton />
       <div className="flex items-center justify-between gap-4 pt-2">
@@ -497,7 +497,7 @@ export function VoiceTab() {
 
       {conversationEngine === 'openai-live' && (
         <p className="text-sm text-muted-foreground">
-          Conversation voice uses OpenAI Live with the Marin voice. Open an agent conversation and press the voice button to talk.
+          Conversation voice uses OpenAI Live with the Marin voice. The voice and speed settings above apply to read-aloud playback. Open an agent conversation and press the voice button to talk.
         </p>
       )}
       {!ttsAvailable && conversationEngine !== 'openai-live' && !showAdminFeatures && (
@@ -540,7 +540,7 @@ export function VoiceTab() {
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground">
-                Choose which service to use for voice-to-text transcription.
+                Choose which service to use for transcription and speech.
               </p>
               {selectedProvider && (() => {
                 const info = VOICE_PROVIDERS.find(p => p.value === selectedProvider)

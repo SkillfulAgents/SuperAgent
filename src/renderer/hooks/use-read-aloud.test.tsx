@@ -10,7 +10,7 @@ const createTtsAdapter = vi.fn((_provider: string) => ({ fake: 'adapter' }))
 vi.mock('@renderer/lib/tts', () => ({ createTtsAdapter: (provider: string) => createTtsAdapter(provider) }))
 
 interface FakePlayer {
-  options: { adapter: unknown; token: string; voice: { voice: string; speed?: number }; firstWordIndex?: number; onStatus?: (s: string, e?: Error) => void }
+  options: { adapter: unknown; connection: { transport: 'websocket'; token: string } | { transport: 'http' }; voice: { voice: string; speed?: number }; firstWordIndex?: number; onStatus?: (s: string, e?: Error) => void }
   status: string
   start: ReturnType<typeof vi.fn>
   append: ReturnType<typeof vi.fn>
@@ -59,15 +59,15 @@ describe('readAloud controller', () => {
   })
 
   it('fetches credentials, then speaks the message through a player', async () => {
-    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', token: 'jwt', voice: 'aura-2-luna-en', speed: 1.2 }))
+    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', connection: { transport: 'websocket', token: 'jwt' }, voice: 'aura-2-luna-en', speed: 1.2 }))
     const speaking = readAloud.speak('m1', 'Hello **world**. Bye.')
     expect(readAloud.getSnapshot()).toEqual({ activeId: 'm1', status: 'connecting', error: null, errorId: null })
     await speaking
 
-    expect(apiFetch).toHaveBeenCalledWith('/api/voice/tts-token')
+    expect(apiFetch).toHaveBeenCalledWith('/api/voice/tts-session')
     expect(createTtsAdapter).toHaveBeenCalledWith('deepgram')
     const player = players[0]
-    expect(player.options).toMatchObject({ token: 'jwt', voice: { voice: 'aura-2-luna-en', speed: 1.2 } })
+    expect(player.options).toMatchObject({ connection: { transport: 'websocket', token: 'jwt' }, voice: { voice: 'aura-2-luna-en', speed: 1.2 } })
     expect(player.start).toHaveBeenCalledTimes(1)
     expect(player.append.mock.calls[0][0].map((w: { text: string }) => w.text)).toEqual(['Hello', 'world.', 'Bye.'])
     expect(player.end).toHaveBeenCalledTimes(1)
@@ -80,8 +80,16 @@ describe('readAloud controller', () => {
     expect(readAloud.getPlayer()).toBeNull()
   })
 
+  it('uses server-side OpenAI synthesis without a browser token', async () => {
+    apiFetch.mockResolvedValue(tokenResponse({ provider: 'openai', connection: { transport: 'http' }, voice: 'marin', speed: 1 }))
+    await readAloud.speak('m1', 'Hello there.')
+    expect(createTtsAdapter).toHaveBeenCalledWith('openai')
+    expect(players[0].options.connection).toEqual({ transport: 'http' })
+    expect(players[0].options).not.toHaveProperty('token')
+  })
+
   it('stop() halts the player and goes idle', async () => {
-    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', token: 'jwt', voice: 'v' }))
+    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', connection: { transport: 'websocket', token: 'jwt' }, voice: 'v' }))
     await readAloud.speak('m1', 'Hello there.')
     readAloud.stop()
     expect(players[0].stop).toHaveBeenCalledTimes(1)
@@ -92,7 +100,7 @@ describe('readAloud controller', () => {
   })
 
   it('speaking another message stops the current one', async () => {
-    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', token: 'jwt', voice: 'v' }))
+    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', connection: { transport: 'websocket', token: 'jwt' }, voice: 'v' }))
     await readAloud.speak('m1', 'First.')
     await readAloud.speak('m2', 'Second.')
     expect(players[0].stop).toHaveBeenCalledTimes(1)
@@ -105,14 +113,14 @@ describe('readAloud controller', () => {
     apiFetch.mockReturnValue(new Promise((r) => { resolve = r }))
     const speaking = readAloud.speak('m1', 'Hello.')
     readAloud.stop()
-    resolve(tokenResponse({ provider: 'deepgram', token: 'jwt', voice: 'v' }))
+    resolve(tokenResponse({ provider: 'deepgram', connection: { transport: 'websocket', token: 'jwt' }, voice: 'v' }))
     await speaking
     expect(players).toHaveLength(0)
     expect(readAloud.getSnapshot().activeId).toBeNull()
   })
 
   it('pause and resume go to the player, and its paused status shows in the snapshot', async () => {
-    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', token: 'jwt', voice: 'v', speed: 1 }))
+    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', connection: { transport: 'websocket', token: 'jwt' }, voice: 'v', speed: 1 }))
     await readAloud.speak('m1', 'Hello there.')
     readAloud.pause()
     expect(players[0].pause).toHaveBeenCalledTimes(1)
@@ -125,15 +133,15 @@ describe('readAloud controller', () => {
   })
 
   it('restart() re-fetches credentials and resumes from the word being spoken', async () => {
-    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', token: 'jwt', voice: 'v', speed: 1 }))
+    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', connection: { transport: 'websocket', token: 'jwt' }, voice: 'v', speed: 1 }))
     await readAloud.speak('m1', 'One two three. Four five six.')
     players[0].getWordCursor.mockReturnValue(3.6)
-    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', token: 'jwt2', voice: 'v', speed: 1.3 }))
+    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', connection: { transport: 'websocket', token: 'jwt2' }, voice: 'v', speed: 1.3 }))
     readAloud.restart()
     await new Promise((r) => setTimeout(r, 0))
     expect(players[0].stop).toHaveBeenCalledTimes(1)
     const next = players[1]
-    expect(next.options).toMatchObject({ token: 'jwt2', voice: { voice: 'v', speed: 1.3 }, firstWordIndex: 3 })
+    expect(next.options).toMatchObject({ connection: { transport: 'websocket', token: 'jwt2' }, voice: { voice: 'v', speed: 1.3 }, firstWordIndex: 3 })
     expect(next.append.mock.calls[0][0].map((w: { text: string }) => w.text)).toEqual(['Four', 'five', 'six.'])
     expect(readAloud.getSnapshot().activeId).toBe('m1')
     // nothing to restart once stopped
@@ -144,7 +152,7 @@ describe('readAloud controller', () => {
   })
 
   it('restart() after playback finished does nothing (no replay from the top)', async () => {
-    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', token: 'jwt', voice: 'v', speed: 1 }))
+    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', connection: { transport: 'websocket', token: 'jwt' }, voice: 'v', speed: 1 }))
     await readAloud.speak('m1', 'One two three.')
     players[0].options.onStatus?.('done')
     readAloud.restart()
@@ -154,7 +162,7 @@ describe('readAloud controller', () => {
   })
 
   it('restart() while paused carries on paused at the new speed', async () => {
-    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', token: 'jwt', voice: 'v', speed: 1 }))
+    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', connection: { transport: 'websocket', token: 'jwt' }, voice: 'v', speed: 1 }))
     await readAloud.speak('m1', 'One two three. Four five six.')
     players[0].status = 'paused'
     players[0].getWordCursor.mockReturnValue(2)
@@ -173,7 +181,7 @@ describe('readAloud controller', () => {
     await readAloud.speak('m1', 'Hello.')
     expect(readAloud.getSnapshot()).toEqual({ activeId: null, status: 'idle', error: 'No voice provider configured', errorId: 'm1' })
 
-    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', token: 'jwt', voice: 'v' }))
+    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', connection: { transport: 'websocket', token: 'jwt' }, voice: 'v' }))
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     await readAloud.speak('m2', 'Hello.')
     expect(readAloud.getSnapshot().error).toBeNull() // cleared on the next play
@@ -191,7 +199,7 @@ describe('useReadAloud', () => {
   })
 
   it('reports status for its own message only and toggles play/stop', async () => {
-    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', token: 'jwt', voice: 'v' }))
+    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', connection: { transport: 'websocket', token: 'jwt' }, voice: 'v' }))
     const { result } = renderHook(() => useReadAloud('m1', 'Hello.'))
     const other = renderHook(() => useReadAloud('m2', 'Other.'))
     expect(result.current.status).toBe('idle')
@@ -218,7 +226,7 @@ describe('useReadAloud', () => {
     expect(result.current.error).toBe('Deepgram key revoked')
     expect(other.result.current.error).toBeNull()
     // the next play clears it
-    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', token: 'jwt', voice: 'v' }))
+    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', connection: { transport: 'websocket', token: 'jwt' }, voice: 'v' }))
     await act(async () => { result.current.toggle() })
     expect(result.current.error).toBeNull()
   })
@@ -274,7 +282,7 @@ describe('useSpokenWordHighlight', () => {
 })
 
 describe('readAloud streaming', () => {
-  const credentials = tokenResponse({ provider: 'deepgram', token: 'jwt', voice: 'v', speed: 1 })
+  const credentials = tokenResponse({ provider: 'deepgram', connection: { transport: 'websocket', token: 'jwt' }, voice: 'v', speed: 1 })
   const spoken = (player: FakePlayer, call = 0) => player.append.mock.calls[call][0].map((w: { text: string }) => w.text)
 
   beforeEach(() => {
@@ -445,13 +453,13 @@ describe('readAloud streaming', () => {
     players[0].options.onStatus?.('speaking')
     players[0].getWordCursor.mockReturnValue(4.2) // in the middle of "five"
     apiFetch.mockClear()
-    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', token: 'fresh', voice: 'v', speed: 1 }))
+    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', connection: { transport: 'websocket', token: 'fresh' }, voice: 'v', speed: 1 }))
     players[0].options.onStatus?.('error', new Error('connection closed before the reply finished'))
     expect(readAloud.getSnapshot()).toEqual({ activeId: 'v', status: 'connecting', error: null, errorId: null })
     expect(readAloud.getStreamWordCursor()).toBe(3)
     await tick()
     expect(players).toHaveLength(2)
-    expect(players[1].options.token).toBe('fresh')
+    expect(players[1].options.connection).toEqual({ transport: 'websocket', token: 'fresh' })
     expect(spoken(players[1])).toEqual(['five', 'six.', 'Seven', 'eight', 'nine.'])
     players[1].getWordCursor.mockReturnValue(2)
     expect(readAloud.getStreamWordCursor()).toBe(6)
@@ -489,7 +497,7 @@ describe('readAloud streaming restart (a speed change)', () => {
   beforeEach(() => {
     players.length = 0
     apiFetch.mockReset()
-    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', token: 'jwt', voice: 'v', speed: 1 }))
+    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', connection: { transport: 'websocket', token: 'jwt' }, voice: 'v', speed: 1 }))
     readAloud.stop()
   })
   const tick = () => new Promise((r) => setTimeout(r, 0))
@@ -502,7 +510,7 @@ describe('readAloud streaming restart (a speed change)', () => {
     players[0].options.onStatus?.('speaking')
     players[0].getWordCursor.mockReturnValue(2.4) // saying "three."
 
-    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', token: 'jwt2', voice: 'v', speed: 1.3 }))
+    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', connection: { transport: 'websocket', token: 'jwt2' }, voice: 'v', speed: 1.3 }))
     readAloud.restart()
     expect(players[0].stop).toHaveBeenCalledTimes(1)
     expect(readAloud.getSnapshot()).toEqual({ activeId: 'v', status: 'connecting', error: null, errorId: null })
@@ -510,7 +518,7 @@ describe('readAloud streaming restart (a speed change)', () => {
     expect(readAloud.getStreamWordCursor()).toBe(1)
     await tick()
     expect(players).toHaveLength(2)
-    expect(players[1].options).toMatchObject({ token: 'jwt2', voice: { speed: 1.3 } })
+    expect(players[1].options).toMatchObject({ connection: { transport: 'websocket', token: 'jwt2' }, voice: { speed: 1.3 } })
     // The word being spoken is said again, then the rest.
     expect(spoken(players[1])).toEqual(['three.', 'Four', 'five', 'six.'])
     players[1].getWordCursor.mockReturnValue(1)
@@ -540,7 +548,7 @@ describe('readAloud streaming restart (a speed change)', () => {
     players[1].options.onStatus?.('done')
 
     // The person's turn: nothing is playing when they pick a new speed.
-    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', token: 'jwt2', voice: 'v', speed: 1.3 }))
+    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', connection: { transport: 'websocket', token: 'jwt2' }, voice: 'v', speed: 1.3 }))
     readAloud.restart()
     expect(players).toHaveLength(2)
 
@@ -548,7 +556,7 @@ describe('readAloud streaming restart (a speed change)', () => {
     readAloud.pushStream('v', 'Seven eight nine. ')
     await tick()
     expect(apiFetch).toHaveBeenCalledTimes(1)
-    expect(players[2].options).toMatchObject({ token: 'jwt2', voice: { speed: 1.3 } })
+    expect(players[2].options).toMatchObject({ connection: { transport: 'websocket', token: 'jwt2' }, voice: { speed: 1.3 } })
   })
 
   it('a restart while credentials are in flight keeps the stale ones out of the cache', async () => {
@@ -560,17 +568,17 @@ describe('readAloud streaming restart (a speed change)', () => {
     await tick()
     expect(players).toHaveLength(0)
     readAloud.restart()
-    resolveToken(tokenResponse({ provider: 'deepgram', token: 'old', voice: 'v', speed: 1 }))
+    resolveToken(tokenResponse({ provider: 'deepgram', connection: { transport: 'websocket', token: 'old' }, voice: 'v', speed: 1 }))
     await tick()
     // This reply opens on what came back; the next one does not reuse it.
     expect(players).toHaveLength(1)
     readAloud.endStream('v')
     players[0].options.onStatus?.('done')
-    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', token: 'new', voice: 'v', speed: 1.3 }))
+    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', connection: { transport: 'websocket', token: 'new' }, voice: 'v', speed: 1.3 }))
     readAloud.beginStream('v')
     readAloud.pushStream('v', 'Four five six. ')
     await tick()
-    expect(players[1].options).toMatchObject({ token: 'new', voice: { speed: 1.3 } })
+    expect(players[1].options).toMatchObject({ connection: { transport: 'websocket', token: 'new' }, voice: { speed: 1.3 } })
   })
 
   it('places a message that started on the old player, and one still pending', async () => {
@@ -604,12 +612,12 @@ describe('readAloud streaming restart (a speed change)', () => {
     players[0].getWordCursor.mockReturnValue(2)
     players[0].options.onStatus?.('done') // idle close: nothing open
     apiFetch.mockClear()
-    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', token: 'jwt3', voice: 'v', speed: 0.9 }))
+    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', connection: { transport: 'websocket', token: 'jwt3' }, voice: 'v', speed: 0.9 }))
     readAloud.restart()
     expect(players).toHaveLength(1)
     readAloud.pushStream('v', 'One two. Three four. ')
     await tick()
-    expect(players[1].options).toMatchObject({ token: 'jwt3', voice: { speed: 0.9 } })
+    expect(players[1].options).toMatchObject({ connection: { transport: 'websocket', token: 'jwt3' }, voice: { speed: 0.9 } })
     expect(spoken(players[1])).toEqual(['Three', 'four.'])
   })
 
@@ -629,7 +637,7 @@ describe('readAloud streaming volume', () => {
   beforeEach(() => {
     players.length = 0
     apiFetch.mockReset()
-    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', token: 'jwt', voice: 'v', speed: 1 }))
+    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', connection: { transport: 'websocket', token: 'jwt' }, voice: 'v', speed: 1 }))
     readAloud.stop()
   })
 
@@ -656,7 +664,7 @@ describe('readAloud streaming word cursor', () => {
   beforeEach(() => {
     players.length = 0
     apiFetch.mockReset()
-    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', token: 'jwt', voice: 'v', speed: 1 }))
+    apiFetch.mockResolvedValue(tokenResponse({ provider: 'deepgram', connection: { transport: 'websocket', token: 'jwt' }, voice: 'v', speed: 1 }))
     readAloud.stop()
   })
   const tick = () => new Promise((r) => setTimeout(r, 0))

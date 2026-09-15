@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createTtsAdapter, DeepgramTtsAdapter, type TtsEvent } from './tts'
+import { HttpTtsAdapter } from './tts-http'
 import { MockWebSocket } from '@shared/test/mock-websocket'
 
 class BinaryMockWebSocket extends MockWebSocket {
@@ -27,7 +28,7 @@ describe('DeepgramTtsAdapter', () => {
     const events: TtsEvent[] = []
     adapter.onAudio((chunk) => audio.push(chunk))
     adapter.onEvent((e) => events.push(e))
-    const connected = adapter.connect('jwt-token', { voice: 'aura-2-thalia-en', ...voiceOptions })
+    const connected = adapter.connect({ transport: 'websocket', token: 'jwt-token' }, { voice: 'aura-2-thalia-en', ...voiceOptions })
     const ws = MockWebSocket.instances[0] as BinaryMockWebSocket
     return { adapter, ws, audio, events, connected }
   }
@@ -132,6 +133,6 @@ describe('createTtsAdapter', () => {
   })
 
   it('rejects providers without text-to-speech', () => {
-    expect(() => createTtsAdapter('openai')).toThrow('Text-to-speech not supported by openai')
+    expect(createTtsAdapter('openai')).toBeInstanceOf(HttpTtsAdapter)
   })
 })

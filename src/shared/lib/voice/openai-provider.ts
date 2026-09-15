@@ -1,3 +1,5 @@
+import { OPENAI_TTS_VOICES } from './openai-voices'
+import type { TtsSynthesisInput, TtsSynthesisProvider } from './tts-types'
 import { BaseVoiceProvider } from './voice-provider'
 import { getEffectiveModels } from '../config/settings'
 import { getConfiguredLlmClient, createSummarizerText } from '../llm-provider/helpers'
@@ -20,11 +22,33 @@ const MIME_TO_EXT: Record<string, string> = {
   'audio/amr': 'amr',
 }
 
-export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConversationProvider {
+export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConversationProvider, TtsSynthesisProvider {
   readonly id = 'openai' as const
   readonly name = 'OpenAI'
   protected readonly settingsKeyField = 'openaiApiKey' as const
   protected readonly envVarName = 'OPENAI_API_KEY'
+
+  override getTtsVoices() { return OPENAI_TTS_VOICES }
+
+  override getTtsSynthesis(): TtsSynthesisProvider { return this }
+
+  async synthesizeSpeech(input: TtsSynthesisInput, signal?: AbortSignal): Promise<ReadableStream<Uint8Array>> {
+    const apiKey = this.getEffectiveApiKey()
+    if (!apiKey) throw new Error('Add your OpenAI API key in Settings > Voice.')
+    const deadline = AbortSignal.timeout(30_000)
+    const response = await fetch('https://api.openai.com/v1/audio/speech', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
+      body: JSON.stringify({ model: 'gpt-4o-mini-tts', input: input.text, voice: input.voice,
+        speed: input.speed, response_format: 'pcm' }),
+    })
+    if (!response.ok || !response.body) {
+      void response.body?.cancel().catch(() => {})
+      throw new Error(`OpenAI speech synthesis failed (${response.status}).`)
+    }
+    return response.body
+  }
 
   override getConversationEngine() {
     return 'openai-live' as const

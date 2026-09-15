@@ -22,10 +22,16 @@ describe('text-to-speech provider support', () => {
     vi.restoreAllMocks()
   })
 
-  it('Deepgram and platform can speak; OpenAI cannot (yet)', () => {
+  it('all configured voice providers support read-aloud', () => {
     expect(getVoiceProvider('deepgram').supportsTts()).toBe(true)
     expect(getVoiceProvider('platform').supportsTts()).toBe(true)
-    expect(getVoiceProvider('openai').supportsTts()).toBe(false)
+    expect(getVoiceProvider('openai').supportsTts()).toBe(true)
+  })
+
+  it('initializes OpenAI without returning a token or making an upstream request', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    await expect(getVoiceProvider('openai').getTtsConnection()).resolves.toEqual({ transport: 'http' })
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('mints the same grant token for speech as for transcription', async () => {
@@ -39,17 +45,17 @@ describe('text-to-speech provider support', () => {
     expect(fetchMock.mock.calls[1][0]).toBe('https://proxy.test/v1/deepgram/auth/grant')
   })
 
-  it('refuses to mint for a provider without speech', async () => {
+  it('does not mint a browser token for server-side OpenAI speech', async () => {
     await expect(getVoiceProvider('openai').getTtsToken()).rejects.toThrow('Text-to-speech not supported by OpenAI')
   })
 })
 
 describe('provider voice catalogue', () => {
-  it('Deepgram and platform offer the same Aura voices; OpenAI offers none', () => {
+  it('Deepgram and platform offer Aura voices; OpenAI offers its own catalogue', () => {
     expect(getVoiceProvider('deepgram').getTtsVoices()).toBe(DEEPGRAM_TTS_VOICES)
     expect(getVoiceProvider('platform').getTtsVoices()).toBe(DEEPGRAM_TTS_VOICES)
-    expect(getVoiceProvider('openai').getTtsVoices()).toEqual([])
-    expect(getVoiceProvider('openai').getDefaultTtsVoice()).toBeUndefined()
+    expect(getVoiceProvider('openai').getTtsVoices()).toContainEqual({ id: 'marin', label: 'Marin', description: 'OpenAI' })
+    expect(getVoiceProvider('openai').getDefaultTtsVoice()).toBe('marin')
   })
 
   it('the default is the first voice and every id in the catalogue is recognised', () => {

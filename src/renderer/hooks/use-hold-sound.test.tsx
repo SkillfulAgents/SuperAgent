@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
+const reader = vi.hoisted(() => ({ isAudible: vi.fn(() => false) }))
+vi.mock('./use-read-aloud', () => ({ readAloud: reader }))
 const sound = vi.hoisted(() => ({ start: vi.fn(), stop: vi.fn(), stopImmediately: vi.fn(), prime: vi.fn() }))
 vi.mock('@renderer/lib/speech/hold-sound', () => ({ holdSound: sound }))
 import { useHoldSound, HOLD_DELAY_MS, HOLD_DELAY_BEFORE_TOOLS_MS } from './use-hold-sound'
 
 describe('useHoldSound', () => {
-  beforeEach(() => { vi.useFakeTimers(); vi.clearAllMocks() })
+  beforeEach(() => { vi.useFakeTimers(); vi.clearAllMocks(); reader.isAudible.mockReturnValue(false) })
   afterEach(() => vi.useRealTimers())
 
   it('primes when enabled and waits for an eligible silent period', () => {
@@ -70,6 +72,23 @@ describe('useHoldSound', () => {
     rerender({ enabled: false, agentTurn: true })
     vi.advanceTimersByTime(10_000)
     expect(sound.start).not.toHaveBeenCalled()
+  })
+
+  it('yields to standalone read-aloud even when the conversation engine is silent', () => {
+    renderHook(() => useHoldSound({ enabled: true, agentTurn: true, working: true, speaking: false }))
+    vi.advanceTimersByTime(1000)
+    expect(sound.start).toHaveBeenCalled()
+    sound.start.mockClear()
+    reader.isAudible.mockReturnValue(true)
+    vi.advanceTimersByTime(200)
+    expect(sound.stopImmediately).toHaveBeenCalled()
+    vi.advanceTimersByTime(2000)
+    expect(sound.start).not.toHaveBeenCalled()
+    reader.isAudible.mockReturnValue(false)
+    vi.advanceTimersByTime(400)
+    expect(sound.start).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(600)
+    expect(sound.start).toHaveBeenCalled()
   })
 
   it('takes an explicit delay policy without knowing the provider', () => {

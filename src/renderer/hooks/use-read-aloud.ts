@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useSyncExternalStore, type RefObject } from 'react'
 import { apiFetch } from '@renderer/lib/api'
-import { createTtsAdapter, type VoiceProvider } from '@renderer/lib/tts'
+import type { TtsSession } from '@shared/lib/voice/tts-types'
+import { createTtsAdapter } from '@renderer/lib/tts'
 import { SpeechPlayer } from '@renderer/lib/speech/speech-player'
 import { markdownToSpokenWords, type SpokenWord } from '@renderer/lib/speech/spoken-words'
 import { stableMarkdownPrefix } from '@renderer/lib/speech/stable-markdown'
@@ -17,12 +18,7 @@ export interface ReadAloudSnapshot {
   errorId: string | null
 }
 
-interface TtsCredentials {
-  provider: VoiceProvider
-  token: string
-  voice: string
-  speed: number
-}
+type TtsCredentials = TtsSession
 
 const IDLE: ReadAloudSnapshot = { activeId: null, status: 'idle', error: null, errorId: null }
 
@@ -137,7 +133,7 @@ class ReadAloudController {
 
     let credentials: TtsCredentials
     try {
-      const res = await apiFetch('/api/voice/tts-token')
+      const res = await apiFetch('/api/voice/tts-session')
       const data: TtsCredentials | { error: string } = await res.json()
       if (!res.ok) throw new Error(('error' in data ? data.error : null) || 'Failed to get text-to-speech credentials')
       credentials = data as TtsCredentials
@@ -159,7 +155,7 @@ class ReadAloudController {
     let startPaused = options.paused ?? false
     const player = new SpeechPlayer({
       adapter: createTtsAdapter(credentials.provider),
-      token: credentials.token,
+      connection: credentials.connection,
       voice: { voice: credentials.voice, speed: credentials.speed },
       firstWordIndex: fromWord,
       ...(ctx ? { createAudioContext: () => ctx } : {}),
@@ -418,7 +414,7 @@ class ReadAloudController {
 
     const player = new SpeechPlayer({
       adapter: createTtsAdapter(credentials.provider),
-      token: credentials.token,
+      connection: credentials.connection,
       voice: { voice: credentials.voice, speed: credentials.speed },
       finishOnIdleClose: true,
       ...(ctx ? { createAudioContext: () => ctx } : {}),
@@ -488,7 +484,7 @@ class ReadAloudController {
     const cached = this.credentials
     if (cached && Date.now() - cached.fetchedAt < CREDENTIALS_MAX_AGE_MS) return cached.value
     const generation = this.credentialsGeneration
-    const res = await apiFetch('/api/voice/tts-token')
+    const res = await apiFetch('/api/voice/tts-session')
     const data: TtsCredentials | { error: string } = await res.json()
     if (!res.ok) throw new Error(('error' in data ? data.error : null) || 'Failed to get text-to-speech credentials')
     // Dropped while this was in flight (a speed change): these are stale.

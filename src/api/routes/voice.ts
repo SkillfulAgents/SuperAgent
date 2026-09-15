@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { ttsSynthesisSchema } from '@shared/lib/voice/tts-types'
 import { HTTPException } from 'hono/http-exception'
 import { LiveSessionRegistry } from '@shared/lib/voice/live-session-registry'
 import { z } from 'zod'
@@ -176,6 +177,44 @@ voice.get('/voice-agent-token', async (c) => {
   }
 })
 
+// Transport-neutral initialization. API keys never reach the renderer.
+voice.get('/tts-session', async (c) => {
+  const selected = getVoiceSettings().sttProvider
+  if (!selected) return c.json({ error: 'No voice provider configured. Set one in Settings > Voice.' }, 400)
+  const provider = getVoiceProvider(selected)
+  if (!provider.supportsTts()) return c.json({ error: `Text-to-speech not supported with current configured voice provider: ${provider.name}` }, 400)
+  try {
+    const connection = await provider.getTtsConnection()
+    const own = getUserSettings(getCurrentUserId(c)).voice
+    return c.json({ provider: selected, connection,
+      voice: provider.resolveTtsVoice(own?.ttsVoice, getVoiceSettings().ttsVoice),
+      speed: resolveTtsSpeed(own?.ttsSpeed),
+    })
+  } catch {
+    return c.json({ error: 'Could not initialize text-to-speech. Check the configured voice provider and API key.' }, 502)
+  }
+})
+
+voice.post('/tts', limitJsonBody(32 * 1024), async (c) => {
+  const parsed = ttsSynthesisSchema.safeParse(c.get('limitedJsonBody'))
+  if (!parsed.success) return c.json({ error: 'Invalid speech synthesis request.' }, 400)
+  const selected = getVoiceSettings().sttProvider
+  if (!selected) return c.json({ error: 'No voice provider configured. Set one in Settings > Voice.' }, 400)
+  // An already-open reader must not silently synthesize against a different account/provider.
+  if (parsed.data.provider !== selected) return c.json({ error: 'Voice provider changed. Restart read-aloud.' }, 409)
+  const provider = getVoiceProvider(selected)
+  const synthesis = provider.getTtsSynthesis()
+  if (!synthesis) return c.json({ error: `Server-side speech synthesis not supported with current configured voice provider: ${provider.name}` }, 400)
+  if (!provider.hasTtsVoice(parsed.data.voice)) return c.json({ error: 'Invalid voice for the configured provider.' }, 400)
+  try {
+    const { text, voice: selectedVoice, speed } = parsed.data
+    const audio = await synthesis.synthesizeSpeech({ text, voice: selectedVoice, speed }, c.req.raw.signal)
+    return new Response(audio, { headers: { 'Content-Type': 'audio/pcm', 'Cache-Control': 'no-store' } })
+  } catch {
+    return c.json({ error: 'Speech synthesis failed. Check your voice provider access and try again.' }, 502)
+  }
+})
+
 // GET /api/voice/tts-token - Credentials for a client-side text-to-speech session,
 // plus the voice and speed to speak with: the caller's own preferences, then
 // the deployment default (so the client needs no settings round-trip).
@@ -192,6 +231,9 @@ voice.get('/tts-token', async (c) => {
       return c.json({ error: `Text-to-speech not supported by ${provider}` }, 400)
     }
 
+    if (sttProvider.getTtsSynthesis()) {
+      return c.json({ error: 'This provider uses server-side synthesis. Initialize it through /api/voice/tts-session.' }, 400)
+    }
     const result = await sttProvider.getTtsToken()
     const own = getUserSettings(getCurrentUserId(c)).voice
     return c.json({

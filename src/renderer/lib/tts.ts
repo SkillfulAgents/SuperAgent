@@ -1,3 +1,6 @@
+import type { TtsConnection } from '@shared/lib/voice/tts-types'
+import { HttpTtsAdapter } from './tts-http'
+
 // --- Types ---
 
 import type { VoiceProvider } from '@shared/lib/config/settings'
@@ -28,13 +31,13 @@ export type TtsEventCallback = (event: TtsEvent) => void
  * Streaming text-to-speech session: text goes in as it becomes available,
  * PCM audio comes back. The mirror image of SttAdapter.
  *
- * Text is buffered until the socket opens, so callers can queue and flush
+ * Text is buffered until the transport is initialized, so callers can queue and flush
  * immediately after connect() without awaiting it.
  */
 export interface TtsAdapter {
   /** Sample rate of the returned int16 mono PCM. */
   readonly sampleRate: number
-  connect(token: string, options: TtsVoiceOptions): Promise<void>
+  connect(connection: TtsConnection, options: TtsVoiceOptions): Promise<void>
   /** Queue text for synthesis. May be called repeatedly with partial text. */
   speak(text: string): void
   /**
@@ -68,7 +71,9 @@ export class DeepgramTtsAdapter implements TtsAdapter {
   private audioCb: TtsAudioCallback | null = null
   private eventCb: TtsEventCallback | null = null
 
-  connect(token: string, { voice, speed }: TtsVoiceOptions): Promise<void> {
+  connect(connection: TtsConnection, { voice, speed }: TtsVoiceOptions): Promise<void> {
+    if (connection.transport !== 'websocket') return Promise.reject(new Error('Expected a WebSocket speech connection.'))
+    const { token } = connection
     return new Promise((resolve, reject) => {
       const params = new URLSearchParams({
         model: voice,
@@ -194,6 +199,8 @@ export function createTtsAdapter(provider: VoiceProvider): TtsAdapter {
     case 'deepgram':
     case 'platform':
       return new DeepgramTtsAdapter()
+    case 'openai':
+      return new HttpTtsAdapter(provider)
     default:
       throw new Error(`Text-to-speech not supported by ${provider}`)
   }

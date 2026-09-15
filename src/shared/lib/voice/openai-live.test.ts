@@ -30,7 +30,7 @@ beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal('fetch', fetchMock) })
     expect(body.session.client.data_channel.allowed_client_events).not.toContain('session.update')
     expect(result).toEqual({ session: { id: 'live_test' }, transport: { type: 'webrtc', sdp: 'answer' } })
     expect(provider.getConversationEngine()).toBe('openai-live')
-    expect(provider.supportsTts()).toBe(false)
+    expect(provider.supportsTts()).toBe(true)
   })
 
   it('reuses the configured summarizer and validates its normalized request', async () => {

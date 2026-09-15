@@ -1,4 +1,5 @@
 import { getSettings, type ApiKeySettings, type ApiKeyStatus, type VoiceProvider } from '../config/settings'
+import type { TtsConnection, TtsSynthesisProvider } from './tts-types'
 import type { LiveConversationProvider } from './live-types'
 import type { VoiceConversationEngine } from './conversation-types'
 import type { TtsVoiceInfo } from './tts-preferences'
@@ -90,6 +91,19 @@ export abstract class BaseVoiceProvider {
    */
   getTtsVoices(): readonly TtsVoiceInfo[] {
     return []
+  }
+
+  /** Optional server-side synthesis; token-based providers use their own socket. */
+  getTtsSynthesis(): TtsSynthesisProvider | null {
+    return null
+  }
+
+  async getTtsConnection(): Promise<TtsConnection> {
+    if (!this.supportsTts()) throw new Error(`Text-to-speech not supported by ${this.name}`)
+    if (!this.getApiKeyStatus().isConfigured) throw new Error(`No API key configured for ${this.name}. Add one in Settings > Voice.`)
+    if (this.getTtsSynthesis()) return { transport: 'http' }
+    const { token } = await this.getTtsToken()
+    return { transport: 'websocket', token }
   }
 
   /** Whether this provider supports streaming text-to-speech. */
