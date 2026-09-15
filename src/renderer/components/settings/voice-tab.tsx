@@ -28,9 +28,9 @@ const VOICE_PROVIDERS = [
   {
     value: 'platform' as const,
     label: 'Platform',
-    model: 'Nova 3',
+    model: 'GPT-4o Mini Transcribe · GPT-Live',
     docsUrl: undefined as string | undefined,
-    note: 'Uses Deepgram via your platform connection. No API key required.',
+    note: 'Uses OpenAI voice via your platform connection. No API key required. Conversation voice uses GPT-Live and the app’s configured summarizer.',
     platformOnly: true,
   },
   {

@@ -56,6 +56,6 @@ describe('OpenAI speech synthesis', () => {
   })
   it('keeps upstream errors out of user-facing messages', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('sensitive upstream details', { status: 403 })))
-    await expect(provider.synthesizeSpeech({ text: 'Hello', voice: 'marin', speed: 1 })).rejects.toThrow('OpenAI rejected speech synthesis access.')
+    await expect(provider.synthesizeSpeech({ text: 'Hello', voice: 'marin', speed: 1 })).rejects.toThrow('OpenAI rejected the API key.')
   })
 })
