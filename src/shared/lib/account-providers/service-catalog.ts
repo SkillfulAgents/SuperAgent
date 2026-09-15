@@ -12,6 +12,12 @@ export interface Provider {
    * developer app), so it is hidden on a local Composio key.
    */
   platformOnly?: true
+  /**
+   * Not offered in the directory: connecting starts outside Gamut (a Shopify
+   * store connects on arrival from its App Store install) and the listing is
+   * not public until Shopify approves the app. Arrivals and reconnects still work.
+   */
+  unlisted?: true
 }
 
 export const SUPPORTED_PROVIDERS: Provider[] = [
@@ -301,6 +307,17 @@ export const SUPPORTED_PROVIDERS: Provider[] = [
     description: 'Posts, timelines, and direct messages',
     composioSlug: 'twitter',
     platformOnly: true,
+  },
+
+  // E-commerce
+  {
+    slug: 'shopify',
+    displayName: 'Shopify',
+    icon: 'shopping-bag',
+    description: 'Online store: products, orders, customers',
+    composioSlug: 'shopify',
+    platformOnly: true,
+    unlisted: true,
   },
 
   // Finance

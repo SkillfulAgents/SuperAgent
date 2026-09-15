@@ -60,7 +60,7 @@ vi.mock('@shared/lib/db', () => ({
 }))
 
 vi.mock('@shared/lib/db/schema', () => ({
-  connectedAccounts: { id: 'id', providerConnectionId: 'provider_connection_id', providerName: 'provider_name' },
+  connectedAccounts: { id: 'id', providerConnectionId: 'provider_connection_id', providerName: 'provider_name', toolkitSlug: 'toolkit_slug', displayName: 'display_name', userId: 'user_id' },
   agentConnectedAccounts: {},
 }))
 
@@ -172,7 +172,7 @@ describe('connected-accounts reconnect flow', () => {
 
   describe('POST /initiate with reconnectAccountId', () => {
     it('accepts reconnectAccountId and includes it in callback URL', async () => {
-      mockDbSelectLimit.mockResolvedValue([{ id: 'existing-acc', providerConnectionId: 'old-conn' }])
+      mockDbSelectLimit.mockResolvedValue([{ id: 'existing-acc', providerConnectionId: 'old-conn', toolkitSlug: 'github' }])
       mockInitiateConnection.mockResolvedValue({
         connectionId: 'new-conn',
         redirectUrl: 'https://oauth.example.com/auth',
@@ -196,6 +196,19 @@ describe('connected-accounts reconnect flow', () => {
       expect(callbackUrl).toContain('reconnectAccountId=existing-acc')
     })
 
+    it('returns 404 when the account belongs to another toolkit', async () => {
+      mockDbSelectLimit.mockResolvedValue([{ id: 'github-acc', toolkitSlug: 'github', displayName: 'My GitHub' }])
+
+      const res = await app.request('http://localhost/api/connected-accounts/initiate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ providerSlug: 'shopify', reconnectAccountId: 'github-acc' }),
+      })
+
+      expect(res.status).toBe(404)
+      expect(mockInitiateConnection).not.toHaveBeenCalled()
+    })
+
     it('returns 404 if reconnectAccountId does not exist', async () => {
       mockDbSelectLimit.mockResolvedValue([])
 
@@ -212,11 +225,211 @@ describe('connected-accounts reconnect flow', () => {
     })
   })
 
+  describe('Shopify', () => {
+    const SHOP = 'gamut-dev.myshopify.com'
+
+    // Installs start at the App Store listing, which the renderer opens itself:
+    // a connect without a real store never reaches Composio.
+    it.each([
+      ['no store', undefined],
+      ['a store outside myshopify.com', 'evil.com'],
+    ])('refuses a connect with %s', async (_, shop) => {
+      const res = await app.request('http://localhost/api/connected-accounts/initiate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ providerSlug: 'shopify', shop }),
+      })
+
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toMatch(/App Store/)
+      expect(mockInitiateConnection).not.toHaveBeenCalled()
+    })
+
+    it('connects an installed store through Composio', async () => {
+      mockDbSelectLimit.mockResolvedValue([])
+      mockInitiateConnection.mockResolvedValue({ connectionId: 'ca_shop', redirectUrl: 'https://connect.composio.dev/link/lk' })
+
+      const res = await app.request('http://localhost/api/connected-accounts/initiate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ providerSlug: 'shopify', shop: SHOP }),
+      })
+
+      expect((await res.json()).redirectUrl).toBe('https://connect.composio.dev/link/lk')
+      const [, callbackUrl, , subdomain] = mockInitiateConnection.mock.calls[0]
+      expect(callbackUrl).not.toContain('reconnectAccountId')
+      expect(subdomain).toBe(SHOP.replace('.myshopify.com', ''))
+    })
+
+    // A second Composio grant for a store retires the first connection's refresh token.
+    it('refuses a second grant for a store that is already connected', async () => {
+      mockDbSelectLimit.mockResolvedValue([{ id: 'shop-acc', displayName: SHOP, status: 'active' }])
+
+      const res = await app.request('http://localhost/api/connected-accounts/initiate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ providerSlug: 'shopify', shop: SHOP }),
+      })
+
+      expect(res.status).toBe(409)
+      expect(await res.json()).toMatchObject({ error: `${SHOP} is already connected` })
+      expect(mockInitiateConnection).not.toHaveBeenCalled()
+      expect(mockDbSelectWhere).toHaveBeenCalledWith([
+        { col: 'toolkit_slug', val: 'shopify' },
+        { col: 'display_name', val: SHOP },
+        undefined,
+      ])
+    })
+
+    it('reconnects a lapsed account for the store in place instead of adding one', async () => {
+      mockDbSelectLimit.mockResolvedValue([{ id: 'shop-acc', displayName: SHOP, status: 'revoked' }])
+      mockInitiateConnection.mockResolvedValue({ connectionId: 'ca_new', redirectUrl: 'https://connect.composio.dev/link/lk3' })
+
+      await app.request('http://localhost/api/connected-accounts/initiate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ providerSlug: 'shopify', shop: SHOP }),
+      })
+
+      const [, callbackUrl] = mockInitiateConnection.mock.calls[0]
+      expect(callbackUrl).toContain('reconnectAccountId=shop-acc')
+    })
+
+    it('reconnects an existing store through Composio instead of the listing', async () => {
+      mockDbSelectLimit.mockResolvedValue([{ id: 'shop-acc', providerConnectionId: 'old', displayName: SHOP, toolkitSlug: 'shopify' }])
+      mockInitiateConnection.mockResolvedValue({ connectionId: 'ca_new', redirectUrl: 'https://connect.composio.dev/link/lk2' })
+
+      const res = await app.request('http://localhost/api/connected-accounts/initiate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ providerSlug: 'shopify', reconnectAccountId: 'shop-acc' }),
+      })
+
+      expect((await res.json()).redirectUrl).toBe('https://connect.composio.dev/link/lk2')
+      const [, callbackUrl, , subdomain] = mockInitiateConnection.mock.calls[0]
+      expect(callbackUrl).toContain('reconnectAccountId=shop-acc')
+      expect(subdomain).toBe(SHOP.replace('.myshopify.com', ''))
+    })
+
+    it('names the new account after its store', async () => {
+      mockDbSelectLimit.mockResolvedValue([])
+      mockGetConnection.mockResolvedValue({ id: 'ca_shop', status: 'ACTIVE' })
+      mockGetAccountDisplayName.mockResolvedValue(SHOP)
+
+      const res = await app.request(
+        'http://localhost/api/connected-accounts/callback' +
+        '?connectedAccountId=ca_shop&status=success&toolkit=shopify',
+      )
+
+      expect(res.status).toBe(200)
+      expect(mockDbInsertValues.mock.calls[0][0]).toMatchObject({ toolkitSlug: 'shopify', displayName: SHOP })
+    })
+
+    it('updates the existing account when the authorized store is already connected', async () => {
+      mockGetConnection.mockResolvedValue({ id: 'ca_second', status: 'ACTIVE' })
+      mockGetAccountDisplayName.mockResolvedValue(SHOP)
+      mockDbSelectLimit.mockResolvedValue([{ id: 'shop-acc', providerConnectionId: 'ca_first', displayName: SHOP, toolkitSlug: 'shopify' }])
+
+      const res = await app.request(
+        'http://localhost/api/connected-accounts/callback' +
+        '?connectedAccountId=ca_second&status=success&toolkit=shopify',
+      )
+
+      expect(res.status).toBe(200)
+      expect(mockDbInsertValues).not.toHaveBeenCalled()
+      expect(mockDbUpdateSet).toHaveBeenCalledWith(expect.objectContaining({ providerConnectionId: 'ca_second', displayName: SHOP }))
+      expect(mockCompleteReauthAccount).toHaveBeenCalledWith('shop-acc')
+    })
+
+    // Composio has already granted the authorized store, so the account for THAT
+    // store takes the connection, not the one the reconnect started from.
+    it('saves a reconnect under the store that was authorized', async () => {
+      mockGetConnection.mockResolvedValue({ id: 'ca_other', status: 'ACTIVE' })
+      mockGetAccountDisplayName.mockResolvedValue('other-store.myshopify.com')
+      mockDbSelectLimit.mockResolvedValue([{ id: 'other-acc', providerConnectionId: 'ca_first', displayName: 'other-store.myshopify.com', toolkitSlug: 'shopify' }])
+
+      const res = await app.request('http://localhost/api/connected-accounts/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ connectionId: 'ca_other', toolkit: 'shopify', reconnectAccountId: 'shop-acc' }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(mockDbUpdateSet).toHaveBeenCalledWith(expect.objectContaining({ providerConnectionId: 'ca_other', displayName: 'other-store.myshopify.com' }))
+      expect(mockDbSelectWhere).toHaveBeenCalledWith([
+        { col: 'toolkit_slug', val: 'shopify' },
+        { col: 'display_name', val: 'other-store.myshopify.com' },
+        undefined,
+      ])
+      expect(mockDbUpdateWhere).toHaveBeenCalledWith({ col: 'id', val: 'other-acc' })
+      expect(mockCompleteReauthAccount).toHaveBeenCalledWith('other-acc')
+    })
+
+    it('does not save a Shopify account whose store could not be verified', async () => {
+      mockGetConnection.mockResolvedValue({ id: 'ca_shop', status: 'ACTIVE' })
+      mockGetAccountDisplayName.mockResolvedValue('Shopify')
+
+      const res = await app.request('http://localhost/api/connected-accounts/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ connectionId: 'ca_shop', toolkit: 'shopify' }),
+      })
+
+      expect(res.status).toBe(502)
+      expect(mockDbInsertValues).not.toHaveBeenCalled()
+      expect(mockDbUpdateSet).not.toHaveBeenCalled()
+    })
+
+    it('refuses to rename a Shopify account', async () => {
+      mockDbSelectLimit.mockResolvedValue([{ id: 'shop-acc', toolkitSlug: 'shopify', displayName: SHOP }])
+
+      const res = await app.request('http://localhost/api/connected-accounts/shop-acc', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ displayName: 'My store' }),
+      })
+
+      expect(res.status).toBe(400)
+      expect(mockDbUpdateSet).not.toHaveBeenCalled()
+    })
+  })
+
+  // The connect path finds a store's row by name, so a row named anything else
+  // would be duplicated by the next install.
+  it('refuses to create a Shopify account that is not named after a store', async () => {
+    const res = await app.request('http://localhost/api/connected-accounts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ providerConnectionId: 'conn-x', toolkitSlug: 'shopify', displayName: 'My store' }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(mockDbInsertValues).not.toHaveBeenCalled()
+  })
+
   describe('POST /complete with reconnectAccountId', () => {
+    // A Shopify grant never lands on another toolkit's account, since the store
+    // decides the target; every other toolkit is guarded by the reconnect lookup.
+    it('refuses to finish a reconnect into another toolkit account', async () => {
+      mockGetConnection.mockResolvedValue({ id: 'ca_slack', status: 'ACTIVE' })
+      mockGetAccountDisplayName.mockResolvedValue('My Slack')
+      mockDbSelectLimit.mockResolvedValue([{ providerConnectionId: 'github-conn', displayName: 'My GitHub', toolkitSlug: 'github' }])
+
+      const res = await app.request('http://localhost/api/connected-accounts/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ connectionId: 'ca_slack', toolkit: 'slack', reconnectAccountId: 'github-acc' }),
+      })
+
+      expect(res.status).toBe(404)
+      expect(mockDbUpdateSet).not.toHaveBeenCalled()
+      expect(mockDeleteConnection).not.toHaveBeenCalled()
+    })
+
     it('updates existing record instead of inserting', async () => {
       mockGetConnection.mockResolvedValue({ id: 'new-conn', status: 'ACTIVE' })
       mockGetAccountDisplayName.mockResolvedValue('My GitHub')
-      mockDbSelectLimit.mockResolvedValue([{ providerConnectionId: 'old-conn' }])
+      mockDbSelectLimit.mockResolvedValue([{ providerConnectionId: 'old-conn', toolkitSlug: 'github' }])
 
       const res = await app.request('http://localhost/api/connected-accounts/complete', {
         method: 'POST',
@@ -247,7 +460,7 @@ describe('connected-accounts reconnect flow', () => {
     it('deletes old remote connection after reconnect', async () => {
       mockGetConnection.mockResolvedValue({ id: 'new-conn', status: 'ACTIVE' })
       mockGetAccountDisplayName.mockResolvedValue('My GitHub')
-      mockDbSelectLimit.mockResolvedValue([{ providerConnectionId: 'old-conn' }])
+      mockDbSelectLimit.mockResolvedValue([{ providerConnectionId: 'old-conn', toolkitSlug: 'github' }])
       mockDeleteConnection.mockResolvedValue(undefined)
 
       await app.request('http://localhost/api/connected-accounts/complete', {
@@ -269,7 +482,7 @@ describe('connected-accounts reconnect flow', () => {
     it('does not delete old connection if IDs match', async () => {
       mockGetConnection.mockResolvedValue({ id: 'same-conn', status: 'ACTIVE' })
       mockGetAccountDisplayName.mockResolvedValue('My GitHub')
-      mockDbSelectLimit.mockResolvedValue([{ providerConnectionId: 'same-conn' }])
+      mockDbSelectLimit.mockResolvedValue([{ providerConnectionId: 'same-conn', toolkitSlug: 'github' }])
 
       await app.request('http://localhost/api/connected-accounts/complete', {
         method: 'POST',
@@ -314,7 +527,7 @@ describe('connected-accounts reconnect flow', () => {
     it('resumes parked proxy requests after the web OAuth callback activates the account', async () => {
       mockGetConnection.mockResolvedValue({ id: 'new-web-conn', status: 'ACTIVE' })
       mockGetAccountDisplayName.mockResolvedValue('My GitHub')
-      mockDbSelectLimit.mockResolvedValue([{ providerConnectionId: 'old-conn' }])
+      mockDbSelectLimit.mockResolvedValue([{ providerConnectionId: 'old-conn', toolkitSlug: 'github' }])
 
       const res = await app.request(
         'http://localhost/api/connected-accounts/callback' +

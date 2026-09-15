@@ -333,19 +333,23 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, accou
             Tools
           </Button>
         )}
+        {/* A Shopify connection is named after its store. */}
+        {toolkit !== 'shopify' && (
+          <Button
+            ref={triggerRef}
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8"
+            onClick={(e) => { e.stopPropagation(); openRename() }}
+            data-testid={`integration-row-actions-rename-${type}-${id}`}
+          >
+            <Pencil className="h-3.5 w-3.5 mr-1.5" />
+            Rename
+          </Button>
+        )}
         <Button
-          ref={triggerRef}
-          type="button"
-          size="sm"
-          variant="outline"
-          className="h-8"
-          onClick={(e) => { e.stopPropagation(); openRename() }}
-          data-testid={`integration-row-actions-rename-${type}-${id}`}
-        >
-          <Pencil className="h-3.5 w-3.5 mr-1.5" />
-          Rename
-        </Button>
-        <Button
+          ref={toolkit === 'shopify' ? triggerRef : undefined}
           type="button"
           size="sm"
           variant="outline"

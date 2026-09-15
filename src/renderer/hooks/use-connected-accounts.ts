@@ -83,13 +83,13 @@ export function useConnectedAccountsByToolkit(toolkit: string) {
 export function useInitiateConnection() {
   const { track } = useAnalyticsTracking()
 
-  return useMutation<InitiateConnectionResponse, Error, { providerSlug: string; electron?: boolean; location?: string }>({
+  return useMutation<InitiateConnectionResponse, Error, { providerSlug: string; electron?: boolean; location?: string; shop?: string }>({
     meta: { skipGlobalErrorToast: true },
-    mutationFn: async ({ providerSlug, electron }) => {
+    mutationFn: async ({ providerSlug, electron, shop }) => {
       const res = await apiFetch('/api/connected-accounts/initiate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ providerSlug, electron }),
+        body: JSON.stringify({ providerSlug, electron, shop }),
       })
 
       if (!res.ok) {

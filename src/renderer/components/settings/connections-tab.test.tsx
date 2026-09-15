@@ -1,8 +1,13 @@
 // @vitest-environment jsdom
+import { StrictMode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { screen } from '@testing-library/react'
+import { screen, waitFor } from '@testing-library/react'
 import { renderWithProviders } from '@renderer/test/test-utils'
-import { ConnectionsTab } from './connections-tab'
+import { ConnectionsHeaderActions, ConnectionsTab } from './connections-tab'
+
+const router = vi.hoisted(() => ({ navigate: vi.fn(), search: {} as Record<string, string> }))
+const shopifyAccounts = vi.hoisted(() => [] as Array<Record<string, string>>)
+const mockInitiate = vi.hoisted(() => vi.fn())
 
 const mockUseConnectionActivityStats = vi.fn()
 vi.mock('@renderer/hooks/use-activity-stats', () => ({
@@ -25,10 +30,11 @@ vi.mock('@renderer/hooks/use-connected-accounts', () => ({
       status: 'active',
       createdAt: '2026-07-01T00:00:00.000Z',
       updatedAt: '2026-07-01T00:00:00.000Z',
-    }] },
+    }, ...shopifyAccounts] },
     isLoading: false,
   }),
   useTriggerCountsPerAccount: () => ({ data: {} }),
+  useInitiateConnection: () => ({ mutateAsync: mockInitiate }),
 }))
 
 vi.mock('@renderer/hooks/use-remote-mcps', () => ({
@@ -63,13 +69,13 @@ vi.mock('@renderer/components/connections/connection-agent-count', () => ({
 }))
 
 vi.mock('@renderer/components/connections/connections-list', () => ({
-  NewIntegrationButton: () => null,
+  NewIntegrationButton: () => <div data-testid="new-integration" />,
 }))
 
 vi.mock('@tanstack/react-router', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@tanstack/react-router')>()),
-  useNavigate: () => vi.fn(),
-  useSearch: () => ({}),
+  useNavigate: () => router.navigate,
+  useSearch: () => router.search,
 }))
 
 describe('global Connections activity charts', () => {
@@ -120,5 +126,44 @@ describe('global Connections activity charts', () => {
     expect(screen.getByText('Docs MCP')).toBeInTheDocument()
     expect(screen.queryByRole('img', { name: /activity/i })).not.toBeInTheDocument()
     expect(screen.queryByTestId('activity-chart-skeleton')).not.toBeInTheDocument()
+  })
+})
+
+describe('Shopify handoff to Connections', () => {
+  const SHOP = 'gamut-dev.myshopify.com'
+  const assign = vi.fn()
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    router.search = { shop: SHOP }
+    shopifyAccounts.length = 0
+    Object.defineProperty(window, 'location', { value: { ...window.location, assign }, writable: true })
+  })
+
+  // A deeplink opens a browser tab with no click to open a popup from, so the
+  // grant takes over the tab with the store pre-filled.
+  it('connects a store that is not connected yet, in this tab', async () => {
+    mockInitiate.mockResolvedValue({ redirectUrl: 'https://backend.composio.dev/api/v3/s/abc' })
+    // StrictMode replays the effect before the URL change renders; the grant must still start once.
+    renderWithProviders(<StrictMode><ConnectionsHeaderActions /></StrictMode>)
+
+    expect(mockInitiate).toHaveBeenCalledWith(expect.objectContaining({ providerSlug: 'shopify', shop: SHOP }))
+    await waitFor(() => expect(assign).toHaveBeenCalledWith('https://backend.composio.dev/api/v3/s/abc'))
+    // The store leaves the URL before the grant starts, so a remount cannot start another.
+    const { search, replace } = router.navigate.mock.calls[0][0]
+    expect(search({ shop: SHOP })).toEqual({ shop: undefined })
+    expect(replace).toBe(true)
+    expect(router.navigate.mock.invocationCallOrder[0]).toBeLessThan(mockInitiate.mock.invocationCallOrder[0])
+    expect(mockInitiate).toHaveBeenCalledTimes(1)
+  })
+
+  it('opens the existing account instead of starting a second grant for a connected store', () => {
+    shopifyAccounts.push({ id: 'shop-acc', toolkitSlug: 'shopify', displayName: SHOP, status: 'active' })
+    renderWithProviders(<ConnectionsHeaderActions />)
+
+    expect(mockInitiate).not.toHaveBeenCalled()
+    const { search, replace } = router.navigate.mock.calls[0][0]
+    expect(search({ shop: SHOP, connectionView: 'logs' })).toEqual({ shop: undefined, detail: 'account-shop-acc', connectionView: undefined })
+    expect(replace).toBe(true)
   })
 })

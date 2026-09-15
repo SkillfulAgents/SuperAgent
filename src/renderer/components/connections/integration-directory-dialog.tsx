@@ -1,5 +1,6 @@
 import { apiFetch } from '@renderer/lib/api'
 import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
+import { openExternalUrl } from '@renderer/lib/open-external'
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { RemoteMcpServer } from '@renderer/hooks/use-remote-mcps'
@@ -17,6 +18,7 @@ import { Button } from '@renderer/components/ui/button'
 import { Label } from '@renderer/components/ui/label'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { cn } from '@shared/lib/utils/cn'
+import { SHOPIFY_APP_INSTALL_URL } from '@shared/lib/account-providers/shopify'
 import {
   Select,
   SelectContent,
@@ -375,6 +377,12 @@ function ApisPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
   const mcpMatchCount = useMemo(() => filterMcpServers(filter).length, [filter])
 
   const handleConnect = async (slug: string) => {
+    // Shopify is installed from its App Store listing, and the install hands the
+    // store back to Connections, which connects it. There is no grant to wait for.
+    if (slug === 'shopify') {
+      void openExternalUrl(SHOPIFY_APP_INSTALL_URL)
+      return
+    }
     setConnecting(slug)
     setError(null)
     const popup = prepareOAuthPopup()

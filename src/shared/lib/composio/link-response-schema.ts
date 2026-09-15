@@ -8,3 +8,10 @@ export const LinkResponseSchema = z.object({
 })
 
 export type LinkResponse = z.infer<typeof LinkResponseSchema>
+
+// `POST /connected_accounts` (kept for custom auth configs) answers with the
+// account id and the provider's authorize URL.
+export const CreateResponseSchema = z.object({
+  id: z.string(),
+  redirect_url: z.string(),
+})

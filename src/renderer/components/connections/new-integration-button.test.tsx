@@ -6,6 +6,7 @@ import { renderWithProviders } from '@renderer/test/test-utils'
 import { NewIntegrationButton } from './connections-list'
 import { OAUTH_ABORT_DELAY_MS } from '@renderer/hooks/use-delayed-oauth-abort'
 import { useMcpOAuthListener } from '@renderer/hooks/use-mcp-oauth-listener'
+import { SHOPIFY_APP_INSTALL_URL } from '@shared/lib/account-providers/shopify'
 
 const MOCK_ACCOUNT_ID = 'new-account-123'
 const MOCK_MCP_ID = 'new-mcp-123'
@@ -29,6 +30,11 @@ vi.mock('@shared/lib/account-providers', () => ({
     slug,
     displayName: slug.charAt(0).toUpperCase() + slug.slice(1),
   }),
+}))
+
+const mockOpenExternal = vi.hoisted(() => vi.fn())
+vi.mock('@renderer/lib/open-external', () => ({
+  openExternalUrl: (...args: unknown[]) => mockOpenExternal(...args),
 }))
 
 vi.mock('@renderer/hooks/use-mcp-oauth-listener', () => ({
@@ -374,4 +380,45 @@ describe('NewIntegrationButton — post-OAuth policy editor', () => {
     await userEvent.click(screen.getByTestId('tool-policy-save'))
     await waitFor(() => expect(lastToolPoliciesPutBody).toEqual({ policies: [] }))
   })
+})
+
+describe('NewIntegrationButton — Shopify', () => {
+  function mockDirectory() {
+    window.electronAPI = undefined
+    const base = mockApiFetch.getMockImplementation()!
+    mockApiFetch.mockImplementation(async (url: string, opts?: { method?: string; body?: string }) => {
+      if (url === '/api/providers') {
+        return {
+          ok: true,
+          json: async () => ({
+            providers: [
+              { slug: 'slack', displayName: 'Slack', description: 'Team communication' },
+              { slug: 'shopify', displayName: 'Shopify', description: 'Online store' },
+            ],
+          }),
+        }
+      }
+      return base(url, opts)
+    })
+  }
+
+  // Shopify installs start at the App Store listing: there is no grant to wait for,
+  // so the directory must not enter its connecting state.
+  it('opens the App Store listing instead of calling initiate', async () => {
+    mockDirectory()
+
+    renderWithProviders(<NewIntegrationButton />)
+    await userEvent.click(screen.getByTestId('connections-add-button'))
+    await waitFor(() => expect(screen.getByTestId('directory-connect-api-shopify')).toBeInTheDocument())
+    await userEvent.click(screen.getByTestId('directory-connect-api-shopify'))
+
+    expect(mockOpenExternal).toHaveBeenCalledWith(SHOPIFY_APP_INSTALL_URL)
+    // The regression was a stuck connecting state that disabled every tile.
+    expect(screen.getByTestId('directory-connect-api-shopify')).toBeEnabled()
+    expect(mockApiFetch).not.toHaveBeenCalledWith(
+      '/api/connected-accounts/initiate',
+      expect.anything(),
+    )
+  })
+
 })
