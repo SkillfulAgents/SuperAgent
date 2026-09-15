@@ -140,7 +140,8 @@ export function StaleSessionNotice({
             <DropdownMenuContent
               side="top"
               align="end"
-              className="w-96"
+              collisionPadding={8}
+              className="w-96 max-w-[var(--radix-dropdown-menu-content-available-width)] outline-none"
               data-testid="stale-options-popover"
             >
               <OptionRow
