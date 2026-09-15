@@ -106,7 +106,7 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
   useDeleteSession: () => ({ mutateAsync: vi.fn() }),
   useUpdateSessionName: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useSetSessionMarkedUnread: () => ({ mutateAsync: mockSetMarkedUnread, isPending: false }),
-  useForkSession: () => ({ mutateAsync: mockFork, isPending: false }),
+  useForkSession: () => ({ mutate: mockFork, isPending: false }),
 }))
 
 const mockCanAdminAgent = vi.fn(() => true)
@@ -377,28 +377,13 @@ describe('Fork Session item', () => {
     expect(screen.getByTestId('fork-session-item')).toHaveAttribute('data-disabled')
   })
 
-  it('forks and navigates; draft and cache seed live in the hook', async () => {
-    mockFork.mockResolvedValue({ id: 'fork-1', agentSlug: 'agent-a', name: 'Pricing (fork)' })
+  it('forks; navigation, draft and cache seed live in the hook', async () => {
     renderMenu()
     fireEvent.click(screen.getByTestId('fork-session-item'))
-    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith({
-      to: '/agents/$slug/sessions/$sessionId',
-      params: { slug: 'agent-a', sessionId: 'fork-1' },
-    }))
-    expect(mockFork).toHaveBeenCalledWith({ sessionId: 'src-1', agentSlug: 'agent-a' })
+    await waitFor(() => expect(mockFork).toHaveBeenCalledWith({ sessionId: 'src-1', agentSlug: 'agent-a' }))
+    expect(mockNavigate).not.toHaveBeenCalled()
     expect(mockSnapshot).not.toHaveBeenCalled()
     expect(mockSeed).not.toHaveBeenCalled()
     expect(mockSetQueryData).not.toHaveBeenCalled()
-  })
-
-  it('stays put and logs when the fork fails', async () => {
-    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
-    mockFork.mockRejectedValue(new Error('nope'))
-    renderMenu()
-    fireEvent.click(screen.getByTestId('fork-session-item'))
-    await waitFor(() => expect(err).toHaveBeenCalled())
-    expect(mockNavigate).not.toHaveBeenCalled()
-    expect(mockSeed).not.toHaveBeenCalled()
-    err.mockRestore()
   })
 })
