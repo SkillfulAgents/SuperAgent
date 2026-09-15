@@ -44,9 +44,15 @@ vi.mock('@shared/lib/account-providers', () => ({
   getRegisteredProviders: () => [mockProvider],
 }))
 
-vi.mock('@shared/lib/account-providers/service-catalog', () => ({
-  getProvider: (slug: string) => ({ slug, displayName: slug.charAt(0).toUpperCase() + slug.slice(1) }),
-}))
+vi.mock('@shared/lib/account-providers/service-catalog', async () => {
+  const catalog = await vi.importActual<typeof import('@shared/lib/account-providers/service-catalog')>('@shared/lib/account-providers/service-catalog')
+  return {
+    // Shopify keeps its real adapter; other slugs are stubs.
+    getProvider: (slug: string) => slug === 'shopify'
+      ? catalog.getProvider(slug)
+      : ({ slug, displayName: slug.charAt(0).toUpperCase() + slug.slice(1) }),
+  }
+})
 
 vi.mock('@shared/lib/config/settings', () => ({
   getAccountProviderUserId: () => 'test-user',
@@ -164,6 +170,18 @@ describe('AccountSyncService', () => {
         displayName: 'work@slack.com',
         status: 'active',
       }))
+    })
+
+    // A reconnect's new Shopify grant replaces its store's account in the connect finalizer.
+    it('leaves unknown Shopify connections to the connect flow', async () => {
+      mockListConnections.mockResolvedValue([
+        { id: 'conn-shop', status: 'ACTIVE', toolkitSlug: 'shopify' },
+      ])
+      mockWhere.mockResolvedValue([])
+
+      await accountSyncService.syncAll()
+
+      expect(mockInsert).not.toHaveBeenCalled()
     })
 
     it('does not add remote connections that are not ACTIVE', async () => {

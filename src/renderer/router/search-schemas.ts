@@ -87,6 +87,8 @@ export const settingsSearchSchema = z
     from: internalPath.optional(),
     detail: connectionDetailKey.optional(),
     connectionView: z.literal('logs').optional(),
+    // Store handed back by Platform's Shopify install (Shopify's catalog `arrivalParam`).
+    shop: z.string().optional().catch(undefined),
   })
   .refine((s) => !s.connectionView || !!s.detail, {
     message: 'a connection subview requires detail',

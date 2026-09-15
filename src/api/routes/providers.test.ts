@@ -18,16 +18,19 @@ async function slugs(): Promise<string[]> {
 }
 
 describe('GET /api/providers', () => {
-  it('lists X and Plaid only on Gamut\'s Composio', async () => {
+  it('lists X and Plaid only on Gamut\'s Composio, and never Shopify', async () => {
     mocks.isPlatformComposioActive.mockReturnValue(true)
     const platform = await slugs()
     expect(platform).toContain('twitter')
     expect(platform).toContain('plaid')
+    // Shopify is unlisted until its App Store listing is live: arrivals still connect it.
+    expect(platform).not.toContain('shopify')
 
     mocks.isPlatformComposioActive.mockReturnValue(false)
     const local = await slugs()
     expect(local).not.toContain('twitter')
     expect(local).not.toContain('plaid')
+    expect(local).not.toContain('shopify')
     expect(local).toContain('gmail')
   })
 })

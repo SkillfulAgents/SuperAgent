@@ -37,6 +37,7 @@ import { useOAuthReconnect } from '@renderer/hooks/use-oauth-reconnect'
 import { useLoginWindow } from '@renderer/hooks/use-login-window'
 import { useQueryClient } from '@tanstack/react-query'
 import { LoginButton } from './login-button'
+import { getProvider } from '@shared/lib/account-providers/service-catalog'
 
 export interface IntegrationRowActionsProps {
   type: 'oauth' | 'mcp'
@@ -57,6 +58,7 @@ export interface IntegrationRowActionsProps {
  * on the detail page itself, so there are no actions for them here.
  */
 export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, accountStatus }: IntegrationRowActionsProps) {
+  const fixedName = !!(toolkit && getProvider(toolkit)?.fixedName)
   const [renameOpen, setRenameOpen] = useState(false)
   const [renameValue, setRenameValue] = useState(name)
   const [deleteOpen, setDeleteOpen] = useState(false)
@@ -299,19 +301,23 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, accou
             Tools
           </Button>
         )}
+        {/* A fixed-name connection is named after what it is authorized for. */}
+        {!fixedName && (
+          <Button
+            ref={triggerRef}
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8"
+            onClick={(e) => { e.stopPropagation(); openRename() }}
+            data-testid={`integration-row-actions-rename-${type}-${id}`}
+          >
+            <Pencil className="h-3.5 w-3.5 mr-1.5" />
+            Rename
+          </Button>
+        )}
         <Button
-          ref={triggerRef}
-          type="button"
-          size="sm"
-          variant="outline"
-          className="h-8"
-          onClick={(e) => { e.stopPropagation(); openRename() }}
-          data-testid={`integration-row-actions-rename-${type}-${id}`}
-        >
-          <Pencil className="h-3.5 w-3.5 mr-1.5" />
-          Rename
-        </Button>
-        <Button
+          ref={fixedName ? triggerRef : undefined}
           type="button"
           size="sm"
           variant="outline"

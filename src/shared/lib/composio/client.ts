@@ -58,7 +58,7 @@ function shouldUseLocalComposioKey(): boolean {
   return Boolean(getEffectiveComposioApiKey())
 }
 
-async function composioFetch<T>(
+export async function composioFetch<T>(
   endpoint: string,
   options: RequestInit = {},
   apiVersion: ComposioApiVersion = 'v3'
