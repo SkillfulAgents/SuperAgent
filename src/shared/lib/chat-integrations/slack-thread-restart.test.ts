@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SlackConnector, type SlackConfig } from './slack-connector'
+import { AgentIntegrationRegistry } from '../agent-integrations/registry'
+import type { AgentIntegration } from '../agent-integrations/agent-integration'
+import type { AgentIntegrationRecord } from '../agent-integrations/types'
+import { chatProviders } from './providers'
+import * as threadState from './slack-thread-state'
 
 type SlackMessage = { text: string; ts: string; thread_ts?: string; channel?: string }
 type MessageListener = (event: { message: Record<string, string>; say: unknown }) => Promise<void>
@@ -46,14 +51,17 @@ function memoryStore() {
   }
 }
 
-const connectors: SlackConnector[] = []
+const connectors: AgentIntegration[] = []
 async function connect(config: Partial<SlackConfig>, store: ReturnType<typeof memoryStore>) {
-  const connector = new SlackConnector({
+  return observe(new SlackConnector({
     botToken: 'xoxb-test', appToken: 'xapp-test', onlyMentioned: true, ...config,
-  }, undefined, store)
+  }, undefined, store))
+}
+
+async function observe<T extends AgentIntegration>(connector: T) {
   connectors.push(connector)
   const received = vi.fn()
-  connector.onMessage(received)
+  connector.onEvent(event => { if (event.type === 'input') received(event.payload) })
   await connector.connect()
   const listener = slack.listeners.at(-1)!
   return {
@@ -75,6 +83,33 @@ afterEach(async () => {
 })
 
 describe('Slack thread participation across connector recreation (SUP-861)', () => {
+  it('restores installation-scoped state through the application provider registry', async () => {
+    const stores = { first: memoryStore(), other: memoryStore() }
+    const factory = vi.spyOn(threadState, 'createSlackThreadStateStore').mockImplementation(id => stores[id as keyof typeof stores])
+    const registry = new AgentIntegrationRegistry(chatProviders)
+    const record: AgentIntegrationRecord = {
+      id: 'first', agentSlug: 'test-agent', provider: 'slack', name: null, status: 'active',
+      config: JSON.stringify({ botToken: 'xoxb-test', appToken: 'xapp-test', onlyMentioned: true, answerInThread: true }),
+      errorMessage: null, createdByUserId: null, model: null, effort: null, speed: null,
+      createdAt: new Date(), updatedAt: new Date(),
+    }
+    try {
+      const first = await observe(await registry.create(record))
+      await first.receive({ text: '<@U_BOT> start a thread', ts: '1000.001' })
+      await first.connector.disconnect()
+
+      const restored = await observe(await registry.create(record))
+      await restored.receive({ text: 'after registry recreation', ts: '1000.002', thread_ts: '1000.001' })
+      expect(restored.received).toHaveBeenCalledWith(expect.objectContaining({ text: 'after registry recreation' }))
+
+      const other = await observe(await registry.create({ ...record, id: 'other' }))
+      await other.receive({ text: 'different installation', ts: '1000.003', thread_ts: '1000.001' })
+      expect(other.received).not.toHaveBeenCalled()
+    } finally {
+      factory.mockRestore()
+    }
+  })
+
   it('restores participation before Socket Mode delivers its first event', async () => {
     const store = memoryStore()
     store.save('U_BOT', ['C123|1000.001'])

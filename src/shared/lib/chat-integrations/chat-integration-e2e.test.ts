@@ -110,6 +110,7 @@ vi.mock('./telegram-connector', async (importOriginal) => {
       static generateSystemPrompt = actual.TelegramConnector.generateSystemPrompt
       static classifyChatId = actual.TelegramConnector.classifyChatId
       constructor() {
+        Object.defineProperty(mockConnector, 'constructor', { value: new.target, configurable: true })
         return mockConnector
       }
     },
