@@ -1638,6 +1638,12 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           if (message.type === 'status' && message.data?.message === 'Connected to session stream') {
             resolveReady()
           }
+          // The guest refuses a session it does not have with an error frame, then
+          // closes. Keep its reason: the close alone reads as a transient drop, and
+          // callers that rotate a missing session match on "Session not found".
+          if (message.type === 'error') {
+            rejectReady(new Error(message.message))
+          }
         } catch (error) {
           console.error('Failed to parse WebSocket message:', error)
         }
