@@ -1,6 +1,8 @@
 import type { ServerType } from '@hono/node-server'
 import pLimit from 'p-limit'
-import { containerHost } from './agent-actor'
+import { agentRegistry, containerHost } from './agent-actor'
+import { seedBrowserProfileFromChrome } from './browser/seed-browser-profile'
+import { displayNameFromInstructions } from './utils/agent-display-name'
 import { shutdownActiveRunner } from './container/client-factory'
 import { reviewManager } from './proxy/review-manager'
 import { accountReauthManager } from './proxy/account-reauth-manager'
@@ -171,6 +173,12 @@ async function initializeServicesInner() {
   // not a snapshot — an agent created during the delay must not be treated as
   // an orphan. Profiles claimed by a browser launch are skipped internally.
   startBrowserProfileCleanup(async () => (await listAgents()).map((a) => a.slug))
+
+  // What a container start needs from the agent's workspace goes through the
+  // agent's actor: the container runtime has no view of the files.
+  containerHost.onBeforeContainerStart = (agentId) => seedBrowserProfileFromChrome(agentRegistry.get(agentId))
+  containerHost.resolveAgentName = async (agentId) =>
+    displayNameFromInstructions(await agentRegistry.get(agentId).config.get('instructions'))
 
   // Stop the host browser for an agent before its container is torn down,
   // so the browser closes gracefully instead of getting a "socket hang up".

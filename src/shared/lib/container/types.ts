@@ -135,6 +135,12 @@ export interface CreateSessionOptions {
 
 export interface StartOptions {
   envVars?: Record<string, string>
+  /**
+   * The agent's display name, for the LLM provider's per-agent attribution.
+   * Supplied by the caller, which reads it through the agent's actor; the
+   * runtime has no view of the workspace and must not read it by host path.
+   */
+  agentName?: string
   additionalVolumes?: string[] // Extra -v flag values for bind mounts
   /**
    * Called when a bind mount is dropped at run time because the container

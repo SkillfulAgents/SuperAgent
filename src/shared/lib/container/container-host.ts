@@ -53,6 +53,17 @@ export class ContainerHost {
   private isSyncing = false
   private healthCheckIntervalId: NodeJS.Timeout | null = null
 
+  /**
+   * Runs before every container start, the runtime's own restarts included.
+   * The app assigns it to do what needs the agent's workspace (seeding the
+   * container browser from the selected Chrome profile) through the agent's
+   * actor, since nothing in this package has a view of the files.
+   */
+  onBeforeContainerStart: ((agentId: string) => Promise<void>) | null = null
+
+  /** The agent's display name for the container env, read through the agent's actor. */
+  resolveAgentName: ((agentId: string) => Promise<string | undefined>) | null = null
+
   /** Optional callback invoked before a container is stopped (e.g. to close host browser) */
   onBeforeContainerStop: ((agentId: string) => Promise<void>) | null = null
 
@@ -65,7 +76,13 @@ export class ContainerHost {
   private readonly hooks: RuntimeHost = (() => {
     const self = this
     return {
-      // A getter, so a hook assigned after the first runtime exists still applies.
+      // Getters, so a hook assigned after the first runtime exists still applies.
+      get onBeforeContainerStart() {
+        return self.onBeforeContainerStart
+      },
+      get resolveAgentName() {
+        return self.resolveAgentName
+      },
       get onBeforeContainerStop() {
         return self.onBeforeContainerStop
       },

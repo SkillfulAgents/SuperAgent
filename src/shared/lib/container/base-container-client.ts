@@ -33,7 +33,6 @@ import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import { getAgentCapabilitySettings, getSettings } from '@shared/lib/config/settings'
 import { getActiveLlmProvider, getModelContextWindowMap } from '@shared/lib/llm-provider'
 import type { AgentIdentity } from '@shared/lib/llm-provider/base-llm-provider'
-import { readAgentDisplayNameSync } from '@shared/lib/utils/file-storage'
 import { resolveContainerModel, getContainerModelPromptHints } from './resolve-model'
 import { getActiveWebProvider } from '../web-provider'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
@@ -742,7 +741,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       let port = await this.findAvailablePort()
 
       // Write env vars to a temp file (avoids command length limits on Windows)
-      const { flag: envFileFlag, cleanup: cleanupEnvFile } = this.buildEnvFile(options?.envVars)
+      const { flag: envFileFlag, cleanup: cleanupEnvFile } = this.buildEnvFile(options?.envVars, options?.agentName)
       const containerName = this.getContainerName()
 
       // Build resource limit flags
@@ -1853,22 +1852,23 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   // Who this container belongs to, for providers that attribute LLM usage per
-  // agent. The display name is re-read from disk on every env build (i.e. each
-  // container start), so a rename takes effect on the next restart.
-  protected agentIdentityForEnv(): AgentIdentity {
+  // agent. The display name arrives with each start (StartOptions.agentName),
+  // read by the caller through the agent's actor, so a rename takes effect on
+  // the next restart and the runtime never reads the workspace itself.
+  protected agentIdentityForEnv(agentName?: string): AgentIdentity {
     return {
       id: this.config.agentId,
-      name: readAgentDisplayNameSync(this.config.agentId),
+      name: agentName,
     }
   }
 
   // The final agent env, transport-agnostic; subclasses only serialize it.
   // Merge order: provider defaults < runtime constants < config.envVars < extra.
-  protected buildAgentEnv(extra?: Record<string, string>): Record<string, string> {
+  protected buildAgentEnv(extra?: Record<string, string>, agentName?: string): Record<string, string> {
     const settings = getSettings()
     const provider = getActiveLlmProvider()
     const merged: Record<string, string | undefined> = {
-      ...provider.getContainerEnvVars(this.agentIdentityForEnv()),
+      ...provider.getContainerEnvVars(this.agentIdentityForEnv(agentName)),
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
       // The setting only switches tool search OFF; whether it may be on is the
       // provider's call, because it depends on the endpoint expanding deferred
@@ -1887,7 +1887,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
   // Serialize the agent env to a temp --env-file (avoids shell-quoting + Windows
   // command-length limits). Caller cleans up the file after start.
-  protected buildEnvFile(additionalEnvVars?: Record<string, string>): { flag: string; cleanup: () => void } {
-    return writeEnvFile(this.buildAgentEnv(additionalEnvVars), this.config.agentId)
+  protected buildEnvFile(additionalEnvVars?: Record<string, string>, agentName?: string): { flag: string; cleanup: () => void } {
+    return writeEnvFile(this.buildAgentEnv(additionalEnvVars, agentName), this.config.agentId)
   }
 }
