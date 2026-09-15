@@ -24,6 +24,7 @@ vi.stubGlobal('fetch', mockFetch)
 
 import {
   getConnectionToken,
+  getConnection,
   proxyExecute,
   getAccountDisplayName,
   initiateConnection,
@@ -991,5 +992,61 @@ describe('getOrCreateAuthConfig', () => {
 
     expect(result.id).toBe('ac_first')
     expect(mockFetch).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('getConnection shopDomain', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetEffectiveComposioApiKey.mockReturnValue('test-api-key')
+  })
+
+  it('returns the store the connection is authorized for', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ...makeComposioResponse({ authScheme: 'OAUTH2', val: { subdomain: 'gamut-dev', access_token: 'tok' } }),
+        toolkit: { slug: 'shopify' },
+      }),
+    })
+    expect((await getConnection('ca_shop')).shopDomain).toBe('gamut-dev.myshopify.com')
+  })
+
+  it('leaves shopDomain unset when the store is not a myshopify domain', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ...makeComposioResponse({ authScheme: 'OAUTH2', val: { subdomain: 'evil.com/x' } }),
+        toolkit: { slug: 'shopify' },
+      }),
+    })
+    expect((await getConnection('ca_shop')).shopDomain).toBeUndefined()
+  })
+
+  // A record can carry state with no val at all, and the status still matters:
+  // the proxy reads it to decide whether an account needs reconnecting.
+  it('still reports status when the connection carries no state val', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        id: 'ca_shop',
+        status: 'ACTIVE',
+        toolkit: { slug: 'shopify' },
+        auth_config: { id: 'ac-1', auth_scheme: 'OAUTH2', is_composio_managed: true },
+        state: { authScheme: 'OAUTH2' },
+      }),
+    })
+    const connection = await getConnection('ca_shop')
+    expect(connection.status).toBe('ACTIVE')
+    expect(connection.shopDomain).toBeUndefined()
+  })
+
+  // Another toolkit's subdomain is a tenant, not a store.
+  it('leaves shopDomain unset for a non-Shopify connection', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => makeComposioResponse({ authScheme: 'OAUTH2', val: { subdomain: 'acme' } }),
+    })
+    expect((await getConnection('conn-1')).shopDomain).toBeUndefined()
   })
 })

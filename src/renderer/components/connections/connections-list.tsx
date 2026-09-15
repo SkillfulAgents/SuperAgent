@@ -73,8 +73,20 @@ export function ConnectionsList({ agentSlug, detailRowKey, detailView, detailBac
   )
 }
 
-export function NewIntegrationButton() {
+/**
+ * `shop` is the store platform's Shopify install hands back: the directory opens
+ * on Shopify so one click finishes the connection. `onShopHandled` clears it.
+ */
+export function NewIntegrationButton({ shop, onShopHandled }: { shop?: string; onShopHandled?: () => void } = {}) {
   const [open, setOpen] = useState(false)
+  // A store can arrive after mount (the account list loads, or the URL changes).
+  useEffect(() => {
+    if (shop) setOpen(true)
+  }, [shop])
+  const handleOpenChange = (next: boolean) => {
+    setOpen(next)
+    if (!next && shop) onShopHandled?.()
+  }
   const [newApi, setNewApi] = useState<NewApiConnection | null>(null)
   const [newMcp, setNewMcp] = useState<NewMcpConnection | null>(null)
 
@@ -93,7 +105,8 @@ export function NewIntegrationButton() {
       </Button>
       <IntegrationDirectoryDialog
         open={open}
-        onOpenChange={setOpen}
+        onOpenChange={handleOpenChange}
+        shop={shop}
         onApiConnected={setNewApi}
         onMcpConnected={setNewMcp}
       />

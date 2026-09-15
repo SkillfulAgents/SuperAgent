@@ -210,6 +210,42 @@ export function ConnectionsTab() {
   )
 }
 
+/**
+ * The Connections header's "New connection" button. Platform hands every
+ * Shopify install and app open to /settings/connections?shop=<store>. A store
+ * that is already connected opens its account, since a second grant would break
+ * that connection. Any other store opens the directory on Shopify. Either way
+ * `shop` leaves the URL once handled.
+ */
+export function ConnectionsHeaderActions() {
+  const navigate = useNavigate()
+  const { shop } = useSearch({ strict: false }) as { shop?: string }
+  const { data: accountsData } = useConnectedAccounts()
+  const connected = shop
+    ? accountsData?.accounts?.find((a) => a.toolkitSlug === 'shopify' && a.displayName === shop && a.status === 'active')
+    : undefined
+  const clearShop = useCallback(() => {
+    void navigate({
+      to: '/settings/$tab',
+      params: { tab: 'connections' },
+      search: (prev) => ({ ...prev, shop: undefined }),
+      replace: true,
+    })
+  }, [navigate])
+  useEffect(() => {
+    if (!connected) return
+    void navigate({
+      to: '/settings/$tab',
+      params: { tab: 'connections' },
+      search: (prev) => ({ ...prev, shop: undefined, detail: `account-${connected.id}`, connectionView: undefined }),
+      replace: true,
+    })
+  }, [connected, navigate])
+  // Wait for the account list so a connected store never flashes the directory.
+  const pendingShop = accountsData && !connected ? shop : undefined
+  return <NewIntegrationButton shop={pendingShop} onShopHandled={clearShop} />
+}
+
 function ConnectionsEmptyState() {
   return (
     <div

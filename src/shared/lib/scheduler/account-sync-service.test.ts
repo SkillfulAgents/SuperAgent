@@ -166,6 +166,18 @@ describe('AccountSyncService', () => {
       }))
     })
 
+    // A reconnect's new Shopify grant replaces its store's account in the connect finalizer.
+    it('leaves unknown Shopify connections to the connect flow', async () => {
+      mockListConnections.mockResolvedValue([
+        { id: 'conn-shop', status: 'ACTIVE', toolkitSlug: 'shopify' },
+      ])
+      mockWhere.mockResolvedValue([])
+
+      await accountSyncService.syncAll()
+
+      expect(mockInsert).not.toHaveBeenCalled()
+    })
+
     it('does not add remote connections that are not ACTIVE', async () => {
       mockListConnections.mockResolvedValue([
         { id: 'conn-expired', status: 'EXPIRED', toolkitSlug: 'gmail' },

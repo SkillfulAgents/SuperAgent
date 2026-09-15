@@ -1,7 +1,7 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { db } from '@shared/lib/db'
 import { connectedAccounts, agentConnectedAccounts } from '@shared/lib/db/schema'
-import { desc, eq } from 'drizzle-orm'
+import { and, desc, eq } from 'drizzle-orm'
 import {
   getProvider,
   isProviderSupported,
@@ -11,7 +11,7 @@ import {
 } from '@shared/lib/account-providers'
 import { getAppBaseUrlFromRequest, getCurrentUserId } from '@shared/lib/auth/config'
 import { isAuthMode } from '@shared/lib/auth/mode'
-import { isOwnedByCaller } from '@shared/lib/auth/ownership'
+import { isOwnedByCaller, ownerScope } from '@shared/lib/auth/ownership'
 import { getAccountProviderUserId } from '@shared/lib/config/settings'
 import { Authenticated, OwnsAccount, IsAdmin, Or } from '../middleware/auth'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
@@ -23,8 +23,11 @@ import {
   syncConnectedAccountAgents,
 } from '@shared/lib/services/connection-sync-service'
 import { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
+import { parseShopDomain } from '@shared/lib/account-providers/shopify'
 
 const connectedAccountsRouter = new Hono()
+
+const SHOPIFY_STORE_UNVERIFIED = "Couldn't confirm which Shopify store was connected. Try connecting again."
 
 connectedAccountsRouter.use('*', Authenticated())
 
@@ -69,6 +72,12 @@ connectedAccountsRouter.post('/', async (c) => {
         },
         400
       )
+    }
+
+    if (toolkitSlug === 'shopify' && !parseShopDomain(displayName)) {
+      // The proxy binds a Shopify account's calls to its own store, so a row
+      // named anything else could never make one.
+      return c.json({ error: 'A Shopify account is named after its store' }, 400)
     }
 
     const id = crypto.randomUUID()
@@ -120,11 +129,70 @@ connectedAccountsRouter.post('/sync', async (c) => {
   }
 })
 
+/**
+ * The caller's account for a Shopify store. Shopify keeps one refresh token per
+ * app and store, so a second Composio grant would break that account's
+ * connection: every connect for the store reuses it.
+ */
+async function findStoreAccount(c: Context, store: string) {
+  const [account] = await db
+    .select()
+    .from(connectedAccounts)
+    .where(and(
+      eq(connectedAccounts.toolkitSlug, 'shopify'),
+      eq(connectedAccounts.displayName, store),
+      ownerScope(c, connectedAccounts.userId),
+    ))
+    .limit(1)
+  return account
+}
+
+/**
+ * Where a finished Shopify grant is saved. The store Composio authorized is the
+ * account's identity, so an unverified store is refused and the account for that
+ * store is the one updated, whichever account the reconnect started from. A
+ * merchant who authorizes a different store than the one they set out to
+ * reconnect gets that store's account updated instead of a dead end.
+ */
+async function resolveShopifyTarget(
+  c: Context,
+  toolkitSlug: string,
+  displayName: string,
+  reconnectAccountId: string | undefined,
+): Promise<{ error: string } | { reconnectAccountId: string | undefined }> {
+  if (toolkitSlug !== 'shopify') return { reconnectAccountId }
+  if (!parseShopDomain(displayName)) return { error: SHOPIFY_STORE_UNVERIFIED }
+  return { reconnectAccountId: (await findStoreAccount(c, displayName))?.id }
+}
+
+/**
+ * The account a finished grant replaces. It must be the caller's account for
+ * the same toolkit.
+ */
+async function findReconnectTarget(c: Context, accountId: string, toolkitSlug: string) {
+  const [account] = await db
+    .select({
+      providerConnectionId: connectedAccounts.providerConnectionId,
+      userId: connectedAccounts.userId,
+      toolkitSlug: connectedAccounts.toolkitSlug,
+    })
+    .from(connectedAccounts)
+    .where(eq(connectedAccounts.id, accountId))
+    .limit(1)
+  // In auth mode a user could otherwise overwrite another user's connection (SUP-198).
+  if (!account || !isOwnedByCaller(c, account) || account.toolkitSlug !== toolkitSlug) {
+    return { error: 'Account not found', status: 404 as const }
+  }
+  return { account }
+}
+
 // POST /api/connected-accounts/initiate - Start OAuth flow
 connectedAccountsRouter.post('/initiate', async (c) => {
   try {
     const body = await c.req.json()
-    const { providerSlug, electron, reconnectAccountId } = body
+    const { providerSlug, electron } = body
+    let { reconnectAccountId } = body
+    let shop = parseShopDomain(body.shop)
 
     if (!providerSlug) {
       return c.json({ error: 'Missing required field: providerSlug' }, 400)
@@ -139,9 +207,12 @@ connectedAccountsRouter.post('/initiate', async (c) => {
         .from(connectedAccounts)
         .where(eq(connectedAccounts.id, reconnectAccountId))
         .limit(1)
-      if (!existing || !isOwnedByCaller(c, existing)) {
+      if (!existing || !isOwnedByCaller(c, existing) || existing.toolkitSlug !== providerSlug) {
         return c.json({ error: 'Account not found' }, 404)
       }
+      // A Shopify account is named after its store, so a reconnect goes
+      // straight back through Composio for that already-installed store.
+      if (providerSlug === 'shopify') shop = parseShopDomain(existing.displayName)
     }
 
     const provider = getDefaultAccountProvider()
@@ -153,16 +224,33 @@ connectedAccountsRouter.post('/initiate', async (c) => {
       )
     }
 
+    // Shopify installs come from the App Store listing, which the renderer opens
+    // itself: a connect with no store never reaches Composio.
+    if (providerSlug === 'shopify' && !shop) {
+      return c.json({ error: 'Install Gamut from the Shopify App Store to connect a store' }, 400)
+    }
+
+    // One account per store: an active one is kept, a lapsed one is reconnected in
+    // place. `shop` is set by the guard above; repeating it narrows the type.
+    if (providerSlug === 'shopify' && shop && !reconnectAccountId) {
+      const existing = await findStoreAccount(c, shop)
+      if (existing?.status === 'active') {
+        return c.json({ error: `${shop} is already connected` }, 409)
+      }
+      if (existing) reconnectAccountId = existing.id
+    }
+
     // Build the callback URL
     // For Electron, use custom protocol; for web, use HTTP callback
-    const reconnectParam = reconnectAccountId ? `&reconnectAccountId=${encodeURIComponent(reconnectAccountId)}` : ''
+    const callbackParams =
+      reconnectAccountId ? `&reconnectAccountId=${encodeURIComponent(reconnectAccountId)}` : ''
     let callbackUrl: string
     if (electron) {
       const protocol = process.env.SUPERAGENT_PROTOCOL || 'superagent'
-      callbackUrl = `${protocol}://oauth-callback?toolkit=${encodeURIComponent(providerSlug)}&providerName=${encodeURIComponent(provider.name)}${reconnectParam}`
+      callbackUrl = `${protocol}://oauth-callback?toolkit=${encodeURIComponent(providerSlug)}&providerName=${encodeURIComponent(provider.name)}${callbackParams}`
     } else {
       const origin = getAppBaseUrlFromRequest(c)
-      callbackUrl = `${origin}/api/connected-accounts/callback?toolkit=${encodeURIComponent(providerSlug)}&providerName=${encodeURIComponent(provider.name)}${reconnectParam}`
+      callbackUrl = `${origin}/api/connected-accounts/callback?toolkit=${encodeURIComponent(providerSlug)}&providerName=${encodeURIComponent(provider.name)}${callbackParams}`
     }
 
     const userId = isAuthMode()
@@ -172,7 +260,7 @@ connectedAccountsRouter.post('/initiate', async (c) => {
     const { connectionId, redirectUrl } = await provider.initiateConnection(
       providerSlug,
       callbackUrl,
-      userId
+      userId,
     )
 
     return c.json({
@@ -214,7 +302,8 @@ connectedAccountsRouter.post('/initiate', async (c) => {
 connectedAccountsRouter.post('/complete', async (c) => {
   try {
     const body = await c.req.json()
-    const { connectionId, toolkit, providerName: reqProviderName, reconnectAccountId } = body
+    const { connectionId, toolkit, providerName: reqProviderName } = body
+    let { reconnectAccountId } = body
 
     if (!connectionId) {
       return c.json({ error: 'Missing connectionId' }, 400)
@@ -240,27 +329,20 @@ connectedAccountsRouter.post('/complete', async (c) => {
     const fallbackName = serviceProvider?.displayName || toolkit
 
     const displayName = await accountProvider.getAccountDisplayName(connectionId, toolkitSlug, fallbackName)
+    const shopifyTarget = await resolveShopifyTarget(c, toolkitSlug, displayName, reconnectAccountId)
+    if ('error' in shopifyTarget) return c.json({ error: shopifyTarget.error }, 502)
+    reconnectAccountId = shopifyTarget.reconnectAccountId
 
     const now = new Date()
     let id: string
 
     if (reconnectAccountId) {
-      // Look up old connection ID (and owner) before updating so we can clean it
-      // up remotely and verify ownership.
-      const [oldRecord] = await db
-        .select({
-          providerConnectionId: connectedAccounts.providerConnectionId,
-          userId: connectedAccounts.userId,
-        })
-        .from(connectedAccounts)
-        .where(eq(connectedAccounts.id, reconnectAccountId))
-        .limit(1)
-
-      // The account must exist and, in auth mode, be owned by the acting user.
-      // Otherwise a user could overwrite another user's connection (SUP-198).
-      if (!oldRecord || !isOwnedByCaller(c, oldRecord)) {
-        return c.json({ error: 'Account not found' }, 404)
+      // Look up the old connection before updating so we can clean it up remotely.
+      const target = await findReconnectTarget(c, reconnectAccountId, toolkitSlug)
+      if (!('account' in target)) {
+        return c.json({ error: target.error }, target.status)
       }
+      const oldRecord = target.account
 
       // Reconnecting: update existing record to preserve agent mappings and scope policies
       await db.update(connectedAccounts)
@@ -340,7 +422,7 @@ connectedAccountsRouter.get('/callback', async (c) => {
     const status = c.req.query('status')
     const toolkit = c.req.query('toolkit')
     const providerName = c.req.query('providerName') ?? 'composio'
-    const reconnectAccountId = c.req.query('reconnectAccountId')
+    let reconnectAccountId = c.req.query('reconnectAccountId')
 
     if (!isValidProviderName(providerName)) {
       return c.html(
@@ -375,27 +457,21 @@ connectedAccountsRouter.get('/callback', async (c) => {
     const fallbackName = serviceProvider?.displayName || toolkit
 
     const displayName = await accountProvider.getAccountDisplayName(connectionId, toolkitSlug, fallbackName)
+    const shopifyTarget = await resolveShopifyTarget(c, toolkitSlug, displayName, reconnectAccountId)
+    if ('error' in shopifyTarget) {
+      return c.html(generateCallbackHtml({ success: false, error: shopifyTarget.error }))
+    }
+    reconnectAccountId = shopifyTarget.reconnectAccountId
 
     const now = new Date()
     let id: string
 
     if (reconnectAccountId) {
-      const [oldRecord] = await db
-        .select({
-          providerConnectionId: connectedAccounts.providerConnectionId,
-          userId: connectedAccounts.userId,
-        })
-        .from(connectedAccounts)
-        .where(eq(connectedAccounts.id, reconnectAccountId))
-        .limit(1)
-
-      // The account must exist and, in auth mode, be owned by the acting user.
-      // Otherwise a user could overwrite another user's connection (SUP-198).
-      if (!oldRecord || !isOwnedByCaller(c, oldRecord)) {
-        return c.html(
-          generateCallbackHtml({ success: false, error: 'Account not found' })
-        )
+      const target = await findReconnectTarget(c, reconnectAccountId, toolkitSlug)
+      if (!('account' in target)) {
+        return c.html(generateCallbackHtml({ success: false, error: target.error }))
       }
+      const oldRecord = target.account
 
       await db.update(connectedAccounts)
         .set({
@@ -528,6 +604,9 @@ connectedAccountsRouter.patch('/:id', Or(OwnsAccount(), IsAdmin()), async (c) =>
 
     if (!existing) {
       return c.json({ error: 'Connected account not found' }, 404)
+    }
+    if (existing.toolkitSlug === 'shopify') {
+      return c.json({ error: 'A Shopify connection is named after its store and cannot be renamed' }, 400)
     }
 
     await db

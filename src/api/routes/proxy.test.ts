@@ -195,6 +195,49 @@ describe('proxy route', () => {
     expect(res.status).toBe(404)
   })
 
+  // A Shopify account is one store reached one way: POST to its own host's
+  // GraphQL Admin API. Every other shape carries the token somewhere it should
+  // not go, so each is refused before the call is made.
+  function mockShopifyAccount() {
+    mockValidateProxyToken.mockResolvedValue('my-agent')
+    mockDbFrom.mockReturnValue({ innerJoin: mockInnerJoin })
+    mockInnerJoin.mockReturnValue({ where: mockWhere })
+    mockWhere.mockReturnValue({ limit: mockLimit })
+    mockLimit.mockResolvedValue([
+      {
+        account: {
+          id: 'acc-shop',
+          toolkitSlug: 'shopify',
+          displayName: 'gamut-dev.myshopify.com',
+          providerConnectionId: 'comp-shop',
+          providerName: 'composio',
+          status: 'active',
+        },
+      },
+    ])
+    mockIsHostAllowed.mockReturnValue(true)
+    mockMakeApiCall.mockResolvedValue(new Response('{}', { status: 200 }))
+  }
+
+  it.each([
+    ['a REST path', 'POST', 'gamut-dev.myshopify.com', 'admin/api/2026-07/products.json', 403],
+    ['a GET on the GraphQL path', 'GET', 'gamut-dev.myshopify.com', 'admin/api/2026-07/graphql.json', 403],
+    ['another store', 'POST', 'attacker.myshopify.com', 'admin/api/2026-07/graphql.json', 403],
+    ['its own store over GraphQL', 'POST', 'gamut-dev.myshopify.com', 'admin/api/2026-07/graphql.json', 200],
+  ])('Shopify: %s', async (_, method, host, path, status) => {
+    mockShopifyAccount()
+
+    const res = await makeRequest(
+      `/api/proxy/my-agent/acc-shop/${host}/${path}`,
+      { method, headers: { Authorization: 'Bearer synth_valid' }, body: method === 'POST' ? '{}' : undefined }
+    )
+    expect(res.status).toBe(status)
+    expect(mockMakeApiCall).toHaveBeenCalledTimes(status === 200 ? 1 : 0)
+    if (host !== 'gamut-dev.myshopify.com') {
+      expect((await res.json()).error).toMatch(/This connection is for/)
+    }
+  })
+
   it('returns 403 when target host is not allowed for toolkit', async () => {
     mockValidateProxyToken.mockResolvedValue('my-agent')
     mockDbFrom.mockReturnValue({ innerJoin: mockInnerJoin })

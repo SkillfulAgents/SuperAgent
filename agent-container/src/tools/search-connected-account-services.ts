@@ -58,6 +58,8 @@ export const SERVICES: ServiceInfo[] = [
   // Social Media
   { slug: 'linkedin', displayName: 'LinkedIn', category: 'Social Media', description: 'Professional networking' },
   { slug: 'instagram', displayName: 'Instagram', category: 'Social Media', description: 'Photo and video sharing' },
+  // E-commerce
+  { slug: 'shopify', displayName: 'Shopify', category: 'E-commerce', description: 'Online store: products, orders, customers. GraphQL Admin API only: POST https://<account name>/admin/api/<version>/graphql.json, where the account name is the store (<store>.myshopify.com)' },
   // Finance
   { slug: 'stripe', displayName: 'Stripe', category: 'Finance', description: 'Payment processing' },
   { slug: 'quickbooks', displayName: 'QuickBooks', category: 'Finance', description: 'Accounting and bookkeeping' },

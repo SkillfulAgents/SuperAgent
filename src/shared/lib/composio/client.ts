@@ -11,6 +11,7 @@ import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { ProxyExecuteResponseSchema } from './proxy-execute-schema'
 import { LinkResponseSchema } from './link-response-schema'
+import { parseShopDomain } from '@shared/lib/account-providers/shopify'
 
 const COMPOSIO_HOST = 'https://backend.composio.dev'
 
@@ -238,6 +239,12 @@ export interface ComposioConnection {
   status: 'ACTIVE' | 'INITIATED' | 'INITIALIZING' | 'FAILED' | 'EXPIRED' | 'INACTIVE'
   toolkitSlug?: string
   createdAt?: string
+  /**
+   * For Shopify, the store the connection is authorized for, as
+   * `<store>.myshopify.com`. The merchant types the store on Composio's connect
+   * page, so this is the account's identity, not the store Gamut asked for.
+   */
+  shopDomain?: string
 }
 
 // API response type for GET /connected_accounts/:id
@@ -358,12 +365,19 @@ export async function initiateConnection(
 export async function getConnection(
   connectionId: string
 ): Promise<ComposioConnection> {
-  const response = await composioFetch<ConnectedAccountGetResponse>(
+  const response = await composioFetch<ConnectedAccountWithTokenResponse>(
     `/connected_accounts/${connectionId}`
   )
+  // Only Shopify's connect page collects a store; another toolkit's `subdomain`
+  // (a Zendesk or Atlassian tenant) is not one. `val` is absent on some records.
+  const subdomain = response.toolkit?.slug === 'shopify' ? response.state?.val?.subdomain : undefined
   return {
     id: response.id,
     status: response.status as ComposioConnection['status'],
+    // Shopify hosts are case-insensitive and the merchant types the store by hand.
+    shopDomain: typeof subdomain === 'string'
+      ? parseShopDomain(`${subdomain.toLowerCase()}.myshopify.com`) ?? undefined
+      : undefined,
   }
 }
 
@@ -389,7 +403,7 @@ interface ConnectionTokenResponse {
 interface ConnectedAccountWithTokenResponse extends ConnectedAccountGetResponse {
   state?: {
     authScheme: string
-    val: {
+    val?: {
       status?: string
       access_token?: string
       oauth_token?: string

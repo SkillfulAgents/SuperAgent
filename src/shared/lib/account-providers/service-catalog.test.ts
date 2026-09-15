@@ -55,4 +55,10 @@ describe('isProviderSupported', () => {
   it('returns false for unknown slug', () => {
     expect(isProviderSupported('nonexistent')).toBe(false)
   })
+
+  it('supports a Composio-only provider in Composio mode but not Nango mode', () => {
+    expect(isProviderSupported('shopify')).toBe(true)
+    expect(isProviderSupported('shopify', 'composio')).toBe(true)
+    expect(isProviderSupported('shopify', 'nango')).toBe(false)
+  })
 })

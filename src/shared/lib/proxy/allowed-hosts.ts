@@ -130,8 +130,16 @@ export function matchesHostPatterns(host: string, patterns: string[]): boolean {
   })
 }
 
+// The proxy takes its host from the request path, so it must be a bare hostname:
+// `evil.com%23.atlassian.net` ends with an allowed suffix, but the '#' it decodes
+// to ends the authority and the request would reach evil.com with the account's
+// credentials. The web filter parses its host through `new URL()` instead, so this
+// guard belongs here and not in the shared matcher.
+const BARE_HOSTNAME = /^[a-z0-9._-]+$/i
+
 export function isHostAllowed(toolkit: string, host: string): boolean {
   const allowed = TOOLKIT_ALLOWED_HOSTS[toolkit]
   if (!allowed) return false
+  if (!BARE_HOSTNAME.test(host)) return false
   return matchesHostPatterns(host, allowed)
 }

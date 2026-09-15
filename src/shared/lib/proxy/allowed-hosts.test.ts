@@ -32,6 +32,16 @@ describe('matchesHostPatterns', () => {
 })
 
 describe('isHostAllowed', () => {
+  // '#', '?' or userinfo inside the host ends the authority, so the request would
+  // leave for the part before it while the suffix check sees an allowed name.
+  it.each([
+    'evil.com#.myshopify.com',
+    'evil.com?.myshopify.com',
+    'user@store.myshopify.com',
+  ])('rejects a host that is not a bare hostname: %s', (host) => {
+    expect(isHostAllowed('shopify', host)).toBe(false)
+  })
+
   it('allows known hosts for gmail toolkit', () => {
     expect(isHostAllowed('gmail', 'gmail.googleapis.com')).toBe(true)
     expect(isHostAllowed('gmail', 'www.googleapis.com')).toBe(true)
