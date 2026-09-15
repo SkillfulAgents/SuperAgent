@@ -1,5 +1,6 @@
 import * as path from 'path'
 import { promises as fsPromises } from 'fs'
+import type { FileOps } from '@shared/lib/agent-actor/types'
 import type { StreamMessage } from './types'
 
 // Dev-only capture of MessagePersister inputs, outputs, and FS snapshots.
@@ -52,23 +53,27 @@ export class SubagentCapture {
     })
   }
 
-  // Snapshot the subagents directory (with mtimes preserved) at a labelled checkpoint.
-  async snapshotSubagentsDir(sessionId: string, sourceDir: string, label: string): Promise<void> {
+  // Snapshot the subagents directory of the agent's workspace (with mtimes
+  // preserved) at a labelled checkpoint. `sourceDir` is a workspace path.
+  async snapshotSubagentsDir(sessionId: string, files: FileOps, sourceDir: string, label: string): Promise<void> {
     const idx = String(this.snapshotCounter++).padStart(3, '0')
     const dest = path.join(this.sessionDir(sessionId), `snapshot-${idx}-${label}`)
 
     try {
-      const files = await fsPromises.readdir(sourceDir)
+      const entries = await files.list(sourceDir)
       await fsPromises.mkdir(dest, { recursive: true })
-      for (const file of files) {
-        const srcPath = path.join(sourceDir, file)
-        const destPath = path.join(dest, file)
-        const stat = await fsPromises.stat(srcPath)
-        if (!stat.isFile()) continue
-        await fsPromises.copyFile(srcPath, destPath)
-        await fsPromises.utimes(destPath, stat.atime, stat.mtime)
+      for (const entry of entries) {
+        if (entry.kind !== 'file') continue
+        const stat = await files.stat(entry.path)
+        if (!stat) continue
+        const destPath = path.join(dest, entry.name)
+        const bytes = await files.getDoc(entry.path)
+        if (bytes === null) continue
+        await fsPromises.writeFile(destPath, bytes)
+        const mtime = new Date(stat.mtimeMs)
+        await fsPromises.utimes(destPath, mtime, mtime)
       }
-      await this.recordNote(sessionId, 'fs_snapshot', { label, dir: `snapshot-${idx}-${label}`, fileCount: files.length })
+      await this.recordNote(sessionId, 'fs_snapshot', { label, dir: `snapshot-${idx}-${label}`, fileCount: entries.length })
     } catch (err) {
       await this.recordNote(sessionId, 'fs_snapshot_error', { label, error: String(err) })
     }

@@ -31,6 +31,7 @@ import {
 } from './session-service'
 import { recordSessionActivity } from './session-summary-cache'
 import { appendInformationalEntry } from './session-transcript-append'
+import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
 
 describe('getSessionSummary cache', () => {
   let testRoot: string
@@ -59,7 +60,7 @@ describe('getSessionSummary cache', () => {
   })
 
   async function createSession(sessionId: string, activityAt: string): Promise<void> {
-    await registerSession(agentSlug, sessionId, sessionId)
+    await registerSession(createLocalSessionStore(agentSlug), sessionId, sessionId)
     await fs.promises.mkdir(sessionsDir(), { recursive: true })
     await fs.promises.writeFile(transcriptPath(sessionId), '{}\n')
     const timestamp = new Date(activityAt)
@@ -70,10 +71,10 @@ describe('getSessionSummary cache', () => {
     await createSession('session-a', '2026-01-01T00:00:00.000Z')
     await createSession('session-b', '2026-01-02T00:00:00.000Z')
 
-    expect((await getSessionSummary(agentSlug)).sessionCount).toBe(2)
+    expect((await getSessionSummary(createLocalSessionStore(agentSlug))).sessionCount).toBe(2)
     statProbe.paths.length = 0
 
-    const warm = await getSessionSummary(agentSlug)
+    const warm = await getSessionSummary(createLocalSessionStore(agentSlug))
 
     expect(warm.sessionIds.sort()).toEqual(['session-a', 'session-b'])
     expect(warm.lastActivityAt).toEqual(new Date('2026-01-02T00:00:00.000Z'))
@@ -82,14 +83,14 @@ describe('getSessionSummary cache', () => {
 
   it('reconciles the full map when a transcript is structurally added', async () => {
     await createSession('session-a', '2026-01-01T00:00:00.000Z')
-    await getSessionSummary(agentSlug)
+    await getSessionSummary(createLocalSessionStore(agentSlug))
 
     await createSession('session-b', '2026-01-03T00:00:00.000Z')
     const changedAt = new Date('2026-02-01T00:00:00.000Z')
     await fs.promises.utimes(sessionsDir(), changedAt, changedAt)
     statProbe.paths.length = 0
 
-    const changed = await getSessionSummary(agentSlug)
+    const changed = await getSessionSummary(createLocalSessionStore(agentSlug))
 
     expect(changed.sessionIds.sort()).toEqual(['session-a', 'session-b'])
     expect(changed.lastActivityAt).toEqual(new Date('2026-01-03T00:00:00.000Z'))
@@ -98,7 +99,7 @@ describe('getSessionSummary cache', () => {
 
   it('reconciles a transcript that appears in the directory after a warm read', async () => {
     await createSession('session-a', '2026-01-01T00:00:00.000Z')
-    expect((await getSessionSummary(agentSlug)).sessionIds).toEqual(['session-a'])
+    expect((await getSessionSummary(createLocalSessionStore(agentSlug))).sessionIds).toEqual(['session-a'])
 
     await fs.promises.mkdir(sessionsDir(), { recursive: true })
     await fs.promises.writeFile(transcriptPath('session-b'), '{}\n')
@@ -108,7 +109,7 @@ describe('getSessionSummary cache', () => {
     // trip the reconcile. (Mirrors the structural-add test above.)
     const changedAt = new Date('2030-01-01T00:00:00.000Z')
     await fs.promises.utimes(sessionsDir(), changedAt, changedAt)
-    const summary = await getSessionSummary(agentSlug)
+    const summary = await getSessionSummary(createLocalSessionStore(agentSlug))
 
     expect(summary.sessionIds.sort()).toEqual(['session-a', 'session-b'])
   })
@@ -116,11 +117,11 @@ describe('getSessionSummary cache', () => {
   it('applies observed activity without restatting unchanged sibling transcripts', async () => {
     await createSession('session-a', '2026-01-01T00:00:00.000Z')
     await createSession('session-b', '2026-01-02T00:00:00.000Z')
-    await getSessionSummary(agentSlug)
+    await getSessionSummary(createLocalSessionStore(agentSlug))
     statProbe.paths.length = 0
 
-    recordSessionActivity(agentSlug, 'session-a', new Date('2026-01-04T12:00:00.000Z'))
-    const updated = await getSessionSummary(agentSlug)
+    recordSessionActivity(createLocalSessionStore(agentSlug), 'session-a', new Date('2026-01-04T12:00:00.000Z'))
+    const updated = await getSessionSummary(createLocalSessionStore(agentSlug))
 
     expect(updated.lastActivityAt).toEqual(new Date('2026-01-04T12:00:00.000Z'))
     expect(statProbe.paths).toEqual([sessionsDir()])
@@ -128,10 +129,10 @@ describe('getSessionSummary cache', () => {
 
   it('does not fabricate a session from an activity signal alone', async () => {
     await createSession('session-a', '2026-01-01T00:00:00.000Z')
-    await getSessionSummary(agentSlug)
+    await getSessionSummary(createLocalSessionStore(agentSlug))
 
-    recordSessionActivity(agentSlug, 'not-on-disk', new Date('2030-01-01T00:00:00.000Z'))
-    const summary = await getSessionSummary(agentSlug)
+    recordSessionActivity(createLocalSessionStore(agentSlug), 'not-on-disk', new Date('2030-01-01T00:00:00.000Z'))
+    const summary = await getSessionSummary(createLocalSessionStore(agentSlug))
 
     expect(summary.sessionIds).toEqual(['session-a'])
     expect(summary.lastActivityAt).toEqual(new Date('2026-01-01T00:00:00.000Z'))
@@ -150,9 +151,9 @@ describe('getSessionSummary cache', () => {
       }
     }
 
-    const loading = getSessionSummary(agentSlug)
+    const loading = getSessionSummary(createLocalSessionStore(agentSlug))
     await entered
-    recordSessionActivity(agentSlug, 'session-a', new Date('2026-01-05T00:00:00.000Z'))
+    recordSessionActivity(createLocalSessionStore(agentSlug), 'session-a', new Date('2026-01-05T00:00:00.000Z'))
     releaseStat()
 
     expect((await loading).lastActivityAt).toEqual(new Date('2026-01-05T00:00:00.000Z'))
@@ -162,28 +163,28 @@ describe('getSessionSummary cache', () => {
     const firstActivity = new Date('2030-01-01T00:00:00.000Z').getTime()
     const clock = vi.spyOn(Date, 'now').mockReturnValue(firstActivity)
     await createSession('session-a', '2026-01-01T00:00:00.000Z')
-    await getSessionSummary(agentSlug)
+    await getSessionSummary(createLocalSessionStore(agentSlug))
 
     const entry = { uuid: 'informational-1', content: 'Prompt blocked', level: 'warning' }
-    await appendInformationalEntry(agentSlug, 'session-a', entry)
-    expect((await getSessionSummary(agentSlug)).lastActivityAt).toEqual(new Date(firstActivity))
+    await appendInformationalEntry(createLocalSessionStore(agentSlug), 'session-a', entry)
+    expect((await getSessionSummary(createLocalSessionStore(agentSlug))).lastActivityAt).toEqual(new Date(firstActivity))
 
     clock.mockReturnValue(firstActivity + 1_000)
-    await appendInformationalEntry(agentSlug, 'session-a', entry)
-    expect((await getSessionSummary(agentSlug)).lastActivityAt).toEqual(new Date(firstActivity))
+    await appendInformationalEntry(createLocalSessionStore(agentSlug), 'session-a', entry)
+    expect((await getSessionSummary(createLocalSessionStore(agentSlug))).lastActivityAt).toEqual(new Date(firstActivity))
   })
 
   it('drops a deleted session from an already-warm summary', async () => {
     await createSession('session-a', '2026-01-01T00:00:00.000Z')
     await createSession('session-b', '2026-01-02T00:00:00.000Z')
-    await getSessionSummary(agentSlug)
+    await getSessionSummary(createLocalSessionStore(agentSlug))
 
-    await deleteSession(agentSlug, 'session-b')
+    await deleteSession(createLocalSessionStore(agentSlug), 'session-b')
     // Coarse-mtime filesystems may not advance the dir mtime on the unlink
     // within the same tick as the warm read; force it so the reconcile fires.
     const changedAt = new Date('2030-01-01T00:00:00.000Z')
     await fs.promises.utimes(sessionsDir(), changedAt, changedAt)
-    const summary = await getSessionSummary(agentSlug)
+    const summary = await getSessionSummary(createLocalSessionStore(agentSlug))
 
     expect(summary.sessionIds).toEqual(['session-a'])
     expect(summary.lastActivityAt).toEqual(new Date('2026-01-01T00:00:00.000Z'))
@@ -198,7 +199,7 @@ describe('getSessionSummary cache', () => {
       }
     }
 
-    const summary = await getSessionSummary(agentSlug)
+    const summary = await getSessionSummary(createLocalSessionStore(agentSlug))
 
     expect(summary.sessionIds).toEqual(['session-a'])
     expect(summary.lastActivityAt).toEqual(new Date('2026-01-01T00:00:00.000Z'))
@@ -207,11 +208,11 @@ describe('getSessionSummary cache', () => {
   it('periodically rebuilds unchanged directories to recover missed external writes', async () => {
     const clock = vi.spyOn(Date, 'now').mockReturnValue(1_800_000_000_000)
     await createSession('session-a', '2026-01-01T00:00:00.000Z')
-    await getSessionSummary(agentSlug)
+    await getSessionSummary(createLocalSessionStore(agentSlug))
 
     clock.mockReturnValue(1_800_000_000_000 + 10 * 60 * 1000)
     statProbe.paths.length = 0
-    await getSessionSummary(agentSlug)
+    await getSessionSummary(createLocalSessionStore(agentSlug))
 
     expect(statProbe.paths).toContain(transcriptPath('session-a'))
   })

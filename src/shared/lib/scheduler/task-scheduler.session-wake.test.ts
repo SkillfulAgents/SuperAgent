@@ -261,7 +261,7 @@ describe('TaskScheduler session wake (resume) branch', () => {
     await taskScheduler.triggerExecution()
 
     expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(
-      'agent-one',
+      expect.objectContaining({ slug: 'agent-one' }),
       'sleeping-session-1',
       {
         lastWake: {

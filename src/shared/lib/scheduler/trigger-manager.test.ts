@@ -208,7 +208,7 @@ describe('TriggerManager', () => {
       // Verify trigger was marked as fired
       expect(mockMarkTriggerFired).toHaveBeenCalledWith('trigger_1', 'session_123')
       expect(mockRegisterSession).toHaveBeenCalledWith(
-        'test-agent',
+        expect.objectContaining({ slug: 'test-agent' }),
         'session_123',
         'Email Handler',
         expect.objectContaining({
@@ -256,7 +256,7 @@ describe('TriggerManager', () => {
       expect(prompt).toContain('Event 2:')
       expect(prompt).toContain('Event 3:')
       expect(mockRegisterSession).toHaveBeenCalledWith(
-        'test-agent',
+        expect.objectContaining({ slug: 'test-agent' }),
         'session_123',
         'Batch Test',
         expect.objectContaining({

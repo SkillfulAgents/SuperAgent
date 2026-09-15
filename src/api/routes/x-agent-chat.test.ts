@@ -88,10 +88,10 @@ vi.mock('@shared/lib/chat-integrations/config-schema', () => ({
   },
 }))
 
-const mockGetSessionJsonlPath = vi.fn()
-
-vi.mock('@shared/lib/utils/file-storage', () => ({
-  getSessionJsonlPath: (...args: unknown[]) => mockGetSessionJsonlPath(...args),
+// The agent's workspace on this machine; the transcript append lands below it.
+vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/utils/file-storage')>()),
+  getAgentWorkspaceDir: () => '/tmp/superagent/agent-one',
 }))
 
 const mockCaptureException = vi.fn()
@@ -101,13 +101,14 @@ vi.mock('@shared/lib/error-reporting', () => ({
 }))
 
 const mockExistsSync = vi.fn()
-const mockMkdirSync = vi.fn()
-const mockAppendFileSync = vi.fn()
+const mockAppendFile = vi.fn()
 
 vi.mock('fs', () => ({
   existsSync: (...args: unknown[]) => mockExistsSync(...args),
-  mkdirSync: (...args: unknown[]) => mockMkdirSync(...args),
-  appendFileSync: (...args: unknown[]) => mockAppendFileSync(...args),
+  promises: {
+    appendFile: (...args: unknown[]) => mockAppendFile(...args),
+    mkdir: vi.fn(),
+  },
 }))
 
 import xAgentChat from './x-agent-chat'
@@ -181,7 +182,7 @@ describe('x-agent chat route', () => {
     mockGetActiveIntegrationIds.mockReturnValue(['integration-1'])
     mockEnsureSession.mockResolvedValue('session-1')
     mockEnsureRunning.mockResolvedValue({ sendMessage: containerSendMessage })
-    mockGetSessionJsonlPath.mockReturnValue('/tmp/superagent/agent-one/session-1.jsonl')
+    mockAppendFile.mockResolvedValue(undefined)
     mockExistsSync.mockReturnValue(false)
     vi.spyOn(Math, 'random').mockReturnValue(0)
   })
@@ -316,13 +317,13 @@ describe('x-agent chat route', () => {
     })
 
     expect(res.status).toBe(200)
-    expect(mockMkdirSync).toHaveBeenCalledWith('/tmp/superagent/agent-one', { recursive: true })
-    expect(mockAppendFileSync).toHaveBeenCalledWith(
-      '/tmp/superagent/agent-one/session-1.jsonl',
-      expect.stringContaining('"type":"assistant"'),
+    expect(mockAppendFile).toHaveBeenCalledWith(
+      '/tmp/superagent/agent-one/.claude/projects/-workspace/session-1.jsonl',
+      expect.any(Buffer),
     )
 
-    const entry = JSON.parse((mockAppendFileSync.mock.calls[0][1] as string).trim())
+    const entry = JSON.parse((mockAppendFile.mock.calls[0][1] as Buffer).toString('utf-8').trim())
+    expect(entry.type).toBe('assistant')
     expect(entry.sessionId).toBe('session-1')
     expect(entry.parentUuid).toBeNull()
     expect(entry.message.content).toEqual([{

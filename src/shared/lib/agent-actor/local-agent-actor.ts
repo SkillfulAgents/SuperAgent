@@ -8,11 +8,7 @@ import type * as sessionService from '@shared/lib/services/session-service'
 import type { appendAssistantEntry, appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
 import type { recordSessionActivity } from '@shared/lib/services/session-summary-cache'
 import type * as transcriptOps from './local-transcript-ops'
-import type {
-  getAgentClaudeConfigDir,
-  getAgentWorkspaceDir,
-  getSessionJsonlPath,
-} from '@shared/lib/utils/file-storage'
+import type { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import type {
   syncAgentConnectionEnvironment,
   updateConnectedAccountsEnvironment,
@@ -21,8 +17,8 @@ import type {
 import type { loadDailyUsageData, loadSessionUsageTotals } from '@shared/lib/services/usage-service'
 import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
 import { WebSocket } from 'ws'
-import { createLocalConfigOps } from './local-config-ops'
-import { createLocalFileOps } from './local-file-ops'
+import { createLocalSessionStore } from './local-session-store'
+import { transcriptPath, type SessionStore } from './session-store'
 import type {
   AgentActor,
   AgentSlug,
@@ -60,8 +56,6 @@ export interface LocalActorDeps {
   readonly appendAssistantEntry: typeof appendAssistantEntry
   readonly recordSessionActivity: typeof recordSessionActivity
   readonly getAgentWorkspaceDir: typeof getAgentWorkspaceDir
-  readonly getAgentClaudeConfigDir: typeof getAgentClaudeConfigDir
-  readonly getSessionJsonlPath: typeof getSessionJsonlPath
   readonly updateConnectedAccountsEnvironment: typeof updateConnectedAccountsEnvironment
   readonly updateRemoteMcpEnvironment: typeof updateRemoteMcpEnvironment
   readonly syncAgentConnectionEnvironment: typeof syncAgentConnectionEnvironment
@@ -73,8 +67,10 @@ export interface LocalActorDeps {
  * An agent whose container and files are managed by this process.
  *
  * Every method is a passthrough: one actor method, one underlying call, with
- * the agent's slug supplied. The ops are closures rather than class methods so
- * a caller may destructure them (`const { send } = actor.messages`).
+ * the agent's session store supplied where the call reads or edits stored
+ * sessions and the slug where it addresses in-memory state. The ops are
+ * closures rather than class methods so a caller may destructure them
+ * (`const { send } = actor.messages`).
  */
 export class LocalAgentActor implements AgentActor {
   readonly container: ContainerOps
@@ -84,15 +80,18 @@ export class LocalAgentActor implements AgentActor {
   readonly usage: UsageOps
   readonly files: FileOps
   readonly config: ConfigOps
+  /** Where this agent's sessions are: the files, the config documents, the transcripts directory. */
+  readonly store: SessionStore
 
   constructor(readonly slug: AgentSlug, deps: LocalActorDeps) {
+    this.store = createLocalSessionStore(slug, deps)
+    this.files = this.store.files
+    this.config = this.store.config
     this.container = createContainerOps(slug, deps)
-    this.sessions = createSessionOps(slug, deps)
-    this.messages = createMessageOps(slug, deps)
+    this.sessions = createSessionOps(slug, this.store, deps)
+    this.messages = createMessageOps(slug, this.store, deps)
     this.inputs = createInputOps(slug, deps)
-    this.usage = createUsageOps(slug, deps)
-    this.files = createLocalFileOps(slug, deps)
-    this.config = createLocalConfigOps({ files: this.files, workspaceHostPath: () => deps.getAgentWorkspaceDir(slug) })
+    this.usage = createUsageOps(this.store, deps)
   }
 }
 
@@ -134,42 +133,42 @@ function createContainerOps(slug: AgentSlug, deps: LocalActorDeps): ContainerOps
   }
 }
 
-function createSessionOps(slug: AgentSlug, deps: LocalActorDeps): SessionOps {
+function createSessionOps(slug: AgentSlug, store: SessionStore, deps: LocalActorDeps): SessionOps {
   const client = () => deps.containerHost.runtime(slug).getClient()
   return {
-    list: (...args) => deps.sessionService.listSessions(slug, ...args),
-    listFromSummary: (...args) => deps.sessionService.listSessionsFromSummary(slug, ...args),
-    listByIds: (...args) => deps.sessionService.listSessionsByIds(slug, ...args),
-    get: (...args) => deps.sessionService.getSession(slug, ...args),
-    summary: () => deps.sessionService.getSessionSummary(slug),
-    exists: (sessionId) => deps.sessionService.sessionExists(slug, sessionId),
-    isKnown: (sessionId) => deps.sessionService.sessionIsKnown(slug, sessionId),
-    isRegistered: (sessionId) => deps.sessionService.isSessionRegistered(slug, sessionId),
-    register: (...args) => deps.sessionService.registerSession(slug, ...args),
-    rename: (sessionId, name) => deps.sessionService.updateSessionName(slug, sessionId, name),
-    delete: (sessionId) => deps.sessionService.deleteSession(slug, sessionId),
-    deleteMany: (sessionIds) => deps.sessionService.deleteSessionsBatch(slug, sessionIds),
-    metadata: (sessionId) => deps.sessionService.getSessionMetadata(slug, sessionId),
-    readMetadata: () => deps.sessionService.readSessionMetadata(slug),
-    updateMetadata: (sessionId, updates) => deps.sessionService.updateSessionMetadata(slug, sessionId, updates),
+    list: (...args) => deps.sessionService.listSessions(store, ...args),
+    listFromSummary: (...args) => deps.sessionService.listSessionsFromSummary(store, ...args),
+    listByIds: (...args) => deps.sessionService.listSessionsByIds(store, ...args),
+    get: (...args) => deps.sessionService.getSession(store, ...args),
+    summary: () => deps.sessionService.getSessionSummary(store),
+    exists: (sessionId) => deps.sessionService.sessionExists(store, sessionId),
+    isKnown: (sessionId) => deps.sessionService.sessionIsKnown(store, sessionId),
+    isRegistered: (sessionId) => deps.sessionService.isSessionRegistered(store, sessionId),
+    register: (...args) => deps.sessionService.registerSession(store, ...args),
+    rename: (sessionId, name) => deps.sessionService.updateSessionName(store, sessionId, name),
+    delete: (sessionId) => deps.sessionService.deleteSession(store, sessionId),
+    deleteMany: (sessionIds) => deps.sessionService.deleteSessionsBatch(store, sessionIds),
+    metadata: (sessionId) => deps.sessionService.getSessionMetadata(store, sessionId),
+    readMetadata: () => deps.sessionService.readSessionMetadata(store),
+    updateMetadata: (sessionId, updates) => deps.sessionService.updateSessionMetadata(store, sessionId, updates),
     finalizeAutomationStatus: (sessionId, status) =>
-      deps.sessionService.finalizeAutomationStatus(slug, sessionId, status),
-    ensureDirectory: () => deps.sessionService.ensureSessionsDirectory(slug),
-    fileRealPathWithinAgent: (sessionId) => deps.sessionService.sessionFileRealPathWithinAgent(slug, sessionId),
+      deps.sessionService.finalizeAutomationStatus(store, sessionId, status),
+    ensureDirectory: () => deps.sessionService.ensureSessionsDirectory(store),
+    fileRealPathWithinAgent: (sessionId) => deps.sessionService.sessionFileRealPathWithinAgent(store, sessionId),
     usage: (sessionId, options) =>
-      deps.loadSessionUsageTotals({ sessionPath: deps.getSessionJsonlPath(slug, sessionId), ...options }),
-    byScheduledTask: (taskId) => deps.sessionService.getSessionsByScheduledTask(slug, taskId),
-    byWebhookTrigger: (triggerId) => deps.sessionService.getSessionsByWebhookTrigger(slug, triggerId),
+      deps.loadSessionUsageTotals({ files: store.files, transcript: transcriptPath(store, sessionId), ...options }),
+    byScheduledTask: (taskId) => deps.sessionService.getSessionsByScheduledTask(store, taskId),
+    byWebhookTrigger: (triggerId) => deps.sessionService.getSessionsByWebhookTrigger(store, triggerId),
     forScheduledExecution: (taskId, executionAt) =>
-      deps.sessionService.getSessionForScheduledExecution(slug, taskId, executionAt),
-    recordActivity: (...args) => deps.recordSessionActivity(slug, ...args),
+      deps.sessionService.getSessionForScheduledExecution(store, taskId, executionAt),
+    recordActivity: (...args) => deps.recordSessionActivity(store, ...args),
 
-    subagents: (sessionId, options) => deps.transcripts.listSubagents(slug, sessionId, options),
-    subagentTranscript: (sessionId, subagentId) => deps.transcripts.readSubagentTranscript(slug, sessionId, subagentId),
-    workflowTree: (sessionId, runId) => deps.transcripts.readWorkflowTree(slug, sessionId, runId),
+    subagents: (sessionId, options) => deps.transcripts.listSubagents(store, sessionId, options),
+    subagentTranscript: (sessionId, subagentId) => deps.transcripts.readSubagentTranscript(store, sessionId, subagentId),
+    workflowTree: (sessionId, runId) => deps.transcripts.readWorkflowTree(store, sessionId, runId),
     workflowAgentTranscript: (sessionId, runId, workflowAgentId) =>
-      deps.transcripts.readWorkflowAgentTranscript(slug, sessionId, runId, workflowAgentId),
-    copyDerivedFiles: (sourceId, targetId) => deps.transcripts.copyDerivedSessionFiles(slug, sourceId, targetId),
+      deps.transcripts.readWorkflowAgentTranscript(store, sessionId, runId, workflowAgentId),
+    copyDerivedFiles: (sourceId, targetId) => deps.transcripts.copyDerivedSessionFiles(store, sourceId, targetId),
 
     create: (options) => client().createSession(options),
     fork: (sessionId) => client().forkSession(sessionId),
@@ -209,7 +208,7 @@ function createSessionOps(slug: AgentSlug, deps: LocalActorDeps): SessionOps {
   }
 }
 
-function createMessageOps(slug: AgentSlug, deps: LocalActorDeps): MessageOps {
+function createMessageOps(slug: AgentSlug, store: SessionStore, deps: LocalActorDeps): MessageOps {
   const client = () => deps.containerHost.runtime(slug).getClient()
   return {
     send: (...args) => client().sendMessage(...args),
@@ -217,18 +216,18 @@ function createMessageOps(slug: AgentSlug, deps: LocalActorDeps): MessageOps {
     interrupt: (...args) => client().interruptSession(...args),
     withSend: (sessionId, send) => deps.messagePersister.withSessionSend(slug, sessionId, client(), send),
 
-    list: (sessionId) => deps.sessionService.getSessionMessages(slug, sessionId),
-    withCompact: (sessionId) => deps.sessionService.getSessionMessagesWithCompact(slug, sessionId),
-    page: (sessionId, opts) => deps.sessionService.getSessionMessagesPage(slug, sessionId, opts),
-    delta: (sessionId, opts) => deps.sessionService.getSessionMessagesDelta(slug, sessionId, opts),
-    findLastEntry: (...args) => deps.sessionService.findLastSessionEntry(slug, ...args),
-    remove: (sessionId, messageUuid) => deps.sessionService.removeMessage(slug, sessionId, messageUuid),
-    removeToolCall: (sessionId, toolCallId) => deps.sessionService.removeToolCall(slug, sessionId, toolCallId),
-    appendInformational: (sessionId, entry) => deps.appendInformationalEntry(slug, sessionId, entry),
-    appendAssistant: (sessionId, text) => deps.appendAssistantEntry(slug, sessionId, text),
-    rawEntries: (sessionId) => deps.transcripts.streamRawEntries(slug, sessionId),
-    rawLog: (sessionId) => deps.transcripts.openRawLog(slug, sessionId),
-    media: (...args) => deps.transcripts.openMedia(slug, ...args),
+    list: (sessionId) => deps.sessionService.getSessionMessages(store, sessionId),
+    withCompact: (sessionId) => deps.sessionService.getSessionMessagesWithCompact(store, sessionId),
+    page: (sessionId, opts) => deps.sessionService.getSessionMessagesPage(store, sessionId, opts),
+    delta: (sessionId, opts) => deps.sessionService.getSessionMessagesDelta(store, sessionId, opts),
+    findLastEntry: (...args) => deps.sessionService.findLastSessionEntry(store, ...args),
+    remove: (sessionId, messageUuid) => deps.sessionService.removeMessage(store, sessionId, messageUuid),
+    removeToolCall: (sessionId, toolCallId) => deps.sessionService.removeToolCall(store, sessionId, toolCallId),
+    appendInformational: (sessionId, entry) => deps.appendInformationalEntry(store, sessionId, entry),
+    appendAssistant: (sessionId, text) => deps.appendAssistantEntry(store, sessionId, text),
+    rawEntries: (sessionId) => deps.transcripts.streamRawEntries(store, sessionId),
+    rawLog: (sessionId) => deps.transcripts.openRawLog(store, sessionId),
+    media: (...args) => deps.transcripts.openMedia(store, ...args),
 
     subscribe: (sessionId, listener) => deps.messagePersister.addSSEClient(slug, sessionId, listener),
     broadcastEvent: (sessionId, data) => deps.messagePersister.broadcastSessionEvent(slug, sessionId, data),
@@ -302,9 +301,9 @@ function createComputerUseOps(slug: AgentSlug, deps: LocalActorDeps): ComputerUs
   }
 }
 
-function createUsageOps(slug: AgentSlug, deps: LocalActorDeps): UsageOps {
+function createUsageOps(store: SessionStore, deps: LocalActorDeps): UsageOps {
   return {
-    daily: (options) => deps.loadDailyUsageData({ claudePath: deps.getAgentClaudeConfigDir(slug), ...options }),
+    daily: (options) => deps.loadDailyUsageData({ files: store.files, dir: store.transcriptsDir, ...options }),
   }
 }
 

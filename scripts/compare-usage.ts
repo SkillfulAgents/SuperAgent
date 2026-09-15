@@ -1,6 +1,7 @@
 import * as path from 'path'
 import * as fs from 'fs'
 import { loadDailyUsageData as loadOurs } from '../src/shared/lib/services/usage-service'
+import { LocalFileOps } from '../src/shared/lib/agent-actor/local-file-ops'
 
 async function loadCcusage(claudePath: string) {
   const { loadDailyUsageData } = await import('ccusage/data-loader')
@@ -22,7 +23,7 @@ async function main() {
     let ccData: any[]
     let ourData: Awaited<ReturnType<typeof loadOurs>>
     try {
-      ;[ccData, ourData] = await Promise.all([loadCcusage(claudePath), loadOurs({ claudePath })])
+      ;[ccData, ourData] = await Promise.all([loadCcusage(claudePath), loadOurs({ files: new LocalFileOps(() => claudePath), dir: 'projects' })])
     } catch (e: any) {
       console.log('SKIP ' + slug + ': ' + e.message)
       continue

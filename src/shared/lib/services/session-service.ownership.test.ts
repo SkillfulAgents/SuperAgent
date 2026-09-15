@@ -16,6 +16,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
 
 let tmpDir: string
 
@@ -65,27 +66,27 @@ describe('isSessionRegistered', () => {
     const { registerSession, isSessionRegistered } = await importService()
     makeAgent('agent-a')
     makeAgent('agent-b')
-    await registerSession('agent-a', 'session-a', 'A')
-    await registerSession('agent-b', 'session-b', 'B')
+    await registerSession(createLocalSessionStore('agent-a'), 'session-a', 'A')
+    await registerSession(createLocalSessionStore('agent-b'), 'session-b', 'B')
 
-    expect(await isSessionRegistered('agent-a', 'session-a')).toBe(true)
-    expect(await isSessionRegistered('agent-a', 'session-b')).toBe(false)
-    expect(await isSessionRegistered('agent-b', 'session-a')).toBe(false)
+    expect(await isSessionRegistered(createLocalSessionStore('agent-a'), 'session-a')).toBe(true)
+    expect(await isSessionRegistered(createLocalSessionStore('agent-a'), 'session-b')).toBe(false)
+    expect(await isSessionRegistered(createLocalSessionStore('agent-b'), 'session-a')).toBe(false)
   })
 
   it.each(INHERITED_KEYS)('is false for the inherited key %s', async (key) => {
     const { registerSession, isSessionRegistered } = await importService()
     makeAgent('agent-a')
-    await registerSession('agent-a', 'session-a', 'A')
+    await registerSession(createLocalSessionStore('agent-a'), 'session-a', 'A')
 
-    expect(await isSessionRegistered('agent-a', key)).toBe(false)
+    expect(await isSessionRegistered(createLocalSessionStore('agent-a'), key)).toBe(false)
   })
 
   it('is false for inherited keys even when the agent has no metadata at all', async () => {
     const { isSessionRegistered } = await importService()
     makeAgent('empty-agent')
 
-    expect(await isSessionRegistered('empty-agent', 'constructor')).toBe(false)
+    expect(await isSessionRegistered(createLocalSessionStore('empty-agent'), 'constructor')).toBe(false)
   })
 })
 
@@ -93,9 +94,9 @@ describe('getSessionMetadata', () => {
   it.each(INHERITED_KEYS)('returns null for the inherited key %s', async (key) => {
     const { registerSession, getSessionMetadata } = await importService()
     makeAgent('agent-a')
-    await registerSession('agent-a', 'session-a', 'A')
+    await registerSession(createLocalSessionStore('agent-a'), 'session-a', 'A')
 
-    expect(await getSessionMetadata('agent-a', key)).toBeNull()
+    expect(await getSessionMetadata(createLocalSessionStore('agent-a'), key)).toBeNull()
   })
 })
 
@@ -105,15 +106,15 @@ describe('sessionIsKnown', () => {
     makeAgent('agent-a')
     writeTranscript('agent-a', 'on-disk-only')
 
-    expect(await sessionIsKnown('agent-a', 'on-disk-only')).toBe(true)
+    expect(await sessionIsKnown(createLocalSessionStore('agent-a'), 'on-disk-only')).toBe(true)
   })
 
   it('accepts a just-registered session whose transcript does not exist yet', async () => {
     const { registerSession, sessionIsKnown } = await importService()
     makeAgent('agent-a')
-    await registerSession('agent-a', 'brand-new', 'New Session')
+    await registerSession(createLocalSessionStore('agent-a'), 'brand-new', 'New Session')
 
-    expect(await sessionIsKnown('agent-a', 'brand-new')).toBe(true)
+    expect(await sessionIsKnown(createLocalSessionStore('agent-a'), 'brand-new')).toBe(true)
   })
 
   it('rejects another agent’s session, by transcript or by metadata', async () => {
@@ -121,10 +122,10 @@ describe('sessionIsKnown', () => {
     makeAgent('agent-a')
     makeAgent('agent-b')
     writeTranscript('agent-b', 'b-on-disk')
-    await registerSession('agent-b', 'b-registered', 'B')
+    await registerSession(createLocalSessionStore('agent-b'), 'b-registered', 'B')
 
-    expect(await sessionIsKnown('agent-a', 'b-on-disk')).toBe(false)
-    expect(await sessionIsKnown('agent-a', 'b-registered')).toBe(false)
+    expect(await sessionIsKnown(createLocalSessionStore('agent-a'), 'b-on-disk')).toBe(false)
+    expect(await sessionIsKnown(createLocalSessionStore('agent-a'), 'b-registered')).toBe(false)
   })
 
   // A forged transcript is no longer refused HERE, and that is the point of
@@ -148,14 +149,14 @@ describe('sessionIsKnown', () => {
     makeAgent('agent-b')
     writeTranscript('agent-b', 'victim-session')
 
-    expect(await sessionIsKnown('agent-b', 'victim-session')).toBe(true)
-    expect(await sessionIsKnown('agent-a', 'victim-session')).toBe(false)
+    expect(await sessionIsKnown(createLocalSessionStore('agent-b'), 'victim-session')).toBe(true)
+    expect(await sessionIsKnown(createLocalSessionStore('agent-a'), 'victim-session')).toBe(false)
 
     writeTranscript('agent-a', 'victim-session')
 
     // Both are now true, and they are two different sessions.
-    expect(await sessionIsKnown('agent-a', 'victim-session')).toBe(true)
-    expect(await sessionIsKnown('agent-b', 'victim-session')).toBe(true)
+    expect(await sessionIsKnown(createLocalSessionStore('agent-a'), 'victim-session')).toBe(true)
+    expect(await sessionIsKnown(createLocalSessionStore('agent-b'), 'victim-session')).toBe(true)
   })
 
   it('lets two agents hold the same session id', async () => {
@@ -164,11 +165,11 @@ describe('sessionIsKnown', () => {
     const { registerSession, sessionIsKnown } = await importService()
     makeAgent('clone-one')
     makeAgent('clone-two')
-    await registerSession('clone-one', 'shared-session', 'Copy')
-    await registerSession('clone-two', 'shared-session', 'Copy')
+    await registerSession(createLocalSessionStore('clone-one'), 'shared-session', 'Copy')
+    await registerSession(createLocalSessionStore('clone-two'), 'shared-session', 'Copy')
 
-    expect(await sessionIsKnown('clone-one', 'shared-session')).toBe(true)
-    expect(await sessionIsKnown('clone-two', 'shared-session')).toBe(true)
+    expect(await sessionIsKnown(createLocalSessionStore('clone-one'), 'shared-session')).toBe(true)
+    expect(await sessionIsKnown(createLocalSessionStore('clone-two'), 'shared-session')).toBe(true)
   })
 
   it('keeps a session of another agent out, by transcript or by metadata', async () => {
@@ -176,25 +177,25 @@ describe('sessionIsKnown', () => {
     makeAgent('agent-a')
     makeAgent('agent-b')
     writeTranscript('agent-b', 'b-on-disk')
-    await registerSession('agent-b', 'b-registered', 'B')
+    await registerSession(createLocalSessionStore('agent-b'), 'b-registered', 'B')
 
-    expect(await sessionIsKnown('agent-a', 'b-on-disk')).toBe(false)
-    expect(await sessionIsKnown('agent-a', 'b-registered')).toBe(false)
+    expect(await sessionIsKnown(createLocalSessionStore('agent-a'), 'b-on-disk')).toBe(false)
+    expect(await sessionIsKnown(createLocalSessionStore('agent-a'), 'b-registered')).toBe(false)
   })
 
   it('rejects an unknown session id', async () => {
     const { sessionIsKnown } = await importService()
     makeAgent('agent-a')
 
-    expect(await sessionIsKnown('agent-a', 'never-existed')).toBe(false)
+    expect(await sessionIsKnown(createLocalSessionStore('agent-a'), 'never-existed')).toBe(false)
   })
 
   it.each(INHERITED_KEYS)('rejects the inherited key %s', async (key) => {
     const { registerSession, sessionIsKnown } = await importService()
     makeAgent('agent-a')
-    await registerSession('agent-a', 'session-a', 'A')
+    await registerSession(createLocalSessionStore('agent-a'), 'session-a', 'A')
 
-    expect(await sessionIsKnown('agent-a', key)).toBe(false)
+    expect(await sessionIsKnown(createLocalSessionStore('agent-a'), key)).toBe(false)
   })
 
   it('rejects — without throwing — an id that escapes the agent’s session directory', async () => {
@@ -207,14 +208,14 @@ describe('sessionIsKnown', () => {
     // 'Invalid session ID' here; the gate has to answer false, because a caller
     // that lets the throw escape hands the request to whatever its catch does.
     const escaping = '../../../../../agent-b/workspace/.claude/projects/-workspace/b-session'
-    await expect(sessionIsKnown('agent-a', escaping)).resolves.toBe(false)
+    await expect(sessionIsKnown(createLocalSessionStore('agent-a'), escaping)).resolves.toBe(false)
   })
 
   it('rejects a bare traversal id without throwing', async () => {
     const { sessionIsKnown } = await importService()
     makeAgent('agent-a')
 
-    await expect(sessionIsKnown('agent-a', '../../../etc/passwd')).resolves.toBe(false)
+    await expect(sessionIsKnown(createLocalSessionStore('agent-a'), '../../../etc/passwd')).resolves.toBe(false)
   })
 
   it('rejects a symlink whose real target is another agent’s transcript', async () => {
@@ -232,7 +233,7 @@ describe('sessionIsKnown', () => {
       path.join(sessionsDir('agent-a'), 'stolen.jsonl'),
     )
 
-    await expect(sessionIsKnown('agent-a', 'stolen')).resolves.toBe(false)
+    await expect(sessionIsKnown(createLocalSessionStore('agent-a'), 'stolen')).resolves.toBe(false)
   })
 
   it('excludes a symlinked transcript from the listing and the summary', async () => {
@@ -250,8 +251,8 @@ describe('sessionIsKnown', () => {
       path.join(sessionsDir('agent-a'), 'stolen.jsonl'),
     )
 
-    expect((await getSessionSummary('agent-a')).sessionIds).toEqual(['real'])
-    expect((await listSessions('agent-a')).map((s) => s.id)).toEqual(['real'])
+    expect((await getSessionSummary(createLocalSessionStore('agent-a'))).sessionIds).toEqual(['real'])
+    expect((await listSessions(createLocalSessionStore('agent-a'))).map((s) => s.id)).toEqual(['real'])
   })
 
   it('rejects a session reached through a symlinked -workspace ancestor', async () => {
@@ -269,7 +270,7 @@ describe('sessionIsKnown', () => {
     fs.rmSync(sessionsDir('agent-a'), { recursive: true, force: true })
     fs.symlinkSync(sessionsDir('agent-b'), sessionsDir('agent-a'))
 
-    await expect(sessionExists('agent-a', 'victim')).resolves.toBe(false)
-    await expect(sessionIsKnown('agent-a', 'victim')).resolves.toBe(false)
+    await expect(sessionExists(createLocalSessionStore('agent-a'), 'victim')).resolves.toBe(false)
+    await expect(sessionIsKnown(createLocalSessionStore('agent-a'), 'victim')).resolves.toBe(false)
   })
 })

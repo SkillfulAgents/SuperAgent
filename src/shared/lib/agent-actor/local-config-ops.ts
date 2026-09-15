@@ -1,17 +1,20 @@
 /**
  * `ConfigOps` for an agent whose workspace is a directory on this machine.
  *
- * Two things are local here. A document the container also writes (`.env`) is
+ * Three things are local here. An update is serialized on the document's
+ * host path, not on this `ConfigOps` instance, so two handles to the same
+ * workspace (an actor's and a test's) never interleave their
+ * read-modify-writes. A document the container also writes (`.env`) is
  * serialized with the on-disk lock the container honours too, so an update
  * from either side re-reads fresh under the lock. And `.env` is kept at the
  * mode the container can read: an older build's atomic rename could leave it
  * owner-only, so a read heals the mode when this process owns the file.
  */
-import fs from 'fs'
-import path from 'path'
-import { withCrossProcessFileLock } from '@shared/lib/utils/file-storage'
+import * as fs from 'fs'
+import * as path from 'path'
+import { withCrossProcessFileLock, withFileLock } from '@shared/lib/utils/file-storage'
 import { CONFIG_DOCS, configDocMode, type ConfigDocId } from './config-schema'
-import { createConfigOps, inProcessSerializer } from './config-ops'
+import { createConfigOps } from './config-ops'
 import type { ConfigOps, FileOps } from './types'
 
 export interface LocalConfigOpsDeps {
@@ -21,12 +24,11 @@ export interface LocalConfigOpsDeps {
 }
 
 export function createLocalConfigOps(deps: LocalConfigOpsDeps): ConfigOps {
-  const inProcess = inProcessSerializer()
   const hostPathOf = (id: ConfigDocId) => path.join(deps.workspaceHostPath(), ...CONFIG_DOCS[id].path.split('/'))
 
   return createConfigOps(deps.files, {
     serialize: async (id, fn) => {
-      if (!CONFIG_DOCS[id].shared) return inProcess(id, fn)
+      if (!CONFIG_DOCS[id].shared) return withFileLock(hostPathOf(id), fn)
       // The lock file lives beside the document, so the directory has to exist.
       await deps.files.mkdir('')
       return withCrossProcessFileLock(hostPathOf(id), fn)

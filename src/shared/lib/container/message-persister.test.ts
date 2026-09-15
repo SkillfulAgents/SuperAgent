@@ -197,6 +197,21 @@ vi.mock('./container-host', async () => {
 
 // Import after mocks are set up
 import { messagePersister, redactStreamedToolInput, sessionKeyOf, WaitForIdleTimeoutError } from './message-persister'
+import { createInMemorySessionStore } from '@shared/lib/agent-actor/testing/in-memory-session-store'
+
+// The registry attaches the real stores; these tests drive the persister
+// alone, over in-memory stores kept per agent so a test can reach the one
+// the persister will use.
+const sessionStores = new Map<string, ReturnType<typeof createInMemorySessionStore>>()
+function storeFor(slug: string): ReturnType<typeof createInMemorySessionStore> {
+  let store = sessionStores.get(slug)
+  if (!store) {
+    store = createInMemorySessionStore(slug)
+    sessionStores.set(slug, store)
+  }
+  return store
+}
+messagePersister.attachSessionStores(storeFor)
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
@@ -344,7 +359,7 @@ describe('MessagePersister', () => {
         sessionId: SESSION_ID,
       })
 
-      expect(mockRecordSessionActivity).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID, timestamp)
+      expect(mockRecordSessionActivity).toHaveBeenCalledWith(expect.objectContaining({ slug: AGENT_SLUG }), SESSION_ID, timestamp)
     })
 
     it('records the session as active the moment a message is sent to it', () => {
@@ -360,7 +375,7 @@ describe('MessagePersister', () => {
 
       expect(mockRecordProvisionalSessionActivity).toHaveBeenCalledTimes(1)
       expect(mockRecordProvisionalSessionActivity).toHaveBeenCalledWith(
-        AGENT_SLUG,
+        expect.objectContaining({ slug: AGENT_SLUG }),
         SESSION_ID,
         Date.parse('2026-08-07T18:30:00.000Z'),
       )
@@ -380,7 +395,7 @@ describe('MessagePersister', () => {
       messagePersister.markSessionIdle(AGENT_SLUG, SESSION_ID)
 
       expect(mockRevertSessionActivity).toHaveBeenCalledTimes(1)
-      expect(mockRevertSessionActivity).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID, mark)
+      expect(mockRevertSessionActivity).toHaveBeenCalledWith(expect.objectContaining({ slug: AGENT_SLUG }), SESSION_ID, mark)
       expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
     })
 
@@ -415,7 +430,8 @@ describe('MessagePersister', () => {
     it('refreshes a session that finished while detached from its transcript mtime, not the replay time', async () => {
       messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
       mockRecordSessionActivity.mockClear()
-      mockStat.mockResolvedValueOnce({ mtimeMs: 1_754_600_000_000, size: 4096 })
+      const transcriptStat = vi.spyOn(storeFor(AGENT_SLUG).files, 'stat')
+        .mockResolvedValueOnce({ kind: 'file', mtimeMs: 1_754_600_000_000, size: 4096 })
 
       mockClient._messageCallback!({
         type: 'message',
@@ -425,8 +441,8 @@ describe('MessagePersister', () => {
       })
       await vi.waitFor(() => expect(mockRecordSessionActivity).toHaveBeenCalled())
 
-      expect(mockStat).toHaveBeenCalledWith(expect.stringContaining(`${SESSION_ID}.jsonl`))
-      expect(mockRecordSessionActivity).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID, 1_754_600_000_000)
+      expect(transcriptStat).toHaveBeenCalledWith(expect.stringContaining(`${SESSION_ID}.jsonl`))
+      expect(mockRecordSessionActivity).toHaveBeenCalledWith(expect.objectContaining({ slug: AGENT_SLUG }), SESSION_ID, 1_754_600_000_000)
     })
 
     it('does not attribute a sidechain transcript frame to the parent session', () => {
@@ -443,7 +459,7 @@ describe('MessagePersister', () => {
 
   describe('completion notification response selection', () => {
     it('passes only the newest merged textual assistant response at authoritative idle', async () => {
-      mockStat.mockResolvedValueOnce({ size: 12_345 })
+      vi.spyOn(storeFor(AGENT_SLUG).files, 'stat').mockResolvedValueOnce({ kind: 'file', size: 12_345, mtimeMs: 0 })
       messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
       mockClient._sendMessage({
         type: 'system',
@@ -558,7 +574,7 @@ describe('MessagePersister', () => {
     })
 
     it('ignores the synthetic "No response requested." placeholder as a response candidate', async () => {
-      mockStat.mockResolvedValueOnce({ size: 12_345 })
+      vi.spyOn(storeFor(AGENT_SLUG).files, 'stat').mockResolvedValueOnce({ kind: 'file', size: 12_345, mtimeMs: 0 })
       messagePersister.markSessionActive(AGENT_SLUG, SESSION_ID)
       mockClient._sendMessage({
         type: 'system',
@@ -603,9 +619,9 @@ describe('MessagePersister', () => {
     })
 
     it('dispatches completion without waiting for the transcript stat', async () => {
-      let resolveStat: ((value: { size: number }) => void) | undefined
-      mockStat.mockImplementationOnce(
-        () => new Promise<{ size: number }>((resolve) => {
+      let resolveStat: ((value: { kind: 'file'; size: number; mtimeMs: number }) => void) | undefined
+      vi.spyOn(storeFor(AGENT_SLUG).files, 'stat').mockImplementationOnce(
+        () => new Promise((resolve) => {
           resolveStat = resolve
         }),
       )
@@ -629,7 +645,7 @@ describe('MessagePersister', () => {
       expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
       const offset = vi.mocked(notificationManager.triggerSessionComplete)
         .mock.calls[0][2]?.responseTranscriptEndOffset
-      resolveStat?.({ size: 99 })
+      resolveStat?.({ kind: 'file', size: 99, mtimeMs: 0 })
       await expect(offset).resolves.toBe(99)
     })
 
@@ -888,7 +904,7 @@ describe('MessagePersister', () => {
         prevent_continuation: true,
       })
 
-      expect(mockAppendInformationalEntry).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID, {
+      expect(mockAppendInformationalEntry).toHaveBeenCalledWith(expect.objectContaining({ slug: AGENT_SLUG }), SESSION_ID, {
         uuid: 'info-uuid-1',
         content: 'UserPromptSubmit operation blocked by hook:\nCircuit breaker\n\nOriginal prompt: hello',
         level: 'warning',
@@ -4678,7 +4694,7 @@ describe('MessagePersister', () => {
       // Let the async promotion complete
       await vi.waitFor(() => {
         expect(updateSessionMetadata).toHaveBeenCalledWith(
-          AGENT_SLUG,
+          expect.objectContaining({ slug: AGENT_SLUG }),
           SESSION_ID,
           { promotedToInteractive: true },
         )
@@ -4698,7 +4714,7 @@ describe('MessagePersister', () => {
 
       await vi.waitFor(() => {
         expect(updateSessionMetadata).toHaveBeenCalledWith(
-          AGENT_SLUG,
+          expect.objectContaining({ slug: AGENT_SLUG }),
           SESSION_ID,
           { promotedToInteractive: true },
         )
@@ -4717,7 +4733,7 @@ describe('MessagePersister', () => {
 
       await vi.waitFor(() => {
         expect(updateSessionMetadata).toHaveBeenCalledWith(
-          AGENT_SLUG,
+          expect.objectContaining({ slug: AGENT_SLUG }),
           SESSION_ID,
           { promotedToInteractive: true },
         )
@@ -4735,7 +4751,7 @@ describe('MessagePersister', () => {
 
       await vi.waitFor(() => {
         expect(updateSessionMetadata).toHaveBeenCalledWith(
-          AGENT_SLUG,
+          expect.objectContaining({ slug: AGENT_SLUG }),
           SESSION_ID,
           { promotedToInteractive: true },
         )
@@ -4751,9 +4767,9 @@ describe('MessagePersister', () => {
     // null path. mockImplementation survives clearAllMocks, so restore the
     // suite default afterwards.
     function withHiddenScheduledMetadata(agentSlug: string, sessionId: string): () => void {
-      vi.mocked(getSessionMetadata).mockImplementation((slug, id) =>
+      vi.mocked(getSessionMetadata).mockImplementation((store, id) =>
         Promise.resolve(
-          slug === agentSlug && id === sessionId
+          store.slug === agentSlug && id === sessionId
             ? ({ isScheduledExecution: true, scheduledTaskId: 'task-1' } as never)
             : null,
         ),
@@ -4800,7 +4816,7 @@ describe('MessagePersister', () => {
 
       await vi.waitFor(() => {
         expect(updateSessionMetadata).toHaveBeenCalledWith(
-          AGENT_SLUG,
+          expect.objectContaining({ slug: AGENT_SLUG }),
           SESSION_ID,
           { promotedToInteractive: true },
         )
@@ -4906,7 +4922,7 @@ describe('MessagePersister', () => {
 
       await vi.waitFor(() => {
         expect(finalizeAutomationStatus).toHaveBeenCalledWith(
-          AGENT_SLUG,
+          expect.objectContaining({ slug: AGENT_SLUG }),
           SESSION_ID,
           'succeeded',
         )
@@ -4941,7 +4957,7 @@ describe('MessagePersister', () => {
 
       await vi.waitFor(() => {
         expect(finalizeAutomationStatus).toHaveBeenCalledWith(
-          AGENT_SLUG,
+          expect.objectContaining({ slug: AGENT_SLUG }),
           SESSION_ID,
           'succeeded',
         )
@@ -4963,7 +4979,7 @@ describe('MessagePersister', () => {
       sendResult(true)
       await vi.waitFor(() => {
         expect(finalizeAutomationStatus).toHaveBeenCalledWith(
-          AGENT_SLUG,
+          expect.objectContaining({ slug: AGENT_SLUG }),
           SESSION_ID,
           'failed',
         )
@@ -4980,7 +4996,7 @@ describe('MessagePersister', () => {
 
       await vi.waitFor(() => {
         expect(finalizeAutomationStatus).toHaveBeenCalledWith(
-          AGENT_SLUG,
+          expect.objectContaining({ slug: AGENT_SLUG }),
           SESSION_ID,
           'failed',
         )
@@ -9079,7 +9095,7 @@ describe('MessagePersister mid-turn recovery snapshot', () => {
     messagePersister.settleRecoveringSessions(AGENT_SLUG, [SESSION_ID])
     expect(messagePersister.isSessionActive(AGENT_SLUG, SESSION_ID)).toBe(false)
     expect(messagePersister.isSessionRecovering(AGENT_SLUG, SESSION_ID)).toBe(false)
-    expect(finalizeAutomationStatus).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID, 'failed')
+    expect(finalizeAutomationStatus).toHaveBeenCalledWith(expect.objectContaining({ slug: AGENT_SLUG }), SESSION_ID, 'failed')
   })
 
   it('defers a fatal SIGKILL result to unexpected-death recovery', async () => {
@@ -9305,8 +9321,8 @@ describe('cross-agent isolation', () => {
         sessionId: SESSION_B1,
       })
 
-      expect(mockRecordSessionActivity).toHaveBeenCalledWith(AGENT_B, SESSION_B1, timestamp)
-      expect(mockRecordSessionActivity).not.toHaveBeenCalledWith(AGENT_A, SESSION_B1, timestamp)
+      expect(mockRecordSessionActivity).toHaveBeenCalledWith(expect.objectContaining({ slug: AGENT_B }), SESSION_B1, timestamp)
+      expect(mockRecordSessionActivity).not.toHaveBeenCalledWith(expect.objectContaining({ slug: AGENT_A }), SESSION_B1, timestamp)
     })
   })
 })

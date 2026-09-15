@@ -449,7 +449,7 @@ async function notifySessionOfOutboundMessage(
     await actor.container.start()
     await actor.messages.send(sessionId, notificationText, undefined, { shouldQuery: false })
   } catch {
-    actor.messages.appendAssistant(sessionId, notificationText)
+    await actor.messages.appendAssistant(sessionId, notificationText)
   }
   // Both paths advance the transcript without emitting the stream frames the
   // message persister watches, so the warm summary must be told directly.

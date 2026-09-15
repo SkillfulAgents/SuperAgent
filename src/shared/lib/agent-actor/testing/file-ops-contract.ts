@@ -113,6 +113,53 @@ export function describeFileOpsContract(name: string, make: () => Promise<FileOp
       expect(await files.write('uploads/raw.bin', new Uint8Array([9, 8, 7]))).toEqual({ size: 3 })
     })
 
+    it('append creates a file and its parents, then adds to the end without interleaving', async () => {
+      await files.append('logs/a.jsonl', 'one\n')
+      await files.append('logs/a.jsonl', text('two\n'))
+      expect(decode(await files.getDoc('logs/a.jsonl'))).toBe('one\ntwo\n')
+
+      await Promise.all(Array.from({ length: 20 }, (_, i) => files.append('logs/many.txt', `${i}\n`)))
+      const lines = decode(await files.getDoc('logs/many.txt'))!.split('\n').filter(Boolean).map(Number).sort((a, b) => a - b)
+      expect(lines).toEqual(Array.from({ length: 20 }, (_, i) => i))
+
+      await files.mkdir('dir')
+      expect(await codeOf(files.append('dir', 'x'))).toBe('not-a-file')
+      expect(await codeOf(files.append('', 'x'))).toBe('invalid-path')
+    })
+
+    it('open reads at byte offsets, sees the file grow, and streams a range', async () => {
+      await files.putDoc('t.jsonl', '0123456789')
+      const file = await files.open('t.jsonl')
+      try {
+        expect(await file.size()).toBe(10)
+        expect(decode(await file.readAt(2, 3))).toBe('234')
+        // Past the end: what is there, not an error.
+        expect(decode(await file.readAt(8, 5))).toBe('89')
+        expect(decode(await file.readAt(20, 5))).toBe('')
+
+        await files.append('t.jsonl', 'ab')
+        expect(await file.size()).toBe(12)
+        expect(decode(await file.readAt(10, 2))).toBe('ab')
+
+        // The stream is the handle's last use; nothing else after it.
+        expect(decode(await readAllBytes(file.stream({ start: 3, end: 5 })))).toBe('345')
+      } finally {
+        await file.close()
+        await file.close()
+      }
+      const past = await files.open('t.jsonl')
+      expect(decode(await readAllBytes(past.stream({ start: 9, end: 40 })))).toBe('9ab')
+      const whole = await files.open('t.jsonl')
+      expect(decode(await readAllBytes(whole.stream()))).toBe('0123456789ab')
+      await whole.close()
+    })
+
+    it('open refuses what is not a file', async () => {
+      expect(await codeOf(files.open('missing.jsonl'))).toBe('not-found')
+      await files.mkdir('dir')
+      expect(await codeOf(files.open('dir').then((file) => file.size()))).toBe('not-a-file')
+    })
+
     it('list returns immediate children with kinds and their own paths', async () => {
       await files.putDoc('a/one.txt', '1')
       await files.putDoc('a/b/two.txt', '2')
@@ -203,6 +250,8 @@ export function describeFileOpsContract(name: string, make: () => Promise<FileOp
         files.write(bad, new Uint8Array([1])),
         files.delete(bad, { recursive: true }),
         files.mkdir(bad),
+        files.append(bad, 'x'),
+        files.open(bad),
       ]) {
         const code = await codeOf(attempt)
         expect(['invalid-path', 'outside-workspace']).toContain(code)

@@ -3,7 +3,7 @@
  * implementation the contract suite runs, and the workspace of an in-memory
  * agent actor in tests.
  */
-import type { ByteRange, FileEntry, FileOps, FileStat, WriteOptions } from '../types'
+import type { ByteRange, FileEntry, FileOps, FileStat, OpenFile, WriteOptions } from '../types'
 import { WorkspaceFileError, normalizeWorkspacePath, workspaceDirname } from '../workspace-path'
 
 function ancestorsOf(rel: string): string[] {
@@ -48,6 +48,7 @@ export class InMemoryFileOps implements FileOps {
   private readonly files = new Map<string, Uint8Array>()
   private readonly dirs = new Set<string>([''])
   private readonly mtimes = new Map<string, number>()
+  private readonly birthtimes = new Map<string, number>()
   /** The mode a write asked for; a file without one reports the usual default. */
   private readonly modes = new Map<string, number>()
 
@@ -86,9 +87,40 @@ export class InMemoryFileOps implements FileOps {
     if (this.dirs.has(rel)) return { kind: 'directory', size: 0, mtimeMs: this.mtimes.get(rel) ?? 0, mode: 0o755 }
     const bytes = this.files.get(rel)
     if (bytes) {
-      return { kind: 'file', size: bytes.byteLength, mtimeMs: this.mtimes.get(rel) ?? 0, mode: this.modes.get(rel) ?? 0o644 }
+      return {
+        kind: 'file',
+        size: bytes.byteLength,
+        mtimeMs: this.mtimes.get(rel) ?? 0,
+        mode: this.modes.get(rel) ?? 0o644,
+        birthtimeMs: this.birthtimes.get(rel) ?? 0,
+      }
     }
     return null
+  }
+
+  async open(workspacePath: string): Promise<OpenFile> {
+    const rel = normalizeWorkspacePath(workspacePath)
+    if (this.dirs.has(rel)) throw new WorkspaceFileError('not-a-file')
+    if (!this.files.has(rel)) throw new WorkspaceFileError('not-found')
+    // Reads go to the map each time, so an append while the file is open is
+    // visible to the next read, as it is on a filesystem.
+    const current = (): Uint8Array => {
+      const bytes = this.files.get(rel)
+      if (!bytes) throw new WorkspaceFileError('not-found')
+      return bytes
+    }
+    return {
+      size: async () => current().byteLength,
+      readAt: async (offset, length, signal) => {
+        signal?.throwIfAborted()
+        return current().slice(offset, offset + length)
+      },
+      stream: (range) => {
+        const bytes = current()
+        return streamOf(range ? bytes.slice(range.start, range.end === undefined ? undefined : range.end + 1) : bytes)
+      },
+      close: async () => {},
+    }
   }
 
   async resolve(workspacePath: string): Promise<string | null> {
@@ -120,7 +152,25 @@ export class InMemoryFileOps implements FileOps {
     this.ensureDirs(workspaceDirname(rel))
     this.files.set(rel, typeof bytes === 'string' ? new TextEncoder().encode(bytes) : new Uint8Array(bytes))
     this.mtimes.set(rel, Date.now())
+    if (!this.birthtimes.has(rel)) this.birthtimes.set(rel, Date.now())
     if (options?.mode !== undefined) this.modes.set(rel, options.mode)
+  }
+
+  async append(workspacePath: string, bytes: Uint8Array | string): Promise<void> {
+    const rel = normalizeWorkspacePath(workspacePath)
+    if (rel === '') throw new WorkspaceFileError('invalid-path', 'The workspace root is not a file')
+    if (this.dirs.has(rel)) throw new WorkspaceFileError('not-a-file')
+    const tail = typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes
+    const head = this.files.get(rel)
+    if (!head) {
+      await this.putDoc(rel, tail)
+      return
+    }
+    const joined = new Uint8Array(head.byteLength + tail.byteLength)
+    joined.set(head, 0)
+    joined.set(tail, head.byteLength)
+    this.files.set(rel, joined)
+    this.mtimes.set(rel, Date.now())
   }
 
   async write(
@@ -138,6 +188,7 @@ export class InMemoryFileOps implements FileOps {
     if (rel === '') throw new WorkspaceFileError('invalid-path', 'The workspace root cannot be deleted')
     if (this.files.delete(rel)) {
       this.mtimes.delete(rel)
+      this.birthtimes.delete(rel)
       this.modes.delete(rel)
       return
     }
@@ -150,6 +201,7 @@ export class InMemoryFileOps implements FileOps {
     for (const candidate of [...this.files.keys()]) if (candidate.startsWith(prefix)) this.files.delete(candidate)
     for (const candidate of [...this.mtimes.keys()]) if (candidate === rel || candidate.startsWith(prefix)) this.mtimes.delete(candidate)
     for (const candidate of [...this.modes.keys()]) if (candidate.startsWith(prefix)) this.modes.delete(candidate)
+    for (const candidate of [...this.birthtimes.keys()]) if (candidate.startsWith(prefix)) this.birthtimes.delete(candidate)
   }
 
   async mkdir(workspacePath: string): Promise<void> {

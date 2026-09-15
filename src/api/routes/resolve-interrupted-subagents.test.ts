@@ -9,15 +9,27 @@ import type { TransformedItem, TransformedMessage } from '@shared/lib/utils/mess
 const mockReaddir = vi.fn()
 const mockReadFile = vi.fn()
 
+// The tests answer a listing with file names; the agent's file operations
+// list with dirents, so the names are dressed as regular files here.
+async function readdirAsDirents(...args: unknown[]) {
+  const names = (await mockReaddir(...args)) as string[]
+  return names.map((name) => ({
+    name,
+    isFile: () => true,
+    isDirectory: () => false,
+    isSymbolicLink: () => false,
+  }))
+}
+
 vi.mock('fs', () => ({
   default: {
     promises: {
-      readdir: (...args: unknown[]) => mockReaddir(...args),
+      readdir: readdirAsDirents,
       readFile: (...args: unknown[]) => mockReadFile(...args),
     },
   },
   promises: {
-    readdir: (...args: unknown[]) => mockReaddir(...args),
+    readdir: readdirAsDirents,
     readFile: (...args: unknown[]) => mockReadFile(...args),
   },
 }))
@@ -257,7 +269,7 @@ describe('resolveInterruptedSubagents', () => {
     await resolveInterruptedSubagents(items, 'my-agent', 'sess-42')
 
     // getAgentSessionsDir returns '/mock/sessions', so the path should be:
-    expect(mockReaddir).toHaveBeenCalledWith('/mock/sessions/sess-42/subagents')
+    expect(mockReaddir).toHaveBeenCalledWith('/mock/.claude/projects/-workspace/sess-42/subagents', { withFileTypes: true })
   })
 
   // --------------------------------------------------------------------------

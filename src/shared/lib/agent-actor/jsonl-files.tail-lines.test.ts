@@ -1,5 +1,5 @@
 /**
- * Structural coverage for readJsonlTailLines.
+ * Structural coverage for readTailLines, the tail reader over `FileOps`.
  *
  * Two contracts, only one of which the type system can see:
  *
@@ -14,23 +14,29 @@
  *    checks the pairing, and fixtures carry a per-row index so a uniform shift
  *    cannot satisfy the comparison by accident.
  *
- * Its own file rather than more of file-storage.test.ts: the shrink-race case
+ * Its own file rather than more of jsonl-files.test.ts: the shrink-race case
  * needs a patched FileHandle.read, and that mock has no business being in scope
- * for the other ~60 file-storage tests.
+ * for the other reader tests.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 
-import { readJsonlTailLines } from './file-storage'
+import { LocalFileOps } from './local-file-ops'
+import { readTailLines } from './jsonl-files'
 
 const TAIL_READ_CHUNK = 64 * 1024
 
 let testDir: string
+let files: LocalFileOps
+
+/** The workspace path of a fixture the test wrote under the test directory. */
+const rel = (filePath: string) => path.relative(testDir, filePath)
 
 beforeEach(() => {
   testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tail-lines-'))
+  files = new LocalFileOps(() => testDir)
 })
 
 afterEach(() => {
@@ -85,7 +91,7 @@ async function expectMatchesOracle(filePath: string, maxLines: number) {
   const all = content.split('\n')
   if (all[all.length - 1] === '') all.pop()
 
-  const result = await readJsonlTailLines(filePath, maxLines)
+  const result = await readTailLines(files, rel(filePath), maxLines)
   const got = result.lines.map((l) => l.toString('utf-8'))
 
   expect(got.length).toBeLessThanOrEqual(Math.max(0, maxLines))
@@ -95,7 +101,7 @@ async function expectMatchesOracle(filePath: string, maxLines: number) {
   return result
 }
 
-describe('readJsonlTailLines — line boundaries', () => {
+describe('readTailLines — line boundaries', () => {
   it('keeps the final row when the file has no trailing newline', async () => {
     const filePath = writeFixture('no-trailing.jsonl', `${row(1)}\n${row(2)}\n${row(3)}`)
 
@@ -132,7 +138,7 @@ describe('readJsonlTailLines — line boundaries', () => {
   })
 })
 
-describe('readJsonlTailLines — maxLines boundary', () => {
+describe('readTailLines — maxLines boundary', () => {
   const content = `${row(1)}\n${row(2)}\n${row(3)}\n`
 
   it('returns every row and reaches the start when maxLines equals the row count', async () => {
@@ -164,7 +170,7 @@ describe('readJsonlTailLines — maxLines boundary', () => {
     const filePath = writeFixture('unopened.jsonl', content)
 
     for (const maxLines of [0, -1, -100]) {
-      const result = await readJsonlTailLines(filePath, maxLines)
+      const result = await readTailLines(files, rel(filePath), maxLines)
       expect(result).toEqual({ lines: [], offsets: [], reachedStart: true })
     }
     expect(open).not.toHaveBeenCalled()
@@ -173,12 +179,12 @@ describe('readJsonlTailLines — maxLines boundary', () => {
   it('returns nothing and reaches the start for an empty file', async () => {
     const filePath = writeFixture('empty.jsonl', '')
 
-    const result = await readJsonlTailLines(filePath, 10)
+    const result = await readTailLines(files, rel(filePath), 10)
     expect(result).toEqual({ lines: [], offsets: [], reachedStart: true })
   })
 })
 
-describe('readJsonlTailLines — rows larger than the read chunk', () => {
+describe('readTailLines — rows larger than the read chunk', () => {
   it('assembles a single row spanning several chunks and offsets it at the file start', async () => {
     const big = row(1, TAIL_READ_CHUNK * 2)
     const filePath = writeFixture('huge-row.jsonl', `${big}\n${row(2)}\n`)
@@ -214,7 +220,7 @@ describe('readJsonlTailLines — rows larger than the read chunk', () => {
   })
 })
 
-describe('readJsonlTailLines — differential against a full read', () => {
+describe('readTailLines — differential against a full read', () => {
   // Deterministic PRNG: a failing case is reproducible from the seed alone.
   function makeRandom(seed: number): () => number {
     let state = seed
@@ -261,7 +267,7 @@ describe('readJsonlTailLines — differential against a full read', () => {
   })
 })
 
-describe('readJsonlTailLines — file shrinking under the walk', () => {
+describe('readTailLines — file shrinking under the walk', () => {
   it('serves the cleanly read suffix instead of splicing across a rewrite', async () => {
     const rows = Array.from({ length: 200 }, (_, i) => row(i, 800))
     const filePath = writeFixture('shrinking.jsonl', `${rows.join('\n')}\n`)
@@ -283,7 +289,7 @@ describe('readJsonlTailLines — file shrinking under the walk', () => {
       return handle
     })
 
-    const result = await readJsonlTailLines(filePath, 500)
+    const result = await readTailLines(files, rel(filePath), 500)
 
     expect(result.reachedStart).toBe(false)
     expect(result.lines.length).toBeGreaterThan(0)

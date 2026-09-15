@@ -8,7 +8,7 @@ import * as sessionService from '@shared/lib/services/session-service'
 import { appendAssistantEntry, appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
 import { recordSessionActivity } from '@shared/lib/services/session-summary-cache'
 import * as transcriptOps from './local-transcript-ops'
-import { getAgentClaudeConfigDir, getAgentWorkspaceDir, getSessionJsonlPath } from '@shared/lib/utils/file-storage'
+import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import {
   syncAgentConnectionEnvironment,
   updateConnectedAccountsEnvironment,
@@ -22,11 +22,16 @@ import type { AgentActor, AgentRegistry, AgentSlug } from './types'
  * Build a registry whose handles delegate to `deps`. A handle is cheap and is
  * created on first `get`; the container state behind it is the agent's
  * `ContainerRuntime`, held by the container host and created on first use.
+ *
+ * The registry also hands the message persister the way to each agent's
+ * session store: the persister is inside the actor and cannot ask the
+ * registry, and the store it stats and appends to must be the one the
+ * agent's actor reads.
  */
 export function createAgentRegistry(deps: LocalActorDeps): AgentRegistry {
-  const handles = new Map<AgentSlug, AgentActor>()
+  const handles = new Map<AgentSlug, LocalAgentActor>()
 
-  const get = (slug: AgentSlug): AgentActor => {
+  const get = (slug: AgentSlug): LocalAgentActor => {
     let actor = handles.get(slug)
     if (!actor) {
       actor = new LocalAgentActor(slug, deps)
@@ -43,10 +48,29 @@ export function createAgentRegistry(deps: LocalActorDeps): AgentRegistry {
     instructions: (slug) => get(slug).config.get('instructions'),
   })
 
+  // The persister's way to the agents' session stores is attached on first
+  // use, not at construction: this module and the persister import each
+  // other, and the persister is not initialized while this module evaluates.
+  // Every path that gives the persister a session to work on goes through a
+  // handle first. A test double of the persister may not carry the port; the
+  // real one does.
+  let attached = false
+  const attach = () => {
+    if (attached) return
+    attached = true
+    deps.messagePersister.attachSessionStores?.((slug) => get(slug).store)
+  }
+
   return {
-    get,
+    get: (slug): AgentActor => {
+      attach()
+      return get(slug)
+    },
     peek: (slug) => handles.get(slug),
-    running: () => deps.containerHost.getRunningAgentIds().map(get),
+    running: () => {
+      attach()
+      return deps.containerHost.getRunningAgentIds().map(get)
+    },
     evict: (slug) => {
       deps.containerHost.dropRuntime(slug)
       handles.delete(slug)
@@ -98,12 +122,6 @@ export const agentRegistry: AgentRegistry = createAgentRegistry({
   },
   get getAgentWorkspaceDir() {
     return getAgentWorkspaceDir
-  },
-  get getAgentClaudeConfigDir() {
-    return getAgentClaudeConfigDir
-  },
-  get getSessionJsonlPath() {
-    return getSessionJsonlPath
   },
   get updateConnectedAccountsEnvironment() {
     return updateConnectedAccountsEnvironment

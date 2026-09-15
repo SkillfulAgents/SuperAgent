@@ -8,6 +8,7 @@ import type { z } from 'zod'
 import { agentPreferencesSchema } from '@shared/lib/types/agent-preferences'
 import { claudeSettingsWithHooksSchema } from '@shared/lib/services/agent-hooks-schema'
 import { InstalledAgentMetadataSchema } from '@shared/lib/types/skillset-schema'
+import { sessionMetadataMapSchema } from '@shared/lib/services/session-metadata-schema'
 
 /**
  * Which skillset template an agent was installed from. Strict on the fields
@@ -44,8 +45,16 @@ export const CONFIG_DOCS = {
   instructions: { kind: 'text', path: 'CLAUDE.md', shared: false },
   /** The agent's `.env`. The container's `POST /env` writes it too, and must be able to read it. */
   secrets: { kind: 'text', path: '.env', shared: true, mode: 0o666 },
-  /** Per-agent defaults for new sessions. */
+  /** Per-agent defaults for new sessions. The agent may edit it by hand; the host re-reads before every write. */
   preferences: { kind: 'json', path: 'agent-preferences.json', shared: false, schema: agentPreferencesSchema },
+  /**
+   * Which sessions the agent has and what they are called. Files remain the
+   * truth for whether a session exists; this carries names, stars, and how a
+   * session was started. The agent may edit it by hand too (renaming a
+   * session that way works), so the host re-reads it before every write and
+   * never rewrites a document it cannot parse.
+   */
+  sessionMetadata: { kind: 'json', path: 'session-metadata.json', shared: false, schema: sessionMetadataMapSchema },
   /** Claude Code settings, which is where hooks live. Unknown keys pass through. */
   claudeSettings: { kind: 'json', path: '.claude/settings.json', shared: false, schema: claudeSettingsWithHooksSchema },
   /** Which skillset template this agent came from and the hash of what was installed. Absent for a local agent. */

@@ -10,9 +10,9 @@
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-import { expect } from 'vitest'
+import { expect, vi } from 'vitest'
 import type { Hono } from 'hono'
-import { PROFILES, seedDataDir, type SeedProfile, type SeededData } from './fixtures'
+import { BASE_TIME, PROFILES, seedDataDir, type SeedProfile, type SeededData } from './fixtures'
 import {
   DEFAULT_LATENCY_MS,
   disableNfsShim,
@@ -53,6 +53,9 @@ export async function bootPerfApp(profileName: keyof typeof PROFILES): Promise<P
   }
   process.env.SUPERAGENT_DATA_DIR = dataDir
   process.env.E2E_MOCK = 'true'
+  // The fixtures' dates are fixed; the app's clock is pinned to match them
+  // (see BASE_TIME), so their registered-but-not-streamed sessions stay new.
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(BASE_TIME)
 
   // Env must be set before these modules load: the container manager reads
   // E2E_MOCK at construction and the db resolves its path on first access.
@@ -61,12 +64,13 @@ export async function bootPerfApp(profileName: keyof typeof PROFILES): Promise<P
   const { Hono: HonoCtor } = await import('hono')
   const agentsRouter = (await import('@/api/routes/agents')).default
   const { invalidateSessionSummaryCache } = await import('@shared/lib/services/session-summary-cache')
+  const { createLocalSessionStore } = await import('@shared/lib/agent-actor/local-session-store')
 
   const app = new HonoCtor()
   app.route('/api/agents', agentsRouter)
 
   const invalidateSummaryCaches = () => {
-    for (const slug of seeded.agentSlugs) invalidateSessionSummaryCache(slug)
+    for (const slug of seeded.agentSlugs) invalidateSessionSummaryCache(createLocalSessionStore(slug))
   }
 
   // One throwaway request, unmeasured: pays Hono's first-request setup and
@@ -89,6 +93,7 @@ export async function bootPerfApp(profileName: keyof typeof PROFILES): Promise<P
     invalidateSummaryCaches,
     dispose: async () => {
       disableNfsShim()
+      clock.mockRestore()
       for (const [key, value] of Object.entries(previousEnv)) {
         if (value === undefined) delete process.env[key]
         else process.env[key] = value

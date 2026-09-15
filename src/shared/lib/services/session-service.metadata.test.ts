@@ -12,6 +12,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
 
 let tmpDir: string
 
@@ -47,9 +48,9 @@ describe('lost-update protection (serialized read-modify-write)', () => {
 
     const ids = Array.from({ length: 40 }, (_, i) => `session-${i}`)
     // Fire every registration at once — the original code lost most of these.
-    await Promise.all(ids.map((id) => registerSession('busy-agent', id, `Name ${id}`)))
+    await Promise.all(ids.map((id) => registerSession(createLocalSessionStore('busy-agent'), id, `Name ${id}`)))
 
-    const meta = await readSessionMetadata('busy-agent')
+    const meta = await readSessionMetadata(createLocalSessionStore('busy-agent'))
     expect(Object.keys(meta).sort()).toEqual([...ids].sort())
     for (const id of ids) {
       expect(meta[id].name).toBe(`Name ${id}`)
@@ -62,18 +63,18 @@ describe('lost-update protection (serialized read-modify-write)', () => {
 
     // Seed 10 existing named sessions.
     for (let i = 0; i < 10; i++) {
-      await registerSession('agent', `existing-${i}`, `Existing ${i}`)
+      await registerSession(createLocalSessionStore('agent'), `existing-${i}`, `Existing ${i}`)
     }
 
     // Concurrently: register a new session AND rename several existing ones.
     await Promise.all([
-      registerSession('agent', 'new-session', 'Brand New'),
-      updateSessionName('agent', 'existing-0', 'Renamed 0'),
-      updateSessionName('agent', 'existing-5', 'Renamed 5'),
-      updateSessionName('agent', 'existing-9', 'Renamed 9'),
+      registerSession(createLocalSessionStore('agent'), 'new-session', 'Brand New'),
+      updateSessionName(createLocalSessionStore('agent'), 'existing-0', 'Renamed 0'),
+      updateSessionName(createLocalSessionStore('agent'), 'existing-5', 'Renamed 5'),
+      updateSessionName(createLocalSessionStore('agent'), 'existing-9', 'Renamed 9'),
     ])
 
-    const meta = await readSessionMetadata('agent')
+    const meta = await readSessionMetadata(createLocalSessionStore('agent'))
     expect(Object.keys(meta)).toHaveLength(11)
     expect(meta['new-session'].name).toBe('Brand New')
     expect(meta['existing-0'].name).toBe('Renamed 0')
@@ -85,15 +86,15 @@ describe('lost-update protection (serialized read-modify-write)', () => {
   it('concurrent partial updates to the same session merge without dropping fields', async () => {
     const { registerSession, updateSessionMetadata, getSessionMetadata } = await importService()
     makeAgent('agent')
-    await registerSession('agent', 's1', 'Original')
+    await registerSession(createLocalSessionStore('agent'), 's1', 'Original')
 
     await Promise.all([
-      updateSessionMetadata('agent', 's1', { starred: true }),
-      updateSessionMetadata('agent', 's1', { effort: 'high' }),
-      updateSessionMetadata('agent', 's1', { model: 'opus' }),
+      updateSessionMetadata(createLocalSessionStore('agent'), 's1', { starred: true }),
+      updateSessionMetadata(createLocalSessionStore('agent'), 's1', { effort: 'high' }),
+      updateSessionMetadata(createLocalSessionStore('agent'), 's1', { model: 'opus' }),
     ])
 
-    const meta = await getSessionMetadata('agent', 's1')
+    const meta = await getSessionMetadata(createLocalSessionStore('agent'), 's1')
     expect(meta).toMatchObject({ name: 'Original', starred: true, effort: 'high', model: 'opus' })
   })
 
@@ -102,12 +103,12 @@ describe('lost-update protection (serialized read-modify-write)', () => {
     makeAgent('agent')
 
     // No entry yet → undefined (the caller treats every value as a change).
-    const beforeRegister = await updateSessionMetadata('agent', 'fresh', { model: 'opus' })
+    const beforeRegister = await updateSessionMetadata(createLocalSessionStore('agent'), 'fresh', { model: 'opus' })
     expect(beforeRegister).toBeUndefined()
 
-    await registerSession('agent', 's1', 'Original')
-    await updateSessionMetadata('agent', 's1', { model: 'opus', effort: 'high' })
-    const previous = await updateSessionMetadata('agent', 's1', { model: 'haiku' })
+    await registerSession(createLocalSessionStore('agent'), 's1', 'Original')
+    await updateSessionMetadata(createLocalSessionStore('agent'), 's1', { model: 'opus', effort: 'high' })
+    const previous = await updateSessionMetadata(createLocalSessionStore('agent'), 's1', { model: 'haiku' })
     expect(previous).toMatchObject({ name: 'Original', model: 'opus', effort: 'high' })
   })
 })
@@ -116,7 +117,7 @@ describe('atomic writes', () => {
   it('writes valid JSON and leaves no temp file behind', async () => {
     const { registerSession } = await importService()
     makeAgent('agent')
-    await registerSession('agent', 's1', 'Session One')
+    await registerSession(createLocalSessionStore('agent'), 's1', 'Session One')
 
     const dir = workspaceDir('agent')
     const stray = fs.readdirSync(dir).filter((f) => f.endsWith('.tmp'))
@@ -134,7 +135,7 @@ describe('fail-closed on corrupt metadata (no clobbering)', () => {
     const corrupt = '{ "old-session": { "name": "Precious '
     fs.writeFileSync(metadataPath('agent'), corrupt)
 
-    await expect(registerSession('agent', 'new-session', 'New')).rejects.toThrow()
+    await expect(registerSession(createLocalSessionStore('agent'), 'new-session', 'New')).rejects.toThrow()
 
     // The corrupt bytes are still on disk — NOT replaced by `{ "new-session": ... }`.
     expect(fs.readFileSync(metadataPath('agent'), 'utf-8')).toBe(corrupt)
@@ -146,7 +147,7 @@ describe('fail-closed on corrupt metadata (no clobbering)', () => {
     const corrupt = 'not json at all'
     fs.writeFileSync(metadataPath('agent'), corrupt)
 
-    await expect(updateSessionName('agent', 's1', 'X')).rejects.toThrow()
+    await expect(updateSessionName(createLocalSessionStore('agent'), 's1', 'X')).rejects.toThrow()
     expect(fs.readFileSync(metadataPath('agent'), 'utf-8')).toBe(corrupt)
   })
 
@@ -158,7 +159,7 @@ describe('fail-closed on corrupt metadata (no clobbering)', () => {
 
     // Listing/display must not crash — it returns {} so sessions fall back to
     // auto-titles — but it must not rewrite the file.
-    const meta = await readSessionMetadata('agent')
+    const meta = await readSessionMetadata(createLocalSessionStore('agent'))
     expect(meta).toEqual({})
     expect(fs.readFileSync(metadataPath('agent'), 'utf-8')).toBe(corrupt)
   })
@@ -166,9 +167,9 @@ describe('fail-closed on corrupt metadata (no clobbering)', () => {
   it('absent file is treated as empty (not corrupt) and does not throw', async () => {
     const { readSessionMetadata, registerSession, getSessionMetadata } = await importService()
     makeAgent('agent')
-    expect(await readSessionMetadata('agent')).toEqual({})
-    await registerSession('agent', 's1', 'First')
-    expect((await getSessionMetadata('agent', 's1'))?.name).toBe('First')
+    expect(await readSessionMetadata(createLocalSessionStore('agent'))).toEqual({})
+    await registerSession(createLocalSessionStore('agent'), 's1', 'First')
+    expect((await getSessionMetadata(createLocalSessionStore('agent'), 's1'))?.name).toBe('First')
   })
 })
 
@@ -176,14 +177,14 @@ describe('deletes preserve siblings', () => {
   it('deleteSessionsBatch only removes metadata for sessions whose JSONL it removed', async () => {
     const { registerSession, deleteSessionsBatch, readSessionMetadata } = await importService()
     makeAgent('agent')
-    for (let i = 0; i < 5; i++) await registerSession('agent', `s${i}`, `S${i}`)
+    for (let i = 0; i < 5; i++) await registerSession(createLocalSessionStore('agent'), `s${i}`, `S${i}`)
 
     // None have JSONL files on disk; deleteSessionsBatch treats missing JSONL as
     // ENOENT-deleted and drops their metadata, leaving the rest intact.
-    const deleted = await deleteSessionsBatch('agent', ['s1', 's3'])
+    const deleted = await deleteSessionsBatch(createLocalSessionStore('agent'), ['s1', 's3'])
     expect(deleted.sort()).toEqual(['s1', 's3'])
 
-    const meta = await readSessionMetadata('agent')
+    const meta = await readSessionMetadata(createLocalSessionStore('agent'))
     expect(Object.keys(meta).sort()).toEqual(['s0', 's2', 's4'])
   })
 
@@ -193,7 +194,7 @@ describe('deletes preserve siblings', () => {
     const corrupt = '{ "s0": { '
     fs.writeFileSync(metadataPath('agent'), corrupt)
 
-    await expect(deleteSessionsBatch('agent', ['s0'])).rejects.toThrow()
+    await expect(deleteSessionsBatch(createLocalSessionStore('agent'), ['s0'])).rejects.toThrow()
     expect(fs.readFileSync(metadataPath('agent'), 'utf-8')).toBe(corrupt)
   })
 })
@@ -202,64 +203,64 @@ describe('finalizeAutomationStatus guards', () => {
   it('finalizes a running automation session and reports updated', async () => {
     const { registerSession, finalizeAutomationStatus, getSessionMetadata } = await importService()
     makeAgent('agent')
-    await registerSession('agent', 'cron-run', 'Nightly report', {
+    await registerSession(createLocalSessionStore('agent'), 'cron-run', 'Nightly report', {
       isScheduledExecution: true,
       scheduledTaskId: 'task-1',
       automationStatus: 'running',
     })
 
-    expect(await finalizeAutomationStatus('agent', 'cron-run', 'succeeded')).toBe('updated')
-    expect((await getSessionMetadata('agent', 'cron-run'))?.automationStatus).toBe('succeeded')
+    expect(await finalizeAutomationStatus(createLocalSessionStore('agent'), 'cron-run', 'succeeded')).toBe('updated')
+    expect((await getSessionMetadata(createLocalSessionStore('agent'), 'cron-run'))?.automationStatus).toBe('succeeded')
   })
 
   it('finalizes a widget-repair session, so the in-flight guard can clear', async () => {
     const { registerSession, finalizeAutomationStatus, getSessionMetadata } = await importService()
     makeAgent('agent')
-    await registerSession('agent', 'repair', 'Fix widget: macros', {
+    await registerSession(createLocalSessionStore('agent'), 'repair', 'Fix widget: macros', {
       isWidgetRepair: true,
       widgetRepairSlug: 'macros',
       automationStatus: 'running',
     })
 
-    expect(await finalizeAutomationStatus('agent', 'repair', 'succeeded')).toBe('updated')
-    expect((await getSessionMetadata('agent', 'repair'))?.automationStatus).toBe('succeeded')
+    expect(await finalizeAutomationStatus(createLocalSessionStore('agent'), 'repair', 'succeeded')).toBe('updated')
+    expect((await getSessionMetadata(createLocalSessionStore('agent'), 'repair'))?.automationStatus).toBe('succeeded')
   })
 
   it('reports not-automation for a regular session and leaves it untouched', async () => {
     const { registerSession, finalizeAutomationStatus, getSessionMetadata } = await importService()
     makeAgent('agent')
-    await registerSession('agent', 'chat', 'Regular session')
+    await registerSession(createLocalSessionStore('agent'), 'chat', 'Regular session')
 
-    expect(await finalizeAutomationStatus('agent', 'chat', 'succeeded')).toBe('not-automation')
-    expect((await getSessionMetadata('agent', 'chat'))?.automationStatus).toBeUndefined()
+    expect(await finalizeAutomationStatus(createLocalSessionStore('agent'), 'chat', 'succeeded')).toBe('not-automation')
+    expect((await getSessionMetadata(createLocalSessionStore('agent'), 'chat'))?.automationStatus).toBeUndefined()
   })
 
   it('never overwrites a finalized outcome with a later turn result', async () => {
     const { registerSession, finalizeAutomationStatus, getSessionMetadata } = await importService()
     makeAgent('agent')
-    await registerSession('agent', 'webhook-run', 'Email handler', {
+    await registerSession(createLocalSessionStore('agent'), 'webhook-run', 'Email handler', {
       isWebhookExecution: true,
       webhookTriggerId: 'trigger-1',
       automationStatus: 'running',
     })
 
-    expect(await finalizeAutomationStatus('agent', 'webhook-run', 'failed')).toBe('updated')
-    expect(await finalizeAutomationStatus('agent', 'webhook-run', 'succeeded')).toBe('already-final')
-    expect((await getSessionMetadata('agent', 'webhook-run'))?.automationStatus).toBe('failed')
+    expect(await finalizeAutomationStatus(createLocalSessionStore('agent'), 'webhook-run', 'failed')).toBe('updated')
+    expect(await finalizeAutomationStatus(createLocalSessionStore('agent'), 'webhook-run', 'succeeded')).toBe('already-final')
+    expect((await getSessionMetadata(createLocalSessionStore('agent'), 'webhook-run'))?.automationStatus).toBe('failed')
   })
 
   it('does not attribute an interactive result to a promoted legacy automation session', async () => {
     const { registerSession, finalizeAutomationStatus, updateSessionMetadata, getSessionMetadata } = await importService()
     makeAgent('agent')
     // Pre-outcome-tracking session: automation flags but no automationStatus.
-    await registerSession('agent', 'legacy', 'Old webhook run', {
+    await registerSession(createLocalSessionStore('agent'), 'legacy', 'Old webhook run', {
       isWebhookExecution: true,
       webhookTriggerId: 'trigger-1',
     })
-    await updateSessionMetadata('agent', 'legacy', { promotedToInteractive: true })
+    await updateSessionMetadata(createLocalSessionStore('agent'), 'legacy', { promotedToInteractive: true })
 
-    expect(await finalizeAutomationStatus('agent', 'legacy', 'failed')).toBe('not-automation')
-    expect((await getSessionMetadata('agent', 'legacy'))?.automationStatus).toBeUndefined()
+    expect(await finalizeAutomationStatus(createLocalSessionStore('agent'), 'legacy', 'failed')).toBe('not-automation')
+    expect((await getSessionMetadata(createLocalSessionStore('agent'), 'legacy'))?.automationStatus).toBeUndefined()
   })
 
   it('aborts on corrupt metadata instead of clobbering it', async () => {
@@ -268,7 +269,7 @@ describe('finalizeAutomationStatus guards', () => {
     const corrupt = '{ "s0": { '
     fs.writeFileSync(metadataPath('agent'), corrupt)
 
-    await expect(finalizeAutomationStatus('agent', 's0', 'succeeded')).rejects.toThrow()
+    await expect(finalizeAutomationStatus(createLocalSessionStore('agent'), 's0', 'succeeded')).rejects.toThrow()
     expect(fs.readFileSync(metadataPath('agent'), 'utf-8')).toBe(corrupt)
   })
 })

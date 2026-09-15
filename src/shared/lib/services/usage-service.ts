@@ -1,6 +1,7 @@
-import * as fs from 'fs'
-import * as path from 'path'
 import pLimit from 'p-limit'
+import type { FileOps } from '@shared/lib/agent-actor/types'
+import { chunksOf } from '@shared/lib/agent-actor/jsonl-files'
+import { WorkspaceFileError, workspaceDirname } from '@shared/lib/agent-actor/workspace-path'
 import {
   getEffectiveCatalog,
   getProviderCatalog,
@@ -83,12 +84,16 @@ export interface UsageLoadStatus {
   incomplete: boolean
 }
 
+/** Every `.jsonl` at or below `dir` in the agent's workspace. */
 interface LoadOptions extends CommonLoadOptions {
-  claudePath: string
+  files: FileOps
+  dir: string
 }
 
+/** One session's transcript plus the transcripts beside it. */
 interface SessionLoadOptions extends CommonLoadOptions {
-  sessionPath: string
+  files: FileOps
+  transcript: string
 }
 
 interface CountedUsage {
@@ -534,22 +539,21 @@ export function calculateCost(
   )
 }
 
-async function findJsonlFiles(dir: string): Promise<string[]> {
+async function findJsonlFiles(files: FileOps, dir: string): Promise<string[]> {
   const results: string[] = []
-  const entries = await fs.promises.readdir(dir, { withFileTypes: true })
+  const entries = await files.list(dir)
   for (const entry of entries) {
-    const fullPath = path.join(dir, entry.name)
-    if (entry.isDirectory()) {
-      results.push(...(await findJsonlFiles(fullPath)))
+    if (entry.kind === 'directory') {
+      results.push(...(await findJsonlFiles(files, entry.path)))
     } else if (entry.name.endsWith('.jsonl')) {
-      results.push(fullPath)
+      results.push(entry.path)
     }
   }
   return results
 }
 
 function isMissingPathError(error: unknown): boolean {
-  return error instanceof Error && 'code' in error && error.code === 'ENOENT'
+  return error instanceof WorkspaceFileError && error.code === 'not-found'
 }
 
 const NEWLINE_BYTE = 0x0a
@@ -579,8 +583,9 @@ export async function loadDailyUsageData(
     if (loadStatus) loadStatus.incomplete = true
   }
 
+  const { files: workspace } = options
   let files: string[]
-  if ('sessionPath' in options) {
+  if ('transcript' in options) {
     // A session's primary transcript is <id>.jsonl. Current subagent/workflow
     // transcripts live below the adjacent <id>/ directory, so include those in
     // the session total without walking every other session for the agent.
@@ -589,20 +594,20 @@ export async function loadDailyUsageData(
     files = []
     let hasPrimaryTranscript = false
     try {
-      const stat = await fs.promises.stat(options.sessionPath)
-      if (stat.isFile()) {
-        files.push(options.sessionPath)
+      const stat = await workspace.stat(options.transcript)
+      if (stat?.kind === 'file') {
+        files.push(options.transcript)
         hasPrimaryTranscript = true
       }
-      else markIncomplete()
-    } catch (error) {
       // A newly-created session can exist before its transcript is written.
-      if (!isMissingPathError(error)) markIncomplete()
+      else if (stat !== null) markIncomplete()
+    } catch {
+      markIncomplete()
     }
 
-    const relatedDir = options.sessionPath.replace(/\.jsonl$/, '')
+    const relatedDir = options.transcript.replace(/\.jsonl$/, '')
     try {
-      files.push(...(await findJsonlFiles(relatedDir)))
+      files.push(...(await findJsonlFiles(workspace, relatedDir)))
     } catch (error) {
       // Most sessions have no nested transcripts.
       if (!isMissingPathError(error)) markIncomplete()
@@ -610,15 +615,12 @@ export async function loadDailyUsageData(
 
     if (hasPrimaryTranscript) {
       try {
-        const siblingEntries = await fs.promises.readdir(path.dirname(options.sessionPath), {
-          withFileTypes: true,
-        })
-        const primaryFilename = path.basename(options.sessionPath)
+        const siblingEntries = await workspace.list(workspaceDirname(options.transcript))
         if (
           siblingEntries.some(
             (entry) =>
-              entry.name !== primaryFilename &&
-              entry.isFile() &&
+              entry.path !== options.transcript &&
+              entry.kind === 'file' &&
               entry.name.startsWith('agent-') &&
               entry.name.endsWith('.jsonl'),
           )
@@ -631,10 +633,8 @@ export async function loadDailyUsageData(
       }
     }
   } else {
-    const projectsDir = path.join(options.claudePath, 'projects')
     try {
-      await fs.promises.access(projectsDir)
-      files = await findJsonlFiles(projectsDir)
+      files = await findJsonlFiles(workspace, options.dir)
     } catch (error) {
       if (!isMissingPathError(error)) markIncomplete()
       return []
@@ -661,7 +661,8 @@ export async function loadDailyUsageData(
       files.map((file) =>
         limit(async () => {
           try {
-            const stat = await fs.promises.stat(file)
+            const stat = await workspace.stat(file)
+            if (stat === null) throw new WorkspaceFileError('not-found')
             return stat.mtimeMs >= sinceMs ? file : null
           } catch {
             markIncomplete()
@@ -723,17 +724,17 @@ export async function loadDailyUsageData(
   await Promise.all(
     files.map((file) =>
       limit(async () => {
-        let fh: fs.promises.FileHandle | null = null
+        let opened: Awaited<ReturnType<FileOps['open']>> | null = null
         try {
-          fh = await fs.promises.open(file, 'r')
-          const stream = fh.createReadStream()
+          opened = await workspace.open(file)
+          const stream = opened.stream()
           // Split on newlines in the raw bytes and decode only the lines that
           // could carry usage. Transcripts are dominated by large tool-result
           // rows; decoding every byte to a JS string costs multiples of the
           // actual work and is the bulk of the wall-clock on big sessions.
           let pending: Buffer[] = []
 
-          for await (const chunk of stream) {
+          for await (const chunk of chunksOf(stream)) {
             let start = 0
             let idx = chunk.indexOf(NEWLINE_BYTE)
             while (idx !== -1) {
@@ -760,7 +761,7 @@ export async function loadDailyUsageData(
           // Skip unreadable files
           markIncomplete()
         } finally {
-          await fh?.close()
+          await opened?.close()
         }
       })
     )
@@ -1244,7 +1245,8 @@ export async function loadDailyUsageData(
  * should receive a fresh total when a session is still accumulating messages.
  */
 export async function loadSessionUsageTotals(options: {
-  sessionPath: string
+  files: FileOps
+  transcript: string
   providerId?: LlmProviderId
 }): Promise<SessionUsageTotals> {
   const loadStatus: UsageLoadStatus = { incomplete: false }

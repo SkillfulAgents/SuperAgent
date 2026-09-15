@@ -2500,7 +2500,7 @@ agents.get('/:id/sessions/:sessionId/media/:ref', AgentRead(), async (c) => {
     // media read answers with a 410.
     if (
       !(await actor.sessions.isKnown(sessionId)) ||
-      !actor.sessions.fileRealPathWithinAgent(sessionId)
+      !(await actor.sessions.fileRealPathWithinAgent(sessionId))
     ) {
       return c.json({ error: 'Session transcript not found' }, 404)
     }
