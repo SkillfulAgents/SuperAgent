@@ -1,13 +1,17 @@
 import { Hono } from 'hono'
+import { randomUUID } from 'node:crypto'
+import { z } from 'zod'
+import { limitJsonBody, type LimitedJsonBodyEnv } from '../middleware/limit-json-body'
 import { Authenticated } from '../middleware/auth'
 import { getVoiceSettings, type VoiceProvider } from '@shared/lib/config/settings'
 import { getVoiceProvider } from '@shared/lib/voice'
+import { liveMappingSchema, voiceHistorySchema } from '@shared/lib/voice/live-types'
 import { resolveTtsSpeed } from '@shared/lib/voice/tts-preferences'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { getVoiceAgentPrompt, type VoiceAgentPromptName } from '@shared/prompts/voice-agent'
 
-const voice = new Hono()
+const voice = new Hono<LimitedJsonBodyEnv>()
 
 voice.use('*', Authenticated())
 
@@ -25,11 +29,81 @@ voice.get('/configured', (c) => {
   const supportsTts = configured && sttProvider.supportsTts()
   return c.json({
     configured,
+    conversationEngine: configured ? sttProvider.getConversationEngine() : null,
     supportsVoiceAgent: configured && sttProvider.supportsVoiceAgent(),
     supportsTts,
     voices: supportsTts ? sttProvider.getTtsVoices() : [],
     defaultVoice: supportsTts ? sttProvider.resolveTtsVoice(voiceSettings.ttsVoice) : undefined,
   })
+})
+
+// Live extends the existing OpenAI BYOK provider, independently of dictation
+// and the voice-agent creation/feedback aids.
+voice.use('/live/*', limitJsonBody(128 * 1024))
+voice.use('/live/*', async (c, next) => {
+  if (c.req.method !== 'DELETE' && getVoiceSettings().sttProvider !== 'openai') {
+    return c.json({ error: 'Select OpenAI in Settings > Voice to use Live.' }, 400)
+  }
+  return next()
+})
+// Opaque, user-bound handles prevent one user from closing another's call.
+const liveSessions = new Map<string, { owner: string; id: string; timer: ReturnType<typeof setTimeout> }>()
+const pendingLiveStarts = new Map<string, number>()
+const liveSessionSchema = z.object({ sdp: z.string().min(1).max(64000), history: voiceHistorySchema })
+voice.post('/live/session', async (c) => {
+  const parsed = liveSessionSchema.safeParse(c.get('limitedJsonBody'))
+  if (!parsed.success) return c.json({ error: 'Invalid Live session request.' }, 400)
+  const owner = getCurrentUserId(c)
+  const pending = pendingLiveStarts.get(owner) ?? 0
+  if (pending + [...liveSessions.values()].filter((session) => session.owner === owner).length >= 4) {
+    return c.json({ error: 'Close an existing voice session before starting another.' }, 429)
+  }
+  pendingLiveStarts.set(owner, pending + 1)
+  try {
+    const provider = getVoiceProvider('openai')
+    const answer = await provider.createLiveSession(parsed.data.sdp, parsed.data.history)
+    if (c.req.raw.signal.aborted) {
+      await provider.closeLiveSession(answer.session.id)
+      return c.json({ error: 'Voice connection request was cancelled.' }, 408)
+    }
+    const handle = randomUUID()
+    const timer = setTimeout(() => {
+      liveSessions.delete(handle)
+      void provider.closeLiveSession(answer.session.id).catch(() => {})
+    }, 60 * 60 * 1000)
+    timer.unref()
+    liveSessions.set(handle, { owner, id: answer.session.id, timer })
+    return c.json({ ...answer, handle }, 201)
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : 'Failed to create Live session.' }, 502)
+  } finally {
+    const remaining = (pendingLiveStarts.get(owner) ?? 1) - 1
+    if (remaining) pendingLiveStarts.set(owner, remaining)
+    else pendingLiveStarts.delete(owner)
+  }
+})
+voice.delete('/live/session/:handle', async (c) => {
+  const handle = c.req.param('handle')
+  const session = liveSessions.get(handle)
+  if (!session || session.owner !== getCurrentUserId(c)) return c.json({ error: 'Voice session not found.' }, 404)
+  try {
+    await getVoiceProvider('openai').closeLiveSession(session.id)
+    clearTimeout(session.timer)
+    liveSessions.delete(handle)
+    return c.json({ closed: true })
+  } catch {
+    return c.json({ error: 'Could not close voice session.' }, 502)
+  }
+})
+voice.post('/live/map', async (c) => {
+  const parsed = liveMappingSchema.safeParse(c.get('limitedJsonBody'))
+  if (!parsed.success) return c.json({ error: 'Invalid Live mapping request.' }, 400)
+  try {
+    const provider = getVoiceProvider('openai')
+    return c.json(await provider.mapLiveConversation(parsed.data, c.req.raw.signal))
+  } catch {
+    return c.json({ error: 'Voice mapping failed. Check the configured summarizer and try again.' }, 502)
+  }
 })
 
 voice.get('/token', async (c) => {

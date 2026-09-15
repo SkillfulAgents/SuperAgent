@@ -16,7 +16,7 @@ export function useHoldSoundPreference(): boolean {
  * and the hold sound, both written to the person's settings so they hold
  * across sessions.
  */
-export function VoiceModeControls() {
+export function VoiceModeControls({ showSpeed = true }: { showSpeed?: boolean }) {
   const holdSound = useHoldSoundPreference()
   const updateUserSettings = useUpdateUserSettings()
   const label = holdSound ? 'Hold sound on' : 'Hold sound off'
@@ -24,7 +24,7 @@ export function VoiceModeControls() {
   return (
     <TooltipProvider>
       <div className="flex items-center gap-0.5" data-testid="voice-mode-controls">
-        <ReadAloudSpeedSelect testId="voice-mode-speed" align="center" />
+        {showSpeed && <ReadAloudSpeedSelect testId="voice-mode-speed" align="center" />}
         <Tooltip>
           <TooltipTrigger asChild>
             <button

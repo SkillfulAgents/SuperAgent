@@ -10,13 +10,13 @@ import { DeepgramVoiceProvider } from './deepgram-provider'
 import { OpenaiVoiceProvider } from './openai-provider'
 import { PlatformVoiceProvider } from './platform-provider'
 
-const providers: Record<VoiceProvider, BaseVoiceProvider> = {
+const providers = {
   deepgram: new DeepgramVoiceProvider(),
   openai: new OpenaiVoiceProvider(),
   platform: new PlatformVoiceProvider(),
-}
+} satisfies Record<VoiceProvider, BaseVoiceProvider>
 
-export function getVoiceProvider(id: VoiceProvider): BaseVoiceProvider {
+export function getVoiceProvider<T extends VoiceProvider>(id: T): typeof providers[T] {
   const provider = providers[id]
   if (!provider) {
     throw new Error(`Unknown voice provider: ${id}`)

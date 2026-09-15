@@ -87,6 +87,24 @@ describe('HoldSound', () => {
     expect(audio.pause).toHaveBeenCalledTimes(1)
   })
 
+  it('cuts music immediately for speech, including a pending fade-out', () => {
+    sound.start()
+    vi.advanceTimersByTime(1000)
+    sound.stop()
+    vi.advanceTimersByTime(80)
+    expect(audios[0].volume).toBeGreaterThan(0)
+    sound.stopImmediately()
+    expect(audios[0].volume).toBe(0)
+    expect(audios[0].paused).toBe(true)
+    expect(sound.isPlaying).toBe(false)
+    vi.advanceTimersByTime(1000)
+    expect(audios[0].volume).toBe(0)
+    sound.start()
+    vi.advanceTimersByTime(1000)
+    expect(audios[0].paused).toBe(false)
+    expect(audios[0].volume).toBeCloseTo(HOLD_VOLUME)
+  })
+
   it('start() twice is one play; stop() when silent is nothing', () => {
     sound.start()
     sound.start()

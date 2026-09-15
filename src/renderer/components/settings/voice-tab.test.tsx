@@ -45,6 +45,7 @@ vi.mock('@renderer/hooks/use-user-settings', () => ({
 }))
 vi.mock('@renderer/hooks/use-voice-input', () => ({
   useIsTtsConfigured: () => state.ttsConfigured,
+  useVoiceConversationEngine: () => state.sttProvider === 'openai' ? 'openai-live' : state.ttsConfigured ? 'chained' : null,
   // What the member-readable endpoint reports: the provider's voices and the
   // deployment default among them.
   useTtsVoices: () => ({ voices: VOICES, defaultVoice: state.defaultVoice ?? 'aura-2-thalia-en' }),

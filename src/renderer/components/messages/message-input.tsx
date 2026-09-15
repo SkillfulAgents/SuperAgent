@@ -347,12 +347,19 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     paused: suspended,
     send: submitMessage,
     startWithAgentTurn: openedByVoice,
+    history: (messages ?? []).slice(-24).flatMap((message) =>
+      message.type === 'user' || message.type === 'assistant'
+        ? [{ role: message.type, content: message.content.text.slice(-4000) }]
+        : [],
+    ).slice(-24),
   })
   // Something to hear while the agent works, unless the person muted it.
   const holdSoundWanted = useHoldSoundPreference()
   useHoldSound({
     enabled: voiceModeOn && !isViewOnly && !suspended && holdSoundWanted,
-    agentTurn: voice.phase !== 'listening',
+    agentTurn: voice.hold.allowed,
+    delayMs: voice.hold.delayMs,
+    speaking: voice.speechActive ?? voice.phase === 'speaking',
     working: voice.working,
   })
 
@@ -375,6 +382,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
         <VoiceModeComposer
           phase={voice.phase}
           utterance={voice.utterance}
+          transcript={voice.transcript}
           error={voice.error}
           onClearError={voice.clearError}
           onPressMic={voice.pressMic}
@@ -398,7 +406,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
               footer={<AgentDefaultFooter agentSlug={agentSlug} state={composerOptions} />}
             />
           )}
-          voiceControls={<VoiceModeControls />}
+          voiceControls={<VoiceModeControls showSpeed={voice.capabilities.speechSpeed} />}
           footer={(
             <>
               {isOffline && (

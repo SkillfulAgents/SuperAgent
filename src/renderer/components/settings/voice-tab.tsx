@@ -17,7 +17,7 @@ import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user
 import { useUser } from '@renderer/context/user-context'
 import { apiFetch } from '@renderer/lib/api'
 import { AlertTriangle, Eye, EyeOff, Check, Loader2, ExternalLink, Square, Volume2 } from 'lucide-react'
-import { useIsTtsConfigured, useTtsVoices, useVoiceInput } from '@renderer/hooks/use-voice-input'
+import { useIsTtsConfigured, useVoiceConversationEngine, useTtsVoices, useVoiceInput } from '@renderer/hooks/use-voice-input'
 import { readAloud, useReadAloud } from '@renderer/hooks/use-read-aloud'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
@@ -43,9 +43,9 @@ const VOICE_PROVIDERS = [
   {
     value: 'openai' as const,
     label: 'OpenAI',
-    model: 'GPT-4o Mini Transcribe',
+    model: 'GPT-4o Mini Transcribe · GPT-Live',
     docsUrl: 'https://platform.openai.com/docs/guides/speech-to-text#supported-languages',
-    note: 'Most accurate & affordable. 57 languages supported.',
+    note: 'Dictation and in-conversation voice with GPT-Live. Uses your OpenAI API key and the app’s configured summarizer.',
   },
 ]
 
@@ -477,6 +477,7 @@ export function VoiceTab() {
   const updateSettings = useUpdateSettings()
   const { data: platformAuth } = usePlatformAuthStatus()
   const ttsAvailable = useIsTtsConfigured()
+  const conversationEngine = useVoiceConversationEngine()
   const isPlatformConnected = platformAuth?.connected ?? false
   const rawProvider = settings?.voice?.sttProvider
   const selectedProvider = rawProvider && VALID_PROVIDERS.has(rawProvider) ? rawProvider : undefined
@@ -494,7 +495,12 @@ export function VoiceTab() {
         <PersonalVoiceSection heading={isAuthMode ? 'Your Voice' : 'Text-to-Speech'} offerWorkspaceDefault={isAuthMode} />
       )}
 
-      {!ttsAvailable && !showAdminFeatures && (
+      {conversationEngine === 'openai-live' && (
+        <p className="text-sm text-muted-foreground">
+          Conversation voice uses OpenAI Live with the Marin voice. Open an agent conversation and press the voice button to talk.
+        </p>
+      )}
+      {!ttsAvailable && conversationEngine !== 'openai-live' && !showAdminFeatures && (
         <p className="text-sm text-muted-foreground" data-testid="voice-unavailable-note">
           Text-to-speech isn&apos;t set up for this workspace yet. Ask an admin to configure a voice provider.
         </p>
@@ -503,7 +509,7 @@ export function VoiceTab() {
       {showAdminFeatures && (
         <>
           <div className={cn('space-y-4', ttsAvailable && 'pt-4 border-t')}>
-            <h3 className="text-sm font-medium">Speech-to-Text Provider</h3>
+            <h3 className="text-sm font-medium">Voice Provider</h3>
             <div className="space-y-2">
               <Label htmlFor="stt-provider">Provider</Label>
               <Select

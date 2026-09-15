@@ -63,6 +63,8 @@ vi.mock('@renderer/hooks/use-voice-mode', () => ({
   useVoiceMode: (args: unknown) => mockUseVoiceMode(args) ?? ({
     phase: mockVoice.phase,
     working: mockVoice.working,
+    hold: { allowed: mockVoice.phase !== 'listening', delayMs: 700 },
+    capabilities: { speechSpeed: true, spokenTranscript: false },
     utterance: '',
     error: null,
     clearError: vi.fn(),
@@ -255,18 +257,38 @@ describe('MessageInput', () => {
       mockVoice.phase = 'thinking'
       mockVoice.working = true
       const { unmount } = renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
-      expect(mockUseHoldSound).toHaveBeenLastCalledWith({ enabled: false, agentTurn: true, working: true })
+      expect(mockUseHoldSound).toHaveBeenLastCalledWith({ enabled: false, agentTurn: true, working: true, delayMs: 700, speaking: false })
       await userEvent.click(screen.getByTestId('voice-mode-button'))
-      expect(mockUseHoldSound).toHaveBeenLastCalledWith({ enabled: true, agentTurn: true, working: true })
+      expect(mockUseHoldSound).toHaveBeenLastCalledWith({ enabled: true, agentTurn: true, working: true, delayMs: 700, speaking: false })
       unmount()
 
       mockUserVoiceSettings.holdSound = false
       renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
       await userEvent.click(screen.getByTestId('voice-mode-button'))
-      expect(mockUseHoldSound).toHaveBeenLastCalledWith({ enabled: false, agentTurn: true, working: true })
+      expect(mockUseHoldSound).toHaveBeenLastCalledWith({ enabled: false, agentTurn: true, working: true, delayMs: 700, speaking: false })
       expect(screen.getByTestId('voice-mode-hold-sound')).toHaveAttribute('aria-pressed', 'false')
       mockVoice.phase = 'listening'
       mockVoice.working = false
+    })
+
+    it('uses Live playback and working state for music and exposes only its hold control', async () => {
+      mockCanUseVoiceMode = true
+      delete mockUserVoiceSettings.holdSound
+      const live = {
+        hold: { allowed: true, delayMs: 700 }, capabilities: { speechSpeed: false, spokenTranscript: true },
+        engine: 'openai-live', phase: 'thinking', speechActive: true, working: true, utterance: '', error: null,
+        clearError: vi.fn(), pressMic: vi.fn(), getAnalyser: () => null,
+      }
+      mockUseVoiceMode.mockReturnValue(live)
+      const { rerender } = renderWithProviders(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      await userEvent.click(screen.getByTestId('voice-mode-button'))
+      expect(screen.queryByTestId('voice-mode-speed')).not.toBeInTheDocument()
+      expect(screen.getByTestId('voice-mode-hold-sound')).toBeInTheDocument()
+      expect(mockUseHoldSound).toHaveBeenLastCalledWith({ enabled: true, agentTurn: true, working: true, delayMs: 700, speaking: true })
+      mockUseVoiceMode.mockReturnValue({ ...live, working: false, hold: { allowed: false, delayMs: 700 } })
+      rerender(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
+      expect(mockUseHoldSound).toHaveBeenLastCalledWith({ enabled: true, agentTurn: false, working: false, delayMs: 700, speaking: true })
+      mockUseVoiceMode.mockReset()
     })
 
     it('tells the agent when the session is left while voice mode is on', async () => {

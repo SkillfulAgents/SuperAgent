@@ -29,8 +29,8 @@ function createDefaultAudio(): HoldSoundAudio | null {
  * never reads as a dropped call. A media element rather than Web Audio: it
  * plays from any origin the app is served from (fetch() cannot read the
  * packaged file:// bundle), and Chromium loops an MP3 without a gap. Fades
- * in and out so it never cuts across the reply's first word; each hold
- * starts the loop from its beginning.
+ * in and out during ordinary transitions; speech uses stopImmediately()
+ * to take priority. Each hold starts the loop from its beginning.
  */
 export class HoldSound {
   private audio: HoldSoundAudio | null = null
@@ -92,6 +92,18 @@ export class HoldSound {
       audio.pause()
       audio.currentTime = 0
     })
+  }
+
+  /** Speech takes priority: cancel even an already-running fade-out. */
+  stopImmediately(): void {
+    if (this.fadeTimer) clearInterval(this.fadeTimer)
+    this.fadeTimer = null
+    this.playing = false
+    if (this.audio) {
+      this.audio.volume = 0
+      this.audio.pause()
+      this.audio.currentTime = 0
+    }
   }
 
   private fadeTo(audio: HoldSoundAudio, target: number, durationMs: number, done: (() => void) | null): void {

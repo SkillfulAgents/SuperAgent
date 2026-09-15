@@ -1,4 +1,5 @@
 import { getSettings, type ApiKeySettings, type ApiKeyStatus, type VoiceProvider } from '../config/settings'
+import type { VoiceConversationEngine } from './conversation-types'
 import type { TtsVoiceInfo } from './tts-preferences'
 
 export abstract class BaseVoiceProvider {
@@ -49,6 +50,11 @@ export abstract class BaseVoiceProvider {
   /** Whether this provider supports Voice Agent (S2S) sessions. */
   supportsVoiceAgent(): boolean {
     return false
+  }
+
+  /** Renderer implementation used for an independently running agent session. */
+  getConversationEngine(): VoiceConversationEngine | null {
+    return this.supportsTts() ? 'chained' : null
   }
 
   /** Mint a token for a Voice Agent session. Override in providers that support it. */
