@@ -82,6 +82,24 @@ jobs:
           PLATFORM_AUTH_ISSUER_URL: ${{ secrets.PLATFORM_AUTH_ISSUER_URL }}
         run: npm run dist:mac
 
+      - name: Enforce release artifact size limit
+        shell: bash
+        run: |
+          # Same cap the release workflow enforces: Cloudflare R2 (wrangler)
+          # rejects single objects over 300 MiB. Catch it on the PR.
+          limit=$((280 * 1024 * 1024))
+          bad=0
+          for f in release/*.exe release/*.dmg release/*.zip; do
+            [ -e "$f" ] || continue
+            size=$(wc -c < "$f")
+            printf '%6d MiB  %s\n' "$((size / 1048576))" "$(basename "$f")"
+            if [ "$size" -gt "$limit" ]; then
+              echo "::error file=$f::$(basename "$f") is $((size / 1048576)) MiB, over the 280 MiB release-artifact limit (R2 upload cap is 300 MiB)"
+              bad=1
+            fi
+          done
+          [ "$bad" -eq 0 ] || exit 1
+
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
         with:

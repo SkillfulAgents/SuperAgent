@@ -5,10 +5,9 @@
  * Handles both one-time ('at') and recurring ('cron') tasks.
  */
 
-import { containerManager } from '@shared/lib/container/container-manager'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
-import { messagePersister } from '@shared/lib/container/message-persister'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
 import {
@@ -20,10 +19,6 @@ import {
 import type { ScheduledTask } from '@shared/lib/services/scheduled-task-service'
 import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import { getNextCronTime } from '@shared/lib/services/schedule-parser'
-import {
-  getSessionForScheduledExecution,
-  registerSession,
-} from '@shared/lib/services/session-service'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentExists } from '@shared/lib/services/agent-service'
 import { captureException } from '@shared/lib/error-reporting'
@@ -189,11 +184,9 @@ class TaskScheduler {
       return
     }
 
-    const existingSession = await getSessionForScheduledExecution(
-      task.agentSlug,
-      task.id,
-      task.nextExecutionAt,
-    )
+    const actor = agentRegistry.get(task.agentSlug)
+
+    const existingSession = await actor.sessions.forScheduledExecution(task.id, task.nextExecutionAt)
 
     if (existingSession) {
       console.log(
@@ -213,7 +206,7 @@ class TaskScheduler {
     }
 
     // Start the container if not running
-    const client = await containerManager.ensureRunning(task.agentSlug)
+    await actor.container.start()
 
     // Get available env vars for the agent
     const availableEnvVars = await getSecretEnvVars(task.agentSlug)
@@ -227,7 +220,7 @@ class TaskScheduler {
       agentPrefs,
       models,
     )
-    const containerSession = await client.createSession({
+    const containerSession = await actor.sessions.create({
       availableEnvVars:
         availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: task.prompt,
@@ -242,7 +235,7 @@ class TaskScheduler {
     const sessionId = containerSession.id
     const sessionName = task.name || 'Scheduled Task'
 
-    await registerSession(task.agentSlug, sessionId, sessionName, {
+    await actor.sessions.register(sessionId, sessionName, {
       isScheduledExecution: true,
       scheduledTaskId: task.id,
       scheduledTaskName: task.name || undefined,
@@ -250,9 +243,9 @@ class TaskScheduler {
       automationStatus: 'running',
     })
 
-    // Subscribe to the session for SSE updates
-    await messagePersister.subscribeToSession(task.agentSlug, sessionId, client, sessionId)
-    messagePersister.markSessionActive(task.agentSlug, sessionId)
+    // createSession already started the turn; replay may finish it during attachment.
+    actor.sessions.markActive(sessionId)
+    await actor.sessions.subscribeStream(sessionId, sessionId)
 
     console.log(
       `[TaskScheduler] Task ${task.id} started, session: ${sessionId}`

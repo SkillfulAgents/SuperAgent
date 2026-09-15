@@ -1,6 +1,7 @@
 // --- Types ---
 
 import type { VoiceProvider } from '@shared/lib/config/settings'
+import { addRendererBreadcrumb } from './error-reporting'
 export type { VoiceProvider }
 
 const CONNECT_TIMEOUT_MS = 10_000
@@ -11,6 +12,9 @@ const CONNECT_TIMEOUT_MS = 10_000
  * On overflow the oldest chunks are dropped.
  */
 const MAX_BUFFERED_AUDIO_BYTES = 1_000_000
+
+/** Distinct server event types a session's stats will keep count of. */
+const MAX_TRACKED_EVENT_TYPES = 32
 
 /**
  * Upper bound on how long finish() waits for the server's trailing transcripts
@@ -32,9 +36,42 @@ export interface TranscriptEvent {
 export type TranscriptCallback = (event: TranscriptEvent) => void
 export type ErrorCallback = (error: Error) => void
 
+/**
+ * What happened on one adapter session, for diagnosing "I spoke and nothing
+ * came back" after the fact: whether the socket ever opened, how much audio
+ * went out and how loud it was, what the server sent, and how it ended.
+ */
+export interface SttSessionStats {
+  /** The socket reached OPEN; audio can only flow after this. */
+  socketOpened: boolean
+  /** connect() to open, in ms. Absent when the socket never opened. */
+  connectMs?: number
+  /** Audio handed to the adapter, written or still buffered. */
+  bytesReceived: number
+  /** Audio written to the socket. */
+  bytesSent: number
+  /** Audio discarded because the pre-open buffer overflowed. */
+  bytesDropped: number
+  /** Loudest 16-bit sample seen (0..32767). 0 means the mic delivered silence. */
+  peakSample: number
+  /** Server events by type, so a missing or unexpected one stands out. */
+  serverEvents: Record<string, number>
+  /** Transcript events delivered to the caller. */
+  interims: number
+  finals: number
+  /** Errors surfaced to the caller. */
+  errors: number
+  /** The last error message, surfaced or not (a late one during finish is swallowed). */
+  lastError?: string
+  closeCode?: number
+  closeReason?: string
+}
+
 export interface SttAdapter {
   /** Required audio sample rate in Hz. Defaults to 16000 if not set. */
   readonly sampleRate?: number
+  /** Running account of this session, for error reports. */
+  readonly stats?: SttSessionStats
   connect(token: string): Promise<void>
   sendAudio(chunk: ArrayBuffer): void
   onTranscript(cb: TranscriptCallback): void
@@ -66,6 +103,17 @@ export interface SttAdapter {
  * a chunk, finalize, and parse incoming messages.
  */
 abstract class WebSocketSttAdapter implements SttAdapter {
+  readonly stats: SttSessionStats = {
+    socketOpened: false,
+    bytesReceived: 0,
+    bytesSent: 0,
+    bytesDropped: 0,
+    peakSample: 0,
+    serverEvents: {},
+    interims: 0,
+    finals: 0,
+    errors: 0,
+  }
   protected ws: WebSocket | null = null
   private transcriptCb: TranscriptCallback | null = null
   private errorCb: ErrorCallback | null = null
@@ -76,6 +124,7 @@ abstract class WebSocketSttAdapter implements SttAdapter {
   private finishTimer: ReturnType<typeof setTimeout> | null = null
   private pendingAudio: ArrayBuffer[] = []
   private pendingBytes = 0
+  private connectStartedAt = 0
 
   /** Open the provider's WebSocket, authenticated with `token`. */
   protected abstract createSocket(token: string): WebSocket
@@ -109,18 +158,21 @@ abstract class WebSocketSttAdapter implements SttAdapter {
 
   async connect(token: string): Promise<void> {
     return new Promise((resolve, reject) => {
+      this.connectStartedAt = Date.now()
       this.ws = this.createSocket(token)
 
       const timeout = setTimeout(() => {
         this.ws?.close()
-        reject(new Error(`${this.connectErrorLabel} WebSocket connection timed out`))
+        reject(this.noteError(new Error(`${this.connectErrorLabel} WebSocket connection timed out`)))
       }, CONNECT_TIMEOUT_MS)
 
       this.ws.onopen = () => {
         clearTimeout(timeout)
         this.connected = true
+        this.stats.socketOpened = true
+        this.stats.connectMs = Date.now() - this.connectStartedAt
         this.onConnected()
-        for (const chunk of this.pendingAudio) this.writeAudio(chunk)
+        for (const chunk of this.pendingAudio) this.write(chunk)
         this.pendingAudio = []
         this.pendingBytes = 0
         // If finish() was requested during the handshake, finalize now that the
@@ -131,45 +183,84 @@ abstract class WebSocketSttAdapter implements SttAdapter {
 
       this.ws.onerror = () => {
         clearTimeout(timeout)
-        const err = new Error(`${this.connectErrorLabel} WebSocket connection failed`)
+        const err = this.noteError(new Error(`${this.connectErrorLabel} WebSocket connection failed`))
         if (!this.connected) {
           reject(err)
         } else if (!this.closed && !this.finishing) {
-          this.errorCb?.(err)
+          this.emitError(err)
         }
       }
 
       this.ws.onmessage = (event) => {
+        let data: any
         try {
-          this.handleMessage(JSON.parse(event.data as string))
+          data = JSON.parse(event.data as string)
         } catch {
           // Ignore non-JSON messages
+          return
         }
+        this.noteServerEvent(data)
+        this.handleMessage(data)
       }
 
       this.ws.onclose = (event) => {
+        this.stats.closeCode = event.code
+        this.stats.closeReason = event.reason
         // A close during finish() (server flushed finals / closed after commit)
         // is finish()'s completion signal.
         if (this.finishResolve) { this.completeFinish(); return }
         if (this.closed) return
         if (event.code !== 1000 && event.code !== 1005) {
-          this.errorCb?.(new Error(`${this.closeErrorLabel} connection closed: ${event.code} ${event.reason}`))
+          this.emitError(new Error(`${this.closeErrorLabel} connection closed: ${event.code} ${event.reason}`))
         }
       }
     })
   }
 
   sendAudio(chunk: ArrayBuffer): void {
+    this.stats.bytesReceived += chunk.byteLength
+    this.notePeak(chunk)
     if (this.ws?.readyState === WebSocket.OPEN) {
-      this.writeAudio(chunk)
+      this.write(chunk)
     } else if (!this.connected && !this.closed) {
       // Capture can start before the socket opens — buffer and flush on open
       this.pendingAudio.push(chunk)
       this.pendingBytes += chunk.byteLength
       while (this.pendingBytes > MAX_BUFFERED_AUDIO_BYTES && this.pendingAudio.length > 0) {
-        this.pendingBytes -= this.pendingAudio.shift()!.byteLength
+        const dropped = this.pendingAudio.shift()!.byteLength
+        this.pendingBytes -= dropped
+        this.stats.bytesDropped += dropped
       }
     }
+  }
+
+  private write(chunk: ArrayBuffer): void {
+    this.writeAudio(chunk)
+    this.stats.bytesSent += chunk.byteLength
+  }
+
+  private notePeak(chunk: ArrayBuffer): void {
+    const samples = new Int16Array(chunk, 0, chunk.byteLength >> 1)
+    let peak = this.stats.peakSample
+    for (let i = 0; i < samples.length; i++) {
+      const magnitude = samples[i] < 0 ? -samples[i] : samples[i]
+      if (magnitude > peak) peak = magnitude
+    }
+    this.stats.peakSample = peak
+  }
+
+  private noteServerEvent(data: any): void {
+    const type = typeof data?.type === 'string' ? data.type : 'unknown'
+    const events = this.stats.serverEvents
+    // Bounded: a misbehaving server cannot grow the record without limit.
+    const key = type in events || Object.keys(events).length < MAX_TRACKED_EVENT_TYPES ? type : 'other'
+    events[key] = (events[key] ?? 0) + 1
+  }
+
+  /** Record an error on the session, whether or not it reaches the caller. */
+  protected noteError(error: Error): Error {
+    this.stats.lastError = error.message
+    return error
   }
 
   onTranscript(cb: TranscriptCallback): void {
@@ -239,10 +330,14 @@ abstract class WebSocketSttAdapter implements SttAdapter {
   }
 
   protected emitTranscript(event: TranscriptEvent): void {
+    if (event.type === 'interim') this.stats.interims++
+    else if (event.type === 'final') this.stats.finals++
     this.transcriptCb?.(event)
   }
 
   protected emitError(error: Error): void {
+    this.noteError(error)
+    this.stats.errors++
     this.errorCb?.(error)
   }
 }
@@ -425,12 +520,22 @@ class OpenaiAdapter extends WebSocketSttAdapter {
       case 'input_audio_buffer.speech_stopped':
         this.emitTranscript({ type: 'speech_ended', text: '' })
         break
+      case 'conversation.item.input_audio_transcription.failed':
+        // The server heard the utterance but could not transcribe it (a model
+        // the project may not use, a quota). Without this the words just vanish.
+        this.emitError(friendlyRealtimeError(data.error))
+        if (this.isFinishing) this.completeFinish()
+        break
       case 'error':
         // A late error while wrapping up (e.g. an empty-buffer commit that raced
         // the server's auto-commit) is benign — finish quietly instead of alarming
         // the user, who already has their transcript.
-        if (this.isFinishing) this.completeFinish()
-        else this.emitError(friendlyRealtimeError(data.error))
+        if (this.isFinishing) {
+          this.noteError(friendlyRealtimeError(data.error))
+          this.completeFinish()
+        } else {
+          this.emitError(friendlyRealtimeError(data.error))
+        }
         break
       case 'response.done':
         if (data.response?.status === 'failed') {
@@ -482,10 +587,14 @@ export interface AudioSink {
   sendAudio(chunk: ArrayBuffer): void
 }
 
+export type CaptureKind = 'worklet' | 'script-processor'
+
 export interface AudioCaptureHandle {
   stream: MediaStream
   audioContext: AudioContext
   analyser: AnalyserNode
+  /** Which node is delivering the samples (the worklet, or its fallback). */
+  captureKind: CaptureKind
   /** Redirect the captured audio (a reconnected adapter), or drop it (null). */
   setSink: (sink: AudioSink | null) => void
   cleanup: () => void
@@ -529,6 +638,7 @@ let captureWorkletUrl: string | null = null
 
 interface CaptureNode {
   node: AudioNode
+  kind: CaptureKind
   disconnect: () => void
 }
 
@@ -545,6 +655,7 @@ async function createCaptureNode(audioContext: AudioContext, onChunk: (samples: 
       node.port.onmessage = (event: MessageEvent<Float32Array>) => onChunk(event.data)
       return {
         node,
+        kind: 'worklet',
         disconnect: () => {
           node.port.onmessage = null
           node.disconnect()
@@ -552,12 +663,16 @@ async function createCaptureNode(audioContext: AudioContext, onChunk: (samples: 
       }
     } catch (err) {
       console.warn('Audio capture worklet unavailable, falling back to ScriptProcessor:', err)
+      addRendererBreadcrumb('dictation', 'capture worklet unavailable, using ScriptProcessor', {
+        reason: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+      })
     }
   }
   const processor = audioContext.createScriptProcessor(CAPTURE_CHUNK_SAMPLES, 1, 1)
   processor.onaudioprocess = (e) => onChunk(e.inputBuffer.getChannelData(0))
   return {
     node: processor,
+    kind: 'script-processor',
     disconnect: () => {
       processor.onaudioprocess = null
       processor.disconnect()
@@ -631,6 +746,7 @@ export async function startAudioCapture(
     stream,
     audioContext,
     analyser,
+    captureKind: capture.kind,
     setSink: (next) => {
       currentSink = next
     },

@@ -105,6 +105,7 @@ function createAuthInstance() {
     },
     user: {
       additionalFields: {
+        avatarOverride: { type: 'string', required: false, input: false },
         mustChangePassword: {
           type: 'boolean',
           required: false,
@@ -134,6 +135,13 @@ function createAuthInstance() {
         },
     databaseHooks: {
       user: {
+        delete: {
+          after: async (deletedUser) => {
+            if (typeof deletedUser.avatarOverride !== 'string') return
+            const { removeStoredAvatar } = await import('@shared/lib/services/profile-avatar-service')
+            await removeStoredAvatar(deletedUser.avatarOverride)
+          },
+        },
         create: {
           after: async (createdUser) => {
             try {

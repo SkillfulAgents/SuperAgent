@@ -23,6 +23,7 @@ import usage from './routes/usage'
 import remoteMcps from './routes/remote-mcps'
 import commonMcpServers from './routes/common-mcp-servers'
 import userSettingsRouter from './routes/user-settings'
+import profileRouter from './routes/profile'
 import homeGraph from './routes/home-graph'
 import homeCardHealth from './routes/home-card-health'
 import policies from './routes/policies'
@@ -44,6 +45,7 @@ import mobilePairing from './routes/mobile-pairing'
 import agentBootstrap from './routes/agent-bootstrap'
 import activityRouter from './routes/activity'
 import { isAuthMode } from '@shared/lib/auth/mode'
+import { WORKSPACE_UNAVAILABLE_HEADER } from '@shared/lib/workspace-unavailable-header'
 import { sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { user as userTable } from '@shared/lib/db/schema'
@@ -65,7 +67,12 @@ app.use('*', armAbortSignal)
 
 // Enable CORS for all routes
 const trustedOrigins = process.env.TRUSTED_ORIGINS?.split(',').map(o => o.trim()).filter(Boolean)
-app.use('*', cors(trustedOrigins?.length ? { origin: trustedOrigins } : undefined))
+app.use('*', cors({
+  ...(trustedOrigins?.length ? { origin: trustedOrigins } : {}),
+  // The packaged renderer is file:// calling loopback, so the cloud router's
+  // not-ready marker (relayed by cloud-proxy.ts) is only readable if exposed here.
+  exposeHeaders: [WORKSPACE_UNAVAILABLE_HEADER],
+}))
 
 // Uncacheable unless a route opts in — see the middleware for why an absent
 // Cache-Control is the wrong default behind a CDN. Scoped to '*' rather than
@@ -241,6 +248,7 @@ app.route('/api/usage', usage)
 app.route('/api/remote-mcps', remoteMcps)
 app.route('/api/common-mcp-servers', commonMcpServers)
 app.route('/api/user-settings', userSettingsRouter)
+app.route('/api/profile', profileRouter)
 app.route('/api/home-graph', homeGraph)
 app.route('/api/home-card-health', homeCardHealth)
 app.route('/api/policies', policies)

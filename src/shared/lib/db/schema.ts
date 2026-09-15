@@ -14,6 +14,7 @@ export const user = sqliteTable('user', {
   email: text('email').notNull().unique(),
   emailVerified: integer('email_verified', { mode: 'boolean' }).default(false).notNull(),
   image: text('image'),
+  avatarOverride: text('avatar_override'),
   createdAt: integer('created_at', { mode: 'timestamp_ms' })
     .default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
     .notNull(),
@@ -27,7 +28,9 @@ export const user = sqliteTable('user', {
   banReason: text('ban_reason'),
   banExpires: integer('ban_expires', { mode: 'timestamp_ms' }),
   mustChangePassword: integer('must_change_password', { mode: 'boolean' }).default(false),
-})
+}, (table) => ({
+  avatarOverrideIdx: index('user_avatar_override_idx').on(table.avatarOverride),
+}))
 
 /**
  * Stable installed-mobile-device identity. Access sessions rotate underneath

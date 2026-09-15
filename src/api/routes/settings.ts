@@ -47,7 +47,7 @@ import {
   getWebProvider,
   resolveEffectiveWebVendor,
 } from '@shared/lib/web-provider'
-import { containerManager } from '@shared/lib/container/container-manager'
+import { agentRegistry, containerHost } from '@shared/lib/agent-actor'
 import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, getContainerClientClass, getRunnerDisplayName, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
 import { detectAllProviders } from '../../main/host-browser'
 import { revokePlatformToken } from '@shared/lib/services/platform-auth-service'
@@ -423,7 +423,7 @@ function buildSettingsResponse(
     accountProviderUserId: getAccountProviderUserId(),
     setupCompleted: !!appSettings.app?.setupCompleted,
     hostBrowserStatus: { providers: detectAllProviders() },
-    runtimeReadiness: containerManager.getReadiness(),
+    runtimeReadiness: containerHost.getReadiness(),
     auth: appSettings.auth,
     voice: getVoiceSettings(),
     tenantId: getTenantId(),
@@ -440,7 +440,7 @@ function buildSettingsResponse(
 settings.get('/', async (c) => {
   try {
     const currentSettings = getSettings()
-    const hasRunningAgents = containerManager.hasRunningAgents()
+    const hasRunningAgents = containerHost.hasRunningAgents()
     const runnerAvailability = await checkAllRunnersAvailability()
     return c.json(buildSettingsResponse(currentSettings, hasRunningAgents, runnerAvailability))
   } catch (error) {
@@ -476,7 +476,7 @@ settings.put(
       // Applying and validating the candidate below are synchronous, so a valid
       // write still has no await between this strict read and updateSettings.
       const currentSettings = loadSettingsStrict()
-      const hasRunningAgents = containerManager.hasRunningAgents()
+      const hasRunningAgents = containerHost.hasRunningAgents()
       const newSettings = applySettingsPatch(currentSettings, body, {
         now: new Date(),
         getProviderDefaultModels: (provider) =>
@@ -500,7 +500,7 @@ settings.put(
           {
             error: transitionProblem.message,
             ...(transitionProblem.includeRunningAgentIds
-              ? { runningAgents: await containerManager.getRunningAgentIds() }
+              ? { runningAgents: await containerHost.getRunningAgentIds() }
               : {}),
           },
           transitionProblem.status,
@@ -526,7 +526,7 @@ settings.put(
 
       // If container runner changed, clear cached clients so new ones use the updated runner
       if (newSettings.container.containerRunner !== currentSettings.container.containerRunner) {
-        containerManager.clearClients()
+        agentRegistry.evictAll()
       }
 
       // If image or runner changed, re-check readiness (may need to pull new image)
@@ -534,7 +534,7 @@ settings.put(
         newSettings.container.agentImage !== currentSettings.container.agentImage ||
         newSettings.container.containerRunner !== currentSettings.container.containerRunner
       ) {
-        containerManager.ensureImageReady().catch((error) => {
+        containerHost.ensureImageReady().catch((error) => {
           console.error('Failed to re-check image readiness:', error)
         })
       }
@@ -566,22 +566,22 @@ settings.post('/start-runner', async (c) => {
     }
 
     // Immediately broadcast CHECKING state so the frontend shows the starting banner
-    containerManager.resetReadiness(`Starting ${getRunnerDisplayName(runner)} runtime...`)
+    containerHost.resetReadiness(`Starting ${getRunnerDisplayName(runner)} runtime...`)
 
     const result = await startRunner(
       runner,
       (progress) => {
-        containerManager.updateStartProgress(progress)
+        containerHost.updateStartProgress(progress)
       },
       { allowInstall: true },
     )
 
     if (result.success) {
-      if (!containerManager.hasRunningAgents() && getSettings().container.containerRunner !== runner) {
+      if (!containerHost.hasRunningAgents() && getSettings().container.containerRunner !== runner) {
         mutateSettings((s) => {
           s.container.containerRunner = runner
         })
-        containerManager.clearClients()
+        agentRegistry.evictAll()
       }
 
       // Wait a bit for the runtime to start, then refresh availability (clears cache first)
@@ -589,7 +589,7 @@ settings.post('/start-runner', async (c) => {
       const runnerAvailability = await refreshRunnerAvailability()
 
       // Re-check image readiness now that a runner is available
-      containerManager.ensureImageReady().catch((error) => {
+      containerHost.ensureImageReady().catch((error) => {
         console.error('Failed to check image after starting runner:', error)
       })
 
@@ -600,7 +600,7 @@ settings.post('/start-runner', async (c) => {
     }
 
     // Clear CHECKING before refresh so a hung probe cannot wedge the UI.
-    containerManager.markRuntimeUnavailable(result.message)
+    containerHost.markRuntimeUnavailable(result.message)
     let runnerAvailability: Awaited<ReturnType<typeof refreshRunnerAvailability>> = []
     try {
       runnerAvailability = await refreshRunnerAvailability()
@@ -610,7 +610,7 @@ settings.post('/start-runner', async (c) => {
     return c.json({ ...result, runnerAvailability }, 400)
   } catch (error) {
     console.error('Failed to start runner:', error)
-    containerManager.markRuntimeUnavailable(
+    containerHost.markRuntimeUnavailable(
       error instanceof Error ? error.message : 'Failed to start runner',
     )
     return c.json({ error: 'Failed to start runner' }, 500)
@@ -629,7 +629,7 @@ settings.post('/restart-runner', async (c) => {
 
     // Immediately broadcast CHECKING state so the frontend blocks agent creation
     // and shows the "restarting" banner before the actual restart begins
-    containerManager.resetReadiness(`Restarting ${getRunnerDisplayName(runner)} runtime...`)
+    containerHost.resetReadiness(`Restarting ${getRunnerDisplayName(runner)} runtime...`)
 
     const result = await restartRunner(runner)
 
@@ -637,7 +637,7 @@ settings.post('/restart-runner', async (c) => {
       await new Promise((resolve) => setTimeout(resolve, 2000))
       const runnerAvailability = await refreshRunnerAvailability()
 
-      containerManager.ensureImageReady().catch((error) => {
+      containerHost.ensureImageReady().catch((error) => {
         console.error('Failed to check image after restarting runner:', error)
       })
 
@@ -656,7 +656,7 @@ settings.post('/refresh-availability', async (c) => {
   try {
     const runnerAvailability = await refreshRunnerAvailability()
     // Also re-check image readiness since runner state may have changed
-    containerManager.ensureImageReady().catch((error) => {
+    containerHost.ensureImageReady().catch((error) => {
       console.error('Failed to re-check image readiness:', error)
     })
     return c.json({ runnerAvailability })
@@ -900,7 +900,7 @@ settings.post('/factory-reset', async (c) => {
     }
 
     // Stop all running containers
-    await containerManager.stopAll()
+    await containerHost.stopAll()
 
     // Delete agents directory
     const agentsDir = getAgentsDataDir()

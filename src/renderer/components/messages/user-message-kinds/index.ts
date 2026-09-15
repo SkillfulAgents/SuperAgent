@@ -1,3 +1,4 @@
+import { connectionReplacementNotice } from './connection-replacement'
 import { compactCommand } from './compact'
 import { interruptMarker } from './interrupt'
 import { slashCommand } from './slash-command'
@@ -16,12 +17,12 @@ export const plainMessage: UserMessageKindSpec = {
 
 /**
  * Registry of user-message kinds, first match wins. Order is deliberate:
- * the voice-mode notice first (a system message with its own visible
- * marker), then the hidden system prefix, then exact prefixes, then the
- * broad "/" catch-all. Adding a kind is one spec file plus one entry here.
+ * visible system notices first, then the hidden system prefix, then exact
+ * prefixes, then the broad "/" catch-all. Adding a kind is one spec file plus one entry here.
  */
 export const USER_MESSAGE_KINDS: readonly UserMessageKindSpec[] = [
   voiceModeNotice,
+  connectionReplacementNotice,
   systemMessage,
   interruptMarker,
   compactCommand,

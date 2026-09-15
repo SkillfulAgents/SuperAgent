@@ -17,8 +17,32 @@ export interface ChromeProfile {
 
 const PROFILE_FILES = ['Cookies', 'Cookies-journal', 'Login Data', 'Login Data-journal', 'Web Data', 'Web Data-journal']
 const PROFILE_DIRS = ['Local Storage', 'Session Storage']
-const PROFILE_SYNC_MANIFEST = '.superagent-profile-sync.json'
+export const PROFILE_SYNC_MANIFEST = '.superagent-profile-sync.json'
 const COPY_CONCURRENCY = 16
+
+/**
+ * Where a profile sync lands. The source is always a Chrome profile on this
+ * machine; the destination is a directory on this machine (the host browser's
+ * own profile) or an agent's workspace, reached through its actor, which is
+ * why the sync never spells a destination path itself. Relative paths are
+ * posix, relative to the destination root.
+ */
+export interface ProfileSyncDestination {
+  /** The previous sync's manifest text, or null when there is none. */
+  readManifest(): Promise<string | null>
+  /** Store the manifest; it is host bookkeeping the agent never needs. */
+  writeManifest(text: string): Promise<void>
+  /** Whether a regular file is at this path. */
+  hasFile(relativePath: string): Promise<boolean>
+  /**
+   * Replace the file at `relativePath` with the host file at `sourcePath`,
+   * creating parents. A source that vanished since it was fingerprinted is
+   * not an error: a running Chrome deletes transient files (SQLite hot
+   * journals, leveldb tables) at any time, and the next sync's source scan
+   * simply will not include it.
+   */
+  copyFile(sourcePath: string, relativePath: string): Promise<void>
+}
 
 /**
  * Returns the platform-specific Chrome user data directory, or null if not found.
@@ -69,17 +93,20 @@ export function listChromeProfiles(): ChromeProfile[] {
 
 /**
  * Asynchronously synchronizes session data (cookies, login data,
- * local/session storage) from a Chrome profile into a destination directory.
+ * local/session storage) from a Chrome profile into a destination.
  * A source-metadata manifest makes subsequent syncs incremental: files are
  * copied only when the selected source profile changed or a destination file
  * disappeared. Destination files modified by the agent are therefore kept
  * when the user's source profile is unchanged.
  *
  * @param profileId - Chrome profile directory name (e.g. "Default", "Profile 1")
- * @param destDir - Destination directory to copy files into
+ * @param destination - A directory on this machine, or a `ProfileSyncDestination`
  * @returns true if the source profile exists, false otherwise
  */
-export async function copyChromeProfileData(profileId: string, destDir: string): Promise<boolean> {
+export async function copyChromeProfileData(
+  profileId: string,
+  destination: string | ProfileSyncDestination,
+): Promise<boolean> {
   const chromeDataDir = getChromeUserDataDir()
   if (!chromeDataDir) return false
 
@@ -94,23 +121,22 @@ export async function copyChromeProfileData(profileId: string, destDir: string):
     throw error
   }
 
+  const target = typeof destination === 'string' ? hostDirectoryDestination(destination) : destination
   const [previousManifest, sourceFiles] = await Promise.all([
-    readProfileSyncManifest(destDir),
+    readProfileSyncManifest(target),
     collectSourceFiles(profileSourceDir),
   ])
   const previousFiles = previousManifest?.profileId === profileId
     ? previousManifest.files
     : {}
 
-  await fs.promises.mkdir(destDir, { recursive: true })
   const entries = Object.entries(sourceFiles)
   await forEachConcurrent(entries, COPY_CONCURRENCY, async ([relativePath, fingerprint]) => {
-    const destinationPath = path.join(destDir, relativePath)
     const unchanged = fingerprintsEqual(previousFiles[relativePath], fingerprint)
-    if (unchanged && await isRegularFile(destinationPath)) {
+    if (unchanged && await target.hasFile(relativePath)) {
       return
     }
-    await copyProfileFile(path.join(profileSourceDir, relativePath), destinationPath)
+    await target.copyFile(path.join(profileSourceDir, relativePath), relativePath)
   })
 
   const nextManifest: ProfileSyncManifest = {
@@ -119,20 +145,52 @@ export async function copyChromeProfileData(profileId: string, destDir: string):
     files: sourceFiles,
   }
   if (!manifestsEqual(previousManifest, nextManifest)) {
-    await writeFileAtomic(
-      path.join(destDir, PROFILE_SYNC_MANIFEST),
-      JSON.stringify(nextManifest),
-      { mode: 0o600 },
-    )
+    await target.writeManifest(JSON.stringify(nextManifest))
   }
 
   return true
+}
+
+/** A sync destination that is a directory on this machine. */
+export function hostDirectoryDestination(destDir: string): ProfileSyncDestination {
+  return {
+    readManifest: async () => {
+      try {
+        return await fs.promises.readFile(path.join(destDir, PROFILE_SYNC_MANIFEST), 'utf8')
+      } catch (error) {
+        if (isNotFound(error)) return null
+        throw error
+      }
+    },
+    writeManifest: async (text) => {
+      await fs.promises.mkdir(destDir, { recursive: true })
+      await writeFileAtomic(path.join(destDir, PROFILE_SYNC_MANIFEST), text, { mode: 0o600 })
+    },
+    hasFile: async (relativePath) => {
+      try {
+        return (await fs.promises.stat(path.join(destDir, ...relativePath.split('/')))).isFile()
+      } catch (error) {
+        if (isNotFound(error)) return false
+        throw error
+      }
+    },
+    copyFile: async (sourcePath, relativePath) => {
+      const destinationPath = path.join(destDir, ...relativePath.split('/'))
+      await fs.promises.mkdir(path.dirname(destinationPath), { recursive: true })
+      try {
+        await fs.promises.copyFile(sourcePath, destinationPath)
+      } catch (error) {
+        if (!isNotFound(error)) throw error
+      }
+    },
+  }
 }
 
 function isNotFound(error: unknown): boolean {
   return (error as NodeJS.ErrnoException).code === 'ENOENT'
 }
 
+/** Relative paths of the source files, in posix form so a destination of any kind can take them. */
 async function collectSourceFiles(
   profileSourceDir: string,
 ): Promise<Record<string, ProfileFileFingerprint>> {
@@ -161,7 +219,7 @@ async function collectDirectoryPaths(
   }
 
   await Promise.all(entries.map(async (entry) => {
-    const relativePath = path.join(relativeDir, entry.name)
+    const relativePath = `${relativeDir}/${entry.name}`
     if (entry.isDirectory()) {
       await collectDirectoryPaths(profileSourceDir, relativePath, relativePaths)
     } else if (entry.isFile()) {
@@ -190,14 +248,9 @@ async function collectFile(
 
 // The manifest is advisory: any unreadable or invalid state resolves to null
 // so the sync falls back to a full re-seed instead of trusting stale data.
-async function readProfileSyncManifest(destDir: string): Promise<ProfileSyncManifest | null> {
-  let raw: string
-  try {
-    raw = await fs.promises.readFile(path.join(destDir, PROFILE_SYNC_MANIFEST), 'utf8')
-  } catch (error) {
-    if (isNotFound(error)) return null
-    throw error
-  }
+async function readProfileSyncManifest(destination: ProfileSyncDestination): Promise<ProfileSyncManifest | null> {
+  const raw = await destination.readManifest()
+  if (raw === null) return null
   let parsed: unknown
   try {
     parsed = JSON.parse(raw)
@@ -208,33 +261,12 @@ async function readProfileSyncManifest(destDir: string): Promise<ProfileSyncMani
   return result.success ? result.data : null
 }
 
-async function isRegularFile(filePath: string): Promise<boolean> {
-  try {
-    return (await fs.promises.stat(filePath)).isFile()
-  } catch (error) {
-    if (isNotFound(error)) return false
-    throw error
-  }
-}
-
-async function copyProfileFile(sourcePath: string, destinationPath: string): Promise<void> {
-  await fs.promises.mkdir(path.dirname(destinationPath), { recursive: true })
-  try {
-    await fs.promises.copyFile(sourcePath, destinationPath)
-  } catch (error) {
-    // A running Chrome deletes transient files (SQLite hot journals, leveldb
-    // tables) at any time, so a source that vanished after fingerprinting must
-    // not fail the sync — and with it the agent start. The next run's source
-    // scan simply won't include the file.
-    if (!isNotFound(error)) throw error
-  }
-}
-
 function fingerprintsEqual(
   left: ProfileFileFingerprint | undefined,
   right: ProfileFileFingerprint,
 ): boolean {
-  return left?.size === right.size
+  return left !== undefined
+    && left.size === right.size
     && left.mtimeMs === right.mtimeMs
     && left.ctimeMs === right.ctimeMs
 }
@@ -243,24 +275,24 @@ function manifestsEqual(
   left: ProfileSyncManifest | null,
   right: ProfileSyncManifest,
 ): boolean {
-  if (!left || left.profileId !== right.profileId) return false
-  const leftPaths = Object.keys(left.files)
-  const rightPaths = Object.keys(right.files)
-  return leftPaths.length === rightPaths.length
-    && rightPaths.every((relativePath) => fingerprintsEqual(left.files[relativePath], right.files[relativePath]))
+  if (!left || left.version !== right.version || left.profileId !== right.profileId) return false
+  const leftEntries = Object.entries(left.files)
+  const rightEntries = Object.entries(right.files)
+  if (leftEntries.length !== rightEntries.length) return false
+  return rightEntries.every(([relativePath, fingerprint]) => fingerprintsEqual(left.files[relativePath], fingerprint))
 }
 
 async function forEachConcurrent<T>(
-  values: T[],
+  items: readonly T[],
   concurrency: number,
-  work: (value: T) => Promise<void>,
+  worker: (item: T) => Promise<void>,
 ): Promise<void> {
-  let nextIndex = 0
-  const workers = Array.from({ length: Math.min(concurrency, values.length) }, async () => {
-    while (nextIndex < values.length) {
-      const value = values[nextIndex++]
-      await work(value)
+  let next = 0
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (next < items.length) {
+      const item = items[next++]
+      await worker(item)
     }
   })
-  await Promise.all(workers)
+  await Promise.all(runners)
 }

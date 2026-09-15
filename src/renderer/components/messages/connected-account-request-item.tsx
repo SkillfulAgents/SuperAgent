@@ -1,5 +1,7 @@
 import { apiFetch } from '@renderer/lib/api'
 import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
+import { warnIfLiveRefreshFailed } from '@renderer/lib/connection-live-refresh'
+import { useQueryClient } from '@tanstack/react-query'
 import { formatDistanceToNow } from 'date-fns'
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
@@ -50,11 +52,15 @@ interface ConnectedAccountRequestItemProps {
   toolUseId: string
   toolkit: string
   reason?: string
-  sessionId: string
   agentSlug: string
   readOnly?: boolean
   onComplete: () => void
 }
+
+type ConnectedAccountRequestProps = ConnectedAccountRequestItemProps & (
+  | { sessionId: string; replacement?: never }
+  | { sessionId?: string; replacement: { requestId: string; onCancel: () => void } }
+)
 
 type RequestStatus = 'pending' | 'submitting' | 'provided' | 'declined' | 'connecting'
 
@@ -66,7 +72,9 @@ export function ConnectedAccountRequestItem({
   agentSlug,
   readOnly,
   onComplete,
-}: ConnectedAccountRequestItemProps) {
+  replacement,
+}: ConnectedAccountRequestProps) {
+  const queryClient = useQueryClient()
   const [selectedAccountIds, setSelectedAccountIds] = useState<Set<string>>(new Set())
   const [status, setStatus] = useState<RequestStatus>('pending')
   const [error, setError] = useState<string | null>(null)
@@ -117,14 +125,14 @@ export function ConnectedAccountRequestItem({
           let detectedNewAccountId = newAccountId
           if (newAccountId) {
             // We have the new account ID directly
-            setSelectedAccountIds((prev) => new Set(prev).add(newAccountId))
+            setSelectedAccountIds((prev) => new Set(replacement ? [] : prev).add(newAccountId))
           } else if (result.data?.accounts) {
             // Find the new account by comparing with accounts before OAuth
             const newAccount = result.data.accounts.find(
               (acc) => !accountIdsBeforeOAuth.current.has(acc.id)
             )
             if (newAccount) {
-              setSelectedAccountIds((prev) => new Set(prev).add(newAccount.id))
+              setSelectedAccountIds((prev) => new Set(replacement ? [] : prev).add(newAccount.id))
               detectedNewAccountId = newAccount.id
             }
           }
@@ -193,7 +201,7 @@ export function ConnectedAccountRequestItem({
 
     window.addEventListener('message', handleMessage)
     return () => window.removeEventListener('message', handleMessage)
-  }, [invalidateConnectedAccounts, refetch, toolkit])
+  }, [invalidateConnectedAccounts, refetch, toolkit, replacement])
 
   const toggleAccount = useCallback((accountId: string) => {
     const account = accounts.find((a) => a.id === accountId)
@@ -203,11 +211,12 @@ export function ConnectedAccountRequestItem({
       if (next.has(accountId)) {
         next.delete(accountId)
       } else {
+        if (replacement) next.clear()
         next.add(accountId)
       }
       return next
     })
-  }, [accounts])
+  }, [accounts, replacement])
 
   const handleConnectNew = async () => {
     setStatus('connecting')
@@ -251,7 +260,9 @@ export function ConnectedAccountRequestItem({
 
     try {
       const response = await apiFetch(
-        `/api/agents/${agentSlug}/sessions/${sessionId}/provide-connected-account`,
+        replacement
+          ? `/api/agents/${agentSlug}/reauth-request/${replacement.requestId}/replace-account`
+          : `/api/agents/${agentSlug}/sessions/${sessionId}/provide-connected-account`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -268,6 +279,12 @@ export function ConnectedAccountRequestItem({
         throw new Error(data.error || 'Failed to provide access')
       }
 
+      if (replacement) {
+        warnIfLiveRefreshFailed(await response.json().catch(() => ({})))
+        queryClient.invalidateQueries({ queryKey: ['agent-connected-accounts'] })
+        queryClient.invalidateQueries({ queryKey: ['account-agents'] })
+        queryClient.invalidateQueries({ queryKey: ['pending-user-requests'] })
+      }
       setStatus('provided')
       onComplete()
     } catch (err: unknown) {
@@ -277,6 +294,10 @@ export function ConnectedAccountRequestItem({
   }
 
   const handleDecline = async (reason?: string) => {
+    if (replacement) {
+      replacement.onCancel()
+      return
+    }
     setStatus('submitting')
     setError(null)
 
@@ -357,7 +378,9 @@ export function ConnectedAccountRequestItem({
   return (
     <RequestItemShell
       title={reason || `Connect to ${provider?.displayName || toolkit}`}
-      subtitle="Selected accounts will be linked to this agent for future use."
+      subtitle={replacement
+        ? 'Choose or connect an account you own. This replaces the connection for this agent. Active sessions will be interrupted and told to use the new account.'
+        : 'Selected accounts will be linked to this agent for future use.'}
       theme="blue"
       sessionId={sessionId}
       agentSlug={agentSlug}
@@ -467,13 +490,19 @@ export function ConnectedAccountRequestItem({
       {/* Action buttons when accounts exist */}
       {accounts.length > 0 && (
         <RequestItemActions>
-          <DeclineButton
-            onDecline={handleDecline}
-            disabled={status !== 'pending'}
-            label="Deny"
-            showIcon={false}
-            className="border-border text-foreground hover:bg-muted"
-          />
+          {replacement ? (
+            <Button size="xs" variant="outline" onClick={replacement.onCancel} disabled={status === 'submitting'}>
+              Cancel
+            </Button>
+          ) : (
+            <DeclineButton
+              onDecline={handleDecline}
+              disabled={status !== 'pending'}
+              label="Deny"
+              showIcon={false}
+              className="border-border text-foreground hover:bg-muted"
+            />
+          )}
 
           <Button
             onClick={handleProvide}
@@ -482,7 +511,7 @@ export function ConnectedAccountRequestItem({
             size="xs"
             className="min-w-24 bg-blue-600 text-white hover:bg-blue-700"
           >
-            Allow Access{selectedAccountIds.size > 0 ? ` (${selectedAccountIds.size})` : ''}
+            {replacement ? 'Replace connection' : `Allow Access${selectedAccountIds.size > 0 ? ` (${selectedAccountIds.size})` : ''}`}
           </Button>
         </RequestItemActions>
       )}
@@ -490,13 +519,19 @@ export function ConnectedAccountRequestItem({
       {/* Action buttons when no accounts */}
       {accounts.length === 0 && (
         <RequestItemActions>
-          <DeclineButton
-            onDecline={handleDecline}
-            disabled={status !== 'pending' && status !== 'connecting'}
-            label="Deny"
-            showIcon={false}
-            className="border-border text-foreground hover:bg-muted"
-          />
+          {replacement ? (
+            <Button size="xs" variant="outline" onClick={replacement.onCancel} disabled={status === 'submitting'}>
+              Cancel
+            </Button>
+          ) : (
+            <DeclineButton
+              onDecline={handleDecline}
+              disabled={status !== 'pending' && status !== 'connecting'}
+              label="Deny"
+              showIcon={false}
+              className="border-border text-foreground hover:bg-muted"
+            />
+          )}
         </RequestItemActions>
       )}
 

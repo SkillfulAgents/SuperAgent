@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   },
   agentStatus: 'running' as 'running' | 'stopped',
   invokedByAgentSlug: undefined as string | undefined,
+  isWidgetRepair: false,
   sessionIsActive: true,
 }))
 
@@ -48,6 +49,7 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
       name: 'Test Session',
       agentSlug: 'test-agent',
       invokedByAgentSlug: mocks.invokedByAgentSlug,
+      isWidgetRepair: mocks.isWidgetRepair,
       isActive: mocks.sessionIsActive,
     },
   }),
@@ -140,6 +142,7 @@ describe('AgentHeader breadcrumbs', () => {
     mocks.routeView = { kind: 'session', id: 'session-1' }
     mocks.agentStatus = 'running'
     mocks.invokedByAgentSlug = undefined
+    mocks.isWidgetRepair = false
     mocks.sessionIsActive = true
     vi.clearAllMocks()
   })
@@ -218,6 +221,21 @@ describe('AgentHeader breadcrumbs', () => {
     expect(parentCrumb).toHaveTextContent('Called from Other Agents')
     expect(trail).toContainElement(parentCrumb)
     expect(trail).toContainElement(screen.getByTestId('session-breadcrumb'))
+  })
+
+  it('uses the inbound history breadcrumb for widget repairs without a caller agent', () => {
+    mocks.isWidgetRepair = true
+    const mutation = { mutate: vi.fn(), isPending: false }
+    render(
+      <AgentHeader
+        slug="test-agent"
+        isViewOnly={false}
+        startAgent={mutation as never}
+        stopAgent={mutation as never}
+      />,
+    )
+
+    expect(screen.getByTestId('inbound-x-agent-breadcrumb')).toHaveTextContent('Called from Other Agents')
   })
 
   it('clips and hover-scrolls the complete breadcrumb trail as one unit', () => {

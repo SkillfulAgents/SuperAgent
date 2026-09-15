@@ -39,6 +39,7 @@ export interface TransformedMessage {
   }>
   createdAt: Date
   sender?: {
+    image?: string | null
     id: string
     name: string
     email: string

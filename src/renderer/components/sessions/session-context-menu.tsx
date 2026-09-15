@@ -114,14 +114,8 @@ export function SessionContextMenu({
     }
   }
 
-  const handleFork = async () => {
-    try {
-      const fork = await forkSession.mutateAsync({ sessionId, agentSlug })
-      void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agentSlug, sessionId: fork.id } })
-    } catch (error) {
-      console.error('Failed to fork session:', error)
-    }
-  }
+  // The hook opens the copy and logs its own failures; `mutate` settles without throwing.
+  const handleFork = () => forkSession.mutate({ sessionId, agentSlug })
 
   const handleRename = async () => {
     const trimmed = newName.trim()

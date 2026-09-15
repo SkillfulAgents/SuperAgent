@@ -1,10 +1,12 @@
 import { useEffect, useRef } from 'react'
 
-type McpOAuthResult = { success: boolean; error?: string }
+type McpOAuthResult = { success: boolean; error?: string; mcpId?: string; state?: string }
 type McpOAuthCallbackMessage = {
   type?: unknown
   success?: unknown
   error?: unknown
+  mcpId?: unknown
+  state?: unknown
 }
 
 const MCP_OAUTH_CALLBACK_CHANNEL = 'mcp-oauth-callback'
@@ -19,6 +21,8 @@ function parseMcpOAuthResult(data: unknown): McpOAuthResult | null {
   return {
     success: !!message.success,
     error: typeof message.error === 'string' ? message.error : undefined,
+    ...(typeof message.state === 'string' && message.state ? { state: message.state } : {}),
+    ...(typeof message.mcpId === 'string' && message.mcpId ? { mcpId: message.mcpId } : {}),
   }
 }
 
@@ -28,7 +32,7 @@ function parseMcpOAuthResult(data: unknown): McpOAuthResult | null {
  * and sever `window.opener`, so web mode listens on postMessage, BroadcastChannel,
  * and localStorage's cross-window storage event.
  */
-export function useMcpOAuthListener(active: boolean, onComplete: (result: McpOAuthResult) => void): void {
+export function useMcpOAuthListener(active: boolean, onComplete: (result: McpOAuthResult) => void, expectedState?: string): void {
   const callbackRef = useRef(onComplete)
   callbackRef.current = onComplete
 
@@ -39,6 +43,9 @@ export function useMcpOAuthListener(active: boolean, onComplete: (result: McpOAu
     const completeOnce = (data: unknown) => {
       const result = parseMcpOAuthResult(data)
       if (!result || completed) return
+      // Other tabs use the same transports. Ignore their callbacks without
+      // consuming this listener, including failures and callbacks without state.
+      if (expectedState !== undefined && result.state !== expectedState) return
 
       completed = true
       callbackRef.current(result)
@@ -76,6 +83,8 @@ export function useMcpOAuthListener(active: boolean, onComplete: (result: McpOAu
           type: 'mcp-oauth-callback',
           success: params.success,
           error: params.error ?? undefined,
+          mcpId: params.mcpId,
+          state: params.state,
         })
       })
     }
@@ -86,5 +95,5 @@ export function useMcpOAuthListener(active: boolean, onComplete: (result: McpOAu
       broadcastChannel?.close()
       unsubscribe?.()
     }
-  }, [active])
+  }, [active, expectedState])
 }

@@ -12,11 +12,21 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
 const mockSendMessage = vi.fn()
 const mockEnsureRunning = vi.fn()
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    ensureRunning: (...args: unknown[]) => mockEnsureRunning(...args),
-  },
-}))
+// The actor reaches the container client through getClient after start();
+// hand back whatever ensureRunning last resolved to.
+let mockClient: unknown
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      ensureRunning: async (...args: unknown[]) => {
+        mockClient = await mockEnsureRunning(...args)
+        return mockClient
+      },
+      getClient: () => mockClient,
+    }),
+  }
+})
 
 const mockSubscribeToSession = vi.fn()
 const mockMarkSessionActive = vi.fn()
@@ -28,6 +38,11 @@ const mockBroadcastSessionUpdate = vi.fn()
 
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
+    withSessionSend: async (agentSlug: string, sessionId: string, _client: unknown, send: () => Promise<unknown>) => {
+      mockMarkSessionActive(agentSlug, sessionId)
+      try { return await send() }
+      catch (error) { mockMarkSessionIdle(agentSlug, sessionId); throw error }
+    },
     subscribeToSession: (...args: unknown[]) => mockSubscribeToSession(...args),
     markSessionActive: (...args: unknown[]) => mockMarkSessionActive(...args),
     markSessionIdle: (...args: unknown[]) => mockMarkSessionIdle(...args),

@@ -106,8 +106,10 @@ const FolderHeader = React.memo(function FolderHeader({
   onDelete: () => void
 }) {
   // Styled like a section label rather than as a row of the list: small muted
-  // text, no icon. The member count sits at the right and yields to the
-  // expand/collapse chevron on hover.
+  // text, no icon. The member count sits at the right only while the folder is
+  // collapsed — the rows themselves say how many there are once it is open —
+  // and yields to the expand/collapse chevron on hover. The slot keeps its
+  // size either way so the chevron lands in the same spot.
   const header = (
         <SidebarMenuButton
           onClick={onToggle}
@@ -120,12 +122,14 @@ const FolderHeader = React.memo(function FolderHeader({
         >
           <span className="truncate">{folder.name}</span>
           <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
-            <span
-              className="text-[11px] tabular-nums text-muted-foreground/70 group-hover/folder-header:hidden"
-              data-testid={`agent-folder-count-${folder.id}`}
-            >
-              {agentCount}
-            </span>
+            {isCollapsed && (
+              <span
+                className="text-[11px] tabular-nums text-muted-foreground/70 group-hover/folder-header:hidden"
+                data-testid={`agent-folder-count-${folder.id}`}
+              >
+                {agentCount}
+              </span>
+            )}
             <ChevronRight
               aria-hidden
               data-testid={`agent-folder-chevron-${folder.id}`}

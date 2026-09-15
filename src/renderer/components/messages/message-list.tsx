@@ -1,3 +1,4 @@
+import { UserAvatar } from '@renderer/components/ui/user-avatar'
 
 import { useMessages, useDeleteMessage, useDeleteToolCall, useCancelQueuedMessage, TranscriptNotFoundError } from '@renderer/hooks/use-messages'
 import { useAgent } from '@renderer/hooks/use-agents'
@@ -426,11 +427,19 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     return () => clearTimeout(timerId)
   }, [pendingUserMessages, peerUserMessages, isActive, onPendingMessageAppeared, sessionId, draftsStore])
 
-  // Visible messages with system-injected entries filtered out (these must not
-  // consume window slots, and the windowing operates on what the user can see).
+  // Hidden system messages and redundant interrupt markers must not consume
+  // window slots: windowing operates on what the user can see.
   const visibleMessages = useMemo(() => {
     if (!messages) return []
-    return messages.filter((item) => !classifyUserMessage(item).hidden)
+    const visible = messages.filter((item) => !classifyUserMessage(item).hidden)
+    // The replacement notice explains its preceding interrupt. Keep the raw
+    // transcript intact for turn bookkeeping; only omit the redundant badge
+    // from display, before windowing. Other user stops remain visible.
+    return visible.filter((item, index) => !(
+      classifyUserMessage(item).kind === 'interrupt' &&
+      visible[index + 1] &&
+      classifyUserMessage(visible[index + 1]).kind === 'connection-replacement'
+    ))
   }, [messages])
 
   // Time flags are derived from all loaded history rather than the trailing DOM
@@ -454,7 +463,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       if (
         item.type !== 'user' ||
         item.queued ||
-        classifyUserMessage(item).kind === 'interrupt'
+        classifyUserMessage(item).kind === 'interrupt' ||
+        classifyUserMessage(item).kind === 'connection-replacement'
       ) continue
 
       const createdAt = new Date(item.createdAt)
@@ -1008,7 +1018,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     text: string
     sentAt: number
     queued?: boolean
-    sender?: { id: string; name: string; email: string }
+    sender?: { id: string; name: string; email: string; image?: string | null }
     testId?: string
     /** Set for own queued ghosts once the server uuid is known — enables Cancel. */
     onCancel?: () => void
@@ -1078,7 +1088,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       sentAt: peer.receivedAt,
       queued: peer.queued,
       sender: peer.sender.name
-        ? { id: peer.sender.id, name: peer.sender.name, email: peer.sender.email || '' }
+        ? { id: peer.sender.id, name: peer.sender.name, email: peer.sender.email || '', image: peer.sender.image }
         : undefined,
     })
 
@@ -1298,11 +1308,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
             message from suppressing a real peer's indicator. */}
         {typingUser && typingUser.id !== user?.id && visiblePeerMessages.length === 0 && (
           <div data-testid="typing-indicator" className="flex gap-3 flex-row-reverse">
-            <div className="h-8 w-8 rounded-full items-center justify-center shrink-0 hidden md:flex bg-primary text-primary-foreground">
-              <span className="text-xs font-medium">
-                {typingUser.name?.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2) || '?'}
-              </span>
-            </div>
+            <UserAvatar user={typingUser} size={32} className="hidden md:inline-flex" />
             <div className="rounded-lg px-4 py-2 bg-primary text-primary-foreground">
               <span className="animate-pulse tracking-widest">...</span>
             </div>

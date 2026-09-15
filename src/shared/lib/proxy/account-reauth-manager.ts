@@ -1,8 +1,9 @@
 import crypto from 'crypto'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import type { PendingUserInputRequest } from '@shared/lib/user-input/request-schema'
 import { ReauthDismissedError, reauthDismissedMessage } from './reauth-dismissal'
+import { AccountReplacedError } from './account-replacement'
 
 export const ACCOUNT_REAUTH_TIMEOUT_MS = 5 * 60 * 1000
 
@@ -80,7 +81,7 @@ export class AccountReauthManager {
       if (action.type === 'resolve') waiter.resolve()
       else waiter.reject(action.error)
     }
-    messagePersister.syncAgentSessionsAwaiting(group.agentSlug)
+    agentRegistry.get(group.agentSlug).sessions.syncAwaiting()
     return waiters.length
   }
 
@@ -106,7 +107,7 @@ export class AccountReauthManager {
     if (entry && AccountReauthManager.isAccountReauthEntry(entry)) {
       userInputRequestManager.resolve(entry.id, outcome)
     }
-    messagePersister.syncAgentSessionsAwaiting(group.agentSlug)
+    agentRegistry.get(group.agentSlug).sessions.syncAwaiting()
   }
 
   requestReauth(details: AccountReauthDetails, signal?: AbortSignal): Promise<void> {
@@ -204,7 +205,7 @@ export class AccountReauthManager {
         return
       }
 
-      messagePersister.syncAgentSessionsAwaiting(details.agentSlug)
+      agentRegistry.get(details.agentSlug).sessions.syncAwaiting()
     })
   }
 
@@ -226,6 +227,17 @@ export class AccountReauthManager {
         reauthDismissedMessage('Account re-authentication', reason),
         reason,
       ),
+    })
+    return true
+  }
+
+  /** Release only this agent's calls; other agents still use the old account. */
+  replaceAccount(entryId: string, agentSlug: string, replacementAccountId: string): boolean {
+    const group = this.groups.get(entryId)
+    if (!group || group.agentSlug !== agentSlug) return false
+    this.settleGroup(group, 'answered', {
+      type: 'reject',
+      error: new AccountReplacedError(replacementAccountId),
     })
     return true
   }

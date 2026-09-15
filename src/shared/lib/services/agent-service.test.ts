@@ -8,7 +8,7 @@ import {
   SAMPLE_CLAUDE_MD_NO_FRONTMATTER,
 } from './__fixtures__/test-data'
 
-// Mock containerManager before importing the service
+// Mock the container host before importing the service
 // Use vi.hoisted to ensure mock variables are available when vi.mock is hoisted
 const { mockGetCachedInfo, mockStopContainer, mockGetClient, mockGetPendingReviewsForAgent } = vi.hoisted(() => {
   const mockGetCachedInfo = vi.fn((): { status: string; port: number | null } => ({ status: 'stopped', port: null }))
@@ -21,14 +21,19 @@ const { mockGetCachedInfo, mockStopContainer, mockGetClient, mockGetPendingRevie
   return { mockGetCachedInfo, mockStopContainer, mockGetClient, mockGetPendingReviewsForAgent }
 })
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    getClient: mockGetClient,
-    getCachedInfo: mockGetCachedInfo,
-    stopContainer: mockStopContainer,
-    getHealthWarnings: vi.fn(() => []),
-  },
-}))
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      getClient: mockGetClient,
+      getCachedInfo: mockGetCachedInfo,
+      stopContainer: mockStopContainer,
+      getHealthWarnings: vi.fn(() => []),
+      // deleteAgent evicts the handle once the agent is gone (dropRuntime).
+      removeClient: vi.fn(),
+    }),
+  }
+})
 
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: {
@@ -128,9 +133,11 @@ describe('agent-service', () => {
 
     it('still surfaces a real read error on an existing agent directory', async () => {
       // CLAUDE.md is a directory: the agent exists, its config is unreadable.
+      // The workspace layer reports EISDIR as its own `not-a-file` error; what
+      // matters here is that it propagates instead of reading as "no agent".
       await fs.promises.mkdir(path.join(testDir, 'agents', 'broken', 'workspace', 'CLAUDE.md'), { recursive: true })
 
-      await expect(getAgent('broken')).rejects.toMatchObject({ code: 'EISDIR' })
+      await expect(getAgent('broken')).rejects.toMatchObject({ name: 'WorkspaceFileError', code: 'not-a-file' })
     })
 
     it('returns agent config for existing agent', async () => {

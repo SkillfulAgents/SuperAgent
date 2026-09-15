@@ -124,7 +124,7 @@ describe('HomeTriggers activity charts', () => {
     })).toBeInTheDocument()
     expect(screen.getByText('Called from Other Agents')).toBeInTheDocument()
     expect(screen.getByRole('img', {
-      name: 'Calls from other agents: 2 calls over 2 days, 2 succeeded and 0 failed.',
+      name: 'Invocations: 2 calls over 2 days, 2 succeeded and 0 failed.',
     })).toBeInTheDocument()
   })
 

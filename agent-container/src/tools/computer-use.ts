@@ -309,11 +309,12 @@ export const computerRunTool = tool(
   `Run an arbitrary agent-computer (ac) command. Use this for advanced operations not covered by the specific tools above. The command is the ac method name and args is a JSON object of parameters.
 
 Examples:
-- method: "read", args: { ref: "@t1" } — read an element's value
-- method: "hover", args: { ref: "@b1" } — hover over an element
-- method: "drag", args: { from: "@b1", to: "@b2" } — drag between elements
-- method: "wait", args: { ms: 2000 } — wait 2 seconds
-- method: "clipboard", args: {} — read clipboard contents`,
+- command: "read", args: { ref: "@t1" } — read an element's value
+- command: "hover", args: { ref: "@b1" } — hover over an element
+- command: "drag", args: { from: "@b1", to: "@b2" } — drag between elements
+- command: "wait", args: { text: "Done", timeout: 5000 } — wait until text appears
+- command: "clipboard_read", args: {} — read clipboard contents
+- command: "clipboard_set", args: { text: "hello" } — set clipboard contents`,
   {
     command: z.string().describe('The ac method name to execute'),
     args: z.record(z.string(), z.unknown()).optional().describe('Arguments to pass to the method'),

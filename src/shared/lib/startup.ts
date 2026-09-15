@@ -1,6 +1,6 @@
 import type { ServerType } from '@hono/node-server'
 import pLimit from 'p-limit'
-import { containerManager } from './container/container-manager'
+import { containerHost } from './agent-actor'
 import { shutdownActiveRunner } from './container/client-factory'
 import { reviewManager } from './proxy/review-manager'
 import { accountReauthManager } from './proxy/account-reauth-manager'
@@ -8,7 +8,7 @@ import { mcpReauthManager } from './proxy/mcp-reauth-manager'
 import { taskScheduler } from './scheduler/task-scheduler'
 import { triggerManager } from './scheduler/trigger-manager'
 import { platformNotificationsManager } from './scheduler/platform-notifications-manager'
-import { chatIntegrationManager } from './chat-integrations/chat-integration-manager'
+import { agentIntegrationManager } from './agent-integrations/agent-integration-manager'
 import { captureException } from './error-reporting'
 import { registerAllAccountProviders } from './account-providers/register'
 import { autoSleepMonitor } from './scheduler/auto-sleep-monitor'
@@ -19,7 +19,6 @@ import { platformService } from './services/platform-service'
 import { getActiveProvider, stopAllProviders } from '../../main/host-browser'
 import { startBrowserProfileCleanup, stopBrowserProfileCleanup } from '../../main/host-browser/profile-maintenance'
 import { listAgents } from './services/agent-service'
-import { removeLegacySessionOwnershipIndex } from './services/session-service'
 import { isAuthMode } from './auth/mode'
 import { clearPendingApprovalBans } from './auth/clear-pending-approval-bans'
 import { validateAuthModeStartup } from './auth/startup-validation'
@@ -125,16 +124,6 @@ async function initializeServicesInner() {
   // Initialize server-side analytics version
   setServerAnalyticsVersion(APP_VERSION)
 
-  // One-time removal of the legacy session-ownership index. This build derives
-  // ownership structurally, so the file is dead here — but leaving it would
-  // strand every new session's ownership on a rollback to a build that reads
-  // it. Deleting it lets that older build re-run its discovery migration.
-  try {
-    await removeLegacySessionOwnershipIndex()
-  } catch (error) {
-    captureException(error, { tags: { component: 'startup', operation: 'remove-legacy-ownership-index' } })
-  }
-
   // Register account providers (Composio, Nango if configured)
   registerAllAccountProviders()
 
@@ -174,7 +163,7 @@ async function initializeServicesInner() {
   ])
   markBoot('dbReady')
   const slugs = agents.map((a) => a.slug)
-  await containerManager.initializeAgents(slugs)
+  await containerHost.initializeAgents(slugs)
 
   // Reclaim host-browser profile storage (orphaned/legacy dirs, regenerable
   // Chrome caches). Scheduled a few minutes out so it doesn't pile onto the
@@ -185,7 +174,7 @@ async function initializeServicesInner() {
 
   // Stop the host browser for an agent before its container is torn down,
   // so the browser closes gracefully instead of getting a "socket hang up".
-  containerManager.onBeforeContainerStop = async (agentId) => {
+  containerHost.onBeforeContainerStop = async (agentId) => {
     const provider = getActiveProvider()
     if (provider?.isRunning(agentId)) {
       await provider.stop(agentId)
@@ -210,24 +199,24 @@ async function initializeServicesInner() {
     console.error('Failed to start platform notifications manager:', error)
   })
 
-  // Start chat integration manager
+  // Start agent integration manager
   scheduleStartupIo(
-    () => chatIntegrationManager.start(),
-    () => chatIntegrationManager.stop(),
+    () => agentIntegrationManager.start(),
+    () => agentIntegrationManager.stop(),
   ).catch((error) => {
-    console.error('Failed to start chat integration manager:', error)
+    console.error('Failed to start agent integration manager:', error)
     // TODO add exception capturing for all other services that start in this file
     captureException(error, { tags: { component: 'chat-integration', operation: 'startup' } })
   })
 
   // Check/pull container image (non-blocking, bounded with other startup I/O)
-  scheduleStartupIo(() => containerManager.ensureImageReady()).catch((error) => {
+  scheduleStartupIo(() => containerHost.ensureImageReady()).catch((error) => {
     console.error('Failed to ensure image ready:', error)
   })
 
   // Start container status sync and health monitor
-  containerManager.startStatusSync()
-  containerManager.startHealthMonitor()
+  containerHost.startStatusSync()
+  containerHost.startHealthMonitor()
 
   // Start task scheduler
   scheduleStartupIo(
@@ -296,7 +285,7 @@ export async function shutdownServices() {
   accountReauthManager.rejectAll()
   mcpReauthManager.rejectAll()
   stopBrowserProfileCleanup()
-  chatIntegrationManager.stop()
+  agentIntegrationManager.stop()
   await credentialBroker.shutdown()
   await stopAllProviders()
   taskScheduler.stop()
@@ -307,9 +296,9 @@ export async function shutdownServices() {
   apiLogAutoDeleteMonitor.stop()
   accountSyncService.stop()
   platformService.stop()
-  containerManager.stopStatusSync()
-  containerManager.stopHealthMonitor()
-  await containerManager.stopAll()
+  containerHost.stopStatusSync()
+  containerHost.stopHealthMonitor()
+  await containerHost.stopAll()
   await shutdownActiveRunner()
   await shutdownAC()
 }

@@ -212,6 +212,19 @@ describe('finalizeAutomationStatus guards', () => {
     expect((await getSessionMetadata('agent', 'cron-run'))?.automationStatus).toBe('succeeded')
   })
 
+  it('finalizes a widget-repair session, so the in-flight guard can clear', async () => {
+    const { registerSession, finalizeAutomationStatus, getSessionMetadata } = await importService()
+    makeAgent('agent')
+    await registerSession('agent', 'repair', 'Fix widget: macros', {
+      isWidgetRepair: true,
+      widgetRepairSlug: 'macros',
+      automationStatus: 'running',
+    })
+
+    expect(await finalizeAutomationStatus('agent', 'repair', 'succeeded')).toBe('updated')
+    expect((await getSessionMetadata('agent', 'repair'))?.automationStatus).toBe('succeeded')
+  })
+
   it('reports not-automation for a regular session and leaves it untouched', async () => {
     const { registerSession, finalizeAutomationStatus, getSessionMetadata } = await importService()
     makeAgent('agent')

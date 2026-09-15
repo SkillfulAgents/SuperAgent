@@ -324,16 +324,21 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
   }, [track])
   const exitVoiceMode = useCallback(() => setVoiceModeOn(false), [])
   const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const trackRef = useRef(track)
+  trackRef.current = track
   // Leaving voice mode — by the exit button or by navigating away from the
   // session — tells the agent. Deferred a tick so a development-mode
   // remount does not send it for a mode that is still on.
   useEffect(() => {
     if (!voiceModeOn) return
     return () => {
-      const timer = setTimeout(() => sendNoticeRef.current(VOICE_MODE_EXITED_MESSAGE), 0)
+      const timer = setTimeout(() => {
+        sendNoticeRef.current(VOICE_MODE_EXITED_MESSAGE)
+        trackRef.current('voice_mode_exited', { origin: openedByVoice ? 'home' : 'session' })
+      }, 0)
       exitTimerRef.current = timer
     }
-  }, [voiceModeOn])
+  }, [voiceModeOn, openedByVoice])
   useEffect(() => {
     if (!voiceModeOn || exitTimerRef.current === null) return
     clearTimeout(exitTimerRef.current)

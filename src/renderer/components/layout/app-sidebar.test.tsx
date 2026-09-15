@@ -12,7 +12,7 @@ if (typeof localStorage === 'undefined' || !localStorage) {
   Object.defineProperty(globalThis, 'localStorage', { value: stub, configurable: true })
 }
 import { cloneElement, isValidElement, type ReactElement } from 'react'
-import { act, fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { pointerWithin } from '@dnd-kit/core'
 import { AppSidebar } from './app-sidebar'
@@ -73,6 +73,11 @@ vi.mock('@renderer/hooks/use-create-untitled-agent', () => ({
     createUntitledAgent: mockCreateUntitledAgent,
     isPending: false,
   }),
+}))
+
+const mockUseAgentMembers = vi.fn()
+vi.mock('@renderer/hooks/use-agent-members', () => ({
+  useAgentMembers: (...args: unknown[]) => mockUseAgentMembers(...args),
 }))
 
 const mockUseSessions = vi.fn()
@@ -169,7 +174,7 @@ const mockUserContext = {
   isAdmin: true,
   user: null,
   signOut: vi.fn(),
-  agentMemberCount: () => 1,
+  agentMemberCount: vi.fn((_slug: string) => 1),
 }
 vi.mock('@renderer/context/user-context', () => ({
   useUser: () => mockUserContext,
@@ -432,6 +437,10 @@ beforeEach(() => {
     data: slug === 'test-agent' ? [makeSession()] : [],
     isLoading: false,
   }))
+  mockUserContext.isAuthMode = false
+  mockUserContext.user = null
+  mockUserContext.agentMemberCount.mockReturnValue(1)
+  mockUseAgentMembers.mockReturnValue({ data: [], isLoading: false, isError: false })
   mockUnreadCount.mockReturnValue({ data: { count: 0 } })
   mockUserSettings.mockReturnValue({ setupCompleted: true, agentOrder: [] })
   delete mockRuntimeStatus.appVersion
@@ -573,6 +582,37 @@ describe('AppSidebar — layout & top nav', () => {
 })
 
 describe('AppSidebar — agent rows', () => {
+  it('keeps the member roster control beside the agent navigation link', () => {
+    mockUserContext.isAuthMode = true
+    mockUserContext.agentMemberCount.mockImplementation(slug => slug === 'test-agent' ? 4 : 1)
+    mockUseAgentMembers.mockReturnValue({
+      data: Array.from({ length: 4 }, (_, index) => ({ id: `member-${index}`, name: `Person ${index}`, email: `person-${index}@example.test`, image: null, role: 'viewer' })),
+      isLoading: false,
+      isError: false,
+    })
+    renderWithProviders(<AppSidebar />)
+    const link = screen.getByTestId('agent-item-test-agent')
+    const members = screen.getByRole('button', { name: '4 members of Test Agent' })
+    expect(link).not.toContainElement(members)
+    expect(link.parentElement).toContainElement(members)
+    expect(within(members).getAllByRole('img', { hidden: true })).toHaveLength(4)
+    expect(members).not.toHaveTextContent('+')
+    expect(screen.queryByTestId('sidebar-members-other-agent')).toBeNull()
+    expect(mockUseAgentMembers).toHaveBeenCalledWith('test-agent', true)
+    expect(mockUseAgentMembers).not.toHaveBeenCalledWith('other-agent', expect.anything())
+  })
+
+  it.each([
+    { auth: true, count: 1 },
+    { auth: false, count: 4 },
+  ])('does not fetch sidebar rosters for auth=$auth and member count=$count', ({ auth, count }) => {
+    mockUserContext.isAuthMode = auth
+    mockUserContext.agentMemberCount.mockReturnValue(count)
+    renderWithProviders(<AppSidebar />)
+    expect(screen.queryByTestId('sidebar-members-test-agent')).toBeNull()
+    expect(mockUseAgentMembers).not.toHaveBeenCalled()
+  })
+
   it('renders agent rows', () => {
     renderWithProviders(<AppSidebar />)
     expect(screen.getByText('Test Agent')).toBeInTheDocument()
@@ -885,7 +925,7 @@ describe('UserMenu action for the current target', () => {
   // platform connection and would mint another.
   beforeEach(() => {
     mockUserContext.isAuthMode = true
-    mockUserContext.user = { name: 'Ada' } as never
+    mockUserContext.user = { id: 'ada-user', name: 'Ada', email: 'ada@example.test' } as never
     _resetApiTargetForTest()
   })
 
@@ -1157,17 +1197,28 @@ describe('AppSidebar — agent folders', () => {
     expect(screen.getByTestId('agent-folder-root')).toHaveTextContent('Your Agents')
   })
 
-  it('renders a folder with its name and how many agents are in it', () => {
+  it('renders a folder with its name, and how many agents are in it only while collapsed', () => {
     mockUserSettings.mockReturnValue({
       agentOrder: ['test-agent', 'other-agent'],
       agentFolders: [FOLDERS[0]],
       agentFolderAssignments: { 'test-agent': 'f1', 'other-agent': 'f1' },
     })
-    renderWithProviders(<AppSidebar />)
+    const { unmount } = renderWithProviders(<AppSidebar />)
 
-    const folder = screen.getByTestId('agent-folder-f1')
-    expect(folder).toHaveTextContent('Work')
-    expect(folder).toHaveTextContent('2')
+    // Expanded: the rows underneath say how many there are, so no count.
+    expect(screen.getByTestId('agent-folder-f1')).toHaveTextContent('Work')
+    expect(screen.queryByTestId('agent-folder-count-f1')).not.toBeInTheDocument()
+    unmount()
+
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [FOLDERS[0]],
+      agentFolderAssignments: { 'test-agent': 'f1', 'other-agent': 'f1' },
+      collapsedAgentFolders: ['f1'],
+    })
+    renderWithProviders(<AppSidebar />)
+    expect(screen.getByTestId('agent-folder-f1')).toHaveTextContent('Work')
+    expect(screen.getByTestId('agent-folder-count-f1')).toHaveTextContent('2')
   })
 
   it('defaults the default folder first before anything is arranged', () => {

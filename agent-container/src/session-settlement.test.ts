@@ -372,6 +372,13 @@ const FIXTURE_EXPECTATIONS: FixtureExpectation[] = [
   { name: 'sdk206-queued-message-interrupt-receipt', settledAtEnd: true },
   { name: 'sdk206-sequential-different-types', settledAtEnd: true },
   { name: 'sdk206-workflow-probe', settledAtEnd: true },
+  // SDK 0.3.272 / CLI 2.1.272 captures. Since CLI 2.1.269 a headless session
+  // emits NO idle after the lead turn while a background SUBAGENT is live
+  // (background Bash keeps the premature-idle shape) — the tracker must stay
+  // busy through the whole run and settle only at the wake turn's idle.
+  { name: 'sdk272-bg-bash-premature-idle', settledAtEnd: true },
+  { name: 'sdk272-bg-subagent-no-idle', settledAtEnd: true },
+  { name: 'sdk272-bg-subagent-interrupt-noop', settledAtEnd: true },
   { name: 'sendmessage-resumed-subagent', settledAtEnd: true },
   { name: 'sequential-different-types', settledAtEnd: true },
   { name: 'single-subagent-progress', settledAtEnd: true },

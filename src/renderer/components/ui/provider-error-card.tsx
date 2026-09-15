@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from 'react'
+import { useMemo, useState } from 'react'
 import type { Components } from 'react-markdown'
 import ReactMarkdown from 'react-markdown'
 import { CircleDollarSign, Info, TriangleAlert, type LucideIcon } from 'lucide-react'
@@ -6,6 +6,8 @@ import { CircleDollarSign, Info, TriangleAlert, type LucideIcon } from 'lucide-r
 import { defaultParseErrorResponse, type ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 
 import { RequestError } from '@renderer/components/messages/request-error'
+import { Button } from '@renderer/components/ui/button'
+import type { ProviderErrorComponentProps } from '@renderer/components/provider-error/provider-error-registry'
 import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
 import { openExternalUrl } from '@renderer/lib/open-external'
 
@@ -90,18 +92,15 @@ export function ProviderErrorCard({
   message,
   presentation,
   children,
+  dismissible = false,
   'data-testid': testId,
-}: {
-  message: string
-  presentation?: ProviderErrorPresentation
-  /** Displaced content (see ProviderErrorComponentProps). The default card never withholds it. */
-  children?: ReactNode
-  'data-testid'?: string
-}) {
+}: ProviderErrorComponentProps & { 'data-testid'?: string }) {
+  const [dismissed, setDismissed] = useState(false)
   const resolved = useMemo(
     () => presentation ?? defaultParseErrorResponse(undefined, message),
     [presentation, message],
   )
+  if (dismissed) return <>{children}</>
   return (
     <>
       <ProviderErrorView
@@ -109,6 +108,11 @@ export function ProviderErrorCard({
         rawMessage={message}
         data-testid={testId}
       />
+      {dismissible && (
+        <div className="mt-1 flex justify-end">
+          <Button size="sm" variant="ghost" onClick={() => setDismissed(true)}>Dismiss</Button>
+        </div>
+      )}
       {children}
     </>
   )

@@ -36,6 +36,8 @@ itself important.
 - `browser-use.md`
 - `computer-use.md`
 - `x.md`
+- `deepgram.md`
+- `exa.md`
 
 `session-history.md` is the one guide with executable companions: the two
 readers under `agent-container/bin/`, installed at `/opt/gamut/bin/`. Keep the
@@ -43,7 +45,7 @@ guide's flags and the scripts' argument parsers in step —
 `src/session-history-scripts.test.ts` exercises the scripts, not the prose.
 
 Dashboard guidance is not here — it lives in the `dashboards` skill
-(`agent-container/skills/dashboards/`), which the agent already discovers
+(`agent-container/plugin/skills/dashboards/`), which the agent already discovers
 through the skill mechanism. Do not add a second copy under this directory.
 
 ## Product FAQs

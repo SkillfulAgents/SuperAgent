@@ -84,18 +84,24 @@ vi.mock('@shared/lib/services/agent-service', () => ({
   getAgentClaudeMdContent: vi.fn(),
 }))
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    getClient: vi.fn(),
-    ensureRunning: vi.fn(),
-    getCachedInfo: vi.fn(() => ({ status: 'stopped', port: null })),
-    getHealthWarnings: vi.fn(() => []),
-    removeClient: vi.fn(),
-  },
-}))
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      getClient: vi.fn(),
+      ensureRunning: vi.fn(),
+      getCachedInfo: vi.fn(() => ({ status: 'stopped', port: null })),
+      getHealthWarnings: vi.fn(() => []),
+      removeClient: vi.fn(),
+    }),
+  }
+})
 
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
+    withSessionSend: async (_agentSlug: string, _sessionId: string, _client: unknown, send: () => Promise<unknown>) => {
+      return send()
+    },
     isSessionActive: vi.fn(() => false),
     isSessionAwaitingInput: vi.fn(() => false),
     hasActiveSessionsForAgent: vi.fn(() => false),

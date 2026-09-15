@@ -364,7 +364,7 @@ function InboundXAgentRow({
       name="Called from Other Agents"
       subtitle={
         <span className="truncate">
-          x-agent · {total} {total === 1 ? 'call' : 'calls'}
+          {total} {total === 1 ? 'run' : 'runs'}
           {lastInvokedAt && (
             <> · last run {formatDistanceToNow(new Date(lastInvokedAt), { addSuffix: true })}</>
           )}
@@ -374,7 +374,7 @@ function InboundXAgentRow({
       data-testid="home-trigger-row-inbound-x-agent"
       right={
         <>
-          <ActivitySparkChart label="Calls from other agents" data={activity} />
+          <ActivitySparkChart label="Invocations" data={activity} />
           <RowHoverChevron />
         </>
       }

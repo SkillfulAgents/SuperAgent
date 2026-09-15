@@ -171,7 +171,7 @@ export function AgentHeader({ slug, isViewOnly, isStreaming = false, startAgent,
             </>
           )
         })()}
-        {sessionId && session?.invokedByAgentSlug && (
+        {sessionId && (session?.invokedByAgentSlug || session?.isWidgetRepair) && (
           <>
             <BreadcrumbSeparator />
             <AppLink

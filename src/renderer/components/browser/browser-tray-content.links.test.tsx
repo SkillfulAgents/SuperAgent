@@ -9,7 +9,7 @@ const CLAY_URL = 'https://app.clay.com/oauth/device?user_code=LCWW-PKKC'
 // does, but reaches it through the browser stream rather than RequestItemShell.
 // The shell's linkify call cannot cover it, so this pins its own call site.
 const stream = {
-  aspectRatio: 16 / 9,
+  aspectRatio: '16 / 9',
   tabs: [],
   viewingTargetId: null,
   autoFollow: true,

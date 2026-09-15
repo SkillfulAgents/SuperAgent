@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
+import { AccountReplacedError } from '@shared/lib/proxy/account-replacement'
 
 // Mock dependencies
 const mockValidateProxyToken = vi.fn()
@@ -788,6 +789,50 @@ describe('proxy route', () => {
         providerConnectionId: 'comp-reconnected',
       }))
     })
+
+    it.each(['local', 'remote', 'token'] as const)(
+      'returns replacement instructions from %s reauth and applies the new account policy on retry',
+      async (failure) => {
+        mockValidateProxyToken.mockResolvedValue('my-agent')
+        mockDbFrom.mockReturnValue({ innerJoin: mockInnerJoin })
+        mockInnerJoin.mockReturnValue({ where: mockWhere })
+        mockWhere.mockReturnValue({ limit: mockLimit })
+        mockLimit.mockResolvedValue([{ account: {
+          id: 'acc-123', toolkitSlug: 'slack', providerName: 'composio',
+          providerConnectionId: 'old-provider', userId: 'old-owner',
+          status: failure === 'local' ? 'expired' : 'active',
+        } }])
+        mockIsHostAllowed.mockReturnValue(true)
+        if (failure === 'remote') mockGetConnection.mockResolvedValueOnce({ status: 'EXPIRED' })
+        if (failure === 'token') mockMakeApiCall.mockRejectedValueOnce(new Error('Failed to fetch token'))
+        mockRequestReauth.mockRejectedValueOnce(new AccountReplacedError('replacement'))
+
+        const response = await makeRequest('/api/proxy/my-agent/acc-123/slack.com/api/conversations.list', {
+          headers: { Authorization: 'Bearer synth_valid' },
+        })
+        expect(response.status).toBe(409)
+        expect(await response.json()).toMatchObject({
+          error: 'account_replaced', replacementAccountId: 'replacement',
+          message: expect.stringContaining('Retry the request using account ID replacement'),
+        })
+        expect(mockMakeApiCall).toHaveBeenCalledTimes(failure === 'token' ? 1 : 0)
+
+        // The new credential must not inherit the old account's allow decision.
+        mockMakeApiCall.mockClear()
+        mockLimit.mockResolvedValue([{ account: {
+          id: 'replacement', toolkitSlug: 'slack', providerName: 'composio',
+          providerConnectionId: 'new-provider', userId: 'new-owner', status: 'active',
+        } }])
+        mockResolveApiPolicy.mockResolvedValueOnce({ decision: 'block', matchedScopes: ['test.scope'] })
+        const retry = await makeRequest('/api/proxy/my-agent/replacement/slack.com/api/conversations.list', {
+          headers: { Authorization: 'Bearer synth_valid' },
+        })
+        expect(retry.status).toBe(403)
+        expect(await retry.json()).toMatchObject({ error: 'blocked_by_policy' })
+        expect(mockResolveApiPolicy).toHaveBeenLastCalledWith('replacement', expect.anything(), 'new-owner', 'slack')
+        expect(mockMakeApiCall).not.toHaveBeenCalled()
+      },
+    )
 
     it('returns a clear timeout when local account re-authentication is abandoned', async () => {
       mockValidateProxyToken.mockResolvedValue('my-agent')

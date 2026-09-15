@@ -3,9 +3,9 @@ import fs from 'fs'
 import path from 'path'
 import net from 'net'
 import os from 'os'
-import { getDataDir, getAgentDownloadsDir } from '@shared/lib/config/data-dir'
+import { getDataDir } from '@shared/lib/config/data-dir'
 import { listChromeProfiles, copyChromeProfileData } from '@shared/lib/browser/chrome-profile'
-import { containerManager } from '@shared/lib/container/container-manager'
+import { agentRegistry, containerHost } from '@shared/lib/agent-actor'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo } from './types'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { readJsonFileStrictSync, writeFileAtomicSync, CorruptFileError } from '@shared/lib/utils/file-storage'
@@ -328,8 +328,11 @@ export class ChromeProvider implements HostBrowserProvider {
     }
 
     // Set Chrome download preferences so files go to the agent's workspace
-    // instead of the user's ~/Downloads folder.
-    const downloadDir = getAgentDownloadsDir(instanceId)
+    // instead of the user's ~/Downloads folder. The host browser runs on this
+    // machine, so this is a host-only feature: it takes the workspace's host
+    // path from the container host rather than asking the actor.
+    const downloadDir = path.join(containerHost.workspaceHostPath(instanceId), 'downloads')
+    fs.mkdirSync(downloadDir, { recursive: true })
     const prefsDir = path.join(userDataDir, 'Default')
     const prefsPath = path.join(prefsDir, 'Preferences')
     fs.mkdirSync(prefsDir, { recursive: true })
@@ -847,7 +850,7 @@ export class ChromeProvider implements HostBrowserProvider {
     port: number,
   ): Promise<'reachable' | 'unreachable' | 'unknown'> {
     try {
-      return await containerManager.getClient(instanceId).probeHostPortFromRunner(host, port)
+      return await agentRegistry.get(instanceId).container.probeHostPort(host, port)
     } catch (error) {
       console.warn('[ChromeProvider] CDP proxy reachability probe failed to run:', error)
       return 'unknown'
@@ -857,7 +860,7 @@ export class ChromeProvider implements HostBrowserProvider {
   private getHostBridgeIp(instanceId: string): string | null {
     let ip: string | null = null
     try {
-      ip = containerManager.getClient(instanceId).getHostBridgeIp()
+      ip = agentRegistry.get(instanceId).container.hostBridgeIp()
     } catch (error) {
       console.warn('[ChromeProvider] Could not resolve host bridge IP for CDP proxy:', error)
       return null

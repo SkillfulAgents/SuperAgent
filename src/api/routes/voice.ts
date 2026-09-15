@@ -10,6 +10,7 @@ import { resolveTtsSpeed } from '@shared/lib/voice/tts-preferences'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { getVoiceAgentPrompt, type VoiceAgentPromptName } from '@shared/prompts/voice-agent'
+import { captureException } from '@shared/lib/error-reporting'
 
 const voice = new Hono<LimitedJsonBodyEnv>()
 
@@ -107,6 +108,7 @@ voice.post('/live/map', async (c) => {
 })
 
 voice.get('/token', async (c) => {
+  let provider: VoiceProvider | undefined
   try {
     const providerParam = c.req.query('provider')
     if (providerParam && providerParam !== 'deepgram' && providerParam !== 'openai' && providerParam !== 'platform') {
@@ -114,7 +116,7 @@ voice.get('/token', async (c) => {
     }
 
     const voiceSettings = getVoiceSettings()
-    const provider: VoiceProvider | undefined = (providerParam as VoiceProvider) || voiceSettings.sttProvider
+    provider = (providerParam as VoiceProvider) || voiceSettings.sttProvider
 
     if (!provider) {
       return c.json({ error: 'No voice provider configured. Set one in Settings > Voice.' }, 400)
@@ -125,6 +127,11 @@ voice.get('/token', async (c) => {
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Failed to get STT credentials'
     console.error('Failed to get STT credentials:', error)
+    // The one server-side step of dictation: a failure here means nobody on
+    // this deployment can dictate, so it belongs in the error tracker.
+    captureException(error, {
+      tags: { component: 'voice', operation: 'stt-token', provider: provider ?? 'none' },
+    })
     return c.json({ error: message }, 500)
   }
 })

@@ -12,6 +12,7 @@ vi.mock('./auth-client', () => ({ signOut: signOutMock }))
 
 import { _resetApiTargetForTest, setActiveTarget } from './api-target'
 import { _resetCloudSessionForTest, onCloudSessionRejected } from './cloud-session'
+import { isWorkspaceUnavailableError, type WorkspaceUnavailableError } from './workspace-unavailable'
 import {
   apiFetch,
   apiJson,
@@ -107,7 +108,7 @@ describe('apiJson (loader fetch: status-preserving throw)', () => {
   })
 
   it('returns the parsed JSON body on a 2xx response', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ a: 1 }) })))
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, headers: new Headers(), json: async () => ({ a: 1 }) })))
     await expect(apiJson('/x')).resolves.toEqual({ a: 1 })
   })
 
@@ -115,7 +116,7 @@ describe('apiJson (loader fetch: status-preserving throw)', () => {
   // notFound(); 500 is the rethrow-to-errorComponent case. apiJson must surface
   // the EXACT status on the error object so the loader can branch on it.
   it.each([403, 404, 500])('throws an HttpError carrying status %i on a non-2xx response', async (status) => {
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status })))
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status, headers: new Headers() })))
     await expect(apiJson('/x')).rejects.toSatisfy(
       (err: unknown) => err instanceof HttpError && err.status === status && err.name === 'HttpError',
     )
@@ -132,7 +133,7 @@ describe('apiFetch 401 auto-stash (warm, router-mounted)', () => {
     signOutMock.mockClear()
     vi.stubGlobal('__AUTH_MODE__', true)
     // Default 401 so apiFetch enters the auto-stash branch unless a case overrides.
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 401 }))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 401, headers: new Headers() }))
     window.history.replaceState(null, '', '/')
   })
 
@@ -173,7 +174,7 @@ describe('apiFetch 401 auto-stash (warm, router-mounted)', () => {
   })
 
   it('does not stash or sign out on a non-401 (e.g. 403 forbidden)', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 403 }))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 403, headers: new Headers() }))
     window.history.replaceState(null, '', '/agents/foo')
     await apiFetch('/api/agents/foo')
     expect(sessionStorage.getItem(KEY)).toBeNull()
@@ -208,7 +209,7 @@ describe('apiFetch 401 against a cloud workspace', () => {
     sessionStorage.clear()
     signOutMock.mockClear()
     vi.stubGlobal('__AUTH_MODE__', false)
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 401 }))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 401, headers: new Headers() }))
     window.history.replaceState(null, '', '/agents/foo')
     _resetApiTargetForTest()
     setActiveTarget('cloud', null)
@@ -267,6 +268,68 @@ describe('apiFetch 401 against a cloud workspace', () => {
   })
 })
 
+describe('apiFetch against a cloud workspace that is not ready', () => {
+  // The router in front of a sleeping / waking workspace answers every request
+  // itself and marks the reply with x-workspace-unavailable. That is one
+  // condition, not a failure per caller, so apiFetch classifies it before any
+  // hook can turn the body into an Error of its own.
+  const notReady = (state: string, status = 503) =>
+    vi.fn().mockResolvedValue({
+      status,
+      ok: false,
+      headers: new Headers({ 'x-workspace-unavailable': state }),
+      json: async () => ({ error: 'deployment_unavailable', state }),
+    })
+
+  beforeEach(() => {
+    vi.stubGlobal('__AUTH_MODE__', false)
+    _resetApiTargetForTest()
+    setActiveTarget('cloud', null)
+    _resetCloudSessionForTest()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    _resetApiTargetForTest()
+  })
+
+  it('rejects with WorkspaceUnavailableError carrying the route state', async () => {
+    vi.stubGlobal('fetch', notReady('sleeping'))
+    const err = await apiFetch('/api/platform-auth/billing').catch((e: unknown) => e)
+    expect(isWorkspaceUnavailableError(err)).toBe(true)
+    expect((err as WorkspaceUnavailableError).state).toBe('sleeping')
+  })
+
+  it('carries a human message rather than the wire error code', async () => {
+    vi.stubGlobal('fetch', notReady('sleeping'))
+    await expect(apiFetch('/api/x')).rejects.toThrow('Your cloud workspace is asleep')
+    vi.stubGlobal('fetch', notReady('waking'))
+    await expect(apiFetch('/api/x')).rejects.toThrow('Your cloud workspace is starting up')
+  })
+
+  it('keys on the header, not the status (the router also marks a 502 unreachable)', async () => {
+    vi.stubGlobal('fetch', notReady('unreachable', 502))
+    const err = await apiFetch('/api/x').catch((e: unknown) => e)
+    expect(isWorkspaceUnavailableError(err)).toBe(true)
+  })
+
+  it('leaves an ordinary 503 without the header to the caller', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 503, ok: false, headers: new Headers() }))
+    const res = await apiFetch('/api/x')
+    expect(res.status).toBe(503)
+  })
+
+  it('does not treat it as a rejected session', async () => {
+    vi.stubGlobal('fetch', notReady('sleeping'))
+    const listener = vi.fn()
+    const unsubscribe = onCloudSessionRejected(listener)
+    await apiFetch('/api/x').catch(() => {})
+    expect(listener).not.toHaveBeenCalled()
+    expect(signOutMock).not.toHaveBeenCalled()
+    unsubscribe()
+  })
+})
+
 describe('apiFetch (init passthrough)', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
@@ -277,7 +340,7 @@ describe('apiFetch (init passthrough)', () => {
   // (multi-MB on long sessions) silently go back to running to completion
   // server-side. Pin the pass-through.
   it('forwards an AbortSignal to fetch so superseded requests can actually abort', async () => {
-    const fetchMock = vi.fn(async () => ({ ok: true, status: 200 }))
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, headers: new Headers() }))
     vi.stubGlobal('fetch', fetchMock)
 
     const controller = new AbortController()

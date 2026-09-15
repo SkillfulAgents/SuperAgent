@@ -10,11 +10,16 @@ import { defineHomeScenarios } from './home-scenarios'
 // reads (the iOS poll) and the sessions page come from the cache. Wall is
 // bounded by the per-agent critical path, not the agent count: the agent
 // list, artifact lookups and per-request DB reads overlap.
+//
+// Every workspace read goes through the actor's file operations, which cost
+// exactly what the plain reads they replace cost: an existence probe is a
+// stat where it used to be an access call, and nothing is added. These are
+// main's counts.
 defineHomeScenarios('small', {
-  agentsCold: { totalOps: 317, ops: { stat: 275 }, wallMs: 240 },
-  agentsWarm: { totalOps: 52, ops: { stat: 15 }, wallMs: 110 },
-  homeCold: { totalOps: 352, ops: { stat: 280 }, wallMs: 370 },
-  homeWarm: { totalOps: 87, ops: { stat: 20 }, wallMs: 240 },
+  agentsCold: { totalOps: 317, ops: { stat: 285 }, wallMs: 240 },
+  agentsWarm: { totalOps: 52, ops: { stat: 25 }, wallMs: 160 },
+  homeCold: { totalOps: 352, ops: { stat: 290 }, wallMs: 370 },
+  homeWarm: { totalOps: 87, ops: { stat: 30 }, wallMs: 260 },
   sessionsPage: { totalOps: 3, ops: { stat: 2 }, wallMs: 70 },
   sessionsNotable: { totalOps: 1, ops: { stat: 1 }, wallMs: 40 },
 })

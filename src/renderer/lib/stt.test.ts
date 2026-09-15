@@ -226,6 +226,7 @@ describe('startAudioCapture', () => {
     vi.stubGlobal('AudioContext', function FakeAudioContext() { return ctx } as unknown as typeof AudioContext)
     const a = sink()
     const handle = await startAudioCapture(a, stream)
+    expect(handle.captureKind).toBe('worklet')
     expect(processors).toHaveLength(0)
     const node = FakeWorkletNode.instances[0]
     expect(node.name).toBe('pcm-capture')
@@ -255,7 +256,8 @@ describe('startAudioCapture', () => {
     const { ctx, processors } = fakeContext({ worklet: 'fails' })
     vi.stubGlobal('AudioContext', function FakeAudioContext() { return ctx } as unknown as typeof AudioContext)
     const a = sink()
-    await startAudioCapture(a, stream)
+    const handle = await startAudioCapture(a, stream)
+    expect(handle.captureKind).toBe('script-processor')
     expect(FakeWorkletNode.instances).toHaveLength(0)
     expect(processors).toHaveLength(1)
     processors[0].onaudioprocess?.({ inputBuffer: { getChannelData: () => Float32Array.from([1]) } })
@@ -716,5 +718,97 @@ describe('finalize', () => {
     adapter.finalize()
     expect(ws.sent).toHaveLength(before)
     expect(events).toEqual([{ type: 'finalized', text: '' }])
+  })
+})
+
+// ============================================================================
+// Session stats (what an error report can say about a session after the fact)
+// ============================================================================
+
+describe('session stats', () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = []
+    FakeWebSocket.autoOpen = false
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  function pcm(...samples: number[]): ArrayBuffer {
+    return Int16Array.from(samples).buffer as ArrayBuffer
+  }
+
+  it('deepgram: records the socket opening, the audio that flowed and its peak, the words, and how it closed', async () => {
+    const adapter = createSttAdapter('deepgram')
+    const errors: Error[] = []
+    adapter.onError((err) => errors.push(err))
+    const connectPromise = adapter.connect('token')
+    const ws = FakeWebSocket.instances[0]
+
+    adapter.sendAudio(pcm(0, 1200, -3000))
+    expect(adapter.stats).toMatchObject({ socketOpened: false, bytesReceived: 6, bytesSent: 0, peakSample: 3000 })
+
+    ws.simulateOpen()
+    await connectPromise
+    expect(adapter.stats).toMatchObject({ socketOpened: true, bytesSent: 6 })
+    expect(typeof adapter.stats!.connectMs).toBe('number')
+
+    ws.simulateMessage({ type: 'Results', is_final: true, channel: { alternatives: [{ transcript: 'hi' }] } })
+    ws.simulateMessage({ type: 'Results', is_final: false, channel: { alternatives: [{ transcript: 'hi there' }] } })
+    expect(adapter.stats).toMatchObject({ finals: 1, interims: 1, serverEvents: { Results: 2 } })
+
+    ws.simulateClose(1011, 'server went away')
+    expect(errors).toHaveLength(1)
+    expect(adapter.stats).toMatchObject({ closeCode: 1011, closeReason: 'server went away', errors: 1 })
+    expect(adapter.stats!.lastError).toContain('1011')
+  })
+
+  it('counts audio discarded from an overflowing pre-open buffer', () => {
+    const adapter = createSttAdapter('deepgram')
+    void adapter.connect('token').catch(() => {})
+    adapter.sendAudio(chunkOf(600_000, 1))
+    adapter.sendAudio(chunkOf(600_000, 2))
+    expect(adapter.stats).toMatchObject({ bytesReceived: 1_200_000, bytesDropped: 600_000, bytesSent: 0 })
+  })
+
+  it('openai: a failed transcription surfaces as an error instead of vanishing', async () => {
+    const adapter = createSttAdapter('openai')
+    const errors: Error[] = []
+    adapter.onError((err) => errors.push(err))
+    const connectPromise = adapter.connect('token')
+    FakeWebSocket.instances[0].simulateOpen()
+    await connectPromise
+
+    FakeWebSocket.instances[0].simulateMessage({
+      type: 'conversation.item.input_audio_transcription.failed',
+      error: { message: 'The model `gpt-4o-mini-transcribe` is not available for this project' },
+    })
+    expect(errors).toHaveLength(1)
+    expect(errors[0].message).toContain('not available for this project')
+    expect(adapter.stats).toMatchObject({
+      errors: 1,
+      serverEvents: { 'conversation.item.input_audio_transcription.failed': 1 },
+    })
+  })
+
+  it('openai: an error swallowed while finishing still goes on the record', async () => {
+    const adapter = createSttAdapter('openai')
+    const errors: Error[] = []
+    adapter.onError((err) => errors.push(err))
+    const connectPromise = adapter.connect('token')
+    const ws = FakeWebSocket.instances[0]
+    ws.simulateOpen()
+    await connectPromise
+    adapter.sendAudio(pcm(1, 2, 3))
+
+    const finishPromise = adapter.finish()
+    ws.simulateMessage({ type: 'error', error: { message: 'insufficient_quota' } })
+    await finishPromise
+    expect(errors).toHaveLength(0)
+    expect(adapter.stats!.lastError).toContain('quota')
   })
 })

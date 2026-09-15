@@ -33,15 +33,14 @@ vi.mock('drizzle-orm', () => ({
   eq: (column: string, value: string) => ({ column, value }),
 }))
 
-vi.mock('./container-manager', () => ({
-  containerManager: {
-    getCachedInfo: (...args: unknown[]) => mockGetCachedInfo(...args),
-    getClient: () => ({
-      fetch: (...args: unknown[]) => mockFetch(...args),
-      getHostApiBaseUrl: (...args: unknown[]) => mockGetHostApiBaseUrl(...args),
-    }),
-  },
-}))
+// The agent's container runtime, as the actor hands it to a sync.
+const runtime = {
+  getCachedInfo: (...args: unknown[]) => mockGetCachedInfo(...args),
+  getClient: () => ({
+    fetch: (...args: unknown[]) => mockFetch(...args),
+    getHostApiBaseUrl: (...args: unknown[]) => mockGetHostApiBaseUrl(...args),
+  }),
+}
 
 import {
   syncAgentConnectionEnvironment,
@@ -175,7 +174,7 @@ describe('connection runtime synchronization', () => {
     mockGetHostApiBaseUrl.mockRejectedValue(new Error('container unavailable'))
 
     await expect(
-      syncAgentConnectionEnvironment('agent-1', 'remote-mcps'),
+      syncAgentConnectionEnvironment('agent-1', 'remote-mcps', runtime),
     ).resolves.toBe(false)
   })
 
@@ -186,7 +185,7 @@ describe('connection runtime synchronization', () => {
     )
 
     await expect(
-      syncAgentConnectionEnvironment('agent-1', 'connected-accounts'),
+      syncAgentConnectionEnvironment('agent-1', 'connected-accounts', runtime),
     ).resolves.toBe(false)
   })
 
@@ -194,7 +193,7 @@ describe('connection runtime synchronization', () => {
     mockGetCachedInfo.mockReturnValue({ status: 'stopped', port: null })
 
     await expect(
-      syncAgentConnectionEnvironment('agent-1', 'connected-accounts'),
+      syncAgentConnectionEnvironment('agent-1', 'connected-accounts', runtime),
     ).resolves.toBe(true)
     expect(mockFetch).not.toHaveBeenCalled()
   })
