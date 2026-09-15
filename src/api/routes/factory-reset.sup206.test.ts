@@ -138,6 +138,10 @@ const BETTER_AUTH_TABLES = new Set<unknown>([
   schema.verification,
 ])
 
+// The data-migration ledger survives too: it says which one-time moves this
+// database has been through, and a reset database is empty, not legacy.
+const PRESERVED_TABLES = new Set<unknown>([...BETTER_AUTH_TABLES, schema.dataMigrations])
+
 /** Every Drizzle table defined in the schema (by object identity). */
 function allSchemaTables(): unknown[] {
   return Object.values(schema).filter((v) => is(v, Table))
@@ -145,7 +149,7 @@ function allSchemaTables(): unknown[] {
 
 /** Agent/app-owned relational tables that factory reset MUST clear. */
 function agentOwnedTables(): unknown[] {
-  return allSchemaTables().filter((t) => !BETTER_AUTH_TABLES.has(t))
+  return allSchemaTables().filter((t) => !PRESERVED_TABLES.has(t))
 }
 
 // ---------------------------------------------------------------------------
@@ -202,5 +206,11 @@ describe('POST /api/settings/factory-reset — agent/app-owned table cleanup', (
         `factory-reset must NOT delete Better Auth table "${getTableName(table as Table)}"`,
       ).not.toContain(table)
     }
+  })
+
+  it('keeps the data-migration ledger, so a reset database does not re-run one-time moves', async () => {
+    const res = await factoryReset()
+    expect(res.status).toBe(200)
+    expect(mockDeletedTables).not.toContain(schema.dataMigrations)
   })
 })

@@ -73,7 +73,6 @@ import {
   mcpToolPolicies,
   agentAcl,
   agents,
-  dataMigrations,
   messageAuthor,
   xAgentPolicies,
   apiScopePolicies,
@@ -169,7 +168,11 @@ async function serveUploadedModelIcon(c: Context) {
  * Ordered children-before-parents so deletes succeed regardless of FK-cascade
  * state. Better Auth tables (user, session, account, verification) are
  * intentionally excluded — a factory reset clears app/agent data but does NOT
- * delete user accounts.
+ * delete user accounts. The data-migration ledger is excluded too, like
+ * drizzle's own: it records which one-time moves this database has been
+ * through, and a reset database is an empty one, not a legacy one. Re-running
+ * those moves after a reset would pull back whatever state the reset did not
+ * delete.
  *
  * Keep this reconciled with the per-agent set in agent-cleanup-service.ts. The
  * test in factory-reset.sup206.test.ts enumerates the schema dynamically and
@@ -187,8 +190,6 @@ const FACTORY_RESET_TABLES: SQLiteTable[] = [
   webhookTriggers,
   // the agent catalog itself, once the per-agent rows above are gone
   agents,
-  // and the ledger of one-time data moves: a reset database starts over
-  dataMigrations,
   notifications,
   sessionUnreadMarks,
   scheduledTasks,
