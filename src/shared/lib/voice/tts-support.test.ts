@@ -76,3 +76,12 @@ describe('resolveTtsSpeed', () => {
     expect(resolveTtsSpeed(undefined)).toBe(1)
   })
 })
+
+
+describe('delegated conversation capability', () => {
+  it('is provided by OpenAI and absent for the chained providers', () => {
+    expect(getVoiceProvider('openai').getLiveConversation()).toBe(getVoiceProvider('openai'))
+    expect(getVoiceProvider('deepgram').getLiveConversation()).toBeNull()
+    expect(getVoiceProvider('platform').getLiveConversation()).toBeNull()
+  })
+})

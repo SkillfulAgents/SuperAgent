@@ -1,4 +1,5 @@
 import { getSettings, type ApiKeySettings, type ApiKeyStatus, type VoiceProvider } from '../config/settings'
+import type { LiveConversationProvider } from './live-types'
 import type { VoiceConversationEngine } from './conversation-types'
 import type { TtsVoiceInfo } from './tts-preferences'
 
@@ -55,6 +56,11 @@ export abstract class BaseVoiceProvider {
   /** Renderer implementation used for an independently running agent session. */
   getConversationEngine(): VoiceConversationEngine | null {
     return this.supportsTts() ? 'chained' : null
+  }
+
+  /** Host-side delegated conversation sessions, when supported by the provider. */
+  getLiveConversation(): LiveConversationProvider | null {
+    return null
   }
 
   /** Mint a token for a Voice Agent session. Override in providers that support it. */

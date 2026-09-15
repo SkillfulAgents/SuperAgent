@@ -4,7 +4,7 @@ export const LIVE_SESSION_MAX_MS = 60 * 60 * 1000
 const RETRY_DELAYS_MS = [1000, 5000, 30_000]
 interface Session {
   owner: string
-  id: string
+  close: () => Promise<void>
   expiresAt: number
   closing: boolean
   attempts: number
@@ -16,13 +16,12 @@ interface Session {
 /** Closing calls stop consuming admission slots, but retain cleanup until expiry. */
 export class LiveSessionRegistry {
   private sessions = new Map<string, Session>()
-  constructor(private hangup: (id: string) => Promise<void>) {}
 
   activeCount(owner: string) {
     return [...this.sessions.values()].filter(session => session.owner === owner && !session.closing).length
   }
 
-  add(owner: string, id: string) {
+  add(owner: string, close: () => Promise<void>) {
     const handle = randomUUID()
     const expiresAt = Date.now() + LIVE_SESSION_MAX_MS
     const timer = setTimeout(() => {
@@ -32,7 +31,7 @@ export class LiveSessionRegistry {
       void this.attempt(handle, session, true)
     }, LIVE_SESSION_MAX_MS)
     timer.unref()
-    this.sessions.set(handle, { owner, id, expiresAt, timer, closing: false, attempts: 0 })
+    this.sessions.set(handle, { owner, close, expiresAt, timer, closing: false, attempts: 0 })
     return { handle, expiresAt }
   }
 
@@ -46,7 +45,7 @@ export class LiveSessionRegistry {
   private attempt(handle: string, session: Session, final = false): Promise<boolean> {
     if (session.pending) return session.pending
     clearTimeout(session.retry)
-    const pending = this.hangup(session.id).then(() => {
+    const pending = session.close().then(() => {
       this.remove(handle, session)
       return true
     }, () => {

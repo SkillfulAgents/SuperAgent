@@ -2,7 +2,7 @@ import { BaseVoiceProvider } from './voice-provider'
 import { getEffectiveModels } from '../config/settings'
 import { getConfiguredLlmClient, createSummarizerText } from '../llm-provider/helpers'
 import { resolveActiveProviderModel } from '../llm-provider'
-import { liveRequestSchema, type LiveMappingInput, type LiveSessionAnswer, type VoiceHistory } from './live-types'
+import { liveRequestSchema, type LiveConversationProvider, type LiveMappingInput, type LiveSessionAnswer, type VoiceHistory } from './live-types'
 import { LIVE_CONVERSATION_PROMPT, LIVE_REPLY_PROMPT, LIVE_REQUEST_PROMPT } from '../../prompts/voice-live'
 
 const MIME_TO_EXT: Record<string, string> = {
@@ -20,7 +20,7 @@ const MIME_TO_EXT: Record<string, string> = {
   'audio/amr': 'amr',
 }
 
-export class OpenaiVoiceProvider extends BaseVoiceProvider {
+export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConversationProvider {
   readonly id = 'openai' as const
   readonly name = 'OpenAI'
   protected readonly settingsKeyField = 'openaiApiKey' as const
@@ -28,6 +28,10 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider {
 
   override getConversationEngine() {
     return 'openai-live' as const
+  }
+
+  override getLiveConversation(): LiveConversationProvider {
+    return this
   }
 
   /** The project key stays on the host; the renderer receives only an SDP answer. */

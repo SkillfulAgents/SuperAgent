@@ -3,14 +3,20 @@ import { once } from 'node:events'
 import { getRequestListener } from '@hono/node-server'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({
-  providerName: 'openai', user: 'alice', authenticated: true,
+  providerName: 'openai' as string | undefined, alternateEnabled: false, user: 'alice', authenticated: true,
   create: vi.fn(), map: vi.fn(), close: vi.fn(async () => {}),
+  alternateCreate: vi.fn(), alternateMap: vi.fn(), alternateClose: vi.fn(async () => {}),
 }))
 vi.mock('../middleware/auth', () => ({ Authenticated: () => async (_c: unknown, next: () => Promise<void>) => mocks.authenticated ? next() : new Response('Unauthorized', { status: 401 }) }))
 vi.mock('@shared/lib/config/settings', () => ({ getVoiceSettings: () => ({ sttProvider: mocks.providerName }) }))
 vi.mock('@shared/lib/voice', () => ({
-  OpenaiVoiceProvider: class {},
-  getVoiceProvider: () => ({ createLiveSession: mocks.create, mapLiveConversation: mocks.map, closeLiveSession: mocks.close,
+  getVoiceProvider: (id: string) => ({
+    name: { openai: 'OpenAI', deepgram: 'Deepgram', platform: 'Platform' }[id],
+    getLiveConversation: () => id === 'openai'
+      ? { createLiveSession: mocks.create, mapLiveConversation: mocks.map, closeLiveSession: mocks.close }
+      : mocks.alternateEnabled
+        ? { createLiveSession: mocks.alternateCreate, mapLiveConversation: mocks.alternateMap, closeLiveSession: mocks.alternateClose }
+        : null,
     getApiKeyStatus: () => ({ isConfigured: true }), supportsTts: () => false, supportsVoiceAgent: () => true, getConversationEngine: () => 'openai-live',
   }),
 }))
@@ -52,7 +58,7 @@ async function chunkedRequest(path: string, chunks: Buffer[]) {
 }
 
 beforeEach(() => {
-  vi.clearAllMocks(); mocks.providerName = 'openai'; mocks.user = 'alice'; mocks.authenticated = true
+  vi.clearAllMocks(); mocks.providerName = 'openai'; mocks.user = 'alice'; mocks.authenticated = true; mocks.alternateEnabled = false
   mocks.create.mockResolvedValue({ session: { id: 'live_test' }, transport: { type: 'webrtc', sdp: 'answer' } })
 })
 
@@ -60,12 +66,57 @@ describe('Live voice routes', () => {
   it('advertises Live separately from unsupported standalone TTS', async () => {
     expect(await (await voice.request('/configured')).json()).toMatchObject({ conversationEngine: 'openai-live', supportsTts: false })
   })
-  it('requires authentication and the selected BYOK provider', async () => {
+  it('requires authentication before calling a provider', async () => {
     mocks.authenticated = false
     expect((await request('/live/session', { sdp: 'offer', history: [] })).status).toBe(401)
-    mocks.authenticated = true; mocks.providerName = 'deepgram'
-    expect((await request('/live/session', { sdp: 'offer', history: [] })).status).toBe(400)
+    expect((await request('/live/map', { kind: 'reply', text: 'Working...' })).status).toBe(401)
     expect(mocks.create).not.toHaveBeenCalled()
+    expect(mocks.map).not.toHaveBeenCalled()
+  })
+  it.each([['deepgram', 'Deepgram'], ['platform', 'Platform']])('reports unsupported operations for %s', async (id, name) => {
+    mocks.providerName = id
+    const creation = await request('/live/session', { sdp: 'offer', history: [] })
+    expect(creation.status).toBe(400)
+    expect(await creation.json()).toEqual({ error: `Live session creation not supported with current configured voice provider: ${name}` })
+    const mapping = await request('/live/map', { kind: 'reply', text: 'Working...' })
+    expect(mapping.status).toBe(400)
+    expect(await mapping.json()).toEqual({ error: `Live conversation mapping not supported with current configured voice provider: ${name}` })
+    expect(mocks.create).not.toHaveBeenCalled()
+    expect(mocks.map).not.toHaveBeenCalled()
+  })
+  it('reports missing configuration without selecting a fallback provider', async () => {
+    mocks.providerName = undefined
+    for (const [path, body] of [
+      ['/live/session', { sdp: 'offer', history: [] }],
+      ['/live/map', { kind: 'reply', text: 'Working...' }],
+    ] as const) {
+      const response = await request(path, body)
+      expect(response.status).toBe(400)
+      expect(await response.json()).toEqual({ error: 'No voice provider configured. Set one in Settings > Voice.' })
+    }
+    expect(mocks.create).not.toHaveBeenCalled()
+    expect(mocks.map).not.toHaveBeenCalled()
+  })
+  it('dispatches by capability and keeps cleanup bound to the creating provider', async () => {
+    // A future provider can implement this capability without changing routes.
+    mocks.providerName = 'deepgram'
+    mocks.alternateEnabled = true
+    mocks.alternateCreate.mockResolvedValue({ session: { id: 'other_session' }, transport: { type: 'webrtc', sdp: 'other-answer' } })
+    mocks.alternateMap.mockResolvedValue({ text: 'Other provider reply' })
+    const creation = await request('/live/session', { sdp: 'offer', history: [] })
+    expect(creation.status).toBe(201)
+    const { handle, transport } = await creation.json()
+    expect(transport.sdp).toBe('other-answer')
+    expect(mocks.alternateCreate).toHaveBeenCalledExactlyOnceWith('offer', [])
+    const mapping = await request('/live/map', { kind: 'reply', text: 'Working...' })
+    expect(await mapping.json()).toEqual({ text: 'Other provider reply' })
+    expect(mocks.alternateMap).toHaveBeenCalledExactlyOnceWith({ kind: 'reply', text: 'Working...' }, expect.any(AbortSignal))
+    mocks.providerName = 'openai'
+    expect((await voice.request(`/live/session/${handle}`, { method: 'DELETE' })).status).toBe(200)
+    expect(mocks.alternateClose).toHaveBeenCalledExactlyOnceWith('other_session')
+    expect(mocks.create).not.toHaveBeenCalled()
+    expect(mocks.map).not.toHaveBeenCalled()
+    expect(mocks.close).not.toHaveBeenCalled()
   })
   it('rejects invalid and oversized mappings before calling the LLM', async () => {
     expect((await request('/live/map', { kind: 'request', transcript: '' })).status).toBe(400)

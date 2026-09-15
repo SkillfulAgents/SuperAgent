@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { HTTPException } from 'hono/http-exception'
 import { LiveSessionRegistry } from '@shared/lib/voice/live-session-registry'
 import { z } from 'zod'
 import { limitJsonBody, type LimitedJsonBodyEnv } from '../middleware/limit-json-body'
@@ -38,20 +39,32 @@ voice.get('/configured', (c) => {
   })
 })
 
-// Live extends the existing OpenAI BYOK provider, independently of dictation
-// and the voice-agent creation/feedback aids.
+// Resolve capability through the configured provider; transport and mapping
+// behavior stay in its implementation.
 voice.use('/live/*', limitJsonBody(128 * 1024))
-voice.use('/live/*', async (c, next) => {
-  if (c.req.method !== 'DELETE' && getVoiceSettings().sttProvider !== 'openai') {
-    return c.json({ error: 'Select OpenAI in Settings > Voice to use Live.' }, 400)
+function requireLiveConversation(operation: string) {
+  const selected = getVoiceSettings().sttProvider
+  if (!selected) {
+    throw new HTTPException(400, { res: Response.json({
+      error: 'No voice provider configured. Set one in Settings > Voice.',
+    }, { status: 400 }) })
   }
-  return next()
-})
-// Opaque, user-bound handles prevent one user from closing another's call.
-const liveSessions = new LiveSessionRegistry((id) => getVoiceProvider('openai').closeLiveSession(id))
+  const provider = getVoiceProvider(selected)
+  const conversation = provider.getLiveConversation()
+  if (!conversation) {
+    throw new HTTPException(400, { res: Response.json({
+      error: `${operation} not supported with current configured voice provider: ${provider.name}`,
+    }, { status: 400 }) })
+  }
+  return conversation
+}
+// Each owned handle retains its creating provider's cleanup operation, including
+// retries and expiry after the configured provider changes.
+const liveSessions = new LiveSessionRegistry()
 const pendingLiveStarts = new Map<string, number>()
 const liveSessionSchema = z.object({ sdp: z.string().min(1).max(64000), history: voiceHistorySchema })
 voice.post('/live/session', async (c) => {
+  const conversation = requireLiveConversation('Live session creation')
   const parsed = liveSessionSchema.safeParse(c.get('limitedJsonBody'))
   if (!parsed.success) return c.json({ error: 'Invalid Live session request.' }, 400)
   const owner = getCurrentUserId(c)
@@ -61,9 +74,8 @@ voice.post('/live/session', async (c) => {
   }
   pendingLiveStarts.set(owner, pending + 1)
   try {
-    const provider = getVoiceProvider('openai')
-    const answer = await provider.createLiveSession(parsed.data.sdp, parsed.data.history)
-    const registered = liveSessions.add(owner, answer.session.id)
+    const answer = await conversation.createLiveSession(parsed.data.sdp, parsed.data.history)
+    const registered = liveSessions.add(owner, () => conversation.closeLiveSession(answer.session.id))
     if (c.req.raw.signal.aborted) {
       await liveSessions.release(registered.handle, owner)
       return c.json({ error: 'Voice connection request was cancelled.' }, 408)
@@ -83,13 +95,13 @@ voice.delete('/live/session/:handle', async (c) => {
   return c.json({ closed: result === 'closed', closing: result === 'closing' }, result === 'closed' ? 200 : 202)
 })
 voice.post('/live/map', async (c) => {
+  const conversation = requireLiveConversation('Live conversation mapping')
   const parsed = liveMappingSchema.safeParse(c.get('limitedJsonBody'))
   if (!parsed.success) return c.json({ error: 'Invalid Live mapping request.' }, 400)
   try {
-    const provider = getVoiceProvider('openai')
-    return c.json(await provider.mapLiveConversation(parsed.data, c.req.raw.signal))
+    return c.json(await conversation.mapLiveConversation(parsed.data, c.req.raw.signal))
   } catch {
-    return c.json({ error: 'Voice mapping failed. Check the configured summarizer and try again.' }, 502)
+    return c.json({ error: 'Voice mapping failed. Please try again.' }, 502)
   }
 })
 

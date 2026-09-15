@@ -19,7 +19,7 @@ Automated tests use mocked provider responses. Microphone quality, model access,
 
 `DeepgramConversationAdapter` owns utterance finalization, interruption word thresholds, ducking, listener reconnection, and the existing read-aloud pipeline. `OpenAILiveConversationAdapter` wraps Live media/mapping behind the same contract. Neither adapter imports agent mutations or subscribes to the agent stream.
 
-Neutral history/transcript types live in `shared/lib/voice/conversation-types.ts`; renderer contracts live in `renderer/lib/voice-conversation.ts`. Provider protocol types remain in `live-types.ts`. The provider registry preserves concrete types, and each provider declares its conversation engine without API-layer casts.
+Neutral history/transcript types live in `shared/lib/voice/conversation-types.ts`; renderer contracts live in `renderer/lib/voice-conversation.ts`. Provider protocol types remain in `live-types.ts`. The provider registry preserves concrete types, and each provider declares its conversation engine without API-layer casts. Host routes resolve the configured provider’s optional `getLiveConversation()` capability and delegate creation/mapping through its typed methods. Providers without that capability return a named unsupported-operation error. Each cleanup handle retains its creating provider’s close operation, so cleanup, retries, and expiry do not depend on later provider selection.
 
 The common snapshot separates user and assistant speech activity. `working` consistently means an active backend turn with a ready, unpaused voice connection. Adapters supply hold eligibility/delay and control capabilities so the composer does not branch on engine names. Music is cut synchronously on either participant's speech activity for both engines.
 

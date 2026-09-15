@@ -6,9 +6,9 @@ afterEach(() => vi.useRealTimers())
 describe('Live session cleanup', () => {
   it('frees admission slots on failed hangup and retries without losing cleanup handles', async () => {
     const hangup = vi.fn(async (_id: string) => {}).mockRejectedValue(new Error('Unavailable'))
-    const registry = new LiveSessionRegistry(hangup)
+    const registry = new LiveSessionRegistry()
     for (let i = 0; i < 4; i++) {
-      const { handle } = registry.add('alice', `session-${i}`)
+      const { handle } = registry.add('alice', () => hangup(`session-${i}`))
       expect(await registry.release(handle, 'alice')).toBe('closing')
     }
     expect(registry.activeCount('alice')).toBe(0)
@@ -21,8 +21,8 @@ describe('Live session cleanup', () => {
 
   it('keeps ownership, deduplicates concurrent releases, and bounds failed cleanup', async () => {
     const hangup = vi.fn(async () => { throw new Error('Unavailable') })
-    const registry = new LiveSessionRegistry(hangup)
-    const { handle } = registry.add('alice', 'session')
+    const registry = new LiveSessionRegistry()
+    const { handle } = registry.add('alice', () => hangup())
     expect(await registry.release(handle, 'bob')).toBe('missing')
     expect(hangup).not.toHaveBeenCalled()
     await Promise.all([registry.release(handle, 'alice'), registry.release(handle, 'alice')])
