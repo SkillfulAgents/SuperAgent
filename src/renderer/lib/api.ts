@@ -1,4 +1,4 @@
-import { getApiBaseUrl } from './env'
+import { getApiBaseUrl, getCloudApiBaseUrl } from './env'
 import { hasInteractiveLogin, isAuthMode } from './auth-mode'
 import { reportCloudSessionRejected } from './cloud-session'
 
@@ -14,6 +14,30 @@ export async function apiFetch(
   init?: RequestInit
 ): Promise<Response> {
   const baseUrl = getApiBaseUrl()
+  const response = await fetch(`${baseUrl}${path}`, init)
+  await handleUnauthorizedResponse(response.status, path)
+  return response
+}
+
+/**
+ * `apiFetch` against the cloud proxy door instead of this window's own API.
+ *
+ * The door is the second sanctioned origin (`getCloudApiBaseUrl()`), handed to
+ * every window at boot so a local window can read the deployment's state
+ * without switching target. Requests still leave over loopback — see
+ * `api/routes/cloud-proxy.ts`.
+ *
+ * Throws when the door is absent rather than falling back to the local origin:
+ * a silent fallback would answer a question about the deployment with this
+ * laptop's answer. Callers gate on `getCloudApiBaseUrl() !== null` first, so
+ * the throw is a backstop rather than a path anything reaches.
+ */
+export async function cloudApiFetch(
+  path: string,
+  init?: RequestInit
+): Promise<Response> {
+  const baseUrl = getCloudApiBaseUrl()
+  if (baseUrl === null) throw new Error('Cloud proxy door is not available')
   const response = await fetch(`${baseUrl}${path}`, init)
   await handleUnauthorizedResponse(response.status, path)
   return response

@@ -3,6 +3,7 @@ import { setActiveTarget } from './api-target'
 
 // Cache for the API base URL (fetched once from Electron main process)
 let cachedApiBaseUrl: string | null = null
+let cachedCloudApiBaseUrl: string | null = null
 
 /**
  * Initialize the API base URL (call this at app startup in Electron).
@@ -30,6 +31,7 @@ export async function initApiBaseUrl(): Promise<void> {
     const resolved = await window.electronAPI.getApiTarget?.().catch(() => null)
     if (resolved) {
       cachedApiBaseUrl = resolved.baseUrl
+      cachedCloudApiBaseUrl = resolved.cloudBaseUrl
       setActiveTarget(resolved.target, resolved.fallback)
       return
     }
@@ -48,6 +50,7 @@ export async function initApiBaseUrl(): Promise<void> {
 /** Test seam: forgets the resolved base URL so a fresh boot can be simulated. */
 export function _resetApiBaseUrlForTest(): void {
   cachedApiBaseUrl = null
+  cachedCloudApiBaseUrl = null
 }
 
 /**
@@ -62,6 +65,11 @@ export function getApiBaseUrl(): string {
   }
   // Web uses same-origin (Vite dev server proxies to API)
   return ''
+}
+
+/** The cloud proxy door, or null when the proxy is not enabled. */
+export function getCloudApiBaseUrl(): string | null {
+  return cachedCloudApiBaseUrl
 }
 
 /**

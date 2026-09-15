@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ResolvedApiTarget } from '@shared/lib/api-target'
 import { _resetApiTargetForTest, getActiveTarget, getTargetFallbackReason } from './api-target'
-import { _resetApiBaseUrlForTest, getApiBaseUrl, initApiBaseUrl } from './env'
+import { _resetApiBaseUrlForTest, getApiBaseUrl, getCloudApiBaseUrl, initApiBaseUrl } from './env'
 
 /**
  * Boot-time target selection: which base URL every call site in the renderer
@@ -25,7 +25,7 @@ function stubWindow(electron?: ElectronStub | null) {
 
 const electron = (overrides: ElectronStub = {}): ElectronStub => ({
   getApiUrl: async () => LOCAL,
-  getApiTarget: async () => ({ target: 'local', baseUrl: LOCAL, fallback: null }),
+  getApiTarget: async () => ({ target: 'local', baseUrl: LOCAL, fallback: null, cloudBaseUrl: CLOUD }),
   ...overrides,
 })
 
@@ -46,18 +46,20 @@ describe('initApiBaseUrl', () => {
     await initApiBaseUrl()
 
     expect(getApiBaseUrl()).toBe(LOCAL)
+    expect(getCloudApiBaseUrl()).toBe(CLOUD)
     expect(getActiveTarget()).toBe('local')
   })
 
   it('uses the keyed proxy prefix when main resolves to cloud', async () => {
     stubWindow(
-      electron({ getApiTarget: async () => ({ target: 'cloud', baseUrl: CLOUD, fallback: null }) }),
+      electron({ getApiTarget: async () => ({ target: 'cloud', baseUrl: CLOUD, fallback: null, cloudBaseUrl: CLOUD }) }),
     )
     await initApiBaseUrl()
 
     // Every call site prefixes this, so this one value is what moves the whole
     // UI to the cloud workspace.
     expect(getApiBaseUrl()).toBe(CLOUD)
+    expect(getCloudApiBaseUrl()).toBe(CLOUD)
     expect(getActiveTarget()).toBe('cloud')
     expect(getTargetFallbackReason()).toBeNull()
   })
@@ -65,12 +67,13 @@ describe('initApiBaseUrl', () => {
   it('carries the reason main denied a stored cloud preference', async () => {
     stubWindow(
       electron({
-        getApiTarget: async () => ({ target: 'local', baseUrl: LOCAL, fallback: 'no-workspace' }),
+        getApiTarget: async () => ({ target: 'local', baseUrl: LOCAL, fallback: 'no-workspace', cloudBaseUrl: CLOUD }),
       }),
     )
     await initApiBaseUrl()
 
     expect(getApiBaseUrl()).toBe(LOCAL)
+    expect(getCloudApiBaseUrl()).toBe(CLOUD)
     expect(getActiveTarget()).toBe('local')
     expect(getTargetFallbackReason()).toBe('no-workspace')
   })
@@ -80,6 +83,7 @@ describe('initApiBaseUrl', () => {
     await initApiBaseUrl()
 
     expect(getApiBaseUrl()).toBe(LOCAL)
+    expect(getCloudApiBaseUrl()).toBeNull()
     expect(getActiveTarget()).toBe('local')
   })
 
@@ -88,6 +92,7 @@ describe('initApiBaseUrl', () => {
     await initApiBaseUrl()
 
     expect(getApiBaseUrl()).toBe(LOCAL)
+    expect(getCloudApiBaseUrl()).toBeNull()
     expect(getActiveTarget()).toBe('local')
   })
 
@@ -96,6 +101,7 @@ describe('initApiBaseUrl', () => {
     await initApiBaseUrl()
 
     expect(getApiBaseUrl()).toBe('')
+    expect(getCloudApiBaseUrl()).toBeNull()
     expect(getActiveTarget()).toBe('local')
   })
 
