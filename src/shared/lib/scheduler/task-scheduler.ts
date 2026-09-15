@@ -21,6 +21,7 @@ import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import { getNextCronTime } from '@shared/lib/services/schedule-parser'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentExists } from '@shared/lib/services/agent-service'
+import { isOrphanedCreator, pauseOrphanedAutomations } from '@shared/lib/services/orphaned-automations'
 import { captureException } from '@shared/lib/error-reporting'
 import { deliverSessionWake } from './wake-delivery'
 
@@ -170,6 +171,14 @@ class TaskScheduler {
    * Execute a single scheduled task.
    */
   private async executeTask(task: ScheduledTask): Promise<void> {
+    // A deleted creator resolves no member; stop the row instead of firing (SUP-858).
+    if (isOrphanedCreator(task.createdByUserId)) {
+      await pauseOrphanedAutomations(task.createdByUserId, 'scheduled_task', {
+        taskId: task.id,
+        agentSlug: task.agentSlug,
+      })
+      return
+    }
     // Attribute to task creator (baked into ANTHROPIC token on cold start).
     return runWithOptionalUser(task.createdByUserId, () => this.executeTaskInner(task))
   }

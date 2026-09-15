@@ -377,6 +377,20 @@ export async function cancelWebhookTrigger(triggerId: string): Promise<boolean> 
   return (result.changes ?? 0) > 0
 }
 
+// Used when the creator is deleted. Returns the number of rows changed.
+export async function pauseWebhookTriggersCreatedBy(userId: string): Promise<number> {
+  const result = await db
+    .update(webhookTriggers)
+    .set({ status: 'paused', pausedAt: new Date() })
+    .where(
+      and(
+        eq(webhookTriggers.createdByUserId, userId),
+        eq(webhookTriggers.status, 'active')
+      )
+    )
+  return result.changes ?? 0
+}
+
 /**
  * Pause a webhook trigger. Events matching its Composio subscription will be
  * acked and discarded instead of firing the agent. The upstream Composio

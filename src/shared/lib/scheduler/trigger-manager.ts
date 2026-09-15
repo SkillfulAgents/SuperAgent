@@ -27,6 +27,7 @@ import type { WebhookTrigger } from '@shared/lib/services/webhook-trigger-servic
 import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentExists } from '@shared/lib/services/agent-service'
+import { isOrphanedCreator, pauseOrphanedAutomations } from '@shared/lib/services/orphaned-automations'
 import {
   pollAndClaimEvents,
   acknowledgeEvents,
@@ -307,6 +308,15 @@ class TriggerManager {
     trigger: WebhookTrigger,
     events: WebhookEvent[]
   ): Promise<void> {
+    // A deleted creator must not keep firing under someone else's account; the
+    // caller acks the events, matching paused-trigger semantics (SUP-858).
+    if (isOrphanedCreator(trigger.createdByUserId)) {
+      await pauseOrphanedAutomations(trigger.createdByUserId, 'webhook_trigger', {
+        triggerId: trigger.id,
+        agentSlug: trigger.agentSlug,
+      })
+      return
+    }
     // Attribute to the same user the poller claimed events under: prefer the
     // trigger creator, but fall back to the connected_account owner when the
     // creator has no platform member (SUP-226). If neither resolves to a

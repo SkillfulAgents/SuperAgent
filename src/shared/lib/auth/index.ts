@@ -7,6 +7,7 @@ import * as schema from '@shared/lib/db/schema'
 import { getOrCreateAuthSecret } from './secret'
 import { getAppBaseUrl, getTrustedOrigins } from './config'
 import { getSettings } from '@shared/lib/config/settings'
+import { captureException } from '@shared/lib/error-reporting'
 import { resolveAuthSettings } from './auth-settings'
 import { PENDING_APPROVAL_BAN_REASON } from './clear-pending-approval-bans'
 import { enforceMaxConcurrentSessions } from './session-enforcement'
@@ -137,6 +138,23 @@ function createAuthInstance() {
       user: {
         delete: {
           after: async (deletedUser) => {
+            // Their tasks/triggers have no FK to the user row; stop them here or
+            // they keep firing with no resolvable member (SUP-858).
+            try {
+              const { pauseAutomationsForUser } = await import('@shared/lib/services/orphaned-automations')
+              const counts = await pauseAutomationsForUser(deletedUser.id)
+              if (counts.scheduledTasks || counts.webhookTriggers) {
+                console.log(
+                  `[auth] user ${deletedUser.id} deleted; paused ${counts.scheduledTasks} task(s) and ${counts.webhookTriggers} trigger(s)`,
+                )
+              }
+            } catch (error) {
+              console.error('[auth] failed to pause automations for deleted user:', error)
+              captureException(error, {
+                tags: { area: 'auth', op: 'user.delete.pause_automations' },
+                extra: { userId: deletedUser.id },
+              })
+            }
             if (typeof deletedUser.avatarOverride !== 'string') return
             const { removeStoredAvatar } = await import('@shared/lib/services/profile-avatar-service')
             await removeStoredAvatar(deletedUser.avatarOverride)

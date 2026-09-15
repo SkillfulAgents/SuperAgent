@@ -415,6 +415,33 @@ export async function pauseScheduledTask(taskId: string): Promise<boolean> {
   return (result.changes ?? 0) > 0
 }
 
+// Used when the creator is deleted: recurring tasks pause (an admin can resume),
+// one-time tasks are cancelled. Returns the number of rows changed.
+export async function pauseScheduledTasksCreatedBy(userId: string): Promise<number> {
+  const now = new Date()
+  const paused = await db
+    .update(scheduledTasks)
+    .set({ status: 'paused', pausedAt: now })
+    .where(
+      and(
+        eq(scheduledTasks.createdByUserId, userId),
+        eq(scheduledTasks.status, 'pending'),
+        eq(scheduledTasks.scheduleType, 'cron')
+      )
+    )
+  const cancelled = await db
+    .update(scheduledTasks)
+    .set({ status: 'cancelled', cancelledAt: now })
+    .where(
+      and(
+        eq(scheduledTasks.createdByUserId, userId),
+        eq(scheduledTasks.status, 'pending'),
+        eq(scheduledTasks.scheduleType, 'at')
+      )
+    )
+  return (paused.changes ?? 0) + (cancelled.changes ?? 0)
+}
+
 /**
  * Resume a paused scheduled task. `nextExecutionAt` is recomputed from the
  * cron expression so missed executions are skipped.

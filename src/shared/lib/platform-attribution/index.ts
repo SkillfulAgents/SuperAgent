@@ -123,7 +123,7 @@ export const attribution = {
   },
   // Container cold start: ambient scope, else the agent owner, else the stored
   // member. Same fallback chain as trigger minting (SUP-765); null only when
-  // nothing resolves, so callers never bake a bare org token by accident (SUP-805).
+  // nothing resolves, so callers never bake a bare org token by accident (SUP-858).
   forAgent(agentSlug: string): Attribution | null {
     const ambient = attributionContext.getStore()?.auth ?? fromCurrentRequest()
     if (ambient) return ambient
