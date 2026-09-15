@@ -56,8 +56,8 @@
     "test:perf": "vitest run --config vitest.perf.config.ts"
   },
   "dependencies": {
-    "@anthropic-ai/bedrock-sdk": "^0.32.0",
-    "@anthropic-ai/sdk": "^0.123.0",
+    "@anthropic-ai/bedrock-sdk": "^0.33.5",
+    "@anthropic-ai/sdk": "^0.125.0",
     "@aws-sdk/client-lambda-microvms": "^3.1075.0",
     "@hono/node-server": "^1.13.7",
     "@hono/zod-validator": "^0.8.0",

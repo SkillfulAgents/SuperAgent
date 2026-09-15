@@ -236,8 +236,8 @@ describe('ClaudeCodeProcess runtime connection handling', () => {
     expect(calls).toHaveLength(2)
     expect(calls[1].options.mcpServers).toHaveProperty('team_calendar')
     expect(calls[1].options.allowedTools).toContain('mcp__team_calendar__*')
-    expect(calls[1].options.systemPrompt).toContain('Team Calendar')
-    expect(calls[1].options.systemPrompt).toContain('list_events')
+    expect(calls[1].options.systemPrompt.prompt).toContain('Team Calendar')
+    expect(calls[1].options.systemPrompt.prompt).toContain('list_events')
     // The rebuild re-read the env itself — no dynamic set on top of it.
     expect(setMcpServersCalls).toHaveLength(1)
   })
@@ -267,7 +267,7 @@ describe('ClaudeCodeProcess runtime connection handling', () => {
     expect(calls[1].options.mcpServers).toMatchObject({
       team_calendar: { type: 'http' },
     })
-    expect(calls[1].options.systemPrompt).toContain('Team Calendar')
+    expect(calls[1].options.systemPrompt.prompt).toContain('Team Calendar')
     expect(mcpServerStatusCalls).toBe(1)
   })
 
@@ -284,17 +284,17 @@ describe('ClaudeCodeProcess runtime connection handling', () => {
     // prompt is baked at query creation — so this one is still a re-query.
     expect(calls).toHaveLength(2)
     expect(setMcpServersCalls).toHaveLength(0)
-    expect(calls[1].options.systemPrompt).toContain('Work Gmail')
-    expect(calls[1].options.systemPrompt).toContain('account-gmail')
-    expect(calls[1].options.systemPrompt).toContain('status: `expired`')
-    expect(calls[1].options.systemPrompt).toContain('Make the intended proxy call')
-    expect(calls[1].options.systemPrompt).toContain('Do NOT report them as missing')
+    expect(calls[1].options.systemPrompt.prompt).toContain('Work Gmail')
+    expect(calls[1].options.systemPrompt.prompt).toContain('account-gmail')
+    expect(calls[1].options.systemPrompt.prompt).toContain('status: `expired`')
+    expect(calls[1].options.systemPrompt.prompt).toContain('Make the intended proxy call')
+    expect(calls[1].options.systemPrompt.prompt).toContain('Do NOT report them as missing')
 
     process.env.CONNECTED_ACCOUNTS = '{}'
     await claude.sendMessage('Continue without Gmail')
 
     expect(calls).toHaveLength(3)
-    expect(calls[2].options.systemPrompt).not.toContain('Work Gmail')
+    expect(calls[2].options.systemPrompt.prompt).not.toContain('Work Gmail')
   })
 
   it('treats unset and serialized empty projections as equivalent', async () => {
@@ -429,7 +429,7 @@ describe('ClaudeCodeProcess remote MCP handshake gate', () => {
     expect(calls).toHaveLength(1)
     expect(mcpServerStatusCalls).toBe(0)
     expect(calls[0].options.mcpServers).toHaveProperty('team_calendar')
-    expect(calls[0].options.systemPrompt).toContain('Do not report an assigned server as missing')
+    expect(calls[0].options.systemPrompt.prompt).toContain('Do not report an assigned server as missing')
   })
 
   it('restarts for a newly projected auth-required MCP without waiting on its parked handshake', async () => {

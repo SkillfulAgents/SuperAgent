@@ -92,13 +92,16 @@ describe('ClaudeCodeProcess system prompt date', () => {
     vi.setSystemTime(THURSDAY_LATE)
     const process = new ClaudeCodeProcess({ sessionId: 's1', workingDirectory: '/tmp' })
     await process.start()
-    expect(calls[0].options.systemPrompt).toContain(`Today is Thursday, 2026-09-10 in ${ZONE} (UTC-07:00)`)
+    expect(calls[0].options.systemPrompt.prompt).toContain(`Today is Thursday, 2026-09-10 in ${ZONE} (UTC-07:00)`)
+    // SDK 0.3.267+ records a custom prompt on the first request unless snapshot
+    // is off; the date line below only re-renders because we opt out.
+    expect(calls[0].options.systemPrompt).toMatchObject({ type: 'custom', snapshot: false })
 
     await process.stop()
     vi.setSystemTime(FRIDAY_EARLY)
     await process.sendMessage('hello')
     expect(calls).toHaveLength(2)
-    expect(calls[1].options.systemPrompt).toContain('Today is Friday, 2026-09-11')
+    expect(calls[1].options.systemPrompt.prompt).toContain('Today is Friday, 2026-09-11')
   })
 
   it('claims a pre-warmed subprocess spawned the same local day', async () => {
@@ -119,6 +122,6 @@ describe('ClaudeCodeProcess system prompt date', () => {
     await process.start()
     expect(warm).toEqual({ spawned: 1, claimed: 0, closed: 1 })
     expect(calls).toHaveLength(1)
-    expect(calls[0].options.systemPrompt).toContain('Today is Friday, 2026-09-11')
+    expect(calls[0].options.systemPrompt.prompt).toContain('Today is Friday, 2026-09-11')
   })
 })
